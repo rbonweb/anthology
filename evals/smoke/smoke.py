@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """Anthology smoke cases U1-U9: the multi-session and no-model checks `claude plugin eval` cannot do.
 
-Usage: smoke.py [--claude BIN] [--budget-usd X] [--out PATH] [--list] [NAME ...]
+Usage: smoke.py [--claude BIN] [--budget-usd X] [--total-budget-usd X] [--out PATH] [--list] [NAME ...]
 
 Runs the named smokes (default: all). Each returns PASS, FAIL or SKIP with a one-line reason;
 one line per smoke is printed, a JSON summary goes to --out, and the exit status is 1 if any
 smoke FAILED, else 0. `scripts/run-evals.sh` runs this after the evals; CI runs `cli-syntax`.
+Spend: every `claude -p` gets --max-budget-usd (--budget-usd); the cost each one reports is summed,
+and once --total-budget-usd (default 10) is spent no more runs start: the remaining smokes FAIL with
+"smoke budget exhausted". A binary given with --claude or $CLAUDE_BIN that is missing is a FAIL.
 
 Isolation: every `claude` run gets a fresh temp dir with its own HOME and CLAUDE_CONFIG_DIR and an
 environment built from scratch (see build_env): the real ~/.claude is never read or written, and
 only ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are passed through. The two
 smokes that run with --permission-mode bypassPermissions (auto-memory-dir, writer-memory-commit)
-do so only inside their scratch temp dir, under that isolated HOME and config, with the
-guardrails plugin loaded. Every subprocess has a timeout. Auth values are never printed.
+do so with their working directory, HOME and config in a scratch temp dir and the guardrails
+plugin loaded. That is NOT a sandbox: the permission mode lets Bash write anywhere the user can, so
+run them only in CI or another throwaway environment. Every subprocess has a timeout. Auth values
+are never printed.
 
 Standard library only; runs on Python 3.9+.
 """
@@ -20,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib.util
 import inspect
 import json
 import os
@@ -39,12 +43,19 @@ AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
 CLAUDE_TIMEOUT = 300
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 NO_AUTH = "no API credentials (set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)"
-READ_ALLOW = {"permissions": {"allow": [f"Read({ROOT}/plugins/**)"]}}  # U1: agents read their knowledge
+# U1: agents read their knowledge. `//` marks an absolute path in permission rules (one `/` is project-relative).
+READ_ALLOW = {"permissions": {"allow": [f"Read(/{ROOT}/plugins/**)"]}}
+EXPECTED_AGENTS = 11
+MARKER = "smoke-unpushed-marker"
 PROMPT_WORKTREE = ("Use the Agent tool to run the anthology:implementer agent with the prompt "
                    "'Run git log --oneline -3, change nothing, and report the output verbatim.' "
                    "Then quote its report.")
 
 Result = Tuple[str, str]  # (status, one-line reason)
+
+
+class BudgetExhausted(Exception):
+    pass
 
 
 class Proc:
@@ -65,7 +76,9 @@ def build_env(tmp: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str, st
     cfg.mkdir(parents=True, exist_ok=True)
     env = {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(cfg), "PATH": os.environ.get("PATH", ""),
            "TMPDIR": os.environ.get("TMPDIR") or tempfile.gettempdir(), "LANG": "C.UTF-8",
-           "TERM": "dumb", "DISABLE_AUTOUPDATER": "1"}
+           "TERM": "dumb", "DISABLE_AUTOUPDATER": "1",
+           "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",  # tools and hooks never see the API key
+           "NPM_CONFIG_OFFLINE": "true"}  # a broken guard cannot fetch a package
     env.update({k: os.environ[k] for k in AUTH_VARS if os.environ.get(k)})
     env.update(extra or {})
     return env
@@ -101,8 +114,8 @@ def run(argv: Sequence[str], cwd: Path, env: Dict[str, str], timeout: int = CLAU
 
 
 class Ctx:
-    def __init__(self, claude: str, budget: str):
-        self.claude, self.budget = claude, budget
+    def __init__(self, claude: str, budget: str, total: float = 10.0):
+        self.claude, self.budget, self.total, self.spent = claude, budget, total, 0.0
 
     def claude_run(self, tmp: Path, args: Sequence[str], cwd: Optional[Path] = None,
                    extra_env: Optional[Dict[str, str]] = None, timeout: int = CLAUDE_TIMEOUT) -> Proc:
@@ -110,11 +123,24 @@ class Ctx:
 
     def prompt_run(self, tmp: Path, prompt: str, flags: Sequence[str], cwd: Optional[Path] = None,
                    extra_env: Optional[Dict[str, str]] = None, variadic: Sequence[str] = ()) -> Proc:
-        """`claude -p PROMPT FLAGS --max-budget-usd B [--allowedTools ...]`; the variadic flag goes last."""
+        """`claude -p PROMPT FLAGS --max-budget-usd B [--allowedTools ...]`; the variadic flag goes last.
+
+        Unless FLAGS pick an output format, the run asks for `json` and `Proc.out` becomes the reply text,
+        so the reported cost can be added to the running total (an unreported cost counts as the budget).
+        """
+        if self.spent >= self.total:
+            raise BudgetExhausted()
+        own_format = "--output-format" in flags
         args = ["-p", prompt, "--max-budget-usd", self.budget, *flags]
+        args += [] if own_format else ["--output-format", "json"]
         if variadic:
             args += ["--allowedTools", *variadic]
-        return self.claude_run(tmp, args, cwd, extra_env)
+        p = self.claude_run(tmp, args, cwd, extra_env)
+        cost, text = result_cost_and_text(p.out)
+        self.spent += cost if cost is not None else float(self.budget)
+        if not own_format and text is not None:
+            p.out = text
+        return p
 
 
 @contextlib.contextmanager
@@ -142,10 +168,17 @@ def git(tmp: Path, cwd: Path, *args: str) -> str:
     return p.out.strip()
 
 
+def set_identity(tmp: Path, repo: Path) -> None:
+    """Claude's own `git commit` in a scratch repo needs an identity (the HOME has no .gitconfig)."""
+    git(tmp, repo, "config", "user.name", "smoke")
+    git(tmp, repo, "config", "user.email", "smoke@example.invalid")
+
+
 def make_repo(tmp: Path, name: str = "repo") -> Path:
     repo = tmp / name
     repo.mkdir()
     git(tmp, repo, "init", "-q", "-b", "main")
+    set_identity(tmp, repo)
     (repo / "README.md").write_text("smoke\n", encoding="utf-8")
     git(tmp, repo, "add", "-A")
     git(tmp, repo, "commit", "-q", "-m", "init")
@@ -242,31 +275,96 @@ def tool_result_texts(events: Sequence[dict]) -> List[str]:
     return out
 
 
-def hook_event_text(events: Sequence[dict]) -> str:
-    return "\n".join(json.dumps(ev) for ev in events
-                     if ev.get("type") == "system" and str(ev.get("subtype", "")).startswith("hook"))
-
-
-def agent_models(agents_dir: Path) -> Dict[str, str]:
-    """agent name -> expected model family: EXPECTED_ROSTER when tests/_repo.py imports, else frontmatter."""
+def result_cost_and_text(out: str) -> Tuple[Optional[float], Optional[str]]:
+    """(total_cost_usd, result text) from the `result` event of a `claude -p` json or stream-json run."""
     try:
-        spec = importlib.util.spec_from_file_location("anthology_tests_repo", ROOT / "tests" / "_repo.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        return {a: v["model"] for a, v in mod.EXPECTED_ROSTER.items()}
-    except Exception:  # PyYAML missing, or the roster is not there yet
-        pass
-    out = {}
-    for f in sorted(agents_dir.glob("*.md")):
-        m = re.match(r"---\n(.*?)\n---", f.read_text(encoding="utf-8"), re.S)
-        mm = re.search(r"^model:\s*(\S+)", m.group(1), re.M) if m else None
-        out[f.stem] = mm.group(1) if mm else "?"
+        data = json.loads(out.strip())
+        events = [e for e in (data if isinstance(data, list) else [data]) if isinstance(e, dict)]
+    except ValueError:
+        events = stream_events(out)
+    result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    if result is None:
+        return None, None
+    cost, text = result.get("total_cost_usd"), result.get("result")
+    return (float(cost) if isinstance(cost, (int, float)) else None), (text if isinstance(text, str) else None)
+
+
+def tool_uses(events: Sequence[dict]) -> List[str]:
+    """Names of the tools the model asked to use in a stream-json run."""
+    out: List[str] = []
+    for ev in events:
+        content = (ev.get("message") or {}).get("content") if ev.get("type") == "assistant" else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("name"), str):
+                out.append(block["name"])
     return out
+
+
+def hook_failure_text(events: Sequence[dict]) -> str:
+    """Output, stderr and exit-code fields of the hook events only (not ids or other metadata)."""
+    parts = []
+    for ev in events:
+        if ev.get("type") == "system" and str(ev.get("subtype", "")).startswith("hook"):
+            parts += [ev[k] for k in ("output", "stdout", "stderr", "message", "error") if isinstance(ev.get(k), str)]
+            parts += [f"exit code {ev[k]}" for k in ("exit_code", "exitCode") if isinstance(ev.get(k), int)]
+    return "\n".join(parts)
+
+
+NOT_FOUND_RE = re.compile(r"executable not found|command not found|\bexit(ed)?( code| status)? 127\b", re.I)
+BLOCKED_RE = re.compile(r"blocking because onFailure is .?block", re.I)
+
+
+def subagent_files(cfg: Path) -> List[Path]:
+    return sorted((cfg / "projects").glob("**/subagents/*.jsonl")) if (cfg / "projects").is_dir() else []
+
+
+def transcript_cwds(text: str) -> List[str]:
+    """The `cwd` of every entry of one transcript JSONL."""
+    out = []
+    for line in text.splitlines():
+        try:
+            cwd = json.loads(line).get("cwd")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(cwd, str):
+            out.append(cwd)
+    return out
+
+
+def parse_agent(text: str) -> Dict[str, object]:
+    """One agent file -> {model, worktree, preloads, startup}, by plain line parsing (no PyYAML).
+
+    model / isolation come from the frontmatter, preloads from its `skills:` list (the `plugin:` prefix
+    dropped), startup from the `## Startup` section: refs `x` or `ds/x` of its `knowledge/.../SKILL.md` paths.
+    """
+    head, _, body = text[4:].partition("\n---") if text.startswith("---\n") else ("", "", text)
+    meta: Dict[str, str] = {}
+    preloads: List[str] = []
+    listing = False
+    for line in head.splitlines():
+        m = re.match(r"^(\w+):\s*(.*)$", line)
+        if m:
+            listing = m.group(1) == "skills"
+            meta[m.group(1)] = m.group(2).strip().strip("\"'")
+        elif listing and line.strip().startswith("- "):
+            preloads.append(line.strip()[2:].strip().strip("\"'").split(":")[-1])
+    section = re.search(r"^## Startup\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+    startup = []
+    for m in re.finditer(r"^- `\$\{CLAUDE_PLUGIN_ROOT\}/knowledge/(.+?)/SKILL\.md`", section.group(1) if section else "", re.M):
+        ref = m.group(1)
+        startup.append("ds/" + ref[len("design-skills/skills/"):] if ref.startswith("design-skills/skills/") else ref)
+    return {"model": meta.get("model", "?"), "worktree": meta.get("isolation") == "worktree",
+            "preloads": preloads, "startup": startup}
+
+
+def load_agents(agents_dir: Path) -> Dict[str, Dict[str, object]]:
+    """agent name -> parse_agent() of plugins/anthology/agents/<name>.md."""
+    return {f.stem: parse_agent(f.read_text(encoding="utf-8")) for f in sorted(agents_dir.glob("*.md"))}
 
 
 def transcript_models(cfg: Path) -> Tuple[List[str], List[Path]]:
     """Every message.model in the subagent transcripts under <cfg>/projects, and the files read."""
-    files = sorted((cfg / "projects").glob("**/subagents/*.jsonl")) if (cfg / "projects").is_dir() else []
+    files = subagent_files(cfg)
     models = []
     for f in files:
         for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -277,17 +375,6 @@ def transcript_models(cfg: Path) -> Tuple[List[str], List[Path]]:
             if isinstance(m, str):
                 models.append(m)
     return models, files
-
-
-def load_roster() -> Optional[dict]:
-    """tests/_repo.py EXPECTED_ROSTER (model, worktree, preloads, knowledge per agent), else None."""
-    try:
-        spec = importlib.util.spec_from_file_location("anthology_tests_repo", ROOT / "tests" / "_repo.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        return dict(mod.EXPECTED_ROSTER)
-    except Exception:  # PyYAML missing, or the roster is not there yet
-        return None
 
 
 def startup_regex(ref: str) -> str:
@@ -400,6 +487,7 @@ def smoke_eval_ceiling(ctx: Ctx) -> Result:
             runs = len(res["cases"][0]["arms"]["with"])
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             return FAIL, f"no usable result JSON (exit {p.code}): {snippet(p.text)}"
+        ctx.spent += float(res["costUsd"]) if isinstance(res.get("costUsd"), (int, float)) else 0.0
         bad = []
         if p.code != 2:
             bad.append(f"exit {p.code}, want 2")
@@ -434,7 +522,7 @@ def smoke_missing_interpreter(ctx: Ctx) -> Result:
     """U8: a hook whose interpreter is missing is non-blocking by default, and blocks with onFailure."""
     prompt = "Run this Bash command once: echo RAN-OK"
     flags = ["--model", "haiku", "--output-format", "stream-json", "--verbose", "--include-hook-events", "--max-turns", "3"]
-    outcomes = {}
+    seen = {}
     with scratch() as tmp:
         for label, extra in (("default", {}), ("block", {"onFailure": "block"})):
             hook = {"type": "command", "command": "python9", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/none.py"], **extra}
@@ -442,18 +530,23 @@ def smoke_missing_interpreter(ctx: Ctx) -> Result:
                                  {"PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]})
             p = ctx.prompt_run(tmp, prompt, [*flags, "--plugin-dir", str(probe)], variadic=["Bash(echo *)"])
             events = stream_events(p.out)
-            outcomes[label] = (p, any("RAN-OK" in t for t in tool_result_texts(events)), hook_event_text(events).lower())
-    p, ran, hooks = outcomes["default"]
-    if not ran or not ("not found" in hooks or "127" in hooks):
-        return FAIL, f"default: command ran={ran}, hook event reports not found={'not found' in hooks}: {snippet(p.text)}"
-    p, ran, _ = outcomes["block"]
-    if ran or "onFailure" not in p.text:
-        return FAIL, f"onFailure=block: command ran={ran}, output mentions onFailure={'onFailure' in p.text}"
+            results = tool_result_texts(events)
+            hooks = hook_failure_text(events)
+            seen[label] = {"ran": any("RAN-OK" in t for t in results), "bash": "Bash" in tool_uses(events),
+                           "not_found": bool(NOT_FOUND_RE.search(hooks)),
+                           "blocked": bool(BLOCKED_RE.search(hooks + "\n" + "\n".join(results))), "text": p.text}
+    d, b = seen["default"], seen["block"]
+    if not (d["ran"] and d["not_found"]):
+        return FAIL, f"default: command ran={d['ran']}, hook reports a missing executable={d['not_found']}: {snippet(d['text'])}"
+    if not (b["bash"] and b["blocked"] and not b["ran"]):
+        return FAIL, (f"onFailure=block: Bash called={b['bash']}, command ran={b['ran']}, "
+                      f"'blocking because onFailure is block' seen={b['blocked']}")
     return PASS, "a missing interpreter reports 'not found' and lets the command run; onFailure=block stops it"
 
 
 def smoke_python_missing(ctx: Ctx) -> Result:
-    """U8 (no model): the sh SessionStart wrapper prints a systemMessage naming python3 when python3 is missing."""
+    """U8 (no model): the sh SessionStart wrapper prints a systemMessage naming python3 when python3 is missing.
+    The guardrails sentinel (PLAN U8) must also print nothing when python3 is present."""
     cmds = []
     for plugin in ("anthology", "anthology-guardrails"):
         root = ROOT / "plugins" / plugin
@@ -462,17 +555,24 @@ def smoke_python_missing(ctx: Ctx) -> Result:
         return SKIP, "no sh SessionStart wrapper yet (stream F)"
     problems = []
     with scratch() as tmp:
-        bindir = tmp / "bin"
-        bindir.mkdir()
-        for tool in ("sh", "cat", "printf", "env", "dirname", "basename", "head", "tr", "sed", "mkdir", "uname"):
-            found = shutil.which(tool)  # resolve before PATH is narrowed
-            if found:
-                os.symlink(found, bindir / tool)
-        for root, argv in cmds:
-            argv = [a.replace("${CLAUDE_PLUGIN_ROOT}", str(root)) for a in argv]
-            env = {"PATH": str(bindir), "HOME": str(tmp), "LANG": "C.UTF-8", "CLAUDE_PLUGIN_ROOT": str(root),
+        tools = ("sh", "cat", "printf", "env", "dirname", "basename", "head", "tr", "sed", "mkdir", "uname")
+        bins = {}
+        for label, extra in (("missing", ()), ("present", ("python3",))):
+            bins[label] = tmp / f"bin-{label}"
+            bins[label].mkdir()
+            for tool in tools + extra:
+                found = shutil.which(tool)  # resolve before PATH is narrowed
+                if found:
+                    os.symlink(found, bins[label] / tool)
+
+        def wrapper(root: Path, argv: List[str], label: str) -> Proc:
+            argv = [re.sub(r"\$\{?CLAUDE_PLUGIN_ROOT\}?", str(root), a) for a in argv]
+            env = {"PATH": str(bins[label]), "HOME": str(tmp), "LANG": "C.UTF-8", "CLAUDE_PLUGIN_ROOT": str(root),
                    "CLAUDE_PROJECT_DIR": str(tmp)}
-            p = run(argv, tmp, env, timeout=60, stdin="{}")
+            return run(argv, tmp, env, timeout=60, stdin="{}")
+
+        for root, argv in cmds:
+            p = wrapper(root, argv, "missing")
             try:
                 msg = json.loads(p.out.strip())["systemMessage"]
                 ok = isinstance(msg, str) and msg.strip() != "" and "python3" in msg
@@ -481,6 +581,10 @@ def smoke_python_missing(ctx: Ctx) -> Result:
             if not ok:
                 problems.append(f"{root.name}: {Path(argv[-1]).name} did not print one JSON object whose systemMessage "
                                 f"mentions python3 (exit {p.code}): {snippet(p.text, 100)}")
+            if root.name == "anthology-guardrails" and (bins["present"] / "python3").exists():
+                present = wrapper(root, argv, "present")
+                if present.out.strip():
+                    problems.append(f"{root.name}: prints output although python3 is present: {snippet(present.out, 80)}")
     return (FAIL, "; ".join(problems)) if problems else (PASS, f"{len(cmds)} wrapper(s) warn about the missing python3")
 
 
@@ -488,6 +592,7 @@ def _unpushed_repo(tmp: Path) -> Path:
     git(tmp, tmp, "init", "-q", "--bare", "origin.git")
     git(tmp, tmp, "clone", "-q", "origin.git", "repo")
     repo = tmp / "repo"
+    set_identity(tmp, repo)
     git(tmp, repo, "checkout", "-q", "-b", "main")
     (repo / "README.md").write_text("smoke\n", encoding="utf-8")
     git(tmp, repo, "add", "-A")
@@ -500,8 +605,8 @@ def _unpushed_repo(tmp: Path) -> Path:
     return repo
 
 
-def _worktree_run(ctx: Ctx, base_ref_head: bool) -> Tuple[Proc, bool]:
-    """One run of the implementer; returns (process, an agent worktree was seen)."""
+def _worktree_run(ctx: Ctx, base_ref_head: bool) -> Tuple[Proc, bool, bool]:
+    """One run of the implementer; returns (process, an agent worktree was used, the marker is in a subagent tool result)."""
     settings = json.loads(json.dumps(READ_ALLOW))
     if base_ref_head:
         settings["worktree"] = {"baseRef": "head"}
@@ -509,39 +614,41 @@ def _worktree_run(ctx: Ctx, base_ref_head: bool) -> Tuple[Proc, bool]:
         repo = _unpushed_repo(tmp)
         p = ctx.prompt_run(tmp, PROMPT_WORKTREE, ["--model", "sonnet", *plugin_flags(), "--settings", json.dumps(settings)],
                            cwd=repo, variadic=["Agent", "Read", "Bash(git log*)"])
+        texts = [f.read_text(encoding="utf-8", errors="replace") for f in subagent_files(tmp / "cfg")]
         listed = ".claude/worktrees/agent-" in git(tmp, repo, "worktree", "list")
-        # An agent that changes nothing has its worktree removed again, so the subagent transcripts
-        # (their cwd) are accepted as evidence too.
-        in_transcripts = any(".claude/worktrees/agent-" in f.read_text(encoding="utf-8", errors="replace")
-                             for f in (tmp / "cfg" / "projects").glob("**/subagents/*.jsonl"))
-        return p, listed or in_transcripts
+        # An agent that changes nothing has its worktree removed again, so the `cwd` of the subagent
+        # transcript entries is accepted as evidence too.
+        in_cwd = any(".claude/worktrees/agent-" in c for t in texts for c in transcript_cwds(t))
+        # The marker must be what the SUBAGENT's Bash returned: the main session runs on `feat` itself.
+        marker = any(MARKER in r for t in texts for r in tool_result_texts(stream_events(t)))
+        return p, listed or in_cwd, marker
 
 
 def smoke_worktree_base(ctx: Ctx) -> Result:
     """U2: with worktree.baseRef=head an isolated agent sees the unpushed commit; the platform default does not."""
-    p, worktree = _worktree_run(ctx, True)
-    marker = "smoke-unpushed-marker" in p.out
-    control, _ = _worktree_run(ctx, False)
-    note = f"control without baseRef: marker {'present' if 'smoke-unpushed-marker' in control.out else 'absent'}"
+    p, worktree, marker = _worktree_run(ctx, True)
+    _, _, control_marker = _worktree_run(ctx, False)
+    note = f"control without baseRef: marker {'present' if control_marker else 'absent'} in the agent"
     if p.code != 0:
         return FAIL, f"claude exited {p.code}: {snippet(p.text)}; {note}"
     if marker and worktree:
         return PASS, f"the unpushed commit is visible in an agent worktree; {note}"
-    return FAIL, f"marker in reply: {marker}; agent worktree seen: {worktree}; {note}"
+    return FAIL, f"marker in the agent's tool results: {marker}; agent worktree seen: {worktree}; {note}"
 
 
 def smoke_model_check(ctx: Ctx) -> Result:
     """U2: each agent's subagent transcript carries the model family its frontmatter names."""
-    roster = agent_models(ROOT / "plugins" / "anthology" / "agents")
-    if not roster:
-        return SKIP, "no agents yet"
+    roster = {a: v["model"] for a, v in load_agents(ROOT / "plugins" / "anthology" / "agents").items()}
+    if len(roster) != EXPECTED_AGENTS:
+        return FAIL, f"found {len(roster)} agents, want {EXPECTED_AGENTS}: {', '.join(sorted(roster))}"
     bad = []
     for agent, family in roster.items():
         with scratch() as tmp:
             repo = make_repo(tmp)
             p = ctx.prompt_run(tmp, f"Use the Agent tool to run the anthology:{agent} agent with the prompt "
                                "'Reply OK.' and quote its reply.",
-                               ["--model", "haiku", *plugin_flags(), "--settings", json.dumps(READ_ALLOW),
+                               ["--model", "sonnet" if family == "haiku" else "haiku",  # never the agent's own model
+                                *plugin_flags(), "--settings", json.dumps(READ_ALLOW),
                                 "--max-turns", "4"], cwd=repo, variadic=["Agent", "Read"])
             models, files = transcript_models(tmp / "cfg")
             if not files:
@@ -555,12 +662,13 @@ def smoke_model_check(ctx: Ctx) -> Result:
 def smoke_knowledge_read_writers(ctx: Ctx) -> Result:
     """U1: each isolation:worktree agent reads its Startup files in order before its first Glob (plugin eval
     cannot run these: it refuses worktree isolation). Preload agents must not call Skill and quote the heading."""
-    roster = load_roster()
-    if roster is None:
-        return SKIP, "tests/_repo.py EXPECTED_ROSTER is not importable (PyYAML?)"
-    writers = {a: v for a, v in roster.items() if v["worktree"] is True}
+    agents = load_agents(ROOT / "plugins" / "anthology" / "agents")
+    writers = {a: v for a, v in agents.items() if v["worktree"]}
     if not writers:
-        return SKIP, "no worktree agents in the roster"
+        return FAIL, f"no isolation: worktree agent found among {len(agents)} agent file(s)"
+    empty = [a for a, v in writers.items() if not v["startup"]]
+    if empty:
+        return FAIL, f"no Startup paths parsed for: {', '.join(empty)}"
     bad = []
     for agent, spec in writers.items():
         headings = [skill_heading(p) for p in spec["preloads"]]
@@ -573,12 +681,12 @@ def smoke_knowledge_read_writers(ctx: Ctx) -> Result:
             # the agent may run in a worktree of this repo; that is expected, not a failure
             p = ctx.prompt_run(tmp, prompt, ["--model", "sonnet", *plugin_flags(), "--settings", json.dumps(READ_ALLOW)],
                                cwd=repo, variadic=["Agent", "Read", "Glob"])
-            files = sorted((tmp / "cfg" / "projects").glob("**/subagents/*.jsonl")) if (tmp / "cfg" / "projects").is_dir() else []
+            files = subagent_files(tmp / "cfg")
             if not files:
                 bad.append(f"{agent}: no subagent transcript (exit {p.code}: {snippet(p.text, 80)})")
                 continue
             calls = [c for f in files for c in transcript_calls(f.read_text(encoding="utf-8", errors="replace"))]
-            problems = startup_problems(calls, ["caveman"] + list(spec["knowledge"]))
+            problems = startup_problems(calls, spec["startup"])
             if headings:
                 if any(n == "Skill" for n, _ in calls):
                     problems.append("called Skill for a preload")
@@ -604,11 +712,18 @@ def smoke_auto_memory_dir(ctx: Ctx) -> Result:
     if not has_session_start(ROOT / "plugins/anthology/hooks/hooks.json"):
         return SKIP, "no SessionStart memory sync yet (stream F)"
     flags = ["--permission-mode", "bypassPermissions", "--model", "sonnet", *plugin_flags(), "--max-turns", "6"]
-    with scratch() as tmp:  # bypassPermissions: confined to this temp dir, isolated HOME/config, guardrails loaded
+    with scratch() as tmp:  # bypassPermissions: cwd/HOME/config in this temp dir (not a sandbox), guardrails loaded
         repo = _approved_repo(ctx, tmp)
         mem = repo / ".claude" / "memory"
         ctx.prompt_run(tmp, "Remember for future sessions that the smoke probe color is amber; save it to auto memory now.",
                        flags, cwd=repo)
+        # Session 1 starts before the setting exists, so the note goes to the platform's default memory dir;
+        # a note already in the repo would make the migration check below pass without migrating anything.
+        default_dirs = list((tmp / "cfg" / "projects").glob("*/memory"))
+        if find_text(mem, "amber") or not any(find_text(d, "amber") for d in default_dirs):
+            return FAIL, ("session 1: want the amber note in the default memory dir (cfg/projects/*/memory) and not yet in "
+                          f"the repo; in the default dir: {any(find_text(d, 'amber') for d in default_dirs)}, "
+                          f"in the repo: {find_text(mem, 'amber')}")
         try:
             setting = json.loads((repo / ".claude/settings.local.json").read_text("utf-8")).get("autoMemoryDirectory")
         except (OSError, ValueError):
@@ -630,7 +745,7 @@ def smoke_writer_memory_commit(ctx: Ctx) -> Result:
               "project-smoke-probe.md saying the smoke probe is teal because this smoke checks writer memory commits; follow "
               "your Memory rules, then finish.' Then report its reply.")
     want = ".claude/agent-memory/anthology-implementer/project-smoke-probe.md"
-    with scratch() as tmp:  # bypassPermissions: confined to this temp dir, isolated HOME/config, guardrails loaded
+    with scratch() as tmp:  # bypassPermissions: cwd/HOME/config in this temp dir (not a sandbox), guardrails loaded
         repo = make_repo(tmp)
         p = ctx.prompt_run(tmp, prompt, ["--permission-mode", "bypassPermissions", "--model", "sonnet", *plugin_flags(),
                                          "--settings", json.dumps({"worktree": {"baseRef": "head"}})], cwd=repo)
@@ -668,23 +783,44 @@ def default_claude() -> str:
     return os.environ.get("CLAUDE_BIN") or (str(local) if os.access(local, os.X_OK) else "claude")
 
 
-def run_smoke(name: str, claude: str, budget: str) -> Result:
+def binary_exists(claude: str) -> bool:
+    return bool(shutil.which(claude)) or (Path(claude).is_file() and os.access(claude, os.X_OK))
+
+
+def run_smoke(name: str, ctx: Ctx, explicit: bool = True) -> Result:
     func, needs_model = SMOKES[name]
-    if name != "python-missing" and not (shutil.which(claude) or os.access(claude, os.X_OK)):
-        return SKIP, f"claude binary not found: {claude}"
+    if ctx.spent >= ctx.total:
+        return FAIL, f"smoke budget exhausted (${ctx.spent:.2f} of ${ctx.total:.2f}); raise --total-budget-usd"
+    if name != "python-missing" and not binary_exists(ctx.claude):
+        # a binary the caller named (flag or $CLAUDE_BIN) must exist: a silent SKIP would hide a broken install
+        return (FAIL if explicit else SKIP), f"claude binary not found: {ctx.claude}"
     if needs_model and not has_auth():
         return SKIP, NO_AUTH
     try:
-        status, reason = func(Ctx(claude, budget))
+        status, reason = func(ctx)
+    except BudgetExhausted:
+        status, reason = FAIL, f"smoke budget exhausted (${ctx.spent:.2f} of ${ctx.total:.2f}); raise --total-budget-usd"
     except Exception as exc:  # a smoke must never crash the run
         status, reason = FAIL, f"{exc.__class__.__name__}: {snippet(str(exc))}"
     return status, " ".join(redact(reason).split())[:400]
 
 
+def positive(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}")
+    if not 0 < value < float("inf"):
+        raise argparse.ArgumentTypeError(f"must be greater than 0: {text!r}")
+    return value
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Anthology smoke cases U1-U9")
-    ap.add_argument("--claude", default=default_claude(), help="claude binary ($CLAUDE_BIN, the pinned CI one, else claude)")
+    ap.add_argument("--claude", help="claude binary (default $CLAUDE_BIN, the pinned CI one, else claude)")
     ap.add_argument("--budget-usd", default="1.00", help="--max-budget-usd for every claude -p (default 1.00)")
+    ap.add_argument("--total-budget-usd", type=positive, default=10.0,
+                    help="stop launching claude runs once this much has been spent (default 10)")
     ap.add_argument("--out", help="write a JSON summary here")
     ap.add_argument("--list", action="store_true", help="print the smoke names and exit")
     ap.add_argument("names", nargs="*", metavar="NAME")
@@ -692,16 +828,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.list:
         print("\n".join(SMOKES))
         return 0
-    if os.sep in args.claude:  # runs happen in other directories, so a path must be absolute
-        args.claude = os.path.abspath(args.claude)
+    try:
+        positive(args.budget_usd)
+    except argparse.ArgumentTypeError as exc:
+        ap.error(f"--budget-usd {exc}")
+    explicit = bool(args.claude or os.environ.get("CLAUDE_BIN"))
+    claude = args.claude or default_claude()
+    if os.sep in claude:  # runs happen in other directories, so a path must be absolute
+        claude = os.path.abspath(claude)
     unknown = [n for n in args.names if n not in SMOKES]
     if unknown:
         ap.error(f"unknown smoke(s): {', '.join(unknown)}; known: {', '.join(SMOKES)}")
+    ctx = Ctx(claude, args.budget_usd, args.total_budget_usd)
     results: Dict[str, Dict[str, str]] = {}
     for name in args.names or list(SMOKES):
-        status, reason = run_smoke(name, args.claude, args.budget_usd)
+        status, reason = run_smoke(name, ctx, explicit)
         results[name] = {"status": status, "reason": reason}
         print(f"{status} {name}: {reason}", flush=True)
+    print(f"smoke spend: ${ctx.spent:.2f} of ${ctx.total:.2f}")
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps({"smokes": results}, indent=2) + "\n", encoding="utf-8")

@@ -496,7 +496,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(list(self.wf["jobs"]), ["evals"])
         self.assertEqual(self.job["if"], "github.repository == 'rbonweb/anthology'")
         self.assertEqual(self.job["runs-on"], "ubuntu-latest")
-        self.assertIsInstance(self.job["timeout-minutes"], int)
+        self.assertEqual(self.job["timeout-minutes"], 180)  # evals (up to 120 min of cases) plus the smokes
         self.assertEqual(self.wf["concurrency"], {"group": "evals", "cancel-in-progress": False})
 
     def test_secret_is_read_only_through_env(self):

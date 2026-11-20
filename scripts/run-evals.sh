@@ -12,7 +12,7 @@ set -eu
 usage() {
   cat <<'USAGE'
 Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB] [--tag TAG]
-                            [--no-smoke] [--smoke-budget-usd USD] [-h]
+                            [--no-smoke] [--smoke-budget-usd USD] [--smoke-total-budget-usd USD] [-h]
 
   --max-cost-usd USD  hard cost ceiling for the run (default 20); a run that hits it is
                       partial and fails the comparison
@@ -24,6 +24,10 @@ Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB]
   --no-smoke          skip the smoke cases (evals/smoke/smoke.py) that run after the evals
   --smoke-budget-usd USD
                       --max-budget-usd for each `claude -p` the smokes run (default 1.00)
+  --smoke-total-budget-usd USD
+                      ceiling for all smokes together (default 10): smoke.py sums the cost each
+                      `claude -p` reports and, once it is spent, fails the remaining smokes with
+                      "smoke budget exhausted"
   -h, --help          this text
 
 The committed baseline is recorded from the CI candidate artifact: dispatch evals.yml once, then
@@ -34,6 +38,8 @@ With --case or --tag only part of the suite runs, so the comparison uses --allow
 when it is executable, else `claude` on PATH. Results go to evals/results/<UTC timestamp>/.
 The smoke cases run after the comparison, with the same Claude binary and results in
 $OUT/smoke.json. They are skipped with --no-smoke and (with a message) with --case or --tag.
+Total spend is at most the eval ceiling (--max-cost-usd) plus the smoke ceiling
+(--smoke-total-budget-usd); with the defaults that is $20 + $10.
 Exit status: the comparison's when it is non-zero (1 regression, 2 invalid or partial result,
 3 no baseline); else 4 if any smoke failed; else 0. A smoke that SKIPs (no credentials) is not a failure.
 USAGE
@@ -48,6 +54,7 @@ CASE=""
 TAG=""
 SMOKE=1
 SMOKE_BUDGET=1.00
+SMOKE_TOTAL=10
 while [ $# -gt 0 ]; do
   case "$1" in
     --max-cost-usd)
@@ -68,6 +75,11 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --no-smoke) SMOKE=0 ;;
+    --smoke-total-budget-usd)
+      [ $# -ge 2 ] || die "--smoke-total-budget-usd needs a value"
+      SMOKE_TOTAL=$2
+      shift
+      ;;
     --smoke-budget-usd)
       [ $# -ge 2 ] || die "--smoke-budget-usd needs a value"
       SMOKE_BUDGET=$2
@@ -88,6 +100,12 @@ awk -v max="$MAX" 'BEGIN { exit !(max > 0) }' || die "--max-cost-usd must be gre
 case "$SMOKE_BUDGET" in
   ''|*[!0-9.]*|*.*.*|.) die "--smoke-budget-usd must be a decimal number, got: $SMOKE_BUDGET" ;;
 esac
+
+case "$SMOKE_TOTAL" in
+  ''|*[!0-9.]*|*.*.*|.) die "--smoke-total-budget-usd must be a decimal number, got: $SMOKE_TOTAL" ;;
+esac
+awk -v max="$SMOKE_TOTAL" 'BEGIN { exit !(max > 0) }' || die "--smoke-total-budget-usd must be greater than 0, got: $SMOKE_TOTAL"
+awk -v max="$SMOKE_BUDGET" 'BEGIN { exit !(max > 0) }' || die "--smoke-budget-usd must be greater than 0, got: $SMOKE_BUDGET"
 
 FILTERED=0
 if [ -n "$CASE" ] || [ -n "$TAG" ]; then
@@ -192,7 +210,8 @@ elif [ "$FILTERED" = 1 ]; then
   echo "run-evals: smoke cases skipped: --case/--tag runs only part of the suite"
 else
   set +e
-  "$PYTHON" evals/smoke/smoke.py --claude "$CLAUDE" --budget-usd "$SMOKE_BUDGET" --out "$OUT/smoke.json"
+  "$PYTHON" evals/smoke/smoke.py --claude "$CLAUDE" --budget-usd "$SMOKE_BUDGET" \
+    --total-budget-usd "$SMOKE_TOTAL" --out "$OUT/smoke.json"
   SMOKE_STATUS=$?
   set -e
   if [ "$SMOKE_STATUS" != 0 ]; then

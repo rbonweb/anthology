@@ -207,5 +207,7 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Claude Code (postinstall links the native binary)
         run: npm ci --prefix ci/claude-code
+      - name: Claude Code version
+        run: ci/claude-code/node_modules/.bin/claude --version
       - name: CLI syntax smoke
         run: python3 evals/smoke/smoke.py --claude ci/claude-code/node_modules/.bin/claude cli-syntax

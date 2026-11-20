@@ -74,7 +74,7 @@ class GitIntegrationTests(unittest.TestCase):
         return env
 
     def git(self, *args):
-        out = subprocess.run(["git", "-C", str(self.repo), *args], check=True, env=self.env(),
+        out = subprocess.run(["git", "-C", str(self.repo), *args], check=True, env=self.env(), timeout=60,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return out.stdout.strip()
 
@@ -91,7 +91,7 @@ class GitIntegrationTests(unittest.TestCase):
     def run_diff(self, base, head, summary=False):
         self.summary.unlink() if self.summary.exists() else None
         proc = subprocess.run([sys.executable, str(SCRIPT), base, head], cwd=str(self.repo),
-                              env=self.env(summary), stdout=subprocess.PIPE,
+                              env=self.env(summary), timeout=60, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
         text = self.summary.read_text(encoding="utf-8") if self.summary.exists() else ""
         return proc.returncode, proc.stdout, proc.stderr, text
@@ -201,10 +201,10 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertIn("memory-diff:", err)
 
     def test_usage_error_exits_2(self):
-        proc = subprocess.run([sys.executable, str(SCRIPT), "only-one"], stdout=subprocess.PIPE,
+        proc = subprocess.run([sys.executable, str(SCRIPT), "only-one"], timeout=60, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
         self.assertEqual(proc.returncode, 2)
-        proc = subprocess.run([sys.executable, str(SCRIPT), "--output=x", "HEAD"],
+        proc = subprocess.run([sys.executable, str(SCRIPT), "--output=x", "HEAD"], timeout=60,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(proc.returncode, 2)
 

@@ -63,9 +63,11 @@ class ListAndEnvTests(unittest.TestCase):
             self.assertEqual(Path(env["HOME"]), Path(d) / "home")
             self.assertEqual(Path(env["CLAUDE_CONFIG_DIR"]), Path(d) / "cfg")
             self.assertEqual(env["DISABLE_AUTOUPDATER"], "1")
+            self.assertEqual(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")  # tools and hooks never see the key
+            self.assertEqual(env["NPM_CONFIG_OFFLINE"], "true")
             self.assertEqual(env["PATH"], "/usr/bin:/bin")
             allowed = {"HOME", "CLAUDE_CONFIG_DIR", "PATH", "TMPDIR", "LANG", "TERM", "DISABLE_AUTOUPDATER",
-                       "ANTHROPIC_API_KEY"}
+                       "ANTHROPIC_API_KEY", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "NPM_CONFIG_OFFLINE"}
             self.assertEqual(set(env), allowed)
             self.assertTrue((Path(d) / "home").is_dir() and (Path(d) / "cfg").is_dir())
 
@@ -85,7 +87,7 @@ class HelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             script = Path(d) / "ss.py"
             script.write_text(smoke.cap_hook_script(), encoding="utf-8")
-            out = subprocess.run([sys.executable, str(script)], env={"CAP_N": "10001"}, check=True,
+            out = subprocess.run([sys.executable, str(script)], env={"CAP_N": "10001"}, check=True, timeout=60,
                                  stdout=subprocess.PIPE, text=True).stdout
         payload = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(payload["hookEventName"], "SessionStart")
@@ -136,7 +138,8 @@ class HelperTests(unittest.TestCase):
         events = smoke.stream_events("\n".join(lines))
         self.assertEqual(len(events), 3)
         self.assertEqual(smoke.tool_result_texts(events), ["blocked by onFailure", "part one two"])  # not the asked command
-        self.assertIn("Executable not found", smoke.hook_event_text(events))
+        self.assertIn("Executable not found", smoke.hook_failure_text(events))
+        self.assertEqual(smoke.tool_uses(events), ["Bash"])
 
     def test_transcript_models_reads_both_layouts(self):
         with tempfile.TemporaryDirectory() as d:
@@ -188,17 +191,65 @@ class HelperTests(unittest.TestCase):
     def test_skill_heading_reads_the_first_h1_after_the_frontmatter(self):
         self.assertEqual(smoke.skill_heading("writing-plans"), "Writing Plans")
 
-    def test_load_roster_knows_the_worktree_agents(self):
-        roster = smoke.load_roster()
-        if roster is None:
-            self.skipTest("PyYAML is not installed")
-        self.assertEqual(sorted(a for a, v in roster.items() if v["worktree"]),
-                         ["debugger", "docs-writer", "implementer", "ui-designer"])
+    def test_parse_agent_on_a_fixture(self):
+        text = ("---\nname: x\nmodel: opus\nisolation: worktree\nskills:\n  - anthology-superpowers:writing-plans\n"
+                "  - anthology-superpowers:test-driven-development\n---\n\n## Startup\nRead:\n"
+                "- `${CLAUDE_PLUGIN_ROOT}/knowledge/caveman/SKILL.md`\n"
+                "- `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/ux-writing/SKILL.md`\n"
+                "Prose with `${CLAUDE_PLUGIN_ROOT}/knowledge/ignored/SKILL.md` inline.\n\n"
+                "## Role\n- `${CLAUDE_PLUGIN_ROOT}/knowledge/after-section/SKILL.md`\n")
+        self.assertEqual(smoke.parse_agent(text), {"model": "opus", "worktree": True,
+                                                   "preloads": ["writing-plans", "test-driven-development"],
+                                                   "startup": ["caveman", "ds/ux-writing"]})
+        self.assertEqual(smoke.parse_agent("no frontmatter\n"), {"model": "?", "worktree": False, "preloads": [], "startup": []})
 
-    def test_agent_models_covers_the_roster_with_known_families(self):
-        roster = smoke.agent_models(ROOT / "plugins" / "anthology" / "agents")
-        self.assertEqual(len(roster), 11)
-        self.assertTrue(set(roster.values()) <= {"opus", "sonnet", "haiku"}, roster)
+    def test_parse_agent_on_a_real_agent_file(self):
+        agent = smoke.parse_agent((ROOT / "plugins/anthology/agents/implementer.md").read_text(encoding="utf-8"))
+        self.assertEqual(agent["model"], "sonnet")
+        self.assertIs(agent["worktree"], True)
+        self.assertEqual(agent["preloads"], ["test-driven-development", "verification-before-completion"])
+        self.assertEqual(agent["startup"][0], "caveman")
+
+    def test_the_parser_agrees_with_the_expected_roster(self):
+        try:
+            from _repo import EXPECTED_ROSTER
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        agents = smoke.load_agents(ROOT / "plugins" / "anthology" / "agents")
+        self.assertEqual(set(agents), set(EXPECTED_ROSTER))
+        self.assertEqual(len(agents), smoke.EXPECTED_AGENTS)
+        for name, spec in EXPECTED_ROSTER.items():
+            self.assertEqual(agents[name]["model"], spec["model"], name)
+            self.assertEqual(agents[name]["worktree"], spec["worktree"], name)
+            self.assertEqual(agents[name]["preloads"], spec["preloads"], name)
+            self.assertEqual(agents[name]["startup"], ["caveman"] + spec["knowledge"], name)
+
+    def test_cost_and_text_from_json_and_stream_json(self):
+        one = json.dumps({"type": "result", "result": "hi", "total_cost_usd": 0.25})
+        self.assertEqual(smoke.result_cost_and_text(one), (0.25, "hi"))
+        self.assertEqual(smoke.result_cost_and_text(json.dumps([{"type": "system"}, json.loads(one)])), (0.25, "hi"))
+        self.assertEqual(smoke.result_cost_and_text("noise\n" + json.dumps({"type": "system"}) + "\n" + one), (0.25, "hi"))
+        self.assertEqual(smoke.result_cost_and_text("not json"), (None, None))
+        self.assertEqual(smoke.result_cost_and_text(json.dumps({"type": "result"})), (None, None))
+
+    def test_hook_failure_text_ignores_ids_and_the_not_found_patterns_are_specific(self):
+        events = [{"type": "system", "subtype": "hook_response", "uuid": "1277-abc", "session_id": "x127y",
+                   "output": "ok", "exit_code": 0}]
+        self.assertFalse(smoke.NOT_FOUND_RE.search(smoke.hook_failure_text(events)))
+        events = [{"type": "system", "subtype": "hook_response", "exit_code": 127}]
+        self.assertTrue(smoke.NOT_FOUND_RE.search(smoke.hook_failure_text(events)))
+        self.assertTrue(smoke.NOT_FOUND_RE.search("python9: command not found"))
+        self.assertTrue(smoke.BLOCKED_RE.search('Blocking because onFailure is "block"'))
+        self.assertFalse(smoke.BLOCKED_RE.search("warning: unknown key onFailure"))
+
+    def test_transcript_cwds_reads_the_cwd_field_only(self):
+        text = "\n".join([json.dumps({"cwd": "/w/.claude/worktrees/agent-1", "message": {}}),
+                          json.dumps({"message": {"content": "error: /w/.claude/worktrees/agent-2 missing"}}), "bad"])
+        self.assertEqual(smoke.transcript_cwds(text), ["/w/.claude/worktrees/agent-1"])
+
+    def test_read_allow_uses_the_absolute_path_form(self):
+        rule = smoke.READ_ALLOW["permissions"]["allow"][0]
+        self.assertTrue(rule.startswith("Read(//") and rule.endswith("/plugins/**)"), rule)
 
 
 @unittest.skipUnless(os.path.exists("/bin/sh"), "no /bin/sh for the stub claude")
@@ -221,8 +272,10 @@ class MainWithStubTests(unittest.TestCase):
         self.assertEqual(list(summary["smokes"]), MODEL_SMOKES)
         for name, result in summary["smokes"].items():
             self.assertEqual(result, {"status": "SKIP", "reason": smoke.NO_AUTH}, name)
-        self.assertEqual(len(out.strip().splitlines()), len(MODEL_SMOKES))
-        self.assertTrue(all(l.startswith("SKIP ") for l in out.splitlines()))
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), len(MODEL_SMOKES) + 1)
+        self.assertTrue(all(l.startswith("SKIP ") for l in lines[:-1]))
+        self.assertEqual(lines[-1], "smoke spend: $0.00 of $10.00")
 
     def test_a_failing_smoke_exits_1_and_is_summarised(self):
         out_path = self.tmp / "smoke.json"
@@ -234,11 +287,56 @@ class MainWithStubTests(unittest.TestCase):
         self.assertIn("lacks", result["reason"])
         self.assertTrue(out.startswith("FAIL cli-syntax: "))
 
-    def test_a_missing_binary_skips(self):
+    def test_a_missing_binary_fails_when_named_and_skips_only_by_default(self):
+        absent = str(self.tmp / "absent")
         with no_auth_environ():
-            code, out = run_main(["--claude", str(self.tmp / "absent"), "cli-syntax"])
+            code, out = run_main(["--claude", absent, "cli-syntax"])
+            self.assertEqual(code, 1)
+            self.assertTrue(out.startswith("FAIL cli-syntax: claude binary not found"))
+            with mock.patch.dict(os.environ, {"CLAUDE_BIN": absent}):
+                self.assertEqual(run_main(["cli-syntax"])[0], 1)
+            os.environ.pop("CLAUDE_BIN", None)
+            with mock.patch.object(smoke, "default_claude", return_value=absent):
+                code, out = run_main(["cli-syntax"])
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("SKIP cli-syntax: claude binary not found"))
+
+    def test_budgets_are_validated(self):
+        for argv in (["--total-budget-usd", "0"], ["--total-budget-usd", "abc"], ["--budget-usd", "abc"],
+                     ["--budget-usd", "-1"], ["--budget-usd", "nan"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                smoke.main([*argv, "cli-syntax"])
+            self.assertEqual(cm.exception.code, 2, argv)
+
+    def reporting_stub(self, cost):
+        stub = self.tmp / "reporter"
+        body = {"type": "result", "result": "hi", "total_cost_usd": cost} if cost is not None else {"type": "result"}
+        stub.write_text("#!/bin/sh\necho '%s'\n" % json.dumps(body), encoding="utf-8")
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        return str(stub)
+
+    def test_reported_costs_are_summed_and_stop_the_launches(self):
+        ctx = smoke.Ctx(self.reporting_stub(0.4), "1.00", total=1.0)
+        for _ in range(3):
+            self.assertEqual(ctx.prompt_run(self.tmp, "x", []).out, "hi")
+        self.assertAlmostEqual(ctx.spent, 1.2)
+        with self.assertRaises(smoke.BudgetExhausted):
+            ctx.prompt_run(self.tmp, "x", [])
+        status, reason = smoke.run_smoke("cli-syntax", ctx)
+        self.assertEqual(status, smoke.FAIL)
+        self.assertIn("smoke budget exhausted", reason)
+
+    def test_an_unreported_cost_counts_as_the_per_run_budget(self):
+        ctx = smoke.Ctx(self.reporting_stub(None), "0.75", total=10.0)
+        ctx.prompt_run(self.tmp, "x", [])
+        self.assertAlmostEqual(ctx.spent, 0.75)
+
+    def test_a_smoke_that_hits_the_budget_mid_way_fails(self):
+        ctx = smoke.Ctx(self.reporting_stub(2.0), "1.00", total=1.0)
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-fake-key"}):
+            status, reason = smoke.run_smoke("context-cap", ctx)  # first run costs 2.0, the second cannot start
+        self.assertEqual(status, smoke.FAIL)
+        self.assertIn("smoke budget exhausted", reason)
 
     def test_python_missing_never_fails_the_run_while_the_wrapper_is_absent(self):
         with no_auth_environ():
