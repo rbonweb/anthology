@@ -1312,6 +1312,290 @@ class RuleTableTest(unittest.TestCase):
             bash("npx playwright install  # it's cheap\nls"),
         ])
 
+    # ------------------------------------------- fix lane F2 (final review I1-I3)
+
+    def test_rtk_command_runners_are_unwrapped(self):
+        """`rtk run|err|test|summary` run a command like `rtk bypass` does (I1, F2-R1)."""
+        self.assert_table("G1", [
+            bash("rtk run npx playwright install"),
+            bash("rtk run -- npx playwright install"),
+            bash("rtk run -c 'npx playwright install'"),
+            bash("rtk run --command 'npx playwright install'"),
+            bash("rtk run --command='npx playwright install'"),
+            bash("rtk run --shell bash -c 'npx playwright install'"),
+            bash("rtk run -c 'npx playwright install' --shell zsh"),
+            bash("rtk run --shell=bash --command 'cd e2e && npx playwright install'"),
+            bash("rtk run -vc 'npx playwright install'"),
+            bash("rtk err npx playwright install"),
+            bash("rtk err --shell bash 'npx playwright install'"),
+            bash("rtk err --shell=sh 'npx playwright install'"),
+            bash("rtk test npx playwright test"),
+            bash("rtk test ! npx playwright install"),
+            bash("rtk test --shell sh 'npx playwright test'"),
+            bash("rtk summary npx playwright install"),
+            bash("rtk summary --shell bash 'npm ci && npx playwright install'"),
+            bash("rtk -v run npx playwright install"),
+            bash("rtk -u summary npx playwright install"),
+            bash("rtk run --skip-env npx playwright install"),
+            bash("rtk err \"npx playwright install\""),
+            bash("sudo rtk run npx playwright install"),
+            bash("cd e2e && rtk run -c 'npx playwright install'"),
+            bash("rtk run bash -euo pipefail -c 'npx playwright install'"),
+        ])
+        self.assert_table("G2", [
+            bash('rtk run open -a "Google Chrome"'),
+            bash("rtk run -c 'open -a \"Google Chrome\"'"),
+            bash("rtk err chromium --headless"),
+        ])
+        self.assert_table("G4", [
+            bash("rtk err agent-browser open x"),
+            bash("rtk run -c 'agent-browser open x'"),
+            bash("rtk test --shell bash 'agent-browser open x'"),
+        ])
+        self.assert_table("G3", [
+            bash("rtk run -c 'cat ~/.config/chromium/Default/Cookies'"),
+            bash("rtk run --shell python3 -c \"open('" + HOME
+                 + "/.config/chromium/Default/Cookies')\""),
+            bash("rtk err 'cd ~/.config && cat chromium/Default/Cookies'"),
+        ])
+        self.assert_table(None, [
+            bash("rtk run ls"),
+            bash("rtk run -c 'git status'"),
+            bash("rtk err cargo build"),
+            bash("rtk test cargo test"),
+            bash("rtk test -f Cargo.toml"),
+            bash("rtk summary npm run build"),
+            bash("rtk run --shell bash -c 'echo playwright'"),
+            bash("rtk run -- git log --oneline"),
+            bash("rtk err --shell bash 'cargo build 2>&1'"),
+            bash("rtk test --shell sh 'pytest -q'"),
+            bash("rtk run docker run img npx playwright install"),
+            bash("rtk err \"cargo build --release\""),
+        ])
+
+    def test_shell_option_parser(self):
+        """bash/sh/zsh/dash/ksh options in every form before `-c`, stdin or a file (I2, F2-R2)."""
+        install = "'npx playwright install'"
+        self.assert_table("G1", [
+            bash("bash -eo pipefail -c " + install),
+            bash("bash -euo pipefail -c " + install),
+            bash("bash -o pipefail -eu -c " + install),
+            bash("bash -eoo pipefail nounset -c " + install),
+            bash("bash -ce " + install),
+            bash("bash -ec " + install),
+            bash("bash -c -e " + install),
+            bash("bash -c -- " + install),
+            bash("bash -c -euo pipefail " + install),
+            bash("bash --rcfile x -c " + install),
+            bash("bash --init-file x -c " + install),
+            bash("bash --rcfile=x -c " + install),
+            bash("bash --norc --noprofile -c " + install),
+            bash("bash --login -euo pipefail -c " + install),
+            bash("bash +O extglob -c " + install),
+            bash("bash -O extglob -c " + install),
+            bash("bash +euo pipefail -c " + install),
+            bash("bash -xeuo pipefail -O extglob -c " + install),
+            bash("zsh -fc " + install),
+            bash("zsh --emulate sh -c " + install),
+            bash("zsh -o pipefail -c " + install),
+            bash("dash -ec " + install),
+            bash("sh -euc " + install),
+            bash("ksh -eo pipefail -c " + install),
+            bash("/bin/bash -euo pipefail -c " + install),
+            bash("sudo bash -euo pipefail -c " + install),
+            bash("env FOO=1 bash -eu -c " + install),
+            # stdin: heredocs, here-strings and pipes into a shell with options or `-s`
+            bash("bash -euo pipefail <<'EOF'\nnpx playwright install\nEOF"),
+            bash("bash -eo pipefail <<EOF\nnpx playwright install\nEOF"),
+            bash("bash -s -- x <<EOF\nnpx playwright install\nEOF"),
+            bash("bash -s x y <<'EOF'\nnpx playwright install\nEOF"),
+            bash("bash -xs -- a b <<'EOF'\nls\nnpx playwright install\nEOF"),
+            bash("echo 'npx playwright install' | bash -s -- x"),
+            bash("bash -s <<<'npx playwright install'"),
+            bash("bash -euo pipefail <<< 'npx playwright install'"),
+            bash("echo 'npx playwright install' | bash -eo pipefail"),
+            bash("printf 'npx playwright install\\n' | sh -eu"),
+            bash("cat <<EOF | bash -euo pipefail -s -- arg\nnpx playwright install\nEOF"),
+            bash("echo 'npx playwright install' | bash -euo pipefail -"),
+            # the lenient (unbalanced quote) path uses the same parser
+            bash("echo it's; bash -c -e 'npx playwright install'"),
+            bash("echo it's; bash -c -- 'npx playwright install'"),
+            bash("echo it's; bash -euo pipefail -c 'npx playwright install'"),
+            bash("echo it's; bash -oc pipefail 'npx playwright install'"),
+        ])
+        self.assert_table("G3", [
+            bash("bash -euo pipefail -c 'cat ~/.config/chromium/Default/Cookies'"),
+            bash("bash -s -- x <<'EOF'\ncat ~/.config/google-chrome/Default/Cookies\nEOF"),
+        ])
+        self.assert_table("G4", [
+            bash("bash -euo pipefail -c 'agent-browser open x'"),
+            bash('docker run img bash -euo pipefail -c "agent-browser open x"'),
+            bash("docker exec c bash -c -e 'agent-browser open x'"),
+            bash("docker run --rm img zsh --emulate sh -c 'agent-browser open x'"),
+            bash("echo 'agent-browser open x' | docker run -i img bash -eo pipefail"),
+            bash("docker exec -i c bash -s -- x <<'EOF'\nagent-browser open x\nEOF"),
+        ])
+        self.assert_table(None, [
+            bash("bash -euo pipefail script.sh"),
+            bash("bash -e -o pipefail ./build.sh arg"),
+            bash("bash --rcfile x script.sh"),
+            bash("bash --rcfile=x script.sh"),
+            bash("bash -O extglob ./x.sh"),
+            bash("bash -c 'echo playwright'"),
+            bash("bash -euo pipefail -c 'make test'"),
+            bash("bash -s -- x <<EOF\necho hi\nEOF"),
+            bash("sh - script.sh"),
+            bash("bash -- script.sh arg"),
+            bash("zsh --emulate sh script.zsh"),
+            bash("echo 'echo hi' | bash -eo pipefail"),
+            # a container may run what the host may not, whatever the shell options
+            bash("docker run img bash -euo pipefail -c 'npx playwright install'"),
+            bash("docker run -i img bash -eo pipefail <<EOF\nnpx playwright install\nEOF"),
+            bash("echo 'npx playwright install' | docker run -i img sh -s -- x"),
+        ])
+
+    def test_g3_profile_paths_in_inline_code(self):
+        """Interpreter code, heredocs fed to interpreters and code-valued tool keys (I3, F2-R3)."""
+        mac = OTHER_HOME + "/Library/Application Support/Google/Chrome"
+        lin = HOME + "/.config/google-chrome/Default/Cookies"
+        self.assert_table("G3", [
+            bash("python3 -c \"print(open('" + mac + "/Default/Bookmarks').read())\""),
+            bash("python -c \"import sqlite3; sqlite3.connect('~/.config/chromium/Default/Cookies')\""),
+            bash("python3 -Ic \"open('~/.config/chromium/Default/Cookies')\""),
+            bash("python3 -c \"import os; os.path.expanduser('~/Library/Application Support/Google/Chrome')\""),
+            bash("python3 -c \"from pathlib import Path; "
+                 "Path.home() / 'Library/Application Support/Google/Chrome/Default/Cookies'\""),
+            bash("python3 -c \"f'{home}/.config/google-chrome/Default'\""),
+            bash("python3 -c 'import os; print(os.listdir(os.environ[\"HOME\"] + \"/.config/chromium\"))'"),
+            bash("node -e \"require('fs').readFileSync('" + lin + "')\""),
+            bash("node --eval=\"require('fs').readFileSync('" + lin + "')\""),
+            bash("node -p \"require('fs').readdirSync('" + mac + "')\""),
+            bash("nodejs -e \"require('fs').readFileSync('" + lin + "')\""),
+            bash("ruby -e \"puts File.read('" + mac + "/Local State')\""),
+            bash("perl -e 'open(F, \"" + mac + "/Default/Bookmarks\"); print <F>'"),
+            bash("perl -lne 'print if /url/; BEGIN { @ARGV = (\"" + HOME
+                 + "/.config/chromium/Default/Bookmarks\") }' notes.txt"),
+            bash("osascript -e 'POSIX file \"" + mac + "\"'"),
+            bash("deno eval \"Deno.readTextFileSync('" + lin + "')\""),
+            bash("bun -e \"await Bun.file('" + lin + "').text()\""),
+            bash("php -r \"echo file_get_contents('" + lin + "');\""),
+            bash("uv run python -c \"open('" + lin + "')\""),
+            bash("sudo python3 -c \"open('" + lin + "')\""),
+            bash("cd ~/.config && python3 -c \"open('chromium/Default/Cookies')\""),
+            # heredoc / here-string / echo text fed to an interpreter
+            bash("python3 - <<'EOF'\nimport sqlite3\ndb = sqlite3.connect('" + mac
+                 + "/Default/Cookies')\nEOF"),
+            bash("python3 - <<EOF\nprint(open(\"$HOME/.config/chromium/Default/Bookmarks\").read())\nEOF"),
+            bash("python3 <<'PY'\nimport os\np = os.path.expanduser(\"~/.config/chromium\")\nPY"),
+            bash("cat <<EOF | python3\nopen('~/.config/chromium/Default/Cookies')\nEOF"),
+            bash("python3 <<< \"open('" + lin + "')\""),
+            bash("echo \"require('fs').readFileSync('" + lin + "')\" | node"),
+            bash("printf '%s' \"open('" + lin + "')\" | python3"),
+            bash("node <<'EOF'\nconst p = `${process.env.HOME}/.config/google-chrome/Default`;\nEOF"),
+            bash("python3 - <<'EOF'\nsrc = '''\n" + mac + "/Default/Cookies\n'''\nEOF"),
+            # escaped space and globs inside code
+            bash("python3 -c \"import os; "
+                 "os.listdir(os.path.expanduser('~/Library/Application\\ Support/Google'))\""),
+            bash("python3 -c \"import glob, os; "
+                 "glob.glob(os.path.expanduser('~/.config/chrom*/Default/Cookies'))\""),
+            bash("python3 -c \"import glob; glob.glob('" + OTHER_HOME
+                 + "/Library/Application Support/G*/Chrome/*/Cookies')\""),
+            # rtk / prefixes / interpreters behind `--shell`
+            bash("rtk run --shell python3 -c \"open('" + lin + "')\""),
+        ])
+        self.assert_table(None, [
+            bash("python3 -c 'print(1)'"),
+            bash("node -e \"console.log(path)\""),
+            bash("python3 -c \"print('chromium')\""),
+            bash("python3 -c \"import os; print(os.environ['HOME'])\""),
+            bash("node -e \"console.log('Google Chrome is not used here')\""),
+            bash("ruby -e 'puts \"Library\"'"),
+            bash("perl -e 'print \"Application Support\\n\"'"),
+            bash("python3 -c \"open('Library/notes.txt')\""),
+            bash("python3 -c \"print('~/Library/Application Support/Code')\""),
+            bash("python3 -c \"print('.config/git')\""),
+            bash("python3 -c \"import json; print(json.load(open('package.json'))['name'])\""),
+            bash("node -e \"require('fs').readFileSync('docs/google-chrome-notes.md')\""),
+            bash("python3 -c \"print('Google', 'Chrome', 'Library', 'Application Support')\""),
+            bash("python3 - <<'EOF'\n# chromium runs only via playwright in Docker; it's documented.\n"
+                 "print('playwright and chromium, Google Chrome')\nEOF"),
+            bash("cat <<'EOF' | python3\nprint(\"Library/Application Support is a folder\")\nEOF"),
+            bash("python3 script.py --profile Default"),
+            bash("perl -pi -e 's/chromium/chrome/' docs/notes.md"),
+            # shell words that are not interpreter code stay as today
+            bash("git commit -m 'fix Library/Application Support/Google handling'"),
+            bash("cat <<EOF > notes.md\nprofiles live in ~/.config/chromium/Default\nEOF"),
+            bash("echo 'open(\"~/.config/chromium\")' > notes.md"),
+            # tool keys that are not code
+            ("Agent", {"prompt": "python3 -c \"open('~/.config/chromium/Default/Cookies')\" is blocked"}),
+            ("mcp__browseros-neo__run", {"script": "await browser.navigate('https://example.com')"}),
+            ("mcp__browseros-neo__evaluate_in_page", {"expression": "document.title"}),
+            ("mcp__browseros-neo__run", {"script": "return 'chromium Google Chrome Library'"}),
+        ])
+
+    def test_g3_code_keys_in_tools(self):
+        """`script` / `code` / `expression` values are code: BrowserOS Neo `run` and the like."""
+        url = "file://" + OTHER_HOME + "/Library/Application%20Support/Google/Chrome/Default/Bookmarks"
+        self.assert_table("G3", [
+            ("mcp__browseros-neo__run", {"script": "await browser.navigate('" + url + "')"}),
+            ("mcp__browseros-neo__evaluate_in_page",
+             {"expression": "fetch('" + url + "').then(r => r.text())"}),
+            ("mcp__browseros-neo__run",
+             {"script": "const p = '~/.config/chromium/Default/Cookies';\nreturn p"}),
+            ("SomeTool", {"code": "open('" + HOME + "/.config/google-chrome/Default/Cookies')"}),
+            ("SomeTool", {"params": {"script": "x = `" + HOME + "/.config/chromium`"}}),
+        ])
+
+    def test_g3_percent_encoded_file_urls(self):
+        """`file:` URLs are percent-decoded before matching; other URLs are not (I3, F2-R4)."""
+        mac = OTHER_HOME + "/Library/Application%20Support/Google/Chrome/Default/Bookmarks"
+        nav = "mcp__browseros-neo__navigate"
+        self.assert_table("G3", [
+            (nav, {"url": "file://" + mac}),
+            (nav, {"url": "file://localhost" + mac}),
+            (nav, {"url": "FILE://" + mac}),
+            (nav, {"url": "File://" + mac}),
+            (nav, {"url": "file://" + mac.replace("/", "%2F")}),
+            (nav, {"url": "file://" + OTHER_HOME + "/Library/Application%20Support/Google"}),
+            (nav, {"url": "file:///home/someone/.config/%63hromium/Default"}),
+            ("WebFetch", {"url": "file://" + mac, "prompt": "x"}),
+            bash("open 'file://" + mac + "'"),
+            bash("curl file://" + mac),
+            bash("curl --url=file://" + mac),
+            bash("url=file://" + mac),
+            bash("url=file://" + mac + " && curl \"$url\""),
+            bash("python3 -c \"import urllib.request as u; u.urlopen('file://" + mac + "')\""),
+        ])
+        self.assert_table(None, [
+            ("WebFetch", {"url": "https://www.google.com/search?q=Library%2FApplication%20Support%2FGoogle",
+                          "prompt": "x"}),
+            (nav, {"url": "https://www.google.com/search?q=Library%2FApplication%20Support%2FGoogle"}),
+            (nav, {"url": "https://example.com/Library/Application%20Support/Google"}),
+            (nav, {"url": "file:///tmp/a%20b.html"}),
+            (nav, {"url": "file://" + HOME + "/proj/Application%20Support/index.html"}),
+            (nav, {"url": "file://" + OTHER_HOME + "/Library/Application%20Support/Code/x.html"}),
+            bash("curl 'https://example.com/?q=.config%2Fchromium'"),
+            bash("open file:///tmp/a%20b.html"),
+        ])
+
+    def test_inline_code_scan_stays_cheap(self):
+        """A 200 KB `-c` program and a 10,000-line heredoc into python3 scan well under 1 s."""
+        import time
+        line = "x = os.path.join('src', 'pkg/mod_%d.py'); print('done', x)\n"
+        program = "".join(line % k for k in range(4000))
+        self.assertGreater(len(program), 200_000)
+        heredoc = "python3 - <<'EOF'\n" + "".join(line % k for k in range(10_000)) + "EOF"
+        for name, command, expected in (
+                ("-c program", "python3 -c \"" + program + "\"", None),
+                ("-c program + path", "python3 -c \"" + program
+                 + "open('~/.config/chromium/Default/Cookies')\"", "G3"),
+                ("heredoc", heredoc, None),
+                ("heredoc + path", heredoc[:-3] + "open('~/.config/chromium/x')\nEOF", "G3")):
+            with self.subTest(case=name):
+                start = time.perf_counter()
+                self.assertEqual(rule_of(bash(command)), expected)
+                self.assertLess(time.perf_counter() - start, 1.0)
+
     def test_check_is_deterministic_and_pure(self):
         tool_input = {"command": "npx playwright install"}
         first = guard_rules.check("Bash", tool_input, HOME)
