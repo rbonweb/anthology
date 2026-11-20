@@ -3,8 +3,10 @@
 `privacy_findings(text)` returns `[{"kind": str, "line": int}, ...]`: labels and 1-based line
 numbers only, never the matched text. Every kind blocks a write into repo memory:
 
-- `home-path`         `/Users/<name>` or `/home/<name>` anywhere in an absolute path (not in a
-                      `scheme://host/...` URL), and the literal value of `$HOME`
+- `home-path`         `/Users/<name>` or `/home/<name>` (case-sensitive, as macOS and Linux spell
+                      them) anywhere in an absolute path, not in a `scheme://host/...` URL or a
+                      relative path, and the literal value of `$HOME`. An API route such as
+                      `/api/home/feed` is flagged too: an accepted false positive on the safe side
 - `email`             an email address (not noreply, GitHub noreply, `git@` a public forge, or a
                       reserved domain)
 - `private-ip`        RFC 1918, CGNAT, link-local IPv4; IPv6 ULA and link-local
@@ -17,7 +19,8 @@ numbers only, never the matched text. Every kind blocks a write into repo memory
 It is an accident guard, not a guarantee: it knows common formats only. `SECRET_PATTERNS` is the
 one secret-pattern list on the anthology side (export/import reporting uses it too); a test keeps
 every anthology-guardrails G6 pattern in it. Pure and stdlib only (3.9+); imports no anthology
-module.
+module. The input may be hostile (an imported archive): the scan stays linear in the line length,
+so no regex here is searched with an end bound from many start positions.
 """
 from __future__ import annotations
 
@@ -44,7 +47,8 @@ SECRET_PATTERNS = (
     ("api-key", re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}")),
     ("credential-assignment",
      re.compile(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}", re.I)),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    # A look-behind, not \b: `-` is in the class, so \b would start a scan at every `-eyJ` (quadratic).
+    ("jwt", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")),
     ("google-api-key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
     ("stripe-live-key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{8,}")),
@@ -65,9 +69,10 @@ _LABELS = {
     "ssh-key-path": "ssh key path",
 }
 
-_HOME_PATH = re.compile(r"/(?i:users|home)/([A-Za-z0-9._-]+)")
-_PATH_RUN = re.compile(r"[A-Za-z0-9._~$@%+/-]*\Z")  # the path characters just before a match
-_URL_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s]")  # `scheme://host`, not `file:///`
+_HOME_PATH = re.compile(r"/(?:Users|home)/([A-Za-z0-9._-]+)")
+_ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+_PATH_CHARS = frozenset(_ALNUM + "._~$@%+/-")  # characters of a path run before a home segment
+_SCHEME_CHARS = frozenset(_ALNUM + "+.-")
 _EMAIL = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"
                     r"(?![\w-])")
 _IPV4 = re.compile(r"(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d|\.\d)")
@@ -161,22 +166,57 @@ def _ipv4_kind(groups):
     return "ip-address"
 
 
-def _home_path_hit(line, m):
-    """`/Users/<name>` or `/home/<name>` as a segment of an absolute path, outside a URL with a
-    host (`file:///Users/x` counts; `https://example.com/home/x` and `app/home/x` do not)."""
-    name = m.group(1).rstrip(".")
-    if not name or name.lower() == "shared":
-        return False
-    run = _PATH_RUN.search(line, 0, m.start()).group(0)
-    if run and not run.startswith("/"):
-        return False  # a relative path such as `src/home/view.py`
-    token_start = max(line.rfind(" ", 0, m.start()), line.rfind("\t", 0, m.start())) + 1
-    return _URL_HOST.search(line, token_start, m.start()) is None
+def _first_url_end(line, start):
+    """End of the first `scheme://h` (a host character right after `://`) in the whitespace-
+    delimited token that starts at `start`, or None. `file:///x` has no host, so it is not one."""
+    end = len(line)
+    for ws in (" ", "\t"):
+        k = line.find(ws, start)
+        if k >= 0:
+            end = min(end, k)
+    p = line.find("://", start, end)
+    while p >= 0:
+        if p > start and line[p - 1] in _SCHEME_CHARS and p + 3 < end and line[p + 3] != "/":
+            return p + 4
+        p = line.find("://", p + 1, end)
+    return None
+
+
+def _home_path_found(line):
+    """True if `line` has `/Users/<name>` or `/home/<name>` as a segment of an absolute path,
+    outside a URL with a host (`file:///Users/x` counts; `https://example.com/home/x` and
+    `app/home/x` do not). Linear in the line: each backwards walk stops where the previous
+    match's walk started, and each token's URL is looked up once."""
+    prev_at = prev_run = -1        # the previous match's start and the start of its path run
+    tok_at = tok_start = -1        # the previous match's start and the start of its token
+    url_end = None                 # end of the first `scheme://h` in that token, or None
+    for m in _HOME_PATH.finditer(line):
+        name = m.group(1).rstrip(".")
+        if not name or name == "Shared":
+            continue
+        i = j = m.start()
+        while j > 0 and line[j - 1] in _PATH_CHARS:
+            j -= 1
+            if j == prev_at:       # joined the previous match's run: reuse its start
+                j = prev_run
+                break
+        prev_at, prev_run = i, j
+        if j < i and line[j] != "/":
+            continue               # a relative path such as `src/home/view.py`
+        lo = tok_at if tok_at >= 0 else 0
+        ws = max(line.rfind(" ", lo, i), line.rfind("\t", lo, i))
+        start = ws + 1 if ws >= 0 else (tok_start if tok_at >= 0 else 0)
+        if start != tok_start or tok_at < 0:
+            tok_start, url_end = start, _first_url_end(line, start)
+        tok_at = i
+        if url_end is None or url_end > i:
+            return True
+    return False
 
 
 def _line_kinds(line, home_rx, host_rxs):
     kinds = set()
-    if any(_home_path_hit(line, m) for m in _HOME_PATH.finditer(line)):
+    if _home_path_found(line):
         kinds.add("home-path")
     if home_rx is not None and home_rx.search(line):
         kinds.add("home-path")

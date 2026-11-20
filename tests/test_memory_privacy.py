@@ -5,6 +5,7 @@ Fixtures are assembled at run time: no real home path, email, hostname or token 
 """
 import importlib.util
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -65,8 +66,9 @@ class KindTest(unittest.TestCase):
     def test_home_path(self):
         for text in (U + "/alice/project", "cd " + H + "/bob", "(" + U + "/alice)", U + "/alice.",
                      "/mnt/c" + U + "/alice/proj", "/var" + H + "/alice/src",
-                     "/System/Volumes/Data" + U + "/alice/x", "/" + "users/alice/x",
-                     "/" + "USERS/alice/x", "file://" + U + "/alice/x", "C:" + U + "/alice/x",
+                     "/System/Volumes/Data" + U + "/alice/x", "file://" + U + "/alice/x",
+                     "C:" + U + "/alice/x", "/mnt/c" + U + "/alice",
+                     "/api" + H + "/feed",  # an accepted false positive on the safe side
                      "PATH=/opt" + H + "/carol/bin"):
             self.assertEqual(kinds(text), ["home-path"], text)
 
@@ -158,6 +160,12 @@ class KindTest(unittest.TestCase):
 
 
 class ExemptionTest(unittest.TestCase):
+    def test_home_segments_are_case_sensitive(self):
+        # macOS spells it /Users/ and Linux /home/: API routes such as /users/42 are not homes
+        for text in ("GET /api/v1/users/42", "GET /users/42", "/" + "USERS/alice/x",
+                     "/" + "Home/alice/x", "see /api/v1/users/alice/settings"):
+            self.assertEqual(kinds(text), [], text)
+
     def test_nothing_is_flagged(self):
         for text in (
                 U + "/Shared/build", U + "/<name>/project", H + "/<user>/x", "$HOME/project",
@@ -173,6 +181,48 @@ class ExemptionTest(unittest.TestCase):
                 "https://example.com/home/index.html", "an .ssh folder", "src/home/view.py",
                 "see https://example.com" + U + "/alice/profile"):
             self.assertEqual(kinds(text), [], text)
+
+
+class HostileInputTest(unittest.TestCase):
+    """Import scans untrusted archives: one huge line must never take quadratic time."""
+
+    BOUND = 1.0  # seconds per line; a linear scan takes a few tens of milliseconds here
+
+    def assertFast(self, text, label):
+        start = time.monotonic()
+        memory_privacy.privacy_findings(text, home="/" + "srv/zed", hostname=HOST)
+        self.assertLess(time.monotonic() - start, self.BOUND, label)
+
+    def test_long_tokens_before_every_kind(self):
+        n = 100000
+        tails = {
+            "home path": " " + U + "/x",
+            "email": " " + at("alice", "mail.acme.zz"),
+            "private ip": " 10.1.2.3",
+            "hostname": " nas.lan " + HOST,
+            "ssh": " ssh " + at("bob", "buildhost"),
+            "key path": " ~/.ssh/id_rsa",
+            "secret": " " + "gh" + "p_" + "a1" * 20,
+        }
+        for prefix in ("a" * n, "a/" * (n // 2), "-" * n, "a." * (n // 2), "a@" * (n // 2)):
+            for label, tail in tails.items():
+                self.assertFast(prefix + tail, "%s after %r..." % (label, prefix[:4]))
+
+    def test_repeated_structures(self):
+        n = 100000
+        cases = {
+            "late scheme then many homes": "/" + "a" * n + "https://h" + (U + "/x") * 1000,
+            "many homes in a relative run": "a" + (U + "/x") * (n // 8),
+            "many file urls": ("x:///" + U[1:] + "/x ") * (n // 14),
+            "schemes in one token": "a://" * (n // 4) + U + "/x",
+            "jwt starts after dashes": "eyJ-" * (n // 4),
+            "jwt segments": "eyJ" + "a" * n + "." + "b" * 8,
+            "labels": ("a" * 70 + ".") * (n // 71),
+            "domain dots": "a@" + "b." * (n // 2) + "_",
+            "hex colons": "fe80:" * (n // 5),
+        }
+        for label, text in cases.items():
+            self.assertFast(text, label)
 
 
 def _load_guard_rules():
