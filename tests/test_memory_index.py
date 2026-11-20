@@ -494,7 +494,8 @@ class SaveCliTest(MemCase):
     def test_saves_without_any_setup(self):
         self.assertFalse(self.anth.exists())
         p = self.save()
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, "created " + self.REL + "\n", ""))
+        self.assertEqual((p.returncode, p.stdout, p.stderr),
+                         (0, "created %s in %s\n" % (self.REL, self.repo), ""))
         note = memory_index.parse_note(self.repo / self.REL)
         self.assertEqual((note["name"], note["type"], note["description"]),
                          ("Eval probe", "project", "How the probe works"))
@@ -507,7 +508,8 @@ class SaveCliTest(MemCase):
         sub.mkdir(parents=True)
         p = self.run_cli("save", "--agent", "scout", "--type", "feedback", "--slug", "x",
                          "--name", "n", "--description", "d", "--body", "b", cwd=sub)
-        self.assertEqual(p.stdout, "created .claude/agent-memory/anthology-scout/feedback-x.md\n")
+        self.assertEqual(p.stdout, "created .claude/agent-memory/anthology-scout/feedback-x.md"
+                                   " in %s\n" % self.repo)
         self.assertTrue((self.repo / ".claude/agent-memory/anthology-scout/feedback-x.md").is_file())
         self.assertFalse((sub / ".claude").exists())
 
@@ -521,16 +523,19 @@ class SaveCliTest(MemCase):
         self.assertIn("--replace", p.stderr)
         self.assertEqual((self.repo / self.REL).read_bytes(), before)
         p = self.save("--replace", body="Newer body.")
-        self.assertEqual((p.returncode, p.stdout), (0, "replaced " + self.REL + "\n"))
+        self.assertEqual((p.returncode, p.stdout),
+                         (0, "replaced %s in %s\n" % (self.REL, self.repo)))
         self.assertIn("Newer body.", (self.repo / self.REL).read_text())
 
     def test_json_output(self):
         p = self.save("--json")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(json.loads(p.stdout), {"action": "created", "path": self.REL})
-        self.assertEqual(list(json.loads(p.stdout)), ["action", "path"])
+        self.assertEqual(json.loads(p.stdout),
+                         {"action": "created", "path": self.REL, "root": str(self.repo)})
+        self.assertEqual(list(json.loads(p.stdout)), ["action", "path", "root"])
         p = self.save("--json", "--replace")
-        self.assertEqual(json.loads(p.stdout), {"action": "replaced", "path": self.REL})
+        self.assertEqual(json.loads(p.stdout),
+                         {"action": "replaced", "path": self.REL, "root": str(self.repo)})
 
     def test_outside_a_git_repo_exits_1(self):
         plain = self.tmp / "plain"
@@ -576,6 +581,32 @@ class SaveCliTest(MemCase):
         p = self.save(body="--not-a-flag text")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue((self.repo / self.REL).read_text().endswith("\n--not-a-flag text\n"))
+
+    def test_a_type_prefixed_slug_is_not_doubled(self):
+        p = self.save(slug="project-eval-probe")
+        self.assertEqual((p.returncode, p.stdout), (0, "created %s in %s\n" % (self.REL, self.repo)))
+        self.assertTrue((self.repo / self.REL).is_file())
+        self.assertFalse((self.repo / ".claude/agent-memory/anthology-scout"
+                          / "project-project-eval-probe.md").exists())
+
+    def test_the_root_names_a_nested_repo(self):
+        nested = self.repo / "vendor" / "inner"
+        nested.mkdir(parents=True)
+        git(nested, "init", "-q")
+        p = self.run_cli("save", "--agent", "scout", "--type", "project", "--slug", "x",
+                         "--name", "n", "--description", "d", "--body", "b", cwd=nested)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(p.stdout.rstrip("\n").endswith(" in %s" % os.path.realpath(str(nested))))
+
+    def test_a_single_token_value_starting_with_a_dash_is_a_flag_unless_joined_with_equals(self):
+        p = self.save(body="-x")
+        self.assertEqual(p.returncode, 2)
+        self.assertEqual(p.stdout, "")
+        self.assertFalse((self.repo / ".claude").exists())
+        p = self.run_cli("save", "--agent", "scout", "--type", "project", "--slug", "eval-probe",
+                         "--name", "n", "--description", "d", "--body=-x")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue((self.repo / self.REL).read_text().endswith("\n-x\n"))
 
     def test_the_save_does_not_touch_other_files(self):
         write(self.repo / "keep.txt", "keep")

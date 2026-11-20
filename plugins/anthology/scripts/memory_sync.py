@@ -17,6 +17,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote
 
@@ -504,11 +505,14 @@ def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
         return False
     data = text.encode("utf-8")
     target = Path(mem_dir) / "MEMORY.md"
-    try:
-        if target.read_bytes() == data:
-            return False
-    except OSError:
-        pass
+    # Only compare against a regular file: reading a FIFO blocks and a symlink could point at
+    # an endless device. `_atomic_write` swaps the entry itself, never writing through a link.
+    if _lstat_kind(target) == "file":
+        try:
+            if _read_regular(target) == data:
+                return False
+        except (OSError, UnsafeTarget):
+            pass
     _atomic_write(target, data)
     return True
 
@@ -545,7 +549,13 @@ class SaveError(ValueError):
 
 
 def _has_control(text, allowed=""):
-    return any((ord(c) < 32 or ord(c) == 127) and c not in allowed for c in text)
+    """Control characters (category Cc), except those in `allowed`."""
+    return any(unicodedata.category(c) == "Cc" and c not in allowed for c in text)
+
+
+def _has_hidden(text):
+    """Controls, format characters (bidi overrides, zero-width) and line/paragraph separators."""
+    return any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in text)
 
 
 def _check_line(label, value, limit):
@@ -556,8 +566,9 @@ def _check_line(label, value, limit):
         raise SaveError("%s must not be empty" % label)
     if len(value) > limit:
         raise SaveError("%s is too long (at most %d characters)" % (label, limit))
-    if _has_control(value):
-        raise SaveError("%s must be one line without control characters" % label)
+    if _has_hidden(value):
+        raise SaveError("%s must be one line without control or invisible formatting "
+                        "characters" % label)
     return value
 
 
@@ -612,7 +623,9 @@ def save_note(root, agent, type_, slug, name, description, body, replace=False, 
 
     Only validated parts build the path, so no argument can reach outside the agent's folder.
     An existing note is refused unless `replace`; symlinks are never written through. Returns
-    {"path", "relative", "action" ("created" or "replaced"), "index_warning"}; raises SaveError."""
+    {"path", "relative", "root", "action" ("created" or "replaced"), "index_warning"}; raises
+    SaveError. A slug that starts with `<type_>-` loses that prefix, so the file is never
+    `project-project-x.md`."""
     if agent not in ROSTER:
         raise SaveError("unknown agent; use one of: %s" % ", ".join(ROSTER))
     if type_ not in SAVE_TYPES:
@@ -623,7 +636,9 @@ def save_note(root, agent, type_, slug, name, description, body, replace=False, 
     name = _check_line("name", name, MAX_NAME)
     description = _check_line("description", description, MAX_DESCRIPTION)
     body = _check_body(body)
-    _refuse_secrets((name, description, body), env)
+    _refuse_secrets((slug, name, description, body), env)
+    if slug.startswith(type_ + "-") and len(slug) > len(type_) + 1:
+        slug = slug[len(type_) + 1:]  # `--type project --slug project-x` is project-x.md
     if not os.path.isdir(str(root)):
         raise SaveError("not a folder: %s" % root)
     root = Path(os.path.realpath(str(root)))
@@ -674,7 +689,8 @@ def save_note(root, agent, type_, slug, name, description, body, replace=False, 
         regenerate_index(agent_dir)
     except (OSError, UnsafeTarget) as exc:
         warning = str(exc)
-    return {"path": path, "relative": relative, "action": action, "index_warning": warning}
+    return {"path": path, "relative": relative, "root": root, "action": action,
+            "index_warning": warning}
 
 
 # ---------------------------------------------------------------------------------------------

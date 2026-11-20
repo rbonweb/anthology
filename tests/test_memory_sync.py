@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1131,9 +1132,14 @@ class SaveNoteTest(MemCase):
         return str(cm.exception)
 
     def test_creates_the_note_with_the_exact_shape(self):
-        out = self.save()
+        old_umask = os.umask(0o022)  # the mode below is only exact under the usual umask
+        try:
+            out = self.save()
+        finally:
+            os.umask(old_umask)
         path = self.agent_dir() / "project-eval-probe.md"
         self.assertEqual(out["path"], path)
+        self.assertEqual(out["root"], self.root)
         self.assertEqual(out["relative"],
                          ".claude/agent-memory/anthology-scout/project-eval-probe.md")
         self.assertEqual(out["action"], "created")
@@ -1260,11 +1266,64 @@ class SaveNoteTest(MemCase):
                 with self.subTest(field=field, value=value):
                     self.assertRefused(**{field: value})
 
+    def test_name_and_description_refuse_format_and_separator_characters(self):
+        # Cf (bidi overrides, zero-width), U+2028/2029 and U+0085 would hide or reshape the
+        # text in MEMORY.md and in a diff.
+        for field in ("name", "description"):
+            for char in ("\u202e", "\u200b", "\u200d", "\ufeff", "\u2066", "\u2028", "\u2029",
+                         "\u0085", "\x9f"):
+                with self.subTest(field=field, char=hex(ord(char))):
+                    self.assertRefused(**{field: "a" + char + "b"})
+            self.save(slug="ok-" + field, **{field: "plain ünïcode ✓ text"})
+
+    def test_body_allows_format_characters_but_not_controls(self):
+        self.save(slug="zwj", body="family \U0001F468\u200d\U0001F469 ok\u200b")
+        text = (self.agent_dir() / "project-zwj.md").read_text(encoding="utf-8")
+        self.assertIn("\u200d", text)
+        for value in ("a\x85b", "a\x9fb"):
+            with self.subTest(value=repr(value)):
+                self.assertRefused(body=value)
+
     def test_bad_body(self):
         for value in ("", "  \n\n \t ", "nul\x00", "bell\x07", "esc\x1b[0m", "del\x7f",
                       "x" * 16385, "é" * 8193):
             with self.subTest(value=value[:12]):
                 self.assertRefused(body=value)
+
+    def test_a_slug_that_repeats_the_type_is_not_doubled(self):
+        out = self.save(slug="project-eval-probe")
+        self.assertEqual(out["path"], self.agent_dir() / "project-eval-probe.md")
+        self.assertEqual(out["relative"],
+                         ".claude/agent-memory/anthology-scout/project-eval-probe.md")
+        info = memory_index.parse_note(out["path"])
+        self.assertEqual(info["type"], "project")
+        self.assertFalse((self.agent_dir() / "project-project-eval-probe.md").exists())
+        # the same note as slug `eval-probe`: a second save collides
+        self.assertRefused("already exists")
+        # only the matching type is dropped, and only once
+        out = self.save(type_="feedback", slug="project-x")
+        self.assertEqual(out["path"].name, "feedback-project-x.md")
+        out = self.save(type_="project", slug="project-project")
+        self.assertEqual(out["path"].name, "project-project.md")
+        out = self.save(type_="reference", slug="reference-reference-x")
+        self.assertEqual(out["path"].name, "reference-reference-x.md")
+        # a slug that is the bare type, or only starts with the type's letters, stays
+        for type_, slug in (("feedback", "feedback"), ("project", "projectile"),
+                            ("project", "project2")):
+            out = self.save(type_=type_, slug=slug)
+            self.assertEqual(out["path"].name, "%s-%s.md" % (type_, slug))
+
+    def test_the_slug_is_checked_for_secrets(self):
+        value = "abcdef0123456789abcd"
+        msg = self.assertRefused(env={"X_API_TOKEN": value}, slug=value)
+        self.assertIn("$X_API_TOKEN", msg)
+        self.assertNotIn(value, msg)
+        key_like = "sk" + "-" + "a1b2c3d4e5f6g7h8i9"
+        msg = self.assertRefused(slug=key_like)
+        self.assertIn("secret", msg)
+        self.assertNotIn(key_like, msg)
+        # the check runs on what the caller passed, before a type prefix is dropped
+        self.assertRefused(env={"X_API_TOKEN": "project-" + value}, slug="project-" + value)
 
     def test_each_secret_pattern_is_refused_everywhere(self):
         samples = _secret_samples()
@@ -1408,6 +1467,96 @@ class SaveNoteTest(MemCase):
                                side_effect=memory_sync.UnsafeTarget("MEMORY.md is a link")):
             out = self.save(slug="two")
         self.assertIn("MEMORY.md is a link", out["index_warning"])
+
+
+def run_with_timeout(fn, seconds=5):
+    """Run fn in a daemon thread; returns (finished, result, error). A regression that blocks
+    (for example reading a FIFO) fails the test instead of hanging the suite."""
+    box = {}
+
+    def target():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            box["error"] = exc
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    return (not t.is_alive()), box.get("result"), box.get("error")
+
+
+class SpecialMemoryMdTest(MemCase):
+    """A MEMORY.md that is a symlink or a FIFO is replaced, never read or written through."""
+
+    def setUp(self):
+        super().setUp()
+        self.agent = self.tmp / "agent"
+        write(self.agent / "project-a.md", note_text("project-a", desc="Thing A"))
+        self.outside = self.tmp / "outside"
+        self.outside.mkdir()
+
+    def unblock(self, fifo):
+        try:  # let a stuck reader finish so the thread does not outlive the test
+            fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+        except OSError:
+            pass
+
+    def assertPromptlyRegular(self, call):
+        done, result, error = run_with_timeout(call)
+        self.assertTrue(done, "regenerating MEMORY.md blocked on a special file")
+        self.assertIsNone(error)
+        target = self.agent / "MEMORY.md"
+        self.assertTrue(target.is_file() and not target.is_symlink())
+        self.assertIn("[project-a](project-a.md)", target.read_text())
+        return result
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_a_fifo_at_memory_md_is_replaced_without_blocking(self):
+        fifo = self.agent / "MEMORY.md"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_a_symlink_to_a_fifo_is_replaced_without_blocking(self):
+        fifo = self.outside / "pipe"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        os.symlink(str(fifo), str(self.agent / "MEMORY.md"))
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+
+    def test_a_symlink_to_a_file_with_the_same_text_is_still_replaced(self):
+        memory_sync.regenerate_index(self.agent)
+        text = (self.agent / "MEMORY.md").read_bytes()
+        victim = write(self.outside / "victim.md", "")
+        victim.write_bytes(text)
+        (self.agent / "MEMORY.md").unlink()
+        os.symlink(str(victim), str(self.agent / "MEMORY.md"))
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+        self.assertEqual(victim.read_bytes(), text)
+
+    def test_a_symlink_to_a_different_file_leaves_the_target_alone(self):
+        victim = write(self.outside / "victim.md", "precious")
+        os.symlink(str(victim), str(self.agent / "MEMORY.md"))
+        self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent))
+        self.assertEqual(victim.read_text(), "precious")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_save_note_returns_promptly_with_a_fifo_memory_md(self):
+        root = self.tmp / "work"
+        agent_dir = root / ".claude" / "agent-memory" / "anthology-scout"
+        agent_dir.mkdir(parents=True)
+        fifo = agent_dir / "MEMORY.md"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        done, out, error = run_with_timeout(lambda: memory_sync.save_note(
+            root, "scout", "project", "x", "n", "d", "b", env={}))
+        self.assertTrue(done, "save_note blocked on a FIFO MEMORY.md")
+        self.assertIsNone(error)
+        self.assertIsNone(out["index_warning"])
+        self.assertTrue(fifo.is_file() and not fifo.is_symlink())
 
 
 if __name__ == "__main__":

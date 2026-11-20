@@ -610,9 +610,10 @@ def _save(args):
         print("anthology-mem: %s" % exc, file=sys.stderr)
         return 1
     if args.json:
-        print(json.dumps({"action": out["action"], "path": out["relative"]}, sort_keys=True))
+        print(json.dumps({"action": out["action"], "path": out["relative"],
+                          "root": str(out["root"])}, sort_keys=True))
     else:
-        print("%s %s" % (out["action"], out["relative"]))
+        print("%s %s in %s" % (out["action"], out["relative"], out["root"]))
     if out["index_warning"]:
         print("anthology-mem: note saved, but MEMORY.md was not regenerated: %s"
               % out["index_warning"], file=sys.stderr)

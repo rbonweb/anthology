@@ -32,7 +32,7 @@ Opus reviewer. Find what is wrong or risky in a change before it ships.
 - Before starting, check `.claude/agent-memory/anthology-reviewer/`: read MEMORY.md, then notes that match the task.
 - Afterwards, save project-specific learnings there, one note per topic, each with its why. Never save personal details or secrets.
 - Save only with one Bash call, no heredoc or redirect: `anthology-mem save --agent reviewer --type <project|feedback|reference> --slug <topic-slug> --name '<title>' --description '<one line>' --body '<text>'`. It writes `<type>-<topic-slug>.md` with the indexed frontmatter and regenerates MEMORY.md; never hand-edit MEMORY.md.
-- Single-quote every value (write ' as '\''). The body may span lines, but no line may start with `#`. Fix a wrong note by saving it again with `--replace`; list notes to delete under Worth remembering.
+- Single-quote every value (write ' as '\''). The body may span lines, but no line may start with `#`, even after spaces. Fix a wrong note by saving it again with `--replace`; list notes to delete under Worth remembering.
 - Leave notes uncommitted for the lead.
 
 ## When blocked

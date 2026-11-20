@@ -175,7 +175,7 @@ class RosterTest(unittest.TestCase):
                 _, body = self.agent(name)
                 memory = sections(body)[1]["Memory"]
                 for needle in (f"anthology-mem save --agent {name} --type", "--replace",
-                               "no heredoc or redirect", "no line may start with `#`", "'\\''",
+                               "no heredoc or redirect", "no line may start with `#`, even after spaces", "'\\''",
                                "`<type>-<topic-slug>.md`", "never hand-edit MEMORY.md"):
                     self.assertIn(needle, memory)
                 self.assertNotIn("<<", memory)
