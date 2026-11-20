@@ -52,7 +52,11 @@ pub fn splitlines(s: &str, keepends: bool) -> Vec<&str> {
             it.next();
             end += 1;
         }
-        out.push(if keepends { &s[start..end] } else { &s[start..i] });
+        out.push(if keepends {
+            &s[start..end]
+        } else {
+            &s[start..i]
+        });
         start = end;
     }
     if start < s.len() {
@@ -84,7 +88,10 @@ mod tests {
     fn whitespace_and_lines() {
         assert_eq!(strip("\u{1c} a b\u{3000}"), "a b");
         assert_eq!(split_ws(" a\u{85}b  c "), ["a", "b", "c"]);
-        assert_eq!(splitlines("a\r\nb\rc\u{2028}d\n", false), ["a", "b", "c", "d"]);
+        assert_eq!(
+            splitlines("a\r\nb\rc\u{2028}d\n", false),
+            ["a", "b", "c", "d"]
+        );
         assert_eq!(splitlines("a\r\nb\n\nc", true), ["a\r\n", "b\n", "\n", "c"]);
         assert!(splitlines("", false).is_empty());
     }
