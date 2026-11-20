@@ -100,7 +100,12 @@ a new version section.
   else (programs that run a string such as `awk`, `make`, `ed`, `sqlite3`; `git grep -O`,
   `git rebase -x`, `git -c`; `env -S`; a stdin script; shells and interpreters) asks. A
   dashed git builtin (`git-push`) and words after a redirect (`git >/dev/null push`) now meet
-  your deny rules. Without rules nothing changes.
+  your deny rules. A rule's command text anywhere in an `rtk` line asks, however quoted; a
+  `/dev/stdin`, `/dev/fd/N` or `/proc/…/fd/N` operand or a redirect opening a descriptor
+  above 2 asks; plugin, linker, MSBuild-property and `--exec` options and VCS or URL
+  package specs (`pip install git+…`, `npx -p`) ask; a `Read()` path the hook cannot
+  resolve asks at top level too. Rules restrict commands, not what an allowed program
+  loads from files. Without rules nothing changes.
 - rtk's local history (command lines, recall store, tee spool) is kept in
   `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
   document what it stores and for how long.

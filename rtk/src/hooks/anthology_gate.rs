@@ -33,8 +33,9 @@
 //!    loaded and enforced against the commands rtk rewrites into reads (`cat`,
 //!    `head`, `tail`, `grep`, `rg`, `diff`, `wc`, `ls`, `find`, `tree`, and the
 //!    `rtk read`-family subcommands). A denied path is a deny; a path the gate
-//!    cannot resolve (`$VAR`, a glob, an unknown cwd) is `Defer` at top level (the
-//!    host judges the original natively) and ask inside an rtk or wrapper expansion.
+//!    cannot resolve (`$VAR`, a glob, an unknown cwd, `/proc/...`, `/dev/fd/...`)
+//!    asks, at top level too (round 6). An input redirect's operand
+//!    (`cat < secr?t.txt`) is checked the same way, every glued token of it.
 //! 4. **Rule sources.** The project's and user's `settings{,.local}.json` as
 //!    before, plus `CLAUDE_PROJECT_DIR` as an additional project root and the
 //!    managed settings (`managed-settings.json` and `managed-settings.d/*.json`,
@@ -56,8 +57,26 @@
 //!    hook asks. A rewrite into such a command is dropped instead (`Defer`), and
 //!    the host judges the original as it would without rtk. See below.
 //!
+//! 7. **Literal backstop** (round 6). Wherever the text has an rtk command, a
+//!    Bash deny or ask rule's command text found anywhere in the line asks:
+//!    quotes and backslashes removed, whitespace collapsed, case folded where
+//!    Claude Code folds it (macOS, Windows), on word boundaries. `rtk ls 'git
+//!    push'` asks; `rtk ls gitpush` does not.
+//!
 //! With no deny, ask or `Read` rule anywhere the gate is inert and the hook's
 //! output is what it was before.
+//!
+//! # Scope
+//!
+//! The gate aims at parity-plus with Claude Code's own rule matching. A Bash deny
+//! or ask rule is enforced against the commands the agent types: every rtk form,
+//! wrapper, compound, substitution and redirect. A `Read()` rule is enforced
+//! against every file the line names or redirects. What an allowed program does
+//! with the files, plugins, configs or build steps it loads (`build.rs`, test
+//! files, MSBuild targets, the linker, plugins, a kubeconfig `exec`, compose
+//! files) is out of scope: deny rules restrict commands, not what programs do.
+//! The option never-lists below remove the options that name such code or a
+//! string on the command line itself; they do not make a listed program safe.
 //!
 //! # The allowlist
 //!
@@ -67,12 +86,12 @@
 //!
 //! | Rule | Programs | Arguments |
 //! |---|---|---|
-//! | any | `cat head tail ls tree wc diff cmp comm cut tr uniq nl echo pwd true false cd basename dirname realpath readlink stat file du df which jq`; `pytest mypy ruff black pyright tsc eslint prettier vitest jest playwright next prisma ng format golangci-lint rspec rubocop phpunit phpstan pest paratest ecs pint sqlfluff ast-grep gradlew` | anything: no option runs a string |
-//! | except | `grep`, `rg` (`--pre`, `--hostname-bin`); `find` (`-exec -execdir -ok -okdir`) | none of those options, and no word that may expand into an option |
-//! | subcommands | `cargo` (no `--config`, `-Z`), `go` (no `-exec`, `-toolexec`, `-vettool`), `dotnet`, `pip`/`pip3`, `gh`/`glab` (no git `--upload-pack`-style options), `docker` (no `-` stdin), `kubectl`/`oc` (no `--exec-command`) | the first operand is a listed subcommand (`docker run`/`exec`, `go env`/`generate`, `cargo install`, `kubectl exec` are not) |
-//! | package managers | `npm` (no `-c`, `--call`, `--script-shell`, `--node-options`), `pnpm`, `yarn`, `bun` (no `-e`), `uv` | a listed subcommand, or a launching one (`npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bun x`, `uv run`) whose program is looked up again |
-//! | launchers | `npx`, `bunx`, `uvx` | known launcher options, then a listed program |
-//! | git | [`git_listed`] | global options from a fixed set (no `-c`, `--config-env`, `--exec-path`); a subcommand from [`GIT_SUBS`] (no alias, `config`, `bisect`, `difftool`, `mergetool`, `filter-branch`, `send-email`, `credential`, `hook`...) without its string-running options (`grep -O`/`--open-files-in-pager`, `rebase -x`/`--exec`, `--upload-pack`, `--receive-pack`, `clone -u`/`-c`/`--template`...); `submodule` without `foreach`; no `ext::`/`fd::` remote |
+//! | any | `cat head tail ls tree wc diff cmp comm cut tr uniq nl echo pwd true false cd basename dirname realpath readlink stat file du df which jq`; `ruff black tsc eslint vitest jest playwright next prisma ng format golangci-lint phpunit phpstan pest paratest ecs pint sqlfluff ast-grep gradlew` | any argument; what the program loads from files is out of scope |
+//! | except | `grep`, `rg` (`--pre`, `--hostname-bin`); `find` (`-exec -execdir -ok -okdir -fprint* -fls`); `prettier` (`--plugin`, `--plugin-search-dir`); `rspec`, `rubocop` (`-r`, `--require`); `pytest` (`--pdb`, `--trace`, `--pdbcls`); `mypy` (`--python-executable`); `pyright` (`--pythonpath`) | none of those options, and no word that may expand into an option |
+//! | subcommands | `cargo` (no `--config`, `-Z`), `go` (no `-exec`, `-toolexec`, `-vettool`, `-ldflags`, `-gcflags`, `-asmflags`, `-gccgoflags`, `-overlay`), `dotnet` (no `-p:`/`/p:`/`-property:`, loggers, targets, `@` response files, `--` MSBuild passthrough), `pip`/`pip3` (no `git+`/`hg+`/`svn+`/`bzr+` or URL spec, no index or find-links option), `gh`/`glab` (no git `--upload-pack`-style options), `docker` (no `-` stdin), `kubectl`/`oc` (no `--exec-command`) | the first operand is a listed subcommand (`docker run`/`exec`, `go env`/`generate`, `cargo install`, `kubectl exec` are not) |
+//! | package managers | `npm`, `pnpm` (no `-c`, `--call`, `--script-shell`, `--node-options`, `--shell`, `--browser`, `--editor`, `--git`, `--config.*`...), `yarn`, `bun` (no `-e`), `uv` (as `pip` for `uv pip install`) | a listed subcommand, or a launching one (`npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bun x`, `uv run`) whose program is looked up again |
+//! | launchers | `npx`, `bunx`, `uvx` | known launcher options, then a listed program; a fetched package (`npx -p <spec>`, `uvx --from`, `uv run --with`) asks |
+//! | git | [`git_listed`] | global options from a fixed set (no `-c`, `--config-env`, `--exec-path`); a subcommand from [`GIT_SUBS`] (no alias, `config`, `bisect`, `difftool`, `mergetool`, `filter-branch`, `send-email`, `credential`, `hook`...) without its string-running options (`grep -O`/`--open-files-in-pager`, `rebase -x`/`--exec`, `--upload-pack`, `--receive-pack`, `fetch`/`pull`/`clone`/`ls-remote --exec`, `clone -u`/`-c`/`--template`...); `submodule` without `foreach`; no `ext::`/`fd::` remote |
 //!
 //! rtk's own readers (`read`, `log`, `smart`, `json`, `deps`, `gain`, `discover`,
 //! `recall`, `pipe`) take any argument (`read`: only its own options); `rtk env`
@@ -85,9 +104,17 @@
 //! `-Ocmd`), a one-dash long option with one or two dashes (`-toolexec=x`). A
 //! dashed git builtin (`/usr/lib/git-core/git-push`) is `git push`, for the rules
 //! too. A runner's script (`rtk run -c '...'`, `--shell sh|bash` only) passes when
-//! every command in it does. No program in the table reads a script on its
-//! standard input, so what a pipe, a here-string or a here-document feeds a listed
-//! program is data.
+//! every command in it does. A command word with a `/` passes only from a system
+//! directory (`/usr/bin/`, `/opt/homebrew/bin/`, git's libexec...).
+//!
+//! A file a listed program may load as code can also come from the line itself
+//! (round 6): any word naming `/dev/stdin`, `/dev/fd/N`, `/proc/self/fd/N` or
+//! `/proc/<pid>/fd/N` (glued, `=`, `/dev//fd` spellings included), a `-` where it
+//! may mean stdin (except for programs that read only data: `cat`, `grep`, `jq`,
+//! `git`...), and any redirect that opens a descriptor above 2 (`3<<<`, `{fd}<`)
+//! ask. What a pipe, a here-string or a here-document feeds stdin is otherwise
+//! data. A file named on the line that a listed program then loads as code is
+//! the file-exec residual below.
 //!
 //! Also asked, wherever the text has an rtk command (or any `rtk` at all, where the
 //! lexer may be out of step with the shell):
@@ -129,9 +156,12 @@
 //!   `package.json`): the gate cannot resolve a path that does not exist yet.
 //! - What a listed program runs from files: test code, build scripts, `npm run`
 //!   scripts, git hooks, git, cargo, npm and kubeconfig settings (including a
-//!   repository `-C`/`--git-dir` points git at), `.gitattributes` filters, and
-//!   packages `npm install`/`pip install`/`npx` fetch. Also the environment the
-//!   session already had (`GIT_PAGER`, `PAGER`, `NODE_OPTIONS`...).
+//!   repository `-C`/`--git-dir` points git at), `.gitattributes` filters, a
+//!   file named on the line that the program loads (`eslint --plugin ./p`,
+//!   `pytest -p`, `docker compose -f x.yml`), and packages from the registry
+//!   `npm install`/`pip install NAME`/`npx NAME` fetch (a VCS or URL spec asks).
+//!   Also the environment the session already had (`GIT_PAGER`, `PAGER`,
+//!   `NODE_OPTIONS`...). Out of scope by the ruling above.
 //! - Listed programs that read a file's content without a path operand: git
 //!   object reads (`git show REV:path`, `git cat-file -p REV:path`, `git log -p`,
 //!   `git grep x REV`).
@@ -149,10 +179,9 @@
 //!   `GIT_CONFIG_COUNT`, `GIT_PAGER`...) is read when a rule's head starts with
 //!   `git`: it asks inside rtk and leaves a top-level command unrewritten.
 //! - A launcher the gate does not model (`caffeinate`, `arch`, `ssh host cmd`,
-//!   `watch`, `su -c`...) is not peeled. Backstop: inside an rtk expansion the
-//!   words of any Bash rule's literal head appearing anywhere in the text, quoted
-//!   or not, make the hook ask; at top level they make it leave a rewrite to the
-//!   host. A rule with a leading or inner `*` has no head to look for.
+//!   `watch`, `su -c`...) is not peeled. Backstop: the literal backstop (point 7)
+//!   asks wherever the text has an rtk command; a rewrite into such a text is
+//!   left to the host. A rule with a leading or inner `*` has no head to look for.
 //! - A word that expands (`$x`, a glob, a brace, `$'..'`, `~user`) after literal
 //!   words a Bash rule can extend (`rtk git $x`, `rtk kubectl $a`) is asked inside
 //!   rtk and left unrewritten at top level; with any `Read()` rule, an expanding
@@ -189,8 +218,8 @@
 //!   push` is read as `git push`.
 //! - When the work budget is spent and any rule exists, the hook asks. Every peel
 //!   step and suffix reading is charged to it.
-//! - Globs are never expanded against the disk: `rtk git add src/*.rs` asks when a
-//!   `Read()` rule exists.
+//! - Globs are never expanded against the disk: `rtk git add src/*.rs` and
+//!   `cat *.txt` ask when a `Read()` rule exists.
 //! - `env` (with its options), `xargs` (with its options) and `find -exec` payloads
 //!   are read, at top level too; an `xargs` or `env` option the gate does not know,
 //!   or an unterminated `-exec`, is opaque. A top-level `find` with such a payload
@@ -548,6 +577,9 @@ pub(crate) struct GateRules {
     /// The same heads cut into the words [`GateRules::embeds_head`] reads (split at
     /// `=`, `:`, `!` and the like).
     embed_heads: Vec<Vec<String>>,
+    /// Each Bash deny and ask rule's literal command text (`git push` for `git
+    /// push:*`), words joined by one space, as written in the rule.
+    literal_heads: Vec<String>,
     /// Some Bash rule's head starts with `git`.
     git_rules: bool,
     /// Some Bash rule has a `*` before its end, or no literal head: any command
@@ -571,6 +603,33 @@ fn rule_head(pattern: &str) -> Option<Vec<String>> {
         .map(str::to_string)
         .collect();
     (!words.is_empty()).then_some(words)
+}
+
+/// A text as the literal backstop compares it: quotes and backslashes removed,
+/// every run of whitespace one space, folded to lower case where the file system
+/// folds case.
+fn normalize_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut space = false;
+    for c in text.chars() {
+        if matches!(c, '\'' | '"' | '\\') {
+            continue;
+        }
+        if c.is_whitespace() {
+            space = !out.is_empty();
+            continue;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        out.push(c);
+    }
+    if cfg!(any(target_os = "macos", windows)) {
+        out.to_lowercase()
+    } else {
+        out
+    }
 }
 
 /// Where words of a command text break for [`GateRules::embeds_head`].
@@ -648,10 +707,15 @@ impl GateRules {
     ) -> Self {
         let mut heads = Vec::new();
         let mut embed_heads = Vec::new();
+        let mut literal_heads = Vec::new();
         let mut wildcard = false;
         for pattern in deny.iter().chain(&ask) {
             match rule_head(pattern) {
                 Some(mut head) => {
+                    let literal = normalize_literal(&head.join(" "));
+                    if !literal.is_empty() {
+                        literal_heads.push(literal);
+                    }
                     head[0] = norm_command(&head[0]);
                     let cut: Vec<String> = head
                         .join(" ")
@@ -680,6 +744,7 @@ impl GateRules {
             project_roots,
             heads,
             embed_heads,
+            literal_heads,
             git_rules,
             wildcard,
         }
@@ -786,6 +851,28 @@ impl GateRules {
             }
         }
         false
+    }
+
+    /// Whether some Bash deny or ask rule's literal command text appears anywhere in
+    /// `text` once quotes and backslashes are removed and whitespace is collapsed
+    /// (`execSync("git push")`, a here-string, a `data:` URL), between word
+    /// boundaries. Case as the file system folds it (see [`norm_command`]).
+    fn literal_in(&self, text: &str) -> bool {
+        if self.literal_heads.is_empty() {
+            return false;
+        }
+        let text = normalize_literal(text);
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        self.literal_heads.iter().any(|head| {
+            text.match_indices(head.as_str()).any(|(at, _)| {
+                let before = text[..at].chars().next_back().is_none_or(|c| !ident(c));
+                let after = text[at + head.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !ident(c));
+                before && after
+            })
+        })
     }
 
     /// Whether any rule exists for the gate to enforce.
@@ -1665,12 +1752,13 @@ impl<'a> Scanner<'a> {
         if generic {
             // A word that expands, or a path an ask rule covers, asks.
             self.ask |= matched_ask || unresolved;
-        } else if unresolved || matched_ask {
-            if ctx.inner {
-                self.ask = true;
-            } else {
-                self.defer = true;
-            }
+        } else if unresolved || (matched_ask && ctx.inner) {
+            // A path the gate cannot resolve (`$x`, a glob) may be the denied file,
+            // at top level too (round 6: a defer let `Bash(rtk *)` decide).
+            self.ask = true;
+        } else if matched_ask {
+            // A Read ask rule names it: the host asks about the original itself.
+            self.defer = true;
         }
     }
 
@@ -1690,11 +1778,33 @@ impl<'a> Scanner<'a> {
                         && next.value == ">"
                         && next.offset == token.offset + token.value.len()
                 });
+                // The operand is every token glued together from there (`secr?t.txt`
+                // lexes as `secr`, `?`, `t.txt`; `*.txt` opens with a glob).
                 let operand = i + 1 + usize::from(glued_write);
-                let Some(target) = tokens.get(operand).filter(|t| t.kind == TokenKind::Arg) else {
+                let stops = |kind: TokenKind| {
+                    matches!(
+                        kind,
+                        TokenKind::Operator | TokenKind::Pipe(_) | TokenKind::Redirect
+                    )
+                };
+                let Some(first) = tokens.get(operand).filter(|t| !stops(t.kind)) else {
                     continue;
                 };
-                let word = resolve_word_text(&target.value);
+                let mut end = first.offset + first.value.len();
+                for next in &tokens[operand + 1..] {
+                    if stops(next.kind) || next.offset != end {
+                        break;
+                    }
+                    end = next.offset + next.value.len();
+                }
+                let raw = &segment[first.offset..end];
+                // A word that expands keeps its `$`/glob so the matcher sees it is
+                // uncertain.
+                let word = if is_uncertain_word(raw) {
+                    raw.to_string()
+                } else {
+                    resolve_word_text(raw)
+                };
                 if word == "/dev/null" {
                     continue;
                 }
@@ -2526,18 +2636,25 @@ const LISTED: &[(&str, Args)] = &[
     ("rg", Args::Except(&["--pre", "--hostname-bin"])),
     (
         "find",
-        Args::Except(&["-exec", "-execdir", "-ok", "-okdir"]),
+        Args::Except(&[
+            "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+        ]),
     ),
-    // Linters, formatters, type checkers and test runners: they run the project's
-    // files, never a string from the command line.
-    ("pytest", Args::Any),
-    ("mypy", Args::Any),
+    // Linters, formatters, type checkers and test runners. What they load from the
+    // project's files (tests, plugins, configs) is out of the gate's scope; options
+    // that name code or a program on the line are screened.
+    // `--pdb`/`--trace` run a debugger that reads commands from stdin.
+    ("pytest", Args::Except(&["--pdb", "--trace", "--pdbcls"])),
+    ("mypy", Args::Except(&["--python-executable"])),
     ("ruff", Args::Any),
     ("black", Args::Any),
-    ("pyright", Args::Any),
+    ("pyright", Args::Except(&["--pythonpath"])),
     ("tsc", Args::Any),
     ("eslint", Args::Any),
-    ("prettier", Args::Any),
+    (
+        "prettier",
+        Args::Except(&["--plugin", "--plugin-search-dir"]),
+    ),
     ("vitest", Args::Any),
     ("jest", Args::Any),
     ("playwright", Args::Any),
@@ -2546,8 +2663,8 @@ const LISTED: &[(&str, Args)] = &[
     ("ng", Args::Any),
     ("format", Args::Any),
     ("golangci-lint", Args::Any),
-    ("rspec", Args::Any),
-    ("rubocop", Args::Any),
+    ("rspec", Args::Except(&["-r", "--require"])),
+    ("rubocop", Args::Except(&["-r", "--require"])),
     ("phpunit", Args::Any),
     ("phpstan", Args::Any),
     ("pest", Args::Any),
@@ -2561,28 +2678,28 @@ const LISTED: &[(&str, Args)] = &[
     ("cargo", Args::Subs(CARGO_SUBS, &["--config", "-Z"])),
     (
         "go",
-        Args::Subs(GO_SUBS, &["-exec", "-toolexec", "-vettool"]),
-    ),
-    ("dotnet", Args::Subs(DOTNET_SUBS, &[])),
-    ("pip", Args::Subs(PIP_SUBS, &[])),
-    ("pip3", Args::Subs(PIP_SUBS, &[])),
-    ("uv", Args::Pkg(UV_SUBS, &["run"], &[])),
-    (
-        "npm",
-        Args::Pkg(
-            NPM_SUBS,
-            &["exec", "x"],
-            &["-c", "--call", "--script-shell", "--node-options"],
+        Args::Subs(
+            GO_SUBS,
+            &[
+                "-exec",
+                "-toolexec",
+                "-vettool",
+                "-ldflags",
+                "-gcflags",
+                "-asmflags",
+                "-gccgoflags",
+                "-overlay",
+                // `go run|install pkg@version` fetches and runs code named on the line.
+                "~@",
+            ],
         ),
     ),
-    (
-        "pnpm",
-        Args::Pkg(
-            PNPM_SUBS,
-            &["exec", "dlx"],
-            &["-c", "--shell-mode", "--script-shell", "--node-options"],
-        ),
-    ),
+    ("dotnet", Args::Subs(DOTNET_SUBS, DOTNET_NEVER)),
+    ("pip", Args::Subs(PIP_SUBS, FETCH_NEVER)),
+    ("pip3", Args::Subs(PIP_SUBS, FETCH_NEVER)),
+    ("uv", Args::Pkg(UV_SUBS, &["run"], FETCH_NEVER)),
+    ("npm", Args::Pkg(NPM_SUBS, &["exec", "x"], NPM_NEVER)),
+    ("pnpm", Args::Pkg(PNPM_SUBS, &["exec", "dlx"], PNPM_NEVER)),
     ("yarn", Args::Pkg(YARN_SUBS, &["dlx"], &["--script-shell"])),
     (
         "bun",
@@ -2604,6 +2721,77 @@ const LISTED: &[(&str, Args)] = &[
         Args::Subs(KUBECTL_SUBS, &["--exec-command", "--exec-arg"]),
     ),
     ("git", Args::Git),
+];
+
+/// npm config options that name a program npm runs (scripts' shell, a browser or
+/// man viewer for `npm help`, an editor, git) or code node loads.
+const NPM_NEVER: &[&str] = &[
+    "-c",
+    "--call",
+    "--script-shell",
+    "--node-options",
+    "--shell",
+    "--browser",
+    "--viewer",
+    "--editor",
+    "--git",
+    "^--config.",
+];
+/// pnpm: as npm, plus `--shell-mode` and `--config.<key>=...` settings.
+const PNPM_NEVER: &[&str] = &[
+    "-c",
+    "--shell-mode",
+    "--script-shell",
+    "--node-options",
+    "--shell",
+    "--browser",
+    "--editor",
+    "--git",
+    "^--config.",
+];
+
+/// MSBuild switches a `dotnet` command line passes on: properties
+/// (`-p:PreBuildEvent=...`), loggers, data collectors, response files, targets,
+/// and everything after `--`. Matched with any case and with `-` or `/`.
+const DOTNET_NEVER: &[&str] = &[
+    "-p",
+    "--property",
+    "^-property:",
+    "^/p:",
+    "^/property:",
+    "-l",
+    "--logger",
+    "^-logger",
+    "^/l:",
+    "^/logger",
+    "^-dl",
+    "^/dl",
+    "^-distributedlogger",
+    "^/distributedlogger",
+    "--collect",
+    "^-getproperty",
+    "^/getproperty",
+    "^-t:",
+    "^/t:",
+    "^-target",
+    "^/target",
+    "^@",
+    "=--",
+];
+/// Package specs fetched from somewhere the command line names (a VCS or URL
+/// requirement, another index) for `pip`/`uv`: they fetch and build code named
+/// on the line, as `uvx` does.
+const FETCH_NEVER: &[&str] = &[
+    "^git+",
+    "^hg+",
+    "^svn+",
+    "^bzr+",
+    "~://",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
 ];
 
 const CARGO_SUBS: &[&str] = &[
@@ -2849,14 +3037,22 @@ const GIT_SUBS: &[(&str, &[&str])] = &[
     ("submodule", &[]),
     ("grep", &["-O", "--open-files-in-pager"]),
     ("rebase", &["-x", "--exec"]),
-    ("fetch", &["--upload-pack"]),
-    ("pull", &["--upload-pack"]),
+    ("fetch", &["--upload-pack", "--exec"]),
+    ("pull", &["--upload-pack", "--exec"]),
     ("push", &["--receive-pack", "--exec"]),
     (
         "clone",
-        &["--upload-pack", "-u", "--config", "-c", "--template"],
+        &[
+            "--upload-pack",
+            "--exec",
+            "-u",
+            "--config",
+            "-c",
+            "--template",
+        ],
     ),
-    ("ls-remote", &["--upload-pack", "-u"]),
+    // `--exec` is ls-remote's hidden alias of `--upload-pack`.
+    ("ls-remote", &["--upload-pack", "--exec", "-u"]),
     ("archive", &["--exec"]),
     ("init", &["--template"]),
 ];
@@ -2891,16 +3087,9 @@ const LAUNCH_FLAGS: &[&str] = &[
     "--no-dev",
     "--all-extras",
 ];
-const LAUNCH_VALUES: &[&str] = &[
-    "-p",
-    "--package",
-    "--with",
-    "--from",
-    "--project",
-    "--directory",
-    "--extra",
-    "--group",
-];
+/// (`-p`/`--package`, `--with`, `--from` are not here: they name a package to
+/// fetch and run, as `uvx` does, so they ask.)
+const LAUNCH_VALUES: &[&str] = &["--project", "--directory", "--extra", "--group"];
 
 /// rtk subcommands that only read and print (rtk's own code, or `log` on stdin or a
 /// file): any arguments.
@@ -2932,6 +3121,19 @@ const ENV_CHANGERS: &[&str] = &[
     "mapfile",
     "readarray",
     "getopts",
+];
+
+/// Folders a command word may name a listed program by (`/usr/bin/git`, git's own
+/// exec path `/usr/lib/git-core/git-push`).
+const SYSTEM_DIRS: &[&str] = &[
+    "/usr/bin/",
+    "/bin/",
+    "/usr/local/bin/",
+    "/opt/homebrew/bin/",
+    "/usr/lib/git-core/",
+    "/usr/libexec/git-core/",
+    "/Library/Developer/CommandLineTools/usr/",
+    "/Applications/Xcode.app/Contents/Developer/usr/",
 ];
 
 fn is_rtk(name: &str) -> bool {
@@ -3015,15 +3217,12 @@ pub(crate) fn unlisted(cmd: &str, rules: &GateRules) -> bool {
     // here-document body, `$'..\'..'`), an rtk command can hide inside what looks
     // like one word: any `rtk` in the text (quotes and backslashes aside, or a
     // `$'...'` that may spell it) then asks.
-    let unquoted: String = text
-        .chars()
-        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
-        .collect();
-    let mentions_rtk =
-        found || unquoted.to_ascii_lowercase().contains("rtk") || text.contains("$'");
+    let mentions_rtk = found || mentions_rtk(&text);
     mentions_rtk
         && (env_change
             || computed_command
+            || rules.literal_in(&text)
+            || opens_high_fd(&text)
             || opens_paren_after_word(&text)
             || here_doc_or_comment(&text)
             || lexer::contains_substitution(&text)
@@ -3041,6 +3240,17 @@ fn shell_text(text: &str) -> Cow<'_, str> {
     } else {
         joined
     }
+}
+
+/// Whether `text` may run rtk anywhere: `rtk` in it once quotes and backslashes are
+/// removed (any case), or a `$'...'` that may spell it. A defer on such a text would
+/// leave it to the `Bash(rtk *)` allow rule, so the hook asks instead.
+pub(crate) fn mentions_rtk(text: &str) -> bool {
+    let unquoted: String = text
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
+    unquoted.to_ascii_lowercase().contains("rtk") || text.contains("$'")
 }
 
 /// `text` with each line continuation (a backslash then a newline, outside single
@@ -3107,6 +3317,26 @@ fn here_doc_or_comment(text: &str) -> bool {
             },
             _ => false,
         }
+    })
+}
+
+/// Whether a redirect opens a file descriptor other than 0, 1 and 2 (`3<<<'...'`,
+/// `4< file`, `{fd}< file`): a program told to read `/dev/fd/3` then reads a script
+/// the command line carries.
+fn opens_high_fd(text: &str) -> bool {
+    let tokens = lexer::tokenize(text);
+    tokens.iter().enumerate().any(|(i, tok)| {
+        if tok.kind != TokenKind::Redirect {
+            return false;
+        }
+        let digits: String = tok.value.chars().take_while(char::is_ascii_digit).collect();
+        let numbered = !digits.is_empty() && digits.parse::<u64>().map_or(true, |fd| fd > 2);
+        // bash's `{name}<file` allocates a descriptor of 10 or more.
+        let named = i > 0
+            && tokens[i - 1].kind == TokenKind::Shellism
+            && tokens[i - 1].value == "}"
+            && tokens[i - 1].offset + 1 == tok.offset;
+        numbered || named
     })
 }
 
@@ -3211,6 +3441,11 @@ fn argv_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
     if is_expanding(raw[0]) || may_become_option(raw[0]) || is_assignment(&words[0]) {
         return false;
     }
+    // A command word with a `/` runs that file: `./cat` is a script, not `cat`.
+    // Only the system's own program folders keep the listed name.
+    if words[0].contains('/') && !SYSTEM_DIRS.iter().any(|dir| words[0].starts_with(dir)) {
+        return false;
+    }
     let name = norm_command(&words[0]);
     if is_rtk(&name) {
         return rtk_listed(raw, words, depth + 1);
@@ -3228,6 +3463,13 @@ fn argv_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
         return false;
     };
     let (raw, words) = (&raw[1..], &words[1..]);
+    // Every listed program, `Any` included: no descriptor or stdin named as a file.
+    if words.iter().any(|word| names_descriptor(word))
+        || (!STDIN_IS_DATA.contains(&name.as_str())
+            && words.iter().any(|word| names_stdin_dash(word)))
+    {
+        return false;
+    }
     match rule {
         Args::Any => true,
         Args::Except(never) => plain_args(raw, words, never),
@@ -3249,19 +3491,48 @@ fn argv_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
     }
 }
 
-/// No word that may expand into an option, no word naming standard input (a
-/// script or Dockerfile read from it: `-f /dev/stdin`), and none of the options in
-/// `never`.
+/// No word that may expand into an option and none of the options in `never`.
 fn plain_args(raw: &[&str], words: &[String], never: &[&str]) -> bool {
-    let names_stdin = |word: &str| {
-        let path = word.split_once('=').map_or(word, |(_, value)| value);
-        matches!(path, "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
-    };
     !raw.iter().any(|word| may_become_option(word))
         && !words
             .iter()
-            .any(|word| names_stdin(word) || never.iter().any(|opt| is_option(word, opt)))
+            .any(|word| never.iter().any(|opt| is_option(word, opt)))
 }
+
+/// Whether a word names an open file descriptor or standard input, however it is
+/// spelled or attached (`-f/dev/stdin`, `--kubeconfig=/dev/fd/3`, `@/dev/fd/3`,
+/// `/proc/self/fd/5`, `/proc/123/fd/0`, `/dev//fd/3`): a listed program told to read
+/// it as a script, a config or a plugin runs what the command line feeds it.
+fn names_descriptor(word: &str) -> bool {
+    let parts: Vec<&str> = word
+        .split(['/', '='])
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    parts
+        .windows(2)
+        .any(|pair| pair[0].ends_with("dev") && matches!(pair[1], "fd" | "stdin"))
+        || parts
+            .windows(3)
+            .any(|triple| triple[0].ends_with("proc") && triple[2] == "fd")
+}
+
+/// `-` as a file name: alone, glued to a short option (`-f-`) or after `=`
+/// (`--file=-`).
+fn names_stdin_dash(word: &str) -> bool {
+    word == "-"
+        || word.ends_with("=-")
+        || (word.len() == 3
+            && word.starts_with('-')
+            && !word.starts_with("--")
+            && word.ends_with('-'))
+}
+
+/// Programs for which a lone `-` is data on standard input (a file to print, a
+/// message, a patch), not a script.
+const STDIN_IS_DATA: &[&str] = &[
+    "cat", "head", "tail", "wc", "diff", "cmp", "comm", "cut", "tr", "uniq", "nl", "grep", "rg",
+    "jq", "echo", "git",
+];
 
 /// Whether the operands of `words` open with one of `subs` (each one or two words).
 fn sub_listed(words: &[String], subs: &[&str]) -> bool {
@@ -3316,7 +3587,7 @@ fn launch_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
 fn git_listed(raw: &[&str], words: &[String]) -> bool {
     if words
         .iter()
-        .any(|word| word.contains("ext::") || word.contains("fd::"))
+        .any(|word| word.contains("ext::") || word.contains("fd::") || names_descriptor(word))
     {
         return false;
     }
@@ -3447,6 +3718,7 @@ fn rtk_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
             [opt] => opt.starts_with("--filter=") || (opt.starts_with("-f") && opt.len() > 2),
             _ => false,
         },
+        _ if rest.iter().any(|word| names_descriptor(word)) => false,
         "read" => read_args_listed(&rest),
         reader if RTK_READERS.contains(&reader) => true,
         // `rtk lint [npx|pnpm|exec...] X ...` runs the program X; a path or an
@@ -3639,10 +3911,21 @@ fn evaluates_code(raw: &str) -> bool {
 ///   take a unique prefix: `--exe`);
 /// - `-x`: a word of short options holding `x` (`-x`, `-xcmd`, `-ix`, `-Ocmd`);
 /// - `-name` (`find -exec`, go's `-toolexec`): with one or two dashes, and `=value`;
-/// - `-` alone: the program reads its script from stdin (`docker build -`).
+/// - `-` alone: the program reads its script from stdin (`docker build -`);
+/// - `^text`: a word opening with `text`, any case (MSBuild's `/p:`, `-P:`);
+/// - `=text`: exactly `text` (`--`); `~text`: a word holding `text` (`://`).
 fn is_option(word: &str, opt: &str) -> bool {
     if opt == "-" {
         return word == "-";
+    }
+    if let Some(prefix) = opt.strip_prefix('^') {
+        return word.to_lowercase().starts_with(prefix);
+    }
+    if let Some(exact) = opt.strip_prefix('=') {
+        return word == exact;
+    }
+    if let Some(part) = opt.strip_prefix('~') {
+        return word.contains(part);
     }
     if let Some(long) = opt.strip_prefix("--") {
         return word.strip_prefix("--").is_some_and(|rest| {
@@ -4033,6 +4316,11 @@ impl ReadMatcher {
         }
         if is_uncertain_word(word) {
             return WordVerdict::Expanding;
+        }
+        // `/proc/self/cwd/x`, `/proc/1/root/...`, `/dev/fd/3/x`: another name for a
+        // directory the gate cannot see.
+        if word.starts_with("/proc/") || word.starts_with("/dev/fd/") {
+            return WordVerdict::Uncertain;
         }
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut unknown = false;
@@ -4963,8 +5251,9 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_read_paths_defer_at_top_level_and_ask_inside_a_wrapper() {
+    fn uncertain_read_paths_ask_at_top_level_and_inside_a_wrapper() {
         in_sandbox(|dir, r| {
+            // Round 6: a top-level defer is no longer used for an unresolvable path.
             for cmd in [
                 "cat *.txt",
                 "cat $F",
@@ -4972,15 +5261,17 @@ mod tests {
                 "cat {a,b}",
                 "cat sec?et.txt",
                 "cat [s]ecret.txt",
+                "cat < sec?et.txt",
+                "cat < $PWD/secret.txt",
             ] {
-                assert_eq!(gate_in(dir, cmd, r), Gate::Defer, "{cmd}");
+                assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
             }
             for cmd in ["rtk read *.txt", "rtk run cat *.txt", "bash -c 'cat *.txt'"] {
                 assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
             }
             // An unknown cwd makes a relative path uncertain.
-            assert_eq!(gate_in(dir, "cd $X && cat ok.txt", r), Gate::Defer);
-            assert_eq!(gate_in(dir, "cd - && cat ok.txt", r), Gate::Defer);
+            assert_eq!(gate_in(dir, "cd $X && cat ok.txt", r), Gate::Ask);
+            assert_eq!(gate_in(dir, "cd - && cat ok.txt", r), Gate::Ask);
         });
     }
 
@@ -5325,7 +5616,10 @@ mod tests {
                 hook("cat ok.txt"),
                 HookDecision::AskRewrite("rtk read ok.txt".into(), AskOwner::Host)
             );
-            assert_eq!(hook("cat *.txt"), HookDecision::Defer);
+            assert_eq!(
+                hook("cat *.txt"),
+                HookDecision::AskRewrite("rtk read *.txt".into(), AskOwner::Hook)
+            );
         });
     }
 
@@ -5619,7 +5913,8 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
-        assert_eq!(gate("HOME=/ cat ~/.ssh/id_rsa", &r), Gate::Defer);
+        // Round 6: an unresolvable path asks at top level too.
+        assert_eq!(gate("HOME=/ cat ~/.ssh/id_rsa", &r), Gate::Ask);
         // A longer name is another variable.
         assert_eq!(gate("HOMEDIR=/ rtk read ~/.ssh/id_rsa", &r), Gate::Deny);
     }
@@ -5637,7 +5932,7 @@ mod tests {
             // Set in the hook's own environment.
             crate::core::user_env::with_path("CDPATH", Some("/x"), || {
                 assert_eq!(gate_in(dir, "cd sub && rtk read ok.txt", r), Gate::Ask);
-                assert_eq!(gate_in(dir, "cd sub && cat ok.txt", r), Gate::Defer);
+                assert_eq!(gate_in(dir, "cd sub && cat ok.txt", r), Gate::Ask);
                 // `./` and `../` are never searched through CDPATH.
                 assert_eq!(gate_in(dir, "cd ./sub && cat ../secret.txt", r), Gate::Deny);
                 // The directory the command started in stays a possible one.
@@ -6696,7 +6991,6 @@ mod tests {
             "rtk git -C sub --no-pager diff HEAD~1 -- src",
             "rtk git log -- $FILE",
             "rtk git add src/*.rs",
-            "rtk git push -u origin x",
             "rtk git clean -fdx",
             "rtk git cherry-pick -x abc",
             "rtk git submodule update --init",
@@ -6811,6 +7105,29 @@ mod tests {
             "for PATH in /tmp; do rtk ls; done",
             "f() { ls; }; rtk ls",
             "coproc rtk bypass ed",
+            "rtk git push -u origin x",
+            "rtk bypass prettier --plugin='data:x,execSync(\"git push\")' x.js",
+            "rtk ls 'git   push'",
+            "rtk rspec /dev/fd/3 3<<<'x'",
+            "rtk rspec -r ./x.rb",
+            "rtk docker compose -f/dev/stdin up",
+            "rtk kubectl --kubeconfig=/dev/fd/3 get pods",
+            "rtk kubectl --kubeconfig=/proc/123/fd/0 get pods",
+            "rtk cat /dev//fd/4",
+            "rtk cat {fd}< ok.txt",
+            "rtk dotnet build -p:PreBuildEvent=sh",
+            "rtk dotnet build /P:RunCommand=sh",
+            "rtk dotnet test -- x",
+            "rtk dotnet build @x.rsp",
+            "rtk go build -ldflags=-extld=sh .",
+            "rtk go build -overlay=x .",
+            "rtk git ls-remote --exec=x .",
+            "rtk pip install git+https://x/y",
+            "rtk pip install -i https://x y",
+            "rtk uv pip install 'y @ https://x'",
+            "rtk npx -p github:x/y cat",
+            "rtk uv run --with x pytest",
+            "rtk prettier --plugin=./p.mjs .",
             "rtk git grep foo\r -O'sh -c x' .",
             "R=rtk; $R bypass ed",
             "rtk${IFS}bypass ed",

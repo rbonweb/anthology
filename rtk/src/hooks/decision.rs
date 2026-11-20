@@ -358,6 +358,11 @@ pub(crate) fn decide_for_claude_hook_at(
     if gate != Gate::Deny && unlisted(cmd, &permissions.gate) {
         gate = Gate::Ask;
     }
+    // A defer hands the original to the host, where `Bash(rtk *)` allows anything
+    // that starts with rtk: a text that may run rtk asks instead.
+    if gate == Gate::Defer && super::anthology_gate::mentions_rtk(cmd) {
+        gate = Gate::Ask;
+    }
     match gate {
         Gate::Deny => return HookDecision::Deny,
         Gate::Defer => return HookDecision::Defer,
