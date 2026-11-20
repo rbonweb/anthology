@@ -663,6 +663,20 @@ class ProjectApprovalTest(CompatBase):
         _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
         self.assertEqual(self.loaded(), {"browseros": False})
 
+    def test_the_users_own_files_are_read_like_claude_code_does(self):
+        # doctor's reader must be the lenient one: UTF-16 BOM and bad bytes in the user's own files
+        self.project()
+        flag = '{"enableAllProjectMcpServers": true}'
+        path = self.config / "settings.json"
+        path.write_bytes(b"\xff\xfe" + flag.encode("utf-16-le"))
+        self.assertEqual(self.loaded(), {"browseros": True})
+        path.write_bytes(b'{"x": "a\xff", "enableAllProjectMcpServers": true}')
+        self.assertEqual(self.loaded(), {"browseros": True})
+        path.unlink()
+        (self.config / ".claude.json").write_bytes(b"\xff\xfe" + json.dumps(
+            {"mcpServers": {"browseros-neo": {}}}).encode("utf-16-le"))
+        self.assertEqual(self.loaded(), {"browseros-neo": True, "browseros": False})
+
     def test_user_settings_approve_without_trust(self):
         self.project()
         _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})

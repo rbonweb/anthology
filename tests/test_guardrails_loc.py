@@ -513,11 +513,69 @@ class DecodeLikeClaudeCodeTest(LiveRootCase):
         self.settings(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
         self.assertEqual(self.inspect(), (self.live, "disabled"))
 
+    def test_a_utf8_bom_is_stripped_in_every_file(self):
+        # only the BOM strip separates these from "invalid": a user file would be ignored, a repo one refused
+        bom = b"\xef\xbb\xbf"
+        (self.config).mkdir(parents=True, exist_ok=True)
+        (self.config / "settings.json").write_bytes(bom + ("{%s}" % self.FLAG).encode("utf-8"))
+        self.assertTrue(self.disabled())
+        (self.config / "settings.json").unlink()
+        self.settings(bom + b'{"other": 1}')
+        self.assertFalse(self.disabled())
+
     def test_the_users_own_files_are_decoded_the_same_way(self):
         self.diverging()
         write(self.config / "settings.json", "")
         (self.config / "settings.json").write_bytes(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
         self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+
+class EnabledValueTest(LiveRootCase):
+    """I-2: Claude Code turns a plugin on only for the literal `true` (its schema is boolean or a list
+    of versions, and a list "leaves it off"). A present entry of any other value is off, in any scope."""
+
+    KEY = "anthology-guardrails@anthology"
+
+    def put(self, where, value):
+        path = {"user": self.config / "settings.json", "repo": self.tmp / ".claude" / "settings.json",
+                "local": self.tmp / ".claude" / "settings.local.json"}[where]
+        write(path, json.dumps({"enabledPlugins": {self.KEY: value}}))
+
+    def disabled(self):
+        return guardrails_loc._disabled({"CLAUDE_CONFIG_DIR": str(self.config)}, str(self.tmp))
+
+    def test_a_non_true_entry_in_the_repo_settings_beats_a_user_true(self):
+        self.diverging()
+        self.put("user", True)
+        for value in ([], ["0.1.0"], "yes", "true", None, 0, 1, {}, {"a": 1}, False):
+            for where in ("repo", "local"):
+                self.put(where, value)
+                self.assertTrue(self.disabled(), (where, value))
+                self.assertEqual(self.inspect(), (self.live, "disabled"), (where, value))
+                (self.tmp / ".claude" / ("settings.json" if where == "repo" else "settings.local.json")).unlink()
+
+    def test_a_non_true_entry_in_the_user_settings_disables_too(self):
+        self.diverging()
+        for value in ([], ["0.1.0"], "yes", None, False):
+            self.put("user", value)
+            self.assertTrue(self.disabled(), value)
+
+    def test_true_and_an_absent_entry_are_active(self):
+        self.diverging()
+        self.assertFalse(self.disabled())
+        for where in ("user", "repo", "local"):
+            self.put(where, True)
+        self.assertFalse(self.disabled())
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.tmp / ".claude" / "settings.json", json.dumps({"enabledPlugins": {"other@x": []}}))
+        write(self.tmp / ".claude" / "settings.local.json", json.dumps({"enabledPlugins": {}}))
+        self.assertFalse(self.disabled())
+
+    def test_another_marketplace_entry_with_a_list_counts_the_same(self):
+        self.diverging()
+        write(self.tmp / ".claude" / "settings.json",
+              json.dumps({"enabledPlugins": {"anthology-guardrails@other": ["1"]}}))
+        self.assertTrue(self.disabled())
 
 
 class UsersOwnFilesAreUncappedTest(LiveRootCase):

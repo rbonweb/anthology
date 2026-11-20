@@ -18,8 +18,10 @@ REPO_READ_LIMIT = 2 * 1024 * 1024  # files a cloned repo controls: Claude Code's
 
 
 def decode_text(raw):
-    """Text of a JSON file the way Claude Code reads settings: UTF-16 (little or big endian) when it
-    starts with that BOM, else UTF-8 with invalid bytes replaced; one leading BOM dropped."""
+    """Text of a JSON file the way Claude Code reads settings: UTF-16LE when it starts with that BOM,
+    else UTF-8 with invalid bytes replaced; one leading BOM dropped. UTF-16BE with a BOM is decoded
+    too, which Claude Code does not do (it reads that as UTF-8 and ignores the file): a harmless
+    superset."""
     if raw.startswith(b"\xff\xfe"):
         text = raw[2:].decode("utf-16-le", errors="replace")
     elif raw.startswith(b"\xfe\xff"):

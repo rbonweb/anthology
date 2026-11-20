@@ -23,13 +23,17 @@
     stays inside `<plugin root>/..` (a symlink escaping it is refused); else `installPath`.
 - Only when the registry has no `anthology@*` entry either (a `--plugin-dir` dev session) is the
   sibling folder `<plugin root>/../anthology-guardrails` used (same containment rule).
-- An install of anthology without an applicable guardrails entry is the problem `not_installed`;
-  `enabledPlugins["anthology-guardrails@..."] == false` in the user, project or local settings is
-  the problem `disabled`. So is a settings file that exists but cannot be read (not a regular file,
-  unreadable) and, for the two files in the working folder, one over Claude Code's own 2 MiB limit
-  or that does not parse after decoding it as Claude Code does (UTF-16 BOM, else UTF-8 with bad
-  bytes replaced): a file Claude Code may honour must never read as "no file". The user's own files are read at any size.
-  Nothing found at all is `not_found`.
+- An install of anthology without an applicable guardrails entry is the problem `not_installed`.
+- The problem `disabled` is any of:
+  - an `enabledPlugins["anthology-guardrails@..."]` entry in the user, project or local settings
+    whose value is anything but `true` (`false`, a list of versions, a string, null: Claude Code
+    turns a plugin on only for `true`); an absent entry is not;
+  - a settings file that exists but cannot be read (not a regular file, unreadable);
+  - for the two files in the working folder, one over Claude Code's own 2 MiB limit or one that
+    does not parse after decoding it as Claude Code does (UTF-16 BOM, else UTF-8 with bad bytes
+    replaced): a file Claude Code may honour must never read as "no file".
+  The user's own files are read at any size.
+- Nothing found at all is `not_found`.
 
 Python stdlib only (3.9+).
 """
@@ -58,8 +62,10 @@ def _has_guard(path):
 
 
 def _decode(raw):
-    """Text of a JSON file the way Claude Code reads settings: UTF-16 (little or big endian) when it
-    starts with that BOM, else UTF-8 with invalid bytes replaced; one leading BOM dropped."""
+    """Text of a JSON file the way Claude Code reads settings: UTF-16LE when it starts with that BOM,
+    else UTF-8 with invalid bytes replaced; one leading BOM dropped. UTF-16BE with a BOM is decoded
+    too, which Claude Code does not do (it reads that as UTF-8 and ignores the file): a harmless
+    superset, since a BE file with the flag reads as disabled and one without it as active."""
     if raw.startswith(b"\xff\xfe"):
         text = raw[2:].decode("utf-16-le", errors="replace")
     elif raw.startswith(b"\xfe\xff"):
@@ -128,7 +134,7 @@ def _disabled(env, cwd):
         enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
         if isinstance(enabled, dict):
             for name, value in enabled.items():
-                if str(name).startswith("anthology-guardrails@") and value is False:
+                if str(name).startswith("anthology-guardrails@") and value is not True:
                     return True
     return False
 
