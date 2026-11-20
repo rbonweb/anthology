@@ -628,3 +628,28 @@ Agent memory saves are silent (no prompt) once setup has run. Cost if wrong: one
 **Consequences**
 
 The defence is model guidance plus review, not a barrier; a note can still mislead an agent within the user's request. Cost if wrong: one line per agent body (about 100 bytes; scout is at 5929 of 5944, so the next body growth there needs a budget bump with a reason).
+
+## ADR-020: legacy notes stay personal; user notes leave the repo (supersedes parts of ADR-009)
+
+- **Date:** 2026-11-20
+- **Task:** final-review finding B3 (stream P1), fix-wave re-review I-1
+- **Status:** Accepted
+
+**Context**
+
+- ADR-009 decided that the path-keyed migration copies notes from `<config>/projects/<encoded path>/memory/` "into the repo", and its `auto-memory-dir` follow-up check asserts that the amber note appears under `<repo>/.claude/memory/` in session 2.
+- The final review (B3) found that this put every old note, including ones with home paths, hosts and secrets, into a repo that may be public, on the first session after setup.
+- Stream P1 changed the code: `memory_sync` now calls `migrate(old, None, personal, …)`, and the repo is written only through an explicit per-note promotion. The ADR and the smoke were not updated, so the smoke failed on every eval run (re-review I-1).
+
+**Decision**
+
+- ADR-009's decision "copies … into the repo" and its follow-up assertion about session 2 no longer hold. Everything else in ADR-009 stands, including the every-session migration and the session 3 check that a new note lands directly in `<repo>/.claude/memory/`.
+- Notes from the old path-keyed folder are copied into `~/.claude/anthology/personal-memory/` only (never overwritten, a ledger prevents re-copying). They reach the repo only through `/anthology:setup`, note by note after a diff, and only if the note is not `type: user` and the privacy scan finds nothing.
+- `type: user` notes found in `.claude/memory/` or `.claude/agent-memory/` are moved to personal memory at every session start.
+- Every write into repo memory that anthology makes (promotion, import, `anthology-mem save`) runs the privacy scan; a scanner failure is a clean refusal with nothing written.
+- A symlinked or non-folder personal-memory folder is never written, swept into or read through. The session says so in one line (fail closed, visibly), instead of silently leaving `user` notes in the repo.
+- The `auto-memory-dir` smoke now asserts: session 2 puts the amber note in personal memory (`<config>/anthology/personal-memory/`) and not under `.claude/memory/`; session 3 puts `cyan-circle` in the repo.
+
+**Consequences**
+
+A first session after setup leaves old notes out of the repo and the main session's repo index until the user promotes them, which is the intended privacy default. Cost if wrong: a user who wanted automatic repo migration runs setup once and picks notes. Evidence: stream P1 tests, `tests/test_smoke.py`.

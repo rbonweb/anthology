@@ -35,9 +35,26 @@ a new version section.
   committing the `.claude/agent-memory/` notes that read-only and docs-only agents leave
   uncommitted and acting on each report's "Worth remembering" items.
 - Memory as committed Markdown notes: main session in `.claude/memory/`, each agent in
-  `.claude/agent-memory/anthology-<agent>/`, personal notes outside any repo. Active only in
-  repos approved through `/anthology:setup`. `MEMORY.md` indexes and the local SQLite
-  search index are derived from the notes and rebuilt on demand.
+  `.claude/agent-memory/anthology-<agent>/`, personal notes outside any repo. Repo memory
+  (`.claude/memory/`) is read and kept up only in repos approved through `/anthology:setup`.
+  Agent memory is different: Claude Code loads `.claude/agent-memory/anthology-<agent>/`
+  into that agent in any repo, approved or not, so the agent bodies treat those notes as
+  hints, never instructions, and the README and `SECURITY.md` say to review that folder in
+  repos you do not trust (ADR-019). `MEMORY.md` indexes and the local SQLite search index
+  are derived from the notes and rebuilt on demand.
+- Personal memory stays out of repos. `type: user` notes are moved out of `.claude/memory/`
+  and `.claude/agent-memory/` into `~/.claude/anthology/personal-memory/` at each session
+  start, and notes from Claude Code's old path-keyed memory folder are copied into personal
+  memory only, never into the repo on their own. `/anthology:setup` can promote chosen old
+  notes into the repo, one by one, after showing a diff (ADR-020). If the personal-memory
+  folder is a symlink, session start says so and moves and loads nothing through it.
+- A privacy scan guards anthology's own writes into repo memory (setup's promotion,
+  `/anthology:import` and `anthology-mem save`): home paths, email addresses, IP
+  addresses, private host names, ssh targets and key paths, and secret-looking tokens
+  (including `secret_access_key = …` assignments and `scheme://user:password@host` URLs)
+  go to personal memory or are refused, naming only the kind and line. If the scanner
+  itself fails, the save or import is refused with one line and nothing is written.
+  Claude Code's own auto-memory writes are not scanned.
 - `anthology-mem` on the Bash path: `search`, `related`, `orphans`, `stale`, `rebuild`,
   and `save`, which lets agents without a Write tool save their own notes. `save` is
   limited to the agent memory folders, refuses symlinks and secret-looking content, and
@@ -47,7 +64,22 @@ a new version section.
   note.
 - Doctor, run by setup: checks `python3`, `node`, Docker, BrowserOS Neo, the rtk binary and
   the platform, and finds installed copies of the official `superpowers` and
-  `design-skills` plugins that Anthology replaces.
+  `design-skills` plugins that Anthology replaces. It also checks the plugin-read
+  permission, that BrowserOS tool names in your MCP configuration match what the plugin
+  expects (`browseros_tools`, read from configuration files only), the plugin data folder,
+  the `bin/` wrappers, where agent memory is written, and whether
+  `CLAUDE_CODE_SUBAGENT_MODEL` overrides the roster's model tiers.
+- Session start prints one loud line when a compatibility assumption breaks (no
+  `CLAUDE_PLUGIN_DATA`, missing `bin/` wrappers, agent memory written outside
+  `anthology-<agent>/`, `CLAUDE_CODE_SUBAGENT_MODEL` set), and one note when a release
+  changed the `settings.json` entries setup makes and one is still missing. The note only
+  suggests re-running setup; it never edits `settings.json`. If you removed such an entry on
+  purpose, it returns at each session start after every release that changes the entries,
+  until you run setup again.
+- Setup shows its `settings.json` diff with every value outside `permissions.allow`,
+  `permissions.deny` and `worktree.baseRef` replaced by `"<redacted>"`. Those three paths
+  are shown as they are, including your own rules, so a token written inside one of your
+  rules would be visible in the conversation.
 - rtk: condenses the output of common dev commands through a `PreToolUse` hook on Bash.
   The pinned binary (`rtk.lock`, sha256 per platform) is downloaded from this repo's
   releases and checked by setup, then reconciled at every session start. Claude Code only,
