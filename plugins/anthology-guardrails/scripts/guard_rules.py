@@ -465,9 +465,9 @@ def _lenient_segments(text):
         seg = _Seg(_Group())
         seg.tokens = tokens
         out.append(seg)
-        for start in _script_starts(tokens):              # `bash -c <rest of the line>`
+        for start, first in _script_starts(tokens):       # `bash -c <rest of the line>`
             extra = _Seg(_Group())
-            extra.tokens = tokens[start:]
+            extra.tokens = [first] + tokens[start + 1:]
             out.append(extra)
     return out
 
@@ -636,19 +636,87 @@ def _parse_shell_args(args, i=0):
     return ("stdin" if stdin or i >= n else "file"), i
 
 
-def _shell_args(args):
-    """Classify a shell's arguments: ('c', script) | ('file', None) | ('stdin', None)."""
-    mode, start = _parse_shell_args(args)
-    return mode, (args[start] if mode == "c" else None)
+# fish long options that take a value (`--opt=v` or `--opt v`); getopt accepts any unique prefix.
+_FISH_LONG_VALUE = ("--command", "--init-command", "--debug", "--debug-output", "--features",
+                    "--profile", "--profile-startup")
+_FISH_SHORT_VALUE = "cCdDofp"             # -c -C run code; -d -D -o -f -p take a value
+_FISH_SCRIPT_LONG = ("--command", "--init-command")
+
+
+def _fish_long_option(token):
+    """(option, attached value or None) for a `--...` token. A prefix of a value option
+    (`--comm`, `--ini`) names it, as getopt would; anything else is returned as written."""
+    name, eq, value = token.partition("=")
+    fits = [opt for opt in _FISH_LONG_VALUE if len(name) > 2 and opt.startswith(name)]
+    return (fits[0] if fits else name), (value if eq else None)
+
+
+def _parse_fish_args(args, i=0):
+    """Parse a fish argument list (fish(1)). `-c`/`--command` and `-C`/`--init-command` each
+    take a command that fish runs (a short one may be attached: `-cX`, `-icX`); `-d -D -o -f
+    -p` and the long options above take a value too. Options end at the first non-option word,
+    `--` or `-`; later words are a script file's or `$argv`.
+
+    Parsing starts at args[i]. Returns (mode, index of the first word after the options,
+    scripts): `scripts` is a list of (index of the word holding it, the command text) for every
+    command the options give fish. mode is 'c' when `-c` was given, else 'file' when a word is
+    left, else 'stdin'."""
+    n = len(args)
+    command = False
+    scripts = []
+    while i < n:
+        token = args[i]
+        if token in ("--", "-"):
+            i += 1
+            break
+        if token.startswith("--"):
+            name, value = _fish_long_option(token)
+            takes_value = name in _FISH_LONG_VALUE and value is None
+            if name in _FISH_SCRIPT_LONG:
+                command = command or name == "--command"
+                if value is not None:
+                    scripts.append((i, value))
+                elif i + 1 < n:
+                    scripts.append((i + 1, args[i + 1]))
+            i += 2 if takes_value else 1
+        elif len(token) > 1 and token[0] == "-":
+            i += 1
+            for k, letter in enumerate(token[1:], 1):
+                if letter not in _FISH_SHORT_VALUE:
+                    continue
+                attached = token[k + 1:]
+                if letter in "cC":
+                    command = command or letter == "c"
+                    if attached:
+                        scripts.append((i - 1, attached))
+                    elif i < n:
+                        scripts.append((i, args[i]))
+                i += 0 if attached else 1
+                break
+        else:
+            break
+    i = min(i, n)
+    return ("c" if command else "file" if i < n else "stdin"), i, scripts
+
+
+def _shell_parse(prog, args, i=0):
+    """(mode, start, scripts) for shell `prog`'s arguments from args[i]: the mode and option
+    end of `_parse_shell_args` (or `_parse_fish_args`), and the (index, text) of every command
+    its options give it."""
+    if prog == "fish":
+        return _parse_fish_args(args, i)
+    mode, start = _parse_shell_args(args, i)
+    return mode, start, ([(start, args[start])] if mode == "c" else [])
 
 
 def _embedded_shells(words):
-    """(mode, start) from `_parse_shell_args` for each shell program among `words` (`docker
-    run img bash -euo pipefail -c X`). A shell's own options are skipped, not rescanned."""
+    """(mode, start) for each shell program among `words` (`docker run img bash -euo pipefail
+    -c X`). A shell's own options are skipped, not rescanned."""
     k, n = 0, len(words)
     while k < n:
-        if _prog_name(words[k]) in _SHELLS:
-            mode, start = _parse_shell_args(words, k + 1)
+        prog = _prog_name(words[k])
+        if prog in _SHELLS:
+            mode, start, _scripts = _shell_parse(prog, words, k + 1)
             yield mode, start
             k = max(start, k + 1)
         else:
@@ -656,19 +724,21 @@ def _embedded_shells(words):
 
 
 def _script_starts(words):
-    """Indexes in `words` where an embedded `-c` script starts: after a shell program's
-    options (`sh -euo pipefail -c X`), or after a `-c` flag of another program (`npx -c X`)."""
+    """(index of the word an embedded script starts in, the script's first word) for each one in
+    `words`: after a shell program's options (`sh -euo pipefail -c X`, `fish --command=X`), or
+    after a `-c` flag of another program (`npx -c X`). The first word differs from
+    words[index] only for a value attached to its option (`--command=X`)."""
     starts, k, n = [], 0, len(words)
     while k < n - 1:
         word = words[k]
-        if _prog_name(word) in _SHELLS:
-            mode, start = _parse_shell_args(words, k + 1)
-            if mode == "c":
-                starts.append(start)
+        prog = _prog_name(word)
+        if prog in _SHELLS:
+            _mode, start, scripts = _shell_parse(prog, words, k + 1)
+            starts.extend(scripts)
             k = max(start, k + 1)
             continue
         if _SHELL_C_FLAG.match(word):
-            starts.append(k + 1)
+            starts.append((k + 1, words[k + 1]))
         k += 1
     return starts
 
@@ -781,9 +851,7 @@ def _strip_prefixes(tokens):
     if toks:
         name = _prog_name(toks[0])
         if name in _SHELLS:
-            kind, script = _shell_args(toks[1:])
-            if kind == "c":
-                scripts.append(script)
+            scripts.extend(script for _index, script in _shell_parse(name, toks[1:])[2])
         elif name == "eval":
             scripts.append(" ".join(toks[1:]))
     return toks, scripts
@@ -825,7 +893,7 @@ def _first_arg(args):
 def _reads_stdin_as_shell(entry):
     """True for a shell fed from stdin (`bash`, `sh -s`) or a docker command that runs one."""
     if entry.prog in _SHELLS:
-        return _parse_shell_args(entry.args)[0] == "stdin"
+        return _shell_parse(entry.prog, entry.args)[0] == "stdin"
     if entry.prog in _DOCKER:
         return any(mode == "stdin" for mode, _start in _embedded_shells(entry.args))
     return False
@@ -843,8 +911,8 @@ def _add_command(tokens, redirs, group, ctx, exempt, depth):
     for script in scripts:
         _collect(script, ctx, exempt, depth + 1)
     if entry.prog in _DOCKER:                             # `docker run img sh -euc "..."`
-        for start in _script_starts(entry.args):
-            _collect(entry.args[start], ctx, True, depth + 1)
+        for _start, script in _script_starts(entry.args):
+            _collect(script, ctx, True, depth + 1)
     elif entry.prog == "find":
         _collect_find_exec(entry, ctx, depth)
     elif entry.prog in ("cd", "pushd"):
@@ -1065,6 +1133,7 @@ def _words_hit(words, predicate, home, cwd):
     return False
 
 
+_ESCAPED_SPACE = re.compile(r"\\+ ")
 _CODE_LITERAL = re.compile("'([^']*)'|\"([^\"]*)\"|`([^`]*)`")
 _CODE_PUNCTUATION = "()[]{}<>,;'\"`"
 # Pieces between quote characters and newlines: a stray `'` in a comment (`# Chrome's ...`)
@@ -1078,9 +1147,10 @@ _CODE_ROOT_HINT = re.compile(r"librar|config|chrom|google|[*?\[]", re.IGNORECASE
 def _code_candidates(text):
     """Path candidates in a piece of code: the contents of every '...', "..." and `...`
     literal (no nesting; triple quotes fall out naturally) and every whitespace-separated
-    word with surrounding punctuation stripped. An escaped space (backslash, space) is a
-    space. Names assembled piecewise (`Path.home() / "Library" / ...`) are not seen (R1)."""
-    text = text.replace("\\ ", " ")
+    word with surrounding punctuation stripped. An escaped space is a space however many
+    backslashes escape it: one in the shell, two inside a Python/JS/AppleScript string.
+    Names assembled piecewise (`Path.home() / "Library" / ...`) are not seen (R1)."""
+    text = _ESCAPED_SPACE.sub(" ", text)
     found = {literal.strip() for match in _CODE_LITERAL.finditer(text)
              for literal in match.groups() if literal}
     found.update(piece.strip() for piece in _CODE_QUOTE_SPLIT.split(text))
@@ -1392,12 +1462,13 @@ def _path_strings(value, skip, in_path_key=False, depth=0):
             yield from _path_strings(item, skip, in_path_key, depth + 1)
 
 
-_CODE_KEYS = frozenset(("script", "code", "expression", "func"))
+_CODE_KEYS = frozenset(("script", "code", "expression", "func", "fn"))
 
 
 def _code_strings(value, in_code_key=False, depth=0):
-    """Strings under keys named `script`, `code`, `expression` or `func` (at any depth): code
-    a tool runs, such as BrowserOS Neo `run {code}` or `evaluate_in_page {code|func}`."""
+    """Strings under keys named `script`, `code`, `expression`, `func` or `fn` (at any depth):
+    code a tool runs, such as BrowserOS Neo `run {code}`, `evaluate_in_page {code|func}` or
+    `save_skill {flow[].fn, patch[].fn}`."""
     if depth > _MAX_WALK_DEPTH:
         return
     if isinstance(value, str):

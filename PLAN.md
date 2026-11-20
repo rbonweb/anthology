@@ -262,7 +262,7 @@ There are **two layers**:
 | G5 | MCP tools whose names contain `playwright`, `puppeteer`, `chrome-devtools`, or `claude-in-chrome` | — |
 | G6 | Secret-looking content written into `.claude/memory/` or `.claude/agent-memory/`, via `Write`/`Edit` **or** Bash redirection/`tee`. Patterns: `AKIA…`, `ghp_`/`github_pat_`, `sk-…`, `xox[bp]-`, `-----BEGIN … PRIVATE KEY-----`, `password\s*[:=]`, `api[_-]?key\s*[:=]` | — |
 
-- Command parsing strips `rtk` / `rtk bypass` / `rtk proxy` prefixes the same way as `sudo`, so `rtk npx playwright install` is still G1.
+- Command parsing peels wrappers off the same way for every program: `sudo`, `env`, `nohup`, `timeout`, `xargs` and similar; package runners (`npx`, `uvx`, `uv run`, `yarn dlx`); and `rtk`, including the commands it runs (`rtk run -c`, `rtk run --shell X`, `rtk err|test|summary`, `rtk bypass`, `rtk proxy`). So `rtk npx playwright install` is still G1. Shell `-c` scripts (bash, sh, zsh, dash, ksh, and fish with its own `-c`/`--command`/`-C` options) are parsed again, and inline code run by an interpreter (`python3 -c`, `node -e`, `osascript -e`, heredocs and here-strings) is scanned for G3.
 - When the guard blocks a call, the block wins over an rtk rewrite/allow (checked as U6).
 - Rules match **commands**, not arbitrary text. `grep playwright package.json`, `grep -r agent-browser .` and `git commit -m "drop playwright"` are allowed. Every block message points to BrowserOS Neo (or Docker, for test suites).
 
@@ -828,8 +828,8 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - [ ] **Step 2: Implement `check`.**
   - **Normalize:** expand `~`/`$HOME`/`${HOME}`, convert `\` → `/`, and lowercase for path matching.
   - **Split** on `;`, `&&`, `||`, `|`, `&` and newlines, respecting quotes (`shlex`).
-  - **Strip prefixes:** `VAR=val`, `sudo`, `env`, `command`, `exec`, `time`, `nohup`, `rtk`, `rtk bypass`, `rtk proxy`.
-  - **Recurse** into `bash|sh|zsh -c`.
+  - **Strip prefixes:** `VAR=val`, the wrapper programs (`sudo`, `env`, `command`, `exec`, `time`, `nohup`, `timeout`, `xargs` and the like), package runners (`npx`, `uvx`, `uv run`), and `rtk` with the commands it runs (`rtk run`, `err`, `test`, `summary`, `bypass`, `proxy`).
+  - **Recurse** into `bash|sh|zsh|dash|ksh|fish -c` (fish has its own option parser), and scan inline interpreter code and the `script`/`code`/`expression`/`func`/`fn` fields of tool inputs for G3.
   - **Docker exemption:** only G1 and G2.
   - **G4:** scan every token.
   - **G3 roots:** the profile dirs and their parents.

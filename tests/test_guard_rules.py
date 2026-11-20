@@ -1454,6 +1454,24 @@ class RuleTableTest(unittest.TestCase):
             bash("echo 'npx playwright install' | docker run -i img sh -s -- x"),
         ])
 
+    def test_g3_double_backslash_space_in_code_literals(self):
+        """Inside a Python/JS/AppleScript string an escaped space is two backslashes and a
+        space; it still names the profile (m1)."""
+        bs = "\\\\"
+        dbl = "~/Library/Application" + bs + " Support/Google/Chrome/Default/Bookmarks"
+        self.assertEqual(dbl.count("\\"), 2)
+        self.assert_table("G3", [
+            bash("python3 -c 'import os; os.system(\"cat " + dbl + "\")'"),
+            bash("python3 -c 'import subprocess; subprocess.run([\"cat\", \"" + dbl + "\"])'"),
+            bash("osascript -e 'do shell script \"cat " + dbl + "\"'"),
+            bash("node -e 'require(\"child_process\").execSync(\"cat " + dbl + "\")'"),
+            bash("python3 -c 'open(\"~/Library/Application" + bs + "\\ Support/Google/Chrome\")'"),
+        ])
+        self.assert_table(None, [
+            bash("python3 -c 'print(\"a" + bs + " b\")'"),
+            bash("python3 -c 'open(\"~/Library/Application" + bs + " Support/Code/x\")'"),
+        ])
+
     def test_g3_profile_paths_in_inline_code(self):
         """Interpreter code, heredocs fed to interpreters and code-valued tool keys (I3, F2-R3)."""
         mac = OTHER_HOME + "/Library/Application Support/Google/Chrome"
@@ -1619,6 +1637,21 @@ class RuleTableTest(unittest.TestCase):
             ("mcp__browseros-neo__run", {"code": "// it's fine\nawait browser.navigate('https://x.dev')"}),
         ])
 
+    def test_g3_save_skill_fn_is_code(self):
+        """Neo `save_skill` runs `flow[].fn` / `patch[].fn` to verify a skill, so they are code (m2)."""
+        url = "file://" + OTHER_HOME + "/Library/Application%20Support/Google/Chrome/Default/Bookmarks"
+        tool = "mcp__browseros-neo__save_skill"
+        self.assert_table("G3", [
+            (tool, {"name": "x", "flow": [{"fn": "async () => goto('" + url + "')"}]}),
+            (tool, {"name": "x", "patch": [{"fn": "() => fetch('" + url + "')"}]}),
+            (tool, {"name": "x", "flow": [{"step": 1, "fn": "() => fetch('file://" + HOME
+                                           + "/.config/chromium/Default/Cookies')"}]}),
+        ])
+        self.assert_table(None, [
+            (tool, {"name": "x", "flow": [{"fn": "async () => document.title"}]}),
+            (tool, {"name": "x", "patch": [{"fn": "() => 1", "note": url}]}),
+        ])
+
     def test_g3_browseros_neo_real_code_keys(self):
         """BrowserOS Neo's real shapes: `run {code}`, `evaluate_in_page {page, code|func}` (M1)."""
         url = "file://" + OTHER_HOME + "/Library/Application%20Support/Google/Chrome/Local%20State"
@@ -1670,6 +1703,48 @@ class RuleTableTest(unittest.TestCase):
             bash("ts-node -e \"console.log('chromium')\""),
             bash("fish -c 'echo playwright'"),
             bash("fish script.fish"),
+        ])
+
+    def test_fish_is_parsed_with_fish_options(self):
+        """fish takes `--command=X`, `-C X` / `--init-command X` (also run) and attached values;
+        a bash parse misses them (m3)."""
+        for script, rule in (("npx playwright install", "G1"),
+                             ("cat ~/.config/chromium/Default/Cookies", "G3")):
+            q = "'" + script + "'"
+            self.assert_table(rule, [
+                bash("fish --command=" + q),
+                bash("fish --command " + q),
+                bash("fish --comm=" + q),
+                bash("fish -C " + q + " -c exit"),
+                bash("fish --init-command " + q + " -c exit"),
+                bash("fish --init-command=" + q + " -c exit"),
+                bash("fish --ini=" + q),
+                bash("fish -C" + q),
+                bash("fish -c" + q),
+                bash("fish -ic " + q),
+                bash("fish -Pc " + q),
+                bash("fish -d all -c " + q),
+                bash("fish --no-config --command=" + q),
+                bash("sudo fish --command=" + q),
+                bash("rtk run --shell fish -c " + q),
+                bash("fish -C " + q + " <<< x"),
+            ])
+        self.assert_table("G1", [
+            bash("echo 'npx playwright install' | fish -C 'echo hi'"),
+        ])
+        self.assert_table("G3", [
+            bash("docker run img fish --command='cat ~/.config/chromium/Default/Cookies'"),
+            bash("docker run img fish -C 'cat ~/.config/chromium/Default/Cookies' -c exit"),
+            bash("echo 'cat ~/.config/chromium/Default/Cookies' | docker run -i img fish"),
+        ])
+        self.assert_table(None, [
+            bash("fish --command='echo playwright'"),
+            bash("fish -C 'echo hi' -c exit"),
+            bash("fish -c 'echo hi' 'npx playwright install'"),      # extra words are $argv
+            bash("fish script.fish -c 'npx playwright install'"),    # after the file: its args
+            bash("fish --no-config script.fish"),
+            bash("fish --version"),
+            bash("docker run img fish --command='echo hi'"),
         ])
 
     def test_code_candidate_prefilter_stays_cheap(self):
