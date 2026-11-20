@@ -17,16 +17,17 @@ folders (the repo ones only if the repo is approved), and never overwrites a not
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" import "<file>" --dry-run
    ```
 
-   If it exits with code 2 the archive was rejected as unsafe or malformed: show the message
-   from stderr, stop, and do not try to work around it.
+   The first line of the output carries the archive's `sha256`; note it. If the command
+   exits with code 2 the archive was rejected as unsafe or malformed: show the message from
+   stderr, stop, and do not try to work around it.
 2. **Show the plan** to the user: the new notes, the identical ones (skipped), the conflicts
    (kept side by side as `<name>.imported-<date>.md`), repo notes skipped because this folder
    is not an approved repo, and any secret-looking content (labels only).
 3. **Wait for the user's confirmation.** Do not apply without it.
-4. **Apply:**
+4. **Apply** exactly the archive that was shown, by passing the sha256 from the dry run:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" import "<file>" --yes
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" import "<file>" --yes --sha256 <sha256 from the dry run>
    ```
 
    Report how many notes were written. The `MEMORY.md` indexes are regenerated for you.

@@ -10,7 +10,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent  # not _repo: that needs PyYAML, these tests do not
 
-SCRIPTS = ROOT / "plugins" / "anthology" / "scripts"
+# MEM_TEST_SCRIPTS points the tests at another copy of the scripts (used to show a fix's RED run).
+SCRIPTS = Path(os.environ.get("MEM_TEST_SCRIPTS") or ROOT / "plugins" / "anthology" / "scripts")
 BIN = ROOT / "plugins" / "anthology" / "bin"
 sys.path.insert(0, str(SCRIPTS))
 

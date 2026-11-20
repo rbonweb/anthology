@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -174,6 +175,47 @@ class ExportTest(PortableCase):
             names = tar.getnames()
         self.assertEqual(names, ["manifest.json", "personal/feedback-x.md", "personal/user-me.md"])
 
+    def test_default_folder_is_under_the_anthology_home_not_the_cwd(self):
+        self.seed_personal()
+        res = memory_portable.export(self.cwd, None, today="2026-04-05", env=self.env)
+        exports = self.anth / "exports"
+        self.assertEqual(Path(res["path"]).parent, exports)
+        self.assertEqual(stat.S_IMODE(exports.stat().st_mode), 0o700)
+        self.assertEqual(list(self.cwd.iterdir()), [])
+
+    def test_explicit_folder_inside_a_git_work_tree_is_refused(self):
+        self.seed_personal()
+        work = self.tmp / "work"
+        (work / ".git").mkdir(parents=True)  # a marker is enough: no git needed
+        for target in (work, work / "sub" / "deeper"):
+            before = tree(self.tmp)
+            with self.assertRaisesRegex(memory_portable.ExportRefused,
+                                        "export refuses to write personal notes inside a git repo"):
+                memory_portable.export(self.cwd, target, today="2026-04-05", env=self.env)
+            self.assertEqual(tree(self.tmp), before)
+
+    def test_cli_export_refuses_a_folder_in_a_git_repo_with_exit_2(self):
+        self.seed_personal()
+        work = self.tmp / "work"
+        (work / ".git").mkdir(parents=True)
+        r = subprocess.run([sys.executable, str(SCRIPTS / "memory_portable.py"), "export", "--out", str(work)],
+                           cwd=str(self.cwd), env=cli_env(self.env), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("export refuses to write personal notes inside a git repo", r.stderr)
+        self.assertEqual([p.name for p in work.iterdir()], [".git"])
+
+    @needs_git
+    def test_exporting_from_inside_a_repo_does_not_write_into_it(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        write(root / ".claude" / "memory" / "project-r.md", note_text("project-r"))
+        before = tree(root)
+        res = memory_portable.export(root, None, today="2026-04-05", env=self.env)
+        self.assertEqual(tree(root), before)
+        self.assertEqual(Path(res["path"]).parent, self.anth / "exports")
+        self.assertEqual(res["counts"]["repo"], 1)
+
     def test_creates_the_output_folder(self):
         self.seed_personal()
         res = memory_portable.export(self.cwd, self.tmp / "new" / "dir", today="2026-04-05", env=self.env)
@@ -327,6 +369,40 @@ class ImportTest(PortableCase):
             memory_portable.apply_import(plan)
         self.assertEqual(tree(anth_b), {})
 
+    def test_the_archive_is_opened_once_and_the_plan_hash_is_of_those_bytes(self):
+        path, _ = self.archive()
+        env_b, anth_b = self.second_machine()
+        real_open = os.open
+        opened = []
+
+        def spy(file, *a, **kw):
+            if str(file) == str(path):
+                opened.append(file)
+            return real_open(file, *a, **kw)
+
+        with mock.patch.object(os, "open", side_effect=spy):
+            plan = memory_portable.plan_import(path, self.cwd, env=env_b)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(plan["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        opened[:] = []
+        with mock.patch.object(os, "open", side_effect=spy):
+            memory_portable.apply_import(plan)
+        self.assertEqual(len(opened), 1)
+
+    def test_cli_yes_can_be_bound_to_the_dry_run_hash(self):
+        path, _ = self.archive()
+        env_b, anth_b = self.second_machine()
+        dry = self.run_cli(env_b, "import", str(path), "--dry-run")
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertIn(sha, dry.stdout)
+        before = tree(self.tmp)
+        r = self.run_cli(env_b, "import", str(path), "--yes", "--sha256", "0" * 64)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(tree(self.tmp), before)
+        r = self.run_cli(env_b, "import", str(path), "--yes", "--sha256", sha)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((anth_b / "personal-memory" / "user-me.md").exists())
+
     def test_forged_plan_entries_are_refused(self):
         path, _ = self.archive()
         env_b, anth_b = self.second_machine()
@@ -414,6 +490,9 @@ class MaliciousArchiveTest(PortableCase):
             "outside-bad-agent-name": lambda: make_archive(p, good + [("repo/agent-memory/.hid/x.md", b"x")]),
             "dot-component": lambda: make_archive(p, good + [("personal/./x.md", b"x")]),
             "empty-component": lambda: make_archive(p, good + [("personal//x.md", b"x")]),
+            "newline-name": lambda: make_archive(p, good + [("personal/foo\n.md", b"x")]),
+            "newline-agent": lambda: make_archive(p, good + [("repo/agent-memory/ag\n/bar.md", b"x")]),
+            "newline-trailing": lambda: make_archive(p, good + [("personal/foo.md\n", b"x")]),
             "backslash": lambda: make_archive(p, good + [("personal\\x.md", b"x")]),
             "backslash-traversal": lambda: make_archive(p, good + [("personal\\..\\x.md", b"x")]),
             "duplicate": lambda: make_archive(p, good + [self.GOOD]),
@@ -446,7 +525,7 @@ class MaliciousArchiveTest(PortableCase):
              "outside-settings outside-subdir outside-agent-dotdot outside-agent-no-folder "
              "outside-toplevel outside-claude outside-memory-md outside-memory-md-lower "
              "outside-repo-memory-md outside-not-md outside-hidden outside-bad-agent-name "
-             "dot-component empty-component backslash backslash-traversal duplicate non-utf8 "
+             "dot-component empty-component newline-name newline-agent newline-trailing backslash backslash-traversal duplicate non-utf8 "
              "no-manifest bad-manifest-format bad-manifest-json not-gzip empty-file truncated").split()
 
     def assert_rejected(self, path, label="", reason=None):
@@ -477,6 +556,28 @@ class MaliciousArchiveTest(PortableCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("rejected", r.stderr)
                 self.assertEqual(tree(self.tmp), before)
+
+    def test_a_hand_forged_plan_pointing_at_a_malicious_archive_is_rejected_by_apply(self):
+        """apply_import re-validates the archive itself; it never trusts a plan."""
+        env_b, anth_b = self.second_machine("forged")
+        good_entry = {"member": "personal/good.md", "scope": "personal", "agent": None, "name": "good.md"}
+        for kind in ("dotdot", "symlink", "hardlink", "fifo", "outside-settings", "duplicate",
+                     "non-utf8", "newline-name", "newline-agent", "backslash"):
+            with self.subTest(kind=kind):
+                path = self.bad(kind)
+                before = tree(self.tmp)
+                plan = {"archive": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "date": "2026-04-06", "home": str(anth_b), "repo_root": None,
+                        "new": [dict(good_entry)], "identical": [], "conflicts": []}
+                with self.assertRaises(memory_portable.ImportRejected):
+                    memory_portable.apply_import(plan)
+                self.assertEqual(tree(self.tmp), before)
+
+    def test_names_with_a_trailing_newline_are_not_note_names(self):
+        for bad in ("foo\n.md", "foo.md\n", "\nfoo.md"):
+            self.assertFalse(memory_portable._ok_note_name(bad), repr(bad))
+        self.assertIsNone(memory_portable.NAME.match("ag\n"))
+        self.assertTrue(memory_portable._ok_note_name("foo.md"))
 
     def test_still_rejected_when_tarfile_has_no_data_filter(self):
         """macOS system Python 3.9.6 has no tarfile.data_filter: our own checks are the protection."""
@@ -724,9 +825,10 @@ class CliTest(PortableCase):
         self.assertNotIn(samples["slack-token"], r.stdout + r.stderr)
         self.assertIn("personal notes", r.stdout)
         archive = next(self.out.glob("anthology-memory-*.tar.gz"))
-        r = self.run_cli("export", "--json")  # default out = cwd
+        r = self.run_cli("export", "--json")  # default out: <anthology home>/exports, never the cwd
         data = json.loads(r.stdout)
-        self.assertEqual(Path(data["path"]).parent, self.cwd)
+        self.assertEqual(Path(data["path"]).parent, self.anth / "exports")
+        self.assertEqual(list(self.cwd.iterdir()), [])
         self.assertEqual(data["counts"]["personal"], 3)
         env_b, anth_b = self.second_machine()
         r = self.run_cli("import", str(archive), "--json", env=env_b)
@@ -777,8 +879,11 @@ class SkillsTest(unittest.TestCase):
         _, export_body = self.frontmatter("export")
         self.assertIn("personal notes", export_body)
         self.assertIn("counts", export_body)
+        self.assertIn("exports", export_body)
+        self.assertIn("never", export_body.lower())
+        self.assertNotIn("add `--out <folder>`", export_body)
         _, import_body = self.frontmatter("import")
-        for needle in ("--dry-run", "--yes", ".imported-", "confirmation", "delete"):
+        for needle in ("--dry-run", "--yes", "--sha256", ".imported-", "confirmation", "delete"):
             self.assertIn(needle, import_body)
         self.assertLess(import_body.index("--dry-run"), import_body.index("--yes"))
 

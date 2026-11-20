@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -835,6 +836,247 @@ class TeamMergeTest(MemCase):
         text = (mem / "MEMORY.md").read_text()
         self.assertEqual(text.count("](project-a.md)"), 1)
         self.assertEqual(text.count("](project-b.md)"), 1)
+
+
+@needs_git
+class TrackedSettingsTest(MemCase):
+    """Review fix: a committed settings.local.json must never receive this clone's path."""
+
+    def test_tracked_settings_file_is_left_alone(self):
+        root = self.make_repo()
+        write(root / ".claude" / "settings.local.json", "{}\n")
+        self.commit_all(root)
+        memory_sync.approve(root)
+        exclude = root / ".git" / "info" / "exclude"
+        exclude_before = exclude.read_bytes() if exclude.exists() else b""
+        before = snapshot(root)
+        status = git(root, "status", "--porcelain").stdout
+        for _ in range(3):
+            ctx, msgs = memory_sync.run(root, env())
+            self.assertEqual(ctx, "")
+            self.assertTrue(any("tracked" in m and "git rm --cached" in m for m in msgs), msgs)
+        self.assertEqual((root / ".claude" / "settings.local.json").read_text(), "{}\n")
+        self.assertEqual(exclude.read_bytes() if exclude.exists() else b"", exclude_before)
+        self.assertEqual(git(root, "status", "--porcelain").stdout, status)
+        self.assertEqual(snapshot(root), before)
+        self.assertNotIn(str(root), (root / ".claude" / "settings.local.json").read_text())
+
+    def test_exclude_line_is_never_appended_twice(self):
+        root = self.make_repo()
+        write(root / ".gitignore", "!.claude/settings.local.json\n")  # beats the exclude file
+        exclude = root / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text("/.claude/settings.local.json\n")
+        for _ in range(3):
+            self.assertFalse(memory_sync.ensure_ignored(root))
+        self.assertEqual(exclude.read_text(), "/.claude/settings.local.json\n")
+        # and a fresh repo gets the line exactly once however often it runs
+        other = self.make_repo("other")
+        for _ in range(3):
+            memory_sync.ensure_ignored(other)
+        lines = (other / ".git" / "info" / "exclude").read_text().splitlines()
+        self.assertEqual(lines.count("/.claude/settings.local.json"), 1)
+
+
+@needs_git
+class SymlinkSafetyTest(MemCase):
+    """Review fixes: a repo's own symlinks must not redirect anthology's writes."""
+
+    def test_symlinked_gitattributes_is_not_appended_through(self):
+        root = self.make_repo()
+        victim = self.tmp / "victim.rc"
+        write(victim, "export X=1\n")
+        (root / ".gitattributes").symlink_to(victim)
+        with self.assertRaises(memory_sync.UnsafeTarget):
+            memory_sync.approve(root)
+        self.assertEqual(victim.read_text(), "export X=1\n")
+        self.assertTrue(memory_sync.is_approved(memory_sync.repo_key(root)))  # recorded first
+        with self.assertRaises(memory_sync.UnsafeTarget):
+            memory_sync.ensure_union_attrs(root)
+        self.assertEqual(victim.read_text(), "export X=1\n")
+
+    def test_fifos_never_hang_a_session(self):
+        """A FIFO named like a file anthology reads or writes must be refused, not opened."""
+        root = self.make_repo()
+        os.mkfifo(str(root / ".gitattributes"))
+        (root / ".claude").mkdir()
+        os.mkfifo(str(root / ".claude" / "settings.local.json"))
+        code = (
+            "import sys, memory_sync\n"
+            "root = sys.argv[1]\n"
+            "try:\n"
+            "    memory_sync.approve(root)\n"
+            "except memory_sync.UnsafeTarget:\n"
+            "    print('refused attrs')\n"
+            "ctx, msgs = memory_sync.run(root, None)\n"
+            "print('settings', any('settings.local.json' in m for m in msgs))\n"
+        )
+        from _mem import SCRIPTS
+        r = subprocess.run([sys.executable, "-c", code, str(root)], env=dict(os.environ, PYTHONPATH=str(SCRIPTS),
+                           PYTHONDONTWRITEBYTECODE="1"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("refused attrs", r.stdout)
+        self.assertIn("settings True", r.stdout)
+
+    def test_symlinked_settings_local_is_not_written_through(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        victim = self.tmp / "victim.json"
+        write(victim, "{}\n")
+        (root / ".claude").mkdir()
+        (root / ".claude" / "settings.local.json").symlink_to(victim)
+        ctx, msgs = memory_sync.run(root, env())
+        self.assertEqual(victim.read_text(), "{}\n")
+        self.assertTrue((root / ".claude" / "settings.local.json").is_symlink())
+
+    def test_symlinked_info_exclude_is_refused(self):
+        root = self.make_repo()
+        victim = self.tmp / "victim.txt"
+        write(victim, "keep\n")
+        exclude = root / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        if exclude.exists():
+            exclude.unlink()
+        exclude.symlink_to(victim)
+        with self.assertRaises(memory_sync.UnsafeTarget):
+            memory_sync.ensure_ignored(root)
+        self.assertEqual(victim.read_text(), "keep\n")
+
+    def _setup_outside(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        outside = self.tmp / "outside"
+        write(outside / "MEMORY.md", "precious\n")
+        write(outside / "project-x.md", note_text("project-x"))
+        (root / ".claude").mkdir()
+        old = self.config / "projects" / encode(root) / "memory"
+        write(old / "project-old.md", note_text("project-old"))
+        return root, outside
+
+    def test_symlinked_repo_memory_dir_skips_all_repo_memory_work(self):
+        root, outside = self._setup_outside()
+        (root / ".claude" / "memory").symlink_to(outside)
+        before = snapshot(outside)
+        ctx, msgs = memory_sync.run(root, env())
+        self.assertEqual(snapshot(outside), before)
+        self.assertEqual(ctx, "")
+        self.assertTrue(any("symlink" in m and ".claude/memory" in m for m in msgs), msgs)
+        self.assertFalse((root / ".claude" / "settings.local.json").exists())
+        self.assertFalse((self.anth / "migrated.json").exists())
+
+    def test_ensure_memory_dir_refuses_symlinked_or_non_folder_memory(self):
+        root, outside = self._setup_outside()
+        settings = root / ".claude" / "settings.local.json"
+        (root / ".claude" / "memory").symlink_to(outside)
+        self.assertEqual(memory_sync.ensure_memory_dir(root, settings), ({}, False))
+        self.assertFalse(settings.exists())
+        (root / ".claude" / "memory").unlink()
+        write(root / ".claude" / "memory", "a file, not a folder")
+        self.assertEqual(memory_sync.ensure_memory_dir(root, settings), ({}, False))
+        ctx, msgs = memory_sync.run(root, env())
+        self.assertTrue(any("not a folder" in m or "symlink" in m for m in msgs), msgs)
+        self.assertFalse(settings.exists())
+
+    def test_migrate_does_not_write_through_symlinked_destinations(self):
+        old = self.tmp / "old"
+        write(old / "project-a.md", note_text("project-a"))
+        write(old / "user-u.md", note_text("user-u", "user"))
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (self.tmp / "repo-mem").symlink_to(outside)
+        (self.tmp / "personal-link").symlink_to(outside)
+        res = memory_sync.migrate(old, self.tmp / "repo-mem", self.tmp / "personal-link")
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(res["copied"], [])
+
+
+class ManyTypesBudgetTest(MemCase):
+    def test_sixty_types_stay_within_the_budget(self):
+        d = self.tmp / "mem"
+        for t in range(60):
+            for n in range(2):
+                write(d / ("t%02d-%d.md" % (t, n)),
+                      note_text("t%02d-%d" % (t, n), "type%02d" % t, "d", "2026-01-%02d" % (n + 1)))
+        budget = memory_sync.Budget(30, 20000)
+        memory_sync.regenerate_index(d, budget)
+        lines = (d / "MEMORY.md").read_text().splitlines()
+        self.assertLessEqual(len(lines), 30)
+        self.assertEqual(lines[0], memory_sync.GENERATED)
+        self.assertEqual(lines[1], "## type00")
+        tail = lines[-1]
+        self.assertRegex(tail, r"^- \d+ more in other types — use `anthology-mem search`$")
+        hidden = int(tail.split()[1])
+        shown_types = len([l for l in lines if l.startswith("## ")])
+        pointers = sum(int(l.split()[1]) for l in lines[:-1] if re.match(r"^- \d+ more — use", l))
+        entries = len([l for l in lines if l.startswith("- [")])
+        self.assertEqual(hidden + pointers + entries, 120)
+        self.assertEqual(hidden, 2 * (60 - shown_types))
+        # a byte budget too
+        memory_sync.regenerate_index(d, memory_sync.Budget(150, 600))
+        self.assertLessEqual(len((d / "MEMORY.md").read_bytes()), 600)
+
+    def test_all_types_fit_means_no_collapsed_pointer(self):
+        d = self.tmp / "mem"
+        for t in range(5):
+            write(d / ("t%d.md" % t), note_text("t%d" % t, "type%d" % t))
+        memory_sync.regenerate_index(d)
+        self.assertNotIn("other types", (d / "MEMORY.md").read_text())
+
+
+class MigrateGlobTest(MemCase):
+    def test_note_names_with_glob_characters_are_matched_literally(self):
+        old = self.tmp / "old"
+        repo_mem = self.tmp / "repo-mem"
+        write(old / "weird[1].md", "from old\n")
+        write(repo_mem / "weird[1].md", "mine\n")
+        for _ in range(3):
+            memory_sync.migrate(old, repo_mem, self.tmp / "personal", today="2026-04-05")
+        self.assertEqual(sorted(p.name for p in repo_mem.iterdir()),
+                         ["weird[1].md", "weird[1].migrated-2026-04-05.md"])
+
+
+class ContextBudgetTest(MemCase):
+    def seed(self, n=300):
+        for i in range(n):
+            write(self.anth / "personal-memory" / ("user-%03d.md" % i),
+                  note_text("user-%03d" % i, "user", "Personal note number %d" % i,
+                            "2026-%02d-%02d" % (i // 28 % 12 + 1, i % 28 + 1)))
+
+    def sections(self, ctx):
+        parts = re.split(r"(?m)^(?=## (?:Personal|Repo) memory \()", ctx)
+        return [p for p in parts if p.startswith("## ")]
+
+    def test_personal_section_is_capped_but_on_disk_index_is_not(self):
+        self.seed()
+        folder = self.tmp / "plain"
+        folder.mkdir()
+        ctx, msgs = memory_sync.run(folder, env())
+        (section,) = self.sections(ctx)
+        heading, _, body = section.partition("\n\n")
+        self.assertTrue(heading.startswith("## Personal memory"))
+        self.assertLessEqual(len(body.encode()), 2500)
+        self.assertLessEqual(len(body.splitlines()), 40)
+        disk = self.anth / "personal-memory" / "MEMORY.md"
+        self.assertRegex(body, r"more — use `anthology-mem search` \(full index: .*MEMORY\.md\)")
+        self.assertIn(str(disk), body)
+        self.assertGreater(len(disk.read_text().splitlines()), 100)  # the file keeps the full budget
+        self.assertLessEqual(len(disk.read_bytes()), memory_sync.DEFAULT_BUDGET.bytes)
+        self.assertEqual(memory_sync.CONTEXT_SECTION_BUDGET, memory_sync.Budget(40, 2500))
+
+    @needs_git
+    def test_repo_cover_still_present_after_a_repair(self):
+        self.seed()
+        root = self.make_repo()
+        write(root / ".claude" / "memory" / "project-a.md", note_text("project-a", desc="Repo thing"))
+        memory_sync.approve(root)
+        ctx, msgs = memory_sync.run(root, env())
+        secs = self.sections(ctx)
+        self.assertEqual(len(secs), 2)
+        self.assertTrue(secs[0].startswith("## Personal memory"))
+        self.assertTrue(secs[1].startswith("## Repo memory"))
+        self.assertIn("[project-a](project-a.md)", secs[1])
+        self.assertLessEqual(len(secs[0].partition("\n\n")[2].encode()), 2500)
 
 
 if __name__ == "__main__":

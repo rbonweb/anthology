@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,6 +33,8 @@ MAX_LINE = 200
 Budget = collections.namedtuple("Budget", "lines bytes")
 # Under Claude Code's 200-line / 25 KB load limit for a MEMORY.md.
 DEFAULT_BUDGET = Budget(150, 20000)
+# The index text injected into a session (one per section); Task 13 budgets the whole context.
+CONTEXT_SECTION_BUDGET = Budget(40, 2500)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -189,8 +192,48 @@ def is_approved(key, env=None):
     return key in _load_approved(env)["repos"]
 
 
+class UnsafeTarget(Exception):
+    """A file anthology would modify is a symlink or not a regular file (refused)."""
+
+
+def _lstat_kind(path):
+    """`absent`, `file` (a regular file, not a symlink) or `other`, without following links."""
+    try:
+        st = os.lstat(str(path))
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "other"
+    return "file" if stat.S_ISREG(st.st_mode) else "other"
+
+
+def _read_regular(path):
+    """Bytes of a regular file (b"" if absent). Never follows a symlink; refuses FIFOs, devices
+    and links with UnsafeTarget (so a hostile repo cannot make a session hang or read elsewhere)."""
+    kind = _lstat_kind(path)
+    if kind == "absent":
+        return b""
+    if kind == "other":
+        raise UnsafeTarget("refusing to use %s: it is not a regular file" % path)
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as exc:
+        raise UnsafeTarget("refusing to use %s: %s" % (path, exc.strerror))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafeTarget("refusing to use %s: it is not a regular file" % path)
+        with os.fdopen(os.dup(fd), "rb") as fh:
+            return fh.read()
+    finally:
+        os.close(fd)
+
+
 def approve(root, env=None):
-    """Approve the repo at `root` (and add the union merge attributes). Returns its key."""
+    """Approve the repo at `root`, then add the union merge attributes. Returns its key.
+
+    The approval is recorded first. If `.gitattributes` is a symlink or not a regular file,
+    `ensure_union_attrs` raises `UnsafeTarget` after the approval is already saved; callers
+    (setup) should report it. Nothing is written through the link."""
     key = repo_key(root, env=env)
     data = _load_approved(env)
     if key not in data["repos"]:
@@ -215,28 +258,37 @@ def unapprove(key, env=None):
 
 
 def _load_settings(path):
-    """Parsed settings object; {} if the file is missing; None if it is unusable."""
-    path = Path(path)
-    if path.is_symlink():
-        return None
-    if not path.exists():
+    """Parsed settings object; {} if the file is missing; None if it is unusable (invalid JSON,
+    not an object, a symlink, or not a regular file)."""
+    if _lstat_kind(path) == "absent":
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = _read_regular(path)
+        data = json.loads(raw.decode("utf-8"))
+    except (UnsafeTarget, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
 
+def settings_tracked(root, env=None):
+    """True if `.claude/settings.local.json` is tracked by git (so it cannot be git-ignored,
+    and writing this clone's path into it would put it in a commit)."""
+    p = _git(root, "ls-files", "--error-unmatch", "--", ".claude/settings.local.json", env=env)
+    return p is not None and p.returncode == 0
+
+
 def ensure_memory_dir(root, settings_local):
     """Point `autoMemoryDirectory` in `settings_local` at this clone's `.claude/memory`.
-    Returns `(settings dict, changed)`. A missing file is created; an unusable one is left
-    untouched."""
+    Returns `(settings dict, changed)`. A missing file is created; an unusable one, or a
+    `.claude` / `.claude/memory` that is a symlink or not a folder, is left untouched."""
     settings_local = Path(settings_local)
+    claude = Path(os.path.realpath(str(root))) / ".claude"
+    mem = claude / "memory"
+    if claude.is_symlink() or mem.is_symlink() or (os.path.lexists(str(mem)) and not mem.is_dir()):
+        return {}, False
     old = _load_settings(settings_local)
     if old is None:
         return {}, False
-    mem = Path(os.path.realpath(str(root))) / ".claude" / "memory"
     mem.mkdir(parents=True, exist_ok=True)
     target = str(mem)
     if old.get("autoMemoryDirectory") == target:
@@ -248,17 +300,34 @@ def ensure_memory_dir(root, settings_local):
 
 
 def _append_line(path, line):
+    """Append `line` (newline-safe) to a regular file, creating it if absent. Refuses symlinks
+    and non-regular files with UnsafeTarget."""
     path = Path(path)
-    existing = path.read_bytes() if path.exists() else b""
-    prefix = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    if _lstat_kind(path) == "other":
+        raise UnsafeTarget("refusing to write %s: it is not a regular file" % path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(str(path), "ab") as fh:
-        fh.write(prefix + line.encode("utf-8") + b"\n")
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags, 0o644)
+    except OSError as exc:
+        raise UnsafeTarget("refusing to write %s: %s" % (path, exc.strerror))
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise UnsafeTarget("refusing to write %s: it is not a regular file" % path)
+        prefix = b"" if info.st_size == 0 or os.pread(fd, 1, info.st_size - 1) == b"\n" else b"\n"
+        os.write(fd, prefix + line.encode("utf-8") + b"\n")
+    finally:
+        os.close(fd)
 
 
 def ensure_ignored(root, env=None):
     """Make sure `.claude/settings.local.json` is git-ignored, via the repo's own exclude file
-    (`git rev-parse --git-path info/exclude`, correct in linked worktrees). Returns changed."""
+    (`git rev-parse --git-path info/exclude`, correct in linked worktrees). Idempotent: the
+    line is never added twice. A tracked file is left alone (excludes do not apply to tracked
+    files; see `settings_tracked`). Returns changed."""
+    if settings_tracked(root, env=env):
+        return False
     check = _git(root, "check-ignore", "-q", "--", ".claude/settings.local.json", env=env)
     if check is None or check.returncode != 1:
         return False  # already ignored (0), or not a usable repo (128/None)
@@ -268,14 +337,18 @@ def ensure_ignored(root, env=None):
     exclude = Path(out)
     if not exclude.is_absolute():
         exclude = Path(str(root)) / exclude
+    present = {l.strip() for l in _read_regular(exclude).decode("utf-8", "replace").splitlines()}
+    if EXCLUDE_LINE in present:
+        return False
     _append_line(exclude, EXCLUDE_LINE)
     return True
 
 
 def ensure_union_attrs(root):
-    """Add the `merge=union` lines for the generated indexes to `.gitattributes` (once)."""
+    """Add the `merge=union` lines for the generated indexes to `.gitattributes` (once).
+    Raises UnsafeTarget if `.gitattributes` is a symlink or not a regular file."""
     path = Path(str(root)) / ".gitattributes"
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = _read_regular(path).decode("utf-8", "replace")
     have = {" ".join(l.split()) for l in existing.splitlines()}
     changed = False
     for line in UNION_LINES:
@@ -327,22 +400,27 @@ def _type_rank(type_):
     return (TYPE_ORDER.index(type_), "") if type_ in TYPE_ORDER else (len(TYPE_ORDER), type_)
 
 
-def _pointer(hidden):
-    return "- %d more — use `anthology-mem search`" % hidden
+def _pointer(hidden, suffix=""):
+    return "- %d more — use `anthology-mem search`%s" % (hidden, suffix)
+
+
+def _collapsed_pointer(hidden, suffix=""):
+    return "- %d more in other types — use `anthology-mem search`%s" % (hidden, suffix)
 
 
 def _blen(line):
     return len(line.encode("utf-8")) + 1
 
 
-def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
-    """Rewrite `<mem_dir>/MEMORY.md` from the notes' frontmatter (deterministic: never uses
-    mtimes or the clock). Grouped by type, newest first; over budget, entries are shared
-    round-robin across types and each cut type ends with an "N more" pointer. Writes only if
-    the content changed; returns whether it did. A folder without notes is left alone."""
+def render_index(mem_dir, budget=DEFAULT_BUDGET, suffix=""):
+    """The generated index text for the notes in `mem_dir` (None if there are no notes),
+    deterministic (never uses mtimes or the clock). Grouped by type, newest first; over
+    budget, entries are shared round-robin across types and each cut type ends with an
+    "N more" pointer (with `suffix` appended). If even the headings and pointers of all types
+    do not fit, the last types are collapsed into one "N more in other types" pointer."""
     notes = _list_notes(mem_dir)
     if not notes:
-        return False
+        return None
     notes.sort(key=lambda n: (n["name"], n["file"]))
     by_type = {}
     for n in notes:
@@ -359,15 +437,34 @@ def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
         lines = 1 + k + (1 if k < len(entries) else 0)
         size = _blen("## " + type_) + sum(_blen(e) for e in entries[:k])
         if k < len(entries):
-            size += _blen(_pointer(len(entries) - k))
+            size += _blen(_pointer(len(entries) - k, suffix))
         return lines, size
+
+    def fits(lines, size):
+        return lines <= budget.lines and size <= budget.bytes
 
     counts = [len(g[1]) for g in groups]
     base_lines, base_bytes = 1, _blen(GENERATED)
     costs = [cost(gi, counts[gi]) for gi in range(len(groups))]
     total_l = base_lines + sum(c[0] for c in costs)
     total_b = base_bytes + sum(c[1] for c in costs)
-    if total_l > budget.lines or total_b > budget.bytes:
+    collapsed = None
+    if not fits(total_l, total_b):
+        zero = [cost(gi, 0) for gi in range(len(groups))]
+        keep = len(groups)
+        while keep > 0:
+            hidden = sum(len(g[1]) for g in groups[keep:])
+            extra = (1, _blen(_collapsed_pointer(hidden, suffix))) if keep < len(groups) else (0, 0)
+            if fits(base_lines + extra[0] + sum(c[0] for c in zero[:keep]),
+                    base_bytes + extra[1] + sum(c[1] for c in zero[:keep])):
+                break
+            keep -= 1
+        if keep < len(groups):
+            hidden = sum(len(g[1]) for g in groups[keep:])
+            collapsed = _collapsed_pointer(hidden, suffix)
+            groups = groups[:keep]
+            base_lines += 1
+            base_bytes += _blen(collapsed)
         counts = [0] * len(groups)
         costs = [cost(gi, 0) for gi in range(len(groups))]
         total_l = base_lines + sum(c[0] for c in costs)
@@ -381,7 +478,7 @@ def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
                 new = cost(gi, counts[gi] + 1)
                 nl = total_l - costs[gi][0] + new[0]
                 nb = total_b - costs[gi][1] + new[1]
-                if nl > budget.lines or nb > budget.bytes:
+                if not fits(nl, nb):
                     live.remove(gi)
                     continue
                 counts[gi] += 1
@@ -392,8 +489,20 @@ def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
         lines.append("## " + type_)
         lines.extend(entries[:k])
         if k < len(entries):
-            lines.append(_pointer(len(entries) - k))
-    data = ("\n".join(lines) + "\n").encode("utf-8")
+            lines.append(_pointer(len(entries) - k, suffix))
+    if collapsed:
+        lines.append(collapsed)
+    return "\n".join(lines) + "\n"
+
+
+def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
+    """Rewrite `<mem_dir>/MEMORY.md` from the notes' frontmatter (see `render_index`).
+    Writes only if the content changed; returns whether it did. A folder without notes is
+    left alone."""
+    text = render_index(mem_dir, budget)
+    if text is None:
+        return False
+    data = text.encode("utf-8")
     target = Path(mem_dir) / "MEMORY.md"
     try:
         if target.read_bytes() == data:
@@ -415,6 +524,10 @@ def _load_ledger(ledger):
         return {h for h in data.get("done", []) if isinstance(h, str)}
     except (OSError, ValueError, AttributeError):
         return set()
+
+
+def _is_plain(path):
+    return os.path.isfile(str(path)) and not os.path.islink(str(path))
 
 
 def _create_exclusive(path, data):
@@ -455,14 +568,17 @@ def migrate(old_dir, repo_mem, personal_mem, ledger=None, today=None):
         stem = entry.name[:-3]
         info = memory_index.parse_text(data.decode("utf-8", errors="replace"), stem)
         dest_dir = Path(personal_mem if info["type"] == "user" else repo_mem)
+        if dest_dir.is_symlink() or (os.path.lexists(str(dest_dir)) and not dest_dir.is_dir()):
+            continue  # never write through a symlinked or non-folder destination
         dest = dest_dir / entry.name
         dest_dir.mkdir(parents=True, exist_ok=True)
         if _create_exclusive(dest, data):
             result["copied"].append(entry.name)
         else:
             same = dest.is_file() and not dest.is_symlink() and dest.read_bytes() == data
-            same = same or any(c.is_file() and not c.is_symlink() and c.read_bytes() == data
-                               for c in dest_dir.glob(stem + ".migrated-*.md"))
+            same = same or any(_is_plain(dest_dir / c) and (dest_dir / c).read_bytes() == data
+                               for c in os.listdir(str(dest_dir))
+                               if c.startswith(stem + ".migrated-") and c.endswith(".md"))
             if same:
                 result["skipped"].append(entry.name)
             else:
@@ -527,14 +643,32 @@ def _section(title, directory, text):
     return "## %s (%s)\n\n%s" % (title, directory, text if text.endswith("\n") else text + "\n")
 
 
+def _context_index(directory):
+    """The index of `directory` for the session context: rendered within the (small) context
+    budget, with "N more" pointers that name the full on-disk MEMORY.md."""
+    suffix = " (full index: %s)" % (Path(directory) / "MEMORY.md")
+    text = render_index(directory, CONTEXT_SECTION_BUDGET, suffix)
+    if text is not None:
+        return text
+    try:  # no notes: show an existing hand-made index, within the same budget
+        raw = (Path(directory) / "MEMORY.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(raw.splitlines()[:CONTEXT_SECTION_BUDGET.lines])[:CONTEXT_SECTION_BUDGET.bytes] + "\n"
+
+
 def _sync_repo(root, home, config, env, messages):
     """The approved-repo flow. Returns the same-session cover section, or None."""
     claude = root / ".claude"
+    repo_mem = claude / "memory"
     if claude.is_symlink():
         messages.append("anthology memory: .claude is a symlink; repo memory skipped")
         return None
+    if repo_mem.is_symlink() or (os.path.lexists(str(repo_mem)) and not repo_mem.is_dir()):
+        messages.append("anthology memory: .claude/memory is a symlink or not a folder; "
+                        "repo memory skipped")
+        return None
     personal = home / "personal-memory"
-    repo_mem = claude / "memory"
     copied, conflicts = 0, 0
     seen = []
     for base in (root, _main_root(root, env=env)):
@@ -552,11 +686,20 @@ def _sync_repo(root, home, config, env, messages):
         messages.append("anthology memory: %d migrated note(s) differ from existing ones; kept "
                         "side by side as *.migrated-*.md" % conflicts)
     settings = claude / "settings.local.json"
-    if _load_settings(settings) is None:
+    changed = False
+    if settings_tracked(root, env=env):
+        messages.append("anthology memory: .claude/settings.local.json is tracked by git, so "
+                        "anthology did not write this clone's memory path into it; untrack it "
+                        "with `git rm --cached .claude/settings.local.json`")
+    elif _load_settings(settings) is None:
         messages.append("anthology memory: .claude/settings.local.json is not a valid JSON "
                         "object; left untouched, so autoMemoryDirectory is not set")
-    _data, changed = ensure_memory_dir(root, settings)
-    ensure_ignored(root, env=env)
+    else:
+        _data, changed = ensure_memory_dir(root, settings)
+        try:
+            ensure_ignored(root, env=env)
+        except UnsafeTarget as exc:
+            messages.append("anthology memory: could not git-ignore settings.local.json: %s" % exc)
     regenerate_index(repo_mem)
     agents = claude / "agent-memory"
     if agents.is_dir() and not agents.is_symlink():
@@ -567,10 +710,7 @@ def _sync_repo(root, home, config, env, messages):
         return None
     messages.append("anthology memory: set autoMemoryDirectory for this clone; its memory index "
                     "is injected for this session")
-    try:
-        text = (repo_mem / "MEMORY.md").read_text(encoding="utf-8")
-    except OSError:
-        text = ""
+    text = _context_index(repo_mem)
     return _section("Repo memory", repo_mem, text.strip() and text or "(no notes yet)\n")
 
 
@@ -592,7 +732,7 @@ def _run(cwd, env):
     if personal.is_dir():
         try:
             regenerate_index(personal)
-            text = (personal / "MEMORY.md").read_text(encoding="utf-8")
+            text = _context_index(personal)
             if text.strip():
                 sections.append(_section("Personal memory", personal, text))
         except OSError as exc:

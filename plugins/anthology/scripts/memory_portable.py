@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tarfile
 import tempfile
@@ -34,12 +35,17 @@ MAX_MANIFEST = 1024 * 1024
 # padding for the most members allowed, plus slack. Bounds memory and time on a gzip bomb.
 STREAM_LIMIT = MAX_TOTAL + MAX_MEMBERS * 1024 + 1024 * 1024
 FORMAT = 1
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# \Z, not $: `$` would also accept a trailing newline.
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 SCOPES = ("personal", "repo", "agent")
 
 
 class ImportRejected(Exception):
     """The archive (or a plan) is unsafe or malformed; nothing was written."""
+
+
+class ExportRefused(Exception):
+    """The requested export folder is inside a git work tree; nothing was written."""
 
 
 # ---------------------------------------------------------------------------------------------
@@ -105,12 +111,36 @@ def _tarinfo(name, size):
     return info
 
 
-def export(cwd, out_dir, today=None, env=None):
-    """Write `anthology-memory-<date>.tar.gz` into `out_dir`. Returns `{"path", "counts",
-    "secrets", "repo_included"}`; `secrets` lists `{"file", "pattern"}` (labels only)."""
+def _inside_git_work_tree(path):
+    probe = os.path.realpath(str(path))
+    while True:
+        if os.path.lexists(os.path.join(probe, ".git")):
+            return True
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        probe = parent
+
+
+def export(cwd, out_dir=None, today=None, env=None):
+    """Write `anthology-memory-<date>.tar.gz`. Returns `{"path", "counts", "secrets",
+    "repo_included"}`; `secrets` lists `{"file", "pattern"}` (labels only).
+
+    The archive holds personal notes, so by default (`out_dir` None) it goes to
+    `<anthology home>/exports/` (created 0700), never into the working folder. An explicit
+    `out_dir` inside a git work tree is refused with `ExportRefused`."""
     env = dict(os.environ) if env is None else dict(env)
     date = _iso(today)
     home = memory_sync.anthology_home(env)
+    if out_dir is None:
+        out = home / "exports"
+        if not out.exists():
+            home.mkdir(parents=True, exist_ok=True)
+            os.mkdir(str(out), 0o700)
+    else:
+        out = Path(out_dir)
+        if _inside_git_work_tree(out):
+            raise ExportRefused("export refuses to write personal notes inside a git repo: %s" % out)
     root = memory_sync.repo_root(cwd, env=env)
     repo_ok = bool(root and memory_sync.is_approved(memory_sync.repo_key(root, env=env), env=env))
     files = {}  # member name -> bytes
@@ -143,7 +173,6 @@ def export(cwd, out_dir, today=None, env=None):
         with tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
             for name in sorted(files):
                 tar.addfile(_tarinfo(name, len(files[name])), io.BytesIO(files[name]))
-    out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     n = 1
     while True:
@@ -215,19 +244,33 @@ def _check_name(name):
     raise ImportRejected("member outside the memory locations: %r" % name)
 
 
-def _load_archive(archive):
-    """Validate the whole archive, then return `(manifest dict, {member name: bytes})`.
-    Raises ImportRejected (before anything is written; this function never writes)."""
-    archive = str(archive)
+def _read_archive_bytes(archive):
+    """The archive file's bytes, read once: the size limit is checked on the open file
+    (fstat) before reading, so these are exactly the bytes that get hashed and parsed."""
     try:
-        size = os.path.getsize(archive)
+        fd = os.open(archive, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as fh:
+            info = os.fstat(fh.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise ImportRejected("the archive is not a regular file")
+            if info.st_size > MAX_ARCHIVE:
+                raise ImportRejected("the archive is larger than %d MiB" % (MAX_ARCHIVE >> 20))
+            blob = fh.read(MAX_ARCHIVE + 1)
     except OSError as exc:
         raise ImportRejected("cannot read the archive: %s" % exc.strerror)
-    if size > MAX_ARCHIVE:
+    if len(blob) > MAX_ARCHIVE:
         raise ImportRejected("the archive is larger than %d MiB" % (MAX_ARCHIVE >> 20))
+    return blob
+
+
+def _load_archive(archive):
+    """Validate the whole archive, then return `(manifest dict, {member name: bytes}, sha256)`.
+    Raises ImportRejected (before anything is written; this function never writes)."""
+    blob = _read_archive_bytes(str(archive))
+    sha = hashlib.sha256(blob).hexdigest()
     data_filter = getattr(tarfile, "data_filter", None)
     try:
-        with open(archive, "rb") as raw:
+        with io.BytesIO(blob) as raw:
             gz = gzip.GzipFile(fileobj=raw, mode="rb")
             with tarfile.open(fileobj=_CappedReader(gz, STREAM_LIMIT), mode="r:") as tar:
                 members, names, total = [], set(), 0
@@ -288,7 +331,7 @@ def _load_archive(archive):
         raise ImportRejected("manifest.json is not valid JSON")
     if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
         raise ImportRejected("unsupported archive format")
-    return manifest, contents
+    return manifest, contents, sha
 
 
 # ---------------------------------------------------------------------------------------------
@@ -302,14 +345,6 @@ def _iso(today):
     if isinstance(today, datetime.date):
         return today.isoformat()
     return str(today)[:10]
-
-
-def _file_sha(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _location(scope, agent, home, root):
@@ -366,12 +401,12 @@ def plan_import(archive, cwd, today=None, env=None):
     nothing. Returns a plan dict: `new`, `identical`, `conflicts` (each an entry with its
     `dest`), `secrets` (`{"file", "pattern"}`, labels only), `skipped_repo`, `messages`."""
     env = dict(os.environ) if env is None else dict(env)
-    manifest, contents = _load_archive(archive)
+    manifest, contents, sha = _load_archive(archive)
     home = memory_sync.anthology_home(env)
     root = memory_sync.repo_root(cwd, env=env)
     repo_ok = bool(root and memory_sync.is_approved(memory_sync.repo_key(root, env=env), env=env))
     date = _iso(today)
-    plan = {"archive": os.path.realpath(str(archive)), "sha256": _file_sha(str(archive)),
+    plan = {"archive": os.path.realpath(str(archive)), "sha256": sha,
             "date": date, "home": str(home), "repo_root": str(root) if repo_ok else None,
             "new": [], "identical": [], "conflicts": [], "secrets": [], "skipped_repo": [],
             "messages": []}
@@ -464,12 +499,8 @@ def apply_import(plan):
     home, root, archive = plan.get("home"), plan.get("repo_root"), plan.get("archive")
     if not (isinstance(home, str) and isinstance(archive, str)) or Path(home).name != "anthology":
         raise ImportRejected("malformed plan")
-    manifest, contents = _load_archive(archive)
-    try:
-        unchanged = _file_sha(archive) == plan.get("sha256")
-    except OSError:
-        unchanged = False
-    if not unchanged:
+    manifest, contents, sha = _load_archive(archive)
+    if sha != plan.get("sha256"):
         raise ImportRejected("the archive changed after it was planned")
     penv = {"CLAUDE_CONFIG_DIR": str(Path(home).parent)}  # approvals live next to `home`
     date = _iso(plan.get("date"))
@@ -531,7 +562,7 @@ def apply_import(plan):
 
 
 def _print_plan(plan):
-    print("Import plan for %s" % os.path.basename(plan["archive"]))
+    print("Import plan for %s (sha256 %s)" % (os.path.basename(plan["archive"]), plan["sha256"]))
     for key, title in (("new", "new"), ("identical", "identical (skipped)"),
                        ("conflicts", "conflicts (kept side by side as <name>.imported-%s.md)" % plan["date"])):
         print("  %s: %d" % (title, len(plan[key])))
@@ -550,18 +581,21 @@ def main(argv=None):
                                      description="Export or import Anthology memory notes.")
     sub = parser.add_subparsers(dest="command", required=True)
     e = sub.add_parser("export", help="write anthology-memory-<date>.tar.gz")
-    e.add_argument("--out", default=None, help="folder for the archive (default: current folder)")
+    e.add_argument("--out", default=None, help="folder for the archive, outside any git repo "
+                   "(default: <anthology home>/exports)")
     e.add_argument("--json", action="store_true")
     i = sub.add_parser("import", help="import an archive (prints the plan unless --yes)")
     i.add_argument("file")
     i.add_argument("--dry-run", action="store_true", help="only print the plan")
     i.add_argument("--yes", action="store_true", help="apply the plan")
+    i.add_argument("--sha256", default=None, help="only apply if the archive has this sha256 "
+                   "(as printed by the dry run)")
     i.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     cwd = os.getcwd()
     try:
         if args.command == "export":
-            res = export(cwd, args.out or cwd)
+            res = export(cwd, args.out)
             if args.json:
                 print(json.dumps(res, indent=2, sort_keys=True))
             else:
@@ -575,6 +609,8 @@ def main(argv=None):
                 print("The archive contains your personal notes; keep it private.")
             return 0
         plan = plan_import(args.file, cwd)
+        if args.sha256 and args.sha256.lower() != plan["sha256"]:
+            raise ImportRejected("the archive is not the one that was shown (sha256 differs)")
         result = None
         if args.yes and not args.dry_run:
             result = apply_import(plan)
@@ -592,6 +628,9 @@ def main(argv=None):
         return 0
     except ImportRejected as exc:
         print("memory_portable: rejected: %s" % exc, file=sys.stderr)
+        return 2
+    except ExportRefused as exc:
+        print("memory_portable: %s" % exc, file=sys.stderr)
         return 2
     except (ValueError, OSError) as exc:
         print("memory_portable: %s" % exc, file=sys.stderr)
