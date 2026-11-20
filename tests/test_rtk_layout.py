@@ -23,6 +23,7 @@ FORK_TESTS = [
     "fork_9_awareness_exact.rs",
 ]
 SYNC = ROOT / "scripts" / "sync-rtk.sh"
+RTK_TEST = ROOT / "scripts" / "rtk-test.sh"
 
 
 def rtk_entry() -> dict:
@@ -93,8 +94,7 @@ class SyncScriptTest(unittest.TestCase):
         self.assertIn('branch="rtk-sync/$tag"', self.text)
         self.assertIn("git status --porcelain", self.text)
         self.assertIn("scripts/rtk-trim.sh", self.text)
-        self.assertIn("ci/images/rust.Dockerfile", self.text)
-        self.assertIn("cargo test --locked", self.text)
+        self.assertIn('"$root/scripts/rtk-test.sh"', self.text)
 
     def test_validates_the_tag(self):
         match = re.search(r"(?m)^tag_pattern='([^']+)'$", self.text)
@@ -104,6 +104,35 @@ class SyncScriptTest(unittest.TestCase):
         self.assertTrue(pattern.fullmatch("v1.2.1"))
         for bad in ("1.2.1", "v1.2", "v1.2.1; rm -rf /", "main", "v1.2.1-rc1"):
             self.assertIsNone(pattern.fullmatch(bad), bad)
+
+
+class RtkTestScriptTest(unittest.TestCase):
+    """$RTK_TEST is scripts/rtk-test.sh, used locally, by CI and by sync-rtk.sh."""
+
+    def setUp(self):
+        self.text = RTK_TEST.read_text(encoding="utf-8")
+
+    def test_is_executable_with_strict_mode(self):
+        self.assertTrue(os.access(RTK_TEST, os.X_OK))
+        self.assertTrue(self.text.startswith("#!"))
+        self.assertRegex(self.text, r"(?m)^set -eu$")
+
+    def test_reads_the_image_from_the_rust_dockerfile(self):
+        self.assertIn('awk \'$1 == "FROM" {print $2}\' "$root/ci/images/rust.Dockerfile"', self.text)
+        self.assertNotRegex(self.text, r"rust:[0-9.]+-slim")
+
+    def test_runs_locked_cargo_test_as_a_non_root_user(self):
+        self.assertIn('cargo test --locked "$@"', self.text)
+        self.assertIn("runuser -u", self.text)
+        self.assertIn("useradd", self.text)
+        self.assertIn("git curl jq procps", self.text)
+        self.assertNotIn("--skip", self.text)
+
+    def test_ci_and_sync_use_it(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertRegex(ci, r"(?m)^  rtk-test:$")
+        self.assertIn("run: scripts/rtk-test.sh", ci)
+        self.assertIn('"$root/scripts/rtk-test.sh"', SYNC.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

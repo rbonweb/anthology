@@ -51,14 +51,11 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_vendor.py' -v
 
   rtk-test:
-    # $RTK_TEST: rtk's own cargo test suite in the pinned Rust image.
+    # $RTK_TEST: rtk's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Run the rtk tests in the pinned Rust image
-        run: |
-          RUST_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/rust.Dockerfile)
-          docker run --rm -v "$PWD/rtk":/w -v anthology-cargo:/usr/local/cargo/registry -w /w \
-            "$RUST_IMAGE" cargo test --locked
+        run: scripts/rtk-test.sh

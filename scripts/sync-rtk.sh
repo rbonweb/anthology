@@ -8,7 +8,7 @@
 # 3. git subtree pull --prefix=rtk https://github.com/rtk-ai/rtk <tag>
 #    (on conflicts: prints the conflicted files and stops, leaving the branch for review);
 # 4. runs scripts/rtk-trim.sh when it exists;
-# 5. runs $RTK_TEST in the pinned Rust image (the FROM line of ci/images/rust.Dockerfile);
+# 5. runs $RTK_TEST (scripts/rtk-test.sh: the pinned image from ci/images/rust.Dockerfile);
 # 6. prints a summary.
 #
 # It never pushes and never merges into another branch: the branch is left for review.
@@ -76,10 +76,8 @@ else
     trim="skipped (scripts/rtk-trim.sh does not exist)"
 fi
 
-image=$(awk '$1 == "FROM" {print $2}' ci/images/rust.Dockerfile)
-echo "sync-rtk: running the rtk tests in $image"
-if docker run --rm -v "$root/$PREFIX":/w -v anthology-cargo:/usr/local/cargo/registry -w /w \
-    "$image" cargo test --locked; then
+echo "sync-rtk: running the rtk tests (scripts/rtk-test.sh)"
+if "$root/scripts/rtk-test.sh"; then
     tests=PASS
 else
     tests=FAIL
