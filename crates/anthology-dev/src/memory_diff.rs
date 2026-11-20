@@ -1,5 +1,8 @@
 //! `anthology-dev memory-diff` (scripts/memory_diff.py). Owner: DV2.
 
+pub mod pystr;
+pub mod unicode;
+
 use std::ffi::OsString;
 use std::io::Read;
 
