@@ -32,6 +32,7 @@ pub mod pycompat_re;
 pub mod pycompat_shlex;
 pub mod pycompat_str;
 pub mod rtk_install_reconcile;
+pub mod runtime_guardrails_loc;
 pub mod settings;
 pub mod setup;
 pub mod shell_analyze;
@@ -75,6 +76,8 @@ pub const ALL: &[&str] = &[
     dev_upstream_watch::NAME,
     dev_rtk_trim::NAME,
     dev_smoke::NAME,
+    // Added by RT1a (controller-approved registration, after plan §1.4's list).
+    runtime_guardrails_loc::NAME,
 ];
 
 /// A surface module's `surface()`.
@@ -118,6 +121,7 @@ const IMPLS: &[MakeSurface] = &[
     dev_upstream_watch::surface,
     dev_rtk_trim::surface,
     dev_smoke::surface,
+    runtime_guardrails_loc::surface,
 ];
 
 /// Every surface name with its implementation, in [`ALL`] order.

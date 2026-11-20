@@ -88,7 +88,9 @@ fn str_field<'a>(entry: &'a Value, k: &str) -> Option<&'a str> {
 pub fn materialize(root: &Path, spec: &[Value]) {
     for entry in spec {
         let kind = str_field(entry, "t").expect("entry t");
-        let path = root.join(str_field(entry, "p").expect("entry p"));
+        let rel = str_field(entry, "p").expect("entry p");
+        assert!(!rel.starts_with('/'), "rt_a: {rel:?} is not relative");
+        let path = root.join(rel);
         match kind {
             "dir" => fs::create_dir_all(&path).expect("mkdir"),
             "file" => {
