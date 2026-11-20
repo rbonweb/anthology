@@ -108,14 +108,23 @@ rtk lives in `rtk/` as a git subtree with full history: the owner's fork merged 
 scripts/sync-rtk.sh <upstream tag>
 ```
 
-It works on an `rtk-sync/<tag>` branch: it pulls the subtree, runs `scripts/rtk-trim.sh`, rewrites the upstream pin in `sources.json` (uncommitted, for review), runs `scripts/rtk-test.sh` and prints a summary of conflicts. It never pushes or merges.
+Give it an upstream release tag like `v1.2.3`. It refuses to run on a dirty tree. In order, it:
 
-Then:
+1. creates the branch `rtk-sync/<tag>` from `HEAD`;
+2. runs `git subtree pull` for that tag. On conflicts it prints the conflicted files and **stops**, leaving the branch for you to resolve;
+3. records the tag and its commit as the upstream pin in `vendor/sources.json`;
+4. runs `scripts/rtk-trim.sh`;
+5. runs `scripts/rtk-test.sh`;
+6. prints a summary.
 
-1. Resolve conflicts so that both upstream's change and the fork's intent survive. If a fork change cannot coexist with upstream, upstream's design wins and the intent is re-implemented where feasible. Record the decision in `DECISIONS.md`.
+The pin and the trim's changes are left uncommitted, for review with the branch. It never pushes and never merges.
+
+What you do:
+
+1. If it stopped on conflicts, resolve them so that both upstream's change and the fork's intent survive. If a fork change cannot coexist with upstream, upstream's design wins and the intent is re-implemented where feasible. Record the decision in `DECISIONS.md`. Then re-run the remaining steps by hand (the pin, `scripts/rtk-trim.sh`, `scripts/rtk-test.sh`).
 2. `rtk-trim.sh` is idempotent and fails loudly when an expected anchor is missing, which means an upstream refactor to look at. It keeps rtk Claude Code only and free of telemetry. The allowlist test `test_rtk_claude_only` fails when upstream adds a hook integration module or a Cargo dependency that is not on the list. Adding one is a deliberate decision, not a test fix.
 3. Each of the fork's nine changes has a permanent named test (`fork_1_…` to `fork_9_…`). They must still pass.
-4. Run `scripts/rtk-test.sh` and the unit tests (as in the development setup), then open a PR.
+4. Review and commit the pin and the trim's changes, run the unit tests (as in the development setup), then open a PR.
 
 #### Releasing rtk binaries
 
@@ -171,13 +180,13 @@ When the ceiling is hit the command exits 2 with a partial result, so raise it d
 
 ### Startup budgets
 
-Each agent's startup reading (its body, the Startup files it must read, and its preloaded skills) has a byte budget in `tests/test_roster.py`, set at the measured size plus 15%. This makes upstream growth show up in a sync PR instead of silently raising the cost of every call.
+Each agent's startup reading (its body, the Startup files it must read, and its preloaded skills) has a byte budget in the `BUDGET` dict in `tests/test_roster.py`, set at the measured size plus 15%. This makes upstream growth show up in a sync PR instead of silently raising the cost of every call.
 
 When a sync fails a budget:
 
 1. Check what grew. The upstream watcher's issue shows the budget delta.
 2. If the growth is not worth it, trim the patch or drop the file from the agent's Startup list.
-3. If it is worth it, raise that one number in `tests/test_roster.py` in the same PR, and say why in the description. Never raise a budget to get a build green without that review.
+3. If it is worth it, raise that one number in `BUDGET`. The failure message gives the value to use, `ceil(measured * 1.15)`. Set it and explain the growth in the same commit and in the PR description. Never raise a budget to get a build green without that review.
 
 ### The upstream watcher
 

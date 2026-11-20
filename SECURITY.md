@@ -41,13 +41,16 @@ Nothing is written to `~/.claude/CLAUDE.md`.
 
 ## Guardrail limits
 
-Read these before relying on the guardrails.
+Read these before relying on the guardrails. The guard is built to stop accidental browser installs and launches by cooperative agents. It is not a sandbox, and it does not defend against deliberate obfuscation.
 
 - **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognises. The hook, `guard.py`, sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
 - **A hook sees commands, not what a script does.** A script that launches Chrome internally is invisible to it. That is why the knowledge Anthology ships must never launch Chrome, and why the deny layer exists.
-- **Rules match commands, not text.** `grep playwright package.json` is allowed on purpose. A rule can only block what the command line says: it cannot read through indirection such as a command assembled at run time.
+- **Rules match commands, not text.** `grep playwright package.json` is allowed on purpose.
+- **Indirection hides commands.** Commands built inside variables or arrays and then run are not seen for what they are. Neither is a command whose text comes from another command's output and is fed to a shell: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`. Unusual nested shell syntax, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`, can also get past the parser.
+- **Some inputs are not path-checked.** Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for browser profile paths. A BrowserOS Neo `run` script can open `file://` URLs.
+- **Profile coverage is bounded.** The guard and the deny rules cover the known Chrome and Chromium profile folders and their parents. Grandparent folders, such as `find ~ -name Cookies`, and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - **Docker is exempt from G1 and G2.** Commands whose program is `docker` or `docker-compose` are not checked against those two rules, because running browser tests in a container is the sanctioned way. G3 to G6 still apply to them.
-- **G6 checks content, not files.** It looks for secret patterns (`AKIA…`, `ghp_`, `github_pat_`, `sk-…`, `xox[bp]-`, private-key blocks, `password:` or `password=`, `api_key:` or `api_key=`) in what `Write` or `Edit` puts into a memory folder, and in `echo`, `printf`, heredoc and `tee` content sent there. **Copying a secret file into memory is not caught.** Neither is a secret that matches none of those patterns.
+- **G6 checks content, not files.** It looks for common key and token formats (AWS access keys, GitHub tokens, `sk-` API keys, Slack tokens, private-key blocks) and `password` or `api key` assignments in what `Write` or `Edit` puts into a memory folder, and in command text that writes there. **Copying a secret file into memory is not caught.** Neither is a secret in a format it does not know.
 - **It fails open on malformed input.** The guard exits 0 when its input is not valid JSON, so a bad payload can never block your whole session.
 - **It cannot be silently off, but it can be off.** At session start Anthology runs the guard on a known-bad sample and shows a loud message if the guard cannot run or does not block. If `python3` is missing, the guard cannot run: tool calls go ahead and you see only that message.
 - **A block wins over rtk.** The guard checks the command Claude asked for, not rtk's rewrite of it, and a block takes precedence over an rtk allow. `rtk`, `rtk bypass` and `rtk proxy` prefixes are stripped before the rules run, so `rtk npx playwright install` is still G1.

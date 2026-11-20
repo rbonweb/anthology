@@ -131,12 +131,18 @@ Commands inside `docker` or `docker-compose` are exempt from G1 and G2 only. Rul
 
 If the guard cannot run (for example `python3` is missing), you get a loud message at session start instead of silence.
 
-**The limits, stated honestly.**
+#### Known limits
 
-- This is a hook plus deny rules, not a sandbox or a jail.
+The guard is built to stop accidental browser installs and launches by cooperative agents. It is a hook plus deny rules, not a sandbox or a jail, and it does not defend against deliberate obfuscation. Known limits:
+
+- Commands built inside variables or arrays and then run are not seen for what they are.
+- A command whose text comes from another command's output and is fed to a shell is not looked into: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`.
+- Unusual nested shell syntax can hide a command, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`.
+- Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for profile paths. A BrowserOS Neo `run` script can open `file://` URLs.
+- Browser profile protection covers the known profile folders and their parents. Grandparent folders (for example `find ~ -name Cookies`) and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - A hook sees the command Claude runs, not what a script does inside. A script that launches Chrome internally is invisible to it. That is why the knowledge we ship never launches Chrome.
-- G6 checks the content in the command text and in `Write` and `Edit`. Copying a secret **file** into a memory folder is not caught.
-- The guard ignores malformed input rather than blocking, so it can never brick a session.
+- Secret detection covers what is written in the command text, `Write` and `Edit`. Copying a secret **file** into a memory folder is not caught.
+- The guard ignores malformed input rather than blocking, so it can never brick a session. If it cannot run at all, you get a loud message at session start.
 
 See [SECURITY.md](SECURITY.md) for the full threat model.
 
