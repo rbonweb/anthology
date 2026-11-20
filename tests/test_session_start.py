@@ -1,0 +1,544 @@
+"""Tests for scripts/session_start.py, session-start.sh, the routing guide, hooks.json and the
+skills folder (Task 13).
+
+Cases that need git skip when it is missing (the Docker test images have none).
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import types
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from _mem import ROOT, SCRIPTS, MemCase, needs_git, note_text, write
+
+import memory_sync  # noqa: E402
+import session_start  # noqa: E402
+import settings_patch  # noqa: E402
+import state  # noqa: E402
+
+PLUGIN = ROOT / "plugins" / "anthology"
+GUIDE = PLUGIN / "templates" / "routing-guide.md"
+AGENTS = ("researcher", "architect", "implementer", "debugger", "reviewer", "scout", "docs-writer",
+          "ui-designer", "ui-reviewer", "product-planner", "marketer")
+NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, memory)"
+MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
+
+
+class FakeRtk:
+    """Stands in for rtk_install (not on every branch); records the reconcile call."""
+
+    def __init__(self, result=None, exc=None):
+        self.calls = []
+        self.result, self.exc = result, exc
+
+    def reconcile(self, data_dir, lock, fetch, timeout):
+        self.calls.append((data_dir, lock, fetch, timeout))
+        if self.exc:
+            raise self.exc
+        return self.result
+
+
+class SessionCase(MemCase):
+    def setUp(self):
+        super().setUp()
+        self.plugin_root = PLUGIN
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
+        os.environ["CLAUDE_PLUGIN_DATA"] = str(self.data)
+        self.rtk = FakeRtk()
+        patcher = mock.patch.dict(sys.modules, {"rtk_install": self.rtk})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def mark_setup(self, plugin_root=None):
+        """Pretend /anthology:setup ran: state.setup_done plus the U1 allow rule in settings.json."""
+        state.write(setup_done="0.1.0")
+        rule = settings_patch.plugin_read_rule(plugin_root or PLUGIN)
+        write(self.config / "settings.json", json.dumps({"permissions": {"allow": [rule]}}))
+
+    def go(self, cwd=None, env_extra=None, hook_input=None):
+        env = dict(os.environ)
+        env.update(env_extra or {})
+        data = {"hook_event_name": "SessionStart", "source": "startup", "cwd": str(cwd or self.tmp)}
+        data.update(hook_input or {})
+        return json.loads(session_start.run(env, json.dumps(data)))
+
+    @staticmethod
+    def context(out):
+        return out["hookSpecificOutput"]["additionalContext"]
+
+    def fake_plugins(self, guard_body, rules=True):
+        """A plugins/ folder with a copy of anthology's guide and a fake anthology-guardrails."""
+        base = self.tmp / "fake-plugins"
+        root = base / "anthology"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        guard = base / "anthology-guardrails" / "scripts"
+        guard.mkdir(parents=True)
+        (guard / "guard.py").write_text(guard_body, encoding="utf-8")
+        if rules:
+            (guard / "guard_rules.py").write_text(
+                'SELF_TEST_SAMPLE = {"tool_name": "Bash", "tool_input": {"command": "x"}}\n'
+                'PROFILE_ROOTS = (".config/chromium",)\n', encoding="utf-8")
+        return root
+
+
+class OutputTest(SessionCase):
+    def test_output_shape_and_guide(self):
+        self.mark_setup()
+        out = self.go()
+        hook = out["hookSpecificOutput"]
+        self.assertEqual(hook["hookEventName"], "SessionStart")
+        guide = GUIDE.read_text(encoding="utf-8")
+        self.assertTrue(self.context(out).startswith(guide.rstrip("\n")))
+        self.assertNotIn("systemMessage", out)
+
+    def test_every_session_source_gets_the_guide(self):
+        self.mark_setup()
+        for source in ("startup", "resume", "clear", "compact"):
+            out = self.go(hook_input={"source": source})
+            self.assertIn("# Anthology routing guide", self.context(out), source)
+
+    def test_setup_not_run_shows_the_one_line_nag(self):
+        out = self.go()
+        self.assertIn(NAG, out["systemMessage"].splitlines())
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    def test_stale_u1_rule_warns(self):
+        state.write(setup_done="0.1.0")
+        write(self.config / "settings.json", json.dumps(
+            {"permissions": {"allow": ["Read(//old/place/plugins/**)"]}}))
+        out = self.go()
+        self.assertIn(MOVED, out["systemMessage"].splitlines())
+
+    def test_missing_settings_file_after_setup_warns(self):
+        state.write(setup_done="0.1.0")
+        self.assertIn(MOVED, self.go()["systemMessage"].splitlines())
+
+    def test_unreadable_settings_after_setup_warns(self):
+        state.write(setup_done="0.1.0")
+        write(self.config / "settings.json", "{nope")
+        self.assertIn(MOVED, self.go()["systemMessage"].splitlines())
+
+    def test_current_u1_rule_is_quiet(self):
+        self.mark_setup()
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_total_context_stays_within_the_budget_with_a_300_note_personal_index(self):
+        self.mark_setup()
+        personal = self.anth / "personal-memory"
+        for i in range(300):
+            write(personal / ("project-topic-%03d.md" % i),
+                  note_text("project-topic-%03d" % i, "project", "A fairly descriptive note number %d" % i))
+        out = self.go()
+        ctx = self.context(out)
+        self.assertLessEqual(len(ctx), 9000)
+        self.assertIn("# Anthology routing guide", ctx)
+        self.assertIn("## Personal memory", ctx)
+        self.assertRegex(ctx, r"\d+ more .*anthology-mem search")
+        self.assertIn(str(personal / "MEMORY.md"), ctx)
+
+    def test_oversized_memory_text_is_truncated_at_a_line_with_a_pointer(self):
+        self.mark_setup()
+        lines = "".join("- note line %04d with some padding text here\n" % i for i in range(400))
+        with mock.patch.object(session_start.memory_sync, "run",
+                               return_value=("## Personal memory (x)\n\n" + lines, [])):
+            out = self.go()
+        ctx = self.context(out)
+        guide = GUIDE.read_text(encoding="utf-8").rstrip("\n")
+        self.assertLessEqual(len(ctx), 9000)
+        self.assertTrue(ctx.startswith(guide))
+        self.assertIn("anthology-mem search", ctx.splitlines()[-1])
+        self.assertIn("MEMORY.md", ctx.splitlines()[-1])
+        body = ctx.splitlines()[:-1]
+        self.assertTrue(body[-1].startswith("- note line "))
+        self.assertTrue(body[-1].endswith("padding text here"))  # cut on a line boundary
+
+    def test_the_guide_is_never_truncated_even_if_it_alone_is_over_budget(self):
+        self.mark_setup()
+        root = self.fake_plugins('import sys\nsys.exit(2)\n')
+        (root / "templates" / "routing-guide.md").write_text("# Anthology routing guide\n" + "x" * 9500,
+                                                           encoding="utf-8")
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertGreaterEqual(len(self.context(out)), 9500)
+
+    def test_memory_messages_reach_the_system_message(self):
+        self.mark_setup()
+        with mock.patch.object(session_start.memory_sync, "run", return_value=("", ["memory said hi"])):
+            out = self.go()
+        self.assertIn("memory said hi", out["systemMessage"].splitlines())
+
+    def test_system_message_is_capped(self):
+        self.mark_setup()
+        with mock.patch.object(session_start.memory_sync, "run",
+                               return_value=("", ["m%03d %s" % (i, "y" * 80) for i in range(100)])):
+            out = self.go()
+        self.assertLessEqual(len(out["systemMessage"]), 2000)
+
+    def test_no_claude_md_is_written_and_no_guide_text_lands_on_disk(self):
+        self.mark_setup()
+        repo = self.tmp / "work"
+        repo.mkdir()
+        self.go(cwd=repo)
+        names = [p.name for p in self.tmp.rglob("*") if p.is_file()]
+        self.assertNotIn("CLAUDE.md", names)
+        for p in self.tmp.rglob("*"):
+            if p.is_file() and ".git" not in p.parts:
+                self.assertNotIn("Anthology routing guide", p.read_text(encoding="utf-8", errors="replace"), p)
+
+    def test_session_start_only_writes_state(self):
+        self.mark_setup()
+        def files():  # Apple's python writes .pyc files under HOME; they are not ours
+            return {p for p in self.tmp.rglob("*") if p.is_file() and p.suffix != ".pyc"}
+
+        before = files()
+        self.go()
+        after = files()
+        self.assertEqual({p.name for p in after - before} - {"state.json"}, set())
+
+    def test_missing_guide_file_is_a_warning_not_a_crash(self):
+        self.mark_setup()
+        root = self.fake_plugins("import sys\nsys.exit(2)\n")
+        (root / "templates" / "routing-guide.md").unlink()
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertIn("routing guide", out["systemMessage"])
+
+    def test_stdin_that_is_not_json_still_works(self):
+        self.mark_setup()
+        out = json.loads(session_start.run(dict(os.environ), "not json"))
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    @needs_git
+    def test_repo_cover_only_when_memory_sync_repaired(self):
+        self.mark_setup()
+        repo = self.make_repo(remote="https://example.invalid/acme/app.git")
+        write(repo / ".claude" / "memory" / "project-a.md", note_text("project-a", "project", "First"))
+        memory_sync.approve(repo)
+        first = self.context(self.go(cwd=repo))
+        self.assertIn("## Repo memory", first)
+        self.assertIn("project-a", first)
+        second = self.context(self.go(cwd=repo))
+        self.assertNotIn("## Repo memory", second)
+
+    @needs_git
+    def test_unapproved_repo_with_memory_gets_the_hint(self):
+        self.mark_setup()
+        repo = self.make_repo(remote="https://example.invalid/acme/other.git")
+        write(repo / ".claude" / "memory" / "project-a.md", note_text("project-a", "project", "First"))
+        out = self.go(cwd=repo)
+        self.assertIn(memory_sync.HINT, out["systemMessage"].splitlines())
+
+
+class FailureTest(SessionCase):
+    def test_injected_exception_gives_a_short_system_message(self):
+        with mock.patch.object(session_start, "_guard_selftest", side_effect=RuntimeError("boom")):
+            out = json.loads(session_start.run(dict(os.environ), "{}"))
+        self.assertIn("anthology", out["systemMessage"])
+        self.assertLessEqual(len(out["systemMessage"]), 300)
+
+    def test_main_exits_zero_even_when_run_raises(self):
+        buf = io.StringIO()
+        with mock.patch.object(session_start, "run", side_effect=RuntimeError("boom")), \
+                mock.patch.object(sys, "stdin", io.StringIO("{}")), mock.patch.object(sys, "stdout", buf):
+            code = session_start.main()
+        self.assertEqual(code, 0)
+        out = json.loads(buf.getvalue())
+        self.assertIn("systemMessage", out)
+        self.assertLessEqual(len(out["systemMessage"]), 300)
+
+    def test_main_prints_one_json_object_on_success(self):
+        self.mark_setup()
+        buf = io.StringIO()
+        stdin = io.StringIO(json.dumps({"cwd": str(self.tmp)}))
+        with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stdout", buf):
+            self.assertEqual(session_start.main(), 0)
+        self.assertIn("hookSpecificOutput", json.loads(buf.getvalue()))
+
+    def test_memory_failure_never_fails_the_session(self):
+        self.mark_setup()
+        with mock.patch.object(session_start.memory_sync, "run", side_effect=OSError("disk")):
+            out = self.go()
+        self.assertIn("# Anthology routing guide", self.context(out))
+        self.assertIn("memory", out["systemMessage"])
+
+
+class PlatformTest(SessionCase):
+    def test_windows_gets_the_refusal_and_nothing_else(self):
+        with mock.patch("platform.system", return_value="Windows"), \
+                mock.patch.object(session_start.memory_sync, "run") as mem, \
+                mock.patch.object(session_start, "_guard_selftest") as guard:
+            out = json.loads(session_start.run(dict(os.environ), "{}"))
+        self.assertEqual(out, {"systemMessage": "Anthology supports macOS and Linux only; it is inactive on Windows."})
+        mem.assert_not_called()
+        guard.assert_not_called()
+        self.assertEqual(self.rtk.calls, [])
+        self.assertFalse(state.state_path().exists())
+
+
+class StateTest(SessionCase):
+    def test_data_dir_is_recorded_only_when_it_changes(self):
+        self.mark_setup()
+        self.go()
+        self.assertEqual(state.read()["data_dir"], str(self.data))
+        with mock.patch.object(state, "write", wraps=state.write) as w:
+            self.go()
+            self.assertFalse([c for c in w.call_args_list if "data_dir" in c.kwargs])
+            self.go(env_extra={"CLAUDE_PLUGIN_DATA": str(self.tmp / "data2")})
+            self.assertTrue([c for c in w.call_args_list if c.kwargs.get("data_dir") == str(self.tmp / "data2")])
+
+    def test_no_data_dir_env_means_no_state_write(self):
+        self.mark_setup()
+        env = dict(os.environ)
+        env.pop("CLAUDE_PLUGIN_DATA")
+        before = dict(state.read())
+        session_start.run(env, "{}")
+        self.assertEqual(state.read(), before)
+
+
+class RtkTest(SessionCase):
+    def test_not_reconciled_before_setup_ran(self):
+        self.go()
+        self.assertEqual(self.rtk.calls, [])
+
+    def test_reconcile_runs_after_setup_with_the_data_dir_and_lock(self):
+        self.mark_setup()
+        self.go()
+        self.assertEqual(len(self.rtk.calls), 1)
+        data_dir, lock, fetch, timeout = self.rtk.calls[0]
+        self.assertEqual(data_dir, self.data)
+        self.assertEqual(lock, PLUGIN / "rtk.lock")
+        self.assertIsNone(fetch)
+        self.assertEqual(timeout, 20)
+
+    def test_data_dir_falls_back_to_state(self):
+        self.mark_setup()
+        state.write(data_dir=str(self.tmp / "remembered"))
+        env = dict(os.environ)
+        env.pop("CLAUDE_PLUGIN_DATA")
+        session_start.run(env, "{}")
+        self.assertEqual(self.rtk.calls[0][0], self.tmp / "remembered")
+
+    def test_returned_warning_is_shown(self):
+        self.mark_setup()
+        self.rtk.result = "rtk download failed: offline"
+        out = self.go()
+        self.assertIn("rtk download failed: offline", out["systemMessage"].splitlines())
+
+    def test_exception_becomes_a_warning(self):
+        self.mark_setup()
+        self.rtk.exc = RuntimeError("kaboom")
+        out = self.go()
+        self.assertIn("rtk", out["systemMessage"])
+        self.assertIn("kaboom", out["systemMessage"])
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    def test_absent_wiring_is_one_short_note(self):
+        self.mark_setup()
+        with mock.patch.dict(sys.modules, {"rtk_install": None}):
+            out = self.go()
+        self.assertIn("anthology: rtk wiring not present yet; skipped", out["systemMessage"].splitlines())
+
+
+class GuardSelfTestTest(SessionCase):
+    def test_real_guard_blocks_the_sample_quietly(self):
+        self.mark_setup()
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_sample_is_piped_as_json_and_blocked_with_exit_2(self):
+        import guardrails_loc
+        rules = guardrails_loc.load_rules(PLUGIN, {})
+        guard = PLUGIN.parent / "anthology-guardrails" / "scripts" / "guard.py"
+        proc = subprocess.run([sys.executable, str(guard)], input=json.dumps(rules.SELF_TEST_SAMPLE).encode(),
+                              capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 2)
+
+    def test_missing_python3_on_the_hook_path_warns_loudly(self):
+        self.mark_setup()
+        out = self.go(env_extra={"PATH": "/nonexistent"})
+        msg = out["systemMessage"]
+        self.assertIn("python3", msg)
+        self.assertRegex(msg.lower(), r"guardrails")
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    def test_guard_that_does_not_block_warns(self):
+        self.mark_setup()
+        root = self.fake_plugins("import sys\nsys.exit(0)\n")
+        self.mark_setup(root)
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertRegex(out["systemMessage"].lower(), r"did not block")
+
+    def test_guard_that_crashes_warns(self):
+        root = self.fake_plugins("raise SystemExit(1)\n")
+        self.mark_setup(root)
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertRegex(out["systemMessage"].lower(), r"did not block")
+
+    def test_guard_that_blocks_is_quiet(self):
+        root = self.fake_plugins("import sys\nsys.stdin.read()\nsys.exit(2)\n")
+        self.mark_setup(root)
+        self.assertNotIn("systemMessage", self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}))
+
+    def test_slow_guard_times_out_into_a_warning(self):
+        root = self.fake_plugins("import time\ntime.sleep(30)\n")
+        self.mark_setup(root)
+        with mock.patch.object(session_start, "GUARD_TIMEOUT", 1):
+            out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertRegex(out["systemMessage"].lower(), r"timed out|did not finish")
+
+    def test_guardrails_not_found_warns(self):
+        root = self.fake_plugins("import sys\nsys.exit(2)\n")
+        shutil.rmtree(str(root.parent / "anthology-guardrails"))
+        self.mark_setup(root)
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertRegex(out["systemMessage"].lower(), r"guardrails.*(not found|missing)")
+
+    def test_guardrails_without_the_sample_warns(self):
+        root = self.fake_plugins("import sys\nsys.exit(2)\n", rules=False)
+        self.mark_setup(root)
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertRegex(out["systemMessage"].lower(), r"guardrails")
+
+    def test_guardrails_found_through_installed_plugins_json(self):
+        base = self.tmp / "cache-style"
+        root = base / "anthology" / "0.1.0"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        guard = self.tmp / "installs" / "guard-new"
+        guard_old = self.tmp / "installs" / "guard-old"
+        for d, body in ((guard, "import sys\nsys.stdin.read()\nsys.exit(2)\n"),
+                        (guard_old, "import sys\nsys.exit(0)\n")):
+            (d / "scripts").mkdir(parents=True)
+            (d / "scripts" / "guard.py").write_text(body, encoding="utf-8")
+            (d / "scripts" / "guard_rules.py").write_text(
+                'SELF_TEST_SAMPLE = {"tool_name": "Bash", "tool_input": {"command": "x"}}\n'
+                'PROFILE_ROOTS = ()\n', encoding="utf-8")
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "anthology-guardrails@anthology": [
+                {"scope": "user", "installPath": str(guard_old), "lastUpdated": "2026-01-01T00:00:00Z"},
+                {"scope": "user", "installPath": str(guard), "lastUpdated": "2026-06-01T00:00:00Z"},
+                {"scope": "user", "installPath": str(self.tmp / "gone"), "lastUpdated": "2027-01-01T00:00:00Z"}]}}))
+        self.mark_setup(root)
+        self.assertNotIn("systemMessage", self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}))
+
+
+class ShellWrapperTest(MemCase):
+    SH = PLUGIN / "scripts" / "session-start.sh"
+
+    def run_sh(self, path, stdin=""):
+        env = {"HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.config), "PATH": path,
+               "CLAUDE_PLUGIN_ROOT": str(PLUGIN), "CLAUDE_PLUGIN_DATA": str(self.data)}
+        return subprocess.run(["/bin/sh", str(self.SH)], input=stdin.encode(), env=env,
+                              capture_output=True, timeout=120)
+
+    def test_python3_missing_prints_one_json_system_message_and_exits_zero(self):
+        proc = self.run_sh("/nonexistent")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout.decode("utf-8"))
+        self.assertEqual(list(out), ["systemMessage"])
+        self.assertIn("python3", out["systemMessage"])
+        self.assertIn("guardrails", out["systemMessage"])
+        self.assertIn("routing guide", out["systemMessage"])
+
+    def test_python3_present_emits_valid_hook_json(self):
+        py = shutil.which("python3")
+        self.assertIsNotNone(py)
+        proc = self.run_sh(os.path.dirname(py) + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
+                           json.dumps({"cwd": str(self.tmp)}))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout.decode("utf-8"))
+        self.assertIn("# Anthology routing guide", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_script_uses_only_sh_builtins_on_the_missing_path(self):
+        text = self.SH.read_text(encoding="utf-8")
+        self.assertIn("command -v python3", text)
+        self.assertIn("exec python3", text)
+        self.assertTrue(text.startswith("#!/bin/sh"))
+
+
+class HooksJsonTest(unittest.TestCase):
+    def test_hooks_json_has_the_session_start_entry_only(self):
+        data = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(data), {"hooks"})
+        self.assertEqual(set(data["hooks"]), {"SessionStart"})
+        entries = data["hooks"]["SessionStart"]
+        self.assertEqual(len(entries), 1)
+        self.assertNotIn("matcher", entries[0])
+        self.assertEqual(entries[0]["hooks"], [{
+            "type": "command", "command": "sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh"], "timeout": 60}])
+
+
+class SkillsFolderTest(unittest.TestCase):
+    def test_skills_folder_is_exactly_setup_export_import(self):
+        names = {p.name for p in (PLUGIN / "skills").iterdir()}
+        self.assertEqual(names, {"setup", "export", "import"})
+
+    def test_every_skill_is_manual_only(self):
+        for name in ("setup", "export", "import"):
+            head = (PLUGIN / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split("\n---")[0]
+            self.assertRegex(head, r"(?m)^name: %s$" % name)
+            self.assertRegex(head, r"(?m)^description: \S")
+            self.assertRegex(head, r"(?m)^disable-model-invocation: true$")
+
+    def test_setup_skill_content(self):
+        text = (PLUGIN / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn('--plugin-root "${CLAUDE_PLUGIN_ROOT}"', text)
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py", text)
+        self.assertIn("/anthology:setup remove", text)
+        self.assertIn("rtk bypass <cmd>", text)
+        self.assertIn("--expect-sha256", text)
+        self.assertIn("claude plugin uninstall", text)
+        self.assertNotRegex(text, r"/U" + r"sers/|@[a-z0-9.-]+\.(com|org|dev)")
+
+
+class GuideTest(unittest.TestCase):
+    def setUp(self):
+        self.text = GUIDE.read_text(encoding="utf-8")
+
+    def test_size_and_shape(self):
+        self.assertLessEqual(len(self.text), 3800)
+        self.assertFalse(self.text.startswith("---"))
+        for n in range(1, 9):
+            self.assertRegex(self.text, r"(?m)^## %d\. " % n)
+
+    def test_uses_anthology_ids_for_every_roster_agent(self):
+        for agent in AGENTS:
+            self.assertIn("anthology:%s" % agent, self.text)
+        self.assertIn("claude-security", self.text)
+        self.assertRegex(self.text, r"ui-designer builds, then ui-reviewer checks")
+
+    def test_browser_rules(self):
+        self.assertIn("BrowserOS Neo", self.text)
+        self.assertRegex(self.text, r"BrowserOS Neo \(MCP\), the only browser")
+        self.assertRegex(self.text, r"BrowserOS Neo unavailable: stop and ask\. Never install a browser")
+        self.assertRegex(self.text, r"Never launch Chrome")
+        for tool in ("agent-browser", "Playwright", "chrome-devtools", "Claude in Chrome"):
+            self.assertIn(tool, self.text)
+        for line in self.text.splitlines():
+            if re.search(r"agent-browser|chrome-devtools|Claude in Chrome", line):
+                self.assertRegex(line, r"Never ", line)
+
+    def test_worktree_docker_rtk_and_memory_rules(self):
+        self.assertIn('worktree.baseRef: "head"', self.text)
+        self.assertIn("never `git worktree add`", self.text)
+        self.assertIn("chore(memory)", self.text)
+        self.assertRegex(self.text, r"commit before finishing")
+        self.assertIn("Docker unavailable: stop and tell the user", self.text)
+        self.assertIn("rtk bypass <cmd>", self.text)
+        self.assertIn("anthology-mem search", self.text)
+        self.assertIn("[[note-name]]", self.text)
+        self.assertRegex(self.text, r"Never save secrets")
+
+    def test_no_personal_details(self):
+        self.assertNotRegex(self.text, r"/U" + r"sers/|/home/\w|@\w+\.\w+")
+
+
+if __name__ == "__main__":
+    unittest.main()
