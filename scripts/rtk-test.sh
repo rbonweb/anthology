@@ -12,7 +12,7 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-image=$(awk '$1 == "FROM" {print $2}' "$root/ci/images/rust.Dockerfile")
+image=$(awk '$1 == "FROM" {print $NF; exit}' "$root/ci/images/rust.Dockerfile")
 if [ -z "$image" ]; then
     echo "rtk-test: no FROM line in ci/images/rust.Dockerfile" >&2
     exit 1

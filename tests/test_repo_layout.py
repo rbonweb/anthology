@@ -119,7 +119,7 @@ class UnchangedCopiesTest(unittest.TestCase):
             self.assertTrue((ROOT / s["target"]).is_dir(), s["target"])
             self.assertTrue(files_under(ROOT / s["target"]), s["target"])
         # A subtree (rtk) keeps its LICENSE in its own tree, not in vendor/licenses/.
-        slugs = {vendor.source_slug(s) for s in sources if s.get("managed_by") != "subtree"}
+        slugs = {vendor.source_slug(s) for s in sources if not vendor.is_subtree(s)}
         self.assertEqual({p.stem for p in (ROOT / "vendor" / "licenses").glob("*.txt")}, slugs)
         for slug in slugs:
             text = (ROOT / "vendor" / "licenses" / f"{slug}.txt").read_text(encoding="utf-8")

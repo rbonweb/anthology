@@ -7,10 +7,12 @@
 # 2. creates branch rtk-sync/<tag> from HEAD;
 # 3. git subtree pull --prefix=rtk https://github.com/rtk-ai/rtk <tag>
 #    (on conflicts: prints the conflicted files and stops, leaving the branch for review);
-# 4. runs scripts/rtk-trim.sh when it exists;
-# 5. runs $RTK_TEST (scripts/rtk-test.sh: the pinned image from ci/images/rust.Dockerfile);
-# 6. prints a summary.
+# 4. records the merged tag and its commit as the upstream pin in vendor/sources.json;
+# 5. runs scripts/rtk-trim.sh when it exists;
+# 6. runs $RTK_TEST (scripts/rtk-test.sh: the pinned image from ci/images/rust.Dockerfile);
+# 7. prints a summary.
 #
+# The pin and the trim's changes are left uncommitted on the branch, for review with it.
 # It never pushes and never merges into another branch: the branch is left for review.
 set -eu
 
@@ -45,6 +47,7 @@ if git show-ref --verify --quiet "refs/heads/$branch"; then
 fi
 
 base=$(git rev-parse --short HEAD)
+start=$(git symbolic-ref --short -q HEAD || echo "$base")
 git switch -c "$branch"
 echo "sync-rtk: on $branch (from $base)"
 
@@ -58,29 +61,65 @@ if ! git subtree pull --prefix="$PREFIX" "$UPSTREAM" "$tag" -m "$message"; then
     if [ -n "$conflicts" ]; then
         echo "sync-rtk: the merge of $tag stopped on conflicts in:"
         printf '%s\n' "$conflicts" | sed 's/^/  /'
+        echo "Resolve them on $branch (keep upstream's design, re-apply the fork's intent),"
+        echo "then commit the merge and re-run the tests. Nothing was pushed or merged."
     else
-        echo "sync-rtk: git subtree pull of $tag failed (see above)"
+        echo "sync-rtk: git subtree pull of $tag failed (see above); nothing was merged."
+        echo "To retry, go back and delete the empty branch:"
+        echo "  git switch $start && git branch -D $branch"
     fi
-    echo "Resolve them on $branch (keep upstream's design, re-apply the fork's intent),"
-    echo "then commit the merge and re-run the tests. Nothing was pushed or merged."
     exit 1
 fi
 merge=$(git rev-parse --short HEAD)
 
+# The pin: the commit the tag names (an annotated tag is peeled to its commit).
+git fetch --no-tags --quiet "$UPSTREAM" "refs/tags/$tag"
+upstream_commit=$(git rev-parse "FETCH_HEAD^{commit}")
+old_pin=$(python3 - "$tag" "$upstream_commit" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path("vendor/sources.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+entry = next(e for e in data["sources"] if e.get("name") == "rtk")
+upstream = entry["upstream"]
+print(f"{upstream['ref']} {upstream['commit']}")
+upstream["ref"], upstream["commit"] = sys.argv[1], sys.argv[2]
+# The same layout as vendor.py's save_sources.
+path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+PY
+)
+if [ "$old_pin" = "$tag $upstream_commit" ]; then
+    pin="unchanged ($tag $upstream_commit)"
+else
+    pin="$old_pin -> $tag $upstream_commit (uncommitted)"
+fi
+
+status=0
 if [ -f scripts/rtk-trim.sh ]; then
     echo "sync-rtk: running scripts/rtk-trim.sh"
-    bash scripts/rtk-trim.sh
-    trim="ran scripts/rtk-trim.sh"
+    if bash scripts/rtk-trim.sh; then
+        trim="ran scripts/rtk-trim.sh"
+    else
+        trim="FAILED (scripts/rtk-trim.sh, see above)"
+        status=1
+    fi
 else
     echo "sync-rtk: scripts/rtk-trim.sh does not exist yet; trim skipped"
     trim="skipped (scripts/rtk-trim.sh does not exist)"
 fi
 
-echo "sync-rtk: running the rtk tests (scripts/rtk-test.sh)"
-if "$root/scripts/rtk-test.sh"; then
-    tests=PASS
+if [ "$status" -ne 0 ]; then
+    tests="not run (the trim failed)"
 else
-    tests=FAIL
+    echo "sync-rtk: running the rtk tests (scripts/rtk-test.sh)"
+    if "$root/scripts/rtk-test.sh"; then
+        tests=PASS
+    else
+        tests=FAIL
+        status=1
+    fi
 fi
 
 echo
@@ -88,11 +127,13 @@ echo "sync-rtk summary"
 echo "  upstream: $UPSTREAM $tag"
 echo "  branch:   $branch (from $base), merge commit $merge"
 echo "  conflicts: none"
+echo "  pin:      $pin"
 echo "  trim:     $trim"
 echo "  tests:    $tests"
-changed=$(git status --porcelain -- "$PREFIX")
+changed=$(git status --porcelain -- "$PREFIX" vendor/sources.json)
 if [ -n "$changed" ]; then
-    echo "  uncommitted changes under $PREFIX/ (from the trim): review and commit them on $branch"
+    echo "  uncommitted changes (the pin, the trim): review and commit them on $branch"
+    printf '%s\n' "$changed" | sed 's/^/    /'
 fi
 echo "Nothing was pushed or merged. Review $branch, then merge it yourself."
-[ "$tests" = PASS ]
+exit "$status"

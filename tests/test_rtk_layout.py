@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import unittest
 
 from _repo import ROOT
 
+# The current pins. scripts/sync-rtk.sh rewrites the upstream pin in sources.json on
+# every sync, so a merged sync bumps UPSTREAM_TAG and UPSTREAM_COMMIT here with it.
 FORK_COMMIT = "9b790c414de16f5fb688126b3945c73aa0e0218e"
+UPSTREAM_TAG = "v1.2.1"
 UPSTREAM_COMMIT = "d0f0399a5ff8cd1d81325a033f0b2d8864d665f6"
+RELEASE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
 FORK_TESTS = [
     "fork_1_auto_allow_hook.rs",
     "fork_2_read_minimal_default.rs",
@@ -29,7 +36,8 @@ RTK_TEST = ROOT / "scripts" / "rtk-test.sh"
 def rtk_entry() -> dict:
     sources = json.loads((ROOT / "vendor" / "sources.json").read_text(encoding="utf-8"))["sources"]
     entries = [s for s in sources if s.get("name") == "rtk"]
-    assert len(entries) == 1, entries
+    if len(entries) != 1:
+        raise AssertionError(f"expected one rtk entry in sources.json, got {entries}")
     return entries[0]
 
 
@@ -51,9 +59,15 @@ class RtkSourceEntryTest(unittest.TestCase):
     def test_upstream_pin(self):
         self.assertEqual(rtk_entry()["upstream"], {
             "repo": "https://github.com/rtk-ai/rtk",
-            "ref": "v1.2.1",
+            "ref": UPSTREAM_TAG,
             "commit": UPSTREAM_COMMIT,
         })
+
+    def test_pins_have_the_shape_a_sync_writes(self):
+        entry = rtk_entry()
+        self.assertIsNotNone(RELEASE_TAG.fullmatch(entry["upstream"]["ref"]), entry["upstream"])
+        for side in ("fork", "upstream"):
+            self.assertIsNotNone(FULL_SHA.fullmatch(entry[side]["commit"]), side)
 
 
 class RtkTreeTest(unittest.TestCase):
@@ -105,6 +119,25 @@ class SyncScriptTest(unittest.TestCase):
         for bad in ("1.2.1", "v1.2", "v1.2.1; rm -rf /", "main", "v1.2.1-rc1"):
             self.assertIsNone(pattern.fullmatch(bad), bad)
 
+    @unittest.skipIf(shutil.which("bash") is None, "bash is not installed")
+    def test_rejects_a_bad_tag_before_touching_the_repo(self):
+        # Tag validation runs before any git call, so this needs neither git nor a repo.
+        for bad in ("v1.2", "v1.2.1\nx", "main"):
+            result = subprocess.run(["bash", str(SYNC), bad], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, (bad, result.stderr))
+            self.assertIn("usage: scripts/sync-rtk.sh <tag>", result.stderr)
+
+    def test_records_the_merged_upstream_pin(self):
+        self.assertIn('git fetch --no-tags --quiet "$UPSTREAM" "refs/tags/$tag"', self.text)
+        self.assertIn('git rev-parse "FETCH_HEAD^{commit}"', self.text)
+        self.assertIn('path = Path("vendor/sources.json")', self.text)
+        self.assertIn("json.dumps(data, indent=2, ensure_ascii=False)", self.text)
+        self.assertIn('echo "  pin:      $pin"', self.text)
+
+    def test_a_failed_trim_still_reaches_the_summary(self):
+        self.assertIn("if bash scripts/rtk-trim.sh; then", self.text)
+        self.assertIn('exit "$status"', self.text)
+
 
 class RtkTestScriptTest(unittest.TestCase):
     """$RTK_TEST is scripts/rtk-test.sh, used locally, by CI and by sync-rtk.sh."""
@@ -118,7 +151,8 @@ class RtkTestScriptTest(unittest.TestCase):
         self.assertRegex(self.text, r"(?m)^set -eu$")
 
     def test_reads_the_image_from_the_rust_dockerfile(self):
-        self.assertIn('awk \'$1 == "FROM" {print $2}\' "$root/ci/images/rust.Dockerfile"', self.text)
+        self.assertIn('awk \'$1 == "FROM" {print $NF; exit}\' "$root/ci/images/rust.Dockerfile"',
+                      self.text)
         self.assertNotRegex(self.text, r"rust:[0-9.]+-slim")
 
     def test_runs_locked_cargo_test_as_a_non_root_user(self):
