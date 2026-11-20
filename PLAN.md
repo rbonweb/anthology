@@ -63,7 +63,6 @@ anthology/
 │   │   ├── bin/rtk, bin/anthology-mem     wrappers on the Bash PATH (resolve paths via ~/.claude/anthology/state.json)
 │   │   ├── rtk.lock                       pinned rtk version + sha256 per platform
 │   │   ├── templates/routing-guide.md     the guide text (delivered by the hook)
-│   │   ├── evals/                         behaviour eval cases (claude plugin eval)
 │   │   └── scripts/                       session_start.py, doctor.py, rtk_install.py, memory_sync.py,
 │   │                                      memory_index.py, memory_portable.py, settings_patch.py
 │   ├── anthology-guardrails/
@@ -80,6 +79,7 @@ anthology/
 ├── scripts/sync-rtk.sh, scripts/rtk-trim.sh
 ├── .github/workflows/                     ci.yml · evals.yml · upstream-watch.yml · rtk-release.yml
 ├── .github/dependabot.yml
+├── evals/                                 behaviour eval cases (claude plugin eval; repo root so all 3 plugins load — U9)
 ├── tests/                                 stdlib unittest (+ pinned test deps), run in pinned Docker images
 ├── PLAN.md · README.md · CHANGELOG.md · SECURITY.md · CONTRIBUTING.md · DECISIONS.md · LICENSE (Apache-2.0)
 ```
@@ -128,6 +128,7 @@ Every agent also reads `caveman` (the house style). `ds/x` = `knowledge/design-s
   - The agent must Read every listed file before any other work.
   - Paths inside a knowledge file are relative to that file's folder. A reference like `design-skills:<x>` means `knowledge/design-skills/skills/<x>/SKILL.md`.
   - The evals check that every agent does this (§14).
+  - Outside auto mode a plugin agent may not Read files in the plugin cache without permission (U1), so `/anthology:setup` adds one narrow allow rule: `Read(<plugin cache>/anthology/**)`, using the resolved cache path.
 - **Startup budget.** Each agent's startup reading (its body, the Startup files and its preloads) has a byte budget enforced by a test. Upstream growth shows up in sync PRs instead of silently raising every call's cost.
 - **ui-designer: which knowledge leads.** For websites and landing pages, `design-taste-frontend` leads. For app screens (web or iOS), `ui-taste` leads. `frontend-design` is the baseline for everything else. The rest are supporting.
 - **ui-reviewer** is split out from ui-designer so the builder and the critic are different models (Sonnet builds, Opus reviews). It uses BrowserOS Neo to look at the rendered page.
@@ -204,7 +205,8 @@ Sections:
 2. **Which agent for which job**: the roster as a lookup table, and security → `claude-security`. For UI work, ui-designer builds and then ui-reviewer checks.
 3. **Blocked agents**: subagents can't ask the user. A blocked agent stops and reports the question. The main session answers or asks the user, then resumes the same agent.
 4. **Worktrees**:
-   - Only built-in isolation; never `git worktree add`.
+   - Only built-in isolation; never `git worktree add`. Setup sets `worktree.baseRef: "head"` (U2), so agents branch from the lead's current commit rather than from origin's default branch.
+   - Agent memory written inside a worktree is untracked there (U7); writers commit it as `chore(memory): …` before finishing.
    - Writers commit before finishing.
    - Parallel writers get disjoint file areas.
    - The main session reviews and merges.
@@ -264,7 +266,7 @@ There are **two layers**:
 - When the guard blocks a call, the block wins over an rtk rewrite/allow (checked as U6).
 - Rules match **commands**, not arbitrary text. `grep playwright package.json`, `grep -r agent-browser .` and `git commit -m "drop playwright"` are allowed. Every block message points to BrowserOS Neo (or Docker, for test suites).
 
-**Never silently off.** On every session start, `session_start.py` runs `guard.py` on a known-bad sample. If the guard can't run (e.g. `python3` is missing) or doesn't block, the user gets a loud `systemMessage`. The guard still fails open on malformed *input*, so it never bricks a session, but a broken guard is always visible.
+**Never silently off.** The `SessionStart` entry is a POSIX `sh` wrapper (`session-start.sh`) because a hook whose interpreter is missing fails silently (U8): if `python3` is missing it prints a JSON `systemMessage` itself; otherwise it execs `session_start.py`, which runs `guard.py` on a known-bad sample. If the guard can't run (e.g. `python3` is missing) or doesn't block, the user gets a loud `systemMessage`. The guard still fails open on malformed *input*, so it never bricks a session, but a broken guard is always visible.
 
 **Known limit:** a hook can't see a Chrome launch hidden inside a script. That's why the shipped knowledge itself must never launch Chrome (§6), and why the deny layer exists.
 
@@ -438,7 +440,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - gitleaks;
 - the memory-diff listing.
 
-**Behaviour evals** (`plugins/anthology/evals/`, `claude plugin eval`; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
+**Behaviour evals** (repo-root `evals/`, `claude plugin eval` with all three plugins loaded; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
 - routing (the main session delegates to the right `anthology:*` agent);
 - knowledge-read order (each agent Reads its Startup files before any other tool);
 - G1/G4/G6 blocks;
@@ -997,7 +999,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 #### Task 13: Session start, routing guide, setup and remove
 
 **Files:**
-- Create: `plugins/anthology/templates/routing-guide.md`, `plugins/anthology/scripts/{session_start,doctor,settings_patch}.py`, `plugins/anthology/skills/setup/SKILL.md`
+- Create: `plugins/anthology/templates/routing-guide.md`, `plugins/anthology/scripts/session-start.sh`, `plugins/anthology/scripts/{session_start,doctor,settings_patch}.py`, `plugins/anthology/skills/setup/SKILL.md`
 - Modify: `plugins/anthology/hooks/hooks.json` (add `SessionStart`, exec form)
 - Test: `tests/test_session_start.py`, `tests/test_doctor.py`, `tests/test_settings_patch.py`
 
@@ -1013,6 +1015,8 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **`settings_patch.apply(settings, ops) / revert(settings, ops) -> (new, diff)`.** Ops:
   - add/remove `Bash(rtk *)`;
   - add/remove the Chrome/Chromium `Read(...)` deny rules for the macOS/Linux profile roots and their parents;
+  - add/remove the `Read(<plugin cache>/anthology/**)` allow rule (U1);
+  - set `worktree.baseRef` to `"head"`, remembering the previous value so `remove` restores it (U2);
   - always keep unrelated keys, byte-stable where possible.
 
 - [ ] **Step 1: Failing tests:**
@@ -1046,17 +1050,17 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 #### Task 14: Long-term operations (releases, evals, upstream watch)
 
 **Files:**
-- Create: `CHANGELOG.md`, `scripts/release.sh`, `scripts/check_version_bump.py`, `plugins/anthology/evals/**`, `.github/workflows/{evals,upstream-watch}.yml`
+- Create: `CHANGELOG.md`, `scripts/release.sh`, `scripts/check_version_bump.py`, `evals/**`, `.github/workflows/{evals,upstream-watch}.yml`
 - Modify: `.github/workflows/ci.yml`
 - Test: `tests/test_version_bump.py`, `tests/test_evals_layout.py`
 
-- [ ] **Step 1: Version-bump check.** Failing test first: `check_version_bump.py <base> <head>` fails when files under `plugins/<p>/` changed without a `version` change in `plugins/<p>/.claude-plugin/plugin.json`, and passes otherwise. Implement it and add it to `ci.yml`, together with `claude plugin validate --strict` for each plugin, gitleaks (pinned), the memory-diff listing and the startup-budget test.
+- [ ] **Step 1: Version-bump check.** Failing test first: `check_version_bump.py <base> <head>` fails when files under `plugins/<p>/` changed without a `version` change in `plugins/<p>/.claude-plugin/plugin.json`, and passes otherwise. Implement it and add it to `ci.yml`, together with `claude plugin validate --strict` for each plugin (CI installs a pinned Claude Code ≥ 2.1.323, because older versions reject `engines` — U4), gitleaks (pinned), the memory-diff listing and the startup-budget test.
 - [ ] **Step 2: Release script.**
   - `release.sh <plugin> <version>` bumps the version, moves the `CHANGELOG.md` *Unreleased* entries, commits, and runs `claude plugin tag`.
   - It never pushes without `--push`.
   - Dry-run it.
 - [ ] **Step 3: Evals.**
-  - **The cases** (`plugins/anthology/evals/`):
+  - **The cases** (repo-root `evals/`, each `case.yaml` listing `plugins: [plugins/anthology, plugins/anthology-guardrails, plugins/anthology-superpowers]` — U9):
     - routing, one case per agent: `tool_used: Agent` with `input_match` `anthology:<name>`;
     - knowledge-read order (`tool_order`: the Startup Reads come before any other tool);
     - G1/G4/G6 blocks;
@@ -1081,7 +1085,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 
 - [ ] **Step 1: Failing test** `test_docs`:
   - `LICENSE` starts with "Apache License";
-  - no tracked file outside `rtk/` and the generated vendored trees (`plugins/anthology-superpowers/`, `plugins/anthology/knowledge/`, `vendor/snapshots/`) contains `/Users/`, and none anywhere contains `/Users/rbonweb`;
+  - no tracked file outside `rtk/` and the generated vendored trees (`plugins/anthology-superpowers/`, `plugins/anthology/knowledge/`, `vendor/snapshots/`) contains a real home path (regex `/Users/[A-Za-z0-9._-]+/` or `/home/[A-Za-z0-9._-]+/`), and none anywhere contains the owner's home path;
   - no `.env*` files;
   - `SECURITY.md` mentions `Bash(rtk *)` and the memory trust model;
   - `CONTRIBUTING.md` links `vendor.py`, `sync-rtk.sh`, `release.sh` and the evals.
