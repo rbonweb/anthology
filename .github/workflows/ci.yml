@@ -136,3 +136,5 @@ jobs:
           persist-credentials: false
       - name: Run the rtk tests in the pinned Rust image
         run: scripts/rtk-test.sh
+      - name: Run the release binary with the network off
+        run: scripts/rtk-net-test.sh

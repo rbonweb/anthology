@@ -6,9 +6,11 @@
 # 1. refuses to run on a dirty tree;
 # 2. creates branch rtk-sync/<tag> from HEAD;
 # 3. git subtree pull --prefix=rtk https://github.com/rtk-ai/rtk <tag>
-#    (on conflicts: prints the conflicted files and stops, leaving the branch for review);
+#    (upstream edits to files the trim deletes are modify/delete conflicts, "deleted by us":
+#    they are resolved by deletion, as the trim would delete them again; on any other
+#    conflict it prints the conflicted files and stops, leaving the branch for review);
 # 4. records the merged tag and its commit as the upstream pin in vendor/sources.json;
-# 5. runs scripts/rtk-trim.sh when it exists;
+# 5. runs scripts/rtk-trim.sh (required: the sync fails without it);
 # 6. runs $RTK_TEST (scripts/rtk-test.sh: the pinned image from ci/images/rust.Dockerfile);
 # 7. prints a summary.
 #
@@ -55,20 +57,40 @@ message="feat: merge upstream rtk $tag
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
+resolved=0
 if ! git subtree pull --prefix="$PREFIX" "$UPSTREAM" "$tag" -m "$message"; then
     conflicts=$(git diff --name-only --diff-filter=U)
-    echo
+    # Upstream edited files the trim deletes ("deleted by us"): delete them again.
+    trimmed=
     if [ -n "$conflicts" ]; then
-        echo "sync-rtk: the merge of $tag stopped on conflicts in:"
-        printf '%s\n' "$conflicts" | sed 's/^/  /'
-        echo "Resolve them on $branch (keep upstream's design, re-apply the fork's intent),"
-        echo "then commit the merge and re-run the tests. Nothing was pushed or merged."
-    else
-        echo "sync-rtk: git subtree pull of $tag failed (see above); nothing was merged."
-        echo "To retry, go back and delete the empty branch:"
-        echo "  git switch $start && git branch -D $branch"
+        trimmed=$(git status --porcelain | python3 scripts/rtk_trim.py --trimmed-conflicts)
     fi
-    exit 1
+    if [ -n "$trimmed" ]; then
+        while IFS= read -r path; do
+            git rm -q -- "$path"
+            resolved=$((resolved + 1))
+        done <<EOF
+$trimmed
+EOF
+        echo "sync-rtk: resolved $resolved deleted-by-us conflicts by deletion (the trim removes them)"
+        conflicts=$(git diff --name-only --diff-filter=U)
+    fi
+    if [ -n "$trimmed" ] && [ -z "$conflicts" ]; then
+        git commit -q --no-edit
+    else
+        echo
+        if [ -n "$conflicts" ]; then
+            echo "sync-rtk: the merge of $tag stopped on conflicts in:"
+            printf '%s\n' "$conflicts" | sed 's/^/  /'
+            echo "Resolve them on $branch (keep upstream's design, re-apply the fork's intent),"
+            echo "then commit the merge and re-run the tests. Nothing was pushed or merged."
+        else
+            echo "sync-rtk: git subtree pull of $tag failed (see above); nothing was merged."
+            echo "To retry, go back and delete the empty branch:"
+            echo "  git switch $start && git branch -D $branch"
+        fi
+        exit 1
+    fi
 fi
 merge=$(git rev-parse --short HEAD)
 
@@ -97,7 +119,11 @@ else
 fi
 
 status=0
-if [ -f scripts/rtk-trim.sh ]; then
+if [ ! -f scripts/rtk-trim.sh ]; then
+    echo "sync-rtk: scripts/rtk-trim.sh is missing; the trim is required" >&2
+    trim="FAILED (scripts/rtk-trim.sh is missing)"
+    status=1
+else
     echo "sync-rtk: running scripts/rtk-trim.sh"
     if bash scripts/rtk-trim.sh; then
         trim="ran scripts/rtk-trim.sh"
@@ -105,9 +131,6 @@ if [ -f scripts/rtk-trim.sh ]; then
         trim="FAILED (scripts/rtk-trim.sh, see above)"
         status=1
     fi
-else
-    echo "sync-rtk: scripts/rtk-trim.sh does not exist yet; trim skipped"
-    trim="skipped (scripts/rtk-trim.sh does not exist)"
 fi
 
 if [ "$status" -ne 0 ]; then
@@ -126,7 +149,11 @@ echo
 echo "sync-rtk summary"
 echo "  upstream: $UPSTREAM $tag"
 echo "  branch:   $branch (from $base), merge commit $merge"
-echo "  conflicts: none"
+if [ "$resolved" -gt 0 ]; then
+    echo "  conflicts: $resolved deleted-by-us, resolved by deletion (no other conflicts)"
+else
+    echo "  conflicts: none"
+fi
 echo "  pin:      $pin"
 echo "  trim:     $trim"
 echo "  tests:    $tests"
