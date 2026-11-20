@@ -68,7 +68,9 @@ pub fn passwd_home() -> Option<OsString> {
 /// The local calendar date `(year, month 1-12, day 1-31)` of the epoch second `t`, after
 /// `tzset()` so the process's `TZ` applies. `None` if `localtime_r` fails.
 pub fn local_date(t: i64) -> Option<(i32, u8, u8)> {
-    // time_t is i64 on every supported target (64-bit Linux and macOS).
+    // time_t is i64 on every supported target (64-bit Linux and macOS). libc marks musl's
+    // `time_t` deprecated for its 32-bit time64 transition, which 64-bit targets don't have.
+    #[allow(deprecated)]
     let t = t as libc::time_t;
     let mut tm = MaybeUninit::<libc::tm>::uninit();
     // SAFETY: tzset reads `TZ` with getenv and updates libc's own time zone state. That is
