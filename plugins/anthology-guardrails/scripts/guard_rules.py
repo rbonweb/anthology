@@ -636,11 +636,15 @@ def _parse_shell_args(args, i=0):
     return ("stdin" if stdin or i >= n else "file"), i
 
 
-# fish long options that take a value (`--opt=v` or `--opt v`); getopt accepts any unique prefix.
-# From fish's own option table (src/fish.cpp `long_opts`); the scan in _parse_fish_args does not
-# depend on this list being complete.
+# fish long options that take a value (`--opt=v` or `--opt v`), and those that do not; getopt
+# accepts any unique prefix. From fish's own option table (src/fish.cpp `long_opts`). The scan
+# for `-c` in _parse_fish_args does not depend on these lists being complete, and neither does
+# the stdin check: a long option in neither list may take a value, so the first word after it
+# could be that value, not a script file; fish is then also read as running a script from stdin.
 _FISH_LONG_VALUE = ("--command", "--init-command", "--debug", "--debug-output",
                     "--debug-stack-frames", "--features", "--profile", "--profile-startup")
+_FISH_LONG_FLAG = ("--interactive", "--login", "--no-config", "--no-execute", "--private",
+                   "--print-rusage-self", "--print-debug-categories", "--help", "--version")
 _FISH_SHORT_VALUE = "cCdDofp"             # -c -C run code; -d -D -o -f -p take a value
 _FISH_SCRIPT_LONG = ("--command", "--init-command")
 
@@ -699,9 +703,11 @@ def _parse_fish_args(args, i=0):
     Parsing starts at args[i]. Returns (mode, index of the first word after the options,
     scripts): `scripts` is a list of (index of the word holding it, the command text) for every
     command found. mode is 'c' when `-c` was given before the options end, else 'file' when a
-    word is left, else 'stdin'."""
+    word is left, else 'stdin'. A long option the lists above do not know may take the next
+    word as its value, so with one before that word the mode is 'stdin' (not 'file'): the word
+    might not be a script file, and a piped script must still be checked."""
     n = len(args)
-    first, command = i, False
+    first, command, unknown = i, False, False
     while i < n:
         token = args[i]
         if token in ("--", "-"):
@@ -711,6 +717,10 @@ def _parse_fish_args(args, i=0):
             break
         _scripts, runs_c, takes_next = _fish_option_at(args, i)
         command = command or runs_c
+        if token.startswith("--") and len(token) > 2:
+            name = token.partition("=")[0]
+            unknown = unknown or not any(
+                len(name) > 2 and opt.startswith(name) for opt in _FISH_LONG_VALUE + _FISH_LONG_FLAG)
         i += 2 if takes_next else 1
     i = min(i, n)
     scripts = []
@@ -718,7 +728,7 @@ def _parse_fish_args(args, i=0):
         for found in _fish_option_at(args, k)[0]:
             if found not in scripts:
                 scripts.append(found)
-    return ("c" if command else "file" if i < n else "stdin"), i, scripts
+    return ("c" if command else "file" if i < n and not unknown else "stdin"), i, scripts
 
 
 def _shell_parse(prog, args, i=0):
@@ -1397,6 +1407,19 @@ def _g5(tool_name):
 
 # G6 ------------------------------------------------------------------
 
+# What is not a secret value after `key:`, `key=` or `"key":` (shared with memory_privacy; a test keeps
+# the two copies identical): a value that is wholly null/none/true/false or a template placeholder
+# (`<...>`, `${...}`, a run of `*`, `.` or `x`), optionally quoted (a quoted one needs its closing
+# quote right after it), then optional blanks and a `,`, `}`, `]`, a line break or the end. Quotes
+# may carry a backslash (JSON inside a double-quoted shell string).
+_SKIP_WORD = r"(?:null|none|true|false|<[^<>\r\n]*>|\$\{[^{}\r\n]*\}|[*.xX]+)"
+_NOT_A_VALUE = r"(?:\\?[\"']" + _SKIP_WORD + r"\\?[\"']|" + _SKIP_WORD + r")[ \t]*(?:[,}\]\r\n]|$)"
+# After the separator of an unquoted key: not a placeholder.
+_UNQUOTED_VALUE = r"(?![ \t]*" + _NOT_A_VALUE + ")"
+# After a key's closing quote (one optional quote, `\"` included): a separator, then a real scalar,
+# not empty, an object or array (a schema) or a placeholder.
+_QUOTED_VALUE = r"\\?[\"']\s*[:=]\s*(?!" + _NOT_A_VALUE + r")(?:\\?[\"'])?(?![\\\"'{\[\]},\s])"
+
 _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"(?:AKIA|ASIA)[0-9A-Z]{16}",
     r"\bgh[pousr]_[A-Za-z0-9]+",
@@ -1405,8 +1428,8 @@ _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"\bxox[baprs]-",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 )) + tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"password\s*[:=]",
-    r"api[_-]?key\s*[:=]",
+    r"password(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)",
+    r"api[_-]?key(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)",
 ))
 _CONTENT_KEYS = ("content", "new_string", "new_source")
 _PATH_KEYS = ("file_path", "path", "notebook_path")

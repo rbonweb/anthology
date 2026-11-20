@@ -653,3 +653,24 @@ The defence is model guidance plus review, not a barrier; a note can still misle
 **Consequences**
 
 A first session after setup leaves old notes out of the repo and the main session's repo index until the user promotes them, which is the intended privacy default. Cost if wrong: a user who wanted automatic repo migration runs setup once and picks notes. Evidence: stream P1 tests, `tests/test_smoke.py`.
+
+## ADR-021: quoted secret keys in the privacy scan and G6
+
+- **Date:** 2026-11-20
+- **Task:** fix-wave lane FW-Q
+- **Status:** Accepted
+
+**Context**
+
+The secret-assignment patterns (`password`, `api key`, and the broader `password|passwd|secret|api key|token` one in `memory_privacy.SECRET_PATTERNS`, whose first two are mirrored by guard rule G6) required the separator right after the key. A JSON- or dict-quoted key (`"password": "…"`, `'api_token': '…'`, `{"token":"…"}`) has a closing quote in between and was missed.
+
+**Decision**
+
+- Each of those patterns allows one closing quote (`"` or `'`, with an optional backslash before it, so JSON inside a double-quoted shell string such as `{\"password\": \"x\"}` counts) between the key and the `:`/`=` separator. The G6 patterns and their copies in `SECRET_PATTERNS` stay byte-identical (a test checks it).
+- After a quoted key the value must be a scalar. It does not count if it is empty (`""`), an object or array (starts with `{` or `[`), or an immediate `,`/`}`/`]`. So JSON schemas (`"password": {"type": "string"}`), blank fields and prose such as "the password field" stay clean. The broad pattern also keeps its 8-character minimum.
+- A value is skipped, after a quoted or an unquoted key, only when it is wholly `null`/`none`/`true`/`false` or a template placeholder: all of it `<…>`, all of it `${…}`, or a run of only `*`, `.` or `x`/`X`, optionally quoted, then optional blanks and one of `,`, `}`, `]`, a line break or the end of the text. A quoted one must have its closing quote right after the word, so a `,`, `}` or `]` inside the quotes does not end it. `"true-love-99"`, `"true,horse,battery"`, `"x,Hunter2xyz"`, `"<a>b"`, `"${X}tail"` and `"***real"` still flag. `"string"` is not a placeholder (a schema is `{"type": "string"}`, already clean). This changes the unquoted forms too: `password=<your-password>` is clean, and so are `password: x` and `password=xxxx`.
+- Every pattern stays linear (one optional quote, no nested quantifiers); a test asserts that 4x the input costs less than 6x.
+
+**Consequences**
+
+A quoted key with a real-looking value is refused or blocked like an unquoted one. Residual misses, accepted: an object-valued secret (`"password": {"value": "…"}`, ARM parameter files), an array (`"password": ["…"]`), a TOML triple-quoted value after a quoted key (`"password" = """…"""`), a value with a leading space inside the quotes, a real secret that is only `x`, `*` or `.` characters, an unquoted value that starts with a skip word and a `,` (`password=true,horse`, since `,` is a normal delimiter there), Unicode quotes or colons (`“password”: …`) and doubly escaped quotes (as on build). Inside a G6 Bash command the placeholder skip rarely applies (`echo 'password: <x>' > mem` still blocks, because a quote and a redirect follow the placeholder); that is the safe side. Cost if wrong: a false negative on one of those, or a false positive on a quoted example value that looks real (`"password": "string"`). Evidence: `QuotedKeyTest` in `tests/test_memory_privacy.py` and the G6 rows in `tests/test_guard_rules.py`.
