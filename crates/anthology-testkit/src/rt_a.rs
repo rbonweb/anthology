@@ -59,7 +59,11 @@ fn unhex(s: &str) -> Vec<u8> {
 /// `text` encoded as `enc` (module docs).
 pub fn encode(text: &str, enc: &str) -> Vec<u8> {
     let utf16 = |le: bool| {
-        let mut out: Vec<u8> = if le { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+        let mut out: Vec<u8> = if le {
+            vec![0xff, 0xfe]
+        } else {
+            vec![0xfe, 0xff]
+        };
         for u in text.encode_utf16() {
             out.extend_from_slice(&if le { u.to_le_bytes() } else { u.to_be_bytes() });
         }

@@ -133,7 +133,10 @@ fn run(case: &Value) -> Observed {
     let mut env = Env::default();
     if let Some(vars) = field(case, "env").and_then(Value::as_object) {
         for (k, v) in vars.iter() {
-            env = env.with(k, &rt_a::expand(v.as_str().expect("env value"), &root, None));
+            env = env.with(
+                k,
+                &rt_a::expand(v.as_str().expect("env value"), &root, None),
+            );
         }
     }
     let op = field(case, "op").and_then(Value::as_str).expect("op");
@@ -237,6 +240,9 @@ fn text(v: &Value) -> String {
     json::dumps(v, &json::PY_DEFAULT)
 }
 
+/// A change to a case under construction (a seed's settings variant).
+type Edit = Box<dyn Fn(&mut B)>;
+
 /// A case under construction.
 #[derive(Default)]
 struct B {
@@ -262,13 +268,23 @@ impl B {
         self.push(vec![("t", s("file")), ("p", s(p)), ("text", s(t))])
     }
     fn file_enc(&mut self, p: &str, t: &str, enc: &str) -> &mut B {
-        self.push(vec![("t", s("file")), ("p", s(p)), ("text", s(t)), ("enc", s(enc))])
+        self.push(vec![
+            ("t", s("file")),
+            ("p", s(p)),
+            ("text", s(t)),
+            ("enc", s(enc)),
+        ])
     }
     fn file_hex(&mut self, p: &str, b: &[u8]) -> &mut B {
         self.push(vec![("t", s("file")), ("p", s(p)), ("hex", s(&hex(b)))])
     }
     fn file_pad(&mut self, p: &str, t: &str, key: &str, n: i64) -> &mut B {
-        self.push(vec![("t", s("file")), ("p", s(p)), ("text", s(t)), (key, int(n))])
+        self.push(vec![
+            ("t", s("file")),
+            ("p", s(p)),
+            ("text", s(t)),
+            (key, int(n)),
+        ])
     }
     fn guard(&mut self, p: &str, kind: &str) -> &mut B {
         self.push(vec![("t", s("guard")), ("p", s(p)), ("kind", s(kind))])
@@ -366,13 +382,21 @@ fn seeds() -> Vec<Value> {
         r#"{"source": "git", "url": "https://example.invalid/x.git"}"#,
         r#"{"source": "url", "url": "https://example.invalid/m.json"}"#,
     ] {
-        out.push(B::new().diverging().known(source, "@ROOT@/market").inspect(plugin));
+        out.push(
+            B::new()
+                .diverging()
+                .known(source, "@ROOT@/market")
+                .inspect(plugin),
+        );
     }
     out.push(
         B::new()
             .diverging()
             .link("link", "@ROOT@/market")
-            .known(r#"{"source": "directory", "path": "@ROOT@/link"}"#, "@ROOT@/link")
+            .known(
+                r#"{"source": "directory", "path": "@ROOT@/link"}"#,
+                "@ROOT@/link",
+            )
             .inspect(plugin),
     );
     // FallbackTest
@@ -395,7 +419,12 @@ fn seeds() -> Vec<Value> {
     ] {
         out.push(sibling_case().file(KNOWN, t).inspect(pd));
     }
-    for manifest in [None, Some("{broken"), Some(r#"{"plugins": "x"}"#), Some(r#"{"plugins": []}"#)] {
+    for manifest in [
+        None,
+        Some("{broken"),
+        Some(r#"{"plugins": "x"}"#),
+        Some(r#"{"plugins": []}"#),
+    ] {
         let mut b = sibling_case();
         b.directory_known();
         if let Some(m) = manifest {
@@ -407,11 +436,20 @@ fn seeds() -> Vec<Value> {
         B::new()
             .guard(CACHE, "file")
             .dir(CACHED_ANTHOLOGY)
-            .guard("home/.claude/plugins/cache/anthology/anthology-guardrails", "file")
+            .guard(
+                "home/.claude/plugins/cache/anthology/anthology-guardrails",
+                "file",
+            )
             .installed()
             .inspect(&format!("@ROOT@/{CACHED_ANTHOLOGY}")),
     );
-    out.push(B::new().guard(CACHE, "file").installed().dir("lone/anthology").inspect(lone));
+    out.push(
+        B::new()
+            .guard(CACHE, "file")
+            .installed()
+            .dir("lone/anthology")
+            .inspect(lone),
+    );
     out.push(
         B::new()
             .dir("dev/anthology")
@@ -499,7 +537,8 @@ fn seeds() -> Vec<Value> {
         let mut b = B::new();
         b.guard(CACHE, "file");
         if live_hooks {
-            b.dir(&format!("{LIVE}/hooks")).dir(&format!("{LIVE}/scripts"));
+            b.dir(&format!("{LIVE}/hooks"))
+                .dir(&format!("{LIVE}/scripts"));
         }
         b.manifest(r#""./plugins/anthology-guardrails""#)
             .directory_known()
@@ -547,7 +586,10 @@ fn seeds() -> Vec<Value> {
         }
         b.manifest(r#""./plugins/anthology-guardrails""#);
         if kind == "github" {
-            b.known(r#"{"source": "github", "repo": "owner/anthology"}"#, "@ROOT@/market");
+            b.known(
+                r#"{"source": "github", "repo": "owner/anthology"}"#,
+                "@ROOT@/market",
+            );
         } else {
             b.directory_known();
         }
@@ -578,9 +620,10 @@ fn seeds() -> Vec<Value> {
             .inspect(plugin),
     );
     // BoundedReadTest, DecodeLikeClaudeCodeTest, EnabledValueTest, UsersOwnFilesAreUncapped
-    let flag_pad = r#"{"enabledPlugins": {"anthology-guardrails@anthology": false}, "pad": "@PAD@"}"#;
+    let flag_pad =
+        r#"{"enabledPlugins": {"anthology-guardrails@anthology": false}, "pad": "@PAD@"}"#;
     let pad = r#"{"pad": "@PAD@"}"#;
-    let settings_cases: Vec<Box<dyn Fn(&mut B)>> = vec![
+    let settings_cases: Vec<Edit> = vec![
         Box::new(|b| {
             b.file_pad(".claude/settings.json", flag_pad, "pad", LIMIT + 10);
         }),
@@ -603,7 +646,10 @@ fn seeds() -> Vec<Value> {
             b.file(".claude/settings.json", FLAG_FALSE);
         }),
         Box::new(|b| {
-            b.file(".claude/settings.json", r#"{"enabledPlugins": {"other@x": false}}"#);
+            b.file(
+                ".claude/settings.json",
+                r#"{"enabledPlugins": {"other@x": false}}"#,
+            );
         }),
         Box::new(|_| {}),
         Box::new(|b| {
@@ -622,7 +668,8 @@ fn seeds() -> Vec<Value> {
             b.fifo(".claude/settings.json");
         }),
         Box::new(|b| {
-            b.file(".claude/settings.json", "{}").chmod(".claude/settings.json", 0);
+            b.file(".claude/settings.json", "{}")
+                .chmod(".claude/settings.json", 0);
         }),
         Box::new(|b| {
             b.link(".claude/settings.json", "/dev/zero");
@@ -637,7 +684,11 @@ fn seeds() -> Vec<Value> {
             b.link(USER_SETTINGS, "/dev/null");
         }),
         Box::new(|b| {
-            b.file_enc(".claude/settings.json", &format!("{{{}}}", &FLAG_FALSE[1..FLAG_FALSE.len() - 1]), "utf16le-bom");
+            b.file_enc(
+                ".claude/settings.json",
+                &format!("{{{}}}", &FLAG_FALSE[1..FLAG_FALSE.len() - 1]),
+                "utf16le-bom",
+            );
         }),
         Box::new(|b| {
             b.file_enc(USER_SETTINGS, FLAG_FALSE, "utf16le-bom");
@@ -651,7 +702,12 @@ fn seeds() -> Vec<Value> {
     }
     for name in ["settings.json", "settings.local.json"] {
         for t in ["{not json", "[1, 2", r#"{"a": }"#, "\u{0}"] {
-            out.push(B::new().diverging().file(&format!(".claude/{name}"), t).inspect(plugin));
+            out.push(
+                B::new()
+                    .diverging()
+                    .file(&format!(".claude/{name}"), t)
+                    .inspect(plugin),
+            );
         }
     }
     let flag = r#""enabledPlugins":{"anthology-guardrails@anthology":false}"#;
@@ -661,18 +717,28 @@ fn seeds() -> Vec<Value> {
             [b"\xff\xfe".as_slice(), &utf16le(&format!("{{{flag}}}"))].concat(),
             "settings.json",
         ),
-        ([b"\xff\xfe".as_slice(), &utf16le(r#"{"other": 1}"#)].concat(), "settings.json"),
+        (
+            [b"\xff\xfe".as_slice(), &utf16le(r#"{"other": 1}"#)].concat(),
+            "settings.json",
+        ),
         (
             [b"\xfe\xff".as_slice(), &utf16be(&format!("{{{flag}}}"))].concat(),
             "settings.json",
         ),
-        ([b"\xfe\xff".as_slice(), &utf16be(r#"{"other": 1}"#)].concat(), "settings.json"),
+        (
+            [b"\xfe\xff".as_slice(), &utf16be(r#"{"other": 1}"#)].concat(),
+            "settings.json",
+        ),
         (
             [b"\xef\xbb\xbf".as_slice(), format!("{{{flag}}}").as_bytes()].concat(),
             "settings.json",
         ),
         (
-            [format!(r#"{{{flag},"env":{{"X":"a"#).as_bytes(), b"\xff\"}}".as_slice()].concat(),
+            [
+                format!(r#"{{{flag},"env":{{"X":"a"#).as_bytes(),
+                b"\xff\"}}".as_slice(),
+            ]
+            .concat(),
             "settings.json",
         ),
         (b"{\"env\":{\"X\":\"a\xff\"}}".to_vec(), "settings.json"),
@@ -681,7 +747,9 @@ fn seeds() -> Vec<Value> {
             "settings.local.json",
         ),
     ] {
-        out.push(disabled(B::new().file_hex(&format!(".claude/{name}"), &raw)));
+        out.push(disabled(
+            B::new().file_hex(&format!(".claude/{name}"), &raw),
+        ));
     }
     out.push(disabled(B::new().file_pad(
         ".claude/settings.json",
@@ -700,10 +768,24 @@ fn seeds() -> Vec<Value> {
         &[b"\xef\xbb\xbf".as_slice(), format!("{{{flag}}}").as_bytes()].concat(),
     )));
     for value in [
-        "[]", r#"["0.1.0"]"#, r#""yes""#, r#""true""#, "null", "0", "1", "{}", r#"{"a": 1}"#,
-        "false", "true", "1.0",
+        "[]",
+        r#"["0.1.0"]"#,
+        r#""yes""#,
+        r#""true""#,
+        "null",
+        "0",
+        "1",
+        "{}",
+        r#"{"a": 1}"#,
+        "false",
+        "true",
+        "1.0",
     ] {
-        for place in [USER_SETTINGS, ".claude/settings.json", ".claude/settings.local.json"] {
+        for place in [
+            USER_SETTINGS,
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+        ] {
             let mut b = B::new();
             b.diverging().file(
                 USER_SETTINGS,
@@ -794,7 +876,10 @@ fn compat_seeds() -> Vec<Value> {
     }
     b.chmod("plug/bin/rtk-hook", 0o644);
     out.push(b.case("wrappers", vec![("plugin_root", s("@ROOT@/plug"))]));
-    out.push(doctor().case("wrappers", vec![("plugin_root", s("@ROOT@/repo/plugins/anthology"))]));
+    out.push(doctor().case(
+        "wrappers",
+        vec![("plugin_root", s("@ROOT@/repo/plugins/anthology"))],
+    ));
     // AgentMemoryPathTest
     let mem = "proj/.claude/agent-memory";
     for dirs in [
@@ -820,9 +905,17 @@ fn compat_seeds() -> Vec<Value> {
     let model = r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}"#;
     out.push(doctor().case("subagent_model", cwd()));
     for v in ["SECRETMODEL", "", " "] {
-        out.push(doctor().env("CLAUDE_CODE_SUBAGENT_MODEL", v).case("subagent_model", cwd()));
+        out.push(
+            doctor()
+                .env("CLAUDE_CODE_SUBAGENT_MODEL", v)
+                .case("subagent_model", cwd()),
+        );
     }
-    for path in ["config/settings.json", "proj/.claude/settings.json", "proj/.claude/settings.local.json"] {
+    for path in [
+        "config/settings.json",
+        "proj/.claude/settings.json",
+        "proj/.claude/settings.local.json",
+    ] {
         out.push(doctor().file(path, model).case("subagent_model", cwd()));
     }
     out.push(
@@ -841,13 +934,21 @@ fn compat_seeds() -> Vec<Value> {
         ("proj/.claude/settings.json", LIMIT - base + 1),
         ("config/settings.json", LIMIT + 10),
     ] {
-        out.push(doctor().file_pad(path, model_pad, "pad", n).case("subagent_model", cwd()));
+        out.push(
+            doctor()
+                .file_pad(path, model_pad, "pad", n)
+                .case("subagent_model", cwd()),
+        );
     }
     for raw in [
         [b"\xff\xfe".as_slice(), &utf16le(model)].concat(),
         [b"\xfe\xff".as_slice(), &utf16be(model)].concat(),
         [b"\xef\xbb\xbf".as_slice(), model.as_bytes()].concat(),
-        [&model.as_bytes()[..model.len() - 2], b", \"x\": \"a\xff\"}}".as_slice()].concat(),
+        [
+            &model.as_bytes()[..model.len() - 2],
+            b", \"x\": \"a\xff\"}}".as_slice(),
+        ]
+        .concat(),
     ] {
         out.push(
             doctor()
@@ -866,7 +967,11 @@ fn compat_seeds() -> Vec<Value> {
             .link("proj/.claude/settings.json", "/dev/zero")
             .case("subagent_model", cwd()),
     );
-    out.push(doctor().fifo("proj/.claude/settings.json").case("subagent_model", cwd()));
+    out.push(
+        doctor()
+            .fifo("proj/.claude/settings.json")
+            .case("subagent_model", cwd()),
+    );
     let mut b = doctor();
     b.fifo("settings.json");
     out.push(b.case(
@@ -1053,7 +1158,11 @@ fn rand_encoded(rng: &mut Rng, text: &str) -> Vec<u8> {
     };
     match enc {
         0..=5 => body(&t, &|p| p.as_bytes().to_vec()),
-        6 => [b"\xef\xbb\xbf".as_slice(), &body(&t, &|p| p.as_bytes().to_vec())].concat(),
+        6 => [
+            b"\xef\xbb\xbf".as_slice(),
+            &body(&t, &|p| p.as_bytes().to_vec()),
+        ]
+        .concat(),
         7 => [b"\xff\xfe".as_slice(), &body(&t, &|p| utf16le(p))].concat(),
         8 => [b"\xfe\xff".as_slice(), &body(&t, &|p| utf16be(p))].concat(),
         _ => {
@@ -1085,7 +1194,17 @@ fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) 
         return;
     }
     if k < 0.86 {
-        let t = *rng.pick(&["", " \n", "\u{1c}", "\u{3000}", "\u{feff}", "\u{feff} ", "\t\r\n", "\u{85}", "\u{200b}"]);
+        let t = *rng.pick(&[
+            "",
+            " \n",
+            "\u{1c}",
+            "\u{3000}",
+            "\u{feff}",
+            "\u{feff} ",
+            "\t\r\n",
+            "\u{85}",
+            "\u{200b}",
+        ]);
         let enc = *rng.pick(&["utf8", "utf8", "utf16le-bom", "utf8-bom"]);
         b.file_enc(path, t, enc);
         return;
@@ -1254,7 +1373,16 @@ fn rand_installed(rng: &mut Rng, b: &mut B) {
         return;
     }
     if k < 0.12 {
-        b.file(INSTALLED, rng.pick(&["{not json", "[]", r#"{"plugins": []}"#, "", r#"{"plugins": {"anthology-guardrails@anthology": "x"}}"#]));
+        b.file(
+            INSTALLED,
+            rng.pick(&[
+                "{not json",
+                "[]",
+                r#"{"plugins": []}"#,
+                "",
+                r#"{"plugins": {"anthology-guardrails@anthology": "x"}}"#,
+            ]),
+        );
         return;
     }
     let mut plugins = Map::new();
@@ -1283,7 +1411,16 @@ fn rand_known(rng: &mut Rng, b: &mut B) {
         return;
     }
     if k < 0.22 {
-        b.file(KNOWN, rng.pick(&["{not json", "[]", r#"{"anthology": 3}"#, r#"{"anthology": {"source": "directory"}}"#, ""]));
+        b.file(
+            KNOWN,
+            rng.pick(&[
+                "{not json",
+                "[]",
+                r#"{"anthology": 3}"#,
+                r#"{"anthology": {"source": "directory"}}"#,
+                "",
+            ]),
+        );
         return;
     }
     let mut known = Map::new();
@@ -1294,7 +1431,9 @@ fn rand_known(rng: &mut Rng, b: &mut B) {
         let source = match rng.below(12) {
             0..=4 => json::loads(r#"{"source": "directory", "path": "@ROOT@/market"}"#).unwrap(),
             5 | 6 => json::loads(r#"{"source": "github", "repo": "owner/anthology"}"#).unwrap(),
-            7 => json::loads(r#"{"source": "git", "url": "https://example.invalid/x.git"}"#).unwrap(),
+            7 => {
+                json::loads(r#"{"source": "git", "url": "https://example.invalid/x.git"}"#).unwrap()
+            }
             8 => json::loads(r#"{"source": "url"}"#).unwrap(),
             9 => s("directory"),
             10 => json::loads(r#"{"source": 5}"#).unwrap(),
@@ -1344,7 +1483,16 @@ fn rand_manifest(rng: &mut Rng, b: &mut B) {
         return;
     }
     if k < 0.2 {
-        b.file(MANIFEST, rng.pick(&["{broken", r#"{"plugins": "x"}"#, r#"{"plugins": []}"#, "", "[]"]));
+        b.file(
+            MANIFEST,
+            rng.pick(&[
+                "{broken",
+                r#"{"plugins": "x"}"#,
+                r#"{"plugins": []}"#,
+                "",
+                "[]",
+            ]),
+        );
         return;
     }
     if k < 0.21 {
@@ -1431,10 +1579,16 @@ fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
     }
     b.dir("market/plugins");
     if rng.chance(0.2) {
-        b.link("market/plugins/link-out", "@ROOT@/outside/anthology-guardrails");
+        b.link(
+            "market/plugins/link-out",
+            "@ROOT@/outside/anthology-guardrails",
+        );
     }
     if rng.chance(0.2) {
-        b.link("market/plugins/link-in", "@ROOT@/market/plugins/anthology-guardrails");
+        b.link(
+            "market/plugins/link-in",
+            "@ROOT@/market/plugins/anthology-guardrails",
+        );
     }
     if rng.chance(0.3) {
         b.link("link-market", "@ROOT@/market");
@@ -1446,15 +1600,20 @@ fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
         5 => {
             b.guard("outside/anthology-guardrails", "file")
                 .dir("plugins-dir")
-                .link("plugins-dir/anthology-guardrails", "@ROOT@/outside/anthology-guardrails");
+                .link(
+                    "plugins-dir/anthology-guardrails",
+                    "@ROOT@/outside/anthology-guardrails",
+                );
         }
         6 => {
             b.guard("plugins-dir", "file")
                 .link("plugins-dir/anthology-guardrails", "@ROOT@/plugins-dir");
         }
         7 => {
-            b.guard("plugins-dir/real-g", "file")
-                .link("plugins-dir/anthology-guardrails", "@ROOT@/plugins-dir/real-g");
+            b.guard("plugins-dir/real-g", "file").link(
+                "plugins-dir/anthology-guardrails",
+                "@ROOT@/plugins-dir/real-g",
+            );
         }
         _ => {}
     }
@@ -1468,8 +1627,11 @@ fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
         b.guard("dev/anthology-guardrails", guard_kind(rng));
     }
     if rng.chance(0.3) {
-        b.guard("home/.claude/plugins/cache/anthology/anthology-guardrails", "file")
-            .dir(CACHED_ANTHOLOGY);
+        b.guard(
+            "home/.claude/plugins/cache/anthology/anthology-guardrails",
+            "file",
+        )
+        .dir(CACHED_ANTHOLOGY);
     }
     // cwd folders (`link-proj` is made by the caller)
     b.dir("proj/sub").dir("elsewhere");
@@ -1493,7 +1655,13 @@ fn settings_for(rng: &mut Rng, b: &mut B, cwd: &str, model: bool) {
     let rel = if rel == "link-proj" { "proj" } else { rel };
     rand_settings(rng, b, USER_SETTINGS, false, model);
     rand_settings(rng, b, &format!("{rel}/.claude/settings.json"), true, model);
-    rand_settings(rng, b, &format!("{rel}/.claude/settings.local.json"), true, model);
+    rand_settings(
+        rng,
+        b,
+        &format!("{rel}/.claude/settings.local.json"),
+        true,
+        model,
+    );
 }
 
 fn gen_case(rng: &mut Rng) -> Value {
@@ -1529,13 +1697,25 @@ fn gen_case(rng: &mut Rng) -> Value {
         return gen_read_json(rng, b);
     }
     let raw: Vec<u8> = (0..rng.below(40)).map(|_| rng.below(256) as u8).collect();
-    let prefix: &[u8] = rng.pick(&[b"".as_slice(), b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf", b"\xef\xbb\xbf\xef\xbb\xbf"]);
+    let prefix: &[u8] = rng.pick(&[
+        b"".as_slice(),
+        b"\xff\xfe",
+        b"\xfe\xff",
+        b"\xef\xbb\xbf",
+        b"\xef\xbb\xbf\xef\xbb\xbf",
+    ]);
     let mut raw = [prefix, &raw].concat();
     if rng.chance(0.3) {
         // UTF-16 code units around the surrogates
         for _ in 0..rng.below(6) {
-            let u: u16 = *rng.pick(&[0xd800, 0xdbff, 0xdc00, 0xdfff, 0xd83d, 0xde00, 0x0041, 0xfeff]);
-            raw.extend(if rng.chance(0.5) { u.to_le_bytes() } else { u.to_be_bytes() });
+            let u: u16 = *rng.pick(&[
+                0xd800, 0xdbff, 0xdc00, 0xdfff, 0xd83d, 0xde00, 0x0041, 0xfeff,
+            ]);
+            raw.extend(if rng.chance(0.5) {
+                u.to_le_bytes()
+            } else {
+                u.to_be_bytes()
+            });
         }
     }
     b.case("decode", vec![("hex", s(&hex(&raw)))])
@@ -1583,12 +1763,28 @@ fn gen_subagent(rng: &mut Rng, mut b: B) -> Value {
     }
     gen_repo_layout(rng, &mut b);
     let cwd = repo_cwd(rng);
-    let top = if rng.chance(0.75) { "proj" } else { "proj/pkg/x" };
+    let top = if rng.chance(0.75) {
+        "proj"
+    } else {
+        "proj/pkg/x"
+    };
     if rng.chance(0.4) {
         rand_settings(rng, &mut b, USER_SETTINGS, false, true);
     }
-    rand_settings(rng, &mut b, &format!("{top}/.claude/settings.json"), true, true);
-    rand_settings(rng, &mut b, &format!("{top}/.claude/settings.local.json"), true, true);
+    rand_settings(
+        rng,
+        &mut b,
+        &format!("{top}/.claude/settings.json"),
+        true,
+        true,
+    );
+    rand_settings(
+        rng,
+        &mut b,
+        &format!("{top}/.claude/settings.local.json"),
+        true,
+        true,
+    );
     b.case("subagent_model", vec![("cwd", s(cwd))])
 }
 
@@ -1648,8 +1844,10 @@ fn gen_wrappers(rng: &mut Rng, mut b: B) -> Value {
         }
         match rng.below(10) {
             0..=4 => {
-                b.file(&path, "#!/bin/sh\n")
-                    .chmod(&path, *rng.pick(&[0o755, 0o700, 0o644, 0o600, 0o000, 0o500]));
+                b.file(&path, "#!/bin/sh\n").chmod(
+                    &path,
+                    *rng.pick(&[0o755, 0o700, 0o644, 0o600, 0o000, 0o500]),
+                );
             }
             5 => {
                 b.dir(&path);
@@ -1711,7 +1909,10 @@ fn gen_read_json(rng: &mut Rng, mut b: B) -> Value {
         }
         _ => {}
     }
-    b.case("read_json", vec![("path", s("@ROOT@/f.json")), ("limit", limit)])
+    b.case(
+        "read_json",
+        vec![("path", s("@ROOT@/f.json")), ("limit", limit)],
+    )
 }
 
 #[cfg(test)]
@@ -1738,7 +1939,10 @@ mod tests {
         let mut rng = Rng::new(20261121);
         for _ in 0..3000 {
             let case = gen_case(&mut rng);
-            let op = field(&case, "op").and_then(Value::as_str).unwrap().to_string();
+            let op = field(&case, "op")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
             let out = String::from_utf8(run(&case).stdout).unwrap();
             let v = json::loads(&out).unwrap();
             let o = v.as_object().unwrap();

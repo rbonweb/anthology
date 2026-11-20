@@ -317,7 +317,10 @@ fn py_normpath(p: &[u8]) -> Vec<u8> {
         if comp.is_empty() || comp == b"." {
             continue;
         }
-        if comp != b".." || (initial.is_empty() && parts.is_empty()) || parts.last() == Some(&&b".."[..]) {
+        if comp != b".."
+            || (initial.is_empty() && parts.is_empty())
+            || parts.last() == Some(&&b".."[..])
+        {
             parts.push(comp);
         } else if !parts.is_empty() {
             parts.pop();
@@ -474,8 +477,7 @@ pub(crate) fn pathlib_child(a: &[u8], b: &[u8]) -> Vec<u8> {
 
 /// Whether `Path.exists()`/`is_dir()` style errors are the ones pathlib turns into `False`.
 fn ignored_error(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::NotFound
-        || matches!(e.raw_os_error(), Some(ENOTDIR | EBADF | ELOOP))
+    e.kind() == io::ErrorKind::NotFound || matches!(e.raw_os_error(), Some(ENOTDIR | EBADF | ELOOP))
 }
 
 /// `Path.exists()` (CPython 3.12): `Err` for the errors pathlib re-raises.
@@ -581,10 +583,10 @@ fn dir_names(folder: &Path) -> Option<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(folder).ok()? {
         let entry = entry.ok()?;
-        if py_is_dir(&entry.path()).ok()? {
-            if let Ok(name) = entry.file_name().into_string() {
-                names.push(name);
-            }
+        if py_is_dir(&entry.path()).ok()?
+            && let Ok(name) = entry.file_name().into_string()
+        {
+            names.push(name);
         }
     }
     names.sort();
@@ -625,7 +627,10 @@ pub fn subagent_model_source(env: &Env, cwd: &Path) -> Option<&'static str> {
     // the project's two files come with the clone, so they are bounded
     for (label, name) in [
         ("the project's .claude/settings.json", "settings.json"),
-        ("the project's .claude/settings.local.json", "settings.local.json"),
+        (
+            "the project's .claude/settings.local.json",
+            "settings.local.json",
+        ),
     ] {
         let data = read_json_limited(&top.join(".claude").join(name), REPO_READ_LIMIT);
         if env_has_model(data.as_ref()) {
@@ -654,7 +659,14 @@ mod tests {
         ] {
             assert_eq!(pathlib_str(p.as_bytes()), want.as_bytes(), "{p:?}");
         }
-        for (p, want) in [("a", "."), ("/a", "/"), ("//a", "//"), ("/", "/"), ("a/b/", "a"), ("", ".")] {
+        for (p, want) in [
+            ("a", "."),
+            ("/a", "/"),
+            ("//a", "//"),
+            ("/", "/"),
+            ("a/b/", "a"),
+            ("", "."),
+        ] {
             assert_eq!(pathlib_parent(p.as_bytes()), want.as_bytes(), "{p:?}");
         }
         assert_eq!(pathlib_child(b".", b"x"), b"x");
@@ -681,9 +693,15 @@ mod tests {
     fn utf16_replacement_follows_cpython() {
         assert_eq!(utf16_replace(b"a\x00", u16::from_le_bytes), "a");
         assert_eq!(utf16_replace(b"a\x00b", u16::from_le_bytes), "a\u{fffd}");
-        assert_eq!(utf16_replace(b"\x00\xd8a\x00", u16::from_le_bytes), "\u{fffd}a");
+        assert_eq!(
+            utf16_replace(b"\x00\xd8a\x00", u16::from_le_bytes),
+            "\u{fffd}a"
+        );
         assert_eq!(utf16_replace(b"\x00\xdc", u16::from_le_bytes), "\u{fffd}");
-        assert_eq!(utf16_replace(b"\x3d\xd8\x00\xde", u16::from_le_bytes), "\u{1f600}");
+        assert_eq!(
+            utf16_replace(b"\x3d\xd8\x00\xde", u16::from_le_bytes),
+            "\u{1f600}"
+        );
     }
 
     #[test]

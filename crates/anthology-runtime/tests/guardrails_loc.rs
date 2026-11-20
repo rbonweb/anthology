@@ -127,7 +127,10 @@ impl Case {
 
     fn directory_known(&self) {
         self.known(
-            &format!(r#"{{"source": "directory", "path": "{}"}}"#, self.market.display()),
+            &format!(
+                r#"{{"source": "directory", "path": "{}"}}"#,
+                self.market.display()
+            ),
             None,
         );
     }
@@ -238,7 +241,11 @@ impl Case {
 }
 
 fn utf16(text: &str, le: bool) -> Vec<u8> {
-    let mut out: Vec<u8> = if le { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+    let mut out: Vec<u8> = if le {
+        vec![0xff, 0xfe]
+    } else {
+        vec![0xfe, 0xff]
+    };
     for u in text.encode_utf16() {
         out.extend_from_slice(&if le { u.to_le_bytes() } else { u.to_be_bytes() });
     }
@@ -507,7 +514,12 @@ fn test_dev_session_does_not_follow_an_escaping_sibling_link() {
 #[test]
 fn test_source_of_the_wrong_type_is_refused() {
     let c = Case::new();
-    for source in [r#"{"source": "github", "repo": "a/b"}"#, "5", r#""""#, "null"] {
+    for source in [
+        r#"{"source": "github", "repo": "a/b"}"#,
+        "5",
+        r#""""#,
+        "null",
+    ] {
         c.assert_not_accepted(source);
     }
 }
@@ -673,8 +685,13 @@ fn test_oversized_project_settings_without_the_flag_also_count_as_disabled() {
 fn test_one_and_a_half_mib_that_disables_the_guard_is_honoured() {
     let c = Case::new();
     c.diverging();
-    write(&c.project_settings("settings.json"), disable_with_pad(3 << 19));
-    let size = fs::metadata(c.project_settings("settings.json")).unwrap().len();
+    write(
+        &c.project_settings("settings.json"),
+        disable_with_pad(3 << 19),
+    );
+    let size = fs::metadata(c.project_settings("settings.json"))
+        .unwrap()
+        .len();
     assert!(1 << 20 < size && size < REPO_READ_LIMIT, "{size}");
     assert_eq!(c.inspect(), loc(Some(&c.live), Some(Problem::Disabled)));
 }
@@ -855,7 +872,10 @@ fn test_a_deeply_nested_value_counts_as_disabled() {
         "settings.json",
     );
     assert!(c.disabled());
-    c.settings_bytes(format!(r#"{{"zz":{deep}}}"#).as_bytes(), "settings.local.json");
+    c.settings_bytes(
+        format!(r#"{{"zz":{deep}}}"#).as_bytes(),
+        "settings.local.json",
+    );
     assert!(c.disabled());
     // the nesting alone refuses it (Python's RecursionError), not the flag next door
     fs::remove_file(c.project_settings("settings.json")).unwrap();
@@ -882,7 +902,10 @@ fn test_a_utf8_bom_is_stripped_in_every_file() {
     );
     assert!(c.disabled());
     fs::remove_file(c.config.join("settings.json")).unwrap();
-    c.settings_bytes(&[bom, br#"{"other": 1}"#.as_slice()].concat(), "settings.json");
+    c.settings_bytes(
+        &[bom, br#"{"other": 1}"#.as_slice()].concat(),
+        "settings.json",
+    );
     assert!(!c.disabled());
 }
 
@@ -1028,7 +1051,10 @@ fn test_a_huge_installed_plugins_file_is_read() {
 fn test_a_huge_known_marketplaces_file_is_read() {
     let c = Case::new();
     c.diverging();
-    let source = format!(r#"{{"source": "directory", "path": "{}"}}"#, c.market.display());
+    let source = format!(
+        r#"{{"source": "directory", "path": "{}"}}"#,
+        c.market.display()
+    );
     write(
         &c.config.join("plugins/known_marketplaces.json"),
         c.known_text(&source, None, BIG),

@@ -191,7 +191,10 @@ fn marketplace_of(name: &str) -> &str {
 
 /// `known_marketplaces.json[marketplace]`, when it is an object.
 fn known_item(config: &Path, marketplace: &str) -> Option<Value> {
-    let mut known = read_json(&config.join("plugins").join("known_marketplaces.json"), None)?;
+    let mut known = read_json(
+        &config.join("plugins").join("known_marketplaces.json"),
+        None,
+    )?;
     known.as_object_mut()?.remove(marketplace)
 }
 
@@ -243,7 +246,12 @@ fn directory_root(config: &Path, marketplace: &str, plugin: &str) -> Option<Path
 /// source of another type, `None` when unreadable.
 fn marketplace_is_directory(config: &Path, marketplace: &str) -> Option<bool> {
     let item = known_item(config, marketplace)?;
-    let kind = item.as_object()?.get("source")?.as_object()?.get("source")?.as_str()?;
+    let kind = item
+        .as_object()?
+        .get("source")?
+        .as_object()?
+        .get("source")?
+        .as_str()?;
     Some(kind == "directory")
 }
 
@@ -300,8 +308,12 @@ fn live_root(plugin_root: &Path, env: &Env, name: &str, install_path: &str) -> G
 /// `_live_has_guard`: whether `name` is in a `directory` marketplace whose live folder has the
 /// guard (that marketplace runs the live folder, so its cache snapshot does not decide, m13).
 fn live_has_guard(env: &Env, name: &str) -> bool {
-    directory_root(&compat::config_dir(env), marketplace_of(name), "anthology-guardrails")
-        .is_some_and(|live| has_guard(&live))
+    directory_root(
+        &compat::config_dir(env),
+        marketplace_of(name),
+        "anthology-guardrails",
+    )
+    .is_some_and(|live| has_guard(&live))
 }
 
 /// `cwd or os.getcwd()`.
@@ -366,7 +378,10 @@ pub fn inspect(plugin_root: &Path, env: &Env, cwd: &Path) -> GuardLoc {
     };
     if let Some((_, install, name)) = best {
         loc = live_root(plugin_root, env, name, install);
-    } else if plugins.iter().any(|(name, _)| name.starts_with(ANTHOLOGY_PREFIX)) {
+    } else if plugins
+        .iter()
+        .any(|(name, _)| name.starts_with(ANTHOLOGY_PREFIX))
+    {
         loc.problem = Some(Problem::NotInstalled);
     } else {
         loc.root = contained_sibling(plugin_root);
@@ -541,11 +556,20 @@ mod tests {
             ("Infinity", "inf"),
             ("-Infinity", "-inf"),
             ("NaN", "nan"),
-            ("123456789012345678901234567890", "123456789012345678901234567890"),
+            (
+                "123456789012345678901234567890",
+                "123456789012345678901234567890",
+            ),
             ("\"2026-01-01\"", "2026-01-01"),
             (r#"[1, "a", null, true, 2.5]"#, "[1, 'a', None, True, 2.5]"),
-            (r#"{"a": [1, {}], "b": "it's"}"#, r#"{'a': [1, {}], 'b': "it's"}"#),
-            (r#"["it's \"q\"", "\\", "\n\u0001\u007f"]"#, r#"['it\'s "q"', '\\', '\n\x01\x7f']"#),
+            (
+                r#"{"a": [1, {}], "b": "it's"}"#,
+                r#"{'a': [1, {}], 'b': "it's"}"#,
+            ),
+            (
+                r#"["it's \"q\"", "\\", "\n\u0001\u007f"]"#,
+                r#"['it\'s "q"', '\\', '\n\x01\x7f']"#,
+            ),
             (r#"[" é "]"#, "['\\xa0é\\u2028']"),
         ] {
             assert_eq!(repr_of(text), want, "{text}");

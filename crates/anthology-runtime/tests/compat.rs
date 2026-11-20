@@ -245,9 +245,15 @@ fn test_set_in_project_settings_and_local() {
 #[test]
 fn test_unrelated_settings_and_garbage_are_ok() {
     let c = Case::new();
-    write(&c.config.join("settings.json"), r#"{"env": {"OTHER": "1"}}"#);
+    write(
+        &c.config.join("settings.json"),
+        r#"{"env": {"OTHER": "1"}}"#,
+    );
     write(&c.cwd.join(".claude/settings.json"), "{nope");
-    write(&c.cwd.join(".claude/settings.local.json"), r#"{"env": "bad"}"#);
+    write(
+        &c.cwd.join(".claude/settings.local.json"),
+        r#"{"env": "bad"}"#,
+    );
     assert_eq!(c.source(), None);
 }
 
@@ -316,7 +322,11 @@ fn test_settings_are_decoded_like_claude_code() {
     let path = c.cwd.join(".claude/settings.json");
     fs::create_dir(c.cwd.join(".claude")).unwrap();
     let utf16 = |le: bool| {
-        let mut out: Vec<u8> = if le { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+        let mut out: Vec<u8> = if le {
+            vec![0xff, 0xfe]
+        } else {
+            vec![0xfe, 0xff]
+        };
         for u in flag.encode_utf16() {
             out.extend_from_slice(&if le { u.to_le_bytes() } else { u.to_be_bytes() });
         }
