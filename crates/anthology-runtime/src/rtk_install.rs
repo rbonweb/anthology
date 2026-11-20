@@ -274,8 +274,15 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Member {
     }
 }
 
+/// `cannot read the rtk tarball: <library text>`. The `tar` crate may quote raw header bytes,
+/// so control characters (a newline included) become `?`: the warning stays one line.
 fn tar_error(e: impl std::fmt::Display) -> PyExc {
-    install_error(format!("cannot read the rtk tarball: {e}"))
+    let text: String = e
+        .to_string()
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    install_error(format!("cannot read the rtk tarball: {text}"))
 }
 
 /// `_extract_rtk(archive, dest)`: copies the one regular-file member named exactly `rtk` to
@@ -286,13 +293,20 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
     }
     let limits = &deps.limits;
     let file = File::open(archive)?;
-    let gz = flate2::read::MultiGzDecoder::new(io::BufReader::new(file));
+    let gz = Watched::new(flate2::read::MultiGzDecoder::new(io::BufReader::new(file)));
+    let (gz_failed, gz_bytes) = (gz.failed.clone(), gz.bytes.clone());
     let mut tf = tar::Archive::new(gz);
     let entries = tf.entries().map_err(tar_error)?;
     let mut found = false;
     let mut count = 0usize;
     for entry in entries {
-        let mut entry = entry.map_err(tar_error)?;
+        let mut entry = match entry {
+            Ok(e) => e,
+            // tarfile: a header it cannot read ends the archive, except at the very start;
+            // a decompression error is always an error.
+            Err(_) if count > 0 && !gz_failed.get() => break,
+            Err(e) => return Err(tar_error(e)),
+        };
         // A pax global header describes the archive; tarfile does not yield it as a member.
         if entry.header().entry_type() == tar::EntryType::XGlobalHeader {
             continue;
@@ -335,10 +349,46 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
         }
         out.flush()?;
     }
+    if count == 0 && gz_bytes.get() == 0 {
+        // tarfile.open: a stream with no header block at all.
+        return Err(tar_error("empty file"));
+    }
     if !found {
         return Err(install_error("tarball has no rtk member"));
     }
     Ok(())
+}
+
+/// A reader that remembers whether it failed and how many bytes it gave.
+struct Watched<R> {
+    inner: R,
+    failed: std::rc::Rc<std::cell::Cell<bool>>,
+    bytes: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl<R> Watched<R> {
+    fn new(inner: R) -> Watched<R> {
+        Watched {
+            inner,
+            failed: Default::default(),
+            bytes: Default::default(),
+        }
+    }
+}
+
+impl<R: Read> Read for Watched<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.inner.read(buf) {
+            Ok(n) => {
+                self.bytes.set(self.bytes.get() + n as u64);
+                Ok(n)
+            }
+            Err(e) => {
+                self.failed.set(true);
+                Err(e)
+            }
+        }
+    }
 }
 
 /// `_touch(path)`: create if missing, then set both times to now.
