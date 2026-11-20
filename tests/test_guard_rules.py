@@ -347,6 +347,13 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": ".claude/memory/a.md", "content": PW + "=<a>b"}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "string"'}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": PW + ": xray1234"}),
+            # a `,` `}` `]` inside the quotes does not end a value that starts like a placeholder (round 2)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "true,horse,battery"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "x,Hunter2xyz"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "X}9aBcdEf"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "*]q8Zr!kP"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "<a>,realsecret1"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "null, real-secret-99"'}),
             ("Write", {"file_path": ".Claude/Memory/a.md", "content": GH_TOKEN}),
             ("MultiEdit", {"file_path": ".claude/memory/a.md", "edits": [
                 {"old_string": "x", "new_string": "fine"},
@@ -386,6 +393,8 @@ class RuleTableTest(unittest.TestCase):
             bash('echo "{\\"' + PW + '\\": \\"' + PWV + '\\"}" > ' + mem),
             bash('printf "%s" "{\\"api' + '_key\\":\\"' + PWV + '\\"}" >> ' + mem),
             bash("echo '{\"" + PW + "\": \"" + PWV + "\"}' > " + mem),
+            bash("echo '\"" + PW + "\": \"true,horse,battery\"' > " + mem),
+            bash('echo "{\\"' + PW + '\\": \\"x,' + PWV + '\\"}" > ' + mem),
         ])
 
     def test_chains_wrappers_and_prefixes(self):
@@ -1048,6 +1057,8 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": mem, "content": PW + ": ${DB_PASS}"}),
             ("Write", {"file_path": mem, "content": '{"username": "<user>", "' + PW + '": "<pass>"}'}),
             ("Write", {"file_path": mem, "content": '"' + PW + '": "true"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "x"'}),
+            ("Write", {"file_path": mem, "content": PW + "='none'"}),
             ("Write", {"file_path": mem, "content": '{\\"' + PW + '\\": \\"\\"}'}),
             bash("echo '{\"" + PW + "\": null}' > " + mem),
             ("Write", {"file_path": mem, "content": "the " + PW + " field"}),

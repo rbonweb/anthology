@@ -241,6 +241,18 @@ class QuotedKeyTest(unittest.TestCase):
         '"%s": "string"' % PW,                          # not a placeholder: a schema uses {"type": ...}
         '"%s": "<a>bcdefgh"' % TOK,
         "%s=xray1234" % SEC,
+        # a `,` `}` `]` inside the quotes does not end a value that starts like a placeholder (round 2)
+        '"%s": "true,horse,battery"' % PW,
+        '"%s": "x,Hunter2xyz"' % PW,
+        '"%s": "X}9aBcdEf"' % PW,
+        '"%s": "*]q8Zr!kP"' % PW,
+        '"%s": "<a>,realsecret1"' % PW,
+        '"%s": "null, real-secret-99"' % PW,
+        '"%s": "${A},realsecret1"' % PW,
+        '"%s": "x,abcdef123"' % AK,
+        '"%s": "x,abcdef123456"' % TOK,
+        '"%s": "true,abcdefgh12"' % SEC,
+        '{\\"%s\\": \\"x,%s\\"}' % (PW, VALUE),
     )
     ALLOWED = (
         '"%s": {"type": "string"}' % PW,
@@ -267,6 +279,11 @@ class QuotedKeyTest(unittest.TestCase):
         '{\\"%s\\": null}' % TOK,
         # template placeholders, quoted or not (I-3)
         '"%s": "<placeholder>"' % PW,
+        '"%s": "x"' % PW,
+        "%s%s%s: %s%s%s" % (SQ, PW, SQ, SQ, "false", SQ),
+        '%s="false"' % PW,
+        "%s='none'" % PW,
+        '"%s": "None"' % TOK,
         '"%s": "<your-password>"' % PW,
         '"%s": "${X}"' % PW,
         '"%s": "${DB_PASS}"' % SEC,
@@ -340,6 +357,8 @@ class QuotedKeyTest(unittest.TestCase):
             "star runs": '%s=*** ' % TOK,
             "x then more": '%s=xxxx, y ' % PW,
             "prefix words": '"%s": "true-' % TOK,
+            "quoted skip then comma": '"%s": "x,' % PW,
+            "quoted skip then brace": '"%s": "true}' % TOK,
         }
         for label, unit in repeated.items():
             with self.subTest(shape=label):

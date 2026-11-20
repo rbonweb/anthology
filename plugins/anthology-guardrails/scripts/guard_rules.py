@@ -1409,15 +1409,16 @@ def _g5(tool_name):
 
 # What is not a secret value after `key:`, `key=` or `"key":` (shared with memory_privacy; a test keeps
 # the two copies identical): a value that is wholly null/none/true/false or a template placeholder
-# (`<...>`, `${...}`, a run of `*`, `.` or `x`), optionally quoted, ending at a blank, `,`, `}`, `]`
-# or the end of the line. Quotes may carry a backslash (JSON inside a double-quoted shell string).
-_VALUE_END = r"(?:\\?[\"'])?[ \t]*(?:[,}\]\r\n]|$)"
-_NOT_A_VALUE = r"(?:null|none|true|false|<[^<>\r\n]*>|\$\{[^{}\r\n]*\}|[*.xX]+)" + _VALUE_END
+# (`<...>`, `${...}`, a run of `*`, `.` or `x`), optionally quoted (a quoted one needs its closing
+# quote right after it), then optional blanks and a `,`, `}`, `]`, a line break or the end. Quotes
+# may carry a backslash (JSON inside a double-quoted shell string).
+_SKIP_WORD = r"(?:null|none|true|false|<[^<>\r\n]*>|\$\{[^{}\r\n]*\}|[*.xX]+)"
+_NOT_A_VALUE = r"(?:\\?[\"']" + _SKIP_WORD + r"\\?[\"']|" + _SKIP_WORD + r")[ \t]*(?:[,}\]\r\n]|$)"
 # After the separator of an unquoted key: not a placeholder.
-_UNQUOTED_VALUE = r"(?![ \t]*(?:\\?[\"'])?" + _NOT_A_VALUE + ")"
+_UNQUOTED_VALUE = r"(?![ \t]*" + _NOT_A_VALUE + ")"
 # After a key's closing quote (one optional quote, `\"` included): a separator, then a real scalar,
 # not empty, an object or array (a schema) or a placeholder.
-_QUOTED_VALUE = r"\\?[\"']\s*[:=]\s*(?:\\?[\"'])?(?![\\\"'{\[\]},\s]|" + _NOT_A_VALUE + ")"
+_QUOTED_VALUE = r"\\?[\"']\s*[:=]\s*(?!" + _NOT_A_VALUE + r")(?:\\?[\"'])?(?![\\\"'{\[\]},\s])"
 
 _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"(?:AKIA|ASIA)[0-9A-Z]{16}",
