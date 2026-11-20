@@ -11,11 +11,12 @@
     Code loads plugins in place, so the folder is `installLocation` joined with the plugin's
     relative `source` in `<installLocation>/.claude-plugin/marketplace.json`. The source must
     stay inside `installLocation` after realpath (no absolute path, no escaping `..`), otherwise
-    the fallback below applies. A contained folder without `scripts/guard.py` is the problem
-    `live_missing` (folder None): that is what the hook runs, so the cache copy never stands in.
+    the problem is `live_missing`. So is a contained folder without `scripts/guard.py`, a plugin
+    that marketplace.json does not list, and a missing or invalid marketplace.json (folder None
+    in every case): the hook runs the live folder, so the cache copy never stands in.
   - any other source type (`github`, `git`, `url`, ...): the plugins run from the cache, so the
     folder is `installPath`.
-  - fallback (marketplace data missing, unreadable or invalid): when `plugin_root` is not under
+  - fallback (`known_marketplaces.json` missing, unreadable, or without the marketplace): when `plugin_root` is not under
     `<config>/plugins/cache/` it is loaded in place and the sibling
     `<plugin root>/../anthology-guardrails` is used if it has `scripts/guard.py` and its realpath
     stays inside `<plugin root>/..` (a symlink escaping it is refused); else `installPath`.
@@ -78,12 +79,15 @@ def _disabled(env, cwd):
     return False
 
 
-def _under(path, parent):
+def _under(path, parent, strict=False):
+    """Whether realpath(path) is inside realpath(parent); `strict` also refuses the parent itself."""
     try:
         path, parent = os.path.realpath(str(path)), os.path.realpath(str(parent))
     except (OSError, ValueError):
         return False
-    return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
+    if path == parent:
+        return not strict
+    return path.startswith(parent.rstrip(os.sep) + os.sep)
 
 
 def _directory_root(config, marketplace, plugin):
@@ -127,10 +131,10 @@ def _marketplace_kind(config, marketplace):
 
 def _contained_sibling(plugin_root):
     """`<plugin root>/../anthology-guardrails` when it has guard.py and does not escape the folder
-    next to the plugin (a symlink out of it is refused), else None."""
+    next to the plugin (a symlink out of it, or to the folder itself, is refused), else None."""
     parent = Path(plugin_root).parent
     sibling = parent / "anthology-guardrails"
-    return sibling if _has_guard(sibling) and _under(sibling, parent) else None
+    return sibling if _has_guard(sibling) and _under(sibling, parent, strict=True) else None
 
 
 def _live_root(plugin_root, env, name, install_path):
@@ -142,9 +146,11 @@ def _live_root(plugin_root, env, name, install_path):
     if kind == "other":
         return Path(install_path), None
     if kind == "directory":
+        # never the cache copy: a source that is refused, unlisted or has no manifest is a problem too
         live = _directory_root(config, marketplace, "anthology-guardrails")
-        if live is not None:
-            return (live, None) if _has_guard(live) else (None, "live_missing")
+        if live is not None and _has_guard(live):
+            return live, None
+        return None, "live_missing"
     if not _under(plugin_root, config / "plugins" / "cache"):
         sibling = _contained_sibling(plugin_root)
         if sibling is not None:
