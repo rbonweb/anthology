@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest import mock
 
 from _repo import ROOT
 
@@ -1789,6 +1790,30 @@ class RuleTableTest(unittest.TestCase):
                 bash("fish -c" + q + "; echo \""),
                 bash("fish -C " + q + " -c exit; echo \""),
             ])
+        # fish reading its script from stdin: a value option (known or not) must not turn the
+        # piped text into "a script file's argument" (fix FW-Q).
+        piped = "echo 'npx playwright install' | "
+        self.assert_table("G1", [
+            bash(piped + "fish --debug-stack-frames 3"),
+            bash(piped + "fish --debug-stack 3"),
+            bash(piped + "fish --debug-stack-frames=3"),
+            bash(piped + "fish --debug-output f"),
+            bash(piped + "fish --some-future-flag value"),
+            bash(piped + "fish --private --another-future-flag value"),
+            bash(piped + "fish --login"),
+        ])
+        # the table of value options is not what keeps this closed: without it the form still holds
+        with mock.patch.object(guard_rules, "_FISH_LONG_VALUE", ("--command", "--init-command")):
+            self.assert_table("G1", [
+                bash(piped + "fish --debug-stack-frames 3"),
+                bash(piped + "fish --debug-stack-frames=3"),
+                bash(piped + "fish --debug-output f"),
+            ])
+        self.assert_table(None, [
+            bash(piped + "fish script.fish"),
+            bash(piped + "fish --login script.fish"),
+            bash(piped + "fish --no-config script.fish extra"),
+        ])
         self.assert_table("G3", [       # docker exempts G1 and G2, not G3
             bash("docker run img fish --debug-stack-frames 3 -c 'cat ~/.config/chromium/Default/Cookies'"),
         ])
