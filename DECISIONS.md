@@ -629,7 +629,7 @@ Setup adds the owner's blanket `Bash(rtk *)` allow (ADR-017, PLAN §12), and Cla
   - With no deny, ask or Read rule anywhere the hook output is byte-identical to before: the owner's accepted risk (`Bash(rtk *)`, rewritten commands never prompt) is unchanged.
 - **Not covered, documented:** `--settings`, `--disallowedTools`, server-managed settings and the macOS MDM profile (no hook can read them); files a recursive search walks into; commands hidden from any parser (also uncovered without rtk).
 - **rtk history.** `bin/rtk` and `bin/rtk-hook` export `RTK_DB_PATH`, `RTK_RECALL_DB` and `RTK_TEE_DIR` under `state.rtk_data_dir()` = `${CLAUDE_CONFIG_DIR:-~/.claude}/anthology/rtk/` (state.json's folder), and `/anthology:setup remove` deletes that folder behind the usual preview. Stats stay on by default; rtk has no switch that drops command lines but keeps `rtk gain`. rtk's default data folder is not deleted, because another rtk install may share it; README and SECURITY name it for `1.2.1-anthology.1` users.
-- **Release:** `1.2.1-anthology.2` (tag `rtk--v1.2.1-anthology.2`), built and attested by `rtk-release.yml` as in ADR-017; `rtk.lock` rewritten from its `checksums.txt`.
+- **Release:** `1.2.1-anthology.3` (tag `rtk--v1.2.1-anthology.3`), built and attested by `rtk-release.yml` as in ADR-017; `rtk.lock` rewritten from its `checksums.txt`. The tag `rtk--v1.2.1-anthology.2` was pushed first, but its release run failed on a test-only timing bound before anything was published, so it has no release; the version moved on rather than re-pointing a pushed tag.
 
 **Consequences**
 

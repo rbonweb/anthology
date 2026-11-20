@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "rtk"
-version = "1.2.1-anthology.2"
+version = "1.2.1-anthology.3"
 dependencies = [
  "anyhow",
  "base16ct",

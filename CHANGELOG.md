@@ -22,7 +22,7 @@ a new version section.
 
 #### Security
 
-- rtk `1.2.1-anthology.2`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
+- rtk `1.2.1-anthology.3`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
   project, local and managed settings) to the command an `rtk …` form wraps, printing an
   explicit deny or ask, so `Bash(rtk *)` no longer runs a command one of those rules covers.
 - rtk's local history (command lines, recall store, tee spool) is kept in
