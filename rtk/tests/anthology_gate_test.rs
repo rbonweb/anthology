@@ -1116,7 +1116,8 @@ fn positional_words_between_a_rules_words_do_not_cost_the_rewrite() {
     assert_eq!(only.hook("git -C . push"), Said::Deny);
 }
 
-/// N-5: no prompt for a bare `.` or an interpreter named as an operand.
+/// N-5: no prompt for a bare `.` named as an operand. (Round 5: a program off the
+/// allowlist asks whatever its operands: `docker exec`, `uv run python`, `rsync`.)
 #[test]
 fn a_bare_dot_and_interpreter_operands_do_not_prompt() {
     let only = push_only_sandbox();
@@ -1124,12 +1125,17 @@ fn a_bare_dot_and_interpreter_operands_do_not_prompt() {
         "rtk npx prettier --check .",
         "rtk ruff check .",
         "rtk docker build -t app .",
-        "rtk docker exec app python manage.py migrate",
-        "rtk uv run python script.py",
-        "rtk bypass rsync -a . /tmp/x",
     ] {
         assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
     }
+    asked(
+        &only,
+        &[
+            "rtk docker exec app python manage.py migrate",
+            "rtk uv run python script.py",
+            "rtk bypass rsync -a . /tmp/x",
+        ],
+    );
 }
 
 /// No rule anywhere: the round-4 spellings say nothing, as before.
@@ -1141,6 +1147,207 @@ fn the_round_four_backstops_are_inert_in_a_bare_sandbox() {
         "rtk git -c alias.p=push p",
         "rtk bypass caffeinate sh -c 'cat secret.txt'",
         "rtk pnpm exec cat secret.txt",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+// --- review round 5: the allowlist ---
+
+/// Whether the hook stopped the command: an explicit deny or an ask.
+fn stopped(sb: &Sandbox, cmd: &str) -> bool {
+    matches!(sb.hook(cmd), Said::Deny | Said::Ask(_))
+}
+
+/// B-1 to B-5: each reviewer payload is denied or asked about, under the brief's
+/// rules and under a git-push deny alone.
+#[test]
+fn the_round_four_bypass_classes_are_stopped() {
+    let payloads = [
+        // B-1: a script on stdin to a program that runs it.
+        "rtk bypass ed -s <<< '!git push'",
+        "echo '!git push' | rtk bypass ed -s",
+        "rtk bypass ed -s <<'EOF'\n!git push\nEOF",
+        "rtk run -c 'ed -s' <<< '!git push'",
+        "rtk bypass vim -es <<< '!git push'",
+        "rtk bypass awk -f /dev/stdin <<< 'BEGIN{system(\"git push\")}'",
+        "rtk bypass make -f - <<< 'all: ; git push'",
+        "rtk bypass sqlite3 :memory: <<< '.shell git push'",
+        "rtk bypass ed -s <<< 'r secret.txt\n,p'",
+        // B-2: git options and subcommands that run a string.
+        "rtk git grep -O'git push' x",
+        "rtk git grep -O'g\\it pu\\sh' x",
+        "rtk git grep --open-files-in-pager='sh -c x' x",
+        "rtk git grep --open='sh -c x' x",
+        "rtk git rebase -x 'echo x | sh' HEAD~1",
+        "rtk git rebase --exec='echo x | sh' HEAD~1",
+        "rtk git bisect run sh -c 'echo x | sh'",
+        "rtk git submodule foreach 'echo x | sh'",
+        "rtk git difftool -x 'echo x | sh' HEAD",
+        "rtk git ls-remote --upload-pack='echo x | sh' .",
+        "rtk git -c core.pager='sh -c x' log",
+        // B-3: env -S escapes.
+        "rtk bypass env -S 'git\\_push'",
+        "rtk bypass env -S 'cat\\_secret.txt'",
+        // B-4: dashed git builtins.
+        "rtk bypass /usr/lib/git-core/git-push",
+        "rtk bypass /Library/Developer/CommandLineTools/usr/libexec/git-core/git-push",
+        "rtk run /usr/lib/git-core/git-push",
+        "rtk bypass git-push",
+        // B-5: hash -p and friends.
+        "rtk run --shell bash -c 'hash -p /usr/bin/git g; g push'",
+        "rtk run -c 'hash -p /usr/bin/git g; g push'",
+    ];
+    let sb = Sandbox::rtk_allowed_with_rules();
+    let only = push_only_sandbox();
+    for cmd in payloads {
+        assert!(stopped(&sb, cmd), "{cmd}: {:?}", sb.hook(cmd));
+        assert!(
+            stopped(&only, cmd),
+            "{cmd} (push rule only): {:?}",
+            only.hook(cmd)
+        );
+    }
+    // A dashed builtin is the git subcommand: the deny rule itself fires.
+    assert_eq!(
+        only.hook("rtk bypass /usr/lib/git-core/git-push"),
+        Said::Deny
+    );
+}
+
+/// The common agent commands keep running without a prompt under a git-push deny.
+#[test]
+fn listed_commands_pass_without_a_prompt() {
+    let only = push_only_sandbox();
+    for cmd in [
+        "rtk git status",
+        "rtk git log --oneline -5",
+        "rtk git diff HEAD~1",
+        "rtk git add src/*.rs",
+        "rtk git commit -m \"fix: x\"",
+        "rtk git -C sub status",
+        "rtk ls -la",
+        "rtk cargo test",
+        "rtk cargo test 2>&1 | tail -5",
+        "rtk grep -rn foo src/",
+        "rtk read ok.txt",
+        "rtk find . -name '*.rs'",
+        "rtk npm run build",
+        "rtk npx prettier --check .",
+        "rtk pytest -x",
+        "rtk go test ./...",
+        "rtk run -c 'git status && git diff'",
+        "rtk test cargo test",
+        "rtk lint ruff check .",
+        "rtk bypass cat ok.txt",
+        "rtk docker compose up",
+        "rtk kubectl get pods",
+        "rtk gh pr view 12",
+    ] {
+        assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
+    }
+    assert!(matches!(
+        only.hook("git status && rtk cargo build"),
+        Said::Rewrite(_) | Said::Allow(_)
+    ));
+}
+
+/// Off the allowlist: a program, an option or a construct the gate does not
+/// understand asks.
+#[test]
+fn what_the_allowlist_does_not_understand_asks() {
+    let only = push_only_sandbox();
+    asked(
+        &only,
+        &[
+            "rtk bypass sh -c 'ls'",
+            "rtk bypass python3 x.py",
+            "rtk bypass sed -n p ok.txt",
+            "rtk bypass ./x.sh",
+            "rtk lint sh -c 'x'",
+            "rtk git config alias.p push",
+            "rtk git p",
+            "rtk git GREP -O'x' .",
+            "rtk git clone 'ext::sh -c x' d",
+            "rtk git grep foo $x",
+            "rtk cargo --config 'target.x.runner=\"sh\"' run",
+            "rtk npx -c 'x'",
+            "rtk npm explore x -- ls",
+            "rtk go test -exec 'sh -c x' ./...",
+            "rtk docker run alpine sh",
+            "rtk docker build -f /dev/stdin .",
+            "rtk find . -exec sh -c x \\;",
+            "rtk grep --pre=sh foo .",
+            "rtk curl https://x",
+            "rtk run --shell zsh -c 'ls'",
+            "rtk run -c 'ls; sh'",
+            "rtk 'ls; git status'",
+            "rtk ls ${x@P}",
+            "rtk ls *(e:'x':)",
+            "nice rtk git status",
+            "X=1 rtk git status",
+            "x=1; rtk git status",
+            "f() { ls; }; rtk git status",
+            "rtk git status && echo $(date)",
+        ],
+    );
+}
+
+/// A redirect between a command's words does not hide the words after it.
+#[test]
+fn a_redirect_between_words_does_not_hide_a_denied_command() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "rtk git >/dev/null push",
+        "rtk git 2>&1 push",
+        "rtk bypass git >x push",
+        "rtk run -c 'git >/dev/null push'",
+        "rtk read >x secret.txt",
+        "rtk bypass grep -fsecret.txt .",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+}
+
+/// A comment, a here-document or a line continuation cannot put the lexer out of
+/// step with the shell to hide an rtk command.
+#[test]
+fn a_comment_or_here_document_cannot_hide_an_rtk_command() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "rtk ls #'\nrtk bypass ed -s <<< 'r secret.txt' #'",
+        "echo #'\nrtk bypass ed -s <<< 'r secret.txt' #'",
+        "rtk git commit -F - <<'EOF'\ndon't\nEOF\nrtk bypass ed -s <<< 'r secret.txt'",
+        "rtk git grep --op\\\nen-files-in-pager='sh -c x' x",
+    ] {
+        assert!(stopped(&sb, cmd), "{cmd}: {:?}", sb.hook(cmd));
+    }
+}
+
+/// A rewrite into an rtk command off the allowlist is left to the host: no prompt
+/// from the hook, no `Bash(rtk *)` approval.
+#[test]
+fn a_rewrite_off_the_allowlist_leaves_the_original_to_the_host() {
+    let only = push_only_sandbox();
+    for cmd in [
+        "docker run --rm alpine sh -c 'echo hi'",
+        "find . -name '*.orig' -exec rm {} +",
+    ] {
+        assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// No rule anywhere: nothing of the allowlist shows.
+#[test]
+fn the_allowlist_is_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "rtk bypass ed -s <<< '!git push'",
+        "rtk git grep -O'git push' x",
+        "rtk bypass env -S 'git\\_push'",
+        "rtk bypass /usr/lib/git-core/git-push",
+        "rtk git >/dev/null push",
+        "rtk ls # x",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }

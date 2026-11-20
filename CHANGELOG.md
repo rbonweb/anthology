@@ -95,6 +95,12 @@ a new version section.
 - rtk `1.2.1-anthology.3`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
   project, local and managed settings) to the command an `rtk …` form wraps, printing an
   explicit deny or ask, so `Bash(rtk *)` no longer runs a command one of those rules covers.
+- rtk `1.2.1-anthology.4`: once you have any deny or ask rule, an `rtk …` command runs
+  without a prompt only when it uses a listed program the hook fully understands; anything
+  else (programs that run a string such as `awk`, `make`, `ed`, `sqlite3`; `git grep -O`,
+  `git rebase -x`, `git -c`; `env -S`; a stdin script; shells and interpreters) asks. A
+  dashed git builtin (`git-push`) and words after a redirect (`git >/dev/null push`) now meet
+  your deny rules. Without rules nothing changes.
 - rtk's local history (command lines, recall store, tee spool) is kept in
   `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
   document what it stores and for how long.

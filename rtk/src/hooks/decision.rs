@@ -349,11 +349,19 @@ pub(crate) fn decide_for_claude_hook_at(
     // the install allows `Bash(rtk *)`, so a deny or ask rule that names what an
     // `rtk ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
     // enforced here (`anthology_gate`).
-    let gate = super::anthology_gate::evaluate(cmd, &permissions.gate, permissions.verdict, cwd);
+    use super::anthology_gate::{Gate, unlisted};
+    let mut gate =
+        super::anthology_gate::evaluate(cmd, &permissions.gate, permissions.verdict, cwd);
+    // With any deny or ask rule, an rtk command passes without a prompt only when
+    // the allowlist understands what it runs; else the hook asks (before a defer,
+    // which would leave `rtk ...` to the `Bash(rtk *)` allow rule).
+    if gate != Gate::Deny && unlisted(cmd, &permissions.gate) {
+        gate = Gate::Ask;
+    }
     match gate {
-        super::anthology_gate::Gate::Deny => return HookDecision::Deny,
-        super::anthology_gate::Gate::Defer => return HookDecision::Defer,
-        super::anthology_gate::Gate::Ask | super::anthology_gate::Gate::Pass => {}
+        Gate::Deny => return HookDecision::Deny,
+        Gate::Defer => return HookDecision::Defer,
+        Gate::Ask | Gate::Pass => {}
     }
     let decision = decide_for_agent_at_with_attestation(
         cmd,
@@ -378,6 +386,16 @@ pub(crate) fn decide_for_claude_hook_at(
                 super::anthology_gate::Gate::Ask => super::anthology_gate::Gate::Ask,
                 super::anthology_gate::Gate::Defer => {
                     if gate == super::anthology_gate::Gate::Ask {
+                        gate
+                    } else {
+                        return HookDecision::Defer;
+                    }
+                }
+                // The rewrite made an rtk command the allowlist does not let
+                // through: leave the original to the host, judged as it would be
+                // without rtk.
+                super::anthology_gate::Gate::Pass if unlisted(rewritten, &permissions.gate) => {
+                    if gate == Gate::Ask {
                         gate
                     } else {
                         return HookDecision::Defer;

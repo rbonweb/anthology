@@ -49,8 +49,64 @@
 //!    it in: a deny is a deny, an ask asks, and an unresolvable path leaves the
 //!    command unrewritten.
 //!
+//! 6. **The allowlist** (round 5). Points 1-5 list the spellings of a ruled
+//!    command; four review rounds each found new ones. So whenever any deny or ask
+//!    rule exists (Bash or `Read`), an rtk-prefixed command passes without a
+//!    prompt only when [`unlisted`] finds nothing it does not understand; else the
+//!    hook asks. A rewrite into such a command is dropped instead (`Defer`), and
+//!    the host judges the original as it would without rtk. See below.
+//!
 //! With no deny, ask or `Read` rule anywhere the gate is inert and the hook's
 //! output is what it was before.
+//!
+//! # The allowlist
+//!
+//! An rtk command (`rtk <sub> ...`, or a runner: `rtk bypass|proxy|run|err|test|
+//! summary ...`) passes only when the program it runs is in [`LISTED`] and its
+//! arguments pass that program's rule:
+//!
+//! | Rule | Programs | Arguments |
+//! |---|---|---|
+//! | any | `cat head tail ls tree wc diff cmp comm cut tr uniq nl echo pwd true false cd basename dirname realpath readlink stat file du df which jq`; `pytest mypy ruff black pyright tsc eslint prettier vitest jest playwright next prisma ng format golangci-lint rspec rubocop phpunit phpstan pest paratest ecs pint sqlfluff ast-grep gradlew` | anything: no option runs a string |
+//! | except | `grep`, `rg` (`--pre`, `--hostname-bin`); `find` (`-exec -execdir -ok -okdir`) | none of those options, and no word that may expand into an option |
+//! | subcommands | `cargo` (no `--config`, `-Z`), `go` (no `-exec`, `-toolexec`, `-vettool`), `dotnet`, `pip`/`pip3`, `gh`/`glab` (no git `--upload-pack`-style options), `docker` (no `-` stdin), `kubectl`/`oc` (no `--exec-command`) | the first operand is a listed subcommand (`docker run`/`exec`, `go env`/`generate`, `cargo install`, `kubectl exec` are not) |
+//! | package managers | `npm` (no `-c`, `--call`, `--script-shell`, `--node-options`), `pnpm`, `yarn`, `bun` (no `-e`), `uv` | a listed subcommand, or a launching one (`npm exec`/`x`, `pnpm exec`/`dlx`, `yarn dlx`, `bun x`, `uv run`) whose program is looked up again |
+//! | launchers | `npx`, `bunx`, `uvx` | known launcher options, then a listed program |
+//! | git | [`git_listed`] | global options from a fixed set (no `-c`, `--config-env`, `--exec-path`); a subcommand from [`GIT_SUBS`] (no alias, `config`, `bisect`, `difftool`, `mergetool`, `filter-branch`, `send-email`, `credential`, `hook`...) without its string-running options (`grep -O`/`--open-files-in-pager`, `rebase -x`/`--exec`, `--upload-pack`, `--receive-pack`, `clone -u`/`-c`/`--template`...); `submodule` without `foreach`; no `ext::`/`fd::` remote |
+//!
+//! rtk's own readers (`read`, `log`, `smart`, `json`, `deps`, `gain`, `discover`,
+//! `recall`, `pipe`) take any argument (`read`: only its own options); `rtk env`
+//! only `-f NAME`; `rtk lint X ...` runs `X`, which is looked up; every other rtk
+//! subcommand is the program of its name. `rtk init`, `hook`, `config`, `trust`,
+//! `curl`, `wget`, `aws`, `psql`, `php`, `deno`, `mvn`, `sbt`... ask.
+//!
+//! Throughout, an option is matched in every spelling a parser takes: `--name`,
+//! `--name=v`, a unique prefix (`--exe`), a short option inside a cluster (`-iO`,
+//! `-Ocmd`), a one-dash long option with one or two dashes (`-toolexec=x`). A
+//! dashed git builtin (`/usr/lib/git-core/git-push`) is `git push`, for the rules
+//! too. A runner's script (`rtk run -c '...'`, `--shell sh|bash` only) passes when
+//! every command in it does. No program in the table reads a script on its
+//! standard input, so what a pipe, a here-string or a here-document feeds a listed
+//! program is data.
+//!
+//! Also asked, wherever the text has an rtk command (or any `rtk` at all, where the
+//! lexer may be out of step with the shell):
+//! - a command word that expands, an assignment in front (`X=1 rtk ...`), an rtk
+//!   word behind a launcher (`nice rtk`, `env rtk`, `sudo rtk`);
+//! - an expansion the shell evaluates as code (`${x@P}`, `${!x}`, `$[..]`, zsh's
+//!   `$~x`), a command or process substitution, `$'..\'..'`;
+//! - a word that may expand into an option for a program whose options can run
+//!   something (`$x`, a word opening with a glob: `rtk git grep foo *.rs`);
+//! - a builtin that changes what a later command runs (`hash`, `alias`, `enable`,
+//!   `shopt`, `export`, `declare`, `source`, `eval`, `trap`, `read`...), a bare
+//!   assignment, a `for` over an upper-case variable, a function definition, a
+//!   `(` after a word or glob (a zsh glob qualifier `*(e:...:)`);
+//! - a here-document or a comment, whose text the lexer reads as commands (a quote
+//!   in one puts every later word out of step with the shell).
+//!
+//! A redirect can stand anywhere among a command's words (`git >/dev/null push`
+//! runs `git push`): every segment is read with its redirects left out, by the
+//! allowlist and by the rule scan. A line continuation is joined first.
 //!
 //! # What the hook cannot see
 //!
@@ -66,16 +122,29 @@
 //!   `Read()` deny rules, whatever the command (`rtk sed -n p secret.txt`). What
 //!   reads a file without naming it as an operand is not seen: `rtk deps`
 //!   (manifests), `find -files0-from FILE`, `rg --pre`, a script or interpreter
-//!   that opens a path itself.
+//!   that opens a path itself. A short option glued to its value (`grep
+//!   -fsecret.txt`) and an `@file` value (`curl -d @secret.txt`) are checked.
+//! - Files, links and settings the same command creates (`ln -s . d && cat
+//!   d/secret.txt`, `cp -r`, `tar`, a script it writes then runs, an edited
+//!   `package.json`): the gate cannot resolve a path that does not exist yet.
+//! - What a listed program runs from files: test code, build scripts, `npm run`
+//!   scripts, git hooks, git, cargo, npm and kubeconfig settings (including a
+//!   repository `-C`/`--git-dir` points git at), `.gitattributes` filters, and
+//!   packages `npm install`/`pip install`/`npx` fetch. Also the environment the
+//!   session already had (`GIT_PAGER`, `PAGER`, `NODE_OPTIONS`...).
+//! - Listed programs that read a file's content without a path operand: git
+//!   object reads (`git show REV:path`, `git cat-file -p REV:path`, `git log -p`,
+//!   `git grep x REV`).
 //! - Opaque inside an rtk expansion (the hook asks) when any deny or ask rule of
 //!   any kind exists: `eval`, `source`, `.`, `trap`, `alias`; a command word with
 //!   `$` or a glob; any shell with no parseable `-c` (stdin, a script file, tcsh
 //!   and csh included); any invocation of an interpreter (python, perl, ruby,
 //!   node, bun, deno, php, lua, osascript, expect, tclsh, wish, Rscript, R,
 //!   julia, pwsh, powershell), a script file included; busybox, toybox, sudo,
-//!   doas; `rg --pre`. Still unread: `./x.sh` and other programs that run a
-//!   string (`awk system()`, `make`), and git aliases and config defined outside
-//!   the command (`~/.gitconfig`, a repository's `.git/config`, hooks). Git
+//!   doas; `rg --pre`. Programs that run a string (`awk`, `make`, `ed`, `vim`,
+//!   `sqlite3`, `sed`) and `./x.sh` are off the allowlist and ask (round 5). Git
+//!   aliases and config defined outside the command (`~/.gitconfig`, a
+//!   repository's `.git/config`, hooks) are still unread. Git
 //!   config set on the command line or in its environment (`-c alias.p=push`,
 //!   `GIT_CONFIG_COUNT`, `GIT_PAGER`...) is read when a rule's head starts with
 //!   `git`: it asks inside rtk and leaves a top-level command unrewritten.
@@ -108,8 +177,8 @@
 //! - `xargs CMD`, `parallel CMD` and `{}` in a `find -exec*`/`-ok*` payload are read
 //!   as followed by a word that expands.
 //! - `rtk git show HEAD:secret.txt` prints a `Read()`-denied file's committed content:
-//!   a `REV:path` operand is not split. Claude Code does not apply Read rules to
-//!   `git show` either.
+//!   a `REV:path` operand is not split (nor for `git cat-file -p`, `git log -p`,
+//!   `git grep x REV`). Claude Code does not apply Read rules to them either.
 //! - A bare `.` or `source` with nothing after it, and a shell or interpreter
 //!   named as an operand (`ruff check .`, `docker exec app python x.py`, `uv run
 //!   python x.py`), are not commands: they ask only after a launcher the gate
@@ -693,8 +762,9 @@ impl GateRules {
     /// The subsequence test from every word of every segment of `text`.
     fn option_split_in(&self, text: &str) -> bool {
         let mut work = 0usize;
-        for segment in lexer::split_for_permissions(text) {
-            let (words, _) = lexer::words_and_spans(segment);
+        for segment in lexer::split_for_wrappers(text) {
+            let segment = without_redirects(segment);
+            let (words, _) = lexer::words_and_spans(&segment);
             let words: Vec<String> = words
                 .iter()
                 .take(256)
@@ -909,6 +979,16 @@ impl<'a> Parsed<'a> {
             if sub > from + 1 && sub < self.resolved.len() {
                 out.push(Cow::Owned(join_command("git", &tail(sub))));
             }
+        }
+        // A dashed builtin from git's exec path (`/usr/lib/git-core/git-push`) is
+        // `git push`.
+        if let Some(sub) = name.strip_prefix("git-")
+            && !sub.is_empty()
+        {
+            out.push(Cow::Owned(join_command(
+                &format!("git {sub}"),
+                &tail(from + 1),
+            )));
         }
         out
     }
@@ -1198,8 +1278,11 @@ impl<'a> Scanner<'a> {
         if self.reading() && !ctx.soft {
             self.check_input_redirects(text, ctx, cwds)?;
         }
-        for segment in lexer::split_for_permissions(text) {
-            self.scan_segment(segment, depth, ctx, substitution, cwds)?;
+        // A redirect can stand anywhere among a command's words (`git >/dev/null
+        // push` runs `git push`): each segment is read with its redirects left out.
+        for segment in lexer::split_for_wrappers(text) {
+            let segment = without_redirects(segment);
+            self.scan_segment(&segment, depth, ctx, substitution, cwds)?;
         }
         Ok(())
     }
@@ -2377,6 +2460,1213 @@ fn push_script(inner: &mut RtkInner, shell: Option<&str>, script: String) {
 }
 
 // ---------------------------------------------------------------------------
+// The allowlist (see "The allowlist" in the module doc)
+// ---------------------------------------------------------------------------
+
+/// How the arguments of a program in [`LISTED`] are read.
+#[derive(Clone, Copy)]
+enum Args {
+    /// No option of the program runs a string or a program the command line names:
+    /// any arguments, words that expand included.
+    Any,
+    /// Any arguments but these options ([`is_option`]), and no word that may expand
+    /// into an option ([`may_become_option`]).
+    Except(&'static [&'static str]),
+    /// As `Except`, and the first operand is one of these subcommands (`"compose
+    /// up"` names two levels). No operand at all (`cargo --version`) is fine.
+    Subs(&'static [&'static str], &'static [&'static str]),
+    /// As `Subs` (subcommands, options), and these subcommands run the program
+    /// after their own options (`npm exec X`, `uv run X`), which is looked up again.
+    Pkg(
+        &'static [&'static str],
+        &'static [&'static str],
+        &'static [&'static str],
+    ),
+    /// Runs the program after its own options (`npx X`): looked up again.
+    Launch,
+    /// git: [`git_listed`].
+    Git,
+}
+
+/// The programs an rtk-prefixed command may run without a prompt when a deny or ask
+/// rule exists. A program that is not here asks. No program here reads a script
+/// from its standard input, so what a pipe, a here-string or a heredoc feeds one is
+/// data.
+const LISTED: &[(&str, Args)] = &[
+    // Read, list, compare and print.
+    ("cat", Args::Any),
+    ("head", Args::Any),
+    ("tail", Args::Any),
+    ("ls", Args::Any),
+    ("tree", Args::Any),
+    ("wc", Args::Any),
+    ("diff", Args::Any),
+    ("cmp", Args::Any),
+    ("comm", Args::Any),
+    ("cut", Args::Any),
+    ("tr", Args::Any),
+    ("uniq", Args::Any),
+    ("nl", Args::Any),
+    ("echo", Args::Any),
+    ("pwd", Args::Any),
+    ("true", Args::Any),
+    ("false", Args::Any),
+    ("cd", Args::Any),
+    ("basename", Args::Any),
+    ("dirname", Args::Any),
+    ("realpath", Args::Any),
+    ("readlink", Args::Any),
+    ("stat", Args::Any),
+    ("file", Args::Any),
+    ("du", Args::Any),
+    ("df", Args::Any),
+    ("which", Args::Any),
+    ("jq", Args::Any),
+    ("grep", Args::Except(&["--pre", "--hostname-bin"])),
+    ("rg", Args::Except(&["--pre", "--hostname-bin"])),
+    (
+        "find",
+        Args::Except(&["-exec", "-execdir", "-ok", "-okdir"]),
+    ),
+    // Linters, formatters, type checkers and test runners: they run the project's
+    // files, never a string from the command line.
+    ("pytest", Args::Any),
+    ("mypy", Args::Any),
+    ("ruff", Args::Any),
+    ("black", Args::Any),
+    ("pyright", Args::Any),
+    ("tsc", Args::Any),
+    ("eslint", Args::Any),
+    ("prettier", Args::Any),
+    ("vitest", Args::Any),
+    ("jest", Args::Any),
+    ("playwright", Args::Any),
+    ("next", Args::Any),
+    ("prisma", Args::Any),
+    ("ng", Args::Any),
+    ("format", Args::Any),
+    ("golangci-lint", Args::Any),
+    ("rspec", Args::Any),
+    ("rubocop", Args::Any),
+    ("phpunit", Args::Any),
+    ("phpstan", Args::Any),
+    ("pest", Args::Any),
+    ("paratest", Args::Any),
+    ("ecs", Args::Any),
+    ("pint", Args::Any),
+    ("sqlfluff", Args::Any),
+    ("ast-grep", Args::Any),
+    ("gradlew", Args::Any),
+    // Build tools and package managers.
+    ("cargo", Args::Subs(CARGO_SUBS, &["--config", "-Z"])),
+    (
+        "go",
+        Args::Subs(GO_SUBS, &["-exec", "-toolexec", "-vettool"]),
+    ),
+    ("dotnet", Args::Subs(DOTNET_SUBS, &[])),
+    ("pip", Args::Subs(PIP_SUBS, &[])),
+    ("pip3", Args::Subs(PIP_SUBS, &[])),
+    ("uv", Args::Pkg(UV_SUBS, &["run"], &[])),
+    (
+        "npm",
+        Args::Pkg(
+            NPM_SUBS,
+            &["exec", "x"],
+            &["-c", "--call", "--script-shell", "--node-options"],
+        ),
+    ),
+    (
+        "pnpm",
+        Args::Pkg(
+            PNPM_SUBS,
+            &["exec", "dlx"],
+            &["-c", "--shell-mode", "--script-shell", "--node-options"],
+        ),
+    ),
+    ("yarn", Args::Pkg(YARN_SUBS, &["dlx"], &["--script-shell"])),
+    (
+        "bun",
+        Args::Pkg(BUN_SUBS, &["x"], &["-e", "--eval", "-p", "--print"]),
+    ),
+    ("npx", Args::Launch),
+    ("bunx", Args::Launch),
+    ("uvx", Args::Launch),
+    // Hosted services and clusters.
+    ("gh", Args::Subs(GH_SUBS, GIT_REMOTE_EXEC)),
+    ("glab", Args::Subs(GLAB_SUBS, GIT_REMOTE_EXEC)),
+    ("docker", Args::Subs(DOCKER_SUBS, &["-"])),
+    (
+        "kubectl",
+        Args::Subs(KUBECTL_SUBS, &["--exec-command", "--exec-arg"]),
+    ),
+    (
+        "oc",
+        Args::Subs(KUBECTL_SUBS, &["--exec-command", "--exec-arg"]),
+    ),
+    ("git", Args::Git),
+];
+
+const CARGO_SUBS: &[&str] = &[
+    "build",
+    "b",
+    "check",
+    "c",
+    "test",
+    "t",
+    "clippy",
+    "fmt",
+    "doc",
+    "d",
+    "bench",
+    "tree",
+    "metadata",
+    "run",
+    "r",
+    "nextest",
+    "update",
+    "fetch",
+    "add",
+    "remove",
+    "rm",
+    "search",
+    "version",
+    "new",
+    "init",
+    "locate-project",
+    "pkgid",
+    "verify-project",
+    "package",
+    "clean",
+];
+const GO_SUBS: &[&str] = &[
+    "build", "test", "vet", "run", "fmt", "mod", "list", "version", "get", "doc", "work", "clean",
+    "install",
+];
+const DOTNET_SUBS: &[&str] = &[
+    "build", "test", "restore", "format", "run", "clean", "list", "publish", "pack",
+];
+const PIP_SUBS: &[&str] = &[
+    "install",
+    "list",
+    "show",
+    "freeze",
+    "check",
+    "uninstall",
+    "download",
+];
+const UV_SUBS: &[&str] = &[
+    "sync", "lock", "add", "remove", "tree", "pip", "venv", "version", "build", "export",
+];
+const NPM_SUBS: &[&str] = &[
+    "run",
+    "run-script",
+    "test",
+    "t",
+    "tst",
+    "start",
+    "stop",
+    "restart",
+    "install",
+    "i",
+    "in",
+    "add",
+    "ci",
+    "ls",
+    "list",
+    "ll",
+    "la",
+    "outdated",
+    "audit",
+    "view",
+    "info",
+    "show",
+    "why",
+    "explain",
+    "uninstall",
+    "remove",
+    "rm",
+    "un",
+    "update",
+    "up",
+    "version",
+    "pack",
+    "prune",
+    "dedupe",
+    "doctor",
+    "help",
+];
+const PNPM_SUBS: &[&str] = &[
+    "install", "i", "add", "remove", "rm", "update", "up", "list", "ls", "outdated", "audit",
+    "run", "test", "t", "build", "why", "store", "fetch", "prune",
+];
+const YARN_SUBS: &[&str] = &[
+    "install", "add", "remove", "run", "test", "build", "why", "info", "list", "outdated",
+    "upgrade",
+];
+const BUN_SUBS: &[&str] = &[
+    "test", "install", "i", "add", "remove", "rm", "update", "outdated", "pm", "build",
+];
+const GH_SUBS: &[&str] = &[
+    "pr", "issue", "run", "repo", "release", "workflow", "search", "label", "status", "cache",
+];
+const GLAB_SUBS: &[&str] = &["mr", "issue", "ci", "pipeline", "repo", "release", "label"];
+const DOCKER_SUBS: &[&str] = &[
+    "ps",
+    "images",
+    "logs",
+    "build",
+    "inspect",
+    "version",
+    "info",
+    "pull",
+    "stop",
+    "top",
+    "stats",
+    "compose build",
+    "compose ps",
+    "compose logs",
+    "compose up",
+    "compose down",
+    "compose config",
+    "compose pull",
+    "compose images",
+    "compose ls",
+    "compose top",
+    "compose version",
+    "compose stop",
+    "compose start",
+    "compose restart",
+];
+const KUBECTL_SUBS: &[&str] = &[
+    "get",
+    "describe",
+    "logs",
+    "top",
+    "explain",
+    "version",
+    "api-resources",
+    "api-versions",
+    "cluster-info",
+    "apply",
+    "diff",
+    "rollout",
+    "events",
+    "auth",
+    "wait",
+];
+
+/// Git options that run a program a remote or the command line names, also passed
+/// on by `gh repo clone ... -- <git options>`.
+const GIT_REMOTE_EXEC: &[&str] = &[
+    "--upload-pack",
+    "--receive-pack",
+    "--exec",
+    "-u",
+    "--config",
+    "-c",
+    "--template",
+];
+
+/// git's global options the gate lets through: without a value, and with one.
+/// `-c`, `--config-env`, `--exec-path=` and anything else ask.
+const GIT_GLOBAL_FLAGS: &[&str] = &[
+    "-p",
+    "-P",
+    "--paginate",
+    "--no-pager",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--no-advice",
+    "--version",
+    "--help",
+    "-v",
+    "-h",
+];
+const GIT_GLOBAL_VALUES: &[&str] = &["-C", "--git-dir", "--work-tree", "--namespace"];
+
+/// git's subcommands the gate lets through, each with the options that make it run
+/// a string or a program the command line names. A subcommand that is not here (an
+/// alias, `config`, `bisect`, `difftool`, `mergetool`, `filter-branch`,
+/// `send-email`, `credential`, `hook`, `shell`, `daemon`...) asks.
+const GIT_SUBS: &[(&str, &[&str])] = &[
+    ("status", &[]),
+    ("log", &[]),
+    ("diff", &[]),
+    ("show", &[]),
+    ("blame", &[]),
+    ("annotate", &[]),
+    ("shortlog", &[]),
+    ("describe", &[]),
+    ("rev-parse", &[]),
+    ("rev-list", &[]),
+    ("ls-files", &[]),
+    ("ls-tree", &[]),
+    ("cat-file", &[]),
+    ("merge-base", &[]),
+    ("reflog", &[]),
+    ("branch", &[]),
+    ("tag", &[]),
+    ("stash", &[]),
+    ("add", &[]),
+    ("rm", &[]),
+    ("mv", &[]),
+    ("restore", &[]),
+    ("switch", &[]),
+    ("checkout", &[]),
+    ("reset", &[]),
+    ("commit", &[]),
+    ("merge", &[]),
+    ("cherry-pick", &[]),
+    ("revert", &[]),
+    ("clean", &[]),
+    ("apply", &[]),
+    ("am", &[]),
+    ("format-patch", &[]),
+    ("range-diff", &[]),
+    ("worktree", &[]),
+    ("notes", &[]),
+    ("show-ref", &[]),
+    ("for-each-ref", &[]),
+    ("symbolic-ref", &[]),
+    ("check-ignore", &[]),
+    ("check-attr", &[]),
+    ("hash-object", &[]),
+    ("count-objects", &[]),
+    ("fsck", &[]),
+    ("gc", &[]),
+    ("name-rev", &[]),
+    ("cherry", &[]),
+    ("whatchanged", &[]),
+    ("bundle", &[]),
+    ("sparse-checkout", &[]),
+    ("version", &[]),
+    ("remote", &[]),
+    ("submodule", &[]),
+    ("grep", &["-O", "--open-files-in-pager"]),
+    ("rebase", &["-x", "--exec"]),
+    ("fetch", &["--upload-pack"]),
+    ("pull", &["--upload-pack"]),
+    ("push", &["--receive-pack", "--exec"]),
+    (
+        "clone",
+        &["--upload-pack", "-u", "--config", "-c", "--template"],
+    ),
+    ("ls-remote", &["--upload-pack", "-u"]),
+    ("archive", &["--exec"]),
+    ("init", &["--template"]),
+];
+/// `git submodule`'s own subcommands the gate lets through (`foreach` asks).
+const GIT_SUBMODULE_SUBS: &[&str] = &[
+    "status",
+    "init",
+    "update",
+    "sync",
+    "summary",
+    "deinit",
+    "absorbgitdirs",
+    "set-branch",
+    "set-url",
+];
+
+/// Options a launcher (`npx`, `npm exec`, `uv run`...) may take before the program
+/// it runs: without a value, and with one (also as `--name=value`).
+const LAUNCH_FLAGS: &[&str] = &[
+    "-y",
+    "--yes",
+    "--no",
+    "-q",
+    "--quiet",
+    "--no-install",
+    "--prefer-offline",
+    "--frozen",
+    "--locked",
+    "--no-sync",
+    "--offline",
+    "--isolated",
+    "--no-dev",
+    "--all-extras",
+];
+const LAUNCH_VALUES: &[&str] = &[
+    "-p",
+    "--package",
+    "--with",
+    "--from",
+    "--project",
+    "--directory",
+    "--extra",
+    "--group",
+];
+
+/// rtk subcommands that only read and print (rtk's own code, or `log` on stdin or a
+/// file): any arguments.
+const RTK_READERS: &[&str] = &[
+    "log", "smart", "json", "deps", "gain", "discover", "recall", "pipe",
+];
+
+/// Builtins that change what a later command in the same text runs: its program
+/// (`hash -p`, `alias`, a function), its environment (`export`, `PS4`, `PATH`), or
+/// the shell's own evaluation (`eval`, `source`, `trap`).
+const ENV_CHANGERS: &[&str] = &[
+    "hash",
+    "alias",
+    "unalias",
+    "enable",
+    "shopt",
+    "unset",
+    "export",
+    "declare",
+    "typeset",
+    "readonly",
+    "local",
+    "source",
+    ".",
+    "eval",
+    "trap",
+    "function",
+    "read",
+    "mapfile",
+    "readarray",
+    "getopts",
+];
+
+fn is_rtk(name: &str) -> bool {
+    matches!(name, "rtk" | "rtk.exe")
+}
+
+/// Whether `cmd` holds an rtk-prefixed command the allowlist does not let through,
+/// when any deny or ask rule exists (else `false`, and the hook's output is what it
+/// was before).
+///
+/// Every segment of `cmd` whose command word is `rtk` (past the shell's grammar:
+/// `if`, `then`, `do`, `{`, `time`...) is read with [`argv_listed`]. The text also
+/// asks when it has an rtk segment and:
+/// - an rtk word behind a launcher or an assignment (`nice rtk ...`, `X=1 rtk ...`);
+/// - a builtin that changes what runs ([`ENV_CHANGERS`]), a bare assignment, or a
+///   `for`/`select` loop over an upper-case variable (`PATH`, `PS4`);
+/// - a `(` after a word or a glob (a function definition, a zsh glob qualifier);
+/// - a command or process substitution, or quoting the lexer cannot follow.
+pub(crate) fn unlisted(cmd: &str, rules: &GateRules) -> bool {
+    if !rules.active() {
+        return false;
+    }
+    let text = shell_text(cmd);
+    let mut found = false;
+    let mut env_change = false;
+    let mut computed_command = false;
+    for segment in lexer::split_for_wrappers(&text) {
+        let raw = command_words(segment);
+        let words: Vec<String> = raw.iter().map(|word| resolve_word_text(word)).collect();
+        let mut k = 0;
+        while let Some(word) = words.get(k) {
+            if GRAMMAR_LEADERS.contains(&word.as_str()) || matches!(word.as_str(), "}" | "coproc") {
+                k += 1;
+            } else if word == "time" {
+                k += 1;
+                if words.get(k).is_some_and(|w| w == "-p") {
+                    k += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        let Some(first) = words.get(k) else {
+            continue;
+        };
+        // A command word computed at run time (`$R bypass ...`, `rtk${IFS}bypass`).
+        computed_command |= is_expanding(raw[k]) || may_become_option(raw[k]);
+        let name = norm_command(first);
+        if is_rtk(&name) {
+            found = true;
+            if !argv_listed(&raw[k..], &words[k..], 0) {
+                return true;
+            }
+            continue;
+        }
+        let behind = if matches!(name.as_str(), "builtin" | "command") {
+            words.get(k + 1).map(|word| norm_command(word))
+        } else {
+            None
+        };
+        let changer = |name: &str| ENV_CHANGERS.contains(&name);
+        let launcher = LAUNCHERS.contains(&name.as_str()) || is_assignment(first);
+        if launcher && words[k + 1..].iter().any(|w| is_rtk(&norm_command(w))) {
+            return true;
+        }
+        let loop_var = matches!(name.as_str(), "for" | "select")
+            && words
+                .get(k + 1)
+                .is_some_and(|var| var.chars().any(|c| c.is_ascii_uppercase()));
+        let printf_v = name == "printf" && words.get(k + 1).is_some_and(|w| w.starts_with("-v"));
+        if is_assignment(first)
+            || changer(&name)
+            || behind.as_deref().is_some_and(changer)
+            || loop_var
+            || printf_v
+        {
+            env_change = true;
+        }
+    }
+    // Where the lexer may read the text differently from the shell (a comment, a
+    // here-document body, `$'..\'..'`), an rtk command can hide inside what looks
+    // like one word: any `rtk` in the text (quotes and backslashes aside, or a
+    // `$'...'` that may spell it) then asks.
+    let unquoted: String = text
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
+    let mentions_rtk =
+        found || unquoted.to_ascii_lowercase().contains("rtk") || text.contains("$'");
+    mentions_rtk
+        && (env_change
+            || computed_command
+            || opens_paren_after_word(&text)
+            || here_doc_or_comment(&text)
+            || lexer::contains_substitution(&text)
+            || lexer::ansi_c_quote_defeats_lexer(&text))
+}
+
+/// The text as the shell reads its words: line continuations joined
+/// ([`join_continuations`]), and a carriage return kept inside its word (the
+/// segmenter cuts at a lone `\r`, the shell does not: `grep x\r -Ocmd` is one
+/// command).
+fn shell_text(text: &str) -> Cow<'_, str> {
+    let joined = join_continuations(text);
+    if joined.contains('\r') {
+        Cow::Owned(joined.replace('\r', "\u{1}"))
+    } else {
+        joined
+    }
+}
+
+/// `text` with each line continuation (a backslash then a newline, outside single
+/// quotes) removed, as the shell removes it before reading words: `--op\<newline>en`
+/// is `--open`.
+fn join_continuations(text: &str) -> Cow<'_, str> {
+    if !text.contains("\\\n") {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' && quote != Some('\'') {
+            match chars.next() {
+                Some('\n') => {}
+                Some(next) => {
+                    out.push(c);
+                    out.push(next);
+                }
+                None => out.push(c),
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = lexer::advance_quote_state(quote, c);
+        }
+        out.push(c);
+    }
+    Cow::Owned(out)
+}
+
+/// Whether the text has a here-document (`<<`, not a here-string `<<<`) or a
+/// comment (a word that opens with `#`): the lexer reads a here-document's body and
+/// a comment's text as commands, and a quote in either throws the rest of the text
+/// out of step with the shell.
+fn here_doc_or_comment(text: &str) -> bool {
+    let tokens = lexer::tokenize(text);
+    tokens.iter().enumerate().any(|(i, tok)| {
+        let end = |t: &lexer::ParsedToken| t.offset + t.value.len();
+        match tok.kind {
+            TokenKind::Redirect => {
+                tok.value
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .starts_with("<<")
+                    && !tokens.get(i + 1).is_some_and(|next| {
+                        next.kind == TokenKind::Redirect
+                            && next.value == "<"
+                            && next.offset == end(tok)
+                    })
+            }
+            TokenKind::Arg if tok.value.starts_with('#') => match i.checked_sub(1) {
+                None => true,
+                Some(p) => {
+                    let prev = &tokens[p];
+                    end(prev) != tok.offset
+                        || matches!(
+                            prev.kind,
+                            TokenKind::Operator | TokenKind::Pipe(_) | TokenKind::Redirect
+                        )
+                        || (prev.kind == TokenKind::Shellism
+                            && matches!(prev.value.as_str(), "(" | ")" | "&"))
+                }
+            },
+            _ => false,
+        }
+    })
+}
+
+/// Whether a `(` follows a word or a glob rather than opening a command: a function
+/// definition (`f() { ...; }`), a zsh glob qualifier (`*(e:...:)`), an extglob.
+fn opens_paren_after_word(cmd: &str) -> bool {
+    let tokens = lexer::tokenize(cmd);
+    tokens.windows(2).any(|pair| {
+        let (prev, paren) = (&pair[0], &pair[1]);
+        paren.kind == TokenKind::Shellism
+            && paren.value == "("
+            && match prev.kind {
+                TokenKind::Arg => {
+                    !GRAMMAR_LEADERS.contains(&prev.value.as_str())
+                        && !matches!(prev.value.as_str(), "time" | "}")
+                }
+                TokenKind::Shellism => !matches!(prev.value.as_str(), "(" | "&" | "!" | "{"),
+                _ => false,
+            }
+    })
+}
+
+/// The words of one segment, as written, with each redirect and its operand left
+/// out: the shell takes a redirect anywhere among a command's words, so `git
+/// >/dev/null push` runs `git push`.
+fn command_words(segment: &str) -> Vec<&str> {
+    let tokens = lexer::tokenize(segment);
+    let mut words = Vec::new();
+    let mut i = 0;
+    let stops = |kind: TokenKind| {
+        matches!(
+            kind,
+            TokenKind::Operator | TokenKind::Pipe(_) | TokenKind::Redirect
+        )
+    };
+    while let Some(tok) = tokens.get(i) {
+        if matches!(tok.kind, TokenKind::Operator | TokenKind::Pipe(_)) {
+            i += 1;
+            continue;
+        }
+        let mut end = tok.offset + tok.value.len();
+        i += 1;
+        if tok.kind == TokenKind::Redirect {
+            // A here-string arrives as `<<` then `<`.
+            if tok.value.ends_with("<<")
+                && let Some(next) = tokens.get(i)
+                && next.kind == TokenKind::Redirect
+                && next.value == "<"
+                && next.offset == end
+            {
+                end += 1;
+                i += 1;
+            }
+            if !lexer::redirect_takes_operand(&tok.value) {
+                continue;
+            }
+            // The operand: the next run of glued tokens, glued to the operator or not.
+            let mut first = true;
+            while let Some(next) = tokens.get(i) {
+                if stops(next.kind) || (!first && next.offset != end) {
+                    break;
+                }
+                first = false;
+                end = next.offset + next.value.len();
+                i += 1;
+            }
+            continue;
+        }
+        // A word: this token and every token glued to it, up to a redirect.
+        let start = tok.offset;
+        while let Some(next) = tokens.get(i) {
+            if stops(next.kind) || next.offset != end {
+                break;
+            }
+            end = next.offset + next.value.len();
+            i += 1;
+        }
+        words.push(&segment[start..end]);
+    }
+    words
+}
+
+/// `segment` with its redirects left out ([`command_words`]), the other words as
+/// written and joined by single spaces.
+fn without_redirects(segment: &str) -> Cow<'_, str> {
+    if lexer::tokenize(segment)
+        .iter()
+        .all(|tok| tok.kind != TokenKind::Redirect)
+    {
+        return Cow::Borrowed(segment);
+    }
+    Cow::Owned(command_words(segment).join(" "))
+}
+
+/// Whether the command `words` (`raw` as written) runs only what the allowlist
+/// understands: a listed program ([`LISTED`]) whose arguments pass its rule, rtk
+/// itself ([`rtk_listed`]), or a dashed git builtin (`git-push` is `git push`).
+fn argv_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
+    if depth > MAX_DEPTH || words.is_empty() || raw.iter().any(|word| evaluates_code(word)) {
+        return false;
+    }
+    if is_expanding(raw[0]) || may_become_option(raw[0]) || is_assignment(&words[0]) {
+        return false;
+    }
+    let name = norm_command(&words[0]);
+    if is_rtk(&name) {
+        return rtk_listed(raw, words, depth + 1);
+    }
+    if let Some(sub) = name.strip_prefix("git-")
+        && !sub.is_empty()
+    {
+        let mut raw_args: Vec<&str> = vec![sub];
+        raw_args.extend_from_slice(&raw[1..]);
+        let mut args = vec![sub.to_string()];
+        args.extend_from_slice(&words[1..]);
+        return git_listed(&raw_args, &args);
+    }
+    let Some(&(_, rule)) = LISTED.iter().find(|(listed, _)| *listed == name) else {
+        return false;
+    };
+    let (raw, words) = (&raw[1..], &words[1..]);
+    match rule {
+        Args::Any => true,
+        Args::Except(never) => plain_args(raw, words, never),
+        Args::Subs(subs, never) => plain_args(raw, words, never) && sub_listed(words, subs),
+        Args::Pkg(subs, launch, never) => {
+            let Some(at) = words.iter().position(|word| !word.starts_with(['-', '+'])) else {
+                return plain_args(raw, words, never);
+            };
+            if !plain_args(&raw[..at], &words[..at], never) {
+                return false;
+            }
+            if launch.contains(&words[at].as_str()) {
+                return launch_listed(&raw[at + 1..], &words[at + 1..], depth);
+            }
+            plain_args(&raw[at..], &words[at..], never) && subs.contains(&words[at].as_str())
+        }
+        Args::Launch => launch_listed(raw, words, depth),
+        Args::Git => git_listed(raw, words),
+    }
+}
+
+/// No word that may expand into an option, no word naming standard input (a
+/// script or Dockerfile read from it: `-f /dev/stdin`), and none of the options in
+/// `never`.
+fn plain_args(raw: &[&str], words: &[String], never: &[&str]) -> bool {
+    let names_stdin = |word: &str| {
+        let path = word.split_once('=').map_or(word, |(_, value)| value);
+        matches!(path, "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+    };
+    !raw.iter().any(|word| may_become_option(word))
+        && !words
+            .iter()
+            .any(|word| names_stdin(word) || never.iter().any(|opt| is_option(word, opt)))
+}
+
+/// Whether the operands of `words` open with one of `subs` (each one or two words).
+fn sub_listed(words: &[String], subs: &[&str]) -> bool {
+    let operands: Vec<&str> = words
+        .iter()
+        .map(String::as_str)
+        .filter(|word| !word.starts_with(['-', '+']))
+        .collect();
+    operands.is_empty()
+        || subs.iter().any(|sub| {
+            let parts: Vec<&str> = sub.split(' ').collect();
+            operands.len() >= parts.len() && operands[..parts.len()] == parts[..]
+        })
+}
+
+/// A launcher's own options, then the program it runs, looked up again.
+fn launch_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
+    let mut i = 0;
+    while let Some(word) = words.get(i) {
+        if may_become_option(raw[i]) {
+            return false;
+        }
+        if word == "--" {
+            i += 1;
+            break;
+        }
+        if LAUNCH_FLAGS.contains(&word.as_str()) {
+            i += 1;
+        } else if LAUNCH_VALUES.contains(&word.as_str()) {
+            if raw.get(i + 1).is_some_and(|value| may_become_option(value)) {
+                return false;
+            }
+            i += 2;
+        } else if LAUNCH_VALUES
+            .iter()
+            .any(|opt| opt.starts_with("--") && word.starts_with(&format!("{opt}=")))
+        {
+            i += 1;
+        } else if word.starts_with('-') {
+            return false;
+        } else {
+            break;
+        }
+    }
+    i < words.len() && argv_listed(&raw[i..], &words[i..], depth + 1)
+}
+
+/// git's arguments (after the command word): only the global options in
+/// [`GIT_GLOBAL_FLAGS`]/[`GIT_GLOBAL_VALUES`], a subcommand in [`GIT_SUBS`] without
+/// the options that make it run a string, no word that may expand into an option
+/// before a `--`, and no `ext::`/`fd::` remote (a transport that runs a command).
+fn git_listed(raw: &[&str], words: &[String]) -> bool {
+    if words
+        .iter()
+        .any(|word| word.contains("ext::") || word.contains("fd::"))
+    {
+        return false;
+    }
+    let mut i = 0;
+    while let Some(word) = words.get(i) {
+        if may_become_option(raw[i]) {
+            return false;
+        }
+        let word = word.as_str();
+        if word == "--" {
+            // rtk's argument parser drops it (`rtk git -- push` runs `git push`).
+            i += 1;
+        } else if GIT_GLOBAL_VALUES.contains(&word) {
+            if raw.get(i + 1).is_some_and(|value| may_become_option(value)) {
+                return false;
+            }
+            i += 2;
+        } else if GIT_GLOBAL_FLAGS.contains(&word)
+            || ["--git-dir=", "--work-tree=", "--namespace="]
+                .iter()
+                .any(|opt| word.starts_with(opt))
+        {
+            i += 1;
+        } else if word.starts_with('-') {
+            return false;
+        } else {
+            break;
+        }
+    }
+    let Some(sub) = words.get(i) else {
+        return true;
+    };
+    let Some(&(_, never)) = GIT_SUBS.iter().find(|(name, _)| *name == sub.as_str()) else {
+        return false;
+    };
+    let rest = i + 1..words.len();
+    for k in rest.clone() {
+        if words[k] == "--" {
+            break;
+        }
+        if may_become_option(raw[k]) || never.iter().any(|opt| is_option(&words[k], opt)) {
+            return false;
+        }
+    }
+    if sub == "submodule"
+        && let Some(op) = words[rest].iter().find(|word| !word.starts_with('-'))
+    {
+        return GIT_SUBMODULE_SUBS.contains(&op.as_str());
+    }
+    true
+}
+
+/// An `rtk ...` command (`words[0]` is rtk): its global options, then a subcommand.
+/// The runners (`bypass`, `proxy`, `run`, `err`, `test`, `summary`) run their argv
+/// or a `sh`/`bash` script whose every command is listed; rtk's readers take any
+/// argument; `git` is read by [`git_listed`]; every other subcommand runs the
+/// program of its name with the arguments, read with and without the first `--`
+/// (rtk's argument parser may drop it).
+fn rtk_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
+    let mut i = 1;
+    while raw.get(i).is_some_and(|word| is_global_flag(word)) {
+        i += 1;
+    }
+    let Some(sub) = words.get(i) else {
+        return true;
+    };
+    // `--skip-env` is a global option rtk takes after the subcommand too.
+    let keep: Vec<usize> = (i + 1..words.len())
+        .filter(|&k| words[k] != "--skip-env")
+        .collect();
+    let raw_rest: Vec<&str> = keep.iter().map(|&k| raw[k]).collect();
+    let rest: Vec<String> = keep.iter().map(|&k| words[k].clone()).collect();
+    match sub.as_str() {
+        "--version" | "-V" | "--help" | "-h" => rest.is_empty(),
+        "bypass" | "proxy" => runner_listed(&raw_rest, &rest, depth),
+        "run" => {
+            let mut shell: Option<&str> = None;
+            let mut script: Option<&str> = None;
+            let mut j = 0;
+            while let Some(word) = rest.get(j) {
+                if let Some(value) = word.strip_prefix("--shell=") {
+                    shell = Some(value);
+                    j += 1;
+                } else if word == "--shell" {
+                    shell = rest.get(j + 1).map(String::as_str);
+                    j += 2;
+                } else if let Some(value) = word.strip_prefix("--command=") {
+                    script = Some(value);
+                    j += 1;
+                } else if word == "--command" || word == "-c" {
+                    script = rest.get(j + 1).map(String::as_str);
+                    j += 2;
+                } else if word.len() > 2 && word.starts_with("-c") && !word.starts_with("--") {
+                    script = Some(&word[2..]);
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            match script {
+                Some(script) => {
+                    j >= rest.len() && shell_listed(shell) && script_listed(script, depth)
+                }
+                None if shell.is_none() => runner_listed(
+                    &raw_rest[j.min(rest.len())..],
+                    &rest[j.min(rest.len())..],
+                    depth,
+                ),
+                None => false,
+            }
+        }
+        "err" | "test" | "summary" => {
+            let (shell, j) = match rest.first().map(String::as_str) {
+                Some("--shell") => (rest.get(1).map(String::as_str), 2),
+                Some(word) if word.starts_with("--shell=") => (Some(&word[8..]), 1),
+                _ => (None, 0),
+            };
+            let j = j.min(rest.len());
+            if j == 0 {
+                runner_listed(&raw_rest, &rest, depth)
+            } else {
+                shell_listed(shell) && rest.len() == j + 1 && script_listed(&rest[j], depth)
+            }
+        }
+        "env" => match rest.as_slice() {
+            [] => true,
+            [opt, _] => opt == "-f" || opt == "--filter",
+            [opt] => opt.starts_with("--filter=") || (opt.starts_with("-f") && opt.len() > 2),
+            _ => false,
+        },
+        "read" => read_args_listed(&rest),
+        reader if RTK_READERS.contains(&reader) => true,
+        // `rtk lint [npx|pnpm|exec...] X ...` runs the program X; a path or an
+        // option first means ESLint.
+        "lint" => {
+            let skip = rest
+                .iter()
+                .take_while(|word| {
+                    matches!(word.as_str(), "npx" | "bunx" | "pnpm" | "yarn" | "exec")
+                })
+                .count();
+            match rest.get(skip) {
+                None => true,
+                Some(first) if first.starts_with('-') || first.contains(['/', '.']) => {
+                    plain_args(&raw_rest[skip..], &rest[skip..], &[])
+                }
+                Some(_) => argv_listed(&raw_rest[skip..], &rest[skip..], depth + 1),
+            }
+        }
+        _ => {
+            let mut raw_cmd: Vec<&str> = vec![raw[i]];
+            raw_cmd.extend_from_slice(&raw_rest);
+            let mut cmd: Vec<String> = vec![sub.clone()];
+            cmd.extend_from_slice(&rest);
+            if sub == "git" {
+                // rtk hands git its arguments as they are (a `--` before the
+                // subcommand is skipped by `git_listed` either way).
+                return git_listed(&raw_cmd[1..], &cmd[1..]);
+            }
+            if !argv_listed(&raw_cmd, &cmd, depth + 1) {
+                return false;
+            }
+            match cmd.iter().position(|word| word == "--") {
+                Some(at) => {
+                    raw_cmd.remove(at);
+                    cmd.remove(at);
+                    argv_listed(&raw_cmd, &cmd, depth + 1)
+                }
+                None => true,
+            }
+        }
+    }
+}
+
+/// The argv of `rtk bypass|proxy|run|err|test|summary`, read with and without a
+/// leading `--`. A lone word rtk may hand to `sh -c`, so it is read as a script.
+fn runner_listed(raw: &[&str], words: &[String], depth: usize) -> bool {
+    let (raw, words) = match words.first().map(String::as_str) {
+        Some("--") => (&raw[1..], &words[1..]),
+        _ => (raw, words),
+    };
+    match words.len() {
+        0 => false,
+        1 => script_listed(&words[0], depth),
+        _ => argv_listed(raw, words, depth + 1),
+    }
+}
+
+/// `rtk run -c` and `--shell X` scripts are read as POSIX shell: `sh` or `bash`.
+fn shell_listed(shell: Option<&str>) -> bool {
+    shell.is_none_or(|shell| matches!(basename(shell), "sh" | "bash"))
+}
+
+/// `rtk read`'s own options and files: an option it does not know makes rtk run a
+/// program named `read` with the arguments instead.
+fn read_args_listed(words: &[String]) -> bool {
+    const WITH_VALUE: &[&str] = &[
+        "-l",
+        "--level",
+        "-m",
+        "--max-lines",
+        "--head-lines",
+        "--tail-lines",
+    ];
+    let mut i = 0;
+    while let Some(word) = words.get(i) {
+        if word == "--" {
+            return true;
+        }
+        if WITH_VALUE.contains(&word.as_str()) {
+            i += 2;
+        } else if matches!(word.as_str(), "-n" | "--line-numbers")
+            || WITH_VALUE
+                .iter()
+                .any(|opt| opt.starts_with("--") && word.starts_with(&format!("{opt}=")))
+            || !word.starts_with('-')
+        {
+            i += 1;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// A script `rtk run -c` (or a runner's lone word) hands to `sh -c`: listed when it
+/// has no substitution, here-document, here-string or comment, defines no function,
+/// and each
+/// of its commands is a listed program ([`argv_listed`]). Shell grammar (`if`, `{`,
+/// `!`), assignments and builtins that are not listed make it unlisted.
+fn script_listed(script: &str, depth: usize) -> bool {
+    let script = shell_text(script);
+    let here_string_or_doc = lexer::tokenize(&script).iter().any(|tok| {
+        tok.kind == TokenKind::Redirect
+            && tok
+                .value
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .starts_with("<<")
+    });
+    if depth > MAX_DEPTH
+        || here_string_or_doc
+        || here_doc_or_comment(&script)
+        || lexer::contains_substitution(&script)
+        || lexer::ansi_c_quote_defeats_lexer(&script)
+        || opens_paren_after_word(&script)
+    {
+        return false;
+    }
+    lexer::split_for_wrappers(&script)
+        .into_iter()
+        .all(|segment| {
+            let raw = command_words(segment);
+            let words: Vec<String> = raw.iter().map(|word| resolve_word_text(word)).collect();
+            words.is_empty() || argv_listed(&raw, &words, depth + 1)
+        })
+}
+
+/// Whether a raw word (quotes still in it) may turn into an option, or into several
+/// words, at run time: it holds a `$` or a backtick outside single quotes, or it
+/// opens with a glob or a brace (`*.rs` may match a file named `-Ocmd`). A word
+/// that opens with a literal character other than `-` cannot.
+fn may_become_option(raw: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next();
+            }
+            (_, '$' | '`') => return true,
+            (None, '\'' | '"') => quote = Some(c),
+            (Some('"'), '"') => quote = None,
+            _ => {}
+        }
+    }
+    raw.starts_with(['*', '?', '[', '{']) && is_expanding(raw)
+}
+
+/// Whether a raw word holds an expansion the shell evaluates as code once more:
+/// `${...}` other than a plain `${NAME}` (`${x@P}`, `${!x}`, an array subscript),
+/// `$[...]`, or zsh's `$~x`.
+fn evaluates_code(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        match (quote, b) {
+            (Some(b'\''), b'\'') => quote = None,
+            (Some(b'\''), _) => {}
+            (_, b'\\') => i += 1,
+            (None, b'\'' | b'"') => quote = Some(b),
+            (Some(b'"'), b'"') => quote = None,
+            (_, b'$') => match bytes.get(i + 1) {
+                // `$[...]` is arithmetic; zsh's `$~x` globs the value of `x`, whose
+                // glob qualifiers can run code.
+                Some(b'[' | b'~') => return true,
+                Some(b'{') => {
+                    let rest = &bytes[i + 2..];
+                    let name = rest
+                        .iter()
+                        .take_while(|c| c.is_ascii_alphanumeric() || **c == b'_')
+                        .count();
+                    if name == 0 || rest.get(name) != Some(&b'}') {
+                        return true;
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether `word` is the option `opt`, in any spelling the program accepts:
+/// - `--name`: `--name`, `--name=value`, or a prefix of it (git's and npm's parsers
+///   take a unique prefix: `--exe`);
+/// - `-x`: a word of short options holding `x` (`-x`, `-xcmd`, `-ix`, `-Ocmd`);
+/// - `-name` (`find -exec`, go's `-toolexec`): with one or two dashes, and `=value`;
+/// - `-` alone: the program reads its script from stdin (`docker build -`).
+fn is_option(word: &str, opt: &str) -> bool {
+    if opt == "-" {
+        return word == "-";
+    }
+    if let Some(long) = opt.strip_prefix("--") {
+        return word.strip_prefix("--").is_some_and(|rest| {
+            let name = rest.split('=').next().unwrap_or("");
+            !name.is_empty() && long.starts_with(name)
+        });
+    }
+    let Some(short) = opt.strip_prefix('-') else {
+        return false;
+    };
+    if short.chars().count() == 1 {
+        return word.starts_with('-') && !word.starts_with("--") && word[1..].contains(short);
+    }
+    word.strip_prefix("--")
+        .or_else(|| word.strip_prefix('-'))
+        .is_some_and(|rest| {
+            rest == short
+                || rest
+                    .strip_prefix(short)
+                    .is_some_and(|tail| tail.starts_with('='))
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Working directory
 // ---------------------------------------------------------------------------
 
@@ -2984,13 +4274,26 @@ fn parse_class(pattern: &[char]) -> Option<(CharClass, usize)> {
     None
 }
 
-/// An operand, and the value of a `key=value` operand too (`dd if=secret.txt`).
+/// An operand, and the value of a `key=value` operand too (`dd if=secret.txt`),
+/// each also without a leading `@` (`curl -d @secret.txt`, `gh api -F x=@secret.txt`).
 fn push_operand(out: &mut Vec<Candidate>, arg: &str, pattern: bool, expands: bool) {
-    out.push(Candidate {
-        text: arg.to_string(),
-        pattern,
-        expands,
-    });
+    let mut push = |text: &str| {
+        out.push(Candidate {
+            text: text.to_string(),
+            pattern,
+            expands,
+        });
+        if let Some(file) = text.strip_prefix('@')
+            && !file.is_empty()
+        {
+            out.push(Candidate {
+                text: file.to_string(),
+                pattern,
+                expands,
+            });
+        }
+    };
+    push(arg);
     if let Some((key, value)) = arg.split_once('=')
         && !value.is_empty()
         && !key.is_empty()
@@ -2998,11 +4301,7 @@ fn push_operand(out: &mut Vec<Candidate>, arg: &str, pattern: bool, expands: boo
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        out.push(Candidate {
-            text: value.to_string(),
-            pattern,
-            expands,
-        });
+        push(value);
     }
 }
 
@@ -3068,6 +4367,13 @@ fn read_candidates(name: &str, args: &[&str]) -> Vec<Candidate> {
             continue;
         }
         if arg.starts_with('-') && arg.len() > 1 {
+            // A short option glued to its value (`grep -fsecret.txt`, `curl
+            // -d@secret.txt`): the value may name a file.
+            if !arg.starts_with("--")
+                && let Some((at, _)) = arg.char_indices().nth(2)
+            {
+                push_operand(&mut out, &arg[at..], false, here);
+            }
             if search && matches!(arg.as_str(), "-f" | "--file") {
                 if let Some(value) = resolved.get(i) {
                     out.push(Candidate {
@@ -3909,10 +5215,9 @@ mod tests {
             );
             // ...nor does the user's deny or ask rule bind.
             assert_ne!(hook("git push origin main"), HookDecision::Deny);
-            assert_eq!(
-                hook("aws s3 ls"),
-                HookDecision::AskRewrite("rtk aws s3 ls".into(), AskOwner::Host)
-            );
+            // `aws` is off the allowlist: its rewrite is dropped and the host judges
+            // the original (and asks, by default).
+            assert_eq!(hook("aws s3 ls"), HookDecision::Defer);
             // The managed deny does.
             assert_eq!(hook("curl x"), HookDecision::Deny);
         });
@@ -5378,5 +6683,268 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &none), Gate::Pass, "{cmd}");
         }
+    }
+
+    // --- round 5: the allowlist ---
+
+    #[test]
+    fn the_allowlist_lets_listed_commands_through_and_asks_about_the_rest() {
+        let r = rules(&["git push:*"], &[], &[]);
+        for cmd in [
+            "rtk git status",
+            "rtk git log --oneline -5",
+            "rtk git -C sub --no-pager diff HEAD~1 -- src",
+            "rtk git log -- $FILE",
+            "rtk git add src/*.rs",
+            "rtk git push -u origin x",
+            "rtk git clean -fdx",
+            "rtk git cherry-pick -x abc",
+            "rtk git submodule update --init",
+            "rtk ls -la $HOME",
+            "rtk read -n ok.txt",
+            "rtk grep -rn foo src/",
+            "rtk find . -name '*.rs' -delete",
+            "rtk cargo +nightly test -- --nocapture",
+            "rtk npm run lint -- --fix",
+            "rtk npm exec -- tsc --noEmit",
+            "rtk npx -y prettier --check .",
+            "rtk uv run pytest -x",
+            "rtk pnpm install",
+            "rtk docker compose up",
+            "rtk kubectl get pods -n prod",
+            "rtk gh pr create --title t --body b",
+            "rtk lint",
+            "rtk lint src/",
+            "rtk lint ruff check .",
+            "rtk run -c 'git status && git diff | head'",
+            "rtk test cargo test",
+            "rtk err --shell bash 'cargo build'",
+            "rtk bypass cat ok.txt",
+            "rtk bypass -- ls",
+            "rtk bypass cat <<< 'x' 2>/dev/null",
+            "rtk gain",
+            "rtk",
+            "if rtk git diff --quiet; then rtk ls; fi",
+            "time rtk cargo build",
+            "git push",
+            "x=1; git status",
+        ] {
+            assert!(!unlisted(cmd, &r), "{cmd}");
+        }
+        for cmd in [
+            "rtk bypass ed -s <<< '!git push'",
+            "echo x | rtk bypass ed -s",
+            "rtk bypass env -S 'git\\_push'",
+            "rtk bypass sh -c ls",
+            "rtk bypass python3 x.py",
+            "rtk bypass xargs ls",
+            "rtk bypass ./x.sh",
+            "rtk 'ls; git status'",
+            "rtk git grep -O'git push' x",
+            "rtk git grep -iO'x' x",
+            "rtk git grep --open-files-in-pager=x x",
+            "rtk git grep --open=x x",
+            "rtk git rebase -x x HEAD~1",
+            "rtk git rebase --exe=x HEAD~1",
+            "rtk git clone -u x url",
+            "rtk git fetch --upload-pack=x origin",
+            "rtk git push --receive-pack=x",
+            "rtk git -c core.pager=x log",
+            "rtk git --exec-path=/tmp status",
+            "rtk git bisect run x",
+            "rtk git submodule foreach x",
+            "rtk git difftool -x x",
+            "rtk git config alias.p push",
+            "rtk git p",
+            "rtk git GREP -Ox .",
+            "rtk git grep foo *.rs",
+            "rtk git grep foo $x",
+            "rtk git -C $DIR status",
+            "rtk git fetch 'ext::sh -c x'",
+            "rtk bypass git-upload-pack x",
+            "rtk cargo --config x run",
+            "rtk cargo -Zscript x.rs",
+            "rtk cargo install x",
+            "rtk npm exec -c x",
+            "rtk npx -c x",
+            "rtk npx sh -c x",
+            "rtk npm --script-shell=x run y",
+            "rtk pnpm exec sh",
+            "rtk yarn exec ls",
+            "rtk bun -e x",
+            "rtk go test -exec x ./...",
+            "rtk go test --toolexec=x ./...",
+            "rtk docker run alpine",
+            "rtk docker build -f - .",
+            "rtk docker build -f /dev/stdin .",
+            "rtk find . -exec sh -c x ;",
+            "rtk find $DIR -name x",
+            "rtk grep --pre=sh x .",
+            "rtk rg --pr=sh x .",
+            "rtk read -a x",
+            "rtk env -S x",
+            "rtk lint sh -c x",
+            "rtk lint npx ed",
+            "rtk init -g",
+            "rtk run --shell zsh -c ls",
+            "rtk run -c 'ls # x'",
+            "rtk run -c 'x=1 ls'",
+            "rtk run -c 'ls <<< x'",
+            "rtk run -c 'f() { ls; }'",
+            "rtk test --shell zsh ls",
+            "rtk ls ${x@P}",
+            "rtk ls ${!x}",
+            "rtk ls $[1]",
+            "rtk ls $~x",
+            "rtk ls *(e:x:)",
+            "rtk git status && echo $(date)",
+            "rtk git status # x",
+            "rtk git commit -F - <<EOF\nmsg\nEOF",
+            "echo #'\nrtk bypass ed'",
+            "nice rtk git status",
+            "env rtk git status",
+            "X=1 rtk git status",
+            "x=1; rtk git status",
+            "export PS4=x; rtk ls",
+            "hash -p /bin/sh g; rtk ls",
+            "builtin alias x=y; rtk ls",
+            "for PATH in /tmp; do rtk ls; done",
+            "f() { ls; }; rtk ls",
+            "coproc rtk bypass ed",
+            "rtk git grep foo\r -O'sh -c x' .",
+            "R=rtk; $R bypass ed",
+            "rtk${IFS}bypass ed",
+            "echo #'\nr''tk bypass ed'",
+            "echo #'\n$'\\x72tk' bypass ed'",
+        ] {
+            assert!(unlisted(cmd, &r), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn the_allowlist_is_inert_without_rules() {
+        let none = rules(&[], &[], &[]);
+        for cmd in [
+            "rtk bypass ed -s <<< '!git push'",
+            "rtk git grep -Ox x",
+            "rtk ls # x",
+        ] {
+            assert!(!unlisted(cmd, &none), "{cmd}");
+        }
+        // A Read rule alone is a rule.
+        let read = rules(&[], &[], &["./secret.txt"]);
+        assert!(unlisted("rtk bypass ed -s <<< 'r secret.txt'", &read));
+    }
+
+    #[test]
+    fn command_words_leave_redirects_and_their_operands_out() {
+        let cases: &[(&str, &[&str])] = &[
+            ("git >/dev/null push", &["git", "push"]),
+            ("git 2>&1 push", &["git", "push"]),
+            ("git > out push x", &["git", "push", "x"]),
+            ("ed -s <<< '!git push'", &["ed", "-s"]),
+            ("ed -s <<'EOF'", &["ed", "-s"]),
+            ("cat < in.txt -n", &["cat", "-n"]),
+            ("a>b c", &["a", "c"]),
+            ("grep 'x > y' f", &["grep", "'x > y'", "f"]),
+        ];
+        for (segment, words) in cases {
+            assert_eq!(command_words(segment), *words, "{segment}");
+        }
+    }
+
+    #[test]
+    fn an_option_is_known_in_every_spelling() {
+        let yes = [
+            ("-O", "-O"),
+            ("-Ocmd", "-O"),
+            ("-iO", "-O"),
+            ("--exec", "--exec"),
+            ("--exec=x", "--exec"),
+            ("--exe", "--exec"),
+            ("--open", "--open-files-in-pager"),
+            ("-exec", "-exec"),
+            ("--toolexec=x", "-toolexec"),
+            ("-toolexec=x", "-toolexec"),
+            ("-", "-"),
+        ];
+        for (word, opt) in yes {
+            assert!(is_option(word, opt), "{word} {opt}");
+        }
+        let no = [
+            ("-o", "-O"),
+            ("--onto", "-O"),
+            ("--exclude", "--exec"),
+            ("--", "--exec"),
+            ("-execdir", "-exec"),
+            ("--pretty", "--pre"),
+            ("x-O", "-O"),
+            ("-", "-O"),
+        ];
+        for (word, opt) in no {
+            assert!(!is_option(word, opt), "{word} {opt}");
+        }
+    }
+
+    #[test]
+    fn words_that_may_expand_or_evaluate_are_known() {
+        for word in [
+            "$x", "\"$x\"", "a$x", "`x`", "*.rs", "{a,-b}", "?x", "[ab]x",
+        ] {
+            assert!(may_become_option(word), "{word}");
+        }
+        for word in ["'$x'", "src/*.rs", "a{b,c}", "x", "-x", "\\$x"] {
+            assert!(!may_become_option(word), "{word}");
+        }
+        for word in ["${x@P}", "${!x}", "${a[1]}", "$[1]", "\"${x:-y}\"", "$~x"] {
+            assert!(evaluates_code(word), "{word}");
+        }
+        for word in ["${HOME}", "$HOME", "'${x@P}'", "x"] {
+            assert!(!evaluates_code(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn line_continuations_are_joined_outside_single_quotes() {
+        assert_eq!(join_continuations("--op\\\nen"), "--open");
+        assert_eq!(join_continuations("\"a\\\nb\""), "\"ab\"");
+        assert_eq!(join_continuations("'a\\\nb'"), "'a\\\nb'");
+        assert_eq!(join_continuations("a\\\\\nb"), "a\\\\\nb");
+    }
+
+    #[test]
+    fn here_documents_and_comments_are_found() {
+        for text in [
+            "cat <<EOF\nx\nEOF",
+            "cat 3<<-X",
+            "ls # x",
+            "ls;#x",
+            "#x",
+            "ls\n#x",
+        ] {
+            assert!(here_doc_or_comment(text), "{text}");
+        }
+        for text in [
+            "cat <<< x",
+            "echo a#b",
+            "echo '#x'",
+            "echo $#",
+            "echo \"# x\"",
+        ] {
+            assert!(!here_doc_or_comment(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_dashed_git_builtin_reads_as_the_subcommand() {
+        let r = rules(&["git push:*"], &[], &[]);
+        for cmd in [
+            "rtk bypass /usr/lib/git-core/git-push",
+            "rtk bypass git-push origin main",
+            "rtk run git-push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        assert_eq!(gate("rtk git >/dev/null push", &r), Gate::Deny);
     }
 }
