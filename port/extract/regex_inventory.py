@@ -1,0 +1,805 @@
+"""Every regex pattern in the Python the port replaces that the Rust `regex` crate cannot compile.
+
+Usage (repository root, the pinned Python 3.12 image, which `ci/jobs/ledger.sh` uses):
+
+    python port/extract/regex_inventory.py [--out FILE]
+
+The output is the committed `port/regex-inventory.tsv`. Rust compiles a pattern listed there with
+`fancy-regex` (through `pycompat::re::compile`), and every other one with `regex` (design §11.1).
+`anthology-dev ledger check` compares a fresh run against the committed file, so a merge that adds
+such a pattern without a row fails (N-I3).
+
+Scope: every `*.py` under `scripts/`, `evals/`, `tests/` and `plugins/*/` except
+`plugins/anthology-superpowers/` (which stays Python). `port/` (the oracle and these extractors)
+is deleted at cutover and is out of scope. The vendor portmaps (`vendor/patches/*.portmap.json`)
+are data the Python compiles with `re`, so every string under a key ending in `_regex` is a
+pattern too (DV1 compiles them through `pycompat::re::translate`).
+
+How (the syntax tree is read; nothing is imported or run):
+- Candidates are every string expression that is not a docstring: a literal, an f-string or a `+`
+  chain, wherever it is (an assignment, a list or dict of patterns, a call argument), with module
+  and function-local string constants inlined. A name passed as the pattern argument of a `re`
+  function (`compile`, `search`, `match`, `fullmatch`, `findall`, `finditer`, `sub`, `subn`,
+  `split`, also through `import re as x` or `from re import compile`) or of
+  `assertRegex`/`assertNotRegex` is resolved the same way.
+- Each candidate is parsed by Python's own regex parser (`re._parser`). The constructs that
+  `regex` rejects are flagged: look-ahead and look-behind (`ASSERT`, `ASSERT_NOT`), numeric and
+  named backreferences (`GROUPREF`), conditionals (`GROUPREF_EXISTS`), atomic groups
+  (`ATOMIC_GROUP`) and possessive quantifiers (`POSSESSIVE_REPEAT`). A replacement template such
+  as `r"\\1"` does not parse as a pattern, so it is not flagged.
+- Outside a pattern argument, a candidate is flagged only when it also looks like a regex (it has
+  a group, a class, `.`, an anchor, an alternation or a repeat), so prose such as `"C++"` is not.
+- A candidate that does not parse (a fragment) is still flagged for a textual lookaround, `(?P=`,
+  `(?(` or `(?>` (and, in a pattern argument, a possessive quantifier), outside a character class
+  and not escaped. A fragment that fails on an invalid group reference, such as `r".*?\1"` built
+  into a pattern elsewhere, is flagged `backref,unresolved`, except as the replacement argument
+  of `sub`/`subn`.
+- Pattern arguments are resolved as far as the source allows: `+` chains, f-strings, `%`
+  formatting (an unknown value under `%d`-style integer conversions is digits) and
+  `"".join([...])` of string constants (module or function-local); a compiled pattern (a name or
+  `self.NAME` bound to `re.compile(...)`, or an inline `re.compile(...)`), whose own argument is
+  checked where it is written; and the variable of a `for` or comprehension over a literal list or
+  tuple written inline, never rebound in the loop, by trying every value. A pattern argument with
+  a part that stays unknown (a parameter, a call other than `re.escape`) is flagged `unresolved`
+  whatever it holds: fail closed, for a person to review.
+
+Columns (tab-separated, sorted): `file`, `where` (`<scope>:<target>`: the enclosing function or
+class, `<module>` at top level, then the assigned name or the called function), `constructs`
+(comma-separated: `lookahead`, `neg-lookahead`, `lookbehind`, `neg-lookbehind`, `backref`,
+`named-backref`, `conditional`, `atomic`, `possessive`, `dynamic` when part of the text is only
+known at run time, and `unresolved` when that part could hold anything), `pattern`. In `pattern`, a string constant is written `«NAME»`, any other
+run-time part `«expression»`, and a tab, line feed or carriage return as U+2409, U+240A, U+240D.
+A pattern that repeats in the same `where` gets `#2`, `#3`, ... appended to `where`.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import collections
+import itertools
+import json
+import os
+import re
+import sys
+import warnings
+
+try:  # 3.11+
+    from re import _constants as sre_c
+    from re import _parser as sre_p
+except ImportError:  # pragma: no cover - 3.9 and 3.10
+    import sre_constants as sre_c  # type: ignore[no-redef]
+    import sre_parse as sre_p  # type: ignore[no-redef]
+
+ROOTS = ("scripts", "evals", "tests", "plugins")
+SKIP_DIRS = {"__pycache__", "node_modules", ".git"}
+SKIP_PREFIXES = ("plugins/anthology-superpowers/",)
+RE_FUNCS = {"compile", "search", "match", "fullmatch", "findall", "finditer", "sub", "subn",
+            "split"}
+ASSERT_FUNCS = {"assertRegex", "assertNotRegex"}
+ORDER = ["lookahead", "neg-lookahead", "lookbehind", "neg-lookbehind", "backref", "named-backref",
+         "conditional", "atomic", "possessive", "dynamic", "unresolved"]
+HEADER = ("# Generated by port/extract/regex_inventory.py; do not edit by hand. Every Python "
+          "pattern with a lookaround, a backreference, a conditional, an atomic group or a "
+          "possessive quantifier: Rust compiles these with fancy-regex (design §11.1, plan "
+          "GC-16).\n"
+          "# file\twhere\tconstructs\tpattern\n")
+
+
+def _op(name):
+    return getattr(sre_c, name, None)
+
+
+OP_ASSERT, OP_ASSERT_NOT = _op("ASSERT"), _op("ASSERT_NOT")
+OP_GROUPREF, OP_GROUPREF_EXISTS = _op("GROUPREF"), _op("GROUPREF_EXISTS")
+OP_ATOMIC, OP_POSSESSIVE = _op("ATOMIC_GROUP"), _op("POSSESSIVE_REPEAT")
+REGEX_LIKE = {_op(n) for n in ("SUBPATTERN", "IN", "ANY", "AT", "BRANCH", "MAX_REPEAT",
+                               "MIN_REPEAT", "GROUPREF", "GROUPREF_EXISTS", "ASSERT",
+                               "ASSERT_NOT", "ATOMIC_GROUP")} - {None}
+
+
+def python_files(root: str) -> list[str]:
+    out = []
+    for top in ROOTS:
+        base = os.path.join(root, top)
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+            for name in filenames:
+                if name.endswith(".py"):
+                    rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                    if not rel.startswith(SKIP_PREFIXES):
+                        out.append(rel)
+    return sorted(out)
+
+
+def textual_constructs(text: str, pattern_position: bool) -> set[str]:
+    """Lookaround, `(?P=`, `(?(`, `(?>` tokens and (in a pattern argument) possessive quantifiers
+    in `text`, outside classes and escapes (for fragments that do not parse)."""
+    found = set()
+    i, n, in_class = 0, len(text), False
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if pattern_position and not in_class and ch == "+" and i > 0 and text[i - 1] in "*+?}" \
+                and (i < 2 or text[i - 2] != "\\"):
+            found.add("possessive")
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            # A `]` (after an optional `^`) right after `[` is a literal.
+            if i < n and text[i] == "^":
+                i += 1
+            if i < n and text[i] == "]":
+                i += 1
+            continue
+        if text.startswith("(?", i):
+            rest = text[i + 2:i + 4]
+            if rest.startswith("="):
+                found.add("lookahead")
+            elif rest.startswith("!"):
+                found.add("neg-lookahead")
+            elif rest == "<=":
+                found.add("lookbehind")
+            elif rest == "<!":
+                found.add("neg-lookbehind")
+            elif text.startswith("(?P=", i):
+                found.add("named-backref")
+            elif rest.startswith("("):
+                found.add("conditional")
+            elif rest.startswith(">"):
+                found.add("atomic")
+        i += 1
+    return found
+
+
+def _walk(node, found: set, ops: set) -> None:
+    if isinstance(node, sre_p.SubPattern):
+        for op, av in node:
+            ops.add(op)
+            if op in (OP_ASSERT, OP_ASSERT_NOT):
+                ahead = av[0] == 1
+                name = ("lookahead" if ahead else "lookbehind")
+                found.add(name if op == OP_ASSERT else "neg-" + name)
+            elif op == OP_GROUPREF:
+                found.add("backref")
+            elif op == OP_GROUPREF_EXISTS:
+                found.add("conditional")
+            elif op == OP_ATOMIC:
+                found.add("atomic")
+            elif op == OP_POSSESSIVE:
+                found.add("possessive")
+            _walk(av, found, ops)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _walk(item, found, ops)
+
+
+def constructs_of(text: str, pattern_position: bool, template: bool = False) -> set[str]:
+    """The constructs in `text` that the `regex` crate rejects (empty when there are none).
+    `template`: `text` is the replacement argument of `sub`/`subn`, where `\\1` is not a
+    backreference."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parsed = sre_p.parse(text)
+    except Exception as e:  # not a whole pattern: a fragment, prose or a template
+        found = textual_constructs(text, pattern_position)
+        message = str(e)
+        if not template and ("invalid group reference" in message
+                             or "unknown group name" in message):
+            found |= {"backref", "unresolved"}
+        return found
+    found: set = set()
+    ops: set = set()
+    _walk(parsed, found, ops)
+    if found and not pattern_position and not (ops & REGEX_LIKE):
+        return set()
+    if "backref" in found and "(?P=" in text:
+        found.add("named-backref")
+        if not any(text[i] == "\\" and text[i + 1:i + 2].isdigit() for i in range(len(text) - 1)):
+            found.discard("backref")
+    return found
+
+
+PERCENT_SPEC = re.compile(r"%(?:\([^)]*\))?[#0\- +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?([a-zA-Z%])")
+
+
+def is_escape(node: ast.AST) -> bool:
+    """`re.escape(...)`: run-time text that can only be literal in a pattern."""
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+        and node.func.attr == "escape" and isinstance(node.func.value, ast.Name) \
+        and node.func.value.id == "re"
+
+
+SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def binding_counts(body, args=None) -> collections.Counter:
+    """How many times each name is bound in the scope of `body` (and `args`, a function's
+    arguments): assignments of any kind, loop and `with` targets, imports, `except … as`, nested
+    `def`/`class` names, and walrus targets (even inside a comprehension). Nested scopes are not
+    entered. A name bound more than once is never resolved to one of its values (fail closed)."""
+    counts = collections.Counter()
+    if args is not None:
+        for a in args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]:
+            if a is not None:
+                counts[a.arg] += 1
+
+    def walk(node, in_comprehension=False):
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            counts[node.target.id] += 1
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            counts[node.name] += 1
+            for d in node.decorator_list:
+                walk(d)
+            return
+        if isinstance(node, ast.Lambda):
+            return
+        if isinstance(node, COMPREHENSIONS):
+            for child in ast.walk(node):  # only walrus targets leak out of a comprehension
+                if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+                    counts[child.target.id] += 1
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            counts[node.id] += 1
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                counts[(alias.asname or alias.name).split(".")[0]] += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                counts[name] += 2  # rebound from another scope: never a constant
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in body:
+        walk(stmt)
+    return counts
+
+
+def global_names(tree) -> set:
+    """Names some function declares `global` (so the module binding is not the only one)."""
+    return {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
+
+
+def str_assignments(body, counts) -> dict:
+    """`NAME = <string expression>` assignments among `body`'s statements (not nested defs), for
+    names bound exactly once in the scope."""
+    out = {}
+    stack = list(body)
+    while stack:
+        stmt = stack.pop(0)
+        if isinstance(stmt, SCOPES):
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name) and is_str_expr(stmt.value) \
+                and counts[stmt.targets[0].id] == 1:
+            out[stmt.targets[0].id] = stmt.value
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(stmt, field, []) or [])
+    return out
+
+
+def is_str_expr(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (str, bytes))
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return has_literal(node)
+    return False
+
+
+def has_literal(node: ast.AST) -> bool:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return has_literal(node.left) or has_literal(node.right)
+    return (isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))) \
+        or isinstance(node, ast.JoinedStr)
+
+
+class FileScan(ast.NodeVisitor):
+    def __init__(self, rel: str, tree: ast.Module):
+        self.rel = rel
+        self.rows: list[tuple[str, str, str, str]] = []
+        self.scope: list[str] = []
+        self.targets: list[str] = []
+        # Name scopes, innermost last: the module, then each enclosing function.
+        module_counts = binding_counts(tree.body)
+        for name in global_names(tree):
+            module_counts[name] += 2
+        # Name scopes, innermost last: the names each binds (with counts), its single-binding
+        # string constants, and its single-binding compiled patterns.
+        self.bound: list[collections.Counter] = [module_counts]
+        self.consts: list[dict] = [str_assignments(tree.body, module_counts)]
+        self.docstrings: set[int] = set()
+        self.seen: set[int] = set()
+        # The replacement arguments of `sub`/`subn` calls (templates, not patterns).
+        self.templates: set[int] = set()
+        # Loop variables over inline literal string collections, never rebound in the loop
+        # (innermost scope last): name -> the literal values.
+        self.loop_names: list[dict] = [{}]
+        # Names that mean the `re` module, and names bound to `re` functions.
+        self.re_modules: set[str] = set()
+        self.re_funcs: dict[str, str] = {}
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, (str, bytes)):
+                self.docstrings.add(id(body[0].value))
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "re":
+                        self.re_modules.add(alias.asname or "re")
+            elif isinstance(node, ast.ImportFrom) and node.module == "re":
+                for alias in node.names:
+                    if alias.name in RE_FUNCS:
+                        self.re_funcs[alias.asname or alias.name] = alias.name
+        # Names bound to `re.compile(...)`: the module, then each enclosing function; and the class
+        # attributes of each enclosing class (for `self.NAME`).
+        self.compiled: list[set] = [self.compiled_names(tree.body, module_counts)]
+        self.class_compiled: list[set] = []
+        # While a pattern is rendered once per value of its loop variables: name -> value node.
+        self.bindings: dict = {}
+
+    def binding_scope(self, name: str):
+        """The index of the innermost scope that binds `name` (Python's lookup), or None."""
+        for i in range(len(self.bound) - 1, -1, -1):
+            if self.bound[i][name]:
+                return i
+        return None
+
+    def lookup(self, name: str):
+        i = self.binding_scope(name)
+        return None if i is None else self.consts[i].get(name)
+
+    def render(self, node: ast.AST, inline: bool, depth: int = 0) -> tuple[str, bool, bool]:
+        """`(text, dynamic, unresolved)`. With `inline`, string constants are replaced by their
+        text. `dynamic`: part of the text is only known at run time; `unresolved`: that part is
+        not an `re.escape(...)` (which can only add literal text)."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value, False, False
+        if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+            return node.value.decode("latin-1"), False, False
+        if isinstance(node, ast.JoinedStr):
+            parts, dynamic, unresolved = [], False, False
+            for value in node.values:
+                if isinstance(value, ast.Constant):
+                    parts.append(str(value.value))
+                    continue
+                inner = value.value
+                plain = value.conversion == -1 and value.format_spec is None
+                known = isinstance(inner, ast.Name) and (
+                    inner.id in self.bindings or self.lookup(inner.id) is not None)
+                if plain and known:
+                    text, d, u = self.render(inner, inline, depth)
+                else:
+                    text, d, u = "«" + ast.unparse(inner) + "»", True, not is_escape(inner)
+                parts.append(text)
+                dynamic, unresolved = dynamic or d, unresolved or u
+            return "".join(parts), dynamic, unresolved
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, dl, ul = self.render(node.left, inline, depth)
+            right, dr, ur = self.render(node.right, inline, depth)
+            return left + right, dl or dr, ul or ur
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) \
+                and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
+            items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+            rendered = [self.render(item, inline, depth) for item in items]
+            fmt = node.left.value
+            specs = [m for m in PERCENT_SPEC.finditer(fmt) if m.group(1) != "%"]
+            convs = [m.group(1) for m in specs]
+            # After a `\\`, the digits are a backreference (or an escape): not safe to guess.
+            escaped = [m.start() > 0 and fmt[m.start() - 1] == "\\" for m in specs]
+            values = []
+            for (text, _, unknown), conv, after_backslash in zip(
+                    rendered, convs + [""] * len(rendered), escaped + [False] * len(rendered)):
+                if unknown and conv and conv in "diouxX" and not after_backslash:
+                    values.append(0)  # an integer conversion: digits whatever the value
+                elif unknown:
+                    values = None
+                    break
+                else:
+                    values.append(text)
+            if values is not None and len(convs) == len(rendered) \
+                    and not any(e for e, (_, _, u) in zip(escaped, rendered) if not u):
+                try:
+                    text = node.left.value % tuple(values)
+                    return text, any(d for _, d, _ in rendered), False
+                except (TypeError, ValueError):
+                    pass
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "join" and isinstance(node.func.value, ast.Constant) \
+                and isinstance(node.func.value.value, str) and len(node.args) == 1 \
+                and isinstance(node.args[0], (ast.List, ast.Tuple)) and not node.keywords:
+            rendered = [self.render(item, inline, depth) for item in node.args[0].elts]
+            return (node.func.value.value.join(t for t, _, _ in rendered),
+                    any(d for _, d, _ in rendered), any(u for _, _, u in rendered))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "encode" and not node.keywords \
+                and all(isinstance(a, ast.Constant) for a in node.args):
+            return self.render(node.func.value, inline, depth)
+        if isinstance(node, ast.Call) and self.re_call(node.func) == "re.compile":
+            # An inline compiled pattern: its argument is checked as a pattern of its own.
+            return "«" + ast.unparse(node) + "»", True, False
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in ("self", "cls") and self.class_compiled \
+                and node.attr in self.class_compiled[-1]:
+            return "«" + ast.unparse(node) + "»", True, False
+        if isinstance(node, ast.Name) and node.id in self.bindings:
+            return self.render(self.bindings[node.id], inline, depth + 1)
+        if isinstance(node, ast.Name):
+            value = self.lookup(node.id)
+            if value is not None:
+                if inline and depth < 20:
+                    return self.render(value, inline, depth + 1)
+                return "«" + node.id + "»", False, False
+            if self.is_compiled(node.id):
+                # A compiled pattern: its own `re.compile(...)` argument is checked there.
+                return "«" + node.id + "»", True, False
+        return "«" + ast.unparse(node) + "»", True, not is_escape(node)
+
+    def is_compiled(self, name: str) -> bool:
+        i = self.binding_scope(name)
+        return i is not None and name in self.compiled[i]
+
+    def compiled_names(self, body, counts) -> set:
+        """Names assigned `re.compile(...)` among `body`'s statements (not nested defs), bound
+        exactly once in the scope."""
+        out = set()
+        for stmt in body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                    and isinstance(stmt.targets[0], ast.Name) \
+                    and isinstance(stmt.value, ast.Call) \
+                    and self.re_call(stmt.value.func) == "re.compile" \
+                    and counts[stmt.targets[0].id] == 1:
+                out.add(stmt.targets[0].id)
+        return out
+
+    def where(self, call: str | None) -> str:
+        scope = ".".join(self.scope) or "<module>"
+        target = self.targets[-1] if self.targets else (call or "?")
+        return f"{scope}:{target}"
+
+    def record(self, node: ast.AST, pattern_position: bool, call: str | None) -> None:
+        if id(node) in self.seen or id(node) in self.docstrings:
+            return
+        text, _, _ = self.render(node, inline=False)
+        template = id(node) in self.templates
+        loops = self.loop_names[-1]
+        used = sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name) and n.id in loops})
+        combos = list(itertools.islice(
+            itertools.product(*(loops[n] for n in used)), 257)) if used else [()]
+        found, dynamic, unresolved = set(), False, False
+        if len(combos) > 256:  # too many to try: fail closed
+            combos, unresolved = [()], True
+        for combo in combos:
+            self.bindings = dict(zip(used, combo))
+            try:
+                full, d, u = self.render(node, inline=True)
+            finally:
+                self.bindings = {}
+            found |= constructs_of(full, pattern_position, template=template)
+            dynamic, unresolved = dynamic or d, unresolved or u
+        if pattern_position and unresolved:
+            found.add("unresolved")
+        if not found:
+            return
+        self.seen.add(id(node))
+        if dynamic:
+            found.add("dynamic")
+        self.rows.append((self.rel, self.where(call), ",".join(c for c in ORDER if c in found),
+                          text))
+
+    # ----------------------------------------------------------------- traversal
+
+    def visit_FunctionDef(self, node):  # noqa: N802
+        self.scope.append(node.name)
+        counts = binding_counts(node.body, node.args)
+        self.bound.append(counts)
+        self.consts.append(str_assignments(node.body, counts))
+        self.compiled.append(self.compiled_names(node.body, counts))
+        self.generic_visit(node)
+        self.bound.pop()
+        self.consts.pop()
+        self.compiled.pop()
+        self.scope.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node):  # noqa: N802
+        self.scope.append(node.name)
+        # `self.NAME` is the class's compiled pattern only if no method assigns `self.NAME`.
+        assigned = {t.attr for t in ast.walk(node) if isinstance(t, ast.Attribute)
+                    and isinstance(t.ctx, ast.Store) and isinstance(t.value, ast.Name)
+                    and t.value.id in ("self", "cls")}
+        self.class_compiled.append(
+            self.compiled_names(node.body, binding_counts(node.body)) - assigned)
+        self.generic_visit(node)
+        self.class_compiled.pop()
+        self.scope.pop()
+
+    def visit_Assign(self, node):  # noqa: N802
+        names = [ast.unparse(t) for t in node.targets]
+        self.targets.append(",".join(names))
+        self.generic_visit(node)
+        self.targets.pop()
+
+    def visit_AnnAssign(self, node):  # noqa: N802
+        self.targets.append(ast.unparse(node.target))
+        self.generic_visit(node)
+        self.targets.pop()
+
+    def visit_AugAssign(self, node):  # noqa: N802
+        self.targets.append(ast.unparse(node.target))
+        self.generic_visit(node)
+        self.targets.pop()
+
+    def re_call(self, func: ast.AST) -> str | None:
+        if isinstance(func, ast.Attribute):
+            if isinstance(func.value, ast.Name) and func.value.id in self.re_modules \
+                    and func.attr in RE_FUNCS:
+                return "re." + func.attr
+            if func.attr in ASSERT_FUNCS:
+                return func.attr
+        if isinstance(func, ast.Name) and func.id in self.re_funcs:
+            return "re." + self.re_funcs[func.id]
+        return None
+
+    def visit_Call(self, node):  # noqa: N802
+        name = self.re_call(node.func)
+        pattern = None
+        if name and name.startswith("re."):
+            pattern = node.args[0] if node.args else next(
+                (k.value for k in node.keywords if k.arg == "pattern"), None)
+        elif name:
+            pattern = node.args[1] if len(node.args) > 1 else next(
+                (k.value for k in node.keywords if k.arg in ("expected_regex", "unexpected_regex")),
+                None)
+        if name in ("re.sub", "re.subn"):
+            repl = node.args[1] if len(node.args) > 1 else next(
+                (k.value for k in node.keywords if k.arg == "repl"), None)
+            if repl is not None:
+                self.templates.add(id(repl))
+        if pattern is not None and not self.loop_value(pattern):
+            self.record(pattern, True, name)
+        self.generic_visit(node)
+
+    def loop_value(self, node: ast.AST) -> bool:
+        """`node` is the variable of a `for` or comprehension over a literal list or tuple written
+        inline: each of its values is a candidate of its own, checked where written."""
+        return isinstance(node, ast.Name) and node.id in self.loop_names[-1]
+
+    def push_loops(self, generators_or_fors, scope_nodes) -> None:
+        names = dict(self.loop_names[-1])
+        for g in generators_or_fors:
+            if not isinstance(g.target, ast.Name):
+                continue
+            name = g.target.id
+            names.pop(name, None)  # a loop over anything else rebinds it: no trust
+            iterable = g.iter
+            if not (isinstance(iterable, (ast.List, ast.Tuple))
+                    and all(is_str_expr(e) for e in iterable.elts)):
+                continue
+            rebound = any(
+                (isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+                 and n is not g.target)
+                or (isinstance(n, ast.arg) and n.arg == name)
+                for scope in scope_nodes for n in ast.walk(scope))
+            if not rebound:
+                names[name] = iterable.elts
+        self.loop_names.append(names)
+
+    def visit_comprehension_owner(self, node):
+        parts = [getattr(node, f) for f in ("elt", "key", "value") if hasattr(node, f)]
+        parts += [cond for g in node.generators for cond in g.ifs]
+        self.push_loops(node.generators, parts)
+        self.generic_visit(node)
+        self.loop_names.pop()
+
+    visit_ListComp = visit_SetComp = visit_GeneratorExp = visit_DictComp = visit_comprehension_owner
+
+    def visit_For(self, node):  # noqa: N802
+        self.push_loops([node], node.body + node.orelse)
+        self.generic_visit(node)
+        self.loop_names.pop()
+
+    def visit_BinOp(self, node):  # noqa: N802
+        if is_str_expr(node):
+            self.record(node, False, None)
+            return  # a maximal string expression: its parts are not patterns of their own
+        self.generic_visit(node)
+
+    def visit_JoinedStr(self, node):  # noqa: N802
+        self.record(node, False, None)
+
+    def visit_Constant(self, node):  # noqa: N802
+        if isinstance(node.value, (str, bytes)):
+            self.record(node, False, None)
+
+
+def portmap_rows(root: str) -> list[tuple[str, str, str, str]]:
+    rows = []
+    base = os.path.join(root, "vendor", "patches")
+    names = sorted(os.listdir(base)) if os.path.isdir(base) else []
+    for name in names:
+        if not name.endswith(".portmap.json"):
+            continue
+        rel = "vendor/patches/" + name
+        with open(os.path.join(base, name), encoding="utf-8") as fh:
+            data = json.load(fh)
+
+        def walk(value, path, under_regex):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    walk(item, f"{path}.{key}", under_regex or key.endswith("_regex"))
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    walk(item, f"{path}[{i}]", under_regex)
+            elif isinstance(value, str) and under_regex:
+                found = constructs_of(value, True)
+                if found:
+                    rows.append((rel, path, ",".join(c for c in ORDER if c in found), value))
+
+        walk(data, "$", False)
+    return rows
+
+
+def scan_source(rel: str, source: bytes) -> list[tuple[str, str, str, str]]:
+    tree = ast.parse(source, filename=rel)
+    scan = FileScan(rel, tree)
+    scan.visit(tree)
+    return scan.rows
+
+
+def inventory(root: str) -> list[tuple[str, str, str, str]]:
+    rows = portmap_rows(root)
+    for rel in python_files(root):
+        with open(os.path.join(root, rel), "rb") as fh:
+            rows.extend(scan_source(rel, fh.read()))
+    # Name repeats within one `where`, in source order, then sort.
+    counts: dict[tuple[str, str, str], int] = {}
+    named = []
+    for file, where, constructs, text in rows:
+        key = (file, where, text)
+        counts[key] = counts.get(key, 0) + 1
+        suffix = "" if counts[key] == 1 else f"#{counts[key]}"
+        named.append((file, where + suffix, constructs, text))
+    return sorted(named)
+
+
+def escape(text: str) -> str:
+    return text.replace("\t", "␉").replace("\n", "␊").replace("\r", "␍")
+
+
+def render_tsv(rows) -> str:
+    return HEADER + "".join("\t".join((f, w, c, escape(p))) + "\n" for f, w, c, p in rows)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--root", default=".", help="the repository root")
+    parser.add_argument("--out", help="write here instead of stdout")
+    parser.add_argument("--self-test", action="store_true",
+                        help="check the detection on built-in cases and exit")
+    args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    if not os.path.isdir(os.path.join(args.root, "tests")):
+        raise SystemExit("regex_inventory: run from the repository root (no tests/ directory)")
+    text = render_tsv(inventory(args.root))
+    if args.out:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+# Each case: source, then the (where, constructs) rows it must give. `ci/jobs/ledger.sh` runs this
+# before the extraction, so a detection gap fails the job.
+SELF_TEST_CASES = [
+    # A loop over a named collection is not trusted (fail closed); an inline literal one is.
+    ('import re\nPATS = [r"([\'\\"]).*?\\1"]\nC = [re.compile(p) for p in PATS]\n',
+     [("<module>:PATS", "backref"), ("<module>:C", "dynamic,unresolved")]),
+    ('import re\ndef f(s):\n    local = r"(\\w+) \\1"\n    return re.search(local, s)\n',
+     [("f:local", "backref"), ("f:re.search", "backref")]),
+    # The aliases: names only, so the pattern argument is the only way to see the pattern.
+    ('import re as _re\nH = r"(a)"\nT = r"x\\1"\nX = _re.compile(H + T)\n',
+     [("<module>:T", "backref,unresolved"), ("<module>:X", "backref")]),
+    ('D = {"k": r"(q)\\1"}\n', [("<module>:D", "backref")]),
+    ('from re import compile as c\nH = r"(a)"\nT = r"x\\1"\nY = c(H + T)\n',
+     [("<module>:T", "backref,unresolved"), ("<module>:Y", "backref")]),
+    # Backreferences split across fragments (the re-review's probe).
+    ('import re\n_Q = r"([\'\\"])"\n_TAIL = r".*?\\1"\nP1 = re.compile(_Q + _TAIL)\n'
+     'P2 = re.compile(rf"{_Q}[^x]*\\1")\nP3 = re.compile("".join([_Q, _TAIL]))\n'
+     'def f(q):\n    return re.compile(q + r"x\\1")\nP5 = re.compile(_Q + r"x\\1")\n'
+     'P6 = re.compile(r"(?>" + _Q + ")")\nP7 = re.compile("%s.*\\\\1" % _Q)\n',
+     [("<module>:_TAIL", "backref,unresolved"), ("<module>:P1", "backref"),
+      ("<module>:P2", "backref"), ("<module>:P3", "backref"),
+      ("f:re.compile", "backref,dynamic,unresolved"), ("<module>:P5", "backref"),
+      ("<module>:P6", "atomic"), ("<module>:P7", "backref"),
+      # The `%` template on its own is a fragment with a `\1`: listed, fail closed.
+      ("<module>:P7", "backref,unresolved")]),
+    # A pattern argument that cannot be resolved is listed whatever it holds; re.escape is literal,
+    # and a loop over literal patterns checks each literal where it is written.
+    ('import re\ndef g(p, s):\n    return re.search(p, s)\ndef h(w, s):\n'
+     '    return re.search(re.escape(w) + "x", s)\n'
+     'C = [re.compile(p) for p in (r"a", r"b(?=c)")]\n',
+     [("g:re.search", "dynamic,unresolved"), ("<module>:C", "lookahead")]),
+    # Loop trust fails closed when the variable is rebound in the loop or by a nested def.
+    ('import re\ndef f(q, s):\n    for p in (r"a", r"b"):\n        p = q + p\n'
+     '        re.search(p, s)\n'
+     'def g(s):\n    for p in (r"a", r"b"):\n        def h(p):\n            return re.search(p, s)\n',
+     [("f:re.search", "dynamic,unresolved"), ("g.h:re.search", "dynamic,unresolved")]),
+    # Resolved: every value of an inline literal loop, `%d`, `self.NAME` and an inline compile.
+    ('import re\nimport unittest\nfor cmd in ("ls", "cat"):\n    re.search(rf"\\b{cmd}\\b", "x")\n'
+     'def f(m):\n    return re.compile("^#{1,%d} x" % len(m))\n'
+     'class T(unittest.TestCase):\n    FROM = re.compile(r"^FROM ")\n'
+     '    def test(self):\n        self.assertRegex("x", self.FROM)\n'
+     '        self.assertNotRegex("x", re.compile("credit|thanks", re.I))\n',
+     []),
+    # A value of a literal loop that makes a construct is found.
+    ('import re\nfor tail in ("x", "(?=y)"):\n    re.search(r"a" + tail, "s")\n',
+     [("<module>:?", "lookahead"), ("<module>:re.search", "lookahead")]),
+    # The textual fallback, on fragments that do not parse: atomic, conditional, possessive.
+    ('import re\ndef f(q):\n    a = re.compile(q + r"(?>a")\n    b = re.compile(q + r"(?(1)a|b")\n'
+     '    c = re.compile(q + r"a++(")\n',
+     [("f:a", "atomic,dynamic,unresolved"), ("f:b", "conditional,dynamic,unresolved"),
+      ("f:c", "possessive,dynamic,unresolved")]),
+    # Fail closed: a `%d` right after a backslash, a rebound string constant, a rebound compiled
+    # name (module or `self.NAME`).
+    ('import re\ndef f(n, s):\n    return re.search(r"(a)\\%d" % n, s)\n'
+     'def g(q, s):\n    P = "a"\n    P = q\n    return re.search(P, s)\n'
+     'X = re.compile(r"a")\ndef h(q, s):\n    X = q\n    return re.search(X, s)\n'
+     'class T:\n    FROM = re.compile(r"a")\n    def set(self, q):\n        self.FROM = q\n'
+     '    def test(self):\n        self.assertRegex("x", self.FROM)\n',
+     [("f:re.search", "dynamic,unresolved"), ("g:re.search", "dynamic,unresolved"),
+      ("h:re.search", "dynamic,unresolved"), ("T.test:assertRegex", "dynamic,unresolved")]),
+    # A literal loop variable re-looped over something unknown loses the trust; too many
+    # combinations of loop values to try fail closed.
+    ('import re\nfor p in ("a",):\n    for p in q:\n        re.search(p, "s")\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
+    ('import re\n[re.search(p, "s") for p in ("a",) for p in q]\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
+    ('import re\n' + "".join("    " * i + f'for v{i} in ("a", "b"):\n' for i in range(9))
+     + "    " * 9 + 're.search(' + " + ".join(f"v{i}" for i in range(9)) + ', "s")\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
+    # A compiled name passed on is resolved; without that it would be listed `unresolved`.
+    ('import re\nX = re.compile(r"a")\ndef t(self, s):\n    return re.search(X, s)\n', []),
+    ('N = r"(?P<q>a)(?P=q)"\n', [("<module>:N", "named-backref")]),
+    ('K = r"(a)?(?(1)b|c)"\n', [("<module>:K", "conditional")]),
+    ('A = r"(?>ab|a)c"\n', [("<module>:A", "atomic")]),
+    ('P = r"[a-z]++x"\n', [("<module>:P", "possessive")]),
+    ('B = rb"(?<![\\w.])x"\n', [("<module>:B", "neg-lookbehind")]),
+    ('F = "(?!" + "x"\n', [("<module>:F", "neg-lookahead")]),
+    ('import re\nR = re.sub(r"(a)", r"\\1\\1", "a")\nT = "C++ and g++"\nU = "+++ b/file"\n'
+     'def g():\n    """Docstring with (?=x) in it."""\n',
+     []),
+]
+
+
+def self_test() -> int:
+    failures = []
+    for source, want in SELF_TEST_CASES:
+        got = [(w, c) for _, w, c, _ in scan_source("case.py", source.encode())]
+        if sorted(got) != sorted(want):
+            failures.append(f"{source!r}: got {got}, want {want}")
+    for failure in failures:
+        sys.stderr.write("regex_inventory self-test: " + failure + "\n")
+    if failures:
+        return 1
+    sys.stderr.write(f"regex_inventory self-test: {len(SELF_TEST_CASES)} cases ok\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
