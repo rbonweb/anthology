@@ -1,6 +1,6 @@
 #!/bin/sh
-# anthology-mem: search and explore Anthology memory notes (search, related, orphans, stale,
-# rebuild). A thin POSIX wrapper around scripts/memory_index.py.
+# anthology-mem: search, explore and save Anthology memory notes (search, related, orphans, stale,
+# rebuild, save). A thin POSIX wrapper around scripts/memory_index.py.
 if ! command -v python3 >/dev/null 2>&1; then
   echo "anthology-mem: python3 not found" >&2
   exit 127

@@ -398,6 +398,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - `anthology-mem orphans` (notes nothing links to)
   - `anthology-mem stale` (superseded or old notes)
   - `anthology-mem rebuild`
+  - `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]` (writes one agent note with nested `metadata:`/`type:`; setup allows `Bash(anthology-mem save *)`; ADR-018)
 - **No embeddings (§2).** If semantic search is ever wanted, vectors can be added to this same derived index without changing the notes.
 
 **Self-learning:**
@@ -1163,227 +1164,27 @@ No repo files. This changes `~/.claude` only. The lead does this with the user.
 
 ## Part 3 — Build decisions
 
-Filled in during the build:
-- the toolchain digests (Task 1);
-- the platform checks U1–U9 (Task 1);
-- the taste-skill port map summary (Task 5);
-- the rtk conflict plan (Task 8);
-- the rtk trim decisions (Task 9);
-- the eval baseline (Task 14);
-- any fallback taken.
+The decisions made while building now live in [`DECISIONS.md`](DECISIONS.md), one ADR each (ADR-001 to ADR-017), and new decisions are added there. This part keeps only the upstream pins that Part 2 refers to as "the U5 commit"; the same table is in ADR-007.
 
-Each entry gives the date, the task, what was found, and what was decided. These entries move to `DECISIONS.md` in Task 15 and are added there from then on.
+**U5 — upstream pins** (resolved read-only with `gh api` / `git ls-remote`; SPDX from the repo license or the shipped LICENSE file):
 
-- **2026-11-20, pre-build (lead):** the owner approved the build. Their instructions: the repo is public from creation, and no further questions; the lead decides. Rulings:
-  - Personal machine details are removed from PLAN.md.
-  - Upstream license texts ship in `vendor/licenses/`.
-  - Task 17 = release readiness; 1.0.0 waits for the owner's credits.
-  - Tasks run sequentially.
-  - Work happens on branch `build`, merged to `main` after the final review; Task 1 bootstraps `main`.
-  - `settings_patch` (Task 13) is the only editor of `~/.claude/settings.json`.
-  - The `/Users/` docs check excludes the generated vendored trees.
-  - If taste-skill can't be fully ported to BrowserOS, the unportable checks are dropped and the guidance kept.
-  - If a fork change can't coexist with upstream, upstream's design wins and the fork's intent is re-implemented where feasible.
-  - The evals workflow skips with a notice while the `ANTHROPIC_API_KEY` secret is missing.
-- **2026-11-20, Task 1 (toolchain pins):** images resolved with `docker buildx imagetools inspect` to the multi-arch index digest, so one digest works on Apple Silicon and on x86_64 CI. Each is a one-line Dockerfile in `ci/images/` (`python.Dockerfile`, `rust.Dockerfile`, `gitleaks.Dockerfile`), the single source of truth: `ci.yml` and `$TEST` read the image from the `FROM` line, and a test checks that every `FROM` is pinned by `@sha256:`.
-  - `python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b`
-  - `rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe` (Rust stable 1.100.0 at pin time)
-  - `zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
-  - `tests/requirements.txt` pins PyYAML 6.0.3 with hashes for the cp312 manylinux x86_64 and aarch64 wheels and the sdist; `pip install --require-hashes` was checked on both arm64 and (emulated) x86_64.
-  - `ci.yml` pins `actions/checkout` to `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1).
-  - `$TEST` = `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
-  - `$RTK_TEST` = `docker run --rm -v "$PWD/rtk":/w -v anthology-cargo:/usr/local/cargo/registry -w /w rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe cargo test --locked`
-  - `engines.claude-code` is provisionally `>=2.1.311` in the first-party manifests; it is updated after the platform checks (U1–U9).
-  - Dependabot covers `github-actions`, `pip` (`/tests`) and `docker` (`/ci/images`), so digest bumps arrive as PRs (updated in fix round 1; the first version kept the digests in `tests/images.lock`, which Dependabot cannot read).
-- **2026-11-20, Task 1 (platform checks U1–U9):** all probes ran on Claude Code **2.1.311** (Homebrew's stable cask; npm `latest` was 2.1.329). They used throwaway plugins under a scratch directory, loaded with `--plugin-dir` or installed from a local marketplace into an isolated `CLAUDE_CONFIG_DIR`, and ran `claude -p` in scratch git repos. Each probe is kept as a future eval/smoke case for Task 14, and each check below ends with a **→ Task 14 case** note. Eval cases use the repo-root `evals/` layout from U9. Smoke cases are scripts that run `claude -p` in a scratch repo with an isolated `CLAUDE_CONFIG_DIR`.
-  - **Probe archive:** the raw probe sources (probe plugins, hook scripts, eval suites, commands, jsonl evidence) are archived in the lead's local, git-ignored workspace at `.superpowers/sdd/PLAN/probes/` (local only, not in the repo) until Task 14 converts them into `evals/` and smoke scripts. The notes below are enough to rebuild every case without them.
-  - **U1 — knowledge loading: passes, with one required permission rule.**
-    - `${CLAUDE_PLUGIN_ROOT}` in a plugin agent's body is substituted. The agent Read `<root>/knowledge/_probe/SKILL.md` and quoted its marker.
-    - A folder under `knowledge/` is not registered: the session's skill list had `probe:hello` and `anthology-superpowers:x`, but no `_probe`.
-    - `skills: [anthology-superpowers:x]` preloads a skill from a second plugin; the agent quoted its marker without a tool call.
-    - **Finding:** Claude Code doesn't auto-approve Reads of a plugin's own files. In the default permission mode the knowledge Read is refused (in `-p`) or prompts (interactive). This held for `--plugin-dir`, for a local-path marketplace (loaded in place) and for a GitHub-marketplace plugin copied into `plugins/cache/`. Auto mode and an allow rule both let it through, and a session-level rule also covers subagents.
-    - **Decision (lead ruling):** `/anthology:setup` (through `settings_patch`) adds one `permissions.allow` rule built from the **resolved** plugin location: `Read(<parent of ${CLAUDE_PLUGIN_ROOT}>/**)`. For a cached install that's `<config>/plugins/cache/anthology/anthology/**`, which covers every cached version. For a local marketplace loaded in place, such as a `marketplace add` of the repo folder, it's `<repo>/plugins/**`. A fixed `~/.claude/plugins/cache/anthology/**` would miss the in-place case. `setup remove` takes the rule out, and `session_start.py`/`doctor.py` warn when it no longer matches the current root. The Glob fallback isn't needed: the path is right, only the permission is missing.
-    - **→ Task 14 case (eval `knowledge-load`):**
-      - Prompt: "Run the anthology:<agent> agent with the prompt 'go' and report the first line of each file it read at startup."
-      - `allowed_tools: [Agent, Read]`; `plugins` lists all three plugins.
-      - Graders:
-        - `tool_used` `Agent`, `input_match: 'anthology:<agent>'`;
-        - `tool_used` `Read`, `input_match: 'knowledge/<first startup folder>/SKILL\.md'`;
-        - `tool_order` before `{tool: Read, input_match: 'knowledge/.*/SKILL\.md'}`, after any non-Read tool the agent uses for its task;
-        - `regex` on `last_message` for a marker phrase from that knowledge file;
-        - for agents with preloads, `regex` for a phrase from the preloaded superpowers skill, with `tool_used Skill min 0 max 0`, proving it came from the preload and not an invocation.
-      - Expected: score 1.00.
-      - A smoke case `skills-hidden` runs `claude -p "hi" --max-turns 1 --output-format stream-json --verbose` with the plugins loaded. It asserts that the `system/init` event's `skills` contains no name matching `knowledge/` folder names, such as `caveman` or `frontend-design`, while `agents` contains every `anthology:*` agent.
-  - **U2 — agent fields: all honored.**
-    - `model: haiku`: the subagent transcript records a Haiku model.
-    - `disallowedTools: Edit, Write, NotebookEdit, Agent`: those tools are absent from the agent's tool list.
-    - `skills`: see U1.
-    - `isolation: worktree`: the agent runs in `<repo>/.claude/worktrees/agent-<id>` on branch `worktree-agent-<id>`, and its commit lands on that branch.
-    - `memory: project`: see U7.
-    - **Finding — worktree base:** worktrees branch from the remote default branch (`worktree.baseRef: "fresh"`) by default, not from the session's `HEAD`. In a repo with an `origin`, an isolated agent didn't see the lead's unpushed commits on a feature branch; with `worktree.baseRef: "head"` it did.
-    - **Decision:** `/anthology:setup` also sets `worktree.baseRef: "head"` in user settings (via `settings_patch`, and removed by `setup remove`), so writers start from the lead's current work, such as branch `build`. The routing guide states that writers branch from the lead's `HEAD`. The per-call `isolation` fallback isn't needed.
-    - **→ Task 14 cases:**
-      - **Eval `agent-fields`:**
-        - Prompt: "Run the anthology:scout agent with the prompt 'list your tools and run `pwd`'; report its reply."
-        - Graders:
-          - `tool_used` `Agent`, `input_match: 'anthology:scout'`;
-          - `regex` on `trace` with `match: not_contains` for `"name":"(Edit|Write|NotebookEdit)"` inside the subagent's tool calls (read-only agents never call them);
-          - `llm`: "PASS if the agent's reported tool list lacks Edit, Write, NotebookEdit and Agent."
-        - Expected: 1.00.
-      - **Model check:** a smoke script asserts each roster agent's subagent transcript (`<config>/projects/<p>/<session>/subagents/agent-*.jsonl`, field `message.model`) contains the frontmatter model family (`opus`, `sonnet` or `haiku`). Run it with `CLAUDE_CODE_SUBAGENT_MODEL` unset, because it overrides agent models.
-      - **Smoke `worktree-base`:**
-        - Set up a scratch repo with a bare `origin` holding `main`, plus a local branch `feat` with one unpushed commit.
-        - Run `claude -p "Use the Agent tool to run anthology:implementer with prompt 'run git log --oneline -3 and change nothing'" --settings '{"worktree":{"baseRef":"head"}}'`.
-        - Assert:
-          - the reply contains the `feat` commit subject;
-          - `git worktree list` shows `.claude/worktrees/agent-*`;
-          - without the setting, the commit is absent, which documents the platform default.
-  - **U3 — hook reach: passes.**
-    - A `PreToolUse` hook with matcher `*` saw `Bash`, `Read`, `Write`, `ToolSearch` and a plugin MCP tool (`mcp__plugin_<plugin>_<server>__<tool>`), in the main session and in subagents. Inside a subagent, the hook input carries `agent_type: "<plugin>:<agent>"`.
-    - Exit 2 with stderr blocks the call, and the model sees `PreToolUse:Bash hook error: [...]: <stderr>` plus the plugin that blocked it.
-    - Exec form (`command` + `args`) works. `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` expand in `args` and are also in the hook's environment. The data dir is `<config>/plugins/data/<plugin>-<marketplace>` (`<plugin>-inline` for `--plugin-dir`).
-    - **Decision:** none needed; the guard design (§9) stands. **Eval case:** a hook log shows every tool class, and the block text reaches the model.
-  - **U4 — CLI syntax (from `--help` on 2.1.311):**
-    - `claude plugin marketplace add <owner/repo|https-url|./path> [--scope user|project|local] [--sparse <paths…>]`. A `file://` URL is rejected.
-    - `claude plugin marketplace list|remove <name>|update [name]`
-    - `claude plugin install|uninstall|update <plugin>[@marketplace] [-s user|project|local]`. `uninstall` also takes `--keep-data`, and `--prune -y` removes auto-installed dependencies.
-    - `claude plugin list [--json] [--available]`
-    - `claude plugin validate <path> [--strict] [--json] [--profile directory]`
-    - `claude plugin tag [path] [--dry-run] [-m <msg>] [--push] [--remote origin] [-f]`
-    - `claude plugin eval [target] [--case <glob>] [--tag …] [--runs n] [--model m] [--judge-model m] [--ablation none|with-without] [--threshold 0..1] [--max-cost-usd usd] [--allow-tools …] [--mocks record|off] [--trust-plugin] [--json path] [--no-publish] [-j n]`
-    - Also present: `claude plugin details|prune|enable|disable|configure|init`.
-    - **→ Task 14 case (smoke `cli-syntax`, in CI with the pinned Claude Code):**
-      - For each subcommand above, `claude plugin <sub> --help` exits 0, and its output contains every flag the plan's scripts and docs use. At minimum: `marketplace add`, `install -s`, `uninstall --keep-data`, `validate --strict`, `tag --dry-run`, `--push`, and `eval --max-cost-usd`, `--trust-plugin`, `--ablation`, `--no-publish`, `--json`.
-      - `claude plugin validate --strict plugins/<each>` exits 0.
-      - `claude plugin tag --dry-run plugins/anthology` prints `anthology--v<version>`.
-      - Expected: all pass. A missing flag means a CLI change that the docs and scripts must follow.
-  - **U5 — upstream pins** (resolved read-only with `gh api` / `git ls-remote`; SPDX from the repo license or the shipped LICENSE file):
+| Source | Path | Pin | SPDX |
+|---|---|---|---|
+| `obra/superpowers` | whole plugin | tag `v7.0.2` = `22f0b463e7a5e579904dd6211a520321035526f7` (as expected) | MIT |
+| `anthropics/knowledge-work-plugins` | `engineering/`, `design/`, `product-management/`, `marketing/` | `0e0fcacddcc892eb92a1b7873ff9d68159c47571` (`main` head; all four plugin.json at 1.2.0, the same commit the directory serves as 1.2.0) | Apache-2.0 |
+| `uxkin/agent` | `plugins/website-design/` | branch **`website-design`** = `07e8f5f61421c7268fddc1511878fb09945da854` (plugin 1.0.0). The folder is not on `main`. | MIT |
+| `anthropics/skills` | `skills/frontend-design/` | `e4bb5d960d87126ff3b3a8af1a104b7db67560ba` (`main` head) | Apache-2.0 (folder `LICENSE.txt`; the repo has no top-level license) |
+| `vercel-labs/agent-skills` | `skills/web-design-guidelines/` | `1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62` (`main` head) | MIT (stated in README; the repo has no LICENSE file) |
+| `leonxlnx/taste-skill` | design-taste-frontend | tag `v2.5.1` = `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
+| `juliusbrussee/caveman` | `skills/caveman/` | tag `v4.1.0` = `1e91f1306d602d4ca23618701b1185575ae1869b` | Apache-2.0 |
+| `cuellarfr/design-skills` | whole repo | `7e25e66e87f64f9d3dea22198f9e29937e7c48f5` (`main` head = 1.0.0; no tags) | MIT |
+| ui-taste (uizze.sh) | `/.well-known/skills/ui-taste/` | `CHECKSUMS.sha256` sha256 `405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612` (25 entries, manifest version `uizze-design-v14`) | Apache-2.0 (shipped LICENSE, matching its checksum line) |
+| `rbonweb/rtk` (fork) | whole repo | `develop` = `9b790c414de16f5fb688126b3945c73aa0e0218e` | Apache-2.0 |
+| `rtk-ai/rtk` (upstream) | whole repo | latest release `v1.2.1` = `d0f0399a5ff8cd1d81325a033f0b2d8864d665f6` (published 2026-11-19) | Apache-2.0 |
 
-    | Source | Path | Pin | SPDX |
-    |---|---|---|---|
-    | `obra/superpowers` | whole plugin | tag `v7.0.2` = `22f0b463e7a5e579904dd6211a520321035526f7` (as expected) | MIT |
-    | `anthropics/knowledge-work-plugins` | `engineering/`, `design/`, `product-management/`, `marketing/` | `0e0fcacddcc892eb92a1b7873ff9d68159c47571` (`main` head; all four plugin.json at 1.2.0, the same commit the directory serves as 1.2.0) | Apache-2.0 |
-    | `uxkin/agent` | `plugins/website-design/` | branch **`website-design`** = `07e8f5f61421c7268fddc1511878fb09945da854` (plugin 1.0.0). The folder is not on `main`. | MIT |
-    | `anthropics/skills` | `skills/frontend-design/` | `e4bb5d960d87126ff3b3a8af1a104b7db67560ba` (`main` head) | Apache-2.0 (folder `LICENSE.txt`; the repo has no top-level license) |
-    | `vercel-labs/agent-skills` | `skills/web-design-guidelines/` | `1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62` (`main` head) | MIT (stated in README; the repo has no LICENSE file) |
-    | `leonxlnx/taste-skill` | design-taste-frontend | tag `v2.5.1` = `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
-    | `juliusbrussee/caveman` | `skills/caveman/` | tag `v4.1.0` = `1e91f1306d602d4ca23618701b1185575ae1869b` | Apache-2.0 |
-    | `cuellarfr/design-skills` | whole repo | `7e25e66e87f64f9d3dea22198f9e29937e7c48f5` (`main` head = 1.0.0; no tags) | MIT |
-    | ui-taste (uizze.sh) | `/.well-known/skills/ui-taste/` | `CHECKSUMS.sha256` sha256 `405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612` (25 entries, manifest version `uizze-design-v14`) | Apache-2.0 (shipped LICENSE, matching its checksum line) |
-    | `rbonweb/rtk` (fork) | whole repo | `develop` = `9b790c414de16f5fb688126b3945c73aa0e0218e` | Apache-2.0 |
-    | `rtk-ai/rtk` (upstream) | whole repo | latest release `v1.2.1` = `d0f0399a5ff8cd1d81325a033f0b2d8864d665f6` (published 2026-11-19) | Apache-2.0 |
-
-    - **Decisions:**
-      - Every source is MIT or Apache-2.0, so no owner decision is needed.
-      - Because `vercel-labs/agent-skills` has no LICENSE file, `vendor/licenses/` carries a standard MIT text naming "Vercel", with a note that the license is declared in the upstream README.
-      - The upstream watcher tracks `uxkin/agent` on branch `website-design`, not `main`.
-    - **→ Task 14 case (unit test, no model):** `test_sources_pins` asserts `vendor/sources.json` matches this table: repo, path, ref/commit (40-hex), checksum for ui-taste, and SPDX in {MIT, Apache-2.0}. `vendor.py check` (CI) proves the committed trees regenerate from those pins. `upstream-watch.yml` compares the same pins: `git ls-remote` per repo/branch/tag (`website-design` branch for uxkin), the ui-taste `CHECKSUMS.sha256` sha256, and the rtk upstream latest release. Expected: no diff on a clean tree, and an issue opened when a pin moves.
-  - **U6 — hooks and PATH: the block wins.**
-    - One plugin's `PreToolUse` hook exited 2 while another returned `permissionDecision: "allow"` with `updatedInput`. The call was blocked, with either plugin load order. This matches the documented precedence `deny > defer > ask > allow`.
-    - Both hooks receive the **original** command (they run in parallel), so the guard always checks what Claude asked for, not rtk's rewrite. Alone, the allow hook's rewrite and auto-approval worked.
-    - Plugin `bin/` is on the Bash `PATH` in the main session and in subagents.
-    - **Decision:** none needed; the `guard_rules.check` fallback isn't needed. **Eval case:** the deny + allow pair blocks the call.
-  - **U7 — memory.**
-    - `autoMemoryDirectory` in `.claude/settings.local.json` is honored when it is present at session start. A note was written to `<repo>/.claude/memory/` along with `MEMORY.md`.
-    - When a `SessionStart` hook writes the setting during startup, it applies **from the next session**. That session's notes went to the path-keyed `<config>/projects/<encoded path>/memory/`.
-    - Per the docs, the project-scope setting is honored only in a trusted workspace, and not while `permissions.blockReadsOutsideWorkingDirectories` is on.
-    - Agent memory for plugin agent `probe:writer` is `.claude/agent-memory/probe-writer/`: the `:` becomes `-`, so `anthology:<name>` maps to `.claude/agent-memory/anthology-<name>/`. With `isolation: worktree` it resolves **inside the worktree** (`<worktree>/.claude/agent-memory/…`), where it is untracked and lost with the worktree unless committed.
-    - The `SessionStart` `additionalContext` reached the main session but **not** subagents: the marker is absent from subagent transcripts, and the agent reported none.
-    - **Decisions:**
-      - `memory_sync.py` keeps the planned same-session cover: when it repairs the setting, it injects the repo memory index.
-      - The path-keyed migration runs on **every** session start, not only once, and copies (never overwrites) anything found there. This moves notes saved in a repair session into the repo on the next start.
-      - Agent memory paths in code, tests and docs use `.claude/agent-memory/anthology-<agent>/`, not `<agent>/`.
-      - Writer agents (worktree) must commit their `.claude/agent-memory/anthology-<agent>/` changes in their worktree as a separate `chore(memory): …` commit before finishing, so the memory merges with their branch. The agent bodies (Task 6) and routing guide (Task 13) say so.
-      - Read-only agents run in the main clone and write memory there; the lead commits it.
-    - **→ Task 14 cases** (smoke scripts: multi-session, so not `plugin eval`):
-      - **`auto-memory-dir`:**
-        - Use a scratch approved repo with no `.claude/settings.local.json` and all three plugins installed in an isolated config.
-        - Session 1: `claude -p "Remember for future sessions that the probe color is amber; save it to auto memory now."`
-        - Assert that `settings.local.json` now has `autoMemoryDirectory` = `<repo>/.claude/memory`. The note lands in the path-keyed `<config>/projects/<encoded>/memory/`; that's the platform behaviour, and the hook's same-session cover is injected.
-        - Session 2: run any prompt, then assert the amber note was copied into `<repo>/.claude/memory/` (migration).
-        - Ask session 2 to remember "cyan", and assert the note is written directly under `<repo>/.claude/memory/`.
-      - **`agent-memory-path`:**
-        - Run `claude -p "Use anthology:implementer with prompt 'save a project memory note named probe-note.md saying probe, then finish'"`.
-        - Assert `git log` on the worktree branch has a `chore(memory)` commit adding `.claude/agent-memory/anthology-implementer/probe-note.md`, and no `.claude/agent-memory/anthology:implementer` path exists anywhere.
-      - **Eval `guide-main-only`:**
-        - Prompt: "Quote the first heading of the anthology routing guide if it is in your context, then run anthology:scout with prompt 'quote any anthology routing guide heading in your context, or NONE'."
-        - Graders:
-          - `regex` on `last_message` for the guide's first heading;
-          - `regex` on `trace` for the subagent result containing `NONE`;
-          - `tool_used` `Agent`, `input_match: 'anthology:scout'`.
-        - Expected: 1.00.
-  - **U8 — hook output and failures.**
-    - The `additionalContext` limit is **10,000 characters**, inclusive: a 10,000-char value arrived whole. At 10,001 characters, the model got `Output too large (…KB). Full output saved to: <session dir>/tool-results/hook-…-additionalContext.txt` and a preview (2,000 chars per the docs), and the tail marker was lost. The limit applies to each field separately, and no setting raises it.
-    - A missing interpreter is a **non-blocking** error and the call goes ahead. In exec form: `Executable not found in $PATH: "<cmd>"`. In shell form: exit 127. The model sees nothing; the user only gets the hook-error notice.
-    - `onFailure: "block"` exists (v2.1.295+) and works on 2.1.311: the call is blocked with `failed; blocking because onFailure is "block"`.
-    - **Decisions:**
-      - Routing guide + personal memory index + repo-memory cover stays under a test budget of **9,000 characters** (one field).
-      - The guard keeps failing open: no `onFailure: "block"` on the matcher-`*` hook, since a missing `python3` would then block every tool and brick the session.
-      - "Never silently off" can't rely on Python. If `python3` is missing, the Python `SessionStart` hook itself fails silently. So `anthology-guardrails` adds a first `SessionStart` hook in POSIX `sh` that emits the loud `systemMessage` when `command -v python3` fails.
-      - `session_start.py` still runs the known-bad-sample self-test.
-    - **→ Task 14 cases:**
-      - **Unit test `test_hook_output_budget`:** run `session_start.py` against fixtures (the largest personal index + repo-memory cover), and assert `len(additionalContext) <= 9000`.
-      - **Smoke `context-cap`:** a throwaway plugin whose SessionStart hook pads `additionalContext` to exactly N chars with `END-<N>` at the end. `claude -p "Without tools, quote any token starting with END-, else NONE" --max-turns 1`. Expected: N=10000 quotes `END-10000`; N=10001 gives NONE, and the reply mentions `Output too large` / `saved to`. A failure means the platform cap moved, so re-check the 9,000 budget.
-      - **Smoke `python-missing`:** run the guardrails `sh` sentinel hook with `PATH=/nonexistent:/bin` (no `python3`), and assert stdout is one JSON object with a non-empty `systemMessage` that names python3. With `python3` present, assert no output.
-      - **Smoke `missing-interpreter`:** a throwaway plugin with a `PreToolUse` Bash hook whose `command` is `python9`. `claude -p "Run: echo RAN-OK" --allowedTools "Bash(echo *)" --output-format stream-json --verbose --include-hook-events`. Assert `RAN-OK` is in the result and a `hook_response` has `Executable not found`. With `"onFailure":"block"`, the result says it was blocked.
-  - **U9 — eval harness: works.**
-    - `claude plugin eval` ran a case against the probe plugin with `tool_used` (Skill), `tool_order` (Skill before the MCP tool) and a `regex` grader on `mock_calls`. A mocked MCP server (`evals/mocks/<server>/<tool>.md`) answered and scored 1.00.
-    - `--max-cost-usd` works: with a tiny ceiling and `--runs 2`, one run ran and the command exited **2**, with `partial: true, partialReason: "cost_ceiling"`.
-    - **Finding:** a case's `plugins:` entries must sit under the containment root. That root is the enclosing plugin, so a suite inside `plugins/anthology/evals/` can't load `anthology-guardrails` or `anthology-superpowers`.
-    - Evals placed in a non-plugin parent directory and run against that directory loaded all listed plugins and passed. That case dispatched the plugin agent, which Read its knowledge file and showed a cross-plugin preload.
-    - **Decision:** the behaviour evals live at the repo root in `evals/`. Each case declares `plugins: ["../../plugins/anthology", "../../plugins/anthology-guardrails", "../../plugins/anthology-superpowers"]`, and `evals.yml` runs `claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling> --model … --judge-model …`. BrowserOS cases mock the `browseros-neo` server under `evals/mocks/`.
-    - **→ Task 14 cases:**
-      - **Eval `harness-sanity`:**
-        - Prompt: "Use the anthology:ui-reviewer agent to take a screenshot of http://localhost:3000 and report what the tool returned."
-        - Mock `evals/mocks/browseros-neo/screenshot.md` with body `MOCK-SHOT {{input.url}}`.
-        - Graders:
-          - `tool_used` `Agent`, `input_match: 'anthology:ui-reviewer'`;
-          - `tool_used` `mcp__.*browseros-neo__screenshot` (or `tool_order`: Agent before it);
-          - `regex` `target: mock_calls`, `pattern: 'localhost:3000'`.
-        - Expected: 1.00.
-      - **CI smoke `eval-ceiling`:** run any one-case suite with `--max-cost-usd 0.000001 --runs 2 --json out.json`. Expected: exit code 2, `partial: true`, `partialReason: "cost_ceiling"`, exactly one run recorded.
-      - **Unit test `test_eval_layout`:** every `evals/*/prompt.md` (or `case.yaml`) lists all three plugin paths in `plugins:`, and no `evals/` directory exists under `plugins/*/`.
-  - **`engines` and the minimum version.**
-    - `claude plugin validate` on 2.1.311 warns `Unknown field 'engines'`, so `--strict` fails. The docs say `engines` is honored from **v2.1.323**.
-    - On 2.1.329 (checked in a throwaway container), `validate --strict` passes for `plugins/anthology`.
-    - Everything above was verified on 2.1.311, and no needed feature is newer (`onFailure` 2.1.295, `plugin eval` 2.1.269). So the minimum stays **`>=2.1.311`**. Clients older than 2.1.323 ignore the field, which is harmless.
-    - **Decision:** CI's `claude plugin validate --strict` (Task 14) installs a pinned Claude Code **≥ 2.1.323**.
-  - **Lead ruling folded in — anthology-superpowers versioning:** anthology-superpowers is versioned independently of upstream superpowers, starting at `0.1.0`. `rename-plugin` sets the plugin's own version from `sources.json` `plugin_version`, and `upstream_version` records 7.0.2. So the `~0.1` dependency in `plugins/anthology/.claude-plugin/plugin.json` resolves, and any transform or sync change gets its own bump.
-- **2026-11-20, Task 5 (design-taste-frontend on BrowserOS Neo):**
-  - Upstream v2.5.1 (`f6b76575`) has 20 scripts: 9 kept byte-identical, 9 ported (6 through the bridge, 3 trimmed), 2 dropped (`scripts/shoot.mjs`, `assets/backgrounds/check.mjs`). The patch adds one script, `scripts/neo.mjs`, the BrowserOS Neo bridge.
-  - The agent starts `neo.mjs serve` in the background (it serves the page on 127.0.0.1:5300-5309) and opens its harness page in its own BrowserOS Neo tab. The hub answers only `127.0.0.1`/`localhost` hosts, sends no CORS header, refuses foreign origins, needs a token for every call and saves only images under `shots/`; it exits after 2 hours idle.
-  - The ported checkers (`consistency`, `layout/check`, `perf`, `make-posters`, scene `make`/`probe`) keep their drivers. Their Chrome launcher is replaced by `NeoTab`, which runs their in-page reads in same-origin harness iframes at each width: no CDP port, no browser launch. `gate.mjs` returns `GATE: SETUP` naming the bridge when it, its harness or the page root is not right; a dev-server URL is not checked (build it and check the folder).
-  - Pixel, hover, key, media-emulation and request-interception checks can't run there. They are listed in the checker's `notChecked` and covered by the eyes step: one `run` call per width captures each section, saves `shots/<w>-<nn>.jpg` through the bridge, and the agent reads them. Widths: 1440x900, 768x1024 and 390x844 at the gate; upstream's five in step 6. BrowserOS can't set the user agent over CDP, so the eyes tab opens the page with `?__neo=eyes` and the hub injects the `HeadlessChrome` shim (`motion.js` `shot()` then shows end states, as under the old checker).
-  - The Stop hook is gone: SKILL.md runs `gate.mjs` by hand before finishing. The Playwright and Puppeteer brand icons are dropped, and the gate's checker-gaming regexes no longer spell the tool names.
-  - `vendor/patches/design-taste-frontend.portmap.json` holds the script rule and each script's action. `vendor.py` (entry field `portmap`) fails build/check/sync when upstream adds an unmapped script, a drop script ships, a keep script differs, a shipped script is not keep/port/added, or any shipped file or path matches the Chrome-launch pattern. `tests/test_taste_bridge.py` drives `neo.mjs` against a fake harness (skipped where `node` is absent); the CI job `taste-bridge` runs it. Kept scripts ran once on host Node on a scratch page; the bridge ports ran for real in a BrowserOS Neo tab.
-- **2026-11-20, Task 8 (rtk conflict plan):** `rtk/` is a non-squash `git subtree add` of the fork `rbonweb/rtk` `develop` = `9b790c414de16f5fb688126b3945c73aa0e0218e`, then a `git subtree pull` of upstream `rtk-ai/rtk` `v1.2.1` = `d0f0399a5ff8cd1d81325a033f0b2d8864d665f6` (merge base `bd7f87eb`; upstream 172 commits ahead, the fork 5 change commits + 4 PR merges). Both pins are in `vendor/sources.json` (`managed_by: "subtree"`); `scripts/sync-rtk.sh <tag>` repeats the pull on an `rtk-sync/<tag>` branch. It then rewrites the `upstream` pin in `sources.json` to the tag and its peeled commit, leaving the change uncommitted for review, and runs `scripts/rtk-test.sh`.
-  - **Textual conflict, `src/core/classify.rs`:** upstream moved `ureq` 2 → 3 (`.header()`, `http::global_timeout`, `send_json`, `http::read_json`); the fork's custom headers used ureq 2 (`.timeout()`, `.set()`). Kept upstream's request code and re-added the fork's loop over `task_cmd::configured_headers(upstream)` with `.header(name, value)`. `Content-Type` now comes from `send_json` (the fork protects that name anyway). One behaviour drift: ureq 2's `.set()` replaced a header, but ureq 3's `.header()` appends. So a configured header that has the same name as one of rtk's own unprotected headers (`anthropic-version`, `x-rtk-routed-from`) is now sent alongside rtk's value instead of replacing it. Credentials stay protected, and this engine-gated code goes to Task 9.
-  - **Checked, no conflict:** `src/core/task_cmd.rs` merged cleanly: upstream's new `post_json` (ureq 3, `via_daemon`) already takes a header list, and the fork's `configured_headers` feeds it. `src/lib.rs` (minimal `read` default, `rtk opencode`), `src/discover/registry.rs` and `rules.rs` (node/python rules, `--level none` on head/tail, lint routing), `src/hooks/hook_cmd.rs` and the awareness files all kept both sides.
-  - **Semantic conflict, `src/hooks/init/claude.rs`:** upstream's new test `boundary_newline_hook_is_idempotent_and_uninstall_is_selective` expects a settings file with the hook already installed to stay untouched, but its fixture has no `Bash(rtk *)` allow rule, so the fork's auto-allow heal patched it. Kept both: the fixture now carries `Bash(rtk *)` (a complete install), so it still proves a boundary-newline hook is not duplicated, and the heal of installs missing the rule stays. The fix is in the merge commit.
-  - **Dropped:** nothing. The custom `[upstream.*]` headers live in engine-gated code (`classify.rs`, `task_cmd.rs`, `rtk-engine` schema); per the stream ruling, Task 9's license trim decides their fate with the BUSL engine.
-  - **Named tests** (`rtk/tests/`, through the built binary): `fork_1_auto_allow_hook` (init adds and heals `Bash(rtk *)`), `fork_2_read_minimal_default` (`rtk read` strips comments; head/tail rewrites add `--level none`), `fork_3_node_filter`, `fork_4_python_filter` (rewrite plus the TOML filter on a stand-in tool), `fork_5_cd_chain_rewrite`, `fork_6_biome_lint` (script routing plus the biome filter on the fork's fixture), `fork_7_opencode_run` (rewrite plus the filter on the multistep fixture), `fork_8_upstream_headers` (`#![cfg(all(unix, feature = "engine"))]`: a local server sees the `{session}` id and that `Authorization`/`x-api-key` cannot be overridden), `fork_9_awareness_exact`. Run against plain upstream v1.2.1, all fail except `fork_5`: the fork's cd-chain change was a regression test only (upstream already rewrote after `cd`), so `fork_5` pins that behaviour.
-  - **The bare `cargo test` in the pinned image could not pass, before or after the merge.** Upstream v1.2.1 alone, the fork alone and the merged tree each failed the same 113 tests there, so the merge caused none of them. The causes: `rust:1.100-slim` has no `git` (107 tests that create repos or run git), no `curl` (1), no `jq` (1, the shell hook) and no `kill`/procps (2 signal tests). It also runs as root, so 2 read-only-directory tests in `init_opencode_test` cannot fail.
-  - **`$RTK_TEST` is now `scripts/rtk-test.sh`** (lead ruling). Why: the tests need tools the slim image lacks and a non-root user. The script is the single source of truth for local runs, ci.yml's `rtk-test` job and `sync-rtk.sh`. It reads the image from `ci/images/rust.Dockerfile`'s `FROM` line. Inside the container only, it installs `git curl jq procps ca-certificates` from the image's own Debian release. These are unpinned, test-only and never shipped: that is the accepted cost. It then runs `cargo test --locked` as a non-root user (the target dir is the `anthology-rtk-target` volume), and extra arguments pass through. There is no skip list. Result: all 5483 tests pass (8 ignored).
-- **2026-11-20, Task 9 (rtk trim):** the shipped rtk is the Apache-2.0 edition, Claude Code only, without telemetry. `scripts/rtk-trim.sh` produces it: a thin bash entry that runs `scripts/rtk_trim.py` (stdlib, Python 3.9+), then the lockfile step. The Python is an ordered list of operations over four idempotent primitives: `rm`; `sub` (exact replacement); `cut` (exact deletion); `drop` (an item by its exact first line, body-tolerant). Every one of them stops with exit 1 and `rtk-trim: <file>: <reason>: <anchor>` when its anchor no longer matches. So an upstream refactor of a trimmed region is noticed, and a second run prints `rtk-trim: no changes`. The commit `refactor(rtk): Claude Code only, no telemetry (scripted trim)` is the script's output; nothing under `rtk/` is hand-edited.
-  - **Removed:** `engine/`, `plugin/`, `proxy/` (all BUSL-1.1), `examples/`, the `engine`/`example-plugins` features and the 12 engine-only source files. Telemetry goes: `telemetry.rs`, `telemetry_cmd.rs`, `rtk telemetry`, the daily ping and the consent prompt in `rtk init`. So does every non-Claude `rtk init` target and `rtk hook` processor (the `hook_cmd.rs` handlers of Copilot/VS Code, Gemini, Antigravity, Vibe, Trae, Codex, Cursor, Droid and OpenCode). Also removed: the translated READMEs, `Formula/`, `install.sh`, `INSTALL.md`, the release-please files, the fork's dev tooling dir, upstream's CI dir, `.semgrep.yml`, `openclaw/`, `scripts/`, `hooks/<11 other hosts>/`, the docs of removed features, and the tests of removed code (13 files, about 130 unit tests).
-  - **Kept:**
-    - `src/hooks/init/{mod,claude,agents_md}.rs` (`agents_md.rs` holds the marker-block helpers that `claude.rs` uses);
-    - `rtk hook claude` and `rtk hook check`, and every command filter (including `opencode run`);
-    - `text/` (`rtk-text`, Apache-2.0);
-    - `permissions_opencode.rs` (the shared rule judging calls it);
-    - `llm_proxy.rs` (a loopback-only client of the optional proxy daemon, woven into `gain`/`claude`);
-    - Windows code.
-  - **The engine's `#[cfg(feature = "engine")]` code stays, dead, and can never be enabled.** The feature is gone, and the cfg is declared in `[lints.rust] unexpected_cfgs` check-cfg. Why: deleting 123 cfg sites in high-churn files would make every sync conflict. Cost if wrong: dead source text only.
-  - **`dead_code = "allow"` for the rtk crate.** Why: removing entry points under upstream's `warnings = "deny"` turns about 75 inert callees across 10 shared files into errors, and chasing them means about 100 more conflict-prone edits for no runtime change. Cost if wrong: inert callees stay in the source (not in the LTO binary); `test_rtk_claude_only` guards what matters.
-  - **Permitted dependencies:** `[dependencies]` anyhow, base16ct, chrono, clap, codepage, colored, crossterm, dirs, encoding_rs, flate2, ignore, oem_cp, quick-xml, ratatui, regex, rtk-text, rusqlite, serde, serde_json, sha2, tempfile, toml, toml_edit, ureq, walkdir, which. Per target: libc (unix), windows-sys (windows), mimalloc (musl). Build: toml. Dev: temp-env. `rtk-text`: regex. The workspace members are `.` and `text`, and these two are the only manifests. `getrandom` is removed. `ureq` is kept: its only live caller is the proxy health check, a loopback GET reached by `rtk llm-proxy`, `rtk claude` and `rtk gain` on a TTY, never by the hook, rewrite or filters.
-  - **Cargo.lock** is pruned by `cargo metadata --offline --format-version 1` in the pinned image, falling back to online only if the registry volume lacks a crate. A guard compares the `[[package]]` name+version pairs before and after. It exits 1, and restores the old lockfile, if any package is added or any version changes. Result: 19 packages pruned, none added or changed.
-    - The container runs as root, and on Linux it chowns `Cargo.lock` back to the caller afterwards. It does not use `--user`. Why: with `--user`, `cargo metadata` fails with `Permission denied` on a cold registry volume, or on one another uid owns, as soon as it must fetch online, which a sync that adds a crate does (checked). Cost if wrong: none (the file ends up owned by the caller either way).
-  - **Fork 8 (custom `[upstream.*]` headers, `cc11f851`) is dropped with the engine**, per the stream ruling. It lived only in `classify.rs`, `task_cmd.rs` and the `rtk-engine` schema. `tests/fork_8_upstream_headers.rs` is deleted by the trim and `FORK_TESTS` lists the 8 remaining named tests. Cost if wrong: the owner loses custom headers for remote pipelines, which exist only in the BUSL edition.
-  - **What changes for Claude:** for `rtk hook claude` on PreToolUse, nothing. The engine's pipeline pre-step returned "not handled" without user pipelines, so the same `process_claude_payload` path runs. Lost with the engine (anthology never wired them): PostToolUse output compression, SessionStart handling and user pipelines (`rtk pipeline/methods/plugins/tasks`). Do not wire PostToolUse to `rtk hook claude`: the oss build would answer with a PreToolUse-shaped rewrite. `rtk init -g` (Claude) works; the agent flags are gone.
-  - **Tests:**
-    - `tests/test_rtk_claude_only.py` is the allowlist. It checks the init keep-list, the Cargo dependencies per section, the members line and manifest set, and that there is no telemetry. It also checks: none of the about 100 removed paths exist, `HookCommands` is `{Claude, Check}`, there is no `AgentTarget`, the check-cfg and `dead_code` lines are present, there are 8 fork tests, and the scripts are wired.
-    - `tests/test_rtk_trim.py` unit-tests the primitives (apply once, no-op once applied, raise on a missing anchor or a changed signature), the lock guard and the conflict filter.
-    - `scripts/rtk-net-test.sh` runs in CI's `rtk-test` job after `scripts/rtk-test.sh`. It builds the release binary in the pinned image (target volume `anthology-rtk-release`) and a throwaway image from the same pinned image plus git (inline Dockerfile on stdin, so `ci/images/` is unchanged). It then asserts the exact outputs under `docker run --network none`: only `lo`; `rtk git status`; `rtk rewrite "git log -5"` (exit 3); `rtk hook claude` with and without a rewrite; the `rtk hook` subcommands `claude`, `check` (and clap's `help`); and `rtk telemetry` unrecognized.
-    - Results: `scripts/rtk-test.sh` gives 4775 passed, 0 failed, 8 ignored (60 test binaries). `scripts/rtk-net-test.sh` gives PASS.
-  - **Syncs:** `sync-rtk.sh` now requires the trim (it fails without it). When the subtree pull stops on conflicts, it removes with `git rm` every "deleted by us" (`DU`) path inside a path the trim removes, and commits the merge if nothing else conflicts. Upstream edits to `engine/` and similar paths would otherwise stop every sync. Any other conflict still stops the sync for review. For a content conflict inside a trimmed region, take upstream's hunk and re-run the trim: drops are body-tolerant, and subs and cuts stop loudly when upstream changed the anchored text.
-  - **Noted for Task 11:** `bin/rtk` should export `RTK_SUPPRESS_HOOK_WARNING=1`. Otherwise rtk's daily `hook_check` finds no `rtk hook claude` entry in Claude's settings.json, because anthology registers the hook in the plugin's hooks.json, and prints "run rtk init -g", which would install the duplicate hook §12 forbids.
+- **Decisions:**
+  - Every source is MIT or Apache-2.0, so no owner decision is needed.
+  - rtk is Apache-2.0 except its BUSL-1.1 `engine/`, `plugin/` and `proxy/` directories, which the rtk trim removes before anything ships (ADR-016).
+  - Because `vercel-labs/agent-skills` has no LICENSE file, `vendor/licenses/` carries a standard MIT text naming "Vercel", with a note that the license is declared in the upstream README.
+  - The upstream watcher tracks `uxkin/agent` on branch `website-design`, not `main`.
+- **→ Task 14 case (unit test, no model):** `test_sources_pins` asserts `vendor/sources.json` matches this table: repo, path, ref/commit (40-hex), checksum for ui-taste, and SPDX in {MIT, Apache-2.0}. `vendor.py check` (CI) proves the committed trees regenerate from those pins. `upstream-watch.yml` compares the same pins: `git ls-remote` per repo/branch/tag (`website-design` branch for uxkin), the ui-taste `CHECKSUMS.sha256` sha256, and the rtk upstream latest release. Expected: no diff on a clean tree, and an issue opened when a pin moves.

@@ -11,6 +11,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import startup_budget  # noqa: E402  (the budget calculation is shared with upstream_watch)
 from startup_budget import BUDGET, sections  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "plugins" / "anthology" / "scripts"))
+from memory_index import _parser  # noqa: E402
+
 PLUGIN = ROOT / "plugins" / "anthology"
 AGENTS = PLUGIN / "agents"
 SECTIONS = ["Startup", "Role", "Do", "Don't", "Memory", "When blocked", "Report"]
@@ -128,23 +131,41 @@ class RosterTest(unittest.TestCase):
                 self.assertIn(f".claude/agent-memory/anthology-{name}/", memory)
                 if spec["edits"] == "yes":
                     self.assertIn("chore(memory)", memory)
-                elif spec["edits"] == "docs":
-                    self.assertIn("uncommitted", memory)
                 else:
-                    self.assertIn("heredoc", memory)
-                    self.assertIn(f"mkdir -p .claude/agent-memory/anthology-{name} && cat >",
-                                  memory)
+                    self.assertIn("uncommitted", memory)
+                if spec["edits"] == "no":
+                    self.assertIn("- Leave notes uncommitted for the lead.", memory)
 
-    def test_memory_notes_are_one_per_file_with_the_indexed_frontmatter(self):
-        # memory_sync regenerates MEMORY.md from each note's name, description, metadata.type.
+    def test_memory_notes_are_saved_with_anthology_mem_save(self):
+        # `anthology-mem save` writes the indexed frontmatter and regenerates MEMORY.md; a
+        # heredoc or redirect never matches the `Bash(anthology-mem save *)` allow rule.
         for name in EXPECTED_ROSTER:
             with self.subTest(agent=name):
                 _, body = self.agent(name)
                 memory = sections(body)[1]["Memory"]
-                self.assertIn("one note per file", memory)
-                self.assertIn("`<type>-<topic-slug>.md`", memory)
-                self.assertIn("`name`, `description` and `metadata.type`", memory)
-                self.assertIn("Never hand-edit MEMORY.md", memory)
+                for needle in (f"anthology-mem save --agent {name} --type", "--replace",
+                               "no heredoc or redirect", "no line may start with `#`, even after spaces", "'\\''",
+                               "`<type>-<topic-slug>.md`", "never hand-edit MEMORY.md"):
+                    self.assertIn(needle, memory)
+                self.assertNotIn("<<", memory)
+                self.assertNotIn("cat >", memory)
+                self.assertNotIn("mkdir", memory)
+
+    def test_memory_command_flags_equal_the_save_subcommand_options(self):
+        save = next(a for a in _parser()._subparsers._group_actions[0].choices.items()
+                    if a[0] == "save")[1]
+        options = {o for a in save._actions for o in a.option_strings if o.startswith("--")}
+        options -= {"--json", "--help"}
+        self.assertEqual(options, {"--agent", "--type", "--slug", "--name", "--description",
+                                   "--body", "--replace"})
+        for name in EXPECTED_ROSTER:
+            with self.subTest(agent=name):
+                _, body = self.agent(name)
+                memory = sections(body)[1]["Memory"]
+                command = re.search(r"`(anthology-mem save [^`]*)`", memory).group(1)
+                self.assertEqual(set(re.findall(r"--[a-z]+", command)), options - {"--replace"})
+                self.assertEqual(set(re.findall(r"--[a-z]+", memory)) - {"--replace"},
+                                 options - {"--replace"})
 
     def test_no_edit_agents_may_only_edit_their_memory_dir(self):
         for name, spec in EXPECTED_ROSTER.items():
