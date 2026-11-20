@@ -515,6 +515,34 @@ class FixRound1Test(SetupCase):
         res = self.apply()
         self.assertNotIn("hunter2", json.dumps(res))
 
+    def test_env_and_secret_values_never_reach_any_diff_in_any_layout(self):
+        data = dict(SETTINGS, apiKeyHelper="/bin/echo sk-live-123", env={"SECRET_TOKEN": "hunter2"})
+        layouts = {
+            "minified": json.dumps(data, separators=(",", ":")),
+            "one-line env last": ('{\n  "model": "opus",\n  "permissions": {"allow": ["Bash(ls)"]},\n'
+                                  '  "env": {"SECRET_TOKEN": "hunter2", "OTHER": "sk-live-123"}\n}\n'),
+            "pretty": json.dumps(data, indent=2) + "\n",
+        }
+        for name, text in layouts.items():
+            with self.subTest(name):
+                write(self.settings, text)
+                for path in (self.data_dir, state.state_path()):
+                    if path.is_dir():
+                        shutil.rmtree(str(path))
+                    elif path.exists():
+                        path.unlink()
+                outs = [self.preview(), self.apply(),
+                        anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True), self.remove()]
+                for out in outs:
+                    self.assertTrue(out["settings"]["diff"], name)
+                    self.assertIn("Bash(rtk *)", out["settings"]["diff"])
+                    dumped = json.dumps(out)
+                    self.assertNotIn("hunter2", dumped)
+                    self.assertNotIn("sk-live-123", dumped)
+                if name != "pretty":  # the env line itself is in the diff, with its key kept
+                    self.assertRegex(outs[0]["settings"]["diff"], r'"SECRET_TOKEN": ?"<redacted>"')
+                self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+
     def test_remove_preview_writes_nothing_and_shows_the_diff(self):
         text = self.write_settings()
         self.apply()

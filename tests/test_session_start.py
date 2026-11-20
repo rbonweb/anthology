@@ -33,6 +33,13 @@ NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, m
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 
 
+OPS_CHANGED = "anthology settings changed in this release — run /anthology:setup to review"
+
+
+def current_ops_version():
+    return settings_patch.ops_version(settings_patch.setup_ops(PLUGIN))
+
+
 BLOCKS = ('import sys\nsys.stdin.read()\nsys.stderr.write("Blocked by anthology-guardrails (G1): x\\n")\n'
           'sys.exit(2)\n')
 
@@ -75,8 +82,9 @@ class SessionCase(MemCase):
         self.addCleanup(patcher.stop)
 
     def mark_setup(self, plugin_root=None):
-        """Pretend /anthology:setup ran: state.setup_done plus the U1 allow rule in settings.json."""
-        state.write(setup_done="0.1.0")
+        """Pretend /anthology:setup ran: state.setup_done and the current op-set version, plus the
+        U1 allow rule in settings.json."""
+        state.write(setup_done="0.1.0", settings_ops_version=current_ops_version())
         rule = settings_patch.plugin_read_rule(plugin_root or PLUGIN)
         write(self.config / "settings.json", json.dumps({"permissions": {"allow": [rule]}}))
 
@@ -147,7 +155,7 @@ class OutputTest(SessionCase):
         self.assertIn("could not read settings.json", msg)
 
     def test_settings_with_a_bom_and_the_rule_are_quiet(self):
-        state.write(setup_done="0.1.0")
+        state.write(setup_done="0.1.0", settings_ops_version=current_ops_version())
         rule = settings_patch.plugin_read_rule(PLUGIN)
         write(self.config / "settings.json", "\ufeff" + json.dumps({"permissions": {"allow": [rule]}}))
         self.assertNotIn("systemMessage", self.go())
@@ -265,6 +273,57 @@ class OutputTest(SessionCase):
         write(repo / ".claude" / "memory" / "project-a.md", note_text("project-a", "project", "First"))
         out = self.go(cwd=repo)
         self.assertIn(memory_sync.HINT, out["systemMessage"].splitlines())
+
+
+class OpsVersionTest(SessionCase):
+    """I6: a release that changes setup's settings ops gets one note; nothing is applied."""
+
+    def test_same_version_is_quiet(self):
+        self.mark_setup()
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_changed_version_is_one_note_and_settings_are_untouched(self):
+        self.mark_setup()
+        state.write(settings_ops_version="1-0000000000000000")
+        before = (self.config / "settings.json").read_bytes()
+        msg = self.go()["systemMessage"]
+        self.assertEqual(msg.splitlines(), [OPS_CHANGED])
+        self.assertEqual((self.config / "settings.json").read_bytes(), before)
+        self.assertEqual(state.read()["settings_ops_version"], "1-0000000000000000")
+
+    def test_a_new_op_in_a_release_is_noticed(self):
+        self.mark_setup()
+        extra = {"op": "add", "path": ["permissions", "allow"], "value": "Bash(new-tool *)"}
+        real = settings_patch.setup_ops
+        with mock.patch.object(settings_patch, "setup_ops", lambda *a, **kw: real(*a, **kw) + [extra]):
+            self.assertIn(OPS_CHANGED, self.go()["systemMessage"].splitlines())
+
+    def test_setup_from_before_the_version_was_recorded_gets_the_note(self):
+        self.mark_setup()
+        state.write(settings_ops_version=None)
+        self.assertIn(OPS_CHANGED, self.go()["systemMessage"].splitlines())
+
+    def test_no_state_is_the_existing_run_setup_path(self):
+        msg = self.go()["systemMessage"].splitlines()
+        self.assertIn(NAG, msg)
+        self.assertNotIn(OPS_CHANGED, msg)
+
+    def test_unusable_plugin_root_skips_the_check_quietly(self):
+        root = self.fake_plugins(BLOCKS)  # no .claude-plugin/plugin.json: setup_ops refuses it
+        state.write(setup_done="0.1.0")
+        write(self.config / "settings.json", json.dumps(
+            {"permissions": {"allow": [settings_patch.plugin_read_rule(root)]}}))
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertNotIn(OPS_CHANGED, out.get("systemMessage", "").splitlines())
+
+    def test_setup_apply_records_the_version_session_start_expects(self):
+        import anthology_setup
+        write(self.config / "settings.json", "{}\n")
+        digest = anthology_setup.preview(PLUGIN, cwd=self.tmp)["settings"]["sha256"]
+        res = anthology_setup.apply(PLUGIN, digest, cwd=self.tmp, skip_approve=True)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(state.read()["settings_ops_version"], current_ops_version())
+        self.assertNotIn(OPS_CHANGED, self.go().get("systemMessage", "").splitlines())
 
 
 class FailureTest(SessionCase):
@@ -624,7 +683,6 @@ class GuardLocationTest(SessionCase):
         self.assertNotIn("systemMessage", self.go(cwd=other / "sub"))
 
     def test_newest_applicable_scope_wins(self):
-        self.mark_setup()
         proj = self.tmp / "proj"
         proj.mkdir()
         bad = self.tmp / "installs" / "bad"
@@ -637,6 +695,7 @@ class GuardLocationTest(SessionCase):
             {"scope": "user", "installPath": str(bad), "lastUpdated": "2026-01-01T00:00:00Z"},
             {"scope": "project", "projectPath": str(proj), "installPath": str(self.guard_install()),
              "lastUpdated": "2026-06-01T00:00:00Z"}]})
+        self.mark_setup()  # after the installs exist: setup records the op set they give
         self.assertNotIn("systemMessage", self.go(cwd=proj))
         self.assertIn("did not block", self.go(cwd=self.tmp)["systemMessage"].lower())
 

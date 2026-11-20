@@ -40,6 +40,7 @@ except Exception as _exc:  # a broken or half-updated install must still not fai
 REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
 NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, memory)"
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
+OPS_CHANGED = "anthology settings changed in this release — run /anthology:setup to review"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test
 # rtk_install's download deadline is 4 x this timeout, overshooting by at most one socket
 # timeout: worst case 5 x 8 = 40 s.
@@ -103,6 +104,16 @@ def _setup_warning(env, root):
         return ("anthology: could not read settings.json to check the plugin-read permission; "
                 "fix the file, then re-run /anthology:setup if agents cannot read their knowledge")
     return None
+
+
+def _ops_warning(env, root, current):
+    """I6: setup's settings op set differs from the one setup last applied (a new release).
+    Only a note: settings change only through setup's confirmed diff."""
+    try:
+        version = settings_patch.ops_version(settings_patch.setup_ops(root, env=env))
+    except (ValueError, OSError):  # an unusable plugin root or no guardrails: setup reports those
+        return None
+    return None if current.get("settings_ops_version") == version else OPS_CHANGED
 
 
 def _reconcile_rtk(root, data_dir):
@@ -208,6 +219,7 @@ def _run(env, stdin):
         warnings.append(NAG)
     else:
         add(_step(warnings, "the plugin-read permission check", lambda: _setup_warning(env, root)))
+        add(_step(warnings, "the settings version check", lambda: _ops_warning(env, root, current)))
         if _elapsed(started) > DEADLINE - RTK_MIN_REMAINING:
             warnings.append("anthology: skipped the rtk check this session (not enough time left)")
         else:
