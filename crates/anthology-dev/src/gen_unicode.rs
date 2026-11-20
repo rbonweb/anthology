@@ -218,16 +218,25 @@ pub fn generate(dump: &str) -> Result<String, String> {
     out.push_str("];\n");
 
     // The str-pattern classes for pycompat::re.
-    for (name, runs, what) in [
-        ("WORD_ITEMS", &word, "`\\w`"),
-        ("SPACE_ITEMS", &space, "`\\s`"),
-        ("DECIMAL_ITEMS", &decimal, "`\\d`"),
+    for (stem, runs, what, not) in [
+        ("WORD", &word, "`\\w`", "`\\W`"),
+        ("SPACE", &space, "`\\s`", "`\\S`"),
+        ("DECIMAL", &decimal, "`\\d`", "`\\D`"),
     ] {
+        let mac = format!("{}_items", stem.to_ascii_lowercase());
         out.push_str(&format!(
-            "\n/// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's {what}.\n#[rustfmt::skip]\npub const {name}: &str = concat!("
+            "\n// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's {what}.\n#[rustfmt::skip]\nmacro_rules! {mac} {{ () => {{ concat!("
         ));
         list(&mut out, runs.iter().map(|&(a, b)| class_item(a, b)));
-        out.push_str(");\n");
+        out.push_str(&format!(
+            ") }}; }}\n\
+             /// The inside of a character class equal to a str pattern's {what}.\n\
+             pub const {stem}_ITEMS: &str = {mac}!();\n\
+             /// A character class equal to a str pattern's {what}.\n\
+             pub const {stem}_CLASS: &str = concat!(\"[\", {mac}!(), \"]\");\n\
+             /// A character class equal to a str pattern's {not}.\n\
+             pub const NOT_{stem}_CLASS: &str = concat!(\"[^\", {mac}!(), \"]\");\n"
+        ));
     }
     Ok(out)
 }

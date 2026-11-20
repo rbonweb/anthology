@@ -2076,9 +2076,9 @@ pub static LOWER_MULTI: &[(u32, &str)] = &[
     (0x130, "i\u{307}"),
 ];
 
-/// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\w`.
+// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\w`.
 #[rustfmt::skip]
-pub const WORD_ITEMS: &str = concat!(
+macro_rules! word_items { () => { concat!(
     "\\x{30}-\\x{39}", "\\x{41}-\\x{5a}", "\\x{5f}", "\\x{61}-\\x{7a}", "\\x{aa}",
     "\\x{b2}-\\x{b3}", "\\x{b5}", "\\x{b9}-\\x{ba}", "\\x{bc}-\\x{be}", "\\x{c0}-\\x{d6}",
     "\\x{d8}-\\x{f6}", "\\x{f8}-\\x{2c1}", "\\x{2c6}-\\x{2d1}", "\\x{2e0}-\\x{2e4}", "\\x{2ec}",
@@ -2276,18 +2276,30 @@ pub const WORD_ITEMS: &str = concat!(
     "\\x{20000}-\\x{2a6df}", "\\x{2a700}-\\x{2b739}", "\\x{2b740}-\\x{2b81d}",
     "\\x{2b820}-\\x{2cea1}", "\\x{2ceb0}-\\x{2ebe0}", "\\x{2f800}-\\x{2fa1d}",
     "\\x{30000}-\\x{3134a}", "\\x{31350}-\\x{323af}",
-);
+) }; }
+/// The inside of a character class equal to a str pattern's `\w`.
+pub const WORD_ITEMS: &str = word_items!();
+/// A character class equal to a str pattern's `\w`.
+pub const WORD_CLASS: &str = concat!("[", word_items!(), "]");
+/// A character class equal to a str pattern's `\W`.
+pub const NOT_WORD_CLASS: &str = concat!("[^", word_items!(), "]");
 
-/// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\s`.
+// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\s`.
 #[rustfmt::skip]
-pub const SPACE_ITEMS: &str = concat!(
+macro_rules! space_items { () => { concat!(
     "\\x{9}-\\x{d}", "\\x{1c}-\\x{20}", "\\x{85}", "\\x{a0}", "\\x{1680}",
     "\\x{2000}-\\x{200a}", "\\x{2028}-\\x{2029}", "\\x{202f}", "\\x{205f}", "\\x{3000}",
-);
+) }; }
+/// The inside of a character class equal to a str pattern's `\s`.
+pub const SPACE_ITEMS: &str = space_items!();
+/// A character class equal to a str pattern's `\s`.
+pub const SPACE_CLASS: &str = concat!("[", space_items!(), "]");
+/// A character class equal to a str pattern's `\S`.
+pub const NOT_SPACE_CLASS: &str = concat!("[^", space_items!(), "]");
 
-/// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\d`.
+// The inside of a `regex`/`fancy-regex` character class equal to a str pattern's `\d`.
 #[rustfmt::skip]
-pub const DECIMAL_ITEMS: &str = concat!(
+macro_rules! decimal_items { () => { concat!(
     "\\x{30}-\\x{39}", "\\x{660}-\\x{669}", "\\x{6f0}-\\x{6f9}", "\\x{7c0}-\\x{7c9}",
     "\\x{966}-\\x{96f}", "\\x{9e6}-\\x{9ef}", "\\x{a66}-\\x{a6f}", "\\x{ae6}-\\x{aef}",
     "\\x{b66}-\\x{b6f}", "\\x{be6}-\\x{bef}", "\\x{c66}-\\x{c6f}", "\\x{ce6}-\\x{cef}",
@@ -2307,4 +2319,10 @@ pub const DECIMAL_ITEMS: &str = concat!(
     "\\x{16b50}-\\x{16b59}", "\\x{1d7ce}-\\x{1d7ff}", "\\x{1e140}-\\x{1e149}",
     "\\x{1e2f0}-\\x{1e2f9}", "\\x{1e4f0}-\\x{1e4f9}", "\\x{1e950}-\\x{1e959}",
     "\\x{1fbf0}-\\x{1fbf9}",
-);
+) }; }
+/// The inside of a character class equal to a str pattern's `\d`.
+pub const DECIMAL_ITEMS: &str = decimal_items!();
+/// A character class equal to a str pattern's `\d`.
+pub const DECIMAL_CLASS: &str = concat!("[", decimal_items!(), "]");
+/// A character class equal to a str pattern's `\D`.
+pub const NOT_DECIMAL_CLASS: &str = concat!("[^", decimal_items!(), "]");
