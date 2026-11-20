@@ -1250,6 +1250,10 @@ class RuleTableTest(unittest.TestCase):
             "cat <<EOF x\n" * 2000,
             "$(cat <<EOF\n" * 300,
             "echo $(" * 40 + "ls" + ")" * 40,
+            # heredoc delimiter words and `$'...'` escapes (fix-wave H)
+            "<<$(" * 2000, "cat <<$'\\", 'cat <<"', "<<-", "cat <<`", 'cat <<"$("', "cat <<E\\",
+            "$'\\c", "$'\\x", "$'\\u'", "$'\\U110000' x", "$'\\777'", "cat <<''\n",
+            "cat <<EOF\n" + "a\\\n" * 2000, "$(cat <<EOF\n" + "x\\\n" * 2000 + ")",
         ]
         for command in odd_commands:
             with self.subTest(command=command[:60]):
@@ -1337,6 +1341,118 @@ class RuleTableTest(unittest.TestCase):
             bash("arr=( ${#arr[@]} $# )\necho ok"),
         ])
 
+    # Each case below was checked against bash 3.2 and 5.2 (`bash -c`, with the blocked command
+    # swapped for `echo RAN >&2`): G1 cases print RAN, allowed cases do not (fix-wave H).
+    HEREDOC_RUNS = [
+        # the word before `<<` is an ordinary word: its quotes do not quote the delimiter
+        'cat - "2"<<EOF\n$(npx playwright install)\nEOF',
+        '"2"<<EOF\n$(npx playwright install)\nEOF',
+        "cat '2'<<EOF\n$(npx playwright install)\nEOF",
+        "cat \\2<<EOF\n$(npx playwright install)\nEOF",
+        "cat $'2'<<EOF\n$(npx playwright install)\nEOF",
+        'cat "0"<<-EOF\n\t$(npx playwright install)\n\tEOF',
+        'cat "2"<< EOF\n$(npx playwright install)\nEOF',
+        'cat "2"<<EOF\n`npx playwright install`\nEOF',
+        'echo "$(cat "2"<<EOF\n$(npx playwright install)\nEOF\n)"',
+        'echo $(cat "2"<<EOF\n$(npx playwright install)\nEOF\n)',
+        'cat x"y"<<EOF\n$(npx playwright install)\nEOF',
+        "cat 2>&1<<EOF\n$(npx playwright install)\nEOF",
+        # `\<<EOF` is the word `<` and a `<EOF` redirection: the next line is a command
+        "cat \\<<EOF\n$(npx playwright install)\nEOF",
+        # a quoted redirection target or here-string word before `<<` is not an fd number
+        'cat 2>&"1"<<EOF\n$(npx playwright install)\nEOF',
+        "cat 2>&'1'<<EOF\n$(npx playwright install)\nEOF",
+        'cat >"1"<<EOF\n$(npx playwright install)\nEOF',
+        'cat <<<"2"<<EOF\n$(npx playwright install)\nEOF',
+        'cat - "2"<<<x <<EOF\n$(npx playwright install)\nEOF',
+        # a backslash-newline inside `<<` or `<<-` still makes a heredoc operator
+        "cat <\\\n<'EOF'\nit's\nEOF\nnpx playwright install\n'",
+        "cat <\\\n<EOF\n$(npx playwright install)\nEOF",
+        "cat <<\\\n-EOF\n\t$(npx playwright install)\n\tEOF",
+        "cat << \\\n EOF\n$(npx playwright install)\nEOF",
+        # each heredoc on a line has its own quoting
+        'cat <<A "2"<<B\nx\nA\n$(npx playwright install)\nB',
+        "cat - \"2\"<<'A' <<B\nx\nA\n$(npx playwright install)\nB",
+        # inside `$(...)`: a partly quoted delimiter is the whole word; `<<<` is not `<<`
+        'echo "$(cat <<"E"OF\nx\nEOF\n)"; npx playwright install; echo "\nE\n)"',
+        'echo "$(cat <<E\\OF\nx\nEOF\n)"; npx playwright install; echo "\nE\n)"',
+        'echo "$(cat <<<EOF\n)"; npx playwright install; echo "\nEOF\n)"',
+        # the terminator is the exact line (`<<-` strips leading tabs only)
+        "cat <<EOF\nEOF \nit's\nEOF\nnpx playwright install\n'",
+        "cat <<EOF\n EOF\nit's\nEOF\nnpx playwright install\n'",
+        "cat <<EOF\nEOF\r\nit's\nEOF\nnpx playwright install\n'",
+        "cat <<-EOF\n  EOF\nit's\nEOF\nnpx playwright install\n'",
+        # an unquoted body joins backslash-newline lines, also when looking for the terminator
+        "cat <<EOF\nEO\\\nF\nnpx playwright install\nEOF",
+        "cat <<EOF\nx\\\nEOF\nit's\nEOF\nnpx playwright install\n'",
+        "cat <<-EOF\n\t\\\n\tEOF\nnpx playwright install\nEOF",
+        "cat <<EOF\n$\\\n(npx playwright install)\nEOF",
+        # any word is a delimiter, not only identifiers
+        "cat <<.\n'$(npx playwright install)'\n.",
+        "cat <<123\n'$(npx playwright install)'\n123",
+        "cat <<$X\n'$(npx playwright install)'\n$X",
+        "cat <<$(echo X)\n'$(npx playwright install)'\n$(echo X)",
+        # a `$'...'` delimiter is decoded: `$'E\x4fF'` ends at `EOF`
+        "cat <<$'E\\x4fF'\nx\nEOF\nnpx playwright install\nEx4fF",
+        # in `((...))` and `$((...))`, `<<` is a shift, not a heredoc
+        "((x=1<<2))\nnpx playwright install\n2",
+        "((x=1<<y))\nnpx playwright install\ny",
+        "for ((i=0; i<<1; i++)); do :; done\nnpx playwright install\n1",
+        'echo "$( ((x=1<<y))\n)"; npx playwright install; echo "\ny\n)"',
+        "x=$(\n((x=1<<y))\nnpx playwright install\ny\n)",
+        "echo $((1<<y))\nnpx playwright install\ny",
+        'echo "$((1<<y\n))"; npx playwright install; echo "\ny\n)"',
+        "x=$((1<<y\n)); npx playwright install\ny",
+        "(( $(npx playwright install) 1 ))",
+        "((npx playwright install) )",
+        "( (echo a) <<EOF\n$(npx playwright install)\nEOF\n)",
+        # an unterminated body runs to the end of the input, quotes and all
+        "cat <<EOF\n'$(npx playwright install)'",
+        "cat <<EOF\n'`npx playwright install`'",
+    ]
+    HEREDOC_DATA = [
+        "cat \"2\"<<'A'\n$(npx playwright install)\nA",
+        'cat <<"E"OF\n$(npx playwright install)\nEOF',
+        "cat <<E\\OF\n$(npx playwright install)\nEOF",
+        "cat <<$'EOF'\n$(npx playwright install)\nEOF",
+        'cat <<$"EOF"\n$(npx playwright install)\nEOF',
+        "cat <<-\\EOF\n$(npx playwright install)\n\tEOF",
+        "cat <<'a b'\n$(npx playwright install)\na b",
+        "cat <<''\n$(npx playwright install)\n\necho ok",
+        'cat <<"$(echo X)"\n$(npx playwright install)\n$(echo X)',
+        "cat <<'EOF'\nEO\\\nF\nnpx playwright install\nEOF",
+        "cat <<EOF\nx\\\nEOF\nnpx playwright install\nEOF",
+        "cat <<-EOF\n\tEO\\\n\tF\nnpx playwright install\nEOF",
+        "cat <<EOF\nEOF\\\\\nnpx playwright install\nEOF",
+        'echo "$(cat <<"E"OF\nnpx playwright install\nE\nEOF\n)"',
+    ]
+
+    def test_heredoc_delimiter_and_body_follow_bash(self):
+        """Delimiter quoting comes from the delimiter word alone; the body ends where bash ends
+        it (fix-wave H)."""
+        self.assert_table("G1", [bash(c) for c in self.HEREDOC_RUNS])
+        self.assert_table(None, [bash(c) for c in self.HEREDOC_DATA])
+
+    # `$'...'` escapes as bash 5 decodes them (checked like the heredoc cases; `\u` is bash 4.2+).
+    ANSI_C_RUNS = [
+        "$'\\x6epx' playwright install",
+        "$'\\156px' playwright install",
+        "$'\\u006epx' playwright install",
+        "$'\\U0000006e'px playwright install",
+        "npx $'pl\\x61ywright' install",
+        "$'np\\0zz'x playwright install",
+        "npx playwright $'\\x69nstall'",
+    ]
+    ANSI_C_DATA = [
+        "echo $'\\x6epx playwright install'",
+        "$'n\\0px' playwright install",
+        "$'\\x6e\\x70x\\x' playwright install",
+    ]
+
+    def test_ansi_c_strings_are_decoded(self):
+        self.assert_table("G1", [bash(c) for c in self.ANSI_C_RUNS])
+        self.assert_table(None, [bash(c) for c in self.ANSI_C_DATA])
+
     def test_commented_array_stays_cheap(self):
         import time
         command = "arr=(\n" + "  x # it's (\n" * 10000 + ")\nnpx playwright install"
@@ -1350,7 +1466,12 @@ class RuleTableTest(unittest.TestCase):
         for name, command in (
                 ("nested substitution", '"$(' * 12 + "cat <<X\n" * 2000),
                 ("lexer", "cat <<X\n" * 2000),
-                ("nested array", "a=(" * 12 + "cat <<X\n" * 2000)):
+                ("nested array", "a=(" * 12 + "cat <<X\n" * 2000),
+                # an unclosed body is scanned once per level, not once per path (fix-wave H)
+                ("nested quoted", "$(cat <<EOF\n'" * 300),
+                ("nested arithmetic", "((x=$(cat <<EOF\n" * 300),
+                ("arithmetic", "((" * 20000),
+                ("continuations", "cat <\\\n" * 20000)):
             with self.subTest(case=name):
                 start = time.perf_counter()
                 guard_rules.check("Bash", {"command": command}, HOME)
