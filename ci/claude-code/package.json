@@ -1,0 +1,8 @@
+{
+  "name": "anthology-ci-claude-code",
+  "private": true,
+  "description": "The Claude Code version CI validates the Anthology plugins with.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.329"
+  }
+}

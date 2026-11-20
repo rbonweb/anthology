@@ -627,6 +627,15 @@ class RenamePluginTest(FixtureCase):
         with self.assertRaises(vendor.VendorError):
             vendor.rename_plugin(tree, self.OLD, self.NEW, plugin_version="0.1.0")
 
+    def test_drops_the_upstream_dev_marketplace(self):
+        # Its entry version would disagree with plugin.json and `claude plugin validate`
+        # checks the marketplace file instead of the plugin.
+        tree = self.make_tree()
+        write(tree, ".claude-plugin/marketplace.json", '{"plugins": [{"version": "7.0.2"}]}\n')
+        vendor.rename_plugin(tree, self.OLD, self.NEW, plugin_version="0.1.0")
+        self.assertFalse((tree / ".claude-plugin/marketplace.json").exists())
+        self.assertTrue((tree / ".claude-plugin/plugin.json").is_file())
+
     def test_missing_manifest_is_an_error(self):
         tree = self.tmp / "empty"
         tree.mkdir()

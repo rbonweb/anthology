@@ -260,6 +260,9 @@ def rename_plugin(tree: Path, old: str, new: str, plugin_version: str) -> dict:
     """Rename a Claude Code plugin and the `old:<skill>` references to its skills.
 
     - `.claude-plugin/plugin.json`: `name` -> new, `version` -> plugin_version.
+    - `.claude-plugin/marketplace.json` (upstream's dev marketplace) is deleted: its entry
+      version would disagree with plugin.json and `claude plugin validate` would check it
+      instead of the plugin.
     - Every text file: the token `old:` followed by `[a-z0-9-]` becomes `new:`, unless
       the token is part of a longer name (`anthology-old:`), a path or URL (`/old:`,
       `.old:`), or is not directly followed by a skill name (`old:` in prose).
@@ -274,6 +277,7 @@ def rename_plugin(tree: Path, old: str, new: str, plugin_version: str) -> dict:
     data["name"] = new
     data["version"] = plugin_version
     manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    (tree / ".claude-plugin" / "marketplace.json").unlink(missing_ok=True)
 
     token = re.compile(rb"(?<![\w./-])" + re.escape(old.encode()) + rb":(?=[a-z0-9-])")
     replacement = new.encode() + b":"
