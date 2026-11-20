@@ -37,8 +37,17 @@ try:
 except Exception as _exc:  # a broken or half-updated install must still not fail the session
     _IMPORT_ERROR = _exc
 
+try:  # the PLAN section 14 checks; a broken import costs only those lines
+    import compat
+except Exception:
+    compat = None
+
 REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
 NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, memory)"
+NO_DATA = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory "
+           "search index have no data folder (compatibility check)")
+SUBAGENT_MODEL_SET = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model "
+                      "and the roster's model tiers do not apply")
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test
 # rtk_install's download deadline is 4 x this timeout, overshooting by at most one socket
@@ -103,6 +112,39 @@ def _setup_warning(env, root):
         return ("anthology: could not read settings.json to check the plugin-read permission; "
                 "fix the file, then re-run /anthology:setup if agents cannot read their knowledge")
     return None
+
+
+def _data_dir_warning(env):
+    return None if env.get("CLAUDE_PLUGIN_DATA") else NO_DATA
+
+
+def _wrappers_warning(root):
+    bad = compat.wrapper_problems(root)
+    if not bad:
+        return None
+    return ("anthology: the plugin's bin/ wrappers are missing or not executable: %s; agents cannot run "
+            "them (reinstall the plugin)" % ", ".join("bin/" + n for n in bad))
+
+
+def _agent_memory_warning(cwd, current):
+    """A soft, once-per-repo warning (recorded in state.json under `agent_memory_warned`)."""
+    bad, _good = compat.agent_memory_problems(cwd)
+    top = compat.repo_top(cwd)
+    if not bad or top is None:
+        return None
+    seen = current.get("agent_memory_warned")
+    seen = seen if isinstance(seen, dict) else {}
+    if seen.get(str(top)):
+        return None
+    try:
+        state.write(agent_memory_warned=dict(seen, **{str(top): True}))
+    except OSError:
+        pass  # cannot record it: still say it this once
+    return "anthology: " + compat.agent_memory_hint(bad[0])
+
+
+def _subagent_model_warning(env, cwd):
+    return SUBAGENT_MODEL_SET if compat.subagent_model_source(env, cwd) else None
 
 
 def _reconcile_rtk(root, data_dir):
@@ -213,6 +255,11 @@ def _run(env, stdin):
         else:
             add(_step(warnings, "the rtk check",
                       lambda: _reconcile_rtk(root, data_dir or current.get("data_dir"))))
+
+    add(_step(warnings, "the plugin data folder check", lambda: _data_dir_warning(env)))
+    add(_step(warnings, "the bin wrapper check", lambda: _wrappers_warning(root)))
+    add(_step(warnings, "the agent-memory path check", lambda: _agent_memory_warning(cwd, current)))
+    add(_step(warnings, "the subagent model check", lambda: _subagent_model_warning(env, cwd)))
 
     def memory_step():
         try:
