@@ -162,6 +162,7 @@ const ON_MACOS: &[bool] = &[
     dev_upstream_watch::ON_MACOS,
     dev_rtk_trim::ON_MACOS,
     dev_smoke::ON_MACOS,
+    runtime_guardrails_loc::ON_MACOS,
 ];
 
 /// Whether `--all` runs the surface `name` on this OS (every surface on Linux; those with

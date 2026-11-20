@@ -45,6 +45,10 @@ use crate::oracle::Oracle;
 /// The surface name.
 pub const NAME: &str = "runtime.guardrails_loc";
 
+/// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`): yes,
+/// the layouts (FIFOs, `/dev/zero`, unreadable files, `/private` temp roots) exist there too.
+pub const ON_MACOS: bool = true;
+
 /// The registered implementation.
 pub fn surface() -> Option<Box<dyn Surface>> {
     Some(Box::new(GuardrailsLoc))
