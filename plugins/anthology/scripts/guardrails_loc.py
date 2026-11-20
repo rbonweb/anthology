@@ -3,7 +3,8 @@
 `inspect(plugin_root, env, cwd)` returns `(folder, problem)` (F20):
 
 - `installed_plugins.json` is the source of truth. An `anthology-guardrails@*` entry counts when
-  its install path has `scripts/guard.py` and its scope is `user`, or `project`/`local` with a
+  its install path has `scripts/guard.py` (for a `directory` marketplace: when the live folder
+  below has it, whatever the cache snapshot holds) and its scope is `user`, or `project`/`local` with a
   `projectPath` containing `cwd`; the newest `lastUpdated` wins.
 - The folder returned is the one the PreToolUse hook really runs from (B2), which is not always
   the entry's `installPath` (an install-time snapshot in `<config>/plugins/cache/`):
@@ -22,9 +23,17 @@
     stays inside `<plugin root>/..` (a symlink escaping it is refused); else `installPath`.
 - Only when the registry has no `anthology@*` entry either (a `--plugin-dir` dev session) is the
   sibling folder `<plugin root>/../anthology-guardrails` used (same containment rule).
-- An install of anthology without an applicable guardrails entry is the problem `not_installed`;
-  `enabledPlugins["anthology-guardrails@..."] == false` in the user, project or local settings is
-  the problem `disabled`; nothing found at all is `not_found`.
+- An install of anthology without an applicable guardrails entry is the problem `not_installed`.
+- The problem `disabled` is any of:
+  - an `enabledPlugins["anthology-guardrails@..."]` entry in the user, project or local settings
+    whose value is anything but `true` (`false`, a list of versions, a string, null: Claude Code
+    turns a plugin on only for `true`); an absent entry is not;
+  - a settings file that exists but cannot be read (not a regular file, unreadable);
+  - for the two files in the working folder, one over Claude Code's own 2 MiB limit or one that
+    does not parse after decoding it as Claude Code does (UTF-16 BOM, else UTF-8 with bad bytes
+    replaced): a file Claude Code may honour must never read as "no file".
+  The user's own files are read at any size.
+- Nothing found at all is `not_found`.
 
 Python stdlib only (3.9+).
 """
@@ -33,8 +42,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import sys
 from pathlib import Path
+
+REPO_READ_LIMIT = 2 * 1024 * 1024  # Claude Code's own limit for a settings file (m15)
 
 
 def _config_dir(env):
@@ -49,12 +61,56 @@ def _has_guard(path):
     return (Path(path) / "scripts" / "guard.py").is_file()
 
 
-def _read_json(path):
+def _decode(raw):
+    """Text of a JSON file the way Claude Code reads settings: UTF-16LE when it starts with that BOM,
+    else UTF-8 with invalid bytes replaced; one leading BOM dropped. UTF-16BE with a BOM is decoded
+    too, which Claude Code does not do (it reads that as UTF-8 and ignores the file): a harmless
+    superset, since a BE file with the flag reads as disabled and one without it as active."""
+    if raw.startswith(b"\xff\xfe"):
+        text = raw[2:].decode("utf-16-le", errors="replace")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw[2:].decode("utf-16-be", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def _load(path, limit=None, closed=False):
+    """`(data, state)`: state is "ok", "absent" (no such file), "refused" (not a regular file, over
+    `limit` bytes, or unreadable) or "invalid" (not JSON). Never blocks on a FIFO or reads a device
+    (a repo can symlink one). `limit=None` is for files the user owns: any size, regular files only.
+    With `closed`, a file that exists but does not parse is "refused" too, so the caller fails
+    closed (an empty file is `{}`, as in Claude Code)."""
     try:
-        text = Path(path).read_text(encoding="utf-8")
-        return json.loads(text[1:] if text.startswith("\ufeff") else text)
-    except (OSError, ValueError, RecursionError):
-        return None
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return None, "absent"
+    except OSError:
+        return None, "refused"
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "refused"
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read() if limit is None else fh.read(limit + 1)
+        if limit is not None and len(raw) > limit:
+            return None, "refused"
+    except OSError:
+        return None, "refused"
+    finally:
+        os.close(fd)
+    text = _decode(raw)
+    if closed and not text.strip():
+        return {}, "ok"
+    try:
+        return json.loads(text), "ok"
+    except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON
+        return None, "refused" if closed else "invalid"
+
+
+def _read_json(path, limit=None):
+    """The parsed JSON file, or None when it is missing, refused (see `_load`) or malformed.
+    Pass `REPO_READ_LIMIT` for a file a cloned repo controls."""
+    return _load(path, limit)[0]
 
 
 def _inside(cwd, project):
@@ -67,14 +123,18 @@ def _inside(cwd, project):
 
 
 def _disabled(env, cwd):
-    files = [_config_dir(env) / "settings.json", Path(cwd) / ".claude" / "settings.json",
-             Path(cwd) / ".claude" / "settings.local.json"]
-    for path in files:
-        data = _read_json(path)
+    files = [(_config_dir(env) / "settings.json", None),
+             (Path(cwd) / ".claude" / "settings.json", REPO_READ_LIMIT),
+             (Path(cwd) / ".claude" / "settings.local.json", REPO_READ_LIMIT)]
+    for path, limit in files:
+        data, state = _load(path, limit, closed=limit is not None)
+        if state == "refused":
+            # fail closed: a repo settings file we cannot read or parse may be the one that disables it
+            return True
         enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
         if isinstance(enabled, dict):
             for name, value in enabled.items():
-                if str(name).startswith("anthology-guardrails@") and value is False:
+                if str(name).startswith("anthology-guardrails@") and value is not True:
                     return True
     return False
 
@@ -103,7 +163,7 @@ def _directory_root(config, marketplace, plugin):
         location = item.get("installLocation")
         if not isinstance(location, str) or not location or not os.path.isabs(location):
             return None
-        manifest = _read_json(Path(location) / ".claude-plugin" / "marketplace.json")
+        manifest = _read_json(Path(location) / ".claude-plugin" / "marketplace.json", REPO_READ_LIMIT)
         listed = manifest.get("plugins") if isinstance(manifest, dict) else None
         for spec in listed if isinstance(listed, list) else ():
             if not isinstance(spec, dict) or spec.get("name") != plugin:
@@ -158,6 +218,15 @@ def _live_root(plugin_root, env, name, install_path):
     return Path(install_path), None
 
 
+def _live_has_guard(env, name):
+    """Whether `name` (an `anthology-guardrails@<marketplace>` key) is in a `directory` marketplace
+    whose live folder has guard.py. That marketplace runs the live folder, so its cache snapshot
+    (which may be gone) does not decide whether the plugin is installed (m13)."""
+    marketplace = name.split("@", 1)[1] if "@" in name else ""
+    live = _directory_root(_config_dir(env), marketplace, "anthology-guardrails")
+    return live is not None and _has_guard(live)
+
+
 def inspect(plugin_root, env=None, cwd=None):
     """`(folder or None, problem or None)`; see the module docstring."""
     cwd = cwd or os.getcwd()
@@ -171,11 +240,11 @@ def inspect(plugin_root, env=None, cwd=None):
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("installPath"), str):
                 continue
-            if not _has_guard(entry["installPath"]):
-                continue
             scope = entry.get("scope")
             if scope in ("project", "local") and not (
                     isinstance(entry.get("projectPath"), str) and _inside(cwd, entry["projectPath"])):
+                continue
+            if not _has_guard(entry["installPath"]) and not _live_has_guard(env, str(name)):
                 continue
             stamp = str(entry.get("lastUpdated") or "")
             if best is None or stamp > best[0]:

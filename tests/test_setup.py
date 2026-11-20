@@ -155,6 +155,28 @@ class PreviewTest(SetupCase):
         self.assertEqual(out["duplicates"][0]["command"],
                          "claude plugin uninstall superpowers@claude-plugins-official -s user")
 
+    def test_an_odd_scope_is_listed_without_a_command(self):
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "superpowers@m": [{"scope": "user; touch x", "installPath": "/p"}]}}))
+        out = self.preview()
+        self.assertIsNone(out["duplicates"][0]["command"])
+        self.assertEqual(out["installed_plugins"], "ok")
+        json.dumps(out)
+
+    def test_an_unreadable_installed_plugins_file_is_reported_not_a_crash(self):
+        write(self.config / "plugins" / "installed_plugins.json", "[" * 200000 + "]" * 200000)
+        out = self.preview()
+        self.assertEqual((out["duplicates"], out["installed_plugins"]), ([], "unreadable"))
+
+    def test_the_skill_tells_the_agent_what_to_do_without_a_command(self):
+        text = (ROOT / "plugins" / "anthology" / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`command` is `null`", text)
+        self.assertIn("`installed_plugins` is `unreadable`", text)
+        self.assertIn("not approved", text)
+
+    def test_a_missing_installed_plugins_file_is_reported(self):
+        self.assertEqual(self.preview()["installed_plugins"], "missing")
+
     def test_not_a_git_repo_is_reported(self):
         out = self.preview(cwd=self.tmp)
         self.assertEqual(out["memory"]["repo"], {"skipped": "not a git repo"})
