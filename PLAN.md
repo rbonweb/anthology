@@ -554,7 +554,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **No user-facing modes, levels or toggles.**
 - **Generated, never hand-edited:** `knowledge/**` and `plugins/anthology-superpowers/**` must equal `vendor.py` output (`vendor.py check` in CI).
 - **Models:** agent models use aliases only: `opus`, `sonnet`, `haiku`.
-- **Runtime scripts:** Python 3 **stdlib only**. Test-only deps are pinned with hashes in `tests/requirements.txt`.
+- **Runtime scripts:** Python 3 **stdlib only**, compatible with **Python 3.9+** (macOS ships 3.9 as `/usr/bin/python3`): use `from __future__ import annotations`, and no `match` or 3.10+ APIs. CI runs the unit tests on pinned Python 3.9 and 3.12 images. Test-only deps are pinned with hashes in `tests/requirements.txt`.
 - **`$TEST`**, the canonical test command (image pinned by digest, recorded in Task 1):
   `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:<digest> sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
 - **`$RTK_TEST`**:
@@ -1006,7 +1006,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 **Interfaces:**
 - **`session_start.run(env, stdin) -> stdout_json`.** In order:
   1. **Platform check:** on Windows, return one `systemMessage` and stop.
-  2. **Guard self-test:** run `guard.py` on `SELF_TEST_SAMPLE`. If it doesn't block, or the interpreter is missing, show a loud `systemMessage`.
+  2. **Guard self-test:** run `guard.py` on `SELF_TEST_SAMPLE`. If it doesn't block, or the interpreter is missing, show a loud `systemMessage`. Also warn if the U1 plugin-read allow rule no longer matches the parent of the current `${CLAUDE_PLUGIN_ROOT}` (re-run setup).
   3. **`rtk_install.reconcile`**, and write `state.json` (`data_dir`, `rtk_path`).
   4. **`memory_sync.run`.**
   5. **`additionalContext`** = the routing guide, then the personal memory index, then the repo-memory cover (only when it repaired). It's capped at the U8 budget, and lower-priority parts are truncated with pointers.
@@ -1024,7 +1024,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
     - the output contains the guide; the total stays ≤ the budget even with a 300-note personal index (truncation pointer present);
     - no guide text is written to any `CLAUDE.md`;
     - an injected exception still exits 0.
-  - **Guard self-test:** a broken guard (an interpreter path that doesn't exist) → the `systemMessage` warns.
+  - **Guard self-test:** a broken guard (an interpreter path that doesn't exist) → the `systemMessage` warns. A stale U1 allow rule (root moved) → warning.
   - **Platform:** Windows → refusal message, nothing else.
   - **Settings:** `settings_patch` apply then revert = the original; apply twice = applied once.
   - **Doctor:** `find_duplicates` on a sample `installed_plugins.json`.
