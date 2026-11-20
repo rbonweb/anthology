@@ -34,7 +34,8 @@ def write(**kv) -> dict:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".state.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
+            # ensure_ascii=False keeps non-ASCII paths literal so bin/rtk (sed, no python) can read them
+            json.dump(data, fh, indent=2, sort_keys=True, ensure_ascii=False)
             fh.write("\n")
         os.replace(tmp, str(path))
     except BaseException:
