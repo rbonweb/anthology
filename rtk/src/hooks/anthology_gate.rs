@@ -3092,6 +3092,14 @@ fn read_candidates(name: &str, args: &[&str]) -> Vec<Candidate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wall-clock bound for the cost tests. They guard against superlinear blowups
+    /// (the release build answers these inputs in well under 100 ms); a debug build on a
+    /// slow CI runner (the release workflow tests unoptimised) is given 15x the room.
+    fn time_bound(secs: u64) -> std::time::Duration {
+        let factor = if cfg!(debug_assertions) { 15 } else { 1 };
+        std::time::Duration::from_secs(secs * factor)
+    }
     use crate::core::test_isolation;
 
     fn strings(items: &[&str]) -> Vec<String> {
@@ -4345,11 +4353,7 @@ mod tests {
         let long = "key".repeat(50_000);
         assert!(!denied(&m, &format!("/p/{long}")));
         assert!(denied(&m, &format!("/p/{long}.json")));
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
+        assert!(started.elapsed() < time_bound(5), "{:?}", started.elapsed());
     }
 
     #[test]
@@ -4380,7 +4384,7 @@ mod tests {
                 Gate::Pass
             );
             assert!(
-                started.elapsed() < std::time::Duration::from_secs(10),
+                started.elapsed() < time_bound(10),
                 "{:?}",
                 started.elapsed()
             );
@@ -5018,7 +5022,7 @@ mod tests {
             let said = gate(cmd, &r);
             (said, started.elapsed())
         };
-        let two_seconds = std::time::Duration::from_secs(2);
+        let two_seconds = time_bound(2);
         let inside = format!(
             "rtk run -c '{}git push {}'",
             "time ".repeat(20_000),
@@ -5047,13 +5051,13 @@ mod tests {
         // The input cap, 1 MiB.
         let (said, took) = timed(&format!("{}git push", "time ".repeat(200_000)));
         assert_ne!(said, Gate::Pass);
-        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        assert!(took < time_bound(10), "{took:?}");
         let (said, took) = timed(&format!("rtk run -c '{}git push'", "time ".repeat(200_000)));
         assert_ne!(said, Gate::Pass);
-        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        assert!(took < time_bound(10), "{took:?}");
         // A long argument list is no reason to stall either.
         let (_, took) = timed(&format!("rtk bypass echo {}", "word ".repeat(100_000)));
-        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        assert!(took < time_bound(10), "{took:?}");
     }
 
     #[test]
