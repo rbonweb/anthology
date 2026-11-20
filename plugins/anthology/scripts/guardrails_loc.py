@@ -3,7 +3,8 @@
 `inspect(plugin_root, env, cwd)` returns `(folder, problem)` (F20):
 
 - `installed_plugins.json` is the source of truth. An `anthology-guardrails@*` entry counts when
-  its install path has `scripts/guard.py` and its scope is `user`, or `project`/`local` with a
+  its install path has `scripts/guard.py` (for a `directory` marketplace: when the live folder
+  below has it, whatever the cache snapshot holds) and its scope is `user`, or `project`/`local` with a
   `projectPath` containing `cwd`; the newest `lastUpdated` wins.
 - The folder returned is the one the PreToolUse hook really runs from (B2), which is not always
   the entry's `installPath` (an install-time snapshot in `<config>/plugins/cache/`):
@@ -33,8 +34,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import sys
 from pathlib import Path
+
+READ_LIMIT = 1 << 20  # no file this module reads is larger; some are repo-controlled (m15)
 
 
 def _config_dir(env):
@@ -50,11 +54,25 @@ def _has_guard(path):
 
 
 def _read_json(path):
+    """The parsed JSON file, or None when it is missing, not a regular file, over `READ_LIMIT`
+    bytes or malformed. Never blocks on a FIFO or reads a device (a repo can symlink one)."""
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except (OSError, ValueError):
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(READ_LIMIT + 1)
+        if len(raw) > READ_LIMIT:
+            return None
+        text = raw.decode("utf-8")
         return json.loads(text[1:] if text.startswith("\ufeff") else text)
     except (OSError, ValueError, RecursionError):
         return None
+    finally:
+        os.close(fd)
 
 
 def _inside(cwd, project):
@@ -158,6 +176,15 @@ def _live_root(plugin_root, env, name, install_path):
     return Path(install_path), None
 
 
+def _live_has_guard(env, name):
+    """Whether `name` (an `anthology-guardrails@<marketplace>` key) is in a `directory` marketplace
+    whose live folder has guard.py. That marketplace runs the live folder, so its cache snapshot
+    (which may be gone) does not decide whether the plugin is installed (m13)."""
+    marketplace = name.split("@", 1)[1] if "@" in name else ""
+    live = _directory_root(_config_dir(env), marketplace, "anthology-guardrails")
+    return live is not None and _has_guard(live)
+
+
 def inspect(plugin_root, env=None, cwd=None):
     """`(folder or None, problem or None)`; see the module docstring."""
     cwd = cwd or os.getcwd()
@@ -171,11 +198,11 @@ def inspect(plugin_root, env=None, cwd=None):
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("installPath"), str):
                 continue
-            if not _has_guard(entry["installPath"]):
-                continue
             scope = entry.get("scope")
             if scope in ("project", "local") and not (
                     isinstance(entry.get("projectPath"), str) and _inside(cwd, entry["projectPath"])):
+                continue
+            if not _has_guard(entry["installPath"]) and not _live_has_guard(env, str(name)):
                 continue
             stamp = str(entry.get("lastUpdated") or "")
             if best is None or stamp > best[0]:

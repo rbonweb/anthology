@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import unittest
 
-from _mem import ROOT, MemCase, write
+from _mem import ROOT, SCRIPTS as SCRIPTS_DIR, MemCase, write
 
 import guardrails_loc  # noqa: E402
 from test_session_start import PLUGIN, SessionCase  # noqa: E402
@@ -273,6 +275,103 @@ class LiveMissingTest(LiveRootCase):
     def test_live_folder_with_guard_py_is_unaffected(self):
         self.diverging()
         self.assertEqual(self.inspect(), (self.live, None))
+
+
+class CacheSnapshotGoneTest(LiveRootCase):
+    """m13: a directory marketplace runs the live folder, so a missing cache snapshot is irrelevant."""
+
+    def installed(self, install_path=None, extra=None):
+        # anthology itself is installed too, so "no usable guardrails entry" is not a dev session
+        extra = dict(extra or {}, **{"anthology@anthology": [{
+            "scope": "user", "installPath": str(self.tmp / "anthology"), "version": "0.1.0"}]})
+        super().installed(install_path, extra)
+
+    def live_only(self, cache_dir=False):
+        self.copy_guardrails(self.live, marker="live-marker")
+        if cache_dir:
+            (self.cache / "scripts").mkdir(parents=True)  # the snapshot exists but has no guard.py
+        self.manifest()
+        self.directory_known()
+        self.installed()
+
+    def test_missing_cache_folder_still_resolves_to_the_live_folder(self):
+        self.live_only()
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_cache_folder_without_guard_py_still_resolves_to_the_live_folder(self):
+        self.live_only(cache_dir=True)
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_neither_folder_has_guard_py_is_not_installed(self):
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_cache_gone_with_a_non_directory_marketplace_is_not_installed(self):
+        self.copy_guardrails(self.live)
+        self.manifest()
+        self.known({"source": "github", "repo": "owner/anthology"})
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_cache_gone_and_live_source_escaping_is_not_installed_not_the_cache(self):
+        outside = self.tmp / "outside" / "anthology-guardrails"
+        self.copy_guardrails(outside)
+        self.manifest(source="../outside/anthology-guardrails")
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_disabled_still_wins_when_the_cache_is_gone(self):
+        self.live_only()
+        write(self.config / "settings.json",
+              json.dumps({"enabledPlugins": {"anthology-guardrails@anthology": False}}))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_project_scoped_entry_for_another_project_is_still_skipped(self):
+        self.live_only()
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "anthology@anthology": [{"scope": "user", "installPath": str(self.tmp / "anthology")}],
+            "anthology-guardrails@anthology": [{
+                "scope": "project", "projectPath": str(self.tmp / "elsewhere"),
+                "installPath": str(self.cache), "lastUpdated": "2026-01-01T00:00:00Z"}]}}))
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+
+class BoundedReadTest(LiveRootCase):
+    """m15 (same class): settings files in the working folder are read only when small and regular."""
+
+    def test_oversized_project_settings_are_not_read(self):
+        self.diverging()
+        pad = "A" * (guardrails_loc.READ_LIMIT + 10)
+        write(self.tmp / ".claude" / "settings.json", json.dumps({
+            "enabledPlugins": {"anthology-guardrails@anthology": False}, "pad": pad}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_small_project_settings_still_disable(self):
+        self.diverging()
+        write(self.tmp / ".claude" / "settings.json", json.dumps({
+            "enabledPlugins": {"anthology-guardrails@anthology": False}}))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_device_symlink_is_not_read(self):
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        os.symlink("/dev/zero", str(self.tmp / ".claude" / "settings.json"))
+        probe = ("import resource, sys\n"
+                 "try:\n    resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))\n"
+                 "except (ValueError, OSError):\n    sys.exit(77)\n"
+                 "sys.path.insert(0, %r)\nimport guardrails_loc\n"
+                 "print(guardrails_loc.inspect(%r, {'CLAUDE_CONFIG_DIR': %r}, %r)[1])\n"
+                 % (str(SCRIPTS_DIR), str(PLUGIN), str(self.config), str(self.tmp)))
+        proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 77:
+            self.skipTest("cannot limit memory here")
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        self.assertEqual(proc.stdout.strip(), "None")
 
 
 class LoadRulesFollowTest(LiveRootCase):
