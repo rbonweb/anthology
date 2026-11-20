@@ -205,8 +205,9 @@ SQ = "'"
 
 class QuotedKeyTest(unittest.TestCase):
     """A JSON- or dict-quoted key (`"key": "value"`) is an assignment too (FW-Q). Ruling: after a
-    quoted key the value must be a scalar that is not empty, null, true/false or an object/array
-    (a JSON schema, a typed field), so schemas and blanks stay clean."""
+    quoted key the value must be a scalar that is not empty, exactly null/true/false, or an
+    object/array (a JSON schema, a typed field); and a value that is wholly a template placeholder
+    (`<...>`, `${...}`, a run of `*`, `.` or `x`), quoted or not, is not a secret."""
 
     FLAGGED = (
         '"%s": "%s"' % (PW, VALUE),
@@ -219,6 +220,27 @@ class QuotedKeyTest(unittest.TestCase):
         '"%s": %s' % (TOK, VALUE),                      # an unquoted scalar value
         '"%s":"%s"' % (PW.upper(), VALUE),
         "%s%s: %s%s%s" % (SQ, PW, SQ, VALUE, SQ),
+        # a value that only starts with null/none/true/false is a value (fix round 1, I-1)
+        '"%s": "true-love-99"' % PW,
+        '"%s": "True!Love#2024"' % PW,
+        '"%s": "null.void.12345"' % AK,
+        '"%s": "None-of-your-biz1"' % PW,
+        '"%s": "false/positive/xyz"' % TOK,
+        '"%s": falsetto12345' % TOK,
+        # JSON inside a double-quoted shell string keeps its backslashes (I-2)
+        '{\\"%s\\": \\"%s\\"}' % (PW, VALUE),
+        '{\\"%s\\":\\"%s\\"}' % (AK, VALUE),
+        'curl -d "{\\"%s\\": \\"%s\\"}"' % (TOK, VALUE),
+        # a placeholder with more after it is not a placeholder (I-3)
+        '"%s": "<a>b"' % PW,
+        '"%s": "${X}tail"' % PW,
+        '"%s": "***real"' % PW,
+        "%s=<a>b" % PW,
+        "%s: ${X}tail" % PW,
+        "%s=***real" % PW,
+        '"%s": "string"' % PW,                          # not a placeholder: a schema uses {"type": ...}
+        '"%s": "<a>bcdefgh"' % TOK,
+        "%s=xray1234" % SEC,
     )
     ALLOWED = (
         '"%s": {"type": "string"}' % PW,
@@ -239,6 +261,28 @@ class QuotedKeyTest(unittest.TestCase):
         'send the "%s" header' % TOK,
         '"%s"' % PW,
         '"%s", "%s"' % (PW, TOK),
+        '"%s": "true"' % PW,
+        '"%s": none }' % TOK,
+        '{\\"%s\\": \\"\\"}' % PW,
+        '{\\"%s\\": null}' % TOK,
+        # template placeholders, quoted or not (I-3)
+        '"%s": "<placeholder>"' % PW,
+        '"%s": "<your-password>"' % PW,
+        '"%s": "${X}"' % PW,
+        '"%s": "${DB_PASS}"' % SEC,
+        '"%s": "***"' % PW,
+        '"%s": "..."' % TOK,
+        '"%s": "xxxxxxxxxx"' % AK,
+        '"%s": "XXXX"' % PW,
+        "%s%s%s: %s<token-here>%s" % (SQ, TOK, SQ, SQ, SQ),
+        '{"username": "<user>", "%s": "<pass>"}' % PW,
+        "%s=<your-%s>" % (PW, PW),
+        "%s: ${DB_PASS}" % PW,
+        "%s=<your-token-here>" % TOK,
+        "%s=********" % SEC,
+        "%s: xxxxxxxxxxxx" % AK,
+        "%s=..." % PW,
+        '%s: "<your-%s>"' % (PW, PW),
     )
 
     def test_quoted_keys_with_a_value_are_flagged(self):
@@ -287,12 +331,23 @@ class QuotedKeyTest(unittest.TestCase):
             "empty values": '"%s": "", ' % PW,
             "object values": '"%s": {"a": 1}, ' % SEC,
             "short values": '"%s": "ab" ' % PW,
+            "escaped quotes": '\\"%s\\": \\"' % PW,
+            "escaped null": '\\"%s\\": null, ' % TOK,
+            "angle placeholders": '%s=<a> ' % PW,
+            "open angles": '%s=<' % PW,
+            "template placeholders": '"%s": "${X}" ' % SEC,
+            "open templates": '"%s": "${' % SEC,
+            "star runs": '%s=*** ' % TOK,
+            "x then more": '%s=xxxx, y ' % PW,
+            "prefix words": '"%s": "true-' % TOK,
         }
         for label, unit in repeated.items():
             with self.subTest(shape=label):
                 small, large = best_cost(unit * 20000), best_cost(unit * 80000)
                 self.assertLess(large, max(6 * small, 0.1), "%.4fs then %.4fs" % (small, large))
-        for label, tail in (("blanks", " "), ("quotes", '"'), ("open braces", "{"), ("letters", "a")):
+        for label, tail in (("blanks", " "), ("quotes", '"'), ("open braces", "{"), ("letters", "a"),
+                            ("escapes", "\\"), ("angles", "<"), ("stars", "*"), ("x run", "x"),
+                            ("dollar braces", "${")):
             with self.subTest(run=label):
                 small = best_cost('"%s":' % PW + tail * 200000)
                 large = best_cost('"%s":' % PW + tail * 800000)

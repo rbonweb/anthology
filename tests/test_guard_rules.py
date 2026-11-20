@@ -335,6 +335,18 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": ".claude/memory/a.md", "content": '"apiKey" : ' + PWV}),
             ("Edit", {"file_path": ".claude/memory/a.md", "old_string": "a",
                       "new_string": '"' + PW.upper() + '"=' + PWV}),
+            # a value that only starts with null/none/true/false is a value (fix round 1, I-1)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "true-love-99"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "True!Love#2024"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"api' + '_key": "' + "nu" + "ll.void." + '12345"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "None-of-your-biz1"'}),
+            # a placeholder with more after it is a value (I-3)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "<a>b"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "${X}tail"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "***real"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": PW + "=<a>b"}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "string"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": PW + ": xray1234"}),
             ("Write", {"file_path": ".Claude/Memory/a.md", "content": GH_TOKEN}),
             ("MultiEdit", {"file_path": ".claude/memory/a.md", "edits": [
                 {"old_string": "x", "new_string": "fine"},
@@ -346,7 +358,7 @@ class RuleTableTest(unittest.TestCase):
         mem = ".claude/memory/reference-aws.md"
         self.assert_table("G6", [
             bash(f'echo "{AWS_KEY}" >> {mem}'),
-            bash("printf 'password: x' | tee .claude/agent-memory/r/n.md"),
+            bash("printf 'password: hunter2' | tee .claude/agent-memory/r/n.md"),
             bash(f"echo {GH_TOKEN} > {mem}"),
             bash(f"echo {GH_TOKEN} >| {mem}"),
             bash(f"echo {GH_TOKEN} &> {mem}"),
@@ -369,7 +381,11 @@ class RuleTableTest(unittest.TestCase):
             bash(f"sed -i 's/a/{GH_TOKEN}/' {mem}"),
             bash(f"perl -pi -e 's/a/{GH_TOKEN}/' {mem}"),
             bash(f"bash -c 'echo {GH_TOKEN} >> {mem}'"),
-            bash(f"echo password=x | sudo tee {mem}"),
+            bash(f"echo password=hunter2 | sudo tee {mem}"),
+            # JSON in a double-quoted shell string keeps its backslashes (fix round 1, I-2)
+            bash('echo "{\\"' + PW + '\\": \\"' + PWV + '\\"}" > ' + mem),
+            bash('printf "%s" "{\\"api' + '_key\\":\\"' + PWV + '\\"}" >> ' + mem),
+            bash("echo '{\"" + PW + "\": \"" + PWV + "\"}' > " + mem),
         ])
 
     def test_chains_wrappers_and_prefixes(self):
@@ -1024,6 +1040,16 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": mem, "content": "{'" + PW + "': ''}"}),
             ("Write", {"file_path": mem, "content": '"api' + '_key": null'}),
             ("Write", {"file_path": mem, "content": '"' + PW + '": true, "api_key": []'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "<placeholder>"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "${X}"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "***"'}),
+            ("Write", {"file_path": mem, "content": '"api' + '_key": "..."'}),
+            ("Write", {"file_path": mem, "content": PW + "=<your-" + PW + ">"}),
+            ("Write", {"file_path": mem, "content": PW + ": ${DB_PASS}"}),
+            ("Write", {"file_path": mem, "content": '{"username": "<user>", "' + PW + '": "<pass>"}'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "true"'}),
+            ("Write", {"file_path": mem, "content": '{\\"' + PW + '\\": \\"\\"}'}),
+            bash("echo '{\"" + PW + "\": null}' > " + mem),
             ("Write", {"file_path": mem, "content": "the " + PW + " field"}),
             ("Write", {"file_path": mem, "content": 'the "' + PW + '" property is required'}),
             ("Write", {"file_path": mem, "content": "A PRIVATE KEY is never stored"}),

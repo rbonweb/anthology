@@ -1407,6 +1407,18 @@ def _g5(tool_name):
 
 # G6 ------------------------------------------------------------------
 
+# What is not a secret value after `key:`, `key=` or `"key":` (shared with memory_privacy; a test keeps
+# the two copies identical): a value that is wholly null/none/true/false or a template placeholder
+# (`<...>`, `${...}`, a run of `*`, `.` or `x`), optionally quoted, ending at a blank, `,`, `}`, `]`
+# or the end of the line. Quotes may carry a backslash (JSON inside a double-quoted shell string).
+_VALUE_END = r"(?:\\?[\"'])?[ \t]*(?:[,}\]\r\n]|$)"
+_NOT_A_VALUE = r"(?:null|none|true|false|<[^<>\r\n]*>|\$\{[^{}\r\n]*\}|[*.xX]+)" + _VALUE_END
+# After the separator of an unquoted key: not a placeholder.
+_UNQUOTED_VALUE = r"(?![ \t]*(?:\\?[\"'])?" + _NOT_A_VALUE + ")"
+# After a key's closing quote (one optional quote, `\"` included): a separator, then a real scalar,
+# not empty, an object or array (a schema) or a placeholder.
+_QUOTED_VALUE = r"\\?[\"']\s*[:=]\s*(?:\\?[\"'])?(?![\\\"'{\[\]},\s]|" + _NOT_A_VALUE + ")"
+
 _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"(?:AKIA|ASIA)[0-9A-Z]{16}",
     r"\bgh[pousr]_[A-Za-z0-9]+",
@@ -1415,10 +1427,8 @@ _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"\bxox[baprs]-",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 )) + tuple(re.compile(p, re.IGNORECASE) for p in (
-    # A key may be followed by one closing quote (`"password": "x"`, a JSON or dict key). Then the
-    # value must be a scalar: not empty, null/true/false, or an object/array (a schema).
-    r"password(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
-    r"api[_-]?key(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
+    r"password(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)",
+    r"api[_-]?key(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)",
 ))
 _CONTENT_KEYS = ("content", "new_string", "new_source")
 _PATH_KEYS = ("file_path", "path", "notebook_path")
