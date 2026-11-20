@@ -349,7 +349,8 @@ class SmokeBodyTests(unittest.TestCase):
         self.assertEqual(seen[0][0][:2], ["plugin", "eval"])
         self.assertEqual(seen[0][1], smoke.NO_SCRUB)
 
-    def test_auto_memory_dir_runs_all_three_sessions_unscrubbed(self):
+    def run_auto_memory_dir(self, session2):
+        """smoke_auto_memory_dir with fake sessions; `session2(tmp, repo, mem)` writes what session 2 left behind."""
         def effects(n, call):
             repo, tmp = call["cwd"], call["tmp"]
             mem = repo / ".claude" / "memory"
@@ -361,7 +362,7 @@ class SmokeBodyTests(unittest.TestCase):
                 (repo / ".claude" / "settings.local.json").write_text(
                     json.dumps({"autoMemoryDirectory": str(mem)}), encoding="utf-8")
             elif n == 2:
-                (mem / "n.md").write_text("amber", encoding="utf-8")
+                session2(tmp, repo, mem)
             else:
                 (mem / "c.md").write_text("cyan-circle", encoding="utf-8")
             return smoke.Proc(0, "", "")
@@ -371,11 +372,35 @@ class SmokeBodyTests(unittest.TestCase):
             repo.mkdir()
             return repo
         with self.fake_prompt_run(effects), mock.patch.object(smoke, "_approved_repo", approved):
-            status, reason = smoke.smoke_auto_memory_dir(self.ctx)
+            return smoke.smoke_auto_memory_dir(self.ctx)
+
+    @staticmethod
+    def personal_dir(tmp):
+        return tmp / "cfg" / "anthology" / "personal-memory"
+
+    def test_auto_memory_dir_runs_all_three_sessions_unscrubbed(self):
+        def session2(tmp, repo, mem):  # B3: the legacy note is copied to personal memory only
+            self.personal_dir(tmp).mkdir(parents=True)
+            (self.personal_dir(tmp) / "n.md").write_text("amber", encoding="utf-8")
+        status, reason = self.run_auto_memory_dir(session2)
         self.assertEqual((status, len(self.calls)), (smoke.PASS, 3), reason)
         for call in self.calls:
             self.assertEqual(call["extra_env"], smoke.NO_SCRUB)
             self.assertEqual(call["flags"][:2], ["--permission-mode", "bypassPermissions"])
+
+    def test_auto_memory_dir_fails_if_the_old_note_is_copied_into_the_repo(self):
+        def session2(tmp, repo, mem):  # the pre-P1 behaviour, now a leak
+            self.personal_dir(tmp).mkdir(parents=True)
+            (self.personal_dir(tmp) / "n.md").write_text("amber", encoding="utf-8")
+            (mem / "n.md").write_text("amber", encoding="utf-8")
+        status, reason = self.run_auto_memory_dir(session2)
+        self.assertEqual(status, smoke.FAIL)
+        self.assertIn("repo", reason)
+
+    def test_auto_memory_dir_fails_if_the_old_note_reaches_no_personal_memory(self):
+        status, reason = self.run_auto_memory_dir(lambda tmp, repo, mem: None)
+        self.assertEqual(status, smoke.FAIL)
+        self.assertIn("personal memory", reason)
 
     def test_writer_memory_commit_runs_unscrubbed(self):
         def make_repo(tmp):
