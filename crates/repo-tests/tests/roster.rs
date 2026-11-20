@@ -911,7 +911,7 @@ mod roster_test {
                 expect(p, measured <= limit, || {
                     format!(
                         "{}: measured {measured} bytes > budget {limit}. If the growth is intended, \
-                     raise its GC-13 budget to ceil({measured} * 1.15) = {} and say why in the \
+                     raise BUDGET in this file (and in scripts/startup_budget.py while it exists) to ceil({measured} * 1.15) = {} and say why in the \
                      commit.",
                         spec.name,
                         budget::suggested_budget(measured)

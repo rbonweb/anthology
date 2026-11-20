@@ -311,7 +311,7 @@ mod pinned_images_test {
         let without_python: BTreeSet<&str> = names
             .iter()
             .map(String::as_str)
-            .filter(|n| !n.starts_with("python"))
+            .filter(|n| !matches!(*n, "python.Dockerfile" | "python39.Dockerfile"))
             .collect();
         assert_eq!(
             without_python,

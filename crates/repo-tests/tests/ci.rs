@@ -253,7 +253,11 @@ mod ci_job_tests {
             want,
             "{targets:?}"
         );
-        assert_eq!(targets.len(), want.len());
+        // A non-string entry is dropped by `strings`, so count the raw items too.
+        assert_eq!(
+            yaml::items(&job["strategy"]["matrix"]["target"]).len(),
+            want.len()
+        );
         assert_eq!(job["strategy"]["fail-fast"].as_bool(), Some(false));
         let run = find_step(job, "plugin validate", |s| {
             text(s, "run").contains("plugin validate")
@@ -358,8 +362,14 @@ mod memory_diff_startup_budget_cli_syntax_job_tests {
         assert!(!run_text(job).contains("gh pr"));
     }
 
-    // test_startup_budget_runs_both_budget_tests_in_the_pinned_image: every assertion pins the
-    // Python image or the Python test modules (dropped:superseded:F-16 in the ledger).
+    #[test]
+    fn test_startup_budget_runs_both_budget_tests_in_the_pinned_image() {
+        let wf = ci_jobs();
+        let text = run_text(&wf["jobs"]["startup-budget"]);
+        // omitted: the Python image, `--require-hashes -r tests/requirements.txt`, `test_roster`,
+        // `test_session_start` and `set -e` (all pin the Python run) -> CO2 replacement.
+        assert!(text.contains("startup_budget"));
+    }
 
     #[test]
     fn test_cli_syntax_installs_the_pinned_cli_and_runs_the_smoke() {

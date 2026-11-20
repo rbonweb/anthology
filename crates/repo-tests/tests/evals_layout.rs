@@ -1338,6 +1338,8 @@ mod workflow_tests {
         let wf = workflow();
         let job = &wf["jobs"]["evals"];
         assert_eq!(yaml::keys(&wf["jobs"]), vec!["evals".to_string()]);
+        // `keys` skips non-string keys; Python's `list(jobs)` would not.
+        assert_eq!(wf["jobs"].as_hash().map(|h| h.len()), Some(1));
         assert_eq!(
             job["if"].as_str(),
             Some("github.repository == 'rbonweb/anthology'")
