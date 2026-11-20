@@ -857,6 +857,9 @@ mod hostile_input_test {
     /// Python's n is 100,000; 25,000 here (unoptimised build).
     const N: usize = 25_000;
 
+    /// A hostile line of about `n` characters.
+    type Make<'a> = Box<dyn Fn(usize) -> String + 'a>;
+
     fn assert_linear(label: &str, make: impl Fn(usize) -> String) {
         let (small_text, large_text) = (make(N / 4), make(N));
         let small = scan_cost(&small_text);
@@ -884,7 +887,8 @@ mod hostile_input_test {
                 format!(" {}{}", ["gh", "p_"].concat(), "a1".repeat(20)),
             ),
         ];
-        let prefixes: [(&str, fn(usize) -> String); 5] = [
+        type Prefix = fn(usize) -> String;
+        let prefixes: [(&str, Prefix); 5] = [
             ("a", |n| "a".repeat(n)),
             ("a/", |n| "a/".repeat(n / 2)),
             ("-", |n| "-".repeat(n)),
@@ -901,7 +905,7 @@ mod hostile_input_test {
     #[test]
     fn test_repeated_structures() {
         let u = u();
-        let cases: Vec<(&str, Box<dyn Fn(usize) -> String>)> = vec![
+        let cases: Vec<(&str, Make<'_>)> = vec![
             (
                 "late scheme then many homes",
                 Box::new(|n| {

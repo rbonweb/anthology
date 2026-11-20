@@ -25,7 +25,9 @@
 //! the one secret-pattern list on the anthology side; a test keeps every guard G6 pattern in it.
 //! It uses no other anthology-memory module.
 
-/// CPython 3.12's `\w`, `\s` and `\d` (generated; public for the difftest's table check).
+/// CPython 3.12's `\w`, `\s` and `\d` (generated; public for the difftest's table check). Kept
+/// exactly as the generator writes it, so a regeneration is byte-for-byte comparable.
+#[rustfmt::skip]
 pub mod pyclass;
 mod pyre;
 
