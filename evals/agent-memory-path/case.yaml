@@ -12,7 +12,7 @@ execution:
   max_turns: 12
   timeout_seconds: 600
   model: sonnet
-  allowed_tools: [Agent, Read, "Bash(anthology-mem save *)"]
+  allowed_tools: [Agent, Read, Edit, Write, "Bash(anthology-mem save *)"]
 runs: 1
 graders:
   - name: dispatched
@@ -23,6 +23,10 @@ graders:
     type: tool_used
     tool: Bash
     input_match: 'anthology-mem save'
+  - name: agent-first
+    type: tool_order
+    before: Agent
+    after: {tool: Bash, input_match: 'anthology-mem save'}
   - name: no-heredoc
     type: tool_used
     tool: Bash

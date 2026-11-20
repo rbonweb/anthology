@@ -22,9 +22,10 @@ sys.path.insert(0, str(ROOT / "evals" / "smoke"))
 import smoke  # noqa: E402
 
 NAMES = ["cli-syntax", "eval-ceiling", "context-cap", "missing-interpreter", "python-missing",
-         "worktree-base", "model-check", "auto-memory-dir", "writer-memory-commit"]
+         "worktree-base", "model-check", "knowledge-read-writers", "auto-memory-dir",
+         "writer-memory-commit"]
 MODEL_SMOKES = ["eval-ceiling", "context-cap", "missing-interpreter", "worktree-base", "model-check",
-                "auto-memory-dir", "writer-memory-commit"]
+                "knowledge-read-writers", "auto-memory-dir", "writer-memory-commit"]
 
 
 def no_auth_environ():
@@ -40,7 +41,7 @@ def run_main(argv):
 
 
 class ListAndEnvTests(unittest.TestCase):
-    def test_list_prints_exactly_the_nine_names(self):
+    def test_list_prints_exactly_the_ten_names(self):
         code, out = run_main(["--list"])
         self.assertEqual(code, 0)
         self.assertEqual(out.split(), NAMES)
@@ -148,6 +149,51 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(models, ["claude-haiku-9"] * 2)
         self.assertEqual(len(files), 2)
         self.assertEqual(smoke.transcript_models(Path("/nonexistent-dir"))[1], [])
+
+    def transcript(self, *calls):
+        """A synthetic subagent transcript: one assistant message per (tool, input) pair."""
+        lines = [json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "working"}, {"type": "tool_use", "name": name, "input": inp}]}})
+            for name, inp in calls]
+        return "\n".join(lines + ["not json"])
+
+    def test_startup_order_helper_accepts_reads_in_order_before_the_glob(self):
+        text = self.transcript(
+            ("Read", {"file_path": "/x/plugins/anthology/knowledge/caveman/SKILL.md"}),
+            ("Read", {"file_path": "/x/plugins/anthology/knowledge/documentation/SKILL.md"}),
+            ("Read", {"file_path": "/x/plugins/anthology/knowledge/design-skills/skills/ux-writing/SKILL.md"}),
+            ("Glob", {"pattern": "*.md"}))
+        calls = smoke.transcript_calls(text)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(smoke.startup_problems(calls, ["caveman", "documentation", "ds/ux-writing"]), [])
+
+    def test_startup_order_helper_reports_missing_late_and_out_of_order_reads(self):
+        text = self.transcript(
+            ("Glob", {"pattern": "**/knowledge/**"}),  # a discovery Glob is not the *.md anchor
+            ("Read", {"file_path": "/x/knowledge/documentation/SKILL.md"}),
+            ("Read", {"file_path": "/x/knowledge/caveman/SKILL.md"}),
+            ("Glob", {"pattern": "*.md"}),
+            ("Read", {"file_path": "/x/knowledge/design-skills/skills/ux-writing/SKILL.md"}))
+        problems = smoke.startup_problems(smoke.transcript_calls(text),
+                                          ["caveman", "documentation", "ds/ux-writing", "tech-debt"])
+        self.assertEqual(problems, ["documentation read out of order", "ds/ux-writing read after the Glob",
+                                    "tech-debt never read"])
+        self.assertEqual(smoke.startup_problems([("Read", "{}")], ["caveman"]), ["no Glob of *.md"])
+
+    def test_startup_regex_does_not_confuse_a_design_skill_with_a_plain_one(self):
+        self.assertRegex("knowledge/design-skills/skills/ux-writing/SKILL.md", smoke.startup_regex("ds/ux-writing"))
+        self.assertNotRegex("knowledge/ux-writing/SKILL.md", smoke.startup_regex("ds/ux-writing"))
+        self.assertNotRegex("knowledge/tech-debt/SKILLxmd", smoke.startup_regex("tech-debt"))
+
+    def test_skill_heading_reads_the_first_h1_after_the_frontmatter(self):
+        self.assertEqual(smoke.skill_heading("writing-plans"), "Writing Plans")
+
+    def test_load_roster_knows_the_worktree_agents(self):
+        roster = smoke.load_roster()
+        if roster is None:
+            self.skipTest("PyYAML is not installed")
+        self.assertEqual(sorted(a for a, v in roster.items() if v["worktree"]),
+                         ["debugger", "docs-writer", "implementer", "ui-designer"])
 
     def test_agent_models_covers_the_roster_with_known_families(self):
         roster = smoke.agent_models(ROOT / "plugins" / "anthology" / "agents")

@@ -21,7 +21,7 @@ graders:
   - name: main-dispatches-first
     type: tool_order
     before: Agent
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-caveman
     type: tool_used
     tool: Read
@@ -29,7 +29,7 @@ graders:
   - name: order-caveman
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-competitive-brief
     type: tool_used
     tool: Read
@@ -37,7 +37,11 @@ graders:
   - name: order-competitive-brief
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-competitive-brief
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
   - name: read-synthesize-research
     type: tool_used
     tool: Read
@@ -45,7 +49,11 @@ graders:
   - name: order-synthesize-research
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-competitive-brief-synthesize-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
   - name: read-research-synthesis
     type: tool_used
     tool: Read
@@ -53,7 +61,11 @@ graders:
   - name: order-research-synthesis
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-synthesize-research-research-synthesis
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
   - name: read-ds-ux-research
     type: tool_used
     tool: Read
@@ -61,7 +73,11 @@ graders:
   - name: order-ds-ux-research
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-research-synthesis-ds-ux-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
   - name: read-ds-journey-mapping
     type: tool_used
     tool: Read
@@ -69,4 +85,8 @@ graders:
   - name: order-ds-journey-mapping
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/journey-mapping/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-ux-research-ds-journey-mapping
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/journey-mapping/SKILL\.md'}

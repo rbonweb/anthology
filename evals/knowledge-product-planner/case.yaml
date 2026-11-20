@@ -21,7 +21,7 @@ graders:
   - name: main-dispatches-first
     type: tool_order
     before: Agent
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-caveman
     type: tool_used
     tool: Read
@@ -29,7 +29,7 @@ graders:
   - name: order-caveman
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-write-spec
     type: tool_used
     tool: Read
@@ -37,7 +37,11 @@ graders:
   - name: order-write-spec
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-write-spec
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
   - name: read-sprint-planning
     type: tool_used
     tool: Read
@@ -45,7 +49,11 @@ graders:
   - name: order-sprint-planning
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-write-spec-sprint-planning
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
   - name: read-roadmap-update
     type: tool_used
     tool: Read
@@ -53,7 +61,11 @@ graders:
   - name: order-roadmap-update
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-sprint-planning-roadmap-update
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
   - name: read-product-brainstorming
     type: tool_used
     tool: Read
@@ -61,7 +73,11 @@ graders:
   - name: order-product-brainstorming
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-roadmap-update-product-brainstorming
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
   - name: read-ds-ux-strategy
     type: tool_used
     tool: Read
@@ -69,7 +85,11 @@ graders:
   - name: order-ds-ux-strategy
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-product-brainstorming-ds-ux-strategy
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
   - name: read-ds-design-ops
     type: tool_used
     tool: Read
@@ -77,4 +97,8 @@ graders:
   - name: order-ds-design-ops
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-ux-strategy-ds-design-ops
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}

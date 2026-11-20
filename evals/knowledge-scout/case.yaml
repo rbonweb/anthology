@@ -21,7 +21,7 @@ graders:
   - name: main-dispatches-first
     type: tool_order
     before: Agent
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-caveman
     type: tool_used
     tool: Read
@@ -29,4 +29,4 @@ graders:
   - name: order-caveman
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}

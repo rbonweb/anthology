@@ -11,7 +11,7 @@ execution:
   max_turns: 12
   timeout_seconds: 600
   model: sonnet
-  allowed_tools: [Agent, Read]
+  allowed_tools: [Agent, Read, Edit, Write, NotebookEdit]
 runs: 1
 graders:
   - name: dispatched

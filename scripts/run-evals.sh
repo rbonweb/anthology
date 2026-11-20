@@ -1,6 +1,12 @@
 #!/bin/sh
 # Run the Anthology behaviour evals and gate them against the recorded baseline.
 # This is the one command: CI (.github/workflows/evals.yml) and the controller both call it.
+#
+# The committed evals/baseline.json is recorded from the CI run, not from a laptop: dispatch
+# evals.yml once, download its `evals-results` artifact and commit candidate-baseline.json (the
+# file `--ci` writes when no baseline exists) as evals/baseline.json with the `candidate` key
+# removed. That way the baseline and every later comparison come from the same environment (same
+# runner, same installed tools, e.g. rtk). `--record` is for local experiments.
 set -eu
 
 usage() {
@@ -10,7 +16,8 @@ Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB]
 
   --max-cost-usd USD  hard cost ceiling for the run (default 20); a run that hits it is
                       partial and fails the comparison
-  --record            write evals/baseline.json from this (full) run instead of comparing
+  --record            write evals/baseline.json from this (full) run instead of comparing; for
+                      local experiments (see below for the committed baseline)
   --ci                also write $OUT/candidate-baseline.json when no baseline exists
   --case GLOB         run only the cases whose name matches GLOB (passed through)
   --tag TAG           run only the cases carrying TAG (passed through)
@@ -19,6 +26,9 @@ Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB]
                       --max-budget-usd for each `claude -p` the smokes run (default 1.00)
   -h, --help          this text
 
+The committed baseline is recorded from the CI candidate artifact: dispatch evals.yml once, then
+commit its candidate-baseline.json as evals/baseline.json with the `candidate` key removed, so
+the baseline and the weekly comparison share one environment.
 With --case or --tag only part of the suite runs, so the comparison uses --allow-missing and
 --record is refused. The Claude binary is $CLAUDE_BIN, else ci/claude-code/node_modules/.bin/claude
 when it is executable, else `claude` on PATH. Results go to evals/results/<UTC timestamp>/.
@@ -73,6 +83,7 @@ done
 case "$MAX" in
   ''|*[!0-9.]*|*.*.*|.) die "--max-cost-usd must be a decimal number, got: $MAX" ;;
 esac
+awk -v max="$MAX" 'BEGIN { exit !(max > 0) }' || die "--max-cost-usd must be greater than 0, got: $MAX"
 
 case "$SMOKE_BUDGET" in
   ''|*[!0-9.]*|*.*.*|.) die "--smoke-budget-usd must be a decimal number, got: $SMOKE_BUDGET" ;;
@@ -88,7 +99,11 @@ fi
 # cannot download a browser or touch anything. One grant per line; scripts and tests read this
 # list, keep the quoting as it is. The one exception to "harmless command" is
 # `Bash(anthology-mem save *)`, for the agent-memory-path case: the agents' memory-save helper
-# (stream I), which only writes a note into the agent's own memory folder.
+# (stream I), which only writes a note into the agent's own memory folder. `Edit(...)` and
+# `NotebookEdit(...)` are granted so the main session holds those tools in agent-fields and
+# agent-memory-path: the scout's own tool list is then what the max-0 checks really test.
+# `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a host-browser
+# launch attempt must be recorded (and denied) rather than hidden.
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)
@@ -96,11 +111,16 @@ Bash(git init -q rtkrepo)
 Bash(git -C rtkrepo status)
 Bash(ls *)
 Bash(anthology-mem save *)
-Write(.claude/memory/**)'
+Write(.claude/memory/**)
+Edit(.claude/memory/**)
+NotebookEdit(.claude/memory/**)'
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 export PYTHONDONTWRITEBYTECODE=1
+# If a guard regresses, a granted npx command (npx playwright ...) must not be able to fetch
+# packages from the registry.
+export NPM_CONFIG_OFFLINE=true
 PYTHON=${PYTHON:-python3}
 BASELINE=evals/baseline.json
 
@@ -146,6 +166,7 @@ elif [ "$EVAL_STATUS" != 0 ]; then
 fi
 
 if [ "$RECORD" = 1 ]; then
+  [ "$EVAL_STATUS" = 0 ] || die "the plugin run exited with status $EVAL_STATUS; not recording a baseline from it"
   set +e
   "$PYTHON" scripts/eval_baseline.py record "$OUT/result.json" "$BASELINE"
   CODE=$?

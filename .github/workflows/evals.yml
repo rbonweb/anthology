@@ -57,6 +57,11 @@ jobs:
           MAX_COST_USD: ${{ inputs.max_cost_usd || '20' }}
           CLAUDE_BIN: ci/claude-code/node_modules/.bin/claude
           DISABLE_AUTOUPDATER: "1"
+          # A granted npx command (guard cases) must not fetch packages if a guard regresses.
+          NPM_CONFIG_OFFLINE: "true"
+          # Already the default under GITHUB_ACTIONS; set explicitly so it cannot silently
+          # change: Bash subprocesses do not inherit the API key.
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         run: |
           status=0
           scripts/run-evals.sh --ci --max-cost-usd "$MAX_COST_USD" || status=$?

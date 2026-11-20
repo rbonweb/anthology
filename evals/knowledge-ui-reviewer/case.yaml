@@ -21,7 +21,7 @@ graders:
   - name: main-dispatches-first
     type: tool_order
     before: Agent
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-caveman
     type: tool_used
     tool: Read
@@ -29,7 +29,7 @@ graders:
   - name: order-caveman
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-web-design-guidelines
     type: tool_used
     tool: Read
@@ -37,7 +37,11 @@ graders:
   - name: order-web-design-guidelines
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/web-design-guidelines/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-web-design-guidelines
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/web-design-guidelines/SKILL\.md'}
   - name: read-web-review
     type: tool_used
     tool: Read
@@ -45,7 +49,11 @@ graders:
   - name: order-web-review
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/web-review/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-web-design-guidelines-web-review
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/web-design-guidelines/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/web-review/SKILL\.md'}
   - name: read-ds-design-critique
     type: tool_used
     tool: Read
@@ -53,7 +61,11 @@ graders:
   - name: order-ds-design-critique
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-critique/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-web-review-ds-design-critique
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/web-review/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/design-critique/SKILL\.md'}
   - name: read-ds-accessibility-audit
     type: tool_used
     tool: Read
@@ -61,4 +73,8 @@ graders:
   - name: order-ds-accessibility-audit
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/accessibility-audit/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-design-critique-ds-accessibility-audit
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-critique/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/accessibility-audit/SKILL\.md'}

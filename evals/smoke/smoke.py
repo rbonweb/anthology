@@ -279,6 +279,66 @@ def transcript_models(cfg: Path) -> Tuple[List[str], List[Path]]:
     return models, files
 
 
+def load_roster() -> Optional[dict]:
+    """tests/_repo.py EXPECTED_ROSTER (model, worktree, preloads, knowledge per agent), else None."""
+    try:
+        spec = importlib.util.spec_from_file_location("anthology_tests_repo", ROOT / "tests" / "_repo.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return dict(mod.EXPECTED_ROSTER)
+    except Exception:  # PyYAML missing, or the roster is not there yet
+        return None
+
+
+def startup_regex(ref: str) -> str:
+    """Path regex of a Startup file; a ref is `x` or `ds/x` (folder names hold only letters, digits, hyphens)."""
+    if ref.startswith("ds/"):
+        return r"knowledge/design-skills/skills/%s/SKILL\.md" % ref[3:]
+    return r"knowledge/%s/SKILL\.md" % ref
+
+
+def skill_heading(skill: str) -> str:
+    """The first `# ` heading of a superpowers skill, without the marker ('' when there is none)."""
+    text = (ROOT / "plugins" / "anthology-superpowers" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    body = text.split("\n---\n", 1)[1] if text.startswith("---\n") else text
+    m = re.search(r"^# (.+)$", body, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def transcript_calls(text: str) -> List[Tuple[str, str]]:
+    """(tool name, input as JSON) of every tool_use in one transcript JSONL, in order."""
+    calls = []
+    for line in text.splitlines():
+        try:
+            content = (json.loads(line).get("message") or {}).get("content")
+        except (ValueError, AttributeError):
+            continue
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("name"), str):
+                calls.append((block["name"], json.dumps(block.get("input", {}))))
+    return calls
+
+
+def startup_problems(calls: Sequence[Tuple[str, str]], refs: Sequence[str]) -> List[str]:
+    """What is wrong with an agent's Startup reading: every ref read, in order, before its `*.md` Glob."""
+    glob = next((i for i, (n, t) in enumerate(calls) if n == "Glob" and "*.md" in t), None)
+    if glob is None:
+        return ["no Glob of *.md"]
+    problems, last = [], -1
+    for ref in refs:
+        pattern = startup_regex(ref)
+        at = next((i for i, (n, t) in enumerate(calls) if n == "Read" and re.search(pattern, t)), None)
+        if at is None:
+            problems.append(f"{ref} never read")
+        elif at > glob:
+            problems.append(f"{ref} read after the Glob")
+        elif at < last:
+            problems.append(f"{ref} read out of order")
+        else:
+            last = at
+    return problems
+
+
 def find_text(directory: Path, needle: str) -> bool:
     for f in directory.rglob("*") if directory.is_dir() else []:
         if f.is_file() and needle in f.read_text(encoding="utf-8", errors="replace").lower():
@@ -492,6 +552,42 @@ def smoke_model_check(ctx: Ctx) -> Result:
     return (FAIL, "; ".join(bad)) if bad else (PASS, f"all {len(roster)} agents ran on their frontmatter model")
 
 
+def smoke_knowledge_read_writers(ctx: Ctx) -> Result:
+    """U1: each isolation:worktree agent reads its Startup files in order before its first Glob (plugin eval
+    cannot run these: it refuses worktree isolation). Preload agents must not call Skill and quote the heading."""
+    roster = load_roster()
+    if roster is None:
+        return SKIP, "tests/_repo.py EXPECTED_ROSTER is not importable (PyYAML?)"
+    writers = {a: v for a, v in roster.items() if v["worktree"] is True}
+    if not writers:
+        return SKIP, "no worktree agents in the roster"
+    bad = []
+    for agent, spec in writers.items():
+        headings = [skill_heading(p) for p in spec["preloads"]]
+        ending = "reply DONE followed by the first heading of each skill preloaded into your context." if headings else "reply DONE."
+        prompt = (f"Use the Agent tool to run the anthology:{agent} agent with exactly this prompt: 'Startup check only: "
+                  f"do your Startup reading, then use Glob once to list *.md files in the current folder, then {ending}' "
+                  "Then quote its reply.")
+        with scratch() as tmp:
+            repo = make_repo(tmp)
+            # the agent may run in a worktree of this repo; that is expected, not a failure
+            p = ctx.prompt_run(tmp, prompt, ["--model", "sonnet", *plugin_flags(), "--settings", json.dumps(READ_ALLOW)],
+                               cwd=repo, variadic=["Agent", "Read", "Glob"])
+            files = sorted((tmp / "cfg" / "projects").glob("**/subagents/*.jsonl")) if (tmp / "cfg" / "projects").is_dir() else []
+            if not files:
+                bad.append(f"{agent}: no subagent transcript (exit {p.code}: {snippet(p.text, 80)})")
+                continue
+            calls = [c for f in files for c in transcript_calls(f.read_text(encoding="utf-8", errors="replace"))]
+            problems = startup_problems(calls, ["caveman"] + list(spec["knowledge"]))
+            if headings:
+                if any(n == "Skill" for n, _ in calls):
+                    problems.append("called Skill for a preload")
+                problems += [f"reply lacks the heading {h!r}" for h in headings if h not in p.out]
+            if problems:
+                bad.append(f"{agent}: " + ", ".join(problems))
+    return (FAIL, "; ".join(bad)) if bad else (PASS, f"all {len(writers)} worktree agents read their Startup files in order")
+
+
 def _approved_repo(ctx: Ctx, tmp: Path) -> Path:
     repo = make_repo(tmp)
     git(tmp, repo, "remote", "add", "origin", "https://example.invalid/smoke/repo.git")
@@ -561,6 +657,7 @@ SMOKES: Dict[str, Tuple[Callable[[Ctx], Result], bool]] = {  # name -> (function
     "python-missing": (smoke_python_missing, False),
     "worktree-base": (smoke_worktree_base, True),
     "model-check": (smoke_model_check, True),
+    "knowledge-read-writers": (smoke_knowledge_read_writers, True),
     "auto-memory-dir": (smoke_auto_memory_dir, True),
     "writer-memory-commit": (smoke_writer_memory_commit, True),
 }

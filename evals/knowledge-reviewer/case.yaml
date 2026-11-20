@@ -21,7 +21,7 @@ graders:
   - name: main-dispatches-first
     type: tool_order
     before: Agent
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-caveman
     type: tool_used
     tool: Read
@@ -29,7 +29,7 @@ graders:
   - name: order-caveman
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
   - name: read-code-review-checklist
     type: tool_used
     tool: Read
@@ -37,7 +37,11 @@ graders:
   - name: order-code-review-checklist
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-code-review-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
   - name: read-tech-debt
     type: tool_used
     tool: Read
@@ -45,7 +49,11 @@ graders:
   - name: order-tech-debt
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-code-review-checklist-tech-debt
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
   - name: read-deploy-checklist
     type: tool_used
     tool: Read
@@ -53,4 +61,8 @@ graders:
   - name: order-deploy-checklist
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}
-    after: Glob
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-tech-debt-deploy-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}

@@ -22,6 +22,10 @@ graders:
     type: tool_used
     tool: Bash
     input_match: 'agent-browser'
+  - name: agent-first
+    type: tool_order
+    before: Agent
+    after: {tool: Bash, input_match: 'agent-browser'}
   - name: blocked
     type: regex
     target: trace

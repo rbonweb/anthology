@@ -19,6 +19,10 @@ graders:
     target: trace
     pattern: '"skills":\[[^\]]*"(?:[\w-]+:)?(?:caveman|frontend-design|design-taste-frontend|ui-taste|code-review-checklist|landing-page|write-spec|seo-audit|ux-research)"'
     match: not_contains
+  - name: skills-listed
+    type: regex
+    target: trace
+    pattern: '"skills":\['
   - name: agents-listed
     type: regex
     target: trace

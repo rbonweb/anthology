@@ -32,6 +32,12 @@ MCP_PREFIX = "mcp__browseros-neo__"
 # Startup reading per agent (caveman first) and the agents that preload skills: the roster.
 EXPECTED_STARTUP = {agent: ["caveman"] + spec["knowledge"] for agent, spec in EXPECTED_ROSTER.items()}
 PRELOAD_AGENTS = {agent for agent, spec in EXPECTED_ROSTER.items() if spec["preloads"]}
+# `plugin eval` refuses worktree isolation ("worktree isolation is unavailable in this session"),
+# so an agent with `isolation: worktree` can never run as a knowledge-read eval case. Those
+# agents are checked by the knowledge-read-writers smoke (evals/smoke/smoke.py) instead.
+WORKTREE_AGENTS = {agent for agent, spec in EXPECTED_ROSTER.items() if spec["worktree"] is True}
+KNOWLEDGE_AGENTS = sorted(set(EXPECTED_ROSTER) - WORKTREE_AGENTS)
+GLOB_ANCHOR = {"tool": "Glob", "input_match": r"\*\.md"}
 
 REQUIRED_CASES = [
     "guard-g1", "guard-g4", "guard-g6", "guard-beats-rtk", "hook-reach-subagent",
@@ -40,6 +46,9 @@ REQUIRED_CASES = [
 ]
 # Bash is visible in this case only so that a host-browser launch attempt is recorded and denied.
 BASH_PROMPT_EXEMPT = {"browser-browseros-only"}
+# These cases hold Write (and Edit) only so that their `max: 0` checks are real: the prompt must
+# not ask for a write.
+WRITE_PROMPT_EXEMPT = {"agent-fields", "agent-memory-path"}
 FORBIDDEN_LITERALS = ["password:", "password =", "AKIA", "ghp_", "BEGIN" + " PRIVATE KEY"]
 ABSOLUTE_PATHS = ["/Users/", "/home/", "~/"]
 KEY_GATE = "steps.key.outputs.present == 'true'"
@@ -225,11 +234,17 @@ class RosterCaseTests(unittest.TestCase):
     def setUpClass(cls):
         cls.cases = all_cases()
 
-    def test_a_routing_and_a_knowledge_case_per_agent(self):
+    def test_a_routing_case_per_agent_and_a_knowledge_case_per_non_worktree_agent(self):
         for agent in EXPECTED_STARTUP:
             self.assertIn("route-" + agent, self.cases)
-            self.assertIn("knowledge-" + agent, self.cases)
+            if agent in WORKTREE_AGENTS:
+                self.assertNotIn("knowledge-" + agent, self.cases, "plugin eval cannot run a worktree agent")
+            else:
+                self.assertIn("knowledge-" + agent, self.cases)
         self.assertEqual(len(EXPECTED_STARTUP), 11)
+        self.assertEqual(sorted(n[len("knowledge-"):] for n in self.cases if n.startswith("knowledge-")),
+                         KNOWLEDGE_AGENTS)
+        self.assertTrue(WORKTREE_AGENTS)
 
     def test_routing_cases_dispatch_the_agent(self):
         for agent in EXPECTED_STARTUP:
@@ -240,7 +255,8 @@ class RosterCaseTests(unittest.TestCase):
                                "input_match": '"anthology:%s"' % agent}, case["graders"])
 
     def test_knowledge_cases_read_the_startup_files_in_order(self):
-        for agent, refs in EXPECTED_STARTUP.items():
+        for agent in KNOWLEDGE_AGENTS:
+            refs = EXPECTED_STARTUP[agent]
             with self.subTest(agent=agent):
                 case = self.cases["knowledge-" + agent]
                 graders = {g["name"]: g for g in case["graders"]}
@@ -253,15 +269,33 @@ class RosterCaseTests(unittest.TestCase):
                     self.assertIsNotNone(order, "order-" + slug)
                     self.assertEqual(order["type"], "tool_order")
                     self.assertEqual(order["before"], {"tool": "Read", "input_match": pattern})
-                    self.assertEqual(order["after"], "Glob")
+                    # the first Glob of the *.md listing, not any discovery Glob before it
+                    self.assertEqual(order["after"], GLOB_ANCHOR)
                 self.assertEqual(sum(1 for n in graders if n.startswith("order-")), len(refs))
+                # consecutive Startup files are read in the documented order
+                inorder = [g["name"] for g in case["graders"] if g["name"].startswith("inorder-")]
+                self.assertEqual(inorder, ["inorder-%s-%s" % (slug_of(a), slug_of(b)) for a, b in zip(refs, refs[1:])])
+                for a, b in zip(refs, refs[1:]):
+                    g = graders["inorder-%s-%s" % (slug_of(a), slug_of(b))]
+                    self.assertEqual(g["type"], "tool_order")
+                    self.assertEqual(g["before"], {"tool": "Read", "input_match": path_regex_of(a)})
+                    self.assertEqual(g["after"], {"tool": "Read", "input_match": path_regex_of(b)})
                 self.assertEqual((graders["main-dispatches-first"]["before"], graders["main-dispatches-first"]["after"]),
-                                 ("Agent", "Glob"))
+                                 ("Agent", GLOB_ANCHOR))
+                tools = case["execution"]["allowed_tools"]
                 if agent in PRELOAD_AGENTS:
+                    # Skill is granted, so "no Skill call" means something, and the agent must quote
+                    # the first heading of each preloaded skill (U1: the preload arrived).
+                    self.assertIn("Skill", tools)
                     self.assertIn("preload-not-invoked", graders)
                     self.assertEqual((graders["preload-not-invoked"]["tool"], graders["preload-not-invoked"]["max"]),
                                      ("Skill", 0))
+                    quoted = graders["preload-quoted"]
+                    self.assertEqual((quoted["type"], quoted["target"]), ("regex", "last_message"))
+                    for skill in EXPECTED_ROSTER[agent]["preloads"]:
+                        self.assertIn(skill_heading(skill), quoted["pattern"], skill)
                 else:
+                    self.assertNotIn("Skill", tools)
                     self.assertNotIn("preload-not-invoked", graders)
 
     def test_agent_files_agree_with_the_cases(self):
@@ -273,6 +307,15 @@ class RosterCaseTests(unittest.TestCase):
                     print("skipped: %s does not exist yet" % path.relative_to(ROOT))
                     continue
                 self.assertEqual(startup_refs(path.read_text(encoding="utf-8")), refs)
+
+
+def skill_heading(skill):
+    """The first `# ` heading of a superpowers skill, without the marker."""
+    text = (ROOT / "plugins" / "anthology-superpowers" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    body = text.split("\n---\n", 1)[1] if text.startswith("---\n") else text
+    m = re.search(r"^# (.+)$", body, re.M)
+    assert m, skill
+    return m.group(1).strip()
 
 
 def startup_refs(text):
@@ -308,6 +351,17 @@ class RequiredCaseTests(unittest.TestCase):
     def test_required_cases_exist(self):
         for name in REQUIRED_CASES:
             self.assertIn(name, self.cases)
+
+    def test_subagent_bash_cases_check_the_agent_ran_first(self):
+        # The main session also holds Bash, so the Bash call must come after the Agent dispatch.
+        for name, command in (("hook-reach-subagent", "agent-browser"), ("agent-memory-path", "anthology-mem save")):
+            order = [g for g in self.cases[name]["graders"] if g["type"] == "tool_order"]
+            self.assertEqual([(g["before"], g["after"]) for g in order],
+                             [("Agent", {"tool": "Bash", "input_match": command})], name)
+
+    def test_skills_hidden_has_a_canary(self):
+        patterns = [g.get("pattern") for g in self.cases["skills-hidden"]["graders"]]
+        self.assertIn(r'"skills":\[', patterns)
 
     def test_guard_cases_name_their_guard(self):
         for name, guard in (("guard-g1", "G1"), ("guard-g4", "G4"), ("guard-g6", "G6"),
@@ -362,7 +416,7 @@ class GrantTests(unittest.TestCase):
     def test_grants_are_read(self):
         self.assertTrue(self.bash_grants())
         for grant in self.grants:
-            self.assertRegex(grant, r"^(Bash|Write)\(.+\)$")
+            self.assertRegex(grant, r"^(Bash|Write|Edit|NotebookEdit)\(.+\)$")
 
     def test_every_literal_bash_grant_is_used_by_a_prompt(self):
         prompts = [c["execution"]["prompt"] for c in self.cases.values()]
@@ -389,11 +443,31 @@ class GrantTests(unittest.TestCase):
                     self.assertIn(tool, self.grants, name)
         self.assertIn("agent-memory-path", seen)
 
+    def test_the_runner_keeps_npx_offline(self):
+        text = (ROOT / "scripts" / "run-evals.sh").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^export NPM_CONFIG_OFFLINE=true$")
+
+    def test_plain_write_tools_have_a_narrow_operator_grant(self):
+        # A gated tool needs the case entry AND an operator grant; the grant is path-limited.
+        for name, case in self.cases.items():
+            for tool in case["execution"]["allowed_tools"]:
+                if tool in ("Write", "Edit", "NotebookEdit"):
+                    self.assertTrue(any(g.startswith(tool + "(.claude/memory/") for g in self.grants), (name, tool))
+
+    def test_the_tool_field_cases_hold_the_tools_they_check(self):
+        # agent-fields and agent-memory-path assert `max: 0` on these tools; that only means
+        # something when the main session has them.
+        cases = all_cases()
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            self.assertIn(tool, cases["agent-fields"]["execution"]["allowed_tools"])
+        for tool in ("Edit", "Write"):
+            self.assertIn(tool, cases["agent-memory-path"]["execution"]["allowed_tools"])
+
     def test_every_write_case_prompt_names_a_granted_path(self):
         prefixes = [g[len("Write("):-1].rstrip("*") for g in self.grants if g.startswith("Write(")]
         self.assertTrue(prefixes)
         for name, case in self.cases.items():
-            if "Write" in case["execution"]["allowed_tools"]:
+            if "Write" in case["execution"]["allowed_tools"] and name not in WRITE_PROMPT_EXEMPT:
                 prompt = case["execution"]["prompt"]
                 self.assertTrue(any(p in prompt for p in prefixes), name)
 
@@ -447,6 +521,9 @@ class WorkflowTests(unittest.TestCase):
         run_step = next(s for s in self.steps if "scripts/run-evals.sh --ci" in s.get("run", ""))
         self.assertEqual(run_step["env"]["CLAUDE_BIN"], "ci/claude-code/node_modules/.bin/claude")
         self.assertEqual(run_step["env"]["DISABLE_AUTOUPDATER"], "1")
+        # a regressed guard must not let a granted npx fetch packages, nor Bash see the API key
+        self.assertEqual(run_step["env"]["NPM_CONFIG_OFFLINE"], "true")
+        self.assertEqual(run_step["env"]["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")
         self.assertIn("inputs.max_cost_usd", run_step["env"]["MAX_COST_USD"])
         self.assertIn('--max-cost-usd "$MAX_COST_USD"', run_step["run"])
 
