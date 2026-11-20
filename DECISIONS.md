@@ -558,3 +558,52 @@ Each of the fork's changes keeps one permanent named test, now 8 instead of 9. T
 - `scripts/rtk-net-test.sh` runs in CI's `rtk-test` job after `scripts/rtk-test.sh`. It builds the release binary in the pinned image (target volume `anthology-rtk-release`) and a throwaway image from the same pinned image plus git (inline Dockerfile on stdin, so `ci/images/` is unchanged). It then asserts the exact outputs under `docker run --network none`: only `lo`; `rtk git status`; `rtk rewrite "git log -5"` (exit 3); `rtk hook claude` with and without a rewrite; the `rtk hook` subcommands `claude`, `check` (and clap's `help`); and `rtk telemetry` unrecognized.
 
 Results: `scripts/rtk-test.sh` gives 4775 passed, 0 failed, 8 ignored (60 test binaries). `scripts/rtk-net-test.sh` gives PASS.
+
+---
+
+## ADR-017: rtk release, pin and install
+
+- **Date:** 2026-11-20
+- **Task:** Tasks 10 and 11
+- **Status:** Accepted
+
+**Context**
+
+The trimmed rtk (ADR-016) has to reach users as a binary they can verify, and the plugin has to install it without editing the user's settings beyond what setup shows.
+
+**Decision**
+
+- **Release.** `.github/workflows/rtk-release.yml` runs on a tag `rtk--v<version>`, where `<version>` must equal the version in `rtk/Cargo.toml` (`1.2.1-anthology.1` for the first release). It builds and tests (`cargo test --locked`) on four native runners (`macos-15`, `macos-15-intel`, `ubuntu-24.04`, `ubuntu-24.04-arm`), builds the macOS targets and the static musl Linux targets with the toolchain pinned in `rtk/rust-toolchain.toml`, attests each tarball with build-provenance, and publishes `rtk-<target>.tar.gz` and `checksums.txt`. It fails if the release already exists, and every action is pinned by commit SHA.
+- **Dry run.** A pull request that touches the workflow or the toolchain pin runs the whole matrix without attesting or publishing, so the matrix is proven before a tag. Cost if wrong: extra CI minutes.
+- **The tag.** The tag is pushed on the commit that carries the workflow, not on `main`, because the release flow does not need `main`. If that branch is squash-merged, the tag still names the exact source of the binaries.
+- **`plugins/anthology/rtk.lock`** is JSON with exactly `version`, `tag`, `repo` and `sha256` (one 64-hex hash of `rtk-<target>.tar.gz` for each of the four targets). The download URL is `https://github.com/<repo>/releases/download/<tag>/rtk-<target>.tar.gz`. `tests/test_rtk_lock.py` checks the lock against `rtk/Cargo.toml`.
+- **Install.** `plugins/anthology/scripts/rtk_install.py` downloads the tarball for the platform, checks its sha256 against the lock, installs under the plugin's data folder and records the binary in `state.json` (one global `rtk_path`). It never raises: on any failure it leaves `state.json` alone and returns a warning. `bin/rtk` runs the installed binary (and says "run /anthology:setup" when there is none); `bin/rtk-hook` is the `PreToolUse` Bash hook, runs `rtk hook claude` and exits 0 when rtk is not installed. Both export `RTK_SUPPRESS_HOOK_WARNING=1`, so rtk does not tell Claude to run `rtk init -g`, which would add a duplicate hook.
+- **Callers.** Setup (60 s per read) and session start (8 s per read, skipped when under 40 s of the session-start budget remain) both go through `rtk_install`. `rtk_install.check_installed` is the read-only check that doctor uses, because the lock pins tarballs, not binaries.
+- **One global binary.** A session still running an older plugin version uses the newest installed binary until it restarts. Cost if wrong: an old session runs a newer rtk, which is acceptable because `rtk hook claude` is stable across our patch releases.
+
+**Consequences**
+
+A future rtk bump sets `rtk/Cargo.toml` to `-anthology.<n+1>`, regenerates the `Cargo.lock` entry, pushes the new tag and then rewrites `rtk.lock` from `checksums.txt`; the lock change is a change to `plugins/anthology`, so it ships with a new plugin release.
+
+## ADR-018: memory saves by read-only agents (`anthology-mem save`)
+
+- **Date:** 2026-11-20
+- **Task:** stream I (follow-up to Tasks 6, 12 and 13)
+- **Status:** Accepted
+
+**Context**
+
+Read-only agents (`disallowedTools` includes Write and Edit) were told to save memory notes with a Bash heredoc. On Claude Code 2.1.311, a Bash command with a heredoc or an output redirect never matches a permission pattern grant, so outside auto mode every save prompted the user, or was denied under `-p`. A flat `metadata.type:` key also indexed as type "other".
+
+**Decision**
+
+- Every agent saves memory with `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]`. The helper writes only `<git toplevel>/.claude/agent-memory/anthology-<agent>/<type>-<slug>.md` with nested `metadata:`/`type:` frontmatter and regenerates that folder's `MEMORY.md`.
+- Setup adds exactly one allow rule, `Bash(anthology-mem save *)` (`settings_patch.ALLOW_MEM_SAVE`); remove reverts it.
+- Verified with `claude -p` and a probe subagent: the rule auto-allows the command, including a quoted argument that spans lines. Still gated: `&&`/`;` compounds, redirects, `$(…)`, `PATH=`/`PYTHONPATH=` prefixes and an absolute path to the binary. A quoted line whose first non-blank character is `#` is not auto-allowed, so notes use bold lines instead of `#` headings.
+- A subagent's Bash environment carries no agent identity, so `--agent` is self-declared and validated against the roster. Types are project/feedback/reference; slugs are validated; symlinks are refused at every level; secret-shaped text is refused; an existing note is refused unless `--replace`. There is no delete subcommand, so the auto-allowed surface is write-only.
+- Every write runs the repo-memory privacy check (`memory_sync._privacy_check`).
+
+**Consequences**
+
+Agent memory saves are silent (no prompt) once setup has run. Cost if wrong: one helper and one line per agent body. Evidence: the stream I log.
+

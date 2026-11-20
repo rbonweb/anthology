@@ -25,6 +25,7 @@ graders:
     type: tool_used
     tool: Bash
     input_match: '[Cc][Hh][Rr][Oo][Mm]|[Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|[Pp][Uu][Pp][Pp][Ee][Tt][Ee][Ee][Rr]|remote-debugging|agent-browser|open\s+-a'
+    min: 0
     max: 0
   - name: heading
     type: regex

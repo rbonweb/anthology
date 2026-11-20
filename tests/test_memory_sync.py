@@ -10,13 +10,19 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from _mem import MemCase, git, needs_git, note_text, snapshot, write
+from _mem import ROOT, MemCase, git, needs_git, note_text, snapshot, write
 
-import memory_sync  # noqa: E402  (path set up by _mem)
+import memory_index  # noqa: E402  (path set up by _mem)
+import memory_privacy  # noqa: E402
+import memory_sync  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "plugins" / "anthology-guardrails" / "scripts"))
+import guard_rules  # noqa: E402
 
 HINT = "this repo has anthology memory; run /anthology:setup to use it"
 UNION_LINES = [".claude/memory/MEMORY.md merge=union",
@@ -1344,6 +1350,506 @@ class UserNotesLeaveTheRepoTest(MemCase):
         ctx, _ = memory_sync.run(root, env())
         self.assertEqual(ctx, personal_only(self.anth))
         self.assertIn(str(self.personal) + "/user-<slug>.md, never in the repo", ctx)
+
+
+def _secret_samples():
+    """One sample per G6 pattern, built by concatenation so no secret-looking literal is
+    committed (gitleaks scans this repo)."""
+    return {
+        "aws": "AKIA" + "IOSFODNN7EXAMPLE",
+        "github token": "ghp" + "_abc123",
+        "github pat": "github" + "_pat_" + "abcdef",
+        "openai style": "sk" + "-" + "a1b2c3d4e5f6g7h8i9",
+        "slack": "xox" + "b-123",
+        "private key": "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
+        "password": "pass" + "word: hunter2",
+        "api key": "API" + "_KEY = abc",
+    }
+
+
+TODAY = "2026-05-06"
+
+
+class SaveNoteTest(MemCase):
+    """`save_note`: the helper behind `anthology-mem save` (plain temp dir, no git needed)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "work"
+        self.root.mkdir()
+        self.outside = self.tmp / "outside"
+        self.outside.mkdir()
+
+    def save(self, **kw):
+        args = {"agent": "scout", "type_": "project", "slug": "eval-probe", "name": "Eval probe",
+                "description": "How the probe works", "body": "Body text.", "today": TODAY,
+                "env": {}}
+        args.update(kw)
+        return memory_sync.save_note(self.root, **args)
+
+    def agent_dir(self, agent="scout"):
+        return self.root / ".claude" / "agent-memory" / f"anthology-{agent}"
+
+    def assertRefused(self, fragment=None, **kw):
+        before = snapshot(self.tmp)
+        with self.assertRaises(memory_sync.SaveError) as cm:
+            self.save(**kw)
+        if fragment:
+            self.assertIn(fragment, str(cm.exception))
+        self.assertEqual(snapshot(self.tmp), before)
+        return str(cm.exception)
+
+    def test_privacy_check_is_the_single_wiring_point(self):
+        # save runs memory_sync.privacy_findings on every field and refuses on any finding,
+        # naming the kind and line but never echoing the text.
+        home = "/" + "Users" + "/alice/notes"
+        msg = self.assertRefused("personal or private data", body="Line one.\nsee " + home + " here")
+        self.assertIn("home path (line 2)", msg)
+        self.assertNotIn("alice", msg)
+        msg = self.assertRefused("email address", description="ping alice" + "@" + "corp-mail.io")
+        self.assertNotIn("corp-mail", msg)
+        self.assertRefused("personal or private data", name="Box at 192.168.1.20")
+        self.save(slug="clean", body="Nothing private; see https://example.com/docs.")
+        self.assertTrue((self.agent_dir() / "project-clean.md").is_file())
+
+    def test_save_calls_privacy_findings_for_each_field(self):
+        seen = []
+
+        def findings(text, home=None, hostname=None):
+            seen.append(text)
+            return []
+
+        with mock.patch.object(memory_sync, "privacy_findings", findings):
+            self.save(slug="spy", body="Body here.")
+        self.assertEqual(seen, ["spy", "Eval probe", "How the probe works", "Body here.\n"])
+
+    def test_creates_the_note_with_the_exact_shape(self):
+        old_umask = os.umask(0o022)  # the mode below is only exact under the usual umask
+        try:
+            out = self.save()
+        finally:
+            os.umask(old_umask)
+        path = self.agent_dir() / "project-eval-probe.md"
+        self.assertEqual(out["path"], path)
+        self.assertEqual(out["root"], self.root)
+        self.assertEqual(out["relative"],
+                         ".claude/agent-memory/anthology-scout/project-eval-probe.md")
+        self.assertEqual(out["action"], "created")
+        self.assertIsNone(out["index_warning"])
+        self.assertEqual(path.read_text(encoding="utf-8"),
+                         "---\nname: 'Eval probe'\ndescription: 'How the probe works'\n"
+                         "metadata:\n  type: project\n  modified: 2026-05-06\n---\n\nBody text.\n")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+
+    def test_modified_defaults_to_today(self):
+        import datetime
+        self.save(today=None)
+        text = (self.agent_dir() / "project-eval-probe.md").read_text()
+        self.assertIn("  modified: " + datetime.date.today().isoformat() + "\n", text)
+
+    def test_every_type_and_agent_is_accepted(self):
+        for type_ in memory_sync.SAVE_TYPES:
+            self.save(type_=type_, slug="t")
+        for agent in memory_sync.ROSTER:
+            if agent != "scout":
+                self.save(agent=agent)
+            self.assertTrue(list(self.agent_dir(agent).glob("*-*.md")), agent)
+        self.assertEqual(len(list(self.agent_dir("scout").glob("*-t.md"))), 3)
+        self.assertEqual(memory_sync.SAVE_TYPES, ("project", "feedback", "reference"))
+
+    def test_roster_matches_the_agent_files(self):
+        stems = {p.stem for p in (ROOT / "plugins" / "anthology" / "agents").glob("*.md")}
+        self.assertEqual(set(memory_sync.ROSTER), stems)
+        self.assertEqual(len(memory_sync.ROSTER), len(stems))
+
+    def test_save_uses_the_shared_secret_list(self):
+        # One anthology-side list (memory_privacy); test_memory_privacy keeps it a superset of G6.
+        self.assertFalse(hasattr(memory_sync, "_SECRET_PATTERNS"))
+        shared = {(rx.pattern, rx.flags) for _label, rx in memory_privacy.SECRET_PATTERNS}
+        for rx in guard_rules._SECRET_PATTERNS:
+            self.assertIn((rx.pattern, rx.flags), shared)
+
+    def test_tricky_values_round_trip_through_the_real_indexer(self):
+        values = ["It's a test", "a: b", "# not a comment", 'say "hi"', "a\\nb literal",
+                  "back\\slash\\", "[x] and [[y]]", "- leading dash", "'quoted'", "''",
+                  "key: 'v' # c", "---", "ünïcode ✓"]
+        for i, value in enumerate(values):
+            with self.subTest(value=value):
+                out = self.save(slug="tricky-%d" % i, name=value, description=value + " d")
+                info = memory_index.parse_note(out["path"])
+                self.assertEqual(info["type"], "project")
+                self.assertEqual(info["name"], value.strip())
+                self.assertEqual(info["description"], (value + " d").strip())
+                self.assertEqual(info["updated"], TODAY)
+                self.assertTrue(info["ok"])
+
+    def test_indexer_build_search_and_memory_md(self):
+        for type_ in ("project", "feedback", "reference"):
+            self.save(type_=type_, slug="x-" + type_, name="Note " + type_,
+                      description="desc " + type_, body="The quokka lives here, " + type_ + ".")
+        db = self.tmp / "idx.db"
+        memory_index.build([("agent", self.agent_dir())], db)
+        rows = memory_index.search("quokka", db)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({r["scope"] for r in rows}, {"agent"})
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        types = {r[0]: r[1] for r in conn.execute("SELECT name, type FROM nodes")}
+        conn.close()
+        self.assertEqual(types, {"Note project": "project", "Note feedback": "feedback",
+                                 "Note reference": "reference"})
+        lines = (self.agent_dir() / "MEMORY.md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([l for l in lines if l.startswith("## ")],
+                         ["## feedback", "## project", "## reference"])
+        self.assertIn("- [Note project](project-x-project.md) — desc project", lines)
+
+    def test_save_regenerates_memory_md_each_time(self):
+        self.save(slug="one", name="First")
+        self.save(slug="two", name="Second")
+        index = (self.agent_dir() / "MEMORY.md").read_text(encoding="utf-8")
+        self.assertIn("[First](project-one.md)", index)
+        self.assertIn("[Second](project-two.md)", index)
+
+    def test_body_multiline_crlf_and_escapes(self):
+        self.save(slug="b1", body="Line one.\nLine two\twith tab.\n\n- item; see [[link]]\n")
+        text = (self.agent_dir() / "project-b1.md").read_text()
+        self.assertTrue(text.endswith(
+            "---\n\nLine one.\nLine two\twith tab.\n\n- item; see [[link]]\n"))
+        self.save(slug="b2", body="\n\n  lead kept\r\nsecond\rthird   \n\n\n")
+        text = (self.agent_dir() / "project-b2.md").read_bytes().decode()
+        self.assertTrue(text.endswith("---\n\n  lead kept\nsecond\nthird\n"))
+        self.assertNotIn("\r", text)
+        self.save(slug="b3", body=r'printf "a\n" and \t stay literal')
+        text = (self.agent_dir() / "project-b3.md").read_text()
+        self.assertTrue(text.endswith('printf "a\\n" and \\t stay literal\n'))
+        info = memory_index.parse_note(self.agent_dir() / "project-b1.md")
+        self.assertIn("Line one.\nLine two", info["body"])
+
+    def test_name_and_description_are_stored_stripped(self):
+        out = self.save(name="  Padded name  ", description="padded  ")
+        info = memory_index.parse_note(out["path"])
+        self.assertEqual((info["name"], info["description"]), ("Padded name", "padded"))
+
+    def test_boundary_lengths_are_accepted(self):
+        self.save(slug="a" * 64, name="n" * 120, description="d" * 300, body="x" * 16384)
+
+    def test_unknown_agent_and_type(self):
+        msg = self.assertRefused(agent="nobody")
+        self.assertIn("scout", msg)
+        for agent in ("", "Scout", "../scout", "anthology-scout", "scout/x"):
+            self.assertRefused(agent=agent)
+        msg = self.assertRefused(type_="user")
+        for t in memory_sync.SAVE_TYPES:
+            self.assertIn(t, msg)
+        for t in ("other", "", "Project", "project/../x"):
+            self.assertRefused(type_=t)
+
+    def test_bad_slugs(self):
+        for slug in ("../x", "a/b", "A", "-a", "a-", "a--b", "a b", ".", "..", "a.b", "a_b", "",
+                     "a" * 65, "x\n", "é"):
+            with self.subTest(slug=slug):
+                self.assertRefused(slug=slug)
+        self.assertFalse((self.root / ".claude").exists())
+
+    def test_bad_name_and_description(self):
+        for field in ("name", "description"):
+            limit = {"name": 120, "description": 300}[field]
+            for value in ("", "   ", "two\nlines", "cr\rhere", "tab\there", "nul\x00",
+                          "esc\x1b[0m", "del\x7f", "x" * (limit + 1)):
+                with self.subTest(field=field, value=value):
+                    self.assertRefused(**{field: value})
+
+    def test_name_and_description_refuse_format_and_separator_characters(self):
+        # Cf (bidi overrides, zero-width), U+2028/2029 and U+0085 would hide or reshape the
+        # text in MEMORY.md and in a diff.
+        for field in ("name", "description"):
+            for char in ("\u202e", "\u200b", "\u200d", "\ufeff", "\u2066", "\u2028", "\u2029",
+                         "\u0085", "\x9f"):
+                with self.subTest(field=field, char=hex(ord(char))):
+                    self.assertRefused(**{field: "a" + char + "b"})
+            self.save(slug="ok-" + field, **{field: "plain ünïcode ✓ text"})
+
+    def test_body_allows_format_characters_but_not_controls(self):
+        self.save(slug="zwj", body="family \U0001F468\u200d\U0001F469 ok\u200b")
+        text = (self.agent_dir() / "project-zwj.md").read_text(encoding="utf-8")
+        self.assertIn("\u200d", text)
+        for value in ("a\x85b", "a\x9fb"):
+            with self.subTest(value=repr(value)):
+                self.assertRefused(body=value)
+
+    def test_bad_body(self):
+        for value in ("", "  \n\n \t ", "nul\x00", "bell\x07", "esc\x1b[0m", "del\x7f",
+                      "x" * 16385, "é" * 8193):
+            with self.subTest(value=value[:12]):
+                self.assertRefused(body=value)
+
+    def test_a_slug_that_repeats_the_type_is_not_doubled(self):
+        out = self.save(slug="project-eval-probe")
+        self.assertEqual(out["path"], self.agent_dir() / "project-eval-probe.md")
+        self.assertEqual(out["relative"],
+                         ".claude/agent-memory/anthology-scout/project-eval-probe.md")
+        info = memory_index.parse_note(out["path"])
+        self.assertEqual(info["type"], "project")
+        self.assertFalse((self.agent_dir() / "project-project-eval-probe.md").exists())
+        # the same note as slug `eval-probe`: a second save collides
+        self.assertRefused("already exists")
+        # only the matching type is dropped, and only once
+        out = self.save(type_="feedback", slug="project-x")
+        self.assertEqual(out["path"].name, "feedback-project-x.md")
+        out = self.save(type_="project", slug="project-project")
+        self.assertEqual(out["path"].name, "project-project.md")
+        out = self.save(type_="reference", slug="reference-reference-x")
+        self.assertEqual(out["path"].name, "reference-reference-x.md")
+        # a slug that is the bare type, or only starts with the type's letters, stays
+        for type_, slug in (("feedback", "feedback"), ("project", "projectile"),
+                            ("project", "project2")):
+            out = self.save(type_=type_, slug=slug)
+            self.assertEqual(out["path"].name, "%s-%s.md" % (type_, slug))
+
+    def test_the_slug_is_checked_for_secrets(self):
+        value = "abcdef0123456789abcd"
+        msg = self.assertRefused(env={"X_API_TOKEN": value}, slug=value)
+        self.assertIn("$X_API_TOKEN", msg)
+        self.assertNotIn(value, msg)
+        key_like = "sk" + "-" + "a1b2c3d4e5f6g7h8i9"
+        msg = self.assertRefused(slug=key_like)
+        self.assertIn("secret", msg)
+        self.assertNotIn(key_like, msg)
+        # the check runs on what the caller passed, before a type prefix is dropped
+        self.assertRefused(env={"X_API_TOKEN": "project-" + value}, slug="project-" + value)
+
+    def test_each_secret_pattern_is_refused_everywhere(self):
+        samples = _secret_samples()
+        self.assertEqual(len(samples), len(guard_rules._SECRET_PATTERNS))
+        for label, secret in samples.items():
+            for field in ("name", "description", "body"):
+                with self.subTest(label=label, field=field):
+                    msg = self.assertRefused(**{field: "see " + secret + " here"})
+                    self.assertIn("looks like it contains a secret", msg)
+                    self.assertNotIn(secret, msg)
+        self.assertFalse((self.root / ".claude").exists())
+
+    def test_env_secret_values_are_refused_without_echoing_them(self):
+        value = "vA1ue" + "-of-the-thing"
+        env = {"MY_API_TOKEN": value, "HOME": "/home/x"}
+        for field in ("name", "description", "body"):
+            with self.subTest(field=field):
+                msg = self.assertRefused(env=env, **{field: "contains " + value + "!"})
+                self.assertIn("$MY_API_TOKEN", msg)
+                self.assertNotIn(value, msg)
+        for var in ("DB_PASSWORD", "x_secret", "SSH_KEY", "THE_PASSWD", "AWS_CREDENTIALS"):
+            with self.subTest(var=var):
+                self.assertRefused(env={var: value}, body=value)
+
+    def test_env_values_that_are_short_or_not_secret_named_do_not_trigger(self):
+        self.save(slug="e1", env={"MY_API_TOKEN": "short"}, body="short appears: short")
+        self.save(slug="e2", env={"EDITOR": "vim-editor-long"}, body="I use vim-editor-long")
+        self.save(slug="e3", env={"MY_API_TOKEN": "x" * 7}, body="x" * 7)
+        self.assertRefused(env={"MY_API_TOKEN": "x" * 8}, body="x" * 8)
+
+    def test_env_defaults_to_the_process_environment(self):
+        value = "proc" + "-env-value-123"
+        with mock.patch.dict(os.environ, {"SOME_TOKEN": value}):
+            with self.assertRaises(memory_sync.SaveError):
+                memory_sync.save_note(self.root, "scout", "project", "x", "n", "d", value)
+
+    def test_existing_note_needs_replace(self):
+        self.save(body="first")
+        path = self.agent_dir() / "project-eval-probe.md"
+        before = path.read_bytes()
+        msg = self.assertRefused(body="second")
+        self.assertIn("--replace", msg)
+        self.assertIn(".claude/agent-memory/anthology-scout/project-eval-probe.md", msg)
+        self.assertEqual(path.read_bytes(), before)
+        out = self.save(body="second", replace=True)
+        self.assertEqual(out["action"], "replaced")
+        self.assertTrue(path.read_text().endswith("\n\nsecond\n"))
+        self.assertEqual(list(self.agent_dir().glob(".tmp-*")), [])
+
+    def test_replace_of_a_missing_note_creates_it(self):
+        out = self.save(replace=True)
+        self.assertEqual(out["action"], "created")
+        self.assertTrue(out["path"].is_file())
+
+    def test_root_must_be_a_directory(self):
+        with self.assertRaises(memory_sync.SaveError):
+            memory_sync.save_note(self.tmp / "missing", "scout", "project", "x", "n", "d", "b",
+                                  env={})
+        f = write(self.tmp / "afile", "x")
+        with self.assertRaises(memory_sync.SaveError):
+            memory_sync.save_note(f, "scout", "project", "x", "n", "d", "b", env={})
+
+    def test_a_symlinked_root_is_resolved_and_paths_below_are_checked(self):
+        link = self.tmp / "rootlink"
+        os.symlink(str(self.root), str(link))
+        out = memory_sync.save_note(link, "scout", "project", "x", "n", "d", "b", today=TODAY,
+                                    env={})
+        self.assertTrue((self.agent_dir() / "project-x.md").is_file())
+        self.assertEqual(out["path"], self.agent_dir() / "project-x.md")
+
+    def test_a_symlinked_or_non_directory_component_is_refused(self):
+        places = {
+            "claude": lambda r: r / ".claude",
+            "memory": lambda r: r / ".claude" / "agent-memory",
+            "agent": lambda r: r / ".claude" / "agent-memory" / "anthology-scout",
+        }
+        for label, where in places.items():
+            for replace in (False, True):
+                with self.subTest(component=label, replace=replace):
+                    root = self.tmp / ("r-%s-%s" % (label, replace))
+                    root.mkdir()
+                    self.root = root
+                    path = where(root)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    outside = self.outside / ("o-%s-%s" % (label, replace))
+                    outside.mkdir()
+                    os.symlink(str(outside), str(path))
+                    before = snapshot(self.tmp)
+                    with self.assertRaises(memory_sync.SaveError) as cm:
+                        self.save(replace=replace)
+                    self.assertIn("symlink or not a folder", str(cm.exception))
+                    self.assertEqual(snapshot(self.tmp), before)
+                    self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_dangling_symlink_component_is_refused(self):
+        (self.root / ".claude").mkdir()
+        os.symlink(str(self.outside / "nope"), str(self.root / ".claude" / "agent-memory"))
+        self.assertRefused("symlink or not a folder")
+        self.assertFalse((self.outside / "nope").exists())
+
+    def test_a_file_where_a_folder_belongs_is_refused(self):
+        write(self.root / ".claude", "not a dir")
+        self.assertRefused("symlink or not a folder")
+        self.assertEqual((self.root / ".claude").read_text(), "not a dir")
+
+    def test_a_symlinked_target_is_refused_with_and_without_replace(self):
+        victim = write(self.outside / "victim.txt", "precious")
+        self.agent_dir().mkdir(parents=True)
+        target = self.agent_dir() / "project-eval-probe.md"
+        os.symlink(str(victim), str(target))
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                self.assertRefused(replace=replace)
+                self.assertEqual(victim.read_text(), "precious")
+        # a dangling link at the target is refused too, and nothing is created through it
+        os.unlink(str(target))
+        os.symlink(str(self.outside / "new.txt"), str(target))
+        for replace in (False, True):
+            with self.subTest(dangling=replace):
+                self.assertRefused(replace=replace)
+                self.assertFalse((self.outside / "new.txt").exists())
+
+    def test_a_directory_at_the_target_is_refused(self):
+        (self.agent_dir() / "project-eval-probe.md").mkdir(parents=True)
+        self.assertRefused(replace=True)
+        self.assertRefused(replace=False)
+
+    def test_other_agents_dirs_are_untouched(self):
+        self.save(agent="reviewer", body="theirs")
+        before = snapshot(self.agent_dir("reviewer"))
+        self.save(agent="scout")
+        self.assertEqual(snapshot(self.agent_dir("reviewer")), before)
+
+    def test_a_failing_index_is_a_warning_not_a_failure(self):
+        with mock.patch.object(memory_sync, "regenerate_index",
+                               side_effect=OSError("disk says no")):
+            out = self.save()
+        self.assertTrue(out["path"].is_file())
+        self.assertIn("disk says no", out["index_warning"])
+        with mock.patch.object(memory_sync, "regenerate_index",
+                               side_effect=memory_sync.UnsafeTarget("MEMORY.md is a link")):
+            out = self.save(slug="two")
+        self.assertIn("MEMORY.md is a link", out["index_warning"])
+
+
+def run_with_timeout(fn, seconds=5):
+    """Run fn in a daemon thread; returns (finished, result, error). A regression that blocks
+    (for example reading a FIFO) fails the test instead of hanging the suite."""
+    box = {}
+
+    def target():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            box["error"] = exc
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    return (not t.is_alive()), box.get("result"), box.get("error")
+
+
+class SpecialMemoryMdTest(MemCase):
+    """A MEMORY.md that is a symlink or a FIFO is replaced, never read or written through."""
+
+    def setUp(self):
+        super().setUp()
+        self.agent = self.tmp / "agent"
+        write(self.agent / "project-a.md", note_text("project-a", desc="Thing A"))
+        self.outside = self.tmp / "outside"
+        self.outside.mkdir()
+
+    def unblock(self, fifo):
+        try:  # let a stuck reader finish so the thread does not outlive the test
+            fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+        except OSError:
+            pass
+
+    def assertPromptlyRegular(self, call):
+        done, result, error = run_with_timeout(call)
+        self.assertTrue(done, "regenerating MEMORY.md blocked on a special file")
+        self.assertIsNone(error)
+        target = self.agent / "MEMORY.md"
+        self.assertTrue(target.is_file() and not target.is_symlink())
+        self.assertIn("[project-a](project-a.md)", target.read_text())
+        return result
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_a_fifo_at_memory_md_is_replaced_without_blocking(self):
+        fifo = self.agent / "MEMORY.md"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_a_symlink_to_a_fifo_is_replaced_without_blocking(self):
+        fifo = self.outside / "pipe"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        os.symlink(str(fifo), str(self.agent / "MEMORY.md"))
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+
+    def test_a_symlink_to_a_file_with_the_same_text_is_still_replaced(self):
+        memory_sync.regenerate_index(self.agent)
+        text = (self.agent / "MEMORY.md").read_bytes()
+        victim = write(self.outside / "victim.md", "")
+        victim.write_bytes(text)
+        (self.agent / "MEMORY.md").unlink()
+        os.symlink(str(victim), str(self.agent / "MEMORY.md"))
+        self.assertTrue(self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent)))
+        self.assertEqual(victim.read_bytes(), text)
+
+    def test_a_symlink_to_a_different_file_leaves_the_target_alone(self):
+        victim = write(self.outside / "victim.md", "precious")
+        os.symlink(str(victim), str(self.agent / "MEMORY.md"))
+        self.assertPromptlyRegular(lambda: memory_sync.regenerate_index(self.agent))
+        self.assertEqual(victim.read_text(), "precious")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_save_note_returns_promptly_with_a_fifo_memory_md(self):
+        root = self.tmp / "work"
+        agent_dir = root / ".claude" / "agent-memory" / "anthology-scout"
+        agent_dir.mkdir(parents=True)
+        fifo = agent_dir / "MEMORY.md"
+        os.mkfifo(str(fifo))
+        self.addCleanup(self.unblock, fifo)
+        done, out, error = run_with_timeout(lambda: memory_sync.save_note(
+            root, "scout", "project", "x", "n", "d", "b", env={}))
+        self.assertTrue(done, "save_note blocked on a FIFO MEMORY.md")
+        self.assertIsNone(error)
+        self.assertIsNone(out["index_warning"])
+        self.assertTrue(fifo.is_file() and not fifo.is_symlink())
 
 
 if __name__ == "__main__":

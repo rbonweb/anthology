@@ -59,9 +59,10 @@ jobs:
           DISABLE_AUTOUPDATER: "1"
           # A granted npx command (guard cases) must not fetch packages if a guard regresses.
           NPM_CONFIG_OFFLINE: "true"
-          # Already the default under GITHUB_ACTIONS; set explicitly so it cannot silently
-          # change: Bash subprocesses do not inherit the API key.
-          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          # `plugin eval` needs the credential in its children: with scrubbing every case fails
+          # "Not logged in". It already hides the key from their tools itself. The smokes build
+          # their own environment per run (evals/smoke/smoke.py).
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"
         run: |
           status=0
           scripts/run-evals.sh --ci --max-cost-usd "$MAX_COST_USD" || status=$?

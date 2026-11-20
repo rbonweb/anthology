@@ -25,9 +25,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Directories the walk fallback never enters (not repo content).
+# Directories the walk fallback never enters (not repo content). It covers every directory
+# pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`):
+# git never lists them, so the walk must not either.
 PRUNED = (".git", ".claude/worktrees", ".superpowers", ".vendor-cache", "__pycache__",
-          "node_modules")
+          "node_modules", "evals/results")
 
 # The home-path check skips the upstream rtk tree and the generated vendored trees.
 HOME_PATH_SKIPS = ("rtk/", "plugins/anthology-superpowers/", "plugins/anthology/knowledge/",
@@ -42,11 +44,6 @@ OWNER_HOMES = ("/Users/" + "rbonweb", "/home/" + "rbonweb")
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 
-
-# Files the docs name that land with the rtk stream (not on this branch yet). Remove an entry
-# when its file merges; a name that exists never needs to be listed.
-PENDING_FILES = {"scripts/sync-rtk.sh", "scripts/rtk-test.sh", "scripts/rtk-trim.sh",
-                 ".github/workflows/rtk-release.yml"}
 
 PUBLIC_DOCS = ("README.md", "SECURITY.md", "CONTRIBUTING.md", "DECISIONS.md")
 CODE_SPAN_PATH = re.compile(r"`((?:scripts|\.github/workflows)/[A-Za-z0-9._-]+)`")
@@ -68,9 +65,14 @@ def tracked_files() -> list:
                              stdout=subprocess.PIPE, check=True).stdout
         names = [os.fsdecode(raw) for raw in out.split(b"\0") if raw]
         return sorted(n for n in names if (ROOT / n).is_file())
+    return walk_files(ROOT)
+
+
+def walk_files(root: Path) -> list:
+    """The no-git listing: every file under `root` outside the PRUNED directories."""
     found = []
-    for dirpath, dirnames, filenames in os.walk(ROOT):
-        rel_dir = Path(dirpath).relative_to(ROOT).as_posix()
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = Path(dirpath).relative_to(root).as_posix()
         kept = []
         for d in dirnames:
             rel = d if rel_dir == "." else rel_dir + "/" + d
@@ -114,6 +116,25 @@ class LicenseTest(unittest.TestCase):
 class RepoContentTest(unittest.TestCase):
     def test_file_listing_is_not_empty(self):
         self.assertIn("LICENSE", tracked_files())
+
+    def test_walk_skips_ignored_eval_results(self):
+        # The Docker images have no git, so the walk runs there; it must not scan the
+        # git-ignored evals/results folders, which hold local paths.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "evals" / "results" / "run1").mkdir(parents=True)
+            (root / "evals" / "results" / "run1" / "out.txt").write_text("x", encoding="utf-8")
+            (root / "evals" / "case").mkdir()
+            (root / "evals" / "case" / "case.yaml").write_text("x", encoding="utf-8")
+            self.assertEqual(walk_files(root), ["evals/case/case.yaml"])
+
+    def test_pruned_covers_gitignored_directories(self):
+        for line in read(".gitignore").splitlines():
+            line = line.strip()
+            if line.endswith("/") and not line.startswith(("#", "!")):
+                with self.subTest(pattern=line):
+                    self.assertIn(line.strip("/"), PRUNED)
 
     def test_no_real_home_paths(self):
         hits = []
@@ -222,8 +243,6 @@ class LinkTest(unittest.TestCase):
                     continue
                 path, _, fragment = target.partition("#")
                 rel = _clean(path) if path else doc
-                if rel in PENDING_FILES:
-                    continue
                 dest = ROOT / rel
                 if not dest.exists():
                     problems.append(f"{doc}: {target} does not exist")
@@ -238,7 +257,7 @@ class LinkTest(unittest.TestCase):
         for doc in ("README.md", "SECURITY.md", "CONTRIBUTING.md"):  # DECISIONS names paths in upstream trees
             for m in CODE_SPAN_PATH.finditer(read(doc)):
                 rel = m.group(1)
-                if rel not in PENDING_FILES and not (ROOT / rel).is_file():
+                if not (ROOT / rel).is_file():
                     problems.append(f"{doc}: `{rel}` does not exist")
         self.assertEqual(problems, [])
 

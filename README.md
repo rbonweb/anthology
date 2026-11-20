@@ -45,10 +45,10 @@ It checks your machine, then shows every change and applies them only after you 
 
 1. **Doctor.** Checks that `python3`, `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
 2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
-3. **rtk.** Downloads the pinned rtk binary and verifies its sha256.
+3. **rtk.** Downloads the pinned rtk binary for your platform from this repo's releases, checks its sha256 against `rtk.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
-   - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes;
+   - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes (see [Saving notes](#saving-notes-anthology-mem-save));
    - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
@@ -164,8 +164,9 @@ Nothing we ship launches Chrome. Browser test suites that a project already has 
 rtk condenses the output of common dev commands, so the main session and every agent spend fewer tokens on `git status`, test runs and the like. A `PreToolUse` hook on Bash runs `rtk hook claude`, which rewrites commands (`git status` becomes `rtk git status`).
 
 - **Always on.** There are no options. Output is condensed, and the routing guide tells Claude to treat it as complete. Exact text stays exact for `cat`, `grep -o` and `grep -c`, `jq -r` and `curl -o` and `curl -w`. `rtk bypass <cmd>` runs a command unfiltered, and the guide says to use it only when a result is unusable.
-- **Claude Code only.** The rtk source lives in this repo under `rtk/`. It carries no integration for any other AI tool, and it has no telemetry. A test makes sure it makes no network calls.
-- **Verified binaries.** Setup downloads the binary for your platform from this repo's public GitHub releases (tag `rtk--v<version>`) over HTTPS. `plugins/anthology/rtk.lock` pins the version and a sha256 for each of the four targets (macOS and Linux, arm64 and x86_64), and the binary is installed only when the hash matches. Each release asset has a build-provenance attestation you can check with `gh attestation verify`. At every session start Anthology reconciles the installed binary with the lock.
+- **Claude Code only.** The rtk source lives in this repo under `rtk/`. It carries no integration for any other AI tool, and it has no telemetry. A CI test runs the built binary with the network switched off.
+- **Apache-2.0 edition.** Upstream rtk also contains a BUSL-1.1 compression engine; Anthology removes it from the source it ships, so what you install is the Apache-2.0 edition and the engine-only features (compressing output after a tool has run, user-defined pipelines and `rtk tasks`) are not part of it.
+- **Verified binaries.** Setup downloads the binary for your platform from this repo's public GitHub releases (tag `rtk--v<version>`) over HTTPS. `plugins/anthology/rtk.lock` pins the version and a sha256 for each of the four targets (macOS and Linux, arm64 and x86_64), and the binary is installed only when the hash of the downloaded archive matches. Each release asset has a build-provenance attestation you can check with `gh attestation verify`. At every session start Anthology reconciles the installed binary with the lock.
 - **Fails safe.** If the binary is missing, the hook exits 0 and commands run unchanged. The `rtk` command on your Bash path says "run /anthology:setup" if setup has not run.
 
 ### The `Bash(rtk *)` risk
@@ -235,6 +236,17 @@ anthology-mem rebuild                   delete and rebuild the index
 ```
 
 Links are the `[[note-name]]` links in the notes, plus relations such as `supersedes` and `depends_on` declared in a note's frontmatter. There are no embeddings, so nothing needs an API key or a model download.
+
+### Saving notes: `anthology-mem save`
+
+Roster agents save their notes through one command, so a read-only agent needs no Write tool, heredoc or redirect:
+
+```text
+anthology-mem save --agent <name> --type <project|feedback|reference> --slug <topic-slug> \
+  --name '<title>' --description '<one line>' --body '<text>' [--replace]
+```
+
+It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) or that the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths) is refused, with the kind and line named. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
 
 ### Export and import
 

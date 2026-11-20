@@ -1,10 +1,18 @@
 """The 11-agent roster (Part 1 section 5): frontmatter, Startup, rules and startup budget."""
 import re
+import sys
 import unittest
 
 from _repo import (EXPECTED_ROSTER, KNOWLEDGE, ROOT, knowledge_path, load_frontmatter,
                    superpowers_skill_path)
 from test_knowledge import EXPECTED_KNOWLEDGE
+
+sys.path.insert(0, str(ROOT / "scripts"))
+import startup_budget  # noqa: E402  (the budget calculation is shared with upstream_watch)
+from startup_budget import BUDGET, sections  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "plugins" / "anthology" / "scripts"))
+from memory_index import _parser  # noqa: E402
 
 PLUGIN = ROOT / "plugins" / "anthology"
 AGENTS = PLUGIN / "agents"
@@ -13,35 +21,7 @@ MAX_BODY_LINES = 60
 BROWSER_AGENTS = {"ui-designer", "ui-reviewer", "researcher", "marketer"}
 FRONTMATTER_KEYS = {"name", "description", "model", "disallowedTools", "isolation", "memory",
                     "skills"}
-STARTUP_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/(knowledge/[A-Za-z0-9_./-]+/SKILL\.md)")
 CAVEMAN = "knowledge/caveman/SKILL.md"
-
-# Startup budget in bytes: body + every Startup file + every preloaded SKILL.md, per agent.
-# Each value is the size measured when the roster landed, times 1.15, rounded up. Growth (an
-# upstream sync that makes a knowledge file bigger, a longer body) fails the test on purpose.
-# To raise a budget: run `python -m unittest test_roster -k budget` (from tests/), take the
-# suggested value from the failure message (ceil(measured * 1.15)), and explain the growth in
-# the same commit.
-BUDGET = {
-    "researcher": 89267,  # measured 77623
-    "architect": 23612,  # measured 20532
-    "implementer": 21607,  # measured 18788
-    "debugger": 17388,  # measured 15120
-    "reviewer": 12553,  # measured 10915
-    "scout": 5944,  # measured 5168
-    "docs-writer": 31376,  # measured 27283
-    "ui-designer": 128097,  # measured 111388
-    "ui-reviewer": 65986,  # measured 57379
-    "product-planner": 102779,  # measured 89373
-    "marketer": 54384,  # measured 47290
-}
-
-
-def sections(body):
-    """Ordered list of `## ` heading names, and a dict name -> text."""
-    parts = re.split(r"^## (.+)$", body, flags=re.MULTILINE)
-    names = [p.strip() for p in parts[1::2]]
-    return names, dict(zip(names, parts[2::2]))
 
 
 def disallowed(meta):
@@ -51,18 +31,11 @@ def disallowed(meta):
 
 
 def startup_files(name):
-    _, body = load_frontmatter(AGENTS / f"{name}.md")
-    return STARTUP_PATH.findall(sections(body)[1]["Startup"])
+    return startup_budget.startup_files(ROOT, name)
 
 
 def startup_bytes(name):
-    meta, body = load_frontmatter(AGENTS / f"{name}.md")
-    total = len(body.encode("utf-8"))
-    for rel in startup_files(name):
-        total += (PLUGIN / rel).stat().st_size
-    for skill in meta.get("skills", []):
-        total += superpowers_skill_path(skill.split(":", 1)[1]).stat().st_size
-    return total
+    return startup_budget.startup_bytes(ROOT, name)
 
 
 class RosterTest(unittest.TestCase):
@@ -158,23 +131,41 @@ class RosterTest(unittest.TestCase):
                 self.assertIn(f".claude/agent-memory/anthology-{name}/", memory)
                 if spec["edits"] == "yes":
                     self.assertIn("chore(memory)", memory)
-                elif spec["edits"] == "docs":
-                    self.assertIn("uncommitted", memory)
                 else:
-                    self.assertIn("heredoc", memory)
-                    self.assertIn(f"mkdir -p .claude/agent-memory/anthology-{name} && cat >",
-                                  memory)
+                    self.assertIn("uncommitted", memory)
+                if spec["edits"] == "no":
+                    self.assertIn("- Leave notes uncommitted for the lead.", memory)
 
-    def test_memory_notes_are_one_per_file_with_the_indexed_frontmatter(self):
-        # memory_sync regenerates MEMORY.md from each note's name, description, metadata.type.
+    def test_memory_notes_are_saved_with_anthology_mem_save(self):
+        # `anthology-mem save` writes the indexed frontmatter and regenerates MEMORY.md; a
+        # heredoc or redirect never matches the `Bash(anthology-mem save *)` allow rule.
         for name in EXPECTED_ROSTER:
             with self.subTest(agent=name):
                 _, body = self.agent(name)
                 memory = sections(body)[1]["Memory"]
-                self.assertIn("one note per file", memory)
-                self.assertIn("`<type>-<topic-slug>.md`", memory)
-                self.assertIn("`name`, `description` and `metadata.type`", memory)
-                self.assertIn("Never hand-edit MEMORY.md", memory)
+                for needle in (f"anthology-mem save --agent {name} --type", "--replace",
+                               "no heredoc or redirect", "no line may start with `#`, even after spaces", "'\\''",
+                               "`<type>-<topic-slug>.md`", "never hand-edit MEMORY.md"):
+                    self.assertIn(needle, memory)
+                self.assertNotIn("<<", memory)
+                self.assertNotIn("cat >", memory)
+                self.assertNotIn("mkdir", memory)
+
+    def test_memory_command_flags_equal_the_save_subcommand_options(self):
+        save = next(a for a in _parser()._subparsers._group_actions[0].choices.items()
+                    if a[0] == "save")[1]
+        options = {o for a in save._actions for o in a.option_strings if o.startswith("--")}
+        options -= {"--json", "--help"}
+        self.assertEqual(options, {"--agent", "--type", "--slug", "--name", "--description",
+                                   "--body", "--replace"})
+        for name in EXPECTED_ROSTER:
+            with self.subTest(agent=name):
+                _, body = self.agent(name)
+                memory = sections(body)[1]["Memory"]
+                command = re.search(r"`(anthology-mem save [^`]*)`", memory).group(1)
+                self.assertEqual(set(re.findall(r"--[a-z]+", command)), options - {"--replace"})
+                self.assertEqual(set(re.findall(r"--[a-z]+", memory)) - {"--replace"},
+                                 options - {"--replace"})
 
     def test_no_edit_agents_may_only_edit_their_memory_dir(self):
         for name, spec in EXPECTED_ROSTER.items():
@@ -263,8 +254,8 @@ class RosterTest(unittest.TestCase):
                 self.assertLessEqual(
                     measured, BUDGET[name],
                     f"{name}: measured {measured} bytes > budget {BUDGET[name]}. If the growth is "
-                    f"intended, set BUDGET to ceil({measured} * 1.15) = "
-                    f"{-(-measured * 115 // 100)} and say why in the commit.")
+                    f"intended, set BUDGET in scripts/startup_budget.py to ceil({measured} * 1.15) = "
+                    f"{startup_budget.suggested_budget(measured)} and say why in the commit.")
 
 
 if __name__ == "__main__":
