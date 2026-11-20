@@ -7,6 +7,9 @@
 - SECURITY.md states the `Bash(rtk *)` allow and the memory trust model.
 - CONTRIBUTING.md links the maintainer tools and the evals.
 - The README carries the sentences the design requires.
+- Every relative link in the public docs points at a file or folder that exists (and at a
+  heading that exists, for `#fragment` links), and every `scripts/...` and
+  `.github/workflows/...` path the docs name in code spans exists.
 
 "Tracked files" is `git ls-files` when git is on PATH and the repo is a work tree. The Docker
 test images have no git, so there the whole tree is walked instead.
@@ -38,6 +41,15 @@ OWNER_HOMES = ("/Users/" + "rbonweb", "/home/" + "rbonweb")
 
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
+
+
+# Files the docs name that land with the rtk stream (not on this branch yet). Remove an entry
+# when its file merges; a name that exists never needs to be listed.
+PENDING_FILES = {"scripts/sync-rtk.sh", "scripts/rtk-test.sh", "scripts/rtk-trim.sh",
+                 ".github/workflows/rtk-release.yml"}
+
+PUBLIC_DOCS = ("README.md", "SECURITY.md", "CONTRIBUTING.md", "DECISIONS.md")
+CODE_SPAN_PATH = re.compile(r"`((?:scripts|\.github/workflows)/[A-Za-z0-9._-]+)`")
 
 
 def _is_git_work_tree() -> bool:
@@ -190,6 +202,45 @@ class ReadmeTest(unittest.TestCase):
 
     def test_codeowners_example_is_a_placeholder(self):
         self.assertIn("@your-org/reviewers", self.text)
+
+
+def github_anchor(heading: str) -> str:
+    """The anchor GitHub gives a heading: lower case, punctuation dropped, spaces to hyphens."""
+    text = re.sub(r"[`*_]", "", heading.strip().lower())
+    text = re.sub(r"[^\w\- ]", "", text)
+    return text.replace(" ", "-")
+
+
+class LinkTest(unittest.TestCase):
+    def test_relative_links_resolve(self):
+        problems = []
+        for doc in PUBLIC_DOCS:
+            text = read(doc)
+            for m in MARKDOWN_LINK.finditer(text):
+                target = m.group(1)
+                if re.match(r"[a-z][a-z0-9+.-]*:", target):  # https:, mailto:
+                    continue
+                path, _, fragment = target.partition("#")
+                rel = _clean(path) if path else doc
+                if rel in PENDING_FILES:
+                    continue
+                dest = ROOT / rel
+                if not dest.exists():
+                    problems.append(f"{doc}: {target} does not exist")
+                elif fragment and dest.is_file() and dest.suffix == ".md":
+                    anchors = {github_anchor(h) for h in headings(dest.read_text(encoding="utf-8"))}
+                    if fragment not in anchors:
+                        problems.append(f"{doc}: {target} has no such heading")
+        self.assertEqual(problems, [])
+
+    def test_named_scripts_and_workflows_exist(self):
+        problems = []
+        for doc in ("README.md", "SECURITY.md", "CONTRIBUTING.md"):  # DECISIONS names paths in upstream trees
+            for m in CODE_SPAN_PATH.finditer(read(doc)):
+                rel = m.group(1)
+                if rel not in PENDING_FILES and not (ROOT / rel).is_file():
+                    problems.append(f"{doc}: `{rel}` does not exist")
+        self.assertEqual(problems, [])
 
 
 class DecisionsDocTest(unittest.TestCase):

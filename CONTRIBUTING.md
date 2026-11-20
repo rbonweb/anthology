@@ -25,8 +25,8 @@ For what the product is and why it is built this way, read the [README](README.m
 | `plugins/anthology-superpowers/` | Generated from `vendor/`, renamed from superpowers |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
 | `rtk/` | The rtk source, a git subtree with its history |
-| `scripts/` | Maintainer tools: `vendor.py`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `release.sh`, `check_version_bump.py`, `upstream_watch.py` |
-| `evals/` | Behaviour evals, run with `claude plugin eval` |
+| `scripts/` | Maintainer tools: `vendor.py`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `release.sh`, `check_version_bump.py`, `upstream_watch.py`, `memory_diff.py`, `run-evals.sh`, `eval_baseline.py` |
+| `evals/` | Behaviour evals (one `case.yaml` per case), the mocked BrowserOS Neo server in `mocks/`, and the smoke cases in `smoke/`; run with `scripts/run-evals.sh` |
 | `tests/` | Unit tests (`unittest`) |
 | `ci/` | Pinned Docker images and the pinned Claude Code used by CI |
 | `.github/workflows/` | `ci.yml`, `evals.yml`, `upstream-watch.yml`, `rtk-release.yml` |
@@ -41,9 +41,11 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
 2. Run the tests from the repo root, in the pinned image, the way CI does:
 
    ```sh
-   docker run --rm -v "$PWD":/w -w /w "$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)" \
+   docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w -w /w "$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)" \
      sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
    ```
+
+   `PYTHONDONTWRITEBYTECODE=1` keeps the container, which runs as root, from leaving root-owned `__pycache__` folders in your checkout. Do not add `-u`: a guard test needs the running user to exist in the container's passwd file.
 
    Then again with `ci/images/python39.Dockerfile`, because the runtime scripts must work on Python 3.9.
 
@@ -57,14 +59,16 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
 
 | Check | What it proves |
 |---|---|
-| Unit tests on the Python 3.12 and 3.9 images | The unit tests, including the per-agent startup budgets |
+| `test` and `test-py39` | The unit tests on the pinned Python 3.12 and 3.9 images, including the per-agent startup budgets |
+| `memory-git`, `setup-git`, `version-bump`, `taste-bridge`, `vendor-check` | The tests that need `git`, `node` or network, which skip in the Docker images and run on the runner (memory, session-start and setup, release and version-bump, the BrowserOS Neo bridge, vendoring) |
 | `scripts/rtk-test.sh` | rtk builds and passes its tests, including one named test per change the fork makes |
 | `vendor.py check` | Every vendored tree and license regenerates exactly from its pin |
 | `check_version_bump.py` | A changed plugin has a higher version than at the merge base |
 | `claude plugin validate --strict` | Each plugin is valid, using the pinned Claude Code in `ci/claude-code/` |
 | gitleaks | No secrets in the history, using `.gitleaks.toml` |
 | `memory-diff` job (`scripts/memory_diff.py`, pull requests) | Lists changed files under `.claude/memory/` and `.claude/agent-memory/` in the job summary, so a memory note is reviewed like code |
-| `startup-budget` job | The per-agent startup budgets hold |
+| `startup-budget` job | The per-agent startup budgets and the session-start output budget (9,000 characters) hold |
+| `cli-syntax` job | The `claude plugin` subcommands and flags the plugins and evals rely on exist in the pinned Claude Code. No model is called |
 
 Images are pinned by digest in `ci/images/*.Dockerfile`, test dependencies by hash in `tests/requirements.txt`, and GitHub Actions by commit SHA. Dependabot proposes the bumps, and CI and the evals gate them.
 
@@ -168,28 +172,32 @@ The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code 
 - BrowserOS-only browsing, against a mocked `browseros-neo` MCP server in `evals/mocks/` and with no Chrome launch;
 - the rtk rewrite;
 - the routing guide being in the main session, and absent from agents;
-- the platform checks recorded in [DECISIONS.md](DECISIONS.md) (agent fields, worktree base, memory paths, hook output limits). The multi-session and no-model ones are smoke cases in `evals/smoke/smoke.py`.
+- the platform checks recorded in [DECISIONS.md](DECISIONS.md) that a case can express (agent fields, memory paths, hooks reaching subagents, skills hidden from the main session).
 
-Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases. Under the hood it calls:
+The checks a case cannot express are smoke cases in `evals/smoke/smoke.py`: the Claude Code CLI syntax, the eval cost ceiling, the session-start output cap, a missing hook interpreter and a missing `python3`, the worktree base, the model each agent runs on, and the knowledge-read, auto-memory-directory and memory-commit checks for writers. `cli-syntax` and `python-missing` call no model.
+
+Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases. Under the hood it calls one `claude plugin eval` with a fixed `--allow-tools` list:
 
 ```sh
-claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling>
+claude plugin eval . --trust-plugin --ablation none --no-publish --threshold 0 --runs 1 \
+  --max-cost-usd <ceiling> --json <result.json> --output-dir <dir> --allow-tools <grants>
 ```
 
-in two passes: the cases tagged `grants-narrow`, then the ones tagged `grants-bash` with an operator `--allow-tools` grant. A tool that is not granted is withheld from the model, so the guard and rtk cases only work through the script; don't run the bare command and read its failures as regressions.
+A tool that is not granted is withheld from the model. The grants are the few harmless commands the guard and rtk cases need (listed in the script), so a broken guard still cannot download anything; the guard and rtk cases only work through the script, so don't run the bare command and read its failures as regressions. `--case GLOB` and `--tag TAG` run part of the suite (the comparison then tolerates missing cases, the smokes are skipped and `--record` is refused); `--no-smoke` skips the smokes. Results go to `evals/results/<UTC timestamp>/`.
 
-When the cost ceiling is hit the command exits 2 with a partial result, so raise the ceiling deliberately.
+The cost ceiling defaults to $20 for the evals (`--max-cost-usd`) plus $10 for all smokes together (`--smoke-total-budget-usd`). When the evals hit their ceiling the run is partial, and the comparison fails it with exit code 2, so raise the ceiling deliberately. The exit codes are the comparison's when it is not 0 (1 regression, 2 invalid or partial result, 3 no baseline), else 4 when a smoke failed, else 0. A smoke that skips because there are no credentials is not a failure.
 
-**The baseline** is `evals/baseline.json`. `scripts/run-evals.sh --record` writes it, from a full, non-partial run.
+**The baseline** is `evals/baseline.json`, the per-case scores of a full, non-partial run. The committed one is recorded from the CI run, so that the baseline and every later comparison come from the same environment: dispatch `evals.yml` once with no baseline committed, download its `evals-results` artifact and commit `candidate-baseline.json` as `evals/baseline.json` with the `candidate` key removed. `scripts/run-evals.sh --record` writes a baseline from a local full run, for experiments.
 
-[`evals.yml`](.github/workflows/evals.yml) runs weekly, on demand, and when the upstream watcher sees a new Claude Code release. It installs the pinned Claude Code from the `ci/claude-code` lockfile and needs the `ANTHROPIC_API_KEY` repository secret (it skips with a notice while that secret is missing). It fails when:
+[`evals.yml`](.github/workflows/evals.yml) runs weekly, on demand, and when the upstream watcher sees a new Claude Code release. It installs the pinned Claude Code from the `ci/claude-code` lockfile and needs the `ANTHROPIC_API_KEY` repository secret (it skips with a notice while that secret is missing). It has no pull-request or push trigger, so it never runs for a fork; to evaluate a Claude Code bump, dispatch it on the Dependabot branch. The run fails when:
 
 - a baseline case scores below its baseline score;
 - a baseline case is missing from the run;
-- the run is partial (the cost ceiling was hit);
-- `evals/baseline.json` is missing.
+- the run is partial (the cost ceiling was hit) or the result is invalid;
+- `evals/baseline.json` is missing (the job says so and the candidate is in the artifact);
+- a smoke case fails.
 
-To change the baseline on purpose, re-record it with `scripts/run-evals.sh --record` and explain why in the PR.
+To change the baseline on purpose, re-record it from a CI run as above and explain why in the PR.
 
 ### Startup budgets
 
