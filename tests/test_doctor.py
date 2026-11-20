@@ -65,7 +65,7 @@ class FindDuplicatesTest(unittest.TestCase):
         self.assertTrue(found[0]["command"].endswith("-s user"))
 
 
-class CheckEnvTest(unittest.TestCase):
+class EnvCase(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -76,6 +76,8 @@ class CheckEnvTest(unittest.TestCase):
         for patcher in (mock.patch.dict(os.environ, self.env), mock.patch("platform.system", return_value="Linux")):
             patcher.start()
             self.addCleanup(patcher.stop)
+        for var in ("CLAUDECODE", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT"):
+            os.environ.pop(var, None)  # the host may be Claude Code itself
         self.tools = {"python3", "node", "docker"}
         which = mock.patch.object(doctor.shutil, "which",
                                   side_effect=lambda n, path=None: "/usr/bin/" + n if n in self.tools else None)
@@ -91,18 +93,27 @@ class CheckEnvTest(unittest.TestCase):
         run = mock.patch.object(doctor.subprocess, "run", side_effect=fake_run)
         run.start()
         self.addCleanup(run.stop)
-        exists = mock.patch.object(doctor, "BROWSEROS_APP", self.tmp / "Applications" / "BrowserOS.app")
-        exists.start()
-        self.addCleanup(exists.stop)
+        self.apps = self.tmp / "SysApplications"
+        self.managed = self.tmp / "managed-mcp.json"
+        self.cwd = self.tmp / "proj"
+        self.cwd.mkdir()
+        for patcher in (mock.patch.object(doctor, "SYSTEM_APPLICATIONS", self.apps),
+                        mock.patch.object(doctor, "MANAGED_MCP_PATHS", (self.managed,))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def checks(self):
-        return {c["name"]: c for c in doctor.check_env(dict(os.environ))}
+        return {c["name"]: c for c in doctor.check_env(dict(os.environ), cwd=self.cwd)}
 
+
+
+class CheckEnvTest(EnvCase):
     def test_shape_and_order(self):
-        checks = doctor.check_env(dict(os.environ))
+        checks = doctor.check_env(dict(os.environ), cwd=self.cwd)
         self.assertEqual([c["name"] for c in checks],
                          ["python3", "node", "docker", "browseros", "rtk", "platform_supported",
-                          "plugin_read_rule"])
+                          "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
+                          "agent_memory_path", "subagent_model"])
         for c in checks:
             self.assertEqual(set(c), {"name", "ok", "detail"})
             self.assertIn(c["ok"], (True, False, None))
@@ -141,9 +152,9 @@ class CheckEnvTest(unittest.TestCase):
 
     def test_browseros_via_app_or_path(self):
         self.assertFalse(self.checks()["browseros"]["ok"])
-        (self.tmp / "Applications" / "BrowserOS.app").mkdir(parents=True)
+        (self.apps / "BrowserOS.app").mkdir(parents=True)
         self.assertTrue(self.checks()["browseros"]["ok"])
-        (self.tmp / "Applications" / "BrowserOS.app").rmdir()
+        (self.apps / "BrowserOS.app").rmdir()
         self.tools.add("browseros")
         self.assertTrue(self.checks()["browseros"]["ok"])
 
@@ -154,7 +165,7 @@ class CheckEnvTest(unittest.TestCase):
     def test_claude_json_in_home_is_used_without_config_dir(self):
         env = {"HOME": str(self.tmp), "PATH": "/bin"}
         (self.tmp / ".claude.json").write_text(json.dumps({"mcpServers": {"my-browseros": {}}}), encoding="utf-8")
-        checks = {c["name"]: c for c in doctor.check_env(env)}
+        checks = {c["name"]: c for c in doctor.check_env(env, cwd=self.cwd)}
         self.assertTrue(checks["browseros"]["ok"])
 
     def test_corrupt_claude_json_is_not_an_error(self):
@@ -178,7 +189,7 @@ class CheckEnvTest(unittest.TestCase):
         (state_dir / "state.json").write_text(json.dumps(kv), encoding="utf-8")
 
     def rtk_check(self, lock):
-        return {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
+        return {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock, cwd=self.cwd)}["rtk"]
 
     def test_rtk_is_checked_through_the_lock_and_the_installed_marker(self):
         data = self.tmp / "data"
@@ -264,7 +275,7 @@ class CheckEnvTest(unittest.TestCase):
         self.assertIsNone(c["ok"])
 
     def plugin_rule(self, **kw):
-        return {c["name"]: c for c in doctor.check_env(dict(os.environ), plugin_root=PLUGIN, **kw)}["plugin_read_rule"]
+        return {c["name"]: c for c in doctor.check_env(dict(os.environ), plugin_root=PLUGIN, cwd=self.cwd, **kw)}["plugin_read_rule"]
 
     def test_plugin_read_rule_is_unknown_before_setup(self):
         self.assertIsNone(self.plugin_rule()["ok"])
@@ -288,9 +299,356 @@ class CheckEnvTest(unittest.TestCase):
 
     def test_check_env_never_raises(self):
         with mock.patch.object(doctor.shutil, "which", side_effect=RuntimeError("boom")):
-            checks = doctor.check_env(dict(os.environ))
-        self.assertEqual(len(checks), 7)
+            checks = doctor.check_env(dict(os.environ), cwd=self.cwd)
+        self.assertEqual(len(checks), 12)
         self.assertFalse(checks[0]["ok"])
+
+
+def _write(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text if isinstance(text, str) else json.dumps(text), encoding="utf-8")
+    return path
+
+
+class CompatBase(EnvCase):
+    """CheckEnvTest's isolated HOME/config/PATH plus helpers for the PLAN section 14 checks."""
+
+    def check(self, name, env_extra=None, plugin_root=PLUGIN):
+        env = dict(os.environ)
+        env.update(env_extra or {})
+        found = {c["name"]: c for c in doctor.check_env(env, plugin_root=plugin_root, cwd=self.cwd)}
+        return found[name]
+
+    def user_json(self, data):
+        return _write(self.config / ".claude.json", data)
+
+
+class BrowserosAppTest(CompatBase):
+    def test_neo_app_in_system_applications(self):
+        (self.apps / "BrowserOS neo.app").mkdir(parents=True)
+        c = self.checks()["browseros"]
+        self.assertTrue(c["ok"], c)
+
+    def test_plain_app_in_user_applications(self):
+        (self.tmp / "Applications").mkdir()
+        self.assertFalse(self.checks()["browseros"]["ok"])
+        (self.tmp / "Applications" / "BrowserOS.app").mkdir()
+        self.assertTrue(self.checks()["browseros"]["ok"])
+
+    def test_unrelated_app_is_not_found(self):
+        (self.apps / "Foo.app").mkdir(parents=True)
+        (self.apps / "browseros.app").mkdir()  # the prefix is case-sensitive
+        self.assertFalse(self.checks()["browseros"]["ok"])
+
+    def test_a_file_is_not_an_app(self):
+        _write(self.apps / "BrowserOS neo.app", "x")
+        self.assertFalse(self.checks()["browseros"]["ok"])
+
+    def test_linux_binaries_on_path(self):
+        for name in ("browseros", "browseros-neo", "BrowserOS"):
+            self.tools = {"python3", name}
+            self.assertTrue(self.checks()["browseros"]["ok"], name)
+
+    def test_linux_appimage_in_user_applications_or_local_bin(self):
+        self.assertFalse(self.checks()["browseros"]["ok"])
+        _write(self.tmp / ".local" / "bin" / "BrowserOS-1.2.AppImage", "x")
+        self.assertTrue(self.checks()["browseros"]["ok"])
+        (self.tmp / ".local" / "bin" / "BrowserOS-1.2.AppImage").unlink()
+        _write(self.tmp / "Applications" / "BrowserOS.AppImage", "x")
+        self.assertTrue(self.checks()["browseros"]["ok"])
+
+    def test_not_found_message_still_says_install_it_yourself(self):
+        c = self.checks()["browseros"]
+        self.assertFalse(c["ok"])
+        self.assertIn("agents never install", c["detail"])
+
+
+class FindMcpServersTest(CompatBase):
+    def find(self, cwd=None):
+        return doctor.find_mcp_servers(dict(os.environ), cwd or self.cwd)
+
+    def by_name(self, cwd=None):
+        return {s["name"]: s for s in self.find(cwd)}
+
+    def test_user_scope(self):
+        self.user_json({"mcpServers": {"browseros-neo": {"url": "http://127.0.0.1:9/mcp?token=SECRET"}}})
+        s = self.by_name()["browseros-neo"]
+        self.assertEqual((s["scope"], s["tool_prefix"]), ("user", "mcp__browseros-neo__"))
+        self.assertEqual(set(s), {"name", "scope", "tool_prefix"})
+
+    def test_user_scope_from_home_without_config_dir(self):
+        _write(self.tmp / ".claude.json", {"mcpServers": {"a": {}}})
+        env = {"HOME": str(self.tmp), "PATH": "/bin"}
+        self.assertEqual([s["name"] for s in doctor.find_mcp_servers(env, self.cwd)], ["a"])
+
+    def test_local_scope_for_cwd_and_ancestors(self):
+        deep = self.cwd / "a" / "b"
+        deep.mkdir(parents=True)
+        self.user_json({"projects": {str(self.cwd): {"mcpServers": {"loc": {"command": "SECRETCMD"}}},
+                                     str(self.tmp / "other"): {"mcpServers": {"nope": {}}}}})
+        found = self.by_name(deep)
+        self.assertEqual(found["loc"]["scope"], "local")
+        self.assertNotIn("nope", found)
+
+    def test_project_scope_walks_up_to_the_first_mcp_json(self):
+        deep = self.cwd / "a" / "b"
+        deep.mkdir(parents=True)
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"proj": {"args": ["SECRETARG"]}}})
+        s = self.by_name(deep)["proj"]
+        self.assertEqual((s["scope"], s["tool_prefix"]), ("project", "mcp__proj__"))
+
+    def test_project_walk_stops_at_the_git_toplevel(self):
+        _write(self.tmp / ".mcp.json", {"mcpServers": {"outside": {}}})
+        (self.cwd / ".git").mkdir()
+        (self.cwd / "sub").mkdir()
+        self.assertNotIn("outside", self.by_name(self.cwd / "sub"))
+
+    def test_plugin_scope_from_mcp_json_and_plugin_json(self):
+        one, two = self.tmp / "p1", self.tmp / "p2"
+        _write(one / ".mcp.json", {"mcpServers": {"srv": {"url": "http://SECRETHOST"}}})
+        _write(two / ".mcp.json", {"flat": {"command": "x"}})  # top-level map form
+        _write(two / ".claude-plugin" / "plugin.json", {"mcpServers": {"inline": {"command": "y"}}})
+        _write(self.config / "plugins" / "installed_plugins.json", {"version": 2, "plugins": {
+            "one@market": [{"scope": "user", "installPath": str(one)}],
+            "two@market": [{"scope": "user", "installPath": str(two)}]}})
+        found = self.by_name()
+        self.assertEqual(found["srv"]["scope"], "plugin")
+        self.assertEqual(found["srv"]["tool_prefix"], "mcp__plugin_one_srv__")
+        self.assertEqual(found["flat"]["tool_prefix"], "mcp__plugin_two_flat__")
+        self.assertEqual(found["inline"]["tool_prefix"], "mcp__plugin_two_inline__")
+
+    def test_managed_scope(self):
+        _write(self.managed, {"mcpServers": {"corp": {"url": "http://SECRETHOST"}}})
+        s = self.by_name()["corp"]
+        self.assertEqual((s["scope"], s["tool_prefix"]), ("managed", "mcp__corp__"))
+
+    def test_malformed_files_are_skipped(self):
+        self.user_json("{nope")
+        _write(self.cwd / ".mcp.json", "[1, 2")
+        _write(self.managed, "")
+        _write(self.config / "plugins" / "installed_plugins.json",
+               {"plugins": {"x@m": "bad", "y@m": [None, {"installPath": 3}]}})
+        self.assertEqual(self.find(), [])
+        self.user_json({"mcpServers": ["a"], "projects": {str(self.cwd): "bad"}})
+        self.assertEqual(self.find(), [])
+
+    def test_no_value_from_any_config_reaches_any_check(self):
+        secret = "SECRETVALUE123"
+        self.user_json({"mcpServers": {"my-browseros": {"url": "http://%s/mcp" % secret,
+                                                        "headers": {"A": secret}}}})
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"p": {"command": secret, "args": [secret]}}})
+        _write(self.managed, {"mcpServers": {"m": {"env": {"T": secret}}}})
+        blob = json.dumps(doctor.check_env(dict(os.environ), plugin_root=PLUGIN, cwd=self.cwd))
+        self.assertNotIn(secret, blob)
+        self.assertIn("my-browseros", blob)
+
+
+class BrowserosToolsTest(CompatBase):
+    def test_exact_name_in_user_scope_is_ok(self):
+        self.user_json({"mcpServers": {"browseros-neo": {}}})
+        self.assertTrue(self.checks()["browseros_tools"]["ok"])
+
+    def test_exact_name_in_project_and_managed_scope_is_ok(self):
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"browseros-neo": {}}})
+        self.assertTrue(self.checks()["browseros_tools"]["ok"])
+        (self.cwd / ".mcp.json").unlink()
+        _write(self.managed, {"mcpServers": {"browseros-neo": {}}})
+        self.assertTrue(self.checks()["browseros_tools"]["ok"])
+
+    def test_wrong_name_is_loud(self):
+        self.user_json({"mcpServers": {"browseros": {"url": "http://SECRETHOST"}}})
+        c = self.checks()["browseros_tools"]
+        self.assertFalse(c["ok"])
+        self.assertIn("mcp__browseros-neo__", c["detail"])
+        self.assertIn("browseros", c["detail"])
+        self.assertIn("user", c["detail"])
+        self.assertNotIn("SECRETHOST", c["detail"])
+
+    def test_plugin_provided_server_is_loud(self):
+        plug = self.tmp / "bp"
+        _write(plug / ".mcp.json", {"mcpServers": {"browseros-neo": {}}})
+        _write(self.config / "plugins" / "installed_plugins.json",
+               {"plugins": {"bp@m": [{"installPath": str(plug)}]}})
+        c = self.checks()["browseros_tools"]
+        self.assertFalse(c["ok"])
+        self.assertIn("mcp__browseros-neo__", c["detail"])
+        self.assertIn("mcp__plugin_bp_browseros-neo__", c["detail"])
+
+    def test_no_server_is_none(self):
+        self.assertIsNone(self.checks()["browseros_tools"]["ok"])
+
+    def test_the_browseros_check_accepts_any_scope(self):
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"x-browseros": {}}})
+        self.assertTrue(self.checks()["browseros"]["ok"])
+
+
+class PluginDataTest(CompatBase):
+    def state(self, **kv):
+        _write(self.config / "anthology" / "state.json", kv)
+
+    def test_not_recorded_is_none(self):
+        self.assertIsNone(self.checks()["plugin_data"]["ok"])
+
+    def test_recorded_and_present_is_ok(self):
+        (self.tmp / "d").mkdir()
+        self.state(data_dir=str(self.tmp / "d"))
+        self.assertTrue(self.checks()["plugin_data"]["ok"])
+
+    def test_recorded_but_gone_is_loud(self):
+        self.state(data_dir=str(self.tmp / "gone"))
+        c = self.checks()["plugin_data"]
+        self.assertFalse(c["ok"])
+        self.assertIn("gone", c["detail"])
+
+    def test_a_file_is_not_a_folder(self):
+        _write(self.tmp / "f", "x")
+        self.state(data_dir=str(self.tmp / "f"))
+        self.assertFalse(self.checks()["plugin_data"]["ok"])
+
+    def test_env_wins_over_state(self):
+        (self.tmp / "d").mkdir()
+        self.state(data_dir=str(self.tmp / "gone"))
+        self.assertTrue(self.check("plugin_data", {"CLAUDE_PLUGIN_DATA": str(self.tmp / "d")})["ok"])
+
+
+class PathWrappersTest(CompatBase):
+    def fake_plugin(self):
+        root = self.tmp / "plug"
+        for name in ("anthology-mem", "rtk", "rtk-hook"):
+            _write(root / "bin" / name, "#!/bin/sh\n")
+            os.chmod(root / "bin" / name, 0o755)
+        return root
+
+    def test_all_present_and_executable_outside_claude_code(self):
+        root = self.fake_plugin()
+        self.assertTrue(self.check("path_wrappers", plugin_root=root)["ok"])
+
+    def test_missing_and_non_executable_are_named(self):
+        root = self.fake_plugin()
+        (root / "bin" / "rtk").unlink()
+        os.chmod(root / "bin" / "rtk-hook", 0o644)
+        c = self.check("path_wrappers", plugin_root=root)
+        self.assertFalse(c["ok"])
+        self.assertIn("bin/rtk", c["detail"])
+        self.assertIn("rtk-hook", c["detail"])
+        self.assertNotIn("anthology-mem", c["detail"])
+
+    def test_the_real_plugin_has_its_wrappers(self):
+        self.assertTrue(self.check("path_wrappers")["ok"])
+
+    def test_inside_claude_code_the_bin_must_be_on_path(self):
+        root = self.fake_plugin()
+        bad = self.check("path_wrappers", {"CLAUDECODE": "1"}, plugin_root=root)
+        self.assertFalse(bad["ok"])
+        self.assertIn("bin/ is not on PATH", bad["detail"])
+        which = mock.patch.object(doctor.shutil, "which",
+                                  side_effect=lambda n, path=None: str(root / "bin" / n))
+        which.start()
+        self.addCleanup(which.stop)
+        self.assertTrue(self.check("path_wrappers", {"CLAUDECODE": "1"}, plugin_root=root)["ok"])
+
+    def test_inside_claude_code_another_anthology_mem_on_path_is_not_ours(self):
+        root = self.fake_plugin()
+        other = self.tmp / "other" / "anthology-mem"
+        _write(other, "x")
+        which = mock.patch.object(doctor.shutil, "which", side_effect=lambda n, path=None: str(other))
+        which.start()
+        self.addCleanup(which.stop)
+        self.assertFalse(self.check("path_wrappers", {"CLAUDECODE": "1"}, plugin_root=root)["ok"])
+
+
+class AgentMemoryPathTest(CompatBase):
+    def setUp(self):
+        super().setUp()
+        (self.cwd / ".git").mkdir()
+        self.mem = self.cwd / ".claude" / "agent-memory"
+
+    def test_none_is_none(self):
+        self.assertIsNone(self.checks()["agent_memory_path"]["ok"])
+        self.mem.mkdir(parents=True)
+        self.assertIsNone(self.checks()["agent_memory_path"]["ok"])
+
+    def test_expected_folders_are_ok(self):
+        (self.mem / "anthology-implementer").mkdir(parents=True)
+        self.assertTrue(self.checks()["agent_memory_path"]["ok"])
+
+    def test_bare_agent_name_alone_is_a_soft_warning_not_a_failure(self):
+        (self.mem / "implementer").mkdir(parents=True)
+        c = self.checks()["agent_memory_path"]
+        self.assertIsNone(c["ok"])
+        self.assertIn("agent-memory/implementer/", c["detail"])
+        self.assertIn("no `anthology-implementer/`", c["detail"])
+        self.assertIn("agent of your own", c["detail"])
+
+    def test_a_user_agent_next_to_anthology_folders_is_fine(self):
+        (self.mem / "reviewer").mkdir(parents=True)
+        (self.mem / "anthology-implementer").mkdir()
+        c = self.checks()["agent_memory_path"]
+        self.assertTrue(c["ok"])
+        self.assertNotIn("reviewer", c["detail"])
+
+    def test_colon_and_underscore_forms_alone_are_soft(self):
+        for name in ("anthology:implementer", "anthology_debugger"):
+            (self.mem / name).mkdir(parents=True)
+            self.assertIsNone(self.checks()["agent_memory_path"]["ok"], name)
+            (self.mem / name).rmdir()
+
+    def test_repo_top_survives_an_unreadable_parent(self):
+        with mock.patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
+            self.assertIsNone(doctor.compat.repo_top(self.cwd))
+
+    def test_found_from_a_subfolder_and_unrelated_folders_ignored(self):
+        sub = self.cwd / "pkg" / "x"
+        sub.mkdir(parents=True)
+        (self.mem / "notes").mkdir(parents=True)
+        (self.mem / "anthology-implementer").mkdir()
+        c = {x["name"]: x for x in doctor.check_env(dict(os.environ), cwd=sub)}["agent_memory_path"]
+        self.assertTrue(c["ok"])
+
+
+class SubagentModelTest(CompatBase):
+    def test_unset_is_ok(self):
+        self.assertTrue(self.checks()["subagent_model"]["ok"])
+
+    def test_set_in_process_env(self):
+        c = self.check("subagent_model", {"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"})
+        self.assertFalse(c["ok"])
+        self.assertIn("process environment", c["detail"])
+        self.assertNotIn("SECRETMODEL", c["detail"])
+        self.assertIn("Anthology never changes it", c["detail"])
+        self.assertIn("opus/sonnet/haiku", c["detail"])
+
+    def test_empty_env_value_is_unset(self):
+        self.assertTrue(self.check("subagent_model", {"CLAUDE_CODE_SUBAGENT_MODEL": ""})["ok"])
+
+    def test_set_only_in_user_settings(self):
+        _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"}})
+        c = self.checks()["subagent_model"]
+        self.assertFalse(c["ok"])
+        self.assertIn("settings.json", c["detail"])
+        self.assertNotIn("SECRETMODEL", c["detail"])
+
+    def test_set_in_project_settings_and_local(self):
+        _write(self.cwd / ".claude" / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        self.assertFalse(self.checks()["subagent_model"]["ok"])
+        (self.cwd / ".claude" / "settings.json").unlink()
+        _write(self.cwd / ".claude" / "settings.local.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        c = self.checks()["subagent_model"]
+        self.assertFalse(c["ok"])
+        self.assertIn("settings.local.json", c["detail"])
+
+    def test_unrelated_settings_and_garbage_are_ok(self):
+        _write(self.config / "settings.json", {"env": {"OTHER": "1"}})
+        _write(self.cwd / ".claude" / "settings.json", "{nope")
+        _write(self.cwd / ".claude" / "settings.local.json", {"env": "bad"})
+        self.assertTrue(self.checks()["subagent_model"]["ok"])
+
+    def test_the_owners_settings_are_never_written(self):
+        path = _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        before = path.read_bytes()
+        self.checks()
+        self.assertEqual(path.read_bytes(), before)
 
 
 class CliTest(unittest.TestCase):
@@ -307,7 +665,8 @@ class CliTest(unittest.TestCase):
         out = json.loads(proc.stdout)
         self.assertEqual({c["name"] for c in out["checks"]},
                          {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
-                          "plugin_read_rule"})
+                          "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
+                          "agent_memory_path", "subagent_model"})
         self.assertEqual(len(out["duplicates"]), 4)
 
 

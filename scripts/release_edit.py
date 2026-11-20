@@ -61,14 +61,20 @@ def check_version(current: str, new: str, tag_exists: bool) -> str:
 # ---- dependency ranges (npm semantics) -----------------------------------------------
 
 _RANGE_RE = re.compile(r"^(~|\^|>=)?(.+)$")
-_PARTIAL_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+_PARTIAL_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?$")
 
 
 def range_accepts(rng: object, version: str) -> bool:
-    """Does `rng` accept `version`? Forms: ~X.Y, ~X.Y.Z, ^X.Y.Z, X.Y.Z, >=X.Y.Z.
+    """Does `rng` accept `version`?
+
+    Forms: ~X, ~X.Y, ~X.Y.Z, ^X, ^X.Y, ^X.Y.Z, X.Y.Z, >=X.Y.Z. The partial forms follow npm:
+    ~X = >=X.0.0 <X+1.0.0; ~X.Y = >=X.Y.0 <X.Y+1.0; ^X and ^X.Y = >=X.0.0 / >=X.Y.0 below the
+    next major (the next minor when X is 0; ^0.0 = >=0.0.0 <0.1.0, ^0 = <1.0.0).
 
     Prerelease versions are accepted only by a range whose base names a prerelease of the
-    same X.Y.Z (npm's rule). Anything else raises UnsupportedRange.
+    same X.Y.Z (npm's rule), so a partial range, which names none, rejects them all.
+    Anything else (`*`, `latest`, `1.x`, `>1.2.3`, `>=1.2`, a bare `1.2`, hyphen ranges,
+    build metadata, surrounding whitespace) raises UnsupportedRange.
     """
     if not isinstance(rng, str) or not rng.strip() or rng != rng.strip():
         raise UnsupportedRange(f"can't check range {rng!r}")
@@ -78,8 +84,10 @@ def range_accepts(rng: object, version: str) -> bool:
     if pv is None:
         raise ReleaseError(f"{version!r} is not a valid semver version")
     partial = _PARTIAL_RE.match(rest)
-    if partial and op == "~":
-        base = f"{partial.group(1)}.{partial.group(2)}.0"
+    minor_named = False
+    if partial and op in ("~", "^"):
+        minor_named = partial.group(2) is not None
+        base = f"{partial.group(1)}.{partial.group(2) or 0}.0"
     elif parse_semver(rest) is not None and "+" not in rest:
         base = rest
     else:
@@ -95,9 +103,11 @@ def range_accepts(rng: object, version: str) -> bool:
     if op == ">=":
         return True
     if op == "~":
-        upper = (major, minor + 1, 0)
-    elif major > 0:
+        upper = (major, minor + 1, 0) if (minor_named or partial is None) else (major + 1, 0, 0)
+    elif major > 0 or (partial and not minor_named):
         upper = (major + 1, 0, 0)
+    elif partial:  # ^0.Y
+        upper = (0, minor + 1, 0)
     elif minor > 0:
         upper = (0, minor + 1, 0)
     else:
@@ -130,8 +140,8 @@ def check_dependents(root, plugin: str, version: str) -> List[str]:
                 ok = range_accepts(rng, version)
             except UnsupportedRange:
                 problems.append(f"{rel} depends on {plugin} with range {rng!r}: "
-                                f"can't check range (supported: ~X.Y, ~X.Y.Z, ^X.Y.Z, "
-                                f"X.Y.Z, >=X.Y.Z)")
+                                f"can't check range (supported: ~X, ~X.Y, ~X.Y.Z, ^X, ^X.Y, "
+                                f"^X.Y.Z, X.Y.Z, >=X.Y.Z)")
                 continue
             if not ok:
                 problems.append(f"{rel} depends on {plugin} {rng}, which does not accept "

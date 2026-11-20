@@ -126,7 +126,8 @@ def _settings_plan(root, env):
 
 def _settings_error(exc):
     if isinstance(exc, FileNotFoundError):
-        return "the anthology-guardrails plugin was not found next to anthology; reinstall it"
+        return ("the anthology-guardrails guard (scripts/guard.py) was not found where Claude Code runs it; "
+                "reinstall or repair the anthology-guardrails plugin")
     return str(exc)
 
 
@@ -169,7 +170,8 @@ def preview(plugin_root, cwd=None, env=None):
     personal = _personal_dir(env)
     return {
         "supported": True,
-        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root)},
+        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root,
+                                         cwd=cwd)},
         "duplicates": doctor.find_duplicates(doctor.installed_plugins(env)),
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,

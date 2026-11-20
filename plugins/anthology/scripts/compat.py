@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Cheap compatibility checks shared by `doctor.py` and `session_start.py` (PLAN section 14).
+
+Each helper reads a few small files and never runs a subprocess, so session start can call them.
+Nothing here returns a value from the user's settings or MCP configuration: only names, scopes
+and paths of folders Anthology owns. Python stdlib only (3.9+).
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+WRAPPERS = ("anthology-mem", "rtk", "rtk-hook")
+SUBAGENT_MODEL = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+
+def read_json(path):
+    """The parsed JSON file, or None when it is missing or malformed. Tolerates a BOM."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def config_dir(env):
+    base = env.get("CLAUDE_CONFIG_DIR")
+    if base:
+        return Path(base)
+    return Path(env.get("HOME") or os.path.expanduser("~")) / ".claude"
+
+
+def repo_top(cwd):
+    """The nearest folder at or above `cwd` holding a `.git` (folder or file), or None. No git."""
+    try:
+        here = Path(os.path.realpath(str(cwd)))
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        for folder in (here, *here.parents):
+            if (folder / ".git").exists():
+                return folder
+    except OSError:
+        return None
+    return None
+
+
+def wrapper_problems(plugin_root):
+    """Names of the PATH wrappers (`bin/anthology-mem`, `bin/rtk`, `bin/rtk-hook`) that are missing
+    or not executable under the plugin root."""
+    bad = []
+    for name in WRAPPERS:
+        path = Path(plugin_root) / "bin" / name
+        if not (path.is_file() and os.access(str(path), os.X_OK)):
+            bad.append(name)
+    return bad
+
+
+def agent_memory_problems(cwd):
+    """Folders under `<repo>/.claude/agent-memory/` that are named like a roster agent without the
+    `anthology-` prefix (`implementer`, `anthology:implementer`, `anthology_implementer`): Claude
+    Code may not be mapping `anthology:<agent>` to `anthology-<agent>/`. Roster names are generic,
+    so a user's own agent can own such a folder; `bad` is therefore only filled when no
+    `anthology-<agent>/` folder exists for any roster agent. Returns (bad, good) as name lists;
+    both are empty when there is no such folder or no repo."""
+    import memory_sync
+    top = repo_top(cwd)
+    if top is None:
+        return [], []
+    try:
+        names = sorted(p.name for p in (top / ".claude" / "agent-memory").iterdir() if p.is_dir())
+    except OSError:
+        return [], []
+    bad, good = [], []
+    for name in names:
+        for agent in memory_sync.ROSTER:
+            if name in (agent, "anthology:" + agent, "anthology_" + agent):
+                bad.append(name)
+            elif name == "anthology-" + agent:
+                good.append(name)
+    if good:
+        return [], good
+    return bad, good
+
+
+def agent_memory_hint(name):
+    """The soft warning for a bare roster-name folder (shared by doctor and session start)."""
+    return ("`.claude/agent-memory/%s/` exists but no `anthology-%s/` does: either Claude Code changed "
+            "the agent-memory path or this is an agent of your own named %s; if anthology agents have "
+            "run here, report it" % (name, name, name))
+
+
+def _env_has_model(data):
+    block = data.get("env") if isinstance(data, dict) else None
+    value = block.get(SUBAGENT_MODEL) if isinstance(block, dict) else None
+    return isinstance(value, str) and bool(value.strip())
+
+
+def subagent_model_source(env, cwd):
+    """Where `CLAUDE_CODE_SUBAGENT_MODEL` is set (never its value), or None: "the process
+    environment", "user settings.json", "the project's .claude/settings.json" or
+    ".claude/settings.local.json"."""
+    if str(env.get(SUBAGENT_MODEL) or "").strip():
+        return "the process environment"
+    candidates = [("user settings.json", config_dir(env) / "settings.json")]
+    top = repo_top(cwd) or Path(str(cwd))
+    candidates.append(("the project's .claude/settings.json", top / ".claude" / "settings.json"))
+    candidates.append(("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json"))
+    for label, path in candidates:
+        if _env_has_model(read_json(path)):
+            return label
+    return None

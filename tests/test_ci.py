@@ -92,11 +92,21 @@ class CiJobTests(unittest.TestCase):
         self.assertEqual(gate["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha || github.sha }}")
         self.assertIn('"$BASE" "$HEAD_SHA"', gate["run"])
 
-    def test_plugin_validate_matrix_is_exactly_the_plugins(self):
+    def test_plugin_validate_matrix_is_the_marketplace_and_exactly_the_plugins(self):
         job = self.jobs["plugin-validate"]
-        self.assertEqual(set(job["strategy"]["matrix"]["plugin"]), PLUGINS)
-        self.assertEqual(len(job["strategy"]["matrix"]["plugin"]), len(PLUGINS))
+        want = {"."} | {f"plugins/{p}" for p in PLUGINS}
+        self.assertEqual(set(job["strategy"]["matrix"]["target"]), want)
+        self.assertEqual(len(job["strategy"]["matrix"]["target"]), len(want))
         self.assertIs(job["strategy"]["fail-fast"], False)
+        run = next(s for s in job["steps"] if "plugin validate" in s.get("run", ""))
+        self.assertIn('plugin validate --strict "$TARGET"', run["run"])
+        self.assertEqual(run["env"]["TARGET"], "${{ matrix.target }}")
+
+    def test_marketplace_manifest_has_a_description(self):
+        manifest = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+        self.assertIsInstance(manifest.get("description"), str)
+        self.assertTrue(manifest["description"].strip())
+        self.assertEqual(list(manifest)[:4], ["name", "owner", "description", "plugins"])
 
     def test_gitleaks_job(self):
         self.assertIn("gitleaks", self.jobs)
