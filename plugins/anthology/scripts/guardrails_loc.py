@@ -25,7 +25,10 @@
   sibling folder `<plugin root>/../anthology-guardrails` used (same containment rule).
 - An install of anthology without an applicable guardrails entry is the problem `not_installed`;
   `enabledPlugins["anthology-guardrails@..."] == false` in the user, project or local settings is
-  the problem `disabled`; nothing found at all is `not_found`.
+  the problem `disabled`. So is a settings file that exists but cannot be read (not a regular file,
+  unreadable, or, for the two files in the working folder, over Claude Code's own 2 MiB limit): the
+  cap must never turn "off" into "active". The user's own files are read at any size.
+  Nothing found at all is `not_found`.
 
 Python stdlib only (3.9+).
 """
@@ -38,7 +41,7 @@ import stat
 import sys
 from pathlib import Path
 
-READ_LIMIT = 1 << 20  # no file this module reads is larger; some are repo-controlled (m15)
+REPO_READ_LIMIT = 2 * 1024 * 1024  # Claude Code's own limit for a settings file (m15)
 
 
 def _config_dir(env):
@@ -53,26 +56,38 @@ def _has_guard(path):
     return (Path(path) / "scripts" / "guard.py").is_file()
 
 
-def _read_json(path):
-    """The parsed JSON file, or None when it is missing, not a regular file, over `READ_LIMIT`
-    bytes or malformed. Never blocks on a FIFO or reads a device (a repo can symlink one)."""
+def _load(path, limit=None):
+    """`(data, state)`: state is "ok", "absent" (no such file), "refused" (not a regular file, over
+    `limit` bytes, or unreadable) or "invalid" (not JSON). Never blocks on a FIFO or reads a device
+    (a repo can symlink one). `limit=None` is for files the user owns: any size, regular files only."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    except (OSError, ValueError):
-        return None
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return None, "absent"
+    except OSError:
+        return None, "refused"
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
+            return None, "refused"
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            raw = fh.read(READ_LIMIT + 1)
-        if len(raw) > READ_LIMIT:
-            return None
-        text = raw.decode("utf-8")
-        return json.loads(text[1:] if text.startswith("\ufeff") else text)
-    except (OSError, ValueError, RecursionError):
-        return None
+            raw = fh.read() if limit is None else fh.read(limit + 1)
+        if limit is not None and len(raw) > limit:
+            return None, "refused"
+    except OSError:
+        return None, "refused"
     finally:
         os.close(fd)
+    try:
+        text = raw.decode("utf-8")
+        return json.loads(text[1:] if text.startswith("\ufeff") else text), "ok"
+    except (ValueError, RecursionError):
+        return None, "invalid"
+
+
+def _read_json(path, limit=None):
+    """The parsed JSON file, or None when it is missing, refused (see `_load`) or malformed.
+    Pass `REPO_READ_LIMIT` for a file a cloned repo controls."""
+    return _load(path, limit)[0]
 
 
 def _inside(cwd, project):
@@ -85,10 +100,13 @@ def _inside(cwd, project):
 
 
 def _disabled(env, cwd):
-    files = [_config_dir(env) / "settings.json", Path(cwd) / ".claude" / "settings.json",
-             Path(cwd) / ".claude" / "settings.local.json"]
-    for path in files:
-        data = _read_json(path)
+    files = [(_config_dir(env) / "settings.json", None),
+             (Path(cwd) / ".claude" / "settings.json", REPO_READ_LIMIT),
+             (Path(cwd) / ".claude" / "settings.local.json", REPO_READ_LIMIT)]
+    for path, limit in files:
+        data, state = _load(path, limit)
+        if state == "refused":
+            return True  # fail closed: a settings file we cannot read may be the one that disables it
         enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
         if isinstance(enabled, dict):
             for name, value in enabled.items():
@@ -121,7 +139,7 @@ def _directory_root(config, marketplace, plugin):
         location = item.get("installLocation")
         if not isinstance(location, str) or not location or not os.path.isabs(location):
             return None
-        manifest = _read_json(Path(location) / ".claude-plugin" / "marketplace.json")
+        manifest = _read_json(Path(location) / ".claude-plugin" / "marketplace.json", REPO_READ_LIMIT)
         listed = manifest.get("plugins") if isinstance(manifest, dict) else None
         for spec in listed if isinstance(listed, list) else ():
             if not isinstance(spec, dict) or spec.get("name") != plugin:

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 from _mem import ROOT, SCRIPTS as SCRIPTS_DIR, MemCase, write
 
@@ -340,27 +341,102 @@ class CacheSnapshotGoneTest(LiveRootCase):
         self.assertEqual(self.inspect(), (None, "not_installed"))
 
 
+DISABLE = {"enabledPlugins": {"anthology-guardrails@anthology": False}}
+
+
 class BoundedReadTest(LiveRootCase):
-    """m15 (same class): settings files in the working folder are read only when small and regular."""
+    """m15 (same class): settings files in the working folder are read only when regular and at most
+    Claude Code's own 2 MiB. One that exists but is refused counts as DISABLED (fail closed): the
+    cap must never turn "the guardrails are off" into "active"."""
 
-    def test_oversized_project_settings_are_not_read(self):
-        self.diverging()
-        pad = "A" * (guardrails_loc.READ_LIMIT + 10)
-        write(self.tmp / ".claude" / "settings.json", json.dumps({
-            "enabledPlugins": {"anthology-guardrails@anthology": False}, "pad": pad}))
-        self.assertEqual(self.inspect(), (self.live, None))
+    def project_settings(self, name="settings.json"):
+        return self.tmp / ".claude" / name
 
-    def test_small_project_settings_still_disable(self):
+    def test_limit_is_claude_codes_own(self):
+        self.assertEqual(guardrails_loc.REPO_READ_LIMIT, 2 * 1024 * 1024)
+
+    def test_oversized_project_settings_count_as_disabled(self):
         self.diverging()
-        write(self.tmp / ".claude" / "settings.json", json.dumps({
-            "enabledPlugins": {"anthology-guardrails@anthology": False}}))
+        pad = "A" * (guardrails_loc.REPO_READ_LIMIT + 10)
+        write(self.project_settings(), json.dumps(dict(DISABLE, pad=pad)))
         self.assertEqual(self.inspect(), (self.live, "disabled"))
 
-    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
-    def test_device_symlink_is_not_read(self):
+    def test_oversized_project_settings_without_the_flag_also_count_as_disabled(self):
+        self.diverging()
+        write(self.project_settings("settings.local.json"), json.dumps({"pad": "A" * (3 << 20)}))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_one_and_a_half_mib_that_disables_the_guard_is_honoured(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps(dict(DISABLE, pad="A" * (3 << 19))))
+        size = os.path.getsize(str(self.project_settings()))
+        self.assertTrue(1 << 20 < size < guardrails_loc.REPO_READ_LIMIT, size)
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_one_and_a_half_mib_without_the_flag_is_read_and_active(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps({"pad": "A" * (3 << 19)}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_file_exactly_at_the_limit_is_read_one_byte_over_is_refused(self):
+        self.diverging()
+        base = json.dumps({"pad": ""})
+        at_limit = json.dumps({"pad": "A" * (guardrails_loc.REPO_READ_LIMIT - len(base))})
+        self.assertEqual(len(at_limit.encode("utf-8")), guardrails_loc.REPO_READ_LIMIT)
+        write(self.project_settings(), at_limit)
+        self.assertEqual(self.inspect(), (self.live, None))  # read, and it does not disable
+        write(self.project_settings(), at_limit.replace('"pad": "', '"pad": "A'))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))  # refused: fail closed
+
+    def test_small_project_settings_still_disable_and_plain_ones_do_not(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps(DISABLE))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+        write(self.project_settings(), json.dumps({"enabledPlugins": {"other@x": False}}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_malformed_and_absent_repo_settings_are_not_refusals(self):
+        self.diverging()
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.project_settings(), "{not json")
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_non_regular_file_counts_as_disabled_even_when_it_reads_as_nothing(self):
+        # /dev/null reads as empty, so only the regular-file check can refuse it
         self.diverging()
         (self.tmp / ".claude").mkdir()
-        os.symlink("/dev/zero", str(self.tmp / ".claude" / "settings.json"))
+        os.symlink(os.devnull, str(self.project_settings()))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_a_fifo_with_data_counts_as_disabled_without_blocking(self):
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        fifo = str(self.project_settings())
+        os.mkfifo(fifo)
+        fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        os.write(fd, b"{}")
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_an_unreadable_repo_settings_file_counts_as_disabled(self):
+        self.diverging()
+        write(self.project_settings(), "{}")
+        real_open = os.open
+
+        def deny(path, *args, **kw):
+            if str(path) == str(self.project_settings()):
+                raise PermissionError(13, "denied")
+            return real_open(path, *args, **kw)
+
+        with mock.patch.object(guardrails_loc.os, "open", side_effect=deny):
+            self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_device_symlink_is_not_read_and_counts_as_disabled(self):
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        os.symlink("/dev/zero", str(self.project_settings()))
         probe = ("import resource, sys\n"
                  "try:\n    resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))\n"
                  "except (ValueError, OSError):\n    sys.exit(77)\n"
@@ -371,7 +447,51 @@ class BoundedReadTest(LiveRootCase):
         if proc.returncode == 77:
             self.skipTest("cannot limit memory here")
         self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
-        self.assertEqual(proc.stdout.strip(), "None")
+        self.assertEqual(proc.stdout.strip(), "disabled")
+
+
+class UsersOwnFilesAreUncappedTest(LiveRootCase):
+    """The user's own settings.json, installed_plugins.json and known_marketplaces.json are not
+    repo-controlled: any size is read (they still must be regular files)."""
+
+    BIG = 3 << 20
+
+    def test_a_huge_user_settings_file_that_disables_the_guard_is_honoured(self):
+        self.diverging()
+        write(self.config / "settings.json", json.dumps(dict(DISABLE, pad="A" * self.BIG)))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_a_huge_user_settings_file_without_the_flag_does_not_disable(self):
+        self.diverging()
+        write(self.config / "settings.json", json.dumps({"pad": "A" * self.BIG}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_huge_installed_plugins_file_is_read(self):
+        self.diverging()
+        data = json.loads((self.config / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        data["pad"] = "A" * self.BIG
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps(data))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_huge_known_marketplaces_file_is_read(self):
+        self.diverging()
+        path = self.config / "plugins" / "known_marketplaces.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["pad"] = "A" * self.BIG
+        write(path, json.dumps(data))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_non_regular_user_settings_file_fails_closed(self):
+        self.diverging()
+        os.symlink(os.devnull, str(self.config / "settings.json"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_the_live_marketplace_json_is_repo_controlled_and_capped(self):
+        self.diverging()
+        write(self.market / ".claude-plugin" / "marketplace.json", json.dumps({
+            "name": "anthology", "pad": "A" * (guardrails_loc.REPO_READ_LIMIT + 10),
+            "plugins": [{"name": "anthology-guardrails", "source": "./plugins/anthology-guardrails"}]}))
+        self.assertEqual(self.inspect(), (None, "live_missing"))
 
 
 class LoadRulesFollowTest(LiveRootCase):

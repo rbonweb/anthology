@@ -115,9 +115,9 @@ def find_mcp_servers(env, cwd):
     after the user approves them (see `_project_approval`); the other scopes always load."""
     found = []
 
-    def add(names, scope, prefix="mcp__%s__"):
+    def add(names, scope, head="mcp__"):
         for name in names:
-            found.append({"name": name, "scope": scope, "tool_prefix": prefix % name})
+            found.append({"name": name, "scope": scope, "tool_prefix": head + name + "__"})
 
     base = Path(env["CLAUDE_CONFIG_DIR"]) if env.get("CLAUDE_CONFIG_DIR") else _home(env)
     data = compat.read_json(base / ".claude.json")
@@ -161,7 +161,7 @@ def find_mcp_servers(env, cwd):
                 meta = compat.read_json(manifest, compat.REPO_READ_LIMIT)
                 if isinstance(meta, dict):
                     names += _servers_in(meta.get("mcpServers"))
-            add(sorted(set(names)), "plugin", "mcp__plugin_%s_%%s__" % plugin)
+            add(sorted(set(names)), "plugin", "mcp__plugin_" + plugin + "_")
 
     for path in MANAGED_MCP_PATHS:
         managed = compat.read_json(path)
@@ -175,25 +175,34 @@ def _names(value):
 
 
 def _project_approval(env, claude_json, here, project_root):
-    """`approved(name)` for servers in `<project_root>/.mcp.json`: Claude Code loads them only
-    after the user approves them (Ruling: m14).
+    """`approved(name)` for servers in `<project_root>/.mcp.json`: Claude Code loads one only when
+    it is approved and not disabled (Ruling: m14, from Claude Code 2.1.329).
 
-    Approval is read from places the user owns or Claude Code writes: user `settings.json`, the
-    `.claude.json` entry of the project (or an ancestor) and the project's `.claude/settings.local.json`
-    (git-ignored by Anthology). The project's shared `.claude/settings.json` is never consulted: a
-    clone must not approve its own servers. Each source may hold `enableAllProjectMcpServers: true`
-    or an `enabledMcpjsonServers` list; `disabledMcpjsonServers` wins. Anything unreadable or
-    oddly shaped means "not approved"."""
-    sources = [_read_json(compat.config_dir(env) / "settings.json")]
+    - `disabledMcpjsonServers` from ANY source (user settings.json, `.claude.json`, the project's
+      shared settings.json and settings.local.json) rejects the server.
+    - `enableAllProjectMcpServers: true` or the name in `enabledMcpjsonServers` approves it when it
+      comes from the user's own settings.json or the project's entry in `.claude.json`.
+    - The same keys in the project's own settings.json and settings.local.json approve it only when
+      the workspace is trusted (`.claude.json` `projects[<folder>].hasTrustDialogAccepted` is `true`
+      for the working folder or the project folder). Before trust a clone could approve its own
+      servers, and a committed settings.local.json is ignored by Claude Code. When trust cannot be
+      read, the workspace is untrusted.
+    - Repo files are read only up to `REPO_READ_LIMIT`; anything unreadable or oddly shaped approves
+      nothing and disables nothing."""
     projects = claude_json.get("projects") if isinstance(claude_json, dict) else None
-    if isinstance(projects, dict):
-        sources += [projects.get(str(folder)) for folder in (here, *here.parents)]
-    sources.append(compat.read_json(Path(project_root) / ".claude" / "settings.local.json",
-                                    compat.REPO_READ_LIMIT))
-    sources = [d for d in sources if isinstance(d, dict)]
-    everything = any(d.get("enableAllProjectMcpServers") is True for d in sources)
-    enabled = set().union(*[_names(d.get("enabledMcpjsonServers")) for d in sources])
-    disabled = set().union(*[_names(d.get("disabledMcpjsonServers")) for d in sources])
+    projects = projects if isinstance(projects, dict) else {}
+    trusted = any(isinstance(projects.get(str(f)), dict) and projects[str(f)].get("hasTrustDialogAccepted") is True
+                  for f in (here, Path(project_root)))
+    own = [_read_json(compat.config_dir(env) / "settings.json")]
+    own += [projects.get(str(folder)) for folder in (here, *here.parents)]
+    repo = [compat.read_json(Path(project_root) / ".claude" / name, compat.REPO_READ_LIMIT)
+            for name in ("settings.json", "settings.local.json")]
+    own = [d for d in own if isinstance(d, dict)]
+    repo = [d for d in repo if isinstance(d, dict)]
+    approving = own + (repo if trusted else [])
+    everything = any(d.get("enableAllProjectMcpServers") is True for d in approving)
+    enabled = set().union(*[_names(d.get("enabledMcpjsonServers")) for d in approving])
+    disabled = set().union(*[_names(d.get("disabledMcpjsonServers")) for d in own + repo])
     return lambda name: name not in disabled and (everything or name in enabled)
 
 

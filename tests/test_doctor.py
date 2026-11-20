@@ -546,20 +546,82 @@ class ProjectApprovalTest(CompatBase):
         _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
         self.assertEqual(self.loaded(), {"browseros": True})
 
-    def test_approval_in_local_settings_and_the_users_claude_json(self):
+    def trust(self, folder=None, value=True):
+        """Record the trust dialog the way Claude Code does: .claude.json projects[<folder>]."""
+        path = self.config / ".claude.json"
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data.setdefault("projects", {}).setdefault(str(folder or self.cwd), {})["hasTrustDialogAccepted"] = value
+        self.user_json(data)
+
+    def test_approval_in_the_users_claude_json_needs_no_trust(self):
         self.project()
-        _write(self.cwd / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["browseros"]})
-        self.assertEqual(self.loaded(), {"browseros": True})
-        (self.cwd / ".claude" / "settings.local.json").unlink()
         self.user_json({"projects": {str(self.cwd): {"enabledMcpjsonServers": ["browseros"]}}})
         self.assertEqual(self.loaded(), {"browseros": True})
         self.user_json({"projects": {str(self.cwd): {"enableAllProjectMcpServers": True}}})
         self.assertEqual(self.loaded(), {"browseros": True})
 
-    def test_a_repo_cannot_approve_itself_through_shared_settings(self):
+    def test_local_settings_approve_only_in_a_trusted_workspace(self):
+        self.project()
+        _write(self.cwd / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": False})  # a clone may commit this file
+        self.trust()
+        self.assertEqual(self.loaded(), {"browseros": True})
+
+    def test_shared_settings_approve_only_in_a_trusted_workspace(self):
+        # Claude Code honours the shared .claude/settings.json once the folder is trusted, not before
         self.project()
         _write(self.cwd / ".claude" / "settings.json",
                {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+        self.trust()
+        self.assertEqual(self.loaded(), {"browseros": True})
+        _write(self.cwd / ".claude" / "settings.json", {"enabledMcpjsonServers": ["other"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+        _write(self.cwd / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+        self.assertEqual(self.loaded(), {"browseros": True})
+
+    def test_trust_must_be_recorded_for_this_project_and_be_true(self):
+        self.project()
+        _write(self.cwd / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+        self.trust(self.tmp / "elsewhere")
+        self.assertEqual(self.loaded(), {"browseros": False})
+        self.trust(self.tmp)  # an ancestor's trust is not enough: undeterminable means untrusted
+        self.assertEqual(self.loaded(), {"browseros": False})
+        for odd in ("true", 1, "yes", None, [True]):
+            self.trust(self.cwd, odd)
+            self.assertEqual(self.loaded(), {"browseros": False}, odd)
+        self.user_json("[]")
+        self.assertEqual(self.loaded(), {"browseros": False})
+
+    def test_user_settings_approve_without_trust(self):
+        self.project()
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
+        self.assertEqual(self.loaded(), {"browseros": True})
+
+    def test_a_server_disabled_in_any_source_is_never_approved(self):
+        self.project()
+        self.trust()
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
+        for where in (self.cwd / ".claude" / "settings.json", self.cwd / ".claude" / "settings.local.json"):
+            self.assertEqual(self.loaded(), {"browseros": True})
+            _write(where, {"disabledMcpjsonServers": ["browseros"]})
+            self.assertEqual(self.loaded(), {"browseros": False}, where.name)
+            where.unlink()
+        self.user_json({"projects": {str(self.cwd): {"hasTrustDialogAccepted": True,
+                                                     "disabledMcpjsonServers": ["browseros"]}}})
+        self.assertEqual(self.loaded(), {"browseros": False})
+
+    def test_disabled_in_shared_settings_wins_even_without_trust(self):
+        self.project()
+        _write(self.config / "settings.json", {"enabledMcpjsonServers": ["browseros"]})
+        _write(self.cwd / ".claude" / "settings.json", {"disabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+
+    def test_oversized_repo_settings_approve_and_disable_nothing(self):
+        self.project()
+        self.trust()
+        pad = "A" * (doctor.compat.REPO_READ_LIMIT + 10)
+        _write(self.cwd / ".claude" / "settings.json", {"enableAllProjectMcpServers": True, "pad": pad})
         self.assertEqual(self.loaded(), {"browseros": False})
 
     def test_disabled_wins_over_enabled(self):
@@ -600,6 +662,18 @@ class HostileNamesTest(CompatBase):
         for name in ("browseros", "browseros_tools"):
             self.assertTrue(self.checks()[name]["detail"].isprintable(), name)
 
+    def test_only_the_first_few_servers_are_listed(self):
+        self.user_json({"mcpServers": {"browseros-%d" % i: {} for i in range(9)}})
+        c = self.checks()["browseros_tools"]
+        self.assertIn("and 4 more", c["detail"])
+        self.assertEqual(c["detail"].count("scope, tools"), doctor.SHOWN_SERVERS)
+
+    def test_only_the_first_few_unapproved_servers_are_listed(self):
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"browseros-%d" % i: {} for i in range(9)}})
+        c = self.checks()["browseros_tools"]
+        self.assertIn("and 4 more", c["detail"])
+        self.assertNotIn("browseros-8", c["detail"])
+
     def test_a_very_long_name_is_cut(self):
         self.user_json({"mcpServers": {"browseros" + "x" * 5000: {}}})
         self.assertLess(len(self.checks()["browseros_tools"]["detail"]), 600)
@@ -618,6 +692,27 @@ class HostileNamesTest(CompatBase):
         self.assertNotIn("\u202e", buf.getvalue())
         names = [l.split()[0] for l in lines if not l.startswith("duplicate:")]
         self.assertEqual(names, list(doctor.CHECKS))
+
+
+class PercentInNamesTest(CompatBase):
+    """Pre-existing: a `%` in a plugin key or server name must not break the tool-prefix format."""
+
+    def test_plugin_key_with_a_percent_sign(self):
+        plug = self.tmp / "bp"
+        _write(plug / ".mcp.json", {"mcpServers": {"browseros-neo": {}}})
+        _write(self.config / "plugins" / "installed_plugins.json",
+               {"plugins": {"b%s%d@m": [{"installPath": str(plug)}]}})
+        found = [s for s in doctor.find_mcp_servers(dict(os.environ), self.cwd) if s["scope"] == "plugin"]
+        self.assertEqual([s["tool_prefix"] for s in found], ["mcp__plugin_b%s%d_browseros-neo__"])
+        c = self.checks()
+        self.assertFalse(c["browseros_tools"]["detail"].startswith("check failed"), c["browseros_tools"])
+        self.assertFalse(c["browseros"]["detail"].startswith("check failed"), c["browseros"])
+
+    def test_server_name_with_a_percent_sign(self):
+        self.user_json({"mcpServers": {"browseros%s%": {}}})
+        found = doctor.find_mcp_servers(dict(os.environ), self.cwd)
+        self.assertEqual(found[0]["tool_prefix"], "mcp__browseros%s%__")
+        self.assertFalse(self.checks()["browseros_tools"]["detail"].startswith("check failed"))
 
 
 class NestedInstalledPluginsTest(CompatBase):
@@ -660,6 +755,15 @@ class NestedInstalledPluginsTest(CompatBase):
         _write(self.config / "plugins" / "installed_plugins.json", INSTALLED)
         data = json.loads(self.run_main("--json")[1])
         self.assertEqual((data["installed_plugins"], len(data["duplicates"])), ("ok", 4))
+
+    def test_a_nested_user_settings_file_does_not_crash_the_approval_check(self):
+        # a valid project .mcp.json makes doctor read the (nested) user settings.json for approvals
+        _write(self.cwd / ".mcp.json", {"mcpServers": {"browseros": {}}})
+        _write(self.config / "settings.json", "[" * 200000 + "]" * 200000)
+        c = self.checks()
+        self.assertFalse(c["browseros"]["detail"].startswith("check failed"), c["browseros"])
+        self.assertFalse(c["browseros_tools"]["detail"].startswith("check failed"))
+        self.assertIn("unapproved", c["browseros"]["detail"])
 
     def test_nested_mcp_and_settings_files_do_not_crash_the_checks(self):
         self.nest()
@@ -896,6 +1000,19 @@ class SubagentModelTest(CompatBase):
         pad = "A" * (doctor.compat.REPO_READ_LIMIT + 10)
         _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}, "pad": pad})
         self.assertFalse(self.checks()["subagent_model"]["ok"])
+
+    def test_the_repo_limit_is_claude_codes_own_two_mib(self):
+        self.assertEqual(doctor.compat.REPO_READ_LIMIT, 2 * 1024 * 1024)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_a_fifo_with_valid_json_is_refused_though_it_reads_fine(self):
+        # only the regular-file check can refuse this: the data is small and valid
+        fifo = str(self.tmp / "settings.json")
+        os.mkfifo(fifo)
+        fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        os.write(fd, b'{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}')
+        self.assertIsNone(doctor.compat.read_json(fifo, doctor.compat.REPO_READ_LIMIT))
 
     def test_a_symlink_to_a_regular_file_is_still_read(self):
         real = _write(self.tmp / "real.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})

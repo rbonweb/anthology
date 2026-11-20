@@ -14,7 +14,7 @@ from pathlib import Path
 
 WRAPPERS = ("anthology-mem", "rtk", "rtk-hook")
 SUBAGENT_MODEL = "CLAUDE_CODE_SUBAGENT_MODEL"
-REPO_READ_LIMIT = 1 << 20  # files a cloned repo controls are read only up to 1 MiB
+REPO_READ_LIMIT = 2 * 1024 * 1024  # files a cloned repo controls: Claude Code's own settings limit
 
 
 def read_json(path, limit=None):
