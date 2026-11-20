@@ -1,0 +1,35 @@
+# Changelog
+
+All notable changes are recorded here, per plugin. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and each plugin uses
+[Semantic Versioning](https://semver.org/) on its own: a release is tagged
+`<plugin>--v<version>`, and `scripts/release.sh` moves a plugin's Unreleased entries into
+a new version section.
+
+## anthology
+
+### [Unreleased]
+
+#### Added
+
+- Plugin manifest with version-range dependencies on `anthology-guardrails` and
+  `anthology-superpowers`, so installing `anthology` brings in both.
+- Knowledge library: 25 skill folders (design, engineering, product and marketing),
+  generated from pinned upstream sources by `scripts/vendor.py`.
+
+## anthology-guardrails
+
+### [Unreleased]
+
+#### Added
+
+- Plugin manifest and marketplace entry; the hooks and rules arrive in later releases.
+
+## anthology-superpowers
+
+### [Unreleased]
+
+#### Added
+
+- The upstream superpowers 7.0.2 skills library, renamed to `anthology-superpowers`, kept
+  reproducible by `scripts/vendor.py` and versioned independently of upstream.

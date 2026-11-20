@@ -63,3 +63,65 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_memory_*.py' -v
+
+  version-bump:
+    # A plugin whose files changed must carry a higher plugin.json version than at the
+    # merge base, once it has been released (a `<plugin>--v*` tag exists). Needs git history
+    # and tags (fetch-depth: 0 fetches both), which the Docker test image does not have.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Gate tests that need git (skipped in the Docker image)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_version_bump.py' -v
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_release.py' -v
+      - name: Check plugin version bumps
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/check_version_bump.py "$BASE" "$HEAD_SHA"
+
+  plugin-validate:
+    # Validate each plugin with the Claude Code version pinned in ci/claude-code.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISABLE_AUTOUPDATER: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [anthology, anthology-guardrails, anthology-superpowers]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Claude Code (postinstall links the native binary)
+        run: npm ci --prefix ci/claude-code
+      - name: Claude Code version
+        run: ci/claude-code/node_modules/.bin/claude --version
+      - name: claude plugin validate --strict
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: ci/claude-code/node_modules/.bin/claude plugin validate --strict "plugins/$PLUGIN"
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the full history for secrets
+        run: |
+          GITLEAKS_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/gitleaks.Dockerfile)
+          docker run --rm -v "$PWD":/repo:ro \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml /repo
