@@ -81,7 +81,7 @@ Setup adds a blanket `Bash(rtk *)` allow to `~/.claude/settings.json` so that co
 - It is an accepted risk, chosen for a prompt-free workflow, not an oversight.
 - `/anthology:setup remove` takes the allow out again. You can also delete the entry from `~/.claude/settings.json` yourself.
 
-The binary behind it is verified before use. The pinned sha256 values are in `plugins/anthology/rtk.lock`, and the binary is installed only when its hash matches. Release assets carry build-provenance attestations. To check one, download it and run `gh attestation verify <file> --repo rbonweb/anthology`. rtk is built for Claude Code only and has no telemetry; a test runs it with the network disabled.
+The binary behind it is verified before use. The pinned sha256 values, one per target, are in `plugins/anthology/rtk.lock`. They are the hashes of the release archives (`rtk-<target>.tar.gz`), and an archive is checked before anything in it is unpacked or installed. The archives are built by the `rtk-release.yml` workflow and carry build-provenance attestations. To check one, download it and run `gh attestation verify <file> --repo rbonweb/anthology`. rtk is built for Claude Code only and has no telemetry; CI runs the built binary with the network disabled (`scripts/rtk-net-test.sh`). The shipped source is the Apache-2.0 edition: upstream's BUSL-1.1 engine is removed, and so is the output compression that depended on it.
 
 ## The memory trust model
 
