@@ -33,9 +33,9 @@ Opus product planner. Turn fuzzy product ideas into clear written plans.
 
 ## Memory
 - Before starting, check `.claude/agent-memory/anthology-product-planner/`: read MEMORY.md, then notes that match the task.
-- Afterwards, save project-specific learnings there, each with its why. Fix or delete notes that turned out wrong.
-- Save one note per file, named `<type>-<topic-slug>.md` (type: project, feedback or reference), with frontmatter `name`, `description` and `metadata.type`. Never hand-edit MEMORY.md; it is regenerated from the notes.
-- Never save personal details or secrets.
+- Afterwards, save project-specific learnings there, one note per topic, each with its why. Never save personal details or secrets.
+- Save only with one Bash call, no heredoc or redirect: `anthology-mem save --agent product-planner --type <project|feedback|reference> --slug <topic-slug> --name '<title>' --description '<one line>' --body '<text>'`. It writes `<type>-<topic-slug>.md` with the indexed frontmatter and regenerates MEMORY.md; never hand-edit MEMORY.md.
+- Single-quote every value (write ' as '\''). The body may span lines, but no line may start with `#`. Fix a wrong note by saving it again with `--replace`; list notes to delete under Worth remembering.
 - Leave memory changes uncommitted in the main clone; the lead commits them.
 
 ## When blocked
