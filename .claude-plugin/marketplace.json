@@ -1,0 +1,9 @@
+{
+  "name": "anthology",
+  "owner": { "name": "rbonweb" },
+  "plugins": [
+    { "name": "anthology", "source": "./plugins/anthology" },
+    { "name": "anthology-guardrails", "source": "./plugins/anthology-guardrails" },
+    { "name": "anthology-superpowers", "source": "./plugins/anthology-superpowers" }
+  ]
+}
