@@ -1228,6 +1228,57 @@ class RuleTableTest(unittest.TestCase):
                 guard_rules.check("Bash", {"command": "cd ~ && ls .config"}, home)
                 guard_rules.check("Read", {"file_path": "~/.config/chromium"}, home)
 
+    def test_array_comments_do_not_hide_later_commands(self):
+        """A quote or `(` inside an array comment does not swallow the lines after `)` (round 4)."""
+        self.assert_table("G1", [
+            bash("deps=(\n  playwright  # it's the e2e runner\n)\nnpx playwright install"),
+            bash("arr=( # it's\n  a\n)\nnpx playwright install"),
+            bash("arr=( # \"\n  a\n)\nnpx playwright install"),
+            bash("arr=( # (\n  a\n)\nnpx playwright install"),
+            bash("deps=(\n x # it's\n)\nsudo npx playwright install && echo ok"),
+            bash("deps=(\n x # it's\n)\n\nnpx playwright install"),
+            bash("f() {\n local a=( # it's\n x\n )\n npx playwright install\n}\nf"),
+            bash("arr=( # it's\n  $(echo hi # it's (\n  )\n)\nnpx playwright install"),
+            bash("arr=(\n  x # c \\\n  $(npx playwright install)\n)"),
+            bash("arr=(\n  x # it's \\\n)\nnpx playwright install"),
+            bash("arr=(\"a\\\"b # it's\")\nnpx playwright install"),
+            bash("arr=(\"${x#\\\"}\")\nnpx playwright install"),
+            # `#` inside quotes, in `${x#y}` / `${x##*/}` / `${#a[@]}` or mid-word is not a comment
+            bash("arr=(${x#y} $(npx playwright install))"),
+            bash("arr=(${x##*/} $(npx playwright install))"),
+            bash("arr=(${#arr[@]} $(npx playwright install))"),
+            bash("arr=(a#b $(npx playwright install))"),
+            bash("arr=(\"a # it's\" $(npx playwright install))"),
+            bash("arr=('a # (' $(npx playwright install))"),
+            bash("arr=(a#b)\nnpx playwright install"),
+            bash("arr=(${x#y})\nnpx playwright install"),
+            bash("arr=(\"a # it's\")\nnpx playwright install"),
+        ])
+        self.assert_table("G4", [
+            bash("deps=(\n x # it's\n)\nagent-browser open https://x"),
+        ])
+        self.assert_table("G2", [
+            bash("deps=(\n x # it's\n)\nopen -a \"Google Chrome\""),
+        ])
+        self.assert_table("G3", [
+            bash("files=( # it's\n  a\n); cat ~/.config/chromium/Default/Cookies"),
+        ])
+        self.assert_table(None, [
+            bash("arr=( # see (docs) and it's ok\n  a\n  b # (x\n)"),
+            bash("arr=(\"a)b\" 'c)d')"),
+            bash("arr=( # it's\n  a\n)\nfor x in \"${arr[@]}\"; do echo \"$x\"; done"),
+            bash("arr=(\"a # it's\" b#c 'd # (')\necho \"${arr[@]}\""),
+            bash("arr=(${x#y} ${x##*/} a#b)\necho ok"),
+            bash("arr=( ${#arr[@]} $# )\necho ok"),
+        ])
+
+    def test_commented_array_stays_cheap(self):
+        import time
+        command = "arr=(\n" + "  x # it's (\n" * 10000 + ")\nnpx playwright install"
+        start = time.perf_counter()
+        self.assertEqual(rule_of(bash(command)), "G1")
+        self.assertLess(time.perf_counter() - start, 0.5)
+
     def test_unterminated_heredocs_stay_cheap(self):
         """Delimiters whose terminator never appears are searched for once, not per line (N3)."""
         import time

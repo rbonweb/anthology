@@ -97,9 +97,20 @@ def _find_heredoc_end(text, i, delimiter):
     return -1, -1
 
 
-def _scan_paren(text, i):
+_WORD_BREAK = " \t\n;&|()<>"   # a `#` right after one of these (or at the start) opens a comment
+
+
+def _comment_at(text, j, start):
+    """True when the `#` at text[j] starts a comment: it begins a word (outside quotes, which the
+    callers have already skipped). `${x#y}`, `$#` and `a#b` are not comments."""
+    return text[j] == "#" and (j == start or text[j - 1] in _WORD_BREAK)
+
+
+def _scan_paren(text, i, comments=False):
     """Return (inner, index after `)`) for the parenthesis opened just before text[i].
-    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over."""
+    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over. With
+    `comments`, a `# comment` is skipped to the end of its line too (array bodies, where a quote
+    or `(` in a comment must not hide the real `)`)."""
     depth, j, n = 1, i, len(text)
     delimiters = []
     unterminated = set()                                  # delimiters already searched in vain
@@ -107,6 +118,10 @@ def _scan_paren(text, i):
         c = text[j]
         if c == "\\":
             j += 2
+            continue
+        if comments and _comment_at(text, j, i):
+            k = text.find("\n", j)                        # a backslash in a comment is literal
+            j = n if k < 0 else k
             continue
         if c == "<":
             match = _HEREDOC_START.match(text, j)
@@ -125,9 +140,18 @@ def _scan_paren(text, i):
                     unterminated.add(delimiter)
             j = pos - 1                                   # the loop's `j += 1` lands on `pos`
             delimiters = []
-        if c in "'\"":
+        if c == "'":
             k = text.find(c, j + 1)
             j = n if k < 0 else k + 1
+            continue
+        if c == '"':
+            if comments:                                  # `"$(...)"` holds comments of its own
+                j = _skip_double_quoted(text, j + 1, comments=True)
+                continue
+            j += 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1          # `\"` does not close the quote
+            j += 1
             continue
         if c == "(":
             depth += 1
@@ -188,13 +212,13 @@ def _array_lines(inner):
             k = inner.find("'", j + 1)
             j = n if k < 0 else k + 1
         elif c == '"':
-            j = _skip_double_quoted(inner, j + 1)
+            j = _skip_double_quoted(inner, j + 1, comments=True)
         elif c == "`":
             k = inner.find("`", j + 1)
             j = n if k < 0 else k + 1
         elif c == "$" and inner[j + 1:j + 2] == "(":
-            j = _scan_paren(inner, j + 2)[1]
-        elif c == "#" and (j == 0 or inner[j - 1] in " \t\n"):
+            j = _scan_paren(inner, j + 2, comments=True)[1]
+        elif _comment_at(inner, j, 0):
             k = inner.find("\n", j)
             j = n if k < 0 else k
         elif c == "\n":
@@ -206,7 +230,7 @@ def _array_lines(inner):
     return [line for line in lines if line.strip()]
 
 
-def _skip_double_quoted(text, j):
+def _skip_double_quoted(text, j, comments=False):
     """Index just past the double quote that closes the one opened before text[j]."""
     n = len(text)
     while j < n:
@@ -216,7 +240,7 @@ def _skip_double_quoted(text, j):
         if c == "\\":
             j += 2
         elif c == "$" and text[j + 1:j + 2] == "(":
-            j = _scan_paren(text, j + 2)[1]
+            j = _scan_paren(text, j + 2, comments)[1]
         elif c == "`":
             k = text.find("`", j + 1)
             j = n if k < 0 else k + 1
@@ -314,7 +338,7 @@ class _Lexer:
                 j = text.find("\n", i)
                 i = n if j < 0 else j
             elif c == "(" and self.has_word and _ARRAY_ASSIGNMENT.match("".join(self.cur)):
-                inner, i = _scan_paren(text, i + 1)       # `names=(a b)` is an array, not a subshell
+                inner, i = _scan_paren(text, i + 1, comments=True)  # `names=(a b)` is an array
                 self.add("(" + inner + ")")
                 # The elements are analyzed as the arguments of an `echo` (so their substitutions
                 # run and their paths are checked), without reading element 0 as a program.
