@@ -18,6 +18,8 @@ UPSTREAM_TAG = "v1.2.1"
 UPSTREAM_COMMIT = "d0f0399a5ff8cd1d81325a033f0b2d8864d665f6"
 RELEASE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# Fork change 8 (custom `[upstream.*]` headers) lived only in the BUSL engine and was
+# dropped with it by Task 9's trim (stream ruling); the other 8 keep their named tests.
 FORK_TESTS = [
     "fork_1_auto_allow_hook.rs",
     "fork_2_read_minimal_default.rs",
@@ -26,7 +28,6 @@ FORK_TESTS = [
     "fork_5_cd_chain_rewrite.rs",
     "fork_6_biome_lint.rs",
     "fork_7_opencode_run.rs",
-    "fork_8_upstream_headers.rs",
     "fork_9_awareness_exact.rs",
 ]
 SYNC = ROOT / "scripts" / "sync-rtk.sh"
