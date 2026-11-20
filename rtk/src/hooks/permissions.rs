@@ -161,6 +161,8 @@ impl DenyRules {
 pub(crate) struct ClaudeHookPermissions {
     pub(crate) verdict: PermissionVerdict,
     scan: SettingsScan,
+    // anthology fork: what `anthology_gate` enforces past rtk prefixes.
+    pub(crate) gate: super::anthology_gate::GateRules,
 }
 
 impl ClaudeHookPermissions {
@@ -178,8 +180,10 @@ impl ClaudeHookPermissions {
 /// status needed if the decision later considers a fish wrap.
 pub(crate) fn check_claude_hook_command(cmd: &str) -> ClaudeHookPermissions {
     let mut scan = SettingsScan::default();
-    let (deny_rules, ask_rules, allow_rules) =
-        load_permission_rules_tracking(&get_settings_paths(), &mut scan);
+    // anthology fork: managed settings and `CLAUDE_PROJECT_DIR` join the files
+    // read, and `allowManagedPermissionRulesOnly` drops the others.
+    let files = claude_hook_settings_files();
+    let (deny_rules, ask_rules, allow_rules) = load_claude_hook_rules(&files, &mut scan);
     let (_, transparent_prefixes) = crate::core::config::hook_rewrite_params();
     let verdict = check_command_with_rules_and_prefixes(
         cmd,
@@ -188,7 +192,49 @@ pub(crate) fn check_claude_hook_command(cmd: &str) -> ClaudeHookPermissions {
         &allow_rules,
         &transparent_prefixes,
     );
-    ClaudeHookPermissions { verdict, scan }
+    let gate = super::anthology_gate::GateRules::new(
+        deny_rules,
+        ask_rules,
+        std::mem::take(&mut scan.read_deny),
+        &transparent_prefixes,
+        files.project_roots,
+    );
+    ClaudeHookPermissions {
+        verdict,
+        scan,
+        gate,
+    }
+}
+
+/// anthology fork: the files the Claude hook reads, which are those
+/// [`get_settings_paths`] names plus `CLAUDE_PROJECT_DIR`'s project and the
+/// managed settings.
+fn claude_hook_settings_files() -> super::anthology_gate::SettingsFiles {
+    let project_root = find_project_root();
+    super::anthology_gate::SettingsFiles::assemble(
+        get_settings_paths_from(project_root.clone(), resolve_claude_dir().ok()),
+        project_root,
+        super::anthology_gate::env_project_dir(),
+        &user_dirs::managed_settings_dir(),
+    )
+}
+
+/// anthology fork: [`load_permission_rules_tracking`] over the managed files and,
+/// unless a managed file sets `allowManagedPermissionRulesOnly` (Claude Code then
+/// ignores every other file), the rest.
+fn load_claude_hook_rules(
+    files: &super::anthology_gate::SettingsFiles,
+    scan: &mut SettingsScan,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut deny, mut ask, mut allow) = load_permission_rules_tracking(&files.managed, scan);
+    if super::anthology_gate::managed_rules_only(&files.managed) {
+        return (deny, ask, allow);
+    }
+    let (other_deny, other_ask, other_allow) = load_permission_rules_tracking(&files.other, scan);
+    deny.extend(other_deny);
+    ask.extend(other_ask);
+    allow.extend(other_allow);
+    (deny, ask, allow)
 }
 
 /// What [`load_permission_rules_tracking`] saw besides the rules themselves.
@@ -197,6 +243,8 @@ struct SettingsScan {
     every_file_read: bool,
     /// At least one entry appears under `permissions.deny`, whatever its tool.
     any_deny_entry: bool,
+    /// anthology fork: the `Read(...)` entries under `permissions.deny`.
+    read_deny: Vec<String>,
 }
 
 impl Default for SettingsScan {
@@ -204,6 +252,7 @@ impl Default for SettingsScan {
         Self {
             every_file_read: true,
             any_deny_entry: false,
+            read_deny: Vec::new(),
         }
     }
 }
@@ -484,6 +533,8 @@ fn load_permission_rules_tracking(
             .and_then(Value::as_array)
             .is_some_and(|rules| !rules.is_empty());
         append_bash_rules(permissions.get("deny"), &mut deny_rules);
+        // anthology fork: `Read(...)` deny rules, which the Bash rules above drop.
+        super::anthology_gate::append_read_deny(permissions.get("deny"), &mut scan.read_deny);
         append_bash_rules(permissions.get("ask"), &mut ask_rules);
         append_bash_rules(permissions.get("allow"), &mut allow_rules);
     }
@@ -746,7 +797,8 @@ pub(crate) fn extract_bash_pattern(rule: &str) -> &str {
 /// segments, so a verdict can get stricter but never looser. On the allow side
 /// it would let `{ ls` inherit an `ls` rule and turn a prompt into an
 /// auto-approve.
-fn strip_grammar_residue(segment: &str) -> &str {
+// anthology fork: `pub(crate)` so `anthology_gate` reads a segment the way the gate does.
+pub(crate) fn strip_grammar_residue(segment: &str) -> &str {
     let mut rest = segment.trim();
     loop {
         // Only a standalone word is grammar. `!rm` is history expansion, not

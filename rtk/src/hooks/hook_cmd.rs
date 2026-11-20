@@ -139,6 +139,12 @@ enum PayloadAction {
         reason: &'static str,
         cmd: String,
     },
+    // anthology fork: an explicit deny, so the host never judges a rewrite of a
+    // command a deny rule matches (`anthology_gate`).
+    Deny {
+        cmd: String,
+        output: Value,
+    },
     Ignore,
 }
 
@@ -188,11 +194,13 @@ fn process_claude_payload_from_decision(
     decision: HookDecision,
 ) -> PayloadAction {
     let (rewritten, permission_decision, outcome) = match decision {
+        // anthology fork: an explicit deny, not silence. The host would judge the
+        // original, but under `Bash(rtk *)` it must never be handed the chance
+        // to judge an rtk-prefixed rewrite or an inner command instead.
         HookDecision::Deny => {
-            return PayloadAction::Skip {
-                decision: HookOutcome::Deny,
-                reason: "skip:deny_rule",
+            return PayloadAction::Deny {
                 cmd: cmd.to_string(),
+                output: super::anthology_gate::deny_output(),
             };
         }
         HookDecision::Defer => {
@@ -324,6 +332,12 @@ pub fn run_claude() -> Result<()> {
             audit_log(reason, &cmd, "");
             log_hook_decision(&v, &cmd, decision, None);
         }
+        // anthology fork: the explicit deny is written before anything else.
+        PayloadAction::Deny { cmd, output } => {
+            let _ = writeln!(io::stdout(), "{output}");
+            audit_log("skip:deny_rule", &cmd, "");
+            log_hook_decision(&v, &cmd, HookOutcome::Deny, None);
+        }
         PayloadAction::Ignore => {}
     }
 
@@ -335,7 +349,9 @@ fn run_claude_inner(input: &str) -> Option<String> {
     let input = strip_leading_bom(input);
     let v: Value = serde_json::from_str(input).ok()?;
     match process_claude_payload(&v) {
-        PayloadAction::Rewrite { output, .. } => Some(output.to_string()),
+        PayloadAction::Rewrite { output, .. } | PayloadAction::Deny { output, .. } => {
+            Some(output.to_string())
+        }
         _ => None,
     }
 }
@@ -677,14 +693,93 @@ mod tests {
         }
     }
 
+    // anthology fork: a deny is an explicit `permissionDecision: "deny"`, not
+    // silence, and carries no `updatedInput`.
     #[test]
     fn test_process_claude_payload_decision_deny() {
         let v = claude_input_value("rm -rf /");
         match process_claude_payload_from_decision(&v, "rm -rf /", HookDecision::Deny) {
-            PayloadAction::Skip { decision, .. } => assert_eq!(decision, HookOutcome::Deny),
-            other => {
-                panic!("expected Skip, got a different PayloadAction variant instead: {other:?}")
+            PayloadAction::Deny { cmd, output } => {
+                assert_eq!(cmd, "rm -rf /");
+                assert_eq!(
+                    output
+                        .pointer("/hookSpecificOutput/hookEventName")
+                        .and_then(Value::as_str),
+                    Some("PreToolUse")
+                );
+                assert_eq!(
+                    output
+                        .pointer("/hookSpecificOutput/permissionDecision")
+                        .and_then(Value::as_str),
+                    Some("deny")
+                );
+                assert!(
+                    output
+                        .pointer("/hookSpecificOutput/permissionDecisionReason")
+                        .and_then(Value::as_str)
+                        .is_some_and(|reason| reason.starts_with("RTK: "))
+                );
+                assert!(
+                    output.pointer("/hookSpecificOutput/updatedInput").is_none(),
+                    "a deny must not hand the host a command"
+                );
             }
+            other => {
+                panic!("expected Deny, got a different PayloadAction variant instead: {other:?}")
+            }
+        }
+    }
+
+    /// The deny is what `run_claude_inner` reports, and a defer still says nothing.
+    #[test]
+    fn test_claude_deny_prints_and_defer_stays_silent() {
+        let v = claude_input_value("rm -rf /");
+        let printed = match process_claude_payload_from_decision(&v, "rm -rf /", HookDecision::Deny)
+        {
+            PayloadAction::Deny { output, .. } => output.to_string(),
+            other => panic!("expected Deny, got {other:?}"),
+        };
+        assert!(
+            printed.contains(r#""permissionDecision":"deny""#),
+            "{printed}"
+        );
+        assert!(matches!(
+            process_claude_payload_from_decision(&v, "rm -rf /", HookDecision::Defer),
+            PayloadAction::Skip {
+                decision: HookOutcome::Defer,
+                ..
+            }
+        ));
+    }
+
+    /// An ask the hook owns prints `"ask"` for the original command too, when no
+    /// rewrite exists.
+    #[test]
+    fn test_claude_hook_ask_without_a_rewrite_keeps_the_command() {
+        let v = claude_input_value("rtk run aws s3 ls");
+        match process_claude_payload_from_decision(
+            &v,
+            "rtk run aws s3 ls",
+            HookDecision::AskRewrite("rtk run aws s3 ls".to_string(), AskOwner::Hook),
+        ) {
+            PayloadAction::Rewrite {
+                output, decision, ..
+            } => {
+                assert_eq!(decision, HookOutcome::Ask);
+                assert_eq!(
+                    output
+                        .pointer("/hookSpecificOutput/permissionDecision")
+                        .and_then(Value::as_str),
+                    Some("ask")
+                );
+                assert_eq!(
+                    output
+                        .pointer("/hookSpecificOutput/updatedInput/command")
+                        .and_then(Value::as_str),
+                    Some("rtk run aws s3 ls")
+                );
+            }
+            other => panic!("expected Rewrite, got {other:?}"),
         }
     }
 

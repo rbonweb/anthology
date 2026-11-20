@@ -345,12 +345,23 @@ pub(crate) fn decide_for_claude_hook_at(
     permissions: &super::permissions::ClaudeHookPermissions,
     cwd: Option<&str>,
 ) -> HookDecision {
-    decide_for_agent_at_with_attestation(
+    // anthology fork: the Claude host judges the text the hook hands back, and
+    // the install allows `Bash(rtk *)`, so a deny or ask rule that names what an
+    // `rtk ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
+    // enforced here (`anthology_gate`).
+    let gate = super::anthology_gate::evaluate(cmd, &permissions.gate, permissions.verdict, cwd);
+    match gate {
+        super::anthology_gate::Gate::Deny => return HookDecision::Deny,
+        super::anthology_gate::Gate::Defer => return HookDecision::Defer,
+        super::anthology_gate::Gate::Ask | super::anthology_gate::Gate::Pass => {}
+    }
+    let decision = decide_for_agent_at_with_attestation(
         cmd,
         permissions.verdict,
         Some(|| permissions.deny_rules()),
         cwd,
-    )
+    );
+    super::anthology_gate::apply(gate, cmd, decision)
 }
 
 fn decide_for_agent_at_with_attestation(
