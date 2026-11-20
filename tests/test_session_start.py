@@ -603,8 +603,18 @@ class GuardLocationTest(SessionCase):
         write(self.config / "settings.json", json.dumps(data))
         self.assertNotIn("systemMessage", self.go())
 
+    def cached_root(self):
+        """anthology as a marketplace install runs it: from <config>/plugins/cache (no sibling fallback)."""
+        root = self.config / "plugins" / "cache" / "anthology" / "anthology" / "0.1.0"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        return root
+
     def test_registry_entry_wins_over_the_sibling_folder(self):
-        root = self.fake_plugins("import sys\nsys.exit(0)\n")  # a sibling that would NOT block
+        root = self.cached_root()
+        guard = root.parent.parent / "anthology-guardrails"  # a sibling that would NOT block
+        (guard / "scripts").mkdir(parents=True)
+        (guard / "scripts" / "guard.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
         self.mark_setup(root)
         self.installed({"anthology-guardrails@anthology": [
             {"scope": "user", "installPath": str(self.guard_install())}]})
@@ -624,7 +634,8 @@ class GuardLocationTest(SessionCase):
         self.assertNotIn("systemMessage", self.go(cwd=other / "sub"))
 
     def test_newest_applicable_scope_wins(self):
-        self.mark_setup()
+        root = self.cached_root()
+        self.mark_setup(root)
         proj = self.tmp / "proj"
         proj.mkdir()
         bad = self.tmp / "installs" / "bad"
@@ -637,8 +648,9 @@ class GuardLocationTest(SessionCase):
             {"scope": "user", "installPath": str(bad), "lastUpdated": "2026-01-01T00:00:00Z"},
             {"scope": "project", "projectPath": str(proj), "installPath": str(self.guard_install()),
              "lastUpdated": "2026-06-01T00:00:00Z"}]})
-        self.assertNotIn("systemMessage", self.go(cwd=proj))
-        self.assertIn("did not block", self.go(cwd=self.tmp)["systemMessage"].lower())
+        env = {"CLAUDE_PLUGIN_ROOT": str(root)}
+        self.assertNotIn("systemMessage", self.go(cwd=proj, env_extra=env))
+        self.assertIn("did not block", self.go(cwd=self.tmp, env_extra=env)["systemMessage"].lower())
 
     def test_exit_2_without_the_guards_message_is_not_a_pass(self):
         root = self.fake_plugins("import sys\nsys.stdin.read()\nsys.exit(2)\n")
