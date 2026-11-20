@@ -88,7 +88,8 @@ jobs:
         run: python3 scripts/check_version_bump.py "$BASE" "$HEAD_SHA"
 
   plugin-validate:
-    # Validate each plugin with the Claude Code version pinned in ci/claude-code.
+    # Validate the marketplace manifest and each plugin with the Claude Code version pinned in
+    # ci/claude-code.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -97,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [anthology, anthology-guardrails, anthology-superpowers]
+        target: [., plugins/anthology, plugins/anthology-guardrails, plugins/anthology-superpowers]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,8 +109,8 @@ jobs:
         run: ci/claude-code/node_modules/.bin/claude --version
       - name: claude plugin validate --strict
         env:
-          PLUGIN: ${{ matrix.plugin }}
-        run: ci/claude-code/node_modules/.bin/claude plugin validate --strict "plugins/$PLUGIN"
+          TARGET: ${{ matrix.target }}
+        run: ci/claude-code/node_modules/.bin/claude plugin validate --strict "$TARGET"
 
   gitleaks:
     runs-on: ubuntu-latest

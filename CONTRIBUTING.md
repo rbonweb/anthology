@@ -105,6 +105,7 @@ Notes for particular sources:
 - **`design-taste-frontend`** has a machine-readable port map, `vendor/patches/design-taste-frontend.portmap.json`, that lists each upstream script as keep, port or drop. `vendor.py` fails when upstream adds a script the map does not list, and when any shipped file contains a Chrome launch. When that happens, decide for the new script and add it to the map.
 - **`ui-taste`** has no git upstream. It is pinned by the sha256 of its `CHECKSUMS.sha256` manifest, and a pristine copy lives in `vendor/snapshots/ui-taste/`. To move it, set `checksum` in `sources.json`, then run `python3 scripts/vendor.py fetch ui-taste && python3 scripts/vendor.py build ui-taste`.
 - **`vendor/licenses/`** carries each source's license text, unchanged, refreshed by `fetch` and `sync`.
+- **Licenses inside the plugin.** Claude Code installs a plugin directory on its own, so `build` also copies each source's license, unchanged, into its target folder (a source with no license file of its own gets the fixed text as `LICENSE`). An upstream `NOTICE` outside the source folder must be listed in the entry's `license_extra` (caveman ships `NOTICE` and `LICENSE-MIT` this way), or `build` fails. `check` verifies the copies byte for byte.
 
 ### Syncing rtk
 
