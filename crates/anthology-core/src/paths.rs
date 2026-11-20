@@ -31,10 +31,13 @@ pub fn home(env: &Env) -> PathBuf {
 }
 
 /// `os.environ.get("HOME") or os.path.expanduser("~")`: `HOME` exactly as given (a trailing
-/// `/` kept) when it is non-empty, else [`home`]. These Python sites use the raw string:
-/// `guard.py:21` (passed to `guard_rules.check`, which never normalises it),
-/// `memory_privacy.py:154`, and `anthology_setup.py:178` and `:215` (line numbers at
-/// `rust@1e00f832`, informational).
+/// `/` kept) when it is non-empty, else [`home`]. These Python sites use this form:
+/// `guard.py:21` (passed to `guard_rules.check`, which never normalises it) and
+/// `settings_patch.py:556` (line numbers informational).
+///
+/// Sites that treat an unset or empty `HOME` as "no home" (no passwd fallback), such as
+/// `memory_privacy.py:154` and `anthology_setup.py:178` and `:215`, read
+/// `env.get_os("HOME")` directly instead.
 pub fn home_raw(env: &Env) -> PathBuf {
     match env.get_os("HOME") {
         Some(h) if !h.is_empty() => PathBuf::from(h),
