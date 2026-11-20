@@ -1,6 +1,6 @@
 schema_version: "1.0"
 name: guard-beats-rtk
-description: 'G1 still blocks a Playwright command that rtk would rewrite.'
+description: 'G1 blocks a Playwright command that rtk would rewrite (rtk is inactive in the eval sandbox; the rtk-rewrite smoke checks it with rtk active).'
 tags: [guardrails, rtk, probe-u6]
 plugins:
   - "../../plugins/anthology"

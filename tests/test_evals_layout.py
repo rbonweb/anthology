@@ -41,14 +41,17 @@ GLOB_ANCHOR = {"tool": "Glob", "input_match": r"\*\.md"}
 
 REQUIRED_CASES = [
     "guard-g1", "guard-g4", "guard-g6", "guard-beats-rtk", "hook-reach-subagent",
-    "browser-browseros-only", "harness-sanity", "rtk-rewrite", "guide-present", "guide-main-only",
-    "skills-hidden", "agent-fields", "agent-memory-path",
+    "browser-browseros-only", "harness-sanity", "guide-present", "guide-main-only",
+    "skills-hidden", "agent-fields",
 ]
+# These two cannot pass inside `claude plugin eval` (its sandbox has no rtk state and no plugin bin/ on
+# the Bash PATH), so they are smokes in evals/smoke/smoke.py.
+MOVED_TO_SMOKES = ["rtk-rewrite", "agent-memory-path"]
 # Bash is visible in this case only so that a host-browser launch attempt is recorded and denied.
 BASH_PROMPT_EXEMPT = {"browser-browseros-only"}
-# These cases hold Write (and Edit) only so that their `max: 0` checks are real: the prompt must
+# This case holds Write (and Edit) only so that its `max: 0` checks are real: the prompt must
 # not ask for a write.
-WRITE_PROMPT_EXEMPT = {"agent-fields", "agent-memory-path"}
+WRITE_PROMPT_EXEMPT = {"agent-fields"}
 FORBIDDEN_LITERALS = ["password:", "password =", "AKIA", "ghp_", "BEGIN" + " PRIVATE KEY"]
 ABSOLUTE_PATHS = ["/Users/", "/home/", "~/"]
 KEY_GATE = "steps.key.outputs.present == 'true'"
@@ -187,6 +190,10 @@ class CaseLayoutTests(unittest.TestCase):
             for key in ("min", "max"):
                 if key in g:
                     self.assertIsInstance(g[key], int, g["name"])
+            # The harness defaults `min` to 1 (`min ?? 1`): a grader with only `max: 0` reports
+            # "called 0x (expected 1..0)" and can never pass (verified live on Claude Code 2.1.311).
+            if g.get("max") == 0:
+                self.assertEqual(g.get("min"), 0, g["name"] + ": max: 0 needs min: 0")
         elif kind == "tool_order":
             for side in ("before", "after"):
                 value = g[side]
@@ -288,8 +295,8 @@ class RosterCaseTests(unittest.TestCase):
                     # the first heading of each preloaded skill (U1: the preload arrived).
                     self.assertIn("Skill", tools)
                     self.assertIn("preload-not-invoked", graders)
-                    self.assertEqual((graders["preload-not-invoked"]["tool"], graders["preload-not-invoked"]["max"]),
-                                     ("Skill", 0))
+                    self.assertEqual((graders["preload-not-invoked"]["tool"], graders["preload-not-invoked"]["min"],
+                                      graders["preload-not-invoked"]["max"]), ("Skill", 0, 0))
                     quoted = graders["preload-quoted"]
                     self.assertEqual((quoted["type"], quoted["target"]), ("regex", "last_message"))
                     for skill in EXPECTED_ROSTER[agent]["preloads"]:
@@ -352,12 +359,26 @@ class RequiredCaseTests(unittest.TestCase):
         for name in REQUIRED_CASES:
             self.assertIn(name, self.cases)
 
+    def test_moved_cases_are_smokes_not_cases(self):
+        for name in MOVED_TO_SMOKES:
+            self.assertNotIn(name, self.cases)
+            self.assertFalse((EVALS / name).exists(), name)
+            self.assertIn('"%s": (smoke_' % name,
+                          (EVALS / "smoke" / "smoke.py").read_text(encoding="utf-8"))
+
     def test_subagent_bash_cases_check_the_agent_ran_first(self):
         # The main session also holds Bash, so the Bash call must come after the Agent dispatch.
-        for name, command in (("hook-reach-subagent", "agent-browser"), ("agent-memory-path", "anthology-mem save")):
+        for name, command in (("hook-reach-subagent", "agent-browser"),):
             order = [g for g in self.cases[name]["graders"] if g["type"] == "tool_order"]
             self.assertEqual([(g["before"], g["after"]) for g in order],
                              [("Agent", {"tool": "Bash", "input_match": command})], name)
+
+    def test_the_guard_cases_say_what_they_cover(self):
+        self.assertIn("rtk-rewrite smoke", self.cases["guard-beats-rtk"]["description"])
+        prompt = self.cases["guard-g6"]["execution"]["prompt"]
+        self.assertIn("rule G6", prompt)  # the model must not refuse the probe write
+        self.assertIn("Do not refuse", prompt)
+        self.assertIn("Step 1 word", self.cases["guide-main-only"]["execution"]["prompt"])
 
     def test_skills_hidden_has_a_canary(self):
         patterns = [g.get("pattern") for g in self.cases["skills-hidden"]["graders"]]
@@ -435,13 +456,23 @@ class GrantTests(unittest.TestCase):
 
     def test_pattern_entries_in_allowed_tools_equal_a_grant(self):
         # A case may list `Bash(cmd)` / `Write(path)` itself, but only for a command the runner grants.
-        seen = []
-        for name, case in self.cases.items():
-            for tool in case["execution"]["allowed_tools"]:
-                if "(" in tool:
-                    seen.append(name)
-                    self.assertIn(tool, self.grants, name)
-        self.assertIn("agent-memory-path", seen)
+        # Today no case lists one, so this fails the moment one appears without a matching grant.
+        entries = [(name, tool) for name, case in self.cases.items()
+                   for tool in case["execution"]["allowed_tools"] if "(" in tool]
+        self.assertEqual([(n, t) for n, t in entries if t not in self.grants], [])
+
+    def test_every_write_style_grant_is_held_by_a_case(self):
+        # A `Write(...)`, `Edit(...)` or `NotebookEdit(...)` grant only matters for a case that lists the tool.
+        held = {t for c in self.cases.values() for t in c["execution"]["allowed_tools"]}
+        for grant in self.grants:
+            tool = grant.split("(", 1)[0]
+            if tool != "Bash":
+                self.assertIn(tool, held, grant)
+
+    def test_the_grants_name_no_command_of_a_moved_case(self):
+        text = "\n".join(self.grants)
+        for bad in ("rtkrepo", "anthology-mem"):
+            self.assertNotIn(bad, text)
 
     def test_the_runner_keeps_npx_offline(self):
         text = (ROOT / "scripts" / "run-evals.sh").read_text(encoding="utf-8")
@@ -455,13 +486,11 @@ class GrantTests(unittest.TestCase):
                     self.assertTrue(any(g.startswith(tool + "(.claude/memory/") for g in self.grants), (name, tool))
 
     def test_the_tool_field_cases_hold_the_tools_they_check(self):
-        # agent-fields and agent-memory-path assert `max: 0` on these tools; that only means
-        # something when the main session has them.
+        # agent-fields asserts `max: 0` on these tools; that only means something when the main
+        # session has them.
         cases = all_cases()
         for tool in ("Edit", "Write", "NotebookEdit"):
             self.assertIn(tool, cases["agent-fields"]["execution"]["allowed_tools"])
-        for tool in ("Edit", "Write"):
-            self.assertIn(tool, cases["agent-memory-path"]["execution"]["allowed_tools"])
 
     def test_every_write_case_prompt_names_a_granted_path(self):
         prefixes = [g[len("Write("):-1].rstrip("*") for g in self.grants if g.startswith("Write(")]
@@ -521,9 +550,11 @@ class WorkflowTests(unittest.TestCase):
         run_step = next(s for s in self.steps if "scripts/run-evals.sh --ci" in s.get("run", ""))
         self.assertEqual(run_step["env"]["CLAUDE_BIN"], "ci/claude-code/node_modules/.bin/claude")
         self.assertEqual(run_step["env"]["DISABLE_AUTOUPDATER"], "1")
-        # a regressed guard must not let a granted npx fetch packages, nor Bash see the API key
+        # a regressed guard must not let a granted npx fetch packages
         self.assertEqual(run_step["env"]["NPM_CONFIG_OFFLINE"], "true")
-        self.assertEqual(run_step["env"]["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")
+        # `plugin eval` needs the credential in its children (scrubbing fails every case "Not logged in")
+        # and hides it from their tools itself; the smokes build their own environment.
+        self.assertEqual(run_step["env"]["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "0")
         self.assertIn("inputs.max_cost_usd", run_step["env"]["MAX_COST_USD"])
         self.assertIn('--max-cost-usd "$MAX_COST_USD"', run_step["run"])
 

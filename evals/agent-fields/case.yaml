@@ -21,14 +21,17 @@ graders:
   - name: no-edit
     type: tool_used
     tool: Edit
+    min: 0
     max: 0
   - name: no-write
     type: tool_used
     tool: Write
+    min: 0
     max: 0
   - name: no-notebook
     type: tool_used
     tool: NotebookEdit
+    min: 0
     max: 0
   - name: tool-list
     type: llm

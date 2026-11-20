@@ -113,22 +113,18 @@ if [ -n "$CASE" ] || [ -n "$TAG" ]; then
   [ "$RECORD" = 0 ] || die "--record needs a full run; drop --case and --tag"
 fi
 
-# Every grant is the one harmless command a guard or rtk case needs, so a broken guard still
-# cannot download a browser or touch anything. One grant per line; scripts and tests read this
-# list, keep the quoting as it is. The one exception to "harmless command" is
-# `Bash(anthology-mem save *)`, for the agent-memory-path case: the agents' memory-save helper
-# (stream I), which only writes a note into the agent's own memory folder. `Edit(...)` and
-# `NotebookEdit(...)` are granted so the main session holds those tools in agent-fields and
-# agent-memory-path: the scout's own tool list is then what the max-0 checks really test.
-# `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a host-browser
-# launch attempt must be recorded (and denied) rather than hidden.
+# Every grant is the one harmless command a guard case needs, so a broken guard still cannot
+# download a browser or touch anything. One grant per line; scripts and tests read this list,
+# keep the quoting as it is. `Edit(...)` and `NotebookEdit(...)` are granted so the main session
+# holds those tools in agent-fields: the scout's own tool list is then what its max-0 checks
+# really test. `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a
+# host-browser launch attempt must be recorded (and denied) rather than hidden.
+# (The rtk-rewrite and agent-memory-path checks are smokes, evals/smoke/smoke.py: rtk and
+# `anthology-mem` are not available inside `claude plugin eval`.)
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)
-Bash(git init -q rtkrepo)
-Bash(git -C rtkrepo status)
 Bash(ls *)
-Bash(anthology-mem save *)
 Write(.claude/memory/**)
 Edit(.claude/memory/**)
 NotebookEdit(.claude/memory/**)'
