@@ -46,6 +46,10 @@ use crate::oracle::Oracle;
 /// The surface name (plan §1.4).
 pub const NAME: &str = "rtk_install.reconcile";
 
+/// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`): it
+/// does; nothing here is Linux-only.
+pub const ON_MACOS: bool = true;
+
 /// The registered implementation.
 pub fn surface() -> Option<Box<dyn Surface>> {
     Some(Box::new(Reconcile))

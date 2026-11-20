@@ -7,8 +7,10 @@
 //! - response: the module's `run(case)` dict, or `{"error": "<traceback>"}`.
 //!
 //! [`Oracle::call`] returns the raw response. It also notes, for the harness, every
-//! `"divergence"` mark and every error it sees ([`Oracle::take_notes`]). A process that dies or
-//! answers garbage gives an error response and is restarted at the next call. A surface can
+//! `"divergence"` mark and every error it sees ([`Oracle::take_notes`]); a `"divergence"` that
+//! is not a string is an error. A process that dies or answers garbage gives an error response
+//! for that case (no retry) and is restarted at the next call. The process gets a fixed
+//! environment: `PATH` and `LANG=C.UTF-8` only. A surface can
 //! also note a divergence it applied itself ([`Oracle::mark`]: the D-2/D-4 normalization hooks).
 #![allow(
     dead_code,
@@ -47,6 +49,7 @@ pub struct Oracle {
     proc: Option<Proc>,
     notes: Notes,
     calls: usize,
+    starts: usize,
 }
 
 impl Oracle {
@@ -69,20 +72,16 @@ impl Oracle {
             proc: None,
             notes: Notes::default(),
             calls: 0,
+            starts: 0,
         }
     }
 
     /// Sends `{"module": module, "case": case}` and returns the response (module docs).
     pub fn call(&mut self, module: &str, case: &Value) -> Value {
         self.calls += 1;
-        let was_running = self.proc.is_some();
-        let mut result = self.exchange(module, case);
-        if result.is_err() && was_running {
-            // The process died since the last case (or now): one retry with a fresh one.
-            self.stop();
-            result = self.exchange(module, case);
-        }
-        let resp = match result {
+        // No retry: a healthy driver never dies, so a dead one fails the case it was asked
+        // (and the next call starts a fresh one).
+        let resp = match self.exchange(module, case) {
             Ok(resp) => resp,
             Err(why) => {
                 self.stop();
@@ -92,8 +91,15 @@ impl Oracle {
         if let Some(e) = oracle_error(&resp) {
             self.notes.errors.push(e);
         }
-        if let Some(d) = divergence_mark(&resp) {
-            self.notes.marks.push(d.to_string());
+        match resp.as_object().and_then(|o| o.get("divergence")) {
+            None => {}
+            Some(_) => match divergence_mark(&resp) {
+                Some(d) => self.notes.marks.push(d.to_string()),
+                None => self
+                    .notes
+                    .errors
+                    .push("oracle: \"divergence\" is not a string".into()),
+            },
         }
         resp
     }
@@ -113,8 +119,14 @@ impl Oracle {
         self.calls
     }
 
+    /// How many times the process was started (more than 1 means it died at least once).
+    pub fn starts(&self) -> usize {
+        self.starts
+    }
+
     fn exchange(&mut self, module: &str, case: &Value) -> Result<Value, String> {
         if self.proc.is_none() {
+            self.starts += 1;
             self.proc = Some(self.start()?);
         }
         let p = self.proc.as_mut().expect("started");
@@ -141,9 +153,15 @@ impl Oracle {
     }
 
     fn start(&self) -> Result<Proc, String> {
+        // A fixed environment: this process's PATH and LANG=C.UTF-8, nothing of the developer's
+        // or the runner's (HOME, TZ, CLAUDE_*). Modules set what their case needs.
+        let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
         let mut child = Command::new(&self.program)
             .args(&self.args)
             .current_dir(&self.cwd)
+            .env_clear()
+            .env("PATH", path)
+            .env("LANG", "C.UTF-8")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -222,7 +240,8 @@ mod tests {
 
     #[test]
     fn errors_are_noted_and_a_dead_oracle_restarts() {
-        // Answers one error, then exits; the next call starts it again.
+        // Answers one error, then exits: the next case fails (no retry hides the death), the
+        // one after gets a fresh process.
         let mut o = sh(r#"read -r l; echo '{"error": "Traceback: boom"}'"#);
         let v = Value::Null;
         let first = o.call("m", &v);
@@ -230,12 +249,23 @@ mod tests {
             oracle_error(&first).as_deref(),
             Some("oracle error: Traceback: boom")
         );
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let second = o.call("m", &v);
+        let e = oracle_error(&second).expect("an error");
+        assert!(e.starts_with("oracle error: oracle process: "), "{e}");
+        let third = o.call("m", &v);
         assert_eq!(
-            oracle_error(&second).as_deref(),
+            oracle_error(&third).as_deref(),
             Some("oracle error: Traceback: boom")
         );
-        assert_eq!(o.take_notes().errors.len(), 2);
+        assert_eq!(o.starts(), 2);
+        assert_eq!(o.take_notes().errors.len(), 3);
+        let mut odd = sh(r#"read -r l; echo '{"exit": 0, "divergence": 6}'"#);
+        odd.call("m", &v);
+        assert_eq!(
+            odd.take_notes().errors,
+            ["oracle: \"divergence\" is not a string"]
+        );
         let mut dead = sh("exit 3");
         let resp = dead.call("m", &v);
         let e = oracle_error(&resp).expect("an error");
