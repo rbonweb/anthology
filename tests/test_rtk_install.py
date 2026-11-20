@@ -415,14 +415,107 @@ class ReconcileTest(Base):
         self.assertTrue(res["installed"])
 
 
+class FakeResponse:
+    """What opener.open returns: a context manager with geturl(), headers and read1()."""
+
+    def __init__(self, body=b"", url="https://objects.example.invalid/rtk.tar.gz", length=None,
+                 chunk=1000, on_read=None, fail_after=None):
+        self.body, self.url, self.chunk, self.on_read, self.fail_after = body, url, chunk, on_read, fail_after
+        self.headers = {} if length is None else {"Content-Length": str(length)}
+        self.pos = 0
+        self.reads = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self):
+        return self.url
+
+    def read1(self, n=-1):
+        self.reads += 1
+        if self.on_read:
+            self.on_read()
+        if self.fail_after is not None and self.pos >= self.fail_after:
+            raise OSError("connection reset")
+        data = self.body[self.pos:self.pos + min(self.chunk, n)]
+        self.pos += len(data)
+        return data
+
+
+class FakeOpener:
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append((request.full_url, timeout))
+        return self.response
+
+
 class DefaultFetchTest(Base):
+    def fetch(self, response, url="https://github.com/o/r/releases/download/t/f.tar.gz", timeout=5):
+        opener = FakeOpener(response)
+        with mock.patch.object(urllib.request, "build_opener", return_value=opener):
+            rtk_install.default_fetch(url, self.tmp / "out", timeout)
+        return opener
+
     def test_refuses_non_https_urls(self):
         for url in ("http://example.invalid/x", "file:///etc/passwd", "ftp://example.invalid/x"):
-            with mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("network")):
-                with self.assertRaises(Exception) as cm:
+            with mock.patch.object(urllib.request, "build_opener", side_effect=AssertionError("opener built")):
+                with self.assertRaises(rtk_install.InstallError):
                     rtk_install.default_fetch(url, self.tmp / "out", 5)
-            self.assertNotIsInstance(cm.exception, AssertionError)
             self.assertFalse((self.tmp / "out").exists())
+
+    def test_uses_the_https_only_redirect_handler(self):
+        with mock.patch.object(urllib.request, "build_opener", return_value=FakeOpener(FakeResponse(b"x"))) as bo:
+            rtk_install.default_fetch("https://example.invalid/a", self.tmp / "out", 5)
+        bo.assert_called_once_with(rtk_install.HttpsOnlyRedirect)
+
+    def test_downloads_the_body_and_passes_the_timeout(self):
+        body = b"abc" * 5000
+        opener = self.fetch(FakeResponse(body, length=len(body)), timeout=7)
+        self.assertEqual((self.tmp / "out").read_bytes(), body)
+        self.assertEqual(opener.requests[0][1], 7)
+
+    def test_refuses_a_final_url_that_is_not_https(self):
+        with self.assertRaises(rtk_install.InstallError):
+            self.fetch(FakeResponse(b"x", url="http://evil.example.invalid/x"))
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_streamed_size_cap_removes_the_partial_file(self):
+        with mock.patch.object(rtk_install, "MAX_DOWNLOAD_BYTES", 1024):
+            with self.assertRaises(rtk_install.InstallError):
+                self.fetch(FakeResponse(b"x" * 5000))  # no Content-Length: only the stream can tell
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_content_length_cap_refuses_before_reading(self):
+        response = FakeResponse(b"x" * 10, length=10 ** 9)
+        with self.assertRaises(rtk_install.InstallError):
+            self.fetch(response)
+        self.assertEqual(response.reads, 0)
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_failure_midway_removes_the_partial_file(self):
+        with self.assertRaises(OSError):
+            self.fetch(FakeResponse(b"x" * 5000, chunk=500, fail_after=1500))
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_deadline_is_checked_after_every_receive(self):
+        clock = {"now": 1000.0}
+
+        def trickle():
+            clock["now"] += 4.0  # each read1 takes 4s; the overall budget is 4 * 5 = 20s
+
+        response = FakeResponse(b"x" * 100000, chunk=10, on_read=trickle)
+        with mock.patch.object(rtk_install.time, "monotonic", lambda: clock["now"]):
+            with self.assertRaises(rtk_install.InstallError) as cm:
+                self.fetch(response, timeout=5)
+        self.assertIn("timed out", str(cm.exception))
+        self.assertLessEqual(response.reads, 7)
+        self.assertFalse((self.tmp / "out").exists())
 
     def test_refuses_redirects_to_non_https(self):
         handler = rtk_install.HttpsOnlyRedirect()
@@ -494,6 +587,21 @@ class CliTest(Base):
             code = rtk_install.main(["--data-dir", str(self.data), "--lock", str(lock_path)])
         self.assertEqual(code, 0)
         self.assertEqual(state.read()["rtk_path"], str(self.data / "rtk" / lock["version"] / "rtk"))
+
+
+class StateWriteTest(Base):
+    def test_non_ascii_is_written_literally(self):
+        state.write(rtk_path="/héllo/rtk")
+        self.assertIn("/héllo/rtk", state.state_path().read_text(encoding="utf-8"))
+        self.assertEqual(state.read()["rtk_path"], "/héllo/rtk")
+
+    def test_lone_surrogate_falls_back_to_escaped_json(self):
+        value = "/bad\udcffpath/rtk"  # a non-UTF-8 byte in a path decodes to a lone surrogate
+        state.write(rtk_path=value, other="x")
+        self.assertEqual(state.read(), {"rtk_path": value, "other": "x"})
+        state.write(more="y")
+        self.assertEqual(state.read()["rtk_path"], value)
+        self.assertEqual([n for n in os.listdir(str(state.state_path().parent)) if n.endswith(".tmp")], [])
 
 
 class FilesTest(unittest.TestCase):
@@ -595,6 +703,23 @@ class WrapperTest(Base):
                              stderr=subprocess.PIPE, universal_newlines=True,
                              env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CLAUDE_CONFIG_DIR": str(self.cfg)})
         self.assertEqual(res.stdout.splitlines()[0], "args:hook claude")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read any file")
+    def test_unreadable_state_is_quiet_for_the_hook_and_missing_for_rtk(self):
+        state.write(rtk_path=str(self.fake))
+        os.chmod(str(state.state_path()), 0)
+        self.addCleanup(os.chmod, str(state.state_path()), 0o600)
+        hook = self.run_bin("rtk-hook", stdin="{}")
+        self.assertEqual((hook.returncode, hook.stdout, hook.stderr), (0, "", ""))
+        res = self.run_bin("rtk", "x")
+        self.assertEqual(res.returncode, 127)
+        self.assertEqual(res.stderr.strip(), "rtk is not installed: run /anthology:setup")
+
+    def test_state_that_is_a_directory_is_missing(self):
+        state.state_path().mkdir(parents=True)
+        self.assertEqual(self.run_bin("rtk").returncode, 127)
+        hook = self.run_bin("rtk-hook")
+        self.assertEqual((hook.returncode, hook.stdout, hook.stderr), (0, "", ""))
 
     def test_hook_missing_exits_0_silently(self):
         res = self.run_bin("rtk-hook", stdin='{"tool_name":"Bash"}')

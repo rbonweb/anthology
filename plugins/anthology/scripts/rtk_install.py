@@ -139,7 +139,8 @@ class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
 
 def default_fetch(url: str, dest_path, timeout: float) -> None:
     """Download `url` (https only) to `dest_path`: size-capped, `timeout` per socket operation
-    and four times that overall."""
+    and four times that overall (checked after every receive, so it overshoots by at most one
+    socket timeout)."""
     if urllib.parse.urlsplit(url).scheme.lower() != "https":
         raise InstallError("refusing to download over a non-https URL: %s" % url)
     opener = urllib.request.build_opener(HttpsOnlyRedirect)
@@ -153,13 +154,19 @@ def default_fetch(url: str, dest_path, timeout: float) -> None:
             if length and length.isdigit() and int(length) > MAX_DOWNLOAD_BYTES:
                 raise InstallError("download is larger than %d bytes" % MAX_DOWNLOAD_BYTES)
             total = 0
+            # read1 returns whatever has arrived instead of waiting for a full chunk, so the
+            # deadline is checked after every receive and a trickling server cannot stretch it.
+            read = getattr(resp, "read1", None) or resp.read
             with open(str(dest_path), "wb") as out:
-                for chunk in iter(lambda: resp.read(1 << 16), b""):
+                while True:
+                    if time.monotonic() > deadline:
+                        raise InstallError("download timed out")
+                    chunk = read(1 << 14)
+                    if not chunk:
+                        break
                     total += len(chunk)
                     if total > MAX_DOWNLOAD_BYTES:
                         raise InstallError("download is larger than %d bytes" % MAX_DOWNLOAD_BYTES)
-                    if time.monotonic() > deadline:
-                        raise InstallError("download timed out")
                     out.write(chunk)
     except BaseException:
         try:

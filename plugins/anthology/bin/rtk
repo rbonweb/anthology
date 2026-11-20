@@ -5,8 +5,8 @@
 # that carries a backslash or quote is refused rather than mis-parsed.
 state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
 rtk_path=
-if [ -f "$state" ]; then
-  rtk_path=$(sed -n 's/^ *"rtk_path": *"\([^"]*\)",\{0,1\} *$/\1/p' "$state" | head -n 1)
+if [ -f "$state" ] && [ -r "$state" ]; then
+  rtk_path=$(sed -n 's/^ *"rtk_path": *"\([^"]*\)",\{0,1\} *$/\1/p' "$state" 2>/dev/null | head -n 1)
 fi
 case $rtk_path in
   *\\*|*\"*) rtk_path= ;;

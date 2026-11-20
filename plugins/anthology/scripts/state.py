@@ -31,12 +31,17 @@ def write(**kv) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = read()
     data.update(kv)
+    # ensure_ascii=False keeps non-ASCII paths literal so bin/rtk (sed, no python) can read them.
+    # A lone surrogate (a non-UTF-8 byte in a path) cannot be encoded that way: escape instead.
+    text = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".state.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            # ensure_ascii=False keeps non-ASCII paths literal so bin/rtk (sed, no python) can read them
-            json.dump(data, fh, indent=2, sort_keys=True, ensure_ascii=False)
-            fh.write("\n")
+            fh.write(text)
         os.replace(tmp, str(path))
     except BaseException:
         try:
