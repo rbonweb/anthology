@@ -1,9 +1,15 @@
 # Anthology in Rust: design
 
 - **Date:** 2026-11-20
-- **Status:** Proposed (architect), **revision 2**. Revision 2 applies the independent review `.superpowers/sdd/RUST/plan-review.md` and the controller's rulings on it. §18 maps each finding to where it is fixed.
+- **Status:** Proposed (architect), **revision 3**.
+  - Revision 2 applied the independent review `.superpowers/sdd/2026-11-20-rust-port/plan-review.md`.
+  - Revision 3 applies the scoped re-review `plan-rereview-1.md` (N-I1 to N-I5, m-R1 to m-R15) and the controller's rulings on it.
+  - §18 maps each finding to where it is fixed.
 - **Decisions:** the owner's binding decisions are in §1.2. Every other choice is marked **architect's call**, with its reason and its cost if wrong. No owner decision is open.
-- **Baseline:** `build` at `fedabad2`. The port branches from `build` once fix lane F1 (`fix-f1`: rtk `anthology_gate.rs`) has merged (§15.0).
+- **Baseline (N-I3):** branch `rust` **as it stands when a lane starts**.
+  - `rust` was created from `build@1e00f832`. Pending `build` work (fix-f1, FW-R, FW-Q) arrives through `build`→`rust` merges.
+  - Lane instructions never cite a fixed SHA. Test counts come from `port/python-test-ids.txt` (the ledger), not from literals in this document.
+  - Controller ruling: F1 starts before fix-f1 lands, and RG1 wires rtk once fix-f1 is on `rust`.
 - **Companion plan:** [`docs/superpowers/plans/2026-11-20-rust-port.md`](../plans/2026-11-20-rust-port.md). Its *Global Constraints* (GC-1 to GC-19) list every value kept verbatim. **The plan is authoritative for lane facts** (ids, owners, dependencies, waves). This design gives the reasons.
 
 ---
@@ -21,7 +27,7 @@ Anthology should be maintained in one language, Rust. All first-party Python (~1
    - `plugins/anthology-guardrails/scripts/*.py` (1.5k lines);
    - `scripts/*.py` (8 tools, 4.0k lines);
    - `evals/smoke/smoke.py` (966 lines);
-   - `tests/*.py` (35 test modules and 4 helpers, 19.1k lines, 1,513 `def test_`; the last full run was 1,445 OK with 152 skipped).
+   - `tests/*.py`: 35 test modules and 4 helpers, about 19k lines. There were 1,528 `def test_` on `rust@1e00f832`; the authoritative and current count is `port/python-test-ids.txt`.
 2. **Vendored content is untouched.** `plugins/anthology-superpowers/**` keeps its six upstream `.py` files. `plugins/anthology/knowledge/**` has none. `vendor check` keeps both trees byte-identical to upstream.
 3. **Delivery.** One `anthology` binary, built, attested and released from this repo's GitHub releases the way rtk is (ADR-017). A tiny POSIX `sh` bootstrap downloads it at the first session and checks it against a pinned sha256. No Python runs at runtime.
 4. **Fail closed.** Until the guard binary is installed, the `PreToolUse` guard blocks shell commands, file writes and edits, and MCP tool calls, with a "run /anthology:setup" message. Read-only tools are allowed. This supersedes the fail-open decision in ADR-010 and SECURITY.md:71.
@@ -267,7 +273,10 @@ Argument parsing uses `lexopt` plus a `pycompat::argparse` rules layer: `--a b` 
 - **`anthology_gate.rs`.** Replaces its own recursion with `anthology_shell::analyze`. It keeps its rule sources, `Read()` logic, work budget, and its "opaque behind rtk → ask" policy, now extended to `incomplete`.
 - **Verdict policy: only stricter.** Over the gate's tests plus the guard corpus, `new ≥ old` in the order deny > ask > defer/allow.
 - **Cross-check test `rtk/tests/anthology_shell_rtk_forms_test.rs`.** It pins rtk's clap subcommand list, so a new upstream subcommand forces a decision about `RTK_PASSTHROUGH`/`RTK_RUNNERS`. The file is not named `fork_*`, so `FORK_TESTS` is untouched.
-- **CI.** `rtk-test.sh` and `rtk-net-test.sh` mount the repo root. A path filter runs `rtk-test` and the RG monotonicity corpus whenever `crates/anthology-shell/**` changes.
+- **CI.**
+  - `rtk-test.sh` and `rtk-net-test.sh` mount the repo root.
+  - The existing live `rtk-test` job already runs on every push (it has no path filter), so changes to `crates/anthology-shell/**` are covered without a filter.
+  - RG1's edits to the two scripts go through a controller plumbing PR, together with the Python `test_rtk_layout` assertions and their Rust port (plan §0.2).
 
 ### 7.3 What stays separate
 
@@ -321,65 +330,88 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
 ```
 <ah> = ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology
 <ah>/bin/
-  <version>/anthology        # 0755 regular file
-  <version>/.bin-sha256      # "<sha256 of the extracted binary>\n" (written before .sha256)
-  <version>/.sha256          # "<tarball sha256>\n", written LAST (install marker)
-  <version>/.last-used       # touched by SessionStart bootstraps
-  .broken-<version>-<epoch>/ # a quarantined install (§9.2), pruned after 24 h
-  .tmp-XXXXXX/               # per-attempt staging, removed on exit
-  .attempt                   # rate-limit stamp, created with noclobber (§8.4)
-  anthology-<target>.tar.gz  # optional, user-seeded for offline installs
+  <version>/anthology                    # 0755 regular, non-empty file that passed the --version probe at install
+  <version>/.bin-sha256                  # "<sha256 of the extracted binary>\n" (written before .sha256)
+  <version>/.sha256                      # "<tarball sha256>\n", written LAST (install marker)
+  <version>/.last-used                   # touched by SessionStart bootstraps
+  .broken-<version>-<epoch>-<pid>/       # a quarantined install (§9.2); <epoch> is the quarantine time
+  .tmp-XXXXXX/                           # per-attempt staging, removed on exit
+  .attempt                               # rate-limit stamp, created with noclobber (§8.4)
+  anthology-<target>.tar.gz              # optional, user-seeded for offline installs (used only if it matches the pin)
 ```
 
-- **"Installed" (guard hot path).** `<version>` is a real directory, `anthology` is a regular executable, and `.sha256` is non-empty. The hot path does not hash anything; it costs one `sed` and three `test` calls.
+- **"Installed" (guard hot path).** `<version>` is a real directory, and `anthology` is a regular, executable, **non-empty** file (`test -f`, `test -x`, `test -s`, all shell builtins). `.sha256` is non-empty. There is no hashing on the hot path.
 - **"Current" (bootstrap, doctor).** Installed, plus `.sha256` equals the lock's hash for this target, plus `.bin-sha256` equals the sha256 of `anthology`.
-  - If the binary hash differs, the install is quarantined (renamed to `.broken-…`) and reinstalled (C-1).
-  - Doctor reports the mismatch in its `anthology_binary` check.
+  - If the binary hash differs, the install is quarantined and reinstalled (C-1).
+  - Doctor reports the mismatch.
+- **Install-time `--version` probe (N-I1).** Before any marker is written, the staged binary must print exactly `anthology <version> (<target>)` and exit 0. A wrong-arch, truncated or garbage file therefore never becomes "installed". On dash and BusyBox, such a file would otherwise be run as a shell script.
+- **Quarantine names (m-R1).** The `<epoch>` in `.broken-<version>-<epoch>-<pid>` is the quarantine time. It is the only clock used for both the 3-strike count ("in the last 86,400 s") and pruning ("older than 24 h"); directory mtimes are never used. `<pid>` keeps two quarantines in the same second from nesting.
 
-**Architect's call:** integrity is verified at session start, not per call. Cost if wrong: a binary corrupted mid-session runs until it fails (and is then quarantined, §9.2) or until the next session start.
+**Architect's call:** integrity is verified at session start, not per call. Cost if wrong: a binary corrupted mid-session runs until it fails, and is then quarantined by the exit classification (§9.2).
 
 ### 8.4 The bootstrap (`hooks/bootstrap.sh`, POSIX sh)
 
 **CLI (m-3):** `bootstrap.sh <session|guard|wrapper> --plugin <anthology|guardrails> [--quiet] [--budget SECONDS]`
 
 **Modes:**
-- `session`: SessionStart. Never rate-limited, and **never writes `.attempt`**, so it cannot delay a later retry (C-1.6).
-- `guard`: `guard.sh` self-heal.
-- `wrapper`: `bin/*`.
-- Both `guard` and `wrapper` are rate-limited through `.attempt`.
+- `session`: SessionStart, setup and `ensure_live_guard_binary`. It is never rate-limited, **never writes `.attempt`** (C-1.6), and **ignores the 3-strike cap**.
+  - Ignoring the cap is an **architect's call** (m-R1): a new session or a setup run is a deliberate user retry, so it gets one fresh attempt.
+  - The cap only stops the automatic reinstalls from tool calls. Cost if wrong: a deliberately broken release costs one extra download per new session.
+- `guard`: `guard.sh` self-heal. Rate-limited, and honours the cap.
+- `wrapper`: `bin/*`. Rate-limited, and honours the cap.
 
 **Output:**
-- `--quiet`: exactly one stdout line `status=present|installed|failed:<reason>`, with exit 0 for present or installed and 1 for failed.
+- `--quiet`: exactly one stdout line `status=present|installed|failed:<reason>`. Exit 0 for present or installed, 1 for failed.
 - Without `--quiet` in `session` mode: nothing on success, and the `--plugin`'s GC-14 `systemMessage` JSON on failure. Exit 0.
-- `--plugin` selects the message text, so one byte-identical script serves both plugins.
 
 **Steps:**
 1. **Platform.** Map `uname -s`/`uname -m` to the target (the rtk table). Anything else is `unsupported platform <os>/<arch>`.
 2. **Lock.** Validate per §8.2; a failure is `anthology.lock is not valid`.
-3. **Current?** If the install is current, touch `.last-used` and report `present`. If the binary hash mismatches, quarantine it and continue.
-4. **Rate limit** (`guard` and `wrapper` modes only):
-   - If `.attempt` is newer than 60 s (`find "$dir" -name .attempt -mmin -1`), stop with `failed:rate-limited`.
-   - Otherwise create a fresh stamp under noclobber: `rm` a stale stamp, then `set -C; : > .attempt`. If creation fails because a parallel call just created it, report `rate-limited` too (m-4).
-5. **Get the archive** within the budget. The default `--budget` is `BOOTSTRAP_BUDGET` = **20 s** of wall time, including connect. First available wins:
-   1. a seeded `<ah>/bin/anthology-<target>.tar.gz`;
-   2. **curl:** `curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time $B --max-filesize 67108864 -A anthology-bootstrap -o "$tmp/a.tgz" "$url"`;
-   3. **GNU wget** (detected by `wget --version 2>/dev/null | grep -q 'GNU Wget'`): `wget --https-only -q -T 10 -U anthology-bootstrap -O … "$url"` under the **watchdog**;
-   4. **BusyBox wget** (detected by `wget --help 2>&1 | grep -q BusyBox`): `wget -q -T 10 -O … "$url"` under the watchdog. There is no `--https-only`; the https URL plus the sha256 pin decide what is accepted, so an http redirect cannot change the accepted bytes;
-   5. **node** (architect's call; it covers `node:*-slim` hosts where Claude Code was installed with npm): `node -e '<fixed inline https.get script>' "$url" "$tmp/a.tgz"`. The script is https-only on every redirect, allows at most 5 redirects, caps the size at 64 MiB and has its own total timeout. It also runs under the watchdog.
-   6. If none applies, the reason is `no downloader (curl, wget or node)`. The message then gives the exact manual install command (GC-14).
+3. **Install folder (m-R2).** `mkdir -p <ah>/bin`, refusing a symlink at `<ah>/bin`. A failure is `cannot write the install folder`.
+4. **Current?** If the install is current, touch `.last-used` and report `present`. A binary-hash mismatch quarantines it and continues.
+5. **Rate limit and cap** (`guard` and `wrapper` only):
+   1. If 3 or more `.broken-<version>-<epoch>-*` directories have `<epoch>` within the last 86,400 s, stop with `failed:three-strikes`.
+   2. If `.attempt` is newer than 60 s (`find "$dir" -name .attempt -mmin -1`), stop with `failed:rate-limited`.
+   3. Otherwise `rm -f` a stale stamp, then `( set -C; : > "$dir/.attempt" )`. If that fails, it is `rate-limited` **only if `.attempt` now exists**. Otherwise it is `cannot write the install folder` (m-R2).
+6. **Get the archive** within the budget. The default is `BOOTSTRAP_BUDGET` = **20 s** of wall time, including connect. Sources are tried in this order:
+   1. **Seed.** `<ah>/bin/anthology-<target>.tar.gz`, if present. If its sha256 does not match the pin, it is **not used and not deleted**. The network downloaders below are tried, and if they also fail, the reason names the seed (`seed file anthology-<target>.tar.gz does not match anthology.lock`), so a stale seed never blocks for good (m-R3).
+   2. **curl:** `curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time $B --max-filesize 67108864 -A anthology-bootstrap -o "$tmp/a.tgz" "$url"`.
+   3. **GNU wget** (`wget --version 2>/dev/null | grep -q 'GNU Wget'`): `wget --https-only -q -T 10 -U anthology-bootstrap -O … "$url"`, under the watchdog.
+   4. **BusyBox wget** (`wget --help 2>&1 | grep -q BusyBox`): `wget -q -T 10 -O … "$url"`, under the watchdog. There is no https-only flag; the https URL plus the sha256 pin decide which bytes are accepted.
+   5. **node** (architect's call): `NODE_USE_ENV_PROXY=1 node -e "$NODE_GET" "$url" "$tmp/a.tgz"`, under the watchdog. `$NODE_GET` is a **fixed constant** in `lib.sh`, and a test checks it byte for byte. It is https-only on every hop, follows at most 5 redirects, caps the size at 64 MiB and has its own total timeout. Caveats, documented in README and SECURITY:
+      - `https.get` honours `HTTPS_PROXY`/`NO_PROXY` **only on node ≥ 24 with `NODE_USE_ENV_PROXY=1`**, which the bootstrap sets. On older node behind a proxy, the result is `download failed`.
+      - Claude Code from the native installer does not guarantee `node` on `PATH`. node is a last resort that mainly helps npm installs on slim images.
+   6. If nothing worked: `no downloader (curl, wget or node)` with the manual command (GC-14), or the seed reason above.
 
-   The **watchdog** is POSIX: `"$@" & p=$!; ( sleep "$B"; kill -9 "$p" ) 2>/dev/null & w=$!; wait "$p"; rc=$?; kill "$w" 2>/dev/null`. It enforces a real total timeout, because wget's `-T` is per read (I-12).
-6. **Hash.** Use `sha256sum`, else `shasum -a 256`, else `openssl dgst -sha256 -r`; with none, the reason is `no sha256 tool`. A mismatch with the lock is `sha256 does not match anthology.lock`. A seeded file is never deleted.
-7. **Extract.** `tar -xzf … -C "$tmp/x" anthology`. The result must be a regular file and not a symlink, else `the archive has no anthology binary`.
-8. **Place.**
-   1. `mkdir -p <version>`, refusing a symlink;
-   2. `mv` the binary in;
-   3. write `.bin-sha256` (temp file + `mv`);
-   4. write `.sha256` **last**.
+   **The watchdog (m-R4)** cannot hold the caller's stdout or outlive a fast download:
+   ```sh
+   "$@" </dev/null & p=$!
+   ( exec </dev/null >/dev/null 2>&1
+     sleep "$B" & s=$!
+     trap 'kill "$s" 2>/dev/null; exit 0' TERM
+     wait "$s"; kill -9 "$p" 2>/dev/null ) & w=$!
+   wait "$p"; rc=$?
+   kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+   ```
+   A download that finishes in 2 s returns in about 2 s, and no orphaned `sleep` keeps a pipe open.
+7. **Hash.** Use `sha256sum`, else `shasum -a 256`, else `openssl dgst -sha256 -r`; with none, `no sha256 tool`. A mismatch is `sha256 does not match anthology.lock`.
+8. **Extract.** `tar -xzf … -C "$tmp/x" anthology`. The result must be a regular, non-empty file and not a symlink, else `the archive has no anthology binary`.
+9. **Probe (N-I1).** `"$tmp/x/anthology" --version </dev/null` must exit 0 and print exactly `anthology <version> (<target>)`. Otherwise the reason is `the binary does not run on this machine`.
+10. **Place.**
+    1. `mkdir -p <version>`, refusing a symlink;
+    2. `mv` the binary in;
+    3. write `.bin-sha256` (temp file + `mv`);
+    4. write `.sha256` **last**.
 
-   Any write failure is `cannot write the install folder`. `$tmp` is removed by a trap. Concurrent installs each use their own `mktemp -d` and rename atomically.
+    Any write failure is `cannot write the install folder`. `$tmp` is removed by a trap. Concurrent installs each use their own `mktemp -d`.
 
-**Tooling:** POSIX plus `uname`, `sed`, `find`, `mktemp`, `tar` and gzip, one sha tool, and one of curl, wget or node. CI runs `shellcheck -s sh` and runs the shims on **Alpine (BusyBox ash + BusyBox wget), Debian slim (dash, no curl or wget, with node), Ubuntu (dash, curl, GNU wget) and macOS (`/bin/sh`, curl)** (I-12).
+**Tooling and test platforms.**
+- POSIX, plus `uname`, `sed`, `find`, `mktemp`, `tar`, gzip, one sha tool, and one of curl, wget or node.
+- CI runs `shellcheck -s sh`, and runs the shims, with their **real** downloaders against the testkit TLS server (§13.4), on:
+  - Alpine (BusyBox ash + BusyBox wget);
+  - Debian slim (dash; `nodejs` installed at job start, no curl or wget);
+  - Ubuntu 24.04 (dash; `curl` and `wget` installed at job start, because the base image has neither);
+  - macOS (`/bin/sh`, system curl).
 
 ### 8.5 Upgrades, pinning and binary freshness
 
@@ -390,7 +422,8 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
   - the `src/` files and `Cargo.toml` of every workspace package in `cargo tree -p anthology-cli -e normal,build --prefix none` (excluding `tests/`, `benches/`, `examples/`);
   - the `Cargo.lock` entries of the packages in that graph;
   - `rust-toolchain.toml`;
-  - the root `[profile.release]` and the `[workspace.dependencies]` entries that graph uses.
+  - the root `[profile.release]`, `[workspace.package]` (version, edition) and the `[workspace.dependencies]` entries that graph uses;
+  - every `build.rs` of those packages, and any file they pull in with `include_*!` from outside `src/`.
 
   Test-only, dev-tool, difftest and golden changes do not force a binary release. CO2 must not touch the shipped set, which also guarantees the binary validated by the replay is the one that ships.
 
@@ -398,7 +431,7 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
 
 - The bootstrap fails and its `systemMessage` names the reason.
 - The guard fails closed: read-only tools work. Each blocked call retries at most once a minute (§9.2), so restored connectivity heals the session.
-- **Air-gapped and no-downloader installs:** copy `anthology-<target>.tar.gz` from the release into `<ah>/bin/`. It is verified against the same pin. The GC-14 "no downloader" message prints the exact URL and folder.
+- **Air-gapped and no-downloader installs:** copy `anthology-<target>.tar.gz` from the release into `<ah>/bin/`. It is verified against the same pin, and a seed that does not match is ignored with a named reason (m-R3). The GC-14 "no downloader" message prints the exact URL and folder.
 
 ### 8.7 Each plugin alone, both together, and the session-start time budget
 
@@ -442,45 +475,69 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
 }}
 ```
 
-### 9.2 `hooks/guard.sh` decision table (C-1)
+### 9.2 `hooks/guard.sh` decision table (C-1, N-I1)
+
+**Exit classification on the hot path** (no temp files):
+
+```sh
+err=$("$bin" guard hook 2>&1 >/dev/null); rc=$?      # stdin inherited; the binary's stdout is always empty
+```
+
+| `rc` | `$err` | Meaning |
+|---|---|---|
+| 0 | empty | Allow (exit 0) |
+| 2 | starts with `Blocked by anthology-guardrails (` | A real block: `printf '%s\n' "$err" >&2; exit 2` |
+| anything else | anything | **The binary did not work.** This includes exit 0 with stderr, exit 2 with foreign stderr (dash's `Syntax error: …` from a garbage file run as a script), 126, 127, 137, 139 and 101. → quarantine |
 
 | State | Tool | Result |
 |---|---|---|
-| Installed (§8.3) | any | Run `"$bin" guard hook` (no `exec`), stdin inherited. **0 → 0. 2 → 2** (stderr passes through). **Any other exit, including a signal** → **quarantine**, then block with the GC-14 "failed to run (exit N) and was set aside" message. Quarantine renames `<version>` to `.broken-<version>-<epoch>`; the next call takes the "Missing" rows and reinstalls. |
-| Missing; ≥ 3 `.broken-<version>-*` directories newer than 24 h | not read-only | Block with the GC-14 "failed 3 times today" message, which names `/plugin`. No further reinstall loop. |
+| Installed (§8.3: `-f`, `-x`, **`-s`**, marker) | any | Classify as above. On "did not work", **quarantine**: `mv <version> .broken-<version>-<epoch>-<pid>`, then block with the GC-14 "set aside" message. If the `mv` fails, block with the GC-14 "could not be set aside" message (m-R2), which never loops on a reinstall promise. |
+| Present but empty (`test -s` fails) or not executable | not read-only | Quarantine as above. A 0-byte file is **never executed**, so it cannot allow the call (N-I1). |
+| Missing; 3 strikes in 86,400 s (by `<epoch>`) | not read-only | Block with the GC-14 three-strikes message (names `/plugin` and "start a new session"). |
 | Missing; lock valid; platform supported | read-only allowlist (§9.4) | Exit 0. |
-| Missing; lock valid; platform supported | anything else; `ANTHOLOGY_GUARD_NO_FETCH` unset | Buffer stdin to a temp file. Run `bootstrap.sh guard --plugin guardrails --quiet` (20 s, rate-limited). If installed, run the binary on the buffer and return its verdict, applying the first row's rules. Otherwise block with the not-installed message, or the no-downloader message with the manual command. |
+| Missing; lock valid; platform supported | anything else; `ANTHOLOGY_GUARD_NO_FETCH` unset | Buffer stdin to a temp file. Run `bootstrap.sh guard --plugin guardrails --quiet` (20 s, rate-limited, capped). If installed, run the binary on the buffer and apply the classification. Otherwise block with the message for the bootstrap's reason: not installed, rate-limited, no downloader with the manual command, a stale seed, or cannot write. |
 | Missing | anything else; `NO_FETCH` set | Block with the not-installed message. |
-| Lock invalid, or platform unsupported | read-only allowlist | **Exit 0** (m-2), so reading works even on Windows. |
+| Lock invalid, or platform unsupported | read-only allowlist | Exit 0 (m-2). |
 | Lock invalid, or platform unsupported | anything else | Block with the specific GC-14 message. |
 
-**Why the current call is blocked rather than retried after a quarantine:** stdin is not buffered on the hot path, to keep it cheap. The next call heals.
+**Why the current call is blocked rather than retried after a quarantine:** the crashed binary consumed stdin, and the hot path does not buffer it. A later call heals. The "set aside" message says so accurately, because of the rate limit (m-R14): "it is reinstalled on a later call (at most once a minute)".
 
 **Recovery is always possible:**
-- self-heal on the next call, at most once a minute;
-- `/anthology:setup`. Its skill says: if a Bash call is blocked with `(setup)`, wait a minute and retry once;
-- a new session while online;
+- self-heal on a later call;
+- `/anthology:setup`. Its skill says: wait a minute, then retry once;
+- a new session while online. This also ignores the 3-strike cap;
 - **`/plugin` → disable anthology-guardrails**, which never passes through `PreToolUse`.
 
 Every `(setup)` and `(internal)` message names `/plugin`.
 
-**Architect's calls:**
-- self-heal from the guard shim (cost: one ≤20 s pause per minute on blocked calls while offline);
-- quarantine on any exit other than 0 or 2 (cost: one re-download after a transient crash such as an OOM kill);
-- a cap of 3 quarantines per version per day (cost: after a bad release, users must use `/plugin` until a fixed version ships, which is the honest answer).
+**Hard hang (m-R6).**
+- `guard hook` starts its watchdog thread **before reading stdin**.
+- Only a process that cannot run its own threads (SIGSTOP, kernel stall) reaches the 60 s hook timeout. That gives Claude Code's generic `onFailure` block ("timed out; blocking because onFailure is block"), which names neither the cause nor `/plugin`.
+- This residual is documented in SECURITY.md.
 
-**Test matrix (BS1, CO3):**
+**Architect's calls:**
+- self-heal from the shim (cost: a ≤20 s pause, at most once a minute while offline);
+- quarantine on anything other than a clean allow or a well-formed block (cost: one re-download after a transient crash);
+- the 3-strike cap for tool calls (cost: a broken release needs a new session or `/plugin`).
+
+**Test matrix (BS1, CO3).** Every row runs under dash, BusyBox sh, `bash --posix` and macOS `/bin/sh` unless noted:
 
 | Case | Expected |
 |---|---|
-| truncated file | exec format error 126 → quarantine + heal |
-| wrong-arch binary | 126 or "Bad CPU type" → quarantine + heal |
-| panic before `catch_unwind` | exit 101 → quarantine + heal |
-| panic inside `check` | exit 2 `(internal)` block; no quarantine |
-| SIGKILL | 137 → quarantine + heal |
-| internal hang | binary watchdog: exit 2 `(internal)` within 8 s |
-| hard hang (SIGSTOP) | hook timeout → `onFailure` block; smoke `guard-timeout` |
-| deterministic failure | 3 quarantines → `/plugin` message |
+| 0-byte binary | `test -s` fails → quarantine; **never allows** |
+| garbage bytes (dash, BusyBox: run as a script, exit 2 with `Syntax error`) | foreign stderr → quarantine |
+| garbage bytes (`bash`, macOS: exit 126) | quarantine |
+| ELF for the other architecture (dash, BusyBox) | swapped in after install → classification → quarantine; at install → the `--version` probe fails (`the binary does not run on this machine`) |
+| a binary that exits 2 with foreign stderr | quarantine |
+| exit 0 with stderr | quarantine |
+| panic before `catch_unwind` (101) | quarantine + heal |
+| SIGKILL (137), SIGSEGV (139) | quarantine + heal |
+| panic inside `check` | exit 2 `(internal)`; no quarantine |
+| internal hang | watchdog → `(internal)` within 8 s |
+| SIGSTOP | hook timeout → `onFailure` block (smoke `guard-timeout`) |
+| deterministic failure | 3 strikes → three-strikes message; a new session retries once |
+| `mv` of the quarantine fails (read-only `<ah>/bin`) | "could not be set aside" message, no loop |
+| stale seed | network fallback; named reason if that also fails |
 
 ### 9.3 Reading `tool_name` in sh
 
@@ -511,7 +568,7 @@ Cost if wrong: a harmless new tool is blocked until the binary installs.
   It is iterative with **no depth limit**, so Python's `RecursionError` fail-open becomes a real check (F-10, D-1).
 - **Panics.** `hook()` installs a **silent panic hook** (m-5), so nothing reaches stderr except our line, and wraps `check` in `catch_unwind`. A panic gives the GC-14 `(internal)` panic block, exit 2.
 - **Regex limits.** Any `fancy-regex` backtrack-limit error in shell or guard sets `Analysis.incomplete` or aborts the check. Either way the call is blocked with the GC-14 `(internal)` limit message (I-9).
-- **Watchdog.** A thread started by `guard hook` writes the `(internal)` limit block and exits 2 after **8 s**. This stays under the self-test's 10 s timeout.
+- **Watchdog.** A thread started by `guard hook` **before it reads stdin** writes the `(internal)` limit block and exits 2 after **8 s**. This stays under the self-test's 10 s timeout.
 - **Divergence rule.** These are the only intended guard divergences: **where Python raised or would merely be slow, Rust may block, and it must never allow what Python blocked** (D-1, D-7). **Architect's call** (fail-closed intent). Cost if wrong: a guard bug blocks one call. Fuzzing makes that rare, and the message names `/plugin`.
 
 ### 9.6 Unsupported platforms and Windows
@@ -562,7 +619,9 @@ The new workflow is `.github/workflows/anthology-release.yml`, cloned from `rtk-
 The rule is **`regex` where the Python pattern has no lookaround and no backreference; `fancy-regex` wherever it has either.**
 
 - This holds in every crate, including shell, guard and dev.
-- Dynamic patterns built from `HOME` and the hostname (memory_privacy.py:136, :154) use `fancy-regex`.
+- Dynamic patterns built from `HOME` and the hostname (`memory_privacy._home_pattern` and the hostname patterns) use `fancy-regex`.
+- **Secret patterns (N-I3).** Once FW-Q merges into `rust`, the quoted-key `password`/`api key`/credential-assignment patterns gain look-aheads, both in the G6 `_SECRET_PATTERNS` and in privacy. `anthology_guard::secrets` and `privacy::SECRET_PATTERNS` are therefore compiled with `pycompat::re::compile`, which picks fancy-regex when it is needed, and the shared-patterns test compares them as `(pattern, flags)`.
+- **Inventory.** F4a commits `port/regex-inventory.tsv`, listing every Python pattern with lookaround or backreferences. `ledger check` fails if a merge from `build` adds one that is not in it.
 - `pycompat::re::translate` emits **fancy-regex syntax**, so lookaround passes through.
 - The vendor portmap `js_node_regex` patterns contain no lookaround today (checked). DV1 records this and still compiles them through `translate`.
 - **Backtrack-limit handling:**
@@ -675,13 +734,13 @@ The rules (also plan GC-16):
 ### 13.4 Shell shims
 
 `crates/repo-tests/tests/shims.rs` drives `hooks/*.sh` and `bin/*` with:
-- fake binaries (exits 0, 2, 101, 126, 137 and 139, a hang, and a deterministic failure);
-- seeded archives;
-- `PATH` stubs: no curl, GNU wget only, BusyBox wget only, node only, no downloader, a slow or never-ending server, no sha tool, no tar;
-- the §9.2 matrix;
-- the session-start budget test: a stubbed downloader that never finishes, where `session-start.sh` must print one JSON line within **45 s**.
+- the §9.2 test matrix: fake binaries for each exit code; 0-byte, garbage and wrong-arch files; a hang; foreign stderr;
+- seeded archives, including a stale seed;
+- **real downloaders against the testkit TLS server (m-R5)**: curl and wget via `SSL_CERT_FILE`, node via `NODE_EXTRA_CA_CERTS`, BusyBox wget via its CA bundle path. The real tools parse the real flags, plus slow and never-ending server modes. `PATH` stubs are used only for the "tool absent" cases;
+- the session-start budget test: a downloader that never finishes, where `session-start.sh` must print one JSON line within **45 s**;
+- a fast download (< 2 s) returns in under 5 s, which proves the watchdog releases stdout (m-R4).
 
-It runs under dash, `bash --posix` and busybox sh in Linux CI, on the four distribution images in §8.4, and under `/bin/sh` on macOS. The `tool_name` scan is fuzzed with proptest: allow ⇒ exactly one `tool_name` key and the top-level value is allowlisted.
+It runs on the four platforms in §8.4. The `tool_name` key scan is fuzzed with proptest.
 
 ### 13.5 Fuzzing and properties
 
@@ -718,7 +777,9 @@ It runs under dash, `bash --posix` and busybox sh in Linux CI, on the four distr
   3. staged `hooks/guard.sh` with the binary seeded;
   4. staged `hooks/guard.sh` with the binary **missing**.
 
-  Runners 1-3 must agree byte for byte on exit code and stderr. Runner 4 is a report: how many real calls fail-closed would block, by `tool_name`. It validates §9.4.
+  Runners 1-3 must agree byte for byte on exit code and stderr. Runner 4 is a report of how many real calls fail-closed would block, by bucket. It validates §9.4.
+
+  **Isolation (m-R7).** Runners 3 and 4 run with a **scratch `CLAUDE_CONFIG_DIR`**, so they never read or install into the owner's `~/.claude/anthology/bin`. Runner 3's scratch dir is seeded with the tagged binary. Runner 4 sets `ANTHOLOGY_GUARD_NO_FETCH=1`, so it stays "missing". `HOME` is still the real home, because the commands reference it.
 - **Deeper than verdicts.**
   - `shell.analyze` is compared on every Bash `command` and `guard.check` on every call (`Entry` minus `opaque`).
   - `privacy.findings` runs over **every text field** in the corpus (tool inputs, assistant text, tool results), Python against Rust.
@@ -727,8 +788,13 @@ It runs under dash, `bash --posix` and busybox sh in Linux CI, on the four distr
   - after every `build`→`rust` merge that touches `guard_rules.py`, `memory_privacy.py` or `crates/anthology-{shell,guard,pycompat,memory}`;
   - at CO2.
 - **Gate.** Zero unexplained differences.
-  - A committed report with **no commands or text** goes to `port/replay-reports/<date>.md`: corpus size, distinct calls, per-tool counts, runner-4 block counts, both commit SHAs and the sha256 of the corpus manifest.
-  - Disagreements become difftest seeds only after manual scrubbing.
+- **Report privacy rule (N-I2, the controller's ruling, verbatim in intent).** The committed report `port/replay-reports/<date>.md` holds **only aggregate counts and HMAC-keyed case ids**:
+  - **Case ids** are `HMAC-SHA256(key, canonical envelope)[:16]` hex. The key is 32 random bytes generated once and kept **locally** at `~/.claude/anthology/replay/hmac.key`, never in the repo; `.gitignore` also lists `*.hmac.key`. Short commands cannot be recovered by guessing without the key.
+  - **Never included:** command text, paths, `HOME`, user or host names, transcript content of any kind, tool names, or MCP server names.
+  - **Tools are bucketed** as `builtin`, `mcp` or `other`. Every `mcp__*` tool counts as `mcp`, unknown names as `other`. Counts are per bucket and per runner.
+  - **Also allowed:** both commit SHAs, the sha256 of the corpus manifest, totals, distinct counts, divergence-class counts (D-1 to D-7), and the case ids of each explained or unexplained difference.
+  - **The corpus-string test** greps the report for every corpus string longer than 3 characters. Before searching it removes the report's fixed vocabulary: the template words, the bucket names `builtin`/`mcp`/`other`, the divergence class names, and hex ids. Any hit fails RP1.
+- Disagreements become difftest seeds only after manual scrubbing, in a local session; the seed text never goes through the report.
 - **Limit (stated).** The replay proves parity on real traffic, not bypass resistance. Generators and monotonicity cover bypass resistance.
 
 ---
@@ -737,25 +803,22 @@ It runs under dash, `bash --posix` and busybox sh in Linux CI, on the four distr
 
 ### 14.1 During the port
 
-F1 creates every job, some as no-op placeholders, so lanes never edit `ci.yml`.
+**Existing live jobs are untouched until CO2,** including `rtk-test`, `vendor-check` and the Python jobs. F1 adds new jobs only.
 
-| Job | Runs |
-|---|---|
-| `rust-lint` | fmt, clippy `-D warnings` |
-| `rust-test-linux` | `cargo test --workspace --locked` (rust image + git + busybox + node) |
-| `rust-test-macos` | the same on `macos-15` |
-| `shims-distros` | `repo-tests` shim suite in `alpine`, `debian:*-slim` (+node), `ubuntu:24.04` images (new one-line pinned Dockerfiles `ci/images/{alpine,debian-slim,ubuntu}.Dockerfile`) |
-| `deny` | `cargo deny check`, plus the `serde_json` tree check |
-| `shellcheck` | pinned image; `shellcheck -s sh` on all shims |
-| `difftest-linux` | static musl binaries in the python 3.12 image; `--all --gen 10000` |
-| `difftest-macos` | CLI surfaces against setup-python 3.12 (gating) |
-| `ledger` | `anthology-dev ledger check --report` (blocking per lane for the merging lane's files) |
-| `rtk-test` | root mount; path filter adds `crates/anthology-shell/**` |
-| `anthology-release` dry run | on PRs touching the workflow or the toolchain |
-| `fuzz` (weekly) | cargo-fuzz |
-| existing Python jobs | unchanged until cutover |
+| Job | Owner | State after F1 | Runs |
+|---|---|---|---|
+| `rust-lint` | F1 | **real** | fmt, clippy `-D warnings` |
+| `rust-test-linux` | F1 | **real** | `cargo test --workspace --locked` (rust image + git + busybox + node) |
+| `rust-test-macos` | F1 | **real** | the same on `macos-15` |
+| `deny` | F1 | **real** | `cargo deny check`, plus the `serde_json` tree check |
+| `fuzz` (`.github/workflows/fuzz.yml`, weekly + dispatch) | F1 creates; target lanes add their targets' corpora | **real** (runs the targets that exist) | cargo-fuzz, 10 min per target, pinned nightly |
+| `shellcheck` | BS1 | placeholder → real | `shellcheck -s sh` on the shims |
+| `shims-distros` | BS1 | placeholder → real | `repo-tests` shim suite on alpine, debian-slim and ubuntu (packages installed at job start) |
+| `difftest-linux`, `difftest-macos` | F4 | placeholder → real | static musl binaries in the python 3.12 image; CLI surfaces on macOS against setup-python 3.12 (gating) |
+| `ledger` | F4a | placeholder → real | `anthology-dev ledger check --report`, blocking for the merging lane's files, plus the regex-inventory check |
+| `anthology-release` dry run | RL1 | real when added | on PRs touching the workflow or the toolchain |
 
-Local runs use `scripts/{rust-test,dev,difftest}.sh` in docker. There is no host Rust (architect's call, the owner's existing constraint; cost: a slower local loop).
+Placeholders exist only for jobs a named lane fills, and each lane edits only `ci/jobs/<its job>.sh`. Local runs use `scripts/{rust-test,dev,difftest}.sh` in docker. There is no host Rust (owner constraint).
 
 ### 14.2 After cutover (no Python anywhere in CI)
 
@@ -776,17 +839,17 @@ Local runs use `scripts/{rust-test,dev,difftest}.sh` in docker. There is no host
 The plan is authoritative for the lane ids and graph (m-10).
 
 **0. Preconditions.**
-- `fix-f1` is merged into `build`, then `rust` is created.
+- `rust` exists (from `build@1e00f832`). F1 starts now; fix-f1, FW-R and FW-Q arrive through `build`→`rust` merges, and lanes always work from `rust` as it stands (N-I3).
 - The id list and row corpora are extracted.
 - **Double-implementation rule:** a Python behaviour change on `build` needs its Rust equivalent, ledger rows and seeds before the next `build`→`rust` merge goes green (architect's call).
 
 **1. Foundation (F1–F4).** F1 pre-declares **every** shared file, dependency, subcommand, module stub, difftest surface, fuzz target and CI job (plan §0.2). After F1, lanes only add files they own.
 
-**2. Wave 1** (parallel after F): P1, SH1 → SH2 (SH2 after P1), MP1\*, ST1\*, RT1a, RT2, BS1, RL1, DV1\*, DV2, DV4, EV1, and MT1, which merges **last** in wave 1. Starred lanes code against P1's signatures and merge after it.
+**2. Wave 1** (parallel after F): P1, SH1 → SH2 (SH2 after P1), MP1\*, ST1\*, RT1a, RT2, BS1, RL1, DV1\*, DV2, DV4, EV1a, and MT1, which merges **last** in wave 1. Starred lanes code against P1's signatures and merge after it.
 
 **3. Wave 2:** GD1 → GD2 (after SH2); MS1 → MS2; RT1b (doctor, after RT1a, RT2 and ST1; `ROSTER` comes from F1); DV3 (after DV2); RG1 (after SH2).
 
-**4. Wave 3:** MI1 and MX1 (after MS2); RT3 (after RT1a, RT1b, RT2, ST1, MS2, GD2, BS1); RT4 (after RT1a, RT1b, RT2, ST1, MS2, BS1); RP1, the replay tool (after GD2, MP1, BS1, F4).
+**4. Wave 3:** MI1 and MX1 (after MS2); RT3 (after RT1a, RT2, ST1, MS2, GD2, BS1); RT4 (after RT1a, RT1b, RT2, ST1, MS2, BS1); RP1, the replay tool (after GD2, MP1, BS1, F4); **EV1b**, the live smokes and the dry eval (after BS1, GD2, RT3, RT4, MI1, MS1, RL1) (N-I4).
 
 **Merges are serial**, through the controller, one lane at a time. Every other open lane merges `rust` back in and re-runs its definition of done before it merges (plan §0.2).
 
@@ -817,7 +880,7 @@ The plan is authoritative for the lane ids and graph (m-10).
    - *Mitigation:* the shipped-set `check-fresh`; lock equality and format tests; dev seeding for evals; CO2 may not touch the shipped set.
 
 Further risks:
-6. **Merge collisions across 14 parallel lanes.** F1 pre-declaration, per-lane files and serial merges.
+6. **Merge collisions across 13 parallel lanes.** F1 pre-declaration, per-lane files and serial merges.
 7. **Session-start timeout on first runs.** One download per hook, a 20 s budget, and the 45 s shim test.
 8. Byte parity of gzip, tar and SQLite. D-5 plus a custom tar writer.
 9. ureq versus urllib behind proxies. An env-proxy integration test.
@@ -857,6 +920,9 @@ Further risks:
 | A24 | One download per session-start hook; `BOOTSTRAP_BUDGET` 20 s; T0-based rtk skip (F-20) | Always inside the 60 s hook timeout | rtk reconciles one session later after a first install |
 | A25 | RT1 split: loc+compat (wave 1), doctor (wave 2) | Matches the real import graph | None |
 | A26 | Merge discipline: F1 pre-declares shared files; serial merges | Avoids lock and dispatch collisions | Integrator plumbing PRs |
+| A27 | Exit classification: allow only on 0 with empty stderr; block only on 2 with our prefix; `test -s`; `--version` probe at install | Closes the dash/BusyBox ENOEXEC fail-open (N-I1) | A legitimately noisy binary would be quarantined (ours never writes stderr on allow) |
+| A28 | `session` mode ignores the 3-strike cap | A new session or setup is a deliberate retry | One extra download per new session during a bad release |
+| A29 | Replay report: aggregate counts and HMAC-keyed ids only; tools bucketed | Public repo; no personal data | Less diagnostic detail in the committed report (full detail stays local) |
 
 ---
 
@@ -878,3 +944,10 @@ Further risks:
 | I-11 | Plan GC-15 F-16 to F-20, GC-16 D-6; MI1 mapping; DV3 uses F-17 |
 | I-12 | §8.4, §13.4, §14.1; plan BS1 |
 | m-1 to m-22 | All accepted; see plan §6 for where each is fixed. None rejected. |
+| **Re-review 1** | |
+| N-I1 | §8.3, §8.4 step 9, §9.2 classification and matrix; plan GC-17, BS1 |
+| N-I2 | §13.7 report privacy rule; plan RP1 |
+| N-I3 | Header baseline; §11.1 secrets + inventory; plan GC-16, F4a, ledger-based counts |
+| N-I4 | §15 (EV1a/EV1b); plan RL1, EV1a, EV1b |
+| N-I5 | §7.2, §14.1; plan F1 |
+| m-R1 to m-R15 | All accepted; see plan §6. None rejected. |
