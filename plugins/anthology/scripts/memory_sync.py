@@ -514,6 +514,170 @@ def regenerate_index(mem_dir, budget=DEFAULT_BUDGET):
 
 
 # ---------------------------------------------------------------------------------------------
+# Saving agent notes (`anthology-mem save`)
+# ---------------------------------------------------------------------------------------------
+
+# Kept equal to plugins/anthology/agents/*.md by a test.
+ROSTER = ("architect", "debugger", "docs-writer", "implementer", "marketer", "product-planner",
+          "researcher", "reviewer", "scout", "ui-designer", "ui-reviewer")
+SAVE_TYPES = ("project", "feedback", "reference")  # TYPE_ORDER minus "user" (personal memory)
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+MAX_SLUG, MAX_NAME, MAX_DESCRIPTION, MAX_BODY_BYTES = 64, 120, 300, 16384
+# Kept equal to anthology-guardrails guard_rules._SECRET_PATTERNS (G6) by a test.
+_SECRET_PATTERNS = tuple(re.compile(p) for p in (
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}",
+    r"\bgh[pousr]_[A-Za-z0-9]+",
+    r"github_pat_",
+    r"\bsk-[A-Za-z0-9_-]{16,}",
+    r"\bxox[baprs]-",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+)) + tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"password\s*[:=]",
+    r"api[_-]?key\s*[:=]",
+))
+_SECRET_ENV_NAME = re.compile(r"(?i)(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)")
+_LEADING_BLANK_LINES = re.compile(r"\A(?:[ \t]*\n)+")
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+class SaveError(ValueError):
+    """A note `save` refused (bad argument, unsafe path, existing note, secret)."""
+
+
+def _has_control(text, allowed=""):
+    return any((ord(c) < 32 or ord(c) == 127) and c not in allowed for c in text)
+
+
+def _check_line(label, value, limit):
+    if not isinstance(value, str):
+        raise SaveError("%s must be text" % label)
+    value = value.strip()
+    if not value:
+        raise SaveError("%s must not be empty" % label)
+    if len(value) > limit:
+        raise SaveError("%s is too long (at most %d characters)" % (label, limit))
+    if _has_control(value):
+        raise SaveError("%s must be one line without control characters" % label)
+    return value
+
+
+def _check_body(value):
+    if not isinstance(value, str):
+        raise SaveError("body must be text")
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    if _has_control(value, "\n\t"):
+        raise SaveError("body must not contain control characters (other than newline and tab)")
+    value = _LEADING_BLANK_LINES.sub("", value).rstrip()
+    if not value:
+        raise SaveError("body must not be empty")
+    if len(value.encode("utf-8")) > MAX_BODY_BYTES:
+        raise SaveError("body is too long (at most %d bytes)" % MAX_BODY_BYTES)
+    return value + "\n"
+
+
+def _refuse_secrets(texts, env):
+    joined = "\n".join(texts)
+    if any(p.search(joined) for p in _SECRET_PATTERNS):
+        raise SaveError("refusing to save: the note looks like it contains a secret "
+                        "(memory is committed to the repo)")
+    for var, value in sorted((os.environ if env is None else env).items()):
+        if (isinstance(value, str) and len(value) >= 8 and _SECRET_ENV_NAME.search(var)
+                and value in joined):
+            raise SaveError("refusing to save: the note contains the value of $%s "
+                            "(memory is committed to the repo)" % var)
+
+
+def _yaml_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ensure_real_dir(path, root):
+    """Make `path` a real directory (never a symlink), creating it if absent."""
+    rel = path.relative_to(root).as_posix()
+    if not os.path.lexists(str(path)):
+        try:
+            os.mkdir(str(path), 0o755)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SaveError("could not create %s: %s" % (rel, exc.strerror or exc))
+    if os.path.islink(str(path)) or not os.path.isdir(str(path)):
+        raise SaveError("refusing to write: %s is a symlink or not a folder" % rel)
+
+
+def save_note(root, agent, type_, slug, name, description, body, replace=False, today=None,
+              env=None):
+    """Write `<root>/.claude/agent-memory/anthology-<agent>/<type_>-<slug>.md` and regenerate that
+    folder's MEMORY.md.
+
+    Only validated parts build the path, so no argument can reach outside the agent's folder.
+    An existing note is refused unless `replace`; symlinks are never written through. Returns
+    {"path", "relative", "action" ("created" or "replaced"), "index_warning"}; raises SaveError."""
+    if agent not in ROSTER:
+        raise SaveError("unknown agent; use one of: %s" % ", ".join(ROSTER))
+    if type_ not in SAVE_TYPES:
+        raise SaveError("type must be one of: %s" % ", ".join(SAVE_TYPES))
+    if not (isinstance(slug, str) and SLUG_RE.fullmatch(slug) and len(slug) <= MAX_SLUG):
+        raise SaveError("slug must be lowercase words joined by single dashes (a-z, 0-9), "
+                        "at most %d characters" % MAX_SLUG)
+    name = _check_line("name", name, MAX_NAME)
+    description = _check_line("description", description, MAX_DESCRIPTION)
+    body = _check_body(body)
+    _refuse_secrets((name, description, body), env)
+    if not os.path.isdir(str(root)):
+        raise SaveError("not a folder: %s" % root)
+    root = Path(os.path.realpath(str(root)))
+
+    agent_dir = root / ".claude" / "agent-memory" / ("anthology-%s" % agent)
+    for directory in (root / ".claude", root / ".claude" / "agent-memory", agent_dir):
+        _ensure_real_dir(directory, root)
+    if os.path.realpath(str(agent_dir)) != str(agent_dir):
+        raise SaveError("refusing to write: %s is a symlink or not a folder"
+                        % agent_dir.relative_to(root).as_posix())
+
+    path = agent_dir / ("%s-%s.md" % (type_, slug))
+    relative = path.relative_to(root).as_posix()
+    text = ("---\nname: %s\ndescription: %s\nmetadata:\n  type: %s\n  modified: %s\n---\n\n%s"
+            % (_yaml_quote(name), _yaml_quote(description), type_,
+               str(today or datetime.date.today().isoformat()), body))
+    data = text.encode("utf-8")
+    action = "created"
+    try:
+        if not replace:
+            try:
+                fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o644)
+            except FileExistsError:
+                raise SaveError("%s already exists; pass --replace to overwrite it" % relative)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+            except BaseException:
+                try:
+                    os.unlink(str(path))
+                except OSError:
+                    pass
+                raise
+        else:
+            kind = _lstat_kind(path)
+            if kind == "other":
+                raise SaveError("refusing to write: %s is a symlink or not a regular file"
+                                % relative)
+            action = "replaced" if kind == "file" else "created"
+            _atomic_write(path, data)
+    except UnsafeTarget as exc:
+        raise SaveError(str(exc))
+    except OSError as exc:
+        raise SaveError("could not write %s: %s" % (relative, exc.strerror or exc))
+
+    warning = None
+    try:
+        regenerate_index(agent_dir)
+    except (OSError, UnsafeTarget) as exc:
+        warning = str(exc)
+    return {"path": path, "relative": relative, "action": action, "index_warning": warning}
+
+
+# ---------------------------------------------------------------------------------------------
 # Migration from the old path-keyed folder
 # ---------------------------------------------------------------------------------------------
 

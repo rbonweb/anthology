@@ -466,5 +466,131 @@ class CliTest(MemCase):
         self.assertEqual(len(rows), 2)
 
 
+@needs_git
+class SaveCliTest(MemCase):
+    """`anthology-mem save` through the real wrapper; no setup, state file or data dir exists."""
+
+    REL = ".claude/agent-memory/anthology-scout/project-eval-probe.md"
+
+    def setUp(self):
+        super().setUp()
+        self.wrapper = BIN / "anthology-mem"
+        self.repo = self.make_repo()
+
+    def run_cli(self, *args, cwd=None):
+        return subprocess.run([str(self.wrapper)] + list(args), cwd=str(cwd or self.repo),
+                              env=cli_env(self.home, self.config), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True)
+
+    def save(self, *extra, **kw):
+        flags = {"agent": "scout", "type": "project", "slug": "eval-probe", "name": "Eval probe",
+                 "description": "How the probe works", "body": "Body."}
+        flags.update(kw)
+        argv = ["save"]
+        for key, value in flags.items():
+            argv += ["--" + key, value]
+        return self.run_cli(*argv, *extra)
+
+    def test_saves_without_any_setup(self):
+        self.assertFalse(self.anth.exists())
+        p = self.save()
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, "created " + self.REL + "\n", ""))
+        note = memory_index.parse_note(self.repo / self.REL)
+        self.assertEqual((note["name"], note["type"], note["description"]),
+                         ("Eval probe", "project", "How the probe works"))
+        self.assertTrue((self.repo / ".claude/agent-memory/anthology-scout/MEMORY.md").is_file())
+        self.assertFalse(self.anth.exists())
+        self.assertEqual(list(self.data.iterdir()), [])
+
+    def test_saves_to_the_repo_root_from_a_subfolder(self):
+        sub = self.repo / "src" / "deep"
+        sub.mkdir(parents=True)
+        p = self.run_cli("save", "--agent", "scout", "--type", "feedback", "--slug", "x",
+                         "--name", "n", "--description", "d", "--body", "b", cwd=sub)
+        self.assertEqual(p.stdout, "created .claude/agent-memory/anthology-scout/feedback-x.md\n")
+        self.assertTrue((self.repo / ".claude/agent-memory/anthology-scout/feedback-x.md").is_file())
+        self.assertFalse((sub / ".claude").exists())
+
+    def test_second_identical_call_fails_and_replace_succeeds(self):
+        self.assertEqual(self.save().returncode, 0)
+        before = (self.repo / self.REL).read_bytes()
+        p = self.save()
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(p.stdout, "")
+        self.assertTrue(p.stderr.startswith("anthology-mem: "))
+        self.assertIn("--replace", p.stderr)
+        self.assertEqual((self.repo / self.REL).read_bytes(), before)
+        p = self.save("--replace", body="Newer body.")
+        self.assertEqual((p.returncode, p.stdout), (0, "replaced " + self.REL + "\n"))
+        self.assertIn("Newer body.", (self.repo / self.REL).read_text())
+
+    def test_json_output(self):
+        p = self.save("--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), {"action": "created", "path": self.REL})
+        self.assertEqual(list(json.loads(p.stdout)), ["action", "path"])
+        p = self.save("--json", "--replace")
+        self.assertEqual(json.loads(p.stdout), {"action": "replaced", "path": self.REL})
+
+    def test_outside_a_git_repo_exits_1(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        p = self.run_cli("save", "--agent", "scout", "--type", "project", "--slug", "x",
+                         "--name", "n", "--description", "d", "--body", "b", cwd=plain)
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(p.stderr, "anthology-mem: not inside a git work tree; memory notes "
+                                   "live in the repo\n")
+        self.assertEqual(list(plain.iterdir()), [])
+
+    def test_abbreviated_flags_are_rejected(self):
+        p = self.save("--rep")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("unrecognized arguments", p.stderr)
+        self.assertFalse((self.repo / ".claude").exists())
+
+    def test_missing_required_flags_exit_2(self):
+        p = self.run_cli("save", "--agent", "scout")
+        self.assertEqual(p.returncode, 2)
+        self.assertFalse((self.repo / ".claude").exists())
+
+    def test_refusals_exit_1_with_a_clear_message(self):
+        p = self.save(type="user")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("project", p.stderr)
+        p = self.save(agent="nobody")
+        self.assertEqual(p.returncode, 1)
+        p = self.save(body="see " + "ghp" + "_abc123")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("secret", p.stderr)
+        self.assertNotIn("ghp" + "_abc123", p.stderr)
+        self.assertFalse((self.repo / ".claude").exists())
+
+    def test_a_body_with_literal_newlines_in_one_argument(self):
+        body = "First line.\nSecond; with | pipes > and && stuff.\n\n- item $HOME `x` \\n kept"
+        p = self.save(body=body)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        text = (self.repo / self.REL).read_text()
+        self.assertTrue(text.endswith("---\n\n" + body + "\n"))
+
+    def test_a_value_starting_with_dashes_is_taken_as_a_value(self):
+        p = self.save(body="--not-a-flag text")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue((self.repo / self.REL).read_text().endswith("\n--not-a-flag text\n"))
+
+    def test_the_save_does_not_touch_other_files(self):
+        write(self.repo / "keep.txt", "keep")
+        before = snapshot(self.repo)
+        self.assertEqual(self.save().returncode, 0)
+        after = snapshot(self.repo)
+        self.assertEqual({k for k in after if k not in before},
+                         {".claude/agent-memory/anthology-scout/MEMORY.md", self.REL})
+        self.assertEqual({k: v for k, v in before.items()}, {k: after[k] for k in before})
+
+    def test_save_is_listed_in_the_help_and_wrapper_header(self):
+        p = self.run_cli("--help")
+        self.assertIn("save", p.stdout)
+        self.assertIn("save", self.wrapper.read_text().splitlines()[1])
+
+
 if __name__ == "__main__":
     unittest.main()
