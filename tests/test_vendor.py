@@ -1477,6 +1477,136 @@ class ShipLicenseTest(FixtureCase):
         vendor.build_tree(self.root, e, self.pristine["s"], built, patches=False)
         self.assertEqual((built / "LICENSE").read_text(), MIT_TEXT)
 
+    # -- symlinks, NOTICE names, and the patch interplay ------------------------------------
+
+    def link(self, name, rel, to):
+        path = self.pristine[name] / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        path.symlink_to(to)
+
+    def outside_file(self):
+        secret = self.tmp / "secret.txt"
+        secret.write_text("PRIVATE\n", encoding="utf-8")
+        return secret
+
+    def patched(self, patch_text, files=None, **kw):
+        """An entry with one patch (written under vendor/patches/s.patch)."""
+        e = self.sub(files=files, transform=[{"patch": "vendor/patches/s.patch"}], **kw)
+        write(self.root, "vendor/patches/s.patch", patch_text)
+        return e
+
+    SKILL_PATCH = "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1 +1,2 @@\n s\n+patched\n"
+
+    def test_symlinked_license_file_is_refused(self):
+        e = self.sub()
+        self.link("s", "LICENSE", self.outside_file())
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("LICENSE", str(ctx.exception))
+        self.assertFalse(self.target("s", "LICENSE").exists())
+        with self.assertRaises(vendor.VendorError):  # vendor/licenses/ is fed by the same read
+            vendor.fetch_licenses(self.root, fetch=self.fetch)
+        self.assertFalse((self.root / "vendor/licenses/acme-s.txt").exists())
+
+    def test_symlinked_license_file_to_a_file_inside_the_checkout_is_refused_too(self):
+        e = self.sub(files={"real/LICENSE": MIT_TEXT})
+        self.link("s", "LICENSE", "real/LICENSE")
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+
+    def test_symlinked_license_extra_is_refused(self):
+        e = self.sub(license_extra=["NOTICE"])
+        self.link("s", "NOTICE", self.outside_file())
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("NOTICE", str(ctx.exception))
+        self.assertFalse(self.target("s", "NOTICE").exists())
+
+    def test_license_extra_behind_a_symlinked_directory_is_refused(self):
+        outside = self.tmp / "elsewhere"
+        write(outside, "NOTICE", "PRIVATE\n")
+        e = self.sub(license_extra=["docs/NOTICE"])
+        self.link("s", "docs", outside)
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+
+    def test_symlinked_upstream_notice_is_refused(self):
+        e = self.sub()
+        self.link("s", "NOTICE", self.outside_file())
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("symlink", str(ctx.exception))
+        self.assertTrue(any("NOTICE" in m for m in self.check()))
+
+    def test_notice_names_match_in_any_case(self):
+        for name in ("notice", "NOTICE.TXT", "Notice.md"):
+            e = self.sub(files={name: self.NOTICE})
+            self.set_sources([e])
+            with self.assertRaises(vendor.VendorError) as ctx:
+                vendor.build(self.root, "s", fetch=self.fetch)
+            self.assertIn(f"upstream {name} is not shipped", str(ctx.exception))
+            (self.pristine["s"] / name).unlink()
+
+    def test_a_notice_directory_is_not_a_notice(self):
+        e = self.sub(files={"NOTICE/readme.md": "x\n"})
+        self.build_all([e])
+
+    def test_license_in_a_sibling_folder_with_the_same_prefix_is_copied(self):
+        e = self.sub(files={"skills/s2/LICENSE": MIT_TEXT}, license_file="skills/s2/LICENSE")
+        self.build_all([e])
+        self.assertEqual(self.target("s", "LICENSE").read_text(), MIT_TEXT)
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_diff_reproduces_a_patch_without_license_hunks(self):
+        e = self.patched(self.SKILL_PATCH, files={"NOTICE": self.NOTICE}, license_extra=["NOTICE"])
+        self.build_all([e])
+        self.assertEqual(self.target("s", "SKILL.md").read_text(), "s\npatched\n")
+        self.assertEqual(self.check(), [])
+        text = vendor.diff_entry(self.root, "s", fetch=self.fetch)
+        self.assertEqual(text, "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1 +1,2 @@\n s\n+patched\n")
+        self.assertNotIn("LICENSE", text)
+        self.assertNotIn("NOTICE", text)
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_patch_may_resolve_a_license_name_conflict(self):
+        drop = "--- a/LICENSE\n+++ /dev/null\n@@ -1 +0,0 @@\n-stale\n"
+        e = self.patched(drop, files={"skills/s/LICENSE": "stale\n"})
+        self.build_all([e])
+        self.assertEqual(self.target("s", "LICENSE").read_text(), MIT_TEXT)  # the root text ships
+        self.assertEqual(self.check(), [])
+        vendor.diff_entry(self.root, "s", fetch=self.fetch)  # must not raise
+        write(self.root, "vendor/patches/s.patch", "")  # without the patch the conflict is an error
+        e["transform"] = []
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertTrue(any("LICENSE" in m for m in self.check()))
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_patch_that_deletes_the_in_folder_license_is_an_error(self):
+        drop = "--- a/LICENSE.txt\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-MIT License\n-\n-Copyright (c) Someone\n"
+        e = self.patched(drop, files={"skills/s/LICENSE.txt": MIT_TEXT}, license_file="skills/s/LICENSE.txt")
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertTrue(any("LICENSE.txt" in m for m in self.check()))
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_patch_that_deletes_an_in_folder_notice_is_an_error(self):
+        drop = "--- a/NOTICE\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-Thing\n-Copyright 2026 Someone\n"
+        e = self.patched(drop, files={"skills/s/NOTICE": self.NOTICE})
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("a patch removed it", str(ctx.exception))
+
 
 class PortmapTest(FixtureCase):
     """The `portmap` entry field: the script rule applied to the pristine and the shipped tree."""

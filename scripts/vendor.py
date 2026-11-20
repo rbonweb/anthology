@@ -61,7 +61,7 @@ VENDORED_PLUGIN = "plugins/anthology-superpowers"
 KNOWLEDGE_DIR = "plugins/anthology/knowledge"
 IGNORED_EXTRAS = {".DS_Store"}
 PORTMAP_DIR = "vendor/patches/"
-NOTICE_NAMES = ("NOTICE", "NOTICE.txt", "NOTICE.md")
+NOTICE_NAMES = frozenset({"notice", "notice.txt", "notice.md"})  # matched in lower case
 FIXED_LICENSE_NAME = "LICENSE"
 
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -1023,12 +1023,15 @@ def _pristine_subtree(entry: dict, pristine: Path) -> Path:
     return src
 
 
-def _ship_file(dest: Path, name: str, data: bytes, entry: dict) -> None:
+def _ship_file(dest: Path, name: str, data: bytes, entry: dict, strict: bool = True) -> None:
     """Write a license file to dest/name (mode 644). A file already there is fine when it has
-    the same bytes (uxkin folders ship their own LICENSE) and an error when it differs."""
+    the same bytes (uxkin folders ship their own LICENSE) and an error when it differs; with
+    strict off (`diff`, before the patches) a differing file is left alone."""
     target = Path(dest) / name
     if target.is_symlink() or target.exists():
         if target.is_symlink() or not target.is_file() or target.read_bytes() != data:
+            if not strict:
+                return
             raise VendorError(f"{entry['name']}: {name} already exists in the source folder "
                               f"and differs from the license text to ship")
         return
@@ -1036,13 +1039,18 @@ def _ship_file(dest: Path, name: str, data: bytes, entry: dict) -> None:
     target.chmod(0o644)
 
 
-def _upstream_extra(entry: dict, pristine: Path, rel: str) -> bytes:
+def _read_upstream(entry: dict, pristine: Path, rel: str, what: str) -> bytes:
+    """The bytes of a license-like file of the pristine checkout. A symlink, or a path that
+    resolves outside the checkout, is refused: it could ship a local file into a public tree."""
     src = Path(pristine) / rel
+    if src.is_symlink() or (src.exists() and Path(pristine).resolve() not in src.resolve().parents):
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} is a symlink or lies outside "
+                          f"the checkout; it is not read")
     if not src.is_file():
-        raise VendorError(f"{entry['name']}: upstream license_extra file {rel} not found")
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} not found")
     data = src.read_bytes()
     if not data.strip():
-        raise VendorError(f"{entry['name']}: upstream license_extra file {rel} is empty")
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} is empty")
     return data
 
 
@@ -1060,11 +1068,13 @@ def _notice_problems(entry: dict, pristine: Path, dest: Path) -> list:
             present = set(os.listdir(here))
         except OSError:
             continue
-        for name in NOTICE_NAMES:
+        for name in sorted(n for n in present if n.lower() in NOTICE_NAMES):
             rel = f"{directory}/{name}" if directory else name
-            if name not in present or not (here / name).is_file():
+            if (here / name).is_symlink():
+                problems.append(f"{entry['name']}: upstream {rel} is a symlink; it is not supported")
+            elif not (here / name).is_file():
                 continue
-            if directory == folder:
+            elif directory == folder:
                 if not (Path(dest) / name).is_file():
                     problems.append(f"{entry['name']}: upstream {rel} is not shipped "
                                     f"(a patch removed it)")
@@ -1074,16 +1084,17 @@ def _notice_problems(entry: dict, pristine: Path, dest: Path) -> list:
     return problems
 
 
-def ship_licenses(root: Path, entry: dict, pristine: Path, dest: Path) -> None:
+def ship_licenses(root: Path, entry: dict, pristine: Path, dest: Path, strict: bool = True) -> None:
     """Put the source's license text, and any upstream NOTICE, inside the built folder: Claude
     Code installs a plugin directory on its own, so the text must travel with it. Files are
-    copied unchanged."""
+    copied unchanged. With strict off (`diff` builds without the patches) a license copy that
+    conflicts with a file of the folder is skipped: a patch may be what resolves it."""
     folder, license_file = entry["path"], entry.get("license_file")
     if license_file is None:
         fixed = Path(root) / LICENSES / f"{source_slug(entry)}.txt"
         if not fixed.is_file():
             raise VendorError(f"{entry['name']}: fixed license text {LICENSES / fixed.name} not found")
-        _ship_file(dest, FIXED_LICENSE_NAME, fixed.read_bytes(), entry)
+        _ship_file(dest, FIXED_LICENSE_NAME, fixed.read_bytes(), entry, strict)
     else:
         prefix = folder + "/" if folder else ""
         if license_file.startswith(prefix):
@@ -1092,9 +1103,10 @@ def ship_licenses(root: Path, entry: dict, pristine: Path, dest: Path) -> None:
                                   f"the built folder")
         else:
             _ship_file(dest, posixpath.basename(license_file),
-                       _upstream_license(entry, pristine), entry)
+                       _upstream_license(entry, pristine), entry, strict)
     for rel in entry.get("license_extra", []):
-        _ship_file(dest, posixpath.basename(rel), _upstream_extra(entry, pristine, rel), entry)
+        _ship_file(dest, posixpath.basename(rel),
+                   _read_upstream(entry, pristine, rel, "license_extra file"), entry, strict)
     if entry.get("repo"):
         problems = _notice_problems(entry, pristine, dest)
         if problems:
@@ -1116,7 +1128,7 @@ def build_tree(root: Path, entry: dict, pristine: Path, dest: Path,
                 stats["rejects"] += apply_patch(dest, patch, reject=reject)
         else:
             stats["transforms"].append((spec["name"], TRANSFORMS[spec["name"]](dest, entry, spec)))
-    ship_licenses(root, entry, pristine, dest)
+    ship_licenses(root, entry, pristine, dest, strict=patches)
     if patches and entry.get("portmap"):
         stats["portmap"] = portmap_problems(load_portmap(root, entry),
                                             _pristine_subtree(entry, pristine), dest)
@@ -1174,13 +1186,7 @@ def fixed_license_problems(root: Path, entry: dict) -> list:
 
 
 def _upstream_license(entry: dict, pristine: Path) -> bytes:
-    src = Path(pristine) / entry["license_file"]
-    if not src.is_file():
-        raise VendorError(f"{entry['name']}: upstream license file {entry['license_file']} not found")
-    data = src.read_bytes()
-    if not data.strip():
-        raise VendorError(f"{entry['name']}: upstream license file {entry['license_file']} is empty")
-    return data
+    return _read_upstream(entry, pristine, entry["license_file"], "license file")
 
 
 def fetch_licenses(root: Path, names=None, fetch=None) -> list:
