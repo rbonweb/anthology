@@ -321,8 +321,14 @@ mod tests {
 
     #[test]
     fn status_lines_parse() {
-        assert_eq!(parse_status(b"status=present\n", 0), GuardBinaryStatus::Present);
-        assert_eq!(parse_status(b"status=installed\n", 0), GuardBinaryStatus::Installed);
+        assert_eq!(
+            parse_status(b"status=present\n", 0),
+            GuardBinaryStatus::Present
+        );
+        assert_eq!(
+            parse_status(b"status=installed\n", 0),
+            GuardBinaryStatus::Installed
+        );
         assert_eq!(
             parse_status(b"status=failed:download failed\n", 1),
             GuardBinaryStatus::Failed("download failed".into())
@@ -354,7 +360,8 @@ mod tests {
             panic!()
         };
         assert_eq!(r.chars().count(), REASON_MAX);
-        let GuardBinaryStatus::Failed(r) = parse_status("status=failed:a\u{1b}b\u{e9}".as_bytes(), 1)
+        let GuardBinaryStatus::Failed(r) =
+            parse_status("status=failed:a\u{1b}b\u{e9}".as_bytes(), 1)
         else {
             panic!()
         };

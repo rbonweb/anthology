@@ -237,7 +237,10 @@ fn listing(dir: &Path) -> Vec<String> {
                 stack.push(p);
             } else {
                 let sha = fs::read(&p).map(|b| sha256_hex(&b)).unwrap_or_default();
-                out.push(format!("{rel} file {mode:04o} {}", &sha[..16.min(sha.len())]));
+                out.push(format!(
+                    "{rel} file {mode:04o} {}",
+                    &sha[..16.min(sha.len())]
+                ));
             }
         }
     }
@@ -253,7 +256,11 @@ fn run(case: &Value) -> Observed {
     let env = Env::default()
         .with_os("CLAUDE_CONFIG_DIR", tmp.join("config"))
         .with_os("HOME", tmp.join("home"));
-    build_pre(&tmp, &data, field(case, "pre").as_array().map_or(&[], Vec::as_slice));
+    build_pre(
+        &tmp,
+        &data,
+        field(case, "pre").as_array().map_or(&[], Vec::as_slice),
+    );
     let shown = |s: &str| s.replace(&*tmp.to_string_lossy(), "<tmp>");
     if let Some(prior) = field(case, "state").as_str() {
         let value = prior.replace("<tmp>", &tmp.to_string_lossy());
@@ -459,7 +466,12 @@ const REPO: &str = "rbonweb/anthology";
 /// A current install of `blob` at version `v`.
 fn installed(v: &str, blob: &[u8]) -> Vec<Value> {
     vec![
-        pre_file(&format!("rtk/{v}/rtk"), b"#!/bin/sh\necho fake-rtk\n", 0o755, None),
+        pre_file(
+            &format!("rtk/{v}/rtk"),
+            b"#!/bin/sh\necho fake-rtk\n",
+            0o755,
+            None,
+        ),
         pre_file(
             &format!("rtk/{v}/.sha256"),
             format!("{}\n", sha256_hex(blob)).as_bytes(),
@@ -488,7 +500,16 @@ fn seed_cases() -> Vec<Value> {
             none,
         ),
         // Already installed, stale state.
-        case(lock(), LINUX, &blob, "lock", None, installed(V, &blob), Some("/previous/rtk"), none),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            installed(V, &blob),
+            Some("/previous/rtk"),
+            none,
+        ),
         // A wrong hash.
         case(
             lock_value(V, REPO, host, &blob, true),
@@ -501,7 +522,16 @@ fn seed_cases() -> Vec<Value> {
             none,
         ),
         // Fetch errors.
-        case(lock(), LINUX, &blob, "error", Some(("OSError", "offline")), vec![], None, none),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "error",
+            Some(("OSError", "offline")),
+            vec![],
+            None,
+            none,
+        ),
         case(
             lock(),
             LINUX,
@@ -514,8 +544,26 @@ fn seed_cases() -> Vec<Value> {
         ),
         case(lock(), LINUX, &blob, "elsewhere", None, vec![], None, none),
         // Platforms.
-        case(lock(), ("Windows", "AMD64"), &blob, "lock", None, vec![], None, none),
-        case(lock(), ("FreeBSD", "amd64"), &blob, "lock", None, vec![], None, none),
+        case(
+            lock(),
+            ("Windows", "AMD64"),
+            &blob,
+            "lock",
+            None,
+            vec![],
+            None,
+            none,
+        ),
+        case(
+            lock(),
+            ("FreeBSD", "amd64"),
+            &blob,
+            "lock",
+            None,
+            vec![],
+            None,
+            none,
+        ),
         case(
             lock_value(V, REPO, host_of(("Darwin", "arm64")), &blob, false),
             ("Darwin", "arm64"),
@@ -535,7 +583,10 @@ fn seed_cases() -> Vec<Value> {
             &blob,
             "lock",
             None,
-            vec![pre_dir("elsewhere-target", None), pre_link(&format!("rtk/{V}"), "<tmp>/data/elsewhere-target")],
+            vec![
+                pre_dir("elsewhere-target", None),
+                pre_link(&format!("rtk/{V}"), "<tmp>/data/elsewhere-target"),
+            ],
             None,
             none,
         ),
@@ -561,8 +612,26 @@ fn seed_cases() -> Vec<Value> {
             none,
         ),
         // Limits.
-        case(lock(), LINUX, &blob, "lock", None, vec![], None, (Some(4), None)),
-        case(lock(), LINUX, &blob, "lock", None, vec![], None, (None, Some(1))),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            vec![],
+            None,
+            (Some(4), None),
+        ),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            vec![],
+            None,
+            (None, Some(1)),
+        ),
     ];
     for (name, members) in rejected_members() {
         let _ = name;
@@ -578,7 +647,12 @@ fn seed_cases() -> Vec<Value> {
             none,
         ));
     }
-    for b in [b"".to_vec(), b"this is not a tarball".to_vec(), gzip(&[0u8; 100]), gzip(&[0u8; 1024])] {
+    for b in [
+        b"".to_vec(),
+        b"this is not a tarball".to_vec(),
+        gzip(&[0u8; 100]),
+        gzip(&[0u8; 1024]),
+    ] {
         out.push(case(
             lock_value(V, REPO, host, &b, false),
             LINUX,
@@ -597,13 +671,25 @@ fn rejected_members() -> Vec<(&'static str, Vec<(&'static str, RawKind)>)> {
     let body = || RawKind::File(b"#!/bin/sh\necho fake-rtk\n".to_vec());
     let x = || RawKind::File(b"x".to_vec());
     vec![
-        ("symlink rtk", vec![("rtk", RawKind::Symlink("/bin/sh".into()))]),
-        ("hardlink rtk", vec![("rtk", RawKind::Hardlink("LICENSE".into())), ("LICENSE", x())]),
+        (
+            "symlink rtk",
+            vec![("rtk", RawKind::Symlink("/bin/sh".into()))],
+        ),
+        (
+            "hardlink rtk",
+            vec![
+                ("rtk", RawKind::Hardlink("LICENSE".into())),
+                ("LICENSE", x()),
+            ],
+        ),
         ("dotdot member", vec![("../rtk", body()), ("LICENSE", x())]),
         ("nested member", vec![("bin/rtk", body())]),
         ("absolute member", vec![("/rtk", body())]),
         ("no rtk member", vec![("LICENSE", x())]),
-        ("duplicate rtk", vec![("rtk", body()), ("rtk", RawKind::File(b"other".to_vec()))]),
+        (
+            "duplicate rtk",
+            vec![("rtk", body()), ("rtk", RawKind::File(b"other".to_vec()))],
+        ),
         ("dir rtk", vec![("rtk", RawKind::Dir)]),
         ("dot rtk", vec![("./rtk", body())]),
     ]
@@ -620,7 +706,9 @@ const MEMBER_NAMES: [&str; 10] = [
 ];
 
 fn rand_bytes(rng: &mut Rng, max: usize) -> Vec<u8> {
-    (0..rng.index(max + 1)).map(|_| rng.below(256) as u8).collect()
+    (0..rng.index(max + 1))
+        .map(|_| rng.below(256) as u8)
+        .collect()
 }
 
 fn rand_blob(rng: &mut Rng) -> Vec<u8> {
@@ -720,7 +808,14 @@ fn rand_pre(rng: &mut Rng, version: &str, blob: &[u8]) -> Vec<Value> {
         _ => {}
     }
     for _ in 0..rng.index(4) {
-        let other = rng.pick(&["0.8.0", "1.0.0", "3.1.4-x.1", "notes", ".tmp-old1", ".tmp-new1"]);
+        let other = rng.pick(&[
+            "0.8.0",
+            "1.0.0",
+            "3.1.4-x.1",
+            "notes",
+            ".tmp-old1",
+            ".tmp-new1",
+        ]);
         if other == &version {
             continue;
         }
@@ -731,7 +826,12 @@ fn rand_pre(rng: &mut Rng, version: &str, blob: &[u8]) -> Vec<Value> {
         }
         if rng.chance(0.5) {
             pre.push(pre_file(&format!("{base}/rtk"), b"x", 0o755, None));
-            pre.push(pre_file(&format!("{base}/.last-used"), b"", 0o644, Some(age)));
+            pre.push(pre_file(
+                &format!("{base}/.last-used"),
+                b"",
+                0o644,
+                Some(age),
+            ));
         }
         pre.push(pre_dir(&base, Some(age)));
     }

@@ -90,7 +90,10 @@ struct Base {
 
 impl Base {
     fn new() -> Base {
-        let dir = tempfile::Builder::new().prefix("t11-").tempdir().expect("tmp");
+        let dir = tempfile::Builder::new()
+            .prefix("t11-")
+            .tempdir()
+            .expect("tmp");
         let tmp = fs::canonicalize(dir.path()).expect("realpath");
         let data = tmp.join("data");
         let cfg = tmp.join("config");
@@ -139,7 +142,13 @@ fn deps(fetch: &dyn Fetch) -> RtkDeps<'_> {
 }
 
 fn install(b: &Base, lock: &Lock, fetch: &dyn Fetch) -> Result<PathBuf, PyExc> {
-    rtk_install::install(&b.data, lock, rtk_install::DEFAULT_TIMEOUT, HOST, &deps(fetch))
+    rtk_install::install(
+        &b.data,
+        lock,
+        rtk_install::DEFAULT_TIMEOUT,
+        HOST,
+        &deps(fetch),
+    )
 }
 
 fn install_with(
@@ -275,7 +284,9 @@ mod load_lock_test {
             }
             "wrong tag" => mutate(|l| set(l, "tag", "rtk--v9.9.9")),
             "no tag prefix" => mutate(|l| set(l, "tag", "v1.2.1-anthology.1")),
-            "extra target" => mutate(|l| set(sha_map(l), "x86_64-pc-windows-msvc", &"a".repeat(64))),
+            "extra target" => {
+                mutate(|l| set(sha_map(l), "x86_64-pc-windows-msvc", &"a".repeat(64)))
+            }
             "missing target" => mutate(|l| {
                 sha_map(l).remove("x86_64-apple-darwin");
             }),
@@ -306,7 +317,10 @@ mod load_lock_test {
     #[test]
     fn test_rejects_invalid_locks() {
         let b = Base::new();
-        let table: Vec<Row> = rows("test_rtk_install", "test_rtk_install.LoadLockTest.test_rejects_invalid_locks");
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.LoadLockTest.test_rejects_invalid_locks",
+        );
         assert_eq!(table.len(), 18);
         for row in table {
             let name = row.str("$msg");
@@ -319,7 +333,11 @@ mod load_lock_test {
     fn test_rejects_non_json() {
         let b = Base::new();
         let err = load(&b, "not json").unwrap_err();
-        assert!(err.py_str().ends_with("is not valid JSON"), "{}", err.py_str());
+        assert!(
+            err.py_str().ends_with("is not valid JSON"),
+            "{}",
+            err.py_str()
+        );
     }
 }
 
@@ -353,7 +371,9 @@ mod install_test {
         assert_eq!(fetch.calls()[0].0, rtk_url_for(&lock, RTK_HOST));
         let vdir = path.parent().expect("vdir");
         assert_eq!(
-            fs::read_to_string(vdir.join(".sha256")).expect("marker").trim(),
+            fs::read_to_string(vdir.join(".sha256"))
+                .expect("marker")
+                .trim(),
             lock.sha256[&HOST]
         );
         assert_eq!(b.entries(vdir), [".last-used", ".sha256", "rtk"]);
@@ -419,7 +439,10 @@ mod install_test {
         let x = || RawKind::File(b"x".to_vec());
         match name {
             "symlink rtk" => vec![("rtk", RawKind::Symlink("/bin/sh".into()))],
-            "hardlink rtk" => vec![("rtk", RawKind::Hardlink("LICENSE".into())), ("LICENSE", x())],
+            "hardlink rtk" => vec![
+                ("rtk", RawKind::Hardlink("LICENSE".into())),
+                ("LICENSE", x()),
+            ],
             "dotdot member" => vec![("../rtk", body()), ("LICENSE", x())],
             "nested member" => vec![("bin/rtk", body())],
             "absolute member" => vec![("/rtk", body())],
@@ -511,8 +534,14 @@ mod check_installed_test {
 
     fn install5(b: &Base, lock: &Lock) -> PathBuf {
         let blob = rtk_tarball();
-        rtk_install::install(&b.data, lock, 5.0, HOST, &deps(&Fake::for_lock(lock, &blob)))
-            .expect("install")
+        rtk_install::install(
+            &b.data,
+            lock,
+            5.0,
+            HOST,
+            &deps(&Fake::for_lock(lock, &blob)),
+        )
+        .expect("install")
     }
 
     #[test]
@@ -540,7 +569,10 @@ mod check_installed_test {
         let b = Base::new();
         let lock = make_lock(V1, &rtk_tarball());
         install5(&b, &lock);
-        let other_hash = make_lock(V1, &raw_tar_gz(&[("rtk", RawKind::File(b"other".to_vec()))]));
+        let other_hash = make_lock(
+            V1,
+            &raw_tar_gz(&[("rtk", RawKind::File(b"other".to_vec()))]),
+        );
         assert!(rtk_install::check_installed_for(&b.data, &other_hash, HOST).is_err());
         let other_version = make_lock("1.9.0", &rtk_tarball());
         assert!(rtk_install::check_installed_for(&b.data, &other_version, HOST).is_err());
@@ -620,7 +652,12 @@ mod prune_test {
         assert!(recent.exists());
         assert!(current.exists());
         assert!(stray.exists());
-        assert!(fs::symlink_metadata(&link).expect("link").file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("link")
+                .file_type()
+                .is_symlink()
+        );
         assert!(link_target.join("keep").exists());
     }
 
@@ -634,7 +671,10 @@ mod prune_test {
         let marker = path.parent().expect("vdir").join(".last-used");
         set_epoch_mtime(&marker, 1);
         install(&b, &lock, &fetch).expect("again");
-        let mtime = fs::metadata(&marker).expect("stat").modified().expect("mtime");
+        let mtime = fs::metadata(&marker)
+            .expect("stat")
+            .modified()
+            .expect("mtime");
         assert!(mtime > SystemTime::now() - Duration::from_secs(60));
         assert_eq!(fetch.calls().len(), 1);
     }
@@ -706,10 +746,7 @@ mod reconcile_test {
         let new_lock = make_lock("1.3.0-anthology.1", &blob2);
         let res = reconcile(&b, &new_lock, &Fake::for_lock(&new_lock, &blob2));
         assert!(res.installed);
-        assert_eq!(
-            b.entries(&b.data.join("rtk")),
-            [V1, "1.3.0-anthology.1"]
-        );
+        assert_eq!(b.entries(&b.data.join("rtk")), [V1, "1.3.0-anthology.1"]);
         let want = b.data.join("rtk").join("1.3.0-anthology.1").join("rtk");
         assert_eq!(
             b.state_read().get("rtk_path").and_then(Value::as_str),
@@ -737,7 +774,10 @@ mod reconcile_test {
         }
         let st = b.state_read();
         assert_eq!(st.len(), 2);
-        assert_eq!(st.get("rtk_path").and_then(Value::as_str), Some("/previous/rtk"));
+        assert_eq!(
+            st.get("rtk_path").and_then(Value::as_str),
+            Some("/previous/rtk")
+        );
         assert_eq!(st.get("other").and_then(Value::as_str), Some("kept"));
         assert!(b.entries(&b.data.join("rtk")).is_empty());
     }
@@ -762,7 +802,11 @@ mod reconcile_test {
         let mut d = deps(&fetch);
         d.uname = windows;
         let res = rtk_install::reconcile(&b.env, &b.data, &lock, 5.0, &d);
-        assert!(res.warning.expect("warning").contains("Windows isn't supported"));
+        assert!(
+            res.warning
+                .expect("warning")
+                .contains("Windows isn't supported")
+        );
         assert!(fetch.calls().is_empty());
     }
 
@@ -883,7 +927,10 @@ mod default_fetch_test {
                 NOW.with(|n| n.set(n.get() + 4.0));
             }
             if self.fail_after.is_some_and(|f| self.pos >= f) {
-                return Err(PyExc::Other("ConnectionResetError", "connection reset".into()));
+                return Err(PyExc::Other(
+                    "ConnectionResetError",
+                    "connection reset".into(),
+                ));
             }
             let end = (self.pos + self.chunk.min(buf.len())).min(self.body.len());
             let n = end - self.pos;
@@ -914,7 +961,9 @@ mod default_fetch_test {
                 .requests
                 .borrow_mut()
                 .push((url.to_string(), timeout));
-            Ok(Box::new(self.response.borrow_mut().take().expect("one open")))
+            Ok(Box::new(
+                self.response.borrow_mut().take().expect("one open"),
+            ))
         }
     }
 
@@ -968,7 +1017,11 @@ mod default_fetch_test {
         // ureq follows no redirect itself (every hop goes through `redirect_target`), and the
         // agent refuses plain http.
         let opener = anthology_runtime::fetch::UreqFetch::new(&Env::default()).opener();
-        let config = opener.config("github.com", Duration::from_secs(5), Duration::from_secs(20));
+        let config = opener.config(
+            "github.com",
+            Duration::from_secs(5),
+            Duration::from_secs(20),
+        );
         assert_eq!(config.max_redirects(), 0);
         assert!(config.https_only());
         assert!(matches!(
@@ -1003,7 +1056,14 @@ mod default_fetch_test {
     fn test_streamed_size_cap_removes_the_partial_file() {
         let b = Base::new();
         // No Content-Length: only the stream can tell.
-        let err = run(&b, &FakeOpener::new(response(&[b'x'; 5000])), URL, 5.0, 1024).unwrap_err();
+        let err = run(
+            &b,
+            &FakeOpener::new(response(&[b'x'; 5000])),
+            URL,
+            5.0,
+            1024,
+        )
+        .unwrap_err();
         assert_eq!(err.py_str(), "download is larger than 1024 bytes");
         assert!(!b.tmp.join("out").exists());
     }
@@ -1041,7 +1101,11 @@ mod default_fetch_test {
         let opener = FakeOpener::new(r);
         let err = run(&b, &opener, URL, 5.0, fetch::MAX_DOWNLOAD_BYTES).unwrap_err();
         assert!(err.py_str().contains("timed out"), "{}", err.py_str());
-        assert!(opener.shared.reads.get() <= 7, "{}", opener.shared.reads.get());
+        assert!(
+            opener.shared.reads.get() <= 7,
+            "{}",
+            opener.shared.reads.get()
+        );
         assert!(!b.tmp.join("out").exists());
     }
 
@@ -1142,7 +1206,11 @@ mod wrapper_test {
     }
 
     fn wrapper(name: &str) -> PathBuf {
-        repo_root().join("plugins").join("anthology").join("bin").join(name)
+        repo_root()
+            .join("plugins")
+            .join("anthology")
+            .join("bin")
+            .join(name)
     }
 
     impl W {
@@ -1154,7 +1222,13 @@ mod wrapper_test {
         }
 
         fn run_bin(&self, name: &str, args: &[&str], stdin: &str) -> anthology_testkit::Output {
-            run_program(&wrapper(name), args, stdin.as_bytes(), &self.env(), &self.b.tmp)
+            run_program(
+                &wrapper(name),
+                args,
+                stdin.as_bytes(),
+                &self.env(),
+                &self.b.tmp,
+            )
         }
 
         fn copy_fake(&self, dest: &Path) -> PathBuf {
@@ -1190,8 +1264,14 @@ mod wrapper_test {
         let mut m = json::Map::new();
         m.insert("rtk_path".into(), Value::Str(w.fake_str().into()));
         let text = json::dumps(&Value::Object(m), &json::STATE) + "\n";
-        fs::write(home.join(".claude").join("anthology").join("state.json"), text).expect("state");
-        let env = Env::default().with("PATH", &path_var()).with_os("HOME", &home);
+        fs::write(
+            home.join(".claude").join("anthology").join("state.json"),
+            text,
+        )
+        .expect("state");
+        let env = Env::default()
+            .with("PATH", &path_var())
+            .with_os("HOME", &home);
         let res = run_program(&wrapper("rtk"), &["x"], b"", &env, &w.b.tmp);
         assert_eq!(lines(&res)[0], "args:x");
     }
@@ -1200,7 +1280,11 @@ mod wrapper_test {
     fn test_rtk_finds_the_key_wherever_it_sits() {
         let w = setup();
         // rtk_path mid-file.
-        w.b.state_write(&[("data_dir", "/d"), ("rtk_path", w.fake_str()), ("zzz", "after")]);
+        w.b.state_write(&[
+            ("data_dir", "/d"),
+            ("rtk_path", w.fake_str()),
+            ("zzz", "after"),
+        ]);
         assert_eq!(lines(&w.run_bin("rtk", &["a"], ""))[0], "args:a");
         // The sole (last) key.
         let mut m = json::Map::new();
@@ -1234,7 +1318,10 @@ mod wrapper_test {
         let w = setup();
         let res = w.run_bin("rtk", &["git", "status"], "");
         assert_eq!(res.code, 127);
-        assert!(res.stderr_text().contains("rtk is not installed: run /anthology:setup"));
+        assert!(
+            res.stderr_text()
+                .contains("rtk is not installed: run /anthology:setup")
+        );
         assert_eq!(res.stdout_text(), "");
     }
 
@@ -1254,7 +1341,10 @@ mod wrapper_test {
             w.b.state_write(&[("rtk_path", &value)]);
             let res = w.run_bin("rtk", &["x"], "");
             assert_eq!(res.code, 127, "{value}");
-            assert!(res.stderr_text().contains("run /anthology:setup"), "{value}");
+            assert!(
+                res.stderr_text().contains("run /anthology:setup"),
+                "{value}"
+            );
         }
     }
 
@@ -1311,9 +1401,15 @@ mod wrapper_test {
         let hook = w.run_bin("rtk-hook", &[], "{}");
         let res = w.run_bin("rtk", &["x"], "");
         set_mode(&st, 0o600);
-        assert_eq!((hook.code, hook.stdout_text(), hook.stderr_text()), (0, String::new(), String::new()));
+        assert_eq!(
+            (hook.code, hook.stdout_text(), hook.stderr_text()),
+            (0, String::new(), String::new())
+        );
         assert_eq!(res.code, 127);
-        assert_eq!(res.stderr_text().trim(), "rtk is not installed: run /anthology:setup");
+        assert_eq!(
+            res.stderr_text().trim(),
+            "rtk is not installed: run /anthology:setup"
+        );
     }
 
     #[test]
@@ -1322,14 +1418,20 @@ mod wrapper_test {
         fs::create_dir_all(state::path(&w.b.env)).expect("mkdir state.json");
         assert_eq!(w.run_bin("rtk", &[], "").code, 127);
         let hook = w.run_bin("rtk-hook", &[], "");
-        assert_eq!((hook.code, hook.stdout_text(), hook.stderr_text()), (0, String::new(), String::new()));
+        assert_eq!(
+            (hook.code, hook.stdout_text(), hook.stderr_text()),
+            (0, String::new(), String::new())
+        );
     }
 
     #[test]
     fn test_hook_missing_exits_0_silently() {
         let w = setup();
         let res = w.run_bin("rtk-hook", &[], r#"{"tool_name":"Bash"}"#);
-        assert_eq!((res.code, res.stdout_text(), res.stderr_text()), (0, String::new(), String::new()));
+        assert_eq!(
+            (res.code, res.stdout_text(), res.stderr_text()),
+            (0, String::new(), String::new())
+        );
     }
 
     #[test]

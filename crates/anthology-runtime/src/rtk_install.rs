@@ -260,8 +260,8 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Member {
     let mut name = entry.path_bytes().into_owned();
     // tarfile: an old-style regular file whose name ends in "/" is a folder, and a folder's
     // name loses its trailing slashes.
-    let dir = matches!(kind, T::Directory)
-        || (kind.as_byte() == b'\0' && name.last() == Some(&b'/'));
+    let dir =
+        matches!(kind, T::Directory) || (kind.as_byte() == b'\0' && name.last() == Some(&b'/'));
     if dir {
         while name.last() == Some(&b'/') {
             name.pop();
@@ -589,7 +589,14 @@ pub fn install(
     let root = data_dir.join("rtk");
     let vdir = root.join(&lock.version);
     if !is_current(&vdir, expected)? {
-        download_and_place(&root, &vdir, &release_url(lock, tgt), expected, timeout, deps)?;
+        download_and_place(
+            &root,
+            &vdir,
+            &release_url(lock, tgt),
+            expected,
+            timeout,
+            deps,
+        )?;
     }
     touch(&vdir.join(".last-used"))?;
     prune(&root, &lock.version, (deps.now)());
@@ -717,7 +724,15 @@ mod tests {
         for ok in ["1.2.3", "1.2.1-anthology.1", "0.0.0-a-b.c", "١.2.3"] {
             assert!(is_version_name(ok), "{ok}");
         }
-        for bad in ["notes", "1.2", "1.2.3-", "1.2.3-a..b", ".tmp-x", "1.2.3\n", "v1.2.3"] {
+        for bad in [
+            "notes",
+            "1.2",
+            "1.2.3-",
+            "1.2.3-a..b",
+            ".tmp-x",
+            "1.2.3\n",
+            "v1.2.3",
+        ] {
             assert!(!is_version_name(bad), "{bad}");
         }
     }

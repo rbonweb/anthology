@@ -100,7 +100,13 @@ mod ensure_live_guard_binary {
         names.sort_unstable();
         assert_eq!(
             names,
-            ["ANTHOLOGY_TEST_MARK", "CLAUDE_CONFIG_DIR", "HOME", "PATH", "T"]
+            [
+                "ANTHOLOGY_TEST_MARK",
+                "CLAUDE_CONFIG_DIR",
+                "HOME",
+                "PATH",
+                "T"
+            ]
         );
     }
 
@@ -172,7 +178,10 @@ mod ensure_live_guard_binary {
         assert!(took >= Duration::from_millis(1400), "{took:?}");
         assert!(took < Duration::from_secs(4), "{took:?}");
         let pid = fs::read_to_string(g.tmp.join("pid")).expect("pid");
-        assert!(wait_gone(&pid), "the bootstrap's sleep {pid} outlived the deadline");
+        assert!(
+            wait_gone(&pid),
+            "the bootstrap's sleep {pid} outlived the deadline"
+        );
     }
 
     #[test]
@@ -196,7 +205,11 @@ mod ensure_live_guard_binary {
         let start = Instant::now();
         let status = bootstrap::ensure_live_guard_binary(&g.root, 20, &g.env);
         assert_eq!(status, GuardBinaryStatus::Present);
-        assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
         let pid = fs::read_to_string(g.tmp.join("pid")).expect("pid");
         assert!(wait_gone(&pid), "the straggler {pid} was left running");
     }
@@ -245,12 +258,21 @@ mod anthology_binary_check {
     fn installed(g: &Guard) -> PathBuf {
         let lock = the_lock(&tarball_sha());
         fs::write(g.root.join("anthology.lock"), lock::render_anthology(&lock)).expect("lock");
-        let vdir = g.tmp.join("config").join("anthology").join("bin").join(VERSION);
+        let vdir = g
+            .tmp
+            .join("config")
+            .join("anthology")
+            .join("bin")
+            .join(VERSION);
         fs::create_dir_all(&vdir).expect("vdir");
         let bin = vdir.join("anthology");
         fs::write(&bin, BINARY).expect("bin");
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("chmod");
-        fs::write(vdir.join(".bin-sha256"), format!("{}\n", sha256_hex(BINARY))).expect("bin sha");
+        fs::write(
+            vdir.join(".bin-sha256"),
+            format!("{}\n", sha256_hex(BINARY)),
+        )
+        .expect("bin sha");
         fs::write(vdir.join(".sha256"), format!("{}\n", tarball_sha())).expect("sha");
         vdir
     }
@@ -315,7 +337,8 @@ mod anthology_binary_check {
     fn an_unsupported_platform_is_not_applicable() {
         let g = guard(None);
         installed(&g);
-        let got = bootstrap::anthology_binary_check_with(Some(&g.root), &g.env, ("FreeBSD", "amd64"));
+        let got =
+            bootstrap::anthology_binary_check_with(Some(&g.root), &g.env, ("FreeBSD", "amd64"));
         assert_eq!(
             got,
             (
@@ -330,13 +353,19 @@ mod anthology_binary_check {
         type Break = fn(&Path);
         let cases: [(&str, Break); 6] = [
             ("no folder", |v| fs::remove_dir_all(v).expect("rm")),
-            ("empty binary", |v| fs::write(v.join("anthology"), b"").expect("empty")),
+            ("empty binary", |v| {
+                fs::write(v.join("anthology"), b"").expect("empty")
+            }),
             ("not executable", |v| {
                 fs::set_permissions(v.join("anthology"), fs::Permissions::from_mode(0o644))
                     .expect("chmod")
             }),
-            ("no marker", |v| fs::remove_file(v.join(".sha256")).expect("rm")),
-            ("empty marker", |v| fs::write(v.join(".sha256"), b"").expect("empty")),
+            ("no marker", |v| {
+                fs::remove_file(v.join(".sha256")).expect("rm")
+            }),
+            ("empty marker", |v| {
+                fs::write(v.join(".sha256"), b"").expect("empty")
+            }),
             ("binary is a symlink", |v| {
                 let real = v.with_file_name("real-anthology");
                 fs::rename(v.join("anthology"), &real).expect("mv");
@@ -368,7 +397,11 @@ mod anthology_binary_check {
         let g = guard(None);
         let vdir = installed(&g);
         fs::write(vdir.join("anthology"), b"\x7fELF swapped").expect("swap");
-        assert_eq!(check(&g), mismatch(), "the binary no longer matches .bin-sha256");
+        assert_eq!(
+            check(&g),
+            mismatch(),
+            "the binary no longer matches .bin-sha256"
+        );
 
         let g = guard(None);
         let vdir = installed(&g);

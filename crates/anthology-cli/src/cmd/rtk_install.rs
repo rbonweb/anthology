@@ -61,7 +61,8 @@ fn usage_error(msg: &str) -> Output {
     }
 }
 
-const HELP: &str = "usage: anthology rtk-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
+const HELP: &str =
+    "usage: anthology rtk-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
 [--timeout TIMEOUT]
 
 Install the rtk binary pinned by rtk.lock.
@@ -97,7 +98,9 @@ fn parse(args: &[OsString]) -> Result<Args, Output> {
                 let raw = value(&mut p, "--timeout")?;
                 let text = raw.to_string_lossy().into_owned();
                 let parsed = text.trim().replace('_', "").parse::<f64>().map_err(|_| {
-                    usage_error(&format!("argument --timeout: invalid float value: '{text}'"))
+                    usage_error(&format!(
+                        "argument --timeout: invalid float value: '{text}'"
+                    ))
                 })?;
                 timeout = Some(parsed);
             }
@@ -116,7 +119,9 @@ fn parse(args: &[OsString]) -> Result<Args, Output> {
         }
     }
     let Some(data_dir) = data_dir else {
-        return Err(usage_error("the following arguments are required: --data-dir"));
+        return Err(usage_error(
+            "the following arguments are required: --data-dir",
+        ));
     };
     Ok(Args {
         data_dir,
@@ -315,7 +320,10 @@ mod tests {
             uname: linux,
         };
         let data = b.tmp.join("data");
-        let out = run_with(&os(&["--data-dir", s(&data), "--lock", s(&lock_path)]), &ctx);
+        let out = run_with(
+            &os(&["--data-dir", s(&data), "--lock", s(&lock_path)]),
+            &ctx,
+        );
         assert_eq!(out.code, 1);
         let err = text(&out.stderr);
         assert!(err.contains("offline"), "{err}");

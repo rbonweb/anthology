@@ -144,12 +144,7 @@ pub fn download(
 
 /// `default_fetch`'s file handling: creates (truncates) `path`, fetches into it, and unlinks
 /// it on any error (module docs).
-pub fn fetch_to_path(
-    fetch: &dyn Fetch,
-    url: &str,
-    path: &Path,
-    timeout: f64,
-) -> Result<(), PyExc> {
+pub fn fetch_to_path(fetch: &dyn Fetch, url: &str, path: &Path, timeout: f64) -> Result<(), PyExc> {
     let result = File::create(path)
         .map_err(PyExc::from)
         .and_then(|mut file| {
@@ -203,7 +198,10 @@ fn join_url(base: &str, reference: &str) -> String {
     }
     let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
     let dir = if dir.is_empty() { "/" } else { dir };
-    format!("{origin}{}", remove_dot_segments(&format!("{dir}{reference}")))
+    format!(
+        "{origin}{}",
+        remove_dot_segments(&format!("{dir}{reference}"))
+    )
 }
 
 /// RFC 3986 §5.2.4 on a path (query and fragment kept after the path).
@@ -275,7 +273,10 @@ impl ProxyEnv {
                 _ => {}
             }
         }
-        for (name, slot) in [("https_proxy", &mut out.https), ("no_proxy", &mut out.no_proxy)] {
+        for (name, slot) in [
+            ("https_proxy", &mut out.https),
+            ("no_proxy", &mut out.no_proxy),
+        ] {
             if let Some(value) = env.get(name) {
                 *slot = if value.is_empty() {
                     None
@@ -442,9 +443,10 @@ impl UreqOpener {
             .provider(TlsProvider::Rustls)
             .root_certs(self.roots.clone())
             .build();
-        let proxy = self.proxy.proxy_for(host).and_then(|authority| {
-            ureq::Proxy::new(&format!("http://{authority}")).ok()
-        });
+        let proxy = self
+            .proxy
+            .proxy_for(host)
+            .and_then(|authority| ureq::Proxy::new(&format!("http://{authority}")).ok());
         Agent::config_builder()
             .tls_config(tls)
             .https_only(true)
@@ -572,7 +574,10 @@ fn reason(status: u16) -> &'static str {
 
 /// `urllib.error.HTTPError`, as `str()` shows it.
 fn http_error(status: u16) -> PyExc {
-    PyExc::Other("HTTPError", format!("HTTP Error {status}: {}", reason(status)))
+    PyExc::Other(
+        "HTTPError",
+        format!("HTTP Error {status}: {}", reason(status)),
+    )
 }
 
 fn timed_out() -> PyExc {
@@ -584,7 +589,10 @@ fn io_error(e: io::Error) -> PyExc {
         return timed_out();
     }
     // A ureq error surfaced through the body reader.
-    match e.get_ref().and_then(|inner| inner.downcast_ref::<ureq::Error>()) {
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+    {
         Some(inner) => describe(inner),
         None => PyExc::Other("OSError", e.to_string()),
     }
@@ -626,16 +634,18 @@ mod tests {
         assert_eq!(config.timeout_per_read(), Some(Duration::from_secs(5)));
         assert_eq!(config.timeouts().global, Some(Duration::from_secs(20)));
         assert_eq!(config.timeouts().connect, Some(Duration::from_secs(5)));
-        assert!(config.proxy().is_none(), "no proxy unless the Env names one");
+        assert!(
+            config.proxy().is_none(),
+            "no proxy unless the Env names one"
+        );
     }
 
     #[test]
     fn test_roots_replace_the_platform_verifier_only_when_asked() {
         let fetch = UreqFetch::new(&Env::default()).with_test_roots(&[b"\x30\x00"]);
-        let config =
-            fetch
-                .opener()
-                .config("h", Duration::from_secs(1), Duration::from_secs(4));
+        let config = fetch
+            .opener()
+            .config("h", Duration::from_secs(1), Duration::from_secs(4));
         assert!(matches!(
             config.tls_config().root_certs(),
             RootCerts::Specific(_)
@@ -654,7 +664,10 @@ mod tests {
     #[test]
     fn join_url_resolves_location_shapes() {
         let base = "https://github.com/o/r/releases/download/t/f.tar.gz?x=1";
-        assert_eq!(join_url(base, "https://cdn.example/a"), "https://cdn.example/a");
+        assert_eq!(
+            join_url(base, "https://cdn.example/a"),
+            "https://cdn.example/a"
+        );
         assert_eq!(join_url(base, "//cdn.example/a"), "https://cdn.example/a");
         assert_eq!(join_url(base, "/a/b"), "https://github.com/a/b");
         assert_eq!(
@@ -671,23 +684,23 @@ mod tests {
 
     #[test]
     fn redirect_target_refuses_every_non_https_hop() {
-        for loc in ["http://e/b", "ftp://e/b", "file:///etc/passwd", "HTTP://e/b"] {
+        for loc in [
+            "http://e/b",
+            "ftp://e/b",
+            "file:///etc/passwd",
+            "HTTP://e/b",
+        ] {
             let err = redirect_target("https://e/a", loc).unwrap_err();
             assert_eq!(
                 err.py_str(),
                 "<urlopen error refusing redirect to a non-https URL>"
             );
         }
-        assert_eq!(
-            redirect_target("https://e/a", "/b").unwrap(),
-            "https://e/b"
-        );
+        assert_eq!(redirect_target("https://e/a", "/b").unwrap(), "https://e/b");
     }
 
     fn env(pairs: &[(&str, &str)]) -> Env {
-        pairs
-            .iter()
-            .fold(Env::default(), |e, (k, v)| e.with(k, v))
+        pairs.iter().fold(Env::default(), |e, (k, v)| e.with(k, v))
     }
 
     #[test]
@@ -702,7 +715,10 @@ mod tests {
         let p = ProxyEnv::from_env(&env(&[("HTTPS_PROXY", "http://up:1"), ("https_proxy", "")]));
         assert_eq!(p.https, None);
         let p = ProxyEnv::from_env(&env(&[("HTTP_PROXY", "http://h:3"), ("ALL_PROXY", "x:4")]));
-        assert_eq!(p.https, None, "only the https entry applies to an https URL");
+        assert_eq!(
+            p.https, None,
+            "only the https entry applies to an https URL"
+        );
         let p = ProxyEnv::from_env(&env(&[("NO_PROXY", "a"), ("no_proxy", "b")]));
         assert_eq!(p.no_proxy.as_deref(), Some("b"));
     }
@@ -732,7 +748,10 @@ mod tests {
             https: Some("https://u:p@proxy:3128/".into()),
             no_proxy: None,
         };
-        assert_eq!(no_list.proxy_for("github.com").as_deref(), Some("u:p@proxy:3128"));
+        assert_eq!(
+            no_list.proxy_for("github.com").as_deref(),
+            Some("u:p@proxy:3128")
+        );
     }
 
     #[test]
