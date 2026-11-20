@@ -1,0 +1,25 @@
+[package]
+name = "anthology-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The anthology-guardrails rules G1 to G6 and the guard hook"
+
+[lints]
+workspace = true
+
+[features]
+# GD2: a test build whose hook panics on a marker input (m-5).
+panic-on-marker = []
+
+[dependencies]
+anthology-shell.workspace = true
+anthology-pycompat.workspace = true
+regex.workspace = true
+fancy-regex.workspace = true
+
+[dev-dependencies]
+anthology-testkit.workspace = true
+proptest.workspace = true

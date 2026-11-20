@@ -1,0 +1,24 @@
+[package]
+name = "anthology-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Env, paths, roster, state.json, fsx, git, platform, lock files, clock and the libc layer"
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `fsx::fault` outside this crate's own tests (plan §3.3).
+test-faults = []
+
+[dependencies]
+anthology-pycompat.workspace = true
+sha2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

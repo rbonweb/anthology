@@ -1,0 +1,23 @@
+name: fuzz
+
+# Every cargo-fuzz target for a bounded time (design §13.5). Weekly, and by hand.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every fuzz target, 10 minutes each
+        env:
+          FUZZ_SECONDS: "600"
+        run: ci/jobs/fuzz.sh

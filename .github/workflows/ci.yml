@@ -240,3 +240,108 @@ jobs:
         run: scripts/rtk-test.sh
       - name: Run the release binary with the network off
         run: scripts/rtk-net-test.sh
+
+  # The Rust port (design §14.1). Each job runs ci/jobs/<job>.sh; the lane that owns a job edits
+  # its script, never this file (plan §0.2). Placeholder scripts echo their name until then.
+
+  rust-lint:
+    # cargo fmt --check and clippy -D warnings, in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-lint
+        run: ci/jobs/rust-lint.sh
+
+  rust-test-linux:
+    # cargo test --workspace --locked in the pinned Rust image (with git, busybox and node).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-test-linux
+        run: ci/jobs/rust-test-linux.sh
+
+  rust-test-macos:
+    # cargo test --workspace --locked on macOS.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-test-macos
+        run: ci/jobs/rust-test-macos.sh
+
+  deny:
+    # cargo deny check (advisories, bans, licenses, sources) and the serde_json tree check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: deny
+        run: ci/jobs/deny.sh
+
+  shims-distros:
+    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shims-distros
+        run: ci/jobs/shims-distros.sh
+
+  shellcheck:
+    # shellcheck -s sh on every shim, in the pinned image (BS1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: ci/jobs/shellcheck.sh
+
+  difftest-linux:
+    # The difftest against the Python oracle in the pinned Python 3.12 image (F4).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: difftest-linux
+        run: ci/jobs/difftest-linux.sh
+
+  difftest-macos:
+    # The CLI difftest surfaces against Python 3.12 on macOS, gating (F4, m-9).
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: difftest-macos
+        run: ci/jobs/difftest-macos.sh
+
+  ledger:
+    # anthology-dev ledger check --report (F4a).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ledger
+        run: ci/jobs/ledger.sh

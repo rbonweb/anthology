@@ -5,3 +5,7 @@ __pycache__/
 .claude/worktrees/
 .vendor-cache/
 evals/results/
+/target
+# The replay corpus is local only (design §13.7), in case someone copies it into the repo.
+/port/replay/
+replay-corpus*
