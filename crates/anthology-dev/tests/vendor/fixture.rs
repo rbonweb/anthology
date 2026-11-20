@@ -63,6 +63,76 @@ pub fn entry(name: &str, kw: &[(&str, Value)]) -> Value {
     Value::Object(e)
 }
 
+/// `e[key] = v`.
+pub fn set(e: &mut Value, key: &str, v: Value) {
+    e.as_object_mut().unwrap().insert(key.to_string(), v);
+}
+
+/// `e[key]` as a str.
+pub fn get_str(e: &Value, key: &str) -> String {
+    e.as_object()
+        .unwrap()
+        .get(key)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// `shutil.which("git")`: the tests Python skips without git return early.
+pub fn have_git() -> bool {
+    let ok = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !ok {
+        eprintln!("skipped: git is not installed");
+    }
+    ok
+}
+
+/// `{rel: bytes}` of every file under `base` (`p.is_file()` follows symlinks).
+pub fn tree_files(base: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in read.flatten() {
+            let p = e.path();
+            let link = fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+            if p.is_dir() && !link {
+                stack.push(p);
+            } else if p.is_file() {
+                let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                out.insert(rel, fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+/// Sorted file names directly in `dir` (`sorted(p.name for p in dir.iterdir())`).
+pub fn names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+/// The executable bit (`os.access(p, os.X_OK)` for the owner).
+pub fn is_exec(p: &Path) -> bool {
+    fs::metadata(p).unwrap().permissions().mode() & 0o111 != 0
+}
+
+/// `os.symlink(to, at)`.
+pub fn symlink(to: impl AsRef<Path>, at: &Path) {
+    std::os::unix::fs::symlink(to, at).unwrap();
+}
+
 /// `del e[key]`.
 pub fn del(e: &mut Value, key: &str) {
     e.as_object_mut().unwrap().remove(key);
@@ -276,6 +346,81 @@ impl Fixture {
     pub fn fetch(&self, e: &Entry) -> vendor::Result<PathBuf> {
         let name = e.get("name").and_then(Value::as_str).unwrap_or("");
         Ok(self.pristine.borrow()[name].clone())
+    }
+
+    /// `self.pristine[name] = path`.
+    pub fn set_upstream(&self, name: &str, path: PathBuf) {
+        self.pristine.borrow_mut().insert(name.to_string(), path);
+    }
+
+    /// `vendor.build(self.root, name, fetch=self.fetch)`.
+    pub fn build(&self, name: &str) -> vendor::Result<vendor::BuildStats> {
+        vendor::build(
+            &self.root,
+            name,
+            None,
+            Some(&|e: &Entry| self.fetch(e)),
+            false,
+        )
+    }
+
+    /// `build_all(entries)`: set the sources, build each non-subtree entry, fetch the licenses.
+    pub fn build_all(&self, entries: &[Value]) {
+        self.set_sources(entries);
+        for e in entries {
+            if vendor::is_subtree(e) {
+                continue;
+            }
+            let name = e
+                .as_object()
+                .unwrap()
+                .get("name")
+                .unwrap()
+                .as_str()
+                .unwrap();
+            self.build(name)
+                .unwrap_or_else(|err| panic!("build {name}: {}", err.0));
+        }
+        self.fetch_licenses().unwrap();
+    }
+
+    /// `vendor.fetch_licenses(self.root, fetch=self.fetch)`.
+    pub fn fetch_licenses(&self) -> vendor::Result<Vec<PathBuf>> {
+        vendor::fetch_licenses(&self.root, None, Some(&|e: &Entry| self.fetch(e)))
+    }
+
+    /// `check()`: `vendor.check(self.root, fetch=self.fetch)`.
+    pub fn check(&self) -> Vec<String> {
+        vendor::check(&self.root, Some(&|e: &Entry| self.fetch(e))).unwrap()
+    }
+
+    /// `vendor.diff_entry(self.root, name, fetch=self.fetch)`.
+    pub fn diff(&self, name: &str) -> vendor::Result<String> {
+        vendor::diff_entry(&self.root, name, Some(&|e: &Entry| self.fetch(e)))
+    }
+
+    /// `vendor.sync(self.root, name, ref, fetch=self.fetch, resolve=…)`.
+    pub fn sync(
+        &self,
+        name: &str,
+        git_ref: &str,
+        resolve: &dyn Fn(&Entry, &str) -> vendor::Result<String>,
+    ) -> vendor::Result<vendor::SyncReport> {
+        vendor::sync(
+            &self.root,
+            name,
+            git_ref,
+            Some(&|e: &Entry| self.fetch(e)),
+            Some(resolve),
+        )
+    }
+
+    /// `self.root / "plugins/anthology/knowledge/<name>" / rel`.
+    pub fn target(&self, name: &str, rel: &str) -> PathBuf {
+        let t = self
+            .root
+            .join(format!("plugins/anthology/knowledge/{name}"));
+        if rel.is_empty() { t } else { t.join(rel) }
     }
 
     /// `set_sources(entries)`: `json.dumps({"sources": entries}, indent=2) + "\n"`.

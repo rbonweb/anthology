@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anthology_dev::vendor;
 use anthology_pycompat::json::{self, Value};
 
-use crate::fixture::{Fixture, write};
+use crate::fixture::{Fixture, MIT_TEXT, jv, write};
 
 pub const CONNECTOR_DOC: &str = "\
 ---
@@ -436,6 +436,21 @@ fn test_preserves_the_executable_bit() {
         .permissions()
         .mode();
     assert!(mode & 0o111 != 0);
+}
+
+#[test]
+fn test_pipeline_applies_it_from_sources_json() {
+    let f = Fixture::new();
+    let e = f.add_upstream(
+        "conn",
+        &[("LICENSE", MIT_TEXT), ("SKILL.md", CONNECTOR_DOC)],
+        &[("transform", jv(r#"["strip-connectors"]"#))],
+    );
+    f.build_all(&[e]);
+    assert_eq!(f.check(), Vec::<String>::new());
+    let shipped = fs::read_to_string(f.target("conn", "SKILL.md")).unwrap();
+    assert!(!shipped.contains("~~"));
+    assert!(!shipped.contains("CONNECTORS.md"));
 }
 
 // ---- parity details beyond the Python tests

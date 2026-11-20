@@ -269,3 +269,53 @@ pub fn compare_trees(expected: &Path, actual: &Path, label: &str) -> Result<Vec<
     }
     Ok(problems)
 }
+
+/// `check(root, fetch)`: rebuild every vendored source in a temp dir and compare it with the
+/// committed trees and licenses. An empty list is clean. Only a sources.json that cannot be
+/// read or a temp dir that cannot be made is an error; everything else is a problem line.
+pub fn check(root: &Path, fetch: Option<&super::Fetch>) -> Result<Vec<String>> {
+    use super::build::build_tree;
+    use super::fetch::fetcher;
+    use super::licenses::check_licenses;
+    use super::manifest::{load_sources, validate_sources, vendored};
+
+    let entries = load_sources(root)?;
+    let errors = validate_sources(&entries);
+    if !errors.is_empty() {
+        return Ok(errors
+            .iter()
+            .map(|m| format!("sources.json: {m}"))
+            .collect());
+    }
+    let fetch = fetcher(root, fetch);
+    let mut problems = Vec::new();
+    {
+        let tmp = tempfile::Builder::new()
+            .prefix("vendor-check-")
+            .tempdir()
+            .map_err(|e| VendorError(format!("cannot create a temporary directory: {e}")))?;
+        for e in vendored(&entries)? {
+            let name = py::str_of(e.get("name"));
+            let target = py::str_of(e.get("target"));
+            let built = tmp.path().join(&name);
+            // As in vendor.py, the port map lines are kept when the comparison then fails.
+            let mut one = || -> Result<()> {
+                let pristine = fetch(e)?;
+                let stats = build_tree(root, e, &pristine, &built, true, false)?;
+                for m in stats.portmap.unwrap_or_default() {
+                    problems.push(format!("{name}: portmap: {m}"));
+                }
+                problems.extend(compare_trees(&built, &root.join(&target), &target)?);
+                Ok(())
+            };
+            if let Err(err) = one() {
+                problems.push(format!("{name}: {err}"));
+            }
+        }
+    }
+    match check_licenses(root, &entries, &*fetch) {
+        Ok(found) => problems.extend(found),
+        Err(err) => problems.push(err.0),
+    }
+    Ok(problems)
+}

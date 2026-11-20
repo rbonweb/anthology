@@ -22,7 +22,8 @@ pub const S: &str = r"[\s\x1c-\x1f]";
 /// SWAP(P1): Python's IGNORECASE matches U+0130 (`İ`, whose simple lowercase is `i`) and
 /// U+0131 (`ı`, an sre case equivalence of `i`) to `i` and `I`; Rust's simple case folding does
 /// not. This rewrites each literal `i`/`I` of a `(?i)` pattern into a class holding all four.
-/// Replace it with pycompat's fold once P1 provides one.
+/// Replace it with pycompat's fold once P1 provides one. A class range with `i`/`I` at one end
+/// (`[i-k]`) is not supported: no vendor pattern has one.
 pub fn py_casefold_pattern(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len() + 16);
@@ -230,14 +231,16 @@ pub fn decode_utf8(raw: &[u8]) -> Result<String, String> {
 
 /// `str(OSError)` for a failed file operation: `[Errno N] <text>: '<path>'`.
 pub fn os_error_text(e: &std::io::Error, path: &Path) -> String {
-    let exc = match PyExc::from(std::io::Error::new(e.kind(), e.to_string())) {
-        PyExc::OSError { errno, .. } => PyExc::OSError {
-            errno: e.raw_os_error().unwrap_or(errno),
-            filename: Some(path.to_string_lossy().into_owned()),
-        },
-        other => other,
+    // An error without an OS code gets the errno its kind maps to.
+    let errno = match PyExc::from(std::io::Error::from(e.kind())) {
+        PyExc::OSError { errno, .. } => errno,
+        _ => 0,
     };
-    exc.py_str()
+    PyExc::OSError {
+        errno: e.raw_os_error().unwrap_or(errno),
+        filename: Some(path.to_string_lossy().into_owned()),
+    }
+    .py_str()
 }
 
 /// `s.lower()` (P1: `pycompat::str::lower`).
@@ -652,6 +655,316 @@ pub fn unlatin1(s: &str) -> Vec<u8> {
     s.chars()
         .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
         .collect()
+}
+
+/// A Python regex in fancy-regex syntax (P1: `pycompat::re::translate`). `unicode` is a str
+/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern, compiled in fancy-regex's
+/// ASCII bytes mode, whose classes are already Python's. `$` (no MULTILINE) also matches before a
+/// final `\n`, `\Z` is `\z`, `{,n}` is `{0,n}`.
+pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
+    let chars: Vec<char> = py.chars().collect();
+    let mut out = String::with_capacity(py.len() + 8);
+    let mut in_class = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                let Some(&e) = chars.get(i + 1) else {
+                    return Err("bad escape (end of pattern)".to_string());
+                };
+                i += 1;
+                match (e, in_class, unicode) {
+                    ('w', false, true) => out.push_str(W),
+                    ('w', true, true) => out.push_str(W_INNER),
+                    ('W', false, true) => out.push_str(r"[^\p{L}\p{N}_]"),
+                    ('s', false, true) => out.push_str(S),
+                    ('s', true, true) => out.push_str(r"\s\x1c-\x1f"),
+                    ('S', false, true) => out.push_str(r"[^\s\x1c-\x1f]"),
+                    ('W' | 'S', true, true) => {
+                        return Err(format!("\\{e} inside a class is not supported"));
+                    }
+                    ('Z', false, _) => out.push_str(r"\z"),
+                    _ => {
+                        out.push('\\');
+                        out.push(e);
+                    }
+                }
+            }
+            '[' if !in_class => {
+                in_class = true;
+                out.push(c);
+                // A `]` right after `[` or `[^` is a literal.
+                if chars.get(i + 1) == Some(&'^') {
+                    out.push('^');
+                    i += 1;
+                }
+                if chars.get(i + 1) == Some(&']') {
+                    out.push_str(r"\]");
+                    i += 1;
+                }
+            }
+            ']' if in_class => {
+                in_class = false;
+                out.push(c);
+            }
+            '[' if in_class => out.push_str(r"\["),
+            '$' if !in_class => out.push_str(r"(?=\n?\z)"),
+            '{' if !in_class && chars.get(i + 1) == Some(&',') => out.push_str("{0"),
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// `re.compile(pattern)` of a str pattern (P1: `pycompat::re::compile`).
+pub fn compile_str(py: &str) -> Result<fancy_regex::Regex, String> {
+    let pattern = translate(py, true)?;
+    fancy_regex::Regex::new(&pattern).map_err(|e| e.to_string())
+}
+
+/// `re.compile(pattern.encode(), re.IGNORECASE)` of a bytes pattern: ASCII classes, ASCII case
+/// folding, any byte matched by `.`.
+pub fn compile_bytes_ignorecase(py: &str) -> Result<fancy_regex::Regex, String> {
+    let pattern = translate(py, false)?;
+    fancy_regex::RegexBuilder::new(&pattern)
+        .bytes_mode(fancy_regex::BytesMode::Ascii)
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// `urllib.parse.quote(s, safe)`: UTF-8 bytes, `%XX` (upper case) for everything but ASCII
+/// letters, digits, `_.-~` and the `safe` characters (P1: `pycompat::quote::quote`).
+pub fn quote(s: &str, safe: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        let c = char::from(b);
+        if b.is_ascii_alphanumeric()
+            || matches!(c, '_' | '.' | '-' | '~')
+            || (b < 0x80 && safe.contains(c))
+        {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// `difflib.SequenceMatcher(None, a, b)` (autojunk on), enough for `get_grouped_opcodes`.
+struct Matcher<'a> {
+    a: &'a [&'a str],
+    b: &'a [&'a str],
+    b2j: std::collections::HashMap<&'a str, Vec<usize>>,
+}
+
+type Opcode = (char, usize, usize, usize, usize);
+
+impl<'a> Matcher<'a> {
+    fn new(a: &'a [&'a str], b: &'a [&'a str]) -> Matcher<'a> {
+        let mut b2j: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+        for (i, elt) in b.iter().enumerate() {
+            b2j.entry(elt).or_default().push(i);
+        }
+        let n = b.len();
+        if n >= 200 {
+            let ntest = n / 100 + 1;
+            b2j.retain(|_, idxs| idxs.len() <= ntest);
+        }
+        Matcher { a, b, b2j }
+    }
+
+    fn find_longest_match(
+        &self,
+        alo: usize,
+        ahi: usize,
+        blo: usize,
+        bhi: usize,
+    ) -> (usize, usize, usize) {
+        let (a, b) = (self.a, self.b);
+        let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0);
+        let mut j2len: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (i, ai) in a.iter().enumerate().take(ahi).skip(alo) {
+            let mut newj2len = std::collections::HashMap::new();
+            if let Some(js) = self.b2j.get(ai) {
+                for &j in js {
+                    if j < blo {
+                        continue;
+                    }
+                    if j >= bhi {
+                        break;
+                    }
+                    let k = j
+                        .checked_sub(1)
+                        .and_then(|p| j2len.get(&p))
+                        .copied()
+                        .unwrap_or(0)
+                        + 1;
+                    newj2len.insert(j, k);
+                    if k > bestsize {
+                        (besti, bestj, bestsize) = (i + 1 - k, j + 1 - k, k);
+                    }
+                }
+            }
+            j2len = newj2len;
+        }
+        // No junk function: extend with equal (popular) elements on both ends.
+        while besti > alo && bestj > blo && a[besti - 1] == b[bestj - 1] {
+            (besti, bestj, bestsize) = (besti - 1, bestj - 1, bestsize + 1);
+        }
+        while besti + bestsize < ahi
+            && bestj + bestsize < bhi
+            && a[besti + bestsize] == b[bestj + bestsize]
+        {
+            bestsize += 1;
+        }
+        (besti, bestj, bestsize)
+    }
+
+    fn matching_blocks(&self) -> Vec<(usize, usize, usize)> {
+        let (la, lb) = (self.a.len(), self.b.len());
+        let mut queue = vec![(0, la, 0, lb)];
+        let mut blocks = Vec::new();
+        while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+            let (i, j, k) = self.find_longest_match(alo, ahi, blo, bhi);
+            if k > 0 {
+                blocks.push((i, j, k));
+                if alo < i && blo < j {
+                    queue.push((alo, i, blo, j));
+                }
+                if i + k < ahi && j + k < bhi {
+                    queue.push((i + k, ahi, j + k, bhi));
+                }
+            }
+        }
+        blocks.sort_unstable();
+        let (mut i1, mut j1, mut k1) = (0, 0, 0);
+        let mut out = Vec::new();
+        for (i2, j2, k2) in blocks {
+            if i1 + k1 == i2 && j1 + k1 == j2 {
+                k1 += k2;
+            } else {
+                if k1 > 0 {
+                    out.push((i1, j1, k1));
+                }
+                (i1, j1, k1) = (i2, j2, k2);
+            }
+        }
+        if k1 > 0 {
+            out.push((i1, j1, k1));
+        }
+        out.push((la, lb, 0));
+        out
+    }
+
+    fn opcodes(&self) -> Vec<Opcode> {
+        let (mut i, mut j) = (0, 0);
+        let mut out = Vec::new();
+        for (ai, bj, size) in self.matching_blocks() {
+            let tag = if i < ai && j < bj {
+                Some('r')
+            } else if i < ai {
+                Some('d')
+            } else if j < bj {
+                Some('i')
+            } else {
+                None
+            };
+            if let Some(tag) = tag {
+                out.push((tag, i, ai, j, bj));
+            }
+            (i, j) = (ai + size, bj + size);
+            if size > 0 {
+                out.push(('e', ai, i, bj, j));
+            }
+        }
+        out
+    }
+
+    fn grouped_opcodes(&self, n: usize) -> Vec<Vec<Opcode>> {
+        let mut codes = self.opcodes();
+        if codes.is_empty() {
+            codes.push(('e', 0, 1, 0, 1));
+        }
+        if let Some(c) = codes.first_mut()
+            && c.0 == 'e'
+        {
+            *c = (
+                'e',
+                c.1.max(c.2.saturating_sub(n)),
+                c.2,
+                c.3.max(c.4.saturating_sub(n)),
+                c.4,
+            );
+        }
+        if let Some(c) = codes.last_mut()
+            && c.0 == 'e'
+        {
+            *c = ('e', c.1, c.2.min(c.1 + n), c.3, c.4.min(c.3 + n));
+        }
+        let nn = n + n;
+        let mut groups = Vec::new();
+        let mut group = Vec::new();
+        for (tag, mut i1, i2, mut j1, j2) in codes {
+            if tag == 'e' && i2 - i1 > nn {
+                group.push((tag, i1, i2.min(i1 + n), j1, j2.min(j1 + n)));
+                groups.push(std::mem::take(&mut group));
+                (i1, j1) = (i1.max(i2.saturating_sub(n)), j1.max(j2.saturating_sub(n)));
+            }
+            group.push((tag, i1, i2, j1, j2));
+        }
+        if !group.is_empty() && !(group.len() == 1 && group[0].0 == 'e') {
+            groups.push(group);
+        }
+        groups
+    }
+}
+
+/// `difflib._format_range_unified(start, stop)`.
+fn unified_range(start: usize, stop: usize) -> String {
+    let mut beginning = start + 1;
+    let length = stop - start;
+    if length == 1 {
+        return beginning.to_string();
+    }
+    if length == 0 {
+        beginning -= 1;
+    }
+    format!("{beginning},{length}")
+}
+
+/// `difflib.unified_diff(a, b, fromfile, tofile, n=n, lineterm="\n")` (P1:
+/// `pycompat::difflib::unified_diff`).
+pub fn unified_diff(a: &[&str], b: &[&str], fromfile: &str, tofile: &str, n: usize) -> Vec<String> {
+    let m = Matcher::new(a, b);
+    let mut out = Vec::new();
+    for (k, group) in m.grouped_opcodes(n).into_iter().enumerate() {
+        if k == 0 {
+            out.push(format!("--- {fromfile}\n"));
+            out.push(format!("+++ {tofile}\n"));
+        }
+        let (first, last) = (group[0], group[group.len() - 1]);
+        out.push(format!(
+            "@@ -{} +{} @@\n",
+            unified_range(first.1, last.2),
+            unified_range(first.3, last.4)
+        ));
+        for (tag, i1, i2, j1, j2) in group {
+            if tag == 'e' {
+                out.extend(a[i1..i2].iter().map(|l| format!(" {l}")));
+                continue;
+            }
+            if tag == 'r' || tag == 'd' {
+                out.extend(a[i1..i2].iter().map(|l| format!("-{l}")));
+            }
+            if tag == 'r' || tag == 'i' {
+                out.extend(b[j1..j2].iter().map(|l| format!("+{l}")));
+            }
+        }
+    }
+    out
 }
 
 /// A `json::Map` built from `(key, int)` pairs, for the stats dicts.

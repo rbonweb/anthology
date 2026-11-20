@@ -31,13 +31,23 @@ use anthology_pycompat::json;
 
 use crate::Output;
 
-pub use compare::{Snap, compare_trees, copy_tree, snapshot};
+pub use build::{BuildStats, build, build_tree, install_tree};
+pub use compare::{Snap, check, compare_trees, copy_tree, snapshot};
+pub use diff::{diff_entry, diff_text};
+pub use fetch::{
+    HttpOpts, dispatch_fetcher, download_snapshot, fetch_entry, fetcher, git_fetcher,
+    git_resolve_ref, http_get, http_get_with, parse_checksums, snapshot_fetcher, verify_snapshot,
+};
+pub use licenses::{check_licenses, fetch_licenses, ship_licenses};
 pub use manifest::{
     ALLOWED_LICENSES, CACHE_DIRNAME, CHECKSUMS_NAME, FIXED_LICENSE_NAME, IGNORED_EXTRAS,
     KNOWLEDGE_DIR, LICENSES, MAX_DOWNLOAD, NOTICE_NAMES, PORTMAP_DIR, SNAPSHOTS, SOURCES, SUBTREE,
     VENDORED_PLUGIN, find_entry, find_entry_index, is_subtree, load_sources, require_valid,
     safe_portmap, safe_relpath, safe_target, save_sources, source_slug, validate_sources, vendored,
 };
+pub use patch::apply_patch;
+pub use portmap::{load_portmap, portmap_problems, portmap_scripts};
+pub use sync::{Resolve, SyncReport, sync};
 pub use transforms::{
     TRANSFORMS, rename_plugin, rename_skill, run_transform, strip_connectors, strip_markdown,
 };
