@@ -12,7 +12,8 @@
 # 2. It runs in the image of ci/images/python.Dockerfile with the repository mounted read-only
 #    at /w, the build volume of scripts/rust-test.sh read-only at /target, and
 #    target/difftest/ writable at /out (for --report and temporary --divergences folders).
-#    The oracle is that image's python3. Every argument goes to difftest.
+#    It runs as the calling user (so /out files are not root-owned) with no network. The
+#    oracle is that image's python3. Every argument goes to difftest.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,7 +33,7 @@ cc_var="CC_$(printf '%s' "$triple" | tr - _)"
 checkout=$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 image=$(awk '$1 == "FROM" {print $2; exit}' "$root/ci/images/python.Dockerfile")
 mkdir -p "$root/target/difftest"
-exec docker run --rm \
+exec docker run --rm --network none --user "$(id -u):$(id -g)" \
     -v "$root":/w:ro \
     -v "anthology-rust-target-$checkout":/target:ro \
     -v "$root/target/difftest":/out \

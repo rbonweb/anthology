@@ -23,6 +23,10 @@ use crate::oracle::Oracle;
 /// The surface name (plan §1.4).
 pub const NAME: &str = "pycompat.json";
 
+/// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`); set
+/// `false` only for a surface that cannot run there, and say why.
+pub const ON_MACOS: bool = true;
+
 /// The registered implementation.
 pub fn surface() -> Option<Box<dyn Surface>> {
     Some(Box::new(PycompatJson))
@@ -617,8 +621,8 @@ fn deep_case(rng: &mut Rng) -> Value {
     } else {
         10_000
     };
-    // CPython's C scanner raises RecursionError a little below 10,000 and the indent encoder
-    // near 1,000, so two thirds of the depths sit at the top of the range (D-1).
+    // CPython's C scanner raises RecursionError between 9,000 and 10,000 (measured) and the
+    // indent encoder near 1,000, so two thirds of the depths sit at the top of the range (D-1).
     let d = match rng.below(3) {
         0 => 1 + rng.index(max),
         1 => max - rng.index(max / 10),

@@ -121,9 +121,12 @@ fn the_seeds_pass_against_the_golden_answers() {
         &report.to_string_lossy(),
     ]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("core.lock: 820 cases"), "{out}");
     assert!(
-        out.contains("(D-6 3), 0 unexplained, 0 oracle errors"),
+        out.contains("core.lock: 820 cases (820 seeds + 0 generated)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("(D-6 3), 0 waived, 0 unexplained, 0 oracle errors"),
         "{out}"
     );
     assert!(
@@ -174,7 +177,12 @@ fn an_injected_diff_fails_and_a_matching_entry_passes() {
     std::fs::write(div.join("core.lock.toml"), toml).expect("write");
     let (code, out) = difftest(&args);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("(D-2 1, D-6 3), 0 unexplained"), "{out}");
+    assert!(out.contains("(D-6 3), 1 waived, 0 unexplained"), "{out}");
+    assert!(out.contains("core.lock: waived 1 diff(s) by "), "{out}");
+    assert!(
+        out.contains("core.lock.toml:8 (D-2, case golden:1)"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -225,6 +233,49 @@ fn a_wrong_class_fails_and_an_unknown_key_is_an_error() {
     let (code, out) = difftest(&args);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("is not a GC-16 class"), "{out}");
+}
+
+#[test]
+fn divergence_folders_and_injection_targets_are_checked() {
+    let Some((_dir, python, div)) = fake() else {
+        return;
+    };
+    let d = div.to_string_lossy().into_owned();
+    // A file named after no surface (a typo) is an error, even for another surface's run.
+    std::fs::write(div.join("core.lok.toml"), "").expect("write");
+    let (code, out) = difftest(&[
+        "--surface",
+        "core.state",
+        "--gen",
+        "0",
+        "--python",
+        &python,
+        "--divergences",
+        &d,
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("no surface is named \"core.lok\""), "{out}");
+    std::fs::remove_file(div.join("core.lok.toml")).expect("rm");
+    // Injecting into a surface that does not run is an error, not a silent pass.
+    let (code, out) = difftest(&[
+        "--surface",
+        "core.state",
+        "--gen",
+        "0",
+        "--python",
+        &python,
+        "--divergences",
+        &d,
+        "--inject-diff",
+        "core.lock",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("--inject-diff core.lock: that surface is not in this run"),
+        "{out}"
+    );
+    let (code, out) = difftest(&["--surface", "core.state", "--divergences", "/nonexistent"]);
+    assert_eq!(code, 2, "{out}");
 }
 
 #[test]
