@@ -387,6 +387,22 @@
           "name": "strip-connectors"
         }
       ]
+    },
+    {
+      "name": "rtk",
+      "managed_by": "subtree",
+      "target": "rtk",
+      "license": "Apache-2.0",
+      "fork": {
+        "repo": "https://github.com/rbonweb/rtk",
+        "ref": "develop",
+        "commit": "9b790c414de16f5fb688126b3945c73aa0e0218e"
+      },
+      "upstream": {
+        "repo": "https://github.com/rtk-ai/rtk",
+        "ref": "v1.2.1",
+        "commit": "d0f0399a5ff8cd1d81325a033f0b2d8864d665f6"
+      }
     }
   ]
 }

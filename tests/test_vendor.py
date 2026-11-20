@@ -101,7 +101,7 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.validate_sources(entries), [])
         self.assertEqual(
             {e["name"] for e in entries},
-            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines"}
+            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines", "rtk"}
             | set(STRIPPED_KNOWLEDGE))
 
     def test_real_pins_match_the_plan(self):
