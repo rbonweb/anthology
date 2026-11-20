@@ -76,7 +76,8 @@ EOF
         conflicts=$(git diff --name-only --diff-filter=U)
     fi
     if [ -n "$trimmed" ] && [ -z "$conflicts" ]; then
-        git commit -q --no-edit
+        # strip: git's commented "# Conflicts:" list stays out of the merge message.
+        git commit -q --no-edit --cleanup=strip
     else
         echo
         if [ -n "$conflicts" ]; then

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import unittest
 
 import yaml
@@ -15,6 +16,16 @@ import yaml
 from _repo import ROOT
 
 RTK = ROOT / "rtk"
+# Build output and OS debris that are never tracked: skipped by the tree allowlists.
+UNTRACKED_DEBRIS = {"target", ".DS_Store"}
+TOP_LEVEL = [
+    ".cargo", ".git-blame-ignore-revs", ".gitattributes", ".gitignore", ".rtk", "CHANGELOG.md",
+    "CLAUDE.md", "CONTRIBUTING.md", "Cargo.lock", "Cargo.toml", "DISCLAIMER.md", "LICENSE",
+    "README.md", "SECURITY.md", "build.rs", "docs", "hooks", "rustfmt.toml", "src", "tests",
+    "text",
+]
+HOOKS_ENTRIES = ["README.md", "claude", "rtk-awareness-full.md", "rtk-awareness-high.md",
+                 "rtk-awareness.md"]
 TRIM_SH = ROOT / "scripts" / "rtk-trim.sh"
 TRIM_PY = ROOT / "scripts" / "rtk_trim.py"
 NET_TEST = ROOT / "scripts" / "rtk-net-test.sh"
@@ -88,25 +99,79 @@ REMOVED_PATHS = [
 ]
 
 _SECTION = re.compile(r"^\[([^\]]+)\]\s*(#.*)?$")
-_DEP = re.compile(r"^([A-Za-z0-9_-]+)(\.[A-Za-z0-9_-]+)?\s*=")
+_DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+_HEADER = re.compile(r"^\s*\[\[?(.+?)\]\]?\s*(#.*)?$")
+_KEY_PART = r"""(?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+)"""
+_KEY = re.compile(r"^\s*(%s)\s*(?:\.\s*%s\s*)*=" % (_KEY_PART, _KEY_PART))
+
+
+def _dotted(name: str) -> list:
+    """The parts of a dotted TOML key or table name, raw (quotes kept), split outside quotes."""
+    parts, cur, quote = [], "", None
+    for ch in name:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+            cur += ch
+        elif ch == ".":
+            parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur.strip())
+    return parts
+
+
+def _unquote(part: str) -> str:
+    return part[1:-1] if len(part) > 1 and part[0] in "\"'" and part[-1] == part[0] else part
+
+
+def _depth_change(line: str) -> int:
+    """Net `[`/`{` nesting a line opens, outside strings and comments."""
+    depth, quote = 0, None
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+    return depth
 
 
 def cargo_deps(path) -> dict:
-    """{section: sorted dependency names} for every `*dependencies` section, by a line scan:
-    a header is `[...]` at column 0; a dependency is `name =` or `name.workspace =` at
-    column 0. Continuation lines of multi-line inline tables are indented or start with
-    `]`, so they never match."""
-    section, out = None, {}
+    """{section: sorted dependency names} for every dependency section of a Cargo.toml.
+
+    A stdlib line scan (Python 3.9 has no tomllib) that tracks bracket nesting, so only
+    top-level lines count. Dependencies are the keys of a `[*dependencies]` table (indented,
+    quoted or dotted keys: the first part is the name) and the `foo` of a
+    `[*dependencies.foo]` sub-table, filed under its parent section."""
+    section, scan, depth, out = None, False, 0, {}
     with open(path, encoding="utf-8") as f:
         for line in f:
-            m = _SECTION.match(line)
-            if m:
-                section = m.group(1).strip()
-                continue
-            if section and section.endswith("dependencies"):
-                m = _DEP.match(line)
-                if m:
-                    out.setdefault(section, []).append(m.group(1))
+            if depth == 0:
+                header = _HEADER.match(line)
+                if header:
+                    parts = _dotted(header.group(1).strip())
+                    section, scan = None, False
+                    if parts[-1] in _DEP_SECTIONS:
+                        section, scan = ".".join(parts), True
+                    elif len(parts) > 1 and parts[-2] in _DEP_SECTIONS:
+                        out.setdefault(".".join(parts[:-1]), []).append(_unquote(parts[-1]))
+                    continue
+                if scan:
+                    key = _KEY.match(line)
+                    if key:
+                        out.setdefault(section, []).append(_unquote(key.group(1)))
+            depth += _depth_change(line)
     return {k: sorted(v) for k, v in out.items()}
 
 
@@ -128,6 +193,45 @@ class InitModulesTest(unittest.TestCase):
         init = RTK / "src" / "hooks" / "init"
         self.assertEqual(sorted(p.name for p in init.glob("*.rs")), INIT_MODULES)
         self.assertEqual([p.name for p in init.iterdir() if p.is_dir()], [])
+
+
+class CargoParserTest(unittest.TestCase):
+    """cargo_deps sees a dependency in every form a manifest can declare it."""
+
+    def deps(self, text: str) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "Cargo.toml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return cargo_deps(path)
+
+    def test_plain_dotted_and_multi_line_values(self):
+        self.assertEqual(self.deps(
+            '[dependencies]\nanyhow = "1"\nrtk-text = { path = "text" }\nserde.workspace = true\n'
+            'windows-sys = { version = "0.61", features = [\n    "A",\n    "B",\n] }\n'),
+            {"dependencies": ["anyhow", "rtk-text", "serde", "windows-sys"]})
+
+    def test_sub_table_headers(self):
+        self.assertEqual(self.deps(
+            '[dependencies]\nanyhow = "1"\n\n[dependencies.foo]\nversion = "1"\nfeatures = ["x"]\n'
+            "[target.'cfg(unix)'.dependencies.bar]\nversion = \"2\"\n"
+            '[dev-dependencies."baz"]\nversion = "3"\n'),
+            {"dependencies": ["anyhow", "foo"], "target.'cfg(unix)'.dependencies": ["bar"],
+             "dev-dependencies": ["baz"]})
+
+    def test_indented_and_quoted_keys(self):
+        self.assertEqual(self.deps(
+            '[build-dependencies]\n  indented = "1"\n"quoted" = "1"\n\'single\'.version = "1"\n'
+            "  [ target.'cfg(windows)'.dependencies ]\nwin = \"1\"\n"),
+            {"build-dependencies": ["indented", "quoted", "single"],
+             "target.'cfg(windows)'.dependencies": ["win"]})
+
+    def test_other_tables_and_nested_arrays_are_not_dependencies(self):
+        self.assertEqual(self.deps(
+            '[package]\nname = "rtk"\n[package.metadata.deb]\nassets = [\n'
+            '    ["target/release/rtk", "usr/bin/", "755"]\n]\n[[bin]]\nname = "x"\n'
+            '[dependencies]\nok = "1"\n[features]\nfoo = ["dep:ok"]\n'),
+            {"dependencies": ["ok"]})
 
 
 class CargoDependenciesTest(unittest.TestCase):
@@ -177,6 +281,28 @@ class NoTelemetryTest(unittest.TestCase):
         self.assertNotIn("maybe_ping", lib)
         self.assertNotIn("prompt_telemetry_consent",
                          (RTK / "src" / "hooks" / "init" / "mod.rs").read_text(encoding="utf-8"))
+
+
+def _has_files(path) -> bool:
+    if not path.is_dir():
+        return True
+    return any(files for _, _, files in os.walk(path))
+
+
+def entries(directory) -> list:
+    """The entries of `directory` git would see: no build output or OS debris, no empty dirs."""
+    return sorted(p.name for p in directory.iterdir()
+                  if p.name not in UNTRACKED_DEBRIS and _has_files(p))
+
+
+class TreeAllowlistTest(unittest.TestCase):
+    """A new host directory or top-level file (an upstream addition) fails here."""
+
+    def test_top_level_entries(self):
+        self.assertEqual(entries(RTK), TOP_LEVEL)
+
+    def test_hooks_entries(self):
+        self.assertEqual(entries(RTK / "hooks"), HOOKS_ENTRIES)
 
 
 class RemovedPathsTest(unittest.TestCase):
@@ -229,6 +355,9 @@ class TrimScriptsTest(unittest.TestCase):
         self.assertIn("if bash scripts/rtk-trim.sh; then", text)
         self.assertNotIn("trim skipped", text)
         self.assertNotIn("if [ -f scripts/rtk-trim.sh ]", text)
+
+    def test_sync_strips_the_conflict_comments_from_the_merge_message(self):
+        self.assertIn("git commit -q --no-edit --cleanup=strip", SYNC.read_text(encoding="utf-8"))
 
     def test_network_test_runs_the_binary_with_the_network_off(self):
         text = NET_TEST.read_text(encoding="utf-8")
