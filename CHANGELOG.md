@@ -95,17 +95,16 @@ a new version section.
 - rtk `1.2.1-anthology.3`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
   project, local and managed settings) to the command an `rtk …` form wraps, printing an
   explicit deny or ask, so `Bash(rtk *)` no longer runs a command one of those rules covers.
-- rtk `1.2.1-anthology.4`: once you have any deny or ask rule, an `rtk …` command runs
-  without a prompt only when it uses a listed program the hook fully understands; anything
-  else (programs that run a string such as `awk`, `make`, `ed`, `sqlite3`; `git grep -O`,
-  `git rebase -x`, `git -c`; `env -S`; a stdin script; shells and interpreters) asks. A
-  dashed git builtin (`git-push`) and words after a redirect (`git >/dev/null push`) now meet
-  your deny rules. A rule's command text anywhere in an `rtk` line asks, however quoted; a
-  `/dev/stdin`, `/dev/fd/N` or `/proc/…/fd/N` operand or a redirect opening a descriptor
-  above 2 asks; plugin, linker, MSBuild-property and `--exec` options and VCS or URL
-  package specs (`pip install git+…`, `npx -p`) ask; a `Read()` path the hook cannot
-  resolve asks at top level too. Rules restrict commands, not what an allowed program
-  loads from files. Without rules nothing changes.
+- rtk `1.2.1-anthology.4`: once you have any deny, ask or `Read()` rule, a line that runs
+  `rtk` passes without a prompt only in the plain shape: one `rtk ls`, `tree`, `read`, `wc`,
+  `diff`, `grep`, `rg`, `find`, everyday `rtk git` or `rtk cargo build/test/check/clippy/fmt`
+  command with listed options and literal paths, and no pipe, `&&`, `;`, redirect,
+  substitution, variable, glob or `cd` in front. Everything else asks, and rtk rewrites
+  only into that shape. A rule's command text anywhere in such a line asks, however
+  quoted. A dashed git builtin (`git-push`), words after a redirect (`git >/dev/null push`)
+  and a redirect before the command (`< secret.txt cat`) now meet your deny rules. Rules
+  restrict commands, not what an allowed program loads from files. Without rules nothing
+  changes.
 - rtk's local history (command lines, recall store, tee spool) is kept in
   `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
   document what it stores and for how long.

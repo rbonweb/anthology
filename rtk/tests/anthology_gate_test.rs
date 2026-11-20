@@ -246,7 +246,8 @@ fn ask_rules_become_hook_asks_that_the_rtk_allow_cannot_beat() {
     let sb = Sandbox::rtk_allowed_with_rules();
     assert_eq!(
         sb.hook("kubectl apply -f x.yaml"),
-        Said::Ask("rtk kubectl apply -f x.yaml".into())
+        // Round 7: `rtk kubectl` is not in the plain shape, so no rewrite.
+        Said::Ask("kubectl apply -f x.yaml".into())
     );
     assert_eq!(
         sb.hook("rtk kubectl apply -f x.yaml"),
@@ -254,7 +255,7 @@ fn ask_rules_become_hook_asks_that_the_rtk_allow_cannot_beat() {
     );
     assert_eq!(
         sb.hook("aws s3 rm s3://b --recursive"),
-        Said::Ask("rtk aws s3 rm s3://b --recursive".into())
+        Said::Ask("aws s3 rm s3://b --recursive".into())
     );
     // No rewrite exists for an already-prefixed command: the hook asks about it
     // as written.
@@ -294,7 +295,7 @@ fn read_deny_rules_leave_other_paths_alone_and_ask_about_uncertain_ones() {
         Said::Rewrite("rtk read ok.txt".into())
     );
     // A glob might name the denied file: the hook asks (round 6: at top level too).
-    assert_eq!(sb.hook("cat *.txt"), Said::Ask("rtk read *.txt".into()));
+    assert_eq!(sb.hook("cat *.txt"), Said::Ask("cat *.txt".into()));
     assert_eq!(
         sb.hook("cat < sec?et.txt"),
         Said::Ask("cat < sec?et.txt".into())
@@ -716,11 +717,11 @@ fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
         ..Rules::default()
     });
     for cmd in [
-        "ls src/*.rs",
-        "git log -- *.rs",
         "grep 'a.*b' f",
         "cat README.md",
         "git status",
+        "git log --oneline -5",
+        "cargo test",
     ] {
         match sb.hook(cmd) {
             Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
@@ -728,6 +729,11 @@ fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
             }
             other => panic!("{cmd} lost its rewrite: {other:?}"),
         }
+    }
+    // Round 7: a rewrite out of the plain shape is not made; the host judges the
+    // original, with no prompt from the hook.
+    for cmd in ["ls src/*.rs", "git log -- *.rs"] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
 }
 
@@ -912,13 +918,10 @@ fn arguments_from_stdin_or_the_filesystem_are_asked_about() {
 fn the_round_three_backstops_leave_ordinary_commands_alone() {
     let sb = push_only_sandbox();
     for cmd in [
-        "ls src/*.rs",
-        "git log -- *.rs",
         "grep 'a.*b' f",
         "cat README.md",
         "git status",
         "git commit -m 'fix the push button'",
-        "git -C . status",
     ] {
         match sb.hook(cmd) {
             Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
@@ -1033,12 +1036,7 @@ fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
             other => panic!("{cmd} lost its rewrite: {other:?}"),
         }
     }
-    for cmd in [
-        "ruff check .",
-        "docker build -t app .",
-        "git status",
-        "cargo test",
-    ] {
+    for cmd in ["git status", "cargo test", "cat README.md"] {
         assert!(
             matches!(sb.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
             "{cmd}: {:?}",
@@ -1046,10 +1044,8 @@ fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
         );
     }
     let only = push_only_sandbox();
-    assert!(matches!(
-        only.hook("ls src/*.rs"),
-        Said::Allow(_) | Said::Rewrite(_)
-    ));
+    // Round 7: outside the plain shape the original goes to the host unrewritten.
+    assert_eq!(only.hook("ls src/*.rs"), Said::Nothing);
 }
 
 /// N-2: a script a launcher runs is read in full.
@@ -1111,7 +1107,10 @@ fn positional_words_between_a_rules_words_do_not_cost_the_rewrite() {
     let only = push_only_sandbox();
     for cmd in ["git stash push -m wip", "git log --grep push"] {
         assert!(
-            matches!(only.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
+            matches!(
+                only.hook(cmd),
+                Said::Allow(_) | Said::Rewrite(_) | Said::Nothing
+            ),
             "{cmd}: {:?}",
             only.hook(cmd)
         );
@@ -1120,20 +1119,21 @@ fn positional_words_between_a_rules_words_do_not_cost_the_rewrite() {
 }
 
 /// N-5: no prompt for a bare `.` named as an operand. (Round 5: a program off the
-/// allowlist asks whatever its operands: `docker exec`, `uv run python`, `rsync`.)
+/// allowlist asks whatever its operands: `docker exec`, `uv run python`, `rsync`;
+/// round 7: so does every program off the plain list.)
 #[test]
 fn a_bare_dot_and_interpreter_operands_do_not_prompt() {
     let only = push_only_sandbox();
-    for cmd in [
-        "rtk npx prettier --check .",
-        "rtk ruff check .",
-        "rtk docker build -t app .",
-    ] {
+    for cmd in ["rtk ls .", "rtk tree .", "rtk git add .", "rtk cargo fmt"] {
         assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
     }
+    // Round 7: off the plain list, whatever the operands.
     asked(
         &only,
         &[
+            "rtk npx prettier --check .",
+            "rtk ruff check .",
+            "rtk docker build -t app .",
             "rtk docker exec app python manage.py migrate",
             "rtk uv run python script.py",
             "rtk bypass rsync -a . /tmp/x",
@@ -1226,36 +1226,42 @@ fn listed_commands_pass_without_a_prompt() {
         "rtk git status",
         "rtk git log --oneline -5",
         "rtk git diff HEAD~1",
-        "rtk git add src/*.rs",
+        "rtk git add src/main.rs",
         "rtk git commit -m \"fix: x\"",
-        "rtk git -C sub status",
         "rtk ls -la",
         "rtk cargo test",
-        "rtk cargo test 2>&1 | tail -5",
+        "rtk cargo clippy --all-targets -- -D warnings",
         "rtk grep -rn foo src/",
         "rtk read ok.txt",
         "rtk find . -name '*.rs'",
-        "rtk npm run build",
-        "rtk npx prettier --check .",
-        "rtk pytest -x",
-        "rtk go test ./...",
-        "rtk run -c 'git status && git diff'",
-        "rtk test cargo test",
-        "rtk lint ruff check .",
-        "rtk bypass cat ok.txt",
-        "rtk docker compose up",
-        "rtk kubectl get pods",
-        "rtk gh pr view 12",
+        "rtk wc -l ok.txt",
     ] {
         assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
     }
-    assert!(matches!(
-        only.hook("git status && rtk cargo build"),
-        Said::Rewrite(_) | Said::Allow(_)
-    ));
+    // Round 7: everything else asks, a compound with a plain part included.
+    asked(
+        &only,
+        &[
+            "git status && rtk cargo build",
+            "rtk git add src/*.rs",
+            "rtk git -C sub status",
+            "rtk cargo test 2>&1 | tail -5",
+            "rtk npm run build",
+            "rtk npx prettier --check .",
+            "rtk pytest -x",
+            "rtk go test ./...",
+            "rtk run -c 'git status && git diff'",
+            "rtk test cargo test",
+            "rtk lint ruff check .",
+            "rtk bypass cat ok.txt",
+            "rtk docker compose up",
+            "rtk kubectl get pods",
+            "rtk gh pr view 12",
+        ],
+    );
 }
 
-/// Off the allowlist: a program, an option or a construct the gate does not
+/// Not in the plain shape (round 7; the allowlist in round 5): a program, an option or a construct the gate does not
 /// understand asks.
 #[test]
 fn what_the_allowlist_does_not_understand_asks() {
@@ -1402,4 +1408,74 @@ fn the_round_six_screens_are_inert_in_a_bare_sandbox() {
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+}
+
+// --- review round 6: the plain shape ---
+
+/// R6-1 to R6-9: each reviewer payload is denied or asked about, under the brief's
+/// rules and under a git-push deny alone (a descriptor, a dotnet `:` option, a
+/// redirect before the command or after a `cd`).
+#[test]
+fn the_round_six_bypass_classes_are_stopped() {
+    let payloads = [
+        "< secret.txt rtk cat",
+        "{ rtk cat; } < secret.txt",
+        "(rtk cat) < secret.txt",
+        "rtk ls; < secret.txt rtk cat",
+        "cd sub && rtk cat < ../secret.txt",
+        "cd sub; rtk head -1 < ../secret.txt",
+        "cd /dev && echo x | rtk kubectl --kubeconfig=stdin get pods",
+        "cd /dev && rtk read stdin",
+        "rtk kubectl --kubeconfig=/dev/stdout get pods 1<<<'x'",
+        "rtk read /dev/stdout 1<<<x",
+        "rtk kubectl --kubeconfig=/DEV/stdin get pods",
+        "rtk dotnet build '--property:PreBuildEvent=git -C . push'",
+        "echo x | rtk kubectl --kubeconfig=/dev/{x,stdin} get pods",
+        "rtk read /proc/self/task/1/fd/0",
+        "cd sub && rtk cat //proc/self/cwd/../secret.txt",
+        "rtk read /./proc/self/cwd/secret.txt",
+        "rtk file -Lfsecret.txt",
+        "rtk docker build -qf- .",
+        "rtk read -",
+    ];
+    let sb = Sandbox::rtk_allowed_with_rules();
+    let only = push_only_sandbox();
+    for cmd in payloads {
+        assert!(stopped(&sb, cmd), "{cmd}: {:?}", sb.hook(cmd));
+        assert!(stopped(&only, cmd), "{cmd}: {:?}", only.hook(cmd));
+    }
+    // APFS folds case: `/DEV/stdin` is `/dev/stdin` there (on Linux it is no device).
+    #[cfg(target_os = "macos")]
+    assert!(stopped(&sb, "rtk read /DEV/stdin"));
+    for cmd in [
+        "< secret.txt cat",
+        "{ cat; } < secret.txt",
+        "rtk read ./sub/../secret.txt",
+        "rtk git log secret.txt~1",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    assert_eq!(
+        sb.hook("cd sub && cat < ../secret.txt"),
+        Said::Ask("cd sub && cat < ../secret.txt".into())
+    );
+}
+
+/// No rule anywhere: the plain-shape check never runs.
+#[test]
+fn the_plain_shape_is_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "rtk bypass git push",
+        "rtk npm run build",
+        "rtk ls $HOME",
+        "< secret.txt rtk cat",
+        "rtk read /dev/stdin",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+    assert_eq!(
+        sb.hook("ls src/*.rs"),
+        Said::Rewrite("rtk ls src/*.rs".into())
+    );
 }

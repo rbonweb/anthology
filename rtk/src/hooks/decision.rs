@@ -349,19 +349,19 @@ pub(crate) fn decide_for_claude_hook_at(
     // the install allows `Bash(rtk *)`, so a deny or ask rule that names what an
     // `rtk ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
     // enforced here (`anthology_gate`).
-    use super::anthology_gate::{Gate, unlisted};
-    let mut gate =
-        super::anthology_gate::evaluate(cmd, &permissions.gate, permissions.verdict, cwd);
-    // With any deny or ask rule, an rtk command passes without a prompt only when
-    // the allowlist understands what it runs; else the hook asks (before a defer,
-    // which would leave `rtk ...` to the `Bash(rtk *)` allow rule).
-    if gate != Gate::Deny && unlisted(cmd, &permissions.gate) {
-        gate = Gate::Ask;
-    }
-    // A defer hands the original to the host, where `Bash(rtk *)` allows anything
-    // that starts with rtk: a text that may run rtk asks instead.
-    if gate == Gate::Defer && super::anthology_gate::mentions_rtk(cmd) {
-        gate = Gate::Ask;
+    use super::anthology_gate::{Gate, evaluate, mentions_rtk, plain};
+    let rules = &permissions.gate;
+    let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
+    // With any deny, ask or `Read()` rule, a line that may run rtk passes without
+    // a prompt only in the plain shape (one listed `rtk` command, listed options,
+    // literal paths); anything else asks, before a defer could leave `rtk ...` to
+    // the `Bash(rtk *)` allow rule.
+    if rules.active() && gate != Gate::Deny && mentions_rtk(cmd) {
+        gate = match (gate, plain(cmd, rules, cwd)) {
+            (_, Gate::Deny) => Gate::Deny,
+            (Gate::Pass, Gate::Pass) => Gate::Pass,
+            _ => Gate::Ask,
+        };
     }
     match gate {
         Gate::Deny => return HookDecision::Deny,
@@ -375,41 +375,26 @@ pub(crate) fn decide_for_claude_hook_at(
         cwd,
     );
     // The host judges the text the hook hands back, and `Bash(rtk *)` allows
-    // whatever starts with `rtk`: read that text as the rtk command it is (`pnpm
-    // exec cat secret.txt` becomes `rtk pnpm exec cat secret.txt`).
-    let gate = match &decision {
+    // whatever starts with `rtk`. With rules, rtk rewrites only into the plain
+    // shape; otherwise the original goes back unrewritten (an ask stays an ask).
+    let (gate, decision) = match &decision {
         HookDecision::AllowRewrite(rewritten) | HookDecision::AskRewrite(rewritten, _)
-            if rewritten != cmd =>
+            if rules.active() && rewritten != cmd =>
         {
-            match super::anthology_gate::evaluate(
-                rewritten,
-                &permissions.gate,
-                PermissionVerdict::Default,
-                cwd,
-            ) {
-                super::anthology_gate::Gate::Deny => return HookDecision::Deny,
-                super::anthology_gate::Gate::Ask => super::anthology_gate::Gate::Ask,
-                super::anthology_gate::Gate::Defer => {
-                    if gate == super::anthology_gate::Gate::Ask {
-                        gate
-                    } else {
-                        return HookDecision::Defer;
-                    }
-                }
-                // The rewrite made an rtk command the allowlist does not let
-                // through: leave the original to the host, judged as it would be
-                // without rtk.
-                super::anthology_gate::Gate::Pass if unlisted(rewritten, &permissions.gate) => {
-                    if gate == Gate::Ask {
-                        gate
-                    } else {
-                        return HookDecision::Defer;
-                    }
-                }
-                super::anthology_gate::Gate::Pass => gate,
+            let judged = evaluate(rewritten, rules, PermissionVerdict::Default, cwd);
+            let shape = plain(rewritten, rules, cwd);
+            if judged == Gate::Deny || shape == Gate::Deny {
+                return HookDecision::Deny;
+            }
+            let ask = gate == Gate::Ask || judged == Gate::Ask;
+            match (shape, ask) {
+                (Gate::Pass, true) => (Gate::Ask, decision),
+                (Gate::Pass, false) if judged == Gate::Pass => (gate, decision),
+                (_, true) => (Gate::Ask, HookDecision::Defer),
+                _ => return HookDecision::Defer,
             }
         }
-        _ => gate,
+        _ => (gate, decision),
     };
     super::anthology_gate::apply(gate, cmd, decision, &permissions.gate)
 }
