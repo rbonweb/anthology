@@ -29,7 +29,8 @@ import state  # noqa: E402
 PLUGIN = ROOT / "plugins" / "anthology"
 BYPASS = ("Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook "
           "still applies the deny and ask rules in your settings files (user, project, local and managed) "
-          "to the command it wraps, but not rules given with `--settings` or `--disallowedTools`.")
+          "to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, "
+          "server-managed settings or an MDM profile.")
 SETTINGS = {"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}
 
 

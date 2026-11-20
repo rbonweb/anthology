@@ -263,6 +263,12 @@ def _rtk_target(env):
     return real, "delete", None
 
 
+def _ignore_vanished(func, path, exc_info):
+    """shutil.rmtree onerror: a file that disappears mid-delete (a SQLite -wal/-shm) is fine."""
+    if not issubclass(exc_info[0], FileNotFoundError):
+        raise exc_info[1]
+
+
 def _rtk_history_target():
     """`(real path to delete or None, status, warning or None)` for rtk's history folder.
 
@@ -329,11 +335,17 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
             os.unlink(str(path))
         else:
             settings_patch.write_text(path, plan["new_text"])
+    # state.json goes first: without its rtk_path, bin/rtk-hook exits before running rtk, so no
+    # hook in another session recreates rtk's history while it is being deleted.
+    try:
+        os.unlink(str(state.state_path()))
+    except FileNotFoundError:
+        pass
     if rtk_real:
-        shutil.rmtree(rtk_real)
+        shutil.rmtree(rtk_real, onerror=_ignore_vanished)
         rtk_status = "deleted"
     if history_real:
-        shutil.rmtree(history_real)
+        shutil.rmtree(history_real, onerror=_ignore_vanished)
         history_status = "deleted"
     unapproved = []
     if unapprove_all:
@@ -343,10 +355,6 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
     elif unapprove and this_repo:
         if memory_sync.unapprove(this_repo, env=env):
             unapproved.append(this_repo)
-    try:
-        os.unlink(str(state.state_path()))
-    except FileNotFoundError:
-        pass
     return {"ok": True, "settings": {"path": str(path), "changed": changed, "diff": plan["diff"]},
             "rtk": {"status": rtk_status}, "rtk_history": {"status": history_status},
             "memory": {"unapproved": unapproved,

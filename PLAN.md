@@ -344,7 +344,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - **No `rtk init`:** it isn't used, because it would add a duplicate hook. Defaults are preconfigured, and there are no user options.
 
 **Permissions — accepted risk (owner's decision):**
-- Setup adds a blanket `Bash(rtk *)` allow, so rewritten commands never prompt.
+- Setup adds a blanket `Bash(rtk *)` allow, so rewritten commands never prompt (since ADR-019: unless a deny, ask or Read rule is involved).
 - Because `rtk bypass <cmd>` runs any command, this also auto-approves `rtk bypass <anything>`.
 - rtk's hook applies the deny and ask rules of the user, project, local and managed settings files to the command and to the command an `rtk …` form wraps (explicit hook deny / hook ask), and `Read()` deny rules to the reads it would rewrite; rules given with `--settings` or `--disallowedTools`, server-managed settings and MDM profiles are invisible to a hook (ADR-019). The guardrails check the command the agent asked for.
 - The README states the risk plainly, and `/anthology:setup remove` takes the allow out again.

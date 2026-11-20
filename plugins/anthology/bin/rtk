@@ -19,7 +19,7 @@ if [ -z "$rtk_path" ] || [ ! -f "$rtk_path" ] || [ ! -x "$rtk_path" ]; then
 fi
 # rtk keeps a local history of the command lines it sees (tracking, 90 days), a recall store of
 # output it elided (30 days) and a tee spool. Keep them next to state.json, not in rtk's default
-# data folder, so /anthology:setup remove deletes them (README "What rtk keeps", SECURITY.md).
+# data folder, so /anthology:setup remove deletes them (README "Local history", SECURITY.md).
 rtk_data=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/rtk
 RTK_DB_PATH=$rtk_data/history.db
 RTK_RECALL_DB=$rtk_data/recall.db
