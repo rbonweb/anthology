@@ -43,11 +43,6 @@ MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 
 
-# Files the docs name that land with the rtk stream (not on this branch yet). Remove an entry
-# when its file merges; a name that exists never needs to be listed.
-PENDING_FILES = {"scripts/sync-rtk.sh", "scripts/rtk-test.sh", "scripts/rtk-trim.sh",
-                 ".github/workflows/rtk-release.yml"}
-
 PUBLIC_DOCS = ("README.md", "SECURITY.md", "CONTRIBUTING.md", "DECISIONS.md")
 CODE_SPAN_PATH = re.compile(r"`((?:scripts|\.github/workflows)/[A-Za-z0-9._-]+)`")
 
@@ -222,8 +217,6 @@ class LinkTest(unittest.TestCase):
                     continue
                 path, _, fragment = target.partition("#")
                 rel = _clean(path) if path else doc
-                if rel in PENDING_FILES:
-                    continue
                 dest = ROOT / rel
                 if not dest.exists():
                     problems.append(f"{doc}: {target} does not exist")
@@ -238,7 +231,7 @@ class LinkTest(unittest.TestCase):
         for doc in ("README.md", "SECURITY.md", "CONTRIBUTING.md"):  # DECISIONS names paths in upstream trees
             for m in CODE_SPAN_PATH.finditer(read(doc)):
                 rel = m.group(1)
-                if rel not in PENDING_FILES and not (ROOT / rel).is_file():
+                if not (ROOT / rel).is_file():
                     problems.append(f"{doc}: `{rel}` does not exist")
         self.assertEqual(problems, [])
 

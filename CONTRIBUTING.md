@@ -25,7 +25,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `plugins/anthology-superpowers/` | Generated from `vendor/`, renamed from superpowers |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
 | `rtk/` | The rtk source, a git subtree with its history |
-| `scripts/` | Maintainer tools: `vendor.py`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `release.sh`, `check_version_bump.py`, `upstream_watch.py`, `memory_diff.py`, `run-evals.sh`, `eval_baseline.py` |
+| `scripts/` | Maintainer tools: `vendor.py`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `rtk-net-test.sh`, `release.sh`, `check_version_bump.py`, `upstream_watch.py`, `memory_diff.py`, `run-evals.sh`, `eval_baseline.py` |
 | `evals/` | Behaviour evals (one `case.yaml` per case), the mocked BrowserOS Neo server in `mocks/`, and the smoke cases in `smoke/`; run with `scripts/run-evals.sh` |
 | `tests/` | Unit tests (`unittest`) |
 | `ci/` | Pinned Docker images and the pinned Claude Code used by CI |
@@ -50,7 +50,7 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
    Then again with `ci/images/python39.Dockerfile`, because the runtime scripts must work on Python 3.9.
 
 3. Some tests need `git`, `node` or network access, and skip themselves in those images. CI runs them on the runner. To run one file on your machine, install the test requirements in a virtual environment and run, for example, `python -m unittest tests.test_release -v`.
-4. Run the rtk tests with [`scripts/rtk-test.sh`](scripts/rtk-test.sh). It reads the Rust image from `ci/images/rust.Dockerfile` and runs `cargo test --locked` in a container. It installs a few test-only tools (`git`, `curl`, `jq`, `procps`, `ca-certificates`) inside the container only.
+4. Run the rtk tests with [`scripts/rtk-test.sh`](scripts/rtk-test.sh). It reads the Rust image from `ci/images/rust.Dockerfile` and runs `cargo test --locked` in a container as a non-root user; extra arguments go to `cargo test`. It needs Docker and network access, because it installs a few test-only tools (`git`, `curl`, `jq`, `procps`, `ca-certificates`) inside the container only. [`scripts/rtk-net-test.sh`](scripts/rtk-net-test.sh) builds the release binary in the same image and runs it with `docker run --network none`.
 5. Check the vendored content with `python3 scripts/vendor.py check`.
 6. Validate a plugin with the Claude Code version CI uses: `npm ci --prefix ci/claude-code`, then `ci/claude-code/node_modules/.bin/claude plugin validate --strict plugins/<name>`.
 7. Try your checkout in Claude Code: `claude plugin marketplace add <path to your checkout>` loads the marketplace in place, then install `anthology@anthology` as in the README.
@@ -61,7 +61,8 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
 |---|---|
 | `test` and `test-py39` | The unit tests on the pinned Python 3.12 and 3.9 images, including the per-agent startup budgets |
 | `memory-git`, `setup-git`, `version-bump`, `taste-bridge`, `vendor-check` | The tests that need `git`, `node` or network, which skip in the Docker images and run on the runner (memory, session-start and setup, release and version-bump, the BrowserOS Neo bridge, vendoring) |
-| `scripts/rtk-test.sh` | rtk builds and passes its tests, including one named test per change the fork makes |
+| `rtk-test` job (`scripts/rtk-test.sh`, then `scripts/rtk-net-test.sh`) | rtk passes its tests, including one named test per change the fork makes, and the release binary works with the network off |
+| `rtk-release` workflow, on a pull request | A change to the workflow or the toolchain pin builds and tests all four release targets, without publishing |
 | `vendor.py check` | Every vendored tree and license regenerates exactly from its pin |
 | `check_version_bump.py` | A changed plugin has a higher version than at the merge base |
 | `claude plugin validate --strict` | Each plugin is valid, using the pinned Claude Code in `ci/claude-code/` |
@@ -116,7 +117,7 @@ scripts/sync-rtk.sh <upstream tag>
 Give it an upstream release tag like `v1.2.3`. It refuses to run on a dirty tree. In order, it:
 
 1. creates the branch `rtk-sync/<tag>` from `HEAD`;
-2. runs `git subtree pull` for that tag. On conflicts it prints the conflicted files and **stops**, leaving the branch for you to resolve;
+2. runs `git subtree pull` for that tag. Upstream edits to files the trim deletes (`engine/` and similar) are resolved by deleting them again. On any other conflict it prints the conflicted files and **stops**, leaving the branch for you to resolve;
 3. records the tag and its commit as the upstream pin in `vendor/sources.json`;
 4. runs `scripts/rtk-trim.sh`;
 5. runs `scripts/rtk-test.sh`;
@@ -127,14 +128,14 @@ The pin and the trim's changes are left uncommitted, for review with the branch.
 What you do:
 
 1. If it stopped on conflicts, resolve them so that both upstream's change and the fork's intent survive. If a fork change cannot coexist with upstream, upstream's design wins and the intent is re-implemented where feasible. Record the decision in `DECISIONS.md`. Then re-run the remaining steps by hand (the pin, `scripts/rtk-trim.sh`, `scripts/rtk-test.sh`).
-2. `rtk-trim.sh` is idempotent and fails loudly when an expected anchor is missing, which means an upstream refactor to look at. It keeps rtk Claude Code only and free of telemetry. The allowlist test `test_rtk_claude_only` fails when upstream adds a hook integration module or a Cargo dependency that is not on the list. Adding one is a deliberate decision, not a test fix.
-3. Each of the fork's nine changes has a permanent named test (`fork_1_…` to `fork_9_…`). They must still pass.
+2. `rtk-trim.sh` removes upstream's BUSL-1.1 `engine/`, `plugin/` and `proxy/`, so that what ships is the Apache-2.0 edition, and keeps rtk Claude Code only and free of telemetry. It is idempotent and stops with exit 1, naming the file and the anchor, when an edit's expected text is missing, which means an upstream refactor to look at. A removal whose target upstream renamed is not noticed that way; the allowlist tests below catch it. The allowlist test `test_rtk_claude_only` fails when upstream adds a hook integration module or a Cargo dependency that is not on the list. Adding one is a deliberate decision, not a test fix.
+3. Each of the fork's eight remaining changes has a permanent named test (`fork_1_…` to `fork_7_…` and `fork_9_…`). They must still pass. The ninth, custom `[upstream.*]` headers, lived only in the removed BUSL engine, so its test is gone.
 4. Review and commit the pin and the trim's changes, run the unit tests (as in the development setup), then open a PR.
 
 #### Releasing rtk binaries
 
-1. Set the `rtk/Cargo.toml` version to `<upstream version>-anthology.<n>`.
-2. Push a tag `rtk--v<version>`. The `rtk-release.yml` workflow builds `aarch64` and `x86_64` for macOS (`apple-darwin`) and Linux (`unknown-linux-musl`), running `cargo test --locked` before each `cargo build --release --locked`. It publishes `rtk-<target>.tar.gz` and `checksums.txt` to the release, with build-provenance attestations.
+1. Set the `rtk/Cargo.toml` version to `<upstream version>-anthology.<n>` (for example `1.2.1-anthology.2`), update the `rtk` package entry in `rtk/Cargo.lock` to match (the builds use `--locked`), and merge that.
+2. Push a tag `rtk--v<version>` on the commit to release. `rtk-release.yml` fails unless the tag equals `rtk--v` plus the `Cargo.toml` version. It builds `aarch64` and `x86_64` for macOS (`apple-darwin`) and Linux (`unknown-linux-musl`), each on a native runner, with the toolchain in `rtk/rust-toolchain.toml`, running `cargo test --locked` before each `cargo build --release --locked`. It attests the archives and publishes `rtk-<target>.tar.gz` and `checksums.txt` to a new release; it fails rather than overwrite an existing release. To publish from an existing tag, run the workflow by hand with the tag as input.
 3. Write the version, the tag and the sha256 of each target from `checksums.txt` into `plugins/anthology/rtk.lock`. `tests/test_rtk_lock.py` checks that the lock matches `Cargo.toml` and has a 64-hex hash for all four targets.
 4. Verify one asset: `gh attestation verify <file> --repo rbonweb/anthology`, and compare its hash.
 5. The lock change is a change to `plugins/anthology`, so release a new `anthology` version (below). Installed users get the new binary at their next session start.
@@ -170,7 +171,7 @@ The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code 
 - knowledge-read order (each agent reads its Startup files before any other tool);
 - the G1, G4 and G6 blocks;
 - BrowserOS-only browsing, against a mocked `browseros-neo` MCP server in `evals/mocks/` and with no Chrome launch;
-- the rtk rewrite;
+- rtk condensing `git status` output, and G1 still blocking a Playwright command that rtk would rewrite;
 - the routing guide being in the main session, and absent from agents;
 - the platform checks recorded in [DECISIONS.md](DECISIONS.md) that a case can express (agent fields, memory paths, hooks reaching subagents, skills hidden from the main session).
 
