@@ -108,6 +108,173 @@ pub fn str_repr(s: &str) -> String {
     out
 }
 
+// ---- minimal in-place edits (release_edit's `_tokens`, `_member_value`, `_replace_string_value`) --
+
+/// A token of [`tokens`]: `kind` is `'s'` for a string, or the structural character itself
+/// (`{ } [ ] : ,`); `start..end` are byte offsets into the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub kind: char,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A failed edit: `release_edit` turns it into a `ReleaseError` with this message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditError(pub String);
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EditError {}
+
+/// `_tokens`: the structural characters and the strings of `text`, with their offsets. It does
+/// not validate the JSON; the callers parse it first. Only ASCII characters matter to the scan,
+/// so it walks bytes (a multi-byte character holds no ASCII byte).
+pub fn tokens(text: &str) -> Result<Vec<Token>, EditError> {
+    let b = text.as_bytes();
+    let n = b.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        match b[i] {
+            b'"' => {
+                let mut j = i + 1;
+                while j < n && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                if j >= n {
+                    return Err(EditError("unterminated string in JSON".into()));
+                }
+                out.push(Token {
+                    kind: 's',
+                    start: i,
+                    end: j + 1,
+                });
+                i = j + 1;
+                continue;
+            }
+            c @ (b'{' | b'}' | b'[' | b']' | b':' | b',') => out.push(Token {
+                kind: char::from(c),
+                start: i,
+                end: i + 1,
+            }),
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// `_member_value`: the token index of the value of `key` directly inside the object (or
+/// array) opened at token `open_idx`; the first member with that key.
+pub fn member_value(text: &str, toks: &[Token], open_idx: usize, key: &str) -> Option<usize> {
+    let mut depth = 0i64;
+    for (k, &t) in toks.iter().enumerate().skip(open_idx) {
+        match t.kind {
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return None;
+                }
+            }
+            's' if depth == 1 && k + 2 < toks.len() && toks[k + 1].kind == ':' => {
+                // A string token of a document that parsed always decodes; one that does
+                // not is no match.
+                let is_key = matches!(
+                    json::loads(&text[t.start..t.end]),
+                    Ok(Value::Str(ref s)) if s == key
+                );
+                if is_key {
+                    return Some(k + 2);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `_replace_string_value`: `text` with the string token `idx` replaced by `json.dumps(new)`
+/// (ASCII only, as `ensure_ascii` makes it). `what` names the value in the error.
+pub fn replace_string_value(
+    text: &str,
+    toks: &[Token],
+    idx: usize,
+    new: &str,
+    what: &str,
+) -> Result<String, EditError> {
+    let t = toks[idx];
+    if t.kind != 's' {
+        return Err(EditError(format!("{what} is not a string")));
+    }
+    let dumped = json::dumps(&Value::Str(new.to_string()), &PY_DEFAULT);
+    Ok(format!("{}{}{}", &text[..t.start], dumped, &text[t.end..]))
+}
+
+// ---- uncaught Python exceptions (ruling R10) ---------------------------------------------------
+
+/// A Python exception the script does not catch: Python prints a traceback and exits 1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Uncaught {
+    pub ty: String,
+    pub msg: String,
+}
+
+impl Uncaught {
+    pub fn new(ty: impl Into<String>, msg: impl Into<String>) -> Uncaught {
+        Uncaught {
+            ty: ty.into(),
+            msg: msg.into(),
+        }
+    }
+
+    /// An `OSError` (or one of its subclasses) as `PyExc` describes it.
+    pub fn from_exc(e: &anthology_pycompat::pyerr::PyExc) -> Uncaught {
+        Uncaught::new(e.type_name(), e.py_str())
+    }
+
+    /// Exit 1 with `anthology-dev <tool>: <PyType>: <message>` on stderr; `stdout` is what the
+    /// script had printed before it raised.
+    pub fn into_output(self, tool: &str, stdout: Vec<u8>) -> crate::Output {
+        crate::Output {
+            stdout,
+            stderr: format!("anthology-dev {tool}: {}: {}\n", self.ty, self.msg).into_bytes(),
+            code: 1,
+        }
+    }
+}
+
+/// `UnicodeDecodeError`'s `str(exc)` for the first invalid byte of `bytes` decoded as UTF-8
+/// (`None` when `bytes` is valid UTF-8).
+pub fn utf8_decode_error(bytes: &[u8]) -> Option<String> {
+    let e = std::str::from_utf8(bytes).err()?;
+    let start = e.valid_up_to();
+    let first = bytes[start];
+    let (end, reason) = match e.error_len() {
+        _ if (0x80..=0xc1).contains(&first) || first >= 0xf5 => (start + 1, "invalid start byte"),
+        Some(len) => (start + len, "invalid continuation byte"),
+        None => (bytes.len(), "unexpected end of data"),
+    };
+    Some(if end - start == 1 {
+        format!("'utf-8' codec can't decode byte 0x{first:02x} in position {start}: {reason}")
+    } else {
+        format!(
+            "'utf-8' codec can't decode bytes in position {start}-{}: {reason}",
+            end - 1
+        )
+    })
+}
+
+/// Text mode's universal newlines: `\r\n` and a lone `\r` become `\n`.
+pub fn universal_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
