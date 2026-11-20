@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Anthology smoke cases U1-U9: the multi-session and no-model checks `claude plugin eval` cannot do.
+"""Anthology smoke cases U1-U9: the multi-session, no-model and tool-environment checks `claude plugin eval` cannot do.
 
 Usage: smoke.py [--claude BIN] [--budget-usd X] [--total-budget-usd X] [--out PATH] [--list] [NAME ...]
 
@@ -12,12 +12,17 @@ and once --total-budget-usd (default 10) is spent no more runs start: the remain
 
 Isolation: every `claude` run gets a fresh temp dir with its own HOME and CLAUDE_CONFIG_DIR and an
 environment built from scratch (see build_env): the real ~/.claude is never read or written, and
-only ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are passed through. The two
-smokes that run with --permission-mode bypassPermissions (auto-memory-dir, writer-memory-commit)
-do so with their working directory, HOME and config in a scratch temp dir and the guardrails
-plugin loaded. That is NOT a sandbox: the permission mode lets Bash write anywhere the user can, so
-run them only in CI or another throwaway environment. Every subprocess has a timeout. Auth values
-are never printed.
+only ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are passed through. By default
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, so tools and hooks never see the key; three smokes need it off
+(NO_SCRUB: eval-ceiling, auto-memory-dir, writer-memory-commit; see there). The two smokes that run
+with --permission-mode bypassPermissions (auto-memory-dir, writer-memory-commit) do so with their
+working directory, HOME and config in a scratch temp dir and the guardrails plugin loaded. That is
+NOT a sandbox: the permission mode lets Bash write anywhere the user can, so run them only in CI or
+another throwaway environment. Every subprocess has a timeout. Auth values are never printed.
+
+The twelve smokes: cli-syntax, eval-ceiling, context-cap, missing-interpreter, python-missing,
+worktree-base, model-check, knowledge-read-writers, auto-memory-dir, writer-memory-commit,
+rtk-rewrite (U6: needs the network to install rtk) and agent-memory-path (U7).
 
 Standard library only; runs on Python 3.9+.
 """
@@ -47,6 +52,16 @@ NO_AUTH = "no API credentials (set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)"
 READ_ALLOW = {"permissions": {"allow": [f"Read(/{ROOT}/plugins/**)"]}}
 EXPECTED_AGENTS = 11
 MARKER = "smoke-unpushed-marker"
+# Verified on Claude Code 2.1.311: with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (a) `claude plugin eval` children
+# get no credential, so every case fails "Not logged in" (the eval confines its own tools itself);
+# (b) `--permission-mode bypassPermissions` is forced back to the default mode; (c) hooks lose
+# CLAUDE_CONFIG_DIR (and the key), so the SessionStart memory sync would not see the scratch config.
+NO_SCRUB = {"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0"}
+# What the rtk-rewrite and agent-memory-path smokes look for.
+RTK_CLEAN_RE = re.compile(r"clean . nothing to commit|Clean working tree")
+RTK_RAW_GIT = "create/copy files and use"
+GUARD_G1 = "anthology-guardrails (G1)"
+MEM_NOTE_RE = re.compile(r"metadata:\s*\n\s+type:\s*project")
 PROMPT_WORKTREE = ("Use the Agent tool to run the anthology:implementer agent with the prompt "
                    "'Run git log --oneline -3, change nothing, and report the output verbatim.' "
                    "Then quote its report.")
@@ -433,6 +448,44 @@ def find_text(directory: Path, needle: str) -> bool:
     return False
 
 
+def colon_memory_paths(root: Path) -> List[str]:
+    """Every path under root through an `agent-memory/anthology:<agent>` folder (the agent type's colon)."""
+    return [os.path.join(d, n) for d, dirs, files in os.walk(root) for n in dirs + files
+            if "agent-memory/anthology:" in os.path.join(d, n)]
+
+
+def rtk_problems(results: Sequence[str], hooks: str) -> List[str]:
+    """What is wrong with an rtk-rewrite run: rtk's condensed status seen, no raw git status, G1 seen."""
+    problems = []
+    if not any(RTK_CLEAN_RE.search(r) for r in results):
+        problems.append("no tool result shows rtk's condensed git status (clean - nothing to commit)")
+    if any(RTK_RAW_GIT in r for r in results):
+        problems.append("a tool result shows the raw git status text")
+    if GUARD_G1 not in hooks + "\n" + "\n".join(results):
+        problems.append(f"no hook event or tool result shows '{GUARD_G1}' (the guard did not fire on the playwright command)")
+    return problems
+
+
+def memory_save_problems(calls: Sequence[Tuple[str, str]], note: Optional[str], stray: Sequence[str]) -> List[str]:
+    """What is wrong with an agent's memory save: via `anthology-mem save` only, a nested `type: project`, no colon path."""
+    problems = []
+    bash = [i for n, i in calls if n == "Bash"]
+    if not any("anthology-mem save" in i for i in bash):
+        problems.append("no Bash call to `anthology-mem save`")
+    if any("<<" in i for i in bash):
+        problems.append("a Bash call used a heredoc")
+    used = sorted({n for n, _ in calls if n in ("Write", "Edit", "NotebookEdit")})
+    if used:
+        problems.append("used " + ", ".join(used))
+    if note is None:
+        problems.append("the note file was not written")
+    elif not MEM_NOTE_RE.search(note):
+        problems.append("the note lacks a nested `metadata: type: project`")
+    if stray:
+        problems.append(f"a path has the agent type's colon: {stray[0]}")
+    return problems
+
+
 # ---- the smokes --------------------------------------------------------------------------------
 
 def smoke_cli_syntax(ctx: Ctx) -> Result:
@@ -481,7 +534,7 @@ def smoke_eval_ceiling(ctx: Ctx) -> Result:
             encoding="utf-8")
         p = ctx.claude_run(tmp, ["plugin", "eval", ".", "--trust-plugin", "--ablation", "none", "--no-publish",
                                  "--max-cost-usd", "0.000001", "--runs", "2", "--json", "out.json"],
-                           cwd=d, timeout=600)
+                           cwd=d, extra_env=NO_SCRUB, timeout=600)
         try:
             res = json.loads((d / "out.json").read_text(encoding="utf-8"))
             runs = len(res["cases"][0]["arms"]["with"])
@@ -716,7 +769,7 @@ def smoke_auto_memory_dir(ctx: Ctx) -> Result:
         repo = _approved_repo(ctx, tmp)
         mem = repo / ".claude" / "memory"
         ctx.prompt_run(tmp, "Remember for future sessions that the smoke probe color is amber; save it to auto memory now.",
-                       flags, cwd=repo)
+                       flags, cwd=repo, extra_env=NO_SCRUB)
         # Session 1 starts before the setting exists, so the note goes to the platform's default memory dir;
         # a note already in the repo would make the migration check below pass without migrating anything.
         default_dirs = list((tmp / "cfg" / "projects").glob("*/memory"))
@@ -730,10 +783,11 @@ def smoke_auto_memory_dir(ctx: Ctx) -> Result:
             setting = None
         if not setting or os.path.realpath(setting) != os.path.realpath(str(mem)):
             return FAIL, f"settings.local.json autoMemoryDirectory is {setting!r}, want {mem}"
-        ctx.prompt_run(tmp, "Reply OK.", flags, cwd=repo)
+        ctx.prompt_run(tmp, "Reply OK.", flags, cwd=repo, extra_env=NO_SCRUB)
         if not find_text(mem, "amber"):
             return FAIL, "the amber note is not under .claude/memory/ after session 2 (migration)"
-        ctx.prompt_run(tmp, "Remember that the smoke probe shape is cyan-circle; save it to auto memory now.", flags, cwd=repo)
+        ctx.prompt_run(tmp, "Remember that the smoke probe shape is cyan-circle; save it to auto memory now.", flags,
+                       cwd=repo, extra_env=NO_SCRUB)
         if not find_text(mem, "cyan-circle"):
             return FAIL, "the cyan-circle note is not under .claude/memory/ after session 3"
     return PASS, "autoMemoryDirectory set, old note migrated, new note saved in the repo"
@@ -748,20 +802,70 @@ def smoke_writer_memory_commit(ctx: Ctx) -> Result:
     with scratch() as tmp:  # bypassPermissions: cwd/HOME/config in this temp dir (not a sandbox), guardrails loaded
         repo = make_repo(tmp)
         p = ctx.prompt_run(tmp, prompt, ["--permission-mode", "bypassPermissions", "--model", "sonnet", *plugin_flags(),
-                                         "--settings", json.dumps({"worktree": {"baseRef": "head"}})], cwd=repo)
+                                         "--settings", json.dumps({"worktree": {"baseRef": "head"}})], cwd=repo,
+                           extra_env=NO_SCRUB)
         found = False
         for branch in git(tmp, repo, "branch", "--list", "worktree-agent-*", "--format=%(refname:short)").split():
             for sha in git(tmp, repo, "rev-list", branch, "--not", "main").split():
                 subject = git(tmp, repo, "log", "-1", "--format=%s", sha)
                 added = git(tmp, repo, "diff-tree", "--no-commit-id", "--name-status", "-r", sha).splitlines()
                 found = found or (subject.startswith("chore(memory)") and f"A\t{want}" in added)
-        stray = [os.path.join(d, n) for d, dirs, files in os.walk(tmp) for n in dirs + files
-                 if "agent-memory/anthology:" in os.path.join(d, n)]
+        stray = colon_memory_paths(tmp)
         if stray:
             return FAIL, f"a note landed in a path with the agent type's colon: {stray[0]}"
         if not found:
             return FAIL, f"no worktree-agent-* branch has a chore(memory) commit adding {want} (exit {p.code}: {snippet(p.text, 80)})"
     return PASS, "chore(memory) commit adds the note in the agent's worktree branch"
+
+
+def smoke_rtk_rewrite(ctx: Ctx) -> Result:
+    """U6: with rtk installed the hook rewrites git status and playwright to rtk, and G1 still blocks the latter.
+    (`claude plugin eval` cannot run this: its sandbox has no rtk state, so the hook never rewrites.)"""
+    prompt = ("Run these three Bash commands, one per tool call, in this order: first `git init -q rtkrepo`, then "
+              "`git -C rtkrepo status`, then `npx playwright test --list`. Report each command's output verbatim.")
+    flags = ["--model", "haiku", *plugin_flags(), "--output-format", "stream-json", "--verbose",
+             "--include-hook-events", "--max-turns", "8"]
+    # the rewritten command must be allowed too, or the run stops at "This command requires approval"
+    allowed = ["Bash(git init -q rtkrepo)", "Bash(git -C rtkrepo status)", "Bash(rtk git -C rtkrepo status)",
+               "Bash(npx playwright test --list)", "Bash(rtk playwright test --list)"]
+    with scratch() as tmp:
+        cfg = tmp / "home" / ".claude"  # the hooks fall back to $HOME/.claude when scrubbing strips CLAUDE_CONFIG_DIR
+        cfg.mkdir(parents=True)
+        env = {"CLAUDE_CONFIG_DIR": str(cfg)}
+        install = run([sys.executable, str(ROOT / "plugins/anthology/scripts/rtk_install.py"), "--data-dir",
+                       str(tmp / "data")], tmp, build_env(tmp, env), timeout=120)
+        if install.code != 0:
+            return FAIL, f"rtk install failed: {snippet(install.text)}"
+        ws = tmp / "ws"
+        ws.mkdir()
+        p = ctx.prompt_run(tmp, prompt, flags, cwd=ws, extra_env=env, variadic=allowed)
+        events = stream_events(p.out)
+        problems = rtk_problems(tool_result_texts(events), hook_failure_text(events))
+    return (FAIL, f"{'; '.join(problems)} (exit {p.code}: {snippet(p.text, 80)})") if problems else (
+        PASS, "rtk condensed git status, the raw status text is absent and G1 blocked the playwright command")
+
+
+def smoke_agent_memory_path(ctx: Ctx) -> Result:
+    """U7: anthology:scout saves its memory note through `anthology-mem save` into its own agent-memory folder.
+    (`claude plugin eval` cannot run this: the plugin bin/ is not on its Bash PATH.)"""
+    prompt = ("Use the Agent tool to run the anthology:scout agent with exactly this prompt: 'Save one project memory "
+              "note named project-eval-probe, following your Memory rules exactly: its description says the eval probe "
+              "colour is teal, and its body says why: this eval checks where agent memory is saved. Then reply DONE.' "
+              "Do not use any tool yourself other than Agent. Then report the agent's reply.")
+    with scratch() as tmp:
+        repo = make_repo(tmp)
+        p = ctx.prompt_run(tmp, prompt, ["--model", "sonnet", *plugin_flags(), "--settings", json.dumps(READ_ALLOW),
+                                         "--max-turns", "12", "--output-format", "stream-json", "--verbose"],
+                           cwd=repo, variadic=["Agent", "Read", "Glob", "Grep", "Bash(anthology-mem save *)"])
+        # a stream-json event has the same message.content shape as a transcript line
+        calls = transcript_calls(p.out)
+        for f in subagent_files(tmp / "cfg"):
+            calls += transcript_calls(f.read_text(encoding="utf-8", errors="replace"))
+        note = repo / ".claude" / "agent-memory" / "anthology-scout" / "project-eval-probe.md"
+        problems = memory_save_problems(calls, note.read_text(encoding="utf-8") if note.is_file() else None,
+                                        colon_memory_paths(tmp))
+    return (FAIL, f"{'; '.join(problems)} (exit {p.code}: {snippet(p.text, 80)})") if problems else (
+        PASS, "the scout saved its note with anthology-mem save, no heredoc or write tool, in its own folder")
 
 
 SMOKES: Dict[str, Tuple[Callable[[Ctx], Result], bool]] = {  # name -> (function, needs a model)
@@ -775,6 +879,8 @@ SMOKES: Dict[str, Tuple[Callable[[Ctx], Result], bool]] = {  # name -> (function
     "knowledge-read-writers": (smoke_knowledge_read_writers, True),
     "auto-memory-dir": (smoke_auto_memory_dir, True),
     "writer-memory-commit": (smoke_writer_memory_commit, True),
+    "rtk-rewrite": (smoke_rtk_rewrite, True),
+    "agent-memory-path": (smoke_agent_memory_path, True),
 }
 
 

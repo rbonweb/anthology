@@ -23,9 +23,10 @@ import smoke  # noqa: E402
 
 NAMES = ["cli-syntax", "eval-ceiling", "context-cap", "missing-interpreter", "python-missing",
          "worktree-base", "model-check", "knowledge-read-writers", "auto-memory-dir",
-         "writer-memory-commit"]
+         "writer-memory-commit", "rtk-rewrite", "agent-memory-path"]
 MODEL_SMOKES = ["eval-ceiling", "context-cap", "missing-interpreter", "worktree-base", "model-check",
-                "knowledge-read-writers", "auto-memory-dir", "writer-memory-commit"]
+                "knowledge-read-writers", "auto-memory-dir", "writer-memory-commit", "rtk-rewrite",
+                "agent-memory-path"]
 
 
 def no_auth_environ():
@@ -41,7 +42,7 @@ def run_main(argv):
 
 
 class ListAndEnvTests(unittest.TestCase):
-    def test_list_prints_exactly_the_ten_names(self):
+    def test_list_prints_exactly_the_twelve_names(self):
         code, out = run_main(["--list"])
         self.assertEqual(code, 0)
         self.assertEqual(out.split(), NAMES)
@@ -70,6 +71,13 @@ class ListAndEnvTests(unittest.TestCase):
                        "ANTHROPIC_API_KEY", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "NPM_CONFIG_OFFLINE"}
             self.assertEqual(set(env), allowed)
             self.assertTrue((Path(d) / "home").is_dir() and (Path(d) / "cfg").is_dir())
+
+    def test_no_scrub_turns_the_scrub_off_and_the_default_stays_on(self):
+        self.assertEqual(smoke.NO_SCRUB, {"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0"})
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(smoke.build_env(Path(d))["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")
+            env = smoke.build_env(Path(d), smoke.NO_SCRUB)
+        self.assertEqual(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "0")
 
     def test_redact_hides_auth_values(self):
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-secret-value"}):
@@ -250,6 +258,209 @@ class HelperTests(unittest.TestCase):
     def test_read_allow_uses_the_absolute_path_form(self):
         rule = smoke.READ_ALLOW["permissions"]["allow"][0]
         self.assertTrue(rule.startswith("Read(//") and rule.endswith("/plugins/**)"), rule)
+
+
+    def test_rtk_problems_name_each_failed_part(self):
+        clean = "On branch main\n* No commits yet on main\nclean \u2014 nothing to commit"
+        self.assertEqual(smoke.rtk_problems([clean, "blocked"], "anthology-guardrails (G1): playwright"), [])
+        self.assertEqual(smoke.rtk_problems([clean, "anthology-guardrails (G1)"], ""), [])  # in a tool result
+        self.assertEqual(smoke.rtk_problems(["Clean working tree"], "x (G1)"), [
+            "no hook event or tool result shows 'anthology-guardrails (G1)' (the guard did not fire on the playwright command)"])
+        raw = "nothing to commit (create/copy files and use \"git add\" to track)"
+        problems = smoke.rtk_problems([raw], "")
+        self.assertEqual(len(problems), 3)
+        self.assertIn("condensed", problems[0])
+        self.assertIn("raw git", problems[1])
+        self.assertIn("(G1)", problems[2])
+
+    def test_memory_save_problems_name_each_failed_check(self):
+        note = "---\nname: x\nmetadata:\n  type: project\n---\nbody\n"
+        save = ("Bash", json.dumps({"command": "anthology-mem save --name project-eval-probe"}))
+        self.assertEqual(smoke.memory_save_problems([("Agent", "{}"), save], note, []), [])
+        self.assertEqual(smoke.memory_save_problems([save], note.replace("  type", "type"), []),
+                         ["the note lacks a nested `metadata: type: project`"])
+        problems = smoke.memory_save_problems(
+            [("Bash", json.dumps({"command": "cat <<EOF > n.md"})), ("Write", "{}"), ("Edit", "{}"), ("Write", "{}")],
+            None, ["/t/.claude/agent-memory/anthology:scout/n.md"])
+        self.assertEqual(problems, ["no Bash call to `anthology-mem save`", "a Bash call used a heredoc",
+                                    "used Edit, Write", "the note file was not written",
+                                    "a path has the agent type's colon: /t/.claude/agent-memory/anthology:scout/n.md"])
+
+    def test_calls_are_read_from_a_stream_json_run(self):
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "anthology-mem save x"}}]}})
+        self.assertEqual(smoke.transcript_calls(line + "\nnot json"), [("Bash", '{"command": "anthology-mem save x"}')])
+
+    def test_colon_memory_paths_finds_only_the_colon_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok = Path(d) / ".claude" / "agent-memory" / "anthology-scout"
+            bad = Path(d) / ".claude" / "agent-memory" / "anthology:scout"
+            ok.mkdir(parents=True)
+            bad.mkdir(parents=True)
+            (bad / "n.md").write_text("x", encoding="utf-8")
+            found = smoke.colon_memory_paths(Path(d))
+        self.assertEqual(len(found), 2)  # the folder and the note in it
+        self.assertTrue(all("agent-memory/anthology:scout" in f for f in found))
+
+
+def stream(*events):
+    return "\n".join(json.dumps(e) for e in events)
+
+
+def bash_call(command):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]}}
+
+
+def tool_result(text):
+    return {"type": "user", "message": {"content": [{"type": "tool_result", "content": text}]}}
+
+
+class SmokeBodyTests(unittest.TestCase):
+    """The model-running smokes with Ctx mocked: assert what they pass to claude, never run a model."""
+
+    def setUp(self):
+        self.ctx = smoke.Ctx("claude", "1.00")
+        self.calls = []
+
+    def fake_prompt_run(self, effects=None):
+        def fake(tmp, prompt, flags, cwd=None, extra_env=None, variadic=()):
+            self.calls.append({"tmp": tmp, "prompt": prompt, "flags": list(flags), "cwd": cwd,
+                               "extra_env": extra_env, "variadic": list(variadic)})
+            return (effects or (lambda n, c: smoke.Proc(0, "", "")))(len(self.calls), self.calls[-1])
+        return mock.patch.object(self.ctx, "prompt_run", side_effect=fake)
+
+    def test_eval_ceiling_runs_plugin_eval_unscrubbed(self):
+        seen = []
+
+        def fake(tmp, args, cwd=None, extra_env=None, timeout=0):
+            seen.append((list(args), extra_env))
+            return smoke.Proc(2, "", "")
+        with mock.patch.object(self.ctx, "claude_run", side_effect=fake):
+            status, _ = smoke.smoke_eval_ceiling(self.ctx)
+        self.assertEqual(status, smoke.FAIL)  # no result JSON came back
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0][:2], ["plugin", "eval"])
+        self.assertEqual(seen[0][1], smoke.NO_SCRUB)
+
+    def test_auto_memory_dir_runs_all_three_sessions_unscrubbed(self):
+        def effects(n, call):
+            repo, tmp = call["cwd"], call["tmp"]
+            mem = repo / ".claude" / "memory"
+            mem.mkdir(parents=True, exist_ok=True)
+            if n == 1:
+                default = tmp / "cfg" / "projects" / "p" / "memory"
+                default.mkdir(parents=True)
+                (default / "n.md").write_text("amber", encoding="utf-8")
+                (repo / ".claude" / "settings.local.json").write_text(
+                    json.dumps({"autoMemoryDirectory": str(mem)}), encoding="utf-8")
+            elif n == 2:
+                (mem / "n.md").write_text("amber", encoding="utf-8")
+            else:
+                (mem / "c.md").write_text("cyan-circle", encoding="utf-8")
+            return smoke.Proc(0, "", "")
+
+        def approved(ctx, tmp):
+            repo = tmp / "repo"
+            repo.mkdir()
+            return repo
+        with self.fake_prompt_run(effects), mock.patch.object(smoke, "_approved_repo", approved):
+            status, reason = smoke.smoke_auto_memory_dir(self.ctx)
+        self.assertEqual((status, len(self.calls)), (smoke.PASS, 3), reason)
+        for call in self.calls:
+            self.assertEqual(call["extra_env"], smoke.NO_SCRUB)
+            self.assertEqual(call["flags"][:2], ["--permission-mode", "bypassPermissions"])
+
+    def test_writer_memory_commit_runs_unscrubbed(self):
+        def make_repo(tmp):
+            (tmp / "repo").mkdir()
+            return tmp / "repo"
+        with self.fake_prompt_run(), mock.patch.object(smoke, "make_repo", make_repo), \
+                mock.patch.object(smoke, "git", return_value=""):
+            status, _ = smoke.smoke_writer_memory_commit(self.ctx)
+        self.assertEqual(status, smoke.FAIL)  # no commit was made
+        self.assertEqual([c["extra_env"] for c in self.calls], [smoke.NO_SCRUB])
+        self.assertIn("bypassPermissions", self.calls[0]["flags"])
+
+    def test_the_other_model_smokes_keep_the_scrub(self):
+        with self.fake_prompt_run():
+            smoke.smoke_context_cap(self.ctx)
+        self.assertTrue(self.calls)
+        self.assertTrue(all("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in (c["extra_env"] or {}) for c in self.calls))
+
+    def run_rtk(self, out, install_code=0):
+        installs = []
+
+        def fake_run(argv, cwd, env, timeout=0, stdin=None):
+            installs.append((list(argv), env))
+            return smoke.Proc(install_code, "", "boom: no network")
+        with self.fake_prompt_run(lambda n, c: smoke.Proc(0, out, "")), mock.patch.object(smoke, "run", fake_run):
+            result = smoke.smoke_rtk_rewrite(self.ctx)
+        return result, installs
+
+    def test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config(self):
+        out = stream(bash_call("git -C rtkrepo status"), tool_result("* No commits yet on main\nclean \u2014 nothing to commit"),
+                     tool_result("blocked: anthology-guardrails (G1) ..."))
+        (status, reason), installs = self.run_rtk(out)
+        self.assertEqual(status, smoke.PASS, reason)
+        argv, env = installs[0]
+        self.assertEqual(argv[1:3], [str(smoke.ROOT / "plugins/anthology/scripts/rtk_install.py"), "--data-dir"])
+        self.assertTrue(argv[3].endswith("data"))
+        cfg = env["CLAUDE_CONFIG_DIR"]
+        self.assertTrue(cfg.endswith(os.path.join("home", ".claude")), cfg)
+        self.assertEqual(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1")  # keep the default scrub
+        call = self.calls[0]
+        self.assertEqual(call["extra_env"], {"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual(call["cwd"].name, "ws")
+        self.assertEqual(call["flags"][:2], ["--model", "haiku"])
+        for flag in ("--include-hook-events", "--verbose"):
+            self.assertIn(flag, call["flags"])
+        self.assertEqual(call["flags"][call["flags"].index("--max-turns") + 1], "8")
+        self.assertEqual(call["flags"][call["flags"].index("--output-format") + 1], "stream-json")
+        self.assertEqual(call["variadic"], ["Bash(git init -q rtkrepo)", "Bash(git -C rtkrepo status)",
+                                            "Bash(rtk git -C rtkrepo status)", "Bash(npx playwright test --list)",
+                                            "Bash(rtk playwright test --list)"])
+
+    def test_rtk_rewrite_fails_loudly_when_the_install_fails_and_names_failed_parts(self):
+        (status, reason), _ = self.run_rtk("", install_code=1)
+        self.assertEqual(status, smoke.FAIL)
+        self.assertTrue(reason.startswith("rtk install failed: boom"), reason)
+        self.assertEqual(self.calls, [])
+        (status, reason), _ = self.run_rtk(stream(tool_result("nothing to commit (create/copy files and use git add)")))
+        self.assertEqual(status, smoke.FAIL)
+        self.assertIn("condensed", reason)
+        self.assertIn("raw git", reason)
+        self.assertIn("(G1)", reason)
+
+    def test_agent_memory_path_checks_the_stream_and_the_note(self):
+        note = "---\nname: project-eval-probe\nmetadata:\n  type: project\n---\nbody\n"
+
+        def effects_for(text, command="anthology-mem save --type project"):
+            def effects(n, call):
+                folder = call["cwd"] / ".claude" / "agent-memory" / "anthology-scout"
+                folder.mkdir(parents=True)
+                (folder / "project-eval-probe.md").write_text(text, encoding="utf-8")
+                return smoke.Proc(0, stream(bash_call(command)), "")
+            return effects
+
+        def make_repo(tmp):
+            (tmp / "repo").mkdir()
+            return tmp / "repo"
+        with mock.patch.object(smoke, "make_repo", make_repo):
+            with self.fake_prompt_run(effects_for(note)):
+                status, reason = smoke.smoke_agent_memory_path(self.ctx)
+            self.assertEqual(status, smoke.PASS, reason)
+            call = self.calls[0]
+            self.assertEqual(call["extra_env"], None)  # the default scrub stays on
+            self.assertEqual(call["flags"][:2], ["--model", "sonnet"])
+            self.assertEqual(call["flags"][call["flags"].index("--max-turns") + 1], "12")
+            self.assertIn("stream-json", call["flags"])
+            self.assertEqual(call["variadic"], ["Agent", "Read", "Glob", "Grep", "Bash(anthology-mem save *)"])
+            self.assertIn("anthology:scout", call["prompt"])
+            with self.fake_prompt_run(effects_for("no metadata", "cat <<EOF > n.md")):
+                status, reason = smoke.smoke_agent_memory_path(self.ctx)
+        self.assertEqual(status, smoke.FAIL)
+        for part in ("no Bash call to `anthology-mem save`", "heredoc", "nested"):
+            self.assertIn(part, reason)
 
 
 @unittest.skipUnless(os.path.exists("/bin/sh"), "no /bin/sh for the stub claude")
