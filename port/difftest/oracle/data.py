@@ -1,6 +1,6 @@
 """F1 oracle: the data compiled into the Rust crates equals the Python values (plan F1, GC-6).
 
-    python3 port/difftest/oracle/data.py
+    python3 -I port/difftest/oracle/data.py   # -I: json.py here shadows the stdlib json
 
 Compares, reading the Python modules at run time (so a later Python change shows up here):
 
