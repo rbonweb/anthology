@@ -77,15 +77,16 @@ class WatchError(Exception):
     """A failure attached to one watched key; the run continues with the others."""
 
 
-def _load_semver():
-    path = Path(__file__).resolve().parent / "check_version_bump.py"
-    spec = importlib.util.spec_from_file_location("_anthology_check_version_bump", str(path))
+def _load_sibling(filename: str, module_name: str):
+    path = Path(__file__).resolve().parent / filename
+    spec = importlib.util.spec_from_file_location(module_name, str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_SEMVER = _load_semver()
+_SEMVER = _load_sibling("check_version_bump.py", "_anthology_check_version_bump")
+_BUDGET = _load_sibling("startup_budget.py", "_anthology_startup_budget")
 
 
 # ---- untrusted text --------------------------------------------------------------------
@@ -159,7 +160,8 @@ def render_body(change: Change, extra_sections: Sequence[Tuple[str, str]] = ()) 
 
     `extra_sections` is a sequence of `(heading, markdown)` pairs appended, in order, after the
     summary and before the update command. It lets a caller attach more context to the same
-    issue (Task 14b adds the startup-budget delta this way) without touching this function.
+    issue (`startup_budget_sections` adds the startup-budget delta this way) without touching
+    this function. The markdown is the caller's responsibility: it must not contain untrusted text.
     """
     lines = [f"<!-- upstream-watch:{change.key} -->",
              f"## Upstream change: `{sanitise_inline(change.key)}`", ""]
@@ -185,6 +187,71 @@ def render_body(change: Change, extra_sections: Sequence[Tuple[str, str]] = ()) 
               "Run this on a branch. CI and the evals are the gate: do not merge without them.",
               "", "```sh", change.command, "```", ""]
     return "\n".join(lines)
+
+
+# ---- startup budget --------------------------------------------------------------------
+
+def sanitise_prose(text, limit: int = 80) -> str:
+    """Untrusted text for issue prose: a plain whitelist, so no markdown, HTML or @mention survives.
+
+    Only letters, digits, spaces and . _ / : + ( ) , - are kept, on one line.
+    """
+    return re.sub(r"[^A-Za-z0-9 ._/:+(),-]", "", sanitise_path(text))[:limit]
+
+
+def render_startup_budget(key: str, rows: Sequence[Tuple[str, Optional[int], Optional[int]]]) -> str:
+    """Markdown for the "Startup budget" section: `rows` are (agent, current bytes, budget)."""
+    agents = [sanitise_prose(agent) for agent, _, _ in rows]
+    lines = [f"The vendored knowledge from `{sanitise_prose(key)}` is read at startup by the agents "
+             "below, so this change can grow their startup cost. Sizes are bytes: the agent body, "
+             "its Startup files and its preloaded skills.", "",
+             "| Agent | Now | Budget | Used |", "|---|---|---|---|"]
+    for agent, (_, now, budget) in zip(agents, rows):
+        shown = budget if budget is not None else "none"
+        if now is None:
+            lines.append(f"| `{agent}` | unreadable | {shown} | |")
+            continue
+        if budget:
+            used = f"{now * 100 // budget}%" + (" OVER" if now > budget else "")
+        else:
+            used = "no budget"
+        lines.append(f"| `{agent}` | {now} | {shown} | {used} |")
+    lines += ["",
+              "Size after the sync: not computed here, because the new upstream files are not "
+              "fetched offline. After running the update command below, run:", "",
+              "```sh", "python3 scripts/startup_budget.py " + " ".join(agents), "```", "",
+              "It prints each agent's size against its budget and exits 1 when one is over (the "
+              "`startup_budget` test in CI checks the same). Raising a budget needs a reason in "
+              "the PR (CONTRIBUTING.md, \"Startup budgets\")."]
+    return "\n".join(lines)
+
+
+def startup_budget_sections(root, changes: Sequence[Change]) -> Dict[str, List[Tuple[str, str]]]:
+    """{change key: [("Startup budget", markdown)]} for changes that touch startup reading.
+
+    A change counts when its source's `target` folder in `vendor/sources.json` holds a file that
+    an agent reads at startup (a Startup file or a preloaded skill). Sizes come from the current
+    checkout through `scripts/startup_budget.py`, the same calculation the roster test enforces.
+    Only local data and sanitised text go into the section, never upstream commit text.
+    """
+    data = json.loads((Path(root) / "vendor" / "sources.json").read_text(encoding="utf-8"))
+    targets = {e.get("name"): e.get("target") for e in data.get("sources", [])
+               if isinstance(e, dict) and isinstance(e.get("target"), str)}
+    found: Dict[str, List[Tuple[str, str]]] = {}
+    for change in changes:
+        target = targets.get(change.key)
+        agents = _BUDGET.agents_reading(root, target) if target else []
+        if not agents:
+            continue
+        rows = []
+        for agent in agents:
+            try:
+                now: Optional[int] = _BUDGET.startup_bytes(root, agent)
+            except OSError:
+                now = None
+            rows.append((agent, now, _BUDGET.BUDGET.get(agent)))
+        found[change.key] = [("Startup budget", render_startup_budget(change.key, rows))]
+    return found
 
 
 # ---- parsing helpers -------------------------------------------------------------------
@@ -606,6 +673,11 @@ def _normal(text) -> str:
     return (text or "").replace("\r\n", "\n").strip()
 
 
+def _without_budget(text) -> str:
+    """The normalised body minus its "Startup budget" section (up to the next heading)."""
+    return re.sub(r"(?ms)^### Startup budget\n.*?(?=^### |\Z)", "", _normal(text))
+
+
 def _has_label(issue: dict) -> bool:
     labels = issue.get("labels")
     if not isinstance(labels, list):
@@ -640,7 +712,8 @@ def sync_issues(changes: Sequence[Change], gh, dry_run: bool = False,
     """Create or update one issue per change. Returns one action record per change.
 
     Per key the newest managed issue decides. Open: identical -> unchanged, else update. Closed
-    with an identical body: the release was dismissed, nothing is written ("dismissed"). Closed
+    with an identical body (ignoring the Startup budget section, which follows the checkout, not
+    the release): the release was dismissed, nothing is written ("dismissed"). Closed
     with a different body: a new issue is created. Other actions: error, and (dry run without a
     client) create-or-update. In a dry run the client is only read from, never written to.
     """
@@ -663,7 +736,8 @@ def sync_issues(changes: Sequence[Change], gh, dry_run: bool = False,
             if existing is None:
                 record["action"] = "create"
             elif existing.get("state") == "closed":
-                if _normal(existing.get("body")) == _normal(body):
+                # The size table follows the checkout, not the release: it must not undo a dismissal.
+                if _without_budget(existing.get("body")) == _without_budget(body):
                     record.update(action="dismissed", number=existing["number"])
                 else:
                     record["action"] = "create"
@@ -720,7 +794,12 @@ def main(argv: Optional[Sequence[str]] = None, env=None, net=None, gh=None, stdo
         return 2
 
     changes, errors = check_all(args.root, net or RealNet(), token)
-    actions = sync_issues(changes, gh, dry_run=args.dry_run)
+    try:
+        extra = startup_budget_sections(args.root, changes)
+    except Exception as exc:  # the budget is context for the issue; it must never block the issue
+        extra = {}
+        print(f"WARNING startup budget not computed ({type(exc).__name__})", file=out)
+    actions = sync_issues(changes, gh, dry_run=args.dry_run, extra_sections=extra)
     errors += [{"key": a["key"], "error": a["error"]} for a in actions if a["action"] == "error"]
     _print_report(out, changes, actions, errors, args.dry_run)
 

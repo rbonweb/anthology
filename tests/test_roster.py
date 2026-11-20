@@ -1,10 +1,15 @@
 """The 11-agent roster (Part 1 section 5): frontmatter, Startup, rules and startup budget."""
 import re
+import sys
 import unittest
 
 from _repo import (EXPECTED_ROSTER, KNOWLEDGE, ROOT, knowledge_path, load_frontmatter,
                    superpowers_skill_path)
 from test_knowledge import EXPECTED_KNOWLEDGE
+
+sys.path.insert(0, str(ROOT / "scripts"))
+import startup_budget  # noqa: E402  (the budget calculation is shared with upstream_watch)
+from startup_budget import BUDGET, sections  # noqa: E402
 
 PLUGIN = ROOT / "plugins" / "anthology"
 AGENTS = PLUGIN / "agents"
@@ -13,35 +18,7 @@ MAX_BODY_LINES = 60
 BROWSER_AGENTS = {"ui-designer", "ui-reviewer", "researcher", "marketer"}
 FRONTMATTER_KEYS = {"name", "description", "model", "disallowedTools", "isolation", "memory",
                     "skills"}
-STARTUP_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/(knowledge/[A-Za-z0-9_./-]+/SKILL\.md)")
 CAVEMAN = "knowledge/caveman/SKILL.md"
-
-# Startup budget in bytes: body + every Startup file + every preloaded SKILL.md, per agent.
-# Each value is the size measured when the roster landed, times 1.15, rounded up. Growth (an
-# upstream sync that makes a knowledge file bigger, a longer body) fails the test on purpose.
-# To raise a budget: run `python -m unittest test_roster -k budget` (from tests/), take the
-# suggested value from the failure message (ceil(measured * 1.15)), and explain the growth in
-# the same commit.
-BUDGET = {
-    "researcher": 89267,  # measured 77623
-    "architect": 23612,  # measured 20532
-    "implementer": 21607,  # measured 18788
-    "debugger": 17388,  # measured 15120
-    "reviewer": 12553,  # measured 10915
-    "scout": 5944,  # measured 5168
-    "docs-writer": 31376,  # measured 27283
-    "ui-designer": 128097,  # measured 111388
-    "ui-reviewer": 65986,  # measured 57379
-    "product-planner": 102779,  # measured 89373
-    "marketer": 54384,  # measured 47290
-}
-
-
-def sections(body):
-    """Ordered list of `## ` heading names, and a dict name -> text."""
-    parts = re.split(r"^## (.+)$", body, flags=re.MULTILINE)
-    names = [p.strip() for p in parts[1::2]]
-    return names, dict(zip(names, parts[2::2]))
 
 
 def disallowed(meta):
@@ -51,18 +28,11 @@ def disallowed(meta):
 
 
 def startup_files(name):
-    _, body = load_frontmatter(AGENTS / f"{name}.md")
-    return STARTUP_PATH.findall(sections(body)[1]["Startup"])
+    return startup_budget.startup_files(ROOT, name)
 
 
 def startup_bytes(name):
-    meta, body = load_frontmatter(AGENTS / f"{name}.md")
-    total = len(body.encode("utf-8"))
-    for rel in startup_files(name):
-        total += (PLUGIN / rel).stat().st_size
-    for skill in meta.get("skills", []):
-        total += superpowers_skill_path(skill.split(":", 1)[1]).stat().st_size
-    return total
+    return startup_budget.startup_bytes(ROOT, name)
 
 
 class RosterTest(unittest.TestCase):
@@ -263,8 +233,8 @@ class RosterTest(unittest.TestCase):
                 self.assertLessEqual(
                     measured, BUDGET[name],
                     f"{name}: measured {measured} bytes > budget {BUDGET[name]}. If the growth is "
-                    f"intended, set BUDGET to ceil({measured} * 1.15) = "
-                    f"{-(-measured * 115 // 100)} and say why in the commit.")
+                    f"intended, set BUDGET in scripts/startup_budget.py to ceil({measured} * 1.15) = "
+                    f"{startup_budget.suggested_budget(measured)} and say why in the commit.")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ a new version section.
   `anthology-superpowers`, so installing `anthology` brings in both.
 - Knowledge library: 25 skill folders (design, engineering, product and marketing),
   generated from pinned upstream sources by `scripts/vendor.py`.
+- Routing guide, Memory section: the lead commits the `.claude/agent-memory/` notes that
+  read-only and docs-only agents leave uncommitted, and acts on each report's "Worth
+  remembering" items.
 
 ## anthology-guardrails
 

@@ -57,5 +57,7 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - project, feedback, reference notes: repo `.claude/memory/` (approved repos only). user notes: personal memory, indexed below.
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
-- Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit memory as `chore(memory): ...`.
+- Save corrections and confirmed approaches with their why; fix or delete wrong notes.
+- Agents save notes. Docs-only and read-only agents leave them uncommitted: commit `.claude/agent-memory/` changes they leave as `chore(memory): ...`.
+- Act on each report's "Worth remembering" items: save what is worth keeping, delete notes it flags as wrong.
 - Never save secrets: repo memory is visible to everyone with the repo.
