@@ -395,10 +395,25 @@ class BoundedReadTest(LiveRootCase):
         write(self.project_settings(), json.dumps({"enabledPlugins": {"other@x": False}}))
         self.assertEqual(self.inspect(), (self.live, None))
 
-    def test_malformed_and_absent_repo_settings_are_not_refusals(self):
+    def test_absent_and_empty_repo_settings_are_not_refusals(self):
         self.diverging()
         self.assertEqual(self.inspect(), (self.live, None))
-        write(self.project_settings(), "{not json")
+        write(self.project_settings(), "")  # Claude Code reads an empty file as {}
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.project_settings(), " \n")
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_repo_settings_file_that_does_not_parse_counts_as_disabled(self):
+        self.diverging()
+        for name in ("settings.json", "settings.local.json"):
+            for text in ("{not json", "[1, 2", '{"a": }', "\x00"):
+                write(self.project_settings(name), text)
+                self.assertEqual(self.inspect(), (self.live, "disabled"), (name, text))
+            self.project_settings(name).unlink()
+
+    def test_a_malformed_users_own_settings_file_is_ignored(self):
+        self.diverging()
+        write(self.config / "settings.json", "{not json")
         self.assertEqual(self.inspect(), (self.live, None))
 
     def test_a_non_regular_file_counts_as_disabled_even_when_it_reads_as_nothing(self):
@@ -448,6 +463,61 @@ class BoundedReadTest(LiveRootCase):
             self.skipTest("cannot limit memory here")
         self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
         self.assertEqual(proc.stdout.strip(), "disabled")
+
+
+class DecodeLikeClaudeCodeTest(LiveRootCase):
+    """I-1b: Claude Code decodes a settings file leniently (UTF-16LE with a BOM, else UTF-8 with bad
+    bytes replaced) before JSON.parse. A file it honours must never read as "no file" here."""
+
+    FLAG = '"enabledPlugins":{"anthology-guardrails@anthology":false}'
+
+    def settings(self, raw, name="settings.json"):
+        path = self.tmp / ".claude" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    def disabled(self):
+        return guardrails_loc._disabled({"CLAUDE_CONFIG_DIR": str(self.config)}, str(self.tmp))
+
+    def test_utf16le_with_a_bom_is_decoded(self):
+        self.settings(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertTrue(self.disabled())
+        self.settings(b"\xff\xfe" + '{"other": 1}'.encode("utf-16-le"))
+        self.assertFalse(self.disabled())  # decoded and read, not refused
+
+    def test_utf16be_with_a_bom_is_decoded(self):
+        self.settings(b"\xfe\xff" + ("{%s}" % self.FLAG).encode("utf-16-be"))
+        self.assertTrue(self.disabled())
+        self.settings(b"\xfe\xff" + '{"other": 1}'.encode("utf-16-be"))
+        self.assertFalse(self.disabled())  # decoded and read, not refused
+
+    def test_utf8_bom_is_stripped(self):
+        self.settings(b"\xef\xbb\xbf" + ("{%s}" % self.FLAG).encode("utf-8"))
+        self.assertTrue(self.disabled())
+
+    def test_an_invalid_byte_in_an_unrelated_value_does_not_hide_the_flag(self):
+        self.settings(('{%s,"env":{"X":"a' % self.FLAG).encode("utf-8") + b'\xff"}}')
+        self.assertTrue(self.disabled())
+        self.settings(b'{"env":{"X":"a\xff"}}')
+        self.assertFalse(self.disabled())  # replaced and parsed: no flag, nothing refused
+
+    def test_a_deeply_nested_value_counts_as_disabled(self):
+        deep = "[" * 200000 + "]" * 200000  # RecursionError on every Python (5000 is enough on 3.9 only)
+        self.settings(('{%s,"zz":%s}' % (self.FLAG, deep)).encode("utf-8"))
+        self.assertTrue(self.disabled())
+        self.settings(('{"zz":%s}' % deep).encode("utf-8"), "settings.local.json")
+        self.assertTrue(self.disabled())
+
+    def test_the_same_through_inspect(self):
+        self.diverging()
+        self.settings(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_the_users_own_files_are_decoded_the_same_way(self):
+        self.diverging()
+        write(self.config / "settings.json", "")
+        (self.config / "settings.json").write_bytes(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
 
 
 class UsersOwnFilesAreUncappedTest(LiveRootCase):

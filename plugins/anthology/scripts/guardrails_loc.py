@@ -26,8 +26,9 @@
 - An install of anthology without an applicable guardrails entry is the problem `not_installed`;
   `enabledPlugins["anthology-guardrails@..."] == false` in the user, project or local settings is
   the problem `disabled`. So is a settings file that exists but cannot be read (not a regular file,
-  unreadable, or, for the two files in the working folder, over Claude Code's own 2 MiB limit): the
-  cap must never turn "off" into "active". The user's own files are read at any size.
+  unreadable) and, for the two files in the working folder, one over Claude Code's own 2 MiB limit
+  or that does not parse after decoding it as Claude Code does (UTF-16 BOM, else UTF-8 with bad
+  bytes replaced): a file Claude Code may honour must never read as "no file". The user's own files are read at any size.
   Nothing found at all is `not_found`.
 
 Python stdlib only (3.9+).
@@ -56,10 +57,24 @@ def _has_guard(path):
     return (Path(path) / "scripts" / "guard.py").is_file()
 
 
-def _load(path, limit=None):
+def _decode(raw):
+    """Text of a JSON file the way Claude Code reads settings: UTF-16 (little or big endian) when it
+    starts with that BOM, else UTF-8 with invalid bytes replaced; one leading BOM dropped."""
+    if raw.startswith(b"\xff\xfe"):
+        text = raw[2:].decode("utf-16-le", errors="replace")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw[2:].decode("utf-16-be", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def _load(path, limit=None, closed=False):
     """`(data, state)`: state is "ok", "absent" (no such file), "refused" (not a regular file, over
     `limit` bytes, or unreadable) or "invalid" (not JSON). Never blocks on a FIFO or reads a device
-    (a repo can symlink one). `limit=None` is for files the user owns: any size, regular files only."""
+    (a repo can symlink one). `limit=None` is for files the user owns: any size, regular files only.
+    With `closed`, a file that exists but does not parse is "refused" too, so the caller fails
+    closed (an empty file is `{}`, as in Claude Code)."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except (FileNotFoundError, NotADirectoryError, ValueError):
@@ -77,11 +92,13 @@ def _load(path, limit=None):
         return None, "refused"
     finally:
         os.close(fd)
+    text = _decode(raw)
+    if closed and not text.strip():
+        return {}, "ok"
     try:
-        text = raw.decode("utf-8")
-        return json.loads(text[1:] if text.startswith("\ufeff") else text), "ok"
-    except (ValueError, RecursionError):
-        return None, "invalid"
+        return json.loads(text), "ok"
+    except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON
+        return None, "refused" if closed else "invalid"
 
 
 def _read_json(path, limit=None):
@@ -104,9 +121,10 @@ def _disabled(env, cwd):
              (Path(cwd) / ".claude" / "settings.json", REPO_READ_LIMIT),
              (Path(cwd) / ".claude" / "settings.local.json", REPO_READ_LIMIT)]
     for path, limit in files:
-        data, state = _load(path, limit)
+        data, state = _load(path, limit, closed=limit is not None)
         if state == "refused":
-            return True  # fail closed: a settings file we cannot read may be the one that disables it
+            # fail closed: a repo settings file we cannot read or parse may be the one that disables it
+            return True
         enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
         if isinstance(enabled, dict):
             for name, value in enabled.items():

@@ -593,6 +593,76 @@ class ProjectApprovalTest(CompatBase):
         self.user_json("[]")
         self.assertEqual(self.loaded(), {"browseros": False})
 
+    def git_project(self):
+        """.mcp.json at the git root; returns a working folder below it."""
+        self.project()
+        (self.cwd / ".git").mkdir()
+        sub = self.cwd / "pkg" / "app"
+        sub.mkdir(parents=True)
+        return sub
+
+    def loaded_from(self, folder):
+        return {s["name"]: s.get("approved", True)
+                for s in doctor.find_mcp_servers(dict(os.environ), folder)}
+
+    def test_repo_settings_are_read_from_the_working_folder_not_the_mcp_json_folder(self):
+        sub = self.git_project()
+        self.trust()  # the git root
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
+        self.assertEqual(self.loaded_from(sub), {"browseros": True})
+        _write(sub / ".claude" / "settings.json", {"disabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})
+        (sub / ".claude" / "settings.json").unlink()
+        _write(sub / ".claude" / "settings.local.json", {"disabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})
+
+    def test_approval_in_the_working_folders_settings_not_the_mcp_json_folders(self):
+        sub = self.git_project()
+        self.trust()
+        _write(self.cwd / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})  # Claude Code reads <cwd>/.claude
+        _write(sub / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded_from(sub), {"browseros": True})
+
+    def test_trust_is_recorded_for_the_git_root_of_the_working_folder(self):
+        sub = self.git_project()
+        _write(sub / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+        self.trust(sub)  # a subfolder key is not how Claude Code records trust
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})
+        self.trust(self.cwd)  # the git root is
+        self.assertEqual(self.loaded_from(sub), {"browseros": True})
+
+    def test_trust_at_the_mcp_json_folder_below_the_git_root_does_not_count(self):
+        (self.cwd / ".git").mkdir()
+        mid = self.cwd / "pkg"
+        sub = mid / "app"
+        sub.mkdir(parents=True)
+        _write(mid / ".mcp.json", {"mcpServers": {"browseros": {}}})
+        _write(sub / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+        self.trust(mid)
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})
+        self.trust(self.cwd)
+        self.assertEqual(self.loaded_from(sub), {"browseros": True})
+
+    def test_without_a_git_root_the_working_folder_is_the_trust_key(self):
+        sub = self.cwd / "a"
+        sub.mkdir()
+        self.project()  # at self.cwd, no .git anywhere below tmp
+        _write(sub / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+        self.trust(self.cwd)  # the folder holding .mcp.json is not the working folder
+        self.assertEqual(self.loaded_from(sub), {"browseros": False})
+        self.trust(sub)
+        self.assertEqual(self.loaded_from(sub), {"browseros": True})
+
+    def test_repo_settings_in_utf16_are_read(self):
+        self.project()
+        self.trust()
+        path = self.cwd / ".claude" / "settings.json"
+        path.parent.mkdir()
+        path.write_bytes(b"\xff\xfe" + '{"disabledMcpjsonServers": ["browseros"]}'.encode("utf-16-le"))
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
+        self.assertEqual(self.loaded(), {"browseros": False})
+
     def test_user_settings_approve_without_trust(self):
         self.project()
         _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
@@ -1013,6 +1083,16 @@ class SubagentModelTest(CompatBase):
         self.addCleanup(os.close, fd)
         os.write(fd, b'{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}')
         self.assertIsNone(doctor.compat.read_json(fifo, doctor.compat.REPO_READ_LIMIT))
+
+    def test_settings_are_decoded_like_claude_code(self):
+        flag = '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}'
+        (self.cwd / ".claude").mkdir()
+        path = self.cwd / ".claude" / "settings.json"
+        for raw in (b"\xff\xfe" + flag.encode("utf-16-le"), b"\xfe\xff" + flag.encode("utf-16-be"),
+                    b"\xef\xbb\xbf" + flag.encode("utf-8"),
+                    flag[:-2].encode("utf-8") + b', "x": "a\xff"}}'):
+            path.write_bytes(raw)
+            self.assertFalse(self.checks()["subagent_model"]["ok"], raw[:6])
 
     def test_a_symlink_to_a_regular_file_is_still_read(self):
         real = _write(self.tmp / "real.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})

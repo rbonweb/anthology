@@ -56,10 +56,7 @@ def _which(name, env):
 
 
 def _read_json(path):
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):  # RecursionError: absurdly nested JSON
-        return None
+    return compat.read_json(path)  # None when missing or malformed, including absurdly nested JSON
 
 
 def _safe(value, limit=SHOWN_NAME_LIMIT):
@@ -137,7 +134,7 @@ def find_mcp_servers(env, cwd):
         mcp = compat.read_json(folder / ".mcp.json", compat.REPO_READ_LIMIT)  # the clone controls it
         if mcp is not None:
             names = _servers_in(mcp.get("mcpServers") if isinstance(mcp, dict) else None)
-            approved = _project_approval(env, data, here, folder)
+            approved = _project_approval(env, data, here)
             for name in names:
                 found.append({"name": name, "scope": "project", "tool_prefix": "mcp__%s__" % name,
                               "approved": approved(name)})
@@ -174,28 +171,31 @@ def _names(value):
     return {n for n in value if isinstance(n, str)} if isinstance(value, list) else set()
 
 
-def _project_approval(env, claude_json, here, project_root):
-    """`approved(name)` for servers in `<project_root>/.mcp.json`: Claude Code loads one only when
-    it is approved and not disabled (Ruling: m14, from Claude Code 2.1.329).
+def _project_approval(env, claude_json, here):
+    """`approved(name)` for servers in a project `.mcp.json`: Claude Code 2.1.329 loads one only when
+    it is approved and not disabled. Doctor is never more permissive than that, and deliberately
+    stricter in one place (below). Ruling: m14.
 
-    - `disabledMcpjsonServers` from ANY source (user settings.json, `.claude.json`, the project's
-      shared settings.json and settings.local.json) rejects the server.
+    - `disabledMcpjsonServers` from ANY source (user settings.json, `.claude.json`, and the
+      working folder's `.claude/settings.json` and `settings.local.json`) rejects the server.
     - `enableAllProjectMcpServers: true` or the name in `enabledMcpjsonServers` approves it when it
       comes from the user's own settings.json or the project's entry in `.claude.json`.
-    - The same keys in the project's own settings.json and settings.local.json approve it only when
-      the workspace is trusted (`.claude.json` `projects[<folder>].hasTrustDialogAccepted` is `true`
-      for the working folder or the project folder). Before trust a clone could approve its own
-      servers, and a committed settings.local.json is ignored by Claude Code. When trust cannot be
-      read, the workspace is untrusted.
+    - The same keys in `<cwd>/.claude/settings.json` and `<cwd>/.claude/settings.local.json` (where
+      Claude Code reads project settings from) approve it only when the workspace is trusted:
+      `.claude.json` `projects[<key>].hasTrustDialogAccepted` is `true`, `<key>` being the git
+      root of the working folder, else the folder itself. Not determinable means untrusted.
+      Stricter than Claude Code: it also honours an untracked settings.local.json before trust;
+      doctor does not, by design (it cannot tell whether git tracks the file without running git).
     - Repo files are read only up to `REPO_READ_LIMIT`; anything unreadable or oddly shaped approves
       nothing and disables nothing."""
     projects = claude_json.get("projects") if isinstance(claude_json, dict) else None
     projects = projects if isinstance(projects, dict) else {}
-    trusted = any(isinstance(projects.get(str(f)), dict) and projects[str(f)].get("hasTrustDialogAccepted") is True
-                  for f in (here, Path(project_root)))
+    key = compat.repo_top(here) or here
+    entry = projects.get(str(key))
+    trusted = isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True
     own = [_read_json(compat.config_dir(env) / "settings.json")]
     own += [projects.get(str(folder)) for folder in (here, *here.parents)]
-    repo = [compat.read_json(Path(project_root) / ".claude" / name, compat.REPO_READ_LIMIT)
+    repo = [compat.read_json(here / ".claude" / name, compat.REPO_READ_LIMIT)
             for name in ("settings.json", "settings.local.json")]
     own = [d for d in own if isinstance(d, dict)]
     repo = [d for d in repo if isinstance(d, dict)]

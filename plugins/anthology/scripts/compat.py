@@ -17,15 +17,28 @@ SUBAGENT_MODEL = "CLAUDE_CODE_SUBAGENT_MODEL"
 REPO_READ_LIMIT = 2 * 1024 * 1024  # files a cloned repo controls: Claude Code's own settings limit
 
 
+def decode_text(raw):
+    """Text of a JSON file the way Claude Code reads settings: UTF-16 (little or big endian) when it
+    starts with that BOM, else UTF-8 with invalid bytes replaced; one leading BOM dropped."""
+    if raw.startswith(b"\xff\xfe"):
+        text = raw[2:].decode("utf-16-le", errors="replace")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw[2:].decode("utf-16-be", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    return text[1:] if text.startswith("\ufeff") else text
+
+
 def read_json(path, limit=None):
-    """The parsed JSON file, or None when it is missing or malformed. Tolerates a BOM.
+    """The parsed JSON file, or None when it is missing or malformed. Decoded like Claude Code
+    does (`decode_text`: a UTF-8 or UTF-16 BOM is fine, bad bytes do not matter).
 
     With `limit` (bytes) the file must also be a regular file (a symlink to one is fine; a device
     or FIFO is not) of at most `limit` bytes, else it is skipped like an absent file. Use it for
     files a cloned repo controls (`REPO_READ_LIMIT`): they are read at every session start."""
     if limit is None:
         try:
-            return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+            return json.loads(decode_text(Path(path).read_bytes()))
         except (OSError, ValueError, RecursionError):
             return None
     try:
@@ -39,7 +52,7 @@ def read_json(path, limit=None):
             raw = fh.read(limit + 1)
         if len(raw) > limit:
             return None
-        return json.loads(raw.decode("utf-8-sig"))
+        return json.loads(decode_text(raw))
     except (OSError, ValueError, RecursionError):
         return None
     finally:
