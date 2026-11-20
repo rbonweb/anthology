@@ -20,14 +20,24 @@ One JSON object on stdout, computed from this interpreter alone, for every code 
 - `"decimal"`: `[[lo, hi, value_at_lo], ...]` runs where `unicodedata.decimal` counts up by one.
 - `"lower"`: `[[cp, str], ...]` for every code point whose `str.lower()` is not itself (one or
   more characters; U+03A3's entry is its non-final form).
+- What `re.IGNORECASE` uses (`re._compiler`): `ranges["sre_cased"]` (`_sre.unicode_iscased`),
+  `"sre_lower"`: `[[cp, lower], ...]` where `_sre.unicode_tolower` (the simple lowercase)
+  differs from `"lower"` (only where `str.lower()` is more than one character), and
+  `"extra_cases"`: `[[lower, [other lowers...]], ...]` (`re._casefix._EXTRA_CASES`). The dump
+  checks that `\\w`, `\\s` and `\\d` give the same answer for a character and its simple
+  lowercase, which `pycompat::re` relies on for classes under IGNORECASE.
 
-Python 3.9+ and the standard library only. The output names nothing about the machine.
+Python 3.11+ (`re._casefix`) and the standard library only. The output names nothing about the
+machine.
 """
 from __future__ import annotations
 
+import _sre
 import json
+import re
 import sys
 import unicodedata
+from re import _casefix
 
 MAX = 0x110000
 SIGMA = "Σ"
@@ -83,6 +93,7 @@ def main():
         "word": lambda c: c.isalnum() or c == "_",
         "case_ignorable": _case_ignorable,
         "cased": _cased,
+        "sre_cased": lambda c: _sre.unicode_iscased(ord(c)),
     }
     for cp in _points():
         _check(chr(cp))
@@ -115,8 +126,25 @@ def main():
         if low != c:
             lower.append([cp, low])
 
+    sre_lower = []
+    classes = [re.compile(p) for p in (r"\w", r"\s", r"\d")]
+    for cp in _points():
+        c = chr(cp)
+        low = _sre.unicode_tolower(cp)
+        full = c.lower()
+        if len(full) != 1 or ord(full) != low:
+            if len(full) == 1:
+                raise SystemExit("unicode_dump: U+%04X: the simple and full lowercase differ" % cp)
+            sre_lower.append([cp, low])
+        for r in classes:
+            if bool(r.fullmatch(c)) != bool(r.fullmatch(chr(low))):
+                raise SystemExit("unicode_dump: U+%04X: %s differs on its lowercase" % (cp, r.pattern))
+    extra = [[k, list(v)] for k, v in sorted(_casefix._EXTRA_CASES.items())]
+
     json.dump(
         {
+            "extra_cases": extra,
+            "sre_lower": sre_lower,
             "version": unicodedata.unidata_version,
             "ranges": ranges,
             "category": category,

@@ -40,6 +40,11 @@ const RANGES: &[(&str, &str, &str)] = &[
         "CASED",
         "Cased, for the characters that are not case-ignorable (the only ones Final_Sigma asks about)",
     ),
+    (
+        "sre_cased",
+        "SRE_CASED",
+        "`_sre.unicode_iscased`: what `re.IGNORECASE` folds",
+    ),
 ];
 
 /// Runs `anthology-dev gen-unicode`; `args` are the arguments after `gen-unicode`.
@@ -217,6 +222,61 @@ pub fn generate(dump: &str) -> Result<String, String> {
     );
     out.push_str("];\n");
 
+    // re.IGNORECASE: the simple lowercase where it is not str.lower's, and the extra cases.
+    let sre = top
+        .get("sre_lower")
+        .and_then(Value::as_array)
+        .ok_or("no sre_lower")?;
+    let mut sre_lower = Vec::new();
+    for item in sre {
+        let p = item
+            .as_array()
+            .filter(|p| p.len() == 2)
+            .ok_or("sre_lower: not a pair")?;
+        let cp = code_point(&p[0], "sre_lower")?;
+        if !multi.iter().any(|(m, _)| *m == cp) {
+            return Err(format!(
+                "sre_lower: {cp:#x} has a one-character str.lower, which must be its simple lowercase"
+            ));
+        }
+        sre_lower.push((cp, code_point(&p[1], "sre_lower")?));
+    }
+    if sre_lower.len() != multi.len() {
+        return Err("sre_lower: every multi-character lowercase needs its simple one".into());
+    }
+    out.push_str("\n/// `_sre.unicode_tolower` where it is not [`LOWER`]'s (the characters in [`LOWER_MULTI`]).\n#[rustfmt::skip]\npub static SRE_LOWER: &[(u32, u32)] = &[");
+    list(
+        &mut out,
+        sre_lower.iter().map(|(a, b)| format!("({a:#x}, {b:#x})")),
+    );
+    out.push_str("];\n");
+    let extra = top
+        .get("extra_cases")
+        .and_then(Value::as_array)
+        .ok_or("no extra_cases")?;
+    let mut rows = Vec::new();
+    let mut prev = None;
+    for item in extra {
+        let p = item
+            .as_array()
+            .filter(|p| p.len() == 2)
+            .ok_or("extra_cases: not a pair")?;
+        let k = code_point(&p[0], "extra_cases")?;
+        if prev.is_some_and(|q| q >= k) {
+            return Err("extra_cases: not sorted".into());
+        }
+        prev = Some(k);
+        let vs = p[1].as_array().ok_or("extra_cases: not a list")?;
+        let vs: Vec<String> = vs
+            .iter()
+            .map(|v| code_point(v, "extra_cases").map(|n| format!("{n:#x}")))
+            .collect::<Result<_, _>>()?;
+        rows.push(format!("({k:#x}, &[{}])", vs.join(", ")));
+    }
+    out.push_str("\n/// `re._casefix._EXTRA_CASES`: other lowercase letters with the same uppercase.\n#[rustfmt::skip]\npub static EXTRA_CASES: &[(u32, &[u32])] = &[");
+    list(&mut out, rows.into_iter());
+    out.push_str("];\n");
+
     // The str-pattern classes for pycompat::re.
     for (stem, runs, what, not) in [
         ("WORD", &word, "`\\w`", "`\\W`"),
@@ -344,10 +404,12 @@ mod tests {
 
     const DUMP: &str = r#"{"category": [[65, 90, "Lu"], [97, 122, "Ll"], [931, 931, "Lu"]],
         "decimal": [[48, 57, 0]], "lower": [[65, "a"], [304, "i̇"], [931, "σ"]],
+        "sre_lower": [[304, 105]], "extra_cases": [[105, [305]], [305, [105]]],
         "ranges": {"case_ignorable": [[39, 39]], "cased": [[65, 90], [97, 122]],
         "isalnum": [[48, 57], [65, 90]], "isalpha": [[65, 90]], "isdecimal": [[48, 57]],
         "isdigit": [[48, 57]], "isprintable": [[32, 126]], "isspace": [[9, 13], [32, 32]],
-        "word": [[48, 57], [65, 90], [95, 95]]}, "version": "15.0.0"}"#;
+        "word": [[48, 57], [65, 90], [95, 95]], "sre_cased": [[65, 90], [97, 122]]},
+        "version": "15.0.0"}"#;
 
     #[test]
     fn a_dump_becomes_the_tables() {

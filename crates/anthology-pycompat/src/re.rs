@@ -249,8 +249,9 @@ const ASCII_WORD: &str = "0-9A-Za-z_";
 const ASCII_SPACE: &str = "\\x{9}-\\x{d}\\x{20}";
 const ASCII_DIGIT: &str = "0-9";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Scope {
+    ignorecase: bool,
     multiline: bool,
     verbose: bool,
     ascii: bool,
@@ -264,12 +265,45 @@ struct Parser<'a> {
     scopes: Vec<Scope>,
     /// Group numbers opened so far, and whether each is closed (index = number - 1).
     groups: Vec<bool>,
-    /// Open groups: `Some(number)` for a capture, `None` otherwise.
-    open: Vec<Option<usize>>,
+    /// The open groups.
+    open: Vec<Open>,
     /// Whether the last thing written can take a repeat ("nothing to repeat" otherwise).
     can_repeat: bool,
+    /// Where the last atom starts in `out`, and whether fancy-regex sees it as a look-around
+    /// (which it refuses to repeat; see `repeat`).
+    atom_start: usize,
+    atom_look: bool,
+    /// Whether the last atom can match empty, and whether it holds a capture group.
+    atom_nullable: bool,
+    atom_captures: bool,
     /// Only global flags written so far.
     at_start: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Capture,
+    Plain,
+    Look,
+}
+
+/// An open group.
+struct Open {
+    capture: Option<usize>,
+    kind: Kind,
+    /// Where the group starts in `out`.
+    start: usize,
+    /// Its top-level items so far, whether the last one is a look-around, and whether it has
+    /// a top-level `|`.
+    items: usize,
+    last_look: bool,
+    alt: bool,
+    /// Whether some finished alternative can match empty; whether the items of the current
+    /// one before the last can, and whether the last can; whether a capture is inside.
+    nullable_alt: bool,
+    nullable_before: bool,
+    nullable_last: bool,
+    captures: bool,
 }
 
 /// [`translate`] with Python's compile flags, saying whether fancy-regex is needed.
@@ -281,6 +315,7 @@ pub fn translate_with(py: &str, flags: Flags) -> Result<Translated, String> {
         out: String::new(),
         fancy: false,
         scopes: vec![Scope {
+            ignorecase: flags.ignorecase,
             multiline: flags.multiline,
             verbose: flags.verbose,
             ascii: flags.ascii,
@@ -288,12 +323,13 @@ pub fn translate_with(py: &str, flags: Flags) -> Result<Translated, String> {
         groups: Vec::new(),
         open: Vec::new(),
         can_repeat: false,
+        atom_start: 0,
+        atom_look: false,
+        atom_nullable: false,
+        atom_captures: false,
         at_start: true,
     };
     let mut prefix = String::new();
-    if flags.ignorecase {
-        prefix.push('i');
-    }
     if flags.multiline {
         prefix.push('m');
     }
@@ -316,11 +352,7 @@ fn hex_lit(c: char) -> String {
 
 impl Parser<'_> {
     fn scope(&self) -> Scope {
-        *self.scopes.last().unwrap_or(&Scope {
-            multiline: false,
-            verbose: false,
-            ascii: false,
-        })
+        self.scopes.last().copied().unwrap_or_default()
     }
 
     fn peek(&self) -> Option<char> {
@@ -344,13 +376,72 @@ impl Parser<'_> {
     fn atom(&mut self, text: &str) {
         self.at_start = false;
         self.can_repeat = true;
+        self.atom_start = self.out.len();
+        self.atom_look = false;
+        self.atom_nullable = false;
+        self.atom_captures = false;
+        self.item(false, false, false);
         self.out.push_str(text);
     }
 
-    /// A zero-width assertion: it cannot be repeated.
-    fn assertion(&mut self, text: &str) {
+    /// A back-reference: an atom that may match empty.
+    fn backref(&mut self, text: &str) {
+        self.atom(text);
+        self.atom_nullable = true;
+        if let Some(top) = self.open.last_mut() {
+            top.nullable_last = true;
+        }
+    }
+
+    /// Counts an item of the innermost open group.
+    fn item(&mut self, look: bool, nullable: bool, captures: bool) {
+        if let Some(top) = self.open.last_mut() {
+            top.items += 1;
+            top.last_look = look;
+            top.nullable_before &= top.nullable_last;
+            top.nullable_last = nullable;
+            top.captures |= captures;
+        }
+    }
+
+    fn open_group(&mut self, text: &str, kind: Kind, capture: Option<usize>, scope: Scope) {
+        self.open.push(Open {
+            capture,
+            kind,
+            start: self.out.len(),
+            items: 0,
+            last_look: false,
+            alt: false,
+            nullable_alt: false,
+            nullable_before: true,
+            nullable_last: true,
+            captures: false,
+        });
+        self.scopes.push(scope);
         self.at_start = false;
         self.can_repeat = false;
+        self.out.push_str(text);
+    }
+
+    /// A literal character; under IGNORECASE, the class of what CPython's sre matches for it.
+    fn literal(&mut self, c: char) {
+        let s = self.scope();
+        let text = if s.ignorecase {
+            fold::literal(c, s.ascii)
+        } else if c.is_ascii_alphanumeric() {
+            c.to_string()
+        } else {
+            hex_lit(c)
+        };
+        self.atom(&text);
+    }
+
+    /// A zero-width assertion: it cannot be repeated. `look` when it is written as a look-around
+    /// (`$`), which matters to a repeated group around it.
+    fn assertion(&mut self, text: &str, look: bool) {
+        self.at_start = false;
+        self.can_repeat = false;
+        self.item(look, true, false);
         self.out.push_str(text);
     }
 
@@ -375,6 +466,12 @@ impl Parser<'_> {
                 '|' => {
                     self.at_start = false;
                     self.can_repeat = false;
+                    if let Some(top) = self.open.last_mut() {
+                        top.alt = true;
+                        top.nullable_alt |= top.nullable_before && top.nullable_last;
+                        top.nullable_before = true;
+                        top.nullable_last = true;
+                    }
                     self.out.push('|');
                 }
                 '(' => self.group()?,
@@ -382,39 +479,50 @@ impl Parser<'_> {
                     let Some(g) = self.open.pop() else {
                         return self.err("unbalanced parenthesis");
                     };
-                    if let Some(n) = g {
+                    if let Some(n) = g.capture {
                         self.groups[n - 1] = true;
                     }
                     self.scopes.pop();
                     // The group as a whole is the atom a repeat applies to.
                     self.out.push(')');
                     self.can_repeat = true;
+                    self.atom_start = g.start;
+                    self.atom_look = match g.kind {
+                        Kind::Look => true,
+                        Kind::Plain => g.items == 1 && g.last_look && !g.alt,
+                        Kind::Capture => false,
+                    };
+                    self.atom_nullable = g.kind == Kind::Look
+                        || g.nullable_alt
+                        || (g.nullable_before && g.nullable_last);
+                    self.atom_captures = g.captures || g.kind == Kind::Capture;
+                    let (look, nullable, captures) =
+                        (self.atom_look, self.atom_nullable, self.atom_captures);
+                    self.item(look, nullable, captures);
                 }
                 '*' | '+' | '?' => {
                     self.repeat_check()?;
-                    self.out.push(c);
-                    self.repeat_suffix()?;
+                    let (min, max) = match c {
+                        '*' => (0, None),
+                        '+' => (1, None),
+                        _ => (0, Some(1)),
+                    };
+                    self.repeat(&c.to_string(), min, max)?;
                 }
                 '{' => self.brace()?,
                 '[' => self.class()?,
                 '.' => self.atom("."),
-                '^' => self.assertion("^"),
+                '^' => self.assertion("^", false),
                 '$' => {
                     if self.scope().multiline {
-                        self.assertion("$");
+                        self.assertion("$", false);
                     } else {
                         self.fancy = true;
-                        self.assertion("(?=\\x{a}?\\z)");
+                        self.assertion("(?=\\x{a}?\\z)", true);
                     }
                 }
                 '\\' => self.escape()?,
-                c if c.is_ascii_alphanumeric() => self.atom(&c.to_string()),
-                c => {
-                    if (0xD800..=0xDFFF).contains(&u32::from(c)) {
-                        return self.err("a lone surrogate");
-                    }
-                    self.atom(&hex_lit(c));
-                }
+                c => self.literal(c),
             }
         }
         if !self.open.is_empty() {
@@ -430,12 +538,55 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// After a repeat: `?` makes it lazy; `+` (possessive) is refused.
-    fn repeat_suffix(&mut self) -> Result<(), String> {
-        if self.eat('?') {
-            self.out.push('?');
-        } else if self.peek() == Some('+') {
-            return self.err("possessive repeats are not supported");
+    /// Writes a repeat (`text` is its Rust form) and its `?` (lazy) suffix; `+` (possessive)
+    /// is refused.
+    ///
+    /// fancy-regex refuses to repeat a look-around, which Python allows. A zero-width item
+    /// repeated is, in CPython's sre (`MAX_UNTIL` stops when an iteration does not advance):
+    /// the item once when `min >= 1`; `(?:A|)` (greedy) or `(?:|A)` (lazy) when `min == 0`;
+    /// nothing (`(?:(?!)A|)`, which keeps A's groups) when `max == 0`. That is what is written.
+    fn repeat(&mut self, text: &str, min: u64, max: Option<u64>) -> Result<(), String> {
+        let lazy = self.eat('?');
+        let possessive = !lazy && self.eat('+');
+        // CPython's sre runs one more, empty, iteration after the last one that advanced (when
+        // `max` allows), and keeps the groups it sets; Rust's engines do not. So a group inside
+        // a repeat whose body can match empty is refused, unless the count is fixed.
+        if self.atom_captures && self.atom_nullable && max != Some(min) {
+            return self
+                .err("a capture group inside a repeat that can match empty is not supported");
+        }
+        if possessive {
+            // `X*+` is the atomic `(?>X*)`.
+            self.fancy = true;
+            let a = self.out.split_off(self.atom_start);
+            self.out.push_str(&format!("(?>{a}{text})"));
+        } else if self.atom_look {
+            let a = self.out.split_off(self.atom_start);
+            let (new, still_look) = if max == Some(0) {
+                (format!("(?:(?!){a}|)"), false)
+            } else if min >= 1 {
+                (a, true)
+            } else if lazy {
+                (format!("(?:|{a})"), false)
+            } else {
+                (format!("(?:{a}|)"), false)
+            };
+            self.out.push_str(&new);
+            self.atom_look = still_look;
+            if let Some(top) = self.open.last_mut() {
+                top.last_look = still_look;
+            }
+        } else {
+            self.out.push_str(text);
+            if lazy {
+                self.out.push('?');
+            }
+        }
+        if min == 0 {
+            self.atom_nullable = true;
+            if let Some(top) = self.open.last_mut() {
+                top.nullable_last = true;
+            }
         }
         // A repeat cannot itself be repeated (Python: "multiple repeat").
         self.can_repeat = false;
@@ -484,31 +635,26 @@ impl Parser<'_> {
             }
         };
         let min = parse(&lo)?.unwrap_or(0);
-        let rep = match hi {
-            None => format!("{{{min}}}"),
+        let (rep, max) = match hi {
+            None => (format!("{{{min}}}"), Some(min)),
             Some(h) => match parse(&h)? {
-                None => format!("{{{min},}}"),
+                None => (format!("{{{min},}}"), None),
                 Some(max) => {
                     if max < min {
                         return self.err("min repeat greater than max repeat");
                     }
-                    format!("{{{min},{max}}}")
+                    (format!("{{{min},{max}}}"), Some(max))
                 }
             },
         };
-        self.out.push_str(&rep);
-        self.repeat_suffix()
+        self.repeat(&rep, min, max)
     }
 
     fn group(&mut self) -> Result<(), String> {
         let scope = self.scope();
         if !self.eat('?') {
             self.groups.push(false);
-            self.open.push(Some(self.groups.len()));
-            self.scopes.push(scope);
-            self.at_start = false;
-            self.can_repeat = false;
-            self.out.push('(');
+            self.open_group("(", Kind::Capture, Some(self.groups.len()), scope);
             return Ok(());
         }
         let Some(c) = self.peek() else {
@@ -521,16 +667,16 @@ impl Parser<'_> {
                 if self.eat('<') {
                     let name = self.name('>')?;
                     self.groups.push(false);
-                    self.open.push(Some(self.groups.len()));
-                    self.scopes.push(scope);
-                    self.at_start = false;
-                    self.can_repeat = false;
-                    self.out.push_str(&format!("(?P<{name}>"));
+                    let n = self.groups.len();
+                    self.open_group(&format!("(?P<{name}>"), Kind::Capture, Some(n), scope);
                     Ok(())
                 } else if self.eat('=') {
                     let name = self.name(')')?;
+                    if self.scope().ignorecase {
+                        return self.err("a back-reference under IGNORECASE is not supported");
+                    }
                     self.fancy = true;
-                    self.atom(&format!("\\k<{name}>"));
+                    self.backref(&format!("\\k<{name}>"));
                     Ok(())
                 } else {
                     self.err("unknown extension ?P")
@@ -538,7 +684,9 @@ impl Parser<'_> {
             }
             '=' | '!' => {
                 self.fancy = true;
-                self.open_plain(if c == '=' { "(?=" } else { "(?!" }, scope)
+                let text = if c == '=' { "(?=" } else { "(?!" };
+                self.open_group(text, Kind::Look, None, scope);
+                Ok(())
             }
             '<' => {
                 let Some(d) = self.peek().filter(|d| matches!(d, '=' | '!')) else {
@@ -546,7 +694,9 @@ impl Parser<'_> {
                 };
                 self.i += 1;
                 self.fancy = true;
-                self.open_plain(if d == '=' { "(?<=" } else { "(?<!" }, scope)
+                let text = if d == '=' { "(?<=" } else { "(?<!" };
+                self.open_group(text, Kind::Look, None, scope);
+                Ok(())
             }
             '>' => {
                 self.fancy = true;
@@ -571,11 +721,7 @@ impl Parser<'_> {
     }
 
     fn open_plain(&mut self, text: &str, scope: Scope) -> Result<(), String> {
-        self.open.push(None);
-        self.scopes.push(scope);
-        self.at_start = false;
-        self.can_repeat = false;
-        self.out.push_str(text);
+        self.open_group(text, Kind::Plain, None, scope);
         Ok(())
     }
 
@@ -624,7 +770,8 @@ impl Parser<'_> {
                 }
                 'a' => new.ascii = true,
                 'u' => new.ascii = false,
-                'i' | 's' => {
+                'i' => new.ignorecase = !neg,
+                's' => {
                     if neg {
                         off.push(c);
                     } else {
@@ -703,8 +850,8 @@ impl Parser<'_> {
             } else {
                 tables::NOT_DECIMAL_CLASS.to_string()
             }),
-            'A' => self.assertion("\\A"),
-            'Z' => self.assertion("\\z"),
+            'A' => self.assertion("\\A", false),
+            'Z' => self.assertion("\\z", false),
             'b' | 'B' => {
                 if ascii {
                     self.fancy = true;
@@ -712,17 +859,21 @@ impl Parser<'_> {
                     let t = if c == 'b' {
                         format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
                     } else {
-                        format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w}))")
+                        format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w})(?:(?<=[\\s\\S])|(?=[\\s\\S])))")
                     };
-                    self.assertion(&t);
+                    self.assertion(&t, true);
+                } else if c == 'b' {
+                    self.assertion("\\b", false);
                 } else {
-                    self.assertion(if c == 'b' { "\\b" } else { "\\B" });
+                    // CPython's `\B` never matches in an empty string; Rust's does.
+                    self.fancy = true;
+                    self.assertion("(?:\\B(?:(?<=[\\s\\S])|(?=[\\s\\S])))", true);
                 }
             }
             '0'..='9' => self.digit_escape(c)?,
             _ => {
                 let lit = self.char_escape(c)?;
-                self.atom(&hex_lit(lit));
+                self.literal(lit);
             }
         }
         Ok(())
@@ -756,9 +907,12 @@ impl Parser<'_> {
         if !self.groups[group - 1] {
             return self.err("cannot refer to an open group");
         }
+        if self.scope().ignorecase {
+            return self.err("a back-reference under IGNORECASE is not supported");
+        }
         self.fancy = true;
         // Wrapped so a following digit stays a literal.
-        self.atom(&format!("(?:\\{group})"));
+        self.backref(&format!("(?:\\{group})"));
         Ok(())
     }
 
@@ -781,7 +935,7 @@ impl Parser<'_> {
         let Some(ch) = char::from_u32(v) else {
             return self.err("a lone surrogate or bad code point");
         };
-        self.atom(&hex_lit(ch));
+        self.literal(ch);
         Ok(())
     }
 
@@ -832,9 +986,10 @@ impl Parser<'_> {
     /// backspace), written with every literal escaped.
     fn class(&mut self) -> Result<(), String> {
         let negate = self.eat('^');
-        let mut items = String::new();
+        let mut items: Vec<ClassItem> = Vec::new();
         let mut any = false;
-        let ascii = self.scope().ascii;
+        let scope = self.scope();
+        let ascii = scope.ascii;
         loop {
             let Some(c) = self.peek() else {
                 return self.err("unterminated character set");
@@ -856,8 +1011,8 @@ impl Parser<'_> {
                 };
                 self.i += 1;
                 if that == ']' {
-                    items.push_str(&item.text());
-                    items.push_str(&hex_lit('-'));
+                    items.push(item);
+                    items.push(ClassItem::Lit('-'));
                     break;
                 }
                 let hi = if that == '\\' {
@@ -870,15 +1025,23 @@ impl Parser<'_> {
                         if b < a {
                             return self.err("bad character range");
                         }
-                        items.push_str(&format!("{}-{}", hex_lit(a), hex_lit(b)));
+                        items.push(ClassItem::Range(a, b));
                     }
                     _ => return self.err("bad character range"),
                 }
             } else {
-                items.push_str(&item.text());
+                items.push(item);
             }
         }
-        let text = format!("[{}{items}]", if negate { "^" } else { "" });
+        let text = if scope.ignorecase {
+            match fold::class(&items, negate, ascii) {
+                Ok(t) => t,
+                Err(e) => return self.err(&e),
+            }
+        } else {
+            let inner: String = items.iter().map(ClassItem::text).collect();
+            format!("[{}{inner}]", if negate { "^" } else { "" })
+        };
         self.atom(&text);
         Ok(())
     }
@@ -963,6 +1126,7 @@ impl Parser<'_> {
 
 enum ClassItem {
     Lit(char),
+    Range(char, char),
     /// A shorthand class's items, and whether it is negated.
     Set(&'static str, bool),
 }
@@ -971,9 +1135,184 @@ impl ClassItem {
     fn text(&self) -> String {
         match self {
             ClassItem::Lit(c) => hex_lit(*c),
+            ClassItem::Range(a, b) => format!("{}-{}", hex_lit(*a), hex_lit(*b)),
             ClassItem::Set(items, false) => (*items).to_string(),
             ClassItem::Set(items, true) => format!("[^{items}]"),
         }
+    }
+}
+
+/// `re.IGNORECASE` as CPython's `re._compiler` implements it, written out as explicit classes
+/// (Rust's `(?i)` folds differently: `İ` and `ı` match `i` in Python, not in Rust).
+///
+/// - A literal `c` that `_sre.unicode_iscased` rejects matches only itself; otherwise a text
+///   character `ch` matches when `lower(ch)` is `lower(c)` or one of its `_EXTRA_CASES`
+///   (`lower` = `_sre.unicode_tolower`, the simple lowercase).
+/// - A class gathers the lowercase of every literal and range member (plus their extra cases);
+///   if any member is cased, `ch` matches when `lower(ch)` is in that set (or in a `\w`/`\s`/
+///   `\d` member: those give the same answer for `ch` and `lower(ch)`, which the dump checks);
+///   otherwise `ch` itself is tested. A range past U+FFFF is refused (CPython moves it to a
+///   slower path with other rules).
+/// - Under `(?a)`, only ASCII letters fold, with no extra cases.
+mod fold {
+    use std::collections::{BTreeSet, HashMap};
+    use std::sync::OnceLock;
+
+    use super::{ClassItem, hex_lit};
+    use crate::tables;
+
+    fn in_runs(runs: &[(u32, u32)], c: u32) -> bool {
+        let i = runs.partition_point(|&(_, hi)| hi < c);
+        runs.get(i).is_some_and(|&(lo, _)| lo <= c)
+    }
+
+    /// `_sre.unicode_tolower`.
+    pub(super) fn lower(c: u32) -> u32 {
+        if let Ok(i) = tables::SRE_LOWER.binary_search_by_key(&c, |&(k, _)| k) {
+            return tables::SRE_LOWER[i].1;
+        }
+        match tables::LOWER.binary_search_by_key(&c, |&(k, _)| k) {
+            Ok(i) => tables::LOWER[i].1,
+            Err(_) => c,
+        }
+    }
+
+    fn cased(c: u32, ascii: bool) -> bool {
+        if ascii {
+            c < 0x80 && char::from_u32(c).is_some_and(|c| c.is_ascii_alphabetic())
+        } else {
+            in_runs(tables::SRE_CASED, c)
+        }
+    }
+
+    fn fold(c: u32, ascii: bool) -> u32 {
+        if ascii {
+            if (u32::from(b'A')..=u32::from(b'Z')).contains(&c) {
+                c + 32
+            } else {
+                c
+            }
+        } else {
+            lower(c)
+        }
+    }
+
+    fn extra(lo: u32) -> &'static [u32] {
+        match tables::EXTRA_CASES.binary_search_by_key(&lo, |&(k, _)| k) {
+            Ok(i) => tables::EXTRA_CASES[i].1,
+            Err(_) => &[],
+        }
+    }
+
+    /// Every character whose `lower` is `x`, other than `x` itself.
+    fn preimages() -> &'static HashMap<u32, Vec<u32>> {
+        static MAP: OnceLock<HashMap<u32, Vec<u32>>> = OnceLock::new();
+        MAP.get_or_init(|| {
+            let mut m: HashMap<u32, Vec<u32>> = HashMap::new();
+            let multi = tables::SRE_LOWER.iter().map(|&(k, v)| (k, v));
+            for (k, v) in tables::LOWER.iter().copied().chain(multi) {
+                if k != v {
+                    m.entry(v).or_default().push(k);
+                }
+            }
+            m
+        })
+    }
+
+    /// The characters `ch` with `fold(ch)` in `set`.
+    fn preimage(set: &BTreeSet<u32>, ascii: bool) -> BTreeSet<u32> {
+        let mut out = BTreeSet::new();
+        for &x in set {
+            if fold(x, ascii) == x {
+                out.insert(x);
+            }
+            if ascii {
+                if (u32::from(b'a')..=u32::from(b'z')).contains(&x) {
+                    out.insert(x - 32);
+                }
+            } else if let Some(v) = preimages().get(&x) {
+                out.extend(v.iter().copied());
+            }
+        }
+        out
+    }
+
+    fn runs_text(set: &BTreeSet<u32>) -> String {
+        let mut out = String::new();
+        let mut it = set.iter().copied().peekable();
+        while let Some(a) = it.next() {
+            let mut b = a;
+            while it.peek() == Some(&(b + 1)) {
+                b += 1;
+                it.next();
+            }
+            let (Some(ca), Some(cb)) = (char::from_u32(a), char::from_u32(b)) else {
+                continue;
+            };
+            if a == b {
+                out.push_str(&hex_lit(ca));
+            } else {
+                out.push_str(&format!("{}-{}", hex_lit(ca), hex_lit(cb)));
+            }
+        }
+        out
+    }
+
+    /// A literal under IGNORECASE.
+    pub(super) fn literal(c: char, ascii: bool) -> String {
+        let c = u32::from(c);
+        if !cased(c, ascii) {
+            return char::from_u32(c).map(hex_lit).unwrap_or_default();
+        }
+        let lo = fold(c, ascii);
+        let mut set = BTreeSet::from([lo]);
+        if !ascii {
+            set.extend(extra(lo).iter().copied());
+        }
+        format!("[{}]", runs_text(&preimage(&set, ascii)))
+    }
+
+    /// A class under IGNORECASE.
+    pub(super) fn class(items: &[ClassItem], negate: bool, ascii: bool) -> Result<String, String> {
+        let mut set = BTreeSet::new();
+        let mut cats = String::new();
+        let mut hascased = false;
+        let add = |set: &mut BTreeSet<u32>, c: u32| {
+            let lo = fold(c, ascii);
+            set.insert(lo);
+            if !ascii {
+                set.extend(extra(lo).iter().copied());
+            }
+            lo
+        };
+        for item in items {
+            match item {
+                ClassItem::Lit(c) => {
+                    let lo = add(&mut set, u32::from(*c));
+                    hascased |= cased(lo, ascii);
+                }
+                ClassItem::Range(a, b) => {
+                    let (a, b) = (u32::from(*a), u32::from(*b));
+                    if b > 0xFFFF {
+                        return Err("a case-insensitive range past U+FFFF is not supported".into());
+                    }
+                    for c in a..=b {
+                        if (0xD800..=0xDFFF).contains(&c) {
+                            continue;
+                        }
+                        add(&mut set, c);
+                        hascased |= cased(c, ascii);
+                    }
+                }
+                ClassItem::Set(..) => cats.push_str(&item.text()),
+            }
+        }
+        let members = if hascased { preimage(&set, ascii) } else { set };
+        Ok(format!(
+            "[{}{}{cats}]",
+            if negate { "^" } else { "" },
+            runs_text(&members)
+        ))
     }
 }
 

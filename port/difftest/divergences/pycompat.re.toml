@@ -1,0 +1,6 @@
+# Allowed divergences of the pycompat.re surface (GC-16).
+
+[[divergence]]
+class = "D-3"
+case = "d3:*"
+reason = "\\b keeps Rust's Unicode meaning (design §12): next to a mark, an No digit or a Pc other than _, Python and Rust disagree on what a word character is. The d3 seeds show it; generated text near \\b uses only characters both agree on."
