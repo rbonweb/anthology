@@ -70,13 +70,16 @@ fi
 
 # Every grant is the one harmless command a guard or rtk case needs, so a broken guard still
 # cannot download a browser or touch anything. One grant per line; scripts and tests read this
-# list, keep the quoting as it is.
+# list, keep the quoting as it is. The one exception to "harmless command" is
+# `Bash(anthology-mem save *)`, for the agent-memory-path case: the agents' memory-save helper
+# (stream I), which only writes a note into the agent's own memory folder.
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)
 Bash(git init -q rtkrepo)
 Bash(git -C rtkrepo status)
 Bash(ls *)
+Bash(anthology-mem save *)
 Write(.claude/memory/**)'
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

@@ -1,0 +1,50 @@
+# Depends on stream I: the `anthology-mem save` subcommand and the agent bodies that call it.
+schema_version: "1.0"
+name: agent-memory-path
+description: 'anthology:scout saves a memory note in its own agent-memory folder through anthology-mem save.'
+tags: [memory, probe-u7]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:scout agent with exactly this prompt: ''Save one project memory note named project-eval-probe, following your Memory rules exactly: its description says the eval probe colour is teal, and its body says why: this eval checks where agent memory is saved. Then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, "Bash(anthology-mem save *)"]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:scout"'
+  - name: mem-save
+    type: tool_used
+    tool: Bash
+    input_match: 'anthology-mem save'
+  - name: no-heredoc
+    type: tool_used
+    tool: Bash
+    input_match: '<<'
+    max: 0
+  - name: no-write-tool
+    type: tool_used
+    tool: Write
+    max: 0
+  - name: no-edit-tool
+    type: tool_used
+    tool: Edit
+    max: 0
+  - name: note-written
+    type: file_exists
+    path: '.claude/agent-memory/anthology-scout/project-eval-probe.md'
+    exists: true
+  - name: nested-type
+    type: regex
+    target: {source: file, path: '.claude/agent-memory/anthology-scout/project-eval-probe.md'}
+    pattern: 'metadata:\s*\n\s+type:\s*project'
+  - name: no-colon-dir
+    type: file_exists
+    path: '.claude/agent-memory/anthology:scout'
+    exists: false

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from _repo import ROOT
+from _repo import EXPECTED_ROSTER, ROOT
 
 EVALS = ROOT / "evals"
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -20,7 +20,7 @@ EXECUTION_KEYS = {"prompt", "max_turns", "timeout_seconds", "model", "allowed_to
 GRADER_KEYS = {
     "tool_used": {"name", "type", "tool", "input_match", "min", "max"},
     "tool_order": {"name", "type", "before", "after"},
-    "regex": {"name", "type", "target", "pattern", "match"},
+    "regex": {"name", "type", "target", "pattern", "match", "flags"},
     "file_exists": {"name", "type", "path", "exists"},
     "llm": {"name", "type", "criteria"},
 }
@@ -29,31 +29,14 @@ REGEX_MATCH = {"contains", "not_contains"}
 PLUGINS = ["../../plugins/anthology", "../../plugins/anthology-guardrails", "../../plugins/anthology-superpowers"]
 MCP_PREFIX = "mcp__browseros-neo__"
 
-# PLAN section 5: the knowledge each agent reads at startup (caveman first), in table order.
-_STARTUP = {
-    "researcher": ["competitive-brief", "synthesize-research", "research-synthesis", "ds/ux-research",
-                   "ds/journey-mapping"],
-    "architect": ["system-design", "architecture", "testing-strategy"],
-    "implementer": [],
-    "debugger": [],
-    "reviewer": ["code-review-checklist", "tech-debt", "deploy-checklist"],
-    "scout": [],
-    "docs-writer": ["documentation", "ds/ux-writing"],
-    "ui-designer": ["frontend-design", "design-taste-frontend", "ui-taste", "landing-page",
-                    "web-design-system", "design-handoff", "ds/design-systems", "ds/interaction-design",
-                    "ds/design-elevation"],
-    "ui-reviewer": ["web-design-guidelines", "web-review", "ds/design-critique", "ds/accessibility-audit"],
-    "product-planner": ["write-spec", "sprint-planning", "roadmap-update", "product-brainstorming",
-                        "ds/ux-strategy", "ds/design-ops"],
-    "marketer": ["seo-audit", "campaign-plan", "content-creation", "email-sequence"],
-}
-EXPECTED_STARTUP = {agent: ["caveman"] + files for agent, files in _STARTUP.items()}
-PRELOAD_AGENTS = {"architect", "implementer", "debugger"}
+# Startup reading per agent (caveman first) and the agents that preload skills: the roster.
+EXPECTED_STARTUP = {agent: ["caveman"] + spec["knowledge"] for agent, spec in EXPECTED_ROSTER.items()}
+PRELOAD_AGENTS = {agent for agent, spec in EXPECTED_ROSTER.items() if spec["preloads"]}
 
 REQUIRED_CASES = [
     "guard-g1", "guard-g4", "guard-g6", "guard-beats-rtk", "hook-reach-subagent",
     "browser-browseros-only", "harness-sanity", "rtk-rewrite", "guide-present", "guide-main-only",
-    "skills-hidden", "agent-fields",
+    "skills-hidden", "agent-fields", "agent-memory-path",
 ]
 # Bash is visible in this case only so that a host-browser launch attempt is recorded and denied.
 BASH_PROMPT_EXEMPT = {"browser-browseros-only"}
@@ -203,7 +186,15 @@ class CaseLayoutTests(unittest.TestCase):
                 else:
                     self.assertIsInstance(value, str, g["name"])
         elif kind == "regex":
-            self.assertIn(g["target"], REGEX_TARGETS, g["name"])
+            target = g["target"]
+            if isinstance(target, dict):
+                self.assertEqual(set(target), {"source", "path"}, g["name"])
+                self.assertEqual(target["source"], "file", g["name"])
+                self.assertIsInstance(target["path"], str, g["name"])
+            else:
+                self.assertIn(target, REGEX_TARGETS, g["name"])
+            if "flags" in g:
+                self.assertRegex(g["flags"], r"^[dgimsuvy]+$", g["name"])
             self.assertIn(g.get("match", "contains"), REGEX_MATCH, g["name"])
             self.assertIsInstance(g["pattern"], str, g["name"])
         elif kind == "file_exists":
@@ -387,6 +378,16 @@ class GrantTests(unittest.TestCase):
             with self.subTest(case=name):
                 prompt = case["execution"]["prompt"]
                 self.assertTrue(any(c in prompt for c in self.bash_grants() if "*" not in c), prompt)
+
+    def test_pattern_entries_in_allowed_tools_equal_a_grant(self):
+        # A case may list `Bash(cmd)` / `Write(path)` itself, but only for a command the runner grants.
+        seen = []
+        for name, case in self.cases.items():
+            for tool in case["execution"]["allowed_tools"]:
+                if "(" in tool:
+                    seen.append(name)
+                    self.assertIn(tool, self.grants, name)
+        self.assertIn("agent-memory-path", seen)
 
     def test_every_write_case_prompt_names_a_granted_path(self):
         prefixes = [g[len("Write("):-1].rstrip("*") for g in self.grants if g.startswith("Write(")]
