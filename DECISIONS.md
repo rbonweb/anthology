@@ -674,3 +674,26 @@ The secret-assignment patterns (`password`, `api key`, and the broader `password
 **Consequences**
 
 A quoted key with a real-looking value is refused or blocked like an unquoted one. Residual misses, accepted: an object-valued secret (`"password": {"value": "…"}`, ARM parameter files), an array (`"password": ["…"]`), a TOML triple-quoted value after a quoted key (`"password" = """…"""`), a value with a leading space inside the quotes, a real secret that is only `x`, `*` or `.` characters, an unquoted value that starts with a skip word and a `,` (`password=true,horse`, since `,` is a normal delimiter there), Unicode quotes or colons (`“password”: …`) and doubly escaped quotes (as on build). Inside a G6 Bash command the placeholder skip rarely applies (`echo 'password: <x>' > mem` still blocks, because a quote and a redirect follow the placeholder); that is the safe side. Cost if wrong: a false negative on one of those, or a false positive on a quoted example value that looks real (`"password": "string"`). Evidence: `QuotedKeyTest` in `tests/test_memory_privacy.py` and the G6 rows in `tests/test_guard_rules.py`.
+
+## ADR-023: the guard reads heredocs, `$'...'` and `((...))` the way bash does
+
+- **Date:** 2026-11-21
+- **Task:** fix-wave lane FW-H
+- **Status:** Accepted
+
+**Context**
+
+A quoted word before a heredoc operator made the guard treat the heredoc as quoted: in `"2"<<EOF` the lexer dropped `"2"` as a file-descriptor number but kept its quote flag, so `$(...)` in the body (which bash runs, because `EOF` is unquoted) was skipped. The same lexer and the substitution scanner (`_scan_paren`) also differed from bash in how they found the delimiter, the terminator and the body, and several of those differences let a blocked command through. Each behaviour below was checked with `bash -c` on bash 3.2 and 5.2.
+
+**Decision**
+
+- The delimiter is the word after `<<` / `<<-` (blanks and backslash-newlines skipped), parsed on its own: quote removal, no expansion. Any quote, backslash or `$'...'` / `$"..."` inside it makes the body literal; nothing before the operator counts. A word made only of unquoted ASCII digits right before a redirection is an fd number only when no redirection target is pending (`2>&1<<EOF`: `1` is the target of `>&`, and `"2"` or `\2` is an ordinary word). The substitution scanner parses the delimiter the same way, so `<<"E"OF` and `<<E\OF` end at `EOF` and `<<<` is never a heredoc.
+- Any word is a delimiter (`.`, `123`, `$X`, `'a b'`, `''`). Substitutions spelled inside the delimiter word are not run by bash; the guard still lexes them (it can only block more).
+- The terminator is a line exactly equal to the delimiter, `<<-` stripping leading tabs only: `EOF `, ` EOF` and `EOF\r` do not end a body. For an unquoted delimiter a line ending in an odd run of backslashes joins the next line, also when matching the terminator, and the body is scanned with those backslash-newlines removed.
+- A body whose terminator never comes runs to the end of the input, as in bash: it is captured (and its substitutions scanned when unquoted), and the lines after it are still lexed as commands too, which only blocks more. Lexers created while lexing those lines skip this extra scan, so the work stays linear in the nesting depth.
+- `$'...'` is decoded as bash 5 does (`\xHH`, `\NNN`, `\uHHHH`, `\UHHHHHHHH`, `\cX`, the single-letter escapes; a NUL ends the string), in command words and delimiters alike, so `$'\x6epx' playwright install` is `npx`.
+- Inside a `((...))` command (no word before it) and a `$((...))` expansion, `<<` is a shift, not a heredoc. A backslash-newline inside an operator (`<\`, newline, `<EOF`) is removed first, as bash does.
+
+**Consequences**
+
+The bypasses listed in `HEREDOC_RUNS` and `ANSI_C_RUNS` in `tests/test_guard_rules.py` are blocked, and the quoted forms in `HEREDOC_DATA` (heredocs bash keeps literal, including `<<'a b'`, `<<''` and a quoted body with `EO\` then `F`) are allowed. Where bash versions differ the guard follows bash 5, which is the safe side for detection: `\u` and `\U` decode (bash 3.2 keeps them literal) and a backtick delimiter is unquoted (bash 3.2 treats it as quoted). Residuals, accepted: multi-line arithmetic whose `((` the lexer does not see at command position, and nested backtick quoting, are approximated as before. Cost if wrong: a heredoc body that bash runs read as data (a missed block), or ordinary text after an unusual heredoc lexed as commands (a false block). Evidence: `test_heredoc_delimiter_and_body_follow_bash`, `test_ansi_c_strings_are_decoded` and the cheapness cases in `test_unterminated_heredocs_stay_cheap`. The Rust port (`anthology-shell`, lane SH) must match these rules.
