@@ -20,6 +20,15 @@ a new version section.
   read-only and docs-only agents leave uncommitted, and acts on each report's "Worth
   remembering" items.
 
+#### Security
+
+- rtk `1.2.1-anthology.2`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
+  project, local and managed settings) to the command an `rtk …` form wraps, printing an
+  explicit deny or ask, so `Bash(rtk *)` no longer runs a command one of those rules covers.
+- rtk's local history (command lines, recall store, tee spool) is kept in
+  `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
+  document what it stores and for how long.
+
 ## anthology-guardrails
 
 ### [Unreleased]

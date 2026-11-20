@@ -167,11 +167,18 @@ rtk condenses the output of common dev commands, so the main session and every a
 - **Claude Code only.** The rtk source lives in this repo under `rtk/`. It carries no integration for any other AI tool, and it has no telemetry. A CI test runs the built binary with the network switched off.
 - **Apache-2.0 edition.** Upstream rtk also contains a BUSL-1.1 compression engine; Anthology removes it from the source it ships, so what you install is the Apache-2.0 edition and the engine-only features (compressing output after a tool has run, user-defined pipelines and `rtk tasks`) are not part of it.
 - **Verified binaries.** Setup downloads the binary for your platform from this repo's public GitHub releases (tag `rtk--v<version>`) over HTTPS. `plugins/anthology/rtk.lock` pins the version and a sha256 for each of the four targets (macOS and Linux, arm64 and x86_64), and the binary is installed only when the hash of the downloaded archive matches. Each release asset has a build-provenance attestation you can check with `gh attestation verify`. At every session start Anthology reconciles the installed binary with the lock.
+- **Local history.** rtk keeps a SQLite history on your machine, never uploaded: every Bash command line the hook sees and the rtk command it became, with token counts (for `rtk gain`), for 90 days; and, for `rtk recall`, the output it left out of a result, for 30 days. Command lines can contain secrets (`TOKEN=…`, `Authorization:` headers). Anthology keeps it in `~/.claude/anthology/rtk/` (`history.db`, `recall.db`, `tee/`; files are private to you), and `/anthology:setup remove` deletes that folder. To clear it sooner, delete the folder, or run `rtk gain --reset --yes`, which empties the history (not the recall store). rtk has no switch that stops the history but keeps `rtk gain`. Version `1.2.1-anthology.1` wrote to rtk's default folder instead (`~/Library/Application Support/rtk/` on macOS, `~/.local/share/rtk/` on Linux); remove does not touch that folder, because another rtk install may use it, so delete it yourself if you ran that version.
 - **Fails safe.** If the binary is missing, the hook exits 0 and commands run unchanged. The `rtk` command on your Bash path says "run /anthology:setup" if setup has not run.
 
 ### The `Bash(rtk *)` risk
 
-Setup adds a blanket `Bash(rtk *)` allow so rewritten commands never prompt. Because `rtk bypass <cmd>` runs any command, **this also auto-approves `rtk bypass <anything>`**. That is an accepted risk, chosen for a prompt-free workflow. The guardrails and the deny rules still apply to the wrapped command, and `/anthology:setup remove` takes the allow out again. If you are not comfortable with it, do not run setup, or run `remove` afterwards.
+Setup adds a blanket `Bash(rtk *)` allow so rewritten commands never prompt. Because `rtk bypass <cmd>` runs any command, **this also auto-approves `rtk bypass <anything>`**. That is an accepted risk, chosen for a prompt-free workflow. What still holds:
+
+- **Your deny and ask rules.** rtk's hook reads the `permissions` of your settings files (user, project, local and managed `managed-settings.json`) and applies them to the command and to the command an `rtk …` form wraps (`rtk bypass`, `run`, `err`, `test`, `summary`, `rtk git …`, and so on). A matching deny rule blocks the call; a matching ask rule makes Claude Code prompt, even under `Bash(rtk *)`. A `Read(…)` deny rule blocks `cat`, `head`, `tail`, `grep`, `rg` and `rtk read` of a denied path.
+- **Not covered.** Rules given only with `--settings` or `--disallowedTools`, server-managed settings and a macOS MDM profile never reach a hook, so they are not applied to the wrapped command. Code that hides a command from a parser (a `python -c` script, `eval` of a variable) is outside every rule, as it is without rtk. Commands that match no rule run without a prompt.
+- **The guardrails** check the command the agent asked for (see [SECURITY.md](SECURITY.md#guardrail-limits)).
+
+`/anthology:setup remove` takes the allow out again. If you are not comfortable with it, do not run setup, or run `remove` afterwards.
 
 ## Memory
 
@@ -256,7 +263,7 @@ It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` 
 
 **Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
-**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
+**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk, rtk's local history (`~/.claude/anthology/rtk/`) and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
 ```text
 claude plugin uninstall anthology@anthology --prune -y

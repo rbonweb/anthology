@@ -34,7 +34,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
    - **settings.json:** show `settings.diff` as a diff. Then print this note verbatim:
-     `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; the guardrails and deny rules still apply to the wrapped command."
+     `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
@@ -65,6 +65,8 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    - `settings.diff` as a diff: the settings.json entries Anthology added come out, and
      `worktree.baseRef` goes back to its previous value. Rules the user added themselves are never touched.
    - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).
+   - `rtk_history.dir`: rtk's local history (the command lines it saw, its recall store and tee spool),
+     which would be deleted (`status` says `delete`, `nothing to delete` or why it is left in place).
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
      and `memory.unapprove_all` list the repo approvals that the optional flags would drop.

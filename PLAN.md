@@ -346,7 +346,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 **Permissions — accepted risk (owner's decision):**
 - Setup adds a blanket `Bash(rtk *)` allow, so rewritten commands never prompt.
 - Because `rtk bypass <cmd>` runs any command, this also auto-approves `rtk bypass <anything>`.
-- The guardrails and deny rules still apply to the wrapped command.
+- rtk's hook applies the deny and ask rules of the user, project, local and managed settings files to the command and to the command an `rtk …` form wraps (explicit hook deny / hook ask), and `Read()` deny rules to the reads it would rewrite; rules given with `--settings` or `--disallowedTools`, server-managed settings and MDM profiles are invisible to a hook (ADR-019). The guardrails check the command the agent asked for.
 - The README states the risk plainly, and `/anthology:setup remove` takes the allow out again.
 
 ### 13. Memory (in the repo, survives re-clone, team-safe)

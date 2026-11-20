@@ -263,6 +263,19 @@ def _rtk_target(env):
     return real, "delete", None
 
 
+def _rtk_history_target():
+    """`(real path to delete or None, status, warning or None)` for rtk's history folder.
+
+    `state.rtk_data_dir()`: the tracking database (every command line the hook saw), the recall
+    store and the tee spool. Deleted only when it is a real folder, not a symlink."""
+    path = state.rtk_data_dir()
+    if not os.path.lexists(str(path)):
+        return None, "nothing to delete", None
+    if path.is_symlink() or not path.is_dir():
+        return None, "left in place", "the rtk history folder %s is not a plain folder; left in place" % path
+    return str(path), "delete", None
+
+
 def _remove_plan(env):
     """`(error, plan)`: what remove would do to settings.json, rtk and state.json."""
     st = state.read()
@@ -276,7 +289,7 @@ def _remove_plan(env):
         except ValueError as exc:
             return "%s; left untouched. Fix the file and run remove again." % exc, None
     return None, {"st": st, "path": path, "text": text, "new_text": new_text, "diff": diff,
-                  "rtk": _rtk_target(env)}
+                  "rtk": _rtk_target(env), "rtk_history": _rtk_history_target()}
 
 
 def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None, preview=False):
@@ -292,7 +305,8 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
     path, st = plan["path"], plan["st"]
     changed = plan["new_text"] != plan["text"]
     rtk_real, rtk_status, rtk_warn = plan["rtk"]
-    warnings = [rtk_warn] if rtk_warn else []
+    history_real, history_status, history_warn = plan["rtk_history"]
+    warnings = [w for w in (rtk_warn, history_warn) if w]
     approved = sorted(memory_sync._load_approved(env)["repos"])
     info = _repo_info(cwd, env)
     this_repo = info[1] if info is not None and info[1] in approved else None
@@ -301,6 +315,7 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
         return {"ok": True, "preview": True,
                 "settings": {"path": str(path), "changed": changed, "diff": plan["diff"]},
                 "rtk": {"dir": rtk_real, "status": rtk_status},
+                "rtk_history": {"dir": str(state.rtk_data_dir()), "status": history_status},
                 "state": {"path": str(state.state_path()), "exists": state.state_path().exists()},
                 "memory": {"notes": "kept (memory notes are never deleted)",
                            "this_repo_approved": this_repo,
@@ -317,6 +332,9 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
     if rtk_real:
         shutil.rmtree(rtk_real)
         rtk_status = "deleted"
+    if history_real:
+        shutil.rmtree(history_real)
+        history_status = "deleted"
     unapproved = []
     if unapprove_all:
         for key in approved:
@@ -330,7 +348,8 @@ def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None
     except FileNotFoundError:
         pass
     return {"ok": True, "settings": {"path": str(path), "changed": changed, "diff": plan["diff"]},
-            "rtk": {"status": rtk_status}, "memory": {"unapproved": unapproved,
+            "rtk": {"status": rtk_status}, "rtk_history": {"status": history_status},
+            "memory": {"unapproved": unapproved,
                                                        "notes": "kept (memory notes are never deleted)"},
             "warnings": warnings}
 

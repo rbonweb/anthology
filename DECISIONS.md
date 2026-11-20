@@ -607,3 +607,29 @@ Read-only agents (`disallowedTools` includes Write and Edit) were told to save m
 
 Agent memory saves are silent (no prompt) once setup has run. Cost if wrong: one helper and one line per agent body. Evidence: the stream I log.
 
+
+## ADR-019: rtk's hook enforces deny, ask and Read rules behind `Bash(rtk *)`; rtk history lives in Anthology's folder
+
+- **Date:** 2026-11-20
+- **Task:** fix lane F1 (final review C1 and I4)
+- **Status:** Accepted
+
+**Context**
+
+Setup adds the owner's blanket `Bash(rtk *)` allow (ADR-017, PLAN §12), and Claude Code judges the command a `PreToolUse` hook returns in `updatedInput`, not the one the agent typed. Probed on Claude Code 2.1.311 (`claude -p`, `.superpowers/sdd/PLAN/probes/F1/`): a hook `"ask"` prompts even when an allow rule matches the rewritten text; a hook `"deny"` blocks; a hook `"allow"` does not override a deny rule that matches the rewritten text; with no decision the rewritten text is judged by the rules; and Claude Code itself denies `cat secret.txt` under `Read(./secret.txt)`. rtk 1.2.1-anthology.1 emitted nothing on a deny and no decision on an ask, read no `Read(…)` rules and no managed settings, and judged `rtk …` forms by their own text. So `rtk git push`, `rtk bypass …`, `kubectl apply` (an ask rule) and `cat secret.txt` all ran without a prompt, and the setup note said the deny rules still applied. Separately, rtk recorded every Bash command line in its default data folder for 90 days, outside anything remove deletes.
+
+**Decision**
+
+- **Fork change in `rtk/src/hooks/anthology_gate.rs`**, wired into `decide_for_claude_hook_at` (so `rtk hook claude` and `rtk hook check --agent claude` agree); `rtk rewrite` is unchanged.
+  - A Bash deny rule that matches the command, the inner command of any `rtk` form (`bypass`/`proxy`, `run` with `-c` or argv, `err`, `test`, `summary`, `rtk <tool> …`, global flags), a shell wrapper's script, a `find -exec`, `xargs` or `env` payload, recursively, prints an explicit `permissionDecision: "deny"` with no `updatedInput`.
+  - A matching ask rule prints `"ask"` (never "no decision"). Behind an `rtk` prefix, when any deny or ask rule exists, constructs the gate cannot read (substitution, `eval`, a stdin-fed shell, inline interpreter code, a non-POSIX `--shell`, the depth cap, the work budget) also ask.
+  - `Read(…)` deny rules block the commands rtk rewrites into reads and `rtk read`-family subcommands on a denied path; an unresolvable path is left unrewritten at top level and asks behind `rtk`. `Read(…)` ask rules prompt the same way.
+  - Rule sources: project and user `settings{,.local}.json`, `CLAUDE_PROJECT_DIR`, and `managed-settings.json` + `managed-settings.d/*.json` (honoring `allowManagedPermissionRulesOnly`). An unreadable file fails closed (ask). Oversize or unparseable hook input prints `"ask"`.
+  - With no deny, ask or Read rule anywhere the hook output is byte-identical to before: the owner's accepted risk (`Bash(rtk *)`, rewritten commands never prompt) is unchanged.
+- **Not covered, documented:** `--settings`, `--disallowedTools`, server-managed settings and the macOS MDM profile (no hook can read them); files a recursive search walks into; commands hidden from any parser (also uncovered without rtk).
+- **rtk history.** `bin/rtk` and `bin/rtk-hook` export `RTK_DB_PATH`, `RTK_RECALL_DB` and `RTK_TEE_DIR` under `state.rtk_data_dir()` = `${CLAUDE_CONFIG_DIR:-~/.claude}/anthology/rtk/` (state.json's folder), and `/anthology:setup remove` deletes that folder behind the usual preview. Stats stay on by default; rtk has no switch that drops command lines but keeps `rtk gain`. rtk's default data folder is not deleted, because another rtk install may share it; README and SECURITY name it for `1.2.1-anthology.1` users.
+- **Release:** `1.2.1-anthology.2` (tag `rtk--v1.2.1-anthology.2`), built and attested by `rtk-release.yml` as in ADR-017; `rtk.lock` rewritten from its `checksums.txt`.
+
+**Consequences**
+
+Users with deny, ask or Read rules get them enforced behind rtk, at the cost of an occasional prompt where a wrapped command cannot be read, and an unreadable settings file now prompts for every command. A later upstream sync must keep the three `// anthology fork:` call sites wired to the gate. Cost if wrong: a rule source Claude Code adds later is invisible to the hook until the gate reads it.
