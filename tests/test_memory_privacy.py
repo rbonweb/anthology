@@ -159,6 +159,23 @@ class KindTest(unittest.TestCase):
             self.assertNotIn(text, repr(found))
         self.assertIn("secret:anthropic-key", kinds("sk" + "-ant-" + "abcdefghij0123456789"))
 
+    def test_cloud_secret_key_assignment_and_url_credentials(self):
+        # m7: an AWS-style secret key assignment and `scheme://user:pw@host` were not caught
+        cases = {
+            "secret:cloud-secret-key": ("aws_secret_" + "access_key = " + "wJalrXUtnFEMI" + "K7MDENGbPxRfiCY",
+                                        "AWS_SECRET_" + "ACCESS_KEY=" + "wJalrXUtnFEMI" + "K7MDENG",
+                                        "secret-" + "access-key: " + "abcdefgh12345678",
+                                        "access_" + "key = " + "abcdefgh12345678"),
+            "secret:url-credentials": ("postgres" + "://app:" + "Sup3rS3cr" + "etPw@db.acme.zz/prod",
+                                       "see https" + "://bob:" + "hunter22xx" + "@host.acme.zz/x",
+                                       "redis" + "://:" + "pw12345678" + "@cache.acme.zz"),
+        }
+        for kind, texts in cases.items():
+            for text in texts:
+                found = memory_privacy.privacy_findings("x\n" + text + "\n", home=HOME, hostname=HOST)
+                self.assertIn({"kind": kind, "line": 2}, found, text)
+                self.assertNotIn(text, repr(found))
+
 
 class ExemptionTest(unittest.TestCase):
     def test_home_segments_are_case_sensitive(self):
@@ -181,7 +198,10 @@ class ExemptionTest(unittest.TestCase):
                 "2001:db8::1", "at 12:30:45 today", "settings.local.json", "Path.home() call",
                 "https://example.com/home/index.html", "an .ssh folder", "src/home/view.py",
                 "see https://example.com" + U + "/alice/profile",
-                "x1a://h" + U + "/alice", "svn+ssh://h" + U + "/alice"):
+                "x1a://h" + U + "/alice", "svn+ssh://h" + U + "/alice",
+                "https://example.com:8443/path", "see https://example.com:443/a@b", "git+ssh://host.test/repo",
+                "the access key is rotated monthly", "secret key handling", "key = short",
+                "https://example.com/x?next=http://example.org/y"):
             self.assertEqual(kinds(text), [], text)
 
 
@@ -222,6 +242,9 @@ class HostileInputTest(unittest.TestCase):
             "labels": ("a" * 70 + ".") * (n // 71),
             "domain dots": "a@" + "b." * (n // 2) + "_",
             "hex colons": "fe80:" * (n // 5),
+            "url credentials, no at sign": "a://b:" * (n // 6),
+            "url user then long password": "a://b:" + "c" * n,
+            "secret key assignments": "secret_key" * (n // 10),
         }
         for label, text in cases.items():
             self.assertFast(text, label)

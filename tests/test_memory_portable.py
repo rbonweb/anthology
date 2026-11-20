@@ -924,6 +924,40 @@ class ImportPrivacyTest(PortableCase):
         self.assertIn("(to personal memory: blocked)", out)
         self.assertNotIn(self.MAIL, out)
 
+    # m5: an exception from the privacy scanner is a clean rejection, never a traceback or a write.
+    def boom(self):
+        return mock.patch.object(memory_sync, "privacy_findings", side_effect=RuntimeError("scanner exploded"))
+
+    def test_plan_rejects_cleanly(self):
+        with self.boom():
+            with self.assertRaises(memory_portable.ImportRejected) as cm:
+                self.plan()
+        self.assertIn("privacy scan failed", str(cm.exception))
+
+    def test_apply_rejects_before_writing_anything(self):
+        plan = self.plan()
+        before = sorted(str(p) for p in self.tmp.rglob("*"))
+        with self.boom():
+            with self.assertRaises(memory_portable.ImportRejected):
+                memory_portable.apply_import(plan)
+        self.assertEqual(sorted(str(p) for p in self.tmp.rglob("*")), before)
+
+    def test_the_cli_prints_one_line_and_exits_nonzero(self):
+        err, old = io.StringIO(), os.getcwd()
+        os.chdir(str(self.repo))
+        try:
+            with self.boom(), mock.patch.dict(os.environ, self.env), mock.patch("sys.stderr", err), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                code = memory_portable.main(["import", str(self.archive_path), "--yes"])
+        finally:
+            os.chdir(old)
+        self.assertEqual(code, 2)
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, err.getvalue())
+        self.assertIn("privacy scan failed", lines[0])
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertFalse((self.repo_mem / "project-clean.md").exists())
+
 
 class CliTest(PortableCase):
     def run_cli(self, *args, env=None):

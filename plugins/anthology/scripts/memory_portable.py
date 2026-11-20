@@ -395,7 +395,10 @@ def _repo_block(name, data):
     (labels and line numbers only)."""
     if memory_sync.is_user_note(memory_sync.note_info(name, data)):
         return [], memory_sync.USER_REASON
-    findings = memory_sync.privacy_findings(data.decode("utf-8", errors="replace"))
+    try:
+        findings = memory_sync.privacy_findings(data.decode("utf-8", errors="replace"))
+    except Exception as exc:  # a scanner bug rejects the import cleanly: nothing is written
+        raise ImportRejected("the privacy scan failed (%s); nothing was written" % type(exc).__name__)
     if findings:
         return findings, "the privacy scan found %s" % memory_privacy.describe(findings)
     return [], None

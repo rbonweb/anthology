@@ -24,7 +24,8 @@ import memory_sync  # noqa: E402
 sys.path.insert(0, str(ROOT / "plugins" / "anthology-guardrails" / "scripts"))
 import guard_rules  # noqa: E402
 
-HINT = "this repo has anthology memory; run /anthology:setup to use it"
+HINT = ("this repo has memory notes; repo notes load only after /anthology:setup, "
+        "but notes in .claude/agent-memory still reach their agents, so review them")
 UNION_LINES = [".claude/memory/MEMORY.md merge=union",
                ".claude/agent-memory/*/MEMORY.md merge=union"]
 
@@ -1315,6 +1316,33 @@ class UserNotesLeaveTheRepoTest(MemCase):
         self.assertIn("user-role", personal_part)
         self.assertIn("project-a", repo_part)
         self.assertNotIn("user-", repo_part)
+
+    def test_a_symlinked_personal_folder_is_a_visible_message_not_a_silent_skip(self):
+        # m8: fail closed (nothing moved, copied or read through the link) but say so, once
+        target = self.tmp / "dotfiles-memory"
+        write(target / "feedback-mine.md", note_text("feedback-mine", "feedback", "Mine"))
+        self.personal.parent.mkdir(parents=True, exist_ok=True)
+        self.personal.symlink_to(target)
+        old = self.config / "projects" / encode(self.root) / "memory"
+        write(old / "project-old.md", note_text("project-old", "project", "Old"))
+        before = snapshot(target)
+        ctx, msgs = memory_sync.run(self.root, env())
+        self.assertEqual(snapshot(target), before)
+        self.assertTrue((self.repo_mem / "user-role.md").exists())  # not swept
+        self.assertFalse((self.anth / "migrated.json").exists())  # not migrated
+        warned = [m for m in msgs if "personal-memory" in m and "symlink" in m]
+        self.assertEqual(len(warned), 1, msgs)
+        self.assertIn("not moved", warned[0])
+        self.assertNotIn("feedback-mine", ctx)  # not read through the link either
+        self.assertIn("not loaded", ctx)
+
+    def test_a_symlinked_personal_folder_is_reported_outside_an_approved_repo_too(self):
+        target = self.tmp / "dotfiles-memory"
+        target.mkdir()
+        self.personal.parent.mkdir(parents=True, exist_ok=True)
+        self.personal.symlink_to(target)
+        _ctx, msgs = memory_sync.run(self.tmp, env())
+        self.assertEqual(len([m for m in msgs if "personal-memory" in m and "symlink" in m]), 1, msgs)
 
     def test_a_conflicting_personal_note_is_kept_side_by_side(self):
         write(self.personal / "user-role.md", "my own\n")
