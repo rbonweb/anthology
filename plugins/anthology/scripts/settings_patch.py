@@ -40,8 +40,9 @@ TAG_MEM_SAVE = "mem-save"
 # Ops whose value may change between runs (a moved plugin, a revised rule string): re-running
 # setup replaces the earlier value it added for the same tag.
 _REPLACEABLE_TAGS = (TAG_PLUGIN_READ, TAG_MEM_SAVE)
-# Part of `ops_version`. Bump it when what an op does changes in a way the op list does not show;
-# any change to the list itself (a new rule, a new guard_rules entry) changes the version anyway.
+# Part of `ops_version`; any change to the op list (a new rule, a new guard_rules entry) changes
+# the version on its own. Session start only notes a changed version while an op is still missing
+# from settings.json, so a bump alone, or a release that only drops an op, shows nothing.
 OPS_VERSION = 1
 REDACTED = "<redacted>"
 # The only places whose values a diff shows: where setup makes its changes.
