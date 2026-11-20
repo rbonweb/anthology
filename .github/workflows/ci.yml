@@ -50,6 +50,20 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_vendor.py' -v
 
+  memory-git:
+    # The memory tests that need git (trust boundary, re-clone, linked worktrees, team merges)
+    # skip in the Docker test images, which have no git, so they run here on the runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Memory tests with git
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_memory_*.py' -v
+
   version-bump:
     # A plugin whose files changed must carry a higher plugin.json version than at the
     # merge base. Needs git history, which the Docker test image does not have.
