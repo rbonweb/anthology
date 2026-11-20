@@ -1,0 +1,6 @@
+# Allowed divergences of the dev.rtk-trim surface (GC-16).
+
+[[divergence]]
+class = "D-3"
+case = "seed:nonascii-letter"
+reason = "Trim.drop looks for `\\b<keyword>\\s+<name>\\b` in a file. Rust fails closed until P1 has Python's \\w tables: a non-ASCII character beside the name counts as a boundary, so the trim stops (the item looks present) where Python, which counts the letter as part of a longer word, finds the item already gone and skips it. The generators keep non-ASCII characters away from item names; only this seed shows it."

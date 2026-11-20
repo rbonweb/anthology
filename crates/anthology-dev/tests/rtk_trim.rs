@@ -1450,3 +1450,36 @@ mod synthetic_tree_test {
         assert_eq!(message, "f.rs: anchor missing: 'let v = 1;'");
     }
 }
+
+mod run_in_test {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn relative_paths_are_taken_from_the_given_folder_and_messages_show_them_as_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = rtk_trim::run_in(dir.path(), &args(&["--root", "rtk"]), &mut "".as_bytes());
+        assert_eq!(out.code, 1);
+        assert_eq!(text(&out.stderr), "rtk-trim: rtk: not a directory: ''\n");
+        fs::create_dir(dir.path().join("rtk")).unwrap();
+        let out = rtk_trim::run_in(dir.path(), &args(&["--root", "rtk"]), &mut "".as_bytes());
+        assert_eq!(out.code, 1);
+        assert!(
+            text(&out.stderr).starts_with("rtk-trim: Cargo.toml: file missing: "),
+            "{}",
+            text(&out.stderr)
+        );
+        fs::write(dir.path().join("a.lock"), "").unwrap();
+        fs::write(dir.path().join("b.lock"), "").unwrap();
+        let out = rtk_trim::run_in(
+            dir.path(),
+            &args(&["--lock-guard", "a.lock", "b.lock"]),
+            &mut "".as_bytes(),
+        );
+        assert_eq!(out.code, 0, "{}", text(&out.stderr));
+        assert!(out.stdout.is_empty());
+    }
+}

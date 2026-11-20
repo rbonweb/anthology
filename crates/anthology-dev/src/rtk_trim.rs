@@ -33,7 +33,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Output;
 
@@ -453,7 +453,7 @@ fn lines_out(lines: &[String]) -> Output {
 }
 
 /// Python's `main` for the parsed arguments.
-fn execute(args: &Args, stdin: &mut dyn Read) -> Result<Output, TrimError> {
+fn execute(args: &Args, cwd: &Path, stdin: &mut dyn Read) -> Result<Output, TrimError> {
     match &args.mode {
         Mode::RemovedPaths => {
             let paths = removed_paths();
@@ -472,11 +472,12 @@ fn execute(args: &Args, stdin: &mut dyn Read) -> Result<Output, TrimError> {
             Ok(lines_out(&paths))
         }
         Mode::LockGuard(before, after) => {
-            let report = lock_guard_allowlist(before, after, &args.root)?;
+            let report =
+                lock_guard_allowlist(&cwd.join(before), &cwd.join(after), &cwd.join(&args.root))?;
             Ok(lines_out(&report_lines(&report)))
         }
         Mode::Trim => {
-            let mut trim = Trim::new(&args.root);
+            let mut trim = Trim::new(cwd.join(&args.root));
             if !trim.root.is_dir() {
                 return Err(TrimError(format!(
                     "{}: not a directory: ''",
@@ -495,6 +496,13 @@ fn execute(args: &Args, stdin: &mut dyn Read) -> Result<Output, TrimError> {
 
 /// Runs `anthology-dev rtk-trim …`; `args` are the arguments after `rtk-trim`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
+    run_in(Path::new(""), args, stdin)
+}
+
+/// [`run`] with relative paths (`--root`, the lockfiles) taken from `cwd` instead of the process's
+/// working directory, so a caller (the difftest surface) can run it in-process without `chdir`.
+/// Messages still show the paths as given.
+pub fn run_in(cwd: &Path, args: &[OsString], stdin: &mut dyn Read) -> Output {
     let parsed = match parse(args) {
         Ok(parsed) => parsed,
         Err(message) => {
@@ -511,7 +519,7 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
             ..Output::default()
         };
     }
-    match execute(&parsed, stdin) {
+    match execute(&parsed, cwd, stdin) {
         Ok(output) => output,
         Err(error) => fail(&error),
     }
