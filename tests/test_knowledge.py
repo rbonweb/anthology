@@ -5,10 +5,12 @@ shape of what is committed. A folder that has not landed yet has its own
 `@unittest.expectedFailure` test below: the task that lands it deletes that marker
 (leaving the marker in place makes the run fail with an "unexpected success").
 """
+import hashlib
+import json
 import re
 import unittest
 
-from _repo import KNOWLEDGE, STRIPPED_KNOWLEDGE, load_frontmatter
+from _repo import KNOWLEDGE, ROOT, STRIPPED_KNOWLEDGE, load_frontmatter
 
 UNCHANGED = {"frontend-design", "web-design-guidelines", "design-skills"}
 EXPECTED_KNOWLEDGE = set(STRIPPED_KNOWLEDGE) | UNCHANGED | {
@@ -46,15 +48,12 @@ class KnowledgeFoldersTest(unittest.TestCase):
         self.assertEqual(landed - present(), set())
 
     # Delete the marker from a test when its task lands the folder.
-    @unittest.expectedFailure
     def test_ui_taste_lands_in_task_4(self):
         self.assertIn("ui-taste", present())
 
-    @unittest.expectedFailure
     def test_caveman_lands_in_task_4(self):
         self.assertIn("caveman", present())
 
-    @unittest.expectedFailure
     def test_design_taste_frontend_lands_in_task_5(self):
         self.assertIn("design-taste-frontend", present())
 
@@ -92,6 +91,103 @@ class KnowledgeFoldersTest(unittest.TestCase):
         text = (KNOWLEDGE / "code-review-checklist" / "SKILL.md").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"/code-review(?!-checklist)", text), [])
         self.assertIn("code-review-checklist", text)
+
+
+def files_of(folder):
+    return sorted(p for p in (KNOWLEDGE / folder).rglob("*") if p.is_file())
+
+
+def source(name):
+    entries = json.loads((ROOT / "vendor" / "sources.json").read_text(encoding="utf-8"))["sources"]
+    return next(e for e in entries if e["name"] == name)
+
+
+class UiTasteTest(unittest.TestCase):
+    PAID_MCP = ("find_ui_references", "find_ui_materials", "get_ui_flow")
+    CHROME_LAUNCH = re.compile(
+        r"remote-debugging|user-data-dir|CHROME_PATH|Google Chrome|chrome\.exe"
+        r"|/usr/bin/(google-chrome|chromium)|playwright|puppeteer|child_process", re.IGNORECASE)
+
+    def test_the_paid_mcp_is_gone_from_every_file(self):
+        self.assertTrue(files_of("ui-taste"))
+        for path in files_of("ui-taste"):
+            text = path.read_text(encoding="utf-8")
+            for needle in self.PAID_MCP:
+                self.assertNotIn(needle, text, f"{path.relative_to(KNOWLEDGE)}: {needle}")
+            self.assertIsNone(re.search(r"uizze mcp|paid mcp", text, re.IGNORECASE),
+                              str(path.relative_to(KNOWLEDGE)))
+
+    def test_the_skill_and_the_policy_file_remain(self):
+        meta, body = load_frontmatter(KNOWLEDGE / "ui-taste" / "SKILL.md")
+        self.assertEqual(meta["name"], "ui-taste")
+        self.assertTrue((KNOWLEDGE / "ui-taste" / "references" / "uizze-reference-policy.md").is_file())
+        self.assertTrue((KNOWLEDGE / "ui-taste" / "reference" / "research.md").is_file())
+
+    def test_the_shipped_folder_has_no_stale_checksums_file(self):
+        self.assertFalse((KNOWLEDGE / "ui-taste" / "CHECKSUMS.sha256").exists())
+
+    def test_the_snapshot_matches_its_checksums_and_the_pin(self):
+        snap = ROOT / "vendor" / "snapshots" / "ui-taste"
+        sums = (snap / "CHECKSUMS.sha256").read_bytes()
+        self.assertEqual(hashlib.sha256(sums).hexdigest(), source("ui-taste")["checksum"])
+        listed = {}
+        for line in sums.decode("utf-8").splitlines():
+            digest, _, rel = line.partition("  ")
+            listed[rel] = digest
+        self.assertTrue(listed)
+        on_disk = {p.relative_to(snap).as_posix() for p in snap.rglob("*") if p.is_file()}
+        self.assertEqual(on_disk, set(listed) | {"CHECKSUMS.sha256"})
+        for rel, digest in listed.items():
+            self.assertEqual(hashlib.sha256((snap / rel).read_bytes()).hexdigest(), digest, rel)
+
+    def test_the_pin_is_the_apache_licensed_uizze_snapshot(self):
+        e = source("ui-taste")
+        self.assertEqual(e["license"], "Apache-2.0")
+        self.assertEqual(e["license_file"], "LICENSE")
+        self.assertEqual(e["url"], "https://uizze.sh/.well-known/skills/ui-taste/")
+        self.assertEqual(e["ref"], "uizze-design-v14")
+        self.assertTrue((ROOT / "vendor" / "licenses" / "ui-taste.txt").is_file())
+
+    def test_the_evidence_script_launches_no_browser(self):
+        text = (KNOWLEDGE / "ui-taste" / "scripts" / "verify-visual-evidence.mjs").read_text(encoding="utf-8")
+        self.assertIsNone(self.CHROME_LAUNCH.search(text))
+
+    def test_the_chrome_pattern_catches_what_it_should(self):
+        for yes in ("--remote-debugging-port=0", "--user-data-dir=/tmp/x", "process.env.CHROME_PATH",
+                    "Google Chrome", "chrome.exe", "/usr/bin/chromium", "import playwright",
+                    "require('puppeteer')", "child_process"):
+            self.assertTrue(self.CHROME_LAUNCH.search(yes), yes)
+
+
+class CavemanTest(unittest.TestCase):
+    DESCRIPTION = "the anthology house style for every agent's chat and reports"
+    DROPPED = ("stop caveman", "normal mode", "/caveman", "ultracave", "megacave", "wenyan")
+
+    def test_only_the_skill_file_is_shipped(self):
+        self.assertEqual([p.relative_to(KNOWLEDGE / "caveman").as_posix() for p in files_of("caveman")],
+                         ["SKILL.md"])
+
+    def test_the_modes_aliases_and_triggers_are_gone(self):
+        for path in files_of("caveman"):
+            text = path.read_text(encoding="utf-8").lower()
+            for needle in self.DROPPED:
+                self.assertNotIn(needle, text, f"{path.name}: {needle}")
+
+    def test_the_kept_sections_remain(self):
+        text = (KNOWLEDGE / "caveman" / "SKILL.md").read_text(encoding="utf-8")
+        for heading in ("## Why", "## Rules", "## When to break the rules", "## Pre-send check"):
+            self.assertRegex(text, rf"(?m)^{re.escape(heading)}\s*$")
+        self.assertNotIn("## Persistence", text)
+
+    def test_name_and_description(self):
+        meta, _ = load_frontmatter(KNOWLEDGE / "caveman" / "SKILL.md")
+        self.assertEqual(meta["name"], "caveman")
+        self.assertEqual(meta["description"], self.DESCRIPTION)
+
+    def test_the_pin_is_the_apache_licensed_upstream_commit(self):
+        e = source("caveman")
+        self.assertEqual((e["path"], e["ref"], e["license"]), ("skills/caveman", "v4.1.0", "Apache-2.0"))
+        self.assertEqual(e["commit"], "1e91f1306d602d4ca23618701b1185575ae1869b")
 
 
 if __name__ == "__main__":

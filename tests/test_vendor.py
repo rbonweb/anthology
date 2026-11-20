@@ -7,6 +7,7 @@ checkout; the tests stub it. Real fetches run on the host and in the CI
 `vendor-check` job.
 """
 import ast
+import hashlib
 import json
 import os
 import re
@@ -101,7 +102,8 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.validate_sources(entries), [])
         self.assertEqual(
             {e["name"] for e in entries},
-            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines", "rtk"}
+            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines",
+             "ui-taste", "caveman", "design-taste-frontend", "rtk"}
             | set(STRIPPED_KNOWLEDGE))
 
     def test_real_pins_match_the_plan(self):
@@ -248,6 +250,314 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.source_slug(entry("x", repo="https://github.com/obra/superpowers")),
                          "obra-superpowers")
         self.assertEqual(vendor.source_slug(entry("x", repo="https://github.com/o/r.git/")), "o-r")
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def checksums_bytes(files):
+    return "".join(f"{sha(data)}  {rel}\n" for rel, data in sorted(files.items())).encode()
+
+
+URL_FILES = {
+    "SKILL.md": b"---\nname: ui\ndescription: d\n---\nbody\n",
+    "LICENSE": b"Apache License\nVersion 2.0\n",
+    "ref/a.md": b"a\n",
+    "scripts/x.mjs": b"export {};\n",
+}
+
+
+def url_base(name):
+    return f"https://example.test/.well-known/skills/{name}/"
+
+
+def url_entry(name, files=URL_FILES, **kw):
+    e = {
+        "name": name,
+        "url": url_base(name),
+        "path": "",
+        "ref": "v1",
+        "checksum": sha(checksums_bytes(files)),
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "target": f"plugins/anthology/knowledge/{name}",
+        "transform": [],
+    }
+    e.update(kw)
+    return e
+
+
+def write_snapshot(root, name, files=URL_FILES):
+    base = Path(root) / "vendor" / "snapshots" / name
+    for rel, data in files.items():
+        write(base, rel, data)
+    write(base, "CHECKSUMS.sha256", checksums_bytes(files))
+    return base
+
+
+class FakeWeb:
+    """A getter serving one skill (files, CHECKSUMS.sha256, index.json) from memory."""
+
+    def __init__(self, name, files=URL_FILES, sums=None, index_files=None):
+        self.base = url_base(name)
+        self.index_url = self.base.rsplit(name + "/", 1)[0] + "index.json"
+        self.pages = {self.base + rel: data for rel, data in files.items()}
+        self.pages[self.base + "CHECKSUMS.sha256"] = checksums_bytes(files) if sums is None else sums
+        listed = index_files if index_files is not None else sorted(files) + ["CHECKSUMS.sha256"]
+        self.pages[self.index_url] = json.dumps({"skills": [
+            {"name": "other", "files": ["x"]}, {"name": name, "files": listed}]}).encode()
+        self.calls = []
+
+    def __call__(self, url):
+        self.calls.append(url)
+        if url not in self.pages:
+            raise vendor.VendorError(f"HTTP 404: {url}")
+        return self.pages[url]
+
+
+class UrlSourceValidationTest(unittest.TestCase):
+    def test_valid_url_entry_has_no_errors(self):
+        self.assertEqual(vendor.validate_sources([url_entry("ui")]), [])
+
+    def test_url_must_be_https_and_end_with_a_slash(self):
+        for bad in ("http://example.test/s/ui/", "file:///tmp/ui/", "ftp://example.test/ui/",
+                    "https://", "https:///ui/", "https://example.test/ui", "//example.test/ui/",
+                    "https://example.test/u i/", "https://user@example.test/ui/", ""):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", url=bad)]), bad)
+
+    def test_a_url_entry_needs_a_checksum_and_no_repo_or_commit(self):
+        e = url_entry("ui")
+        del e["checksum"]
+        self.assertTrue(vendor.validate_sources([e]))
+        for bad in ("abc", "C" * 64, "c" * 63, ""):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", checksum=bad)]), bad)
+        self.assertTrue(vendor.validate_sources([url_entry("ui", repo="https://github.com/a/b")]))
+        self.assertTrue(vendor.validate_sources([url_entry("ui", commit=SHA_A)]))
+
+    def test_a_url_entry_has_an_empty_path(self):
+        self.assertTrue(vendor.validate_sources([url_entry("ui", path="skills/ui")]))
+
+    def test_a_url_entry_needs_a_license_file_inside_the_snapshot(self):
+        e = url_entry("ui")
+        del e["license_file"]
+        self.assertTrue(vendor.validate_sources([e]))
+        self.assertTrue(vendor.validate_sources([url_entry("ui", license_file=None)]))
+        for bad in ("/etc/passwd", "../LICENSE", "a/../../x"):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", license_file=bad)]), bad)
+
+    def test_the_license_slug_of_a_url_entry_is_its_name(self):
+        self.assertEqual(vendor.source_slug(url_entry("ui")), "ui")
+
+
+class UrlSourceTest(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.e = url_entry("ui")
+        self.set_sources([self.e])
+        self.snap = write_snapshot(self.root, "ui")
+
+    def fetch_offline(self):
+        return vendor.snapshot_fetcher(self.root)(self.e)
+
+    def test_offline_fetch_returns_the_verified_snapshot(self):
+        self.assertEqual(self.fetch_offline(), self.snap)
+
+    def test_the_default_fetcher_routes_url_entries_to_the_snapshot(self):
+        self.assertEqual(vendor._fetcher(self.root, None)(self.e), self.snap)
+
+    def test_a_tampered_file_is_rejected(self):
+        write(self.snap, "ref/a.md", b"changed\n")
+        with self.assertRaisesRegex(vendor.VendorError, "ref/a.md"):
+            self.fetch_offline()
+
+    def test_an_extra_file_is_rejected(self):
+        write(self.snap, "ref/extra.md", b"x\n")
+        with self.assertRaisesRegex(vendor.VendorError, "extra.md"):
+            self.fetch_offline()
+
+    def test_a_missing_file_is_rejected(self):
+        (self.snap / "ref/a.md").unlink()
+        with self.assertRaisesRegex(vendor.VendorError, "ref/a.md"):
+            self.fetch_offline()
+
+    def test_a_wrong_pin_is_rejected(self):
+        self.e["checksum"] = "0" * 64
+        with self.assertRaisesRegex(vendor.VendorError, "checksum"):
+            self.fetch_offline()
+
+    def test_a_rewritten_checksums_file_is_rejected_by_the_pin(self):
+        files = dict(URL_FILES, **{"ref/a.md": b"changed\n"})
+        write_snapshot(self.root, "ui", files)
+        with self.assertRaisesRegex(vendor.VendorError, "checksum"):
+            self.fetch_offline()
+
+    def test_a_missing_snapshot_is_rejected(self):
+        shutil.rmtree(self.snap)
+        with self.assertRaisesRegex(vendor.VendorError, "fetch ui"):
+            self.fetch_offline()
+
+    def test_a_symlink_in_the_snapshot_is_rejected(self):
+        (self.snap / "ref/a.md").unlink()
+        os.symlink("../SKILL.md", self.snap / "ref/a.md")
+        with self.assertRaises(vendor.VendorError):
+            self.fetch_offline()
+
+    def test_unsafe_paths_in_checksums_are_rejected(self):
+        for bad in ("../x", "/etc/passwd", "a/../../b", "a//b", "./a", "a\\b", "CHECKSUMS.sha256"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.parse_checksums(f"{'1' * 64}  {bad}\n".encode())
+
+    def test_malformed_checksums_are_rejected(self):
+        line = ("1" * 64 + "  a\n").encode()
+        for bad in (b"", b"nothex  a\n", b"1" * 64 + b" a\n", line + b"\n", line * 2, b"\xff\xfe"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.parse_checksums(bad)
+
+    def test_well_formed_checksums_parse(self):
+        self.assertEqual(vendor.parse_checksums(checksums_bytes(URL_FILES)),
+                         {rel: sha(data) for rel, data in URL_FILES.items()})
+
+    def test_build_check_and_license_work_without_git_or_network(self):
+        vendor.build(self.root, "ui")
+        target = self.root / "plugins/anthology/knowledge/ui"
+        self.assertEqual(sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()),
+                         sorted(list(URL_FILES) + ["CHECKSUMS.sha256"]))
+        vendor.fetch_licenses(self.root)
+        self.assertEqual((self.root / "vendor/licenses/ui.txt").read_bytes(), URL_FILES["LICENSE"])
+        self.assertEqual(vendor.check(self.root), [])
+
+    def test_check_reports_a_tampered_snapshot(self):
+        vendor.build(self.root, "ui")
+        vendor.fetch_licenses(self.root)
+        write(self.snap, "SKILL.md", b"changed\n")
+        self.assertTrue(any("SKILL.md" in p for p in vendor.check(self.root)))
+
+    def test_check_reports_a_drifted_license(self):
+        vendor.build(self.root, "ui")
+        vendor.fetch_licenses(self.root)
+        write(self.root, "vendor/licenses/ui.txt", "other\n")
+        self.assertTrue(any("ui.txt" in p for p in vendor.check(self.root)))
+
+    def test_diff_works_on_a_url_entry(self):
+        vendor.build(self.root, "ui")
+        write(self.root / "plugins/anthology/knowledge/ui", "SKILL.md", b"---\nname: ui\n---\nnew\n")
+        self.assertIn("-body", vendor.diff_entry(self.root, "ui"))
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_patch_on_a_url_entry_can_drop_the_shipped_checksums(self):
+        vendor.build(self.root, "ui")
+        target = self.root / "plugins/anthology/knowledge/ui"
+        (target / "CHECKSUMS.sha256").unlink()
+        write(self.root, "vendor/patches/ui.patch", vendor.diff_entry(self.root, "ui"))
+        self.e["transform"] = [{"patch": "vendor/patches/ui.patch"}]
+        self.set_sources([self.e])
+        vendor.build(self.root, "ui")
+        self.assertFalse((target / "CHECKSUMS.sha256").exists())
+        vendor.fetch_licenses(self.root)
+        self.assertEqual(vendor.check(self.root), [])
+
+    def test_sync_on_a_url_entry_is_an_error_with_a_hint(self):
+        with self.assertRaisesRegex(vendor.VendorError, r"checksum.*vendor\.py fetch ui"):
+            vendor.sync(self.root, "ui", "v2")
+
+
+class UrlDownloadTest(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.e = url_entry("ui")
+        self.set_sources([self.e])
+        self.snap = self.root / "vendor" / "snapshots" / "ui"
+
+    def download(self, web):
+        return vendor.download_snapshot(self.root, self.e, get=web)
+
+    def tree(self, base):
+        return {p.relative_to(base).as_posix(): p.read_bytes() for p in base.rglob("*") if p.is_file()}
+
+    def test_download_writes_a_verified_snapshot(self):
+        web = FakeWeb("ui")
+        self.assertEqual(self.download(web), self.snap)
+        self.assertEqual(self.tree(self.snap),
+                         dict(URL_FILES, **{"CHECKSUMS.sha256": checksums_bytes(URL_FILES)}))
+        self.assertEqual(vendor.snapshot_fetcher(self.root)(self.e), self.snap)
+        self.assertEqual(sorted(p.name for p in self.snap.parent.iterdir()), ["ui"])
+        self.assertEqual(web.calls[0], web.base + "CHECKSUMS.sha256")
+
+    def test_download_replaces_an_older_snapshot(self):
+        write_snapshot(self.root, "ui", {"SKILL.md": b"old\n", "LICENSE": b"old\n", "stale.md": b"s\n"})
+        self.download(FakeWeb("ui"))
+        self.assertFalse((self.snap / "stale.md").exists())
+        self.assertEqual((self.snap / "SKILL.md").read_bytes(), URL_FILES["SKILL.md"])
+
+    def assert_refused_and_untouched(self, web, pattern):
+        write_snapshot(self.root, "ui", {"SKILL.md": b"keep\n", "LICENSE": b"keep\n"})
+        before = self.tree(self.snap)
+        with self.assertRaisesRegex(vendor.VendorError, pattern):
+            self.download(web)
+        self.assertEqual(self.tree(self.snap), before)
+        self.assertEqual(sorted(p.name for p in self.snap.parent.iterdir()), ["ui"])
+
+    def test_a_wrong_pin_refuses_before_downloading_any_file(self):
+        self.e["checksum"] = "0" * 64
+        web = FakeWeb("ui")
+        self.assert_refused_and_untouched(web, "checksum")
+        self.assertEqual(web.calls, [web.base + "CHECKSUMS.sha256"])
+
+    def test_a_file_that_does_not_match_its_checksum_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.base + "ref/a.md"] = b"tampered\n"
+        self.assert_refused_and_untouched(web, "ref/a.md")
+
+    def test_a_missing_file_refuses(self):
+        web = FakeWeb("ui")
+        del web.pages[web.base + "ref/a.md"]
+        self.assert_refused_and_untouched(web, "404")
+
+    def test_an_index_that_lists_another_file_set_refuses(self):
+        everything = sorted(URL_FILES) + ["CHECKSUMS.sha256"]
+        self.assert_refused_and_untouched(FakeWeb("ui", index_files=everything + ["more.md"]), "more.md")
+        self.assert_refused_and_untouched(
+            FakeWeb("ui", index_files=[f for f in everything if f != "ref/a.md"]), "ref/a.md")
+
+    def test_an_index_without_the_skill_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.index_url] = b'{"skills": []}'
+        self.assert_refused_and_untouched(web, "index")
+
+    def test_a_malformed_index_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.index_url] = b"not json"
+        self.assert_refused_and_untouched(web, "index")
+
+    def test_path_traversal_in_checksums_refuses_and_requests_nothing_else(self):
+        for bad in ("../evil.md", "/etc/passwd", "a/../../b.md"):
+            sums = checksums_bytes(URL_FILES) + f"{sha(b'x')}  {bad}\n".encode()
+            self.e["checksum"] = sha(sums)
+            web = FakeWeb("ui", sums=sums)
+            self.assert_refused_and_untouched(web, "unsafe")
+            self.assertEqual(web.calls, [web.base + "CHECKSUMS.sha256"], bad)
+        self.assertFalse((self.root / "vendor" / "evil.md").exists())
+        self.assertFalse((self.tmp / "evil.md").exists())
+
+    def test_the_getter_is_https_only(self):
+        for bad in ("http://example.test/x", "file:///etc/passwd", "ftp://example.test/x", "//x/y"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.http_get(bad)
+
+    def test_an_invalid_entry_is_refused_before_any_request(self):
+        self.e["url"] = "http://example.test/.well-known/skills/ui/"
+        self.set_sources([self.e])
+        web = FakeWeb("ui")
+        with self.assertRaises(vendor.VendorError):
+            self.download(web)
+        self.assertEqual(web.calls, [])
+
+    def test_fetch_entry_downloads_url_entries_and_delegates_the_rest(self):
+        web = FakeWeb("ui")
+        self.assertEqual(vendor.fetch_entry(self.root, self.e, None, get=web), self.snap)
+        self.assertEqual(vendor.fetch_entry(self.root, entry("g"), lambda e: Path("/x/" + e["name"])),
+                         Path("/x/g"))
 
 
 class RenamePluginTest(FixtureCase):
@@ -966,6 +1276,211 @@ class SyncAndDiffTest(FixtureCase):
         report = vendor.sync(self.root, "p", "v2", fetch=self.fetch, resolve=self.resolve)
         self.assertEqual(len(report["rejects"]), 1)
         self.assertIn("SKILL.md", report["rejects"][0])
+
+
+class PortmapTest(FixtureCase):
+    """The `portmap` entry field: the script rule applied to the pristine and the shipped tree."""
+
+    PORTMAP = "vendor/patches/taste.portmap.json"
+    NEO = "// bridge\nexport const x = 1;\n"
+    PATCH_ADD_DROP = (
+        "--- a/scripts/drop.mjs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-// drop\n-import fs from 'node:fs';\n"
+        "--- /dev/null\n+++ b/scripts/neo.mjs\n@@ -0,0 +1,2 @@\n+// bridge\n+export const x = 1;\n")
+
+    def setUp(self):
+        super().setUp()
+        real = json.loads((ROOT / "vendor/patches/design-taste-frontend.portmap.json").read_text(encoding="utf-8"))
+        self.rule, self.chrome = real["script_rule"], real["chrome_regex"]
+        self.upstream = {
+            "LICENSE": MIT_TEXT,
+            "SKILL.md": "---\nname: taste\n---\nbody\n",
+            "scripts/keep.mjs": "// keep\nimport fs from 'node:fs';\n",
+            "scripts/port.mjs": "// port\nimport fs from 'node:fs';\n",
+            "scripts/drop.mjs": "// drop\nimport fs from 'node:fs';\n",
+            "assets/lib.js": "window.x = 1;\n",
+        }
+        self.write_map()
+
+    def write_map(self, scripts=None, added=None):
+        scripts = scripts or {
+            "scripts/keep.mjs": {"action": "keep", "chrome": False, "why": "k"},
+            "scripts/port.mjs": {"action": "port", "how": "trim", "chrome": True, "why": "p", "browseros": "b"},
+            "scripts/drop.mjs": {"action": "drop", "chrome": True, "why": "d", "browseros": "b"},
+        }
+        data = {"script_rule": self.rule, "chrome_regex": self.chrome, "scripts": scripts,
+                "added": {"scripts/neo.mjs": {"chrome": False, "why": "n"}} if added is None else added}
+        write(self.root, self.PORTMAP, json.dumps(data, indent=2) + "\n")
+
+    def entry(self, files=None, patch=True):
+        return self.add_upstream("taste", files or self.upstream,
+                                 transform=[{"patch": "vendor/patches/taste.patch"}] if patch else [],
+                                 portmap=self.PORTMAP)
+
+    def data(self):
+        return json.loads((self.root / self.PORTMAP).read_text(encoding="utf-8"))
+
+    def trees(self, shipped_edit):
+        pristine, shipped = self.tmp / "p", self.tmp / "s"
+        for base in (pristine, shipped):
+            shutil.rmtree(base, ignore_errors=True)
+            for rel, text in self.upstream.items():
+                write(base, rel, text)
+        shipped_edit(shipped)
+        return pristine, shipped
+
+    def problems(self, shipped_edit):
+        pristine, shipped = self.trees(shipped_edit)
+        return vendor.portmap_problems(self.data(), pristine, shipped)
+
+    @staticmethod
+    def good(shipped):
+        (shipped / "scripts/drop.mjs").unlink()
+        write(shipped, "scripts/neo.mjs", PortmapTest.NEO)
+
+    def test_the_rule_finds_extensions_shebangs_and_node_js_only(self):
+        tree = self.tmp / "t"
+        for rel, text in {
+                "a.mjs": "", "B.MJS": "", "c.py": "", "d.sh": "", "e.ts": "", "f.txt": "#!/bin/sh\n",
+                "g.txt": "# !\n", "h.md": "# title\n", "browser.js": "window.x = 1;\n",
+                "node1.js": "const fs = require('fs');\n", "node2.js": "import fs from 'node:fs';\n",
+                "node3.js": "process.exit(1)\n", "node4.js": "const m = await import('node:fs');\n",
+                "node5.js": "import { dirname } from 'path';\n", "page.js": "const required = 1; // from 'react'\n",
+                "sub/x.cjs": ""}.items():
+            write(tree, rel, text)
+        write(tree, "bin.dat", b"\xff\xfe\x00 process.exit(1)")
+        self.assertEqual(vendor.portmap_scripts(tree, self.rule), {
+            "a.mjs", "B.MJS", "c.py", "d.sh", "e.ts", "f.txt", "node1.js", "node2.js", "node3.js", "node4.js",
+            "node5.js", "sub/x.cjs"})
+
+    def test_a_clean_shipped_tree_has_no_problems(self):
+        self.assertEqual(self.problems(self.good), [])
+
+    def test_an_upstream_script_missing_from_the_map_is_a_problem(self):
+        pristine, shipped = self.trees(self.good)
+        write(pristine, "scripts/new.mjs", "import fs from 'node:fs';\n")
+        write(shipped, "scripts/new.mjs", "import fs from 'node:fs';\n")
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/new.mjs" in p and "not in the port map" in p for p in found), found)
+
+    def test_a_mapped_script_that_is_not_upstream_is_a_problem(self):
+        pristine, shipped = self.trees(self.good)
+        (pristine / "scripts/keep.mjs").unlink()
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/keep.mjs" in p and "not upstream" in p for p in found), found)
+
+    def test_a_shipped_drop_script_is_a_problem(self):
+        found = self.problems(lambda s: write(s, "scripts/neo.mjs", self.NEO))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("scripts/drop.mjs", found[0])
+        self.assertIn("drop", found[0])
+
+    def test_a_modified_keep_script_is_a_problem(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/keep.mjs", "// keep\nimport fs from 'node:fs';\n// edited\n")
+        found = self.problems(edit)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("scripts/keep.mjs", found[0])
+        self.assertIn("byte-identical", found[0])
+
+    def test_a_missing_keep_or_port_script_is_a_problem(self):
+        for rel in ("scripts/keep.mjs", "scripts/port.mjs"):
+            def edit(shipped, rel=rel):
+                self.good(shipped)
+                (shipped / rel).unlink()
+            found = self.problems(edit)
+            self.assertTrue(any(rel in p and "not shipped" in p for p in found), (rel, found))
+
+    def test_a_ported_script_may_differ(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/port.mjs", "// ported\nimport fs from 'node:fs';\n")
+        self.assertEqual(self.problems(edit), [])
+
+    def test_the_added_script_must_ship_and_must_not_be_upstream(self):
+        found = self.problems(lambda s: (s / "scripts/drop.mjs").unlink())
+        self.assertTrue(any("scripts/neo.mjs" in p and "not shipped" in p for p in found), found)
+        pristine, shipped = self.trees(self.good)
+        write(pristine, "scripts/neo.mjs", "import fs from 'node:fs';\n")
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/neo.mjs" in p and "upstream" in p for p in found), found)
+
+    def test_an_unlisted_shipped_script_is_a_problem(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/extra.py", "print(1)\n")
+            write(shipped, "assets/extra.js", "const fs = require('fs');\n")
+        found = "\n".join(self.problems(edit))
+        self.assertIn("scripts/extra.py", found)
+        self.assertIn("assets/extra.js", found)
+
+    def test_a_chrome_string_in_a_file_or_a_path_is_a_problem(self):
+        for rel, text in (("notes/a.md", "launch with --Remote-Debugging-Port=0"),
+                          ("notes/b.md", "uses Playwright"),
+                          ("notes/c.bin", b"\x00\x01 google chrome \x02"),
+                          ("notes/puppeteer.svg", "<svg/>")):
+            def edit(shipped, rel=rel, text=text):
+                self.good(shipped)
+                write(shipped, rel, text)
+            found = self.problems(edit)
+            self.assertEqual(len(found), 1, (rel, found))
+            self.assertIn(rel, found[0])
+
+    def test_headless_chrome_alone_is_not_a_chrome_launch(self):
+        self.assertEqual(self.problems(lambda s: (self.good(s), write(s, "a.md", "HeadlessChrome/ UA"))), [])
+
+    def test_build_refuses_an_unmapped_upstream_script(self):
+        files = dict(self.upstream, **{"scripts/new.mjs": "import fs from 'node:fs';\n"})
+        e = self.entry(files, patch=False)
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("scripts/new.mjs", str(ctx.exception))
+        self.assertFalse((self.root / e["target"]).exists())
+
+    def test_build_refuses_a_shipped_drop_script(self):
+        e = self.entry(patch=False)
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("scripts/drop.mjs", str(ctx.exception))
+
+    def test_a_missing_portmap_file_is_an_error(self):
+        e = self.entry(patch=False)
+        (self.root / self.PORTMAP).unlink()
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("taste.portmap.json", str(ctx.exception))
+
+    def test_the_portmap_path_must_be_a_safe_json_file_under_vendor_patches(self):
+        for bad in ("../x.json", "/etc/x.json", "vendor/other/x.json", "vendor/patches/x.txt",
+                    "vendor/patches/", "vendor/patches/../x.json", 3):
+            errors = vendor.validate_sources([entry("p", portmap=bad)])
+            self.assertTrue(any("portmap" in m for m in errors), (bad, errors))
+        self.assertEqual(vendor.validate_sources([entry("p", portmap="vendor/patches/p.portmap.json")]), [])
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_check_is_clean_with_a_good_patch_and_lists_every_problem_without_one(self):
+        e = self.entry()
+        write(self.root, "vendor/patches/taste.patch", self.PATCH_ADD_DROP)
+        self.build_all([e])
+        self.assertEqual(self.check(), [])
+        e["transform"] = []
+        self.set_sources([e])
+        found = self.check()
+        self.assertTrue(any("scripts/drop.mjs" in p for p in found), found)
+        self.assertTrue(any("scripts/neo.mjs" in p for p in found), found)
+        self.assertGreaterEqual(len([p for p in found if p.startswith("taste: portmap: ")]), 2, found)
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_sync_reports_portmap_problems_without_failing_the_rebuild(self):
+        e = self.entry()
+        write(self.root, "vendor/patches/taste.patch", self.PATCH_ADD_DROP)
+        self.build_all([e])
+        write(self.pristine["taste"], "scripts/new.mjs", "import fs from 'node:fs';\n")
+        report = vendor.sync(self.root, "taste", "v2", fetch=self.fetch, resolve=lambda *_: SHA_B)
+        self.assertTrue(any("scripts/new.mjs" in p for p in report["portmap"]), report["portmap"])
 
 
 class CompatibilityTest(unittest.TestCase):

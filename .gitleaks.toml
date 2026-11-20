@@ -7,6 +7,11 @@ description = "RFC 6455 section 4.2.2 sample handshake nonce (vendored superpowe
 regexTarget = "secret"
 regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
 
+[[allowlists]]
+description = "Upstream icon-credit lines naming a public git commit of gilbarbara/logos (a 40-hex sha, not a token); they appear in the design-taste-frontend patch"
+regexTarget = "line"
+regexes = ['''"source": "gilbarbara/logos@[0-9a-f]{40}"''']
+
 # rtk (subtree, Task 8). The imported upstream history keeps its original paths (no `rtk/` prefix),
 # so each path matches both. Every entry is a test fixture or a documentation example, never a real key.
 [[allowlists]]
