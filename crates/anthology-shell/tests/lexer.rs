@@ -310,7 +310,21 @@ fn the_lenient_fish_rescan_is_bounded_and_fails_closed() {
         assert!(tokens <= 4_000_000, "{tokens} tokens");
     });
     assert_quick("plain fish words", Duration::from_secs(2), || {
-        segments(&format!("' {}", "fish ".repeat(80_000)), 0);
+        let lexed = segments(&format!("' {}", "fish ".repeat(80_000)), 0);
+        assert!(lexed.incomplete);
+    });
+    // long words are charged by their length: 190 scripts of 2,000 bytes each would copy gigabytes
+    let long = format!("' {}", format!("fish -c{} ", "X".repeat(2000)).repeat(190));
+    assert_quick("long fish words", Duration::from_secs(2), || {
+        let lexed = segments(&long, 0);
+        assert!(lexed.incomplete);
+        let bytes: usize = lexed
+            .segments
+            .iter()
+            .flat_map(|s| &s.tokens)
+            .map(String::len)
+            .sum();
+        assert!(bytes <= 16_000_000, "{bytes} bytes");
     });
 }
 

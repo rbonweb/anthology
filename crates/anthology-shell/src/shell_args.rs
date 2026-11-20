@@ -225,13 +225,17 @@ pub(crate) fn parse_fish_args_in(
     }
     i = i.min(n);
     // Every later word is read as an option too (fail closed); `found not in scripts` keeps first-seen order.
-    if !budget.spend(n.saturating_sub(first)) {
-        return None;
-    }
+    // Costs: 1 + length per word read, and 1 + twice its length per script kept.
     let mut scripts: Vec<(usize, String)> = Vec::new();
     let mut seen: HashSet<(usize, String)> = HashSet::new();
     for k in first..n {
+        if !budget.spend(1 + args[k].len()) {
+            return None;
+        }
         for found in fish_option_at(args, k).0 {
+            if !budget.spend(1 + 2 * found.1.len()) {
+                return None;
+            }
             if seen.insert(found.clone()) {
                 scripts.push(found);
             }
@@ -344,7 +348,8 @@ pub(crate) fn script_starts_in(
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
             let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
-            if !budget.spend(parsed.scripts.len()) {
+            let cost = parsed.scripts.iter().map(|(_, s)| 1 + s.len()).sum();
+            if !budget.spend(cost) {
                 return None;
             }
             starts.extend(parsed.scripts);
@@ -352,7 +357,7 @@ pub(crate) fn script_starts_in(
             continue;
         }
         if is_shell_c_flag(word) {
-            if !budget.spend(1) {
+            if !budget.spend(1 + words[k + 1].len()) {
                 return None;
             }
             starts.push((k + 1, words[k + 1].clone()));

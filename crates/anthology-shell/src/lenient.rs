@@ -45,11 +45,13 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared<'_>) -> Vec<Segment> 
         if tokens.is_empty() {
             continue;
         }
-        let Some(starts) = script_starts_in(&tokens, &mut sh.budget) else {
-            sh.incomplete = true;
-            return out;
-        };
-        if !sh.budget.spend(tokens.len()) {
+        // Every copied word costs 1 + its length, so long words cannot get past the budget. `cost[k]` is
+        // the cost of tokens[k..].
+        let mut cost = vec![0usize; tokens.len() + 1];
+        for k in (0..tokens.len()).rev() {
+            cost[k] = cost[k + 1].saturating_add(1 + tokens[k].len());
+        }
+        if !sh.budget.spend(cost[0]) {
             sh.incomplete = true;
             return out;
         }
@@ -58,9 +60,14 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared<'_>) -> Vec<Segment> 
             redirs: Vec::new(),
             group: sh.new_group(),
         });
+        let Some(starts) = script_starts_in(&tokens, &mut sh.budget) else {
+            sh.incomplete = true;
+            return out;
+        };
         for (start, first) in starts {
             let rest = tokens.get(start + 1..).unwrap_or(&[]);
-            if !sh.budget.spend(1 + rest.len()) {
+            let rest_cost = cost.get(start + 1).copied().unwrap_or(0);
+            if !sh.budget.spend(1 + first.len() + rest_cost) {
                 sh.incomplete = true;
                 return out;
             }

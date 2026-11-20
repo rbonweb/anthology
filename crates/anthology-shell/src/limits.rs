@@ -14,10 +14,12 @@ pub struct Limits {
     pub backtrack_limit: usize,
 }
 
-/// Work units one `segments` call may spend in the lenient fallback (option rescans, starts found, tokens
-/// copied) before it stops and sets `incomplete`. Python's quadratic-to-cubic `_script_starts` path only
-/// reaches this past about a thousand `fish` words; below it the output is Python's exactly.
-pub(crate) const LEX_BUDGET: usize = 4_000_000;
+/// Work units one `segments` call may spend in the lenient fallback before it stops and sets `incomplete`:
+/// each word read by an option rescan and each word or script copied costs 1 plus its length in bytes, so
+/// the budget bounds memory as well as time. Python's quadratic-to-cubic `_script_starts` path reaches it
+/// at a few hundred `fish -c` words in one unbalanced command (a few KB of text); Rust then blocks where
+/// Python would only be slow (D-7). Below it the output is Python's exactly; past it, a correct prefix.
+pub(crate) const LEX_BUDGET: usize = 16_000_000;
 
 /// fancy-regex's own default (`RegexBuilder::backtrack_limit`), kept as GC-16 asks.
 pub(crate) const DEFAULT_BACKTRACK_LIMIT: usize = 1_000_000;
