@@ -313,6 +313,20 @@ def install(data_dir, lock: dict, fetch, timeout: float = DEFAULT_TIMEOUT, tgt: 
     return vdir / "rtk"
 
 
+def check_installed(data_dir, lock: dict, tgt: str | None = None) -> bool:
+    """True when `<data>/rtk/<lock version>/rtk` is an executable regular file whose recorded
+    tarball hash (`.sha256`) equals the lock's hash for `tgt` (default: this machine). Read-only:
+    never downloads, never raises. (The lock pins the tarball, so the binary itself has no hash
+    to compare; the marker is written only after the verified tarball was extracted.)"""
+    try:
+        validate_lock(lock)
+        if tgt is None:
+            tgt = target(platform.system(), platform.machine())
+        return _is_current(Path(data_dir) / "rtk" / lock["version"], lock["sha256"][tgt])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def reconcile(data_dir, lock: dict, fetch=None, timeout: float = DEFAULT_TIMEOUT,
               system: str | None = None, machine: str | None = None) -> dict:
     """Session-start entry point. Never raises.

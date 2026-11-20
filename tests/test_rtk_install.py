@@ -290,6 +290,46 @@ class InstallTest(Base):
         self.assertNotIsInstance(cm.exception, AssertionError)
 
 
+class CheckInstalledTest(Base):
+    def install(self, lock):
+        return rtk_install.install(self.data, lock, self.fetch_for(lock, tarball()), 5, tgt=HOST)
+
+    def test_true_after_install_and_false_before(self):
+        lock = make_lock()
+        self.assertFalse(rtk_install.check_installed(self.data, lock, HOST))
+        self.install(lock)
+        self.assertTrue(rtk_install.check_installed(self.data, lock, HOST))
+
+    def test_default_target_is_this_machine(self):
+        lock = make_lock()
+        self.install(lock)
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("platform.machine", return_value="x86_64"):
+            self.assertTrue(rtk_install.check_installed(self.data, lock))
+
+    def test_false_for_a_different_lock_hash_or_version(self):
+        lock = make_lock()
+        self.install(lock)
+        other_hash = make_lock(blob=tarball([("rtk", "file", b"other")]))
+        self.assertFalse(rtk_install.check_installed(self.data, other_hash, HOST))
+        self.assertFalse(rtk_install.check_installed(self.data, make_lock("1.9.0"), HOST))
+
+    def test_false_when_the_binary_is_not_executable_or_the_marker_is_gone(self):
+        lock = make_lock()
+        path = self.install(lock)
+        os.chmod(str(path), 0o600)
+        self.assertFalse(rtk_install.check_installed(self.data, lock, HOST))
+        os.chmod(str(path), 0o755)
+        (path.parent / ".sha256").unlink()
+        self.assertFalse(rtk_install.check_installed(self.data, lock, HOST))
+
+    def test_never_raises(self):
+        self.assertFalse(rtk_install.check_installed(self.data, {"nope": 1}, HOST))
+        self.assertFalse(rtk_install.check_installed(self.data, make_lock(), "no-such-target"))
+        with mock.patch("platform.system", return_value="Windows"):
+            self.assertFalse(rtk_install.check_installed(self.data, make_lock()))
+
+
 class PruneTest(Base):
     def make_version(self, name, age_days, marker=True):
         vdir = self.data / "rtk" / name
