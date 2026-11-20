@@ -64,6 +64,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_version_bump.py' -v
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_release.py' -v
       - name: Check plugin version bumps
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
