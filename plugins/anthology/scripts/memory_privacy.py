@@ -29,6 +29,19 @@ import os
 import re
 import socket
 
+# What is not a secret value (the same fragments as guard_rules.py; a test checks the patterns match).
+# A value that is wholly null/none/true/false or a template placeholder (`<...>`, `${...}`, a run of
+# `*`, `.` or `x`), optionally quoted (a quoted one needs its closing quote right after it), then
+# optional blanks and a `,`, `}`, `]`, a line break or the end. Quotes may carry a backslash (JSON
+# inside a double-quoted shell string).
+_SKIP_WORD = r"(?:null|none|true|false|<[^<>\r\n]*>|\$\{[^{}\r\n]*\}|[*.xX]+)"
+_NOT_A_VALUE = r"(?:\\?[\"']" + _SKIP_WORD + r"\\?[\"']|" + _SKIP_WORD + r")[ \t]*(?:[,}\]\r\n]|$)"
+# After the separator of an unquoted key: not a placeholder.
+_UNQUOTED_VALUE = r"(?![ \t]*" + _NOT_A_VALUE + ")"
+# After a key's closing quote (one optional quote, `\"` included): a separator, then a real scalar,
+# not empty, an object or array (a schema) or a placeholder.
+_QUOTED_VALUE = r"\\?[\"']\s*[:=]\s*(?!" + _NOT_A_VALUE + r")(?:\\?[\"'])?(?![\\\"'{\[\]},\s])"
+
 # The anthology-guardrails G6 patterns, copied exactly (same source and flags; a test checks it),
 # then the export/import patterns, then a few more common token formats.
 SECRET_PATTERNS = (
@@ -38,15 +51,19 @@ SECRET_PATTERNS = (
     ("api-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
     ("slack-token", re.compile(r"\bxox[baprs]-")),
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("credential-assignment", re.compile(r"password\s*[:=]", re.IGNORECASE)),
-    ("credential-assignment", re.compile(r"api[_-]?key\s*[:=]", re.IGNORECASE)),
+    # A key may be followed by one closing quote (`"password": "x"`, a JSON or dict key).
+    ("credential-assignment", re.compile(
+        r"password(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)", re.IGNORECASE)),
+    ("credential-assignment", re.compile(
+        r"api[_-]?key(?:\s*[:=]" + _UNQUOTED_VALUE + "|" + _QUOTED_VALUE + r"\S)", re.IGNORECASE)),
     ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
     ("github-token", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("slack-token", re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}")),
     ("api-key", re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}")),
     ("credential-assignment",
-     re.compile(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}", re.I)),
+     re.compile(r"(password|passwd|secret|api[_-]?key|token)(?:\s*[:=]" + _UNQUOTED_VALUE
+                + r"\s*\S{8,}|" + _QUOTED_VALUE + r"\S{8,})", re.I)),
     # A look-behind, not \b: `-` is in the class, so \b would start a scan at every `-eyJ` (quadratic).
     ("jwt", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     # An AWS-style `aws_secret_access_key = …`, also JSON-quoted (`"SecretAccessKey": "…"`); the token
