@@ -63,7 +63,8 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
 | `check_version_bump.py` | A changed plugin has a higher version than at the merge base |
 | `claude plugin validate --strict` | Each plugin is valid, using the pinned Claude Code in `ci/claude-code/` |
 | gitleaks | No secrets in the history, using `.gitleaks.toml` |
-| A listing of memory diffs | A contributor's memory note is reviewed like code |
+| `memory-diff` job (`scripts/memory_diff.py`, pull requests) | Lists changed files under `.claude/memory/` and `.claude/agent-memory/` in the job summary, so a memory note is reviewed like code |
+| `startup-budget` job | The per-agent startup budgets hold |
 
 Images are pinned by digest in `ci/images/*.Dockerfile`, test dependencies by hash in `tests/requirements.txt`, and GitHub Actions by commit SHA. Dependabot proposes the bumps, and CI and the evals gate them.
 
@@ -142,6 +143,7 @@ Each plugin is versioned on its own (semver). A release is a commit plus a tag `
 scripts/release.sh <plugin> <version> --dry-run   # look first
 scripts/release.sh <plugin> <version>             # commit and tag locally
 scripts/release.sh <plugin> <version> --push      # also push the branch and the tag
+                                                  # (--remote NAME picks the remote; default origin)
 ```
 
 It refuses to run (and changes nothing) unless:
@@ -158,7 +160,7 @@ A plugin's `version` is what moves installed users to new code, so a change that
 
 ### Evals and the baseline
 
-The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code update that silently breaks the product. They sit at the repo root, because a case can only load plugins inside its containment root. Each case lists all three plugins as `../../plugins/anthology`, `../../plugins/anthology-guardrails` and `../../plugins/anthology-superpowers`. They cover:
+The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code update that silently breaks the product. Each case is `evals/<case>/case.yaml`. They sit at the repo root, because a case can only load plugins inside its containment root. Each case lists all three plugins as `../../plugins/anthology`, `../../plugins/anthology-guardrails` and `../../plugins/anthology-superpowers`. They cover:
 
 - routing (the main session delegates to the right `anthology:*` agent);
 - knowledge-read order (each agent reads its Startup files before any other tool);
@@ -166,17 +168,26 @@ The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code 
 - BrowserOS-only browsing, against a mocked `browseros-neo` MCP server in `evals/mocks/` and with no Chrome launch;
 - the rtk rewrite;
 - the routing guide being in the main session, and absent from agents;
-- the platform checks that DECISIONS.md records (agent fields, worktree base, memory paths, hook output limits).
+- the platform checks recorded in [DECISIONS.md](DECISIONS.md) (agent fields, worktree base, memory paths, hook output limits). The multi-session and no-model ones are smoke cases in `evals/smoke/smoke.py`.
 
-Run them from the repo root with a cost ceiling:
+Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases. The evals run as:
 
 ```sh
 claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling>
 ```
 
-When the ceiling is hit the command exits 2 with a partial result, so raise it deliberately.
+When the cost ceiling is hit the command exits 2 with a partial result, so raise the ceiling deliberately.
 
-[`evals.yml`](.github/workflows/evals.yml) runs the evals weekly, on demand, and when the upstream watcher sees a new Claude Code release. It needs the `ANTHROPIC_API_KEY` repository secret and skips with a notice while that secret is missing. It fails on a regression against the baseline, which is recorded in [DECISIONS.md](DECISIONS.md). When a change moves the baseline on purpose, add a new entry there with the new numbers and the reason.
+**The baseline** is `evals/baseline.json`. `scripts/run-evals.sh --record` writes it, from a full, non-partial run.
+
+[`evals.yml`](.github/workflows/evals.yml) runs weekly, on demand, and when the upstream watcher sees a new Claude Code release. It installs the pinned Claude Code from the `ci/claude-code` lockfile and needs the `ANTHROPIC_API_KEY` repository secret (it skips with a notice while that secret is missing). It fails when:
+
+- a baseline case scores below its baseline score;
+- a baseline case is missing from the run;
+- the run is partial (the cost ceiling was hit);
+- `evals/baseline.json` is missing.
+
+To change the baseline on purpose, re-record it with `scripts/run-evals.sh --record` and explain why in the PR.
 
 ### Startup budgets
 
@@ -184,7 +195,7 @@ Each agent's startup reading (its body, the Startup files it must read, and its 
 
 When a sync fails a budget:
 
-1. Check what grew. The upstream watcher's issue shows the budget delta.
+1. Check what grew: compare the failing agent's measured size (in the failure message) with its budget, and look at what the sync changed in its Startup files.
 2. If the growth is not worth it, trim the patch or drop the file from the agent's Startup list.
 3. If it is worth it, raise that one number in `BUDGET`. The failure message gives the value to use, `ceil(measured * 1.15)`. Set it and explain the growth in the same commit and in the PR description. Never raise a budget to get a build green without that review.
 

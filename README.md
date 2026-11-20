@@ -37,19 +37,21 @@ Check [Requirements](#requirements) first.
 
 ### What `/anthology:setup` does
 
-It checks your machine, then shows every change as a diff and applies it only after you confirm.
+It checks your machine, then shows every change and applies them only after you confirm once.
 
 1. **Doctor.** Checks `python3`, `node`, `docker`, BrowserOS Neo, rtk and the platform. On Windows it refuses and stops.
-2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
+2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
 3. **rtk.** Downloads the pinned rtk binary and verifies its sha256.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
    - denies `Read(...)` on the Chrome and Chromium profile folders and their parent folders, for macOS and Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
-5. **Memory.** Approves the current repo for memory and creates the personal-memory folder.
+5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder.
 
-Nothing is written to `~/.claude/CLAUDE.md`.
+When it finishes, restart the session so the new permissions and the rtk hook take effect. Nothing is written to `~/.claude/CLAUDE.md`.
+
+After setup, some things happen on their own at session start: Anthology reconciles the rtk binary with `rtk.lock`, and in approved repos it keeps memory working (see [Memory](#memory)).
 
 ## The product
 
@@ -86,7 +88,7 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 - **Knowledge belongs to agents.** Every skill we ship is read by at least one agent, and the main session never sees it. The only skills the main session has are `anthology-superpowers` and the three user commands. Each agent reads its own knowledge files before it starts anything else.
 - **Builders and critics are different models.** For UI work, `ui-designer` (Sonnet) builds and `ui-reviewer` (Opus) checks.
 - **For websites and landing pages** `design-taste-frontend` leads; **for app screens** `ui-taste` leads; `frontend-design` is the baseline.
-- **No agent can call other agents,** so the main session stays the single orchestrator. Agents marked "no" in the Edits column cannot edit files at all; `product-planner` and `marketer` edit docs only.
+- **No agent can call other agents,** so the main session stays the single orchestrator. In the Edits column, "no" means the Edit, Write and NotebookEdit tools are turned off for that agent. It can still run Bash, which is how it saves its own memory notes. "Docs only" for `product-planner` and `marketer` is an instruction in the agent, not a tool restriction.
 - **Every agent has project memory** (see [Memory](#memory)).
 - **Security work** goes to the `claude-security` plugin. There is no Anthology agent for it.
 
@@ -179,7 +181,7 @@ Memory is plain Markdown notes committed with your project, so it survives a re-
 
 ### Approved repos only
 
-Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo nothing is written and nothing is injected. If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
+Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is). If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
 
 Approvals are kept in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo path if there is no remote). Memory also stays off if you turned auto memory off in Claude Code.
 
@@ -237,13 +239,13 @@ Links are the `[[note-name]]` links in the notes, plus relations such as `supers
 
 **Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
-**Removing.** Run `/anthology:setup remove`. It reverts the settings changes (the `Bash(rtk *)` allow, the Chrome deny rules, the plugin-read allow, and `worktree.baseRef`, which goes back to its previous value), deletes `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory files. Then uninstall the plugin:
+**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` allow, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
 ```text
 claude plugin uninstall anthology@anthology --prune -y
 ```
 
-`--prune -y` also removes the dependencies that were installed automatically. Pass `--keep-data` if you want to keep the plugin's data, such as the downloaded rtk binaries and the memory index.
+`--prune -y` also removes the dependencies that were installed automatically. Uninstalling without `--keep-data` also removes the plugin's data folder (the rtk binaries and the memory search index).
 
 ## Requirements
 
@@ -264,10 +266,10 @@ Anthology carries its own copies, so setup recommends uninstalling the official 
 - **superpowers.** `anthology-superpowers` is the same skills library under a different name, so it does not clash with the official `superpowers` (two enabled plugins with one name lose hooks and collide on commands). Both would work side by side, but their instructions would load twice.
 - **design-skills.** Anthology uses it only inside its agents' knowledge. An installed copy would expose its skills loose in the main session.
 
-Setup finds the duplicates and prints the commands:
+Setup finds the duplicates and shows the commands. You run them yourself; setup does not:
 
 ```text
-claude plugin uninstall <plugin>[@marketplace]
+claude plugin uninstall <plugin> -s <scope>
 ```
 
-`claude plugin list` shows which marketplace each copy came from, so you can fill in the name for the copy you have.
+`claude plugin list` shows where each copy came from and at which scope it is installed.

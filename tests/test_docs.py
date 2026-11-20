@@ -78,6 +78,12 @@ def read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
 
 
+def _clean(target: str) -> str:
+    """A link target without its #fragment and without one leading `./`."""
+    target = target.split("#")[0]
+    return target[2:] if target.startswith("./") else target
+
+
 def headings(text: str) -> list:
     return [m.group(1).strip() for m in HEADING.finditer(text)]
 
@@ -152,10 +158,10 @@ class ContributingDocTest(unittest.TestCase):
     def test_links_the_maintainer_tools(self):
         for want in ("scripts/vendor.py", "scripts/sync-rtk.sh", "scripts/release.sh"):
             with self.subTest(want=want):
-                self.assertIn(want, [t.split("#")[0].lstrip("./") for t in self.targets])
+                self.assertIn(want, [_clean(t) for t in self.targets])
 
     def test_links_the_evals(self):
-        paths = [t.split("#")[0].lstrip("./") for t in self.targets]
+        paths = [_clean(t) for t in self.targets]
         self.assertTrue(any(p == "evals" or p.startswith("evals/") for p in paths),
                         "CONTRIBUTING.md must link evals/")
 

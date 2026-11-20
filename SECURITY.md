@@ -30,12 +30,28 @@ Anthology configures Claude Code and the agents that run inside it. The risks it
 
 The assumed cause is a mistake, or an agent misled by content it read (a web page, a file in a repo). It is **not** a defence against a determined attacker, a malicious plugin, or code you choose to run yourself. The guardrails are not a sandbox.
 
-What Anthology changes outside the plugin, all through `/anthology:setup` after a diff and a confirmation, and all removed by `/anthology:setup remove`:
+What Anthology changes outside the plugin, by who writes it:
+
+**`/anthology:setup`, after it shows the changes and you confirm once:**
 
 - `~/.claude/settings.json`: the `Bash(rtk *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
-- `~/.claude/anthology/`: `state.json`, `approved-repos.json`, the personal-memory folder and exports. Setup removes `state.json`, and the approvals if you choose; your notes stay.
-- In an approved repo: `.claude/settings.local.json` (git-ignored), the git exclude entry for it, and the two `merge=union` lines in `.gitattributes`.
-- The rtk binaries and the memory index, under the plugin's data folder.
+- The rtk download.
+- Approving the current repo for memory. You can decline this step. It adds the two `merge=union` lines to the repo's `.gitattributes`.
+- Creating the personal-memory folder.
+
+**Session start, automatically:**
+
+- It reconciles the rtk binary with `rtk.lock` (a download into the plugin's data folder) and writes `~/.claude/anthology/state.json`.
+- In approved repos only: it writes `autoMemoryDirectory` into `.claude/settings.local.json` and a git exclude entry for that file, regenerates the `MEMORY.md` indexes, and copies notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder (never overwriting anything).
+- The memory search index lives in the plugin's data folder.
+
+**`/anthology:setup remove` takes out:**
+
+- the settings entries Anthology added (rules you added yourself are never touched, and `worktree.baseRef` goes back to its previous value);
+- the downloaded rtk and `state.json`;
+- optionally, the repo approvals.
+
+It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or exports. Uninstalling the plugin without `--keep-data` removes its data folder (the rtk binaries and the search index).
 
 Nothing is written to `~/.claude/CLAUDE.md`.
 
@@ -71,7 +87,7 @@ The binary behind it is verified before use. The pinned sha256 values are in `pl
 
 Notes are Markdown that is loaded into a session's context. A note can therefore steer an agent, the way a line in a `CLAUDE.md` can. The model:
 
-- **Memory is opt-in per repo, per user.** It is active only in repos you approved by running `/anthology:setup` inside them. In any other repo nothing is written and nothing is injected, and a repo that already has `.claude/memory/` only gets a one-line hint. A stranger's committed notes never load on their own.
+- **Memory is opt-in per repo, per user.** It is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is), and a repo that already has `.claude/memory/` only gets a one-line hint. A stranger's committed notes never load on their own.
 - **Approval follows the remote.** Approvals in `~/.claude/anthology/approved-repos.json` are keyed by the normalized git remote URL, so a re-clone of the same repo is trusted automatically. Anyone who can push to that remote can add notes you will load. Treat memory changes like code changes: review them, and use CODEOWNERS for `.claude/memory/` and `.claude/agent-memory/` (see the [README](README.md#codeowners-for-memory)).
 - **Repo memory is visible to everyone who can see the repo.** If the repo is public, so is its memory. Never put secrets or personal details in it. Guardrail G6 blocks the obvious secret patterns and is not a scanner.
 - **Personal memory stays out of repos.** It lives under `~/.claude/anthology/personal-memory/`. Its index is added to your main session at start.
