@@ -20,8 +20,9 @@
 //! (kind, mode, a sha256 prefix or a link target), and state.json's `rtk_path`, with the
 //! temporary folder written as `<tmp>`.
 //!
-//! D-2: the text after `cannot read the rtk tarball: ` (Python's `tarfile`/`gzip` versus the
-//! `tar`/`flate2` crates) and after `[Errno ` (P1's errno tables are pending) is library text.
+//! D-2: the rest of the line after `cannot read the rtk tarball: ` (Python's `tarfile`/`gzip`
+//! versus the `tar`/`flate2` crates), and the OS error text in `[Errno N] <text>` up to the
+//! next `:` or `)` (P1's errno tables are pending; the number and file names still compare).
 
 use std::fs;
 use std::io::Write;
@@ -57,13 +58,74 @@ pub fn surface() -> Option<Box<dyn Surface>> {
 
 struct Reconcile;
 
-/// The D-2 prefixes (module docs).
-const D2_PREFIXES: [&str; 2] = ["cannot read the rtk tarball: ", "[Errno "];
+/// The D-2 prefix whose rest of line is library text (module docs).
+const D2_TARBALL: &str = "cannot read the rtk tarball: ";
 
 fn normalizer() -> Normalizer {
-    D2_PREFIXES
-        .iter()
-        .fold(Normalizer::new(), |n, p| n.d2_prefix(p))
+    Normalizer::new().d2_prefix(D2_TARBALL)
+}
+
+/// The OS error text only: `[Errno N] <text>` → `[Errno N] <LIBTEXT>`, where `<text>` runs to
+/// the next `:` or `)` (the errno number, the file names and the rest are still compared).
+fn errno_text(b: &[u8]) -> Vec<u8> {
+    const OPEN: &[u8] = b"[Errno ";
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(OPEN) {
+            let digits = b[i + OPEN.len()..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
+            let close = i + OPEN.len() + digits;
+            if digits > 0 && b[close..].starts_with(b"] ") {
+                out.extend_from_slice(&b[i..close + 2]);
+                out.extend_from_slice(crate::normalize::LIBTEXT.as_bytes());
+                i = close + 2;
+                while i < b.len() && !matches!(b[i], b':' | b')' | b'\n') {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `mkdtemp`'s random `.tmp-XXXXXXXX` names differ between any two runs: `.tmp-<RANDOM>`.
+/// Not a divergence; a left-over staging folder still shows as an entry.
+fn temp_names(b: &[u8]) -> Vec<u8> {
+    const PREFIX: &[u8] = b".tmp-";
+    let name = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_';
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(PREFIX) {
+            let start = i + PREFIX.len();
+            let len = b[start..].iter().take_while(|&&c| name(c)).count();
+            if len == 8 {
+                out.extend_from_slice(b".tmp-<RANDOM>");
+                i = start + len;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Both D-2 rules on one side (after the temp-name rule); true when the D-2 rules changed it.
+fn apply_d2(o: &mut Observed) -> bool {
+    o.stdout = temp_names(&o.stdout);
+    o.stderr = temp_names(&o.stderr);
+    let before = o.clone();
+    normalizer().apply(o);
+    o.stdout = errno_text(&o.stdout);
+    o.stderr = errno_text(&o.stderr);
+    *o != before
 }
 
 impl Surface for Reconcile {
@@ -87,13 +149,15 @@ impl Surface for Reconcile {
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
         let mut o = from_oracle(&oracle.call("rtk_install", &c.data));
-        normalizer().apply_python(&mut o, oracle);
+        if apply_d2(&mut o) {
+            oracle.mark("D-2");
+        }
         o
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
         let mut o = run(&c.data);
-        normalizer().apply(&mut o);
+        apply_d2(&mut o);
         o
     }
 }
@@ -615,6 +679,42 @@ fn seed_cases() -> Vec<Value> {
             None,
             none,
         ),
+        // OSError paths: `.last-used` is a folder (touch), `rtk` is a non-empty folder (the
+        // rename), the version folder is a file (mkdir).
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            {
+                let mut p = installed(V, &blob);
+                p.push(pre_dir(&format!("rtk/{V}/.last-used"), None));
+                p
+            },
+            None,
+            none,
+        ),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            vec![pre_file(&format!("rtk/{V}/rtk/keep"), b"x", 0o644, None)],
+            None,
+            none,
+        ),
+        case(
+            lock(),
+            LINUX,
+            &blob,
+            "lock",
+            None,
+            vec![pre_file(&format!("rtk/{V}"), b"a file", 0o644, None)],
+            None,
+            none,
+        ),
         // Limits.
         case(
             lock(),
@@ -696,6 +796,15 @@ fn rejected_members() -> Vec<(&'static str, Vec<(&'static str, RawKind)>)> {
         ),
         ("dir rtk", vec![("rtk", RawKind::Dir)]),
         ("dot rtk", vec![("./rtk", body())]),
+        // tarfile reads an old-style `rtk/` as the folder `rtk`.
+        (
+            "old-style folder",
+            vec![("rtk/", RawKind::OldFile(Vec::new())), ("rtk", body())],
+        ),
+        (
+            "old-style regular rtk",
+            vec![("rtk", RawKind::OldFile(b"old".to_vec()))],
+        ),
     ]
 }
 
@@ -750,6 +859,7 @@ fn rand_blob(rng: &mut Rng) -> Vec<u8> {
             0 => RawKind::Symlink("/bin/sh".into()),
             1 => RawKind::Hardlink("LICENSE".into()),
             2 => RawKind::Dir,
+            3 => RawKind::OldFile(rand_bytes(rng, 48)),
             _ => RawKind::File(rand_bytes(rng, 48)),
         };
         members.push((name, kind));

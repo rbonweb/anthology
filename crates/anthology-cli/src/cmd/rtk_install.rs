@@ -97,7 +97,7 @@ fn parse(args: &[OsString]) -> Result<Args, Output> {
             Long("timeout") => {
                 let raw = value(&mut p, "--timeout")?;
                 let text = raw.to_string_lossy().into_owned();
-                let parsed = text.trim().replace('_', "").parse::<f64>().map_err(|_| {
+                let parsed = py_float(&text).ok_or_else(|| {
                     usage_error(&format!(
                         "argument --timeout: invalid float value: '{text}'"
                     ))
@@ -129,6 +129,21 @@ fn parse(args: &[OsString]) -> Result<Args, Output> {
         dry_run,
         timeout: timeout.unwrap_or(rtk_install::DEFAULT_TIMEOUT),
     })
+}
+
+/// `float(text)` for the shapes argparse's `type=float` takes: surrounding whitespace, and `_`
+/// only between two digits (`1_0`, not `_1`, `1_`, `1__0` or `1_.5`).
+fn py_float(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let b = t.as_bytes();
+    let underscores_ok = b.iter().enumerate().all(|(i, &c)| {
+        c != b'_'
+            || (i > 0 && i + 1 < b.len() && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit())
+    });
+    if !underscores_ok {
+        return None;
+    }
+    t.replace('_', "").parse::<f64>().ok()
 }
 
 fn fail(code: i32, msg: &str) -> Output {
@@ -412,6 +427,17 @@ mod tests {
     }
 
     #[test]
+    fn timeouts_parse_as_python_float() {
+        assert_eq!(py_float(" 5 "), Some(5.0));
+        assert_eq!(py_float("1_0"), Some(10.0));
+        assert_eq!(py_float("2.5e1"), Some(25.0));
+        assert!(py_float("inf").is_some_and(f64::is_infinite));
+        for bad in ["_1", "1_", "1__0", "1_.5", "", "soon"] {
+            assert_eq!(py_float(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn usage_errors_exit_2() {
         let b = base();
         let fetch = Fake(RtkFakeFetch::default());
@@ -425,6 +451,8 @@ mod tests {
             &["--lock", "x"][..],
             &["--data-dir"][..],
             &["--data-dir", "d", "--timeout", "soon"][..],
+            &["--data-dir", "d", "--timeout", "_1"][..],
+            &["--data-dir", "d", "--timeout", "1__0"][..],
             &["--data-dir", "d", "--bogus"][..],
         ] {
             let out = run_with(&os(args), &ctx);

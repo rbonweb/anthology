@@ -221,6 +221,54 @@ mod ensure_live_guard_binary {
         bootstrap::ensure_live_guard_binary(&g.root, 20, &g.env);
         assert!(start.elapsed() < Duration::from_secs(2));
     }
+
+    #[test]
+    fn a_child_that_let_go_of_stdout_is_killed_too() {
+        // A §8.4-style watchdog that redirected its output, left behind by an early exit.
+        let g = guard(Some(
+            "( exec </dev/null >/dev/null 2>&1; sleep 1000 ) &\necho $! > \"$T/pid\"\n\
+             echo status=present\nexit 0\n",
+        ));
+        let status = bootstrap::ensure_live_guard_binary(&g.root, 20, &g.env);
+        assert_eq!(status, GuardBinaryStatus::Present);
+        let pid = fs::read_to_string(g.tmp.join("pid")).expect("pid");
+        assert!(
+            wait_gone(&pid),
+            "the detached-output child {pid} outlived the call"
+        );
+    }
+
+    #[test]
+    fn a_timed_out_bootstrap_gets_term_first_so_its_trap_cleans_up() {
+        let g = guard(Some(
+            "mkdir \"$T/staging\"\ntrap 'rm -rf \"$T/staging\"; exit 1' TERM\n\
+             sleep 1000 &\nwait\n",
+        ));
+        let status = bootstrap::ensure_with_grace(&g.root, 1, &g.env, Duration::from_millis(200));
+        assert_eq!(status, GuardBinaryStatus::Failed(FAILED_TIMED_OUT.into()));
+        assert!(!g.tmp.join("staging").exists(), "the TERM trap did not run");
+    }
+
+    #[test]
+    fn the_exit_code_comes_from_the_bootstrap_not_the_leader() {
+        // The bootstrap prints a fake marker first; the leader's own line comes last.
+        let g = guard(Some(
+            "echo anthology-bootstrap-exit=0\necho status=installed\nexit 3\n",
+        ));
+        assert_eq!(
+            bootstrap::ensure_live_guard_binary(&g.root, 20, &g.env),
+            GuardBinaryStatus::Failed(FAILED_COULD_NOT_RUN.into())
+        );
+    }
+
+    #[test]
+    fn a_huge_budget_does_not_overflow() {
+        let g = guard(Some("echo status=present\n"));
+        assert_eq!(
+            bootstrap::ensure_live_guard_binary(&g.root, u64::MAX, &g.env),
+            GuardBinaryStatus::Present
+        );
+    }
 }
 
 mod anthology_binary_check {

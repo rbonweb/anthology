@@ -255,13 +255,12 @@ struct Member {
 }
 
 fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Member {
-    use tar::EntryType as T;
-    let kind = entry.header().entry_type();
+    // The raw typeflag: the crate maps `\0` and `0` to one `Regular`, tarfile does not.
+    let flag = entry.header().as_bytes()[156];
     let mut name = entry.path_bytes().into_owned();
-    // tarfile: an old-style regular file whose name ends in "/" is a folder, and a folder's
-    // name loses its trailing slashes.
-    let dir =
-        matches!(kind, T::Directory) || (kind.as_byte() == b'\0' && name.last() == Some(&b'/'));
+    // tarfile: an old-style (`\0`) regular file whose name ends in "/" is a folder, and a
+    // folder's name loses its trailing slashes.
+    let dir = flag == b'5' || (flag == b'\0' && name.last() == Some(&b'/'));
     if dir {
         while name.last() == Some(&b'/') {
             name.pop();
@@ -269,7 +268,8 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Member {
     }
     Member {
         name,
-        regular: !dir && matches!(kind, T::Regular | T::Continuous),
+        // tarfile's REGULAR_TYPES: REGTYPE, AREGTYPE, CONTTYPE, GNUTYPE_SPARSE.
+        regular: !dir && matches!(flag, b'0' | b'\0' | b'7' | b'S'),
         size: entry.header().entry_size().unwrap_or(u64::MAX),
     }
 }
@@ -292,7 +292,7 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
         hook()?;
     }
     let limits = &deps.limits;
-    let file = File::open(archive)?;
+    let file = File::open(archive).map_err(|e| os_error(e, archive))?;
     let gz = Watched::new(flate2::read::MultiGzDecoder::new(io::BufReader::new(file)));
     let (gz_failed, gz_bytes) = (gz.failed.clone(), gz.bytes.clone());
     let mut tf = tar::Archive::new(gz);
@@ -333,7 +333,8 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
             .write(true)
             .create_new(true)
             .mode(0o700)
-            .open(dest)?;
+            .open(dest)
+            .map_err(|e| os_error(e, dest))?;
         let mut written: u64 = 0;
         let mut buf = vec![0u8; 1 << 16];
         loop {
@@ -393,9 +394,14 @@ impl<R: Read> Read for Watched<R> {
 
 /// `_touch(path)`: create if missing, then set both times to now.
 fn touch(path: &Path) -> Result<(), PyExc> {
-    let file = OpenOptions::new().append(true).create(true).open(path)?;
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|e| os_error(e, path))?;
     let now = SystemTime::now();
-    file.set_times(fs::FileTimes::new().set_accessed(now).set_modified(now))?;
+    file.set_times(fs::FileTimes::new().set_accessed(now).set_modified(now))
+        .map_err(|e| os_error(e, path))?;
     Ok(())
 }
 
@@ -442,6 +448,32 @@ fn os_error(e: io::Error, path: &Path) -> PyExc {
     exc
 }
 
+/// `os.replace(src, dst)`'s `OSError`: `[Errno N] <text>: '<src>' -> '<dst>'` (`filename2`).
+fn os_error2(e: io::Error, src: &Path, dst: &Path) -> PyExc {
+    let PyExc::OSError { errno, .. } = PyExc::from(e) else {
+        unreachable!("io::Error always maps to OSError")
+    };
+    let named = |p: &Path| {
+        PyExc::OSError {
+            errno,
+            filename: Some(p.to_string_lossy().into_owned()),
+        }
+        .py_str()
+    };
+    let bare = PyExc::OSError {
+        errno,
+        filename: None,
+    };
+    // `named(p)` is `<bare>: <repr(p)>`; the second repr follows ` -> `.
+    let tail = named(dst)[bare.py_str().len() + 2..].to_string();
+    PyExc::Other(bare.type_name(), format!("{} -> {tail}", named(src)))
+}
+
+/// `os.replace(src, dst)`.
+fn replace(src: &Path, dst: &Path) -> Result<(), PyExc> {
+    fs::rename(src, dst).map_err(|e| os_error2(e, src, dst))
+}
+
 /// Removes the staging folder however the install ends (`finally: shutil.rmtree(tmp)`).
 struct TempDir(PathBuf);
 
@@ -485,7 +517,8 @@ fn download_and_place(
     }
     let staged = tmp.0.join("rtk");
     extract_rtk(&archive, &staged, deps)?;
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
+        .map_err(|e| os_error(e, &staged))?;
     if fs::symlink_metadata(vdir).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(install_error(format!(
             "{} is a symlink",
@@ -507,10 +540,10 @@ fn download_and_place(
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(os_error(e, &vdir.join(".sha256"))),
         }
-        fs::rename(&staged, vdir.join("rtk"))?;
+        replace(&staged, &vdir.join("rtk"))?;
         let marker = tmp.0.join("marker");
-        fs::write(&marker, format!("{expected}\n"))?;
-        fs::rename(&marker, vdir.join(".sha256"))?;
+        fs::write(&marker, format!("{expected}\n")).map_err(|e| os_error(e, &marker))?;
+        replace(&marker, &vdir.join(".sha256"))?;
         Ok(())
     })();
     if placed.is_err() && created {

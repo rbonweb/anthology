@@ -146,7 +146,13 @@ pub fn download(
 /// it on any error (module docs).
 pub fn fetch_to_path(fetch: &dyn Fetch, url: &str, path: &Path, timeout: f64) -> Result<(), PyExc> {
     let result = File::create(path)
-        .map_err(PyExc::from)
+        .map_err(|e| {
+            let mut exc = PyExc::from(e);
+            if let PyExc::OSError { filename, .. } = &mut exc {
+                *filename = Some(path.to_string_lossy().into_owned());
+            }
+            exc
+        })
         .and_then(|mut file| {
             fetch.fetch(url, &mut file, timeout)?;
             file.flush()?;
@@ -256,8 +262,8 @@ pub struct ProxyEnv {
 
 impl ProxyEnv {
     /// `getproxies_environment()`'s `https` and `no` entries: first every `<x>_proxy` variable
-    /// in any case with a non-empty value, then the lower-case spellings again, where an empty
-    /// value removes the entry.
+    /// in any case with a non-empty value, then again every name ending in exactly `_proxy`
+    /// (`HTTPS_proxy`, `https_proxy`), where an empty value removes the entry.
     pub fn from_env(env: &Env) -> ProxyEnv {
         let mut out = ProxyEnv::default();
         for (name, value) in env.iter() {
@@ -273,17 +279,19 @@ impl ProxyEnv {
                 _ => {}
             }
         }
-        for (name, slot) in [
-            ("https_proxy", &mut out.https),
-            ("no_proxy", &mut out.no_proxy),
-        ] {
-            if let Some(value) = env.get(name) {
-                *slot = if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
+        for (name, value) in env.iter() {
+            let (Some(name), Some(value)) = (name.to_str(), value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with("_proxy") {
+                continue;
             }
+            let slot = match name.to_ascii_lowercase().as_str() {
+                "https_proxy" => &mut out.https,
+                "no_proxy" => &mut out.no_proxy,
+                _ => continue,
+            };
+            *slot = (!value.is_empty()).then(|| value.to_string());
         }
         out
     }
@@ -378,7 +386,11 @@ impl UreqFetch {
         }
     }
 
-    /// Test only: trust exactly the DER certificates `cas` instead of the OS store.
+    /// **Test only**: trust exactly the DER certificates `cas` (the testkit CA,
+    /// `TestServer::ca_der()`) instead of the OS store. macOS's verifier refuses the testkit's
+    /// 100-year leaf, so the TLS tests need this seam; nothing outside `tests/` calls it, and
+    /// production keeps `RootCerts::PlatformVerifier`.
+    #[doc(hidden)]
     pub fn with_test_roots(mut self, cas: &[&[u8]]) -> UreqFetch {
         let certs = cas
             .iter()
@@ -437,17 +449,31 @@ fn duration(timeout: f64) -> Result<Duration, PyExc> {
 
 impl UreqOpener {
     /// The agent configuration for one request to `host` with `remaining` of the global
-    /// budget left.
-    pub fn config(&self, host: &str, timeout: Duration, remaining: Duration) -> Config {
+    /// budget left. A proxy setting ureq cannot parse is an error, never a direct connection
+    /// (it would bypass the user's proxy policy); the text does not echo the setting, which may
+    /// hold credentials.
+    ///
+    /// `config_builder()` starts from ureq's `Config::default()`, which reads the process
+    /// environment's proxy variables; `.proxy(...)` below always replaces that, so only the
+    /// [`Env`] decides (GC-18).
+    pub fn config(
+        &self,
+        host: &str,
+        timeout: Duration,
+        remaining: Duration,
+    ) -> Result<Config, PyExc> {
         let tls = TlsConfig::builder()
             .provider(TlsProvider::Rustls)
             .root_certs(self.roots.clone())
             .build();
-        let proxy = self
-            .proxy
-            .proxy_for(host)
-            .and_then(|authority| ureq::Proxy::new(&format!("http://{authority}")).ok());
-        Agent::config_builder()
+        let proxy = match self.proxy.proxy_for(host) {
+            None => None,
+            Some(authority) => Some(
+                ureq::Proxy::new(&format!("http://{authority}"))
+                    .map_err(|_| url_error("the https proxy setting is not a valid proxy URL"))?,
+            ),
+        };
+        Ok(Agent::config_builder()
             .tls_config(tls)
             .https_only(true)
             .max_redirects(0)
@@ -460,9 +486,12 @@ impl UreqOpener {
             .timeout_per_read(Some(timeout))
             .timeout_per_write(Some(timeout))
             .timeout_global(Some(remaining))
-            .build()
+            .build())
     }
 }
+
+/// urllib's `HTTPRedirectHandler.max_repeats`: the same URL at most this many times.
+pub const MAX_REPEATS: usize = 4;
 
 impl Opener for UreqOpener {
     fn open(&self, url: &str, timeout: f64) -> Result<Box<dyn Response>, PyExc> {
@@ -470,14 +499,15 @@ impl Opener for UreqOpener {
         let total = duration(4.0 * timeout)?;
         let start = Instant::now();
         let mut current = url.to_string();
-        let mut hops = 0;
+        // `redirect_dict`: how often each redirect target was visited (none before the first).
+        let mut visited: Vec<(String, usize)> = Vec::new();
         loop {
             let remaining = total.saturating_sub(start.elapsed());
             if remaining.is_zero() {
                 return Err(timed_out());
             }
             let agent: Agent = self
-                .config(url_host(&current), per_op, remaining)
+                .config(url_host(&current), per_op, remaining)?
                 .new_agent();
             let resp = agent.get(&current).call().map_err(ureq_error)?;
             let status = resp.status().as_u16();
@@ -491,8 +521,13 @@ impl Opener for UreqOpener {
                 let Some(location) = location else {
                     return Err(http_error(status));
                 };
-                hops += 1;
-                if hops > MAX_REDIRECTS {
+                // `http_error_302`: the https check (`redirect_request`), then the loop check.
+                let next = redirect_target(&current, &location)?;
+                let seen = visited
+                    .iter()
+                    .find(|(u, _)| *u == next)
+                    .map_or(0, |(_, n)| *n);
+                if !visited.is_empty() && (seen >= MAX_REPEATS || visited.len() >= MAX_REDIRECTS) {
                     return Err(PyExc::Other(
                         "HTTPError",
                         format!(
@@ -503,7 +538,11 @@ impl Opener for UreqOpener {
                         ),
                     ));
                 }
-                current = redirect_target(&current, &location)?;
+                match visited.iter_mut().find(|(u, _)| *u == next) {
+                    Some((_, n)) => *n += 1,
+                    None => visited.push((next.clone(), 1)),
+                }
+                current = next;
                 continue;
             }
             if !(200..300).contains(&status) {
@@ -618,11 +657,14 @@ mod tests {
     #[test]
     fn the_production_agent_uses_the_platform_verifier() {
         let fetch = UreqFetch::new(&Env::default());
-        let config = fetch.opener().config(
-            "github.com",
-            Duration::from_secs(5),
-            Duration::from_secs(20),
-        );
+        let config = fetch
+            .opener()
+            .config(
+                "github.com",
+                Duration::from_secs(5),
+                Duration::from_secs(20),
+            )
+            .expect("config");
         assert!(matches!(
             config.tls_config().root_certs(),
             RootCerts::PlatformVerifier
@@ -645,11 +687,43 @@ mod tests {
         let fetch = UreqFetch::new(&Env::default()).with_test_roots(&[b"\x30\x00"]);
         let config = fetch
             .opener()
-            .config("h", Duration::from_secs(1), Duration::from_secs(4));
+            .config("h", Duration::from_secs(1), Duration::from_secs(4))
+            .expect("config");
         assert!(matches!(
             config.tls_config().root_certs(),
             RootCerts::Specific(_)
         ));
+    }
+
+    #[test]
+    fn an_unparsable_proxy_fails_closed() {
+        let env = Env::default().with("HTTPS_PROXY", "http://user:secret@[bad");
+        let err = UreqFetch::new(&env)
+            .opener()
+            .config("github.com", Duration::from_secs(1), Duration::from_secs(4))
+            .map(|_| ())
+            .expect_err("an error, not a direct connection");
+        assert_eq!(
+            err.py_str(),
+            "<urlopen error the https proxy setting is not a valid proxy URL>"
+        );
+        assert!(!err.py_str().contains("secret"));
+    }
+
+    #[test]
+    fn proxy_names_ending_in_lower_case_proxy_override() {
+        let p = ProxyEnv::from_env(
+            &Env::default()
+                .with("HTTPS_PROXY", "http://up:1")
+                .with("HTTPS_proxy", "http://mixed:2"),
+        );
+        assert_eq!(p.https.as_deref(), Some("http://mixed:2"));
+        let p = ProxyEnv::from_env(
+            &Env::default()
+                .with("HTTPS_PROXY", "http://up:1")
+                .with("HTTPS_proxy", ""),
+        );
+        assert_eq!(p.https, None);
     }
 
     #[test]

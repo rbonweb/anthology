@@ -5,10 +5,12 @@
 //! installed. It runs **one** `sh <guard>/hooks/bootstrap.sh session --plugin guardrails
 //! --quiet --budget N` and never retries, so a session start makes at most one download here:
 //! - stdin is `/dev/null`, stderr is discarded, and the environment is exactly the [`Env`];
-//! - the script runs in its own process group. The bootstrap's own watchdog bounds its
-//!   download by N; this side adds a hard deadline of N + [`GRACE_SECS`] for the hash, extract
-//!   and probe, after which the whole group is killed (`kill -KILL -- -<pgid>`, so a hung curl
-//!   or `sleep` dies with the shell) and the child is reaped;
+//! - the script runs as the child of a small group leader ([`LEADER`]) in a process group of
+//!   its own. When the bootstrap ends, the leader prints its exit code and kills the whole
+//!   group, so nothing it started outlives the call on any path. The bootstrap's own watchdog
+//!   bounds its download by N; this side adds a hard deadline of N + [`GRACE_SECS`] for the
+//!   hash, extract and probe, after which the group gets `TERM` (the bootstrap's traps remove
+//!   its staging folder), then `KILL`, and the leader is reaped;
 //! - the answer is the first stdout line starting `status=` (GC-14): `present` and `installed`
 //!   count only with exit 0; `failed:<reason>` keeps the reason as printable ASCII (others
 //!   become `?`), cut to [`REASON_MAX`] characters.
@@ -49,6 +51,8 @@ const LINGER: Duration = Duration::from_millis(200);
 
 /// The guard root has no bootstrap (R7).
 pub const SKIPPED_NO_BOOTSTRAP: &str = "guardrails bootstrap not found";
+/// Setup's `skipped: guardrails not found` (GC-14), for callers that found no guard root.
+pub const SKIPPED_NOT_FOUND: &str = "guardrails not found";
 /// The hard deadline passed (R7).
 pub const FAILED_TIMED_OUT: &str = "the bootstrap timed out";
 /// The bootstrap could not be started, or printed no status line (R7).
@@ -101,10 +105,14 @@ pub fn ensure_with_grace(
     if !script.is_file() {
         return GuardBinaryStatus::Skipped(SKIPPED_NO_BOOTSTRAP);
     }
-    let deadline = Instant::now() + Duration::from_secs(budget_secs) + grace;
+    let start = Instant::now();
+    let deadline = start
+        .checked_add(Duration::from_secs(budget_secs).saturating_add(grace))
+        .unwrap_or_else(|| start + Duration::from_secs(365 * 86400));
     let budget = budget_secs.to_string();
     let mut cmd = Command::new("/bin/sh");
-    cmd.arg(&script)
+    cmd.args(["-c", LEADER, "anthology-bootstrap"])
+        .arg(&script)
         .args(["session", "--plugin", "guardrails", "--quiet", "--budget"])
         .arg(&budget)
         .env_clear()
@@ -141,56 +149,74 @@ pub fn ensure_with_grace(
         *done.lock().unwrap_or_else(|e| e.into_inner()) = true;
     }
 
-    let mut exited: Option<(i32, Instant)> = None;
-    let mut timed_out = false;
-    let mut reader_done;
-    loop {
-        reader_done = *done.lock().unwrap_or_else(|e| e.into_inner());
-        if exited.is_none() {
-            match child.try_wait() {
-                Ok(Some(status)) => exited = Some((status.code().unwrap_or(-1), Instant::now())),
-                Ok(None) => {}
-                Err(_) => exited = Some((-1, Instant::now())),
-            }
+    let reader_done = || *done.lock().unwrap_or_else(|e| e.into_inner());
+    let mut exited_at: Option<Instant> = None;
+    let timed_out = loop {
+        if exited_at.is_none() && !matches!(child.try_wait(), Ok(None)) {
+            exited_at = Some(Instant::now());
         }
-        match exited {
-            Some(_) if reader_done => break,
-            // The shell is gone but something it started still holds stdout.
-            Some((_, at)) if at.elapsed() >= LINGER => break,
+        match exited_at {
+            Some(_) if reader_done() => break false,
+            // The leader is gone (its last act killed the group), but something that left the
+            // group still holds stdout: do not wait for it.
+            Some(at) if at.elapsed() >= LINGER => break false,
             _ => {}
         }
-        if Instant::now() >= deadline {
-            timed_out = exited.is_none();
-            break;
+        if exited_at.is_none() && Instant::now() >= deadline {
+            break true;
         }
         thread::sleep(Duration::from_millis(10));
-    }
-    // Nothing the bootstrap started outlives this call. The group is killed only while it is
-    // known to exist (the unreaped shell, or a member still holding stdout), so its id cannot
-    // have been reused.
-    if exited.is_none() || !reader_done {
-        kill_group(pgid);
-    }
-    if exited.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    };
     if timed_out {
+        // The leader is not reaped yet, so the group id is still reserved: TERM lets the
+        // bootstrap's traps clean up its staging folder, then KILL ends whatever is left.
+        signal_group(pgid, "TERM");
+        thread::sleep(TERM_WAIT);
+        signal_group(pgid, "KILL");
+        let _ = child.wait();
         return GuardBinaryStatus::Failed(FAILED_TIMED_OUT.into());
     }
-    let code = exited.map_or(-1, |(c, _)| c);
+    // A reader that is merely slow still gets its last bytes copied.
+    let until = Instant::now() + LINGER;
+    while !reader_done() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(5));
+    }
     let stdout = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    parse_status(&stdout, code)
+    parse_status(&stdout, exit_code(&stdout))
 }
 
-/// Kills process group `pgid` with the POSIX `kill` utility (safe code: no libc here).
-fn kill_group(pgid: u32) {
+/// The group leader: runs the bootstrap as its child, reports the child's exit code on its own
+/// line, then kills its whole process group (itself included), so nothing the bootstrap
+/// started — a watchdog, a downloader, a `sleep` — outlives the call, whatever path the
+/// bootstrap took. Only a process that left the group (`setsid`) escapes.
+const LEADER: &str = "script=$1; shift; /bin/sh \"$script\" \"$@\"; rc=$?; \
+                      printf '\\nanthology-bootstrap-exit=%s\\n' \"$rc\"; kill -9 0";
+
+/// The marker [`LEADER`] prints the bootstrap's exit code after.
+const EXIT_MARK: &str = "anthology-bootstrap-exit=";
+
+/// How long a timed-out group gets between TERM and KILL.
+const TERM_WAIT: Duration = Duration::from_millis(200);
+
+/// The bootstrap's exit code from [`LEADER`]'s line; -1 when it is missing.
+fn exit_code(stdout: &[u8]) -> i32 {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix(EXIT_MARK))
+        .and_then(|c| c.trim().parse().ok())
+        .unwrap_or(-1)
+}
+
+/// Sends `signal` to process group `pgid` with the POSIX `kill` utility (safe code: no libc).
+fn signal_group(pgid: u32, signal: &str) {
     let group = format!("-{pgid}");
     let _ = Command::new("/bin/sh")
         .args([
             "-c",
-            "kill -KILL -- \"$1\" 2>/dev/null || kill -KILL \"$1\" 2>/dev/null",
+            "kill -s \"$1\" -- \"$2\" 2>/dev/null || kill -s \"$1\" \"$2\" 2>/dev/null",
             "sh",
+            signal,
             &group,
         ])
         .env_clear()
@@ -292,9 +318,14 @@ pub fn anthology_binary_check_with(
     if !installed {
         return not_installed();
     }
+    // As the bootstrap compares `$(cat <marker>)`: trailing newlines go, nothing else.
     let marker = |name: &str| {
         fs::read(vdir.join(name))
-            .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+            .map(|b| {
+                String::from_utf8_lossy(&b)
+                    .trim_end_matches('\n')
+                    .to_string()
+            })
             .unwrap_or_default()
     };
     let expected = lock.sha256.get(&target).map(String::as_str).unwrap_or("");

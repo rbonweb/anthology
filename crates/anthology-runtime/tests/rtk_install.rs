@@ -1017,11 +1017,13 @@ mod default_fetch_test {
         // ureq follows no redirect itself (every hop goes through `redirect_target`), and the
         // agent refuses plain http.
         let opener = anthology_runtime::fetch::UreqFetch::new(&Env::default()).opener();
-        let config = opener.config(
-            "github.com",
-            Duration::from_secs(5),
-            Duration::from_secs(20),
-        );
+        let config = opener
+            .config(
+                "github.com",
+                Duration::from_secs(5),
+                Duration::from_secs(20),
+            )
+            .expect("config");
         assert_eq!(config.max_redirects(), 0);
         assert!(config.https_only());
         assert!(matches!(

@@ -35,6 +35,8 @@ pub const RTK_TEST_BODY: &[u8] = b"#!/bin/sh\necho fake-rtk\n";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawKind {
     File(Vec<u8>),
+    /// A regular file with the old-style `\0` typeflag (tarfile reads `name/` as a folder).
+    OldFile(Vec<u8>),
     Symlink(String),
     Hardlink(String),
     Dir,
@@ -58,6 +60,13 @@ pub fn raw_tar_gz(members: &[(&str, RawKind)]) -> Vec<u8> {
         let data: &[u8] = match kind {
             RawKind::File(payload) => {
                 h.set_entry_type(tar::EntryType::Regular);
+                h.set_mode(0o644);
+                h.set_size(payload.len() as u64);
+                payload
+            }
+            RawKind::OldFile(payload) => {
+                // The crate writes `\0` back as `0`: set the typeflag byte itself.
+                h.as_old_mut().linkflag = [0];
                 h.set_mode(0o644);
                 h.set_size(payload.len() as u64);
                 payload

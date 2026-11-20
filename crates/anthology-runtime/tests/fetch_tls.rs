@@ -89,12 +89,43 @@ fn a_plain_http_url_is_refused_without_a_request() {
 }
 
 #[test]
-fn too_many_redirects_stop() {
+fn a_redirect_loop_stops_as_urllib_does() {
+    // urllib: the same target at most MAX_REPEATS times, so the 5th response raises.
     let server = TestServer::https();
     server.route("/loop", Route::redirect(&server.url("/loop")));
     let err = get(&trusting(&Env::default()), &server.url("/loop"), 5.0).unwrap_err();
     assert_eq!(err.type_name(), "HTTPError");
+    assert!(err.py_str().starts_with(
+        "HTTP Error 302: The HTTP server returned a redirect error that would lead to an \
+         infinite loop.\n"
+    ));
+    assert_eq!(server.requests().len(), fetch::MAX_REPEATS + 1);
+}
+
+#[test]
+fn a_long_redirect_chain_stops_after_max_redirects() {
+    // urllib: at most MAX_REDIRECTS distinct targets; the 11th redirect raises.
+    let server = TestServer::https();
+    for i in 0..20 {
+        server.route(
+            &format!("/r{i}"),
+            Route::redirect(&server.url(&format!("/r{}", i + 1))),
+        );
+    }
+    let err = get(&trusting(&Env::default()), &server.url("/r0"), 5.0).unwrap_err();
+    assert_eq!(err.type_name(), "HTTPError");
     assert_eq!(server.requests().len(), fetch::MAX_REDIRECTS + 1);
+    // Ten hops are fine.
+    let server = TestServer::https();
+    for i in 0..10 {
+        server.route(
+            &format!("/r{i}"),
+            Route::redirect(&server.url(&format!("/r{}", i + 1))),
+        );
+    }
+    server.route("/r10", Route::ok(b"end"));
+    let got = get(&trusting(&Env::default()), &server.url("/r0"), 5.0).expect("10 hops");
+    assert_eq!(got, b"end");
 }
 
 #[test]
