@@ -434,11 +434,12 @@ class DiffTest(unittest.TestCase):
         self.assertIn('+      "Bash(rtk *)"', diff)
 
 
-SECRETS = ("hunter2", "sk-live-123", "s3cr3t-cookie", "Bearer abc.def")
+SECRETS = ("hunter2", "sk-live-123", "s3cr3t-cookie", "Bearer abc.def", "XYZSECRET", "opus")
 
 
 class RedactTest(unittest.TestCase):
-    """Setup and remove diffs never show a value under `env` or a secret-looking key."""
+    """Setup and remove diffs show values only where setup changes them: never one under `env`,
+    a secret-looking key or any other key."""
 
     def check(self, text, diff_lines=(), undo_lines=()):
         """The setup diff and the remove diff of `text`; checks both carry the change, no secret
@@ -458,13 +459,17 @@ class RedactTest(unittest.TestCase):
 
     def test_minified_file(self):
         text = json.dumps({"env": {"API_TOKEN": "hunter2", "PLAIN": "sk-live-123"},
+                           "model": "opus",
                            "permissions": {"allow": ["Bash(ls)"]},
-                           "mcp": {"headers": {"Authorization": "Bearer abc.def"}}},
+                           "mcp": {"headers": {"Authorization": "Bearer abc.def"}},
+                           "hooks": {"Stop": [{"command": "curl https://hooks.example/XYZSECRET"}]},
+                           "proxyUrl": "http://u:s3cr3t-cookie@proxy"},
                           separators=(",", ":"))
         diff, undo = self.check(text)
         for shown in (diff, undo):
-            for part in ('"API_TOKEN":"<redacted>"', '"PLAIN":"<redacted>"',
-                         '"Authorization":"<redacted>"', '"Bash(ls)","Bash(rtk *)"'):
+            for part in ('"API_TOKEN":"<redacted>"', '"PLAIN":"<redacted>"', '"model":"<redacted>"',
+                         '"Authorization":"<redacted>"', '"command":"<redacted>"',
+                         '"proxyUrl":"<redacted>"', '"Bash(ls)","Bash(rtk *)"'):
                 self.assertIn(part, shown)
 
     def test_one_line_env_as_the_last_key(self):
@@ -484,13 +489,19 @@ class RedactTest(unittest.TestCase):
         self.check(text, diff_lines=["+  },"], undo_lines=["-  },"])
         self.assertIn('    "SECRET": "<redacted>"', settings_patch.redact(text).splitlines())
 
+    def test_pretty_printed_file_with_a_one_line_secret_as_the_last_key(self):
+        text = json.dumps({"permissions": {"allow": ["Bash(ls)"]},
+                           "apiKeyHelper": "/bin/echo sk-live-123"}, indent=2) + "\n"
+        self.check(text, diff_lines=['-  "apiKeyHelper": "<redacted>"', '+  "apiKeyHelper": "<redacted>",'],
+                   undo_lines=['-  "apiKeyHelper": "<redacted>",', '+  "apiKeyHelper": "<redacted>"'])
+
     def test_redaction_keeps_keys_layout_and_line_count(self):
         text = json.dumps({"env": {"A": "1", "B": {"c": [1, "x"]}}, "model": "opus",
                            "githubToken": "hunter2"}, indent=2) + "\n"
         out = settings_patch.redact(text)
         self.assertEqual(len(out.splitlines()), len(text.splitlines()))
         self.assertEqual(json.loads(out), {"env": {"A": "<redacted>", "B": {"c": ["<redacted>", "<redacted>"]}},
-                                           "model": "opus", "githubToken": "<redacted>"})
+                                           "model": "<redacted>", "githubToken": "<redacted>"})
         self.assertEqual(settings_patch.redact(""), "")
 
     def test_diff_without_secrets_is_unchanged_by_redaction(self):
@@ -500,12 +511,19 @@ class RedactTest(unittest.TestCase):
                                              "settings.json", lineterm="", n=0))
         self.assertEqual(diff, raw)
 
-    def test_no_setup_op_touches_a_redacted_key(self):
+    def test_shown_paths_stay_visible(self):
+        text = json.dumps({"permissions": {"allow": ["Bash(ls)"], "deny": ["Read(x)"], "ask": ["y"]},
+                           "worktree": {"baseRef": "fresh", "other": "z"},
+                           "list": [{"permissions": {"allow": ["hidden"]}}]}, indent=2)
+        self.assertEqual(json.loads(settings_patch.redact(text)),
+                         {"permissions": {"allow": ["Bash(ls)"], "deny": ["Read(x)"], "ask": ["<redacted>"]},
+                          "worktree": {"baseRef": "fresh", "other": "<redacted>"},
+                          "list": [{"permissions": {"allow": ["<redacted>"]}}]})
+
+    def test_every_setup_op_is_on_a_shown_path(self):
         """Otherwise the diff would hide a change setup makes."""
         for op in settings_patch.setup_ops(PLUGIN_ROOT):
-            for key in op["path"]:
-                self.assertNotEqual(key.lower(), "env", op)
-                self.assertIsNone(settings_patch._SECRET_KEY.search(key), op)
+            self.assertIn(tuple(op["path"]), settings_patch.SHOWN_PATHS, op)
 
 
 class OpsVersionTest(unittest.TestCase):

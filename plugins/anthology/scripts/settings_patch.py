@@ -15,8 +15,8 @@ Ops are JSON-serialisable dicts:
 never ours) and records what is needed to undo each one exactly: the containers it created,
 the raw text of an empty container it filled, and the previous value of a replaced key.
 `revert(text, planned_ops)` removes only those entries, in reverse order. Every diff shown to
-the user (and so to Claude) has the values under `env` and under secret-looking keys replaced
-by `"<redacted>"`, in any layout. `ops_version(ops)` fingerprints the op set, so session start
+the user (and so to Claude) shows values only where setup makes its changes; every other value
+(`env`, tokens, hook commands, URLs, ...) reads `"<redacted>"`, in any layout. `ops_version(ops)` fingerprints the op set, so session start
 can tell when a release changed it. Python stdlib only (3.9+).
 """
 from __future__ import annotations
@@ -44,9 +44,8 @@ _REPLACEABLE_TAGS = (TAG_PLUGIN_READ, TAG_MEM_SAVE)
 # any change to the list itself (a new rule, a new guard_rules entry) changes the version anyway.
 OPS_VERSION = 1
 REDACTED = "<redacted>"
-# Keys whose values never appear in a diff (besides everything under `env`).
-_SECRET_KEY = re.compile(r"(?i)token|secret|passw|pwd|api[-_]?key|auth|credential|private[-_]?key|"
-                         r"cookie|bearer")
+# The only places whose values a diff shows: where setup makes its changes.
+SHOWN_PATHS = (("permissions", "allow"), ("permissions", "deny"), ("worktree", "baseRef"))
 
 _WS = " \t\r\n"
 _STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"', re.S)
@@ -413,38 +412,27 @@ def _run(text, ops):
     return text, planned
 
 
-def _leaves(node, out):
+def _hidden_leaves(node, path, out):
+    """The string and scalar nodes outside `SHOWN_PATHS` (an array item adds `[]` to the path)."""
+    if path in SHOWN_PATHS:
+        return
     if node.kind == "object":
         for m in node.items:
-            _leaves(m.value, out)
+            _hidden_leaves(m.value, path + (m.key,), out)
     elif node.kind == "array":
         for item in node.items:
-            _leaves(item, out)
+            _hidden_leaves(item, path + ("[]",), out)
     else:
         out.append(node)
 
 
-def _secret_leaves(node, out):
-    """The string and scalar nodes under an `env` key or a secret-looking key, at any depth."""
-    if node.kind == "array":
-        for item in node.items:
-            _secret_leaves(item, out)
-    elif node.kind == "object":
-        for m in node.items:
-            if m.key.lower() == "env" or _SECRET_KEY.search(m.key):
-                _leaves(m.value, out)
-            else:
-                _secret_leaves(m.value, out)
-
-
 def redact(text):
-    """`text` with every value under `env` or a secret-looking key replaced by `"<redacted>"`.
-    Keys, layout and line count are kept, so a diff of two redacted texts stays exact for the
-    keys setup changes (none of them is redacted)."""
+    """`text` with every value outside `SHOWN_PATHS` replaced by `"<redacted>"`. Keys, layout and
+    line count are kept, so a diff of two redacted texts stays exact for what setup changes."""
     if _is_blank(text):
         return text
     leaves = []
-    _secret_leaves(_parse(text), leaves)
+    _hidden_leaves(_parse(text), (), leaves)
     new = json.dumps(REDACTED)
     for node in sorted(leaves, key=lambda n: n.start, reverse=True):
         text = text[:node.start] + new + text[node.end:]
@@ -452,7 +440,7 @@ def redact(text):
 
 
 def _diff(old, new):
-    """The unified diff shown to the user (and Claude): secrets are redacted on both sides."""
+    """The unified diff shown to the user (and Claude), redacted on both sides."""
     if old == new:
         return ""
     return "\n".join(difflib.unified_diff(redact(old).splitlines(), redact(new).splitlines(),

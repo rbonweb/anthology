@@ -107,13 +107,17 @@ def _setup_warning(env, root):
 
 
 def _ops_warning(env, root, current):
-    """I6: setup's settings op set differs from the one setup last applied (a new release).
-    Only a note: settings change only through setup's confirmed diff."""
+    """I6: setup's settings ops changed since setup last ran (a new release) and are not all in
+    settings.json. Only a note: settings change only through setup's confirmed diff."""
     try:
-        version = settings_patch.ops_version(settings_patch.setup_ops(root, env=env))
-    except (ValueError, OSError):  # an unusable plugin root or no guardrails: setup reports those
+        ops = settings_patch.setup_ops(root, env=env)
+        if current.get("settings_ops_version") == settings_patch.ops_version(ops):
+            return None
+        ops = [op for op in ops if op.get("tag") != settings_patch.TAG_PLUGIN_READ]  # MOVED's job
+        pending = settings_patch.plan(settings_patch.read_text(settings_patch.settings_path(env)), ops)
+    except Exception:  # unusable plugin root, broken guardrails, bad settings: reported elsewhere
         return None
-    return None if current.get("settings_ops_version") == version else OPS_CHANGED
+    return OPS_CHANGED if pending else None
 
 
 def _reconcile_rtk(root, data_dir):

@@ -314,7 +314,32 @@ class OpsVersionTest(SessionCase):
         write(self.config / "settings.json", json.dumps(
             {"permissions": {"allow": [settings_patch.plugin_read_rule(root)]}}))
         out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
-        self.assertNotIn(OPS_CHANGED, out.get("systemMessage", "").splitlines())
+        self.assertNotIn("systemMessage", out)
+
+    def test_missing_or_broken_guardrails_add_no_line_of_their_own(self):
+        self.mark_setup()
+        state.write(settings_ops_version="1-0000000000000000")
+        for exc in (FileNotFoundError("anthology-guardrails plugin not found"), ImportError("x"),
+                    AttributeError("x"), SyntaxError("x")):
+            with mock.patch.object(settings_patch, "setup_ops", side_effect=exc):
+                self.assertNotIn("systemMessage", self.go(), exc)
+
+    def test_changed_version_with_every_op_already_present_is_quiet(self):
+        """Nothing to review (e.g. setup ran in a project whose guardrails gave other rules)."""
+        self.mark_setup()
+        path = self.config / "settings.json"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(settings_patch.apply(text, settings_patch.setup_ops(PLUGIN))[0], encoding="utf-8")
+        state.write(settings_ops_version="1-0000000000000000")
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_a_moved_plugin_alone_is_only_the_moved_line(self):
+        self.mark_setup()
+        path = self.config / "settings.json"
+        ops = [op for op in settings_patch.setup_ops(PLUGIN) if op.get("tag") != settings_patch.TAG_PLUGIN_READ]
+        path.write_text(settings_patch.apply("{}", ops)[0], encoding="utf-8")
+        state.write(settings_ops_version="1-0000000000000000")
+        self.assertEqual(self.go()["systemMessage"].splitlines(), [MOVED])
 
     def test_setup_apply_records_the_version_session_start_expects(self):
         import anthology_setup
