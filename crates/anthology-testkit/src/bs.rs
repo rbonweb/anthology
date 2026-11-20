@@ -735,19 +735,17 @@ pub fn run_argv(
         let _ = tx2.send((2, v));
     });
     let deadline = start + timeout;
-    let mut status = None;
     let mut timed_out = false;
-    while status.is_none() {
-        if let Some(s) = child.try_wait().unwrap() {
-            status = Some(s);
-        } else if Instant::now() >= deadline {
+    while matches!(child.try_wait(), Ok(None)) {
+        if Instant::now() >= deadline {
             timed_out = true;
             kill_group(pgid);
-            status = Some(child.wait().unwrap());
-        } else {
-            std::thread::sleep(Duration::from_millis(5));
+            break;
         }
+        std::thread::sleep(Duration::from_millis(5));
     }
+    // Reaps it (already exited, or killed above).
+    let status = child.wait().expect("wait for the child");
     let (mut stdout, mut stderr) = (None, None);
     while stdout.is_none() || stderr.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -773,7 +771,6 @@ pub fn run_argv(
     let elapsed = start.elapsed();
     // Nothing of the run may outlive it.
     kill_group(pgid);
-    let status = status.unwrap();
     Run {
         code: status.code(),
         signal: status.signal(),

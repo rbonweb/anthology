@@ -217,11 +217,13 @@ proptest! {
         // The scan reads raw keys, so this holds for keys written without `\u` escapes, as
         // Claude Code's serializer writes them (design §9.3).
         let escaped = p.windows(2).any(|w| w == b"\\u");
-        if want && !escaped && let Ok(v) = json::loads(&String::from_utf8_lossy(&p)) {
-            if let Some(obj) = v.as_object() {
-                let t = obj.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
-                prop_assert!(READONLY.contains(&t), "allowed {:?}", String::from_utf8_lossy(&p));
-            }
+        if want
+            && !escaped
+            && let Ok(v) = json::loads(&String::from_utf8_lossy(&p))
+            && let Some(obj) = v.as_object()
+        {
+            let t = obj.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
+            prop_assert!(READONLY.contains(&t), "allowed {:?}", String::from_utf8_lossy(&p));
         }
     }
 }
