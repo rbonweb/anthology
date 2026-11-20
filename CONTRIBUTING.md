@@ -41,9 +41,11 @@ You need git, Docker, Python 3 and Node 22 or newer. You do not need Rust, Chrom
 2. Run the tests from the repo root, in the pinned image, the way CI does:
 
    ```sh
-   docker run --rm -v "$PWD":/w -w /w "$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)" \
+   docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w -w /w "$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)" \
      sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
    ```
+
+   `PYTHONDONTWRITEBYTECODE=1` keeps the container, which runs as root, from leaving root-owned `__pycache__` folders in your checkout. Do not add `-u`: a guard test needs the running user to exist in the container's passwd file.
 
    Then again with `ci/images/python39.Dockerfile`, because the runtime scripts must work on Python 3.9.
 

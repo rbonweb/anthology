@@ -24,11 +24,15 @@ More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECIS
    /plugin marketplace add rbonweb/anthology
    ```
 
+   From a terminal, the same step is `claude plugin marketplace add rbonweb/anthology`.
+
 2. Install the plugin. This also installs `anthology-guardrails` and `anthology-superpowers`:
 
    ```text
    /plugin install anthology@anthology
    ```
+
+   From a terminal: `claude plugin install anthology@anthology`.
 
 3. Turn on auto-update for the `anthology` marketplace in `/plugin`. Third-party marketplaces default to off, and a plugin only reaches you when it updates.
 4. Run `/anthology:setup` in each repo you want memory in. The first run also does the one-time machine setup.
