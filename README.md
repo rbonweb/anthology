@@ -44,6 +44,7 @@ It checks your machine, then shows every change and applies them only after you 
 3. **rtk.** Downloads the pinned rtk binary and verifies its sha256.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
+   - allows `Bash(anthology-mem save *)`, so read-only agents can save their memory notes without a prompt (see [Saving notes](#saving-notes-anthology-mem-save));
    - denies `Read(...)` on the Chrome and Chromium profile folders and their parent folders, for macOS and Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
@@ -230,6 +231,17 @@ anthology-mem rebuild                   delete and rebuild the index
 
 Links are the `[[note-name]]` links in the notes, plus relations such as `supersedes` and `depends_on` declared in a note's frontmatter. There are no embeddings, so nothing needs an API key or a model download.
 
+### Saving notes: `anthology-mem save`
+
+Roster agents save their notes through one command, so a read-only agent needs no Write tool, heredoc or redirect:
+
+```text
+anthology-mem save --agent <name> --type <project|feedback|reference> --slug <topic-slug> \
+  --name '<title>' --description '<one line>' --body '<text>' [--replace]
+```
+
+It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) is refused. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
+
 ### Export and import
 
 - `/anthology:export` writes `anthology-memory-<date>.tar.gz` under `~/.claude/anthology/exports/` by default. It holds your personal notes plus the current repo's notes, and a manifest. Nothing is uploaded. The archive holds personal notes, so keep it private: if you pass `--out` with a folder inside a git work tree, export refuses.
@@ -239,7 +251,7 @@ Links are the `[[note-name]]` links in the notes, plus relations such as `supers
 
 **Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
-**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` allow, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
+**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
 ```text
 claude plugin uninstall anthology@anthology --prune -y

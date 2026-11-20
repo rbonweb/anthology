@@ -34,7 +34,7 @@ What Anthology changes outside the plugin, by who writes it:
 
 **`/anthology:setup`, after it shows the changes and you confirm once:**
 
-- `~/.claude/settings.json`: the `Bash(rtk *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
+- `~/.claude/settings.json`: the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
 - The rtk download.
 - Approving the current repo for memory. You can decline this step. It adds the two `merge=union` lines to the repo's `.gitattributes`.
 - Creating the personal-memory folder.

@@ -398,6 +398,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - `anthology-mem orphans` (notes nothing links to)
   - `anthology-mem stale` (superseded or old notes)
   - `anthology-mem rebuild`
+  - `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]` (stream I: writes one agent note with nested `metadata:`/`type:`; setup allows `Bash(anthology-mem save *)`)
 - **No embeddings (§2).** If semantic search is ever wanted, vectors can be added to this same derived index without changing the notes.
 
 **Self-learning:**
@@ -1356,3 +1357,8 @@ Each entry gives the date, the task, what was found, and what was decided. These
   - Pixel, hover, key, media-emulation and request-interception checks can't run there. They are listed in the checker's `notChecked` and covered by the eyes step: one `run` call per width captures each section, saves `shots/<w>-<nn>.jpg` through the bridge, and the agent reads them. Widths: 1440x900, 768x1024 and 390x844 at the gate; upstream's five in step 6. BrowserOS can't set the user agent over CDP, so the eyes tab opens the page with `?__neo=eyes` and the hub injects the `HeadlessChrome` shim (`motion.js` `shot()` then shows end states, as under the old checker).
   - The Stop hook is gone: SKILL.md runs `gate.mjs` by hand before finishing. The Playwright and Puppeteer brand icons are dropped, and the gate's checker-gaming regexes no longer spell the tool names.
   - `vendor/patches/design-taste-frontend.portmap.json` holds the script rule and each script's action. `vendor.py` (entry field `portmap`) fails build/check/sync when upstream adds an unmapped script, a drop script ships, a keep script differs, a shipped script is not keep/port/added, or any shipped file or path matches the Chrome-launch pattern. `tests/test_taste_bridge.py` drives `neo.mjs` against a fake harness (skipped where `node` is absent); the CI job `taste-bridge` runs it. Kept scripts ran once on host Node on a scratch page; the bridge ports ran for real in a BrowserOS Neo tab.
+- **2026-11-20, stream I (memory saves by read-only agents), verified on 2.1.311 with `claude -p` + a probe subagent:**
+  - `Bash(anthology-mem save *)` (and the legacy `Bash(anthology-mem save:*)`) auto-allows `anthology-mem save …` in a subagent, including a single- or double-quoted argument that spans lines. Still gated: `&&`/`;` compounds, redirects, `$(…)`, `PATH=`/`PYTHONPATH=` prefixes, an absolute path to the binary. Not gated: `LANG=C` prefixes, `2>&1`, `$VAR` inside double quotes.
+  - A quoted multi-line argument with a line whose first non-blank character is `#` is NOT auto-allowed, so agent notes never use `#` headings.
+  - A subagent's Bash environment carries no agent identity, so `save --agent` is self-declared (validated against the roster).
+  - Evidence and rulings: `.superpowers/sdd/PLAN/stream-i.md`.
