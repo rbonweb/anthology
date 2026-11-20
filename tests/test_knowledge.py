@@ -54,7 +54,6 @@ class KnowledgeFoldersTest(unittest.TestCase):
     def test_caveman_lands_in_task_4(self):
         self.assertIn("caveman", present())
 
-    @unittest.expectedFailure
     def test_design_taste_frontend_lands_in_task_5(self):
         self.assertIn("design-taste-frontend", present())
 

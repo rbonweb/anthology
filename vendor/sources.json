@@ -417,6 +417,22 @@
           "patch": "vendor/patches/caveman.patch"
         }
       ]
+    },
+    {
+      "name": "design-taste-frontend",
+      "repo": "https://github.com/leonxlnx/taste-skill",
+      "path": "skills/taste-skill",
+      "ref": "v2.5.1",
+      "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-taste-frontend",
+      "transform": [
+        {
+          "patch": "vendor/patches/design-taste-frontend.patch"
+        }
+      ],
+      "portmap": "vendor/patches/design-taste-frontend.portmap.json"
     }
   ]
 }

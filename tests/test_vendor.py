@@ -103,7 +103,7 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(
             {e["name"] for e in entries},
             {"superpowers", "design-skills", "frontend-design", "web-design-guidelines",
-             "ui-taste", "caveman"}
+             "ui-taste", "caveman", "design-taste-frontend"}
             | set(STRIPPED_KNOWLEDGE))
 
     def test_real_pins_match_the_plan(self):
@@ -1267,6 +1267,211 @@ class SyncAndDiffTest(FixtureCase):
         report = vendor.sync(self.root, "p", "v2", fetch=self.fetch, resolve=self.resolve)
         self.assertEqual(len(report["rejects"]), 1)
         self.assertIn("SKILL.md", report["rejects"][0])
+
+
+class PortmapTest(FixtureCase):
+    """The `portmap` entry field: the script rule applied to the pristine and the shipped tree."""
+
+    PORTMAP = "vendor/patches/taste.portmap.json"
+    NEO = "// bridge\nexport const x = 1;\n"
+    PATCH_ADD_DROP = (
+        "--- a/scripts/drop.mjs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-// drop\n-import fs from 'node:fs';\n"
+        "--- /dev/null\n+++ b/scripts/neo.mjs\n@@ -0,0 +1,2 @@\n+// bridge\n+export const x = 1;\n")
+
+    def setUp(self):
+        super().setUp()
+        real = json.loads((ROOT / "vendor/patches/design-taste-frontend.portmap.json").read_text(encoding="utf-8"))
+        self.rule, self.chrome = real["script_rule"], real["chrome_regex"]
+        self.upstream = {
+            "LICENSE": MIT_TEXT,
+            "SKILL.md": "---\nname: taste\n---\nbody\n",
+            "scripts/keep.mjs": "// keep\nimport fs from 'node:fs';\n",
+            "scripts/port.mjs": "// port\nimport fs from 'node:fs';\n",
+            "scripts/drop.mjs": "// drop\nimport fs from 'node:fs';\n",
+            "assets/lib.js": "window.x = 1;\n",
+        }
+        self.write_map()
+
+    def write_map(self, scripts=None, added=None):
+        scripts = scripts or {
+            "scripts/keep.mjs": {"action": "keep", "chrome": False, "why": "k"},
+            "scripts/port.mjs": {"action": "port", "how": "trim", "chrome": True, "why": "p", "browseros": "b"},
+            "scripts/drop.mjs": {"action": "drop", "chrome": True, "why": "d", "browseros": "b"},
+        }
+        data = {"script_rule": self.rule, "chrome_regex": self.chrome, "scripts": scripts,
+                "added": {"scripts/neo.mjs": {"chrome": False, "why": "n"}} if added is None else added}
+        write(self.root, self.PORTMAP, json.dumps(data, indent=2) + "\n")
+
+    def entry(self, files=None, patch=True):
+        return self.add_upstream("taste", files or self.upstream,
+                                 transform=[{"patch": "vendor/patches/taste.patch"}] if patch else [],
+                                 portmap=self.PORTMAP)
+
+    def data(self):
+        return json.loads((self.root / self.PORTMAP).read_text(encoding="utf-8"))
+
+    def trees(self, shipped_edit):
+        pristine, shipped = self.tmp / "p", self.tmp / "s"
+        for base in (pristine, shipped):
+            shutil.rmtree(base, ignore_errors=True)
+            for rel, text in self.upstream.items():
+                write(base, rel, text)
+        shipped_edit(shipped)
+        return pristine, shipped
+
+    def problems(self, shipped_edit):
+        pristine, shipped = self.trees(shipped_edit)
+        return vendor.portmap_problems(self.data(), pristine, shipped)
+
+    @staticmethod
+    def good(shipped):
+        (shipped / "scripts/drop.mjs").unlink()
+        write(shipped, "scripts/neo.mjs", PortmapTest.NEO)
+
+    def test_the_rule_finds_extensions_shebangs_and_node_js_only(self):
+        tree = self.tmp / "t"
+        for rel, text in {
+                "a.mjs": "", "B.MJS": "", "c.py": "", "d.sh": "", "e.ts": "", "f.txt": "#!/bin/sh\n",
+                "g.txt": "# !\n", "h.md": "# title\n", "browser.js": "window.x = 1;\n",
+                "node1.js": "const fs = require('fs');\n", "node2.js": "import fs from 'node:fs';\n",
+                "node3.js": "process.exit(1)\n", "node4.js": "const m = await import('node:fs');\n",
+                "node5.js": "import { dirname } from 'path';\n", "page.js": "const required = 1; // from 'react'\n",
+                "sub/x.cjs": ""}.items():
+            write(tree, rel, text)
+        write(tree, "bin.dat", b"\xff\xfe\x00 process.exit(1)")
+        self.assertEqual(vendor.portmap_scripts(tree, self.rule), {
+            "a.mjs", "B.MJS", "c.py", "d.sh", "e.ts", "f.txt", "node1.js", "node2.js", "node3.js", "node4.js",
+            "node5.js", "sub/x.cjs"})
+
+    def test_a_clean_shipped_tree_has_no_problems(self):
+        self.assertEqual(self.problems(self.good), [])
+
+    def test_an_upstream_script_missing_from_the_map_is_a_problem(self):
+        pristine, shipped = self.trees(self.good)
+        write(pristine, "scripts/new.mjs", "import fs from 'node:fs';\n")
+        write(shipped, "scripts/new.mjs", "import fs from 'node:fs';\n")
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/new.mjs" in p and "not in the port map" in p for p in found), found)
+
+    def test_a_mapped_script_that_is_not_upstream_is_a_problem(self):
+        pristine, shipped = self.trees(self.good)
+        (pristine / "scripts/keep.mjs").unlink()
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/keep.mjs" in p and "not upstream" in p for p in found), found)
+
+    def test_a_shipped_drop_script_is_a_problem(self):
+        found = self.problems(lambda s: write(s, "scripts/neo.mjs", self.NEO))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("scripts/drop.mjs", found[0])
+        self.assertIn("drop", found[0])
+
+    def test_a_modified_keep_script_is_a_problem(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/keep.mjs", "// keep\nimport fs from 'node:fs';\n// edited\n")
+        found = self.problems(edit)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("scripts/keep.mjs", found[0])
+        self.assertIn("byte-identical", found[0])
+
+    def test_a_missing_keep_or_port_script_is_a_problem(self):
+        for rel in ("scripts/keep.mjs", "scripts/port.mjs"):
+            def edit(shipped, rel=rel):
+                self.good(shipped)
+                (shipped / rel).unlink()
+            found = self.problems(edit)
+            self.assertTrue(any(rel in p and "not shipped" in p for p in found), (rel, found))
+
+    def test_a_ported_script_may_differ(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/port.mjs", "// ported\nimport fs from 'node:fs';\n")
+        self.assertEqual(self.problems(edit), [])
+
+    def test_the_added_script_must_ship_and_must_not_be_upstream(self):
+        found = self.problems(lambda s: (s / "scripts/drop.mjs").unlink())
+        self.assertTrue(any("scripts/neo.mjs" in p and "not shipped" in p for p in found), found)
+        pristine, shipped = self.trees(self.good)
+        write(pristine, "scripts/neo.mjs", "import fs from 'node:fs';\n")
+        found = vendor.portmap_problems(self.data(), pristine, shipped)
+        self.assertTrue(any("scripts/neo.mjs" in p and "upstream" in p for p in found), found)
+
+    def test_an_unlisted_shipped_script_is_a_problem(self):
+        def edit(shipped):
+            self.good(shipped)
+            write(shipped, "scripts/extra.py", "print(1)\n")
+            write(shipped, "assets/extra.js", "const fs = require('fs');\n")
+        found = "\n".join(self.problems(edit))
+        self.assertIn("scripts/extra.py", found)
+        self.assertIn("assets/extra.js", found)
+
+    def test_a_chrome_string_in_a_file_or_a_path_is_a_problem(self):
+        for rel, text in (("notes/a.md", "launch with --Remote-Debugging-Port=0"),
+                          ("notes/b.md", "uses Playwright"),
+                          ("notes/c.bin", b"\x00\x01 google chrome \x02"),
+                          ("notes/puppeteer.svg", "<svg/>")):
+            def edit(shipped, rel=rel, text=text):
+                self.good(shipped)
+                write(shipped, rel, text)
+            found = self.problems(edit)
+            self.assertEqual(len(found), 1, (rel, found))
+            self.assertIn(rel, found[0])
+
+    def test_headless_chrome_alone_is_not_a_chrome_launch(self):
+        self.assertEqual(self.problems(lambda s: (self.good(s), write(s, "a.md", "HeadlessChrome/ UA"))), [])
+
+    def test_build_refuses_an_unmapped_upstream_script(self):
+        files = dict(self.upstream, **{"scripts/new.mjs": "import fs from 'node:fs';\n"})
+        e = self.entry(files, patch=False)
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("scripts/new.mjs", str(ctx.exception))
+        self.assertFalse((self.root / e["target"]).exists())
+
+    def test_build_refuses_a_shipped_drop_script(self):
+        e = self.entry(patch=False)
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("scripts/drop.mjs", str(ctx.exception))
+
+    def test_a_missing_portmap_file_is_an_error(self):
+        e = self.entry(patch=False)
+        (self.root / self.PORTMAP).unlink()
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "taste", fetch=self.fetch)
+        self.assertIn("taste.portmap.json", str(ctx.exception))
+
+    def test_the_portmap_path_must_be_a_safe_json_file_under_vendor_patches(self):
+        for bad in ("../x.json", "/etc/x.json", "vendor/other/x.json", "vendor/patches/x.txt",
+                    "vendor/patches/", "vendor/patches/../x.json", 3):
+            errors = vendor.validate_sources([entry("p", portmap=bad)])
+            self.assertTrue(any("portmap" in m for m in errors), (bad, errors))
+        self.assertEqual(vendor.validate_sources([entry("p", portmap="vendor/patches/p.portmap.json")]), [])
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_check_is_clean_with_a_good_patch_and_lists_every_problem_without_one(self):
+        e = self.entry()
+        write(self.root, "vendor/patches/taste.patch", self.PATCH_ADD_DROP)
+        self.build_all([e])
+        self.assertEqual(self.check(), [])
+        e["transform"] = []
+        self.set_sources([e])
+        found = self.check()
+        self.assertTrue(any("scripts/drop.mjs" in p for p in found), found)
+        self.assertTrue(any("scripts/neo.mjs" in p for p in found), found)
+        self.assertGreaterEqual(len([p for p in found if p.startswith("taste: portmap: ")]), 2, found)
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_sync_reports_portmap_problems_without_failing_the_rebuild(self):
+        e = self.entry()
+        write(self.root, "vendor/patches/taste.patch", self.PATCH_ADD_DROP)
+        self.build_all([e])
+        write(self.pristine["taste"], "scripts/new.mjs", "import fs from 'node:fs';\n")
+        report = vendor.sync(self.root, "taste", "v2", fetch=self.fetch, resolve=lambda *_: SHA_B)
+        self.assertTrue(any("scripts/new.mjs" in p for p in report["portmap"]), report["portmap"])
 
 
 class CompatibilityTest(unittest.TestCase):

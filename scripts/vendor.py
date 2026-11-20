@@ -15,6 +15,11 @@ Needs Python 3.9+ (the macOS system python3), the standard library, and `git`
 Fetching is a function `fetch(entry) -> Path` returning a pristine checkout of the
 upstream repo, so tests can stub it with local fixture trees.
 
+A source may name a `portmap` (a json under vendor/patches/): the script rule, the keep/port/
+drop action of every upstream script and the Chrome-launch pattern. build/check/sync fail when
+upstream adds a script the map does not list, a drop script ships, a keep script differs from
+upstream, or any shipped file or path matches the pattern.
+
 A source with `url` + `checksum` (no git) is a downloaded skill folder. Its pristine copy
 is committed in vendor/snapshots/<name>/ and re-verified on every build/check/diff, so CI
 never contacts the host; only `vendor.py fetch NAME` downloads and refreshes it.
@@ -48,6 +53,7 @@ SUBTREE = "subtree"
 VENDORED_PLUGIN = "plugins/anthology-superpowers"
 KNOWLEDGE_DIR = "plugins/anthology/knowledge"
 IGNORED_EXTRAS = {".DS_Store"}
+PORTMAP_DIR = "vendor/patches/"
 
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -118,6 +124,10 @@ def _safe_target(value, subtree: bool) -> bool:
         return True
     folder = value[len(KNOWLEDGE_DIR) + 1:]
     return value.startswith(KNOWLEDGE_DIR + "/") and bool(NAME.match(folder))
+
+
+def _safe_portmap(value) -> bool:
+    return _safe_relpath(value, False) and value.startswith(PORTMAP_DIR) and value.endswith(".json")
 
 
 def _check_transforms(label: str, entry: dict, errors: list) -> None:
@@ -220,6 +230,8 @@ def validate_sources(entries: list) -> list:
         if "url" in e:
             _check_url_entry(label, e, errors)
         _check_transforms(label, e, errors)
+        if "portmap" in e and not _safe_portmap(e["portmap"]):
+            errors.append(f"{label}: portmap must be a .json file under {PORTMAP_DIR}")
     for i, (a_label, a) in enumerate(targets):
         for b_label, b in targets[i + 1:]:
             if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
@@ -861,6 +873,111 @@ def apply_patch(tree: Path, patch: Path, reject: bool = False) -> list:
     return rejects or [f"{patch.name}: {result.stderr.strip()}"]
 
 
+# --------------------------------------------------------------------------- port maps
+
+def load_portmap(root: Path, entry: dict) -> dict:
+    """The entry's port map (`portmap` field), checked for the keys the rules need."""
+    path = Path(root) / entry["portmap"]
+    if not path.is_file():
+        raise VendorError(f"{entry['name']}: port map {entry['portmap']} not found")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        rule = data["script_rule"]
+        if not (isinstance(data["scripts"], dict) and isinstance(data.get("added", {}), dict)
+                and isinstance(rule["extensions"], list)):
+            raise TypeError("scripts, added or extensions have the wrong type")
+        re.compile(rule["js_node_regex"])
+        re.compile(data["chrome_regex"])
+    except (ValueError, KeyError, TypeError, re.error) as exc:
+        raise VendorError(f"{entry['name']}: port map {entry['portmap']} is not usable: {exc}")
+    return data
+
+
+def portmap_scripts(tree: Path, rule: dict) -> set:
+    """The files of a tree the port map's script_rule counts as scripts: a listed extension
+    (any case), a `#!` first line, or a `.js` file that reads like Node (not browser code)."""
+    extensions = {e.lower() for e in rule["extensions"]}
+    node_js = re.compile(rule["js_node_regex"])
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(tree):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        for name in filenames:
+            path = Path(dirpath) / name
+            rel = path.relative_to(tree).as_posix()
+            ext = path.suffix.lower()
+            if ext in extensions:
+                found.add(rel)
+                continue
+            try:
+                if ext == ".js":
+                    raw = path.read_bytes()
+                else:
+                    with path.open("rb") as handle:
+                        raw = handle.read(2)
+            except OSError:
+                continue
+            if (rule.get("shebang") and raw[:2] == b"#!") or (
+                    ext == ".js" and node_js.search(raw.decode("utf-8", "replace"))):
+                found.add(rel)
+    return found
+
+
+def portmap_problems(portmap: dict, pristine: Path, shipped: Path) -> list:
+    """Check a built tree against its port map. `pristine` is the upstream folder before any
+    patch. Every problem is one line."""
+    pristine, shipped = Path(pristine), Path(shipped)
+    rule, scripts, added = portmap["script_rule"], portmap["scripts"], portmap.get("added", {})
+    problems = []
+    upstream = portmap_scripts(pristine, rule)
+    for rel in sorted(upstream - set(scripts)):
+        problems.append(f"{rel}: upstream script is not in the port map (add it as keep, port or drop)")
+    for rel in sorted(set(scripts) - upstream):
+        problems.append(f"{rel}: the port map lists it, but it is not upstream")
+    expected, dropped = set(added), set()
+    for rel, spec in sorted(scripts.items()):
+        action = spec.get("action") if isinstance(spec, dict) else None
+        if action == "drop":
+            if (shipped / rel).exists():
+                dropped.add(rel)
+                problems.append(f"{rel}: drop script is shipped")
+        elif action in ("keep", "port"):
+            expected.add(rel)
+            if not (shipped / rel).is_file():
+                problems.append(f"{rel}: {action} script is not shipped")
+            elif action == "keep" and (not (pristine / rel).is_file()
+                                       or (shipped / rel).read_bytes() != (pristine / rel).read_bytes()):
+                problems.append(f"{rel}: keep script is not byte-identical to upstream")
+        else:
+            problems.append(f"{rel}: action must be keep, port or drop")
+    for rel in sorted(added):
+        if not (shipped / rel).is_file():
+            problems.append(f"{rel}: added script is not shipped")
+        if rel in upstream or (pristine / rel).exists():
+            problems.append(f"{rel}: added script already exists upstream")
+    have = portmap_scripts(shipped, rule)
+    for rel in sorted(have - expected - dropped):
+        problems.append(f"{rel}: shipped script is not keep, port or added in the port map")
+    for rel in sorted(expected - have):
+        if (shipped / rel).is_file():
+            problems.append(f"{rel}: shipped, but the script rule does not count it as a script")
+    chrome = re.compile(portmap["chrome_regex"].encode("utf-8"), re.IGNORECASE)
+    for dirpath, dirnames, filenames in os.walk(shipped):
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            rel = path.relative_to(shipped).as_posix()
+            if chrome.search(rel.encode("utf-8")):
+                problems.append(f"{rel}: the path matches the Chrome launch pattern")
+            try:
+                found = chrome.search(path.read_bytes())
+            except OSError:
+                continue
+            if found:
+                problems.append(f"{rel}: the file matches the Chrome launch pattern "
+                                f"({found.group().decode('utf-8', 'replace')!r})")
+    return problems
+
+
 # --------------------------------------------------------------------------- build
 
 def _pristine_subtree(entry: dict, pristine: Path) -> Path:
@@ -885,6 +1002,9 @@ def build_tree(root: Path, entry: dict, pristine: Path, dest: Path,
                 stats["rejects"] += apply_patch(dest, patch, reject=reject)
         else:
             stats["transforms"].append((spec["name"], TRANSFORMS[spec["name"]](dest, entry, spec)))
+    if patches and entry.get("portmap"):
+        stats["portmap"] = portmap_problems(load_portmap(root, entry),
+                                            _pristine_subtree(entry, pristine), dest)
     return stats
 
 
@@ -915,6 +1035,8 @@ def build(root: Path, name: str, out=None, fetch=None, reject: bool = False) -> 
     with tempfile.TemporaryDirectory(prefix="vendor-build-") as tmp:
         built = Path(tmp) / "tree"
         stats = build_tree(root, entry, pristine, built, reject=reject)
+        if stats.get("portmap"):
+            raise VendorError(f"{name}: the port map is not satisfied:\n  " + "\n  ".join(stats["portmap"]))
         install_tree(built, Path(out or root) / entry["target"])
     return stats
 
@@ -999,7 +1121,8 @@ def check(root: Path, fetch=None) -> list:
         for e in vendored(entries):
             built = Path(tmp) / e["name"]
             try:
-                build_tree(root, e, fetch(e), built)
+                stats = build_tree(root, e, fetch(e), built)
+                problems += [f"{e['name']}: portmap: {m}" for m in stats.get("portmap", [])]
                 problems += compare_trees(built, root / e["target"], e["target"])
             except VendorError as exc:
                 problems.append(f"{e['name']}: {exc}")
@@ -1036,7 +1159,8 @@ def sync(root: Path, name: str, ref: str, fetch=None, resolve=None) -> dict:
     save_sources(root, entries)
     fetch_licenses(root, names=[name], fetch=fetch)
     return {"name": name, "old": old, "new": {"ref": ref, "commit": commit},
-            "transforms": stats["transforms"], "rejects": stats["rejects"]}
+            "transforms": stats["transforms"], "rejects": stats["rejects"],
+            "portmap": stats.get("portmap", [])}
 
 
 def _unified(rel: str, old: bytes | None, new: bytes | None) -> str:
@@ -1141,10 +1265,12 @@ def main(argv=None) -> int:
                   f"({report['new']['commit']})")
             for r in report["rejects"]:
                 print(f"REJECT {r}", file=sys.stderr)
+            for r in report["portmap"]:
+                print(f"PORTMAP {r}", file=sys.stderr)
             print("Rebuilt the target and refreshed the license. Nothing was committed.\n"
                   "Review the diff; if the output changed, bump plugin_version in sources.json "
                   "where it applies.")
-            return 1 if report["rejects"] else 0
+            return 1 if report["rejects"] or report["portmap"] else 0
         elif args.command == "diff":
             sys.stdout.write(diff_entry(root, args.name, fetch=fetch))
     except VendorError as exc:
