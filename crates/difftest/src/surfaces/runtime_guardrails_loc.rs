@@ -212,15 +212,15 @@ fn run(case: &Value) -> Observed {
 // ---------------------------------------------------------------------------------------------
 // Building cases
 
-const CONFIG: &str = "home/.claude";
-const CACHE: &str = "home/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0";
-const CACHED_ANTHOLOGY: &str = "home/.claude/plugins/cache/anthology/anthology/0.1.0";
+const CONFIG: &str = "hm/.claude";
+const CACHE: &str = "hm/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0";
+const CACHED_ANTHOLOGY: &str = "hm/.claude/plugins/cache/anthology/anthology/0.1.0";
 const MARKET: &str = "market";
 const LIVE: &str = "market/plugins/anthology-guardrails";
 const MANIFEST: &str = "market/.claude-plugin/marketplace.json";
-const INSTALLED: &str = "home/.claude/plugins/installed_plugins.json";
-const KNOWN: &str = "home/.claude/plugins/known_marketplaces.json";
-const USER_SETTINGS: &str = "home/.claude/settings.json";
+const INSTALLED: &str = "hm/.claude/plugins/installed_plugins.json";
+const KNOWN: &str = "hm/.claude/plugins/known_marketplaces.json";
+const USER_SETTINGS: &str = "hm/.claude/settings.json";
 const LIMIT: i64 = 2 * 1024 * 1024;
 const FLAG_FALSE: &str = r#"{"enabledPlugins": {"anthology-guardrails@anthology": false}}"#;
 
@@ -437,7 +437,7 @@ fn seeds() -> Vec<Value> {
             .guard(CACHE, "file")
             .dir(CACHED_ANTHOLOGY)
             .guard(
-                "home/.claude/plugins/cache/anthology/anthology-guardrails",
+                "hm/.claude/plugins/cache/anthology/anthology-guardrails",
                 "file",
             )
             .installed()
@@ -1296,7 +1296,7 @@ const PLUGIN_ROOTS: &[&str] = &[
     "@ROOT@/market/plugins/anthology",
     "@ROOT@/market/plugins/anthology",
     "@ROOT@/lone/anthology",
-    "@ROOT@/home/.claude/plugins/cache/anthology/anthology/0.1.0",
+    "@ROOT@/hm/.claude/plugins/cache/anthology/anthology/0.1.0",
     "@ROOT@/dev/anthology",
     "@ROOT@/plugins-dir/anthology/",
     "@ROOT@/plugins-dir//anthology",
@@ -1306,10 +1306,10 @@ const PLUGIN_ROOTS: &[&str] = &[
 ];
 
 const INSTALL_PATHS: &[&str] = &[
-    "@ROOT@/home/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0",
-    "@ROOT@/home/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0",
-    "@ROOT@/home/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0/",
-    "@ROOT@/home/.claude/plugins/cache/anthology/anthology-guardrails/0.2.0",
+    "@ROOT@/hm/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0",
+    "@ROOT@/hm/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0",
+    "@ROOT@/hm/.claude/plugins/cache/anthology/anthology-guardrails/0.1.0/",
+    "@ROOT@/hm/.claude/plugins/cache/anthology/anthology-guardrails/0.2.0",
     "@ROOT@/market/plugins/anthology-guardrails",
     "@ROOT@//market/plugins/./anthology-guardrails",
     "@ROOT@/plugins-dir/anthology-guardrails",
@@ -1544,8 +1544,8 @@ fn rand_manifest(rng: &mut Rng, b: &mut B) {
 
 fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
     if rng.chance(0.15) {
-        b.env("CLAUDE_CONFIG_DIR", rng.pick(&["", "@ROOT@/home/.claude/"]));
-        b.env("HOME", rng.pick(&["@ROOT@/home", "@ROOT@/home/"]));
+        b.env("CLAUDE_CONFIG_DIR", rng.pick(&["", "@ROOT@/hm/.claude/"]));
+        b.env("HOME", rng.pick(&["@ROOT@/hm", "@ROOT@/hm/"]));
     }
     // guardrails folders
     if rng.chance(0.6) {
@@ -1628,7 +1628,7 @@ fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
     }
     if rng.chance(0.3) {
         b.guard(
-            "home/.claude/plugins/cache/anthology/anthology-guardrails",
+            "hm/.claude/plugins/cache/anthology/anthology-guardrails",
             "file",
         )
         .dir(CACHED_ANTHOLOGY);
