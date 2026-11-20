@@ -1,0 +1,80 @@
+schema_version: "1.0"
+name: knowledge-marketer
+description: 'anthology:marketer reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:marketer agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:marketer"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-seo-audit
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/seo-audit/SKILL\.md'
+  - name: order-seo-audit
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-seo-audit
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
+  - name: read-campaign-plan
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/campaign-plan/SKILL\.md'
+  - name: order-campaign-plan
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-seo-audit-campaign-plan
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
+  - name: read-content-creation
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/content-creation/SKILL\.md'
+  - name: order-content-creation
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-campaign-plan-content-creation
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
+  - name: read-email-sequence
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/email-sequence/SKILL\.md'
+  - name: order-email-sequence
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/email-sequence/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-content-creation-email-sequence
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/email-sequence/SKILL\.md'}

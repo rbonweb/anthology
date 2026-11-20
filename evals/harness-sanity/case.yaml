@@ -1,0 +1,31 @@
+schema_version: "1.0"
+name: harness-sanity
+description: 'A subagent can call a mocked MCP tool, and the mock records the call.'
+tags: [browser, probe-u9]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Use the anthology:ui-reviewer agent to take a screenshot of http://localhost:3000 and report what the tool returned.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, ToolSearch]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:ui-reviewer"'
+  - name: screenshot
+    type: tool_used
+    tool: mcp__browseros-neo__screenshot
+  - name: agent-first
+    type: tool_order
+    before: Agent
+    after: mcp__browseros-neo__screenshot
+  - name: opened-url
+    type: regex
+    target: mock_calls
+    pattern: 'localhost:3000'

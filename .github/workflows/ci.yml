@@ -144,6 +144,89 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_taste_bridge.py' -v
 
+  setup-git:
+    # The session-start and setup tests that need git (repo approval, memory cover) skip in the
+    # Docker test images, which have no git, so they run here on the runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Session-start and setup tests with git
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_se*.py' -v
+
+  memory-diff:
+    # Lists the memory notes a pull request adds, changes, renames or deletes (.claude/memory and
+    # .claude/agent-memory) in the job summary: notes load into everyone's sessions, so reviewers
+    # read them like code. A listing, not a gate, and it comments nothing on the PR (fork-safe).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: List the memory changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/memory_diff.py "$BASE" "$HEAD_SHA"
+
+  startup-budget:
+    # Runs two tests in the pinned Python image: test_roster `startup_budget` (the per-agent startup
+    # budget, PLAN section 5) and test_session_start `budget` (the session-start output budget, U8's
+    # 9,000 characters). The budgets themselves live in those tests (stream A: test_roster.
+    # test_startup_budget; stream F: the session-start output budget), not here. Each part runs once
+    # its product files exist; from then on a missing test module fails (ImportError) and a filter
+    # that matches no test fails (Python 3.12 unittest exits 5 when no test ran).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Startup budgets in the pinned Python image
+        run: |
+          PYTHON_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)
+          docker run --rm -v "$PWD":/w -w /w "$PYTHON_IMAGE" sh -c '
+            set -e
+            pip install -q --require-hashes -r tests/requirements.txt
+            cd tests
+            if [ -d ../plugins/anthology/agents ]; then
+              python -m unittest -v -k startup_budget test_roster
+            else
+              echo "::notice::no agents yet; per-agent startup budget not checked"
+            fi
+            if [ -f ../plugins/anthology/scripts/session_start.py ]; then
+              python -m unittest -v -k budget test_session_start
+            else
+              echo "::notice::no session_start.py yet; session-start output budget not checked"
+            fi'
+
+  cli-syntax:
+    # The Claude Code CLI surface the plugins and the evals rely on (U4): every `claude plugin`
+    # subcommand answers --help with the flags we use, `validate --strict` passes for each plugin
+    # and `tag --dry-run` names the release tag. No model is called and no credentials are needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISABLE_AUTOUPDATER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Claude Code (postinstall links the native binary)
+        run: npm ci --prefix ci/claude-code
+      - name: Claude Code version
+        run: ci/claude-code/node_modules/.bin/claude --version
+      - name: CLI syntax smoke
+        run: python3 evals/smoke/smoke.py --claude ci/claude-code/node_modules/.bin/claude cli-syntax
+
   rtk-test:
     # $RTK_TEST: rtk's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
     runs-on: ubuntu-latest

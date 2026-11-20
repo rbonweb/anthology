@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: browser-browseros-only
+description: 'A browsing job goes to BrowserOS Neo, never to a host browser.'
+tags: [browser]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Open http://localhost:3000 in a real browser, take a screenshot, and tell me the page''s main heading.'
+  max_turns: 6
+  timeout_seconds: 180
+  model: sonnet
+  allowed_tools: [Bash, ToolSearch]
+runs: 1
+graders:
+  - name: screenshot
+    type: tool_used
+    tool: mcp__browseros-neo__screenshot
+  - name: opened-url
+    type: regex
+    target: mock_calls
+    pattern: 'localhost:3000'
+  - name: no-host-browser
+    type: tool_used
+    tool: Bash
+    input_match: '[Cc][Hh][Rr][Oo][Mm]|[Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|[Pp][Uu][Pp][Pp][Ee][Tt][Ee][Ee][Rr]|remote-debugging|agent-browser|open\s+-a'
+    max: 0
+  - name: heading
+    type: regex
+    target: last_message
+    pattern: 'MOCK-SHOP-HEADING'

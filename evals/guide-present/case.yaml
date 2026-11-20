@@ -1,0 +1,24 @@
+schema_version: "1.0"
+name: guide-present
+description: 'The main session knows the anthology routing guide.'
+tags: [guide]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Answer from your context only, without using any tools: according to the anthology routing guide, which agent or plugin handles (a) security work and (b) quickly finding code? Give the exact IDs.'
+  max_turns: 2
+  timeout_seconds: 180
+  model: opus
+  allowed_tools: []
+runs: 1
+graders:
+  - name: security
+    type: regex
+    target: last_message
+    pattern: 'claude-security'
+  - name: scout
+    type: regex
+    target: last_message
+    pattern: 'anthology:scout'
