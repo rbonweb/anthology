@@ -20,9 +20,11 @@
 //! - `ported`: `rust_test` is `crates/<crate>/<file.rs>::<mod>::…::<fn>`, named like the Python
 //!   method (plan §0.1.5): a `#[test]` that cargo lists, not ignored, behind no `cfg` but `test`
 //!   or a feature, in a file `mod` declarations reach. Each target is claimed by one row only;
-//!   one Rust test covering several Python tests says so with `merged:`;
+//!   one Rust test covering several Python tests says so with `merged:`. A note
+//!   `platform:<linux|macos>` lets the test run on that platform only, and only for a
+//!   (python_id, platform) pair in `port/ledger/platform-exceptions.tsv` (controller-owned);
 //! - `merged:<python_id>`: covered by that id's test, which must be `ported` and in the same
-//!   module, with a note saying how (listed in `--report`);
+//!   module, with a note saying how (listed in `--report`), and never `platform:`-limited;
 //! - `golden:<corpus>`: a difftest surface (plan §1.4) or `crates/*/tests/golden/<corpus>.jsonl`;
 //! - `dropped:py-compat`, `dropped:python-runtime`, `dropped:superseded:F-<1..20>`, with a note;
 //! - `todo`, or `todo:<TASK>` when a module's ids are split between tasks; `<TASK>` must own the
@@ -51,6 +53,9 @@ pub const IDS_FILE: &str = "port/python-test-ids.txt";
 pub const ROWS_FILE: &str = "port/python-test-rows.tsv";
 pub const INVENTORY_FILE: &str = "port/regex-inventory.tsv";
 pub const LEDGER_DIR: &str = "port/ledger";
+/// The (python_id, platform) pairs whose ported Rust test may run on one platform only
+/// (`platform:<os>` in the row's note). Controller-owned: lanes never edit it.
+pub const EXCEPTIONS_FILE: &str = "port/ledger/platform-exceptions.tsv";
 /// What the fresh-extraction directory holds (the committed files' base names).
 pub const FRESH_IDS: &str = "python-test-ids.txt";
 pub const FRESH_ROWS: &str = "python-test-rows.tsv";
@@ -539,7 +544,9 @@ fn ledger_files(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(module) = name.strip_suffix(".tsv") {
+        if let Some(module) = name.strip_suffix(".tsv")
+            && format!("{LEDGER_DIR}/{name}") != EXCEPTIONS_FILE
+        {
             out.insert(module.to_string(), entry.path());
         }
     }
@@ -856,6 +863,7 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
     };
 
     let surfaces = surface_names(root);
+    let exceptions = parse_exceptions(root, &id_set, problems);
     let mut scanned = targets::ScanCache::new();
     // Each `ported` target is claimed once (many-to-one coverage is `merged:`).
     let mut claims: BTreeMap<&str, &str> = BTreeMap::new();
@@ -903,10 +911,11 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
                     let only_on = match platform_note(&row.note) {
                         Ok(None) => None,
                         Ok(Some(p)) => {
-                            if let Err(e) = python_platform_conditional(root, &row.id) {
+                            if !exceptions.contains(&(row.id.clone(), p.to_string())) {
                                 problems.push(format!(
-                                    "{at}: `platform:{p}` is allowed only for a Python test that \
-                                     is itself platform-conditional; {e}"
+                                    "{at}: `platform:{p}` needs the pair ({}, {p}) in \
+                                     {EXCEPTIONS_FILE}, which the controller owns",
+                                    row.id
                                 ));
                             }
                             Some(p)
@@ -939,6 +948,19 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
                     if row.note.trim().is_empty() {
                         problems.push(format!(
                             "{at}: a merged row needs a note (how {target}'s Rust test covers it)"
+                        ));
+                    }
+                    if !matches!(platform_note(&row.note), Ok(None)) {
+                        problems.push(format!(
+                            "{at}: a merged row cannot carry a `platform:` note (port it on its own)"
+                        ));
+                    }
+                    if let Some(t) = all_rows.get(target)
+                        && !matches!(platform_note(&t.note), Ok(None))
+                    {
+                        problems.push(format!(
+                            "{at}: merged into {target}, whose Rust test runs on one platform only \
+                             (`platform:`); port this test on its own"
                         ));
                     }
                 }
@@ -1058,6 +1080,39 @@ fn load_listings(dir: &Path, platform: &str, problems: &mut Vec<String>) -> targ
     l
 }
 
+/// `port/ledger/platform-exceptions.tsv`: `python_id<TAB>platform<TAB>reason` rows (a missing
+/// file is an empty table).
+fn parse_exceptions(
+    root: &Path,
+    ids: &BTreeSet<&str>,
+    problems: &mut Vec<String>,
+) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let Ok(text) = fs::read_to_string(root.join(EXCEPTIONS_FILE)) else {
+        return out;
+    };
+    for (n, line) in data_lines(&text) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let at = format!("{EXCEPTIONS_FILE}:{n}");
+        let [id, platform, reason] = fields[..] else {
+            problems.push(format!(
+                "{at}: not `python_id<TAB>platform<TAB>reason`: {line:?}"
+            ));
+            continue;
+        };
+        if !ids.contains(id) {
+            problems.push(format!("{at}: {id} is not in {IDS_FILE}"));
+        } else if !targets::PLATFORMS.contains(&platform) {
+            problems.push(format!("{at}: {platform} is not linux or macos"));
+        } else if reason.trim().is_empty() {
+            problems.push(format!("{at}: an exception needs a reason"));
+        } else if !out.insert((id.to_string(), platform.to_string())) {
+            problems.push(format!("{at}: repeated"));
+        }
+    }
+    out
+}
+
 /// The `platform:<linux|macos>` token of a ported row's note: the Rust test runs on that
 /// platform only.
 fn platform_note(note: &str) -> Result<Option<&'static str>, String> {
@@ -1076,86 +1131,6 @@ fn platform_note(note: &str) -> Result<Option<&'static str>, String> {
         }
     }
     Ok(found)
-}
-
-/// `Ok` when the Python test `id` is platform-conditional in its source: a `skipIf`/`skipUnless`
-/// decorator on the method or its class that reads `sys.platform` or `platform.system()`, or a
-/// `skipTest` in the method body next to one of them.
-pub fn python_platform_conditional(root: &Path, id: &str) -> Result<(), String> {
-    let parts: Vec<&str> = id.split('.').collect();
-    let (module, class, method) = (parts[0], parts[1], parts[parts.len() - 1]);
-    let path = root.join("tests").join(format!("{module}.py"));
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read tests/{module}.py to check it: {e}"))?;
-    let lines: Vec<&str> = text.lines().collect();
-    let indent = |l: &str| l.len() - l.trim_start().len();
-    let reads_platform = |t: &str| t.contains("sys.platform") || t.contains("platform.system(");
-    // The decorators right above line `at` (multi-line ones included): from the topmost `@` line
-    // at the same indent, up to a blank line or any other line at that indent.
-    let decorators = |at: usize| -> String {
-        let at_indent = indent(lines[at]);
-        let mut top = None;
-        let mut i = at;
-        while i > 0 {
-            i -= 1;
-            let l = lines[i];
-            if l.trim().is_empty() {
-                break;
-            }
-            let decorator = l.trim_start().starts_with('@');
-            let closing = l.trim_start().starts_with([')', ']', '}']);
-            if indent(l) <= at_indent && !decorator && !closing {
-                break;
-            }
-            if indent(l) == at_indent && decorator {
-                top = Some(i);
-            }
-        }
-        top.map(|t| lines[t..at].join("\n")).unwrap_or_default()
-    };
-    let skip_decorated = |text: &str| {
-        (text.contains("skipIf") || text.contains("skipUnless")) && reads_platform(text)
-    };
-    let class_at = lines.iter().position(|l| {
-        l.trim_start().starts_with(&format!("class {class}("))
-            || l.trim_start().starts_with(&format!("class {class}:"))
-    });
-    if let Some(c) = class_at
-        && skip_decorated(&decorators(c))
-    {
-        return Ok(());
-    }
-    let def = format!("def {method}(");
-    // The method in its own class, else (inherited) wherever the file defines it.
-    let in_class = class_at.and_then(|c| {
-        let class_indent = indent(lines[c]);
-        lines[c + 1..]
-            .iter()
-            .take_while(|l| l.trim().is_empty() || indent(l) > class_indent)
-            .position(|l| l.trim_start().starts_with(&def))
-            .map(|p| c + 1 + p)
-    });
-    let Some(d) = in_class.or_else(|| lines.iter().position(|l| l.trim_start().starts_with(&def)))
-    else {
-        return Err(format!("no `def {method}` in tests/{module}.py"));
-    };
-    if skip_decorated(&decorators(d)) {
-        return Ok(());
-    }
-    let def_indent = indent(lines[d]);
-    let body: Vec<&str> = lines[d + 1..]
-        .iter()
-        .take_while(|l| l.trim().is_empty() || indent(l) > def_indent)
-        .copied()
-        .collect();
-    let body = body.join("\n");
-    if body.contains("skipTest") && reads_platform(&body) {
-        return Ok(());
-    }
-    Err(format!(
-        "{id} has no skipIf/skipUnless on sys.platform or platform.system() (nor a platform \
-         skipTest)"
-    ))
 }
 
 /// The reason after `rows:computed` in `note`, if the token is there.

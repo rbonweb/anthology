@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import collections
 import itertools
 import json
 import os
@@ -216,17 +217,72 @@ def is_escape(node: ast.AST) -> bool:
         and node.func.value.id == "re"
 
 
-def str_assignments(body) -> dict:
-    """`NAME = <string expression>` assignments among `body`'s statements (not nested defs)."""
+SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def binding_counts(body, args=None) -> collections.Counter:
+    """How many times each name is bound in the scope of `body` (and `args`, a function's
+    arguments): assignments of any kind, loop and `with` targets, imports, `except … as`, nested
+    `def`/`class` names, and walrus targets (even inside a comprehension). Nested scopes are not
+    entered. A name bound more than once is never resolved to one of its values (fail closed)."""
+    counts = collections.Counter()
+    if args is not None:
+        for a in args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]:
+            if a is not None:
+                counts[a.arg] += 1
+
+    def walk(node, in_comprehension=False):
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            counts[node.target.id] += 1
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            counts[node.name] += 1
+            for d in node.decorator_list:
+                walk(d)
+            return
+        if isinstance(node, ast.Lambda):
+            return
+        if isinstance(node, COMPREHENSIONS):
+            for child in ast.walk(node):  # only walrus targets leak out of a comprehension
+                if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+                    counts[child.target.id] += 1
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            counts[node.id] += 1
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                counts[(alias.asname or alias.name).split(".")[0]] += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                counts[name] += 2  # rebound from another scope: never a constant
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in body:
+        walk(stmt)
+    return counts
+
+
+def global_names(tree) -> set:
+    """Names some function declares `global` (so the module binding is not the only one)."""
+    return {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
+
+
+def str_assignments(body, counts) -> dict:
+    """`NAME = <string expression>` assignments among `body`'s statements (not nested defs), for
+    names bound exactly once in the scope."""
     out = {}
     stack = list(body)
     while stack:
         stmt = stack.pop(0)
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        if isinstance(stmt, SCOPES):
             continue
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
-                and isinstance(stmt.targets[0], ast.Name) and is_str_expr(stmt.value):
-            out.setdefault(stmt.targets[0].id, stmt.value)
+                and isinstance(stmt.targets[0], ast.Name) and is_str_expr(stmt.value) \
+                and counts[stmt.targets[0].id] == 1:
+            out[stmt.targets[0].id] = stmt.value
         for field in ("body", "orelse", "finalbody", "handlers"):
             stack.extend(getattr(stmt, field, []) or [])
     return out
@@ -256,7 +312,13 @@ class FileScan(ast.NodeVisitor):
         self.scope: list[str] = []
         self.targets: list[str] = []
         # Name scopes, innermost last: the module, then each enclosing function.
-        self.consts: list[dict] = [str_assignments(tree.body)]
+        module_counts = binding_counts(tree.body)
+        for name in global_names(tree):
+            module_counts[name] += 2
+        # Name scopes, innermost last: the names each binds (with counts), its single-binding
+        # string constants, and its single-binding compiled patterns.
+        self.bound: list[collections.Counter] = [module_counts]
+        self.consts: list[dict] = [str_assignments(tree.body, module_counts)]
         self.docstrings: set[int] = set()
         self.seen: set[int] = set()
         # The replacement arguments of `sub`/`subn` calls (templates, not patterns).
@@ -283,16 +345,21 @@ class FileScan(ast.NodeVisitor):
                         self.re_funcs[alias.asname or alias.name] = alias.name
         # Names bound to `re.compile(...)`: the module, then each enclosing function; and the class
         # attributes of each enclosing class (for `self.NAME`).
-        self.compiled: list[set] = [self.compiled_names(tree.body)]
+        self.compiled: list[set] = [self.compiled_names(tree.body, module_counts)]
         self.class_compiled: list[set] = []
         # While a pattern is rendered once per value of its loop variables: name -> value node.
         self.bindings: dict = {}
 
-    def lookup(self, name: str):
-        for scope in reversed(self.consts):
-            if name in scope:
-                return scope[name]
+    def binding_scope(self, name: str):
+        """The index of the innermost scope that binds `name` (Python's lookup), or None."""
+        for i in range(len(self.bound) - 1, -1, -1):
+            if self.bound[i][name]:
+                return i
         return None
+
+    def lookup(self, name: str):
+        i = self.binding_scope(name)
+        return None if i is None else self.consts[i].get(name)
 
     def render(self, node: ast.AST, inline: bool, depth: int = 0) -> tuple[str, bool, bool]:
         """`(text, dynamic, unresolved)`. With `inline`, string constants are replaced by their
@@ -327,18 +394,23 @@ class FileScan(ast.NodeVisitor):
                 and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
             items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
             rendered = [self.render(item, inline, depth) for item in items]
-            convs = [m.group(1) for m in PERCENT_SPEC.finditer(node.left.value)
-                     if m.group(1) != "%"]
+            fmt = node.left.value
+            specs = [m for m in PERCENT_SPEC.finditer(fmt) if m.group(1) != "%"]
+            convs = [m.group(1) for m in specs]
+            # After a `\\`, the digits are a backreference (or an escape): not safe to guess.
+            escaped = [m.start() > 0 and fmt[m.start() - 1] == "\\" for m in specs]
             values = []
-            for (text, _, unknown), conv in zip(rendered, convs + [""] * len(rendered)):
-                if unknown and conv and conv in "diouxX":
+            for (text, _, unknown), conv, after_backslash in zip(
+                    rendered, convs + [""] * len(rendered), escaped + [False] * len(rendered)):
+                if unknown and conv and conv in "diouxX" and not after_backslash:
                     values.append(0)  # an integer conversion: digits whatever the value
                 elif unknown:
                     values = None
                     break
                 else:
                     values.append(text)
-            if values is not None and len(convs) == len(rendered):
+            if values is not None and len(convs) == len(rendered) \
+                    and not any(e for e, (_, _, u) in zip(escaped, rendered) if not u):
                 try:
                     text = node.left.value % tuple(values)
                     return text, any(d for _, d, _ in rendered), False
@@ -376,16 +448,19 @@ class FileScan(ast.NodeVisitor):
         return "«" + ast.unparse(node) + "»", True, not is_escape(node)
 
     def is_compiled(self, name: str) -> bool:
-        return any(name in scope for scope in self.compiled)
+        i = self.binding_scope(name)
+        return i is not None and name in self.compiled[i]
 
-    def compiled_names(self, body) -> set:
-        """Names assigned `re.compile(...)` among `body`'s statements (not nested defs)."""
+    def compiled_names(self, body, counts) -> set:
+        """Names assigned `re.compile(...)` among `body`'s statements (not nested defs), bound
+        exactly once in the scope."""
         out = set()
         for stmt in body:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
                     and isinstance(stmt.targets[0], ast.Name) \
                     and isinstance(stmt.value, ast.Call) \
-                    and self.re_call(stmt.value.func) == "re.compile":
+                    and self.re_call(stmt.value.func) == "re.compile" \
+                    and counts[stmt.targets[0].id] == 1:
                 out.add(stmt.targets[0].id)
         return out
 
@@ -428,9 +503,12 @@ class FileScan(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node):  # noqa: N802
         self.scope.append(node.name)
-        self.consts.append(str_assignments(node.body))
-        self.compiled.append(self.compiled_names(node.body))
+        counts = binding_counts(node.body, node.args)
+        self.bound.append(counts)
+        self.consts.append(str_assignments(node.body, counts))
+        self.compiled.append(self.compiled_names(node.body, counts))
         self.generic_visit(node)
+        self.bound.pop()
         self.consts.pop()
         self.compiled.pop()
         self.scope.pop()
@@ -439,7 +517,12 @@ class FileScan(ast.NodeVisitor):
 
     def visit_ClassDef(self, node):  # noqa: N802
         self.scope.append(node.name)
-        self.class_compiled.append(self.compiled_names(node.body))
+        # `self.NAME` is the class's compiled pattern only if no method assigns `self.NAME`.
+        assigned = {t.attr for t in ast.walk(node) if isinstance(t, ast.Attribute)
+                    and isinstance(t.ctx, ast.Store) and isinstance(t.value, ast.Name)
+                    and t.value.id in ("self", "cls")}
+        self.class_compiled.append(
+            self.compiled_names(node.body, binding_counts(node.body)) - assigned)
         self.generic_visit(node)
         self.class_compiled.pop()
         self.scope.pop()
@@ -672,6 +755,24 @@ SELF_TEST_CASES = [
      '    c = re.compile(q + r"a++(")\n',
      [("f:a", "atomic,dynamic,unresolved"), ("f:b", "conditional,dynamic,unresolved"),
       ("f:c", "possessive,dynamic,unresolved")]),
+    # Fail closed: a `%d` right after a backslash, a rebound string constant, a rebound compiled
+    # name (module or `self.NAME`).
+    ('import re\ndef f(n, s):\n    return re.search(r"(a)\\%d" % n, s)\n'
+     'def g(q, s):\n    P = "a"\n    P = q\n    return re.search(P, s)\n'
+     'X = re.compile(r"a")\ndef h(q, s):\n    X = q\n    return re.search(X, s)\n'
+     'class T:\n    FROM = re.compile(r"a")\n    def set(self, q):\n        self.FROM = q\n'
+     '    def test(self):\n        self.assertRegex("x", self.FROM)\n',
+     [("f:re.search", "dynamic,unresolved"), ("g:re.search", "dynamic,unresolved"),
+      ("h:re.search", "dynamic,unresolved"), ("T.test:assertRegex", "dynamic,unresolved")]),
+    # A literal loop variable re-looped over something unknown loses the trust; too many
+    # combinations of loop values to try fail closed.
+    ('import re\nfor p in ("a",):\n    for p in q:\n        re.search(p, "s")\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
+    ('import re\n[re.search(p, "s") for p in ("a",) for p in q]\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
+    ('import re\n' + "".join("    " * i + f'for v{i} in ("a", "b"):\n' for i in range(9))
+     + "    " * 9 + 're.search(' + " + ".join(f"v{i}" for i in range(9)) + ', "s")\n',
+     [("<module>:re.search", "dynamic,unresolved")]),
     # A compiled name passed on is resolved; without that it would be listed `unresolved`.
     ('import re\nX = re.compile(r"a")\ndef t(self, s):\n    return re.search(X, s)\n', []),
     ('N = r"(?P<q>a)(?P=q)"\n', [("<module>:N", "named-backref")]),

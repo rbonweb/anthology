@@ -440,16 +440,21 @@ fn a_platform_cfg_on_a_trusted_macro_invocation_fails() {
 
 #[test]
 fn an_untrusted_macro_around_a_trusted_one_fails() {
+    // `wrap!` is not defined in the crate (an imported macro), so only the rule that every
+    // enclosing invocation must be trusted refuses it.
     let dir = repo();
     replace(
         dir.path(),
         "crates/alpha/tests/alpha.rs",
         "#[test]\nfn test_one() {}\n",
-        "macro_rules! lin2 { ($($i:item)*) => { $(#[cfg(target_os = \"linux\")] $i)* }; }\n\
-         lin2! {\n    proptest::proptest! {\n        #[test]\n        \
+        "wrap! {\n    proptest::proptest! {\n        #[test]\n        \
          fn test_one(x in 0..3u8) { let _ = x; }\n    }\n}\n",
     );
-    assert_fails(dir.path(), &[], "is inside `lin2!`");
+    assert_fails(
+        dir.path(),
+        &[],
+        "is inside `wrap!`, whose expansion the ledger cannot check",
+    );
 }
 
 #[test]
@@ -507,49 +512,101 @@ fn the_listing_only_mode_checks_one_platform() {
     );
 }
 
-/// The fixture's Python source for `test_memory_sync`, with `test_one` decorated by `decorator`.
-fn python_source(root: &Path, decorator: &str) {
+/// The fixture's Python source for `test_memory_sync`, with `test_one` decorated by `decorator`
+/// and `body` as its body (the ledger never reads it any more: only the exception table counts).
+fn python_source(root: &Path, decorator: &str, body: &str) {
     put(
         root,
         "tests/test_memory_sync.py",
         &format!(
-            "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
-             {decorator}\n    def test_one(self):\n        pass\n\n    def test_two(self):\n        \
-             pass\n"
+            "import sys\nimport unittest\nfrom unittest import mock\n\n\n\
+             class AlphaTest(unittest.TestCase):\n    {decorator}\n    def test_one(self):\n        \
+             {body}\n\n    def test_two(self):\n        pass\n"
         ),
     );
 }
 
-#[test]
-fn a_platform_note_needs_a_platform_conditional_python_test() {
-    let dir = repo();
-    // A Linux-only Rust test.
+/// A Linux-only Rust port of `test_one` whose row says `platform:linux`.
+fn linux_only_port(root: &Path) {
     replace(
-        dir.path(),
+        root,
         "crates/alpha/tests/alpha.rs",
         "#[test]\nfn test_one",
         "#[cfg(target_os = \"linux\")]\n#[test]\nfn test_one",
     );
-    assert_fails(dir.path(), &[], "behind a cfg other than test or feature");
     replace(
-        dir.path(),
+        root,
         "port/ledger/test_memory_sync.tsv",
         "crates/alpha/tests/alpha.rs::test_one\n",
         "crates/alpha/tests/alpha.rs::test_one\tplatform:linux (the Python test is Linux-only)\n",
     );
-    // The Python test is not platform-conditional: the note is refused.
-    python_source(dir.path(), "# no decorator");
-    assert_fails(
+}
+
+const EXCEPTION_NEEDED: &str = "`platform:linux` needs the pair (test_memory_sync.AlphaTest.test_one, linux) in port/ledger/platform-exceptions.tsv";
+
+#[test]
+fn a_platform_note_needs_a_listed_exception_whatever_the_python_says() {
+    // The re-review's cases: none of them makes the note acceptable, because no exception row
+    // lists the pair (the Python source is not read at all).
+    for (decorator, body) in [
+        ("# no decorator", "pass"),
+        (
+            "@unittest.skipUnless(sys.platform.startswith(\"linux\"), \"Linux only\")",
+            "pass",
+        ),
+        (
+            "@unittest.skipUnless(LOCK.exists(), \"no lock\")  # not sys.platform",
+            "pass",
+        ),
+        ("@unittest.skipIf(False, \"sys.platform\")", "pass"),
+        (
+            "@unittest.skipUnless(sys.platform == \"darwin\", \"macOS only\")",
+            "pass",
+        ),
+        (
+            "@unittest.skipIf(sys.platform == \"win32\", \"not on Windows\")",
+            "pass",
+        ),
+        (
+            "# body",
+            "self.skipTest(\"no lock\")\n        _ = sys.platform",
+        ),
+        ("@mock.patch(\"sys.platform\", \"linux\")", "pass"),
+    ] {
+        let dir = repo();
+        linux_only_port(dir.path());
+        python_source(dir.path(), decorator, body);
+        assert_fails(dir.path(), &[], EXCEPTION_NEEDED);
+    }
+}
+
+#[test]
+fn a_listed_exception_allows_one_platform_and_an_unlisted_pair_fails() {
+    let dir = repo();
+    linux_only_port(dir.path());
+    // test_two cannot stay merged into a one-platform test (see below): drop it here.
+    replace(
         dir.path(),
-        &[],
-        "`platform:linux` is allowed only for a Python test that is itself platform-conditional",
+        "port/ledger/test_memory_sync.tsv",
+        "test_two\tmerged:test_memory_sync.AlphaTest.test_one\t\tcovered by test_one's table\n",
+        "test_two\tdropped:py-compat\t\tfixture: not under test here\n",
     );
-    // It is: Linux checks it, macOS does not need it.
-    python_source(
+    // The pair for the other platform does not count.
+    put(
         dir.path(),
-        "@unittest.skipUnless(sys.platform.startswith(\"linux\"), \"Linux only\")",
+        "port/ledger/platform-exceptions.tsv",
+        "# python_id\tplatform\treason\n\
+         test_memory_sync.AlphaTest.test_one\tmacos\tthe Python test is macOS-only\n",
+    );
+    assert_fails(dir.path(), &[], EXCEPTION_NEEDED);
+    put(
+        dir.path(),
+        "port/ledger/platform-exceptions.tsv",
+        "# python_id\tplatform\treason\n\
+         test_memory_sync.AlphaTest.test_one\tlinux\tthe Python test is Linux-only\n",
     );
     assert_passes(dir.path(), &[]);
+    // Linux checks it; macOS does not need it.
     replace(dir.path(), LISTING, "test_one: test\n", "");
     let listings = listings_dir(dir.path());
     let l = listings.path().to_str().expect("utf-8");
@@ -574,33 +631,86 @@ fn a_platform_note_needs_a_platform_conditional_python_test() {
 }
 
 #[test]
-fn a_platform_skip_in_the_class_or_the_body_counts() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let id = "test_memory_sync.AlphaTest.test_one";
+fn the_exception_table_is_validated() {
+    for (row, needle) in [
+        (
+            "test_memory_sync.AlphaTest.test_gone\tlinux\tx",
+            "is not in port/python-test-ids.txt",
+        ),
+        (
+            "test_memory_sync.AlphaTest.test_one\twindows\tx",
+            "windows is not linux or macos",
+        ),
+        (
+            "test_memory_sync.AlphaTest.test_one\tlinux\t ",
+            "an exception needs a reason",
+        ),
+        (
+            "test_memory_sync.AlphaTest.test_one\tlinux",
+            "not `python_id<TAB>platform<TAB>reason`",
+        ),
+    ] {
+        let dir = repo();
+        put(
+            dir.path(),
+            "port/ledger/platform-exceptions.tsv",
+            &format!("# python_id\tplatform\treason\n{row}\n"),
+        );
+        assert_fails(dir.path(), &[], needle);
+    }
+    // It is not a module ledger.
+    let dir = repo();
     put(
-        root.path(),
-        "tests/test_memory_sync.py",
-        "import platform\nimport unittest\n\n\n@unittest.skipIf(\n    platform.system() == \"Darwin\",\n    \
-         \"not on macOS\",\n)\nclass AlphaTest(unittest.TestCase):\n    def test_one(self):\n        pass\n",
+        dir.path(),
+        "port/ledger/platform-exceptions.tsv",
+        "# python_id\tplatform\treason\n",
     );
-    assert_eq!(ledger::python_platform_conditional(root.path(), id), Ok(()));
+    assert_passes(dir.path(), &[]);
+}
+
+#[test]
+fn a_merged_row_cannot_be_platform_limited() {
+    // It cannot carry the note …
+    let dir = repo();
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "covered by test_one's table",
+        "covered by test_one's table platform:linux",
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "a merged row cannot carry a `platform:` note",
+    );
+    // … nor ride on a target's (pn_merged), even a listed exception.
+    let dir = repo();
+    linux_only_port(dir.path());
     put(
-        root.path(),
-        "tests/test_memory_sync.py",
-        "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
-         def test_one(self):\n        if sys.platform != \"darwin\":\n            \
-         self.skipTest(\"macOS only\")\n",
+        dir.path(),
+        "port/ledger/platform-exceptions.tsv",
+        "test_memory_sync.AlphaTest.test_one\tlinux\tthe Python test is Linux-only\n",
     );
-    assert_eq!(ledger::python_platform_conditional(root.path(), id), Ok(()));
-    // A skip on another method does not count.
-    put(
-        root.path(),
-        "tests/test_memory_sync.py",
-        "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
-         @unittest.skipIf(sys.platform == \"darwin\", \"x\")\n    def test_zero(self):\n        \
-         pass\n\n    def test_one(self):\n        pass\n",
+    assert_fails(
+        dir.path(),
+        &[],
+        "merged into test_memory_sync.AlphaTest.test_one, whose Rust test runs on one platform only",
     );
-    assert!(ledger::python_platform_conditional(root.path(), id).is_err());
+}
+
+#[test]
+fn the_committed_exception_table_is_empty() {
+    let table = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../port/ledger/platform-exceptions.tsv"),
+    )
+    .expect("read the table");
+    assert!(table.contains("CONTROLLER-OWNED"), "{table}");
+    assert!(
+        table
+            .lines()
+            .all(|l| l.starts_with('#') || l.trim().is_empty()),
+        "{table}"
+    );
 }
 
 #[test]
