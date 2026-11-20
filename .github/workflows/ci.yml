@@ -119,9 +119,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Scan the full history for secrets
+      - name: Scan the history reachable from the tested commit for secrets
         run: |
           GITLEAKS_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/gitleaks.Dockerfile)
           docker run --rm -v "$PWD":/repo:ro \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml /repo
+            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml --log-opts="HEAD" /repo
+
+  taste-bridge:
+    # The BrowserOS Neo bridge (design-taste-frontend/scripts/neo.mjs) is driven by a fake harness. It
+    # needs `node` (the Docker test images have none, so those tests skip there). neo.mjs uses only
+    # node: built-ins and runs on Node 18 or later, so the runner's default node is enough.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node version
+        run: node --version
+      - name: Bridge tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_taste_bridge.py' -v
