@@ -191,6 +191,7 @@ class SourcesJsonTest(unittest.TestCase):
         for bad in ("plugins/anthology", "plugins/anthology/", "plugins/anthology/knowledge",
                     "plugins/anthology/knowledge/a/b", "plugins/anthology/skills/x",
                     "plugins/anthology/.claude-plugin", "plugins/anthology-guardrails",
+                    "plugins/anthology/knowledge/.git", "plugins/anthology/knowledge/Upper",
                     "plugins/anthology-superpowers/skills", "plugins/x", "plugins/anthology/knowledgex/a"):
             self.assertTrue(vendor.validate_sources([entry("x", target=bad)]), bad)
         for good in ("plugins/anthology-superpowers", "plugins/anthology/knowledge/x",
@@ -416,6 +417,11 @@ Last sentence of the step.
 kept inside a fence
 ```
 
+## Tool Integration
+
+### If no tools are connected
+- Paste the copy
+
 ## Tips
 
 1. Keep this tip.
@@ -478,6 +484,57 @@ class StripConnectorsTest(FixtureCase):
         self.assertEqual(self.strip(doc), (
             "# T\n\n## A\n\n- Offer drafts\n\n## B\n\nNext paragraph.\n\n"
             "## C\n\nWithout the tools, rely on the project.\n\n## D\n\nEnd.\n"))
+
+    EMAIL_SEQUENCE = ("# Email Sequence\n\n## Sequence types\n\n**Educational Drip:**\nLesson 1 -- Lesson 2\n\n"
+                      "## Tool Integration\n\n"
+                      "### If ~~email marketing is connected (e.g., Klaviyo, Mailchimp)\n"
+                      "- Reference how to set up the flow\n- Map the branching logic\n\n"
+                      "### If ~~marketing automation or ~~CRM is connected (e.g., HubSpot)\n"
+                      "- Reference lead scoring data\n\n"
+                      "### If no tools are connected\n"
+                      "- Deliver all email content in copy-paste-ready format\n"
+                      "- Include a setup checklist the user can follow in any email platform:\n"
+                      "  1. Create the automation or flow\n  2. Set the enrollment trigger\n\n"
+                      "## Output\n\nPresent the complete sequence.\n")
+
+    def test_fallback_subsections_survive_inside_a_removed_connector_section(self):
+        # the email-sequence shape: the container and the connector children go; the
+        # "If no tools are connected" subsection stays verbatim under the container heading
+        self.assertEqual(self.strip(self.EMAIL_SEQUENCE), (
+            "# Email Sequence\n\n## Sequence types\n\n**Educational Drip:**\nLesson 1 -- Lesson 2\n\n"
+            "## Tool Integration\n\n"
+            "### If no tools are connected\n"
+            "- Deliver all email content in copy-paste-ready format\n"
+            "- Include a setup checklist the user can follow in any email platform:\n"
+            "  1. Create the automation or flow\n  2. Set the enrollment trigger\n\n"
+            "## Output\n\nPresent the complete sequence.\n"))
+
+    def test_fallback_paragraphs_survive_inside_a_removed_connector_section(self):
+        # the write-spec shape
+        doc = ("# T\n\n### 2. Gather\n\nAsk.\n\n### 3. Pull Context from Connected Tools\n\n"
+               "If **~~project tracker** is connected:\n- Search tickets\n\n"
+               "If **~~design** is connected:\n- Pull mockups\n\n"
+               "If these tools are not connected, work entirely from what the user provides. "
+               "Do not ask the user to connect tools.\n\n### 4. Generate\n\nkept\n")
+        self.assertEqual(self.strip(doc), (
+            "# T\n\n### 2. Gather\n\nAsk.\n\n### 3. Pull Context from Connected Tools\n\n"
+            "If these tools are not connected, work entirely from what the user provides. "
+            "Do not ask the user to connect tools.\n\n### 4. Generate\n\nkept\n"))
+
+    def test_a_removed_section_without_fallbacks_leaves_nothing_and_a_fallback_at_the_end_stays(self):
+        self.assertEqual(self.strip("# T\n\n## Connectors\n\nIf ~~a is connected:\n- b\n\n## Next\n\nx\n"),
+                         "# T\n\n## Next\n\nx\n")
+        self.assertEqual(self.strip("# T\n\n## Connectors\n\nIf ~~a is connected:\n- b\n\n"
+                                    "### If no tools are connected\n- c\n"),
+                         "# T\n\n## Connectors\n\n### If no tools are connected\n- c\n")
+
+    def test_a_fallback_heading_is_not_a_connector_section_by_itself(self):
+        doc = "# T\n\n### If no connected tools\n- Ask the user\n\n### Next\n\nx\n"
+        self.assertEqual(self.strip(doc), doc)
+
+    def test_a_longer_fence_is_not_closed_by_a_shorter_one(self):
+        doc = "# T\n\n## Connectors\n\n````\n```\n## Not a heading\n```\n````\n\n## Tips\n\nkept\n"
+        self.assertEqual(self.strip(doc), "# T\n\n## Tips\n\nkept\n")
 
     def test_no_tool_fallbacks_stay(self):
         doc = ("# T\n\nIf no project management tool is connected:\n- Ask the user\n\n"
@@ -583,6 +640,10 @@ class RenameSkillTest(FixtureCase):
         tree = self.make("---\nname: other\n---\nbody\n")
         with self.assertRaises(vendor.VendorError):
             vendor.rename_skill(tree, "code-review", "x")
+
+    def test_frontmatter_without_a_name_is_an_error(self):
+        with self.assertRaises(vendor.VendorError):
+            vendor.rename_skill(self.make("---\ndescription: x\n---\n\n/a\n"), "a", "b")
 
     def test_missing_skill_file_or_frontmatter_is_an_error(self):
         with self.assertRaises(vendor.VendorError):
