@@ -120,6 +120,56 @@ const IMPLS: &[MakeSurface] = &[
     dev_smoke::surface,
 ];
 
+/// Each surface's `ON_MACOS`, in [`ALL`] order.
+const ON_MACOS: &[bool] = &[
+    pycompat_json::ON_MACOS,
+    pycompat_str::ON_MACOS,
+    pycompat_re::ON_MACOS,
+    pycompat_difflib::ON_MACOS,
+    pycompat_fnmatch::ON_MACOS,
+    pycompat_quote::ON_MACOS,
+    pycompat_path::ON_MACOS,
+    pycompat_pyerr::ON_MACOS,
+    pycompat_ipaddress::ON_MACOS,
+    pycompat_shlex::ON_MACOS,
+    pycompat_argparse::ON_MACOS,
+    core_state::ON_MACOS,
+    core_lock::ON_MACOS,
+    shell_segments::ON_MACOS,
+    shell_analyze::ON_MACOS,
+    guard_check::ON_MACOS,
+    guard_hook::ON_MACOS,
+    settings::ON_MACOS,
+    privacy_findings::ON_MACOS,
+    notes_parse::ON_MACOS,
+    memory_sync::ON_MACOS,
+    mem::ON_MACOS,
+    memory_portable::ON_MACOS,
+    rtk_install_reconcile::ON_MACOS,
+    doctor::ON_MACOS,
+    hook_session_start::ON_MACOS,
+    setup::ON_MACOS,
+    dev_vendor::ON_MACOS,
+    dev_version_bump::ON_MACOS,
+    dev_release_edit::ON_MACOS,
+    dev_memory_diff::ON_MACOS,
+    dev_startup_budget::ON_MACOS,
+    dev_eval_baseline::ON_MACOS,
+    dev_upstream_watch::ON_MACOS,
+    dev_rtk_trim::ON_MACOS,
+    dev_smoke::ON_MACOS,
+];
+
+/// Whether `--all` runs the surface `name` on this OS (every surface on Linux; those with
+/// `ON_MACOS` on macOS).
+pub fn runs_here(name: &str) -> bool {
+    !cfg!(target_os = "macos")
+        || ALL
+            .iter()
+            .position(|n| *n == name)
+            .is_some_and(|i| ON_MACOS[i])
+}
+
 /// Every surface name with its implementation, in [`ALL`] order.
 pub fn registry() -> Vec<(&'static str, Option<Box<dyn crate::case::Surface>>)> {
     ALL.iter()
@@ -133,6 +183,8 @@ mod tests {
     #[test]
     fn the_registry_follows_all_and_each_surface_has_its_name() {
         assert_eq!(super::IMPLS.len(), super::ALL.len());
+        assert_eq!(super::ON_MACOS.len(), super::ALL.len());
+        assert!(super::runs_here("pycompat.json"));
         for (name, surface) in super::registry() {
             if let Some(s) = surface {
                 assert_eq!(s.name(), name);

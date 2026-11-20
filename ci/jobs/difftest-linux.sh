@@ -39,6 +39,11 @@ docker run --rm -v "$root":/w:ro -w /w "$image" sh -ec '
     done'
 echo "difftest-linux: the core state and lock golden corpora match their oracles"
 
+# F4: the oracle driver's own rules (a lone surrogate outside "python" is an error, a module's
+# SystemExit or stdin read cannot break the protocol).
+docker run --rm -v "$root":/w:ro -w /w "$image" \
+    python -I port/difftest/oracle/_driver.py --self-test
+
 # F4: every ported surface, its seeds and 10,000 generated cases, through the static musl
 # difftest in the same 3.12 image (scripts/difftest.sh). 0 unexplained diffs or the job fails.
 "$root/scripts/difftest.sh" --all --gen 10000 --report /out/report.json

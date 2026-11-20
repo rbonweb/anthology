@@ -105,11 +105,11 @@ pub fn tar_gz(entries: &[TarEntry]) -> Vec<u8> {
                 });
                 h.set_mode(0o777);
                 h.set_size(0);
-                h.set_link_name(target).expect("tar: link name");
+                set_raw(&mut h.as_old_mut().linkname, target.as_bytes(), "link name");
                 (name, &[])
             }
         };
-        h.set_path(name).expect("tar: member name");
+        set_name(&mut h, name.as_bytes());
         h.set_cksum();
         builder.append(&h, data).expect("tar: append");
     }
@@ -117,6 +117,39 @@ pub fn tar_gz(entries: &[TarEntry]) -> Vec<u8> {
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     gz.write_all(&tar).expect("gzip");
     gz.finish().expect("gzip")
+}
+
+/// Copies `b` into a NUL-padded header field; panics when it does not fit.
+fn set_raw(field: &mut [u8], b: &[u8], what: &str) {
+    assert!(
+        b.len() <= field.len(),
+        "tar: the {what} is longer than {} bytes",
+        field.len()
+    );
+    field.fill(0);
+    field[..b.len()].copy_from_slice(b);
+}
+
+/// Writes a member name as given (`../rtk`, `/rtk` included: the `tar` crate's `set_path`
+/// refuses those). A name over 100 bytes is split at a `/` into the ustar prefix (155 bytes)
+/// and name (100 bytes), as Python's `tarfile` does for the ustar format.
+fn set_name(h: &mut tar::Header, name: &[u8]) {
+    if name.len() <= 100 {
+        set_raw(&mut h.as_old_mut().name, name, "member name");
+        return;
+    }
+    let split = (0..name.len())
+        .rev()
+        .find(|&i| name[i] == b'/' && i <= 155 && name.len() - i - 1 <= 100 && i > 0)
+        .unwrap_or_else(|| {
+            panic!(
+                "tar: {:?} does not fit a ustar header",
+                String::from_utf8_lossy(name)
+            )
+        });
+    let ustar = h.as_ustar_mut().expect("a ustar header");
+    set_raw(&mut ustar.prefix, &name[..split], "name prefix");
+    set_raw(&mut ustar.name, &name[split + 1..], "member name");
 }
 
 /// `tarball(body)`: an rtk release tarball, `rtk` then `LICENSE`.
@@ -280,6 +313,41 @@ mod tests {
         assert_eq!(got[0].1, tar::EntryType::Directory);
         assert_eq!(got[1].1, tar::EntryType::Symlink);
         assert_eq!(got[2].1, tar::EntryType::Link);
+    }
+
+    #[test]
+    fn tar_gz_writes_hostile_and_long_names_as_given() {
+        let long = format!("{}/{}", "d".repeat(120), "f".repeat(90));
+        let blob = tar_gz(&[
+            TarEntry::file("../rtk", b"up"),
+            TarEntry::file("/rtk", b"abs"),
+            TarEntry::file("bin/rtk", b"nested"),
+            TarEntry::file("./rtk", b"dot"),
+            TarEntry::file(&long, b"long"),
+            TarEntry::Symlink {
+                name: "l".into(),
+                target: "../../etc/passwd".into(),
+            },
+        ]);
+        // The raw header names, as an extractor sees them (tar's reader would also refuse
+        // nothing here: it reports paths, unpack is what checks them).
+        let mut names = Vec::new();
+        let mut ar = tar::Archive::new(GzDecoder::new(&blob[..]));
+        for e in ar.entries().expect("entries") {
+            let e = e.expect("entry");
+            names.push(String::from_utf8_lossy(&e.path_bytes()).into_owned());
+            if e.header().entry_type() == tar::EntryType::Symlink {
+                let link = e.link_name_bytes().expect("link");
+                assert_eq!(&*link, b"../../etc/passwd");
+            }
+        }
+        assert_eq!(
+            names,
+            ["../rtk", "/rtk", "bin/rtk", "./rtk", long.as_str(), "l"]
+        );
+        let too_long =
+            std::panic::catch_unwind(|| tar_gz(&[TarEntry::file(&"x".repeat(101), b"")]));
+        assert!(too_long.is_err());
     }
 
     #[test]

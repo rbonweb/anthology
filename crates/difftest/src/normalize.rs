@@ -21,7 +21,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use anthology_testkit::tree::Entry;
+use anthology_testkit::tree::TreeEntry;
 
 use crate::divergences::Class;
 use crate::observe::Observed;
@@ -86,7 +86,9 @@ impl Normalizer {
         self.today(&iso)
     }
 
-    /// Numbers followed by `ms` or `s` (`12ms`, `0.53s`, `1.5 s`) → `<DURATION>`.
+    /// Numbers followed by `ms` or `s` (`12ms`, `0.53s`, `1.5 s`) → `<DURATION>`. Only for
+    /// surfaces that print real timings: it also hides fixed texts such as "times out after
+    /// 20 s", which then go uncompared.
     pub fn durations(mut self) -> Normalizer {
         self.durations = true;
         self
@@ -98,7 +100,9 @@ impl Normalizer {
         self
     }
 
-    /// D-4: at exit 2, stderr → `<USAGE>`.
+    /// D-4: at exit 2, when stderr starts with argparse's `usage: `, the usage block (every line
+    /// before the first `<prog>: error: ` line) → `<USAGE>`. The error line and everything
+    /// after it are still compared, and so is any other exit-2 output.
     pub fn d4_usage(mut self) -> Normalizer {
         self.d4 = true;
         self
@@ -108,7 +112,7 @@ impl Normalizer {
     pub fn bytes(&self, b: &[u8]) -> Vec<u8> {
         let mut out = b.to_vec();
         for (root, mark) in &self.roots {
-            out = replace(&out, root, mark.as_bytes());
+            out = replace_root(&out, root, mark.as_bytes());
         }
         if let Some(t) = &self.today {
             out = replace(&out, t.as_bytes(), TODAY.as_bytes());
@@ -138,15 +142,19 @@ impl Normalizer {
             }
             *stream = full;
         }
-        if self.d4 && o.exit == 2 && o.stderr != USAGE.as_bytes() {
-            o.stderr = USAGE.as_bytes().to_vec();
+        if self.d4
+            && o.exit == 2
+            && let Some(new) = usage_block(&o.stderr)
+            && new != o.stderr
+        {
+            o.stderr = new;
             classes.push(Class::D4);
         }
         if let Some(tree) = &mut o.files {
             for entry in tree.0.values_mut() {
                 match entry {
-                    Entry::File { bytes, .. } => *bytes = plain.bytes(bytes),
-                    Entry::Symlink { target } => {
+                    TreeEntry::File { bytes, .. } => *bytes = plain.bytes(bytes),
+                    TreeEntry::Symlink { target } => {
                         *target = String::from_utf8_lossy(&plain.bytes(target.as_bytes())).into()
                     }
                     _ => {}
@@ -163,6 +171,51 @@ impl Normalizer {
             oracle.mark(class.as_str());
         }
     }
+}
+
+/// `stderr` with its leading argparse usage block replaced (see `d4_usage`), or `None` when it
+/// does not start with `usage: `.
+fn usage_block(stderr: &[u8]) -> Option<Vec<u8>> {
+    if !stderr.starts_with(b"usage: ") {
+        return None;
+    }
+    let lines: Vec<&[u8]> = stderr.split(|&c| c == b'\n').collect();
+    let is_error = |l: &&[u8]| {
+        l.windows(9)
+            .position(|w| w == b": error: ")
+            .is_some_and(|at| at > 0 && !l[..at].contains(&b' '))
+    };
+    let end = lines.iter().position(is_error).unwrap_or(lines.len());
+    let mut out = USAGE.as_bytes().to_vec();
+    for line in &lines[end..] {
+        out.push(b'\n');
+        out.extend_from_slice(line);
+    }
+    if end == lines.len() && stderr.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    Some(out)
+}
+
+/// [`replace`] for a path: only where the path ends (the next byte is not a path name byte),
+/// so `/tmp/x` does not rewrite `/tmp/x2`.
+fn replace_root(hay: &[u8], root: &[u8], with: &[u8]) -> Vec<u8> {
+    let name_byte = |c: u8| c.is_ascii_alphanumeric() || b"._-~+".contains(&c) || c >= 0x80;
+    let mut out = Vec::with_capacity(hay.len());
+    let mut i = 0;
+    while i < hay.len() {
+        if !root.is_empty()
+            && hay[i..].starts_with(root)
+            && hay.get(i + root.len()).is_none_or(|&c| !name_byte(c))
+        {
+            out.extend_from_slice(with);
+            i += root.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn replace(hay: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
@@ -260,15 +313,19 @@ mod tests {
             .today("2026-11-21")
             .durations();
         let text = format!(
-            "{}/a {}/b on 2026-11-21 took 12ms, 0.53s and 2 s; 3 files, v1.2s3, x12s, 5ms.",
+            "{}/a {}/b {}2/c {}: on 2026-11-21 took 12ms, 0.53s and 2 s; 3 files, v1.2s3, \
+             x12s, 5ms.",
             dir.path().display(),
+            real.display(),
+            real.display(),
             real.display()
         );
-        assert_eq!(
-            String::from_utf8_lossy(&n.bytes(text.as_bytes())),
-            "<ROOT>/a <ROOT>/b on <TODAY> took <DURATION>, <DURATION> and <DURATION>; 3 files, \
-             v1.2s3, x12s, <DURATION>."
+        let want = format!(
+            "<ROOT>/a <ROOT>/b {}2/c <ROOT>: on <TODAY> took <DURATION>, <DURATION> and \
+             <DURATION>; 3 files, v1.2s3, x12s, <DURATION>.",
+            real.display()
         );
+        assert_eq!(String::from_utf8_lossy(&n.bytes(text.as_bytes())), want);
     }
 
     #[test]
@@ -277,15 +334,37 @@ mod tests {
         let mut o = Observed::text(1, "ok\n", "x\nerror: [Errno 2] text\n");
         assert_eq!(n.apply(&mut o), [Class::D2]);
         assert_eq!(o.stderr, b"x\nerror: <LIBTEXT>\n");
-        let mut o = Observed::text(2, "", "usage: x [-h]\nx: error: bad\n");
+        let mut o = Observed::text(2, "", "usage: x [-h]\n       [--all]\nx: error: bad\n");
         assert_eq!(n.apply(&mut o), [Class::D2, Class::D4]);
-        assert_eq!(o.stderr, b"<USAGE>");
+        assert_eq!(o.stderr, b"<USAGE>\nx: error: <LIBTEXT>\n");
         let mut o = Observed::text(0, "fine", "");
         assert!(n.apply(&mut o).is_empty());
         let mut oracle = Oracle::spawn("/nonexistent".into(), vec![], "/".into());
-        let mut o = Observed::text(2, "", "usage");
+        let mut o = Observed::text(2, "", "usage: x\n");
         n.apply_python(&mut o, &mut oracle);
+        assert_eq!(o.stderr, b"<USAGE>\n");
         assert_eq!(oracle.take_notes().marks, ["D-4"]);
+    }
+
+    #[test]
+    fn d4_keeps_the_error_line_and_other_exit_2_output() {
+        let n = Normalizer::new().d4_usage();
+        // Different usage text, different error lines: still a diff.
+        let mut py = Observed::text(2, "", "usage: x [-h] A\nx: error: argument A: bad\n");
+        let mut rs = Observed::text(2, "", "usage: x [-h] [A]\nx: error: argument B: bad\n");
+        n.apply(&mut py);
+        n.apply(&mut rs);
+        assert_ne!(py, rs);
+        assert_eq!(py.stderr, b"<USAGE>\nx: error: argument A: bad\n");
+        // Same error line, different usage: equal.
+        let mut rs = Observed::text(2, "", "usage: x [-h] [A]\nx: error: argument A: bad\n");
+        n.apply(&mut rs);
+        assert_eq!(py, rs);
+        // Not argparse: untouched.
+        let blocked = "Blocked by anthology-guardrails (G1): usage: of rm -rf\n";
+        let mut o = Observed::text(2, "", blocked);
+        assert!(n.apply(&mut o).is_empty());
+        assert_eq!(o.stderr, blocked.as_bytes());
     }
 
     #[test]
@@ -294,14 +373,14 @@ mod tests {
         let mut tree = Tree::default();
         tree.0.insert(
             "f".into(),
-            Entry::File {
+            TreeEntry::File {
                 bytes: b"path=/sb/1/x".to_vec(),
                 mode: 0o644,
             },
         );
         tree.0.insert(
             "l".into(),
-            Entry::Symlink {
+            TreeEntry::Symlink {
                 target: "/sb/1/y".into(),
             },
         );
@@ -314,7 +393,7 @@ mod tests {
         assert_eq!(t.file("f"), Some(&b"path=<ROOT>/x"[..]));
         assert_eq!(
             t.get("l"),
-            Some(&Entry::Symlink {
+            Some(&TreeEntry::Symlink {
                 target: "<ROOT>/y".into()
             })
         );
