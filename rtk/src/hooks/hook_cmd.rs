@@ -274,7 +274,17 @@ pub fn run_claude() -> Result<()> {
     #[cfg(feature = "engine")]
     let input = claude_pipeline::read_payload()?;
     #[cfg(not(feature = "engine"))]
-    let input = read_stdin_limited()?;
+    let input = match read_stdin_limited() {
+        Ok(input) => input,
+        // anthology fork: a tool call the hook cannot read must not fall through
+        // to the host's allow rules (`Bash(rtk *)`): exit 1 would, and so would
+        // silence. Claude Code reads the JSON on exit 0.
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "[rtk hook] {e:#}");
+            let _ = writeln!(io::stdout(), "{}", super::anthology_gate::ask_output());
+            return Ok(());
+        }
+    };
     #[cfg(feature = "engine")]
     let raw_len = input.len();
 
@@ -287,6 +297,8 @@ pub fn run_claude() -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             let _ = writeln!(io::stderr(), "[rtk hook] Failed to parse JSON input: {e}");
+            // anthology fork: ask rather than leave an unread call to the allow rules.
+            let _ = writeln!(io::stdout(), "{}", super::anthology_gate::ask_output());
             return Ok(());
         }
     };

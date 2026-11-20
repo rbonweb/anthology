@@ -56,10 +56,25 @@
 //!
 //! - Files a recursive search descends into (`grep -r x .`, `find . -name x`) are
 //!   not matched against `Read()` rules: only the paths named on the command line.
-//! - Commands rtk does not rewrite into reads (`sed`, `awk`, `less`, a script) are
-//!   outside the `Read()` check; nothing launders them through `rtk`.
-//! - A wrapper the peel does not model (`env -i rtk ...`, `sudo rtk ...`) is not
-//!   expanded: the hook sees the command word `env` or `sudo`.
+//! - Inside an rtk expansion every command's operand words are checked against
+//!   `Read()` deny rules, whatever the command (`rtk sed -n p secret.txt`). What
+//!   reads a file without naming it as an operand is not seen: `rtk deps`
+//!   (manifests), `find -files0-from FILE`, `rg --pre`, a script or interpreter
+//!   that opens a path itself.
+//! - Opaque inside an rtk expansion (the hook asks) when any Bash deny or ask rule
+//!   exists: `eval`, `source`, `.`; a command word with `$` or a glob; a shell with
+//!   no `-c` (stdin or a script file); an interpreter given inline code (python,
+//!   node, bun, deno eval, perl, ruby, php, lua, osascript); busybox, toybox, sudo,
+//!   doas; `rg --pre`. Still unread: a script file the agent wrote and then runs
+//!   (`python x.py`, `./x.sh`), `python -m`, and any other program that runs a
+//!   string (`awk system()`, `make`, a git alias or hook, `ssh host cmd`).
+//! - `env` (with its options), `xargs` (with its options) and `find -exec` payloads
+//!   are read, at top level too; an `xargs` or `env` option the gate does not know,
+//!   or an unterminated `-exec`, is opaque. A top-level `find` with such a payload
+//!   is left unrewritten (`Defer`).
+//! - A wrapper the peel does not model (`sudo rtk ...`, `command -p rtk ...`,
+//!   `exec -a x rtk ...`) is not expanded: the hook sees the command word `sudo`,
+//!   `command` or `exec`.
 //! - `rtk <sub>` for a subcommand that runs a different program than its name
 //!   (`rtk vitest`, `rtk lint`) is matched as `<sub> <rest>`, as the brief says.
 
@@ -76,9 +91,12 @@ use std::path::{Path, PathBuf};
 /// How many rtk or wrapper expansions deep the gate reads before it gives up and
 /// asks.
 const MAX_DEPTH: usize = 4;
-/// Upper bound on segments scanned for one command, so a crafted command cannot
-/// make the hook slow. Past it the answer is ask.
-const SEGMENT_BUDGET: usize = 4000;
+/// Units of work (about sixteen bytes of text each) one command may cost, so a
+/// crafted command cannot make the hook slow. Past it the answer is ask, or defer
+/// when nothing in the command could be an rtk form (see [`evaluate`]).
+const WORK_BUDGET: usize = 1_000_000;
+/// The least a segment costs: 4000 segments use the whole budget.
+const SEGMENT_COST: usize = 250;
 /// The shells whose `-c` script the gate reads.
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish"];
 /// The shells whose grammar the lexer models: anything else is opaque.
@@ -142,6 +160,20 @@ pub(crate) fn deny_output() -> Value {
             "hookEventName": PRE_TOOL_USE_KEY,
             "permissionDecision": "deny",
             "permissionDecisionReason": DENY_REASON,
+        }
+    })
+}
+
+/// The `PreToolUse` response for a tool call the hook could not read (stdin over
+/// the size limit, or not JSON): ask, so that an allow rule never decides on an
+/// unread command. No `updatedInput`.
+pub(crate) fn ask_output() -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": PRE_TOOL_USE_KEY,
+            "permissionDecision": "ask",
+            "permissionDecisionReason": "RTK: the hook could not read this tool call (input over \
+    the size limit, or not valid JSON), so it asks instead of letting an allow rule decide.",
         }
     })
 }
@@ -255,10 +287,10 @@ pub(crate) fn managed_rules_only(managed: &[PathBuf]) -> bool {
     })
 }
 
-/// Append the `Read(...)` entries of a `permissions.deny` array to `target`: the
+/// Append the `Read(...)` entries of a `permissions.deny` or `permissions.ask` array to `target`: the
 /// path pattern for `Read(pattern)`, and `**` for a bare `Read`, which denies
 /// every read.
-pub(crate) fn append_read_deny(rules_value: Option<&Value>, target: &mut Vec<String>) {
+pub(crate) fn append_read_rules(rules_value: Option<&Value>, target: &mut Vec<String>) {
     let Some(rules) = rules_value.and_then(Value::as_array) else {
         return;
     };
@@ -280,6 +312,7 @@ pub(crate) struct GateRules {
     deny: Vec<String>,
     ask: Vec<String>,
     read_deny: Vec<String>,
+    read_ask: Vec<String>,
     /// The user's `transparent_prefixes`, normalized.
     prefixes: Vec<String>,
     project_roots: Vec<PathBuf>,
@@ -290,6 +323,7 @@ impl GateRules {
         deny: Vec<String>,
         ask: Vec<String>,
         read_deny: Vec<String>,
+        read_ask: Vec<String>,
         transparent_prefixes: &[String],
         project_roots: Vec<PathBuf>,
     ) -> Self {
@@ -297,6 +331,7 @@ impl GateRules {
             deny,
             ask,
             read_deny,
+            read_ask,
             prefixes: registry::normalize_transparent_prefixes(transparent_prefixes),
             project_roots,
         }
@@ -304,7 +339,10 @@ impl GateRules {
 
     /// Whether any rule exists for the gate to enforce.
     fn active(&self) -> bool {
-        !(self.deny.is_empty() && self.ask.is_empty() && self.read_deny.is_empty())
+        !(self.deny.is_empty()
+            && self.ask.is_empty()
+            && self.read_deny.is_empty()
+            && self.read_ask.is_empty())
     }
 }
 
@@ -330,15 +368,27 @@ pub(crate) fn evaluate(
         .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
         .or_else(|| user_dirs::current_dir().ok());
-    let mut scanner = Scanner::new(rules, initial.as_deref());
+    let mut scanner = Scanner::new(rules, initial.as_deref(), cmd);
     let mut cwds = Cwds::new(initial);
     let ctx = Ctx {
         inner: false,
         in_rtk: false,
+        payload: false,
     };
     if scanner.scan_text(cmd, 0, ctx, &mut cwds).is_err() {
-        Gate::Deny
-    } else if scanner.ask {
+        return Gate::Deny;
+    }
+    if scanner.exhausted {
+        // Part of the command was never read. Text that may hold an rtk form (or
+        // any Bash rule at all) asks; otherwise the host, which sees no rtk text
+        // and gets no rewrite, judges the original.
+        if scanner.bash_rules || cmd.contains("rtk") {
+            scanner.ask = true;
+        } else {
+            scanner.defer = true;
+        }
+    }
+    if scanner.ask {
         Gate::Ask
     } else if scanner.defer {
         Gate::Defer
@@ -359,33 +409,142 @@ struct Ctx {
     /// Reached through an rtk-prefixed segment: a substitution is opaque, because
     /// the host will not rewrite it and `Bash(rtk *)` would allow it unseen.
     in_rtk: bool,
+    /// Inside the payload of an exec action (`find -exec`, `xargs`, `env`): what
+    /// the gate cannot read there is deferred when the host would have rewritten it.
+    payload: bool,
+}
+
+/// One more text to scan, and how it was reached.
+#[derive(PartialEq)]
+struct Expansion {
+    text: String,
+    via_rtk: bool,
+    payload: bool,
+}
+
+/// What the command itself can change under the gate's feet.
+#[derive(Clone, Copy, Default)]
+struct EnvFlags {
+    /// `HOME` or `CDPATH` is set, exported or unset in the command: `~` and a bare
+    /// `cd` mean something the gate cannot know.
+    home: bool,
+    /// `CDPATH` is set, in the hook's environment or by the command: a relative
+    /// `cd` operand may land elsewhere.
+    cdpath: bool,
+}
+
+/// A segment form with its words, read once.
+struct Parsed<'a> {
+    form: &'a str,
+    words: Vec<&'a str>,
+    spans: Vec<usize>,
+    /// The command word's basename, unquoted.
+    name: String,
+    /// The form with every word unquoted and joined by single spaces: what a rule
+    /// that names `git push` has to match when the text says `git 'push'`.
+    unquoted: String,
+}
+
+impl<'a> Parsed<'a> {
+    fn new(form: &'a str) -> Self {
+        let (words, spans) = lexer::words_and_spans(form);
+        let resolved: Vec<String> = words.iter().map(|word| resolve_word_text(word)).collect();
+        let name = resolved
+            .first()
+            .map(|word| basename(word).to_string())
+            .unwrap_or_default();
+        Self {
+            form,
+            words,
+            spans,
+            name,
+            unquoted: resolved.join(" "),
+        }
+    }
 }
 
 struct Scanner<'a> {
     rules: &'a GateRules,
     reads: Option<ReadMatcher>,
+    read_asks: Option<ReadMatcher>,
+    env: EnvFlags,
+    /// Any Bash deny or ask rule exists.
+    bash_rules: bool,
     ask: bool,
     defer: bool,
+    /// The work budget ran out: part of the command was not read.
+    exhausted: bool,
+    /// An rtk, wrapper or payload expansion was met.
+    expanded: bool,
     budget: usize,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(rules: &'a GateRules, cwd: Option<&Path>) -> Self {
-        let reads = (!rules.read_deny.is_empty()).then(|| {
-            ReadMatcher::new(
-                &rules.read_deny,
-                user_dirs::home(),
-                &rules.project_roots,
-                cwd,
-                cfg!(any(target_os = "macos", windows)),
-            )
-        });
+    fn new(rules: &'a GateRules, cwd: Option<&Path>, cmd: &str) -> Self {
+        let cdpath_set = mentions_word(cmd, "CDPATH")
+            || crate::core::user_env::var("CDPATH").is_some_and(|value| !value.is_empty());
+        let env = EnvFlags {
+            home: mentions_word(cmd, "HOME") || cdpath_set,
+            cdpath: cdpath_set,
+        };
+        let matcher = |patterns: &[String]| {
+            (!patterns.is_empty()).then(|| {
+                ReadMatcher::new(
+                    patterns,
+                    user_dirs::home(),
+                    &rules.project_roots,
+                    cwd,
+                    cfg!(any(target_os = "macos", windows)),
+                )
+                .with_unstable_home(env.home)
+            })
+        };
         Self {
             rules,
-            reads,
+            reads: matcher(&rules.read_deny),
+            read_asks: matcher(&rules.read_ask),
+            env,
+            bash_rules: !(rules.deny.is_empty() && rules.ask.is_empty()),
             ask: false,
             defer: false,
-            budget: SEGMENT_BUDGET,
+            exhausted: false,
+            expanded: false,
+            budget: WORK_BUDGET,
+        }
+    }
+
+    /// Whether any Read rule is in play.
+    fn reading(&self) -> bool {
+        self.reads.is_some() || self.read_asks.is_some()
+    }
+
+    /// Spend `cost` units of work. `false` once the budget is gone: the caller
+    /// stops reading and the answer degrades to an ask (or a defer, see
+    /// [`evaluate`]).
+    fn spend(&mut self, cost: usize) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        if self.budget < cost {
+            self.exhausted = true;
+            self.budget = 0;
+            return false;
+        }
+        self.budget -= cost;
+        true
+    }
+
+    /// Something the gate cannot read was met: inside an rtk expansion the hook
+    /// asks, inside the payload of a top-level exec action the command is left to
+    /// the host unrewritten.
+    fn opaque(&mut self, ctx: Ctx) {
+        if !self.bash_rules {
+            return;
+        }
+        if ctx.in_rtk {
+            self.ask = true;
+        } else if ctx.payload {
+            self.defer = true;
         }
     }
 
@@ -404,7 +563,7 @@ impl<'a> Scanner<'a> {
         if ctx.in_rtk && substitution {
             self.ask = true;
         }
-        if self.reads.is_some() {
+        if self.reading() {
             self.check_input_redirects(text, ctx, cwds)?;
         }
         for segment in lexer::split_for_permissions(text) {
@@ -425,11 +584,9 @@ impl<'a> Scanner<'a> {
         if segment.is_empty() {
             return Ok(());
         }
-        if self.budget == 0 {
-            self.ask = true;
+        if !self.spend(SEGMENT_COST + segment.len() / 8) {
             return Ok(());
         }
-        self.budget -= 1;
 
         // Each segment read every way a rule may name it, as the ordinary gate
         // does: as written, without the grammar a split leaves behind, then
@@ -446,12 +603,23 @@ impl<'a> Scanner<'a> {
                 forms.push(form);
             }
         }
-        for form in &forms {
+        if !self.spend(forms.len() * (1 + segment.len() / 16)) {
+            return Ok(());
+        }
+        let parsed: Vec<Parsed> = forms.iter().map(|form| Parsed::new(form)).collect();
+
+        // Rules are matched against the text as written and as the shell reads it
+        // once the quotes are gone: `git 'push'` is `git push` to a rule.
+        for reading in parsed
+            .iter()
+            .flat_map(|p| [p.form, p.unquoted.as_str()])
+            .filter(|reading| !reading.is_empty())
+        {
             if self
                 .rules
                 .deny
                 .iter()
-                .any(|pattern| permissions::command_matches_pattern(form, pattern))
+                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
             {
                 return Err(Denied);
             }
@@ -459,85 +627,144 @@ impl<'a> Scanner<'a> {
                 .rules
                 .ask
                 .iter()
-                .any(|pattern| permissions::command_matches_pattern(form, pattern))
+                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
             {
                 self.ask = true;
             }
         }
 
-        let mut expansions: Vec<(String, bool)> = Vec::new();
-        for form in &forms {
-            let (words, spans) = lexer::words_and_spans(form);
-            let Some(first) = words.first() else {
+        let mut expansions: Vec<Expansion> = Vec::new();
+        for p in &parsed {
+            if p.words.is_empty() {
                 continue;
-            };
-            let name = basename(&resolve_word_text(first)).to_string();
-            if READ_COMMANDS.contains(&name.as_str()) {
-                self.check_read(&name, &words[1..], ctx, cwds)?;
             }
-            if SHELLS.contains(&name.as_str())
-                && let Some(script) = shell_wrapper_script(&words)
-            {
-                push_unique(&mut expansions, (script, false));
-            }
-            if let Some(inner) = rtk_inner(form, &words, &spans) {
-                self.ask |= inner.opaque || substitution;
-                for text in inner.texts {
-                    push_unique(&mut expansions, (text, true));
+            let name = p.name.as_str();
+            let args = &p.words[1..];
+            if self.reading() {
+                if READ_COMMANDS.contains(&name) {
+                    self.check_read(name, args, ctx, cwds, false)?;
+                } else if ctx.in_rtk && !is_assignment(name) {
+                    // Anything rtk runs can read a file: sed, awk, cp, jq...
+                    self.check_read(name, args, ctx, cwds, true)?;
                 }
             }
+            if (ctx.in_rtk || ctx.payload) && is_opaque_command(name, &p.words) {
+                self.opaque(ctx);
+            }
+            if SHELLS.contains(&name)
+                && let Some(script) = shell_wrapper_script(&p.words)
+            {
+                push_unique(
+                    &mut expansions,
+                    Expansion {
+                        text: script,
+                        via_rtk: false,
+                        payload: false,
+                    },
+                );
+            }
+            if let Some(inner) = rtk_inner(p.form, &p.words, &p.spans) {
+                self.ask |= inner.opaque || substitution;
+                for text in inner.texts {
+                    push_unique(
+                        &mut expansions,
+                        Expansion {
+                            text,
+                            via_rtk: true,
+                            payload: false,
+                        },
+                    );
+                }
+            }
+            let payloads = exec_payloads(name, p.form, &p.words, &p.spans);
+            if payloads.unattested {
+                self.opaque(Ctx {
+                    payload: true,
+                    ..ctx
+                });
+            }
+            for text in payloads.texts {
+                push_unique(
+                    &mut expansions,
+                    Expansion {
+                        text,
+                        via_rtk: false,
+                        payload: true,
+                    },
+                );
+            }
         }
 
-        if self.reads.is_some() {
-            apply_cd(residue, cwds);
+        if self.reading() {
+            apply_cd(residue, cwds, self.env);
         }
 
-        for (text, via_rtk) in expansions {
+        for expansion in expansions {
+            self.expanded = true;
             if depth >= MAX_DEPTH {
                 self.ask = true;
                 continue;
             }
             let nested_ctx = Ctx {
                 inner: true,
-                in_rtk: ctx.in_rtk || via_rtk,
+                in_rtk: ctx.in_rtk || expansion.via_rtk,
+                payload: ctx.payload || expansion.payload,
             };
             // A `cd` inside the expansion runs in a process of its own.
             let mut nested = cwds.clone();
-            self.scan_text(&text, depth + 1, nested_ctx, &mut nested)?;
+            self.scan_text(&expansion.text, depth + 1, nested_ctx, &mut nested)?;
         }
         Ok(())
     }
 
+    /// The Read rules against one command's non-option words. `generic` is a
+    /// command outside [`READ_COMMANDS`], met inside an rtk expansion: a denied
+    /// path is still a deny, but an unresolvable one adds no prompt.
     fn check_read(
         &mut self,
         name: &str,
         args: &[&str],
         ctx: Ctx,
         cwds: &Cwds,
+        generic: bool,
     ) -> Result<(), Denied> {
-        let outcome = match &self.reads {
-            Some(reads) => reads.check_command(name, args, cwds),
-            None => return Ok(()),
+        if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
+            return Ok(());
+        }
+        let denied = match &self.reads {
+            Some(reads) => reads.check_command(name, args, cwds, generic),
+            None => ReadOutcome::Clear,
         };
-        self.apply_read(outcome, ctx)
+        if denied == ReadOutcome::Denied {
+            return Err(Denied);
+        }
+        let asked = match &self.read_asks {
+            Some(asks) => asks.check_command(name, args, cwds, generic),
+            None => ReadOutcome::Clear,
+        };
+        self.apply_read(denied, asked, ctx, generic);
+        Ok(())
     }
 
-    fn apply_read(&mut self, outcome: ReadOutcome, ctx: Ctx) -> Result<(), Denied> {
-        match outcome {
-            ReadOutcome::Denied => Err(Denied),
-            ReadOutcome::Uncertain => {
-                if ctx.inner {
-                    self.ask = true;
-                } else {
-                    self.defer = true;
-                }
-                Ok(())
+    /// Fold what the Read rules said. An unresolvable path, or a path an ask rule
+    /// names, leaves a top-level command to the host unrewritten and makes an
+    /// expansion ask.
+    fn apply_read(&mut self, denied: ReadOutcome, asked: ReadOutcome, ctx: Ctx, generic: bool) {
+        let unresolved = denied == ReadOutcome::Uncertain || asked == ReadOutcome::Uncertain;
+        let matched_ask = asked == ReadOutcome::Denied;
+        if generic {
+            // No prompt for a `$VAR`, but a named path that an ask rule covers asks.
+            self.ask |= matched_ask;
+        } else if unresolved || matched_ask {
+            if ctx.inner {
+                self.ask = true;
+            } else {
+                self.defer = true;
             }
-            ReadOutcome::Clear => Ok(()),
         }
     }
 
-    /// `< file` reads the file whatever the command is.
+    /// `< file` (and `<> file`) reads the file whatever the command is.
     fn check_input_redirects(&mut self, text: &str, ctx: Ctx, cwds: &Cwds) -> Result<(), Denied> {
         for segment in lexer::split_for_wrappers(text) {
             let tokens = lexer::tokenize(segment);
@@ -547,22 +774,297 @@ impl<'a> Scanner<'a> {
                 if !is_input {
                     continue;
                 }
-                let Some(target) = tokens.get(i + 1).filter(|t| t.kind == TokenKind::Arg) else {
+                // `<>` (read and write) lexes as `<` then `>`, glued together.
+                let glued_write = tokens.get(i + 1).is_some_and(|next| {
+                    next.kind == TokenKind::Redirect
+                        && next.value == ">"
+                        && next.offset == token.offset + token.value.len()
+                });
+                let operand = i + 1 + usize::from(glued_write);
+                let Some(target) = tokens.get(operand).filter(|t| t.kind == TokenKind::Arg) else {
                     continue;
                 };
                 let word = resolve_word_text(&target.value);
                 if word == "/dev/null" {
                     continue;
                 }
-                let outcome = match &self.reads {
-                    Some(reads) => reads.check_word(&word, cwds),
-                    None => return Ok(()),
+                if !self.spend(1 + word.len() / 16) {
+                    return Ok(());
+                }
+                let denied = match &self.reads {
+                    Some(reads) => ReadOutcome::from(reads.check_word(&word, cwds, false)),
+                    None => ReadOutcome::Clear,
                 };
-                self.apply_read(ReadOutcome::from(outcome), ctx)?;
+                if denied == ReadOutcome::Denied {
+                    return Err(Denied);
+                }
+                let asked = match &self.read_asks {
+                    Some(asks) => ReadOutcome::from(asks.check_word(&word, cwds, false)),
+                    None => ReadOutcome::Clear,
+                };
+                self.apply_read(denied, asked, ctx, false);
             }
         }
         Ok(())
     }
+}
+
+/// `NAME=value`: an assignment prefix, not a command word.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Whether `word` appears in `text` as a whole identifier (`HOME`, `$HOME`,
+/// `HOME=/x`, `export HOME`, but not `HOMEDIR`).
+fn mentions_word(text: &str, word: &str) -> bool {
+    let bytes = text.as_bytes();
+    let ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    text.match_indices(word).any(|(at, _)| {
+        let before = at == 0 || !ident(bytes[at - 1]);
+        let after = bytes.get(at + word.len()).is_none_or(|byte| !ident(*byte));
+        before && after
+    })
+}
+
+/// A command whose effect the gate cannot read from its words: it evaluates a
+/// string, reads a script from elsewhere, runs inline code, or hands the real
+/// command to another program. Inside an rtk expansion the hook asks.
+fn is_opaque_command(name: &str, words: &[&str]) -> bool {
+    if is_assignment(name) {
+        return false;
+    }
+    let first = words
+        .first()
+        .map(|w| resolve_word_text(w))
+        .unwrap_or_default();
+    // `[` and `[[` are the test builtin; any other glob or expansion in command
+    // position names a program the gate cannot see.
+    if first.contains(['$', '`', '*', '?', '[', '{']) && !matches!(first.as_str(), "[" | "[[") {
+        return true;
+    }
+    match name {
+        "eval" | "source" | "." | "busybox" | "toybox" | "sudo" | "doas" => true,
+        // A shell with no `-c` reads stdin or a script file.
+        shell if SHELLS.contains(&shell) => shell_wrapper_script(words).is_none(),
+        // `rg --pre CMD` runs CMD on every file.
+        "rg" | "grep" => words[1..].iter().any(|word| {
+            let word = resolve_word_text(word);
+            word == "--pre" || word.starts_with("--pre=")
+        }),
+        other => runs_inline_code(other, words),
+    }
+}
+
+/// An interpreter given code on its command line.
+fn runs_inline_code(name: &str, words: &[&str]) -> bool {
+    let is_python = name
+        .strip_prefix("python")
+        .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    // (single-dash flag letters that introduce code, long flags that do)
+    let (letters, long): (&str, &[&str]) = if is_python {
+        ("c", &[])
+    } else {
+        match name {
+            "node" | "nodejs" | "bun" => ("ep", &["--eval", "--print"]),
+            "perl" => ("eE", &[]),
+            "ruby" | "lua" | "luajit" | "osascript" => ("e", &[]),
+            "php" => ("r", &[]),
+            "deno" => ("", &[]),
+            _ => return false,
+        }
+    };
+    for raw in &words[1..] {
+        let word = resolve_word_text(raw);
+        if name == "deno" && word == "eval" {
+            return true;
+        }
+        if long.contains(&word.as_str()) {
+            return true;
+        }
+        match word.strip_prefix('-') {
+            Some(flags) if !word.starts_with("--") => {
+                if flags.chars().any(|c| letters.contains(c)) {
+                    return true;
+                }
+            }
+            Some(_) => {}
+            // The first operand is the script: its own flags are not ours.
+            None => break,
+        }
+    }
+    false
+}
+
+/// The commands an exec action runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Payloads {
+    texts: Vec<String>,
+    /// The action's command could not be read.
+    unattested: bool,
+}
+
+/// What `form` hands to another command: the payload of `find -exec`,
+/// `-execdir`, `-ok` and `-okdir`, the command `xargs` runs, and the command
+/// `env` runs, past each one's options.
+fn exec_payloads(name: &str, form: &str, words: &[&str], spans: &[usize]) -> Payloads {
+    let slice = |from: usize, to: usize| -> String {
+        form[spans[from]..spans[to] + words[to].len()].to_string()
+    };
+    let resolved = |at: usize| resolve_word_text(words[at]);
+    let mut out = Payloads::default();
+    match name {
+        "find" => {
+            let mut i = 1;
+            while i < words.len() {
+                if !matches!(
+                    resolved(i).as_str(),
+                    "-exec" | "-execdir" | "-ok" | "-okdir"
+                ) {
+                    i += 1;
+                    continue;
+                }
+                let start = i + 1;
+                let end = (start..words.len()).find(|&k| matches!(resolved(k).as_str(), ";" | "+"));
+                match end {
+                    Some(end) if end > start => {
+                        out.texts.push(slice(start, end - 1));
+                        i = end + 1;
+                    }
+                    Some(end) => {
+                        out.unattested = true;
+                        i = end + 1;
+                    }
+                    None => {
+                        out.unattested = true;
+                        if start < words.len() {
+                            out.texts.push(slice(start, words.len() - 1));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        "xargs" => {
+            // Options that take the next word as their value.
+            const WITH_VALUE: &[&str] = &["-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a"];
+            const LONG_WITH_VALUE: &[&str] = &[
+                "--max-args",
+                "--max-procs",
+                "--delimiter",
+                "--arg-file",
+                "--max-chars",
+                "--process-slot-var",
+            ];
+            const NO_VALUE: &[&str] = &[
+                "-0",
+                "-t",
+                "-r",
+                "-p",
+                "-x",
+                "-o",
+                "--null",
+                "--verbose",
+                "--no-run-if-empty",
+                "--interactive",
+                "--open-tty",
+                "--exit",
+                "--show-limits",
+            ];
+            let mut i = 1;
+            while i < words.len() {
+                let word = resolved(i);
+                if word == "--" {
+                    i += 1;
+                    break;
+                }
+                if !word.starts_with('-') || word == "-" {
+                    break;
+                }
+                if WITH_VALUE.contains(&word.as_str()) || LONG_WITH_VALUE.contains(&word.as_str()) {
+                    i += 2;
+                } else if NO_VALUE.contains(&word.as_str())
+                    || word.contains('=') && word.starts_with("--")
+                    || WITH_VALUE
+                        .iter()
+                        .any(|opt| word.len() > 2 && word.starts_with(opt))
+                    || matches!(word.get(..2), Some("-e" | "-i" | "-l"))
+                    || word.starts_with("--replace")
+                    || word.starts_with("--eof")
+                    || word.starts_with("--max-lines")
+                    || (!word.starts_with("--") && word[1..].chars().all(|c| "0trpxo".contains(c)))
+                {
+                    i += 1;
+                } else {
+                    out.unattested = true;
+                    return out;
+                }
+            }
+            if i < words.len() {
+                out.texts.push(slice(i, words.len() - 1));
+            }
+        }
+        "env" => {
+            let mut i = 1;
+            while i < words.len() {
+                let word = resolved(i);
+                if word == "--" {
+                    i += 1;
+                    break;
+                }
+                if matches!(
+                    word.as_str(),
+                    "-i" | "-" | "--ignore-environment" | "-0" | "--null" | "-v" | "--debug"
+                ) || is_assignment(&word)
+                {
+                    i += 1;
+                } else if matches!(word.as_str(), "-u" | "--unset" | "-C" | "--chdir" | "-P") {
+                    i += 2;
+                } else if word.starts_with("--unset=")
+                    || word.starts_with("--chdir=")
+                    || (word.starts_with("-u") || word.starts_with("-C") || word.starts_with("-P"))
+                        && word.len() > 2
+                {
+                    i += 1;
+                } else if word == "-S" || word == "--split-string" {
+                    // The string is split into the command and its arguments.
+                    if let Some(next) = words.get(i + 1) {
+                        let mut text = resolve_word_text(next);
+                        if i + 2 < words.len() {
+                            text = format!("{text} {}", slice(i + 2, words.len() - 1));
+                        }
+                        out.texts.push(text);
+                    } else {
+                        out.unattested = true;
+                    }
+                    return out;
+                } else if let Some(split) = word
+                    .strip_prefix("--split-string=")
+                    .or_else(|| word.strip_prefix("-S").filter(|rest| !rest.is_empty()))
+                {
+                    let mut text = split.to_string();
+                    if i + 1 < words.len() {
+                        text = format!("{text} {}", slice(i + 1, words.len() - 1));
+                    }
+                    out.texts.push(text);
+                    return out;
+                } else if word.starts_with('-') {
+                    out.unattested = true;
+                    return out;
+                } else {
+                    break;
+                }
+            }
+            if i < words.len() {
+                out.texts.push(slice(i, words.len() - 1));
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 fn push_unique<T: PartialEq>(items: &mut Vec<T>, item: T) {
@@ -697,7 +1199,10 @@ pub(crate) fn rtk_inner(form: &str, words: &[&str], spans: &[usize]) -> Option<R
     match sub.as_str() {
         "run" => run_inner(words, spans, form, i + 1, &mut inner),
         "err" | "test" | "summary" => shell_option_inner(words, spans, form, i + 1, &mut inner),
-        "bypass" | "proxy" => push_rest(&mut inner.texts, rest),
+        "bypass" | "proxy" => {
+            push_rest(&mut inner.texts, rest);
+            lone_script(&mut inner, words, i + 1);
+        }
         "read" | "json" | "log" | "smart" | "deps" => {
             push_unique(&mut inner.texts, join_command(&sub, rest));
             push_unique(&mut inner.texts, join_command("cat", rest));
@@ -717,6 +1222,10 @@ pub(crate) fn rtk_inner(form: &str, words: &[&str], spans: &[usize]) -> Option<R
                 .collect();
             if without.len() != words.len() - (i + 1) {
                 push_unique(&mut inner.texts, join_command(&sub, &without.join(" ")));
+            }
+            // `rtk 'git push'`: rtk's fallback runs a lone word through `sh -c`.
+            if words.len() == i + 1 {
+                push_script(&mut inner, None, sub.clone());
             }
         }
     }
@@ -758,7 +1267,17 @@ fn run_inner(words: &[&str], spans: &[usize], form: &str, from: usize, inner: &m
             if let Some(&at) = spans.get(j) {
                 push_rest(&mut inner.texts, &form[at..]);
             }
+            lone_script(inner, words, j);
         }
+    }
+}
+
+/// A single argv word that is not a program is run through `sh -c` by rtk
+/// (`core::shell::direct_command`), so it is also a script. Read it as one
+/// whatever it holds: being conservative costs a scan.
+fn lone_script(inner: &mut RtkInner, words: &[&str], from: usize) {
+    if words.len() == from + 1 {
+        push_script(inner, None, resolve_word_text(words[from]));
     }
 }
 
@@ -797,7 +1316,10 @@ fn shell_option_inner(
             let parts = lexer::shell_split(rest);
             push_script(inner, Some(&shell), parts.join(" "));
         }
-        None => push_rest(&mut inner.texts, rest),
+        None => {
+            push_rest(&mut inner.texts, rest);
+            lone_script(inner, words, j);
+        }
     }
 }
 
@@ -866,21 +1388,21 @@ impl Cwds {
 }
 
 /// Track `cd`/`pushd`/`popd` for the segment `segment`.
-fn apply_cd(segment: &str, cwds: &mut Cwds) {
+fn apply_cd(segment: &str, cwds: &mut Cwds, env: EnvFlags) {
     let (words, _) = lexer::words_and_spans(segment);
     let Some(first) = words.first() else {
         return;
     };
     let target = match basename(&resolve_word_text(first)) {
-        "cd" => cd_target(&words[1..], true),
-        "pushd" => cd_target(&words[1..], false),
+        "cd" => cd_target(&words[1..], true, env),
+        "pushd" => cd_target(&words[1..], false, env),
         "popd" => CdTarget::Unknown,
         _ => return,
     };
     cwds.apply(&target);
 }
 
-fn cd_target(args: &[&str], empty_is_home: bool) -> CdTarget {
+fn cd_target(args: &[&str], empty_is_home: bool, env: EnvFlags) -> CdTarget {
     let mut operand = None;
     for raw in args {
         let word = resolve_word_text(raw);
@@ -897,12 +1419,15 @@ fn cd_target(args: &[&str], empty_is_home: bool) -> CdTarget {
         break;
     }
     let Some(operand) = operand else {
-        return match (empty_is_home, user_dirs::home()) {
+        return match (empty_is_home && !env.home, user_dirs::home()) {
             (true, Some(home)) => CdTarget::Absolute(home),
             _ => CdTarget::Unknown,
         };
     };
     if is_uncertain_word(&operand) {
+        return CdTarget::Unknown;
+    }
+    if env.home && operand.starts_with('~') {
         return CdTarget::Unknown;
     }
     if operand == "~" || operand.starts_with("~/") {
@@ -918,6 +1443,13 @@ fn cd_target(args: &[&str], empty_is_home: bool) -> CdTarget {
     }
     if Path::new(&operand).is_absolute() {
         CdTarget::Absolute(PathBuf::from(operand))
+    } else if env.cdpath
+        && !(matches!(operand.as_str(), "." | "..")
+            || operand.starts_with("./")
+            || operand.starts_with("../"))
+    {
+        // With `CDPATH` set a bare relative operand may land anywhere.
+        CdTarget::Unknown
     } else {
         CdTarget::Relative(operand)
     }
@@ -980,7 +1512,7 @@ fn is_uncertain_word(word: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Comp {
     Literal(String),
-    Glob(String),
+    Glob(Vec<GlobItem>),
     /// `**`: any number of components, including none.
     Any,
 }
@@ -990,7 +1522,7 @@ impl Comp {
         if text == "**" {
             Self::Any
         } else if text.contains(['*', '?', '[', '\\']) {
-            Self::Glob(text.to_string())
+            Self::Glob(compile_glob(text))
         } else {
             Self::Literal(text.to_string())
         }
@@ -1000,9 +1532,8 @@ impl Comp {
         match self {
             Self::Literal(literal) => literal == name,
             Self::Glob(glob) => {
-                let glob: Vec<char> = glob.chars().collect();
                 let name: Vec<char> = name.chars().collect();
-                glob_segment(&glob, &name)
+                glob_match(glob, &name)
             }
             Self::Any => true,
         }
@@ -1024,6 +1555,8 @@ enum Rule {
 struct ReadMatcher {
     rules: Vec<Rule>,
     case_insensitive: bool,
+    /// The command changes `HOME` or `CDPATH`: `~` names nothing the gate knows.
+    home_unstable: bool,
 }
 
 impl ReadMatcher {
@@ -1122,17 +1655,25 @@ impl ReadMatcher {
         Self {
             rules,
             case_insensitive,
+            home_unstable: false,
         }
     }
 
-    /// The outcome for one READ command: `args` are its words after the command.
-    fn check_command(&self, name: &str, args: &[&str], cwds: &Cwds) -> ReadOutcome {
-        if self.rules.iter().any(|rule| matches!(rule, Rule::All)) {
+    fn with_unstable_home(mut self, unstable: bool) -> Self {
+        self.home_unstable = unstable;
+        self
+    }
+
+    /// The outcome for one command: `args` are its words after the command.
+    /// `generic` is a command that is not one of [`READ_COMMANDS`]: a bare `Read`
+    /// rule (every read) does not make everything it runs a read.
+    fn check_command(&self, name: &str, args: &[&str], cwds: &Cwds, generic: bool) -> ReadOutcome {
+        if !generic && self.rules.iter().any(|rule| matches!(rule, Rule::All)) {
             return ReadOutcome::Denied;
         }
         let mut uncertain = false;
         for candidate in read_candidates(name, args) {
-            match self.check_word(&candidate.text, cwds) {
+            match self.check_word(&candidate.text, cwds, generic) {
                 WordVerdict::Denied => return ReadOutcome::Denied,
                 WordVerdict::Uncertain if !candidate.pattern => uncertain = true,
                 WordVerdict::Uncertain | WordVerdict::Allowed => {}
@@ -1146,11 +1687,11 @@ impl ReadMatcher {
     }
 
     /// Whether one path word is denied, allowed or cannot be resolved.
-    fn check_word(&self, word: &str, cwds: &Cwds) -> WordVerdict {
+    fn check_word(&self, word: &str, cwds: &Cwds, generic: bool) -> WordVerdict {
         if word.is_empty() {
             return WordVerdict::Allowed;
         }
-        if self.rules.iter().any(|rule| matches!(rule, Rule::All)) {
+        if !generic && self.rules.iter().any(|rule| matches!(rule, Rule::All)) {
             return WordVerdict::Denied;
         }
         if is_uncertain_word(word) {
@@ -1158,7 +1699,9 @@ impl ReadMatcher {
         }
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut unknown = false;
-        if word == "~" || word.starts_with("~/") {
+        if word.starts_with('~') && self.home_unstable {
+            unknown = true;
+        } else if word == "~" || word.starts_with("~/") {
             match user_dirs::home() {
                 Some(home) => {
                     candidates.push(home.join(word.trim_start_matches('~').trim_start_matches('/')))
@@ -1178,11 +1721,11 @@ impl ReadMatcher {
             }
         }
         for path in &candidates {
-            if self.denied(&normalize(path)) {
+            if self.denied(&normalize(path), generic) {
                 return WordVerdict::Denied;
             }
             if let Ok(real) = std::fs::canonicalize(path)
-                && self.denied(&real)
+                && self.denied(&real, generic)
             {
                 return WordVerdict::Denied;
             }
@@ -1195,7 +1738,7 @@ impl ReadMatcher {
     }
 
     /// Whether the path, or an ancestor of it, matches a rule.
-    fn denied(&self, path: &Path) -> bool {
+    fn denied(&self, path: &Path, ignore_all: bool) -> bool {
         let comps: Vec<String> = path
             .components()
             .filter_map(|component| match component {
@@ -1208,7 +1751,7 @@ impl ReadMatcher {
             })
             .collect();
         self.rules.iter().any(|rule| match rule {
-            Rule::All => true,
+            Rule::All => !ignore_all,
             Rule::AnyDepth(comp) => comps.iter().any(|name| comp.matches(name)),
             Rule::Anchored(patterns) => {
                 patterns.iter().any(|pattern| match_prefix(pattern, &comps))
@@ -1230,45 +1773,133 @@ fn dir_comps(dir: &Path) -> Vec<Comp> {
 }
 
 /// Whether `pattern` matches `path` or an ancestor of it, so a pattern consumed
-/// in full matches whatever lies below.
+/// in full matches whatever lies below. Iterative, with `**` backtracking to the
+/// last one only.
 fn match_prefix(pattern: &[Comp], path: &[String]) -> bool {
-    match pattern.split_first() {
-        None => true,
-        Some((Comp::Any, rest)) => {
-            match_prefix(rest, path) || (!path.is_empty() && match_prefix(pattern, &path[1..]))
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    loop {
+        match pattern.get(p) {
+            None => return true,
+            Some(Comp::Any) => {
+                star = Some((p, t));
+                p += 1;
+                continue;
+            }
+            Some(comp) if path.get(t).is_some_and(|name| comp.matches(name)) => {
+                p += 1;
+                t += 1;
+                continue;
+            }
+            Some(_) => {}
         }
-        Some((comp, rest)) => {
-            path.first().is_some_and(|name| comp.matches(name)) && match_prefix(rest, &path[1..])
+        match star {
+            Some((star_p, star_t)) if star_t < path.len() => {
+                star = Some((star_p, star_t + 1));
+                p = star_p + 1;
+                t = star_t + 1;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// One element of a compiled glob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GlobItem {
+    /// `*`: any run of characters within the component.
+    Star,
+    /// `?`
+    Any,
+    /// `[...]`
+    Class(CharClass),
+    Literal(char),
+}
+
+impl GlobItem {
+    fn matches(&self, c: char) -> bool {
+        match self {
+            Self::Star => true,
+            Self::Any => true,
+            Self::Class(class) => class.matches(c),
+            Self::Literal(literal) => *literal == c,
         }
     }
 }
 
 /// gitignore-style glob for one path component: `*`, `?`, `[...]`, `\x`.
-fn glob_segment(pattern: &[char], text: &[char]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some(('*', rest)) => {
-            let rest = {
-                let skip = rest.iter().take_while(|c| **c == '*').count();
-                &rest[skip..]
-            };
-            (0..=text.len()).any(|k| glob_segment(rest, &text[k..]))
-        }
-        Some(('?', rest)) => !text.is_empty() && glob_segment(rest, &text[1..]),
-        Some(('[', _)) => match parse_class(pattern) {
-            Some((class, used)) => {
-                text.first().is_some_and(|c| class.matches(*c))
-                    && glob_segment(&pattern[used..], &text[1..])
+fn compile_glob(pattern: &str) -> Vec<GlobItem> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut items = Vec::new();
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        match c {
+            '*' => {
+                if items.last() != Some(&GlobItem::Star) {
+                    items.push(GlobItem::Star);
+                }
+                i += 1;
             }
-            None => text.first() == Some(&'[') && glob_segment(&pattern[1..], &text[1..]),
-        },
-        Some(('\\', rest)) if !rest.is_empty() => {
-            text.first() == Some(&rest[0]) && glob_segment(&rest[1..], &text[1..])
+            '?' => {
+                items.push(GlobItem::Any);
+                i += 1;
+            }
+            '[' => match parse_class(&chars[i..]) {
+                Some((class, used)) => {
+                    items.push(GlobItem::Class(class));
+                    i += used;
+                }
+                None => {
+                    items.push(GlobItem::Literal('['));
+                    i += 1;
+                }
+            },
+            '\\' if i + 1 < chars.len() => {
+                items.push(GlobItem::Literal(chars[i + 1]));
+                i += 2;
+            }
+            other => {
+                items.push(GlobItem::Literal(other));
+                i += 1;
+            }
         }
-        Some((c, rest)) => text.first() == Some(c) && glob_segment(rest, &text[1..]),
     }
+    items
 }
 
+/// Whether the whole of `text` matches `pattern`. Iterative: on a mismatch it
+/// falls back to the last `*` alone, so the cost is the pattern's length times
+/// the text's at worst, never exponential in the number of stars.
+fn glob_match(pattern: &[GlobItem], text: &[char]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some(GlobItem::Star) => {
+                star = Some((p, t));
+                p += 1;
+                continue;
+            }
+            Some(item) if item.matches(text[t]) => {
+                p += 1;
+                t += 1;
+                continue;
+            }
+            _ => {}
+        }
+        match star {
+            Some((star_p, star_t)) => {
+                star = Some((star_p, star_t + 1));
+                p = star_p + 1;
+                t = star_t + 1;
+            }
+            None => return false,
+        }
+    }
+    pattern[p..].iter().all(|item| *item == GlobItem::Star)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CharClass {
     negated: bool,
     ranges: Vec<(char, char)>,
@@ -1538,7 +2169,23 @@ mod tests {
     // --- the gate over Bash rules ---
 
     fn rules(deny: &[&str], ask: &[&str], read: &[&str]) -> GateRules {
-        GateRules::new(strings(deny), strings(ask), strings(read), &[], Vec::new())
+        rules_with_read_ask(deny, ask, read, &[])
+    }
+
+    fn rules_with_read_ask(
+        deny: &[&str],
+        ask: &[&str],
+        read: &[&str],
+        read_ask: &[&str],
+    ) -> GateRules {
+        GateRules::new(
+            strings(deny),
+            strings(ask),
+            strings(read),
+            strings(read_ask),
+            &[],
+            Vec::new(),
+        )
     }
 
     fn gate(cmd: &str, rules: &GateRules) -> Gate {
@@ -1732,7 +2379,7 @@ mod tests {
     }
 
     fn denied(m: &ReadMatcher, path: &str) -> bool {
-        m.denied(&normalize(Path::new(path)))
+        m.denied(&normalize(Path::new(path)), false)
     }
 
     #[test]
@@ -1802,8 +2449,14 @@ mod tests {
     fn read_bare_read_denies_everything() {
         let m = matcher(&["**"], false);
         let cwds = Cwds::new(Some(PathBuf::from("/proj")));
-        assert_eq!(m.check_command("cat", &["x"], &cwds), ReadOutcome::Denied);
-        assert_eq!(m.check_command("ls", &[], &cwds), ReadOutcome::Denied);
+        assert_eq!(
+            m.check_command("cat", &["x"], &cwds, false),
+            ReadOutcome::Denied
+        );
+        assert_eq!(
+            m.check_command("ls", &[], &cwds, false),
+            ReadOutcome::Denied
+        );
     }
 
     #[test]
@@ -1973,9 +2626,9 @@ mod tests {
             "Read(//etc/shadow)"
         ]);
         let mut target = Vec::new();
-        append_read_deny(Some(&value), &mut target);
+        append_read_rules(Some(&value), &mut target);
         assert_eq!(target, strings(&["./secret.txt", "**", "//etc/shadow"]));
-        append_read_deny(None, &mut target);
+        append_read_rules(None, &mut target);
         assert_eq!(target.len(), 3);
     }
 
@@ -2280,6 +2933,421 @@ mod tests {
                 HookDecision::AskRewrite("rtk read ok.txt".into(), AskOwner::Host)
             );
             assert_eq!(hook("cat *.txt"), HookDecision::Defer);
+        });
+    }
+
+    // --- review round 1: every reproducer of the review ---
+
+    fn bash_rules() -> GateRules {
+        rules(
+            &["git push:*", "curl:*"],
+            &["kubectl apply:*", "aws:*"],
+            &[],
+        )
+    }
+
+    #[test]
+    fn quoted_words_are_read_as_the_shell_reads_them() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk git 'push' --force origin main",
+            "rtk git \"push\"",
+            "rtk bypass git p'u'sh",
+            "rtk run -c 'git pu\\sh'",
+            // The top level too: the extra reading can only be stricter.
+            "git 'push'",
+            "g\"it\" push",
+            "timeout 5 git 'push'",
+            "bash -c \"git 'push'\"",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        for cmd in [
+            "rtk kubectl 'apply' -f x.yaml",
+            "rtk run kubectl \"apply\" -f x.yaml",
+            "kubectl \"apply\" -f x.yaml",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_single_string_argv_is_also_a_script() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk run 'git push --force'",
+            "rtk test 'git push'",
+            "rtk err 'git push'",
+            "rtk summary 'git push'",
+            "rtk run 'echo ok; curl x'",
+            "rtk bypass 'git push'",
+            "rtk proxy 'echo ok; git push'",
+            "rtk 'git push'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        // A lone word that is only a program name stays harmless.
+        assert_eq!(gate("rtk run ls", &r), Gate::Pass);
+        assert_eq!(gate("rtk test cargo", &r), Gate::Pass);
+    }
+
+    #[test]
+    fn exec_payloads_are_read_at_top_level_and_behind_rtk() {
+        let r = bash_rules();
+        for cmd in [
+            "find . -exec git push \\;",
+            "find . -execdir git push \\;",
+            "find . -ok git push \\;",
+            "find . -okdir git push {} +",
+            "find . -exec curl x \\;",
+            "find . -type f -exec sh -c 'git push' \\;",
+            "rtk find . -exec git push \\;",
+            "rtk bypass xargs -n1 git push",
+            "xargs -I{} -P 4 git push",
+            "xargs -0 -t -- git push",
+            "rtk run env -i git push",
+            "rtk run env -u X git push",
+            "env -i -u X git push",
+            "env FOO=1 -- git push",
+            "env -C /tmp git push",
+            "env -S 'git push'",
+            "env --unset=X git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        assert_eq!(
+            gate("find . -exec kubectl apply -f {} \\;", &r),
+            Gate::Ask,
+            "an ask rule on a payload"
+        );
+        assert_eq!(gate("find . -exec echo hi \\;", &r), Gate::Pass);
+        assert_eq!(gate("xargs", &r), Gate::Pass);
+        assert_eq!(gate("env", &r), Gate::Pass);
+    }
+
+    #[test]
+    fn an_exec_payload_the_gate_cannot_attest_defers_a_top_level_find() {
+        let r = bash_rules();
+        for cmd in [
+            "find . -exec sh {} \\;",
+            "find . -exec git status",
+            "find . -exec \\;",
+            "find . -exec $CMD {} \\;",
+            "xargs --frobnicate git status",
+            "env --frobnicate git status",
+            "find . -exec python3 -c 'print(1)' \\;",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Defer, "{cmd}");
+        }
+        // Behind rtk the same asks.
+        assert_eq!(gate("rtk find . -exec sh {} \\;", &r), Gate::Ask);
+        // With no Bash rule there is nothing to protect.
+        let no_bash = rules(&[], &[], &["./secret.txt"]);
+        assert_eq!(gate("find . -exec sh {} \\;", &no_bash), Gate::Pass);
+    }
+
+    #[test]
+    fn opaque_commands_inside_rtk_ask() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk run eval 'git push'",
+            "rtk run -c 'eval \"git push\"'",
+            "rtk run -c 'g=git; $g push'",
+            "echo 'curl x' | rtk bypass bash",
+            "echo 'curl x' | rtk bypass sh -s",
+            "rtk bypass bash <<< 'curl x'",
+            "rtk bypass python3 -c 'import os; os.system(\"curl x\")'",
+            "rtk bypass python3.11 -c 'x'",
+            "rtk bypass python -Sc 'x'",
+            "rtk bypass busybox sh -c 'curl x'",
+            "rtk bypass sudo git status",
+            "rtk bypass doas git status",
+            "rtk bypass toybox sh",
+            "rtk bypass node -e 'x'",
+            "rtk bypass node --print 1",
+            "rtk bypass perl -e 'x'",
+            "rtk bypass perl -lne 'x'",
+            "rtk bypass ruby -e 'x'",
+            "rtk bypass php -r 'x'",
+            "rtk bypass lua -e 'x'",
+            "rtk bypass osascript -e 'x'",
+            "rtk bypass deno eval 'x'",
+            "rtk bypass bun -e 'x'",
+            "rtk bypass rg --pre ./x foo .",
+            "rtk bypass grep --pre=./x foo .",
+            "rtk bypass source ./x.sh",
+            "rtk bypass . ./x.sh",
+            "rtk bypass ./x* arg",
+            "rtk run -c 'bash script.sh'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        // The same constructs outside rtk keep today's behaviour, and the
+        // ordinary ones inside it are not opaque.
+        for cmd in [
+            "eval 'git status'",
+            "python3 -c 'x'",
+            "bash script.sh",
+            "rtk bypass python3 script.py",
+            "rtk run -c '[ -f x ] && echo y'",
+            "rtk run -c 'FOO=$BAR true'",
+            "rtk run -c 'echo hi'",
+        ] {
+            assert_ne!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        // No Bash rule: nothing to be opaque about.
+        let none = rules(&[], &[], &["./secret.txt"]);
+        assert_eq!(gate("rtk bypass python3 -c 'x'", &none), Gate::Pass);
+    }
+
+    #[test]
+    fn rtk_inner_single_word_table() {
+        assert_eq!(
+            inner("rtk run 'git push'").expect("rtk").texts,
+            strings(&["'git push'", "git push"])
+        );
+        assert_eq!(
+            inner("rtk test 'git push'").expect("rtk").texts,
+            strings(&["'git push'", "git push"])
+        );
+        assert_eq!(
+            inner("rtk bypass 'git push'").expect("rtk").texts,
+            strings(&["'git push'", "git push"])
+        );
+        assert_eq!(
+            inner("rtk run git push").expect("rtk").texts,
+            strings(&["git push"])
+        );
+    }
+
+    #[test]
+    fn exec_payload_extraction_table() {
+        let payloads = |cmd: &str| {
+            let (words, spans) = lexer::words_and_spans(cmd);
+            let name = basename(&resolve_word_text(words[0])).to_string();
+            exec_payloads(&name, cmd, &words, &spans)
+        };
+        let p = payloads("find . -exec git push {} \\; -exec rm {} +");
+        assert_eq!(p.texts, strings(&["git push {}", "rm {}"]));
+        assert!(!p.unattested);
+        let p = payloads("xargs -n 1 -P4 -I {} git push");
+        assert_eq!(p.texts, strings(&["git push"]));
+        let p = payloads("xargs");
+        assert!(p.texts.is_empty() && !p.unattested);
+        let p = payloads("env -i FOO=1 BAR=2 git push");
+        assert_eq!(p.texts, strings(&["git push"]));
+        let p = payloads("env -S 'git push' --force");
+        assert_eq!(p.texts, strings(&["git push --force"]));
+        assert!(payloads("env --weird git push").unattested);
+        assert!(payloads("find . -exec git push").unattested);
+    }
+
+    // --- Read rules beyond the read commands ---
+
+    #[test]
+    fn read_deny_holds_for_every_program_inside_rtk() {
+        in_sandbox(|dir, r| {
+            for cmd in [
+                "rtk sed -n p secret.txt",
+                "rtk awk 1 secret.txt",
+                "rtk less secret.txt",
+                "rtk bypass sed -n p secret.txt",
+                "rtk bypass base64 secret.txt",
+                "rtk bypass xxd secret.txt",
+                "rtk bypass cp secret.txt out.txt",
+                "rtk bypass sort secret.txt",
+                "rtk bypass jq -R . secret.txt",
+                "rtk bypass sort --output=out.txt secret.txt",
+                "rtk run -c 'sort <>secret.txt'",
+                "sort <>secret.txt",
+            ] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
+            // An unresolvable operand adds no prompt for a program that is no read;
+            // a program outside rtk is the host's own business.
+            for cmd in [
+                "rtk bypass sed -n p ok.txt",
+                "rtk bypass echo $HOME",
+                "rtk git commit -m 'a*b'",
+                "sed -n p secret.txt",
+            ] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Pass, "{cmd}");
+            }
+        });
+    }
+
+    #[test]
+    fn bare_read_rule_does_not_deny_every_rtk_command() {
+        let r = rules(&[], &[], &["**"]);
+        assert_eq!(gate("rtk git status", &r), Gate::Pass);
+        assert_eq!(gate("rtk bypass echo hi", &r), Gate::Pass);
+        assert_eq!(gate("cat x", &r), Gate::Deny);
+    }
+
+    #[test]
+    fn read_ask_rules_defer_at_top_level_and_ask_inside_rtk() {
+        in_sandbox(|dir, _| {
+            let r = rules_with_read_ask(&[], &[], &["./secret.txt"], &["./asked.txt"]);
+            std::fs::write(dir.join("asked.txt"), "a").expect("write asked");
+            for cmd in ["cat asked.txt", "head asked.txt", "cat < asked.txt"] {
+                assert_eq!(gate_in(dir, cmd, &r), Gate::Defer, "{cmd}");
+            }
+            for cmd in [
+                "rtk read asked.txt",
+                "rtk sed -n p asked.txt",
+                "bash -c 'cat asked.txt'",
+                "rtk run cat asked.txt",
+            ] {
+                assert_eq!(gate_in(dir, cmd, &r), Gate::Ask, "{cmd}");
+            }
+            assert_eq!(gate_in(dir, "cat ok.txt", &r), Gate::Pass);
+            assert_eq!(gate_in(dir, "cat secret.txt", &r), Gate::Deny);
+            // Only an ask list of Read rules is enough to be active.
+            let only_ask = rules_with_read_ask(&[], &[], &[], &["./asked.txt"]);
+            assert_eq!(gate_in(dir, "cat asked.txt", &only_ask), Gate::Defer);
+            assert_eq!(gate_in(dir, "rtk read *.txt", &only_ask), Gate::Ask);
+        });
+    }
+
+    // --- HOME and CDPATH ---
+
+    #[test]
+    fn a_command_that_changes_home_makes_tilde_unknown() {
+        let r = rules(&[], &[], &["~/.ssh/**"]);
+        // The control: `~` is the home the hook sees.
+        assert_eq!(gate("rtk read ~/.ssh/id_rsa", &r), Gate::Deny);
+        for cmd in [
+            "export HOME=/; rtk read ~/.ssh/id_rsa",
+            "HOME=/ rtk run -c 'cat ~/.ssh/id_rsa'",
+            "env HOME=/ rtk read ~/.ssh/id_rsa",
+            "unset HOME; rtk read ~/.ssh/id_rsa",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        assert_eq!(gate("HOME=/ cat ~/.ssh/id_rsa", &r), Gate::Defer);
+        // A longer name is another variable.
+        assert_eq!(gate("HOMEDIR=/ rtk read ~/.ssh/id_rsa", &r), Gate::Deny);
+    }
+
+    #[test]
+    fn cdpath_makes_a_bare_relative_cd_unknown() {
+        in_sandbox(|dir, r| {
+            // No CDPATH anywhere: a relative cd is followed.
+            assert_eq!(gate_in(dir, "cd sub && cat ../secret.txt", r), Gate::Deny);
+            // Set by the command.
+            assert_eq!(
+                gate_in(dir, "export CDPATH=/x; cd sub && rtk read ok.txt", r),
+                Gate::Ask
+            );
+            // Set in the hook's own environment.
+            crate::core::user_env::with_path("CDPATH", Some("/x"), || {
+                assert_eq!(gate_in(dir, "cd sub && rtk read ok.txt", r), Gate::Ask);
+                assert_eq!(gate_in(dir, "cd sub && cat ok.txt", r), Gate::Defer);
+                // `./` and `../` are never searched through CDPATH.
+                assert_eq!(gate_in(dir, "cd ./sub && cat ../secret.txt", r), Gate::Deny);
+                // The directory the command started in stays a possible one.
+                assert_eq!(gate_in(dir, "cd .. && cat secret.txt", r), Gate::Deny);
+            });
+        });
+    }
+
+    // --- cost ---
+
+    #[test]
+    fn glob_matching_is_not_exponential() {
+        let started = std::time::Instant::now();
+        let m = matcher(&["**/*a*a*a*a*b.json", "*key*.json"], false);
+        let long = "a".repeat(5000);
+        let name = format!("/p/{long}");
+        assert!(!denied(&m, &name));
+        let long = "key".repeat(50_000);
+        assert!(!denied(&m, &format!("/p/{long}")));
+        assert!(denied(&m, &format!("/p/{long}.json")));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_very_deep_path_does_not_overflow_the_stack() {
+        let pattern = [
+            Comp::Any,
+            Comp::Literal("x".into()),
+            Comp::Literal("y".into()),
+        ];
+        let path: Vec<String> = (0..200_000).map(|_| "a".to_string()).collect();
+        assert!(!match_prefix(&pattern, &path));
+        let mut hit = path;
+        hit.push("x".into());
+        hit.push("y".into());
+        assert!(match_prefix(&pattern, &hit));
+    }
+
+    #[test]
+    fn a_huge_read_operand_is_cheap() {
+        // The review's case: a 300k-character word against a two-star rule used to
+        // take over a minute.
+        in_sandbox(|dir, _| {
+            let r = rules(&[], &[], &["**/*key*.json"]);
+            let started = std::time::Instant::now();
+            let word = "key".repeat(100_000);
+            assert_eq!(
+                gate_in(dir, &format!("cat {word}; rtk git push"), &r),
+                Gate::Pass
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "{:?}",
+                started.elapsed()
+            );
+        });
+    }
+
+    #[test]
+    fn an_exhausted_budget_asks_or_defers() {
+        let many = "a;".repeat(5000);
+        // Any Bash rule, or text that may hold an rtk form: ask.
+        assert_eq!(gate(&many, &bash_rules()), Gate::Ask);
+        let read_only = rules(&[], &[], &["./secret.txt"]);
+        assert_eq!(
+            gate(&format!("{many}rtk read secret.txt"), &read_only),
+            Gate::Ask
+        );
+        // Nothing that could be rtk, and only Read rules: the host judges the original.
+        assert_eq!(gate(&many, &read_only), Gate::Defer);
+        // A few segments are fine.
+        assert_eq!(gate("a;b;c", &bash_rules()), Gate::Pass);
+    }
+
+    #[test]
+    fn an_unreadable_payload_asks() {
+        let out = ask_output();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "ask");
+        assert!(out["hookSpecificOutput"].get("updatedInput").is_none());
+    }
+
+    #[test]
+    fn read_ask_rules_load_from_the_ask_list() {
+        with_machine(|m| {
+            write(
+                &m.project.join(".claude"),
+                "settings.json",
+                &settings(
+                    &["Read(./secret.txt)"],
+                    &["Read(./asked.txt)", "Bash(aws:*)"],
+                    &[],
+                ),
+            );
+            let permissions = permissions::check_claude_hook_command("cat x");
+            assert_eq!(permissions.gate.read_deny, strings(&["./secret.txt"]));
+            assert_eq!(permissions.gate.read_ask, strings(&["./asked.txt"]));
+            assert_eq!(hook("cat asked.txt"), HookDecision::Defer);
+            assert_eq!(
+                hook("rtk read asked.txt"),
+                HookDecision::AskRewrite("rtk read asked.txt".into(), AskOwner::Hook)
+            );
         });
     }
 }

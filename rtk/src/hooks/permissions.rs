@@ -196,6 +196,7 @@ pub(crate) fn check_claude_hook_command(cmd: &str) -> ClaudeHookPermissions {
         deny_rules,
         ask_rules,
         std::mem::take(&mut scan.read_deny),
+        std::mem::take(&mut scan.read_ask),
         &transparent_prefixes,
         files.project_roots,
     );
@@ -245,6 +246,8 @@ struct SettingsScan {
     any_deny_entry: bool,
     /// anthology fork: the `Read(...)` entries under `permissions.deny`.
     read_deny: Vec<String>,
+    /// anthology fork: the `Read(...)` entries under `permissions.ask`.
+    read_ask: Vec<String>,
 }
 
 impl Default for SettingsScan {
@@ -253,6 +256,7 @@ impl Default for SettingsScan {
             every_file_read: true,
             any_deny_entry: false,
             read_deny: Vec::new(),
+            read_ask: Vec::new(),
         }
     }
 }
@@ -534,7 +538,8 @@ fn load_permission_rules_tracking(
             .is_some_and(|rules| !rules.is_empty());
         append_bash_rules(permissions.get("deny"), &mut deny_rules);
         // anthology fork: `Read(...)` deny rules, which the Bash rules above drop.
-        super::anthology_gate::append_read_deny(permissions.get("deny"), &mut scan.read_deny);
+        super::anthology_gate::append_read_rules(permissions.get("deny"), &mut scan.read_deny);
+        super::anthology_gate::append_read_rules(permissions.get("ask"), &mut scan.read_ask);
         append_bash_rules(permissions.get("ask"), &mut ask_rules);
         append_bash_rules(permissions.get("allow"), &mut allow_rules);
     }

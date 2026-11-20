@@ -48,6 +48,7 @@ struct Rules<'a> {
     ask: &'a [&'a str],
     allow: &'a [&'a str],
     read_deny: &'a [&'a str],
+    read_ask: &'a [&'a str],
 }
 
 impl Sandbox {
@@ -66,6 +67,7 @@ impl Sandbox {
             ("ok.txt", "fine\n"),
             ("config/.env", "KEY=1\n"),
             ("sub/note.txt", "note\n"),
+            ("asked.txt", "asked\n"),
         ] {
             std::fs::write(project.join(name), body).expect("write fixture");
         }
@@ -80,10 +82,12 @@ impl Sandbox {
         };
         let mut deny = bash(rules.deny);
         deny.extend(rules.read_deny.iter().map(|r| format!("Read({r})")));
+        let mut ask = bash(rules.ask);
+        ask.extend(rules.read_ask.iter().map(|r| format!("Read({r})")));
         let settings = serde_json::json!({
             "permissions": {
                 "deny": deny,
-                "ask": bash(rules.ask),
+                "ask": ask,
                 "allow": bash(rules.allow),
             }
         });
@@ -111,6 +115,7 @@ impl Sandbox {
             ask: &["kubectl apply:*", "aws:*"],
             allow: &["rtk *"],
             read_deny: &["./secret.txt", "**/.env"],
+            read_ask: &["./asked.txt"],
         })
     }
 
@@ -152,7 +157,8 @@ impl Sandbox {
         let mut child = command.spawn().expect("spawn rtk");
         let mut pipe = child.stdin.take().expect("stdin");
         if let Some(input) = stdin {
-            pipe.write_all(input.as_bytes()).expect("write payload");
+            // The hook may stop reading (an oversize payload) and exit first.
+            let _ = pipe.write_all(input.as_bytes());
         }
         drop(pipe);
         let out = child.wait_with_output().expect("wait rtk");
@@ -387,4 +393,127 @@ fn hook_check_for_claude_reports_the_same_denials() {
             "{cmd}: {stderr}"
         );
     }
+}
+
+/// Every reproducer of the review of the first version of the gate.
+#[test]
+fn quoted_words_single_strings_and_exec_payloads_are_denied() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        // C1: quoted words
+        "rtk git 'push' --force origin main",
+        "rtk git \"push\"",
+        "rtk bypass git p'u'sh",
+        "rtk run -c 'git pu\\sh'",
+        "git 'push'",
+        // C2: a single string run through sh -c
+        "rtk run 'git push --force'",
+        "rtk test 'git push'",
+        "rtk err 'git push'",
+        "rtk summary 'git push'",
+        "rtk run 'echo ok; curl x'",
+        // C3: exec payloads, including a plain find the hook would rewrite
+        "find . -exec git push \\;",
+        "find . -execdir git push \\;",
+        "find . -ok git push \\;",
+        "find . -exec curl x \\;",
+        "rtk bypass xargs -n1 git push",
+        "rtk run env -i git push",
+        "rtk run env -u X git push",
+        // I2: Read() deny through any program inside rtk
+        "rtk sed -n p secret.txt",
+        "rtk awk 1 secret.txt",
+        "rtk bypass base64 secret.txt",
+        "rtk bypass cp secret.txt out.txt",
+        "rtk bypass jq -R . secret.txt",
+        // Minor: a read-write redirect reads
+        "rtk bypass sort <>secret.txt",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    for cmd in [
+        "rtk kubectl 'apply' -f x.yaml",
+        "rtk run kubectl \"apply\" -f x.yaml",
+    ] {
+        assert!(matches!(sb.hook(cmd), Said::Ask(_)), "{cmd}");
+    }
+}
+
+#[test]
+fn what_the_gate_cannot_read_is_asked_or_left_unrewritten() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "rtk run eval 'git push'",
+        "rtk run -c 'eval \"git push\"'",
+        "rtk run -c 'g=git; $g push'",
+        "echo 'curl x' | rtk bypass bash",
+        "echo 'curl x' | rtk bypass sh -s",
+        "rtk bypass bash <<< 'curl x'",
+        "rtk bypass python3 -c 'import os; os.system(\"curl x\")'",
+        "rtk bypass busybox sh -c 'curl x'",
+    ] {
+        assert!(
+            matches!(sb.hook(cmd), Said::Ask(_)),
+            "{cmd}: {:?}",
+            sb.hook(cmd)
+        );
+    }
+    // A top-level find whose payload the gate cannot read is not rewritten, so
+    // `Bash(rtk *)` never sees `rtk find . -exec sh {} \\;`.
+    assert_eq!(sb.hook("find . -exec sh {} \\;"), Said::Nothing);
+    assert!(matches!(
+        sb.hook("rtk find . -exec sh {} \\;"),
+        Said::Ask(_)
+    ));
+}
+
+#[test]
+fn read_ask_rules_are_not_rewritten_into_an_allow() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    assert_eq!(sb.hook("cat asked.txt"), Said::Nothing);
+    assert_eq!(sb.hook("head asked.txt"), Said::Nothing);
+    assert!(matches!(sb.hook("rtk read asked.txt"), Said::Ask(_)));
+}
+
+#[test]
+fn an_unreadable_payload_asks_instead_of_failing_open() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    let ask = |stdout: &str| {
+        let v: serde_json::Value = serde_json::from_str(stdout).expect("JSON");
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+        assert!(v["hookSpecificOutput"].get("updatedInput").is_none());
+    };
+    // Over the 1 MiB limit.
+    let mut big = String::from("rtk bypass git push #");
+    big.push_str(&"A".repeat(1_100_000));
+    let (code, stdout, _) = sb.spawn(&["hook", "claude"], Some(Sandbox::payload(&big, None)), &[]);
+    assert_eq!(code, 0);
+    ask(&stdout);
+    // Not JSON.
+    let (code, stdout, _) = sb.spawn(&["hook", "claude"], Some("{not json".to_string()), &[]);
+    assert_eq!(code, 0);
+    ask(&stdout);
+    // Nothing at all stays silent.
+    let (code, stdout, _) = sb.spawn(&["hook", "claude"], Some(String::new()), &[]);
+    assert_eq!((code, stdout.trim()), (0, ""));
+}
+
+/// The review's case: a 300k-character word against a two-star Read rule took over
+/// a minute, past Claude Code's hook timeout.
+#[test]
+fn a_huge_read_operand_does_not_stall_the_hook() {
+    let sb = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["rtk *"],
+        read_deny: &["**/*key*.json"],
+        ..Rules::default()
+    });
+    let started = std::time::Instant::now();
+    let cmd = format!("cat {}; rtk git push", "key".repeat(100_000));
+    assert_eq!(sb.hook(&cmd), Said::Deny);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
 }
