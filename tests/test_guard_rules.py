@@ -1741,10 +1741,63 @@ class RuleTableTest(unittest.TestCase):
             bash("fish --command='echo playwright'"),
             bash("fish -C 'echo hi' -c exit"),
             bash("fish -c 'echo hi' 'npx playwright install'"),      # extra words are $argv
-            bash("fish script.fish -c 'npx playwright install'"),    # after the file: its args
             bash("fish --no-config script.fish"),
             bash("fish --version"),
             bash("docker run img fish --command='echo hi'"),
+        ])
+
+    def test_fish_fails_closed_past_unknown_options(self):
+        """A fish value option the parser does not know (`--debug-stack-frames N`) must not hide
+        a later `-c`: every word is also scanned for a script form (fix round 1, I1)."""
+        for script, rule in (("npx playwright install", "G1"),
+                             ("cat ~/.config/chromium/Default/Cookies", "G3")):
+            q = "'" + script + "'"
+            self.assert_table(rule, [
+                bash("fish --debug-stack-frames 3 -c " + q),
+                bash("fish --debug-stack 3 -c " + q),
+                bash("fish --debug-stack-frames=3 -c " + q),
+                bash("fish --debug-stack-frames 3 --command=" + q),
+                bash("fish --debug-stack-frames 3 -C " + q),
+                bash("fish --login -c " + q),
+                bash("fish --private -c " + q),
+                bash("fish --no-config -c " + q),
+                bash("fish --print-rusage-self -c " + q),
+                bash("fish --some-future-flag value -c " + q),
+                bash("fish --future-flag value --command=" + q),
+                bash("fish -d -c " + q),
+                bash("fish script.fish -c " + q),
+                bash("fish script.fish --command=" + q),
+                bash("fish -- -c " + q),
+                bash("fish --c=" + q),
+                bash("fish --co " + q),
+                bash("fish --private --command " + q),
+                bash("fish -nc " + q),
+                bash("fish -N -c " + q),
+                bash("fish -C " + q + " script.fish"),
+                bash("fish --init-command=" + q + " script.fish"),
+                bash("fish -c 'echo a' -c " + q),
+                bash("fish -o f -c " + q),
+                bash("fish --debug-output f -c " + q),
+                bash("fish -D 3 -c " + q),
+                bash("fish --profile-startup p -c " + q),
+                bash("fish --features x -c " + q),
+                bash("exec fish -c " + q),
+                bash("env fish --command=" + q),
+                bash("xargs fish -c " + q),
+                # unbalanced quote: the lenient lexer builds the script from the rest of the line
+                bash("fish --command=" + q + "; echo \""),
+                bash("fish -c" + q + "; echo \""),
+                bash("fish -C " + q + " -c exit; echo \""),
+            ])
+        self.assert_table("G3", [       # docker exempts G1 and G2, not G3
+            bash("docker run img fish --debug-stack-frames 3 -c 'cat ~/.config/chromium/Default/Cookies'"),
+        ])
+        self.assert_table(None, [
+            bash("fish --login -c 'echo hi'"),
+            bash("fish --debug-stack-frames 3 -c 'echo hi'"),
+            bash("fish script.fish --arg"),
+            bash("fish --no-config script.fish extra"),
+            bash("fish -c 'echo hi' --private"),
         ])
 
     def test_code_candidate_prefilter_stays_cheap(self):
@@ -1763,6 +1816,28 @@ class RuleTableTest(unittest.TestCase):
                 start = time.perf_counter()
                 self.assertEqual(rule_of(bash(command)), expected)
                 self.assertLess(time.perf_counter() - start, 1.0)
+
+    def test_escaped_space_normalising_scales_linearly(self):
+        """A long backslash run with no space after it costs time proportional to its length: 4x
+        the input costs under 6x (fix round 1, I2). Best of three, so a busy host does not trip it."""
+        import time
+
+        def cost(count):
+            command = "python3 -c '" + "\\" * count + "'"
+            best = None
+            for _ in range(3):
+                start = time.perf_counter()
+                self.assertIsNone(rule_of(bash(command)))
+                elapsed = time.perf_counter() - start
+                best = elapsed if best is None else min(best, elapsed)
+            return best
+
+        small, large = cost(50_000), cost(200_000)
+        self.assertLess(large, 6 * max(small, 0.005))
+        # the run still normalises when a space ends it
+        bs = "\\" * 50_000
+        self.assertEqual(rule_of(bash(
+            "python3 -c 'open(\"~/Library/Application" + bs + " Support/Google/Chrome\")'")), "G3")
 
     def test_check_is_deterministic_and_pure(self):
         tool_input = {"command": "npx playwright install"}

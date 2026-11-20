@@ -637,8 +637,10 @@ def _parse_shell_args(args, i=0):
 
 
 # fish long options that take a value (`--opt=v` or `--opt v`); getopt accepts any unique prefix.
-_FISH_LONG_VALUE = ("--command", "--init-command", "--debug", "--debug-output", "--features",
-                    "--profile", "--profile-startup")
+# From fish's own option table (src/fish.cpp `long_opts`); the scan in _parse_fish_args does not
+# depend on this list being complete.
+_FISH_LONG_VALUE = ("--command", "--init-command", "--debug", "--debug-output",
+                    "--debug-stack-frames", "--features", "--profile", "--profile-startup")
 _FISH_SHORT_VALUE = "cCdDofp"             # -c -C run code; -d -D -o -f -p take a value
 _FISH_SCRIPT_LONG = ("--command", "--init-command")
 
@@ -651,51 +653,71 @@ def _fish_long_option(token):
     return (fits[0] if fits else name), (value if eq else None)
 
 
+def _fish_option_at(args, i):
+    """Read the option word args[i] the way fish would: (scripts, runs_c, takes_next) where
+    `scripts` lists the (index, text) of each command it gives fish (the attached value, else
+    the next word), `runs_c` is true for `-c`/`--command`, and `takes_next` is true when the
+    option consumes the next word. A non-option word gives ([], False, False)."""
+    token, n = args[i], len(args)
+    scripts, runs_c, takes_next = [], False, False
+    if token.startswith("--") and len(token) > 2:
+        name, value = _fish_long_option(token)
+        takes_next = name in _FISH_LONG_VALUE and value is None
+        if name in _FISH_SCRIPT_LONG:
+            runs_c = name == "--command"
+            if value is not None:
+                scripts.append((i, value))
+            elif i + 1 < n:
+                scripts.append((i + 1, args[i + 1]))
+    elif token.startswith("-") and len(token) > 1 and token != "--":
+        for k, letter in enumerate(token[1:], 1):
+            if letter not in _FISH_SHORT_VALUE:
+                continue
+            attached = token[k + 1:]
+            if letter in "cC":
+                runs_c = letter == "c"
+                if attached:
+                    scripts.append((i, attached))
+                elif i + 1 < n:
+                    scripts.append((i + 1, args[i + 1]))
+            takes_next = not attached
+            break
+    return scripts, runs_c, takes_next
+
+
 def _parse_fish_args(args, i=0):
     """Parse a fish argument list (fish(1)). `-c`/`--command` and `-C`/`--init-command` each
     take a command that fish runs (a short one may be attached: `-cX`, `-icX`); `-d -D -o -f
     -p` and the long options above take a value too. Options end at the first non-option word,
     `--` or `-`; later words are a script file's or `$argv`.
 
+    Fail closed: the list of value options may be incomplete, so after that parse every word
+    from args[i] on is also read as an option (values not consumed) and any `-c`-style command
+    it introduces is added. An unknown option's value, a script file's arguments, or a later
+    word that happens to look like `-c` can therefore only add commands to check.
+
     Parsing starts at args[i]. Returns (mode, index of the first word after the options,
     scripts): `scripts` is a list of (index of the word holding it, the command text) for every
-    command the options give fish. mode is 'c' when `-c` was given, else 'file' when a word is
-    left, else 'stdin'."""
+    command found. mode is 'c' when `-c` was given before the options end, else 'file' when a
+    word is left, else 'stdin'."""
     n = len(args)
-    command = False
-    scripts = []
+    first, command = i, False
     while i < n:
         token = args[i]
         if token in ("--", "-"):
             i += 1
             break
-        if token.startswith("--"):
-            name, value = _fish_long_option(token)
-            takes_value = name in _FISH_LONG_VALUE and value is None
-            if name in _FISH_SCRIPT_LONG:
-                command = command or name == "--command"
-                if value is not None:
-                    scripts.append((i, value))
-                elif i + 1 < n:
-                    scripts.append((i + 1, args[i + 1]))
-            i += 2 if takes_value else 1
-        elif len(token) > 1 and token[0] == "-":
-            i += 1
-            for k, letter in enumerate(token[1:], 1):
-                if letter not in _FISH_SHORT_VALUE:
-                    continue
-                attached = token[k + 1:]
-                if letter in "cC":
-                    command = command or letter == "c"
-                    if attached:
-                        scripts.append((i - 1, attached))
-                    elif i < n:
-                        scripts.append((i, args[i]))
-                i += 0 if attached else 1
-                break
-        else:
+        if not (token.startswith("-") and len(token) > 1):
             break
+        _scripts, runs_c, takes_next = _fish_option_at(args, i)
+        command = command or runs_c
+        i += 2 if takes_next else 1
     i = min(i, n)
+    scripts = []
+    for k in range(first, n):
+        for found in _fish_option_at(args, k)[0]:
+            if found not in scripts:
+                scripts.append(found)
     return ("c" if command else "file" if i < n else "stdin"), i, scripts
 
 
@@ -1133,7 +1155,7 @@ def _words_hit(words, predicate, home, cwd):
     return False
 
 
-_ESCAPED_SPACE = re.compile(r"\\+ ")
+_ESCAPED_SPACE = re.compile(r"(?<!\\)\\+ ")
 _CODE_LITERAL = re.compile("'([^']*)'|\"([^\"]*)\"|`([^`]*)`")
 _CODE_PUNCTUATION = "()[]{}<>,;'\"`"
 # Pieces between quote characters and newlines: a stray `'` in a comment (`# Chrome's ...`)
