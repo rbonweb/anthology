@@ -1,0 +1,23 @@
+#!/bin/sh
+# rtk: run the rtk binary that session start installed (see scripts/rtk_install.py).
+# The path is read from ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json without
+# python. state.py writes one `  "rtk_path": "<path>",` line (indent=2, sort_keys); a path
+# that carries a backslash or quote is refused rather than mis-parsed.
+state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
+rtk_path=
+if [ -f "$state" ] && [ -r "$state" ]; then
+  rtk_path=$(sed -n 's/^ *"rtk_path": *"\([^"]*\)",\{0,1\} *$/\1/p' "$state" 2>/dev/null | head -n 1)
+fi
+case $rtk_path in
+  *\\*|*\"*) rtk_path= ;;
+  /*) ;;
+  *) rtk_path= ;;
+esac
+if [ -z "$rtk_path" ] || [ ! -f "$rtk_path" ] || [ ! -x "$rtk_path" ]; then
+  echo "rtk is not installed: run /anthology:setup" >&2
+  exit 127
+fi
+# rtk otherwise tells Claude to run `rtk init -g`, which would add a duplicate hook.
+RTK_SUPPRESS_HOOK_WARNING=1
+export RTK_SUPPRESS_HOOK_WARNING
+exec "$rtk_path" "$@"

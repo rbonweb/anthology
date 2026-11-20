@@ -41,9 +41,11 @@ REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
 NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, memory)"
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test
-RTK_TIMEOUT = 20          # seconds for the rtk reconcile (download included)
+# rtk_install's download deadline is 4 x this timeout, overshooting by at most one socket
+# timeout: worst case 5 x 8 = 40 s.
+RTK_TIMEOUT = 8
 DEADLINE = 50             # seconds of work before the 60 s hook timeout (M5)
-RTK_MIN_REMAINING = 25    # skip the rtk reconcile when less than this is left
+RTK_MIN_REMAINING = 40    # skip the rtk reconcile when less than this is left (its worst case)
 CONTEXT_BUDGET = 9000     # characters of additionalContext (U8 test budget; the platform cap is 10,000)
 MESSAGE_CAP = 2000
 
@@ -114,11 +116,19 @@ def _reconcile_rtk(root, data_dir):
         return "anthology: rtk wiring failed to load (%s); skipped" % type(exc).__name__
     if not data_dir:
         return None
+    lock_path = Path(root) / "rtk.lock"
     try:
-        result = rtk_install.reconcile(Path(data_dir), Path(root) / "rtk.lock", None, RTK_TIMEOUT)
+        lock = rtk_install.load_lock(lock_path)
+    except Exception as exc:
+        if not lock_path.exists():
+            return "anthology: rtk wiring not present yet; skipped"
+        return "anthology: rtk.lock is not valid (%s); rtk skipped" % (str(exc) or type(exc).__name__)[:150]
+    try:
+        result = rtk_install.reconcile(Path(data_dir), lock, None, RTK_TIMEOUT)
     except Exception as exc:
         return "anthology: rtk setup failed: %s" % (str(exc) or type(exc).__name__)[:150]
-    return result if isinstance(result, str) and result else None
+    warning = result.get("warning") if isinstance(result, dict) else None
+    return warning if isinstance(warning, str) and warning else None
 
 
 def _read_guide(root):

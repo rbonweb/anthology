@@ -87,36 +87,35 @@ def _check_browseros(env):
                    "yourself (agents never install a browser) and add its MCP server to Claude Code")
 
 
-def _lock_sha(lock, target):
-    """The pinned sha256 for `target` in the parsed rtk.lock (tolerates a few layouts)."""
-    for table in (lock.get("targets"), lock):
-        entry = table.get(target) if isinstance(table, dict) else None
-        if isinstance(entry, str):
-            return entry
-        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str):
-            return entry["sha256"]
-    return None
-
-
 def _check_rtk(env, lock):
-    """Adapter over Task 11's `rtk_install` (the one place that names its interface)."""
+    """Adapter over Task 11's `rtk_install` (the one place that names its interface).
+
+    The lock pins each release tarball, not the binary, so the check is: state.json's `rtk_path`
+    is `<data>/rtk/<lock version>/rtk`, and rtk_install says that version dir holds an executable
+    rtk whose recorded tarball hash equals the lock's hash for this platform."""
     try:
         import rtk_install
     except ImportError:
         return None, "rtk is not wired yet"
     lock_path = Path(lock) if lock else DEFAULT_LOCK
-    data = _read_json(lock_path)
-    if not isinstance(data, dict):
+    try:
+        data = rtk_install.load_lock(lock_path)
+    except Exception:
         return None, "rtk is not wired yet (no rtk.lock)"
-    target = rtk_install.target(platform.system(), platform.machine())
-    sha = _lock_sha(data, target)
-    if not sha:
-        return False, "rtk.lock has no hash for this platform"
+    try:
+        target = rtk_install.target(platform.system(), platform.machine())
+    except Exception as exc:
+        return False, str(exc) or "this platform is not supported"
     state = _read_json(_config_dir(env) / "anthology" / "state.json")
-    path = state.get("rtk_path") if isinstance(state, dict) else None
+    state = state if isinstance(state, dict) else {}
+    path = state.get("rtk_path")
     if not path or not os.path.exists(str(path)):
         return False, "rtk is not installed; run /anthology:setup"
-    if rtk_install.verify(path, sha):
+    # session start records data_dir; failing that, the folder three levels above the binary
+    parents = Path(str(path)).parents
+    data_dir = env.get("CLAUDE_PLUGIN_DATA") or state.get("data_dir") or (parents[2] if len(parents) > 2 else "")
+    expected = Path(str(data_dir)) / "rtk" / data["version"] / "rtk"
+    if Path(str(path)) == expected and rtk_install.check_installed(data_dir, data, target):
         return True, "rtk matches rtk.lock"
     return False, "rtk does not match rtk.lock; run /anthology:setup"
 

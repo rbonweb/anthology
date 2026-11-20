@@ -20,6 +20,7 @@ from unittest import mock
 
 from _mem import ROOT, SCRIPTS, MemCase, needs_git, note_text, snapshot, write
 
+import _rtk  # noqa: E402
 import anthology_setup  # noqa: E402
 import memory_sync  # noqa: E402
 import settings_patch  # noqa: E402
@@ -36,17 +37,21 @@ def sha(text):
 
 
 class FakeRtk:
+    """Stands in for rtk_install with its real interface (load_lock returns the parsed lock,
+    reconcile returns the {"rtk_path", "warning", "installed"} dict). RealRtkTest runs the real
+    module, so this fake cannot drift from it unnoticed."""
+
     def __init__(self):
         self.calls = []
-        self.result = None
+        self.result = {"rtk_path": None, "warning": None, "installed": True}
+
+    def load_lock(self, path):
+        return json.loads(Path(path).read_text(encoding="utf-8"))
 
     def target(self, system, machine):
         return "test-target"
 
-    def verify(self, path, digest):
-        return True
-
-    def reconcile(self, data_dir, lock, fetch, timeout):
+    def reconcile(self, data_dir, lock, fetch=None, timeout=30, system=None, machine=None):
         self.calls.append((data_dir, lock, fetch, timeout))
         return self.result
 
@@ -162,6 +167,54 @@ class PreviewTest(SetupCase):
         self.assertNotIn("settings", out)
 
 
+class RealRtkTest(MemCase):
+    """The real rtk_install behind the setup adapters, with a fake download."""
+
+    def setUp(self):
+        super().setUp()
+        self.data_dir = self.tmp / "plugin-data"
+        self.blob = _rtk.tarball()
+        self.root = self.tmp / "plugin"
+        self.lock = _rtk.write_lock(self.root / "rtk.lock", self.blob)
+        for patcher in (mock.patch("platform.system", return_value=_rtk.LINUX[0]),
+                        mock.patch("platform.machine", return_value=_rtk.LINUX[1])):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_preview_names_the_version_target_and_destination(self):
+        out = anthology_setup._rtk_preview(self.root, str(self.data_dir))
+        self.assertEqual(out, {"version": _rtk.VERSION, "target": _rtk.TARGET,
+                               "dest": str(self.data_dir / "rtk" / _rtk.VERSION / "rtk")})
+
+    def test_apply_installs_then_reports_up_to_date(self):
+        import rtk_install
+        fetch = _rtk.FakeFetch(self.blob)
+        with mock.patch.object(rtk_install, "default_fetch", fetch):
+            self.assertEqual(anthology_setup._rtk_apply(self.root, str(self.data_dir)), ("installed", None))
+            self.assertEqual(anthology_setup._rtk_apply(self.root, str(self.data_dir)), ("up to date", None))
+        want = str(self.data_dir / "rtk" / _rtk.VERSION / "rtk")
+        self.assertEqual(state.read()["rtk_path"], want)
+        self.assertTrue(os.access(want, os.X_OK))
+        self.assertEqual(len(fetch.calls), 1)
+        self.assertEqual(fetch.calls[0][2], anthology_setup.RTK_TIMEOUT)
+
+    def test_a_bad_download_is_a_warning(self):
+        import rtk_install
+        with mock.patch.object(rtk_install, "default_fetch", _rtk.FakeFetch(b"wrong")):
+            status, warning = anthology_setup._rtk_apply(self.root, str(self.data_dir))
+        self.assertEqual(status, "warning")
+        self.assertIn("rtk is not installed or up to date", warning)
+        self.assertNotIn("rtk_path", state.read())
+
+    def test_an_invalid_lock_is_a_warning(self):
+        (self.root / "rtk.lock").write_text('{"version": "1"}', encoding="utf-8")
+        status, warning = anthology_setup._rtk_apply(self.root, str(self.data_dir))
+        self.assertEqual(status, "failed")
+        self.assertIn("rtk.lock", warning)
+        self.assertEqual(anthology_setup._rtk_preview(self.root, str(self.data_dir)),
+                         {"skipped": "rtk wiring not present (no rtk.lock)"})
+
+
 class ApplyRemoveTest(SetupCase):
     def test_round_trip_leaves_settings_byte_identical_and_state_gone(self):
         text = self.write_settings()
@@ -230,17 +283,33 @@ class ApplyRemoveTest(SetupCase):
 
     def test_apply_runs_the_rtk_reconcile_and_surfaces_its_warning(self):
         self.write_settings()
-        self.rtk.result = "rtk download failed: offline"
+        self.rtk.result = {"rtk_path": None, "warning": "rtk download failed: offline", "installed": False}
         res = self.apply()
         self.assertEqual(len(self.rtk.calls), 1)
         data_dir, lock, fetch, timeout = self.rtk.calls[0]
         self.assertEqual(data_dir, self.data_dir)
-        self.assertEqual(lock, PLUGIN / "rtk.lock")
+        self.assertEqual(lock, json.loads((PLUGIN / "rtk.lock").read_text(encoding="utf-8")))  # the parsed lock
         self.assertIsNone(fetch)
         self.assertGreaterEqual(timeout, 60)
+        self.assertEqual(res["rtk"]["status"], "warning")
         self.assertIn("rtk download failed: offline", res["warnings"])
         self.assertTrue(res["ok"])
         self.assertEqual(state.read()["setup_done"], "0.1.0")
+
+    def test_apply_reports_installed_and_up_to_date(self):
+        self.write_settings()
+        self.assertEqual(self.apply()["rtk"]["status"], "installed")
+        self.rtk.result = {"rtk_path": "x", "warning": None, "installed": False}
+        self.assertEqual(self.apply()["rtk"]["status"], "up to date")
+
+    def test_missing_lock_is_a_warning_not_an_exception(self):
+        root = self.tmp / "p" / "anthology"
+        self.assertEqual(anthology_setup._rtk_preview(root, str(self.data_dir)),
+                         {"skipped": "rtk wiring not present (no rtk.lock)"})
+        status, warning = anthology_setup._rtk_apply(root, str(self.data_dir))
+        self.assertEqual(status, "failed")
+        self.assertIn("rtk install failed", warning)
+        self.assertEqual(self.rtk.calls, [])
 
     def test_rtk_exception_is_a_warning(self):
         self.write_settings()
@@ -400,8 +469,9 @@ class FixRound1Test(SetupCase):
         digest = self.preview()["settings"]["sha256"]
         edited = json.dumps(dict(SETTINGS, model="sonnet"), indent=2) + "\n"
 
-        def reconcile(data_dir, lock, fetch, timeout):
+        def reconcile(data_dir, lock, fetch=None, timeout=30, system=None, machine=None):
             self.settings.write_text(edited, encoding="utf-8")  # the user edits while we "download"
+            return {"rtk_path": None, "warning": None, "installed": False}
 
         self.rtk.reconcile = reconcile
         res = anthology_setup.apply(PLUGIN, digest, cwd=self.tmp)

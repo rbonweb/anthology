@@ -1,0 +1,11 @@
+{
+  "version": "1.2.1-anthology.1",
+  "tag": "rtk--v1.2.1-anthology.1",
+  "repo": "rbonweb/anthology",
+  "sha256": {
+    "aarch64-apple-darwin": "9c3ecad0d5e9f27c248b7c95157369e9e20fdfd84582a9aa321c92128aaadd4a",
+    "x86_64-apple-darwin": "bfdda72b35eb0c12cc0bff5db8d562e3587190cea32905d0ce2abba95c37c400",
+    "x86_64-unknown-linux-musl": "dfb363051a35930178d6361116f37349ecb8f9204d7ecbe70f7a3a8c9b6cbf79",
+    "aarch64-unknown-linux-musl": "88516082be3fbf158b4ed332b013f56eaadd977f85aea9597196963a4128f118"
+  }
+}
