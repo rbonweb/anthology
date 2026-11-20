@@ -14,26 +14,6 @@ Plan a sprint by scoping work, estimating capacity, and setting clear goals.
 /sprint-planning $ARGUMENTS
 ```
 
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SPRINT PLANNING                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  STANDALONE (always works)                                       │
-│  ✓ Define sprint goals and success criteria                     │
-│  ✓ Estimate team capacity (accounting for PTO, meetings)        │
-│  ✓ Scope and prioritize backlog items                           │
-│  ✓ Identify dependencies and risks                              │
-│  ✓ Generate sprint plan document                                │
-├─────────────────────────────────────────────────────────────────┤
-│  SUPERCHARGED (when you connect your tools)                      │
-│  + Project tracker: Pull backlog, create sprint, assign items   │
-│  + Calendar: Account for PTO and meetings in capacity           │
-│  + Chat: Share sprint plan with the team                        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ## What I Need From You
 
 - **Team**: Who's on the team and their availability this sprint?

@@ -462,8 +462,58 @@ class StripConnectorsTest(FixtureCase):
         tree, _ = self.run_strip({"SKILL.md": doc})
         self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "# T\n\n### 4. Next\n\nkept\n")
 
+    def strip(self, doc):
+        tree, _ = self.run_strip({"SKILL.md": doc})
+        return (tree / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_tools_connected_blocks_without_a_placeholder(self):
+        # a one-line list item, a paragraph, a lead-in with a list after a blank line, a "weren't"
+        doc = ("# T\n\n## A\n\n- Offer drafts\n- If project management tool is connected, offer updates\n\n"
+               "## B\n\nIf the UXKIN tools are connected and the direction is open, call\n"
+               "`find_ui_materials` for the feeling to see\nreal sites.\n\nNext paragraph.\n\n"
+               "## C\n\nIf the UXKIN tools are connected:\n\n1. Call `find_ui_materials`\n   with words.\n"
+               "2. Try again.\n\nWithout the tools, rely on the project.\n\n"
+               "## D\n\nIf the UXKIN tools weren't connected and it would help, say once\n"
+               "(setup: https://uxkin.com/ui-design-mcp).\n\nEnd.\n")
+        self.assertEqual(self.strip(doc), (
+            "# T\n\n## A\n\n- Offer drafts\n\n## B\n\nNext paragraph.\n\n"
+            "## C\n\nWithout the tools, rely on the project.\n\n## D\n\nEnd.\n"))
+
+    def test_no_tool_fallbacks_stay(self):
+        doc = ("# T\n\nIf no project management tool is connected:\n- Ask the user\n\n"
+               "**If tools are not connected:**\n- Use web search\n\n"
+               "If these tools are not connected, work from what the user provides.\n")
+        self.assertEqual(self.strip(doc), doc)
+
+    def test_a_list_item_telling_the_user_to_connect_via_mcp_goes(self):
+        doc = ("# T\n\n**If tools are not connected:**\n- Use web search\n"
+               "- Note: \"For precise data, connect an SEO tool like Ahrefs via MCP.\"\n\nNext.\n")
+        self.assertEqual(self.strip(doc), "# T\n\n**If tools are not connected:**\n- Use web search\n\nNext.\n")
+
+    SUPERCHARGED = ("```\n+----+\n| STANDALONE (always works) |\n| SUPERCHARGED (when you connect your tools) |\n"
+                    "| + Tracker: link tickets |\n+----+\n```\n")
+
+    def test_supercharged_box_goes_with_a_heading_it_leaves_empty(self):
+        doc = f"# T\n\nIntro.\n\n## How It Works\n\n{self.SUPERCHARGED}\n## Next\n\nkept\n"
+        self.assertEqual(self.strip(doc), "# T\n\nIntro.\n\n## Next\n\nkept\n")
+
+    def test_supercharged_box_keeps_a_heading_that_has_other_content(self):
+        doc = f"# T\n\n## How It Works\n\nSome words.\n\n{self.SUPERCHARGED}\nAfter.\n"
+        self.assertEqual(self.strip(doc), "# T\n\n## How It Works\n\nSome words.\n\nAfter.\n")
+        doc = f"# T\n\n## How It Works\n\n{self.SUPERCHARGED}\n### Sub\n\nkept\n"
+        self.assertEqual(self.strip(doc), "# T\n\n## How It Works\n\n### Sub\n\nkept\n")
+
+    def test_supercharged_box_takes_a_line_that_only_introduces_it(self):
+        doc = f"# T\n\nText.\n\nHere is how it works:\n\n{self.SUPERCHARGED}\nAfter.\n"
+        self.assertEqual(self.strip(doc), "# T\n\nText.\n\nAfter.\n")
+
+    def test_other_fenced_blocks_are_untouched(self):
+        doc = "# T\n\n```\n+--+\n| STANDALONE |\n+--+\n```\n\nIf the tool is fine.\n"
+        self.assertEqual(self.strip(doc), doc)
+
     def test_idempotent(self):
-        tree, _ = self.run_strip({"SKILL.md": CONNECTOR_DOC, "references/a.md": CONNECTOR_DOC})
+        extra = CONNECTOR_DOC + "\n## Box\n\n" + self.SUPERCHARGED + "\n## Z\n\nIf the UXKIN tools are connected:\n\n1. a\n\nEnd.\n"
+        tree, _ = self.run_strip({"SKILL.md": extra, "references/a.md": CONNECTOR_DOC})
         once = {p.name + str(p.parent): p.read_bytes() for p in tree.rglob("*.md")}
         stats = vendor.strip_connectors(tree)
         self.assertEqual(once, {p.name + str(p.parent): p.read_bytes() for p in tree.rglob("*.md")})
@@ -511,11 +561,23 @@ class RenameSkillTest(FixtureCase):
         write(tree, "SKILL.md", text)
         return tree
 
-    def test_renames_the_frontmatter_name_only(self):
-        tree = self.make("---\nname: code-review\ndescription: Review code.\n---\n\n# /code-review\n")
+    def test_renames_the_frontmatter_name_and_the_slash_references(self):
+        tree = self.make("---\nname: code-review\ndescription: Use /code-review here.\n---\n\n"
+                         "# /code-review\n\n```\n/code-review <PR URL>\n```\n\n"
+                         "Also /code-review-checklist, a/code-review and code-review stay.\n")
         vendor.rename_skill(tree, "code-review", "code-review-checklist")
         self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"),
-                         "---\nname: code-review-checklist\ndescription: Review code.\n---\n\n# /code-review\n")
+                         "---\nname: code-review-checklist\ndescription: Use /code-review here.\n---\n\n"
+                         "# code-review-checklist\n\n```\ncode-review-checklist <PR URL>\n```\n\n"
+                         "Also /code-review-checklist, a/code-review and code-review stay.\n")
+
+    def test_rename_is_idempotent_on_the_body(self):
+        tree = self.make("---\nname: code-review\n---\n\n# /code-review\n")
+        vendor.rename_skill(tree, "code-review", "code-review-checklist")
+        once = (tree / "SKILL.md").read_bytes()
+        (tree / "SKILL.md").write_bytes(once.replace(b"name: code-review-checklist", b"name: code-review"))
+        vendor.rename_skill(tree, "code-review", "code-review-checklist")
+        self.assertEqual((tree / "SKILL.md").read_bytes(), once)
 
     def test_a_different_name_is_an_error(self):
         tree = self.make("---\nname: other\n---\nbody\n")

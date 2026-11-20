@@ -26,19 +26,6 @@ and sites the person likes.
 
 ## 2. Look at real sites
 
-If the UXKIN tools are connected:
-
-1. Call `find_ui_materials` with the industry and the feeling in plain
-   words: "dark fintech", "minimal dev tools", "warm e-commerce",
-   "serif editorial". Combine industry, theme, brand color and font.
-2. Try a second wording when results are thin ("developer tools" and
-   "API platform").
-3. Compare 3 to 5 results: how many colors they really use and for
-   what, the type pairing and scale, the radius and shadows, and the
-   components they rely on. The top result's full DESIGN.md shows how a
-   complete one is written.
-4. To study one named site, search for its name.
-
 Without the tools, rely on the project, the person's references and the
 rules below, and say clearly that the direction isn't based on real
 examples. Don't describe sites you haven't seen.

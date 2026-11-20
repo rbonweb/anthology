@@ -84,7 +84,6 @@ If this is an update to an existing roadmap, summarize what changed:
 After generating the roadmap:
 - Offer to format for a specific audience (executive summary, engineering detail, customer-facing)
 - Offer to draft communication about roadmap changes
-- If project management tool is connected, offer to update ticket statuses
 
 ## Roadmap Frameworks
 

@@ -5,6 +5,7 @@ shape of what is committed. A folder that has not landed yet has its own
 `@unittest.expectedFailure` test below: the task that lands it deletes that marker
 (leaving the marker in place makes the run fail with an "unexpected success").
 """
+import re
 import unittest
 
 from _repo import KNOWLEDGE, STRIPPED_KNOWLEDGE, load_frontmatter
@@ -12,7 +13,13 @@ from _repo import KNOWLEDGE, STRIPPED_KNOWLEDGE, load_frontmatter
 UNCHANGED = {"frontend-design", "web-design-guidelines", "design-skills"}
 EXPECTED_KNOWLEDGE = set(STRIPPED_KNOWLEDGE) | UNCHANGED | {
     "ui-taste", "caveman", "design-taste-frontend"}
-FORBIDDEN_IN_STRIPPED = ("~~", "CONNECTORS.md", "uxkin.com/mcp")
+FORBIDDEN_IN_STRIPPED = ("~~", "CONNECTORS.md", "uxkin.com/mcp", "find_ui_materials",
+                         "find_ui_references", "ui-design-mcp", "SUPERCHARGED")
+# "If the UXKIN tools are connected ..." lead-ins; "If no tool is connected" and "If tools are
+# not connected" are fallbacks and stay.
+CONNECTED_LEAD_IN = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\*\*)?If\s+(?!no\b).*\btools?\s+(?:is|are|weren't|were)\s+connected\b",
+    re.MULTILINE)
 
 
 def present():
@@ -71,6 +78,20 @@ class KnowledgeFoldersTest(unittest.TestCase):
                 text = path.read_text(encoding="utf-8", errors="ignore")
                 for needle in FORBIDDEN_IN_STRIPPED:
                     self.assertNotIn(needle, text, f"{path.relative_to(KNOWLEDGE)}: {needle}")
+                self.assertIsNone(CONNECTED_LEAD_IN.search(text), f"{path.relative_to(KNOWLEDGE)}")
+
+    def test_the_connected_lead_in_pattern_only_matches_the_connector_blocks(self):
+        for yes in ("If the UXKIN tools are connected:", "- If project management tool is connected, x",
+                    "**If tool is connected:**", "If the UXKIN tools weren't connected and"):
+            self.assertTrue(CONNECTED_LEAD_IN.search(yes), yes)
+        for no in ("If no project management tool is connected:", "**If tools are not connected:**",
+                   "If these tools are not connected, work from what the user provides."):
+            self.assertIsNone(CONNECTED_LEAD_IN.search(no), no)
+
+    def test_code_review_checklist_never_points_at_the_builtin_command(self):
+        text = (KNOWLEDGE / "code-review-checklist" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"/code-review(?!-checklist)", text), [])
+        self.assertIn("code-review-checklist", text)
 
 
 if __name__ == "__main__":

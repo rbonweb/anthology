@@ -4,40 +4,19 @@ description: Review code changes for security, performance, and correctness. Tri
 argument-hint: "<PR URL, diff, or file path>"
 ---
 
-# /code-review
+# code-review-checklist
 
 Review code changes with a structured lens on security, performance, correctness, and maintainability.
 
 ## Usage
 
 ```
-/code-review <PR URL or file path>
+code-review-checklist <PR URL or file path>
 ```
 
 Review the provided code changes: @$1
 
 If no specific file or URL is provided, ask what to review.
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      CODE REVIEW                                   │
-├─────────────────────────────────────────────────────────────────┤
-│  STANDALONE (always works)                                       │
-│  ✓ Paste a diff, PR URL, or point to files                      │
-│  ✓ Security audit (OWASP top 10, injection, auth)               │
-│  ✓ Performance review (N+1, memory leaks, complexity)           │
-│  ✓ Correctness (edge cases, error handling, race conditions)    │
-│  ✓ Style (naming, structure, readability)                        │
-│  ✓ Actionable suggestions with code examples                    │
-├─────────────────────────────────────────────────────────────────┤
-│  SUPERCHARGED (when you connect your tools)                      │
-│  + Source control: Pull PR diff automatically                    │
-│  + Project tracker: Link findings to tickets                     │
-│  + Knowledge base: Check against team coding standards           │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ## Review Dimensions
 

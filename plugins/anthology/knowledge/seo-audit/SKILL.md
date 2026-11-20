@@ -39,7 +39,6 @@ Research keywords related to the user's domain, topic, or target keywords.
 
 **If tools are not connected:**
 - Use web search to research the keyword landscape
-- Note: "For more precise volume and difficulty data, connect an SEO tool like Ahrefs or Semrush via MCP. The audit will auto-populate with ranking data."
 
 For each keyword opportunity, assess:
 - **Primary keywords** — high-intent terms directly tied to the user's product or service

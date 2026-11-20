@@ -256,8 +256,16 @@ CONNECTOR_HEADING = re.compile(
     r"|.*\bconnected tools)$", re.IGNORECASE)
 MD_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?$")
 MD_FENCE = re.compile(r"^\s*(```|~~~)")
-IF_CONNECTED = re.compile(r"^\s*(?:\*\*)?If\b.*~~.*\bconnected\b")
+LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+# `If ... connected` lead-ins: a `~~<category>` placeholder, or the tools themselves ("If the
+# UXKIN tools are connected", "... weren't connected"). "If no tool is connected" and "If tools
+# are not connected" describe the fallback behaviour and stay.
+IF_PLACEHOLDER_CONNECTED = re.compile(r"^\s*(?:\*\*)?If\b.*~~.*\bconnected\b")
+IF_TOOLS_CONNECTED = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\*\*)?If\s+(?!no\b).*\btools?\s+(?:is|are|weren't|were)\s+connected\b")
 LIST_IF_CONNECTED = re.compile(r"^\s*[-*+]\s.*~~.*\(if connected\)")
+CONNECT_VIA_MCP = re.compile(r"^\s*[-*+]\s.*\bconnect\b.*\bMCP\b")
+SUPERCHARGED_BOX = re.compile(r"SUPERCHARGED.*\bconnect\b")
 CONNECTORS_FILE = "CONNECTORS.md"
 
 
@@ -265,28 +273,49 @@ def _is_connector_heading(text: str) -> bool:
     return bool(CONNECTOR_HEADING.match(text.strip())) or "~~" in text
 
 
+def _fence_end(lines: list, start: int, marker: str) -> int:
+    """Index of the line closing the fence opened at `start` (the last line if unclosed)."""
+    for j in range(start + 1, len(lines)):
+        m = MD_FENCE.match(lines[j].rstrip())
+        if m and m.group(1) == marker:
+            return j
+    return len(lines) - 1
+
+
 def _section_end(lines: list, start: int, level: int) -> int:
     """Index of the next heading (outside code fences) at `level` or higher, else the end."""
-    fence = None
-    for j in range(start + 1, len(lines)):
+    j = start + 1
+    while j < len(lines):
         line = lines[j].rstrip()
         m = MD_FENCE.match(line)
-        if fence:
-            fence = None if m and m.group(1) == fence else fence
-            continue
         if m:
-            fence = m.group(1)
+            j = _fence_end(lines, j, m.group(1)) + 1
             continue
         h = MD_HEADING.match(line)
         if h and len(h.group(1)) <= level:
             return j
+        j += 1
     return len(lines)
+
+
+def _if_block_end(lines: list, i: int) -> int:
+    """End of an `If ... connected` block: a list item is one line; a lead-in ending in a colon
+    owns the list under it (also after one blank line); anything else is its paragraph."""
+    line = lines[i].rstrip()
+    if LIST_MARKER.match(line):
+        return i + 1
+    j = i + 1
+    if line.endswith((":", ":**")) and j + 1 < len(lines) and not lines[j].strip() \
+            and LIST_MARKER.match(lines[j + 1]):
+        j += 1
+    while j < len(lines) and lines[j].strip():
+        j += 1
+    return j
 
 
 def _strip_markdown(text: str) -> str:
     lines = text.split("\n")
     out: list = []
-    fence = None
     i, n = 0, len(lines)
 
     def skip_blanks(j: int) -> int:
@@ -297,19 +326,37 @@ def _strip_markdown(text: str) -> str:
             j += 1
         return j
 
+    def trim_blanks() -> int:
+        k = len(out)
+        while k and not out[k - 1].strip():
+            k -= 1
+        return k
+
     while i < n:
         line = lines[i]
         probe = line.rstrip()
         m = MD_FENCE.match(probe)
-        if fence:
-            out.append(line)
-            fence = None if m and m.group(1) == fence else fence
-            i += 1
-            continue
         if m:
-            fence = m.group(1)
-            out.append(line)
-            i += 1
+            end = _fence_end(lines, i, m.group(1))
+            block = lines[i:end + 1]
+            if not any(SUPERCHARGED_BOX.search(l) for l in block):
+                out.extend(block)
+                i = end + 1
+                continue
+            # the "STANDALONE / SUPERCHARGED (when you connect your tools)" box goes, with a
+            # line that only introduces it and a heading it leaves without any content
+            k = trim_blanks()
+            if k and out[k - 1].rstrip().endswith(":") and not MD_HEADING.match(out[k - 1].rstrip()):
+                del out[k - 1:]
+            j = end + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            k = trim_blanks()
+            above = MD_HEADING.match(out[k - 1].rstrip()) if k else None
+            below = MD_HEADING.match(lines[j].rstrip()) if j < n else None
+            if above and (j >= n or (below and len(below.group(1)) <= len(above.group(1)))):
+                del out[k - 1:]
+            i = j if out and not out[-1].strip() else end + 1
             continue
         h = MD_HEADING.match(probe)
         if h and _is_connector_heading(h.group(2)):
@@ -322,14 +369,10 @@ def _strip_markdown(text: str) -> str:
             if any(CONNECTORS_FILE in l for l in lines[i:j]):
                 i = skip_blanks(j)
                 continue
-        if IF_CONNECTED.match(probe):
-            j = i + 1
-            if probe.endswith((":", ":**")):  # a lead-in line: its list belongs to it
-                while j < n and lines[j].strip():
-                    j += 1
-            i = skip_blanks(j)
+        if IF_PLACEHOLDER_CONNECTED.match(probe) or IF_TOOLS_CONNECTED.match(probe):
+            i = skip_blanks(_if_block_end(lines, i))
             continue
-        if LIST_IF_CONNECTED.match(probe):
+        if LIST_IF_CONNECTED.match(probe) or CONNECT_VIA_MCP.match(probe):
             i += 1
             continue
         out.append(line)
@@ -342,15 +385,20 @@ def _strip_markdown(text: str) -> str:
 
 
 def strip_connectors(tree: Path) -> dict:
-    """Remove the connector scaffolding the knowledge-work plugins wrap around a skill.
+    """Remove everything that tells an agent to use connected tools, so the folders are connector-free.
 
     In every `.md` file, outside code fences:
     - a connector setup section: a heading that is "Connectors", "If Connectors Available",
       "Tool Integration", "Connect <Product> (optional)", ends in "Connected Tools" or holds a
       `~~` placeholder, together with its body, up to the next heading of the same or a higher level;
-    - an `If ~~<category> is connected` block: the line, plus the list under it when it ends
-      with a colon;
+    - an `If ... connected` block: a lead-in with a `~~<category>` placeholder, or one saying the
+      tools "are/is/weren't connected" (not "If no tool is connected" or "If tools are not
+      connected", the fallbacks). A one-line list item is just the line; a lead-in ending with a
+      colon takes the list under it; otherwise it takes its paragraph;
     - a list item `~~<category> (if connected): ...`;
+    - a list item telling the user to connect a tool via MCP;
+    - a fenced "SUPERCHARGED (when you connect your tools)" box, a line that only introduces it
+      and a heading left without content;
     - a blockquote paragraph that points to `CONNECTORS.md`.
     A file named `CONNECTORS.md` is deleted. Nothing else changes. If a `~~` placeholder or
     a `CONNECTORS.md` reference is left over, this fails rather than guessing a rewrite.
@@ -379,7 +427,9 @@ def strip_connectors(tree: Path) -> dict:
 
 
 def rename_skill(tree: Path, old: str, new: str) -> dict:
-    """Change the `name:` in SKILL.md's frontmatter from old to new (the folder is the target)."""
+    """Rename a skill: the frontmatter `name:` goes from old to new (the folder is the entry's
+    target), and `/old` in the body becomes `new`, so nothing points at a built-in `/old`
+    command. A longer name such as `/old-checklist` is not matched."""
     path = Path(tree) / "SKILL.md"
     if not path.is_file():
         raise VendorError("rename-skill: SKILL.md not found")
@@ -389,8 +439,9 @@ def rename_skill(tree: Path, old: str, new: str) -> dict:
         raise VendorError("rename-skill: SKILL.md has no frontmatter")
     head = re.sub(r"^name:[ \t]*(.*?)[ \t]*$", lambda m: _renamed(m, old, new), text[:end],
                   count=1, flags=re.MULTILINE)
-    path.write_text(head + text[end:], encoding="utf-8")
-    return {"name": new}
+    body, count = re.subn(r"(?<![\w])/" + re.escape(old) + r"(?![\w-])", new, text[end:])
+    path.write_text(head + body, encoding="utf-8")
+    return {"name": new, "references": count}
 
 
 def _renamed(match, old: str, new: str) -> str:

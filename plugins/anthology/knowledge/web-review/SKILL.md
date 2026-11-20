@@ -40,10 +40,6 @@ is:
 | States | Forms without error and success states, empty or broken sections, dead links |
 | Basics | Missing page title, meta description, social preview image or favicon |
 
-If the UXKIN tools are connected and a finding is a judgment call, call
-`find_ui_materials` to see how real sites in the same space handle it,
-and say which ones you looked at.
-
 ## 3. Report
 
 Order the findings by how much they cost visitors:
