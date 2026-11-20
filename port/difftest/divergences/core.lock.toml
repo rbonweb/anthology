@@ -1,0 +1,6 @@
+# Allowed divergences of the core.lock surface (GC-16). The oracle
+# (port/difftest/oracle/core_lock.py) marks each case it adjusted.
+
+[[divergence]]
+class = "D-6"
+reason = "F-19: an rtk.lock holding a lone surrogate escape. Rust decodes it as U+FFFD, so an error's %r shows '\\ufffd' where Python shows '\\ud800'. The oracle's expected result replaces lone surrogates at decode time."
