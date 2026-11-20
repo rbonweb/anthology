@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import unicodedata
+import warnings
 
 _MAX = 0x110000
 
@@ -111,7 +112,9 @@ def _compile(case):
     flags = 0
     for k in case.get("flags", ""):
         flags |= _FLAGS[k]
-    return re.compile(case["pattern"], flags)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # FutureWarning on nested sets and the like
+        return re.compile(case["pattern"], flags)
 
 
 def _re_finditer(case):
@@ -163,10 +166,118 @@ _PYERR_OPS = {
 }
 
 
+# --- difflib, fnmatch, quote, path, ipaddress, shlex ----------------------------------------
+
+def _difflib_unified(case):
+    """`{"a", "b", "fromfile", "tofile", "n", "lineterm"}`: `list(difflib.unified_diff(...))`."""
+    import difflib
+    return list(difflib.unified_diff(case["a"], case["b"], case["fromfile"], case["tofile"],
+                                     n=case["n"], lineterm=case.get("lineterm", "")))
+
+
+def _fnmatch_case(case):
+    """`{"name", "pat"}`: `fnmatch.fnmatchcase(name, pat)`."""
+    import fnmatch
+    return fnmatch.fnmatchcase(case["name"], case["pat"])
+
+
+def _quote(case):
+    """`{"s", "safe"}`: `urllib.parse.quote(s, safe=safe)`."""
+    import urllib.parse
+    return urllib.parse.quote(case["s"], safe=case["safe"])
+
+
+def _unquote(case):
+    """`{"s"}`: `urllib.parse.unquote(s)`."""
+    import urllib.parse
+    return urllib.parse.unquote(case["s"])
+
+
+def _build_tree(root, tree):
+    """`tree`: `[[relpath, "dir" | "file" | "link", target], ...]`, in order."""
+    for rel, kind, target in tree:
+        path = os.path.join(root, rel)
+        if kind == "dir":
+            os.makedirs(path, exist_ok=True)
+        elif kind == "file":
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w"):
+                pass
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.symlink(target, path)
+
+
+def _path_realpath(case):
+    """`{"tree", "p"}`: `os.path.realpath(<root>/p)` where `<root>` is
+    `<tmp>/n1/n2/n3/n4/n5/n6/root` in a fresh temporary folder `<tmp>`, holding `tree` (see
+    `_build_tree`); the realpath of `<tmp>` is written `<TMP>`, so a link or `..` that leads out
+    of the root (up to six levels) still gives the same text on every machine."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = os.path.realpath(d)
+        root = os.path.join(tmp, "n1/n2/n3/n4/n5/n6/root")
+        os.makedirs(root)
+        _build_tree(root, case["tree"])
+        out = os.path.realpath(os.path.join(root, case["p"]))
+        if out == tmp or out.startswith(tmp + "/"):
+            out = "<TMP>" + out[len(tmp):]
+        return out
+
+
+def _ipaddress_v4(case):
+    """`{"s"}`: `list(ipaddress.IPv4Address(s).packed)`."""
+    import ipaddress
+    return list(ipaddress.IPv4Address(case["s"]).packed)
+
+
+def _ipaddress_v6(case):
+    """`{"s"}`: the eight groups of `ipaddress.IPv6Address(s)`, and whether it is in fc00::/7
+    and in fe80::/10."""
+    import ipaddress
+    a = ipaddress.IPv6Address(case["s"])
+    b = a.packed
+    groups = [b[i] * 256 + b[i + 1] for i in range(0, 16, 2)]
+    return {"groups": groups,
+            "unique_local": a in ipaddress.ip_network("fc00::/7"),
+            "link_local": a in ipaddress.ip_network("fe80::/10")}
+
+
+def _shlex_split(case):
+    """`{"s"}`: `["ok", shlex.split(s)]` or `["error", str(ValueError)]`."""
+    import shlex
+    try:
+        return ["ok", shlex.split(case["s"])]
+    except ValueError as e:
+        return ["error", str(e)]
+
+
+def _shlex_quote(case):
+    """`{"s"}`: `shlex.quote(s)`."""
+    import shlex
+    return shlex.quote(case["s"])
+
+
+_B_OPS = {
+    "difflib.unified": _difflib_unified,
+    "fnmatch.case": _fnmatch_case,
+    "quote.quote": _quote,
+    "quote.unquote": _unquote,
+    "path.normpath": lambda c: __import__("posixpath").normpath(c["p"]),
+    "path.join": lambda c: __import__("posixpath").join(c["a"], c["b"]),
+    "path.realpath": _path_realpath,
+    "ipaddress.v4": _ipaddress_v4,
+    "ipaddress.v6": _ipaddress_v6,
+    "shlex.split": _shlex_split,
+    "shlex.quote": _shlex_quote,
+}
+
+
 _OPS = {}
 _OPS.update(_STR_OPS)
 _OPS.update(_RE_OPS)
 _OPS.update(_PYERR_OPS)
+_OPS.update(_B_OPS)
 
 
 def run(case):
