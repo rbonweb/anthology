@@ -1,0 +1,324 @@
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,8 @@
+ # Superpowers
+ 
+ Superpowers is a complete software development methodology for your coding agents, built on top of a set of composable skills and some initial instructions that make sure your agent uses them.
++
++In Anthology, install with `/plugin install anthology-superpowers@anthology` (it is also installed automatically with `anthology`).
+ 
+ ## Table of Contents
+ 
+--- a/skills/brainstorming/scripts/server.cjs
++++ b/skills/brainstorming/scripts/server.cjs
+@@ -285,20 +285,6 @@
+ 
+ function companionUrl() {
+   return 'http://' + urlHostForHttp(URL_HOST) + ':' + PORT + '/?key=' + TOKEN;
+-}
+-
+-function browserLauncherForPlatform(url, {
+-  platform = process.platform,
+-  osRelease = require('os').release(),
+-  env = process.env
+-} = {}) {
+-  const isWSL = platform === 'linux' && /microsoft/i.test(osRelease);
+-  if (platform === 'darwin') return { bin: 'open', args: [url] };
+-  if (platform === 'win32' || isWSL) {
+-    return { bin: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] };
+-  }
+-  if (env.DISPLAY || env.WAYLAND_DISPLAY) return { bin: 'xdg-open', args: [url] };
+-  return null;
+ }
+ 
+ function isRegularFileInsideContentDir(filePath) {
+@@ -523,30 +509,6 @@
+   }
+ }
+ 
+-// Best-effort: open the user's browser the first time a screen is actually ready
+-// to show. Skips when disabled, on a non-loopback (remote) bind, or when a
+-// browser is already connected. Override the launcher with BRAINSTORM_OPEN_CMD.
+-let browserOpened = false;
+-function maybeOpenBrowser() {
+-  if (browserOpened) return;
+-  browserOpened = true;
+-  if (!process.env.BRAINSTORM_OPEN) return; // opt-in: only after the user approves the companion
+-  if (HOST !== '127.0.0.1' && HOST !== 'localhost') return;
+-  if (clients.size > 0) return; // the user already opened it
+-  const url = companionUrl(); // must carry the key or the gate 403s it
+-  const cp = require('child_process');
+-  // Operator-provided launcher: run as given (this env var is trusted operator input).
+-  if (process.env.BRAINSTORM_OPEN_CMD) {
+-    try { cp.exec(process.env.BRAINSTORM_OPEN_CMD + ' ' + JSON.stringify(url), () => {}); } catch (e) { /* best effort */ }
+-    return;
+-  }
+-  // Platform launchers: pass the URL as an argv element via execFile (no shell),
+-  // so a url-host containing shell metacharacters can't inject a command.
+-  const launcher = browserLauncherForPlatform(url);
+-  if (!launcher) return; // headless: nothing to open
+-  try { cp.execFile(launcher.bin, launcher.args, () => {}); } catch (e) { /* best effort */ }
+-}
+-
+ // ========== Activity Tracking ==========
+ 
+ // Idle timeout: shut down after this long with no activity. Default 4 hours;
+@@ -603,7 +565,6 @@
+         const eventsFile = path.join(STATE_DIR, 'events');
+         if (fs.existsSync(eventsFile)) fs.unlinkSync(eventsFile);
+         console.log(JSON.stringify({ type: 'screen-added', file: filePath }));
+-        maybeOpenBrowser();
+       } else {
+         console.log(JSON.stringify({ type: 'screen-updated', file: filePath }));
+       }
+@@ -717,7 +678,6 @@
+   computeAcceptKey,
+   encodeFrame,
+   decodeFrame,
+-  browserLauncherForPlatform,
+   OPCODES,
+   MAX_FRAME_PAYLOAD_BYTES
+ };
+--- a/skills/brainstorming/scripts/start-server.sh
++++ b/skills/brainstorming/scripts/start-server.sh
+@@ -12,8 +12,6 @@
+ #                         Use 0.0.0.0 in remote/containerized environments.
+ #   --url-host <host>     Hostname shown in returned URL JSON.
+ #   --idle-timeout-minutes <n>  Shut down after n minutes idle (default 240 = 4h).
+-#   --open                Auto-open the browser on the first screen (use only
+-#                         after the user approves the visual companion).
+ #   --foreground          Run server in the current terminal (no backgrounding).
+ #   --background          Force background mode (overrides Codex auto-foreground).
+ 
+@@ -43,10 +41,6 @@
+     --idle-timeout-minutes)
+       IDLE_TIMEOUT_MINUTES="$2"
+       shift 2
+-      ;;
+-    --open)
+-      export BRAINSTORM_OPEN=1
+-      shift
+       ;;
+     --foreground|--no-daemon)
+       FOREGROUND="true"
+--- a/skills/brainstorming/visual-companion.md
++++ b/skills/brainstorming/visual-companion.md
+@@ -33,9 +33,9 @@
+ ## Starting a Session
+ 
+ ```bash
+-# Start AFTER the user approves the companion. --open auto-opens their browser on
+-# the first screen; --project-dir persists mockups and enables same-port restart.
+-bash scripts/start-server.sh --project-dir /path/to/project --open
++# Start AFTER the user approves the companion. --project-dir persists mockups
++# and enables same-port restart. The server never opens a browser itself.
++bash scripts/start-server.sh --project-dir /path/to/project
+ 
+ # Returns: {"type":"server-started","port":52341,
+ #           "url":"http://localhost:52341/?key=ab12…",
+@@ -43,7 +43,7 @@
+ #           "state_dir":"/path/to/project/.superpowers/brainstorm/12345-1706000000/state"}
+ ```
+ 
+-Save `screen_dir` and `state_dir` from the response. With `--open`, the browser opens itself when you push the first screen — you don't need to ask the user to open it, but still share the URL as a fallback (headless/remote setups won't auto-open).
++Save `screen_dir` and `state_dir` from the response. The server never opens a browser, so share the complete `url` with the user and open it in BrowserOS Neo: call `mcp__browseros-neo__tabs` with action `new` and the URL to open a tab on it, or `mcp__browseros-neo__navigate` in your own tab. If those tools are not available, give the user the URL to open themselves. Never launch another browser, and never run an OS command to open the URL.
+ 
+ **The URL contains a session key (`?key=…`).** The server rejects any request
+ without it, so always give the user the **complete** URL from the `url` field —
+@@ -62,7 +62,7 @@
+ **Claude Code:**
+ ```bash
+ # Default mode works — the script backgrounds the server itself.
+-bash scripts/start-server.sh --project-dir /path/to/project --open
++bash scripts/start-server.sh --project-dir /path/to/project
+ ```
+ 
+ On Windows, the script auto-detects and switches to foreground mode (which blocks the tool call). Use `run_in_background: true` on the Bash tool call so the server survives across conversation turns, then read `$STATE_DIR/server-info` on the next turn to get the URL and port.
+@@ -71,14 +71,14 @@
+ ```bash
+ # Codex reaps background processes. The script auto-detects CODEX_CI and
+ # switches to foreground mode. Run it normally — no extra flags needed.
+-bash scripts/start-server.sh --project-dir /path/to/project --open
++bash scripts/start-server.sh --project-dir /path/to/project
+ ```
+ 
+ **Gemini CLI:**
+ ```bash
+ # Use --foreground and set is_background: true on your shell tool call
+ # so the process survives across turns
+-bash scripts/start-server.sh --project-dir /path/to/project --open --foreground
++bash scripts/start-server.sh --project-dir /path/to/project --foreground
+ ```
+ 
+ **Copilot CLI:**
+@@ -87,7 +87,7 @@
+ # server survives across turns. Keep --foreground so the harness, not the
+ # script, owns backgrounding. The launcher is a .sh, so invoke it via bash
+ # (on Windows, call Git Bash's bash.exe from the PowerShell tool).
+-bash scripts/start-server.sh --project-dir /path/to/project --open --foreground
++bash scripts/start-server.sh --project-dir /path/to/project --foreground
+ ```
+ 
+ **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
+--- a/tests/brainstorm-server/browser-launcher.test.js
++++ /dev/null
+@@ -1,66 +0,0 @@
+-const assert = require('assert');
+-const {
+-  browserLauncherForPlatform
+-} = require('../../skills/brainstorming/scripts/server.cjs');
+-
+-let passed = 0;
+-let failed = 0;
+-
+-async function test(name, fn) {
+-  try {
+-    await fn();
+-    console.log(`  PASS: ${name}`);
+-    passed++;
+-  } catch (e) {
+-    console.log(`  FAIL: ${name}`);
+-    console.log(`    ${e.message}`);
+-    failed++;
+-  }
+-}
+-
+-(async () => {
+-  console.log('\n--- Browser Launcher ---');
+-
+-  await test('Windows launcher does not route URLs through cmd.exe', () => {
+-    const url = 'http://localhost:54122/?key=abc&x=SAFE&echo=INJECTED';
+-    const launcher = browserLauncherForPlatform(url, {
+-      platform: 'win32',
+-      osRelease: '10.0.26200',
+-      env: {}
+-    });
+-
+-    assert.deepStrictEqual(launcher, {
+-      bin: 'rundll32.exe',
+-      args: ['url.dll,FileProtocolHandler', url]
+-    });
+-    assert(!launcher.args.includes('/c'), 'Windows launcher must not pass /c to a command interpreter');
+-  });
+-
+-  await test('WSL launcher does not route URLs through cmd.exe', () => {
+-    const url = 'http://localhost:54122/?key=abc&x=SAFE&echo=INJECTED';
+-    const launcher = browserLauncherForPlatform(url, {
+-      platform: 'linux',
+-      osRelease: '5.15.167.4-microsoft-standard-WSL2',
+-      env: {}
+-    });
+-
+-    assert.deepStrictEqual(launcher, {
+-      bin: 'rundll32.exe',
+-      args: ['url.dll,FileProtocolHandler', url]
+-    });
+-  });
+-
+-  await test('Linux launcher stays headless without a display', () => {
+-    assert.strictEqual(
+-      browserLauncherForPlatform('http://localhost:1/', {
+-        platform: 'linux',
+-        osRelease: '6.0.0',
+-        env: {}
+-      }),
+-      null
+-    );
+-  });
+-
+-  console.log(`\n--- Results: ${passed} passed, ${failed} failed ---`);
+-  if (failed > 0) process.exit(1);
+-})();
+--- a/tests/brainstorm-server/lifecycle.test.js
++++ b/tests/brainstorm-server/lifecycle.test.js
+@@ -44,26 +44,8 @@
+   return waitForExit(child, 500);
+ }
+ 
+-async function waitForFile(file, timeoutMs = 3000) {
+-  const deadline = Date.now() + timeoutMs;
+-  while (Date.now() < deadline) {
+-    if (fs.existsSync(file)) return true;
+-    await sleep(50);
+-  }
+-  return fs.existsSync(file);
+-}
+-
+ function firstServerStarted(out) {
+   return JSON.parse(out.trim().split('\n').find(l => l.includes('server-started')));
+-}
+-
+-function openCaptureCommand(dir, marker) {
+-  const scriptPath = path.resolve(dir, 'capture-open.cjs');
+-  const markerPath = path.resolve(marker);
+-  fs.writeFileSync(scriptPath,
+-    "const fs = require('fs');\n" +
+-    "fs.appendFileSync(process.argv[2], process.argv[3] + '\\n');\n");
+-  return `node ${JSON.stringify(scriptPath)} ${JSON.stringify(markerPath)}`;
+ }
+ 
+ function httpStatus(port, key) {
+@@ -444,52 +426,6 @@
+     }
+   });
+ 
+-  await test('auto-opens the browser once, on the first screen', async () => {
+-    const dir = fs.mkdtempSync('/tmp/bs-open-');
+-    const marker = path.join(dir, 'opened.log');
+-    const openCmd = openCaptureCommand(dir, marker); // capture the launch instead of opening a browser
+-    const srv = spawn('node', [SERVER], { env: { ...process.env, BRAINSTORM_PORT: 3417, BRAINSTORM_DIR: dir, BRAINSTORM_OPEN: '1', BRAINSTORM_OPEN_CMD: openCmd, BRAINSTORM_LIFECYCLE_CHECK_MS: 100000 } });
+-    let out = ''; srv.stdout.on('data', d => out += d.toString());
+-    for (let i = 0; i < 60 && !out.includes('server-started'); i++) await sleep(50);
+-
+-    // First screen, with no browser connected -> should auto-open.
+-    fs.writeFileSync(path.join(dir, 'content', 'first.html'), '<h2>First</h2>');
+-    await waitForFile(marker);
+-    // Second screen -> must NOT open again.
+-    fs.writeFileSync(path.join(dir, 'content', 'second.html'), '<h2>Second</h2>');
+-    await sleep(700);
+-
+-    const lines = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean) : [];
+-    // The opened URL must carry the key AND be reachable — a keyless URL hits 403.
+-    let status = 0;
+-    if (lines[0]) {
+-      status = await new Promise(r => require('http').get(lines[0], res => { res.resume(); r(res.statusCode); }).on('error', () => r(0)));
+-    }
+-    await killAndWait(srv);
+-    fs.rmSync(dir, { recursive: true, force: true });
+-
+-    assert.strictEqual(lines.length, 1, 'should open exactly once');
+-    assert(lines[0].includes('3417'), `should open the server URL, got: ${lines[0]}`);
+-    assert(/[?&]key=/.test(lines[0]), `opened URL must carry the session key, got: ${lines[0]}`);
+-    assert.strictEqual(status, 200, 'the opened URL must be reachable (valid key), not the 403 page');
+-  });
+-
+-  await test('does NOT auto-open unless approved (BRAINSTORM_OPEN unset)', async () => {
+-    const dir = fs.mkdtempSync('/tmp/bs-open-');
+-    const marker = path.join(dir, 'opened.log');
+-    const openCmd = openCaptureCommand(dir, marker);
+-    // BRAINSTORM_OPEN intentionally NOT set — auto-open must stay off.
+-    const srv = spawn('node', [SERVER], { env: { ...process.env, BRAINSTORM_PORT: 3418, BRAINSTORM_DIR: dir, BRAINSTORM_OPEN_CMD: openCmd, BRAINSTORM_LIFECYCLE_CHECK_MS: 100000 } });
+-    let out = ''; srv.stdout.on('data', d => out += d.toString());
+-    for (let i = 0; i < 60 && !out.includes('server-started'); i++) await sleep(50);
+-    fs.writeFileSync(path.join(dir, 'content', 'first.html'), '<h2>First</h2>');
+-    await sleep(700);
+-    await killAndWait(srv);
+-    const opened = fs.existsSync(marker);
+-    fs.rmSync(dir, { recursive: true, force: true });
+-    assert(!opened, 'must not open the browser without explicit approval');
+-  });
+-
+   await test('unauthenticated requests do not defeat the idle timeout', async () => {
+     const dir = fs.mkdtempSync('/tmp/bs-life-');
+     const srv = spawn('node', [SERVER], { env: { ...process.env, BRAINSTORM_PORT: 3419, BRAINSTORM_DIR: dir, BRAINSTORM_TOKEN: 'authtok', BRAINSTORM_IDLE_TIMEOUT_MS: 400, BRAINSTORM_LIFECYCLE_CHECK_MS: 100 } });
+--- a/tests/brainstorm-server/package.json
++++ b/tests/brainstorm-server/package.json
+@@ -2,7 +2,7 @@
+   "name": "brainstorm-server-tests",
+   "version": "1.0.0",
+   "scripts": {
+-    "test": "node ws-protocol.test.js && node helper.test.js && node browser-launcher.test.js && node auth.test.js && node branding.test.js && node server.test.js && node lifecycle.test.js && bash start-server.test.sh && bash stop-server.test.sh"
++    "test": "node ws-protocol.test.js && node helper.test.js && node auth.test.js && node branding.test.js && node server.test.js && node lifecycle.test.js && bash start-server.test.sh && bash stop-server.test.sh"
+   },
+   "dependencies": {
+     "ws": "^8.21.0"

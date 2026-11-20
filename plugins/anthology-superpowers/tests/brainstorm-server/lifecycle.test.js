@@ -44,26 +44,8 @@ async function killAndWait(child, timeoutMs = 2000) {
   return waitForExit(child, 500);
 }
 
-async function waitForFile(file, timeoutMs = 3000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(file)) return true;
-    await sleep(50);
-  }
-  return fs.existsSync(file);
-}
-
 function firstServerStarted(out) {
   return JSON.parse(out.trim().split('\n').find(l => l.includes('server-started')));
-}
-
-function openCaptureCommand(dir, marker) {
-  const scriptPath = path.resolve(dir, 'capture-open.cjs');
-  const markerPath = path.resolve(marker);
-  fs.writeFileSync(scriptPath,
-    "const fs = require('fs');\n" +
-    "fs.appendFileSync(process.argv[2], process.argv[3] + '\\n');\n");
-  return `node ${JSON.stringify(scriptPath)} ${JSON.stringify(markerPath)}`;
 }
 
 function httpStatus(port, key) {
@@ -442,52 +424,6 @@ async function runTests() {
       await killAndWait(b);
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  await test('auto-opens the browser once, on the first screen', async () => {
-    const dir = fs.mkdtempSync('/tmp/bs-open-');
-    const marker = path.join(dir, 'opened.log');
-    const openCmd = openCaptureCommand(dir, marker); // capture the launch instead of opening a browser
-    const srv = spawn('node', [SERVER], { env: { ...process.env, BRAINSTORM_PORT: 3417, BRAINSTORM_DIR: dir, BRAINSTORM_OPEN: '1', BRAINSTORM_OPEN_CMD: openCmd, BRAINSTORM_LIFECYCLE_CHECK_MS: 100000 } });
-    let out = ''; srv.stdout.on('data', d => out += d.toString());
-    for (let i = 0; i < 60 && !out.includes('server-started'); i++) await sleep(50);
-
-    // First screen, with no browser connected -> should auto-open.
-    fs.writeFileSync(path.join(dir, 'content', 'first.html'), '<h2>First</h2>');
-    await waitForFile(marker);
-    // Second screen -> must NOT open again.
-    fs.writeFileSync(path.join(dir, 'content', 'second.html'), '<h2>Second</h2>');
-    await sleep(700);
-
-    const lines = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean) : [];
-    // The opened URL must carry the key AND be reachable — a keyless URL hits 403.
-    let status = 0;
-    if (lines[0]) {
-      status = await new Promise(r => require('http').get(lines[0], res => { res.resume(); r(res.statusCode); }).on('error', () => r(0)));
-    }
-    await killAndWait(srv);
-    fs.rmSync(dir, { recursive: true, force: true });
-
-    assert.strictEqual(lines.length, 1, 'should open exactly once');
-    assert(lines[0].includes('3417'), `should open the server URL, got: ${lines[0]}`);
-    assert(/[?&]key=/.test(lines[0]), `opened URL must carry the session key, got: ${lines[0]}`);
-    assert.strictEqual(status, 200, 'the opened URL must be reachable (valid key), not the 403 page');
-  });
-
-  await test('does NOT auto-open unless approved (BRAINSTORM_OPEN unset)', async () => {
-    const dir = fs.mkdtempSync('/tmp/bs-open-');
-    const marker = path.join(dir, 'opened.log');
-    const openCmd = openCaptureCommand(dir, marker);
-    // BRAINSTORM_OPEN intentionally NOT set — auto-open must stay off.
-    const srv = spawn('node', [SERVER], { env: { ...process.env, BRAINSTORM_PORT: 3418, BRAINSTORM_DIR: dir, BRAINSTORM_OPEN_CMD: openCmd, BRAINSTORM_LIFECYCLE_CHECK_MS: 100000 } });
-    let out = ''; srv.stdout.on('data', d => out += d.toString());
-    for (let i = 0; i < 60 && !out.includes('server-started'); i++) await sleep(50);
-    fs.writeFileSync(path.join(dir, 'content', 'first.html'), '<h2>First</h2>');
-    await sleep(700);
-    await killAndWait(srv);
-    const opened = fs.existsSync(marker);
-    fs.rmSync(dir, { recursive: true, force: true });
-    assert(!opened, 'must not open the browser without explicit approval');
   });
 
   await test('unauthenticated requests do not defeat the idle timeout', async () => {

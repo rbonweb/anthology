@@ -2,6 +2,8 @@
 
 Superpowers is a complete software development methodology for your coding agents, built on top of a set of composable skills and some initial instructions that make sure your agent uses them.
 
+In Anthology, install with `/plugin install anthology-superpowers@anthology` (it is also installed automatically with `anthology`).
+
 ## Table of Contents
 
 - [How it works](#how-it-works)
