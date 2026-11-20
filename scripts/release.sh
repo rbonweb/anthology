@@ -14,6 +14,8 @@
 # $RELEASE_DATE (YYYY-MM-DD) overrides today's date in the new CHANGELOG heading.
 # The text and JSON edits live in scripts/release_edit.py. Works with bash 3.2 (macOS).
 set -euo pipefail
+# The helper must never leave __pycache__ in the checkout (it would make the tree dirty).
+export PYTHONDONTWRITEBYTECODE=1
 
 die() { echo "release: $*" >&2; exit 1; }
 

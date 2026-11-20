@@ -348,7 +348,7 @@ class ReleaseScriptTests(unittest.TestCase):
         self.write("CHANGELOG.md", FAKE_CHANGELOG)
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "initial")
-        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.remote)], check=True)
         self.git("remote", "add", "origin", str(self.remote))
         self.git("push", "-q", "origin", "main")
 
@@ -509,7 +509,7 @@ class ReleaseScriptTests(unittest.TestCase):
 
     def test_rejected_branch_push_gives_a_recovery_hint_and_no_tag(self):
         other = Path(self._tmp.name) / "other"
-        subprocess.run(["git", "clone", "-q", str(self.remote), str(other)], check=True)
+        subprocess.run(["git", "clone", "-q", "-b", "main", str(self.remote), str(other)], check=True)
         for key, value in (("user.name", "Test"), ("user.email", "test@users.noreply.github.com"),
                            ("commit.gpgsign", "false")):
             self.git("config", key, value, cwd=other)
