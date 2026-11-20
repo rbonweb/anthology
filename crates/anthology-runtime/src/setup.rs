@@ -1,0 +1,1 @@
+//! `anthology setup` (RT4).

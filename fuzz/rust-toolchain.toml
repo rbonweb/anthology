@@ -1,0 +1,4 @@
+# cargo-fuzz needs nightly; pinned so a weekly run is reproducible (design §13.5).
+[toolchain]
+channel = "nightly-2026-11-19"
+profile = "minimal"

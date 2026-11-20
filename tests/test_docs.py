@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`):
 # git never lists them, so the walk must not either.
 PRUNED = (".git", ".claude/worktrees", ".superpowers", ".vendor-cache", "__pycache__",
-          "node_modules", "evals/results")
+          "node_modules", "evals/results", "port/replay")
 
 # The home-path check skips the upstream rtk tree and the generated vendored trees.
 HOME_PATH_SKIPS = ("rtk/", "plugins/anthology-superpowers/", "plugins/anthology/knowledge/",

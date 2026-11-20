@@ -76,7 +76,8 @@ class PinnedImagesTest(unittest.TestCase):
         files = sorted((ROOT / "ci" / "images").glob("*.Dockerfile"))
         self.assertEqual({f.name for f in files},
                          {"python.Dockerfile", "python39.Dockerfile", "rust.Dockerfile",
-                          "gitleaks.Dockerfile"})
+                          "gitleaks.Dockerfile", "shellcheck.Dockerfile", "alpine.Dockerfile",
+                          "debian-slim.Dockerfile", "ubuntu.Dockerfile"})
         for f in files:
             lines = [l for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
             self.assertEqual(len(lines), 1, f"{f.name}: expected a single FROM line")
