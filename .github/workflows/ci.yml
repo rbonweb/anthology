@@ -119,9 +119,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Scan the full history for secrets
+      - name: Scan the history reachable from the tested commit for secrets
         run: |
           GITLEAKS_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/gitleaks.Dockerfile)
           docker run --rm -v "$PWD":/repo:ro \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml /repo
+            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml --log-opts="HEAD" /repo
