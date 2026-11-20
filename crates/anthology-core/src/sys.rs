@@ -4,13 +4,17 @@
 //! - [`local_date`]: `tzset` then `localtime_r`, as `datetime.date.fromtimestamp`.
 //! - [`hostname`]: `gethostname`, as `socket.gethostname`.
 //! - [`uname`]: `uname`'s `sysname` and `machine`, as `platform.system()` and `machine()`.
+//! - [`close`]: `close(2)` with its error reported, as Python's `os.close` and file `close()`.
 //!
 //! `O_NOFOLLOW` and the other open flags need no `unsafe`: `fsx` passes the `libc` constants to
 //! `OpenOptionsExt::custom_flags`.
 
 use std::ffi::{CStr, OsString};
+use std::fs::File;
+use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::io::IntoRawFd;
 
 unsafe extern "C" {
     /// POSIX `tzset(3)` (the `libc` crate does not declare it).
@@ -67,7 +71,10 @@ pub fn local_date(t: i64) -> Option<(i32, u8, u8)> {
     // time_t is i64 on every supported target (64-bit Linux and macOS).
     let t = t as libc::time_t;
     let mut tm = MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: tzset only reads the environment and updates libc's own time zone state.
+    // SAFETY: tzset reads `TZ` with getenv and updates libc's own time zone state. That is
+    // sound while no thread changes the environment at the same time, which safe Rust cannot
+    // do: in edition 2024 `std::env::set_var` and `remove_var` are `unsafe`, with that very
+    // contract, and the workspace forbids `unsafe` outside this module.
     unsafe { tzset() };
     // SAFETY: `t` is a valid time_t and `tm` is writable storage for one `tm`.
     let r = unsafe { libc::localtime_r(&t, tm.as_mut_ptr()) };
@@ -96,6 +103,24 @@ pub fn hostname() -> Option<OsString> {
     Some(OsString::from_vec(buf))
 }
 
+/// Closes `file` and returns `close(2)`'s error, which dropping a `File` ignores (a delayed
+/// `ENOSPC` or `EIO`, on NFS for example). `EINTR` counts as success: the descriptor is gone
+/// either way, and Python ignores it too (PEP 475).
+pub fn close(file: File) -> io::Result<()> {
+    let fd = file.into_raw_fd();
+    // SAFETY: `fd` came from `into_raw_fd`, so this function owns it and nothing else closes or
+    // uses it; it is closed exactly once, here.
+    if unsafe { libc::close(fd) } == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::EINTR) {
+        Ok(())
+    } else {
+        Err(e)
+    }
+}
+
 /// `(sysname, machine)` from `uname(2)`, for example `("Darwin", "arm64")` or `("Linux",
 /// "x86_64")`. `None` if the call fails.
 pub fn uname() -> Option<(String, String)> {
@@ -122,6 +147,12 @@ fn field(f: &[libc::c_char]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_closes_and_reports_success() {
+        let f = File::open("/dev/null").expect("open");
+        close(f).expect("close");
+    }
 
     #[test]
     fn uname_names_a_supported_kernel() {

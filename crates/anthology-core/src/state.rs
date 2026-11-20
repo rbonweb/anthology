@@ -10,6 +10,7 @@
 //!   lone surrogates, which Rust never holds (they are U+FFFD, D-6).
 //! - Each key is on its own line, so `"rtk_path"` is `  "rtk_path": "<path>",` (or without the
 //!   comma) for the `sed` in `bin/rtk`.
+#![forbid(unsafe_code)]
 
 use std::path::PathBuf;
 

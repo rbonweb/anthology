@@ -68,6 +68,7 @@ fn a_failed_step_unlinks_the_temp_file_and_keeps_the_target() {
     for (op, errno) in [
         ("write", libc::ENOSPC),
         ("chmod", libc::EPERM),
+        ("close", libc::EIO),
         ("rename", libc::EXDEV),
     ] {
         let d = tmp();
@@ -78,7 +79,7 @@ fn a_failed_step_unlinks_the_temp_file_and_keeps_the_target() {
         assert_eq!(errno_of(&e), errno, "{op}");
         assert_eq!(names(d.path()), ["f"], "{op}: the temp file is gone");
         assert_eq!(fs::read(&p).expect("read"), b"old", "{op}");
-        if op != "write" {
+        if op == "chmod" || op == "rename" {
             // chmod and os.replace name the temp file, as Python's exception does.
             let PyExc::OSError {
                 filename: Some(f), ..
@@ -254,6 +255,44 @@ fn create_excl_creates_once_and_refuses_existing_paths_and_symlinks() {
         !d.path().join("elsewhere").exists(),
         "never written through"
     );
+}
+
+#[test]
+fn a_close_error_counts_as_in_python() {
+    let d = tmp();
+    // create_excl: like a failed write, the new file is unlinked.
+    let p = d.path().join("note.md");
+    fault::fail_next("close", libc::EIO);
+    let e = create_excl(&p, b"body", 0o644, true).expect_err("close");
+    assert_eq!(
+        e,
+        PyExc::OSError {
+            errno: libc::EIO,
+            filename: None
+        }
+    );
+    assert!(!p.exists());
+    // append_line: `finally: os.close(fd)` raises after the line is written.
+    let p = d.path().join("exclude");
+    fault::fail_next("close", libc::EIO);
+    let e = append_line(&p, "x").expect_err("close");
+    assert_eq!(errno_of(&e), libc::EIO);
+    assert_eq!(fs::read(&p).expect("read"), b"x\n");
+    // read_regular: the same `finally`.
+    fault::fail_next("close", libc::EIO);
+    assert_eq!(
+        errno_of(&read_regular(&p, None).expect_err("close")),
+        libc::EIO
+    );
+    assert_eq!(read_regular(&p, None).expect("read"), b"x\n");
+}
+
+#[test]
+fn atomic_write_sets_the_mode_on_the_open_file_whatever_the_umask() {
+    let d = tmp();
+    let p = d.path().join("f");
+    atomic_write(&p, b"x", 0o640, ".tmp-", ".part").expect("write");
+    assert_eq!(mode(&p), 0o640);
 }
 
 #[test]

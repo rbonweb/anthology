@@ -6,7 +6,8 @@
 //! `VERSION_RE` is Unicode `Nd`, as in a Python str pattern. The JSON step's message is
 //! `"<path> is not valid JSON"` in Python; `parse` has no path and names the file
 //! (`rtk.lock is not valid JSON`), which is what `load_lock("rtk.lock")` prints. A caller that
-//! has the path runs `pycompat::json::loads` itself and then [`validate`].
+//! has the path runs `pycompat::json::loads` itself and then [`validate`] (and, for
+//! `anthology.lock`, [`check_anthology_layout`]).
 //!
 //! With [`ANTHOLOGY_TAG_PREFIX`] the same checks and messages apply with `anthology.lock` in
 //! place of `rtk.lock` and GC-17's rules: the version is
@@ -14,7 +15,14 @@
 //! `anthology-bin--v<version>`. `parse` also requires the exact design §8.2 layout
 //! ([`render_anthology`], with or without its final newline), because `bootstrap.sh` reads the
 //! file line by line with `sed`; any other layout is
-//! `anthology.lock: not in the layout anthology-dev lock write produces`.
+//! `anthology.lock: not in the layout anthology-dev lock write produces`. A caller that runs
+//! `loads` and [`validate`] itself **must** then call [`check_anthology_layout`], or it skips
+//! that rule.
+//!
+//! The `anthology.lock …` messages are details, not GC-14 strings. RT1b, RT2 and RL1 show
+//! GC-14's reason (`anthology.lock is not valid`) for every error from this module on an
+//! anthology lock, and keep the detail for logs or `--verbose` output only.
+#![forbid(unsafe_code)]
 
 mod tables;
 
@@ -77,14 +85,21 @@ pub fn parse(text: &str, tag_prefix: &str) -> Result<Lock, String> {
     let value = json::loads(text).map_err(|_| format!("{} is not valid JSON", kind.file()))?;
     let lock = validate(&value, tag_prefix)?;
     if let Kind::Anthology = kind {
-        let layout = render_anthology(&lock);
-        if text != layout && Some(text) != layout.strip_suffix('\n') {
-            return Err(
-                "anthology.lock: not in the layout anthology-dev lock write produces".into(),
-            );
-        }
+        check_anthology_layout(text, &lock)?;
     }
     Ok(lock)
+}
+
+/// The design §8.2 layout rule for `anthology.lock`: `text` must be [`render_anthology`] of the
+/// lock it holds, with or without the final newline. [`parse`] applies it; a caller that runs
+/// `loads` and [`validate`] itself must call it next.
+pub fn check_anthology_layout(text: &str, lock: &Lock) -> Result<(), String> {
+    let layout = render_anthology(lock);
+    if text == layout || Some(text) == layout.strip_suffix('\n') {
+        Ok(())
+    } else {
+        Err("anthology.lock: not in the layout anthology-dev lock write produces".into())
+    }
 }
 
 /// `validate_lock(value)` for an already decoded JSON value (no layout check).

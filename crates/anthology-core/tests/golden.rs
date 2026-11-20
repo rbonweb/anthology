@@ -5,6 +5,7 @@
 //! 3.12 image (CI regenerates both and compares them byte for byte). The `rtk--v` lock lines
 //! and every state line are CPython's output; the `anthology-bin--v` lock lines come from the
 //! oracle's hand-written GC-17 reference (there is no Python for anthology.lock) and say so.
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;

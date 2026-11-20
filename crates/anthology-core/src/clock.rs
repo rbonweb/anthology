@@ -1,4 +1,5 @@
 //! `Date`, `today_local`, `now_epoch` (plan §3.3): `datetime.date.today()` and `time.time()`.
+#![forbid(unsafe_code)]
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

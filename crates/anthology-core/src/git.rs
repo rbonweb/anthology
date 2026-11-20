@@ -6,14 +6,19 @@
 //! output cannot deadlock. Past the timeout (10 s, [`GIT_TIMEOUT`]) the child is killed and
 //! reaped and the result is `None`, as is a missing `git` or any spawn failure. As with
 //! `subprocess.run(timeout=10)`, the timeout also covers reading the pipes to their end, and a
-//! killed child's grandchildren are not waited for.
+//! killed child's grandchildren are not waited for. After a timeout the reader threads are
+//! told to stop: each drops its pipe when its current read returns, so a grandchild that keeps
+//! writing gets `SIGPIPE`, as it does once Python's `Popen` closes the pipes (Rust closes them
+//! at the grandchild's next write rather than at once, and buffers at most one more chunk).
+#![forbid(unsafe_code)]
 
 use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::Env;
@@ -97,16 +102,17 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
     }
     let deadline = Instant::now() + timeout;
     let mut child = cmd.spawn().ok()?;
-    let stdout = reader(child.stdout.take());
-    let stderr = reader(child.stderr.take());
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let stdout = reader(child.stdout.take(), &abandoned);
+    let stderr = reader(child.stderr.take(), &abandoned);
     // As `communicate(timeout)`: read both pipes to their end, then wait for the exit, all
     // within the one deadline.
     let left = || deadline.saturating_duration_since(Instant::now());
     let Ok(stdout) = stdout.recv_timeout(left()) else {
-        return kill(child);
+        return kill(child, &abandoned);
     };
     let Ok(stderr) = stderr.recv_timeout(left()) else {
-        return kill(child);
+        return kill(child, &abandoned);
     };
     let status = loop {
         match child.try_wait() {
@@ -114,7 +120,7 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(left().min(Duration::from_millis(2)));
             }
-            Ok(None) | Err(_) => return kill(child),
+            Ok(None) | Err(_) => return kill(child, &abandoned),
         }
     };
     let code = status
@@ -129,13 +135,27 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
 
 /// Reads a pipe to its end on its own thread; the bytes arrive on the channel. If the thread
 /// cannot start, the sender is dropped with it and the run ends as "no result".
-fn reader(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+/// Once `abandoned` is set, the thread stops at its next read and drops the pipe.
+fn reader(
+    pipe: Option<impl Read + Send + 'static>,
+    abandoned: &Arc<AtomicBool>,
+) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     if let Some(mut pipe) = pipe {
+        let abandoned = Arc::clone(abandoned);
         let _ = std::thread::Builder::new().spawn(move || {
             let mut buf = Vec::new();
-            // A read error ends the output early, as a closed pipe would.
-            let _ = pipe.read_to_end(&mut buf);
+            let mut chunk = vec![0u8; 64 * 1024];
+            while !abandoned.load(Ordering::Relaxed) {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    // A read error ends the output early, as a closed pipe would.
+                    Err(_) => break,
+                }
+            }
+            drop(pipe);
             let _ = tx.send(buf);
         });
     } else {
@@ -144,8 +164,9 @@ fn reader(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
     rx
 }
 
-/// Kills and reaps the child; the reader threads end when the pipes close.
-fn kill(mut child: Child) -> Option<GitOut> {
+/// Kills and reaps the child, and tells the reader threads to drop their pipes.
+fn kill(mut child: Child, abandoned: &AtomicBool) -> Option<GitOut> {
+    abandoned.store(true, Ordering::Relaxed);
     let _ = child.kill();
     let _ = child.wait();
     None

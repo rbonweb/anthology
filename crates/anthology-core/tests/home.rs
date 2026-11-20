@@ -1,6 +1,7 @@
 //! `paths::home` without `HOME` falls back to the password database (GC-1, GC-2), and that
 //! equals what the system's own tools report for this uid: `getent passwd <uid>` (or
 //! `/etc/passwd`) on Linux, `dscl` on macOS.
+#![forbid(unsafe_code)]
 
 use std::path::PathBuf;
 use std::process::Command;

@@ -1,4 +1,5 @@
 //! `Target`, `detect_with`, `uname` (plan §3.3, GC-9): `rtk_install.target()` and `TARGETS`.
+#![forbid(unsafe_code)]
 
 use crate::sys;
 

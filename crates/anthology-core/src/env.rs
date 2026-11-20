@@ -3,6 +3,7 @@
 //! Only `anthology-cli` reads the process environment, once, with [`Env::from_process`]; every
 //! other crate takes `&Env`. Child processes get exactly an `Env` (see `git`), never the real
 //! process environment.
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -15,7 +16,12 @@ impl Env {
     /// The process environment, as is (`HOME` is not filled in; `paths::home` does the passwd
     /// fallback).
     pub fn from_process() -> Env {
-        Env(std::env::vars_os().collect())
+        // A name listed twice keeps its first value, as `os.environ` and `getenv` do.
+        let mut m = BTreeMap::new();
+        for (k, v) in std::env::vars_os() {
+            m.entry(k).or_insert(v);
+        }
+        Env(m)
     }
 
     /// The value of `k`; `None` when it is unset or not UTF-8.

@@ -1,4 +1,5 @@
 //! `config_dir`, `anthology_home`, `home` (plan §3.3, GC-1).
+#![forbid(unsafe_code)]
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -10,6 +11,9 @@ use crate::{Env, sys};
 /// not UTF-8), else the passwd home of the current uid. Trailing `/` are stripped and an empty
 /// result is `/`. With no `HOME` and no passwd entry Python returns the path unchanged, so
 /// this is `~`.
+///
+/// This is `expanduser("~")`, normalised. Python sites that use `HOME` as given, such as
+/// `os.environ.get("HOME") or os.path.expanduser("~")`, want [`home_raw`] instead.
 pub fn home(env: &Env) -> PathBuf {
     let raw = match env.get_os("HOME") {
         Some(h) => h.to_os_string(),
@@ -24,6 +28,18 @@ pub fn home(env: &Env) -> PathBuf {
         return PathBuf::from("/");
     }
     PathBuf::from(OsString::from_vec(bytes[..end].to_vec()))
+}
+
+/// `os.environ.get("HOME") or os.path.expanduser("~")`: `HOME` exactly as given (a trailing
+/// `/` kept) when it is non-empty, else [`home`]. These Python sites use the raw string:
+/// `guard.py:21` (passed to `guard_rules.check`, which never normalises it),
+/// `memory_privacy.py:154`, and `anthology_setup.py:178` and `:215` (line numbers at
+/// `rust@1e00f832`, informational).
+pub fn home_raw(env: &Env) -> PathBuf {
+    match env.get_os("HOME") {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => home(env),
+    }
 }
 
 /// `$CLAUDE_CONFIG_DIR` when it is non-empty, else `os.path.join(home, ".claude")`.
@@ -62,6 +78,20 @@ mod tests {
         ] {
             assert_eq!(home(&with_home(h)), PathBuf::from(want), "HOME={h:?}");
         }
+    }
+
+    #[test]
+    fn home_raw_keeps_home_as_given() {
+        for (h, want) in [
+            ("/home/user/", "/home/user/"),
+            ("/a//b", "/a//b"),
+            ("//", "//"),
+            ("", "/"),
+        ] {
+            assert_eq!(home_raw(&with_home(h)), PathBuf::from(want), "HOME={h:?}");
+        }
+        let env = Env::default().with_os("HOME", OsStr::from_bytes(b"/h/\xff/"));
+        assert_eq!(home_raw(&env).as_os_str().as_bytes(), b"/h/\xff/");
     }
 
     #[test]

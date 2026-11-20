@@ -5,6 +5,7 @@
 //! The named zones need the tz database. Where it is missing (the slim Rust image), libc and
 //! `date` both fall back to UTC, so the POSIX `TZ` strings (no database needed) carry the
 //! +14 / -12 offset checks there.
+#![forbid(unsafe_code)]
 
 use std::path::Path;
 use std::process::Command;

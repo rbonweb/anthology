@@ -1,6 +1,7 @@
 //! `RealGit` (GC-2): the argv, the stripped environment, stdin, large output, exit codes,
 //! a missing git and the timeout. Fake gits are shell scripts first on `PATH`; the real git
 //! runs with its own `HOME` and `GIT_CONFIG_NOSYSTEM`, so no developer config applies.
+#![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -152,6 +153,25 @@ fn a_child_that_exits_but_leaves_a_pipe_open_also_times_out() {
     let start = Instant::now();
     assert_eq!(git.run(&env_with_path(&bin), Path::new("/"), &[]), None);
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn after_a_timeout_a_streaming_grandchild_loses_its_pipe() {
+    // Python's Popen closes the pipes after the kill, so a grandchild that keeps writing gets
+    // EPIPE (SIGPIPE is ignored here so it can leave a mark).
+    let (_d, bin) = fake_git(
+        "(trap '' PIPE; while echo x; do sleep 0.05; done; touch \"$MARK\") & exec sleep 30",
+    );
+    let marks = tempfile::tempdir().expect("marks");
+    let mark = marks.path().join("epipe");
+    let env = env_with_path(&bin).with_os("MARK", &mark);
+    let git = RealGit::with_timeout(Duration::from_millis(300));
+    assert_eq!(git.run(&env, Path::new("/"), &[]), None);
+    let start = Instant::now();
+    while !mark.exists() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(mark.exists(), "the grandchild never saw its pipe close");
 }
 
 /// The real git, if this machine has one, without any user or system config.

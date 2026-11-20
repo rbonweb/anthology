@@ -16,6 +16,7 @@
 //!
 //! `mkstemp` is `tempfile.mkstemp`'s: `<prefix><8 of [a-z0-9_]><suffix>` in the target's
 //! folder, `O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, retried on `EEXIST`.
+#![forbid(unsafe_code)]
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -35,7 +36,8 @@ use anthology_pycompat::pyerr::PyExc;
 /// - `fstat`: the regular-file check after opening;
 /// - `read`: reading the file (`read_regular`; `append_line`'s last-byte `pread`);
 /// - `write`: writing the data;
-/// - `chmod`: `atomic_write`'s `chmod` of the temp file;
+/// - `chmod`: `atomic_write`'s `chmod` of the temp file (an `fchmod` while it is open);
+/// - `close`: closing a file (the real close still runs; its error is replaced);
 /// - `rename`: the `os.replace` of the temp file onto the target;
 /// - `unlink`: the cleanup after a failure (Python ignores its error, and so does Rust).
 #[cfg(any(test, feature = "test-faults"))]
@@ -43,8 +45,8 @@ pub mod fault {
     use std::cell::RefCell;
 
     /// Every op name [`fail_next`] accepts.
-    pub const OPS: [&str; 9] = [
-        "lstat", "mkdir", "open", "fstat", "read", "write", "chmod", "rename", "unlink",
+    pub const OPS: [&str; 10] = [
+        "lstat", "mkdir", "open", "fstat", "read", "write", "chmod", "close", "rename", "unlink",
     ];
 
     thread_local! {
@@ -78,6 +80,14 @@ fn fault(op: &str) -> io::Result<()> {
     }
     let _ = op;
     Ok(())
+}
+
+/// Closes `file` and reports the close error, as Python's `close()` raises it (a delayed
+/// `ENOSPC` or `EIO`, on NFS for example). An injected `close` fault still closes the file.
+fn close(file: File) -> io::Result<()> {
+    let injected = fault("close");
+    let closed = crate::sys::close(file);
+    injected.and(closed)
 }
 
 /// `str(path)`.
@@ -197,8 +207,10 @@ fn mkstemp(dir: &Path, prefix: &str, suffix: &str) -> Result<(File, PathBuf), Py
     })
 }
 
-/// Writes `data` to a `mkstemp` file beside `path`, `chmod`s it to `mode` when given, and
-/// renames it onto `path`; on any failure the temp file is unlinked and the error returned.
+/// Writes `data` to a `mkstemp` file beside `path`, sets its mode to `mode` when given (with
+/// `fchmod` while it is open: Python's `os.chmod(tmp)` without the path race), closes it with
+/// the close error checked, and renames it onto `path`. On any failure the temp file is
+/// unlinked and the error returned.
 /// The parent folder must exist (callers run [`mkdir_parents`] first, at the point Python does).
 pub(crate) fn replace_via_temp(
     path: &Path,
@@ -210,21 +222,21 @@ pub(crate) fn replace_via_temp(
     let (mut file, tmp) = mkstemp(parent_of(path), prefix, suffix)?;
     let written = fault("write")
         .and_then(|()| file.write_all(data))
-        .map_err(PyExc::from);
-    drop(file);
-    let result = written
+        .map_err(PyExc::from)
         .and_then(|()| match mode {
             Some(m) => fault("chmod")
-                .and_then(|()| fs::set_permissions(&tmp, fs::Permissions::from_mode(m)))
+                .and_then(|()| file.set_permissions(fs::Permissions::from_mode(m)))
                 .map_err(|e| os_err(e, &tmp)),
             None => Ok(()),
-        })
-        .and_then(|()| {
-            // Python's error also names the target (`'tmp' -> 'path'`); `PyExc` holds one name.
-            fault("rename")
-                .and_then(|()| fs::rename(&tmp, path))
-                .map_err(|e| os_err(e, &tmp))
         });
+    // The close runs whatever happened before; its error only counts after a success.
+    let closed = close(file).map_err(PyExc::from);
+    let result = written.and(closed).and_then(|()| {
+        // Python's error also names the target (`'tmp' -> 'path'`); `PyExc` holds one name.
+        fault("rename")
+            .and_then(|()| fs::rename(&tmp, path))
+            .map_err(|e| os_err(e, &tmp))
+    });
     if result.is_err() {
         let _ = fault("unlink").and_then(|()| fs::remove_file(&tmp));
     }
@@ -295,20 +307,27 @@ pub fn read_regular(path: &Path, max: Option<u64>) -> Result<Vec<u8>, PyExc> {
             strerror(e)
         ))
     })?;
-    if !is_regular(&file)? {
-        return Err(refused());
-    }
-    let mut out = Vec::new();
-    fault("read")?;
-    match max {
-        None => (&file).read_to_end(&mut out)?,
-        Some(n) => (&file).take(n).read_to_end(&mut out)?,
+    let body = || -> Result<Vec<u8>, PyExc> {
+        if !is_regular(&file)? {
+            return Err(refused());
+        }
+        let mut out = Vec::new();
+        fault("read")?;
+        match max {
+            None => (&file).read_to_end(&mut out)?,
+            Some(n) => (&file).take(n).read_to_end(&mut out)?,
+        };
+        Ok(out)
     };
-    Ok(out)
+    let result = body();
+    // `finally: os.close(fd)`: a close error replaces the result.
+    close(file)?;
+    result
 }
 
 /// `os.open(path, O_WRONLY | O_CREAT | O_EXCL [| O_NOFOLLOW], mode)`, then write `data`. An
-/// existing path (a symlink too) is `FileExistsError`; a failed write unlinks the file.
+/// existing path (a symlink too) is `FileExistsError`; a failed write or close unlinks the
+/// file.
 pub fn create_excl(path: &Path, data: &[u8], mode: u32, nofollow: bool) -> Result<(), PyExc> {
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true).mode(mode);
@@ -319,8 +338,8 @@ pub fn create_excl(path: &Path, data: &[u8], mode: u32, nofollow: bool) -> Resul
         .and_then(|()| opts.open(path))
         .map_err(|e| os_err(e, path))?;
     let written = fault("write").and_then(|()| file.write_all(data));
-    drop(file);
-    if let Err(e) = written {
+    let closed = close(file);
+    if let Err(e) = written.and(closed) {
         let _ = fault("unlink").and_then(|()| fs::remove_file(path));
         return Err(e.into());
     }
@@ -357,31 +376,37 @@ pub fn append_line(path: &Path, line: &str) -> Result<(), PyExc> {
                 strerror(e)
             ))
         })?;
-    fault("fstat")?;
-    let info = file.metadata()?;
-    if !info.file_type().is_file() {
-        return Err(refused());
-    }
-    let size = info.len();
-    let needs_newline = if size == 0 {
-        false
-    } else {
-        let mut last = [0u8; 1];
-        fault("read")?;
-        let n = file.read_at(&mut last, size - 1)?;
-        !(n == 1 && last[0] == b'\n')
-    };
-    let mut data = Vec::with_capacity(line.len() + 2);
-    if needs_newline {
+    let body = || -> Result<(), PyExc> {
+        fault("fstat")?;
+        let info = file.metadata()?;
+        if !info.file_type().is_file() {
+            return Err(refused());
+        }
+        let size = info.len();
+        let needs_newline = if size == 0 {
+            false
+        } else {
+            let mut last = [0u8; 1];
+            fault("read")?;
+            let n = file.read_at(&mut last, size - 1)?;
+            !(n == 1 && last[0] == b'\n')
+        };
+        let mut data = Vec::with_capacity(line.len() + 2);
+        if needs_newline {
+            data.push(b'\n');
+        }
+        data.extend_from_slice(line.as_bytes());
         data.push(b'\n');
-    }
-    data.extend_from_slice(line.as_bytes());
-    data.push(b'\n');
-    fault("write")?;
-    // Python makes one `os.write` and ignores a short count; a regular file only writes short
-    // when it then fails, which `write_all` reports.
-    (&file).write_all(&data)?;
-    Ok(())
+        fault("write")?;
+        // Python makes one `os.write` and ignores a short count; a regular file only writes
+        // short when it then fails, which `write_all` reports.
+        (&file).write_all(&data)?;
+        Ok(())
+    };
+    let result = body();
+    // `finally: os.close(fd)`: a close error replaces the result.
+    close(file)?;
+    result
 }
 
 /// `not os.path.islink(p) and os.path.isdir(p)`: a folder that is not a symlink.

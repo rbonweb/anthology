@@ -164,6 +164,26 @@ fn the_anthology_layout_is_exact() {
     );
 }
 
+#[test]
+fn the_layout_check_is_public_for_callers_that_decode_themselves() {
+    let l = lock("0.1.0", ANTHOLOGY_TAG_PREFIX, "rbonweb/anthology");
+    let text = render_anthology(&l);
+    let value = json::loads(&text).expect("json");
+    let decoded = validate(&value, ANTHOLOGY_TAG_PREFIX).expect("valid");
+    assert_eq!(check_anthology_layout(&text, &decoded), Ok(()));
+    assert_eq!(check_anthology_layout(text.trim_end(), &decoded), Ok(()));
+    for other in [
+        format!("{text}\n"),
+        text.replace('\n', "\r\n"),
+        format!(" {text}"),
+    ] {
+        assert_eq!(
+            check_anthology_layout(&other, &decoded),
+            Err("anthology.lock: not in the layout anthology-dev lock write produces".into())
+        );
+    }
+}
+
 fn charset(chars: &'static str, len: std::ops::Range<usize>) -> impl Strategy<Value = String> {
     let chars: Vec<char> = chars.chars().collect();
     prop::collection::vec(prop::sample::select(chars), len).prop_map(|v| v.into_iter().collect())

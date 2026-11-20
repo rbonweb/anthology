@@ -48,7 +48,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "plugins" / "anthology" / "scripts"
-RTK_LOCK = ROOT / "plugins" / "anthology" / "rtk.lock"
+
+# plugins/anthology/rtk.lock as of F3 (rtk 1.2.1-anthology.1), frozen so an rtk bump does not
+# change the golden corpus.
+_RTK_LOCK_TEXT = (
+    '{\n'
+    '  "version": "1.2.1-anthology.1",\n'
+    '  "tag": "rtk--v1.2.1-anthology.1",\n'
+    '  "repo": "rbonweb/anthology",\n'
+    '  "sha256": {\n'
+    '    "aarch64-apple-darwin": "9c3ecad0d5e9f27c248b7c95157369e9e20fdfd84582a9aa321c92128aaadd4a",\n'
+    '    "x86_64-apple-darwin": "bfdda72b35eb0c12cc0bff5db8d562e3587190cea32905d0ce2abba95c37c400",\n'
+    '    "x86_64-unknown-linux-musl": "dfb363051a35930178d6361116f37349ecb8f9204d7ecbe70f7a3a8c9b6cbf79",\n'
+    '    "aarch64-unknown-linux-musl": "88516082be3fbf158b4ed332b013f56eaadd977f85aea9597196963a4128f118"\n'
+    '  }\n'
+    '}\n'
+)
 
 RTK = "rtk--v"
 ANTHOLOGY = "anthology-bin--v"
@@ -333,7 +348,7 @@ def _random_texts(r, prefix, n):
 
 
 def _cases():
-    rtk_lock = RTK_LOCK.read_text(encoding="utf-8")
+    rtk_lock = _RTK_LOCK_TEXT
     yield {"op": "lock", "prefix": RTK, "text": rtk_lock}
     yield {"op": "lock", "prefix": ANTHOLOGY, "text": rtk_lock}
     for prefix in (RTK, ANTHOLOGY):
