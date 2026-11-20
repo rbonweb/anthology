@@ -1,6 +1,7 @@
 {
   "name": "anthology",
   "owner": { "name": "rbonweb" },
+  "description": "Anthology for Claude Code: curated agents, knowledge, guardrails and workflow skills.",
   "plugins": [
     { "name": "anthology", "source": "./plugins/anthology" },
     { "name": "anthology-guardrails", "source": "./plugins/anthology-guardrails" },

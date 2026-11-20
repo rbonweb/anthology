@@ -14,6 +14,9 @@
           "name": "rename-plugin",
           "old": "superpowers",
           "new": "anthology-superpowers"
+        },
+        {
+          "patch": "vendor/patches/superpowers.patch"
         }
       ],
       "plugin_version": "0.1.0",
@@ -411,6 +414,10 @@
       "commit": "1e91f1306d602d4ca23618701b1185575ae1869b",
       "license": "Apache-2.0",
       "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE",
+        "LICENSE-MIT"
+      ],
       "target": "plugins/anthology/knowledge/caveman",
       "transform": [
         {

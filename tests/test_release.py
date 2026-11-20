@@ -199,6 +199,23 @@ class RangeTests(unittest.TestCase):
         ("~0.1", "0.1.5-beta.1", False), ("^0.1.2", "0.1.5-rc.1", False),
         ("^0.1.2-beta.1", "0.1.2-beta.2", True), ("^0.1.2-beta.1", "0.1.2", True),
         ("^0.1.2-beta.2", "0.1.2-beta.1", False), (">=1.0.0", "2.0.0-rc.1", False),
+        # npm partial ranges: ^X.Y, ^X, ~X
+        ("^1.0", "1.0.0", True), ("^1.0", "1.9.3", True), ("^1.0", "2.0.0", False),
+        ("^1.0", "0.9.9", False), ("^1.0", "1.0.1-rc.1", False), ("^1.0", "1.1.0-rc.1", False),
+        ("^1.2", "1.2.0", True), ("^1.2", "1.1.9", False), ("^1.2", "1.9.0", True),
+        ("^0.1", "0.1.0", True), ("^0.1", "0.1.9", True), ("^0.1", "0.2.0", False),
+        ("^0.1", "0.0.9", False), ("^0.1", "0.1.1-beta.1", False),
+        ("^0.0", "0.0.0", True), ("^0.0", "0.0.9", True), ("^0.0", "0.1.0", False),
+        ("^0.0", "1.0.0", False),
+        ("^1", "1.0.0", True), ("^1", "1.9.9", True), ("^1", "2.0.0", False),
+        ("^1", "0.9.9", False), ("^1", "1.0.0-rc.1", False),
+        ("^0", "0.0.0", True), ("^0", "0.9.9", True), ("^0", "1.0.0", False),
+        ("^0", "0.1.0-rc.1", False),
+        ("~1", "1.0.0", True), ("~1", "1.9.9", True), ("~1", "2.0.0", False),
+        ("~1", "0.9.9", False), ("~1", "1.0.0-rc.1", False),
+        ("~0", "0.0.0", True), ("~0", "0.9.9", True), ("~0", "1.0.0", False),
+        ("~0", "0.1.0-rc.1", False),
+        ("^10", "10.4.0", True), ("^10", "11.0.0", False),
     ]
 
     def test_acceptance_table(self):
@@ -206,8 +223,10 @@ class RangeTests(unittest.TestCase):
             self.assertEqual(re_.range_accepts(rng, version), want, f"{rng} vs {version}")
 
     def test_unsupported_forms_raise(self):
-        for rng in ("*", "latest", "~1", "1.x", ">1.2.3", "^1.2", "1.2 - 2.0", "", "~", ">=1.2",
-                    "||", "~0.1 || ~0.2", "v1.2.3", "=1.2.3", "<2.0.0", None):
+        for rng in ("*", "latest", "1.x", ">1.2.3", "1.2 - 2.0", "", "~", "^", ">=1.2", ">=1",
+                    "||", "~0.1 || ~0.2", "v1.2.3", "=1.2.3", "<2.0.0", None,
+                    "1.2", "1", "^1.x", "~1.x", "^1.2.3+build", "^1.2+build", " ^1.0",
+                    "^1.0 ", "^01", "^1.02", "^1.2.", "^-1"):
             with self.assertRaises(re_.UnsupportedRange, msg=repr(rng)):
                 re_.range_accepts(rng, "1.2.3")
 
@@ -242,6 +261,15 @@ class RangeTests(unittest.TestCase):
         problems = re_.check_dependents(root, "lib", "0.1.0")
         self.assertEqual(len(problems), 1)
         self.assertIn("can't check range", problems[0])
+
+    def test_dependents_caret_partial_range(self):
+        root = self._tree({"lib": None, "app": [{"name": "lib", "version": "^1.0"}]})
+        self.assertEqual(re_.check_dependents(root, "lib", "1.0.0"), [])
+        problems = re_.check_dependents(root, "lib", "2.0.0")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("plugins/app/.claude-plugin/plugin.json", problems[0])
+        self.assertIn("^1.0", problems[0])
+        self.assertIn("does not accept 2.0.0", problems[0])
 
     def test_dependency_without_range_or_as_string_accepts_anything(self):
         root = self._tree({"lib": None, "a": [{"name": "lib"}], "b": ["lib"]})
