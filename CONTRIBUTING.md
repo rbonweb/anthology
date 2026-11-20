@@ -170,11 +170,13 @@ The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code 
 - the routing guide being in the main session, and absent from agents;
 - the platform checks recorded in [DECISIONS.md](DECISIONS.md) (agent fields, worktree base, memory paths, hook output limits). The multi-session and no-model ones are smoke cases in `evals/smoke/smoke.py`.
 
-Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases. The evals run as:
+Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases. Under the hood it calls:
 
 ```sh
 claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling>
 ```
+
+in two passes: the cases tagged `grants-narrow`, then the ones tagged `grants-bash` with an operator `--allow-tools` grant. A tool that is not granted is withheld from the model, so the guard and rtk cases only work through the script; don't run the bare command and read its failures as regressions.
 
 When the cost ceiling is hit the command exits 2 with a partial result, so raise the ceiling deliberately.
 

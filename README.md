@@ -100,8 +100,8 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 
 | Command | What it does |
 |---|---|
-| `/anthology:setup` | Checks your machine and makes the changes above, each after a diff and a confirmation |
-| `/anthology:setup remove` | Takes out everything setup added outside the plugin (see [Updating and removing](#updating-and-removing)) |
+| `/anthology:setup` | Checks your machine, shows the changes above as diffs and makes them after you confirm |
+| `/anthology:setup remove` | Takes out the settings entries and the rtk download that setup added; never deletes your notes (see [Updating and removing](#updating-and-removing)) |
 | `/anthology:export` | Exports your memory notes to a portable archive |
 | `/anthology:import <file>` | Imports an archive after a dry run |
 
