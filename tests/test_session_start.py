@@ -326,15 +326,22 @@ class CompatibilityLinesTest(SessionCase):
         with mock.patch.object(session_start, "_guard_selftest", return_value=None):
             self.assertEqual(self.lines(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}), [])
 
-    def test_agent_memory_path_mismatch_is_loud_and_good_is_quiet(self):
+    def test_a_user_agent_folder_next_to_anthology_folders_is_quiet(self):
         mem = self.repo / ".claude" / "agent-memory"
         (mem / "anthology-implementer").mkdir(parents=True)
+        (mem / "reviewer").mkdir()
         self.assertEqual(self.lines(), [])
-        (mem / "implementer").mkdir()
-        hit = [l for l in self.lines() if "agent memory" in l]
+        self.assertNotIn("agent_memory_warned", state.read())
+
+    def test_a_bare_agent_folder_alone_is_a_soft_warning_shown_once(self):
+        (self.repo / ".claude" / "agent-memory" / "reviewer").mkdir(parents=True)
+        hit = [l for l in self.lines() if "agent-memory" in l]
         self.assertEqual(len(hit), 1)
-        self.assertIn("anthology-<agent>/", hit[0])
-        self.assertIn("implementer", hit[0])
+        self.assertIn("`.claude/agent-memory/reviewer/` exists but no `anthology-reviewer/` does", hit[0])
+        self.assertIn("agent of your own named reviewer", hit[0])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(len(state.read()["agent_memory_warned"]), 1)
 
     def test_subagent_model_in_hook_env(self):
         lines = self.lines(env_extra={"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"})

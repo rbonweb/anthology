@@ -36,9 +36,12 @@ def repo_top(cwd):
         here = Path(os.path.realpath(str(cwd)))
     except (OSError, ValueError, TypeError):
         return None
-    for folder in (here, *here.parents):
-        if (folder / ".git").exists():
-            return folder
+    try:
+        for folder in (here, *here.parents):
+            if (folder / ".git").exists():
+                return folder
+    except OSError:
+        return None
     return None
 
 
@@ -56,8 +59,10 @@ def wrapper_problems(plugin_root):
 def agent_memory_problems(cwd):
     """Folders under `<repo>/.claude/agent-memory/` that are named like a roster agent without the
     `anthology-` prefix (`implementer`, `anthology:implementer`, `anthology_implementer`): Claude
-    Code is not mapping `anthology:<agent>` to `anthology-<agent>/`. Returns (bad, good) as name
-    lists; both are empty when there is no such folder or no repo."""
+    Code may not be mapping `anthology:<agent>` to `anthology-<agent>/`. Roster names are generic,
+    so a user's own agent can own such a folder; `bad` is therefore only filled when no
+    `anthology-<agent>/` folder exists for any roster agent. Returns (bad, good) as name lists;
+    both are empty when there is no such folder or no repo."""
     import memory_sync
     top = repo_top(cwd)
     if top is None:
@@ -73,7 +78,16 @@ def agent_memory_problems(cwd):
                 bad.append(name)
             elif name == "anthology-" + agent:
                 good.append(name)
+    if good:
+        return [], good
     return bad, good
+
+
+def agent_memory_hint(name):
+    """The soft warning for a bare roster-name folder (shared by doctor and session start)."""
+    return ("`.claude/agent-memory/%s/` exists but no `anthology-%s/` does: either Claude Code changed "
+            "the agent-memory path or this is an agent of your own named %s; if anthology agents have "
+            "run here, report it" % (name, name, name))
 
 
 def _env_has_model(data):

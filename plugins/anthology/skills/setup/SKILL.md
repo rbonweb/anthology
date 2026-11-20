@@ -32,10 +32,11 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    - `subagent_model` false: show the `detail` warning clearly. `CLAUDE_CODE_SUBAGENT_MODEL` overrides
      every agent's model, so the roster's opus/sonnet/haiku tiers do not apply. Anthology never
      changes it, and whether to keep it is the user's choice. Continue either way.
-   - `path_wrappers`, `plugin_data` or `agent_memory_path` false: a Claude Code change broke an
-     assumption Anthology relies on (the plugin's `bin/` on PATH, the plugin data folder, or where
-     agent memory is written). Show the `detail`, say so, and ask the user to report it. `null` just
-     means there is nothing to check yet.
+   - `path_wrappers` or `plugin_data` false: a Claude Code change broke an assumption Anthology
+     relies on (the plugin's `bin/` on PATH or the plugin data folder). Show the `detail`, say so, and
+     ask the user to report it. `null` just means there is nothing to check yet.
+   - `agent_memory_path` `null` with a `detail` naming a `.claude/agent-memory/<name>/` folder: only a
+     possible problem (it may be the user's own agent). Show the `detail` as a note, never a failure.
    - Node missing: some project tooling needs it; explain, and continue.
    - rtk `null`: the rtk wiring is not part of this install yet; the rtk step is skipped.
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the

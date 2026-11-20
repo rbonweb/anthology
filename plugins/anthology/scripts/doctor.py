@@ -286,8 +286,7 @@ def _check_path_wrappers(env, plugin_root):
 def _check_agent_memory(env, cwd):
     bad, good = compat.agent_memory_problems(cwd)
     if bad:
-        return False, ("Claude Code wrote agent memory to .claude/agent-memory/%s/; Anthology expects "
-                       "anthology-<agent>/ (report this: a Claude Code change broke an assumption)" % bad[0])
+        return None, compat.agent_memory_hint(bad[0])
     if good:
         return True, "agent memory is under .claude/agent-memory/anthology-<agent>/"
     return None, "no agent memory folders yet"

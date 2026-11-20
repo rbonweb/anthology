@@ -573,18 +573,30 @@ class AgentMemoryPathTest(CompatBase):
         (self.mem / "anthology-implementer").mkdir(parents=True)
         self.assertTrue(self.checks()["agent_memory_path"]["ok"])
 
-    def test_bare_agent_name_is_loud(self):
+    def test_bare_agent_name_alone_is_a_soft_warning_not_a_failure(self):
         (self.mem / "implementer").mkdir(parents=True)
         c = self.checks()["agent_memory_path"]
-        self.assertFalse(c["ok"])
-        self.assertIn("anthology-<agent>/", c["detail"])
+        self.assertIsNone(c["ok"])
         self.assertIn("agent-memory/implementer/", c["detail"])
+        self.assertIn("no `anthology-implementer/`", c["detail"])
+        self.assertIn("agent of your own", c["detail"])
 
-    def test_colon_and_underscore_forms_are_loud(self):
+    def test_a_user_agent_next_to_anthology_folders_is_fine(self):
+        (self.mem / "reviewer").mkdir(parents=True)
+        (self.mem / "anthology-implementer").mkdir()
+        c = self.checks()["agent_memory_path"]
+        self.assertTrue(c["ok"])
+        self.assertNotIn("reviewer", c["detail"])
+
+    def test_colon_and_underscore_forms_alone_are_soft(self):
         for name in ("anthology:implementer", "anthology_debugger"):
             (self.mem / name).mkdir(parents=True)
-            self.assertFalse(self.checks()["agent_memory_path"]["ok"], name)
+            self.assertIsNone(self.checks()["agent_memory_path"]["ok"], name)
             (self.mem / name).rmdir()
+
+    def test_repo_top_survives_an_unreadable_parent(self):
+        with mock.patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
+            self.assertIsNone(doctor.compat.repo_top(self.cwd))
 
     def test_found_from_a_subfolder_and_unrelated_folders_ignored(self):
         sub = self.cwd / "pkg" / "x"

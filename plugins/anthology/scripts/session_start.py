@@ -126,12 +126,21 @@ def _wrappers_warning(root):
             "them (reinstall the plugin)" % ", ".join("bin/" + n for n in bad))
 
 
-def _agent_memory_warning(cwd):
+def _agent_memory_warning(cwd, current):
+    """A soft, once-per-repo warning (recorded in state.json under `agent_memory_warned`)."""
     bad, _good = compat.agent_memory_problems(cwd)
-    if not bad:
+    top = compat.repo_top(cwd)
+    if not bad or top is None:
         return None
-    return ("anthology: Claude Code wrote agent memory to .claude/agent-memory/%s/; Anthology expects "
-            "anthology-<agent>/ (a Claude Code change broke an assumption; report it)" % bad[0])
+    seen = current.get("agent_memory_warned")
+    seen = seen if isinstance(seen, dict) else {}
+    if seen.get(str(top)):
+        return None
+    try:
+        state.write(agent_memory_warned=dict(seen, **{str(top): True}))
+    except OSError:
+        pass  # cannot record it: still say it this once
+    return "anthology: " + compat.agent_memory_hint(bad[0])
 
 
 def _subagent_model_warning(env, cwd):
@@ -249,7 +258,7 @@ def _run(env, stdin):
 
     add(_step(warnings, "the plugin data folder check", lambda: _data_dir_warning(env)))
     add(_step(warnings, "the bin wrapper check", lambda: _wrappers_warning(root)))
-    add(_step(warnings, "the agent-memory path check", lambda: _agent_memory_warning(cwd)))
+    add(_step(warnings, "the agent-memory path check", lambda: _agent_memory_warning(cwd, current)))
     add(_step(warnings, "the subagent model check", lambda: _subagent_model_warning(env, cwd)))
 
     def memory_step():
