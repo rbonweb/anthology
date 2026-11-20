@@ -125,12 +125,22 @@ pub fn probe(bin: &Path, target: Target) -> Result<String, String> {
         .spawn()
         .map_err(|e| format!("cannot run {} --version: {e}", bin.display()))?;
     let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let reader = std::thread::spawn(move || {
+    // The reader hands its bytes over a channel, so a grandchild that keeps stdout open cannot
+    // hold the probe past its deadline.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.by_ref().take(4096).read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     });
     let deadline = Instant::now() + PROBE_TIMEOUT;
+    let late = || {
+        format!(
+            "{} --version did not finish within {} s",
+            bin.display(),
+            PROBE_TIMEOUT.as_secs()
+        )
+    };
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -138,16 +148,18 @@ pub fn probe(bin: &Path, target: Target) -> Result<String, String> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "{} --version did not finish within {} s",
-                    bin.display(),
-                    PROBE_TIMEOUT.as_secs()
-                ));
+                return Err(late());
             }
             Err(e) => return Err(format!("{} --version: {e}", bin.display())),
         }
     };
-    let out = reader.join().unwrap_or_default();
+    let out = rx
+        .recv_timeout(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(200)),
+        )
+        .map_err(|_| late())?;
     if !status.success() {
         return Err(format!("{} --version failed ({status})", bin.display()));
     }
@@ -196,21 +208,69 @@ pub fn tarball(binary: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("cannot pack the binary: {e}"))
 }
 
-/// An error when `dir` holds files tracked by git.
+/// The repository this anthology-dev was built from (its plugin trees are never seeded).
+fn own_repository() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// An error unless `dir` is certainly a scratch copy: not one of this repository's plugin
+/// trees, and either outside any git work tree or holding no tracked file. Every git failure
+/// other than "not a git repository" refuses (fail closed), as does a missing git.
 fn refuse_tracked(dir: &Path) -> Result<(), String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "core.fsmonitor=false", "ls-files", "-z", "--", "."])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() && !o.stdout.is_empty() => Err(format!(
-            "{} holds files tracked by git; seed only a scratch copy of the plugins",
+    let refuse = |why: String| {
+        Err(format!(
+            "{}: {why}; seed only a scratch copy of the plugins",
             dir.display()
+        ))
+    };
+    let canonical = std::fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if let Ok(repo) = std::fs::canonicalize(own_repository()) {
+        for own in ["plugins", "port/staging/plugins"] {
+            if canonical.starts_with(repo.join(own)) {
+                return refuse(format!("it is this repository's {own}"));
+            }
+        }
+    }
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "core.fsmonitor=false"])
+            .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .output()
+    };
+    let inside = match git(&["rev-parse", "--is-inside-work-tree"]) {
+        Ok(o) => o,
+        Err(e) => {
+            return refuse(format!(
+                "cannot run git to check that it is untracked ({e})"
+            ));
+        }
+    };
+    if !inside.status.success() {
+        let err = String::from_utf8_lossy(&inside.stderr);
+        if err.contains("not a git repository") {
+            return Ok(());
+        }
+        return refuse(format!(
+            "git cannot tell whether it is tracked ({})",
+            err.trim()
+        ));
+    }
+    if String::from_utf8_lossy(&inside.stdout).trim() != "true" {
+        return refuse("it is inside a git directory".into());
+    }
+    match git(&["ls-files", "-z", "--", "."]) {
+        Ok(o) if o.status.success() && o.stdout.is_empty() => Ok(()),
+        Ok(o) if o.status.success() => refuse("it holds files tracked by git".into()),
+        Ok(o) => refuse(format!(
+            "git ls-files failed ({})",
+            String::from_utf8_lossy(&o.stderr).trim()
         )),
-        _ => Ok(()), // not in a work tree (or no git): a scratch copy
+        Err(e) => refuse(format!("cannot run git ls-files ({e})")),
     }
 }
 

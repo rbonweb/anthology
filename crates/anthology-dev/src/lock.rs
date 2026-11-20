@@ -265,8 +265,14 @@ fn write(a: &WriteArgs) -> Result<String, String> {
     let digests = parse_checksums(&text)?;
     let lock = render(&a.tag, &a.repo, digests)?;
     let paths = lock_paths(&a.plugins_dir)?;
-    for path in &paths {
-        write_atomic(path, lock.as_bytes())?;
+    for (i, path) in paths.iter().enumerate() {
+        write_atomic(path, lock.as_bytes()).map_err(|e| {
+            if i == 0 {
+                e
+            } else {
+                format!("{e}; {} was already written, so the locks now differ: fix the cause and run lock write again", paths[0].display())
+            }
+        })?;
     }
     let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     Ok(format!("pinned {} in {}", a.tag, names.join(" and ")))

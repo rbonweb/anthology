@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 
 use anthology_core::platform;
 use anthology_testkit::rl::{
-    FAKE_BLOCK_LINE, FAKE_BLOCK_MARKER, fake_anthology, fake_anthology_with,
+    FAKE_BLOCK_LINE, FAKE_BLOCK_MARKER, fake_anthology, fake_anthology_with, settle_exec,
 };
 use sha2::{Digest, Sha256};
 
@@ -291,6 +291,7 @@ fn script(path: &Path, body: &str) -> PathBuf {
         .unwrap();
     drop(f);
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    settle_exec(path, &[]);
     path.to_path_buf()
 }
 
@@ -553,4 +554,78 @@ fn the_fake_answers_like_the_binary() {
     assert_eq!((code, err), (2, format!("{FAKE_BLOCK_LINE}\n")));
     assert_eq!(run(&["doctor"], "").0, 64);
     assert_eq!(run(&["guard", "hook", "--other"], "").0, 64);
+}
+
+#[test]
+fn seed_refuses_when_it_cannot_ask_git() {
+    let s = Scratch::new();
+    let fake = s.fake("0.1.0", LINUX);
+    let empty = s.root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(BIN)
+        .args(["seed", "--target", LINUX, "--bin"])
+        .arg(&fake)
+        .arg("--plugins-dir")
+        .arg(s.plugins())
+        .arg("--config-dir")
+        .arg(s.config())
+        .env("PATH", &empty)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("cannot run git"), "{err}");
+    assert!(!s.plugins().join("anthology/anthology.lock").exists());
+    assert!(!s.bin_dir().exists());
+}
+
+#[test]
+fn seed_never_touches_this_repositorys_own_plugins() {
+    let s = Scratch::new();
+    let fake = s.fake("0.1.0", LINUX);
+    let own = std::fs::canonicalize(repo_root().join("plugins")).unwrap();
+    let before = std::fs::read_dir(own.join("anthology")).unwrap().count();
+    let out = Command::new(BIN)
+        .args(["seed", "--target", LINUX, "--bin"])
+        .arg(&fake)
+        .arg("--plugins-dir")
+        .arg(&own)
+        .arg("--config-dir")
+        .arg(s.config())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("this repository's plugins"), "{err}");
+    assert_eq!(
+        std::fs::read_dir(own.join("anthology")).unwrap().count(),
+        before
+    );
+    assert!(!s.bin_dir().exists());
+}
+
+#[test]
+fn seed_refuses_a_symlinked_home_or_version_folder() {
+    let s = Scratch::new();
+    let fake = s.fake("0.1.0", LINUX);
+    let elsewhere = s.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, s.config().join("anthology")).unwrap();
+    assert_refused(&s, &fake, &["--target", LINUX], "is a symlink");
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    let s = Scratch::new();
+    let fake = s.fake("0.1.0", LINUX);
+    let elsewhere = s.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(s.bin_dir()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, s.bin_dir().join("0.1.0")).unwrap();
+    let out = s.seed(&fake, &["--target", LINUX]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("is a symlink"), "{err}");
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    assert!(!s.plugins().join("anthology/anthology.lock").exists());
 }

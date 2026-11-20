@@ -152,6 +152,10 @@ impl Repo {
             std::fs::write(&p, body).unwrap();
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            anthology_testkit::rl::settle_exec(
+                &p,
+                &[("DEV_LOG", "/dev/null"), ("FAKE_CLAUDE_LOG", "/dev/null")],
+            );
         }
         r.git(&["init", "-q", "-b", "main"]);
         for kv in [

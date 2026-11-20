@@ -73,5 +73,34 @@ exit 64
     std::fs::write(&path, script).expect("fake_anthology: write");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
         .expect("fake_anthology: chmod");
+    settle_exec(&path, &[]);
     path
+}
+
+/// Runs the just-written executable `path` once (`--version`, stdio closed, `envs` set),
+/// retrying while exec fails with ETXTBSY (Linux): another test thread that forked while the
+/// file was open for writing holds a copy of that descriptor until it execs. After one
+/// successful exec no writer is left, so later runs of `path` cannot hit ETXTBSY.
+pub fn settle_exec(path: &Path, envs: &[(&str, &str)]) {
+    const ETXTBSY: i32 = 26;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let spawned = std::process::Command::new(path)
+            .arg("--version")
+            .envs(envs.iter().copied())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(mut child) => {
+                let _ = child.wait();
+                return;
+            }
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("settle_exec: {}: {e}", path.display()),
+        }
+    }
 }

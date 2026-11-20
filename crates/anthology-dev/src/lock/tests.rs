@@ -181,7 +181,14 @@ path = "tools/main.rs"
     let ws = tables.iter().find(|t| t.header == "workspace").unwrap();
     assert_eq!(ws.entries.len(), 1);
     assert!(tables.iter().any(|t| t.header == "bin" && t.array));
-    assert_eq!(manifest_targets(text), ["tools/main.rs"]);
+    assert_eq!(
+        manifest_targets(text),
+        [(TargetKind::Crate, "tools/main.rs".to_string())]
+    );
+    assert_eq!(
+        manifest_targets("[package]\nname = \"x\"\nbuild = \"gen/b.rs\"\n"),
+        [(TargetKind::Build, "gen/b.rs".to_string())]
+    );
 }
 
 #[test]
@@ -244,4 +251,118 @@ fn the_probe_option_is_a_usage_error() {
         );
         assert_eq!(out.code, 2, "{sub}");
     }
+}
+
+#[test]
+fn path_modules_and_rust_includes_are_references() {
+    let src = r#"
+#[path = "../../shared/x.rs"]
+mod x;
+#[ path = "y.rs" ] mod y;
+include!("gen.rs");
+const T: &str = include_str!("t.txt");
+// #[path = "commented.rs"]
+"#;
+    assert_eq!(
+        references(src).unwrap(),
+        [
+            Ref {
+                path: "../../shared/x.rs".into(),
+                rust: true
+            },
+            Ref {
+                path: "y.rs".into(),
+                rust: true
+            },
+            Ref {
+                path: "gen.rs".into(),
+                rust: true
+            },
+            Ref {
+                path: "t.txt".into(),
+                rust: false
+            },
+        ]
+    );
+    assert!(references("#[cfg_attr(unix, path = \"u.rs\")]\nmod m;").is_err());
+    assert!(references("#[path = concat!(\"a\", \"b\")]\nmod m;").is_err());
+}
+
+#[test]
+fn build_inputs_are_declared_or_refused() {
+    let ok = r#"fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=../../data/gen.txt");
+    let _ = std::fs::read_to_string("../../data/gen.txt");
+}"#;
+    assert_eq!(build_inputs(ok).unwrap(), ["../../data/gen.txt"]);
+    assert_eq!(
+        build_inputs("fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }").unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(build_inputs("fn main() { let _ = std::fs::read(\"x\"); }").is_err());
+    assert!(build_inputs("fn main() { println!(\"cargo:rerun-if-changed={p}\"); }").is_err());
+}
+
+#[test]
+fn dotted_keys_and_headers() {
+    assert_eq!(dotted("a.b"), ["a", "b"]);
+    assert_eq!(
+        dotted(" profile . \"release\" .'x.y'"),
+        ["profile", "release", "x.y"]
+    );
+    let t = parse_tables("[profile.\"release\".package.foo]\nopt-level = 0\n");
+    assert_eq!(t[1].header, "profile.release.package.foo");
+}
+
+#[test]
+fn root_manifest_items_compare_everything_but_the_denylist() {
+    let names: BTreeSet<String> = ["anthology-core"].iter().map(|s| s.to_string()).collect();
+    let base = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n\n[workspace.lints.rust]\nx = \"warn\"\n\n[profile.dev]\nopt-level = 0\n";
+    let items = root_manifest_items(base, &names);
+    assert_eq!(
+        items.keys().collect::<Vec<_>>(),
+        ["Cargo.toml [workspace]"],
+        "{items:?}"
+    );
+    assert_eq!(
+        items["Cargo.toml [workspace]"],
+        "workspace.resolver = \"3\""
+    );
+    // The denylisted parts do not count; anything else does.
+    let same = base
+        .replace("crates/*", "crates/*\", \"x")
+        .replace("x = \"warn\"", "x = \"deny\"")
+        .replace("opt-level = 0", "opt-level = 1");
+    assert_eq!(root_manifest_items(&same, &names), items);
+    assert_ne!(
+        root_manifest_items(&base.replace("\"3\"", "\"2\""), &names),
+        items
+    );
+    let top = format!("cargo-features = [\"x\"]\n{base}");
+    assert!(
+        root_manifest_items(&top, &names).contains_key("Cargo.toml (top level) cargo-features")
+    );
+    // Quoted headers and dotted keys are the same items as plain tables.
+    let plain = root_manifest_items("[profile.release]\nlto = \"thin\"\n", &names);
+    let quoted = root_manifest_items("[profile.\"release\"]\nlto = \"thin\"\n", &names);
+    let dotted_form = root_manifest_items("[profile]\nrelease.lto = \"thin\"\n", &names);
+    assert_eq!(plain, quoted);
+    assert_eq!(plain, dotted_form);
+    assert!(plain.contains_key("Cargo.toml [profile.release]"));
+    assert!(root_manifest_items("[profile]\ndev.lto = \"thin\"\n", &names).is_empty());
+}
+
+#[test]
+fn renamed_workspace_dependencies_are_found_by_their_package_key() {
+    let names: BTreeSet<String> = ["anthology-core"].iter().map(|s| s.to_string()).collect();
+    let text = "[workspace.dependencies]\nx = { path = \"crates/package-x\", package = \"anthology-core\" }\nunused = { path = \"crates/package-y\" }\n\n[workspace.dependencies.z]\npath = \"crates/z\"\npackage = \"anthology-core\"\n";
+    let items = root_manifest_items(text, &names);
+    assert_eq!(
+        items.keys().collect::<Vec<_>>(),
+        [
+            "Cargo.toml [workspace.dependencies] x",
+            "Cargo.toml [workspace.dependencies] z"
+        ]
+    );
 }

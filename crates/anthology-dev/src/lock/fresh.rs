@@ -6,16 +6,26 @@
 //! repository. The shipped set, compared between the tag's commit and `HEAD` through git
 //! objects, is:
 //!
-//! 1. each workspace package's `src/` tree, `Cargo.toml` and `build.rs`, and any `build`,
-//!    `[lib]` or `[[bin]]` path outside `src/` (`tests/`, `benches/`, `examples/` are not in it);
-//! 2. every file that those sources pull in with `include_str!`, `include_bytes!` or `include!`
-//!    from outside `src/`; an include whose argument is neither a string literal nor
-//!    `concat!(env!("OUT_DIR"), …)` (the build script's output) is an error;
-//! 3. in `Cargo.lock`, the `[[package]]` blocks of every package name in the graph;
-//! 4. `rust-toolchain.toml`, and `.cargo/config.toml` or `.cargo/config` if present;
-//! 5. in the root `Cargo.toml`: `[workspace.package]` (every key, a superset of version and
-//!    edition), `[profile.release]` and its subtables, the `[workspace.dependencies]` entries of
-//!    graph packages, `[patch.*]` and `[replace]`. Comments and blank lines are ignored there.
+//! 1. each workspace package's `src/` tree, `Cargo.toml` and build script (`build.rs` or its
+//!    `build` path). `tests/`, `benches/` and `examples/` are not in it. A `[lib]` or `[[bin]]`
+//!    root outside `src/` is an error, since its modules would sit beside it;
+//! 2. every file those sources pull in from outside `src/`: `include_str!`, `include_bytes!`,
+//!    `include!` and `#[path = "…"]` modules, followed transitively through the Rust ones. An
+//!    include whose argument is neither a string literal nor `concat!(env!("OUT_DIR"), …)`,
+//!    a non-literal `#[path]` and a `cfg_attr(…, path = …)` are errors;
+//! 3. the files a build script declares with `cargo:rerun-if-changed=`; a build script that
+//!    reads files without declaring any is an error;
+//! 4. in `Cargo.lock`, the `[[package]]` blocks of every package name in the graph;
+//! 5. `rust-toolchain.toml`, `rust-toolchain`, `.cargo/config.toml` and `.cargo/config`;
+//! 6. the root `Cargo.toml`, all of it except what cannot change the binary
+//!    ([`root_manifest_items`]): `[workspace]` `members`/`exclude`/`default-members`/`lints`/
+//!    `metadata`, profiles other than `release`, and the `[workspace.dependencies]` entries of
+//!    packages outside the graph. Comments, blank lines, key order and dotted-key spelling are
+//!    ignored.
+//!
+//! Known limit: with explicit `--target`s, cargo evaluates the host-only edges (build
+//! dependencies and proc-macros) for the machine that runs check-fresh (Linux in
+//! `scripts/dev.sh`), so a build dependency only a macOS host would use is not named.
 //!
 //! The old commit is never resolved or built: a change to the graph itself shows up as a change
 //! to a shipped `Cargo.toml` or to a `Cargo.lock` block of a package that is in the graph at
@@ -231,7 +241,12 @@ impl ShippedSet {
     /// The set for `graph`, reading the work tree `root` (which equals `HEAD` on these paths).
     pub fn at_head(root: &Path, graph: &[GraphPkg]) -> Result<ShippedSet, String> {
         let mut set = ShippedSet::default();
-        for p in ["rust-toolchain.toml", ".cargo/config.toml", ".cargo/config"] {
+        for p in [
+            "rust-toolchain.toml",
+            "rust-toolchain",
+            ".cargo/config.toml",
+            ".cargo/config",
+        ] {
             set.paths.insert(p.to_string());
         }
         for pkg in graph {
@@ -261,46 +276,101 @@ impl ShippedSet {
             }
         };
         let src = join("src");
+        let in_src = |p: &str| p.starts_with(&format!("{src}/"));
         self.paths.insert(src.clone());
         self.paths.insert(join("Cargo.toml"));
-        self.paths.insert(join("build.rs"));
         let manifest = std::fs::read_to_string(root.join(join("Cargo.toml")))
             .map_err(|e| format!("{}: {e}", join("Cargo.toml")))?;
-        let mut sources = vec![];
-        for target in manifest_targets(&manifest) {
+
+        // The Rust files to scan, and the build scripts among them.
+        let mut todo: Vec<String> = Vec::new();
+        let mut build_scripts: Vec<String> = Vec::new();
+        let mut has_build_key = false;
+        for (kind, target) in manifest_targets(&manifest) {
             let rel = normalize(&join(&target))
                 .ok_or_else(|| format!("{pkg}/Cargo.toml: {target} is outside the repository"))?;
-            if !rel.starts_with(&format!("{src}/")) {
-                self.paths.insert(rel.clone());
+            match kind {
+                TargetKind::Build => {
+                    has_build_key = true;
+                    self.paths.insert(rel.clone());
+                    build_scripts.push(rel.clone());
+                }
+                TargetKind::Crate if !in_src(&rel) => {
+                    // Its `mod` files would be found next to it, outside the compared tree.
+                    return Err(format!(
+                        "{pkg}/Cargo.toml: the crate root {target} is outside src/; check-fresh \
+                         cannot follow its modules"
+                    ));
+                }
+                TargetKind::Crate => {}
             }
-            sources.push(rel);
+            todo.push(rel);
         }
-        sources.push(join("build.rs"));
+        if !has_build_key {
+            let rel = join("build.rs");
+            self.paths.insert(rel.clone());
+            build_scripts.push(rel.clone());
+            todo.push(rel);
+        }
         let mut files = Vec::new();
         collect_rs(&root.join(&src), &mut files)?;
         for f in files {
-            sources.push(relative(root, &f)?);
+            todo.push(relative(root, &f)?);
         }
-        for file in sources {
-            let Ok(text) = std::fs::read_to_string(root.join(&file)) else {
-                continue; // a build.rs that does not exist
+
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        while let Some(file) = todo.pop() {
+            if !seen.insert(file.clone()) {
+                continue;
+            }
+            let text = match std::fs::read_to_string(root.join(&file)) {
+                Ok(t) => t,
+                // Only a default build.rs may be absent.
+                Err(_) if build_scripts.contains(&file) && !has_build_key => continue,
+                Err(e) => return Err(format!("{file}: {e}")),
             };
             let dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-            for inc in includes(&text).map_err(|e| format!("{file}: {e}"))? {
-                let target = if inc.starts_with('/') {
-                    relative(root, Path::new(&inc))?
+            for r in references(&text).map_err(|e| format!("{file}: {e}"))? {
+                let target = if r.path.starts_with('/') {
+                    relative(root, Path::new(&r.path))?
                 } else {
-                    normalize(&format!("{dir}/{inc}")).ok_or_else(|| {
-                        format!("{file}: include {inc:?} is outside the repository")
-                    })?
+                    normalize(&format!("{dir}/{}", r.path))
+                        .ok_or_else(|| format!("{file}: {:?} is outside the repository", r.path))?
                 };
-                if !target.starts_with(&format!("{src}/")) {
+                if !in_src(&target) {
+                    self.paths.insert(target.clone());
+                }
+                if r.rust {
+                    if !root.join(&target).is_file() {
+                        return Err(format!(
+                            "{file}: {:?} does not name a file check-fresh can follow",
+                            r.path
+                        ));
+                    }
+                    todo.push(target);
+                }
+            }
+            if build_scripts.contains(&file) {
+                let inputs = build_inputs(&text).map_err(|e| format!("{file}: {e}"))?;
+                for input in inputs {
+                    let target = normalize(&join(&input)).ok_or_else(|| {
+                        format!("{file}: rerun-if-changed {input:?} is outside the repository")
+                    })?;
                     self.paths.insert(target);
                 }
             }
         }
         Ok(())
     }
+}
+
+/// What a manifest target is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    /// `[package] build`.
+    Build,
+    /// `[lib] path` or a `[[bin]] path`.
+    Crate,
 }
 
 /// Every `.rs` file under `dir` (none when it does not exist).
@@ -326,19 +396,19 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 /// The `build` path of `[package]` and the `path` of `[lib]` and every `[[bin]]`, as written.
-pub fn manifest_targets(manifest: &str) -> Vec<String> {
+pub fn manifest_targets(manifest: &str) -> Vec<(TargetKind, String)> {
     let mut out = Vec::new();
     for table in parse_tables(manifest) {
-        let key = match table.header.as_str() {
-            "package" => "build",
-            "lib" | "bin" => "path",
+        let (key, kind) = match table.header.as_str() {
+            "package" => ("build", TargetKind::Build),
+            "lib" | "bin" => ("path", TargetKind::Crate),
             _ => continue,
         };
         for e in &table.entries {
             if e.key == key
                 && let Some(v) = string_value(&e.text)
             {
-                out.push(v);
+                out.push((kind, v));
             }
         }
     }
@@ -355,54 +425,130 @@ fn string_value(entry: &str) -> Option<String> {
     (!inner.contains(['"', '\'', '\\'])).then(|| inner.to_string())
 }
 
-/// The paths of `include_str!`, `include_bytes!` and `include!` in Rust source `text`. A
-/// `concat!(env!("OUT_DIR"), …)` argument is skipped (the build script's output, covered by
-/// `build.rs`); any other non-literal argument is an error. Lines that start with `//` are
-/// comments.
+/// A file a Rust source pulls in: `rust` when it is compiled as Rust (`include!`, `#[path]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ref {
+    pub path: String,
+    pub rust: bool,
+}
+
+/// The paths of `include_str!`, `include_bytes!` and `include!` and of `#[path]` modules in
+/// Rust source `text` ([`references`], paths only).
 pub fn includes(text: &str) -> Result<Vec<String>, String> {
+    Ok(references(text)?.into_iter().map(|r| r.path).collect())
+}
+
+/// The string literal at the start of `arg` (`"…"`, `r"…"`, `r#"…"#`), if it is one.
+fn literal_at(arg: &str, n: usize) -> Result<Option<String>, String> {
+    let (body, close, plain) = if let Some(b) = arg.strip_prefix('"') {
+        (b, "\"", true)
+    } else if let Some(b) = arg.strip_prefix("r\"") {
+        (b, "\"", false)
+    } else if let Some(b) = arg.strip_prefix("r#\"") {
+        (b, "\"#", false)
+    } else {
+        return Ok(None);
+    };
+    let end = body
+        .find(close)
+        .ok_or_else(|| format!("line {n}: unterminated path"))?;
+    let path = &body[..end];
+    if plain && path.contains('\\') {
+        return Err(format!("line {n}: escaped path {path:?}"));
+    }
+    Ok(Some(path.to_string()))
+}
+
+/// Every file Rust source `text` pulls in: `include_str!`, `include_bytes!` and `include!`
+/// arguments and `#[path = "…"]` modules, in that line order. A `concat!(env!("OUT_DIR"), …)`
+/// include is skipped (the build script's output; its inputs are the build script's, see
+/// [`build_inputs`]); any other non-literal include or `#[path]`, and any
+/// `cfg_attr(…, path = …)`, is an error. Lines that start with `//` are comments.
+pub fn references(text: &str) -> Result<Vec<Ref>, String> {
     let mut out = Vec::new();
-    for (n, line) in text.lines().enumerate() {
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
         if line.trim_start().starts_with("//") {
             continue;
         }
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains("cfg_attr(") && compact.contains("path=") {
+            return Err(format!(
+                "line {n}: a cfg_attr path attribute; the shipped set cannot follow it"
+            ));
+        }
+        let mut search = compact.as_str();
+        while let Some(at) = search.find("#[path=") {
+            let arg = &search[at + "#[path=".len()..];
+            match literal_at(arg, n)? {
+                Some(path) => out.push(Ref { path, rust: true }),
+                None => {
+                    return Err(format!(
+                        "line {n}: a #[path] whose value is not a string literal"
+                    ));
+                }
+            }
+            search = &search[at + 1..];
+        }
         let mut rest = line;
-        while let Some(at) = find_include(rest) {
-            let (macro_len, start) = at;
+        while let Some((macro_len, start)) = find_include(rest) {
+            let rust = rest[start..].starts_with("include!");
             let after = rest[start + macro_len..].trim_start();
             let Some(arg) = after
                 .strip_prefix('(')
                 .or_else(|| after.strip_prefix('['))
                 .or_else(|| after.strip_prefix('{'))
             else {
-                return Err(format!("line {}: cannot read the include", n + 1));
+                return Err(format!("line {n}: cannot read the include"));
             };
             let arg = arg.trim_start();
-            if let Some(lit) = arg.strip_prefix('"') {
-                let end = lit
-                    .find('"')
-                    .ok_or_else(|| format!("line {}: unterminated include path", n + 1))?;
-                let path = &lit[..end];
-                if path.contains('\\') {
-                    return Err(format!("line {}: escaped include path {path:?}", n + 1));
-                }
-                out.push(path.to_string());
-            } else if let Some(raw) = arg.strip_prefix("r\"").or_else(|| arg.strip_prefix("r#\"")) {
-                let end = raw
-                    .find('"')
-                    .ok_or_else(|| format!("line {}: unterminated include path", n + 1))?;
-                out.push(raw[..end].to_string());
-            } else {
-                let compact: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
-                if !compact.starts_with("concat!(env!(\"OUT_DIR\")") {
-                    return Err(format!(
-                        "line {}: an include whose path is not a string literal; the shipped \
-                         set cannot follow it",
-                        n + 1
-                    ));
+            match literal_at(arg, n)? {
+                Some(path) => out.push(Ref { path, rust }),
+                None => {
+                    let compact: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+                    if !compact.starts_with("concat!(env!(\"OUT_DIR\")") {
+                        return Err(format!(
+                            "line {n}: an include whose path is not a string literal; the \
+                             shipped set cannot follow it"
+                        ));
+                    }
                 }
             }
             rest = &rest[start + macro_len..];
         }
+    }
+    Ok(out)
+}
+
+/// The files a build script declares with `cargo:rerun-if-changed=` (relative to the package),
+/// except itself. A build script that reads files (`fs::`, `File::`, `read_to_string`,
+/// `read_dir`) without declaring any is an error: check-fresh could not see its inputs.
+pub fn build_inputs(text: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("rerun-if-changed=") {
+        let tail = &rest[at + "rerun-if-changed=".len()..];
+        let end = tail.find(['"', '\n']).unwrap_or(tail.len());
+        let path = &tail[..end];
+        if path.is_empty() || path.contains(['{', '}', '\\']) {
+            return Err(format!(
+                "rerun-if-changed={path:?} is not a literal path; the shipped set cannot follow it"
+            ));
+        }
+        if path != "build.rs" {
+            out.push(path.to_string());
+        }
+        rest = &tail[end..];
+    }
+    let reads = ["fs::", "File::", "read_to_string", "read_dir"]
+        .iter()
+        .any(|p| text.contains(p));
+    if reads && out.is_empty() {
+        return Err(
+            "the build script reads files but declares none with rerun-if-changed; the shipped \
+             set cannot follow them"
+                .into(),
+        );
     }
     Ok(out)
 }
@@ -477,6 +623,10 @@ pub fn lock_blocks(text: &str) -> BTreeMap<String, Vec<String>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub key: String,
+    /// Every segment of the key.
+    pub path: Vec<String>,
+    /// The value, comments removed, continuation lines joined with newlines.
+    pub value: String,
     pub text: String,
 }
 
@@ -551,6 +701,40 @@ fn scan(line: &str, ml: &mut Option<&'static str>) -> (i32, String) {
     (depth, out.trim().to_string())
 }
 
+/// The segments of a dotted TOML key or table header: `a . "b.c" . 'd'` → `a`, `b.c`, `d`.
+pub fn dotted(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '.' => out.push(std::mem::take(&mut cur)),
+            None if c.is_whitespace() => {}
+            None => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// `key = value` split at the first `=` outside quotes.
+fn split_key(clean: &str) -> (&str, &str) {
+    let mut quote: Option<char> = None;
+    for (i, c) in clean.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '=' => return (&clean[..i], clean[i + 1..].trim()),
+            None => {}
+        }
+    }
+    (clean, "")
+}
+
 /// The tables of a TOML document, in order. Entries before the first header belong to a table
 /// with an empty header. Comments and blank lines are dropped.
 pub fn parse_tables(text: &str) -> Vec<Table> {
@@ -571,6 +755,8 @@ pub fn parse_tables(text: &str) -> Vec<Table> {
             {
                 e.text.push('\n');
                 e.text.push_str(&clean);
+                e.value.push('\n');
+                e.value.push_str(&clean);
             }
             continue;
         }
@@ -579,97 +765,125 @@ pub fn parse_tables(text: &str) -> Vec<Table> {
         }
         if clean.starts_with('[') {
             let array = clean.starts_with("[[");
-            let inner = clean.trim_start_matches('[').trim_end_matches(']');
-            let header: String = inner.chars().filter(|c| !c.is_whitespace()).collect();
+            let inner = clean.trim_start_matches('[').trim_end_matches(']').trim();
             tables.push(Table {
-                header,
+                header: dotted(inner).join("."),
                 array,
                 entries: Vec::new(),
             });
             continue;
         }
         depth += d;
-        let key = clean
-            .split('=')
-            .next()
-            .unwrap_or("")
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"')
-            .to_string();
+        let (key, value) = split_key(&clean);
+        let path = dotted(key);
+        let entry = Entry {
+            key: path.first().cloned().unwrap_or_default(),
+            path,
+            value: value.to_string(),
+            text: clean,
+        };
         if let Some(t) = tables.last_mut() {
-            t.entries.push(Entry { key, text: clean });
+            t.entries.push(entry);
         }
     }
     tables
 }
 
-/// The `package = "…"` of a dependency entry, if any.
-fn renamed_package(text: &str) -> Option<String> {
-    let at = text.find("package")?;
-    let rest = text[at + "package".len()..]
-        .trim_start()
-        .strip_prefix('=')?
-        .trim_start();
-    let rest = rest.strip_prefix('"')?;
-    Some(rest[..rest.find('"')?].to_string())
+/// The `package = "…"` key of an inline dependency table, if any.
+fn renamed_package(value: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(i) = value[from..].find("package") {
+        let at = from + i;
+        from = at + "package".len();
+        let before_ok = value[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c == '{' || c == ',' || c.is_whitespace());
+        let Some(rest) = value[from..].trim_start().strip_prefix('=') else {
+            continue;
+        };
+        if !before_ok {
+            continue;
+        }
+        let rest = rest.trim_start().strip_prefix('"')?;
+        return Some(rest[..rest.find('"')?].to_string());
+    }
+    None
 }
 
-/// The compared items of a root `Cargo.toml` (module docs, item 5): label → text.
+/// The compared items of a root `Cargo.toml` (module docs, item 5): label → text. Everything is
+/// compared except what cannot change the shipped binary: `[workspace]` `members`, `exclude`,
+/// `default-members`, `lints` and `metadata`; profiles other than `release`; and the
+/// `[workspace.dependencies]` entries of packages outside the graph. Each item's text is its
+/// lines as `dotted.key = value`, sorted, so the table and dotted-key spellings and the order
+/// of keys do not matter.
 pub fn root_manifest_items(text: &str, names: &BTreeSet<String>) -> BTreeMap<String, String> {
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
-    let mut push = |label: String, text: &str| {
-        let slot = out.entry(label).or_default();
-        if !slot.is_empty() {
-            slot.push('\n');
-        }
-        slot.push_str(text);
-    };
+    let mut items: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut renames: BTreeMap<String, String> = BTreeMap::new();
     for table in parse_tables(text) {
-        let h = table.header.as_str();
-        let whole = || {
-            table
-                .entries
-                .iter()
-                .map(|e| e.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
+        let head: Vec<String> = if table.header.is_empty() {
+            Vec::new()
+        } else {
+            dotted(&table.header)
         };
-        if h == "workspace.package" {
-            for e in &table.entries {
-                push(format!("Cargo.toml [workspace.package] {}", e.key), &e.text);
-            }
-        } else if h == "profile.release"
-            || h.starts_with("profile.release.")
-            || h == "patch"
-            || h.starts_with("patch.")
-            || h == "replace"
-        {
-            push(format!("Cargo.toml [{h}]"), &whole());
-        } else if h == "workspace.dependencies" {
-            for e in &table.entries {
-                let used = names.contains(&e.key)
-                    || renamed_package(&e.text).is_some_and(|p| names.contains(&p));
-                if used {
-                    push(
-                        format!("Cargo.toml [workspace.dependencies] {}", e.key),
-                        &e.text,
-                    );
+        for e in &table.entries {
+            let mut path = head.clone();
+            path.extend(e.path.iter().cloned());
+            let line = format!("{} = {}", path.join("."), e.value);
+            let seg = |i: usize| path.get(i).map(String::as_str);
+            match (seg(0), seg(1)) {
+                (
+                    Some("workspace"),
+                    Some("members" | "exclude" | "default-members" | "lints" | "metadata"),
+                ) => continue,
+                (Some("profile"), Some(p)) if p != "release" => continue,
+                (Some("workspace"), Some("dependencies")) => {
+                    let Some(dep) = seg(2) else { continue };
+                    match &path[3..] {
+                        [] => {
+                            if let Some(p) = renamed_package(&e.value) {
+                                renames.insert(dep.to_string(), p);
+                            }
+                        }
+                        [k] if k == "package" => {
+                            if let Some(p) = string_value(&format!("x = {}", e.value)) {
+                                renames.insert(dep.to_string(), p);
+                            }
+                        }
+                        _ => {}
+                    }
+                    deps.entry(dep.to_string()).or_default().push(line);
+                    continue;
                 }
+                _ => {}
             }
-        } else if let Some(dep) = h.strip_prefix("workspace.dependencies.") {
-            let dep = dep.split('.').next().unwrap_or(dep).trim_matches('"');
-            let text = whole();
-            let used =
-                names.contains(dep) || renamed_package(&text).is_some_and(|p| names.contains(&p));
-            if used {
-                push(format!("Cargo.toml [workspace.dependencies] {dep}"), &text);
-            }
+            let label = match path.as_slice() {
+                [w, p, key, ..] if w == "workspace" && p == "package" => {
+                    format!("Cargo.toml [workspace.package] {key}")
+                }
+                [key] => format!("Cargo.toml (top level) {key}"),
+                more => format!("Cargo.toml [{}]", more[..more.len() - 1].join(".")),
+            };
+            items.entry(label).or_default().push(line);
         }
     }
-    out
+    for (dep, lines) in deps {
+        let used = names.contains(&dep) || renames.get(&dep).is_some_and(|p| names.contains(p));
+        if used {
+            items
+                .entry(format!("Cargo.toml [workspace.dependencies] {dep}"))
+                .or_default()
+                .extend(lines);
+        }
+    }
+    items
+        .into_iter()
+        .map(|(label, mut lines)| {
+            lines.sort();
+            (label, lines.join("\n"))
+        })
+        .collect()
 }
 
 /// Items present on one side or with different texts.

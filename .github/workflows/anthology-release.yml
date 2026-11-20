@@ -166,12 +166,16 @@ jobs:
       - name: Check the binary is static (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -eu
           bin="target/$TARGET/release/anthology"
-          if readelf -lW "$bin" | grep INTERP; then
+          # readelf writes to files first, so a readelf failure fails the step.
+          readelf -lW "$bin" > "$RUNNER_TEMP/program-headers.txt"
+          readelf -dW "$bin" > "$RUNNER_TEMP/dynamic.txt"
+          if grep INTERP "$RUNNER_TEMP/program-headers.txt"; then
             echo "::error::$bin has a program interpreter (not static)"
             exit 1
           fi
-          if readelf -dW "$bin" | grep NEEDED; then
+          if grep NEEDED "$RUNNER_TEMP/dynamic.txt"; then
             echo "::error::$bin has shared-library dependencies (not static)"
             exit 1
           fi

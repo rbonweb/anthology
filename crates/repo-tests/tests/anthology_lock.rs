@@ -553,8 +553,11 @@ fn the_binary_is_built_checked_and_packaged() {
     assert_eq!(s(&st["if"]), "runner.os == 'Linux'");
     let r = s(&st["run"]);
     assert!(
-        r.contains("readelf -lW \"$bin\" | grep INTERP")
-            && r.contains("readelf -dW \"$bin\" | grep NEEDED")
+        r.contains("readelf -lW \"$bin\" > \"$RUNNER_TEMP/program-headers.txt\"")
+            && r.contains("readelf -dW \"$bin\" > \"$RUNNER_TEMP/dynamic.txt\"")
+            && r.contains("if grep INTERP \"$RUNNER_TEMP/program-headers.txt\"; then")
+            && r.contains("if grep NEEDED \"$RUNNER_TEMP/dynamic.txt\"; then")
+            && !r.contains("| grep")
     );
     let version = step_named(build, "Check --version");
     assert!(version["if"].is_badvalue(), "on every OS");

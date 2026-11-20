@@ -315,7 +315,8 @@ fn vendored(name: &str, version: &str, checksum: char) -> [(String, String); 3] 
 impl Repo {
     fn new() -> Repo {
         let tmp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
         let repo = Repo { _tmp: tmp, root };
         let mut files: Vec<(String, String)> = vec![
             ("Cargo.toml".into(), ROOT_TOML.into()),
@@ -347,6 +348,7 @@ impl Repo {
                 member(
                     "anthology-core",
                     "\n[dependencies]\nfoo.workspace = true\n\n\
+                     [target.'cfg(target_os = \"macos\")'.dependencies]\nbaz = \"1\"\n\n\
                      [dev-dependencies]\nanthology-testkit.workspace = true\n",
                 ),
             ),
@@ -377,6 +379,7 @@ impl Repo {
         ];
         files.extend(vendored("foo", "1.0.0", '1'));
         files.extend(vendored("bar", "1.0.0", '2'));
+        files.extend(vendored("baz", "1.0.0", '5'));
         for (rel, t) in &files {
             repo.write(rel, t);
         }
@@ -717,4 +720,116 @@ fn an_unfollowable_include_is_an_error() {
     let (code, out) = r.fresh();
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("not a string literal"), "{out}");
+}
+
+#[test]
+fn a_macos_only_dependency_counts() {
+    // check-fresh runs on Linux here; the --target flags must still see a macOS-only crate.
+    let Some(r) = repo() else { return };
+    for (rel, t) in vendored("baz", "1.0.1", '6') {
+        r.write(&rel, &t);
+    }
+    r.cargo(&["update", "-p", "baz"]);
+    r.commit("baz");
+    r.assert_stale("Cargo.lock: baz");
+}
+
+#[test]
+fn a_path_module_outside_src_counts() {
+    let Some(r) = repo() else { return };
+    r.write("shared/x.rs", "pub fn x() {}\n");
+    r.edit(
+        "crates/anthology-core/src/lib.rs",
+        "pub mod inner;",
+        "pub mod inner;\n#[path = \"../../../shared/x.rs\"]\nmod x;",
+    );
+    r.commit("path module");
+    r.write("shared/x.rs", "pub fn x2() {}\n");
+    r.commit("change it");
+    r.assert_stale("shared/x.rs");
+}
+
+#[test]
+fn a_build_script_input_counts() {
+    let Some(r) = repo() else { return };
+    r.write("data/gen.txt", "one\n");
+    r.write(
+        "crates/anthology-cli/build.rs",
+        "fn main() {\n    println!(\"cargo:rerun-if-changed=build.rs\");\n    \
+         println!(\"cargo:rerun-if-changed=../../data/gen.txt\");\n    \
+         let _ = std::fs::read_to_string(\"../../data/gen.txt\");\n}\n",
+    );
+    r.commit("build input");
+    r.git(&["tag", "-f", TAG]);
+    r.write("data/gen.txt", "two\n");
+    r.commit("change it");
+    r.assert_stale("data/gen.txt");
+}
+
+#[test]
+fn a_build_script_with_undeclared_inputs_is_an_error() {
+    let Some(r) = repo() else { return };
+    r.write(
+        "crates/anthology-cli/build.rs",
+        "fn main() { let _ = std::fs::read_to_string(\"x\"); }\n",
+    );
+    r.commit("reads");
+    let (code, out) = r.fresh();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("rerun-if-changed"), "{out}");
+}
+
+#[test]
+fn the_resolver_and_quoted_profile_headers_count() {
+    let Some(r) = repo() else { return };
+    r.edit("Cargo.toml", "resolver = \"3\"", "resolver = \"2\"");
+    r.commit("resolver");
+    r.assert_stale("Cargo.toml [workspace]");
+
+    let Some(r) = repo() else { return };
+    r.edit(
+        "Cargo.toml",
+        "[profile.dev]",
+        "[profile.\"release\".package.anthology-core]\nopt-level = 0\n\n[profile.dev]",
+    );
+    r.commit("quoted");
+    r.assert_stale("Cargo.toml [profile.release.package.anthology-core]");
+}
+
+#[test]
+fn a_path_package_outside_the_repository_is_an_error() {
+    let Some(r) = repo() else { return };
+    let outside = r.root.parent().unwrap().join("outside");
+    std::fs::create_dir_all(outside.join("src")).unwrap();
+    std::fs::write(
+        outside.join("Cargo.toml"),
+        "[package]\nname = \"outside\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(outside.join("src/lib.rs"), "pub fn o() {}\n").unwrap();
+    r.edit(
+        "crates/anthology-core/Cargo.toml",
+        "foo.workspace = true",
+        "foo.workspace = true\noutside = { path = \"../../../outside\" }",
+    );
+    r.cargo(&["update", "-p", "anthology-core"]);
+    r.commit("outside");
+    let (code, out) = r.fresh();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("outside the repository"), "{out}");
+}
+
+#[test]
+fn a_crate_root_outside_src_is_an_error() {
+    let Some(r) = repo() else { return };
+    r.edit(
+        "crates/anthology-cli/Cargo.toml",
+        "path = \"src/main.rs\"",
+        "path = \"main.rs\"",
+    );
+    r.write("crates/anthology-cli/main.rs", "fn main() {}\n");
+    r.commit("root");
+    let (code, out) = r.fresh();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("outside src/"), "{out}");
 }
