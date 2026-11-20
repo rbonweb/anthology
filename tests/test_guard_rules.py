@@ -1596,6 +1596,99 @@ class RuleTableTest(unittest.TestCase):
                 self.assertEqual(rule_of(bash(command)), expected)
                 self.assertLess(time.perf_counter() - start, 1.0)
 
+    def test_g3_quote_in_a_comment_does_not_hide_a_code_literal(self):
+        """A stray apostrophe (`# Chrome's ...`) must not pair with a path literal's quote (C1)."""
+        mac = "Library/Application Support/Google/Chrome/Default"
+        sqlite = ("import sqlite3\n# it's the cookie db\nc = sqlite3.connect('~/" + mac
+                  + "/Cookies')  # don't commit\n")
+        self.assert_table("G3", [
+            bash("python3 - <<'EOF'\nimport json, os\n# Chrome's bookmarks live here\n"
+                 "path = os.path.expanduser('~/" + mac + "/Bookmarks')\n"
+                 "print(json.load(open(path))['roots'].keys())\nEOF"),
+            bash("python3 - <<'EOF'\n# don't modify, read only\nimport shutil\n"
+                 "shutil.copy('" + OTHER_HOME + "/" + mac + "/Cookies', '/tmp/c')\nEOF"),
+            bash("node <<'EOF'\n// don't write, it's read only\n"
+                 "const p = require('os').homedir() + '/" + mac + "/Bookmarks';\nEOF"),
+            bash("python3 -c \"# it's here\nopen('" + OTHER_HOME + "/" + mac + "/Cookies')\""),
+            ("mcp__ide__executeCode", {"code": sqlite}),
+            ("mcp__browseros-neo__run", {"code": sqlite}),
+        ])
+        self.assert_table(None, [
+            bash("python3 - <<'EOF'\n# Chrome's profile is never read here; it's off-limits\n"
+                 "print('don\\'t', \"it's\")\nEOF"),
+            ("mcp__browseros-neo__run", {"code": "// it's fine\nawait browser.navigate('https://x.dev')"}),
+        ])
+
+    def test_g3_browseros_neo_real_code_keys(self):
+        """BrowserOS Neo's real shapes: `run {code}`, `evaluate_in_page {page, code|func}` (M1)."""
+        url = "file://" + OTHER_HOME + "/Library/Application%20Support/Google/Chrome/Local%20State"
+        self.assert_table("G3", [
+            ("mcp__browseros-neo__run", {"code": "await browser.navigate('" + url + "')"}),
+            ("mcp__browseros-neo__evaluate_in_page", {"page": 1, "code": "fetch('" + url + "')"}),
+            ("mcp__browseros-neo__evaluate_in_page", {"page": 1, "func": "() => fetch('" + url + "')"}),
+            ("mcp__browseros-neo__evaluate_in_page",
+             {"page": 1, "func": "() => fetch('file://" + HOME + "/.config/chromium/Default/Bookmarks')"}),
+        ])
+        self.assert_table(None, [
+            ("mcp__browseros-neo__evaluate_in_page", {"page": 1, "func": "() => document.title"}),
+            ("mcp__browseros-neo__evaluate_in_page", {"page": 1, "code": "location.href"}),
+        ])
+
+    def test_bad_glob_ranges_do_not_fail_open(self):
+        """A reversed glob range (`[z-a]`) is no match, not an exception that allows all (M3)."""
+        self.assert_table("G1", [
+            bash("ls '[z-a]/b/c' && npx playwright install"),
+            bash("python3 -c \"x = '[z-a]/b/c'\" && npx playwright install"),
+            bash("cat ~/.config/[z-a]*/x; npx playwright install"),
+        ])
+        self.assert_table(None, [
+            bash("ls '[z-a]/b/c'"),
+            ("Glob", {"pattern": "[z-a]/**", "path": "src"}),
+        ])
+
+    def test_more_interpreters_and_fish(self):
+        """`pypy*`, `tsx`, `ts-node` run inline code; `fish -c` is a shell (M6)."""
+        lin = HOME + "/.config/google-chrome/Default/Cookies"
+        self.assert_table("G3", [
+            bash("pypy3 -c \"open('" + lin + "')\""),
+            bash("pypy -c \"open('" + lin + "')\""),
+            bash("tsx -e \"require('fs').readFileSync('" + lin + "')\""),
+            bash("npx tsx -e \"require('fs').readFileSync('" + lin + "')\""),
+            bash("ts-node -e \"require('fs').readFileSync('" + lin + "')\""),
+            bash("echo \"require('fs').readFileSync('" + lin + "')\" | ts-node"),
+            bash("fish -c 'cat ~/.config/chromium/Default/Cookies'"),
+        ])
+        self.assert_table("G1", [
+            bash("fish -c 'npx playwright install'"),
+            bash("fish --no-config -c 'npx playwright install'"),
+            bash("rtk run --shell fish -c 'npx playwright install'"),
+            bash("echo 'npx playwright install' | fish"),
+        ])
+        self.assert_table(None, [
+            bash("pypy3 -c 'print(1)'"),
+            bash("tsx src/index.ts"),
+            bash("ts-node -e \"console.log('chromium')\""),
+            bash("fish -c 'echo playwright'"),
+            bash("fish script.fish"),
+        ])
+
+    def test_code_candidate_prefilter_stays_cheap(self):
+        """Many unique literals / path-like words in code scan well under 1 s (M4)."""
+        import time
+        literals = "".join("v%d = 'lit%d/a/b/c'\n" % (k, k) for k in range(60_000))
+        words = " ".join("w%d/x/y/z/q/r/s" % k for k in range(200_000))
+        for name, command, expected in (
+                ("60k unique literals", "python3 - <<'EOF'\n" + literals + "EOF", None),
+                ("60k unique literals + path", "python3 - <<'EOF'\n" + literals
+                 + "open('~/.config/chromium/x')\nEOF", "G3"),
+                ("200k path-like words", "python3 -c '" + words + "'", None),
+                ("200k path-like words + url", "python3 -c '" + words + " file:%2Fhome%2Ftester"
+                 "%2F.config%2Fchromium'", "G3")):
+            with self.subTest(case=name):
+                start = time.perf_counter()
+                self.assertEqual(rule_of(bash(command)), expected)
+                self.assertLess(time.perf_counter() - start, 1.0)
+
     def test_check_is_deterministic_and_pure(self):
         tool_input = {"command": "npx playwright install"}
         first = guard_rules.check("Bash", tool_input, HOME)

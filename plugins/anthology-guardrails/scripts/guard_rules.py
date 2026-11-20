@@ -50,12 +50,13 @@ _MAX_CWD_DEPTH = 64     # stop tracking `cd` chains deeper than this many compon
 _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
-_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
+_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish"))
 # Long shell options that take the next word as their value (bash `--rcfile x`, zsh `--emulate sh`).
 _SHELL_VALUE_OPTIONS = frozenset(("--rcfile", "--init-file", "--emulate"))
 # Programs whose arguments (and fed stdin text) are inline code: `python3 -c`, `node -e`, ...
 _INTERPRETER = re.compile(
-    r"(?:python|ruby|perl|php|lua)[0-9.]*\Z|(?:node|nodejs|deno|bun|osascript|rscript)\Z")
+    r"(?:python|pypy|ruby|perl|php|lua)[0-9.]*\Z"
+    r"|(?:node|nodejs|deno|bun|tsx|ts-node|osascript|rscript)\Z")
 # rtk subcommands that run a command (rtk/src/lib.rs `Commands`); `proxy` aliases `bypass`.
 _RTK_PASSTHROUGH = frozenset(("bypass", "proxy"))
 _RTK_RUNNERS = frozenset(("run", "err", "test", "summary"))
@@ -941,7 +942,10 @@ def _normalize(path, home, cwd):
 def _component_matches(candidate, protected, prefix):
     if _GLOB_CHARS.search(candidate):
         variants = _PREFIX_VARIANTS if prefix else ("",)
-        return any(fnmatch.fnmatchcase(protected + v, candidate) for v in variants)
+        try:
+            return any(fnmatch.fnmatchcase(protected + v, candidate) for v in variants)
+        except re.error:                                  # `[z-a]`: matches nothing
+            return False
     return candidate.startswith(protected) if prefix else candidate == protected
 
 
@@ -1063,6 +1067,12 @@ def _words_hit(words, predicate, home, cwd):
 
 _CODE_LITERAL = re.compile("'([^']*)'|\"([^\"]*)\"|`([^`]*)`")
 _CODE_PUNCTUATION = "()[]{}<>,;'\"`"
+# Pieces between quote characters and newlines: a stray `'` in a comment (`# Chrome's ...`)
+# can pair with a literal's opening quote, so the literals alone are not enough.
+_CODE_QUOTE_SPLIT = re.compile("['\"`\n]")
+# A code candidate can name a profile root only if it has a separator and a root-like word
+# or a glob; the rest is dropped before path matching (keeps huge programs cheap).
+_CODE_ROOT_HINT = re.compile(r"librar|config|chrom|google|[*?\[]", re.IGNORECASE)
 
 
 def _code_candidates(text):
@@ -1073,9 +1083,17 @@ def _code_candidates(text):
     text = text.replace("\\ ", " ")
     found = {literal.strip() for match in _CODE_LITERAL.finditer(text)
              for literal in match.groups() if literal}
+    found.update(piece.strip() for piece in _CODE_QUOTE_SPLIT.split(text))
     found.update(word.strip(_CODE_PUNCTUATION) for word in text.split())
     found.discard("")
     return found
+
+
+def _may_name_profile(candidate):
+    """Cheap prefilter: a `/` (or an encoded `%2F`, or a backslash) and a root-like word."""
+    lowered = candidate.lower()
+    return ("/" in candidate or "\\" in candidate or "%2f" in lowered) and bool(
+        _CODE_ROOT_HINT.search(candidate))
 
 
 def _code_hits_profile(texts, home, cwd):
@@ -1083,7 +1101,8 @@ def _code_hits_profile(texts, home, cwd):
     candidates = set()
     for text in texts:
         candidates |= _code_candidates(text)
-    return _words_hit(candidates, _is_profile_path_in_code, home, cwd)
+    return _words_hit([c for c in candidates if _may_name_profile(c)],
+                      _is_profile_path_in_code, home, cwd)
 
 
 # ------------------------------------------------------------- rules
@@ -1373,12 +1392,12 @@ def _path_strings(value, skip, in_path_key=False, depth=0):
             yield from _path_strings(item, skip, in_path_key, depth + 1)
 
 
-_CODE_KEYS = frozenset(("script", "code", "expression"))
+_CODE_KEYS = frozenset(("script", "code", "expression", "func"))
 
 
 def _code_strings(value, in_code_key=False, depth=0):
-    """Strings under keys named `script`, `code` or `expression` (at any depth): code a tool
-    runs, such as a BrowserOS Neo `run` script or an `evaluate_in_page` expression."""
+    """Strings under keys named `script`, `code`, `expression` or `func` (at any depth): code
+    a tool runs, such as BrowserOS Neo `run {code}` or `evaluate_in_page {code|func}`."""
     if depth > _MAX_WALK_DEPTH:
         return
     if isinstance(value, str):
