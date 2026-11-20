@@ -21,7 +21,7 @@ UNTRACKED_DEBRIS = {"target", ".DS_Store"}
 TOP_LEVEL = [
     ".cargo", ".git-blame-ignore-revs", ".gitattributes", ".gitignore", ".rtk", "CHANGELOG.md",
     "CLAUDE.md", "CONTRIBUTING.md", "Cargo.lock", "Cargo.toml", "DISCLAIMER.md", "LICENSE",
-    "README.md", "SECURITY.md", "build.rs", "docs", "hooks", "rustfmt.toml", "src", "tests",
+    "README.md", "SECURITY.md", "build.rs", "docs", "hooks", "rust-toolchain.toml", "rustfmt.toml", "src", "tests",
     "text",
 ]
 HOOKS_ENTRIES = ["README.md", "claude", "rtk-awareness-full.md", "rtk-awareness-high.md",
