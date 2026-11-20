@@ -726,6 +726,12 @@ class GuardLocationTest(SessionCase):
         root = self.config / "plugins" / "cache" / "anthology" / "anthology" / "0.1.0"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        # A real install ships its bin/ wrappers (session start warns when they are missing).
+        (root / "bin").mkdir()
+        for name in ("anthology-mem", "rtk", "rtk-hook"):
+            wrapper = root / "bin" / name
+            wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            wrapper.chmod(0o755)
         return root
 
     def test_registry_entry_wins_over_the_sibling_folder(self):
