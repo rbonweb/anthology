@@ -38,15 +38,22 @@ SECRET_PATTERNS = (
     ("api-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
     ("slack-token", re.compile(r"\bxox[baprs]-")),
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("credential-assignment", re.compile(r"password\s*[:=]", re.IGNORECASE)),
-    ("credential-assignment", re.compile(r"api[_-]?key\s*[:=]", re.IGNORECASE)),
+    # A key may be followed by one closing quote (`"password": "x"`, a JSON or dict key). Then the
+    # value must be a scalar: not empty, null/true/false, or an object/array (a schema).
+    ("credential-assignment", re.compile(
+        r"password(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
+        re.IGNORECASE)),
+    ("credential-assignment", re.compile(
+        r"api[_-]?key(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
+        re.IGNORECASE)),
     ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
     ("github-token", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("slack-token", re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}")),
     ("api-key", re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}")),
     ("credential-assignment",
-     re.compile(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}", re.I)),
+     re.compile(r"(password|passwd|secret|api[_-]?key|token)(?:\s*[:=]\s*\S{8,}"
+                r"|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S{8,})", re.I)),
     # A look-behind, not \b: `-` is in the class, so \b would start a scan at every `-eyJ` (quadratic).
     ("jwt", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")),

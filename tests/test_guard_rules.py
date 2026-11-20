@@ -21,6 +21,8 @@ GH_PAT = "github" + "_pat_" + "abcdef"
 SK_KEY = "sk" + "-" + "a1b2c3d4e5f6g7h8i9"
 SLACK = "xox" + "b-123"
 PRIVATE_KEY = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+PW = "pass" + "word"
+PWV = "hunter2" + "xyz"
 
 
 def bash(command):
@@ -325,6 +327,14 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": ".claude/memory/a.md", "content": "api-key=abc"}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": "apikey: abc"}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": "role " + "ASIA" + "ABCDEFGHIJKLMNOP"}),
+            # a JSON- or dict-quoted key is an assignment too (FW-Q)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "' + PWV + '"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": "{'" + PW + "': '" + PWV + "'}"}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '{"' + PW + '":"' + PWV + '"}'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"api' + '_key": "' + PWV + '"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"apiKey" : ' + PWV}),
+            ("Edit", {"file_path": ".claude/memory/a.md", "old_string": "a",
+                      "new_string": '"' + PW.upper() + '"=' + PWV}),
             ("Write", {"file_path": ".Claude/Memory/a.md", "content": GH_TOKEN}),
             ("MultiEdit", {"file_path": ".claude/memory/a.md", "edits": [
                 {"old_string": "x", "new_string": "fine"},
@@ -1008,6 +1018,14 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": mem, "content": "the sk-learn library is used"}),
             ("Write", {"file_path": mem, "content": "AKIA prefix marks AWS keys"}),
             ("Write", {"file_path": mem, "content": "Use `password` fields carefully"}),
+            # quoted keys with an empty, null or schema-shaped value are not assignments (FW-Q)
+            ("Write", {"file_path": mem, "content": '"' + PW + '": {"type": "string"}'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": ""'}),
+            ("Write", {"file_path": mem, "content": "{'" + PW + "': ''}"}),
+            ("Write", {"file_path": mem, "content": '"api' + '_key": null'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": true, "api_key": []'}),
+            ("Write", {"file_path": mem, "content": "the " + PW + " field"}),
+            ("Write", {"file_path": mem, "content": 'the "' + PW + '" property is required'}),
             ("Write", {"file_path": mem, "content": "A PRIVATE KEY is never stored"}),
             ("Edit", {"file_path": mem, "old_string": GH_TOKEN, "new_string": "[redacted]"}),
             ("Read", {"file_path": mem}),

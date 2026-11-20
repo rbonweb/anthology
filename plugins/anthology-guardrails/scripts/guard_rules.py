@@ -1415,8 +1415,10 @@ _SECRET_PATTERNS = tuple(re.compile(p) for p in (
     r"\bxox[baprs]-",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 )) + tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"password\s*[:=]",
-    r"api[_-]?key\s*[:=]",
+    # A key may be followed by one closing quote (`"password": "x"`, a JSON or dict key). Then the
+    # value must be a scalar: not empty, null/true/false, or an object/array (a schema).
+    r"password(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
+    r"api[_-]?key(?:\s*[:=]|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S)",
 ))
 _CONTENT_KEYS = ("content", "new_string", "new_source")
 _PATH_KEYS = ("file_path", "path", "notebook_path")
