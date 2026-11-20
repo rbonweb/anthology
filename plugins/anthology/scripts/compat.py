@@ -9,18 +9,41 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 WRAPPERS = ("anthology-mem", "rtk", "rtk-hook")
 SUBAGENT_MODEL = "CLAUDE_CODE_SUBAGENT_MODEL"
+REPO_READ_LIMIT = 1 << 20  # files a cloned repo controls are read only up to 1 MiB
 
 
-def read_json(path):
-    """The parsed JSON file, or None when it is missing or malformed. Tolerates a BOM."""
+def read_json(path, limit=None):
+    """The parsed JSON file, or None when it is missing or malformed. Tolerates a BOM.
+
+    With `limit` (bytes) the file must also be a regular file (a symlink to one is fine; a device
+    or FIFO is not) of at most `limit` bytes, else it is skipped like an absent file. Use it for
+    files a cloned repo controls (`REPO_READ_LIMIT`): they are read at every session start."""
+    if limit is None:
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return None
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))  # a FIFO must not block
+    except (OSError, ValueError):
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(limit + 1)
+        if len(raw) > limit:
+            return None
+        return json.loads(raw.decode("utf-8-sig"))
     except (OSError, ValueError, RecursionError):
         return None
+    finally:
+        os.close(fd)
 
 
 def config_dir(env):
@@ -107,6 +130,7 @@ def subagent_model_source(env, cwd):
     candidates.append(("the project's .claude/settings.json", top / ".claude" / "settings.json"))
     candidates.append(("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json"))
     for label, path in candidates:
-        if _env_has_model(read_json(path)):
+        # user settings are the owner's; the project's two files come with the clone, so they are bounded
+        if _env_has_model(read_json(path, None if label == "user settings.json" else REPO_READ_LIMIT)):
             return label
     return None

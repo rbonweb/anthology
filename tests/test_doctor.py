@@ -304,6 +304,19 @@ class CheckEnvTest(EnvCase):
         self.assertFalse(checks[0]["ok"])
 
 
+def _run_probe(code, timeout=60):
+    """Run `code` in a fresh interpreter (EnvCase mocks subprocess.run); `(returncode, stdout, stderr)`."""
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise AssertionError("the probe hung (blocked on a file it should not open)")
+    return proc.returncode, out, err
+
+
 def _write(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -451,6 +464,7 @@ class BrowserosToolsTest(CompatBase):
 
     def test_exact_name_in_project_and_managed_scope_is_ok(self):
         _write(self.cwd / ".mcp.json", {"mcpServers": {"browseros-neo": {}}})
+        _write(self.config / "settings.json", {"enabledMcpjsonServers": ["browseros-neo"]})
         self.assertTrue(self.checks()["browseros_tools"]["ok"])
         (self.cwd / ".mcp.json").unlink()
         _write(self.managed, {"mcpServers": {"browseros-neo": {}}})
@@ -478,9 +492,228 @@ class BrowserosToolsTest(CompatBase):
     def test_no_server_is_none(self):
         self.assertIsNone(self.checks()["browseros_tools"]["ok"])
 
-    def test_the_browseros_check_accepts_any_scope(self):
+    def test_the_browseros_check_accepts_any_loaded_scope(self):
         _write(self.cwd / ".mcp.json", {"mcpServers": {"x-browseros": {}}})
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
         self.assertTrue(self.checks()["browseros"]["ok"])
+        self.assertIn("configured", self.checks()["browseros"]["detail"])
+
+
+HOSTILE = "browseros\x1b[31m\nFAKE  ok   forged line\r\u202e"
+
+
+class ProjectApprovalTest(CompatBase):
+    """m14: a server in the repo's .mcp.json only counts when Claude Code would load it for this user."""
+
+    def project(self, name="browseros"):
+        _write(self.cwd / ".mcp.json", {"mcpServers": {name: {"url": "http://SECRETHOST/mcp"}}})
+
+    def loaded(self):
+        return {s["name"]: s.get("approved", True) for s in doctor.find_mcp_servers(dict(os.environ), self.cwd)}
+
+    def test_unapproved_project_server_is_not_configured(self):
+        self.project()
+        self.assertEqual(self.loaded(), {"browseros": False})
+        c = self.checks()["browseros"]
+        self.assertFalse(c["ok"])
+        self.assertIn("unapproved project", c["detail"])
+        self.assertIn("browseros", c["detail"])
+        self.assertNotIn("SECRETHOST", c["detail"])
+        self.assertIn("install it", c["detail"])
+
+    def test_unapproved_project_server_does_not_pass_browseros_tools(self):
+        self.project("browseros-neo")
+        c = self.checks()["browseros_tools"]
+        self.assertIsNone(c["ok"])
+        self.assertIn("unapproved project", c["detail"])
+
+    def test_unapproved_server_next_to_an_installed_app_says_so(self):
+        self.project()
+        (self.apps / "BrowserOS neo.app").mkdir(parents=True)
+        c = self.checks()["browseros"]
+        self.assertTrue(c["ok"])
+        self.assertIn("installed", c["detail"])
+        self.assertIn("unapproved project", c["detail"])
+
+    def test_approval_in_user_settings_by_name_or_wholesale(self):
+        self.project()
+        _write(self.config / "settings.json", {"enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": True})
+        self.assertTrue(self.checks()["browseros"]["ok"])
+        self.assertIn("configured", self.checks()["browseros"]["detail"])
+        _write(self.config / "settings.json", {"enabledMcpjsonServers": ["other"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True})
+        self.assertEqual(self.loaded(), {"browseros": True})
+
+    def test_approval_in_local_settings_and_the_users_claude_json(self):
+        self.project()
+        _write(self.cwd / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": True})
+        (self.cwd / ".claude" / "settings.local.json").unlink()
+        self.user_json({"projects": {str(self.cwd): {"enabledMcpjsonServers": ["browseros"]}}})
+        self.assertEqual(self.loaded(), {"browseros": True})
+        self.user_json({"projects": {str(self.cwd): {"enableAllProjectMcpServers": True}}})
+        self.assertEqual(self.loaded(), {"browseros": True})
+
+    def test_a_repo_cannot_approve_itself_through_shared_settings(self):
+        self.project()
+        _write(self.cwd / ".claude" / "settings.json",
+               {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+
+    def test_disabled_wins_over_enabled(self):
+        self.project()
+        _write(self.config / "settings.json", {"enableAllProjectMcpServers": True,
+                                               "disabledMcpjsonServers": ["browseros"]})
+        self.assertEqual(self.loaded(), {"browseros": False})
+
+    def test_non_project_scopes_are_not_gated(self):
+        self.user_json({"mcpServers": {"browseros-neo": {}}})
+        _write(self.managed, {"mcpServers": {"corp-browseros": {}}})
+        self.assertEqual(self.loaded(), {"browseros-neo": True, "corp-browseros": True})
+        self.assertTrue(self.checks()["browseros"]["ok"])
+
+    def test_garbage_approval_lists_are_unapproved(self):
+        self.project()
+        for bad in ("browseros", {"browseros": True}, [3, None], 7):
+            _write(self.config / "settings.json", {"enabledMcpjsonServers": bad})
+            self.assertEqual(self.loaded(), {"browseros": False}, bad)
+
+
+class HostileNamesTest(CompatBase):
+    """m14: names from repo files never reach the terminal raw."""
+
+    def test_wrong_name_detail_is_escaped(self):
+        self.user_json({"mcpServers": {HOSTILE: {"url": "http://SECRETHOST"}}})
+        c = self.checks()["browseros_tools"]
+        self.assertFalse(c["ok"])
+        for bad in ("\x1b", "\n", "\r", "\u202e"):
+            self.assertNotIn(bad, c["detail"])
+        self.assertIn("\\x1b[31m", c["detail"])
+        self.assertIn("\\n", c["detail"])
+        self.assertTrue(c["detail"].isprintable())
+        self.assertNotIn("SECRETHOST", c["detail"])
+
+    def test_unapproved_name_is_escaped_too(self):
+        _write(self.cwd / ".mcp.json", {"mcpServers": {HOSTILE: {}}})
+        for name in ("browseros", "browseros_tools"):
+            self.assertTrue(self.checks()[name]["detail"].isprintable(), name)
+
+    def test_a_very_long_name_is_cut(self):
+        self.user_json({"mcpServers": {"browseros" + "x" * 5000: {}}})
+        self.assertLess(len(self.checks()["browseros_tools"]["detail"]), 600)
+
+    def test_text_mode_prints_one_line_per_check_and_no_control_characters(self):
+        import contextlib
+        import io
+        self.user_json({"mcpServers": {HOSTILE: {}}})
+        _write(self.cwd / ".mcp.json", {"mcpServers": {HOSTILE + "2": {}}})
+        buf = io.StringIO()
+        with mock.patch.object(doctor.os, "getcwd", return_value=str(self.cwd)):
+            with contextlib.redirect_stdout(buf):
+                doctor.main([])
+        lines = buf.getvalue().splitlines()
+        self.assertNotIn("\x1b", buf.getvalue())
+        self.assertNotIn("\u202e", buf.getvalue())
+        names = [l.split()[0] for l in lines if not l.startswith("duplicate:")]
+        self.assertEqual(names, list(doctor.CHECKS))
+
+
+class NestedInstalledPluginsTest(CompatBase):
+    """Pre-existing: a deeply nested installed_plugins.json must not crash doctor."""
+
+    def nest(self):
+        _write(self.config / "plugins" / "installed_plugins.json", "[" * 200000 + "]" * 200000)
+
+    def run_main(self, *argv):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(doctor.os, "getcwd", return_value=str(self.cwd)):
+            with contextlib.redirect_stdout(buf):
+                code = doctor.main(list(argv))
+        return code, buf.getvalue()
+
+    def test_text_mode_reports_unreadable(self):
+        self.nest()
+        code, out = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("installed_plugins.json is unreadable", out)
+
+    def test_json_mode_reports_unreadable_and_no_duplicates(self):
+        self.nest()
+        code, out = self.run_main("--json")
+        data = json.loads(out)
+        self.assertEqual(data["duplicates"], [])
+        self.assertEqual(data["installed_plugins"], "unreadable")
+
+    def test_malformed_and_missing_files(self):
+        _write(self.config / "plugins" / "installed_plugins.json", "{nope")
+        self.assertEqual(json.loads(self.run_main("--json")[1])["installed_plugins"], "unreadable")
+        (self.config / "plugins" / "installed_plugins.json").unlink()
+        data = json.loads(self.run_main("--json")[1])
+        self.assertEqual((data["installed_plugins"], data["duplicates"]), ("missing", []))
+        self.assertNotIn("unreadable", self.run_main()[1])
+
+    def test_readable_file_is_ok(self):
+        _write(self.config / "plugins" / "installed_plugins.json", INSTALLED)
+        data = json.loads(self.run_main("--json")[1])
+        self.assertEqual((data["installed_plugins"], len(data["duplicates"])), ("ok", 4))
+
+    def test_nested_mcp_and_settings_files_do_not_crash_the_checks(self):
+        self.nest()
+        _write(self.cwd / ".mcp.json", "[" * 200000)
+        _write(self.cwd / ".claude" / "settings.local.json", "[" * 200000)
+        _write(self.config / "settings.json", "[" * 200000)
+        self.assertFalse([c for c in self.checks().values() if c["detail"].startswith("check failed")])
+
+
+class DuplicateScopeTest(unittest.TestCase):
+    """Pre-existing: an unvalidated scope must not become part of a runnable command."""
+
+    def found(self, scope, name="superpowers@m"):
+        return doctor.find_duplicates({"plugins": {name: [{"scope": scope, "installPath": "/p"}]}})
+
+    def test_known_scopes_get_the_command(self):
+        for scope in ("user", "project", "local"):
+            self.assertEqual(self.found(scope)[0]["command"],
+                             "claude plugin uninstall superpowers@m -s " + scope)
+
+    def test_unknown_scope_gets_no_command_and_is_escaped(self):
+        for scope in ("user; touch x", "x\x1b[31m\nfake", "", " user", "USER", "managed", 3, ["user"]):
+            (d,) = self.found(scope)
+            self.assertIsNone(d["command"], scope)
+            self.assertTrue(str(d["scope"]).isprintable(), scope)
+
+    def test_the_escaped_scope_shows_the_odd_value(self):
+        (d,) = self.found("x\x1b\nz")
+        self.assertIn("\\x1b", d["scope"])
+        self.assertIn("\\n", d["scope"])
+
+    def test_a_plugin_name_with_shell_characters_gets_no_command(self):
+        for name in ("superpowers@m; touch x", "superpowers@m$(id)", "superpowers@m x", "superpowers@m\nz"):
+            (d,) = self.found("user", name)
+            self.assertIsNone(d["command"], name)
+            self.assertTrue(d["plugin"].isprintable(), name)
+
+    def test_text_mode_prints_no_runnable_command_for_an_odd_scope(self):
+        import contextlib
+        import io
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        config = Path(tmp.name)
+        _write(config / "plugins" / "installed_plugins.json", {"plugins": {
+            "superpowers@m": [{"scope": "user; touch x"}, {"scope": "user"}]}})
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=str(config), HOME=tmp.name)
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env), mock.patch.object(doctor, "check_env", return_value=[
+                {"name": "platform_supported", "ok": True, "detail": "x"}]):
+            with contextlib.redirect_stdout(buf):
+                doctor.main([])
+        out = buf.getvalue()
+        self.assertEqual(out.count("claude plugin uninstall"), 1)
+        self.assertIn("touch x", out)  # shown, escaped, with no command
 
 
 class PluginDataTest(CompatBase):
@@ -643,6 +876,58 @@ class SubagentModelTest(CompatBase):
         _write(self.cwd / ".claude" / "settings.json", "{nope")
         _write(self.cwd / ".claude" / "settings.local.json", {"env": "bad"})
         self.assertTrue(self.checks()["subagent_model"]["ok"])
+
+    def test_oversized_repo_settings_are_skipped_like_an_absent_file(self):
+        pad = "A" * (doctor.compat.REPO_READ_LIMIT + 10)
+        for name in ("settings.json", "settings.local.json"):
+            _write(self.cwd / ".claude" / name, {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}, "pad": pad})
+        self.assertTrue(self.checks()["subagent_model"]["ok"])
+
+    def test_repo_settings_just_under_the_cap_are_read(self):
+        text = json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}, "pad": ""})
+        pad = "A" * (doctor.compat.REPO_READ_LIMIT - len(text.encode("utf-8")))
+        _write(self.cwd / ".claude" / "settings.json", json.dumps(
+            {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}, "pad": pad}))
+        self.assertEqual(os.path.getsize(str(self.cwd / ".claude" / "settings.json")),
+                         doctor.compat.REPO_READ_LIMIT)
+        self.assertFalse(self.checks()["subagent_model"]["ok"])
+
+    def test_the_users_own_settings_are_not_capped(self):
+        pad = "A" * (doctor.compat.REPO_READ_LIMIT + 10)
+        _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}, "pad": pad})
+        self.assertFalse(self.checks()["subagent_model"]["ok"])
+
+    def test_a_symlink_to_a_regular_file_is_still_read(self):
+        real = _write(self.tmp / "real.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        (self.cwd / ".claude").mkdir()
+        os.symlink(str(real), str(self.cwd / ".claude" / "settings.json"))
+        self.assertFalse(self.checks()["subagent_model"]["ok"])
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_a_device_symlink_is_skipped_without_reading_it(self):
+        (self.cwd / ".claude").mkdir()
+        os.symlink("/dev/zero", str(self.cwd / ".claude" / "settings.json"))
+        os.symlink("/dev/zero", str(self.cwd / ".mcp.json"))
+        probe = ("import resource, sys\n"
+                 "try:\n    resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))\n"
+                 "except (ValueError, OSError):\n    sys.exit(77)\n"
+                 "sys.path.insert(0, %r)\nimport compat, doctor\n"
+                 "print(compat.subagent_model_source({}, %r), doctor.find_mcp_servers({'HOME': %r}, %r))\n"
+                 % (str(SCRIPTS), str(self.cwd), str(self.tmp), str(self.cwd)))
+        code, out, err = _run_probe(probe)
+        if code == 77:
+            self.skipTest("cannot limit memory here")
+        self.assertEqual(code, 0, err[-300:])
+        self.assertEqual(out.strip(), "None []")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_a_fifo_is_skipped_without_blocking(self):
+        (self.cwd / ".claude").mkdir()
+        os.mkfifo(str(self.cwd / ".claude" / "settings.json"))
+        probe = ("import sys\nsys.path.insert(0, %r)\nimport compat\n"
+                 "print(compat.subagent_model_source({}, %r))\n" % (str(SCRIPTS), str(self.cwd)))
+        code, out, err = _run_probe(probe, timeout=20)
+        self.assertEqual(out.strip(), "None", err[-300:])
 
     def test_the_owners_settings_are_never_written(self):
         path = _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})

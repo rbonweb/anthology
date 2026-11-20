@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,10 @@ EXPECTED_TOOL_SERVER = "browseros-neo"
 DOCKER_TIMEOUT = 10
 SUPPORTED_SYSTEMS = ("Darwin", "Linux")
 DUPLICATE_NAMES = ("superpowers", "design-skills")
+UNINSTALL_SCOPES = ("user", "project", "local")  # `claude plugin uninstall -s` accepts these
+SAFE_PLUGIN_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?")
+SHOWN_NAME_LIMIT = 80
+SHOWN_SERVERS = 5
 DEFAULT_LOCK = Path(__file__).resolve().parent.parent / "rtk.lock"
 CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported", "plugin_read_rule",
           "browseros_tools", "plugin_data", "path_wrappers", "agent_memory_path", "subagent_model")
@@ -53,8 +58,15 @@ def _which(name, env):
 def _read_json(path):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: absurdly nested JSON
         return None
+
+
+def _safe(value, limit=SHOWN_NAME_LIMIT):
+    """`value` escaped for a terminal line: control and non-printable characters (ANSI escapes,
+    newlines, bidi marks) become backslash escapes, as in `repr`; long values are cut."""
+    text = repr(str(value))[1:-1]
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _check_python(env):
@@ -97,7 +109,10 @@ def find_mcp_servers(env, cwd):
 
     Scopes: user and local (`.claude.json`), project (`.mcp.json`), plugin (installed plugins'
     `.mcp.json` and `plugin.json`), managed. Reads names only, never a URL, command, argument,
-    header or token. Missing or malformed files are skipped. Never connects to a server."""
+    header or token. Missing or malformed files are skipped. Never connects to a server.
+
+    A project server also carries `"approved"`: Claude Code loads a repo's `.mcp.json` servers only
+    after the user approves them (see `_project_approval`); the other scopes always load."""
     found = []
 
     def add(names, scope, prefix="mcp__%s__"):
@@ -119,9 +134,13 @@ def find_mcp_servers(env, cwd):
 
     top = compat.repo_top(cwd)
     for folder in (here, *here.parents):
-        mcp = compat.read_json(folder / ".mcp.json")
+        mcp = compat.read_json(folder / ".mcp.json", compat.REPO_READ_LIMIT)  # the clone controls it
         if mcp is not None:
-            add(_servers_in(mcp.get("mcpServers") if isinstance(mcp, dict) else None), "project")
+            names = _servers_in(mcp.get("mcpServers") if isinstance(mcp, dict) else None)
+            approved = _project_approval(env, data, here, folder)
+            for name in names:
+                found.append({"name": name, "scope": "project", "tool_prefix": "mcp__%s__" % name,
+                              "approved": approved(name)})
             break
         if folder == top:
             break
@@ -135,11 +154,11 @@ def find_mcp_servers(env, cwd):
             if not isinstance(path, str) or not path:
                 continue
             names = []
-            mcp = compat.read_json(Path(path) / ".mcp.json")
+            mcp = compat.read_json(Path(path) / ".mcp.json", compat.REPO_READ_LIMIT)
             if isinstance(mcp, dict):
                 names += _servers_in(mcp["mcpServers"] if isinstance(mcp.get("mcpServers"), dict) else mcp)
             for manifest in (Path(path) / ".claude-plugin" / "plugin.json", Path(path) / "plugin.json"):
-                meta = compat.read_json(manifest)
+                meta = compat.read_json(manifest, compat.REPO_READ_LIMIT)
                 if isinstance(meta, dict):
                     names += _servers_in(meta.get("mcpServers"))
             add(sorted(set(names)), "plugin", "mcp__plugin_%s_%%s__" % plugin)
@@ -151,8 +170,47 @@ def find_mcp_servers(env, cwd):
     return found
 
 
-def _browseros_servers(env, cwd):
-    return [s for s in find_mcp_servers(env, cwd) if "browseros" in s["name"].lower()]
+def _names(value):
+    return {n for n in value if isinstance(n, str)} if isinstance(value, list) else set()
+
+
+def _project_approval(env, claude_json, here, project_root):
+    """`approved(name)` for servers in `<project_root>/.mcp.json`: Claude Code loads them only
+    after the user approves them (Ruling: m14).
+
+    Approval is read from places the user owns or Claude Code writes: user `settings.json`, the
+    `.claude.json` entry of the project (or an ancestor) and the project's `.claude/settings.local.json`
+    (git-ignored by Anthology). The project's shared `.claude/settings.json` is never consulted: a
+    clone must not approve its own servers. Each source may hold `enableAllProjectMcpServers: true`
+    or an `enabledMcpjsonServers` list; `disabledMcpjsonServers` wins. Anything unreadable or
+    oddly shaped means "not approved"."""
+    sources = [_read_json(compat.config_dir(env) / "settings.json")]
+    projects = claude_json.get("projects") if isinstance(claude_json, dict) else None
+    if isinstance(projects, dict):
+        sources += [projects.get(str(folder)) for folder in (here, *here.parents)]
+    sources.append(compat.read_json(Path(project_root) / ".claude" / "settings.local.json",
+                                    compat.REPO_READ_LIMIT))
+    sources = [d for d in sources if isinstance(d, dict)]
+    everything = any(d.get("enableAllProjectMcpServers") is True for d in sources)
+    enabled = set().union(*[_names(d.get("enabledMcpjsonServers")) for d in sources])
+    disabled = set().union(*[_names(d.get("disabledMcpjsonServers")) for d in sources])
+    return lambda name: name not in disabled and (everything or name in enabled)
+
+
+def _browseros_servers(env, cwd, loaded=True):
+    """BrowserOS servers Claude Code loads (`loaded`), or those in a project file nobody approved."""
+    return [s for s in find_mcp_servers(env, cwd)
+            if "browseros" in s["name"].lower() and s.get("approved", True) == loaded]
+
+
+def _unapproved_note(env, cwd):
+    names = [_safe(s["name"]) for s in _browseros_servers(env, cwd, loaded=False)]
+    if not names:
+        return ""
+    shown = ", ".join(names[:SHOWN_SERVERS]) + (" and %d more" % (len(names) - SHOWN_SERVERS)
+                                                 if len(names) > SHOWN_SERVERS else "")
+    return ("found in an unapproved project .mcp.json (%s), so it is not counted; approve it in Claude "
+            "Code or add the server at user scope" % shown)
 
 
 def _browseros_installed(env):
@@ -176,20 +234,28 @@ def _browseros_installed(env):
 def _check_browseros(env, cwd):
     if _browseros_servers(env, cwd):
         return True, "a BrowserOS MCP server is configured"
+    note = _unapproved_note(env, cwd)
     if _browseros_installed(env):
-        return True, "BrowserOS is installed"
+        return True, "BrowserOS is installed" + ("; a BrowserOS MCP server was " + note if note else "")
     return False, ("BrowserOS Neo not found. It is the only browser Anthology uses; install it "
-                   "yourself (agents never install a browser) and add its MCP server to Claude Code")
+                   "yourself (agents never install a browser) and add its MCP server to Claude Code"
+                   + ("; a BrowserOS MCP server was " + note if note else ""))
 
 
 def _check_browseros_tools(env, cwd):
     """Agents and the guide call `mcp__browseros-neo__*`. Config files only; no live tool listing."""
     servers = _browseros_servers(env, cwd)
     if not servers:
+        note = _unapproved_note(env, cwd)
+        if note:
+            return None, "no BrowserOS MCP server is loaded: one was " + note
         return None, "no BrowserOS MCP server is configured (see the browseros check)"
     if any(s["name"] == EXPECTED_TOOL_SERVER and s["scope"] != "plugin" for s in servers):
         return True, "the BrowserOS MCP server is named browseros-neo (tools: mcp__browseros-neo__*)"
-    found = "; ".join("%s (%s scope, tools %s*)" % (s["name"], s["scope"], s["tool_prefix"]) for s in servers)
+    found = "; ".join("%s (%s scope, tools %s*)" % (_safe(s["name"]), s["scope"], _safe(s["tool_prefix"]))
+                      for s in servers[:SHOWN_SERVERS])
+    if len(servers) > SHOWN_SERVERS:
+        found += "; and %d more" % (len(servers) - SHOWN_SERVERS)
     return False, ("agents call mcp__browseros-neo__* tools, but the BrowserOS server is configured as: %s. "
                    "Name the server browseros-neo (user, local, project or managed scope)" % found)
 
@@ -326,7 +392,11 @@ def check_env(env=None, lock=None, plugin_root=None, cwd=None):
 
 def find_duplicates(installed):
     """Installs of the official `superpowers` / `design-skills` plugins, with U4 uninstall
-    commands. `installed` is the parsed `installed_plugins.json` (version 2)."""
+    commands. `installed` is the parsed `installed_plugins.json` (version 2).
+
+    Each item is `{"plugin", "scope", "command"}` with `plugin` and `scope` escaped for printing.
+    `command` is only built from a scope in `UNINSTALL_SCOPES` (a missing scope means user) and a
+    plugin key of plain name characters; otherwise it is None and no command is offered."""
     plugins = installed.get("plugins") if isinstance(installed, dict) else None
     found = []
     for name, entries in sorted(plugins.items()) if isinstance(plugins, dict) else ():
@@ -335,15 +405,33 @@ def find_duplicates(installed):
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            scope = entry.get("scope") if isinstance(entry.get("scope"), str) else "user"
-            found.append({"plugin": name, "scope": scope,
-                          "command": "claude plugin uninstall %s -s %s" % (name, scope)})
+            scope = entry.get("scope")
+            scope = "user" if scope is None else scope
+            command = None
+            if isinstance(name, str) and scope in UNINSTALL_SCOPES and SAFE_PLUGIN_KEY.fullmatch(name):
+                command = "claude plugin uninstall %s -s %s" % (name, scope)
+            found.append({"plugin": _safe(name), "scope": _safe(scope), "command": command})
     return found
 
 
-def installed_plugins(env=None):
+def installed_plugins_state(env=None):
+    """`(parsed installed_plugins.json or None, "ok" | "missing" | "unreadable")`."""
     env = dict(os.environ) if env is None else env
-    return _read_json(_config_dir(env) / "plugins" / "installed_plugins.json")
+    path = _config_dir(env) / "plugins" / "installed_plugins.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError):
+        return None, "unreadable"
+    try:
+        return json.loads(text), "ok"
+    except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON
+        return None, "unreadable"
+
+
+def installed_plugins(env=None):
+    return installed_plugins_state(env)[0]
 
 
 def main(argv=None):
@@ -351,15 +439,23 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
     env = dict(os.environ)
-    result = {"checks": check_env(env), "duplicates": find_duplicates(installed_plugins(env))}
+    installed, state = installed_plugins_state(env)
+    result = {"checks": check_env(env), "duplicates": find_duplicates(installed), "installed_plugins": state}
     if args.json:
         print(json.dumps(result, indent=2))
     else:
         for c in result["checks"]:
             mark = {True: "ok", False: "FAIL", None: "n/a"}[c["ok"]]
             print("%-18s %-4s %s" % (c["name"], mark, c["detail"]))
+        if state == "unreadable":
+            print("duplicates: installed_plugins.json is unreadable, so installs of the bundled plugins "
+                  "were not checked")
         for d in result["duplicates"]:
-            print("duplicate: %s (%s): %s" % (d["plugin"], d["scope"], d["command"]))
+            if d["command"]:
+                print("duplicate: %s (%s): %s" % (d["plugin"], d["scope"], d["command"]))
+            else:
+                print("duplicate: %s (scope '%s' is not one of %s): no uninstall command offered"
+                      % (d["plugin"], d["scope"], ", ".join(UNINSTALL_SCOPES)))
     supported = [c for c in result["checks"] if c["name"] == "platform_supported"][0]["ok"]
     return 0 if supported else 2
 
