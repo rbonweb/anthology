@@ -168,7 +168,8 @@ def preview(plugin_root, cwd=None, env=None):
     personal = _personal_dir(env)
     return {
         "supported": True,
-        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root)},
+        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root,
+                                         cwd=cwd)},
         "duplicates": doctor.find_duplicates(doctor.installed_plugins(env)),
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,

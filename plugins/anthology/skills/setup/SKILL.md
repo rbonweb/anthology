@@ -25,6 +25,17 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      to install or start it (OrbStack or Docker Desktop).
    - BrowserOS Neo missing: it is the only browser Anthology uses. Ask the user to install it
      themselves and add its MCP server to Claude Code. Never offer to install any browser.
+   - `browseros_tools` false: agents call `mcp__browseros-neo__*`, so the BrowserOS MCP server must be
+     named exactly `browseros-neo` (user, local, project or managed scope; a plugin-provided server gets
+     a different tool prefix). Show the `detail`, which names what was found, and ask the user to
+     rename it. `null` means no BrowserOS server is configured (the BrowserOS check above covers it).
+   - `subagent_model` false: show the `detail` warning clearly. `CLAUDE_CODE_SUBAGENT_MODEL` overrides
+     every agent's model, so the roster's opus/sonnet/haiku tiers do not apply. Anthology never
+     changes it, and whether to keep it is the user's choice. Continue either way.
+   - `path_wrappers`, `plugin_data` or `agent_memory_path` false: a Claude Code change broke an
+     assumption Anthology relies on (the plugin's `bin/` on PATH, the plugin data folder, or where
+     agent memory is written). Show the `detail`, say so, and ask the user to report it. `null` just
+     means there is nothing to check yet.
    - Node missing: some project tooling needs it; explain, and continue.
    - rtk `null`: the rtk wiring is not part of this install yet; the rtk step is skipped.
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the

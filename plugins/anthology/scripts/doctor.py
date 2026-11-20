@@ -6,6 +6,9 @@ None for "cannot tell yet"). `find_duplicates(installed)` lists installs of the 
 `superpowers` and `design-skills` plugins, which Anthology already bundles. Nothing here
 prints a URL, a token or a path out of the user's MCP configuration. Python stdlib only (3.9+).
 
+Limitation: the BrowserOS tool-name check (`browseros_tools`) reads configuration files only. It
+never connects to the server, so it cannot list the tools the server really offers.
+
     python3 doctor.py [--json]
 """
 from __future__ import annotations
@@ -20,14 +23,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import compat  # noqa: E402
 import settings_patch  # noqa: E402
 
-BROWSEROS_APP = Path("/Applications/BrowserOS.app")
+SYSTEM_APPLICATIONS = Path("/Applications")
+MANAGED_MCP_PATHS = (Path("/Library/Application Support/ClaudeCode/managed-mcp.json"),
+                     Path("/etc/claude-code/managed-mcp.json"))
+BROWSEROS_BINARIES = ("browseros", "browseros-neo", "BrowserOS")
+EXPECTED_TOOL_SERVER = "browseros-neo"
 DOCKER_TIMEOUT = 10
 SUPPORTED_SYSTEMS = ("Darwin", "Linux")
 DUPLICATE_NAMES = ("superpowers", "design-skills")
 DEFAULT_LOCK = Path(__file__).resolve().parent.parent / "rtk.lock"
-CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported", "plugin_read_rule")
+CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported", "plugin_read_rule",
+          "browseros_tools", "plugin_data", "path_wrappers", "agent_memory_path", "subagent_model")
 
 
 def _config_dir(env):
@@ -74,17 +83,115 @@ def _check_docker(env):
     return False, "Docker is on PATH but not running; start Docker and try again"
 
 
-def _check_browseros(env):
-    claude_json = (Path(env["CLAUDE_CONFIG_DIR"]) / ".claude.json" if env.get("CLAUDE_CONFIG_DIR")
-                   else Path(env.get("HOME") or os.path.expanduser("~")) / ".claude.json")
-    data = _read_json(claude_json)
-    servers = data.get("mcpServers") if isinstance(data, dict) else None
-    if isinstance(servers, dict) and any("browseros" in str(name).lower() for name in servers):
+def _home(env):
+    return Path(env.get("HOME") or os.path.expanduser("~"))
+
+
+def _servers_in(data):
+    """Server names in an `mcpServers` object (names only; nothing else is ever read out)."""
+    return [str(n) for n in data] if isinstance(data, dict) else []
+
+
+def find_mcp_servers(env, cwd):
+    """Every MCP server Claude Code would see from `cwd`, as `{"name", "scope", "tool_prefix"}`.
+
+    Scopes: user and local (`.claude.json`), project (`.mcp.json`), plugin (installed plugins'
+    `.mcp.json` and `plugin.json`), managed. Reads names only, never a URL, command, argument,
+    header or token. Missing or malformed files are skipped. Never connects to a server."""
+    found = []
+
+    def add(names, scope, prefix="mcp__%s__"):
+        for name in names:
+            found.append({"name": name, "scope": scope, "tool_prefix": prefix % name})
+
+    base = Path(env["CLAUDE_CONFIG_DIR"]) if env.get("CLAUDE_CONFIG_DIR") else _home(env)
+    data = compat.read_json(base / ".claude.json")
+    data = data if isinstance(data, dict) else {}
+    add(_servers_in(data.get("mcpServers")), "user")
+
+    here = Path(os.path.realpath(str(cwd)))
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        for folder in (here, *here.parents):
+            entry = projects.get(str(folder))
+            if isinstance(entry, dict):
+                add(_servers_in(entry.get("mcpServers")), "local")
+
+    top = compat.repo_top(cwd)
+    for folder in (here, *here.parents):
+        mcp = compat.read_json(folder / ".mcp.json")
+        if mcp is not None:
+            add(_servers_in(mcp.get("mcpServers") if isinstance(mcp, dict) else None), "project")
+            break
+        if folder == top:
+            break
+
+    installed = compat.read_json(compat.config_dir(env) / "plugins" / "installed_plugins.json")
+    plugins = installed.get("plugins") if isinstance(installed, dict) else None
+    for key, entries in sorted(plugins.items()) if isinstance(plugins, dict) else ():
+        plugin = str(key).split("@", 1)[0]
+        for entry in entries if isinstance(entries, list) else ():
+            path = entry.get("installPath") if isinstance(entry, dict) else None
+            if not isinstance(path, str) or not path:
+                continue
+            names = []
+            mcp = compat.read_json(Path(path) / ".mcp.json")
+            if isinstance(mcp, dict):
+                names += _servers_in(mcp["mcpServers"] if isinstance(mcp.get("mcpServers"), dict) else mcp)
+            for manifest in (Path(path) / ".claude-plugin" / "plugin.json", Path(path) / "plugin.json"):
+                meta = compat.read_json(manifest)
+                if isinstance(meta, dict):
+                    names += _servers_in(meta.get("mcpServers"))
+            add(sorted(set(names)), "plugin", "mcp__plugin_%s_%%s__" % plugin)
+
+    for path in MANAGED_MCP_PATHS:
+        managed = compat.read_json(path)
+        if isinstance(managed, dict):
+            add(_servers_in(managed.get("mcpServers")), "managed")
+    return found
+
+
+def _browseros_servers(env, cwd):
+    return [s for s in find_mcp_servers(env, cwd) if "browseros" in s["name"].lower()]
+
+
+def _browseros_installed(env):
+    """A BrowserOS app (macOS), binary on PATH or AppImage (Linux), through injectable roots."""
+    home = _home(env)
+    for root in (SYSTEM_APPLICATIONS, home / "Applications"):
+        try:
+            if any(p.is_dir() for p in root.glob("BrowserOS*.app")):
+                return True
+        except OSError:
+            pass
+    for root in (home / "Applications", home / ".local" / "bin"):
+        try:
+            if any(p.is_file() for p in root.glob("BrowserOS*.AppImage")):
+                return True
+        except OSError:
+            pass
+    return any(_which(name, env) for name in BROWSEROS_BINARIES)
+
+
+def _check_browseros(env, cwd):
+    if _browseros_servers(env, cwd):
         return True, "a BrowserOS MCP server is configured"
-    if BROWSEROS_APP.exists() or _which("browseros", env):
+    if _browseros_installed(env):
         return True, "BrowserOS is installed"
     return False, ("BrowserOS Neo not found. It is the only browser Anthology uses; install it "
                    "yourself (agents never install a browser) and add its MCP server to Claude Code")
+
+
+def _check_browseros_tools(env, cwd):
+    """Agents and the guide call `mcp__browseros-neo__*`. Config files only; no live tool listing."""
+    servers = _browseros_servers(env, cwd)
+    if not servers:
+        return None, "no BrowserOS MCP server is configured (see the browseros check)"
+    if any(s["name"] == EXPECTED_TOOL_SERVER and s["scope"] != "plugin" for s in servers):
+        return True, "the BrowserOS MCP server is named browseros-neo (tools: mcp__browseros-neo__*)"
+    found = "; ".join("%s (%s scope, tools %s*)" % (s["name"], s["scope"], s["tool_prefix"]) for s in servers)
+    return False, ("agents call mcp__browseros-neo__* tools, but the BrowserOS server is configured as: %s. "
+                   "Name the server browseros-neo (user, local, project or managed scope)" % found)
 
 
 def _check_rtk(env, lock):
@@ -141,13 +248,73 @@ def _check_plugin_rule(env, plugin_root):
     return False, "the plugin moved or the rule is gone; re-run /anthology:setup"
 
 
-def check_env(env=None, lock=None, plugin_root=None):
+def _plugin_root(env, plugin_root):
+    return Path(plugin_root or env.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
+
+
+def _check_plugin_data(env):
+    """`${CLAUDE_PLUGIN_DATA}` only exists in hook environments, so the folder session start
+    recorded in state.json stands in for it."""
+    state = _read_json(_config_dir(env) / "anthology" / "state.json")
+    recorded = env.get("CLAUDE_PLUGIN_DATA") or (state.get("data_dir") if isinstance(state, dict) else None)
+    if not recorded:
+        return None, "session start has not run since install, so no plugin data folder is recorded yet"
+    if Path(str(recorded)).is_dir():
+        return True, "the plugin data folder exists"
+    return False, ("session start recorded a data folder that is gone; start a new session, and if it "
+                   "stays gone Claude Code changed where it keeps plugin data (report it)")
+
+
+def _check_path_wrappers(env, plugin_root):
+    root = _plugin_root(env, plugin_root)
+    bad = compat.wrapper_problems(root)
+    if bad:
+        return False, "the plugin's bin/ is missing or not executable: %s (reinstall the plugin)" % ", ".join(
+            "bin/" + n for n in bad)
+    if env.get("CLAUDECODE"):
+        found = _which("anthology-mem", env)
+        try:
+            ours = bool(found) and os.path.realpath(os.path.dirname(found)) == os.path.realpath(str(root / "bin"))
+        except OSError:
+            ours = False
+        if not ours:
+            return False, "the plugin's bin/ is not on PATH; agents cannot run anthology-mem"
+        return True, "the plugin's bin/ wrappers exist and bin/ is on PATH"
+    return True, "the plugin's bin/ wrappers exist and are executable"
+
+
+def _check_agent_memory(env, cwd):
+    bad, good = compat.agent_memory_problems(cwd)
+    if bad:
+        return False, ("Claude Code wrote agent memory to .claude/agent-memory/%s/; Anthology expects "
+                       "anthology-<agent>/ (report this: a Claude Code change broke an assumption)" % bad[0])
+    if good:
+        return True, "agent memory is under .claude/agent-memory/anthology-<agent>/"
+    return None, "no agent memory folders yet"
+
+
+def _check_subagent_model(env, cwd):
+    where = compat.subagent_model_source(env, cwd)
+    if where is None:
+        return True, "CLAUDE_CODE_SUBAGENT_MODEL is not set"
+    return False, ("CLAUDE_CODE_SUBAGENT_MODEL is set (%s): it overrides every agent's model, so the "
+                   "roster's opus/sonnet/haiku tiers do not apply. Anthology never changes it; remove it "
+                   "yourself if you want the tiers." % where)
+
+
+def check_env(env=None, lock=None, plugin_root=None, cwd=None):
     env = dict(os.environ) if env is None else env
+    cwd = cwd or os.getcwd()
     runners = (
         ("python3", _check_python), ("node", _check_node), ("docker", _check_docker),
-        ("browseros", _check_browseros), ("rtk", lambda e: _check_rtk(e, lock)),
+        ("browseros", lambda e: _check_browseros(e, cwd)), ("rtk", lambda e: _check_rtk(e, lock)),
         ("platform_supported", _check_platform),
-        ("plugin_read_rule", lambda e: _check_plugin_rule(e, plugin_root)))
+        ("plugin_read_rule", lambda e: _check_plugin_rule(e, plugin_root)),
+        ("browseros_tools", lambda e: _check_browseros_tools(e, cwd)),
+        ("plugin_data", _check_plugin_data),
+        ("path_wrappers", lambda e: _check_path_wrappers(e, plugin_root)),
+        ("agent_memory_path", lambda e: _check_agent_memory(e, cwd)),
+        ("subagent_model", lambda e: _check_subagent_model(e, cwd)))
     out = []
     for name, fn in runners:
         try:
