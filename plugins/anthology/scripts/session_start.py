@@ -34,7 +34,7 @@ try:
     import settings_patch
     import state
     _IMPORT_ERROR = None
-except ImportError as _exc:  # a broken install must still not fail the session
+except Exception as _exc:  # a broken or half-updated install must still not fail the session
     _IMPORT_ERROR = _exc
 
 REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
@@ -110,6 +110,8 @@ def _reconcile_rtk(root, data_dir):
         import rtk_install
     except ImportError:
         return "anthology: rtk wiring not present yet; skipped"
+    except Exception as exc:  # e.g. a SyntaxError in a half-updated install
+        return "anthology: rtk wiring failed to load (%s); skipped" % type(exc).__name__
     if not data_dir:
         return None
     try:

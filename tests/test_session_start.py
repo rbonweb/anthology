@@ -627,6 +627,19 @@ class ShellWrapperTest(MemCase):
         self.assertIn("python3", out["systemMessage"])
         self.assertIn("3.9", out["systemMessage"])
 
+    def test_broken_sibling_module_still_exits_zero_with_json(self):
+        # A half-written plugin update: a sibling module that fails to compile.
+        copy = self.tmp / "plugin-copy"
+        shutil.copytree(str(PLUGIN / "scripts"), str(copy / "scripts"))
+        (copy / "scripts" / "memory_sync.py").write_text("def broken(:\n", encoding="utf-8")
+        env = {"HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.config), "PATH": os.environ.get("PATH", ""),
+               "CLAUDE_PLUGIN_ROOT": str(copy), "CLAUDE_PLUGIN_DATA": str(self.data)}
+        proc = subprocess.run([sys.executable, str(copy / "scripts" / "session_start.py")], input=b"{}",
+                              env=env, capture_output=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout.decode("utf-8"))
+        self.assertIn("anthology", out["systemMessage"])
+
     def test_script_uses_only_sh_builtins_on_the_missing_path(self):
         text = self.SH.read_text(encoding="utf-8")
         self.assertIn("command -v python3", text)
