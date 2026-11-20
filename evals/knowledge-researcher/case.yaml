@@ -1,0 +1,92 @@
+schema_version: "1.0"
+name: knowledge-researcher
+description: 'anthology:researcher reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:researcher agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:researcher"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-competitive-brief
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/competitive-brief/SKILL\.md'
+  - name: order-competitive-brief
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-competitive-brief
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
+  - name: read-synthesize-research
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/synthesize-research/SKILL\.md'
+  - name: order-synthesize-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-competitive-brief-synthesize-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/competitive-brief/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
+  - name: read-research-synthesis
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/research-synthesis/SKILL\.md'
+  - name: order-research-synthesis
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-synthesize-research-research-synthesis
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/synthesize-research/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
+  - name: read-ds-ux-research
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'
+  - name: order-ds-ux-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-research-synthesis-ds-ux-research
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/research-synthesis/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
+  - name: read-ds-journey-mapping
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/journey-mapping/SKILL\.md'
+  - name: order-ds-journey-mapping
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/journey-mapping/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-ux-research-ds-journey-mapping
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-research/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/journey-mapping/SKILL\.md'}

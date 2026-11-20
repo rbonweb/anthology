@@ -114,6 +114,50 @@ class CiJobTests(unittest.TestCase):
         self.assertEqual(on_disk, PLUGINS)
 
 
+class MemoryDiffStartupBudgetCliSyntaxJobTests(unittest.TestCase):
+    def setUp(self):
+        self.jobs = load_workflow(ROOT / ".github/workflows/ci.yml")["jobs"]
+
+    @staticmethod
+    def run_text(job):
+        return "\n".join(s.get("run", "") for s in job["steps"])
+
+    def test_jobs_exist_with_a_timeout(self):
+        for name in ("memory-diff", "startup-budget", "cli-syntax"):
+            self.assertIn(name, self.jobs)
+            self.assertEqual(self.jobs[name].get("timeout-minutes"), 15, name)
+
+    def test_memory_diff_is_pull_request_only_and_passes_the_shas_by_env(self):
+        job = self.jobs["memory-diff"]
+        self.assertEqual(job["if"], "github.event_name == 'pull_request'")
+        checkout = CiJobTests.checkout_of(job)
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        step = next(s for s in job["steps"] if "memory_diff.py" in s.get("run", ""))
+        self.assertEqual(step["env"]["BASE"], "${{ github.event.pull_request.base.sha }}")
+        self.assertEqual(step["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha }}")
+        self.assertIn('"$BASE" "$HEAD_SHA"', step["run"])
+        self.assertNotIn("permissions", job)  # the workflow's contents: read is enough
+        self.assertNotIn("gh pr", self.run_text(job))  # it comments nothing on the PR
+
+    def test_startup_budget_runs_both_budget_tests_in_the_pinned_image(self):
+        text = self.run_text(self.jobs["startup-budget"])
+        self.assertIn("ci/images/python.Dockerfile", text)
+        self.assertIn("--require-hashes -r tests/requirements.txt", text)
+        self.assertIn("startup_budget", text)
+        self.assertIn("test_roster", text)
+        self.assertIn("test_session_start", text)
+        self.assertIn("set -e", text)
+
+    def test_cli_syntax_installs_the_pinned_cli_and_runs_the_smoke(self):
+        job = self.jobs["cli-syntax"]
+        text = self.run_text(job)
+        self.assertIn("npm ci --prefix ci/claude-code", text)
+        self.assertIn("evals/smoke/smoke.py", text)
+        self.assertIn("cli-syntax", text)
+        self.assertIn("ci/claude-code/node_modules/.bin/claude", text)
+        self.assertEqual(job["env"]["DISABLE_AUTOUPDATER"], "1")
+
+
 class UpstreamWatchWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.wf = load_workflow(ROOT / ".github/workflows/upstream-watch.yml")

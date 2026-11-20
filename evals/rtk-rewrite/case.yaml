@@ -1,0 +1,29 @@
+schema_version: "1.0"
+name: rtk-rewrite
+description: 'rtk condenses git status output.'
+tags: [rtk]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run these two Bash commands, one per tool call: first `git init -q rtkrepo`, then `git -C rtkrepo status`. Report the second command''s output verbatim.'
+  max_turns: 6
+  timeout_seconds: 180
+  model: haiku
+  allowed_tools: [Bash]
+runs: 1
+graders:
+  - name: ran-status
+    type: tool_used
+    tool: Bash
+    input_match: 'git -C rtkrepo status'
+  - name: rtk-output
+    type: regex
+    target: trace
+    pattern: 'clean . nothing to commit|Clean working tree'
+  - name: not-raw-git
+    type: regex
+    target: trace
+    pattern: 'create/copy files and use'
+    match: not_contains
