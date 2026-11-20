@@ -54,10 +54,11 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - `rtk bypass <cmd>` only when a result is unusable.
 
 ## 8. Memory
-- project, feedback, reference notes: repo `.claude/memory/` (approved repos only). user notes: personal memory, indexed below.
+- project, feedback, reference notes: repo `.claude/memory/` (approved repos only).
+- user notes (role, preferences): personal memory at the path given below, never into the repo. Never commit a `user` note.
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
-- Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit memory as `chore(memory): ...`.
+- Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit repo memory as `chore(memory): ...`.
 - Agents save notes with `anthology-mem save`. Docs-only and read-only agents leave them uncommitted: commit their `.claude/agent-memory/` changes.
 - Act on each report's "Worth remembering": save what is worth keeping; delete the notes it flags as wrong (`save` cannot delete).
-- Never save secrets: repo memory is visible to everyone with the repo.
+- Never save secrets, home paths, emails or private hosts in repo memory: everyone with the repo sees it.

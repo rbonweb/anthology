@@ -163,9 +163,9 @@ class CavemanTest(unittest.TestCase):
     DESCRIPTION = "the anthology house style for every agent's chat and reports"
     DROPPED = ("stop caveman", "normal mode", "/caveman", "ultracave", "megacave", "wenyan")
 
-    def test_only_the_skill_file_is_shipped(self):
+    def test_only_the_skill_file_and_the_license_texts_are_shipped(self):
         self.assertEqual([p.relative_to(KNOWLEDGE / "caveman").as_posix() for p in files_of("caveman")],
-                         ["SKILL.md"])
+                         ["LICENSE", "LICENSE-MIT", "NOTICE", "SKILL.md"])
 
     def test_the_modes_aliases_and_triggers_are_gone(self):
         for path in files_of("caveman"):

@@ -33,6 +33,13 @@ NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, m
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 
 
+OPS_CHANGED = "anthology settings changed in this release — run /anthology:setup to review"
+
+
+def current_ops_version():
+    return settings_patch.ops_version(settings_patch.setup_ops(PLUGIN))
+
+
 BLOCKS = ('import sys\nsys.stdin.read()\nsys.stderr.write("Blocked by anthology-guardrails (G1): x\\n")\n'
           'sys.exit(2)\n')
 
@@ -69,14 +76,16 @@ class SessionCase(MemCase):
         self.plugin_root = PLUGIN
         os.environ["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
         os.environ["CLAUDE_PLUGIN_DATA"] = str(self.data)
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
         self.rtk = FakeRtk()
         patcher = mock.patch.dict(sys.modules, {"rtk_install": self.rtk})
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def mark_setup(self, plugin_root=None):
-        """Pretend /anthology:setup ran: state.setup_done plus the U1 allow rule in settings.json."""
-        state.write(setup_done="0.1.0")
+        """Pretend /anthology:setup ran: state.setup_done and the current op-set version, plus the
+        U1 allow rule in settings.json."""
+        state.write(setup_done="0.1.0", settings_ops_version=current_ops_version())
         rule = settings_patch.plugin_read_rule(plugin_root or PLUGIN)
         write(self.config / "settings.json", json.dumps({"permissions": {"allow": [rule]}}))
 
@@ -97,6 +106,7 @@ class SessionCase(MemCase):
         root = base / "anthology"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
         guard = base / "anthology-guardrails" / "scripts"
         guard.mkdir(parents=True)
         (guard / "guard.py").write_text(guard_body, encoding="utf-8")
@@ -147,7 +157,7 @@ class OutputTest(SessionCase):
         self.assertIn("could not read settings.json", msg)
 
     def test_settings_with_a_bom_and_the_rule_are_quiet(self):
-        state.write(setup_done="0.1.0")
+        state.write(setup_done="0.1.0", settings_ops_version=current_ops_version())
         rule = settings_patch.plugin_read_rule(PLUGIN)
         write(self.config / "settings.json", "\ufeff" + json.dumps({"permissions": {"allow": [rule]}}))
         self.assertNotIn("systemMessage", self.go())
@@ -265,6 +275,236 @@ class OutputTest(SessionCase):
         write(repo / ".claude" / "memory" / "project-a.md", note_text("project-a", "project", "First"))
         out = self.go(cwd=repo)
         self.assertIn(memory_sync.HINT, out["systemMessage"].splitlines())
+
+
+class OpsVersionTest(SessionCase):
+    """I6: a release that changes setup's settings ops gets one note; nothing is applied."""
+
+    def test_same_version_is_quiet(self):
+        self.mark_setup()
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_changed_version_is_one_note_and_settings_are_untouched(self):
+        self.mark_setup()
+        state.write(settings_ops_version="1-0000000000000000")
+        before = (self.config / "settings.json").read_bytes()
+        msg = self.go()["systemMessage"]
+        self.assertEqual(msg.splitlines(), [OPS_CHANGED])
+        self.assertEqual((self.config / "settings.json").read_bytes(), before)
+        self.assertEqual(state.read()["settings_ops_version"], "1-0000000000000000")
+
+    def test_a_new_op_in_a_release_is_noticed(self):
+        self.mark_setup()
+        extra = {"op": "add", "path": ["permissions", "allow"], "value": "Bash(new-tool *)"}
+        real = settings_patch.setup_ops
+        with mock.patch.object(settings_patch, "setup_ops", lambda *a, **kw: real(*a, **kw) + [extra]):
+            self.assertIn(OPS_CHANGED, self.go()["systemMessage"].splitlines())
+
+    def test_setup_from_before_the_version_was_recorded_gets_the_note(self):
+        self.mark_setup()
+        state.write(settings_ops_version=None)
+        self.assertIn(OPS_CHANGED, self.go()["systemMessage"].splitlines())
+
+    def test_no_state_is_the_existing_run_setup_path(self):
+        msg = self.go()["systemMessage"].splitlines()
+        self.assertIn(NAG, msg)
+        self.assertNotIn(OPS_CHANGED, msg)
+
+    def test_unusable_plugin_root_skips_the_check_quietly(self):
+        root = self.fake_plugins(BLOCKS)  # no .claude-plugin/plugin.json: setup_ops refuses it
+        state.write(setup_done="0.1.0")
+        write(self.config / "settings.json", json.dumps(
+            {"permissions": {"allow": [settings_patch.plugin_read_rule(root)]}}))
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertNotIn("systemMessage", out)
+
+    def test_missing_or_broken_guardrails_add_no_line_of_their_own(self):
+        self.mark_setup()
+        state.write(settings_ops_version="1-0000000000000000")
+        for exc in (FileNotFoundError("anthology-guardrails plugin not found"), ImportError("x"),
+                    AttributeError("x"), SyntaxError("x")):
+            with mock.patch.object(settings_patch, "setup_ops", side_effect=exc):
+                self.assertNotIn("systemMessage", self.go(), exc)
+
+    def test_changed_version_with_every_op_already_present_is_quiet(self):
+        """Nothing to review (e.g. setup ran in a project whose guardrails gave other rules)."""
+        self.mark_setup()
+        path = self.config / "settings.json"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(settings_patch.apply(text, settings_patch.setup_ops(PLUGIN))[0], encoding="utf-8")
+        state.write(settings_ops_version="1-0000000000000000")
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_a_moved_plugin_alone_is_only_the_moved_line(self):
+        self.mark_setup()
+        path = self.config / "settings.json"
+        ops = [op for op in settings_patch.setup_ops(PLUGIN) if op.get("tag") != settings_patch.TAG_PLUGIN_READ]
+        path.write_text(settings_patch.apply("{}", ops)[0], encoding="utf-8")
+        state.write(settings_ops_version="1-0000000000000000")
+        self.assertEqual(self.go()["systemMessage"].splitlines(), [MOVED])
+
+    def test_setup_apply_records_the_version_session_start_expects(self):
+        import anthology_setup
+        write(self.config / "settings.json", "{}\n")
+        digest = anthology_setup.preview(PLUGIN, cwd=self.tmp)["settings"]["sha256"]
+        res = anthology_setup.apply(PLUGIN, digest, cwd=self.tmp, skip_approve=True)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(state.read()["settings_ops_version"], current_ops_version())
+        self.assertNotIn(OPS_CHANGED, self.go().get("systemMessage", "").splitlines())
+
+
+DATA_LINE = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory "
+             "search index have no data folder (compatibility check)")
+MODEL_LINE = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the "
+              "roster's model tiers do not apply")
+
+
+class CompatibilityLinesTest(SessionCase):
+    """PLAN section 14: cheap compatibility checks, one loud line each, only when broken."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        self.mark_setup()
+        self.repo = self.tmp / "work"
+        (self.repo / ".git").mkdir(parents=True)
+
+    def lines(self, **kw):
+        kw.setdefault("cwd", self.repo)
+        return self.go(**kw).get("systemMessage", "").splitlines()
+
+    def test_a_healthy_session_has_no_compat_lines(self):
+        self.assertEqual(self.lines(), [])
+
+    def test_missing_plugin_data_env(self):
+        os.environ.pop("CLAUDE_PLUGIN_DATA")
+        self.assertIn(DATA_LINE, self.lines())
+
+    def test_present_plugin_data_env_is_quiet(self):
+        self.assertNotIn(DATA_LINE, self.lines())
+
+    def copy_plugin(self, drop=(), unexec=()):
+        root = self.tmp / "plugcopy"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
+        for name in drop:
+            (root / "bin" / name).unlink()
+        for name in unexec:
+            (root / "bin" / name).chmod(0o644)
+        return root
+
+    def test_wrappers_missing_or_not_executable_are_named(self):
+        root = self.copy_plugin(drop=("rtk",), unexec=("anthology-mem",))
+        with mock.patch.object(session_start, "_guard_selftest", return_value=None):
+            lines = self.lines(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        hit = [l for l in lines if "bin/" in l]
+        self.assertEqual(len(hit), 1, lines)
+        self.assertIn("rtk", hit[0])
+        self.assertIn("anthology-mem", hit[0])
+        self.assertNotIn("rtk-hook", hit[0])
+
+    def test_wrappers_present_is_quiet(self):
+        root = self.copy_plugin()
+        self.mark_setup(root)
+        with mock.patch.object(session_start, "_guard_selftest", return_value=None):
+            self.assertEqual(self.lines(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}), [])
+
+    def test_a_user_agent_folder_next_to_anthology_folders_is_quiet(self):
+        mem = self.repo / ".claude" / "agent-memory"
+        (mem / "anthology-implementer").mkdir(parents=True)
+        (mem / "reviewer").mkdir()
+        self.assertEqual(self.lines(), [])
+        self.assertNotIn("agent_memory_warned", state.read())
+
+    def test_a_bare_agent_folder_alone_is_a_soft_warning_shown_once(self):
+        (self.repo / ".claude" / "agent-memory" / "reviewer").mkdir(parents=True)
+        hit = [l for l in self.lines() if "agent-memory" in l]
+        self.assertEqual(len(hit), 1)
+        self.assertIn("`.claude/agent-memory/reviewer/` exists but no `anthology-reviewer/` does", hit[0])
+        self.assertIn("agent of your own named reviewer", hit[0])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(len(state.read()["agent_memory_warned"]), 1)
+
+    def test_subagent_model_in_hook_env(self):
+        lines = self.lines(env_extra={"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"})
+        self.assertIn(MODEL_LINE, lines)
+        self.assertNotIn("SECRETMODEL", "\n".join(lines))
+
+    def test_subagent_model_in_settings_files(self):
+        write(self.config / "settings.json", json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        self.assertIn(MODEL_LINE, self.lines())
+        write(self.config / "settings.json", json.dumps({"permissions": {"allow": [
+            settings_patch.plugin_read_rule(PLUGIN)]}}))
+        self.assertNotIn(MODEL_LINE, self.lines())
+        write(self.repo / ".claude" / "settings.local.json",
+              json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        self.assertIn(MODEL_LINE, self.lines())
+
+    def test_each_compat_step_is_isolated(self):
+        labels = {"_data_dir_warning": "the plugin data folder check",
+                  "_wrappers_warning": "the bin wrapper check",
+                  "_agent_memory_warning": "the agent-memory path check",
+                  "_subagent_model_warning": "the subagent model check"}
+        for name, label in labels.items():
+            with self.subTest(name), mock.patch.object(session_start, name, side_effect=RuntimeError("boom")):
+                out = self.go(cwd=self.repo)
+                self.assertIn("# Anthology routing guide", self.context(out))
+                self.assertEqual(out["systemMessage"].splitlines(),
+                                 ["anthology: %s failed (RuntimeError)" % label])
+
+    def test_a_broken_compat_import_only_loses_these_checks(self):
+        with mock.patch.object(session_start, "compat", None):
+            out = self.go(cwd=self.repo)
+        self.assertIn("# Anthology routing guide", self.context(out))
+        lines = out["systemMessage"].splitlines()
+        self.assertEqual(sum("failed" in l for l in lines), 3, lines)
+
+    def test_session_start_never_asks_docker(self):
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            self.go(cwd=self.repo)
+        for call in run.call_args_list:
+            self.assertNotEqual(Path(str(call[0][0][0])).name, "docker")
+
+
+class MemoryPrivacyTest(SessionCase):
+    """B3 and C1 through the whole hook (no git needed: fake_repo stubs memory_sync's git calls)."""
+
+    def setUp(self):
+        super().setUp()
+        self.mark_setup()
+        self.root = self.fake_repo()
+        memory_sync.approve(self.root)
+        self.personal = self.anth / "personal-memory"
+
+    def test_legacy_notes_never_land_in_the_repo(self):
+        old = self.config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.root)) / "memory"
+        write(old / "reference-build-host.md",
+              note_text("reference-build-host", "reference", "The build host",
+                        body="Builds run on build-" + "box.lan.\n"))
+        write(old / "project-plan.md", note_text("project-plan", "project", "The plan"))
+        out = self.go(cwd=self.root)
+        self.assertEqual(sorted(p.name for p in (self.root / ".claude" / "memory").iterdir()), [])
+        self.assertTrue((self.personal / "reference-build-host.md").is_file())
+        self.assertTrue((self.personal / "project-plan.md").is_file())
+        self.assertTrue((self.anth / "migrated.json").is_file())
+        self.assertIn("into personal memory", out["systemMessage"])
+        self.assertIn("/anthology:setup", out["systemMessage"])
+
+    def test_user_notes_leave_the_repo_and_personal_memory_is_always_shown(self):
+        out = self.go(cwd=self.root)
+        ctx = self.context(out)
+        self.assertIn("## Personal memory (%s)" % self.personal, ctx)
+        self.assertIn("Save notes about the user", ctx)
+        self.assertFalse(self.personal.exists())
+        write(self.root / ".claude" / "memory" / "user-role.md", note_text("user-role", "user", "Role"))
+        out = self.go(cwd=self.root)
+        self.assertFalse((self.root / ".claude" / "memory" / "user-role.md").exists())
+        self.assertTrue((self.personal / "user-role.md").is_file())
+        self.assertIn("moved 1 user note(s) out of the repo", out["systemMessage"])
+        self.assertIn("[user-role](user-role.md)", self.context(out))
+        self.assertLessEqual(len(self.context(out)), session_start.CONTEXT_BUDGET)
 
 
 class FailureTest(SessionCase):
@@ -543,6 +783,7 @@ class GuardSelfTestTest(SessionCase):
         root = base / "anthology" / "0.1.0"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
         guard = self.tmp / "installs" / "guard-new"
         guard_old = self.tmp / "installs" / "guard-old"
         for d, body in ((guard, BLOCKS),
@@ -603,8 +844,24 @@ class GuardLocationTest(SessionCase):
         write(self.config / "settings.json", json.dumps(data))
         self.assertNotIn("systemMessage", self.go())
 
+    def cached_root(self):
+        """anthology as a marketplace install runs it: from <config>/plugins/cache (no sibling fallback)."""
+        root = self.config / "plugins" / "cache" / "anthology" / "anthology" / "0.1.0"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        # A real install ships its bin/ wrappers (session start warns when they are missing).
+        (root / "bin").mkdir()
+        for name in ("anthology-mem", "rtk", "rtk-hook"):
+            wrapper = root / "bin" / name
+            wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            wrapper.chmod(0o755)
+        return root
+
     def test_registry_entry_wins_over_the_sibling_folder(self):
-        root = self.fake_plugins("import sys\nsys.exit(0)\n")  # a sibling that would NOT block
+        root = self.cached_root()
+        guard = root.parent / "anthology-guardrails"  # a sibling that would NOT block
+        (guard / "scripts").mkdir(parents=True)
+        (guard / "scripts" / "guard.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
         self.mark_setup(root)
         self.installed({"anthology-guardrails@anthology": [
             {"scope": "user", "installPath": str(self.guard_install())}]})
@@ -624,7 +881,8 @@ class GuardLocationTest(SessionCase):
         self.assertNotIn("systemMessage", self.go(cwd=other / "sub"))
 
     def test_newest_applicable_scope_wins(self):
-        self.mark_setup()
+        root = self.cached_root()
+        self.mark_setup(root)
         proj = self.tmp / "proj"
         proj.mkdir()
         bad = self.tmp / "installs" / "bad"
@@ -637,8 +895,9 @@ class GuardLocationTest(SessionCase):
             {"scope": "user", "installPath": str(bad), "lastUpdated": "2026-01-01T00:00:00Z"},
             {"scope": "project", "projectPath": str(proj), "installPath": str(self.guard_install()),
              "lastUpdated": "2026-06-01T00:00:00Z"}]})
-        self.assertNotIn("systemMessage", self.go(cwd=proj))
-        self.assertIn("did not block", self.go(cwd=self.tmp)["systemMessage"].lower())
+        env = {"CLAUDE_PLUGIN_ROOT": str(root)}
+        self.assertNotIn("systemMessage", self.go(cwd=proj, env_extra=env))
+        self.assertIn("did not block", self.go(cwd=self.tmp, env_extra=env)["systemMessage"].lower())
 
     def test_exit_2_without_the_guards_message_is_not_a_pass(self):
         root = self.fake_plugins("import sys\nsys.stdin.read()\nsys.exit(2)\n")
@@ -803,8 +1062,13 @@ class GuideTest(unittest.TestCase):
         self.assertRegex(self.text, r"Never save secrets")
 
     def test_personal_index_is_below_the_guide(self):
-        self.assertIn("personal memory, indexed below", self.text)
-        self.assertNotIn("indexed above", self.text)
+        self.assertIn("personal memory at the path given below", self.text)
+        self.assertNotIn("above", self.text)
+
+    def test_user_notes_never_go_into_the_repo(self):
+        line = next(l for l in self.text.splitlines() if l.startswith("- user notes"))
+        self.assertIn("never into the repo", line)
+        self.assertIn("Never commit a `user` note", line)
 
     def test_no_personal_details(self):
         self.assertNotRegex(self.text, r"/U" + r"sers/|/home/\w|@\w+\.\w+")

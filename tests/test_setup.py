@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -102,7 +103,8 @@ class PreviewTest(SetupCase):
         self.assertTrue(out["supported"])
         self.assertEqual({c["name"] for c in out["doctor"]["checks"]},
                          {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
-                          "plugin_read_rule"})
+                          "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
+                          "agent_memory_path", "subagent_model"})
         self.assertEqual(out["duplicates"], [])
         s = out["settings"]
         self.assertEqual(s["sha256"], sha(text))
@@ -114,6 +116,16 @@ class PreviewTest(SetupCase):
         self.assertEqual(s["bypass_note"], BYPASS)
         self.assertEqual(out["memory"]["personal_dir"], str(self.anth / "personal-memory"))
         self.assertFalse(out["memory"]["personal_exists"])
+
+    def test_preview_runs_the_compat_checks_in_its_cwd(self):
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        proj = self.tmp / "proj"
+        write(proj / ".claude" / "settings.local.json", json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        checks = {c["name"]: c for c in self.preview(cwd=proj)["doctor"]["checks"]}
+        self.assertFalse(checks["subagent_model"]["ok"])
+        self.assertNotIn('"m"', json.dumps(checks["subagent_model"]))
+        checks = {c["name"]: c for c in self.preview(cwd=self.tmp)["doctor"]["checks"]}
+        self.assertTrue(checks["subagent_model"]["ok"])
 
     def test_missing_settings_file_previews_a_new_file(self):
         out = self.preview()
@@ -144,6 +156,28 @@ class PreviewTest(SetupCase):
         out = self.preview()
         self.assertEqual(out["duplicates"][0]["command"],
                          "claude plugin uninstall superpowers@claude-plugins-official -s user")
+
+    def test_an_odd_scope_is_listed_without_a_command(self):
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "superpowers@m": [{"scope": "user; touch x", "installPath": "/p"}]}}))
+        out = self.preview()
+        self.assertIsNone(out["duplicates"][0]["command"])
+        self.assertEqual(out["installed_plugins"], "ok")
+        json.dumps(out)
+
+    def test_an_unreadable_installed_plugins_file_is_reported_not_a_crash(self):
+        write(self.config / "plugins" / "installed_plugins.json", "[" * 200000 + "]" * 200000)
+        out = self.preview()
+        self.assertEqual((out["duplicates"], out["installed_plugins"]), ([], "unreadable"))
+
+    def test_the_skill_tells_the_agent_what_to_do_without_a_command(self):
+        text = (ROOT / "plugins" / "anthology" / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`command` is `null`", text)
+        self.assertIn("`installed_plugins` is `unreadable`", text)
+        self.assertIn("not approved", text)
+
+    def test_a_missing_installed_plugins_file_is_reported(self):
+        self.assertEqual(self.preview()["installed_plugins"], "missing")
 
     def test_not_a_git_repo_is_reported(self):
         out = self.preview(cwd=self.tmp)
@@ -435,6 +469,138 @@ class ApplyRemoveTest(SetupCase):
         self.assertEqual(res["memory"]["approved_key"], "k")
 
 
+class LegacyPromotionTest(SetupCase):
+    """B3: moving a legacy note into repo memory is an explicit per-note choice, behind the
+    privacy scan. Runs without git (fake_repo stubs memory_sync's git calls)."""
+
+    def setUp(self):
+        super().setUp()
+        self.text = self.write_settings()
+        self.root = self.fake_repo()
+        self.old = self.config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.root)) / "memory"
+        self.repo_mem = self.root / ".claude" / "memory"
+        self.personal = self.anth / "personal-memory"
+        write(self.old / "clean.md", note_text("clean", "project", "A clean note", body="Use Docker.\n"))
+        write(self.old / "dirty.md", note_text("dirty", "reference", "Where things live",
+                                               body="Checkout in /" + "Users/alice/src\n"))
+        write(self.old / "mail.md", note_text("mail", "reference", "Contact",
+                                              body="Ask alice" + "@" + "mail.acme.zz\n"))
+        write(self.old / "user-me.md", note_text("user-me", "user", "About me"))
+        write(self.old / "MEMORY.md", "- index\n")
+        host = mock.patch.object(memory_sync.memory_privacy.socket, "gethostname",
+                                 return_value="alice-laptop")
+        host.start()
+        self.addCleanup(host.stop)
+
+    def notes(self, cwd=None):
+        return {n["file"]: n for n in self.preview(cwd or self.root)["memory"]["legacy_notes"]}
+
+    def test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing(self):
+        write(self.repo_mem / "mail.md", "the repo's own note\n")
+        before = snapshot(self.tmp)
+        notes = self.notes()
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertEqual(sorted(notes), ["clean.md", "dirty.md", "mail.md", "user-me.md"])
+        clean = notes["clean.md"]
+        self.assertEqual((clean["name"], clean["description"], clean["type"]),
+                         ("clean", "A clean note", "project"))
+        self.assertEqual(clean["default"], "personal")
+        self.assertEqual((clean["findings"], clean["movable"], clean["status"]), ([], True, "new"))
+        self.assertTrue(clean["diff"].startswith("--- /dev/null\n+++ b/.claude/memory/clean.md\n"))
+        self.assertIn("+Use Docker.", clean["diff"])
+        dirty = notes["dirty.md"]
+        self.assertEqual(dirty["findings"], [{"kind": "home-path", "line": 8}])
+        self.assertFalse(dirty["movable"])
+        self.assertIn("home path (line 8)", dirty["reason"])
+        mail = notes["mail.md"]
+        self.assertEqual([f["kind"] for f in mail["findings"]], ["email"])
+        self.assertEqual(mail["status"], "conflict")
+        self.assertRegex(mail["would_create"], r"^mail\.migrated-\d{4}-\d\d-\d\d\.md$")
+        self.assertIn("-the repo's own note", mail["diff"])
+        self.assertIn("+++ b/.claude/memory/" + mail["would_create"], mail["diff"])
+        user = notes["user-me.md"]
+        self.assertFalse(user["movable"])
+        self.assertIn("type: user", user["reason"])
+        for n in notes.values():
+            for f in n["findings"]:
+                self.assertEqual(sorted(f), ["kind", "line"])
+        self.assertNotIn("alice" + "@", json.dumps([n["findings"] for n in notes.values()]))
+
+    def test_preview_marks_identical_notes_and_lists_ledgered_ones(self):
+        memory_sync.migrate(self.old, None, self.personal, ledger=self.anth / "migrated.json")
+        write(self.repo_mem / "clean.md", (self.old / "clean.md").read_text())
+        notes = self.notes()
+        self.assertEqual(len(notes), 4)  # the ledger never hides a note from the choice
+        self.assertEqual((notes["clean.md"]["status"], notes["clean.md"]["diff"]), ("identical", ""))
+
+    def test_explicit_selection_moves_only_the_clean_ones(self):
+        res = self.apply(cwd=self.root, promote=["clean.md", "dirty.md"])
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(sorted(p.name for p in self.repo_mem.iterdir()), ["MEMORY.md", "clean.md"])
+        self.assertEqual((self.repo_mem / "clean.md").read_bytes(), (self.old / "clean.md").read_bytes())
+        self.assertIn("[clean](clean.md)", (self.repo_mem / "MEMORY.md").read_text())
+        self.assertEqual(sorted(p.name for p in self.personal.glob("*.md")),
+                         ["dirty.md", "mail.md", "user-me.md"])
+        blocked = res["memory"]["blocked"]
+        self.assertEqual([b["file"] for b in blocked], ["dirty.md"])
+        self.assertEqual(blocked[0]["findings"], [{"kind": "home-path", "line": 8}])
+        self.assertIn("home path", blocked[0]["reason"])
+        self.assertNotIn("alice", json.dumps(blocked))
+        self.assertEqual(res["memory"]["migrated"]["repo"], ["clean.md"])
+        self.assertEqual(sorted(res["memory"]["migrated"]["personal"]), ["dirty.md", "mail.md", "user-me.md"])
+        self.assertEqual(len(json.loads((self.anth / "migrated.json").read_text())["done"]), 4)
+        # the next session start copies nothing more
+        ctx, msgs = memory_sync.run(self.root, dict(os.environ))
+        self.assertFalse(any("note(s)" in m for m in msgs), msgs)
+        self.assertEqual(sorted(p.name for p in self.repo_mem.glob("*.md")), ["MEMORY.md", "clean.md"])
+        self.assertEqual(sorted(p.name for p in self.personal.glob("*.md") if p.name != "MEMORY.md"),
+                         ["dirty.md", "mail.md", "user-me.md"])
+
+    def test_without_promote_everything_stays_personal(self):
+        res = self.apply(cwd=self.root)
+        self.assertTrue(res["ok"], res)
+        self.assertFalse(self.repo_mem.exists())
+        self.assertEqual(res["memory"]["blocked"], [])
+        self.assertEqual(sorted(res["memory"]["migrated"]["personal"]),
+                         ["clean.md", "dirty.md", "mail.md", "user-me.md"])
+
+    def test_a_promoted_user_note_is_blocked(self):
+        res = self.apply(cwd=self.root, promote=["user-me.md"])
+        self.assertEqual([b["file"] for b in res["memory"]["blocked"]], ["user-me.md"])
+        self.assertFalse(self.repo_mem.exists())
+        self.assertTrue((self.personal / "user-me.md").is_file())
+
+    def test_refusals_write_nothing(self):
+        before = snapshot(self.tmp)
+        digest = sha(self.text)
+        for kw, needle in (({"promote": ["nope.md"], "cwd": self.root}, "nope.md"),
+                           ({"promote": ["../clean.md"], "cwd": self.root}, "../clean.md"),
+                           ({"promote": ["clean.md"], "cwd": self.root, "skip_approve": True},
+                            "--skip-approve")):
+            res = anthology_setup.apply(PLUGIN, digest, **kw)
+            self.assertFalse(res["ok"])
+            self.assertIn(needle, res["error"])
+            self.assertIn("Nothing was written", res["error"])
+        with mock.patch.object(memory_sync, "repo_root", return_value=None):
+            res = anthology_setup.apply(PLUGIN, digest, cwd=self.root, promote=["clean.md"])
+        self.assertFalse(res["ok"])
+        self.assertIn("git repo", res["error"])
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertEqual(self.rtk.calls, [])
+        self.assertFalse(memory_sync.is_approved("example.invalid/acme/app"))
+
+    def test_cli_promote_flag_is_repeatable(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = anthology_setup.main(["apply", "--plugin-root", str(PLUGIN), "--expect-sha256",
+                                         sha(self.text), "--cwd", str(self.root),
+                                         "--promote", "clean.md", "--promote", "mail.md"])
+        out = json.loads(buf.getvalue())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["memory"]["migrated"]["repo"], ["clean.md"])
+        self.assertEqual([b["file"] for b in out["memory"]["blocked"]], ["mail.md"])
+
+
 class FixRound1Test(SetupCase):
     """Review round 1: plugin-root guard (F21), concurrent edits, remove preview, containment."""
 
@@ -516,6 +682,34 @@ class FixRound1Test(SetupCase):
         self.assertNotIn("hunter2", json.dumps(out))
         res = self.apply()
         self.assertNotIn("hunter2", json.dumps(res))
+
+    def test_env_and_secret_values_never_reach_any_diff_in_any_layout(self):
+        data = dict(SETTINGS, apiKeyHelper="/bin/echo sk-live-123", env={"SECRET_TOKEN": "hunter2"})
+        layouts = {
+            "minified": json.dumps(data, separators=(",", ":")),
+            "one-line env last": ('{\n  "model": "opus",\n  "permissions": {"allow": ["Bash(ls)"]},\n'
+                                  '  "env": {"SECRET_TOKEN": "hunter2", "OTHER": "sk-live-123"}\n}\n'),
+            "pretty": json.dumps(data, indent=2) + "\n",
+        }
+        for name, text in layouts.items():
+            with self.subTest(name):
+                write(self.settings, text)
+                for path in (self.data_dir, state.state_path()):
+                    if path.is_dir():
+                        shutil.rmtree(str(path))
+                    elif path.exists():
+                        path.unlink()
+                outs = [self.preview(), self.apply(),
+                        anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True), self.remove()]
+                for out in outs:
+                    self.assertTrue(out["settings"]["diff"], name)
+                    self.assertIn("Bash(rtk *)", out["settings"]["diff"])
+                    dumped = json.dumps(out)
+                    self.assertNotIn("hunter2", dumped)
+                    self.assertNotIn("sk-live-123", dumped)
+                if name != "pretty":  # the env line itself is in the diff, with its key kept
+                    self.assertRegex(outs[0]["settings"]["diff"], r'"SECRET_TOKEN": ?"<redacted>"')
+                self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
 
     def test_remove_preview_writes_nothing_and_shows_the_diff(self):
         text = self.write_settings()

@@ -14,12 +14,17 @@ Ops are JSON-serialisable dicts:
 `plan(text, ops)` drops ops that are already satisfied (the user's own pre-existing rule is
 never ours) and records what is needed to undo each one exactly: the containers it created,
 the raw text of an empty container it filled, and the previous value of a replaced key.
-`revert(text, planned_ops)` removes only those entries, in reverse order. Python stdlib only
-(3.9+).
+`revert(text, planned_ops)` removes only those entries, in reverse order. Every diff shown to
+the user (and so to Claude) shows values only under `permissions.allow`, `permissions.deny` and
+`worktree.baseRef`, all of them, including the user's own rule strings (a token inside one of those
+rules is shown). Every other value (`env`, tokens, hook commands, URLs, ...) reads `"<redacted>"`,
+in any layout. `ops_version(ops)` fingerprints the op set, so session start
+can tell when a release changed it. Python stdlib only (3.9+).
 """
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -39,6 +44,13 @@ TAG_MEM_SAVE = "mem-save"
 # Ops whose value may change between runs (a moved plugin, a revised rule string): re-running
 # setup replaces the earlier value it added for the same tag.
 _REPLACEABLE_TAGS = (TAG_PLUGIN_READ, TAG_MEM_SAVE)
+# Part of `ops_version`; any change to the op list (a new rule, a new guard_rules entry) changes
+# the version on its own. Session start only notes a changed version while an op is still missing
+# from settings.json, so a bump alone, or a release that only drops an op, shows nothing.
+OPS_VERSION = 1
+REDACTED = "<redacted>"
+# The only places whose values a diff shows: where setup makes its changes.
+SHOWN_PATHS = (("permissions", "allow"), ("permissions", "deny"), ("worktree", "baseRef"))
 
 _WS = " \t\r\n"
 _STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"', re.S)
@@ -405,11 +417,39 @@ def _run(text, ops):
     return text, planned
 
 
+def _hidden_leaves(node, path, out):
+    """The string and scalar nodes outside `SHOWN_PATHS` (an array item adds `[]` to the path)."""
+    if path in SHOWN_PATHS:
+        return
+    if node.kind == "object":
+        for m in node.items:
+            _hidden_leaves(m.value, path + (m.key,), out)
+    elif node.kind == "array":
+        for item in node.items:
+            _hidden_leaves(item, path + ("[]",), out)
+    else:
+        out.append(node)
+
+
+def redact(text):
+    """`text` with every value outside `SHOWN_PATHS` replaced by `"<redacted>"`. Keys, layout and
+    line count are kept, so a diff of two redacted texts stays exact for what setup changes."""
+    if _is_blank(text):
+        return text
+    leaves = []
+    _hidden_leaves(_parse(text), (), leaves)
+    new = json.dumps(REDACTED)
+    for node in sorted(leaves, key=lambda n: n.start, reverse=True):
+        text = text[:node.start] + new + text[node.end:]
+    return text
+
+
 def _diff(old, new):
+    """The unified diff shown to the user (and Claude), redacted on both sides."""
     if old == new:
         return ""
-    return "\n".join(difflib.unified_diff(old.splitlines(), new.splitlines(), "settings.json",
-                                          "settings.json", lineterm="", n=0))
+    return "\n".join(difflib.unified_diff(redact(old).splitlines(), redact(new).splitlines(),
+                                          "settings.json", "settings.json", lineterm="", n=0))
 
 
 def plan(settings, ops):
@@ -565,6 +605,20 @@ def setup_ops(plugin_root, profile_roots=None, env=None):
                 "tag": TAG_PLUGIN_READ})
     ops.append({"op": "set", "path": ["worktree", "baseRef"], "value": "head"})
     return ops
+
+
+def ops_version(ops):
+    """A fingerprint of the setup op set: `"<OPS_VERSION>-<hash>"`. It changes when a release
+    adds, drops or edits an op. The plugin-read rule's value is left out: it follows where the
+    plugin lives, which session start already checks on its own."""
+    canon = []
+    for op in ops:
+        op = {k: v for k, v in op.items() if k not in _INFO_KEYS}
+        if op.get("tag") == TAG_PLUGIN_READ:
+            op["value"] = "<plugin root>"
+        canon.append(op)
+    payload = json.dumps([OPS_VERSION, canon], sort_keys=True, separators=(",", ":"))
+    return "%d-%s" % (OPS_VERSION, hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16])
 
 
 def _key(op):

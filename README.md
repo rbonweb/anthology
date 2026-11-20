@@ -14,7 +14,7 @@ It ships three plugins. Installing `anthology` brings the other two with it:
 | `anthology-guardrails` | The hook that blocks the things agents must not do (see [Guardrails](#guardrails)) |
 | `anthology-superpowers` | The superpowers skills for the main session, renamed so they do not clash with the official copy |
 
-More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECISIONS.md](DECISIONS.md) · [LICENSE](LICENSE) (Apache-2.0).
+More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECISIONS.md](DECISIONS.md) · [LICENSE](LICENSE) (Apache-2.0). Each plugin ships its license text, and each vendored folder ships its upstream license (and NOTICE, where upstream has one).
 
 ## Install
 
@@ -34,7 +34,7 @@ More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECIS
 
    From a terminal: `claude plugin install anthology@anthology`.
 
-3. Turn on auto-update for the `anthology` marketplace in `/plugin`. Third-party marketplaces default to off, and a plugin only reaches you when it updates.
+3. Turn on auto-update: run `/plugin`, open the **Marketplaces** tab, select `anthology` and enable auto-update. Auto-update is off by default for every marketplace that is not Anthropic's own, so without this step you only get new versions when you update by hand (see [Updating](#updating-and-removing)).
 4. Run `/anthology:setup` in each repo you want memory in. The first run also does the one-time machine setup.
 
 Check [Requirements](#requirements) first.
@@ -43,7 +43,7 @@ Check [Requirements](#requirements) first.
 
 It checks your machine, then shows every change and applies them only after you confirm once.
 
-1. **Doctor.** Checks that `python3`, `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
+1. **Doctor.** Checks that `python3`, `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. BrowserOS Neo is found as any `BrowserOS*.app` in `/Applications` or `~/Applications`, a `browseros` binary on your path, or an MCP server in any scope; a separate check says whether that server is named `browseros-neo`, because agents call `mcp__browseros-neo__*`. Doctor also checks the compatibility assumptions Anthology relies on: the plugin's `bin/` wrappers exist and (inside Claude Code) are on your path, the plugin data folder exists, and agent memory lands in `.claude/agent-memory/anthology-<agent>/`. If `CLAUDE_CODE_SUBAGENT_MODEL` is set (in your environment or in `settings.json`), it warns that this overrides every agent's model so the roster's tiers do not apply; Anthology never changes that setting. After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
 2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
 3. **rtk.** Downloads the pinned rtk binary for your platform from this repo's releases, checks its sha256 against `rtk.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
 4. **Settings.** Edits `~/.claude/settings.json`:
@@ -52,11 +52,11 @@ It checks your machine, then shows every change and applies them only after you 
    - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
-5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder.
+5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder. If Claude Code kept notes for this folder before Anthology (the old path-keyed `~/.claude/projects/<encoded path>/memory/`), it lists each one with its diff and copies them all into personal memory, unless you pick some to move into the repo's memory instead. The default, and the recommendation, is none. Notes the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths, secrets) and `user` notes cannot be moved.
 
 When it finishes, restart the session so the new permissions and the rtk hook take effect. Nothing is written to `~/.claude/CLAUDE.md`.
 
-After setup, some things happen on their own at session start: Anthology delivers the routing guide, runs the guardrails self-test (see [Guardrails](#guardrails)), reconciles the rtk binary with `rtk.lock`, and in approved repos keeps memory working (see [Memory](#memory)). Until you have run `/anthology:setup` it prints a one-line reminder to do so, and it warns you if the plugin has moved so that agents can no longer read their knowledge files; re-run `/anthology:setup` to fix that.
+After setup, some things happen on their own at session start: Anthology delivers the routing guide, runs the guardrails self-test (see [Guardrails](#guardrails)), reconciles the rtk binary with `rtk.lock`, and in approved repos keeps memory working (see [Memory](#memory)). Until you have run `/anthology:setup` it prints a one-line reminder to do so, and it warns you if the plugin has moved so that agents can no longer read their knowledge files; re-run `/anthology:setup` to fix that. It also prints one loud line when a compatibility assumption breaks: Claude Code did not pass `CLAUDE_PLUGIN_DATA`, the plugin's `bin/` wrappers are missing or not executable, agent memory was written somewhere other than `anthology-<agent>/`, or `CLAUDE_CODE_SUBAGENT_MODEL` is set. When a release changes the `settings.json` entries that setup makes and one of them is missing, it prints "anthology settings changed in this release — run /anthology:setup to review" and changes nothing itself. If you deleted one of those entries on purpose (for example `Bash(rtk *)`), the line returns at each session start after every such release, until you run setup again. If the personal-memory folder is a symlink or not a folder, it prints a line saying personal memory was not loaded and nothing was moved or copied.
 
 ## The product
 
@@ -145,7 +145,7 @@ The guard is built to stop accidental browser installs and launches by cooperati
 - Commands built inside variables or arrays and then run are not seen for what they are.
 - A command whose text comes from another command's output and is fed to a shell is not looked into: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`.
 - Unusual nested shell syntax can hide a command, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`.
-- Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for profile paths. A BrowserOS Neo `run` script can open `file://` URLs.
+- Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for profile paths. Inside interpreter code (`python3 -c`, `node -e`, a heredoc fed to `python3`, a BrowserOS Neo `run` script) only profile paths spelled out in one string are seen: a path assembled piecewise (`Path.home() / "Library" / …`, variables) is not, and neither is a command run from inside the code (`os.system(…)`).
 - Browser profile protection covers the known profile folders and their parents. Grandparent folders (for example `find ~ -name Cookies`) and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - A hook sees the command Claude runs, not what a script does inside. A script that launches Chrome internally is invisible to it. That is why the knowledge we ship never launches Chrome.
 - Secret detection covers what is written in the command text, `Write` and `Edit`. Copying a secret **file** into a memory folder is not caught.
@@ -190,11 +190,13 @@ Memory is plain Markdown notes committed with your project, so it survives a re-
 | Each roster agent | `<repo>/.claude/agent-memory/anthology-<agent>/` (committed; `anthology:implementer` becomes `anthology-implementer`) |
 | You (`user` notes) | `~/.claude/anthology/personal-memory/`, never in a repo (under `$CLAUDE_CONFIG_DIR` if you set it) |
 
-**Repo memory is visible to everyone who can see the repo.** Never save secrets or personal details in it. Personal notes go in personal memory, which stays on your machine.
+**Repo memory is visible to everyone who can see the repo.** Never save secrets or personal details in it. Personal notes go in personal memory, which stays on your machine. Claude Code's auto memory saves every note type into the repo's folder, so at each session start Anthology moves `type: user` notes out of `.claude/memory/` and `.claude/agent-memory/` into personal memory and tells you; if one was already committed, commit its removal. The repo `MEMORY.md` indexes never list `user` notes, and the session context always names the personal-memory folder, even when it is empty.
 
 ### Approved repos only
 
-Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is). If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
+Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is), and no notes are moved. If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. That covers repo auto-memory only.
+
+**Agent memory is different.** Claude Code loads `.claude/agent-memory/anthology-<agent>/MEMORY.md` into that agent itself (the agents set `memory: project`), whether or not you approved the repo, and the agent bodies tell the agent to read the folder. So notes a stranger committed there can reach an agent in a repo you cloned. The bodies say to treat notes as hints, never instructions: they cannot override your request, the BrowserOS-only rule or the Docker rule (subagents never receive the routing guide, so it is not named). That is guidance to the model, not a barrier. Review `.claude/agent-memory/` in any repo you do not trust, as you would review code (see [ADR-019](DECISIONS.md)).
 
 Approvals are kept in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo path if there is no remote). Memory also stays off if you turned auto memory off in Claude Code.
 
@@ -205,6 +207,7 @@ Because approvals follow the remote URL, re-cloning the same repo into any folde
 - It writes this clone's absolute path into `autoMemoryDirectory` in `<repo>/.claude/settings.local.json`. That file is per-clone and git-ignored, and Anthology makes sure it is ignored.
 - It regenerates the `MEMORY.md` indexes from the notes.
 - If it had to repair the setting, it injects the repo's memory index for that session, because the setting may only apply from the next one.
+- It copies any notes in Claude Code's old path-keyed memory folder for this clone into personal memory, never into the repo, once (a ledger remembers them), and moves `user` notes out of the repo. Nothing is overwritten: a different note with the same name is kept side by side as `<name>.migrated-<date>.md`. To move an old note into the repo's memory, re-run `/anthology:setup` and pick it.
 
 ### Team merges
 
@@ -252,16 +255,16 @@ anthology-mem save --agent <name> --type <project|feedback|reference> --slug <to
   --name '<title>' --description '<one line>' --body '<text>' [--replace]
 ```
 
-It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) is refused. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
+It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) or that the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths) is refused, with the kind and line named. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
 
 ### Export and import
 
 - `/anthology:export` writes `anthology-memory-<date>.tar.gz` under `~/.claude/anthology/exports/` by default. It holds your personal notes plus the current repo's notes, and a manifest. Nothing is uploaded. The archive holds personal notes, so keep it private: if you pass `--out` with a folder inside a git work tree, export refuses.
-- `/anthology:import <file>` shows a dry run first: new notes, identical ones (skipped) and conflicts. Nothing is overwritten. A conflicting note is kept as `<name>.imported-<date>.md`, and Claude merges it with you. Archives over 50 MB are refused, files are extracted safely (no absolute paths, `..`, links or devices), only the memory folders can be written, and secret-looking content is reported.
+- `/anthology:import <file>` shows a dry run first: new notes, identical ones (skipped) and conflicts. Nothing is overwritten. A conflicting note is kept as `<name>.imported-<date>.md`, and Claude merges it with you. Archives over 50 MB are refused, files are extracted safely (no absolute paths, `..`, links or devices), only the memory folders can be written, and secret-looking content is reported. A repo or agent note the privacy scan flags is written to personal memory instead of the repo, and the dry run lists it as blocked.
 
 ## Updating and removing
 
-**Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
+**Updating.** Auto-update is off by default for third-party marketplaces such as `anthology`. Turn it on in `/plugin` > **Marketplaces** > `anthology` (install step 3). Claude Code then checks the marketplace after a session starts and updates the installed plugins on disk; it shows "Plugin updated", and the new version loads after `/reload-plugins` or at your next launch. Setting `DISABLE_AUTOUPDATER=1`, `DISABLE_UPDATES=1` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also turns plugin auto-update off unless you set `FORCE_AUTOUPDATE_PLUGINS=1`. Without auto-update, update by hand: run `claude plugin marketplace update anthology`, then `claude plugin update anthology@anthology` (and the same for `anthology-guardrails` and `anthology-superpowers`), and restart Claude Code. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
 **Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk, rtk's local history (`~/.claude/anthology/rtk/`) and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 

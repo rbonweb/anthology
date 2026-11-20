@@ -7,6 +7,7 @@ generation, migration, approvals) runs everywhere.
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -17,12 +18,14 @@ from unittest import mock
 from _mem import ROOT, MemCase, git, needs_git, note_text, snapshot, write
 
 import memory_index  # noqa: E402  (path set up by _mem)
+import memory_privacy  # noqa: E402
 import memory_sync  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "plugins" / "anthology-guardrails" / "scripts"))
 import guard_rules  # noqa: E402
 
-HINT = "this repo has anthology memory; run /anthology:setup to use it"
+HINT = ("this repo has memory notes; repo notes load only after /anthology:setup, "
+        "but notes in .claude/agent-memory still reach their agents, so review them")
 UNION_LINES = [".claude/memory/MEMORY.md merge=union",
                ".claude/agent-memory/*/MEMORY.md merge=union"]
 
@@ -33,6 +36,14 @@ def encode(path):
 
 def env():
     return dict(os.environ)
+
+
+def personal_only(anth):
+    """The context when personal memory has no notes: its section is still there, with its path
+    and how to save user notes there (C1)."""
+    personal = anth / "personal-memory"
+    return ("## Personal memory (%s)\nSave notes about the user (type: user: role, preferences) here "
+            "as %s/user-<slug>.md, never in the repo.\n\n(no notes yet)\n" % (personal, personal))
 
 
 class NormalizeRemoteTest(unittest.TestCase):
@@ -361,6 +372,8 @@ class RegenerateIndexTest(MemCase):
 
 
 class MigrateTest(MemCase):
+    """B3: legacy notes go to personal memory; only an explicit, clean promotion reaches the repo."""
+
     def setUp(self):
         super().setUp()
         self.old = self.tmp / "old"
@@ -373,26 +386,30 @@ class MigrateTest(MemCase):
         write(self.old / "MEMORY.md", "- index\n")
 
     def migrate(self, **kw):
+        kw.setdefault("hostname", "alice-laptop")
         return memory_sync.migrate(self.old, self.repo_mem, self.personal, ledger=self.ledger,
                                    today="2026-04-05", **kw)
 
-    def test_routes_user_to_personal_and_others_to_repo(self):
+    def test_every_note_goes_to_personal_memory(self):
         result = self.migrate()
         self.assertEqual(sorted(result["copied"]), ["feedback-a.md", "project-b.md", "user-me.md"])
-        self.assertEqual(sorted(p.name for p in self.personal.iterdir()), ["user-me.md"])
-        self.assertEqual(sorted(p.name for p in self.repo_mem.iterdir()),
-                         ["feedback-a.md", "project-b.md"])
-        self.assertEqual((self.repo_mem / "project-b.md").read_bytes(),
+        self.assertEqual(sorted(p.name for p in self.personal.iterdir()),
+                         ["feedback-a.md", "project-b.md", "user-me.md"])
+        self.assertFalse(self.repo_mem.exists())
+        self.assertEqual((result["promoted"], result["blocked"]), ([], []))
+        self.assertEqual((self.personal / "project-b.md").read_bytes(),
                          (self.old / "project-b.md").read_bytes())
+        self.assertEqual(stat.S_IMODE(self.personal.stat().st_mode), 0o700)
 
     def test_memory_md_and_symlinks_are_not_copied(self):
         outside = self.tmp / "secret.md"
         write(outside, "---\nname: s\n---\nsecret\n")
         (self.old / "link.md").symlink_to(outside)
-        self.migrate()
-        names = {p.name for p in self.repo_mem.iterdir()} | {p.name for p in self.personal.iterdir()}
+        self.migrate(promote={"link.md"})
+        names = {p.name for p in self.personal.iterdir()}
         self.assertNotIn("MEMORY.md", names)
         self.assertNotIn("link.md", names)
+        self.assertFalse(self.repo_mem.exists())
 
     def test_second_run_copies_nothing(self):
         self.migrate()
@@ -402,33 +419,33 @@ class MigrateTest(MemCase):
         self.assertEqual(sorted(again["skipped"]), ["feedback-a.md", "project-b.md", "user-me.md"])
 
     def test_never_overwrites_differing_files(self):
-        write(self.repo_mem / "project-b.md", "mine, edited since\n")
+        write(self.personal / "project-b.md", "mine, edited since\n")
         result = self.migrate()
-        self.assertEqual((self.repo_mem / "project-b.md").read_text(), "mine, edited since\n")
+        self.assertEqual((self.personal / "project-b.md").read_text(), "mine, edited since\n")
         self.assertEqual(result["conflicts"], ["project-b.md"])
-        copy = self.repo_mem / "project-b.migrated-2026-04-05.md"
+        copy = self.personal / "project-b.migrated-2026-04-05.md"
         self.assertEqual(copy.read_bytes(), (self.old / "project-b.md").read_bytes())
 
     def test_conflict_name_is_made_unique(self):
-        write(self.repo_mem / "project-b.md", "mine\n")
-        write(self.repo_mem / "project-b.migrated-2026-04-05.md", "taken\n")
+        write(self.personal / "project-b.md", "mine\n")
+        write(self.personal / "project-b.migrated-2026-04-05.md", "taken\n")
         self.migrate()
-        self.assertEqual((self.repo_mem / "project-b.migrated-2026-04-05.md").read_text(), "taken\n")
-        self.assertEqual((self.repo_mem / "project-b.migrated-2026-04-05-2.md").read_bytes(),
+        self.assertEqual((self.personal / "project-b.migrated-2026-04-05.md").read_text(), "taken\n")
+        self.assertEqual((self.personal / "project-b.migrated-2026-04-05-2.md").read_bytes(),
                          (self.old / "project-b.md").read_bytes())
 
     def test_identical_existing_file_is_skipped(self):
-        write(self.repo_mem / "project-b.md", (self.old / "project-b.md").read_text())
+        write(self.personal / "project-b.md", (self.old / "project-b.md").read_text())
         result = self.migrate()
         self.assertIn("project-b.md", result["skipped"])
         self.assertEqual(result["conflicts"], [])
 
     def test_ledger_stops_recopying_deleted_notes(self):
         self.migrate()
-        (self.repo_mem / "project-b.md").unlink()
+        (self.personal / "project-b.md").unlink()
         again = self.migrate()
         self.assertNotIn("project-b.md", again["copied"])
-        self.assertFalse((self.repo_mem / "project-b.md").exists())
+        self.assertFalse((self.personal / "project-b.md").exists())
         data = json.loads(self.ledger.read_text())
         self.assertEqual(data["version"], 1)
         self.assertEqual(len(data["done"]), 3)
@@ -439,14 +456,154 @@ class MigrateTest(MemCase):
         again = memory_sync.migrate(self.old, self.repo_mem, self.personal, today="2026-04-05")
         self.assertEqual(again["copied"], [])
         self.assertEqual(again["conflicts"], [])
-        self.assertEqual(len(list(self.repo_mem.iterdir())), 2)
+        self.assertEqual(len(list(self.personal.iterdir())), 3)
 
     def test_missing_old_dir_is_a_noop(self):
         result = memory_sync.migrate(self.tmp / "nope", self.repo_mem, self.personal,
                                      ledger=self.ledger)
-        self.assertEqual(result, {"copied": [], "skipped": [], "conflicts": []})
+        self.assertEqual(result, {"copied": [], "skipped": [], "conflicts": [], "promoted": [],
+                                  "blocked": []})
         self.assertFalse(self.repo_mem.exists())
         self.assertFalse(self.personal.exists())
+
+    def test_a_clean_promoted_note_goes_to_the_repo(self):
+        result = self.migrate(promote={"project-b.md"})
+        self.assertEqual(result["promoted"], ["project-b.md"])
+        self.assertEqual(sorted(p.name for p in self.repo_mem.iterdir()), ["project-b.md"])
+        self.assertEqual((self.repo_mem / "project-b.md").read_bytes(),
+                         (self.old / "project-b.md").read_bytes())
+        self.assertEqual(sorted(p.name for p in self.personal.iterdir()), ["feedback-a.md", "user-me.md"])
+        self.assertEqual(len(json.loads(self.ledger.read_text())["done"]), 3)
+
+    def test_promotion_ignores_the_ledger_but_never_overwrites(self):
+        self.migrate()  # the automatic copy: everything personal, all in the ledger
+        write(self.repo_mem / "project-b.md", "the repo's own\n")
+        result = self.migrate(promote={"project-b.md"})
+        self.assertEqual(result["promoted"], ["project-b.md"])
+        self.assertEqual(result["conflicts"], ["project-b.md"])
+        self.assertEqual((self.repo_mem / "project-b.md").read_text(), "the repo's own\n")
+        self.assertTrue((self.repo_mem / "project-b.migrated-2026-04-05.md").is_file())
+        self.assertTrue((self.personal / "project-b.md").is_file())  # never deleted
+
+    def test_promoted_notes_with_findings_or_type_user_stay_personal(self):
+        write(self.old / "reference-host.md", note_text("reference-host", "reference", "Host",
+                                                        body="Runs on build-box.lan\n"))
+        result = self.migrate(promote={"reference-host.md", "user-me.md"})
+        self.assertFalse(self.repo_mem.exists())
+        blocked = {b["file"]: b for b in result["blocked"]}
+        self.assertEqual(sorted(blocked), ["reference-host.md", "user-me.md"])
+        self.assertEqual(blocked["reference-host.md"]["findings"], [{"kind": "private-hostname", "line": 8}])
+        self.assertIn("private hostname (line 8)", blocked["reference-host.md"]["reason"])
+        self.assertNotIn("build-box", json.dumps(result))
+        self.assertIn("type: user", blocked["user-me.md"]["reason"])
+        self.assertTrue((self.personal / "reference-host.md").is_file())
+        self.assertTrue((self.personal / "user-me.md").is_file())
+
+    def test_promotion_refuses_a_symlinked_dot_claude_before_any_mkdir(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        (repo / ".claude").symlink_to(outside)
+        result = self.migrate(promote={"project-b.md"})
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual([b["file"] for b in result["blocked"]], ["project-b.md"])
+        self.assertIn(".claude", result["blocked"][0]["reason"])
+        self.assertTrue((self.personal / "project-b.md").is_file())
+
+    def test_a_user_type_in_any_case_or_with_a_comment_is_never_promoted(self):
+        write(self.old / "user-odd.md", note_text("user-odd", "User  # mine", "odd"))
+        result = self.migrate(promote={"user-odd.md"})
+        self.assertEqual(result["blocked"][0]["reason"], memory_sync.USER_REASON)
+        self.assertFalse(self.repo_mem.exists())
+
+    def test_promotion_never_writes_through_a_symlinked_repo_memory(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        self.repo_mem.parent.mkdir(parents=True)
+        self.repo_mem.symlink_to(outside)
+        result = self.migrate(promote={"project-b.md"})
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual([b["file"] for b in result["blocked"]], ["project-b.md"])
+        self.assertTrue((self.personal / "project-b.md").is_file())
+
+
+class SweepUserNotesTest(MemCase):
+    """C1: `type: user` notes are moved out of repo and agent memory into personal memory."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.tmp / "repo" / ".claude" / "memory"
+        self.personal = self.anth / "personal-memory"
+        write(self.src / "user-role.md", note_text("user-role", "user", "Role"))
+        write(self.src / "project-a.md", note_text("project-a", "project", "A"))
+
+    def test_type_is_compared_case_insensitively_without_comments(self):
+        write(self.src / "user-caps.md", note_text("user-caps", "User", "Caps"))
+        write(self.src / "user-comment.md", note_text("user-comment", "user # about me", "Comment"))
+        res = memory_sync.sweep_user_notes(self.src, self.personal)
+        self.assertEqual(sorted(res["moved"]), ["user-caps.md", "user-comment.md", "user-role.md"])
+        self.assertEqual(memory_sync.normalize_type(" User # x "), "user")
+
+    def test_moves_user_notes_only(self):
+        data = (self.src / "user-role.md").read_bytes()
+        res = memory_sync.sweep_user_notes(self.src, self.personal, today="2026-04-05")
+        self.assertEqual(res, {"moved": ["user-role.md"], "conflicts": []})
+        self.assertFalse((self.src / "user-role.md").exists())
+        self.assertTrue((self.src / "project-a.md").exists())
+        self.assertEqual((self.personal / "user-role.md").read_bytes(), data)
+
+    def test_identical_personal_copy_counts_as_done(self):
+        write(self.personal / "user-role.md", (self.src / "user-role.md").read_text())
+        res = memory_sync.sweep_user_notes(self.src, self.personal, today="2026-04-05")
+        self.assertEqual(res["moved"], ["user-role.md"])
+        self.assertEqual(sorted(p.name for p in self.personal.iterdir()), ["user-role.md"])
+        self.assertFalse((self.src / "user-role.md").exists())
+
+    def test_conflict_is_kept_side_by_side(self):
+        write(self.personal / "user-role.md", "mine\n")
+        data = (self.src / "user-role.md").read_bytes()
+        res = memory_sync.sweep_user_notes(self.src, self.personal, today="2026-04-05")
+        self.assertEqual(res, {"moved": ["user-role.md"], "conflicts": ["user-role.md"]})
+        self.assertEqual((self.personal / "user-role.md").read_text(), "mine\n")
+        self.assertEqual((self.personal / "user-role.migrated-2026-04-05.md").read_bytes(), data)
+        self.assertFalse((self.src / "user-role.md").exists())
+
+    def test_symlinks_and_unsafe_folders_are_never_touched(self):
+        outside = self.tmp / "outside.md"
+        write(outside, note_text("user-out", "user", "Out"))
+        (self.src / "user-link.md").symlink_to(outside)
+        memory_sync.sweep_user_notes(self.src, self.personal)
+        self.assertTrue((self.src / "user-link.md").is_symlink())
+        self.assertTrue(outside.exists())
+        self.assertFalse((self.personal / "user-link.md").exists())
+        # a symlinked personal folder: nothing is written or deleted
+        other = self.tmp / "elsewhere"
+        other.mkdir()
+        link = self.tmp / "personal-link"
+        link.symlink_to(other)
+        write(self.src / "user-two.md", note_text("user-two", "user", "Two"))
+        self.assertEqual(memory_sync.sweep_user_notes(self.src, link), {"moved": [], "conflicts": []})
+        self.assertTrue((self.src / "user-two.md").exists())
+        self.assertEqual(list(other.iterdir()), [])
+        # a symlinked source folder is not followed
+        linked_src = self.tmp / "src-link"
+        linked_src.symlink_to(self.src)
+        self.assertEqual(memory_sync.sweep_user_notes(linked_src, self.personal)["moved"], [])
+
+    def test_repo_file_is_kept_when_the_copy_cannot_be_verified(self):
+        real = memory_sync._read_regular
+        calls = []
+
+        def flaky(path):
+            calls.append(path)
+            data = real(path)
+            return data + b"changed" if str(path).startswith(str(self.personal)) else data
+
+        with mock.patch.object(memory_sync, "_read_regular", flaky):
+            res = memory_sync.sweep_user_notes(self.src, self.personal)
+        self.assertEqual(res["moved"], [])
+        self.assertTrue((self.src / "user-role.md").exists())
 
 
 class AutoMemoryOffTest(MemCase):
@@ -514,7 +671,7 @@ class RunOutsideRepoTest(MemCase):
     def test_never_creates_the_personal_dir(self):
         folder = self.tmp / "plain"
         folder.mkdir()
-        self.assertEqual(memory_sync.run(folder, env()), ("", []))
+        self.assertEqual(memory_sync.run(folder, env()), (personal_only(self.anth), []))
         self.assertFalse((self.anth / "personal-memory").exists())
 
     def test_swallows_every_exception(self):
@@ -527,7 +684,7 @@ class RunOutsideRepoTest(MemCase):
 
     def test_unreadable_cwd_does_not_raise(self):
         ctx, msgs = memory_sync.run(self.tmp / "does-not-exist", env())
-        self.assertEqual(ctx, "")
+        self.assertEqual(ctx, personal_only(self.anth))
 
 
 @needs_git
@@ -546,7 +703,7 @@ class TrustBoundaryTest(MemCase):
         exclude = (self.root / ".git" / "info" / "exclude").read_bytes()
         status = git(self.root, "status", "--porcelain").stdout
         ctx, msgs = memory_sync.run(self.root, env())
-        self.assertEqual(ctx, "")
+        self.assertEqual(ctx, personal_only(self.anth))
         self.assertEqual(msgs, [HINT])
         self.assertEqual(snapshot(self.root), before)
         self.assertEqual((self.root / ".git" / "info" / "exclude").read_bytes(), exclude)
@@ -559,11 +716,11 @@ class TrustBoundaryTest(MemCase):
     def test_hint_for_agent_memory_only(self):
         other = self.make_repo("other")
         write(other / ".claude" / "agent-memory" / "anthology-x" / "a.md", note_text("a"))
-        self.assertEqual(memory_sync.run(other, env()), ("", [HINT]))
+        self.assertEqual(memory_sync.run(other, env()), (personal_only(self.anth), [HINT]))
 
     def test_no_hint_without_committed_memory(self):
         other = self.make_repo("other")
-        self.assertEqual(memory_sync.run(other, env()), ("", []))
+        self.assertEqual(memory_sync.run(other, env()), (personal_only(self.anth), []))
 
     def test_unapproved_notes_are_never_injected(self):
         write(self.anth / "personal-memory" / "user-me.md", note_text("user-me", "user", "me"))
@@ -581,7 +738,9 @@ class TrustBoundaryTest(MemCase):
         self.assertIn("[feedback-x](feedback-x.md) — Prefer small commits", index)
         self.assertIn(index, ctx)
         self.assertTrue(ctx.startswith("## "))
-        self.assertIn(str(self.root / ".claude" / "memory"), ctx.splitlines()[0])
+        self.assertTrue(ctx.startswith("## Personal memory"))  # always first, even when empty
+        repo_head = [l for l in ctx.splitlines() if l.startswith("## Repo memory")][0]
+        self.assertIn(str(self.root / ".claude" / "memory"), repo_head)
         self.assertNotIn(HINT, msgs)
         self.assertTrue(msgs)
         # the generated index never names a clone path
@@ -729,7 +888,7 @@ class ReCloneTest(MemCase):
         # a second run is a complete no-op
         before = snapshot(b)
         exclude = (b / ".git" / "info" / "exclude").read_bytes()
-        self.assertEqual(memory_sync.run(b, env()), ("", []))
+        self.assertEqual(memory_sync.run(b, env()), (personal_only(self.anth), []))
         self.assertEqual(snapshot(b), before)
         self.assertEqual((b / ".git" / "info" / "exclude").read_bytes(), exclude)
 
@@ -739,7 +898,7 @@ class ReCloneTest(MemCase):
         ctx, msgs = memory_sync.run(root, env())
         self.assertTrue(ctx.startswith("## "))
         self.assertTrue(ctx.strip().splitlines()[-1].strip())
-        self.assertEqual(memory_sync.run(root, env()), ("", []))
+        self.assertEqual(memory_sync.run(root, env()), (personal_only(self.anth), []))
 
 
 @needs_git
@@ -777,18 +936,22 @@ class RunFlowTest(MemCase):
         write(old_wt / "feedback-w.md", note_text("feedback-w", "feedback", "from wt"))
         ctx, msgs = memory_sync.run(wt, env())
         repo_mem = wt / ".claude" / "memory"
-        self.assertTrue((repo_mem / "project-m.md").exists())
-        self.assertTrue((repo_mem / "feedback-w.md").exists())
-        self.assertFalse((repo_mem / "user-u.md").exists())
-        self.assertTrue((self.anth / "personal-memory" / "user-u.md").exists())
+        personal = self.anth / "personal-memory"
+        # B3: nothing is copied into the repo; every legacy note goes to personal memory
+        self.assertEqual(sorted(p.name for p in repo_mem.glob("*.md")), [])
+        self.assertEqual(sorted(p.name for p in personal.glob("*.md") if p.name != "MEMORY.md"),
+                         ["feedback-w.md", "project-m.md", "user-u.md"])
         self.assertIn("personal one", ctx)
+        self.assertIn("from main", ctx)
         self.assertTrue((self.anth / "migrated.json").exists())
+        self.assertTrue(any("3 note(s)" in m and str(personal) in m and "/anthology:setup" in m
+                            for m in msgs), msgs)
         # old notes are still there (copied, never moved)
         self.assertTrue((old_main / "project-m.md").exists())
         # a later session does not duplicate
         memory_sync.run(wt, env())
-        self.assertEqual(sorted(p.name for p in repo_mem.glob("*.md") if p.name != "MEMORY.md"),
-                         ["feedback-w.md", "project-m.md"])
+        self.assertEqual(sorted(p.name for p in personal.glob("*.md") if p.name != "MEMORY.md"),
+                         ["feedback-w.md", "project-m.md", "user-u.md"])
 
 
 @needs_git
@@ -858,7 +1021,7 @@ class TrackedSettingsTest(MemCase):
         status = git(root, "status", "--porcelain").stdout
         for _ in range(3):
             ctx, msgs = memory_sync.run(root, env())
-            self.assertEqual(ctx, "")
+            self.assertEqual(ctx, personal_only(self.anth))
             self.assertTrue(any("tracked" in m and "git rm --cached" in m for m in msgs), msgs)
         self.assertEqual((root / ".claude" / "settings.local.json").read_text(), "{}\n")
         self.assertEqual(exclude.read_bytes() if exclude.exists() else b"", exclude_before)
@@ -965,7 +1128,7 @@ class SymlinkSafetyTest(MemCase):
         before = snapshot(outside)
         ctx, msgs = memory_sync.run(root, env())
         self.assertEqual(snapshot(outside), before)
-        self.assertEqual(ctx, "")
+        self.assertEqual(ctx, personal_only(self.anth))
         self.assertTrue(any("symlink" in m and ".claude/memory" in m for m in msgs), msgs)
         self.assertFalse((root / ".claude" / "settings.local.json").exists())
         self.assertFalse((self.anth / "migrated.json").exists())
@@ -1032,12 +1195,12 @@ class ManyTypesBudgetTest(MemCase):
 class MigrateGlobTest(MemCase):
     def test_note_names_with_glob_characters_are_matched_literally(self):
         old = self.tmp / "old"
-        repo_mem = self.tmp / "repo-mem"
+        personal = self.tmp / "personal"
         write(old / "weird[1].md", "from old\n")
-        write(repo_mem / "weird[1].md", "mine\n")
+        write(personal / "weird[1].md", "mine\n")
         for _ in range(3):
-            memory_sync.migrate(old, repo_mem, self.tmp / "personal", today="2026-04-05")
-        self.assertEqual(sorted(p.name for p in repo_mem.iterdir()),
+            memory_sync.migrate(old, None, personal, today="2026-04-05")
+        self.assertEqual(sorted(p.name for p in personal.iterdir()),
                          ["weird[1].md", "weird[1].migrated-2026-04-05.md"])
 
 
@@ -1082,6 +1245,182 @@ class ContextBudgetTest(MemCase):
         self.assertTrue(secs[1].startswith("## Repo memory"))
         self.assertIn("[project-a](project-a.md)", secs[1])
         self.assertLessEqual(len(secs[0].partition("\n\n")[2].encode()), 2500)
+
+
+class LegacyNotesStayOutOfTheRepoTest(MemCase):
+    """B3 reproduced: the first session after setup copied every non-user legacy note into the
+    (possibly public) repo. Now they all go to personal memory. Runs without git (fake_repo)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.fake_repo()
+        memory_sync.approve(self.root)
+        self.old = self.config / "projects" / encode(self.root) / "memory"
+        write(self.old / "reference-build-host.md",
+              note_text("reference-build-host", "reference", "The build host",
+                        body="Builds run on build-" + "box.lan as deploy.\n"))
+        write(self.old / "project-plan.md", note_text("project-plan", "project", "The plan"))
+
+    def test_session_start_copies_legacy_notes_to_personal_memory_only(self):
+        ctx, msgs = memory_sync.run(self.root, env())
+        repo_mem = self.root / ".claude" / "memory"
+        self.assertEqual(sorted(p.name for p in repo_mem.iterdir()), [])
+        personal = self.anth / "personal-memory"
+        for name in ("reference-build-host.md", "project-plan.md"):
+            self.assertEqual((personal / name).read_bytes(), (self.old / name).read_bytes())
+        self.assertEqual(len(json.loads((self.anth / "migrated.json").read_text())["done"]), 2)
+        self.assertTrue(any("2 note(s)" in m and str(personal) in m and "/anthology:setup" in m
+                            for m in msgs), msgs)
+        self.assertNotIn("build-" + "box", "".join(l for l in ctx.splitlines() if "Repo memory" in l))
+        # a second session copies nothing more and still writes nothing into the repo
+        _ctx, msgs = memory_sync.run(self.root, env())
+        self.assertFalse(any("note(s)" in m for m in msgs), msgs)
+        self.assertEqual(sorted(p.name for p in repo_mem.iterdir()), [])
+
+
+class UserNotesLeaveTheRepoTest(MemCase):
+    """C1: `type: user` notes never stay in an approved repo. Runs without git (fake_repo)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.fake_repo()
+        memory_sync.approve(self.root)
+        self.repo_mem = self.root / ".claude" / "memory"
+        self.agent = self.root / ".claude" / "agent-memory" / "anthology-scout"
+        self.personal = self.anth / "personal-memory"
+        write(self.repo_mem / "user-role.md", note_text("user-role", "user", "Senior engineer"))
+        write(self.repo_mem / "project-a.md", note_text("project-a", "project", "Repo thing"))
+        write(self.agent / "user-tz.md", note_text("user-tz", "user", "Works in CET"))
+        write(self.agent / "feedback-b.md", note_text("feedback-b", "feedback", "Agent thing"))
+
+    def test_user_notes_move_to_personal_memory_at_session_start(self):
+        role = (self.repo_mem / "user-role.md").read_bytes()
+        tz = (self.agent / "user-tz.md").read_bytes()
+        ctx, msgs = memory_sync.run(self.root, env())
+        self.assertFalse((self.repo_mem / "user-role.md").exists())
+        self.assertFalse((self.agent / "user-tz.md").exists())
+        self.assertEqual((self.personal / "user-role.md").read_bytes(), role)
+        self.assertEqual((self.personal / "user-tz.md").read_bytes(), tz)
+        self.assertTrue((self.repo_mem / "project-a.md").exists())
+        self.assertTrue((self.agent / "feedback-b.md").exists())
+        moved = [m for m in msgs if "moved 2 user note(s)" in m]
+        self.assertEqual(len(moved), 1, msgs)
+        self.assertIn(str(self.personal), moved[0])
+        self.assertIn("commit their removal", moved[0])
+        for index in (self.repo_mem / "MEMORY.md", self.agent / "MEMORY.md"):
+            text = index.read_text()
+            self.assertNotIn("## user", text)
+            self.assertNotIn("user-", text)
+        self.assertIn("[user-role](user-role.md)", (self.personal / "MEMORY.md").read_text())
+        personal_part, _, repo_part = ctx.partition("## Repo memory")
+        self.assertIn("user-role", personal_part)
+        self.assertIn("project-a", repo_part)
+        self.assertNotIn("user-", repo_part)
+
+    def test_a_symlinked_personal_folder_is_a_visible_message_not_a_silent_skip(self):
+        # m8: fail closed (nothing moved, copied or read through the link) but say so, once
+        target = self.tmp / "dotfiles-memory"
+        write(target / "feedback-mine.md", note_text("feedback-mine", "feedback", "Mine"))
+        self.personal.parent.mkdir(parents=True, exist_ok=True)
+        self.personal.symlink_to(target)
+        old = self.config / "projects" / encode(self.root) / "memory"
+        write(old / "project-old.md", note_text("project-old", "project", "Old"))
+        before = snapshot(target)
+        ctx, msgs = memory_sync.run(self.root, env())
+        self.assertEqual(snapshot(target), before)
+        self.assertTrue((self.repo_mem / "user-role.md").exists())  # not swept
+        self.assertFalse((self.anth / "migrated.json").exists())  # not migrated
+        warned = [m for m in msgs if "personal-memory" in m and "symlink" in m]
+        self.assertEqual(len(warned), 1, msgs)
+        self.assertIn("not moved", warned[0])
+        self.assertNotIn("feedback-mine", ctx)  # not read through the link either
+        self.assertIn("Personal memory is unavailable", ctx)
+        self.assertNotIn("Save notes about the user", ctx)  # no instruction to write through the link
+        self.assertEqual(memory_sync.note_sources(None, self.anth), [])  # `anthology-mem search` skips it
+        self.assertNotIn("personal", [s for s, _ in memory_sync.note_sources(self.root, self.anth)])
+
+    def test_a_symlinked_personal_folder_is_reported_outside_an_approved_repo_too(self):
+        target = self.tmp / "dotfiles-memory"
+        target.mkdir()
+        self.personal.parent.mkdir(parents=True, exist_ok=True)
+        self.personal.symlink_to(target)
+        _ctx, msgs = memory_sync.run(self.tmp, env())
+        self.assertEqual(len([m for m in msgs if "personal-memory" in m and "symlink" in m]), 1, msgs)
+
+    def test_a_conflicting_personal_note_is_kept_side_by_side(self):
+        write(self.personal / "user-role.md", "my own\n")
+        role = (self.repo_mem / "user-role.md").read_bytes()
+        memory_sync.run(self.root, env())
+        self.assertEqual((self.personal / "user-role.md").read_text(), "my own\n")
+        copies = [p for p in self.personal.glob("user-role.migrated-*.md")]
+        self.assertEqual(len(copies), 1)
+        self.assertEqual(copies[0].read_bytes(), role)
+        self.assertFalse((self.repo_mem / "user-role.md").exists())
+
+    def test_a_symlinked_user_note_is_untouched(self):
+        outside = self.tmp / "outside.md"
+        write(outside, note_text("user-out", "user", "Outside"))
+        (self.repo_mem / "user-link.md").symlink_to(outside)
+        memory_sync.run(self.root, env())
+        self.assertTrue((self.repo_mem / "user-link.md").is_symlink())
+        self.assertTrue(outside.is_file())
+        self.assertFalse((self.personal / "user-link.md").exists())
+        self.assertNotIn("user-link", (self.repo_mem / "MEMORY.md").read_text())
+
+    def test_repo_indexes_never_list_user_notes_even_if_the_move_fails(self):
+        write(self.repo_mem / "MEMORY.md", "## user\n- [user-role](user-role.md)\n")
+        write(self.agent / "MEMORY.md", "## user\n- [user-tz](user-tz.md)\n")
+        (self.agent / "feedback-b.md").unlink()  # the agent folder holds only a user note now
+        stuck = {"moved": [], "conflicts": []}
+        with mock.patch.object(memory_sync, "sweep_user_notes", return_value=stuck):
+            ctx, _ = memory_sync.run(self.root, env())
+        self.assertTrue((self.repo_mem / "user-role.md").exists())
+        for index in (self.repo_mem / "MEMORY.md", self.agent / "MEMORY.md"):
+            text = index.read_text()
+            self.assertNotIn("user-", text)
+            self.assertTrue(text.startswith(memory_sync.GENERATED))
+        self.assertIn("## Repo memory", ctx)  # the same-session cover
+        self.assertNotIn("user-role", ctx)
+
+    def test_an_index_left_with_no_notes_drops_the_moved_ones(self):
+        (self.agent / "feedback-b.md").unlink()
+        memory_sync.regenerate_index(self.agent)  # an older index that lists the user note
+        self.assertIn("user-tz", (self.agent / "MEMORY.md").read_text())
+        memory_sync.run(self.root, env())
+        self.assertEqual((self.agent / "MEMORY.md").read_text(), memory_sync.GENERATED + "\n")
+
+    def test_render_index_exclude_types_keyword(self):
+        self.assertIn("[user-role]", memory_sync.render_index(self.repo_mem))
+        text = memory_sync.render_index(self.repo_mem, exclude_types=("user",))
+        self.assertNotIn("user-role", text)
+        self.assertIn("[project-a]", text)
+        self.assertTrue(memory_sync.regenerate_index(self.repo_mem, memory_sync.DEFAULT_BUDGET, ("user",)))
+        self.assertNotIn("user-role", (self.repo_mem / "MEMORY.md").read_text())
+
+    def test_a_failing_repo_step_keeps_the_personal_section(self):
+        write(self.personal / "user-me.md", note_text("user-me", "user", "Me"))
+        with mock.patch.object(memory_sync, "sweep_user_notes",
+                               side_effect=PermissionError(13, "denied")):
+            ctx, msgs = memory_sync.run(self.root, env())
+        self.assertTrue(ctx.startswith("## Personal memory (%s)" % self.personal))
+        self.assertIn("[user-me](user-me.md)", ctx)
+        self.assertTrue(any("repo memory step failed" in m and "denied" in m for m in msgs), msgs)
+
+    def test_odd_user_types_are_left_out_of_repo_indexes(self):
+        write(self.repo_mem / "user-caps.md", note_text("user-caps", "USER", "Caps"))
+        text = memory_sync.render_index(self.repo_mem, exclude_types=("user",))
+        self.assertNotIn("user-caps", text)
+        self.assertNotIn("user-role", text)
+
+    def test_the_personal_section_is_always_there_with_its_path(self):
+        root = self.fake_repo("plain-repo", key="example.invalid/acme/other")  # not approved
+        ctx, _ = memory_sync.run(root, env())
+        self.assertEqual(ctx, personal_only(self.anth))
+        self.assertFalse(self.personal.exists())  # never created just to show it
+        self.personal.mkdir(parents=True)
+        ctx, _ = memory_sync.run(root, env())
+        self.assertEqual(ctx, personal_only(self.anth))
+        self.assertIn(str(self.personal) + "/user-<slug>.md, never in the repo", ctx)
 
 
 def _secret_samples():
@@ -1131,23 +1470,40 @@ class SaveNoteTest(MemCase):
         self.assertEqual(snapshot(self.tmp), before)
         return str(cm.exception)
 
+    def test_save_never_lists_user_notes_in_the_agent_index(self):
+        # I1: an agent folder may hold a `user` note (Claude Code's agent memory, or a sweep that
+        # has not run in this repo); `save` regenerates the committed index without it.
+        write(self.agent_dir() / "user-role.md", note_text("user-role", "user", "Senior engineer"))
+        write(self.agent_dir() / "user-tz.md", note_text("user-tz", "User # me", "Works in CET"))
+        self.save()
+        index = (self.agent_dir() / "MEMORY.md").read_text()
+        self.assertIn("[Eval probe](project-eval-probe.md)", index)
+        self.assertNotIn("## user", index.lower())
+        self.assertNotIn("user-", index)
+
     def test_privacy_check_is_the_single_wiring_point(self):
-        # Stream P adds memory_sync.privacy_findings(text) -> list; save must refuse on any
-        # finding, without echoing it. Until it lands, _privacy_check is a no-op.
+        # save runs memory_sync.privacy_findings on every field and refuses on any finding,
+        # naming the kind and line but never echoing the text.
+        home = "/" + "Users" + "/alice/notes"
+        msg = self.assertRefused("personal or private data", body="Line one.\nsee " + home + " here")
+        self.assertIn("home path (line 2)", msg)
+        self.assertNotIn("alice", msg)
+        msg = self.assertRefused("email address", description="ping alice" + "@" + "corp-mail.io")
+        self.assertNotIn("corp-mail", msg)
+        self.assertRefused("personal or private data", name="Box at 192.168.1.20")
+        self.save(slug="clean", body="Nothing private; see https://example.com/docs.")
+        self.assertTrue((self.agent_dir() / "project-clean.md").is_file())
+
+    def test_save_calls_privacy_findings_for_each_field(self):
         seen = []
 
-        def findings(text):
+        def findings(text, home=None, hostname=None):
             seen.append(text)
-            return ["home path"] if "SECRETHOMEPATH" in text else []
+            return []
 
-        with mock.patch.object(memory_sync, "privacy_findings", findings, create=True):
-            msg = self.assertRefused("personal or private data", body="see SECRETHOMEPATH here")
-            self.assertNotIn("SECRETHOMEPATH", msg)
-            self.save(slug="clean", body="Nothing private.")
-        self.assertTrue(any("Nothing private." in t for t in seen))
-        self.assertTrue(any("eval-probe" in t or "clean" in t for t in seen))
-        if not hasattr(memory_sync, "privacy_findings"):
-            self.save(slug="no-scanner", body="see SECRETHOMEPATH here")
+        with mock.patch.object(memory_sync, "privacy_findings", findings):
+            self.save(slug="spy", body="Body here.")
+        self.assertEqual(seen, ["spy", "Eval probe", "How the probe works", "Body here.\n"])
 
     def test_creates_the_note_with_the_exact_shape(self):
         old_umask = os.umask(0o022)  # the mode below is only exact under the usual umask
@@ -1188,11 +1544,12 @@ class SaveNoteTest(MemCase):
         self.assertEqual(set(memory_sync.ROSTER), stems)
         self.assertEqual(len(memory_sync.ROSTER), len(stems))
 
-    def test_secret_patterns_equal_the_guardrail_g6_list(self):
-        mine = [(p.pattern, p.flags) for p in memory_sync._SECRET_PATTERNS]
-        theirs = [(p.pattern, p.flags) for p in guard_rules._SECRET_PATTERNS]
-        self.assertEqual(mine, theirs)
-        self.assertEqual(len(mine), 8)
+    def test_save_uses_the_shared_secret_list(self):
+        # One anthology-side list (memory_privacy); test_memory_privacy keeps it a superset of G6.
+        self.assertFalse(hasattr(memory_sync, "_SECRET_PATTERNS"))
+        shared = {(rx.pattern, rx.flags) for _label, rx in memory_privacy.SECRET_PATTERNS}
+        for rx in guard_rules._SECRET_PATTERNS:
+            self.assertIn((rx.pattern, rx.flags), shared)
 
     def test_tricky_values_round_trip_through_the_real_indexer(self):
         values = ["It's a test", "a: b", "# not a comment", 'say "hi"', "a\\nb literal",
@@ -1345,7 +1702,7 @@ class SaveNoteTest(MemCase):
 
     def test_each_secret_pattern_is_refused_everywhere(self):
         samples = _secret_samples()
-        self.assertEqual(len(samples), len(memory_sync._SECRET_PATTERNS))
+        self.assertEqual(len(samples), len(guard_rules._SECRET_PATTERNS))
         for label, secret in samples.items():
             for field in ("name", "description", "body"):
                 with self.subTest(label=label, field=field):

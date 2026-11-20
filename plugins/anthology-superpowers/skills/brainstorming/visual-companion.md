@@ -33,9 +33,9 @@ The server watches a directory for HTML files and serves the newest one to the b
 ## Starting a Session
 
 ```bash
-# Start AFTER the user approves the companion. --open auto-opens their browser on
-# the first screen; --project-dir persists mockups and enables same-port restart.
-bash scripts/start-server.sh --project-dir /path/to/project --open
+# Start AFTER the user approves the companion. --project-dir persists mockups
+# and enables same-port restart. The server never opens a browser itself.
+bash scripts/start-server.sh --project-dir /path/to/project
 
 # Returns: {"type":"server-started","port":52341,
 #           "url":"http://localhost:52341/?key=ab12…",
@@ -43,7 +43,7 @@ bash scripts/start-server.sh --project-dir /path/to/project --open
 #           "state_dir":"/path/to/project/.superpowers/brainstorm/12345-1706000000/state"}
 ```
 
-Save `screen_dir` and `state_dir` from the response. With `--open`, the browser opens itself when you push the first screen — you don't need to ask the user to open it, but still share the URL as a fallback (headless/remote setups won't auto-open).
+Save `screen_dir` and `state_dir` from the response. The server never opens a browser, so share the complete `url` with the user and open it in BrowserOS Neo: call `mcp__browseros-neo__tabs` with action `new` and the URL to open a tab on it, or `mcp__browseros-neo__navigate` in your own tab. If those tools are not available, give the user the URL to open themselves. Never launch another browser, and never run an OS command to open the URL.
 
 **The URL contains a session key (`?key=…`).** The server rejects any request
 without it, so always give the user the **complete** URL from the `url` field —
@@ -62,7 +62,7 @@ without repeating it.
 **Claude Code:**
 ```bash
 # Default mode works — the script backgrounds the server itself.
-bash scripts/start-server.sh --project-dir /path/to/project --open
+bash scripts/start-server.sh --project-dir /path/to/project
 ```
 
 On Windows, the script auto-detects and switches to foreground mode (which blocks the tool call). Use `run_in_background: true` on the Bash tool call so the server survives across conversation turns, then read `$STATE_DIR/server-info` on the next turn to get the URL and port.
@@ -71,14 +71,14 @@ On Windows, the script auto-detects and switches to foreground mode (which block
 ```bash
 # Codex reaps background processes. The script auto-detects CODEX_CI and
 # switches to foreground mode. Run it normally — no extra flags needed.
-bash scripts/start-server.sh --project-dir /path/to/project --open
+bash scripts/start-server.sh --project-dir /path/to/project
 ```
 
 **Gemini CLI:**
 ```bash
 # Use --foreground and set is_background: true on your shell tool call
 # so the process survives across turns
-bash scripts/start-server.sh --project-dir /path/to/project --open --foreground
+bash scripts/start-server.sh --project-dir /path/to/project --foreground
 ```
 
 **Copilot CLI:**
@@ -87,7 +87,7 @@ bash scripts/start-server.sh --project-dir /path/to/project --open --foreground
 # server survives across turns. Keep --foreground so the harness, not the
 # script, owns backgrounding. The launcher is a .sh, so invoke it via bash
 # (on Windows, call Git Bash's bash.exe from the PowerShell tool).
-bash scripts/start-server.sh --project-dir /path/to/project --open --foreground
+bash scripts/start-server.sh --project-dir /path/to/project --foreground
 ```
 
 **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.

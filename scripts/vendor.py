@@ -20,6 +20,12 @@ drop action of every upstream script and the Chrome-launch pattern. build/check/
 upstream adds a script the map does not list, a drop script ships, a keep script differs from
 upstream, or any shipped file or path matches the pattern.
 
+build also ships each source's license inside its target (after transforms and patches), so
+the installed plugin carries the text: the upstream license_file unless it already lies in the
+source folder, the fixed vendor/licenses text as LICENSE when license_file is null, and each
+upstream path listed in the optional `license_extra` (e.g. a NOTICE), all unchanged. A NOTICE in
+the upstream root or on the path to the folder must ship, or build fails.
+
 A source with `url` + `checksum` (no git) is a downloaded skill folder. Its pristine copy
 is committed in vendor/snapshots/<name>/ and re-verified on every build/check/diff, so CI
 never contacts the host; only `vendor.py fetch NAME` downloads and refreshes it.
@@ -31,6 +37,7 @@ import difflib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -54,6 +61,8 @@ VENDORED_PLUGIN = "plugins/anthology-superpowers"
 KNOWLEDGE_DIR = "plugins/anthology/knowledge"
 IGNORED_EXTRAS = {".DS_Store"}
 PORTMAP_DIR = "vendor/patches/"
+NOTICE_NAMES = frozenset({"notice", "notice.txt", "notice.md"})  # matched in lower case
+FIXED_LICENSE_NAME = "LICENSE"
 
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -156,6 +165,27 @@ def _check_transforms(label: str, entry: dict, errors: list) -> None:
                 errors.append(f"{label}: rename-skill needs old and new skill names")
 
 
+def _check_license_extra(label: str, entry: dict, errors: list) -> None:
+    """`license_extra`: upstream files (NOTICE, a second license) shipped unchanged next to
+    the source folder, as `<target>/<basename>`."""
+    extra = entry["license_extra"]
+    if entry.get("url"):
+        errors.append(f"{label}: a url source has no license_extra (its snapshot is the folder)")
+        return
+    if not (isinstance(extra, list) and all(_safe_relpath(v, False) for v in extra)):
+        errors.append(f"{label}: license_extra must be a list of upstream repo-relative paths")
+        return
+    license_file = entry.get("license_file")
+    taken = {posixpath.basename(license_file) if isinstance(license_file, str)
+             else FIXED_LICENSE_NAME}
+    for value in extra:
+        base = posixpath.basename(value)
+        if base in taken:
+            errors.append(f"{label}: license_extra {value!r} clashes with another shipped "
+                          f"license file named {base}")
+        taken.add(base)
+
+
 def _check_url_entry(label: str, entry: dict, errors: list) -> None:
     """A downloaded skill folder: https URL ending in a slash, a pinned checksum of its
     CHECKSUMS.sha256, no git fields, and a license file inside the snapshot."""
@@ -227,6 +257,8 @@ def validate_sources(entries: list) -> list:
             if slug in license_files and license_files[slug] != e.get("license_file"):
                 errors.append(f"{label}: entries from one repo must agree on license_file")
             license_files.setdefault(slug, e.get("license_file"))
+        if "license_extra" in e:
+            _check_license_extra(label, e, errors)
         if "url" in e:
             _check_url_entry(label, e, errors)
         _check_transforms(label, e, errors)
@@ -991,9 +1023,99 @@ def _pristine_subtree(entry: dict, pristine: Path) -> Path:
     return src
 
 
+def _ship_file(dest: Path, name: str, data: bytes, entry: dict, strict: bool = True) -> None:
+    """Write a license file to dest/name (mode 644). A file already there is fine when it has
+    the same bytes (uxkin folders ship their own LICENSE) and an error when it differs; with
+    strict off (`diff`, before the patches) a differing file is left alone."""
+    target = Path(dest) / name
+    if target.is_symlink() or target.exists():
+        if target.is_symlink() or not target.is_file() or target.read_bytes() != data:
+            if not strict:
+                return
+            raise VendorError(f"{entry['name']}: {name} already exists in the source folder "
+                              f"and differs from the license text to ship")
+        return
+    target.write_bytes(data)
+    target.chmod(0o644)
+
+
+def _read_upstream(entry: dict, pristine: Path, rel: str, what: str) -> bytes:
+    """The bytes of a license-like file of the pristine checkout. A symlink, or a path that
+    resolves outside the checkout, is refused: it could ship a local file into a public tree."""
+    src = Path(pristine) / rel
+    if src.is_symlink() or (src.exists() and Path(pristine).resolve() not in src.resolve().parents):
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} is a symlink or lies outside "
+                          f"the checkout; it is not read")
+    if not src.is_file():
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} not found")
+    data = src.read_bytes()
+    if not data.strip():
+        raise VendorError(f"{entry['name']}: upstream {what} {rel} is empty")
+    return data
+
+
+def _notice_problems(entry: dict, pristine: Path, dest: Path) -> list:
+    """Every NOTICE in the upstream repo root or on the way down to the source folder must
+    ship: inside the folder, or listed in license_extra (Apache-2.0 section 4(d))."""
+    folder = entry["path"]
+    parts = folder.split("/") if folder else []
+    chain = ["/".join(parts[:i]) for i in range(len(parts) + 1)]
+    listed = set(entry.get("license_extra", []))
+    problems = []
+    for directory in chain:
+        here = Path(pristine) / directory if directory else Path(pristine)
+        try:
+            present = set(os.listdir(here))
+        except OSError:
+            continue
+        for name in sorted(n for n in present if n.lower() in NOTICE_NAMES):
+            rel = f"{directory}/{name}" if directory else name
+            if (here / name).is_symlink():
+                problems.append(f"{entry['name']}: upstream {rel} is a symlink; it is not supported")
+            elif not (here / name).is_file():
+                continue
+            elif directory == folder:
+                if not (Path(dest) / name).is_file():
+                    problems.append(f"{entry['name']}: upstream {rel} is not shipped "
+                                    f"(a patch removed it)")
+            elif rel not in listed:
+                problems.append(f"{entry['name']}: upstream {rel} is not shipped; "
+                                f"add it to license_extra")
+    return problems
+
+
+def ship_licenses(root: Path, entry: dict, pristine: Path, dest: Path, strict: bool = True) -> None:
+    """Put the source's license text, and any upstream NOTICE, inside the built folder: Claude
+    Code installs a plugin directory on its own, so the text must travel with it. Files are
+    copied unchanged. With strict off (`diff` builds without the patches) a license copy that
+    conflicts with a file of the folder is skipped: a patch may be what resolves it."""
+    folder, license_file = entry["path"], entry.get("license_file")
+    if license_file is None:
+        fixed = Path(root) / LICENSES / f"{source_slug(entry)}.txt"
+        if not fixed.is_file():
+            raise VendorError(f"{entry['name']}: fixed license text {LICENSES / fixed.name} not found")
+        _ship_file(dest, FIXED_LICENSE_NAME, fixed.read_bytes(), entry, strict)
+    else:
+        prefix = folder + "/" if folder else ""
+        if license_file.startswith(prefix):
+            if not (Path(dest) / license_file[len(prefix):]).is_file():
+                raise VendorError(f"{entry['name']}: license file {license_file} is not in "
+                                  f"the built folder")
+        else:
+            _ship_file(dest, posixpath.basename(license_file),
+                       _upstream_license(entry, pristine), entry, strict)
+    for rel in entry.get("license_extra", []):
+        _ship_file(dest, posixpath.basename(rel),
+                   _read_upstream(entry, pristine, rel, "license_extra file"), entry, strict)
+    if entry.get("repo"):
+        problems = _notice_problems(entry, pristine, dest)
+        if problems:
+            raise VendorError("\n".join(problems))
+
+
 def build_tree(root: Path, entry: dict, pristine: Path, dest: Path,
                patches: bool = True, reject: bool = False) -> dict:
-    """pristine -> transforms -> patches, written to dest. Returns stats and rejects."""
+    """pristine -> transforms -> patches -> licenses, written to dest. Returns stats and rejects."""
     stats: dict = {"transforms": [], "rejects": []}
     copy_tree(_pristine_subtree(entry, pristine), dest)
     for t in entry["transform"]:
@@ -1006,6 +1128,7 @@ def build_tree(root: Path, entry: dict, pristine: Path, dest: Path,
                 stats["rejects"] += apply_patch(dest, patch, reject=reject)
         else:
             stats["transforms"].append((spec["name"], TRANSFORMS[spec["name"]](dest, entry, spec)))
+    ship_licenses(root, entry, pristine, dest, strict=patches)
     if patches and entry.get("portmap"):
         stats["portmap"] = portmap_problems(load_portmap(root, entry),
                                             _pristine_subtree(entry, pristine), dest)
@@ -1063,13 +1186,7 @@ def fixed_license_problems(root: Path, entry: dict) -> list:
 
 
 def _upstream_license(entry: dict, pristine: Path) -> bytes:
-    src = Path(pristine) / entry["license_file"]
-    if not src.is_file():
-        raise VendorError(f"{entry['name']}: upstream license file {entry['license_file']} not found")
-    data = src.read_bytes()
-    if not data.strip():
-        raise VendorError(f"{entry['name']}: upstream license file {entry['license_file']} is empty")
-    return data
+    return _read_upstream(entry, pristine, entry["license_file"], "license file")
 
 
 def fetch_licenses(root: Path, names=None, fetch=None) -> list:
