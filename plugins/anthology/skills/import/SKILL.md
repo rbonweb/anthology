@@ -25,8 +25,8 @@ scan), and never overwrites a note.
    (kept side by side as `<name>.imported-<date>.md`), repo notes skipped because this folder
    is not an approved repo, and any secret-looking content (labels only). Repo and agent notes
    the privacy scan blocks (home paths, emails, private IPs or hosts, ssh targets and key paths,
-   secrets) are listed as blocked: they go to personal memory instead of the repo, and the apply
-   step scans them again.
+   secrets), and `type: user` notes, are listed as blocked with a reason: they go to personal
+   memory instead of the repo, and the apply step checks them again.
 3. **Wait for the user's confirmation.** Do not apply without it.
 4. **Apply** exactly the archive that was shown, by passing the sha256 from the dry run:
 

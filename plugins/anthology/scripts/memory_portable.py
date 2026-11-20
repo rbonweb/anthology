@@ -389,18 +389,25 @@ def _imported_name(directory, name, date):
         n += 1
 
 
-def _privacy(data):
-    """Privacy findings for a note that would be written into repo memory (labels only)."""
-    return memory_sync.privacy_findings(data.decode("utf-8", errors="replace"))
+def _repo_block(name, data):
+    """`(findings, reason)` why a note may not be written into repo or agent memory, or
+    `([], None)`: a `type: user` note is personal by definition; otherwise the privacy scan
+    (labels and line numbers only)."""
+    if memory_sync.is_user_note(memory_sync.note_info(name, data)):
+        return [], memory_sync.USER_REASON
+    findings = memory_sync.privacy_findings(data.decode("utf-8", errors="replace"))
+    if findings:
+        return findings, "the privacy scan found %s" % memory_privacy.describe(findings)
+    return [], None
 
 
 def plan_import(archive, cwd, today=None, env=None):
     """Validate `archive` and compare it with the notes already on this machine. Writes
     nothing. Returns a plan dict: `new`, `identical`, `conflicts` (each an entry with its
     `dest`), `secrets` (`{"file", "pattern"}`, labels only), `skipped_repo`, `blocked`,
-    `messages`. A repo or agent note that would be written and has privacy findings is
-    redirected to personal memory (`"redirected": "personal"`, its `dest` there) and listed in
-    `blocked` as `{"file", "findings"}`."""
+    `messages`. A repo or agent note that would be written and is `type: user` or has privacy
+    findings is redirected to personal memory (`"redirected": "personal"`, its `dest` there)
+    and listed in `blocked` as `{"file", "findings", "reason"}`."""
     env = dict(os.environ) if env is None else dict(env)
     manifest, contents, sha = _load_archive(archive)
     home = memory_sync.anthology_home(env)
@@ -426,9 +433,9 @@ def plan_import(archive, cwd, today=None, env=None):
         entry["dest"] = os.path.join(directory, entry["name"])
         if entry["scope"] != "personal" and not (os.path.lexists(entry["dest"]) and
                                                  _same_as_existing(directory, entry["name"], data)):
-            findings = _privacy(data)
-            if findings:  # would be written into the repo: redirected to personal memory
-                plan["blocked"].append({"file": member, "findings": findings})
+            findings, reason = _repo_block(entry["name"], data)
+            if reason:  # would be written into the repo: redirected to personal memory
+                plan["blocked"].append({"file": member, "findings": findings, "reason": reason})
                 entry["redirected"] = "personal"
                 base, parts = _location("personal", None, home, root)
                 directory = os.path.join(str(base), *parts)
@@ -444,8 +451,9 @@ def plan_import(archive, cwd, today=None, env=None):
         plan["messages"].append("this folder is not an approved repo (run /anthology:setup in it): "
                                 "%d repo note(s) skipped" % len(plan["skipped_repo"]))
     if plan["blocked"]:
-        plan["messages"].append("%d repo note(s) look private (privacy scan); they go to personal "
-                                "memory instead of the repo" % len(plan["blocked"]))
+        plan["messages"].append("%d repo note(s) are user notes or look private (privacy scan); "
+                                "they go to personal memory instead of the repo"
+                                % len(plan["blocked"]))
     return plan
 
 
@@ -528,9 +536,10 @@ def apply_import(plan):
                 raise ImportRejected("plan entry not in the archive: %s" % member)
             data = contents[member]
             if scope != "personal" and key != "identical":
-                findings = _privacy(data)
-                if findings or member in planned_blocked:
-                    blocked.append({"file": member, "findings": findings})
+                findings, reason = _repo_block(name, data)
+                if reason or member in planned_blocked:
+                    blocked.append({"file": member, "findings": findings,
+                                    "reason": reason or "blocked in the plan"})
                     scope, agent = "personal", None
             work.append((key, scope, agent, name, data))
     if any(w[1] != "personal" for w in work):
@@ -594,9 +603,9 @@ def _print_plan(plan):
     for message in plan["messages"]:
         print("  note: %s" % message)
     if plan.get("blocked"):
-        print("  blocked from the repo by the privacy scan (written to personal memory instead):")
+        print("  blocked from the repo (written to personal memory instead):")
         for b in plan["blocked"]:
-            print("    - %s: %s" % (b["file"], memory_privacy.describe(b["findings"])))
+            print("    - %s: %s" % (b["file"], b.get("reason") or memory_privacy.describe(b["findings"])))
     if plan["secrets"]:
         print("  secret-looking content found (labels only, contents not shown):")
         for s in plan["secrets"]:
@@ -653,7 +662,7 @@ def main(argv=None):
                 for path in result["conflicts"]:
                     print("    %s" % path)
                 if result["blocked"]:
-                    print("%d repo note(s) blocked by the privacy scan, written to personal memory:"
+                    print("%d repo note(s) blocked from the repo, written to personal memory:"
                           % len(result["blocked"]))
                     for b in result["blocked"]:
                         print("    %s" % b["file"])

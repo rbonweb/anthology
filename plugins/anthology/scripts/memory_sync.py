@@ -37,7 +37,8 @@ UNION_LINES = (".claude/memory/MEMORY.md merge=union",
                ".claude/agent-memory/*/MEMORY.md merge=union")
 EXCLUDE_LINE = "/.claude/settings.local.json"
 TYPE_ORDER = ("user", "feedback", "project", "reference")
-REPO_EXCLUDE = ("user",)  # never listed in a repo or agent index: they belong in personal memory
+REPO_EXCLUDE = ("user",)
+USER_REASON = "type: user notes are personal; they never go into a repo"  # never listed in a repo or agent index: they belong in personal memory
 PERSONAL_SAVE = ("Save notes about the user (type: user: role, preferences) here as "
                  "%s/user-<slug>.md, never in the repo.")
 MAX_LINE = 200
@@ -375,6 +376,17 @@ def ensure_union_attrs(root):
 # ---------------------------------------------------------------------------------------------
 
 
+def normalize_type(value):
+    """A note type as compared everywhere: lower case, a trailing `# comment` and whitespace
+    dropped (so `User` and `user # me` are both `user`)."""
+    return str(value or "").split("#", 1)[0].strip().lower()
+
+
+def is_user_note(info):
+    """True for a `type: user` note (any case, trailing comment allowed)."""
+    return normalize_type(info.get("type")) == "user"
+
+
 def _list_notes(mem_dir):
     notes = []
     mem_dir = Path(mem_dir)
@@ -435,7 +447,8 @@ def render_index(mem_dir, budget=DEFAULT_BUDGET, suffix="", exclude_types=()):
     notes = _list_notes(mem_dir)
     if not notes:
         return None
-    notes = [n for n in notes if n["type"] not in exclude_types]
+    excluded = {normalize_type(t) for t in exclude_types}
+    notes = [n for n in notes if normalize_type(n["type"]) not in excluded]
     if not notes:
         return GENERATED + "\n"
     notes.sort(key=lambda n: (n["name"], n["file"]))
@@ -705,7 +718,7 @@ def save_note(root, agent, type_, slug, name, description, body, replace=False, 
 
     warning = None
     try:
-        regenerate_index(agent_dir)
+        regenerate_index(agent_dir, exclude_types=REPO_EXCLUDE)
     except (OSError, UnsafeTarget) as exc:
         warning = str(exc)
     return {"path": path, "relative": relative, "root": root, "action": action,
@@ -780,6 +793,17 @@ def placement_status(dest_dir, name, data):
     return "identical" if _same_copy(dest_dir, name, data) else "conflict"
 
 
+def side_by_side_name(dest_dir, name, date):
+    """The first free `<stem>.migrated-<date>[-N].md` name in `dest_dir` (the copy a conflict
+    gets; setup's preview shows the same name)."""
+    stem, n = name[:-3], 1
+    while True:
+        candidate = "%s.migrated-%s%s.md" % (stem, date, "" if n == 1 else "-%d" % n)
+        if not os.path.lexists(str(Path(dest_dir) / candidate)):
+            return candidate
+        n += 1
+
+
 def _place(dest_dir, name, data, date):
     """Copy `data` into `dest_dir` as `name`, never overwriting: a different file with the name
     gets a `<stem>.migrated-<date>.md` copy instead. Returns `(status, path)`, status `created`,
@@ -790,14 +814,10 @@ def _place(dest_dir, name, data, date):
     same = _same_copy(dest_dir, name, data)
     if same:
         return "identical", same
-    stem = name[:-3]
-    n = 1
     while True:
-        suffix = "" if n == 1 else "-%d" % n
-        path = dest_dir / ("%s.migrated-%s%s.md" % (stem, date, suffix))
+        path = dest_dir / side_by_side_name(dest_dir, name, date)
         if _create_exclusive(path, data):
             return "conflict", path
-        n += 1
 
 
 def legacy_entries(old_dir):
@@ -826,8 +846,8 @@ def note_info(name, data):
 
 def promotion_block(info, data, home=None, hostname=None):
     """`(findings, reason)`: why a note may not go into repo memory, or `([], None)`."""
-    if info["type"] == "user":
-        return [], "type: user notes are personal; they never go into a repo"
+    if is_user_note(info):
+        return [], USER_REASON
     findings = privacy_findings(data.decode("utf-8", errors="replace"), home=home, hostname=hostname)
     if findings:
         return findings, ("the privacy scan found %s; kept in personal memory"
@@ -860,8 +880,10 @@ def migrate(old_dir, repo_mem, personal_mem, ledger=None, today=None, promote=()
         to_repo = False
         if name in promote:
             findings, reason = promotion_block(note_info(name, data), data, home, hostname)
-            if reason is None and (repo_mem is None or _unsafe_dir(repo_mem)):
-                reason = "repo memory is a symlink or not a folder; kept in personal memory"
+            if reason is None and (repo_mem is None or _unsafe_dir(repo_mem)
+                                   or _unsafe_dir(Path(repo_mem).parent)):
+                reason = ("repo memory (or .claude) is a symlink or not a folder; kept in "
+                          "personal memory")
             if reason is None:
                 to_repo = True
             else:
@@ -931,7 +953,7 @@ def sweep_user_notes(src_dir, personal_mem, today=None):
             data = _read_regular(entry.path)
         except (OSError, UnsafeTarget):
             continue
-        if note_info(entry.name, data)["type"] != "user":
+        if not is_user_note(note_info(entry.name, data)):
             continue
         try:
             _ensure_private_dir(personal_mem)
@@ -1081,7 +1103,11 @@ def _run(cwd, env):
     cover = None
     if root is not None:
         if is_approved(repo_key(root, env=env), env=env):
-            cover = _sync_repo(root, home, config, env, messages)
+            try:
+                cover = _sync_repo(root, home, config, env, messages)
+            except Exception as exc:  # the personal section below must still be built
+                messages.append("anthology memory: repo memory step failed: %s"
+                                % (str(exc) or type(exc).__name__)[:120])
         elif (root / ".claude" / "memory").is_dir() or (root / ".claude" / "agent-memory").is_dir():
             messages.append(HINT)
     personal = home / "personal-memory"

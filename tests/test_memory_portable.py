@@ -840,8 +840,10 @@ class ImportPrivacyTest(PortableCase):
         plan = self.plan()
         self.assertEqual(plan["blocked"], [
             {"file": "repo/agent-memory/anthology-w/reference-ip.md",
-             "findings": [{"kind": "private-ip", "line": 1}]},
-            {"file": "repo/memory/reference-contact.md", "findings": [{"kind": "email", "line": 1}]}])
+             "findings": [{"kind": "private-ip", "line": 1}],
+             "reason": "the privacy scan found private IP address (line 1)"},
+            {"file": "repo/memory/reference-contact.md", "findings": [{"kind": "email", "line": 1}],
+             "reason": "the privacy scan found email address (line 1)"}])
         self.assertNotIn(self.MAIL, json.dumps(plan))
         dests = {e["member"]: e["dest"] for e in plan["new"]}
         self.assertEqual(dests["repo/memory/reference-contact.md"],
@@ -881,22 +883,44 @@ class ImportPrivacyTest(PortableCase):
         self.assertEqual([e["member"] for e in plan["identical"]], ["repo/memory/reference-contact.md"])
         self.assertNotIn("repo/memory/reference-contact.md", [b["file"] for b in plan["blocked"]])
 
-    def test_repo_indexes_never_list_user_notes(self):
+    def test_user_notes_are_never_written_into_the_repo(self):
         path = make_archive(self.tmp / "u.tar.gz", [
             ("repo/memory/user-x.md", note_text("user-x", "user", "Me").encode()),
+            ("repo/agent-memory/anthology-w/user-z.md",
+             note_text("user-z", "User # personal", "Z").encode()),
             ("repo/memory/project-y.md", note_text("project-y", "project", "Y").encode())])
-        memory_portable.apply_import(memory_portable.plan_import(path, self.repo, env=self.env))
+        plan = memory_portable.plan_import(path, self.repo, env=self.env)
+        self.assertEqual(sorted((b["file"], b["reason"]) for b in plan["blocked"]),
+                         [("repo/agent-memory/anthology-w/user-z.md", memory_sync.USER_REASON),
+                          ("repo/memory/user-x.md", memory_sync.USER_REASON)])
+        result = memory_portable.apply_import(plan)
+        self.assertEqual(len(result["blocked"]), 2)
+        self.assertEqual(sorted(p.name for p in self.repo_mem.glob("*.md")), ["MEMORY.md", "project-y.md"])
+        self.assertFalse((self.repo / ".claude" / "agent-memory").exists())
+        self.assertTrue((self.personal / "user-x.md").is_file())
+        self.assertTrue((self.personal / "user-z.md").is_file())
         index = (self.repo_mem / "MEMORY.md").read_text()
         self.assertIn("[project-y]", index)
         self.assertNotIn("user-x", index)
+
+    def test_apply_redirects_a_user_note_the_plan_let_through(self):
+        path = make_archive(self.tmp / "u.tar.gz", [
+            ("repo/memory/user-x.md", note_text("user-x", "user", "Me").encode())])
+        plan = memory_portable.plan_import(path, self.repo, env=self.env)
+        plan["blocked"] = []
+        for entry in plan["new"]:
+            entry.pop("redirected", None)
+        memory_portable.apply_import(plan)
+        self.assertFalse((self.repo_mem / "user-x.md").exists())
+        self.assertTrue((self.personal / "user-x.md").is_file())
 
     def test_dry_run_output_names_the_blocked_notes_without_their_content(self):
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
             memory_portable._print_plan(self.plan())
         out = buf.getvalue()
-        self.assertIn("blocked from the repo by the privacy scan", out)
-        self.assertIn("repo/memory/reference-contact.md: email address (line 1)", out)
+        self.assertIn("blocked from the repo (written to personal memory instead)", out)
+        self.assertIn("repo/memory/reference-contact.md: the privacy scan found email address (line 1)", out)
         self.assertIn("(to personal memory: blocked)", out)
         self.assertNotIn(self.MAIL, out)
 

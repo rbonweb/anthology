@@ -63,7 +63,11 @@ class FindingShapeTest(unittest.TestCase):
 
 class KindTest(unittest.TestCase):
     def test_home_path(self):
-        for text in (U + "/alice/project", "cd " + H + "/bob", "(" + U + "/alice)", U + "/alice."):
+        for text in (U + "/alice/project", "cd " + H + "/bob", "(" + U + "/alice)", U + "/alice.",
+                     "/mnt/c" + U + "/alice/proj", "/var" + H + "/alice/src",
+                     "/System/Volumes/Data" + U + "/alice/x", "/" + "users/alice/x",
+                     "/" + "USERS/alice/x", "file://" + U + "/alice/x", "C:" + U + "/alice/x",
+                     "PATH=/opt" + H + "/carol/bin"):
             self.assertEqual(kinds(text), ["home-path"], text)
 
     def test_literal_home_value(self):
@@ -102,6 +106,11 @@ class KindTest(unittest.TestCase):
         self.assertEqual(kinds("a box called abc", hostname="abc"), [])  # under 4 chars
         self.assertEqual(kinds("on localhost", hostname="localhost"), [])
 
+    def test_generic_machine_names_are_never_a_finding(self):
+        for name in ("ubuntu", "raspberrypi", "MacBook-Pro", "docker", "workstation", "laptop",
+                     "debian.local"):
+            self.assertEqual(kinds("runs on " + name.split(".")[0] + " today", hostname=name), [], name)
+
     def test_hostname_lookup_failure_never_raises(self):
         with mock.patch.object(memory_privacy.socket, "gethostname", side_effect=OSError("no")):
             self.assertEqual(memory_privacy.privacy_findings("plain text", home=HOME), [])
@@ -110,7 +119,16 @@ class KindTest(unittest.TestCase):
         self.assertEqual(kinds("ssh -p 2222 deploy" + "@build-01"), ["ssh-target"])
         for cmd in ("scp f ", "sftp ", "rsync -a x ", "mosh "):
             self.assertIn("ssh-target", kinds(cmd + "bob" + "@buildhost"), cmd)
+        self.assertEqual(kinds("deploy" + "@build-01 via ssh"), ["ssh-target"])  # target first
         self.assertEqual(kinds("deploy" + "@build-01 without a command"), [])
+
+    def test_git_user_is_exempt_only_on_public_forges(self):
+        for forge in ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org",
+                      "ssh.dev.azure.com", "git.sr.ht"):
+            self.assertEqual(kinds("ssh -T " + at("git", forge)), [], forge)
+            self.assertEqual(kinds("remote " + at("git", forge) + ":acme/app.git"), [], forge)
+        self.assertEqual(kinds("remote " + at("git", "forge.acme.zz") + ":a/b.git"), ["email"])
+        self.assertEqual(kinds("ssh " + at("git", "build-box")), ["ssh-target"])
 
     def test_ssh_key_path(self):
         for text in ("~/.ssh/id_work", "$HOME/.ssh/config", "/" + "etc" + "/ssh-keys/.ssh/k",
@@ -127,6 +145,10 @@ class KindTest(unittest.TestCase):
             "google-api-key": "AI" + "za" + "C" * 35,
             "stripe-live-key": "sk" + "_live_" + "abcdefghij0123",
             "bearer-token": "Bear" + "er " + "abcdefghij0123456789xyz",
+            "basic-auth": "Authorization: Bas" + "ic " + "dXNlcjpwYXNzd29yZA==",
+            "gitlab-token": "gl" + "pat-" + "abcdefghij0123456789",
+            "huggingface-token": "hf" + "_" + "abcdefghij" * 3 + "xy",
+            "npm-token": "np" + "m_" + "abcdefghij" * 3 + "abcdef",
         }
         for label, text in cases.items():
             found = memory_privacy.privacy_findings("x\n" + text + "\n", home=HOME, hostname=HOST)
@@ -148,7 +170,8 @@ class ExemptionTest(unittest.TestCase):
                 "127.0.0.1", "127.8.9.10", "0.0.0.0", "255.255.255.255", "192.0.2.1",
                 "198.51.100.7", "203.0.113.200", "v1.2.3.4", "1.2.3.4.5", "999.1.2.3",
                 "2001:db8::1", "at 12:30:45 today", "settings.local.json", "Path.home() call",
-                "https://example.com/home/index.html", "an .ssh folder"):
+                "https://example.com/home/index.html", "an .ssh folder", "src/home/view.py",
+                "see https://example.com" + U + "/alice/profile"):
             self.assertEqual(kinds(text), [], text)
 
 

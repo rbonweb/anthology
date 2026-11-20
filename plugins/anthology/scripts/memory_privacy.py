@@ -3,12 +3,14 @@
 `privacy_findings(text)` returns `[{"kind": str, "line": int}, ...]`: labels and 1-based line
 numbers only, never the matched text. Every kind blocks a write into repo memory:
 
-- `home-path`         `/Users/<name>`, `/home/<name>` and the literal value of `$HOME`
-- `email`             an email address (not noreply, GitHub noreply, `git@`, or a reserved domain)
+- `home-path`         `/Users/<name>` or `/home/<name>` anywhere in an absolute path (not in a
+                      `scheme://host/...` URL), and the literal value of `$HOME`
+- `email`             an email address (not noreply, GitHub noreply, `git@` a public forge, or a
+                      reserved domain)
 - `private-ip`        RFC 1918, CGNAT, link-local IPv4; IPv6 ULA and link-local
 - `ip-address`        any other literal IPv4 (not loopback, documentation ranges, or versions)
 - `private-hostname`  `*.local`, `*.lan`, `*.internal`, ... and this machine's hostname
-- `ssh-target`        the `user@host` argument of ssh, scp, sftp, rsync or mosh
+- `ssh-target`        a `user@host` on a line that runs ssh, scp, sftp, rsync or mosh
 - `ssh-key-path`      a path through a `.ssh/` folder, or a bare `id_rsa`-style key file name
 - `secret:<label>`    a token from `SECRET_PATTERNS`
 
@@ -47,6 +49,10 @@ SECRET_PATTERNS = (
     ("google-api-key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
     ("stripe-live-key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{8,}")),
     ("bearer-token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")),
+    ("basic-auth", re.compile(r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE)),
+    ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}")),
+    ("huggingface-token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
+    ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36,}")),
 )
 
 _LABELS = {
@@ -59,7 +65,9 @@ _LABELS = {
     "ssh-key-path": "ssh key path",
 }
 
-_HOME_PATH = re.compile(r"(?<![\w.-])/(?:Users|home)/([A-Za-z0-9._-]+)")
+_HOME_PATH = re.compile(r"/(?i:users|home)/([A-Za-z0-9._-]+)")
+_PATH_RUN = re.compile(r"[A-Za-z0-9._~$@%+/-]*\Z")  # the path characters just before a match
+_URL_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s]")  # `scheme://host`, not `file:///`
 _EMAIL = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"
                     r"(?![\w-])")
 _IPV4 = re.compile(r"(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d|\.\d)")
@@ -80,6 +88,14 @@ _EXEMPT_V4 = tuple(ipaddress.ip_network(n) for n in (
 _PRIVATE_V6 = tuple(ipaddress.ip_network(n) for n in ("fc00::/7", "fe80::/10"))
 _RESERVED_DOMAINS = ("example.com", "example.org", "example.net")
 _RESERVED_TLDS = ("example", "test", "invalid", "localhost")
+# `git@<forge>` is the shared ssh user of a public forge, not a person or a private host.
+_PUBLIC_FORGES = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "ssh.dev.azure.com",
+                  "git.sr.ht")
+# Default or generic machine names: never a finding on their own.
+_GENERIC_HOSTNAMES = frozenset((
+    "ubuntu", "debian", "fedora", "arch", "alpine", "linux", "macbook", "macbook-pro",
+    "macbook-air", "imac", "mac-mini", "mac", "localhost", "raspberrypi", "docker", "container",
+    "server", "workstation", "desktop", "laptop"))
 
 
 def _reserved_host(host):
@@ -90,9 +106,15 @@ def _reserved_host(host):
     return any(host == d or host.endswith("." + d) for d in _RESERVED_DOMAINS)
 
 
+def _forge_git_user(local, host):
+    return local.lower() == "git" and host.lower().rstrip(".") in _PUBLIC_FORGES
+
+
 def _exempt_email(local, domain):
+    if _forge_git_user(local, domain):
+        return True
     local, domain = local.lower(), domain.lower()
-    if local in ("noreply", "no-reply", "git"):
+    if local in ("noreply", "no-reply"):
         return True
     if domain == "users.noreply.github.com":
         return True
@@ -122,7 +144,7 @@ def _hostname_patterns(hostname):
         names.add(name.split(".", 1)[0])  # the short name of an FQDN
     out = []
     for n in sorted(names):
-        if len(n) >= 4 and n.lower() != "localhost":
+        if len(n) >= 4 and n.lower() not in _GENERIC_HOSTNAMES:
             out.append(re.compile(r"(?<![\w-])" + re.escape(n) + r"(?![\w-])", re.IGNORECASE))
     return out
 
@@ -139,12 +161,23 @@ def _ipv4_kind(groups):
     return "ip-address"
 
 
+def _home_path_hit(line, m):
+    """`/Users/<name>` or `/home/<name>` as a segment of an absolute path, outside a URL with a
+    host (`file:///Users/x` counts; `https://example.com/home/x` and `app/home/x` do not)."""
+    name = m.group(1).rstrip(".")
+    if not name or name.lower() == "shared":
+        return False
+    run = _PATH_RUN.search(line, 0, m.start()).group(0)
+    if run and not run.startswith("/"):
+        return False  # a relative path such as `src/home/view.py`
+    token_start = max(line.rfind(" ", 0, m.start()), line.rfind("\t", 0, m.start())) + 1
+    return _URL_HOST.search(line, token_start, m.start()) is None
+
+
 def _line_kinds(line, home_rx, host_rxs):
     kinds = set()
-    for m in _HOME_PATH.finditer(line):
-        name = m.group(1).rstrip(".")
-        if name and name.lower() != "shared":
-            kinds.add("home-path")
+    if any(_home_path_hit(line, m) for m in _HOME_PATH.finditer(line)):
+        kinds.add("home-path")
     if home_rx is not None and home_rx.search(line):
         kinds.add("home-path")
     for m in _EMAIL.finditer(line):
@@ -163,10 +196,9 @@ def _line_kinds(line, home_rx, host_rxs):
             kinds.add("private-ip")
     if _PRIVATE_HOST.search(line) or any(rx.search(line) for rx in host_rxs):
         kinds.add("private-hostname")
-    cmd = _SSH_COMMAND.search(line)
-    if cmd:
-        for m in _USER_AT_HOST.finditer(line, cmd.end()):
-            if m.group(1).lower() != "git" and not _reserved_host(m.group(2)):
+    if _SSH_COMMAND.search(line):  # the target may come before or after the command word
+        for m in _USER_AT_HOST.finditer(line):
+            if not _forge_git_user(m.group(1), m.group(2)) and not _reserved_host(m.group(2)):
                 kinds.add("ssh-target")
                 break
     if _SSH_PATH.search(line) or _KEY_NAME.search(line):

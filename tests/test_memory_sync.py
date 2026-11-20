@@ -498,6 +498,24 @@ class MigrateTest(MemCase):
         self.assertTrue((self.personal / "reference-host.md").is_file())
         self.assertTrue((self.personal / "user-me.md").is_file())
 
+    def test_promotion_refuses_a_symlinked_dot_claude_before_any_mkdir(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        (repo / ".claude").symlink_to(outside)
+        result = self.migrate(promote={"project-b.md"})
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual([b["file"] for b in result["blocked"]], ["project-b.md"])
+        self.assertIn(".claude", result["blocked"][0]["reason"])
+        self.assertTrue((self.personal / "project-b.md").is_file())
+
+    def test_a_user_type_in_any_case_or_with_a_comment_is_never_promoted(self):
+        write(self.old / "user-odd.md", note_text("user-odd", "User  # mine", "odd"))
+        result = self.migrate(promote={"user-odd.md"})
+        self.assertEqual(result["blocked"][0]["reason"], memory_sync.USER_REASON)
+        self.assertFalse(self.repo_mem.exists())
+
     def test_promotion_never_writes_through_a_symlinked_repo_memory(self):
         outside = self.tmp / "outside"
         outside.mkdir()
@@ -518,6 +536,13 @@ class SweepUserNotesTest(MemCase):
         self.personal = self.anth / "personal-memory"
         write(self.src / "user-role.md", note_text("user-role", "user", "Role"))
         write(self.src / "project-a.md", note_text("project-a", "project", "A"))
+
+    def test_type_is_compared_case_insensitively_without_comments(self):
+        write(self.src / "user-caps.md", note_text("user-caps", "User", "Caps"))
+        write(self.src / "user-comment.md", note_text("user-comment", "user # about me", "Comment"))
+        res = memory_sync.sweep_user_notes(self.src, self.personal)
+        self.assertEqual(sorted(res["moved"]), ["user-caps.md", "user-comment.md", "user-role.md"])
+        self.assertEqual(memory_sync.normalize_type(" User # x "), "user")
 
     def test_moves_user_notes_only(self):
         data = (self.src / "user-role.md").read_bytes()
@@ -1341,6 +1366,21 @@ class UserNotesLeaveTheRepoTest(MemCase):
         self.assertTrue(memory_sync.regenerate_index(self.repo_mem, memory_sync.DEFAULT_BUDGET, ("user",)))
         self.assertNotIn("user-role", (self.repo_mem / "MEMORY.md").read_text())
 
+    def test_a_failing_repo_step_keeps_the_personal_section(self):
+        write(self.personal / "user-me.md", note_text("user-me", "user", "Me"))
+        with mock.patch.object(memory_sync, "sweep_user_notes",
+                               side_effect=PermissionError(13, "denied")):
+            ctx, msgs = memory_sync.run(self.root, env())
+        self.assertTrue(ctx.startswith("## Personal memory (%s)" % self.personal))
+        self.assertIn("[user-me](user-me.md)", ctx)
+        self.assertTrue(any("repo memory step failed" in m and "denied" in m for m in msgs), msgs)
+
+    def test_odd_user_types_are_left_out_of_repo_indexes(self):
+        write(self.repo_mem / "user-caps.md", note_text("user-caps", "USER", "Caps"))
+        text = memory_sync.render_index(self.repo_mem, exclude_types=("user",))
+        self.assertNotIn("user-caps", text)
+        self.assertNotIn("user-role", text)
+
     def test_the_personal_section_is_always_there_with_its_path(self):
         root = self.fake_repo("plain-repo", key="example.invalid/acme/other")  # not approved
         ctx, _ = memory_sync.run(root, env())
@@ -1398,6 +1438,17 @@ class SaveNoteTest(MemCase):
             self.assertIn(fragment, str(cm.exception))
         self.assertEqual(snapshot(self.tmp), before)
         return str(cm.exception)
+
+    def test_save_never_lists_user_notes_in_the_agent_index(self):
+        # I1: an agent folder may hold a `user` note (Claude Code's agent memory, or a sweep that
+        # has not run in this repo); `save` regenerates the committed index without it.
+        write(self.agent_dir() / "user-role.md", note_text("user-role", "user", "Senior engineer"))
+        write(self.agent_dir() / "user-tz.md", note_text("user-tz", "User # me", "Works in CET"))
+        self.save()
+        index = (self.agent_dir() / "MEMORY.md").read_text()
+        self.assertIn("[Eval probe](project-eval-probe.md)", index)
+        self.assertNotIn("## user", index.lower())
+        self.assertNotIn("user-", index)
 
     def test_privacy_check_is_the_single_wiring_point(self):
         # save runs memory_sync.privacy_findings on every field and refuses on any finding,

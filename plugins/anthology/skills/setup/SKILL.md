@@ -30,7 +30,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the
    separate installs conflict. Show each `command` (`claude plugin uninstall <plugin> -s <scope>`)
    and ask the user to run them. Do not run them for the user.
-4. Show every change, then ask one yes/no question ("Apply these changes?"):
+4. Show every change listed below, then ask for one confirmation: apply these changes and, if
+   `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
+   (recommend none):
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
    - **settings.json:** show `settings.diff` as a diff. Then print this note verbatim:
@@ -46,9 +48,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      `.claude/memory/`; for a `conflict` the existing note stays and `would_create` is the new file).
      A note with `movable` false cannot be moved: mark it blocked and show its `reason` (privacy
      findings name a kind and a line, never the text; `type: user` notes are always personal).
-     In the same confirmation, ask which notes, if any, to move into the repo's memory, where everyone
-     who can see the repo can read them. Recommend **none**.
-5. On yes, apply, passing the digest from the preview so a changed settings file is never overwritten:
+     That confirmation asks which notes, if any, to move into the repo's memory, where everyone who
+     can see the repo can read them. Recommend **none**.
+5. Once confirmed, apply, passing the digest from the preview so a changed settings file is never overwritten:
 
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>

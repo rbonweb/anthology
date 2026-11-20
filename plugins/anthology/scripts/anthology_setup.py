@@ -162,15 +162,6 @@ def _diff_lines(data):
     return [l if l.endswith("\n") else l + "\n" for l in lines]
 
 
-def _side_by_side_name(directory, name, date):
-    stem, n = name[:-3], 1
-    while True:
-        candidate = "%s.migrated-%s%s.md" % (stem, date, "" if n == 1 else "-%d" % n)
-        if not os.path.lexists(str(Path(directory) / candidate)):
-            return candidate
-        n += 1
-
-
 def legacy_notes(root, env, today=None):
     """The old path-keyed auto-memory notes of the repo at `root` (both legacy folders), with
     what moving each into `<root>/.claude/memory/` would do. Writes nothing. The default for
@@ -196,7 +187,7 @@ def legacy_notes(root, env, today=None):
                 diff = difflib.unified_diff([], _diff_lines(data), "/dev/null",
                                             "b/.claude/memory/" + name)
             elif status == "conflict":
-                note["would_create"] = _side_by_side_name(mem, name, date)
+                note["would_create"] = memory_sync.side_by_side_name(mem, name, date)
                 try:
                     existing = memory_sync._read_regular(mem / name)
                 except memory_sync.UnsafeTarget:
