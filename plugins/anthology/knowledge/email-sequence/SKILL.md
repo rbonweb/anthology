@@ -141,6 +141,17 @@ Usage milestone or success celebration -- Feature gap or limitation they are hit
 **Educational Drip (5-8 emails over 4-6 weeks):**
 Introduction and what they will learn -- Lesson 1: foundational concept -- Lesson 2: intermediate concept -- Lesson 3: advanced concept -- Practical application or exercise -- Resource roundup -- Graduation and next steps
 
+## Tool Integration
+
+### If no tools are connected
+- Deliver all email content in copy-paste-ready format
+- Include a setup checklist the user can follow in any email platform:
+  1. Create the automation or flow
+  2. Set the enrollment trigger
+  3. Add each email with the specified delays
+  4. Configure branching and exit conditions
+  5. Set up tracking for the recommended metrics
+
 ## Output
 
 Present the complete sequence with the following sections:

@@ -103,7 +103,8 @@ def _safe_target(value, subtree: bool) -> bool:
         return True
     if value == VENDORED_PLUGIN:
         return True
-    return value.startswith(KNOWLEDGE_DIR + "/") and "/" not in value[len(KNOWLEDGE_DIR) + 1:]
+    folder = value[len(KNOWLEDGE_DIR) + 1:]
+    return value.startswith(KNOWLEDGE_DIR + "/") and bool(NAME.match(folder))
 
 
 def _check_transforms(label: str, entry: dict, errors: list) -> None:
@@ -215,6 +216,9 @@ def rename_plugin(tree: Path, old: str, new: str, plugin_version: str) -> dict:
     """Rename a Claude Code plugin and the `old:<skill>` references to its skills.
 
     - `.claude-plugin/plugin.json`: `name` -> new, `version` -> plugin_version.
+    - `.claude-plugin/marketplace.json` (upstream's dev marketplace) is deleted: its entry
+      version would disagree with plugin.json and `claude plugin validate` would check it
+      instead of the plugin.
     - Every text file: the token `old:` followed by `[a-z0-9-]` becomes `new:`, unless
       the token is part of a longer name (`anthology-old:`), a path or URL (`/old:`,
       `.old:`), or is not directly followed by a skill name (`old:` in prose).
@@ -229,6 +233,7 @@ def rename_plugin(tree: Path, old: str, new: str, plugin_version: str) -> dict:
     data["name"] = new
     data["version"] = plugin_version
     manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    (tree / ".claude-plugin" / "marketplace.json").unlink(missing_ok=True)
 
     token = re.compile(rb"(?<![\w./-])" + re.escape(old.encode()) + rb":(?=[a-z0-9-])")
     replacement = new.encode() + b":"
@@ -255,7 +260,12 @@ CONNECTOR_HEADING = re.compile(
     r"^(?:if connectors available|connectors?|tool integrations?|connect \w+(?: \(optional\))?"
     r"|.*\bconnected tools)$", re.IGNORECASE)
 MD_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?$")
-MD_FENCE = re.compile(r"^\s*(```|~~~)")
+MD_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+# What stays when the connector setup around it goes: "If no tool is connected", "If tools are
+# not connected", "Without the tools". Heading, paragraph, list item or bold lead-in.
+FALLBACK = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\*\*)?(?:if\s+(?:no|none|neither)\b.*\bconnected\b"
+    r"|if\b.*\bnot\s+connected\b|without\b.*\btools?\b)", re.IGNORECASE)
 LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
 # `If ... connected` lead-ins: a `~~<category>` placeholder, or the tools themselves ("If the
 # UXKIN tools are connected", "... weren't connected"). "If no tool is connected" and "If tools
@@ -270,6 +280,8 @@ CONNECTORS_FILE = "CONNECTORS.md"
 
 
 def _is_connector_heading(text: str) -> bool:
+    if FALLBACK.match(text):
+        return False
     return bool(CONNECTOR_HEADING.match(text.strip())) or "~~" in text
 
 
@@ -277,7 +289,8 @@ def _fence_end(lines: list, start: int, marker: str) -> int:
     """Index of the line closing the fence opened at `start` (the last line if unclosed)."""
     for j in range(start + 1, len(lines)):
         m = MD_FENCE.match(lines[j].rstrip())
-        if m and m.group(1) == marker:
+        if m and m.group(1)[0] == marker[0] and len(m.group(1)) >= len(marker) \
+                and not m.group(2).strip():
             return j
     return len(lines) - 1
 
@@ -311,6 +324,36 @@ def _if_block_end(lines: list, i: int) -> int:
     while j < len(lines) and lines[j].strip():
         j += 1
     return j
+
+
+def _fallbacks_in(lines: list, start: int, end: int, level: int) -> list:
+    """The fallback text inside a connector section that is about to be removed.
+
+    Returns chunks of lines (verbatim): every nested subsection whose heading is a fallback
+    ("### If no tools are connected"), and every paragraph or list item that starts with a
+    fallback lead-in ("If these tools are not connected, ...")."""
+    chunks: list = []
+    j = start + 1
+    while j < end:
+        line = lines[j].rstrip()
+        m = MD_FENCE.match(line)
+        if m:
+            j = _fence_end(lines, j, m.group(1)) + 1
+            continue
+        h = MD_HEADING.match(line)
+        if h and len(h.group(1)) > level and FALLBACK.match(h.group(2)):
+            stop = min(_section_end(lines, j, len(h.group(1))), end)
+        elif not h and FALLBACK.match(line):
+            stop = min(_if_block_end(lines, j), end)
+        else:
+            j += 1
+            continue
+        chunk = lines[j:stop]
+        while chunk and not chunk[-1].strip():
+            chunk.pop()
+        chunks.append(chunk)
+        j = stop
+    return chunks
 
 
 def _strip_markdown(text: str) -> str:
@@ -360,7 +403,15 @@ def _strip_markdown(text: str) -> str:
             continue
         h = MD_HEADING.match(probe)
         if h and _is_connector_heading(h.group(2)):
-            i = _section_end(lines, i, len(h.group(1)))
+            end = _section_end(lines, i, len(h.group(1)))
+            kept = _fallbacks_in(lines, i, end, len(h.group(1)))
+            if kept:  # the section goes, its fallbacks stay under the section's own heading
+                out.append(line)
+                out.append("")
+                for chunk in kept:
+                    out.extend(chunk)
+                    out.append("")
+            i = end
             continue
         if probe.lstrip().startswith(">"):
             j = i
@@ -419,7 +470,8 @@ def strip_connectors(tree: Path) -> dict:
             for number, line in enumerate(stripped.split("\n"), 1):
                 if "~~" in line or CONNECTORS_FILE in line:
                     raise VendorError(f"strip-connectors: {rel}:{number}: connector markup the "
-                                      f"transform does not handle: {line.strip()[:100]}")
+                                      f"transform does not handle (failing on purpose, so nothing "
+                                      f"slips through; extend strip-connectors): {line.strip()[:100]}")
             if stripped != text:
                 path.write_bytes(stripped.encode("utf-8"))  # keeps the file's mode
                 stats["files"] += 1
@@ -437,8 +489,10 @@ def rename_skill(tree: Path, old: str, new: str) -> dict:
     end = text.find("\n---", 4) if text.startswith("---\n") else -1
     if end < 0:
         raise VendorError("rename-skill: SKILL.md has no frontmatter")
-    head = re.sub(r"^name:[ \t]*(.*?)[ \t]*$", lambda m: _renamed(m, old, new), text[:end],
-                  count=1, flags=re.MULTILINE)
+    head, found = re.subn(r"^name:[ \t]*(.*?)[ \t]*$", lambda m: _renamed(m, old, new), text[:end],
+                          count=1, flags=re.MULTILINE)
+    if not found:
+        raise VendorError("rename-skill: SKILL.md frontmatter has no name")
     body, count = re.subn(r"(?<![\w])/" + re.escape(old) + r"(?![\w-])", new, text[end:])
     path.write_text(head + body, encoding="utf-8")
     return {"name": new, "references": count}

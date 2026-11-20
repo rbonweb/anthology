@@ -34,6 +34,10 @@ Ask the user for the following. Be conversational — do not dump all questions 
 - **Constraints**: Technical constraints, timeline, regulatory requirements, dependencies
 - **Prior art**: Has this been attempted before? Are there existing solutions?
 
+### 3. Pull Context from Connected Tools
+
+If these tools are not connected, work entirely from what the user provides. Do not ask the user to connect tools — just proceed with available information.
+
 ### 4. Generate the PRD
 
 Produce a structured PRD with these sections. See **PRD Structure** below for detailed guidance on what each section should contain.
