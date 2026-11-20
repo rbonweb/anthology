@@ -1185,7 +1185,7 @@ Each entry gives the date, the task, what was found, and what was decided. These
   - If taste-skill can't be fully ported to BrowserOS, the unportable checks are dropped and the guidance kept.
   - If a fork change can't coexist with upstream, upstream's design wins and the fork's intent is re-implemented where feasible.
   - The evals workflow skips with a notice while the `ANTHROPIC_API_KEY` secret is missing.
-- **2026-11-20, Task 1 (toolchain pins):** images resolved with `docker buildx imagetools inspect` to the multi-arch index digest, so one digest works on Apple Silicon and on x86_64 CI. They are recorded in `tests/images.lock`, which `ci.yml` reads.
+- **2026-11-20, Task 1 (toolchain pins):** images resolved with `docker buildx imagetools inspect` to the multi-arch index digest, so one digest works on Apple Silicon and on x86_64 CI. Each is a one-line Dockerfile in `ci/images/` (`python.Dockerfile`, `rust.Dockerfile`, `gitleaks.Dockerfile`), the single source of truth: `ci.yml` and `$TEST` read the image from the `FROM` line, and a test checks that every `FROM` is pinned by `@sha256:`.
   - `python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b`
   - `rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe` (Rust stable 1.100.0 at pin time)
   - `zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
@@ -1194,15 +1194,26 @@ Each entry gives the date, the task, what was found, and what was decided. These
   - `$TEST` = `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
   - `$RTK_TEST` = `docker run --rm -v "$PWD/rtk":/w -v anthology-cargo:/usr/local/cargo/registry -w /w rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe cargo test --locked`
   - `engines.claude-code` is provisionally `>=2.1.311` in the first-party manifests; it is updated after the platform checks (U1–U9).
-  - Dependabot covers `github-actions` and `pip` (`/tests`). The docker ecosystem is omitted: there is no Dockerfile or compose file, and the digests live in `tests/images.lock`, which Dependabot does not read; bump them by hand and record the change here.
-- **2026-11-20, Task 1 (platform checks U1–U9):** all probes ran on Claude Code **2.1.311** (Homebrew's stable cask; npm `latest` was 2.1.329). They used throwaway plugins under a scratch directory, loaded with `--plugin-dir` or installed from a local marketplace into an isolated `CLAUDE_CONFIG_DIR`, and ran `claude -p` in scratch git repos. Each probe is kept as a future eval/smoke case for Task 14; the case notes are listed under each check.
+  - Dependabot covers `github-actions`, `pip` (`/tests`) and `docker` (`/ci/images`), so digest bumps arrive as PRs (updated in fix round 1; the first version kept the digests in `tests/images.lock`, which Dependabot cannot read).
+- **2026-11-20, Task 1 (platform checks U1–U9):** all probes ran on Claude Code **2.1.311** (Homebrew's stable cask; npm `latest` was 2.1.329). They used throwaway plugins under a scratch directory, loaded with `--plugin-dir` or installed from a local marketplace into an isolated `CLAUDE_CONFIG_DIR`, and ran `claude -p` in scratch git repos. Each probe is kept as a future eval/smoke case for Task 14, and each check below ends with a **→ Task 14 case** note. Eval cases use the repo-root `evals/` layout from U9. Smoke cases are scripts that run `claude -p` in a scratch repo with an isolated `CLAUDE_CONFIG_DIR`.
+  - **Probe archive:** the raw probe sources (probe plugins, hook scripts, eval suites, commands, jsonl evidence) are archived in the lead's local, git-ignored workspace at `.superpowers/sdd/PLAN/probes/` (local only, not in the repo) until Task 14 converts them into `evals/` and smoke scripts. The notes below are enough to rebuild every case without them.
   - **U1 — knowledge loading: passes, with one required permission rule.**
     - `${CLAUDE_PLUGIN_ROOT}` in a plugin agent's body is substituted. The agent Read `<root>/knowledge/_probe/SKILL.md` and quoted its marker.
     - A folder under `knowledge/` is not registered: the session's skill list had `probe:hello` and `anthology-superpowers:x`, but no `_probe`.
     - `skills: [anthology-superpowers:x]` preloads a skill from a second plugin; the agent quoted its marker without a tool call.
     - **Finding:** Claude Code doesn't auto-approve Reads of a plugin's own files. In the default permission mode the knowledge Read is refused (in `-p`) or prompts (interactive). This held for `--plugin-dir`, for a local-path marketplace (loaded in place) and for a GitHub-marketplace plugin copied into `plugins/cache/`. Auto mode and an allow rule both let it through, and a session-level rule also covers subagents.
-    - **Decision:** `/anthology:setup` (through `settings_patch`) adds `permissions.allow` `Read(~/.claude/plugins/cache/anthology/**)`. `setup remove` takes it out, and `doctor.py` checks it. The Glob fallback isn't needed: the path is right, only the permission is missing.
-    - **Eval cases (Task 14):** the main-session skill list doesn't include `_probe`; the agent Reads its Startup file first and quotes the marker; the preload marker is present.
+    - **Decision (lead ruling):** `/anthology:setup` (through `settings_patch`) adds one `permissions.allow` rule built from the **resolved** plugin location: `Read(<parent of ${CLAUDE_PLUGIN_ROOT}>/**)`. For a cached install that's `<config>/plugins/cache/anthology/anthology/**`, which covers every cached version. For a local marketplace loaded in place, such as a `marketplace add` of the repo folder, it's `<repo>/plugins/**`. A fixed `~/.claude/plugins/cache/anthology/**` would miss the in-place case. `setup remove` takes the rule out, and `session_start.py`/`doctor.py` warn when it no longer matches the current root. The Glob fallback isn't needed: the path is right, only the permission is missing.
+    - **→ Task 14 case (eval `knowledge-load`):**
+      - Prompt: "Run the anthology:<agent> agent with the prompt 'go' and report the first line of each file it read at startup."
+      - `allowed_tools: [Agent, Read]`; `plugins` lists all three plugins.
+      - Graders:
+        - `tool_used` `Agent`, `input_match: 'anthology:<agent>'`;
+        - `tool_used` `Read`, `input_match: 'knowledge/<first startup folder>/SKILL\.md'`;
+        - `tool_order` before `{tool: Read, input_match: 'knowledge/.*/SKILL\.md'}`, after any non-Read tool the agent uses for its task;
+        - `regex` on `last_message` for a marker phrase from that knowledge file;
+        - for agents with preloads, `regex` for a phrase from the preloaded superpowers skill, with `tool_used Skill min 0 max 0`, proving it came from the preload and not an invocation.
+      - Expected: score 1.00.
+      - A smoke case `skills-hidden` runs `claude -p "hi" --max-turns 1 --output-format stream-json --verbose` with the plugins loaded. It asserts that the `system/init` event's `skills` contains no name matching `knowledge/` folder names, such as `caveman` or `frontend-design`, while `agents` contains every `anthology:*` agent.
   - **U2 — agent fields: all honored.**
     - `model: haiku`: the subagent transcript records a Haiku model.
     - `disallowedTools: Edit, Write, NotebookEdit, Agent`: those tools are absent from the agent's tool list.
@@ -1211,6 +1222,22 @@ Each entry gives the date, the task, what was found, and what was decided. These
     - `memory: project`: see U7.
     - **Finding — worktree base:** worktrees branch from the remote default branch (`worktree.baseRef: "fresh"`) by default, not from the session's `HEAD`. In a repo with an `origin`, an isolated agent didn't see the lead's unpushed commits on a feature branch; with `worktree.baseRef: "head"` it did.
     - **Decision:** `/anthology:setup` also sets `worktree.baseRef: "head"` in user settings (via `settings_patch`, and removed by `setup remove`), so writers start from the lead's current work, such as branch `build`. The routing guide states that writers branch from the lead's `HEAD`. The per-call `isolation` fallback isn't needed.
+    - **→ Task 14 cases:**
+      - **Eval `agent-fields`:**
+        - Prompt: "Run the anthology:scout agent with the prompt 'list your tools and run `pwd`'; report its reply."
+        - Graders:
+          - `tool_used` `Agent`, `input_match: 'anthology:scout'`;
+          - `regex` on `trace` with `match: not_contains` for `"name":"(Edit|Write|NotebookEdit)"` inside the subagent's tool calls (read-only agents never call them);
+          - `llm`: "PASS if the agent's reported tool list lacks Edit, Write, NotebookEdit and Agent."
+        - Expected: 1.00.
+      - **Model check:** a smoke script asserts each roster agent's subagent transcript (`<config>/projects/<p>/<session>/subagents/agent-*.jsonl`, field `message.model`) contains the frontmatter model family (`opus`, `sonnet` or `haiku`). Run it with `CLAUDE_CODE_SUBAGENT_MODEL` unset, because it overrides agent models.
+      - **Smoke `worktree-base`:**
+        - Set up a scratch repo with a bare `origin` holding `main`, plus a local branch `feat` with one unpushed commit.
+        - Run `claude -p "Use the Agent tool to run anthology:implementer with prompt 'run git log --oneline -3 and change nothing'" --settings '{"worktree":{"baseRef":"head"}}'`.
+        - Assert:
+          - the reply contains the `feat` commit subject;
+          - `git worktree list` shows `.claude/worktrees/agent-*`;
+          - without the setting, the commit is absent, which documents the platform default.
   - **U3 — hook reach: passes.**
     - A `PreToolUse` hook with matcher `*` saw `Bash`, `Read`, `Write`, `ToolSearch` and a plugin MCP tool (`mcp__plugin_<plugin>_<server>__<tool>`), in the main session and in subagents. Inside a subagent, the hook input carries `agent_type: "<plugin>:<agent>"`.
     - Exit 2 with stderr blocks the call, and the model sees `PreToolUse:Bash hook error: [...]: <stderr>` plus the plugin that blocked it.
@@ -1225,6 +1252,11 @@ Each entry gives the date, the task, what was found, and what was decided. These
     - `claude plugin tag [path] [--dry-run] [-m <msg>] [--push] [--remote origin] [-f]`
     - `claude plugin eval [target] [--case <glob>] [--tag …] [--runs n] [--model m] [--judge-model m] [--ablation none|with-without] [--threshold 0..1] [--max-cost-usd usd] [--allow-tools …] [--mocks record|off] [--trust-plugin] [--json path] [--no-publish] [-j n]`
     - Also present: `claude plugin details|prune|enable|disable|configure|init`.
+    - **→ Task 14 case (smoke `cli-syntax`, in CI with the pinned Claude Code):**
+      - For each subcommand above, `claude plugin <sub> --help` exits 0, and its output contains every flag the plan's scripts and docs use. At minimum: `marketplace add`, `install -s`, `uninstall --keep-data`, `validate --strict`, `tag --dry-run`, `--push`, and `eval --max-cost-usd`, `--trust-plugin`, `--ablation`, `--no-publish`, `--json`.
+      - `claude plugin validate --strict plugins/<each>` exits 0.
+      - `claude plugin tag --dry-run plugins/anthology` prints `anthology--v<version>`.
+      - Expected: all pass. A missing flag means a CLI change that the docs and scripts must follow.
   - **U5 — upstream pins** (resolved read-only with `gh api` / `git ls-remote`; SPDX from the repo license or the shipped LICENSE file):
 
     | Source | Path | Pin | SPDX |
@@ -1245,6 +1277,7 @@ Each entry gives the date, the task, what was found, and what was decided. These
       - Every source is MIT or Apache-2.0, so no owner decision is needed.
       - Because `vercel-labs/agent-skills` has no LICENSE file, `vendor/licenses/` carries a standard MIT text naming "Vercel", with a note that the license is declared in the upstream README.
       - The upstream watcher tracks `uxkin/agent` on branch `website-design`, not `main`.
+    - **→ Task 14 case (unit test, no model):** `test_sources_pins` asserts `vendor/sources.json` matches this table: repo, path, ref/commit (40-hex), checksum for ui-taste, and SPDX in {MIT, Apache-2.0}. `vendor.py check` (CI) proves the committed trees regenerate from those pins. `upstream-watch.yml` compares the same pins: `git ls-remote` per repo/branch/tag (`website-design` branch for uxkin), the ui-taste `CHECKSUMS.sha256` sha256, and the rtk upstream latest release. Expected: no diff on a clean tree, and an issue opened when a pin moves.
   - **U6 — hooks and PATH: the block wins.**
     - One plugin's `PreToolUse` hook exited 2 while another returned `permissionDecision: "allow"` with `updatedInput`. The call was blocked, with either plugin load order. This matches the documented precedence `deny > defer > ask > allow`.
     - Both hooks receive the **original** command (they run in parallel), so the guard always checks what Claude asked for, not rtk's rewrite. Alone, the allow hook's rewrite and auto-approval worked.
@@ -1262,6 +1295,23 @@ Each entry gives the date, the task, what was found, and what was decided. These
       - Agent memory paths in code, tests and docs use `.claude/agent-memory/anthology-<agent>/`, not `<agent>/`.
       - Writer agents (worktree) must commit their `.claude/agent-memory/anthology-<agent>/` changes in their worktree as a separate `chore(memory): …` commit before finishing, so the memory merges with their branch. The agent bodies (Task 6) and routing guide (Task 13) say so.
       - Read-only agents run in the main clone and write memory there; the lead commits it.
+    - **→ Task 14 cases** (smoke scripts: multi-session, so not `plugin eval`):
+      - **`auto-memory-dir`:**
+        - Use a scratch approved repo with no `.claude/settings.local.json` and all three plugins installed in an isolated config.
+        - Session 1: `claude -p "Remember for future sessions that the probe color is amber; save it to auto memory now."`
+        - Assert that `settings.local.json` now has `autoMemoryDirectory` = `<repo>/.claude/memory`. The note lands in the path-keyed `<config>/projects/<encoded>/memory/`; that's the platform behaviour, and the hook's same-session cover is injected.
+        - Session 2: run any prompt, then assert the amber note was copied into `<repo>/.claude/memory/` (migration).
+        - Ask session 2 to remember "cyan", and assert the note is written directly under `<repo>/.claude/memory/`.
+      - **`agent-memory-path`:**
+        - Run `claude -p "Use anthology:implementer with prompt 'save a project memory note named probe-note.md saying probe, then finish'"`.
+        - Assert `git log` on the worktree branch has a `chore(memory)` commit adding `.claude/agent-memory/anthology-implementer/probe-note.md`, and no `.claude/agent-memory/anthology:implementer` path exists anywhere.
+      - **Eval `guide-main-only`:**
+        - Prompt: "Quote the first heading of the anthology routing guide if it is in your context, then run anthology:scout with prompt 'quote any anthology routing guide heading in your context, or NONE'."
+        - Graders:
+          - `regex` on `last_message` for the guide's first heading;
+          - `regex` on `trace` for the subagent result containing `NONE`;
+          - `tool_used` `Agent`, `input_match: 'anthology:scout'`.
+        - Expected: 1.00.
   - **U8 — hook output and failures.**
     - The `additionalContext` limit is **10,000 characters**, inclusive: a 10,000-char value arrived whole. At 10,001 characters, the model got `Output too large (…KB). Full output saved to: <session dir>/tool-results/hook-…-additionalContext.txt` and a preview (2,000 chars per the docs), and the tail marker was lost. The limit applies to each field separately, and no setting raises it.
     - A missing interpreter is a **non-blocking** error and the call goes ahead. In exec form: `Executable not found in $PATH: "<cmd>"`. In shell form: exit 127. The model sees nothing; the user only gets the hook-error notice.
@@ -1271,14 +1321,31 @@ Each entry gives the date, the task, what was found, and what was decided. These
       - The guard keeps failing open: no `onFailure: "block"` on the matcher-`*` hook, since a missing `python3` would then block every tool and brick the session.
       - "Never silently off" can't rely on Python. If `python3` is missing, the Python `SessionStart` hook itself fails silently. So `anthology-guardrails` adds a first `SessionStart` hook in POSIX `sh` that emits the loud `systemMessage` when `command -v python3` fails.
       - `session_start.py` still runs the known-bad-sample self-test.
+    - **→ Task 14 cases:**
+      - **Unit test `test_hook_output_budget`:** run `session_start.py` against fixtures (the largest personal index + repo-memory cover), and assert `len(additionalContext) <= 9000`.
+      - **Smoke `context-cap`:** a throwaway plugin whose SessionStart hook pads `additionalContext` to exactly N chars with `END-<N>` at the end. `claude -p "Without tools, quote any token starting with END-, else NONE" --max-turns 1`. Expected: N=10000 quotes `END-10000`; N=10001 gives NONE, and the reply mentions `Output too large` / `saved to`. A failure means the platform cap moved, so re-check the 9,000 budget.
+      - **Smoke `python-missing`:** run the guardrails `sh` sentinel hook with `PATH=/nonexistent:/bin` (no `python3`), and assert stdout is one JSON object with a non-empty `systemMessage` that names python3. With `python3` present, assert no output.
+      - **Smoke `missing-interpreter`:** a throwaway plugin with a `PreToolUse` Bash hook whose `command` is `python9`. `claude -p "Run: echo RAN-OK" --allowedTools "Bash(echo *)" --output-format stream-json --verbose --include-hook-events`. Assert `RAN-OK` is in the result and a `hook_response` has `Executable not found`. With `"onFailure":"block"`, the result says it was blocked.
   - **U9 — eval harness: works.**
     - `claude plugin eval` ran a case against the probe plugin with `tool_used` (Skill), `tool_order` (Skill before the MCP tool) and a `regex` grader on `mock_calls`. A mocked MCP server (`evals/mocks/<server>/<tool>.md`) answered and scored 1.00.
     - `--max-cost-usd` works: with a tiny ceiling and `--runs 2`, one run ran and the command exited **2**, with `partial: true, partialReason: "cost_ceiling"`.
     - **Finding:** a case's `plugins:` entries must sit under the containment root. That root is the enclosing plugin, so a suite inside `plugins/anthology/evals/` can't load `anthology-guardrails` or `anthology-superpowers`.
     - Evals placed in a non-plugin parent directory and run against that directory loaded all listed plugins and passed. That case dispatched the plugin agent, which Read its knowledge file and showed a cross-plugin preload.
     - **Decision:** the behaviour evals live at the repo root in `evals/`. Each case declares `plugins: ["../../plugins/anthology", "../../plugins/anthology-guardrails", "../../plugins/anthology-superpowers"]`, and `evals.yml` runs `claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling> --model … --judge-model …`. BrowserOS cases mock the `browseros-neo` server under `evals/mocks/`.
+    - **→ Task 14 cases:**
+      - **Eval `harness-sanity`:**
+        - Prompt: "Use the anthology:ui-reviewer agent to take a screenshot of http://localhost:3000 and report what the tool returned."
+        - Mock `evals/mocks/browseros-neo/screenshot.md` with body `MOCK-SHOT {{input.url}}`.
+        - Graders:
+          - `tool_used` `Agent`, `input_match: 'anthology:ui-reviewer'`;
+          - `tool_used` `mcp__.*browseros-neo__screenshot` (or `tool_order`: Agent before it);
+          - `regex` `target: mock_calls`, `pattern: 'localhost:3000'`.
+        - Expected: 1.00.
+      - **CI smoke `eval-ceiling`:** run any one-case suite with `--max-cost-usd 0.000001 --runs 2 --json out.json`. Expected: exit code 2, `partial: true`, `partialReason: "cost_ceiling"`, exactly one run recorded.
+      - **Unit test `test_eval_layout`:** every `evals/*/prompt.md` (or `case.yaml`) lists all three plugin paths in `plugins:`, and no `evals/` directory exists under `plugins/*/`.
   - **`engines` and the minimum version.**
     - `claude plugin validate` on 2.1.311 warns `Unknown field 'engines'`, so `--strict` fails. The docs say `engines` is honored from **v2.1.323**.
     - On 2.1.329 (checked in a throwaway container), `validate --strict` passes for `plugins/anthology`.
     - Everything above was verified on 2.1.311, and no needed feature is newer (`onFailure` 2.1.295, `plugin eval` 2.1.269). So the minimum stays **`>=2.1.311`**. Clients older than 2.1.323 ignore the field, which is harmless.
     - **Decision:** CI's `claude plugin validate --strict` (Task 14) installs a pinned Claude Code **≥ 2.1.323**.
+  - **Lead ruling folded in — anthology-superpowers versioning:** anthology-superpowers is versioned independently of upstream superpowers, starting at `0.1.0`. `rename-plugin` sets the plugin's own version from `sources.json` `plugin_version`, and `upstream_version` records 7.0.2. So the `~0.1` dependency in `plugins/anthology/.claude-plugin/plugin.json` resolves, and any transform or sync change gets its own bump.

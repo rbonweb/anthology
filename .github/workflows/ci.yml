@@ -17,6 +17,6 @@ jobs:
           persist-credentials: false
       - name: Run tests in the pinned Python image
         run: |
-          . tests/images.lock
+          PYTHON_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)
           docker run --rm -v "$PWD":/w -w /w "$PYTHON_IMAGE" \
             sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
