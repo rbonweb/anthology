@@ -37,12 +37,12 @@ What Anthology changes outside the plugin, by who writes it:
 - `~/.claude/settings.json`: the `Bash(rtk *)` allow, the `Bash(anthology-mem save *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
 - The rtk download.
 - Approving the current repo for memory. You can decline this step. It adds the two `merge=union` lines to the repo's `.gitattributes`.
-- Creating the personal-memory folder.
+- Creating the personal-memory folder, and copying the repo's notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder into it. A note goes into the repo's `.claude/memory/` instead only if you pick it, one by one, after seeing its diff, and the privacy scan finds nothing in it.
 
 **Session start, automatically:**
 
 - It runs the guardrails on a known-bad sample, reconciles the rtk binary with `rtk.lock` (a download into the plugin's data folder) and writes `~/.claude/anthology/state.json`.
-- In approved repos only: it writes `autoMemoryDirectory` into `.claude/settings.local.json` and a git exclude entry for that file, regenerates the `MEMORY.md` indexes, and copies notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder (never overwriting anything).
+- In approved repos only: it writes `autoMemoryDirectory` into `.claude/settings.local.json` and a git exclude entry for that file, regenerates the `MEMORY.md` indexes, copies notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder into personal memory (never into the repo), and moves `type: user` notes out of `.claude/memory/` and `.claude/agent-memory/` into personal memory. Nothing is overwritten; a repo file is deleted only after its personal copy is verified.
 - The memory search index lives in the plugin's data folder.
 
 **`/anthology:setup remove` takes out:**
@@ -90,9 +90,12 @@ Notes are Markdown that is loaded into a session's context. A note can therefore
 - **Memory is opt-in per repo, per user.** It is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is), and a repo that already has `.claude/memory/` only gets a one-line hint. A stranger's committed notes never load on their own.
 - **Approval follows the remote.** Approvals in `~/.claude/anthology/approved-repos.json` are keyed by the normalized git remote URL, so a re-clone of the same repo is trusted automatically. Anyone who can push to that remote can add notes you will load. Treat memory changes like code changes: review them, and use CODEOWNERS for `.claude/memory/` and `.claude/agent-memory/` (see the [README](README.md#codeowners-for-memory)).
 - **Repo memory is visible to everyone who can see the repo.** If the repo is public, so is its memory. Never put secrets or personal details in it. Guardrail G6 blocks the obvious secret patterns and is not a scanner.
-- **Personal memory stays out of repos.** It lives under `~/.claude/anthology/personal-memory/`. Its index is added to your main session at start.
+- **Personal memory stays out of repos.** It lives under `~/.claude/anthology/personal-memory/`. Its path and index are added to your main session at start, even when it is empty.
+- **`user` notes are moved out of the repo.** Claude Code's auto memory writes every note type into the repo's memory folder. At each session start in an approved repo, Anthology moves `type: user` notes from `.claude/memory/` and `.claude/agent-memory/` into personal memory, and the repo `MEMORY.md` indexes never list them. If one was already committed, its removal still needs a commit, and it stays in the git history.
+- **Old notes stay personal.** Notes from Claude Code's old path-keyed memory folder are copied into personal memory, never into the repo on their own. Moving one into the repo is a per-note choice in `/anthology:setup`, and only for notes the privacy scan passes.
+- **The privacy scan guards writes into repo memory.** Setup's moves and `/anthology:import` scan each note before it goes into the repo. A note with a home path (`/Users/<name>`, `/home/<name>`), an email address, a private or public IP address, a private host name (such as `*.local`, `*.lan`, `*.internal`) or this machine's name, an `ssh user@host` target, an `.ssh/` key path or a secret-looking token is blocked and goes to personal memory instead. The findings name a kind and a line, never the text. It is an accident guard, not a guarantee: it knows common formats only, so read what you commit.
 - **Exports hold personal notes.** An export refuses to write into a git work tree. Keep the archive private.
-- **Imports are checked.** Import shows a dry run first, never overwrites, extracts with Python's `data` filter (no absolute paths, `..`, links or devices), writes only the three memory locations, refuses archives over 50 MB, and reports secret-looking content. Import archives only from people you trust: their notes become yours.
+- **Imports are checked.** Import shows a dry run first, never overwrites, extracts with Python's `data` filter (no absolute paths, `..`, links or devices), writes only the three memory locations, refuses archives over 50 MB, reports secret-looking content, and sends repo notes the privacy scan blocks to personal memory. Import archives only from people you trust: their notes become yours.
 - **Claude Code's own rules apply.** A project-level `autoMemoryDirectory` is honored only in a trusted workspace.
 
 ## Other things to know

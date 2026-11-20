@@ -52,7 +52,7 @@ It checks your machine, then shows every change and applies them only after you 
    - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
-5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder.
+5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder. If Claude Code kept notes for this folder before Anthology (the old path-keyed `~/.claude/projects/<encoded path>/memory/`), it lists each one with its diff and copies them all into personal memory, unless you pick some to move into the repo's memory instead. The default, and the recommendation, is none. Notes the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths, secrets) and `user` notes cannot be moved.
 
 When it finishes, restart the session so the new permissions and the rtk hook take effect. Nothing is written to `~/.claude/CLAUDE.md`.
 
@@ -182,11 +182,11 @@ Memory is plain Markdown notes committed with your project, so it survives a re-
 | Each roster agent | `<repo>/.claude/agent-memory/anthology-<agent>/` (committed; `anthology:implementer` becomes `anthology-implementer`) |
 | You (`user` notes) | `~/.claude/anthology/personal-memory/`, never in a repo (under `$CLAUDE_CONFIG_DIR` if you set it) |
 
-**Repo memory is visible to everyone who can see the repo.** Never save secrets or personal details in it. Personal notes go in personal memory, which stays on your machine.
+**Repo memory is visible to everyone who can see the repo.** Never save secrets or personal details in it. Personal notes go in personal memory, which stays on your machine. Claude Code's auto memory saves every note type into the repo's folder, so at each session start Anthology moves `type: user` notes out of `.claude/memory/` and `.claude/agent-memory/` into personal memory and tells you; if one was already committed, commit its removal. The repo `MEMORY.md` indexes never list `user` notes, and the session context always names the personal-memory folder, even when it is empty.
 
 ### Approved repos only
 
-Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is). If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
+Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is), and no notes are moved. If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
 
 Approvals are kept in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo path if there is no remote). Memory also stays off if you turned auto memory off in Claude Code.
 
@@ -197,6 +197,7 @@ Because approvals follow the remote URL, re-cloning the same repo into any folde
 - It writes this clone's absolute path into `autoMemoryDirectory` in `<repo>/.claude/settings.local.json`. That file is per-clone and git-ignored, and Anthology makes sure it is ignored.
 - It regenerates the `MEMORY.md` indexes from the notes.
 - If it had to repair the setting, it injects the repo's memory index for that session, because the setting may only apply from the next one.
+- It copies any notes in Claude Code's old path-keyed memory folder for this clone into personal memory, never into the repo, once (a ledger remembers them), and moves `user` notes out of the repo. Nothing is overwritten: a different note with the same name is kept side by side as `<name>.migrated-<date>.md`. To move an old note into the repo's memory, re-run `/anthology:setup` and pick it.
 
 ### Team merges
 
@@ -238,7 +239,7 @@ Links are the `[[note-name]]` links in the notes, plus relations such as `supers
 ### Export and import
 
 - `/anthology:export` writes `anthology-memory-<date>.tar.gz` under `~/.claude/anthology/exports/` by default. It holds your personal notes plus the current repo's notes, and a manifest. Nothing is uploaded. The archive holds personal notes, so keep it private: if you pass `--out` with a folder inside a git work tree, export refuses.
-- `/anthology:import <file>` shows a dry run first: new notes, identical ones (skipped) and conflicts. Nothing is overwritten. A conflicting note is kept as `<name>.imported-<date>.md`, and Claude merges it with you. Archives over 50 MB are refused, files are extracted safely (no absolute paths, `..`, links or devices), only the memory folders can be written, and secret-looking content is reported.
+- `/anthology:import <file>` shows a dry run first: new notes, identical ones (skipped) and conflicts. Nothing is overwritten. A conflicting note is kept as `<name>.imported-<date>.md`, and Claude merges it with you. Archives over 50 MB are refused, files are extracted safely (no absolute paths, `..`, links or devices), only the memory folders can be written, and secret-looking content is reported. A repo or agent note the privacy scan flags is written to personal memory instead of the repo, and the dry run lists it as blocked.
 
 ## Updating and removing
 

@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -431,6 +432,138 @@ class ApplyRemoveTest(SetupCase):
         self.assertTrue(res["ok"])
         self.assertIn("refusing", res["memory"]["approve_error"])
         self.assertEqual(res["memory"]["approved_key"], "k")
+
+
+class LegacyPromotionTest(SetupCase):
+    """B3: moving a legacy note into repo memory is an explicit per-note choice, behind the
+    privacy scan. Runs without git (fake_repo stubs memory_sync's git calls)."""
+
+    def setUp(self):
+        super().setUp()
+        self.text = self.write_settings()
+        self.root = self.fake_repo()
+        self.old = self.config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.root)) / "memory"
+        self.repo_mem = self.root / ".claude" / "memory"
+        self.personal = self.anth / "personal-memory"
+        write(self.old / "clean.md", note_text("clean", "project", "A clean note", body="Use Docker.\n"))
+        write(self.old / "dirty.md", note_text("dirty", "reference", "Where things live",
+                                               body="Checkout in /" + "Users/alice/src\n"))
+        write(self.old / "mail.md", note_text("mail", "reference", "Contact",
+                                              body="Ask alice" + "@" + "mail.acme.zz\n"))
+        write(self.old / "user-me.md", note_text("user-me", "user", "About me"))
+        write(self.old / "MEMORY.md", "- index\n")
+        host = mock.patch.object(memory_sync.memory_privacy.socket, "gethostname",
+                                 return_value="alice-laptop")
+        host.start()
+        self.addCleanup(host.stop)
+
+    def notes(self, cwd=None):
+        return {n["file"]: n for n in self.preview(cwd or self.root)["memory"]["legacy_notes"]}
+
+    def test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing(self):
+        write(self.repo_mem / "mail.md", "the repo's own note\n")
+        before = snapshot(self.tmp)
+        notes = self.notes()
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertEqual(sorted(notes), ["clean.md", "dirty.md", "mail.md", "user-me.md"])
+        clean = notes["clean.md"]
+        self.assertEqual((clean["name"], clean["description"], clean["type"]),
+                         ("clean", "A clean note", "project"))
+        self.assertEqual(clean["default"], "personal")
+        self.assertEqual((clean["findings"], clean["movable"], clean["status"]), ([], True, "new"))
+        self.assertTrue(clean["diff"].startswith("--- /dev/null\n+++ b/.claude/memory/clean.md\n"))
+        self.assertIn("+Use Docker.", clean["diff"])
+        dirty = notes["dirty.md"]
+        self.assertEqual(dirty["findings"], [{"kind": "home-path", "line": 8}])
+        self.assertFalse(dirty["movable"])
+        self.assertIn("home path (line 8)", dirty["reason"])
+        mail = notes["mail.md"]
+        self.assertEqual([f["kind"] for f in mail["findings"]], ["email"])
+        self.assertEqual(mail["status"], "conflict")
+        self.assertRegex(mail["would_create"], r"^mail\.migrated-\d{4}-\d\d-\d\d\.md$")
+        self.assertIn("-the repo's own note", mail["diff"])
+        self.assertIn("+++ b/.claude/memory/" + mail["would_create"], mail["diff"])
+        user = notes["user-me.md"]
+        self.assertFalse(user["movable"])
+        self.assertIn("type: user", user["reason"])
+        for n in notes.values():
+            for f in n["findings"]:
+                self.assertEqual(sorted(f), ["kind", "line"])
+        self.assertNotIn("alice" + "@", json.dumps([n["findings"] for n in notes.values()]))
+
+    def test_preview_marks_identical_notes_and_lists_ledgered_ones(self):
+        memory_sync.migrate(self.old, None, self.personal, ledger=self.anth / "migrated.json")
+        write(self.repo_mem / "clean.md", (self.old / "clean.md").read_text())
+        notes = self.notes()
+        self.assertEqual(len(notes), 4)  # the ledger never hides a note from the choice
+        self.assertEqual((notes["clean.md"]["status"], notes["clean.md"]["diff"]), ("identical", ""))
+
+    def test_explicit_selection_moves_only_the_clean_ones(self):
+        res = self.apply(cwd=self.root, promote=["clean.md", "dirty.md"])
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(sorted(p.name for p in self.repo_mem.iterdir()), ["MEMORY.md", "clean.md"])
+        self.assertEqual((self.repo_mem / "clean.md").read_bytes(), (self.old / "clean.md").read_bytes())
+        self.assertIn("[clean](clean.md)", (self.repo_mem / "MEMORY.md").read_text())
+        self.assertEqual(sorted(p.name for p in self.personal.glob("*.md")),
+                         ["dirty.md", "mail.md", "user-me.md"])
+        blocked = res["memory"]["blocked"]
+        self.assertEqual([b["file"] for b in blocked], ["dirty.md"])
+        self.assertEqual(blocked[0]["findings"], [{"kind": "home-path", "line": 8}])
+        self.assertIn("home path", blocked[0]["reason"])
+        self.assertNotIn("alice", json.dumps(blocked))
+        self.assertEqual(res["memory"]["migrated"]["repo"], ["clean.md"])
+        self.assertEqual(sorted(res["memory"]["migrated"]["personal"]), ["dirty.md", "mail.md", "user-me.md"])
+        self.assertEqual(len(json.loads((self.anth / "migrated.json").read_text())["done"]), 4)
+        # the next session start copies nothing more
+        ctx, msgs = memory_sync.run(self.root, dict(os.environ))
+        self.assertFalse(any("note(s)" in m for m in msgs), msgs)
+        self.assertEqual(sorted(p.name for p in self.repo_mem.glob("*.md")), ["MEMORY.md", "clean.md"])
+        self.assertEqual(sorted(p.name for p in self.personal.glob("*.md") if p.name != "MEMORY.md"),
+                         ["dirty.md", "mail.md", "user-me.md"])
+
+    def test_without_promote_everything_stays_personal(self):
+        res = self.apply(cwd=self.root)
+        self.assertTrue(res["ok"], res)
+        self.assertFalse(self.repo_mem.exists())
+        self.assertEqual(res["memory"]["blocked"], [])
+        self.assertEqual(sorted(res["memory"]["migrated"]["personal"]),
+                         ["clean.md", "dirty.md", "mail.md", "user-me.md"])
+
+    def test_a_promoted_user_note_is_blocked(self):
+        res = self.apply(cwd=self.root, promote=["user-me.md"])
+        self.assertEqual([b["file"] for b in res["memory"]["blocked"]], ["user-me.md"])
+        self.assertFalse(self.repo_mem.exists())
+        self.assertTrue((self.personal / "user-me.md").is_file())
+
+    def test_refusals_write_nothing(self):
+        before = snapshot(self.tmp)
+        digest = sha(self.text)
+        for kw, needle in (({"promote": ["nope.md"], "cwd": self.root}, "nope.md"),
+                           ({"promote": ["../clean.md"], "cwd": self.root}, "../clean.md"),
+                           ({"promote": ["clean.md"], "cwd": self.root, "skip_approve": True},
+                            "--skip-approve")):
+            res = anthology_setup.apply(PLUGIN, digest, **kw)
+            self.assertFalse(res["ok"])
+            self.assertIn(needle, res["error"])
+            self.assertIn("Nothing was written", res["error"])
+        with mock.patch.object(memory_sync, "repo_root", return_value=None):
+            res = anthology_setup.apply(PLUGIN, digest, cwd=self.root, promote=["clean.md"])
+        self.assertFalse(res["ok"])
+        self.assertIn("git repo", res["error"])
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertEqual(self.rtk.calls, [])
+        self.assertFalse(memory_sync.is_approved("example.invalid/acme/app"))
+
+    def test_cli_promote_flag_is_repeatable(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = anthology_setup.main(["apply", "--plugin-root", str(PLUGIN), "--expect-sha256",
+                                         sha(self.text), "--cwd", str(self.root),
+                                         "--promote", "clean.md", "--promote", "mail.md"])
+        out = json.loads(buf.getvalue())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["memory"]["migrated"]["repo"], ["clean.md"])
+        self.assertEqual([b["file"] for b in out["memory"]["blocked"]], ["mail.md"])
 
 
 class FixRound1Test(SetupCase):

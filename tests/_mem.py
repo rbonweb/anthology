@@ -98,6 +98,23 @@ class MemCase(unittest.TestCase):
             git(root, "remote", "add", "origin", remote)
         return Path(os.path.realpath(root))
 
+    def fake_repo(self, name="repo", key="example.invalid/acme/app"):
+        """A folder that memory_sync treats as a git work tree with remote key `key`, without
+        running git (the Docker test images have none): repo_root, repo_key and _main_root are
+        stubbed, and the git-only repairs (settings_tracked, ensure_ignored) are no-ops."""
+        import memory_sync
+        root = Path(os.path.realpath(self.tmp)) / name
+        root.mkdir(parents=True, exist_ok=True)
+        for attr, value in (("repo_root", lambda cwd, env=None: root),
+                            ("repo_key", lambda r, env=None: key),
+                            ("_main_root", lambda r, env=None: root),
+                            ("settings_tracked", lambda r, env=None: False),
+                            ("ensure_ignored", lambda r, env=None: False)):
+            patcher = mock.patch.object(memory_sync, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return root
+
     def commit_all(self, root, msg="c"):
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", msg)
