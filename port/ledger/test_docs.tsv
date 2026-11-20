@@ -1,22 +1,22 @@
 # python_id	status	rust_test	note
-test_docs.ContributingDocTest.test_links_the_evals	todo
-test_docs.ContributingDocTest.test_links_the_maintainer_tools	todo
-test_docs.DecisionsDocTest.test_entries_are_adr_style	todo
-test_docs.LicenseTest.test_license_is_apache_2	todo
-test_docs.LicenseTest.test_license_is_unmodified	todo
-test_docs.LinkTest.test_named_scripts_and_workflows_exist	todo
-test_docs.LinkTest.test_relative_links_resolve	todo
-test_docs.ReadmeTest.test_codeowners_example_is_a_placeholder	todo
-test_docs.ReadmeTest.test_install_commands	todo
-test_docs.ReadmeTest.test_no_credit_sections	todo
-test_docs.ReadmeTest.test_states_the_limits	todo
-test_docs.RepoContentTest.test_file_listing_is_not_empty	todo
-test_docs.RepoContentTest.test_no_codeowners_file	todo
-test_docs.RepoContentTest.test_no_env_files	todo
-test_docs.RepoContentTest.test_no_owner_home_path_anywhere	todo
-test_docs.RepoContentTest.test_no_real_home_paths	todo
-test_docs.RepoContentTest.test_pruned_covers_gitignored_directories	todo
-test_docs.RepoContentTest.test_walk_skips_ignored_eval_results	todo
-test_docs.SecurityDocTest.test_has_memory_trust_model_heading	todo
-test_docs.SecurityDocTest.test_names_the_rtk_allow	todo
-test_docs.SecurityDocTest.test_reporting_route_has_no_email	todo
+test_docs.ContributingDocTest.test_links_the_evals	ported	crates/repo-tests/tests/docs.rs::contributing_doc_test::test_links_the_evals	
+test_docs.ContributingDocTest.test_links_the_maintainer_tools	ported	crates/repo-tests/tests/docs.rs::contributing_doc_test::test_links_the_maintainer_tools	omitted: `scripts/vendor.py` link -> CO2 replacement: cutover_docs.rs asserts CONTRIBUTING.md links `scripts/dev.sh`; rows:computed the literal tool list, looped with every failure collected
+test_docs.DecisionsDocTest.test_entries_are_adr_style	ported	crates/repo-tests/tests/docs.rs::decisions_doc_test::test_entries_are_adr_style	rows:computed the literal required fields, looped with every failure collected
+test_docs.LicenseTest.test_license_is_apache_2	ported	crates/repo-tests/tests/docs.rs::license_test::test_license_is_apache_2	
+test_docs.LicenseTest.test_license_is_unmodified	ported	crates/repo-tests/tests/docs.rs::license_test::test_license_is_unmodified	
+test_docs.LinkTest.test_named_scripts_and_workflows_exist	ported	crates/repo-tests/tests/docs.rs::link_test::test_named_scripts_and_workflows_exist	
+test_docs.LinkTest.test_relative_links_resolve	ported	crates/repo-tests/tests/docs.rs::link_test::test_relative_links_resolve	
+test_docs.ReadmeTest.test_codeowners_example_is_a_placeholder	ported	crates/repo-tests/tests/docs.rs::readme_test::test_codeowners_example_is_a_placeholder	
+test_docs.ReadmeTest.test_install_commands	ported	crates/repo-tests/tests/docs.rs::readme_test::test_install_commands	rows:computed the literal install commands, looped with every failure collected
+test_docs.ReadmeTest.test_no_credit_sections	ported	crates/repo-tests/tests/docs.rs::readme_test::test_no_credit_sections	rows:computed one row per public document, read from the repo
+test_docs.ReadmeTest.test_states_the_limits	ported	crates/repo-tests/tests/docs.rs::readme_test::test_states_the_limits	
+test_docs.RepoContentTest.test_file_listing_is_not_empty	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_file_listing_is_not_empty	
+test_docs.RepoContentTest.test_no_codeowners_file	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_no_codeowners_file	
+test_docs.RepoContentTest.test_no_env_files	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_no_env_files	
+test_docs.RepoContentTest.test_no_owner_home_path_anywhere	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_no_owner_home_path_anywhere	
+test_docs.RepoContentTest.test_no_real_home_paths	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_no_real_home_paths	
+test_docs.RepoContentTest.test_pruned_covers_gitignored_directories	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_pruned_covers_gitignored_directories	rows:computed one row per directory pattern of .gitignore, read from the repo
+test_docs.RepoContentTest.test_walk_skips_ignored_eval_results	ported	crates/repo-tests/tests/docs.rs::repo_content_test::test_walk_skips_ignored_eval_results	
+test_docs.SecurityDocTest.test_has_memory_trust_model_heading	ported	crates/repo-tests/tests/docs.rs::security_doc_test::test_has_memory_trust_model_heading	
+test_docs.SecurityDocTest.test_names_the_rtk_allow	ported	crates/repo-tests/tests/docs.rs::security_doc_test::test_names_the_rtk_allow	
+test_docs.SecurityDocTest.test_reporting_route_has_no_email	ported	crates/repo-tests/tests/docs.rs::security_doc_test::test_reporting_route_has_no_email	
