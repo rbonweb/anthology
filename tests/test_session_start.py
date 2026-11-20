@@ -468,6 +468,45 @@ class CompatibilityLinesTest(SessionCase):
             self.assertNotEqual(Path(str(call[0][0][0])).name, "docker")
 
 
+class MemoryPrivacyTest(SessionCase):
+    """B3 and C1 through the whole hook (no git needed: fake_repo stubs memory_sync's git calls)."""
+
+    def setUp(self):
+        super().setUp()
+        self.mark_setup()
+        self.root = self.fake_repo()
+        memory_sync.approve(self.root)
+        self.personal = self.anth / "personal-memory"
+
+    def test_legacy_notes_never_land_in_the_repo(self):
+        old = self.config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.root)) / "memory"
+        write(old / "reference-build-host.md",
+              note_text("reference-build-host", "reference", "The build host",
+                        body="Builds run on build-" + "box.lan.\n"))
+        write(old / "project-plan.md", note_text("project-plan", "project", "The plan"))
+        out = self.go(cwd=self.root)
+        self.assertEqual(sorted(p.name for p in (self.root / ".claude" / "memory").iterdir()), [])
+        self.assertTrue((self.personal / "reference-build-host.md").is_file())
+        self.assertTrue((self.personal / "project-plan.md").is_file())
+        self.assertTrue((self.anth / "migrated.json").is_file())
+        self.assertIn("into personal memory", out["systemMessage"])
+        self.assertIn("/anthology:setup", out["systemMessage"])
+
+    def test_user_notes_leave_the_repo_and_personal_memory_is_always_shown(self):
+        out = self.go(cwd=self.root)
+        ctx = self.context(out)
+        self.assertIn("## Personal memory (%s)" % self.personal, ctx)
+        self.assertIn("Save notes about the user", ctx)
+        self.assertFalse(self.personal.exists())
+        write(self.root / ".claude" / "memory" / "user-role.md", note_text("user-role", "user", "Role"))
+        out = self.go(cwd=self.root)
+        self.assertFalse((self.root / ".claude" / "memory" / "user-role.md").exists())
+        self.assertTrue((self.personal / "user-role.md").is_file())
+        self.assertIn("moved 1 user note(s) out of the repo", out["systemMessage"])
+        self.assertIn("[user-role](user-role.md)", self.context(out))
+        self.assertLessEqual(len(self.context(out)), session_start.CONTEXT_BUDGET)
+
+
 class FailureTest(SessionCase):
     def test_injected_exception_gives_a_short_system_message(self):
         with mock.patch.object(session_start, "_plugin_root", side_effect=RuntimeError("boom")):
@@ -1023,8 +1062,13 @@ class GuideTest(unittest.TestCase):
         self.assertRegex(self.text, r"Never save secrets")
 
     def test_personal_index_is_below_the_guide(self):
-        self.assertIn("personal memory, indexed below", self.text)
-        self.assertNotIn("indexed above", self.text)
+        self.assertIn("personal memory at the path given below", self.text)
+        self.assertNotIn("above", self.text)
+
+    def test_user_notes_never_go_into_the_repo(self):
+        line = next(l for l in self.text.splitlines() if l.startswith("- user notes"))
+        self.assertIn("never into the repo", line)
+        self.assertIn("Never commit a `user` note", line)
 
     def test_no_personal_details(self):
         self.assertNotRegex(self.text, r"/U" + r"sers/|/home/\w|@\w+\.\w+")

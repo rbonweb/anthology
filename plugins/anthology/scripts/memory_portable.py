@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+import memory_privacy
 import memory_sync
 
 MAX_ARCHIVE = 50 * 1024 * 1024      # the archive file
@@ -52,16 +53,8 @@ class ExportRefused(Exception):
 # Secret detection (reports labels only, never the matched text)
 # ---------------------------------------------------------------------------------------------
 
-SECRET_PATTERNS = (
-    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
-    ("github-token", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
-    ("slack-token", re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}")),
-    ("api-key", re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}")),
-    ("credential-assignment",
-     re.compile(r"(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*\S{8,}", re.I)),
-)
+# The one shared list (memory_privacy): the guardrails' G6 patterns plus the reporting ones.
+SECRET_PATTERNS = memory_privacy.SECRET_PATTERNS
 
 
 def scan_secrets(text):
@@ -396,10 +389,25 @@ def _imported_name(directory, name, date):
         n += 1
 
 
+def _repo_block(name, data):
+    """`(findings, reason)` why a note may not be written into repo or agent memory, or
+    `([], None)`: a `type: user` note is personal by definition; otherwise the privacy scan
+    (labels and line numbers only)."""
+    if memory_sync.is_user_note(memory_sync.note_info(name, data)):
+        return [], memory_sync.USER_REASON
+    findings = memory_sync.privacy_findings(data.decode("utf-8", errors="replace"))
+    if findings:
+        return findings, "the privacy scan found %s" % memory_privacy.describe(findings)
+    return [], None
+
+
 def plan_import(archive, cwd, today=None, env=None):
     """Validate `archive` and compare it with the notes already on this machine. Writes
     nothing. Returns a plan dict: `new`, `identical`, `conflicts` (each an entry with its
-    `dest`), `secrets` (`{"file", "pattern"}`, labels only), `skipped_repo`, `messages`."""
+    `dest`), `secrets` (`{"file", "pattern"}`, labels only), `skipped_repo`, `blocked`,
+    `messages`. A repo or agent note that would be written and is `type: user` or has privacy
+    findings is redirected to personal memory (`"redirected": "personal"`, its `dest` there)
+    and listed in `blocked` as `{"file", "findings", "reason"}`."""
     env = dict(os.environ) if env is None else dict(env)
     manifest, contents, sha = _load_archive(archive)
     home = memory_sync.anthology_home(env)
@@ -409,7 +417,7 @@ def plan_import(archive, cwd, today=None, env=None):
     plan = {"archive": os.path.realpath(str(archive)), "sha256": sha,
             "date": date, "home": str(home), "repo_root": str(root) if repo_ok else None,
             "new": [], "identical": [], "conflicts": [], "secrets": [], "skipped_repo": [],
-            "messages": []}
+            "blocked": [], "messages": []}
     for member in sorted(contents):
         if member == "manifest.json":
             continue
@@ -423,6 +431,15 @@ def plan_import(archive, cwd, today=None, env=None):
         base, parts = _location(entry["scope"], entry["agent"], home, root)
         directory = os.path.join(str(base), *parts)
         entry["dest"] = os.path.join(directory, entry["name"])
+        if entry["scope"] != "personal" and not (os.path.lexists(entry["dest"]) and
+                                                 _same_as_existing(directory, entry["name"], data)):
+            findings, reason = _repo_block(entry["name"], data)
+            if reason:  # would be written into the repo: redirected to personal memory
+                plan["blocked"].append({"file": member, "findings": findings, "reason": reason})
+                entry["redirected"] = "personal"
+                base, parts = _location("personal", None, home, root)
+                directory = os.path.join(str(base), *parts)
+                entry["dest"] = os.path.join(directory, entry["name"])
         if not os.path.lexists(entry["dest"]):
             plan["new"].append(entry)
         elif _same_as_existing(directory, entry["name"], data):
@@ -433,6 +450,10 @@ def plan_import(archive, cwd, today=None, env=None):
     if plan["skipped_repo"]:
         plan["messages"].append("this folder is not an approved repo (run /anthology:setup in it): "
                                 "%d repo note(s) skipped" % len(plan["skipped_repo"]))
+    if plan["blocked"]:
+        plan["messages"].append("%d repo note(s) are user notes or look private (privacy scan); "
+                                "they go to personal memory instead of the repo"
+                                % len(plan["blocked"]))
     return plan
 
 
@@ -492,8 +513,10 @@ def _checked_entry(entry):
 def apply_import(plan):
     """Write what `plan_import` planned. The archive is validated again (and must be the
     file that was planned); new notes are created exclusively, differing ones are kept as
-    `<name>.imported-<date>.md`, nothing is overwritten. Returns `{"written", "conflicts",
-    "skipped", "indexes"}`."""
+    `<name>.imported-<date>.md`, nothing is overwritten. A repo or agent note that would be
+    written is scanned again (the plan is not trusted for this): with privacy findings, or if
+    the plan blocked it, it goes to personal memory instead. Returns `{"written", "conflicts",
+    "skipped", "blocked", "indexes"}`."""
     if not isinstance(plan, dict):
         raise ImportRejected("malformed plan")
     home, root, archive = plan.get("home"), plan.get("repo_root"), plan.get("archive")
@@ -504,13 +527,21 @@ def apply_import(plan):
         raise ImportRejected("the archive changed after it was planned")
     penv = {"CLAUDE_CONFIG_DIR": str(Path(home).parent)}  # approvals live next to `home`
     date = _iso(plan.get("date"))
-    work = []
+    planned_blocked = {b.get("file") for b in plan.get("blocked", []) if isinstance(b, dict)}
+    work, blocked = [], []
     for key in ("new", "conflicts", "identical"):
         for entry in plan.get(key, []):
             scope, agent, name, member = _checked_entry(entry)
             if member not in contents:
                 raise ImportRejected("plan entry not in the archive: %s" % member)
-            work.append((key, scope, agent, name, contents[member]))
+            data = contents[member]
+            if scope != "personal" and key != "identical":
+                findings, reason = _repo_block(name, data)
+                if reason or member in planned_blocked:
+                    blocked.append({"file": member, "findings": findings,
+                                    "reason": reason or "blocked in the plan"})
+                    scope, agent = "personal", None
+            work.append((key, scope, agent, name, data))
     if any(w[1] != "personal" for w in work):
         if not isinstance(root, str) or not os.path.isdir(root) \
                 or memory_sync.repo_root(root, env=penv) != Path(os.path.realpath(root)) \
@@ -522,7 +553,7 @@ def apply_import(plan):
         base, parts = _location(scope, agent, home, root)
         _check_chain(base, parts)
         targets[(scope, agent)] = (base, parts)
-    result = {"written": [], "conflicts": [], "skipped": [], "indexes": []}
+    result = {"written": [], "conflicts": [], "skipped": [], "blocked": blocked, "indexes": []}
     dirs = {}
     for key, scope, agent, name, data in work:
         if key == "identical":
@@ -550,8 +581,9 @@ def apply_import(plan):
             except FileExistsError:
                 continue
         result["conflicts"].append(str(directory / imported))
-    for directory in dirs.values():
-        memory_sync.regenerate_index(directory)
+    for (scope, _agent), directory in dirs.items():
+        memory_sync.regenerate_index(directory, exclude_types=() if scope == "personal"
+                                     else memory_sync.REPO_EXCLUDE)
         result["indexes"].append(str(directory))
     return result
 
@@ -567,9 +599,13 @@ def _print_plan(plan):
                        ("conflicts", "conflicts (kept side by side as <name>.imported-%s.md)" % plan["date"])):
         print("  %s: %d" % (title, len(plan[key])))
         for e in plan[key]:
-            print("    - %s" % e["member"])
+            print("    - %s%s" % (e["member"], " (to personal memory: blocked)" if e.get("redirected") else ""))
     for message in plan["messages"]:
         print("  note: %s" % message)
+    if plan.get("blocked"):
+        print("  blocked from the repo (written to personal memory instead):")
+        for b in plan["blocked"]:
+            print("    - %s: %s" % (b["file"], b.get("reason") or memory_privacy.describe(b["findings"])))
     if plan["secrets"]:
         print("  secret-looking content found (labels only, contents not shown):")
         for s in plan["secrets"]:
@@ -625,6 +661,11 @@ def main(argv=None):
                                                                    len(result["conflicts"])))
                 for path in result["conflicts"]:
                     print("    %s" % path)
+                if result["blocked"]:
+                    print("%d repo note(s) blocked from the repo, written to personal memory:"
+                          % len(result["blocked"]))
+                    for b in result["blocked"]:
+                        print("    %s" % b["file"])
         return 0
     except ImportRejected as exc:
         print("memory_portable: rejected: %s" % exc, file=sys.stderr)

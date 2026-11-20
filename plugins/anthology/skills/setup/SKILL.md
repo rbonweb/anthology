@@ -42,7 +42,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the
    separate installs conflict. Show each `command` (`claude plugin uninstall <plugin> -s <scope>`)
    and ask the user to run them. Do not run them for the user.
-4. Show every change, then ask one yes/no question ("Apply these changes?"):
+4. Show every change listed below, then ask for one confirmation: apply these changes and, if
+   `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
+   (recommend none):
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
    - **settings.json:** show `settings.diff` as a diff. Values setup does not change show as
@@ -53,17 +55,29 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
      is skipped.
    - **personal memory:** the folder `memory.personal_dir` is created (private to the user).
-5. On yes, apply, passing the digest from the preview so a changed settings file is never overwritten:
+   - **old memory notes:** if `memory.legacy_notes` is not empty, these are notes Claude Code saved for
+     this folder before Anthology. By default they **all go to personal memory**, never into the repo.
+     For each note show its `name`, `description` and `diff` (what moving it would add to
+     `.claude/memory/`; for a `conflict` the existing note stays and `would_create` is the new file).
+     A note with `movable` false cannot be moved: mark it blocked and show its `reason` (privacy
+     findings name a kind and a line, never the text; `type: user` notes are always personal).
+     That confirmation asks which notes, if any, to move into the repo's memory, where everyone who
+     can see the repo can read them. Recommend **none**.
+5. Once confirmed, apply, passing the digest from the preview so a changed settings file is never overwritten:
 
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>
    ```
 
-   Add `--skip-approve` if the user does not want this repo approved. If it reports that settings.json
-   changed since the preview, run the preview again and ask again.
+   Add `--promote <file>` once for each legacy note the user chose to move into the repo (the bare
+   `file` name from `memory.legacy_notes`); add nothing if they chose none. Add `--skip-approve` if the
+   user does not want this repo approved (it cannot be combined with `--promote`). If it reports that
+   settings.json changed since the preview, run the preview again and ask again.
 6. Report the result: what changed, any `warnings`, and `memory.approve_error` if present (the repo is
-   still approved; say which file was refused). Tell the user to restart the session so the new
-   permissions and the rtk hook take effect.
+   still approved; say which file was refused). `memory.migrated` lists the legacy notes copied into the
+   repo (`repo`) and into personal memory (`personal`). If `memory.blocked` is not empty, list each
+   `file` with its `reason`: those notes stayed in personal memory. Tell the user to restart the
+   session so the new permissions and the rtk hook take effect.
 
 ## Remove (`/anthology:setup remove`)
 

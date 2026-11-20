@@ -2,13 +2,16 @@
 """`/anthology:setup` orchestration: preview, apply and remove.
 
     anthology_setup.py preview --plugin-root R [--cwd C] [--json]
-    anthology_setup.py apply   --plugin-root R --expect-sha256 H [--cwd C] [--skip-approve]
+    anthology_setup.py apply   --plugin-root R --expect-sha256 H [--cwd C] [--skip-approve] [--promote F]...
     anthology_setup.py remove  --plugin-root R [--cwd C] [--preview] [--unapprove] [--unapprove-all]
 
 `preview` writes nothing: it reports the environment checks, duplicate plugins, the rtk step,
 the settings.json diff (with the sha256 of the text it was computed from) and the memory
-steps. `apply` refuses if settings.json changed since the preview (checked again after the rtk
-download, right before the write). `remove --preview` writes nothing and shows what remove
+steps, including the old path-keyed memory notes of this repo (`memory.legacy_notes`). `apply`
+refuses if settings.json changed since the preview (checked again after the rtk download, right
+before the write); after approving the repo it copies those legacy notes into personal memory,
+except the ones named with `--promote`, which go into the repo's memory if the privacy scan
+finds nothing (otherwise they stay personal and are listed in `memory.blocked`). `remove --preview` writes nothing and shows what remove
 would change (settings diff, the rtk folder, state.json, approvals). `remove` undoes the
 settings edits, deletes the downloaded rtk and `state.json`, and optionally drops repo
 approvals; memory notes, `.gitattributes` and the personal-memory folder are never deleted.
@@ -18,6 +21,8 @@ platform. Python stdlib only (3.9+).
 from __future__ import annotations
 
 import argparse
+import datetime
+import difflib
 import hashlib
 import json
 import os
@@ -145,6 +150,97 @@ def _repo_info(cwd, env):
     return root, memory_sync.repo_key(root, env=env)
 
 
+def _repo_mem(root):
+    """`<root>/.claude/memory`, or None if it or `.claude` is a symlink or not a folder."""
+    claude = Path(str(root)) / ".claude"
+    mem = claude / "memory"
+    if memory_sync._unsafe_dir(claude) or memory_sync._unsafe_dir(mem):
+        return None
+    return mem
+
+
+def _diff_lines(data):
+    lines = data.decode("utf-8", errors="replace").splitlines(True)
+    return [l if l.endswith("\n") else l + "\n" for l in lines]
+
+
+def legacy_notes(root, env, today=None):
+    """The old path-keyed auto-memory notes of the repo at `root` (both legacy folders), with
+    what moving each into `<root>/.claude/memory/` would do. Writes nothing. The default for
+    every note is personal memory; `movable` is False for `type: user` notes and for notes
+    with privacy findings (`reason` says why)."""
+    date = today or datetime.date.today().isoformat()
+    mem = _repo_mem(root)
+    out = []
+    for old in memory_sync.legacy_dirs(root, memory_sync.config_dir(env), env=env):
+        for name, data in memory_sync.legacy_entries(old):
+            info = memory_sync.note_info(name, data)
+            findings, reason = memory_sync.promotion_block(info, data, home=env.get("HOME"))
+            if reason is None and mem is None:
+                reason = "repo memory is a symlink or not a folder"
+            note = {"file": name, "name": info["name"], "description": info["description"],
+                    "type": info["type"], "source": str(old), "default": "personal",
+                    "findings": findings, "movable": reason is None}
+            if reason:
+                note["reason"] = reason
+            status = memory_sync.placement_status(mem, name, data) if mem is not None else "new"
+            note["status"] = status
+            if status == "new":
+                diff = difflib.unified_diff([], _diff_lines(data), "/dev/null",
+                                            "b/.claude/memory/" + name)
+            elif status == "conflict":
+                note["would_create"] = memory_sync.side_by_side_name(mem, name, date)
+                try:
+                    existing = memory_sync._read_regular(mem / name)
+                except memory_sync.UnsafeTarget:
+                    existing = b""
+                diff = difflib.unified_diff(_diff_lines(existing), _diff_lines(data),
+                                            "a/.claude/memory/" + name,
+                                            "b/.claude/memory/" + note["would_create"])
+            else:
+                diff = []
+            note["diff"] = "".join(diff)
+            out.append(note)
+    return out
+
+
+def _migrate_legacy(root, env, personal, promote):
+    """Copy this repo's legacy notes: the promoted clean ones into repo memory, everything
+    else into personal memory; the ledger records all of them."""
+    mem = _repo_mem(root)
+    home = memory_sync.anthology_home(env)
+    out = {"repo": [], "personal": [], "skipped": [], "blocked": []}
+    for old in memory_sync.legacy_dirs(root, memory_sync.config_dir(env), env=env):
+        res = memory_sync.migrate(old, mem, personal, ledger=home / "migrated.json",
+                                  promote=set(promote), home=env.get("HOME"))
+        out["repo"] += res["promoted"]
+        out["personal"] += [n for n in res["copied"] + res["conflicts"] if n not in res["promoted"]]
+        out["skipped"] += [n for n in res["skipped"] if n not in res["promoted"]]
+        out["blocked"] += res["blocked"]
+    if out["repo"] and mem is not None:
+        memory_sync.regenerate_index(mem, exclude_types=memory_sync.REPO_EXCLUDE)
+    return out
+
+
+def _promote_error(promote, skip_approve, cwd, env):
+    """Why `--promote` cannot be honoured, or None (checked before anything is written)."""
+    if not promote:
+        return None
+    if skip_approve:
+        return ("--promote moves notes into this repo's memory, which needs the repo approved; "
+                "it cannot be combined with --skip-approve. Nothing was written.")
+    info = _repo_info(cwd, env)
+    if info is None:
+        return "--promote needs a git repo (this folder is not one). Nothing was written."
+    listed = {n["file"] for n in legacy_notes(info[0], env)}
+    unknown = sorted({p for p in promote if p not in listed})
+    if unknown:
+        return ("--promote takes the file name of one of this repo's legacy notes "
+                "(memory.legacy_notes in the preview); not one: %s. Nothing was written."
+                % ", ".join(unknown))
+    return None
+
+
 # -- commands -------------------------------------------------------------------------------------
 
 
@@ -167,6 +263,7 @@ def preview(plugin_root, cwd=None, env=None):
         repo = {"skipped": "not a git repo"}
     else:
         repo = {"root": str(info[0]), "key": info[1], "approved": memory_sync.is_approved(info[1], env=env)}
+    legacy = legacy_notes(info[0], env) if info is not None else []
     personal = _personal_dir(env)
     return {
         "supported": True,
@@ -175,15 +272,23 @@ def preview(plugin_root, cwd=None, env=None):
         "duplicates": doctor.find_duplicates(doctor.installed_plugins(env)),
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,
-        "memory": {"repo": repo, "personal_dir": str(personal), "personal_exists": personal.is_dir()},
+        "memory": {"repo": repo, "personal_dir": str(personal), "personal_exists": personal.is_dir(),
+                   "legacy_notes": legacy},
     }
 
 
-def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
+def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, promote=()):
+    """Apply the previewed setup. `promote` names legacy notes (bare file names from the
+    preview's `memory.legacy_notes`) to move into the repo's memory instead of personal memory;
+    a note with privacy findings stays personal and is listed in `memory.blocked`."""
     env = dict(os.environ) if env is None else dict(env)
     if _unsupported():
         return {"ok": False, "unsupported": True, "error": REFUSAL}
     cwd = cwd or os.getcwd()
+    promote = list(promote or ())
+    refused = _promote_error(promote, skip_approve, cwd, env)
+    if refused:
+        return {"ok": False, "error": refused}
     warnings = []
     path = settings_patch.settings_path(env)
     if _sha256(settings_patch.read_text(path)) != expect_sha256:
@@ -220,8 +325,13 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
             return stale
         settings_patch.write_text(path, new_text)
 
-    memory = {"approved_key": None, "approve_error": None}
+    memory = {"approved_key": None, "approve_error": None, "migrated": None, "blocked": []}
     info = None if skip_approve else _repo_info(cwd, env)
+    personal = _personal_dir(env)
+    fresh = not personal.is_dir()
+    personal.mkdir(parents=True, exist_ok=True)
+    if fresh:
+        os.chmod(str(personal), 0o700)
     if info is not None:
         root, key = info
         memory["approved_key"] = key
@@ -230,11 +340,9 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
         except memory_sync.UnsafeTarget as exc:  # the approval is already recorded
             memory["approve_error"] = str(exc)
             warnings.append("repo memory is approved, but: %s" % exc)
-    personal = _personal_dir(env)
-    fresh = not personal.is_dir()
-    personal.mkdir(parents=True, exist_ok=True)
-    if fresh:
-        os.chmod(str(personal), 0o700)
+        migrated = _migrate_legacy(root, env, personal, promote)
+        memory["blocked"] = migrated.pop("blocked")
+        memory["migrated"] = migrated
     memory["personal_dir"] = str(personal)
 
     # The op set this run applied: session start compares it with the current release's (I6).
@@ -350,6 +458,8 @@ def main(argv=None):
         if name == "apply":
             p.add_argument("--expect-sha256", required=True)
             p.add_argument("--skip-approve", action="store_true")
+            p.add_argument("--promote", action="append", default=[], metavar="FILE",
+                           help="move this legacy note into the repo's memory (repeatable)")
         if name == "remove":
             p.add_argument("--unapprove", action="store_true")
             p.add_argument("--unapprove-all", action="store_true")
@@ -360,7 +470,8 @@ def main(argv=None):
         if args.command == "preview":
             result = preview(args.plugin_root, cwd=args.cwd)
         elif args.command == "apply":
-            result = apply(args.plugin_root, args.expect_sha256, cwd=args.cwd, skip_approve=args.skip_approve)
+            result = apply(args.plugin_root, args.expect_sha256, cwd=args.cwd, skip_approve=args.skip_approve,
+                           promote=args.promote)
         else:
             result = remove(args.plugin_root, cwd=args.cwd, unapprove=args.unapprove,
                             unapprove_all=args.unapprove_all, preview=args.preview)
