@@ -128,7 +128,7 @@ Every agent also reads `caveman` (the house style). `ds/x` = `knowledge/design-s
   - The agent must Read every listed file before any other work.
   - Paths inside a knowledge file are relative to that file's folder. A reference like `design-skills:<x>` means `knowledge/design-skills/skills/<x>/SKILL.md`.
   - The evals check that every agent does this (§14).
-  - Outside auto mode a plugin agent may not Read files in the plugin cache without permission (U1), so `/anthology:setup` adds one narrow allow rule: `Read(<plugin cache>/anthology/**)`, using the resolved cache path.
+  - Outside auto mode a plugin agent may not Read its own plugin files without permission (U1). So `/anthology:setup` adds one narrow allow rule built from the **resolved** plugin location: the parent of `${CLAUDE_PLUGIN_ROOT}` + `/**`. That covers every cached version, and a local marketplace that loads in place. `session_start.py` warns if the rule no longer matches the current root (re-run setup).
 - **Startup budget.** Each agent's startup reading (its body, the Startup files and its preloads) has a byte budget enforced by a test. Upstream growth shows up in sync PRs instead of silently raising every call's cost.
 - **ui-designer: which knowledge leads.** For websites and landing pages, `design-taste-frontend` leads. For app screens (web or iOS), `ui-taste` leads. `frontend-design` is the baseline for everything else. The rest are supporting.
 - **ui-reviewer** is split out from ui-designer so the builder and the critic are different models (Sonnet builds, Opus reviews). It uses BrowserOS Neo to look at the rendered page.
@@ -667,7 +667,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
   - `sync NAME --ref REF`: re-pins, rebuilds, reports patch rejects for review, and never commits.
   - `diff NAME`: pristine vs shipped, used to regenerate a patch after an intentional change.
 - Named transforms:
-  - `rename-plugin(old,new)`: rewrites the `plugin.json` name and every `old:<skill>` reference.
+  - `rename-plugin(old,new)`: rewrites the `plugin.json` name and every `old:<skill>` reference, and sets the plugin's **own** version from `sources.json` (`plugin_version`, starting `0.1.0`). The upstream version stays recorded as `upstream_version`. anthology-superpowers is versioned independently, so the `~0.1` dependency range resolves and any transform or sync change gets its own bump. Its `license` stays the upstream one (MIT).
   - `strip-connectors` (Task 3).
 
 - [ ] **Step 1: Failing tests:**
@@ -1015,7 +1015,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **`settings_patch.apply(settings, ops) / revert(settings, ops) -> (new, diff)`.** Ops:
   - add/remove `Bash(rtk *)`;
   - add/remove the Chrome/Chromium `Read(...)` deny rules for the macOS/Linux profile roots and their parents;
-  - add/remove the `Read(<plugin cache>/anthology/**)` allow rule (U1);
+  - add/remove the `Read(<parent of CLAUDE_PLUGIN_ROOT>/**)` allow rule (U1; covers cached versions and local in-place marketplaces);
   - set `worktree.baseRef` to `"head"`, remembering the previous value so `remove` restores it (U2);
   - always keep unrelated keys, byte-stable where possible.
 
