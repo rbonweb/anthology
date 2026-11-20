@@ -176,6 +176,55 @@ def _body_substitutions(body):
     return found
 
 
+def _array_lines(inner):
+    """Split an array body into its lines, keeping quoted text, `$(...)` (heredocs included),
+    backticks and `# comments` whole. Each line is later lexed as `echo <line>`."""
+    lines, start, j, n = [], 0, 0, len(inner)
+    while j < n:
+        c = inner[j]
+        if c == "\\":
+            j += 2
+        elif c == "'":
+            k = inner.find("'", j + 1)
+            j = n if k < 0 else k + 1
+        elif c == '"':
+            j = _skip_double_quoted(inner, j + 1)
+        elif c == "`":
+            k = inner.find("`", j + 1)
+            j = n if k < 0 else k + 1
+        elif c == "$" and inner[j + 1:j + 2] == "(":
+            j = _scan_paren(inner, j + 2)[1]
+        elif c == "#" and (j == 0 or inner[j - 1] in " \t\n"):
+            k = inner.find("\n", j)
+            j = n if k < 0 else k
+        elif c == "\n":
+            lines.append(inner[start:j])
+            start = j = j + 1
+        else:
+            j += 1
+    lines.append(inner[start:])
+    return [line for line in lines if line.strip()]
+
+
+def _skip_double_quoted(text, j):
+    """Index just past the double quote that closes the one opened before text[j]."""
+    n = len(text)
+    while j < n:
+        c = text[j]
+        if c == '"':
+            return j + 1
+        if c == "\\":
+            j += 2
+        elif c == "$" and text[j + 1:j + 2] == "(":
+            j = _scan_paren(text, j + 2)[1]
+        elif c == "`":
+            k = text.find("`", j + 1)
+            j = n if k < 0 else k + 1
+        else:
+            j += 1
+    return n
+
+
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
     their segments spliced in ahead of the segment that contains them (execution order)."""
@@ -235,8 +284,8 @@ class _Lexer:
         while i < n:
             c = text[i]
             if c == "\\":
-                self.quoted = True
-                if i + 1 < n and text[i + 1] != "\n":
+                if i + 1 < n and text[i + 1] != "\n":     # backslash-newline adds nothing
+                    self.quoted = True
                     self.add(text[i + 1])
                 i += 2
             elif c == "'":
@@ -269,7 +318,8 @@ class _Lexer:
                 self.add("(" + inner + ")")
                 # The elements are analyzed as the arguments of an `echo` (so their substitutions
                 # run and their paths are checked), without reading element 0 as a program.
-                self.nested("echo " + inner.replace("\n", " "))
+                for line in _array_lines(inner):
+                    self.nested("echo " + line)
             elif c in ";()":
                 self.end_seg(new_group=True)
                 i += 1

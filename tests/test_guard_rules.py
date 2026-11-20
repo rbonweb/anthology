@@ -184,6 +184,9 @@ class RuleTableTest(unittest.TestCase):
             bash("declare -a f=(~/.config/chromium/Default/Cookies)"),
             bash("local f=(~/.config/chromium/Default/Cookies)"),
             bash("files=(\n  ~/.config/chromium/Default/Cookies\n)"),
+            bash("files=( # list\n  ~/.config/chromium/Default/Cookies\n); cat \"${files[0]}\""),
+            bash("files=(\n  /tmp/a # first\n  ~/.config/chromium/Default/Cookies\n)"),
+            bash("files=(\n  # it's the profile\n  ~/.config/chromium/Default/Cookies\n)"),
             # -C <dir> changes directory for tar / git / make (review M4)
             bash("tar czf /tmp/p.tgz -C ~/.config chromium"),
             bash("tar xf /tmp/p.tgz --directory ~/.config google-chrome"),
@@ -520,6 +523,14 @@ class RuleTableTest(unittest.TestCase):
             bash("arr+=($(npx playwright install))"),
             bash("declare -a arr=($(npx playwright install))"),
             bash("arr=(a b\n  $(npx playwright install)\n)"),
+            # multi-line arrays with comments (round 3)
+            bash("arr=(\n  x # c\n  $(npx playwright install)\n)"),
+            bash("arr=( # it's a list\n  $(npx playwright install)\n)"),
+            bash("arr=(\n  \"$(cat <<'EOF'\nsay \"hi\" it's\nEOF\n)\"\n  $(npx playwright install)\n)"),
+            # a backslash-newline before a heredoc does not make its delimiter look quoted
+            bash("cat \\\n<<EOF\n$(npx playwright install)\nEOF"),
+            bash("git commit -F - \\\n  <<EOF\nuse `npx playwright install`\nEOF"),
+            bash("cat 2\\\n<<EOF\n$(npx playwright install)\nEOF"),
             # nesting up to the depth cap (review M9)
             bash("echo $(echo $(echo $(echo $(echo $(echo $(echo $(npx playwright install)))))))"),
             # macOS / coreutils wrappers, quoting tricks and substituted program names
@@ -760,6 +771,13 @@ class RuleTableTest(unittest.TestCase):
             bash("files=(\n  a.txt\n  b.txt\n)"),
             bash("arr=($(ls) \"$(date)\" `pwd`)"),
             bash("declare -a f=(src/*.py)"),
+            bash("files=(src/*.py)"),
+            bash("args=(--flag \"$x\")"),
+            bash("names=(chromium firefox webkit)"),
+            bash("pids=($(pgrep -f chromium))"),
+            bash("names=(\n  chromium # it's here\n  firefox\n  # it's a comment\n  webkit\n)"),
+            bash("arr=(\n  \"$(cat <<'EOF'\nnpx playwright install\nagent-browser it's\nEOF\n)\"\n  b\n)"),
+            bash("cat \\\n<<'EOF'\n$(npx playwright install)\nEOF"),
             # unquoted heredoc bodies without a blocked command, and quoted ones stay data
             bash("cat <<EOF\n$(date) and `pwd`\nEOF"),
             bash("git commit -F - <<'EOF'\nuse `npx playwright install` now\nEOF"),
