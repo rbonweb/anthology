@@ -248,28 +248,32 @@ enum Rx {
 }
 
 impl Rx {
-    /// Compiles a translated pattern; a pattern that does not compile is a bug (tests compile
-    /// every one), so it panics with the pattern's Python source.
-    fn build(py: &str, t: &pyre::Translated, limit: usize) -> Rx {
+    /// Compiles a translated pattern.
+    fn try_build(t: &pyre::Translated, limit: usize) -> Result<Rx, String> {
         if t.fancy {
             let rx = fancy_regex::RegexBuilder::new(&t.pattern)
                 .backtrack_limit(limit)
                 .build()
-                .unwrap_or_else(|e| panic!("privacy: {py:?} does not compile: {e}"));
-            Rx::Fancy(rx)
+                .map_err(|e| e.to_string())?;
+            Ok(Rx::Fancy(rx))
         } else {
             let rx = regex::RegexBuilder::new(&t.pattern)
                 .size_limit(64 << 20)
                 .build()
-                .unwrap_or_else(|e| panic!("privacy: {py:?} does not compile: {e}"));
-            Rx::Plain(rx)
+                .map_err(|e| e.to_string())?;
+            Ok(Rx::Plain(rx))
         }
     }
 
+    fn try_compile(py: &str, ignorecase: bool, limit: usize) -> Result<Rx, String> {
+        Rx::try_build(&pyre::translate(py, ignorecase)?, limit)
+    }
+
+    /// A static pattern: one that does not translate or compile is a bug (a unit test compiles
+    /// every one), so it panics with the pattern's Python source.
     fn compile(py: &str, ignorecase: bool, limit: usize) -> Rx {
-        let t = pyre::translate(py, ignorecase)
-            .unwrap_or_else(|e| panic!("privacy: {py:?} does not translate: {e}"));
-        Rx::build(py, &t, limit)
+        Rx::try_compile(py, ignorecase, limit)
+            .unwrap_or_else(|e| panic!("privacy: {py:?} does not compile: {e}"))
     }
 
     /// `rx.search(line) is not None`.
@@ -407,43 +411,38 @@ enum Dynamic {
     Python(String, bool),
 }
 
-fn dynamic_for(which: &Dynamic, limit: usize) -> Arc<Rx> {
-    static CACHE: OnceLock<Cache<(Dynamic, usize), Rx>> = OnceLock::new();
+/// A dynamic pattern, or `None` when it cannot be built (a value too large for the engines'
+/// size limits, say): the scan then fails closed (`unscannable` on every line it would search).
+fn dynamic_for(which: &Dynamic, limit: usize) -> Arc<Option<Rx>> {
+    static CACHE: OnceLock<Cache<(Dynamic, usize), Option<Rx>>> = OnceLock::new();
     CACHE
         .get_or_init(Cache::new)
-        .get(&(which.clone(), limit), || build_dynamic(which, limit))
+        .get(&(which.clone(), limit), || build_dynamic(which, limit).ok())
 }
 
-fn build_dynamic(which: &Dynamic, limit: usize) -> Rx {
-    let part = |py: &str, ic: bool| {
-        pyre::translate(py, ic)
-            .unwrap_or_else(|e| panic!("privacy: {py:?} does not translate: {e}"))
-            .pattern
-    };
-    let (py, pattern) = match which {
-        Dynamic::Python(py, ic) => return Rx::compile(py, *ic, limit),
+fn build_dynamic(which: &Dynamic, limit: usize) -> Result<Rx, String> {
+    let part = |py: &str, ic: bool| pyre::translate(py, ic).map(|t| t.pattern);
+    let pattern = match which {
+        Dynamic::Python(py, ic) => return Rx::try_compile(py, *ic, limit),
         // `re.escape(home) + r"(?![\w-])"`.
         Dynamic::Home(home) => {
-            let lit = pyre::literal(home, false, pyre::NonAsciiCase::Refuse)
-                .unwrap_or_else(|e| panic!("privacy: home literal: {e}"));
-            (HOME_TAIL, format!("{lit}{}", part(HOME_TAIL, false)))
+            let lit = pyre::literal(home, false, pyre::NonAsciiCase::Refuse)?;
+            format!("{lit}{}", part(HOME_TAIL, false)?)
         }
         // `r"(?<![\w-])" + re.escape(n) + r"(?![\w-])"`, re.IGNORECASE. A hostname is data: a
         // non-ASCII cased letter in it uses the engine's own case folding (documented residual).
         Dynamic::Host(name) => {
-            let lit = pyre::literal(name, true, pyre::NonAsciiCase::EngineFold)
-                .unwrap_or_else(|e| panic!("privacy: hostname literal: {e}"));
-            (
-                HOST_HEAD,
-                format!("{}{lit}{}", part(HOST_HEAD, true), part(HOST_TAIL, true)),
-            )
+            let lit = pyre::literal(name, true, pyre::NonAsciiCase::EngineFold)?;
+            format!("{}{lit}{}", part(HOST_HEAD, true)?, part(HOST_TAIL, true)?)
         }
     };
-    let translated = pyre::Translated {
-        pattern,
-        fancy: true,
-    };
-    Rx::build(py, &translated, limit)
+    Rx::try_build(
+        &pyre::Translated {
+            pattern,
+            fancy: true,
+        },
+        limit,
+    )
 }
 
 /// The patterns of one scan, per line budget.
@@ -456,8 +455,9 @@ struct Scan {
 
 struct LinePatterns {
     statics: Arc<Patterns>,
-    home: Option<Arc<Rx>>,
-    hosts: Vec<Arc<Rx>>,
+    /// `None`: no home literal; `Some(None)`: one that could not be built (fail closed).
+    home: Option<Arc<Option<Rx>>>,
+    hosts: Vec<Arc<Option<Rx>>>,
 }
 
 impl Scan {
@@ -808,7 +808,7 @@ fn line_kinds(line: &str, pats: &LinePatterns) -> BTreeSet<String> {
         add(&mut kinds, "home-path");
     }
     if let Some(rx) = &pats.home {
-        match rx.search(line) {
+        match search_built(rx, line) {
             Ok(true) => add(&mut kinds, "home-path"),
             Ok(false) => {}
             Err(Unfinished) => unfinished = true,
@@ -849,7 +849,7 @@ fn line_kinds(line: &str, pats: &LinePatterns) -> BTreeSet<String> {
     }
     if !private_host {
         for rx in &pats.hosts {
-            match rx.search(line) {
+            match search_built(rx, line) {
                 Ok(true) => {
                     private_host = true;
                     break;
@@ -952,8 +952,13 @@ pub fn search_any(patterns: &[(&str, bool)], text: &str) -> bool {
     let limit = PrivacyLimits::default().for_len(text.len());
     patterns.iter().any(|&(py, ic)| {
         let which = Dynamic::Python(py.to_string(), ic);
-        dynamic_for(&which, limit).search(text).unwrap_or(true)
+        search_built(&dynamic_for(&which, limit), text).unwrap_or(true)
     })
+}
+
+/// A search with a dynamic pattern; one that could not be built cannot finish (fail closed).
+fn search_built(rx: &Option<Rx>, line: &str) -> Result<bool, Unfinished> {
+    rx.as_ref().ok_or(Unfinished)?.search(line)
 }
 
 #[cfg(test)]
@@ -968,11 +973,20 @@ mod tests {
             Dynamic::Home("/srv/x".into()),
             Dynamic::Host("Box-Ünï.k".into()),
         ] {
-            let _ = build_dynamic(&d, limit);
+            build_dynamic(&d, limit).unwrap();
         }
         for (py, ic) in anthology_guard::secrets::GUARD_SECRET_PATTERNS {
             pyre::translate(py, *ic).unwrap();
         }
+    }
+
+    /// A dynamic pattern the engines cannot build fails closed. (Even a 4 MiB home literal
+    /// builds, so the branch is driven directly.)
+    #[test]
+    fn an_unbuildable_dynamic_pattern_fails_closed() {
+        assert_eq!(search_built(&None, "text"), Err(Unfinished));
+        let home = "/srv/".to_string() + &"a".repeat(4 << 20);
+        assert!(build_dynamic(&Dynamic::Home(home), 1_000_000).is_ok());
     }
 
     #[test]
