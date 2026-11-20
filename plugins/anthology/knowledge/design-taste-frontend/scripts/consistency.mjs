@@ -292,7 +292,7 @@ const NEO_NOT = [
   'focus-visible, focus-hidden, skip-link Tab walk (BrowserOS Neo: no key events; Tab through the page in the eyes step)',
   'reduced-motion, hidden-content with scripts off, gl-fallback, the slow line (BrowserOS Neo: no media, script or network emulation)',
 ];
-const NEO_SKIP = new Set(['empty-visual', 'skip-link', 'dark-ground', 'photo-set', 'fade-cut', 'button-contrast', 'busy-ground', 'hover', 'hover-move', 'hover-spill', 'hidden-visual', 'loop-pause', 'forms', 'focus-visible', 'focus-hidden', 'reduced-motion', 'gl-fallback']);
+const NEO_SKIP = new Set(['empty-visual', 'skip-link', 'contrast', 'dark-ground', 'photo-set', 'fade-cut', 'button-contrast', 'busy-ground', 'hover', 'hover-move', 'hover-spill', 'hidden-visual', 'loop-pause', 'forms', 'focus-visible', 'focus-hidden', 'reduced-motion', 'gl-fallback']);
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf('--' + n); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
 const has = (n) => { const i = argv.indexOf('--' + n); if (i < 0) return false; argv.splice(i, 1); return true; };
@@ -9957,7 +9957,7 @@ const LOST_CHECKS = {
   more: [['action-count', 'button-styles', 'copy-length', 'fact-agree', 'fold-action', 'grounds', 'links', 'one-screen', 'photo-print', 'product-shown', 'split-align'], 'the page-wide reads (the main action, buttons, copy length, facts, the first fold, grounds, links, prints on photographs, the product shown, split alignment)'],
 };
 function lose(errors, name, e, msg) {
-  if (e && e.neo) return;
+  if (e && e.unavailable) return;
   const why = msg ?? (e && e.message) ?? String(e);
   errors.push(`${name}: ${why}`);
   (errors.lost ||= []).push({ name, why: String(why).split('\n')[0].slice(0, 90) });
@@ -10314,6 +10314,8 @@ async function runWidth(cdp, helper, { w: width, h }, first) {
             F.push({ check: 'fade-cut', sev: 'WARN', id: x.id, sel: x.sel, text: x.text, stop: k, rects: [...list.flatMap((y) => y.rects).slice(0, 8), Object.assign({}, x.hostRect, { ref: true })], msg: `${list.length > 1 ? `${list.length} lines` : 'a line'} of ${x.hostSel.split(' > ').pop()} fade${list.length > 1 ? '' : 's'} out under its edge (${list.slice(0, 3).map((y) => `"${y.text.slice(0, 22)}"`).join(', ')}): drawn at a fraction of ${x.fg} on ${x.bg}, half-erased` });
           }
         }
+      }
+      if (m.fades && m.fades.length) {
         // a box of the mock laid over its own text (a note card over the page's words)
         const covered = new Map(); for (const x of m.fades) if (x.cover && !covered.has(x.cover.id)) covered.set(x.cover.id, x);
         for (const [, x] of [...covered].slice(0, 3)) F.push({ check: 'overlap-text', sev: 'WARN', id: x.cover.id, sel: x.cover.sel, text: x.cover.text, stop: k, rects: [...x.rects, Object.assign({}, x.hostRect, { ref: true })], msg: `inside ${x.hostSel.split(' > ').pop()}, a box sits on the mock's own text and hides it mid-line ("${x.text.slice(0, 30)}")` });

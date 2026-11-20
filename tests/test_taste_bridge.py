@@ -229,7 +229,8 @@ class RootSecretsTest(unittest.TestCase):
                 info = json.loads((work / ".taste-skill" / "neo.json").read_text(encoding="utf-8"))
                 self.assertEqual(info["root"], str(work))
                 self.assertEqual((work / ".taste-skill" / ".gitignore").read_text(encoding="utf-8"), "*\n")
-                for path in ("/.taste-skill/neo.json", "/.taste-skill/", "/.taste-skill/.gitignore"):
+                for path in ("/.taste-skill/neo.json", "/.taste-skill/", "/.taste-skill/.gitignore",
+                             "/.TASTE-SKILL/neo.json", "/.Taste-Skill/neo.json", "/.TASTE-SKILL/", "/.TASTE-SKILL/.gitignore"):
                     conn = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=10)
                     conn.request("GET", path)
                     res = conn.getresponse()
@@ -423,6 +424,34 @@ class ClientTest(Bridge):
         self.assertIn("close", ops)
         goto = next(j for j in harness.jobs if j["op"] == "goto")
         self.assertEqual(goto["url"], out["origin"] + "/index.html")
+
+    def test_a_bridge_timeout_is_not_an_unavailable_method(self):
+        harness = FakeHarness(self)
+        harness.start()
+        script = (
+            "import { connect, NeoTab, NeoError } from %s;"
+            "const hub = await connect({ cwd: process.cwd(), wait: 3000 });"
+            "const tab = await NeoTab.open(hub, { width: 390, height: 844 });"
+            "const out = {};"
+            "try { await tab.send('Page.captureScreenshot', {}); } catch (e) { out.unavailable = [e instanceof NeoError, e.unavailable === true]; }"
+            "await new Promise((r) => setTimeout(r, 100));"
+            "process.stdout.write('READY\\n');"
+            "await new Promise((r) => process.stdin.once('data', r));"
+            "try { await tab.eval('1', 200); } catch (e) { out.timeout = [e instanceof NeoError, e.unavailable === true, e.message]; }"
+            "console.log(JSON.stringify(out)); process.exit(0);"
+        ) % json.dumps(NEO.as_uri())
+        proc = subprocess.Popen([NODE, "--input-type=module", "-e", script], cwd=self.dir, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        self.assertEqual(proc.stdout.readline().strip(), "READY", proc.stderr.read() if proc.poll() else "")
+        harness.answer = lambda job: {"ok": True, "value": None}
+        harness.stop()
+        proc.stdin.write("go\n")
+        proc.stdin.flush()
+        out = json.loads(proc.stdout.readline())
+        self.assertEqual(out["unavailable"], [True, True])
+        self.assertEqual(out["timeout"][:2], [True, False])
+        self.assertIn("did not answer", out["timeout"][2])
 
     def test_status_says_what_to_do_when_the_harness_is_missing_or_hidden(self):
         script = ("import { status } from %s; const s = await status({ cwd: process.cwd() });"

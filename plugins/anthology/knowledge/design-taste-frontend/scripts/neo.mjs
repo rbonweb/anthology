@@ -105,7 +105,7 @@ class Hub {
   }
   urlFor(file) {
     let abs = path.resolve(file);
-    try { abs = fs.realpathSync(abs); } catch { /* not there yet */ }
+    try { abs = fs.realpathSync.native(abs); } catch { /* not there yet */ }
     const rel = path.relative(this.root, abs);
     if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
       throw new NeoError(`the page is outside the bridge's root ${this.root}: restart it with neo.mjs serve --root <dir>`);
@@ -135,7 +135,9 @@ export class NeoTab {
     }
     if (NOOP.has(method)) return {};
     if (method === 'Runtime.evaluate') return { result: { value: await this.eval(params.expression) } };
-    throw new NeoError(`${method} is not available on BrowserOS Neo`);
+    const e = new NeoError(`${method} is not available on BrowserOS Neo`);
+    e.unavailable = true;
+    throw e;
   }
   async goto(url, ms = 30000) {
     this.failed = [];
@@ -387,12 +389,14 @@ function startHub({ root, port0 }) {
     if (pathname.includes('\0')) return send(res, 400, 'bad path', 'text/plain');
     let file = path.resolve(root, '.' + pathname);
     if (!within(root, file)) return send(res, 403, 'forbidden', 'text/plain');
-    const secret = path.relative(root, file).split(path.sep)[0] === INFO_DIR && !SAVE_EXT.has(path.extname(file).toLowerCase());
+    const first = (p) => path.relative(root, p).split(path.sep)[0].toLowerCase();
+    const secret = first(file) === INFO_DIR && !SAVE_EXT.has(path.extname(file).toLowerCase());
     let st;
     try {
       st = fs.statSync(file);
       if (st.isDirectory()) { file = path.join(file, 'index.html'); st = fs.statSync(file); }
-      if (secret || !within(root, fs.realpathSync(file))) throw new Error('hidden');
+      const real = fs.realpathSync.native(file);
+      if (secret || !within(root, real) || (first(real) === INFO_DIR && !SAVE_EXT.has(path.extname(real).toLowerCase()))) throw new Error('hidden');
     } catch { st = null; }
     const own = u.searchParams.get('__neo');
     let tab = own || null;
@@ -448,14 +452,14 @@ function startHub({ root, port0 }) {
 function arg(name) { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; }
 
 async function serve() {
-  const cwd = fs.realpathSync(process.cwd());
+  const cwd = fs.realpathSync.native(process.cwd());
   const existing = findInfo(cwd, 0);
   if (existing && existing.pid !== process.pid && alive(existing.pid)) {
     console.error(`neo: a bridge is already running (pid ${existing.pid}) for ${existing.root}; stop it first: node <skill>/scripts/neo.mjs stop\nNEO: open the harness in a BrowserOS Neo tab: ${existing.harness}`);
     process.exit(2);
   }
   let root;
-  try { root = fs.realpathSync(path.resolve(cwd, arg('--root') || '.')); } catch { console.error('neo: --root does not exist'); process.exit(2); }
+  try { root = fs.realpathSync.native(path.resolve(cwd, arg('--root') || '.')); } catch { console.error('neo: --root does not exist'); process.exit(2); }
   if (!within(cwd, root)) { console.error(`neo: --root must be inside the current folder (${cwd})`); process.exit(2); }
   const hub = await startHub({ root, port0: Number(arg('--port')) || FIRST_PORT }).catch((e) => { console.error('neo: ' + e.message); process.exit(2); });
   const origin = `http://127.0.0.1:${hub.port}`, harness = origin + '/__neo/';

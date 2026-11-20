@@ -44,7 +44,7 @@ if (/^https?:\/\//i.test(target)) {
   if (rootArg) {
     root = path.resolve(rootArg); const rel = path.relative(root, file);
     if (rel.split(path.sep)[0] === '..' || path.isAbsolute(rel)) { console.error(`check: the page is not inside --root ${root}: ${file}`); process.exit(2); }
-    if (fs.realpathSync(root) !== hub.root) { console.error(`check: the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${root}`); process.exit(2); }
+    if (fs.realpathSync.native(root) !== hub.root) { console.error(`check: the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${root}`); process.exit(2); }
   }
   try { url = hub.urlFor(file); } catch (e) { console.error('check: ' + e.message); process.exit(2); }
 }

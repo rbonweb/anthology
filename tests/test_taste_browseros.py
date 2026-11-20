@@ -142,6 +142,26 @@ class PortMapTest(unittest.TestCase):
         self.assertEqual(entry["transform"], [{"patch": "vendor/patches/design-taste-frontend.patch"}])
         self.assertTrue((ROOT / "vendor" / "licenses" / "leonxlnx-taste-skill.txt").is_file())
 
+    def test_lose_swallows_only_unavailable_methods_never_a_bridge_failure(self):
+        text = (FOLDER / "scripts" / "consistency.mjs").read_text(encoding="utf-8")
+        body = text.split("function lose(errors, name, e, msg) {\n", 1)[1].split("\n", 1)[0]
+        self.assertEqual(body.strip(), "if (e && e.unavailable) return;")
+        self.assertNotIn("e.neo", body)
+        self.assertIn("e.unavailable = true", (FOLDER / "scripts" / "neo.mjs").read_text(encoding="utf-8"))
+
+    def test_checks_that_never_run_on_neo_print_skip_not_pass(self):
+        text = (FOLDER / "scripts" / "consistency.mjs").read_text(encoding="utf-8")
+        skip = re.search(r"const NEO_SKIP = new Set\(\[(.*?)\]\)", text).group(1)
+        ids = set(re.findall(r"'([a-z-]+)'", skip))
+        for check in ("contrast", "empty-visual", "skip-link", "fade-cut", "dark-ground", "photo-set", "busy-ground",
+                      "button-contrast", "hover", "hover-move", "hover-spill", "hidden-visual", "loop-pause", "forms",
+                      "focus-visible", "focus-hidden", "reduced-motion", "gl-fallback"):
+            self.assertIn(check, ids)
+        # overlap-text of a mock is DOM-based: it runs outside the pixel (fade) block
+        before = text.split("const covered = new Map();", 1)[0].rstrip().splitlines()
+        opener = [l for l in before if l.startswith("      if (")][-1]
+        self.assertEqual(opener.strip(), "if (m.fades && m.fades.length) {")
+
     def test_the_not_checked_paths_are_explicit_in_the_ported_checkers(self):
         text = (FOLDER / "scripts" / "consistency.mjs").read_text(encoding="utf-8")
         self.assertIn("BrowserOS Neo: no screenshots", text)

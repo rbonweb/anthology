@@ -304,7 +304,7 @@ if (/^https?:/.test(target)) die('BrowserOS Neo checks a local file or folder se
   if (!fs.existsSync(abs)) die('not found: ' + abs);
   const isDir = fs.statSync(abs).isDirectory(), dir = rootArg || (isDir ? abs : path.dirname(abs)), rel = path.relative(dir, abs);
   if (rel.split(path.sep)[0] === '..' || path.isAbsolute(rel)) { console.error(`perf: the page is not inside --root ${dir}: ${abs}`); process.exit(2); }
-  if (rootArg && fs.realpathSync(rootArg) !== hub.root) die(`the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${rootArg}`);
+  if (rootArg && fs.realpathSync.native(rootArg) !== hub.root) die(`the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${rootArg}`);
   try { url = hub.urlFor(isDir ? path.join(abs, 'index.html') : abs); } catch (e) { die(e.message); }
 }
 const loadBefore = await hostLoad();

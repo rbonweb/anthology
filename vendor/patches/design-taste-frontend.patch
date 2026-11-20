@@ -549,7 +549,7 @@
 +  if (rootArg) {
 +    root = path.resolve(rootArg); const rel = path.relative(root, file);
 +    if (rel.split(path.sep)[0] === '..' || path.isAbsolute(rel)) { console.error(`check: the page is not inside --root ${root}: ${file}`); process.exit(2); }
-+    if (fs.realpathSync(root) !== hub.root) { console.error(`check: the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${root}`); process.exit(2); }
++    if (fs.realpathSync.native(root) !== hub.root) { console.error(`check: the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${root}`); process.exit(2); }
 +  }
 +  try { url = hub.urlFor(file); } catch (e) { console.error('check: ' + e.message); process.exit(2); }
  }
@@ -1578,7 +1578,7 @@
 +  'focus-visible, focus-hidden, skip-link Tab walk (BrowserOS Neo: no key events; Tab through the page in the eyes step)',
 +  'reduced-motion, hidden-content with scripts off, gl-fallback, the slow line (BrowserOS Neo: no media, script or network emulation)',
 +];
-+const NEO_SKIP = new Set(['empty-visual', 'skip-link', 'dark-ground', 'photo-set', 'fade-cut', 'button-contrast', 'busy-ground', 'hover', 'hover-move', 'hover-spill', 'hidden-visual', 'loop-pause', 'forms', 'focus-visible', 'focus-hidden', 'reduced-motion', 'gl-fallback']);
++const NEO_SKIP = new Set(['empty-visual', 'skip-link', 'contrast', 'dark-ground', 'photo-set', 'fade-cut', 'button-contrast', 'busy-ground', 'hover', 'hover-move', 'hover-spill', 'hidden-visual', 'loop-pause', 'forms', 'focus-visible', 'focus-hidden', 'reduced-motion', 'gl-fallback']);
  const argv = process.argv.slice(2);
  const opt = (n, d) => { const i = argv.indexOf('--' + n); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
  const has = (n) => { const i = argv.indexOf('--' + n); if (i < 0) return false; argv.splice(i, 1); return true; };
@@ -1835,7 +1835,7 @@
    more: [['action-count', 'button-styles', 'copy-length', 'fact-agree', 'fold-action', 'grounds', 'links', 'one-screen', 'photo-print', 'product-shown', 'split-align'], 'the page-wide reads (the main action, buttons, copy length, facts, the first fold, grounds, links, prints on photographs, the product shown, split alignment)'],
  };
  function lose(errors, name, e, msg) {
-+  if (e && e.neo) return;
++  if (e && e.unavailable) return;
    const why = msg ?? (e && e.message) ?? String(e);
    errors.push(`${name}: ${why}`);
    (errors.lost ||= []).push({ name, why: String(why).split('\n')[0].slice(0, 90) });
@@ -1883,7 +1883,16 @@
          await helper.eval(`window.__h.use("fade", ${JSON.stringify(shots[k])})`);
          const items = m.fades.flatMap((x, i) => x.rects.map((r) => ({ i, r })));
          const got = (await safe('fades', () => helper.eval(`window.__h.inkRange("fade", ${JSON.stringify(items.map((o) => o.r))})`))) || [];
-@@ -10470,7 +10321,7 @@
+@@ -10463,6 +10314,8 @@
+             F.push({ check: 'fade-cut', sev: 'WARN', id: x.id, sel: x.sel, text: x.text, stop: k, rects: [...list.flatMap((y) => y.rects).slice(0, 8), Object.assign({}, x.hostRect, { ref: true })], msg: `${list.length > 1 ? `${list.length} lines` : 'a line'} of ${x.hostSel.split(' > ').pop()} fade${list.length > 1 ? '' : 's'} out under its edge (${list.slice(0, 3).map((y) => `"${y.text.slice(0, 22)}"`).join(', ')}): drawn at a fraction of ${x.fg} on ${x.bg}, half-erased` });
+           }
+         }
++      }
++      if (m.fades && m.fades.length) {
+         // a box of the mock laid over its own text (a note card over the page's words)
+         const covered = new Map(); for (const x of m.fades) if (x.cover && !covered.has(x.cover.id)) covered.set(x.cover.id, x);
+         for (const [, x] of [...covered].slice(0, 3)) F.push({ check: 'overlap-text', sev: 'WARN', id: x.cover.id, sel: x.cover.sel, text: x.cover.text, stop: k, rects: [...x.rects, Object.assign({}, x.hostRect, { ref: true })], msg: `inside ${x.hostSel.split(' > ').pop()}, a box sits on the mock's own text and hides it mid-line ("${x.text.slice(0, 30)}")` });
+@@ -10470,7 +10323,7 @@
        // button-contrast: a filled button with no outline that hardly stands off what is around it (a dark-olive button on
        // a near-black photograph), read from the pixels of a 10px ring round it
        { const bf = m.buttons.filter((b) => !b.mock && b.real && b.fill && b.fill !== 'gradient' && !b.stroke && !b.faint && !btnSeen.has(b.id) && b.rect.top >= 10 && b.rect.top + b.rect.height <= vh - 10 && b.rect.left >= 10 && b.rect.left + b.rect.width <= vw - 10);
@@ -1892,7 +1901,7 @@
            await helper.eval(`window.__h.use("btn", ${JSON.stringify(shots[k])})`);
            const strips = bf.flatMap((b) => { const q = b.rect; return [{ left: q.left - 10, top: q.top - 10, width: q.width + 20, height: 9 }, { left: q.left - 10, top: q.top + q.height + 1, width: q.width + 20, height: 9 }, { left: q.left - 10, top: q.top, width: 9, height: q.height }, { left: q.left + q.width + 1, top: q.top, width: 9, height: q.height }].map((rect) => ({ rect, holes: [] })); });
            const gl = (await safe('button-contrast', () => helper.eval(`window.__h.ground("btn", ${JSON.stringify(strips)})`))) || [];
-@@ -10496,7 +10347,7 @@
+@@ -10496,7 +10349,7 @@
          if (!had || (!had.on && (p.on || p.off < had.off))) pairs.set(p.i, Object.assign(p, { stop: k }));
        }
        // body text over a picture or an effect: read the ground with the text hidden
@@ -1901,7 +1910,7 @@
          await tab.eval('window.__cc.hideText(true)');
          const plate = await tab.shot(95);
          await tab.eval('window.__cc.hideText(false)');
-@@ -10666,6 +10517,7 @@
+@@ -10666,6 +10519,7 @@
      if (first) {
        const base = url.slice(0, url.lastIndexOf('/') + 1), told = new Set();
        const KIND = { Stylesheet: 'stylesheet', Script: 'script', Image: 'image', Media: 'video or audio', Document: 'frame', Font: 'font', XHR: 'data file', Fetch: 'data file' };
@@ -1909,7 +1918,7 @@
        for (const q of tab.failed) {
          if (told.has(q.url) || /\/favicon\.ico(\?|$)/i.test(q.url)) continue;
          const kind = KIND[q.type]; if (!kind) continue;
-@@ -10965,7 +10817,7 @@
+@@ -10965,7 +10819,7 @@
        TM(M.id);
      }
      // the passes that hover, wait or submit run once, at the first width
@@ -1918,7 +1927,7 @@
        // hover-spill: a card or link card that grows past its column or the screen on hover
        const hc = (await safe('hover', () => tab.eval('window.__cc.hoverCands()'))) || [];
        let spills = 0; const moved = [], deadCards = [];
-@@ -11347,19 +11199,18 @@
+@@ -11347,19 +11201,18 @@
  }
  
  // ---------------------------------------------------------------- run
@@ -1942,7 +1951,7 @@
    for (const [i, w] of WIDTHS.entries()) {
      // a width the browser could not walk (a CDP timeout on a busy machine) is tried once more, then told as not
      // checked: never a row of PASS for a page nobody looked at
-@@ -11371,14 +11222,14 @@
+@@ -11371,14 +11224,14 @@
      if (!(r.screens > 0)) r.failed = true;
      report.widths.push(r);
      // gl-fallback: once, at the first width, on a page that asks for WebGL
@@ -1960,7 +1969,7 @@
        const g = await reducedPass(cdp, helper, w);
        report.widths[0].findings.push(...g.F.map(clean)); takeErrors(report.widths[0].errors, g.errors);
        report.reduced = { screens: g.read, notRead: g.missed };
-@@ -11395,7 +11246,7 @@
+@@ -11395,7 +11248,7 @@
      }
      // --quick (the gate's mode) still reads what stays hidden: once, at the first width, with scripts switched off and
      // under reduced motion (motion.md: without script and under reduced motion nothing stays hidden); about one page load each
@@ -1969,7 +1978,7 @@
        const a = await hiddenWalk(cdp, helper, w, 'nojs');
        const b = noReduced ? { F: [], errors: [], read: 0 } : await hiddenWalk(cdp, helper, w, 'reduced', new Set(a.F.map((f) => f.sel)));
        r.findings.push(...a.F.map(clean), ...b.F.map(clean)); takeErrors(r.errors, a.errors); takeErrors(r.errors, b.errors);
-@@ -11415,7 +11266,7 @@
+@@ -11415,7 +11268,7 @@
        r.findings.push(...got.map(clean));
      }
      // a phone over a slow mobile line: once, at the first phone width (skipped with --quick or --no-slow)
@@ -1978,7 +1987,7 @@
        const g = await slowPass(cdp, helper);
        r.findings.push(...g.F.map(clean)); takeErrors(r.errors, g.errors);
        report.slow = { stops: g.stops, late: g.F.length };
-@@ -11432,9 +11283,7 @@
+@@ -11432,9 +11285,7 @@
  } catch (e) {
    console.error('consistency: ' + e.message); code = 2;
  } finally {
@@ -1989,7 +1998,7 @@
  }
  // widths that could not be walked: the page is not checked there (exit 2, said first and last)
  const missed = [...report.widths.filter((w) => w.failed).map((w) => w.width), ...WIDTHS.slice(report.widths.length).map((w) => w.w)];
-@@ -11449,7 +11298,7 @@
+@@ -11449,7 +11300,7 @@
  report.checks = {};
  for (const c of ORDER) {
    const mine = lists.flat().filter((f) => f.check === c);
@@ -2690,7 +2699,7 @@
  }
 --- /dev/null
 +++ b/scripts/neo.mjs
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,508 @@
 +// The BrowserOS Neo bridge: a localhost hub that serves the page, plus a harness page the agent opens in its own
 +// BrowserOS Neo tab. The checkers talk to the hub over 127.0.0.1 HTTP; the hub hands their jobs to the harness, which
 +// runs them in same-origin iframes sized to each width. No browser is launched and no debugging port is opened.
@@ -2798,7 +2807,7 @@
 +  }
 +  urlFor(file) {
 +    let abs = path.resolve(file);
-+    try { abs = fs.realpathSync(abs); } catch { /* not there yet */ }
++    try { abs = fs.realpathSync.native(abs); } catch { /* not there yet */ }
 +    const rel = path.relative(this.root, abs);
 +    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
 +      throw new NeoError(`the page is outside the bridge's root ${this.root}: restart it with neo.mjs serve --root <dir>`);
@@ -2828,7 +2837,9 @@
 +    }
 +    if (NOOP.has(method)) return {};
 +    if (method === 'Runtime.evaluate') return { result: { value: await this.eval(params.expression) } };
-+    throw new NeoError(`${method} is not available on BrowserOS Neo`);
++    const e = new NeoError(`${method} is not available on BrowserOS Neo`);
++    e.unavailable = true;
++    throw e;
 +  }
 +  async goto(url, ms = 30000) {
 +    this.failed = [];
@@ -3080,12 +3091,14 @@
 +    if (pathname.includes('\0')) return send(res, 400, 'bad path', 'text/plain');
 +    let file = path.resolve(root, '.' + pathname);
 +    if (!within(root, file)) return send(res, 403, 'forbidden', 'text/plain');
-+    const secret = path.relative(root, file).split(path.sep)[0] === INFO_DIR && !SAVE_EXT.has(path.extname(file).toLowerCase());
++    const first = (p) => path.relative(root, p).split(path.sep)[0].toLowerCase();
++    const secret = first(file) === INFO_DIR && !SAVE_EXT.has(path.extname(file).toLowerCase());
 +    let st;
 +    try {
 +      st = fs.statSync(file);
 +      if (st.isDirectory()) { file = path.join(file, 'index.html'); st = fs.statSync(file); }
-+      if (secret || !within(root, fs.realpathSync(file))) throw new Error('hidden');
++      const real = fs.realpathSync.native(file);
++      if (secret || !within(root, real) || (first(real) === INFO_DIR && !SAVE_EXT.has(path.extname(real).toLowerCase()))) throw new Error('hidden');
 +    } catch { st = null; }
 +    const own = u.searchParams.get('__neo');
 +    let tab = own || null;
@@ -3141,14 +3154,14 @@
 +function arg(name) { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; }
 +
 +async function serve() {
-+  const cwd = fs.realpathSync(process.cwd());
++  const cwd = fs.realpathSync.native(process.cwd());
 +  const existing = findInfo(cwd, 0);
 +  if (existing && existing.pid !== process.pid && alive(existing.pid)) {
 +    console.error(`neo: a bridge is already running (pid ${existing.pid}) for ${existing.root}; stop it first: node <skill>/scripts/neo.mjs stop\nNEO: open the harness in a BrowserOS Neo tab: ${existing.harness}`);
 +    process.exit(2);
 +  }
 +  let root;
-+  try { root = fs.realpathSync(path.resolve(cwd, arg('--root') || '.')); } catch { console.error('neo: --root does not exist'); process.exit(2); }
++  try { root = fs.realpathSync.native(path.resolve(cwd, arg('--root') || '.')); } catch { console.error('neo: --root does not exist'); process.exit(2); }
 +  if (!within(cwd, root)) { console.error(`neo: --root must be inside the current folder (${cwd})`); process.exit(2); }
 +  const hub = await startHub({ root, port0: Number(arg('--port')) || FIRST_PORT }).catch((e) => { console.error('neo: ' + e.message); process.exit(2); });
 +  const origin = `http://127.0.0.1:${hub.port}`, harness = origin + '/__neo/';
@@ -3420,7 +3433,7 @@
 -const profile = path.join(profileBase, 'run-' + process.pid);
 -fs.mkdirSync(profile, { recursive: true });
 -const portFile = path.join(profile, 'DevToolsActivePort');
-+  if (rootArg && fs.realpathSync(rootArg) !== hub.root) die(`the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${rootArg}`);
++  if (rootArg && fs.realpathSync.native(rootArg) !== hub.root) die(`the BrowserOS Neo bridge serves ${hub.root}; restart it with: neo.mjs serve --root ${rootArg}`);
 +  try { url = hub.urlFor(isDir ? path.join(abs, 'index.html') : abs); } catch (e) { die(e.message); }
 +}
  const loadBefore = await hostLoad();
