@@ -125,7 +125,8 @@ def _settings_plan(root, env):
 
 def _settings_error(exc):
     if isinstance(exc, FileNotFoundError):
-        return "the anthology-guardrails plugin was not found next to anthology; reinstall it"
+        return ("the anthology-guardrails guard (scripts/guard.py) was not found where Claude Code runs it; "
+                "reinstall or repair the anthology-guardrails plugin")
     return str(exc)
 
 
