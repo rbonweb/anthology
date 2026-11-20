@@ -24,3 +24,17 @@ docker run --rm -v "$root":/w:ro -w /w "$image" sh -ec '
         exit 1
     }'
 echo "difftest-linux: the json golden corpus matches its oracle"
+
+# F3's golden corpora (core.state, core.lock), checked the same way. The mount is read-only:
+# core_state.py writes only in its own temporary folders, core_lock.py chdirs into them.
+docker run --rm -v "$root":/w:ro -w /w "$image" sh -ec '
+    for name in state lock; do
+        python -I "port/difftest/oracle/core_$name.py" --golden "/tmp/$name.jsonl"
+        golden="crates/anthology-core/tests/golden/$name.jsonl"
+        cmp "/tmp/$name.jsonl" "$golden" || {
+            echo "difftest: $golden is stale; regenerate it with" \
+                "python3 -I port/difftest/oracle/core_$name.py --golden $golden (3.12 image)" >&2
+            exit 1
+        }
+    done'
+echo "difftest-linux: the core state and lock golden corpora match their oracles"
