@@ -11,32 +11,60 @@ import unittest
 
 from _repo import ROOT, SUPERPOWERS
 
-# Each pattern is a launch of an OS browser (or the opt-in that triggers one).
-LAUNCH_PATTERNS = [
-    r"xdg-open",
-    r"wslview",
-    r"sensible-browser",
-    r"x-www-browser",
-    r"gio\s+open",
-    r"rundll32",
-    r"FileProtocolHandler",
-    r"BRAINSTORM_OPEN",
-    r"open\s+-a\b",
-    r"cmd(\.exe)?\s+/c\s+start",
-    r"start\s+\"\"",
-    r"\bopen\s+[\"']?https?://",
-    r"\bopen\s+\"?\$",
-    r"execFile(Sync)?\(\s*['\"](open|xdg-open|start)['\"]",
-    r"bin:\s*['\"](open|xdg-open|start)['\"]",
-    r"spawn(Sync)?\(\s*['\"](open|xdg-open|start)['\"]",
-    r"start-server\.sh[^\n]*--open",
-]
-COMPILED = [(p, re.compile(p.encode(), re.IGNORECASE)) for p in LAUNCH_PATTERNS]
+# Each pattern is a launch of an OS browser (or the opt-in that triggers one), with sample
+# strings it must match: the self-test below proves no pattern is vacuous.
+_CALL = r"\b(exec|execFile|spawn)(Sync)?\(\s*['\"`](/usr/bin/|/bin/)?"
+_CMD = r"(open|xdg-open|start|wslview)(?![\w.-])"
+LAUNCH_SAMPLES = {
+    r"xdg-open": ["xdg-open $URL"],
+    r"wslview": ["wslview $URL"],
+    r"sensible-browser": ["sensible-browser $URL"],
+    r"x-www-browser": ["x-www-browser $URL"],
+    r"gio\s+open": ["gio open $URL"],
+    r"rundll32": ["rundll32.exe url.dll,FileProtocolHandler x"],
+    r"FileProtocolHandler": ["url.dll,FileProtocolHandler x"],
+    r"BRAINSTORM_OPEN": ["BRAINSTORM_OPEN=1", "BRAINSTORM_OPEN_CMD=x"],
+    r"open\s+-a\b": ["open -a Safari"],
+    r"cmd(\.exe)?\s+/c\s+start": ["cmd /c start x", "cmd.exe /c start x"],
+    r"start\s+\"\"": ["start \"\" http://x"],
+    r"\bopen\s+[\"']?https?://": ["open https://example.com", "open 'http://x'"],
+    r"\bopen\s+[\"']?\$": ["open \"$URL\"", "open '$URL'", "open '${URL}'", "open $URL"],
+    _CALL + _CMD: [
+        "execFile('open', [url])", "cp.execFile( \"xdg-open\", args)", "spawn('start', [url])",
+        "cp.exec(\"open \" + url)", "exec(`xdg-open ${url}`)", "execSync('wslview x')",
+        "spawn(\"/usr/bin/open\", [url])",
+    ],
+    r"bin:\s*['\"](/usr/bin/)?(open|xdg-open|start)['\"]": [
+        "{ bin: 'open', args: [url] }", "{ bin: \"xdg-open\" }",
+    ],
+    r"\bwebbrowser\b": ["import webbrowser", "python -m webbrowser -t x", "webbrowser.open(u)"],
+    r"Start-Process": ["Start-Process $url"],
+    r"explorer(\.exe)?\s+[\"']?https?://": ["explorer.exe http://x", "explorer \"https://x\""],
+    r"open\s+location": ["osascript -e 'open location \"http://x\"'"],
+    r"require\(\s*['\"]open['\"]\s*\)": ["require('open')", "const o = require( \"open\" )"],
+    r"import\s+\w+\s+from\s+['\"]open['\"]": ["import open from 'open'"],
+    r"/usr/bin/open\b": ["/usr/bin/open -g x"],
+    r"\bstart\s+[\"']?https?://": ["start http://x", "start \"https://x\""],
+    r"start-server\.sh[^\n]*--open": ["bash scripts/start-server.sh --project-dir p --open"],
+}
+LAUNCH_PATTERNS = list(LAUNCH_SAMPLES)
+COMPILED = {p: re.compile(p.encode(), re.IGNORECASE) for p in LAUNCH_PATTERNS}
 
-# (relative path, reason). Historical prose that no skill tells the agent to follow. An
-# exemption is only legal while the file really matches, so a stale one fails too.
+# Things that must never trip a pattern: ordinary prose and non-launch code.
+NEGATIVE_SAMPLES = [
+    "ws.on('open', () => {})", "open the URL in BrowserOS Neo", "fs.open(file, 'r', cb)",
+    "an open question", "keep the tab open", "the open source license",
+    "WebSocket.OPEN", "exec('start-server.sh')", "spawn('node', [server])",
+    "start the server", "start the server at the url", "execFile('git', ['open'])",
+    "import open_things from './x'", "require('openai')", "/usr/bin/env node",
+]
+
+# (relative path, pattern, reason). Historical prose that no skill tells the agent to
+# follow. Only that pattern is waived for that file, so a later sync that adds a different
+# launch form there still fails; and an exemption that stops matching fails too.
 EXEMPT = [
     ("docs/plans/2026-01-17-visual-brainstorming.md",
+     r"\bopen\s+[\"']?https?://",
      "upstream design plan from Jan 2026; line 510 tells the human to open the local URL, "
      "no skill sends the agent here"),
 ]
@@ -50,46 +78,44 @@ def shipped_files():
 
 def matches(path):
     data = path.read_bytes()
-    return [p for p, rx in COMPILED if rx.search(data)]
+    return [p for p, rx in COMPILED.items() if rx.search(data)]
 
 
 class NoOsBrowserLaunch(unittest.TestCase):
     def test_no_shipped_file_launches_an_os_browser(self):
         files = shipped_files()
         self.assertGreater(len(files), 100, "the plugin tree is missing")
-        exempt = {rel for rel, _ in EXEMPT}
+        waived = {(rel, pattern) for rel, pattern, _ in EXEMPT}
         bad = []
         for path in files:
             rel = path.relative_to(SUPERPOWERS).as_posix()
-            if rel in exempt:
-                continue
             for pattern in matches(path):
-                bad.append(f"{rel}: {pattern}")
+                if (rel, pattern) not in waived:
+                    bad.append(f"{rel}: {pattern}")
         self.assertEqual(bad, [], "OS browser launch in the shipped superpowers plugin")
 
     def test_every_exemption_still_matches_and_has_a_reason(self):
-        for rel, reason in EXEMPT:
-            with self.subTest(rel=rel):
+        for rel, pattern, reason in EXEMPT:
+            with self.subTest(rel=rel, pattern=pattern):
+                self.assertIn(pattern, COMPILED, "exemption names an unknown pattern")
                 self.assertTrue(reason.strip())
                 path = SUPERPOWERS / rel
                 self.assertTrue(path.is_file(), f"{rel} no longer exists: drop the exemption")
-                self.assertTrue(matches(path), f"{rel} no longer matches: drop the exemption")
+                self.assertIn(pattern, matches(path),
+                              f"{rel} no longer matches: drop the exemption")
 
-    def test_the_patterns_catch_what_they_are_meant_to(self):
-        samples = [
-            "execFile('open', [url])", "cp.execFile( \"xdg-open\", args)",
-            "{ bin: 'open', args: [url] }", "spawn('start', [url])",
-            "open \"$URL\"", "open https://example.com", "cmd.exe /c start http://x",
-            "rundll32.exe url.dll,FileProtocolHandler", "gio open x", "open -a Safari",
-            "bash scripts/start-server.sh --project-dir p --open", "BRAINSTORM_OPEN=1",
-            "wslview x", "sensible-browser x", "x-www-browser x", "start \"\" http://x",
-        ]
-        for text in samples:
+    def test_every_pattern_matches_its_samples(self):
+        for pattern, samples in LAUNCH_SAMPLES.items():
+            self.assertTrue(samples, f"{pattern}: needs at least one sample")
+            for text in samples:
+                with self.subTest(pattern=pattern, text=text):
+                    self.assertTrue(COMPILED[pattern].search(text.encode()))
+
+    def test_the_patterns_ignore_ordinary_text(self):
+        for text in NEGATIVE_SAMPLES:
             with self.subTest(text=text):
-                self.assertTrue(any(rx.search(text.encode()) for _, rx in COMPILED))
-        for text in ["an open question", "keep the tab open", "the open source license"]:
-            with self.subTest(text=text):
-                self.assertFalse(any(rx.search(text.encode()) for _, rx in COMPILED))
+                hit = [p for p, rx in COMPILED.items() if rx.search(text.encode())]
+                self.assertEqual(hit, [])
 
 
 class VisualCompanionUsesBrowserOs(unittest.TestCase):
