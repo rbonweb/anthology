@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Version-bump gate: a plugin whose files changed must carry a higher version.
 
+Only released plugins are gated: a plugin counts as released once a git tag `<plugin>--v*`
+(the `claude plugin tag` format, e.g. `anthology--v0.1.0`) exists. Unreleased plugins are
+skipped with a notice.
+
 Usage: check_version_bump.py <base> <head> [--repo PATH]
 
 `base` and `head` are commits (in CI: the pull-request base and head SHAs, or the push's
@@ -148,6 +152,13 @@ def _plugin_version_at(repo: str, rev: str, plugin: str) -> Tuple[bool, Optional
     return True, version
 
 
+def _released_plugins(repo: str, plugins: Sequence[str]) -> set:
+    """Plugins with at least one `<plugin>--v*` tag. Matched by prefix, not git glob, so a
+    plugin name can never be read as a pattern."""
+    tags = _git_ok(repo, "for-each-ref", "--format=%(refname:strip=2)", "refs/tags").splitlines()
+    return {p for p in plugins if any(t.startswith(f"{p}--v") for t in tags)}
+
+
 def run(base: str, head: str, repo: str) -> int:
     if re.fullmatch("0+", base):
         print("version gate: no base commit (new branch); nothing to compare")
@@ -168,8 +179,12 @@ def run(base: str, head: str, repo: str) -> int:
     if not plugins:
         print("version gate: no plugin changed")
         return 0
+    released = _released_plugins(repo, plugins)
     failed = False
     for plugin in plugins:
+        if plugin not in released:
+            print(f"{plugin}: unreleased (no {plugin}--v* tag) \u2014 version bump not required")
+            continue
         base_exists, base_version = _plugin_version_at(repo, mb_c, plugin)
         head_exists, head_version = _plugin_version_at(repo, head_c, plugin)
         ok, reason = verdict(plugin, base_version, head_version, base_exists, head_exists)

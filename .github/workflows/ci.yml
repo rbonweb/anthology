@@ -66,7 +66,8 @@ jobs:
 
   version-bump:
     # A plugin whose files changed must carry a higher plugin.json version than at the
-    # merge base. Needs git history, which the Docker test image does not have.
+    # merge base, once it has been released (a `<plugin>--v*` tag exists). Needs git history
+    # and tags (fetch-depth: 0 fetches both), which the Docker test image does not have.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

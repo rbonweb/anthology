@@ -145,11 +145,15 @@ class GitIntegrationTests(unittest.TestCase):
         self.stderr = err.getvalue()
         return code, buf.getvalue()
 
-    def base_with_plugin(self, version="0.1.0"):
+    def base_with_plugin(self, version="0.1.0", released=True):
+        """Commit plugin `p`; by default tag it `p--v<version>` (the gate only binds released plugins)."""
         self.install_gate()
         self.set_version("p", version)
         self.write("plugins/p/skill.md", "one\n")
-        return self.commit("base")
+        sha = self.commit("base")
+        if released:
+            self.git("tag", f"p--v{version}")
+        return sha
 
     def test_a_change_without_bump_fails(self):
         base = self.base_with_plugin()
@@ -159,6 +163,34 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("FAIL", out)
         self.assertIn("plugins/p changed without a version bump (still 0.1.0)", out)
+
+    def test_unreleased_plugin_is_skipped(self):
+        base = self.base_with_plugin(released=False)
+        self.write("plugins/p/skill.md", "two\n")
+        head = self.commit("edit without bump")
+        code, out = self.run_gate(base, head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("p: unreleased (no p--v* tag) \u2014 version bump not required", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_released_plugin_is_enforced(self):
+        base = self.base_with_plugin(released=False)
+        self.git("tag", "p--v0.1.0")
+        self.write("plugins/p/skill.md", "two\n")
+        head = self.commit("edit without bump")
+        code, out = self.run_gate(base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("plugins/p changed without a version bump (still 0.1.0)", out)
+
+    def test_another_plugins_tag_does_not_release_this_one(self):
+        base = self.base_with_plugin(released=False)
+        self.git("tag", "pp--v0.1.0")
+        self.git("tag", "p-v0.1.0")
+        self.write("plugins/p/skill.md", "two\n")
+        head = self.commit("edit without bump")
+        code, out = self.run_gate(base, head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("unreleased", out)
 
     def test_b_change_with_bump_passes(self):
         base = self.base_with_plugin()
