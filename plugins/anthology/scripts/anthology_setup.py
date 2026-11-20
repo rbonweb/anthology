@@ -3,11 +3,13 @@
 
     anthology_setup.py preview --plugin-root R [--cwd C] [--json]
     anthology_setup.py apply   --plugin-root R --expect-sha256 H [--cwd C] [--skip-approve]
-    anthology_setup.py remove  --plugin-root R [--cwd C] [--unapprove] [--unapprove-all]
+    anthology_setup.py remove  --plugin-root R [--cwd C] [--preview] [--unapprove] [--unapprove-all]
 
 `preview` writes nothing: it reports the environment checks, duplicate plugins, the rtk step,
 the settings.json diff (with the sha256 of the text it was computed from) and the memory
-steps. `apply` refuses if settings.json changed since the preview. `remove` undoes the
+steps. `apply` refuses if settings.json changed since the preview (checked again after the rtk
+download, right before the write). `remove --preview` writes nothing and shows what remove
+would change (settings diff, the rtk folder, state.json, approvals). `remove` undoes the
 settings edits, deletes the downloaded rtk and `state.json`, and optionally drops repo
 approvals; memory notes, `.gitattributes` and the personal-memory folder are never deleted.
 Every command prints one JSON object. Exit codes: 0 ok, 1 refused or failed, 2 unsupported
@@ -162,7 +164,7 @@ def preview(plugin_root, cwd=None, env=None):
     personal = _personal_dir(env)
     return {
         "supported": True,
-        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root))},
+        "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root)},
         "duplicates": doctor.find_duplicates(doctor.installed_plugins(env)),
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,
@@ -177,11 +179,10 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
     cwd = cwd or os.getcwd()
     warnings = []
     path = settings_patch.settings_path(env)
-    text = settings_patch.read_text(path)
-    if _sha256(text) != expect_sha256:
+    if _sha256(settings_patch.read_text(path)) != expect_sha256:
         return {"ok": False, "error": "settings.json changed since the preview; run the preview again"}
     try:
-        _path, _text, new_text, diff, stored = _settings_plan(plugin_root, env)
+        _settings_plan(plugin_root, env)  # refuse early: nothing is downloaded for a bad plan
     except (ValueError, FileNotFoundError) as exc:
         return {"ok": False, "error": _settings_error(exc)}
 
@@ -190,11 +191,27 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
     if warn:
         warnings.append(warn)
 
-    created = bool(state.read().get("settings_created")) or not os.path.lexists(str(path))
+    # The rtk step can take a while. Re-read settings.json now and recompute from what is on disk,
+    # so an edit made meanwhile is either kept (we refuse) or never overwritten.
+    stale = {"ok": False, "rtk": {"status": rtk_status}, "warnings": warnings,
+             "error": "settings.json changed during setup; it was left untouched. Run the preview again."}
+    if _sha256(settings_patch.read_text(path)) != expect_sha256:
+        return stale
+    try:
+        _path, text, new_text, diff, stored = _settings_plan(plugin_root, env)
+    except (ValueError, FileNotFoundError) as exc:
+        return {"ok": False, "error": _settings_error(exc)}
+    before = state.read()
+    created = bool(before.get("settings_created")) or not os.path.lexists(str(path))
     changed = new_text != text
-    if changed:
-        settings_patch.write_text(path, new_text)
+    # Record what we are about to do before doing it, so remove can always undo it.
     state.write(settings_ops=stored, settings_created=created)
+    if changed:
+        if _sha256(settings_patch.read_text(path)) != expect_sha256:
+            state.write(settings_ops=before.get("settings_ops") or [],
+                        settings_created=bool(before.get("settings_created")))
+            return stale
+        settings_patch.write_text(path, new_text)
 
     memory = {"approved_key": None, "approve_error": None}
     info = None if skip_approve else _repo_info(cwd, env)
@@ -221,64 +238,96 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
             "rtk": {"status": rtk_status}, "memory": memory, "warnings": warnings}
 
 
-def _remove_rtk(env, warnings):
+def _rtk_target(env):
+    """`(real path to delete or None, status, warning or None)` for the downloaded rtk folder.
+
+    Only `realpath(data_dir)/rtk` is ever deleted, and only when data_dir sits under
+    `<config>/plugins/data/` and the folder is not a symlink."""
     data_dir = _data_dir(env)
     if not data_dir:
-        return "no plugin data folder recorded"
+        return None, "no plugin data folder recorded", None
     rtk_dir = Path(data_dir) / "rtk"
     if not os.path.lexists(str(rtk_dir)):
-        return "nothing to delete"
+        return None, "nothing to delete", None
     if rtk_dir.is_symlink():
-        warnings.append("the rtk folder is a symlink; left in place")
-        return "left in place"
+        return None, "left in place", "the rtk folder is a symlink; left in place"
+    data_real = os.path.realpath(data_dir)
+    data_root = os.path.join(os.path.realpath(str(memory_sync.config_dir(env))), "plugins", "data")
     real = os.path.realpath(str(rtk_dir))
-    config = os.path.realpath(str(memory_sync.config_dir(env)))
-    if os.path.basename(real) != "rtk" or not real.startswith(config + os.sep):
-        warnings.append("the rtk folder is outside the Claude config folder; left in place")
-        return "left in place"
-    shutil.rmtree(real)
-    return "deleted"
+    if not data_real.startswith(data_root + os.sep) or real != os.path.join(data_real, "rtk"):
+        return None, "left in place", "the rtk folder is not under the plugin data folder; left in place"
+    return real, "delete", None
 
 
-def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None):
-    env = dict(os.environ) if env is None else dict(env)
-    if _unsupported():
-        return {"ok": False, "unsupported": True, "error": REFUSAL}
-    cwd = cwd or os.getcwd()
-    warnings = []
+def _remove_plan(env):
+    """`(error, plan)`: what remove would do to settings.json, rtk and state.json."""
     st = state.read()
     ops = st.get("settings_ops") or []
     path = settings_patch.settings_path(env)
     text = settings_patch.read_text(path)
-    new_text = text
+    new_text, diff = text, ""
     if ops:
         try:
-            new_text, _diff = settings_patch.revert(text, ops)
+            new_text, diff = settings_patch.revert(text, ops)
         except ValueError as exc:
-            return {"ok": False, "error": "%s; left untouched. Fix the file and run remove again." % exc}
-    changed = new_text != text
+            return "%s; left untouched. Fix the file and run remove again." % exc, None
+    return None, {"st": st, "path": path, "text": text, "new_text": new_text, "diff": diff,
+                  "rtk": _rtk_target(env)}
+
+
+def remove(plugin_root, cwd=None, unapprove=False, unapprove_all=False, env=None, preview=False):
+    """Undo setup. With `preview=True` nothing is written: it reports the settings diff, the rtk
+    folder and state.json that would be deleted, and what each approval flag would drop."""
+    env = dict(os.environ) if env is None else dict(env)
+    if _unsupported():
+        return {"ok": False, "unsupported": True, "error": REFUSAL}
+    cwd = cwd or os.getcwd()
+    error, plan = _remove_plan(env)
+    if error:
+        return {"ok": False, "error": error}
+    path, st = plan["path"], plan["st"]
+    changed = plan["new_text"] != plan["text"]
+    rtk_real, rtk_status, rtk_warn = plan["rtk"]
+    warnings = [rtk_warn] if rtk_warn else []
+    approved = sorted(memory_sync._load_approved(env)["repos"])
+    info = _repo_info(cwd, env)
+    this_repo = info[1] if info is not None and info[1] in approved else None
+
+    if preview:
+        return {"ok": True, "preview": True,
+                "settings": {"path": str(path), "changed": changed, "diff": plan["diff"]},
+                "rtk": {"dir": rtk_real, "status": rtk_status},
+                "state": {"path": str(state.state_path()), "exists": state.state_path().exists()},
+                "memory": {"notes": "kept (memory notes are never deleted)",
+                           "this_repo_approved": this_repo,
+                           "approved_total": len(approved),
+                           "unapprove": [this_repo] if this_repo else [],
+                           "unapprove_all": approved},
+                "warnings": warnings}
+
     if changed:
-        if new_text == "" and st.get("settings_created"):
+        if plan["new_text"] == "" and st.get("settings_created"):
             os.unlink(str(path))
         else:
-            settings_patch.write_text(path, new_text)
-
-    rtk = _remove_rtk(env, warnings)
+            settings_patch.write_text(path, plan["new_text"])
+    if rtk_real:
+        shutil.rmtree(rtk_real)
+        rtk_status = "deleted"
     unapproved = []
     if unapprove_all:
-        for key in sorted(memory_sync._load_approved(env)["repos"]):
+        for key in approved:
             if memory_sync.unapprove(key, env=env):
                 unapproved.append(key)
-    elif unapprove:
-        info = _repo_info(cwd, env)
-        if info is not None and memory_sync.unapprove(info[1], env=env):
-            unapproved.append(info[1])
+    elif unapprove and this_repo:
+        if memory_sync.unapprove(this_repo, env=env):
+            unapproved.append(this_repo)
     try:
         os.unlink(str(state.state_path()))
     except FileNotFoundError:
         pass
-    return {"ok": True, "settings": {"path": str(path), "changed": changed}, "rtk": {"status": rtk},
-            "memory": {"unapproved": unapproved, "notes": "kept (memory notes are never deleted)"},
+    return {"ok": True, "settings": {"path": str(path), "changed": changed, "diff": plan["diff"]},
+            "rtk": {"status": rtk_status}, "memory": {"unapproved": unapproved,
+                                                       "notes": "kept (memory notes are never deleted)"},
             "warnings": warnings}
 
 
@@ -296,6 +345,8 @@ def main(argv=None):
         if name == "remove":
             p.add_argument("--unapprove", action="store_true")
             p.add_argument("--unapprove-all", action="store_true")
+            p.add_argument("--preview", action="store_true",
+                           help="write nothing; show what remove would change")
     args = parser.parse_args(argv)
     try:
         if args.command == "preview":
@@ -304,7 +355,7 @@ def main(argv=None):
             result = apply(args.plugin_root, args.expect_sha256, cwd=args.cwd, skip_approve=args.skip_approve)
         else:
             result = remove(args.plugin_root, cwd=args.cwd, unapprove=args.unapprove,
-                            unapprove_all=args.unapprove_all)
+                            unapprove_all=args.unapprove_all, preview=args.preview)
     except Exception as exc:
         result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
     print(json.dumps(result, indent=2))

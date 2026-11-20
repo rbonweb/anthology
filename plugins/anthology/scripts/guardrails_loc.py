@@ -1,8 +1,17 @@
 """Finds the sibling anthology-guardrails plugin (shared by session start, setup and doctor).
 
-Order: (1) `<plugin root>/../anthology-guardrails` (a local marketplace or `--plugin-dir`
-layout), else (2) the newest `anthology-guardrails@*` entry of `installed_plugins.json` whose
-install path exists. Python stdlib only (3.9+).
+`inspect(plugin_root, env, cwd)` returns `(folder, problem)` (F20):
+
+- `installed_plugins.json` is the source of truth. An `anthology-guardrails@*` entry counts when
+  its install path has `scripts/guard.py` and its scope is `user`, or `project`/`local` with a
+  `projectPath` containing `cwd`; the newest `lastUpdated` wins.
+- Only when the registry has no `anthology@*` entry either (a `--plugin-dir` dev session) is the
+  sibling folder `<plugin root>/../anthology-guardrails` used.
+- An install of anthology without an applicable guardrails entry is the problem `not_installed`;
+  `enabledPlugins["anthology-guardrails@..."] == false` in the user, project or local settings is
+  the problem `disabled`; nothing found at all is `not_found`.
+
+Python stdlib only (3.9+).
 """
 from __future__ import annotations
 
@@ -25,37 +34,85 @@ def _has_guard(path):
     return (Path(path) / "scripts" / "guard.py").is_file()
 
 
-def locate(plugin_root, env=None):
-    """The guardrails plugin folder (it has `scripts/guard.py`), or None."""
-    sibling = Path(plugin_root).parent / "anthology-guardrails"
-    if _has_guard(sibling):
-        return sibling
+def _read_json(path):
     try:
-        data = json.loads((_config_dir(env) / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
-        plugins = data.get("plugins") if isinstance(data, dict) else None
-        best = None
-        for name, entries in (plugins.items() if isinstance(plugins, dict) else ()):
-            if not str(name).startswith("anthology-guardrails@") or not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("installPath"), str):
-                    continue
-                if not _has_guard(entry["installPath"]):
-                    continue
-                stamp = str(entry.get("lastUpdated") or "")
-                if best is None or stamp > best[0]:
-                    best = (stamp, entry["installPath"])
-        return Path(best[1]) if best else None
-    except (OSError, ValueError, AttributeError):
+        text = Path(path).read_text(encoding="utf-8")
+        return json.loads(text[1:] if text.startswith("\ufeff") else text)
+    except (OSError, ValueError, RecursionError):
         return None
 
 
-def load_rules(plugin_root, env=None):
+def _inside(cwd, project):
+    try:
+        cwd = os.path.realpath(str(cwd))
+        project = os.path.realpath(str(project))
+    except (OSError, ValueError):
+        return False
+    return cwd == project or cwd.startswith(project.rstrip(os.sep) + os.sep)
+
+
+def _disabled(env, cwd):
+    files = [_config_dir(env) / "settings.json", Path(cwd) / ".claude" / "settings.json",
+             Path(cwd) / ".claude" / "settings.local.json"]
+    for path in files:
+        data = _read_json(path)
+        enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
+        if isinstance(enabled, dict):
+            for name, value in enabled.items():
+                if str(name).startswith("anthology-guardrails@") and value is False:
+                    return True
+    return False
+
+
+def inspect(plugin_root, env=None, cwd=None):
+    """`(folder or None, problem or None)`; see the module docstring."""
+    cwd = cwd or os.getcwd()
+    data = _read_json(_config_dir(env) / "plugins" / "installed_plugins.json")
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    plugins = plugins if isinstance(plugins, dict) else {}
+    best = None
+    for name, entries in plugins.items():
+        if not str(name).startswith("anthology-guardrails@") or not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("installPath"), str):
+                continue
+            if not _has_guard(entry["installPath"]):
+                continue
+            scope = entry.get("scope")
+            if scope in ("project", "local") and not (
+                    isinstance(entry.get("projectPath"), str) and _inside(cwd, entry["projectPath"])):
+                continue
+            stamp = str(entry.get("lastUpdated") or "")
+            if best is None or stamp > best[0]:
+                best = (stamp, entry["installPath"])
+    found, problem = None, None
+    if best is not None:
+        found = Path(best[1])
+    elif any(str(name).startswith("anthology@") for name in plugins):
+        problem = "not_installed"
+    else:
+        sibling = Path(plugin_root).parent / "anthology-guardrails"
+        if _has_guard(sibling):
+            found = sibling
+        else:
+            problem = "not_found"
+    if problem is None and _disabled(env, cwd):
+        problem = "disabled"
+    return found, problem
+
+
+def locate(plugin_root, env=None, cwd=None):
+    """The guardrails plugin folder (it has `scripts/guard.py`), or None."""
+    return inspect(plugin_root, env, cwd)[0]
+
+
+def load_rules(plugin_root, env=None, cwd=None):
     """Import the located plugin's `guard_rules.py` (for `SELF_TEST_SAMPLE`, `PROFILE_ROOTS`).
 
     Raises FileNotFoundError when the plugin or the file is missing, ImportError when it will
     not load."""
-    base = locate(plugin_root, env)
+    base = locate(plugin_root, env, cwd)
     if base is None:
         raise FileNotFoundError("anthology-guardrails plugin not found")
     path = base / "scripts" / "guard_rules.py"

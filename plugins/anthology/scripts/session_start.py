@@ -10,7 +10,8 @@ exits 0, because a problem here must never fail a session. Output (F7):
 `additionalContext` stays within 9,000 characters (U8: the platform cuts a field at 10,000). The
 guide is never truncated; memory text is cut from the end at a line boundary and ends with a
 pointer to `anthology-mem search` and the full index. Nothing is written except `state.json`
-(and what `memory_sync` writes); the guide goes nowhere but the context. Python stdlib only (3.9+).
+(and what `memory_sync` writes); the guide goes nowhere but the context. Every step is isolated
+(F22): one failing step becomes a warning and never costs the guide. Python stdlib only (3.9+).
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _SCRIPTS = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +42,8 @@ NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, m
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test
 RTK_TIMEOUT = 20          # seconds for the rtk reconcile (download included)
+DEADLINE = 50             # seconds of work before the 60 s hook timeout (M5)
+RTK_MIN_REMAINING = 25    # skip the rtk reconcile when less than this is left
 CONTEXT_BUDGET = 9000     # characters of additionalContext (U8 test budget; the platform cap is 10,000)
 MESSAGE_CAP = 2000
 
@@ -48,14 +52,25 @@ def _plugin_root(env):
     return Path(env.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(_SCRIPTS))
 
 
-def _guard_selftest(env, root):
-    """Pipe the known-bad sample into guard.py; a warning string unless it blocks (exit 2)."""
-    base = guardrails_loc.locate(root, env)
+def _elapsed(start):
+    return time.monotonic() - start
+
+
+def _guard_selftest(env, root, cwd=None):
+    """Pipe the known-bad sample into guard.py; a warning string unless it blocks (exit 2 with the
+    guard's own message)."""
+    base, problem = guardrails_loc.inspect(root, env, cwd)
+    if problem == "disabled":
+        return ("anthology: anthology-guardrails is disabled in your settings, so the guardrails are "
+                "OFF; enable it (/plugin)")
+    if problem == "not_installed":
+        return ("anthology: anthology-guardrails is not installed, so the browser and secret "
+                "guardrails are NOT active; install it (/plugin)")
     if base is None:
         return ("anthology: the guardrails plugin was not found, so the browser and secret "
                 "guardrails are NOT active; reinstall anthology-guardrails")
     try:
-        sample = guardrails_loc.load_rules(root, env).SELF_TEST_SAMPLE
+        sample = guardrails_loc.load_rules(root, env, cwd).SELF_TEST_SAMPLE
     except Exception as exc:
         return ("anthology: the guardrails self-test could not load its sample (%s); the "
                 "guardrails may be OFF" % (str(exc) or type(exc).__name__)[:100])
@@ -71,18 +86,21 @@ def _guard_selftest(env, root):
         return "anthology: the guardrails self-test timed out; the guardrails may be OFF"
     except OSError as exc:
         return "anthology: the guardrails self-test could not run (%s); the guardrails may be OFF" % exc.strerror
-    if proc.returncode != 2:
+    if proc.returncode != 2 or not proc.stderr.startswith(b"Blocked by anthology-guardrails"):
         return ("anthology: the guardrails self-test did NOT block a known-bad command (exit %d); "
                 "the guardrails may be OFF" % proc.returncode)
     return None
 
 
-def _u1_rule_present(env, root):
-    try:
-        data = json.loads(settings_patch.read_text(settings_patch.settings_path(env)))
-        return settings_patch.plugin_read_rule(root) in data["permissions"]["allow"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
+def _setup_warning(env, root):
+    """The U1 plugin-read rule check (shared with doctor through settings_patch)."""
+    status = settings_patch.plugin_rule_status(root, env)
+    if status == "missing":
+        return MOVED
+    if status == "unreadable":
+        return ("anthology: could not read settings.json to check the plugin-read permission; "
+                "fix the file, then re-run /anthology:setup if agents cannot read their knowledge")
+    return None
 
 
 def _reconcile_rtk(root, data_dir):
@@ -104,7 +122,7 @@ def _reconcile_rtk(root, data_dir):
 def _read_guide(root):
     try:
         return (Path(root) / "templates" / "routing-guide.md").read_text(encoding="utf-8").rstrip("\n") + "\n"
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -128,50 +146,75 @@ def _compose(guide, memory, home):
     return head + (cut + "\n" if cut else "") + pointer
 
 
+def _step(warnings, label, fn, default=None):
+    """Run one step; a failure becomes a warning naming it, never an exception."""
+    try:
+        return fn()
+    except Exception as exc:  # includes RecursionError and UnicodeDecodeError
+        warnings.append("anthology: %s failed (%s)" % (label, type(exc).__name__))
+        return default
+
+
+def _parse_stdin(stdin):
+    try:
+        hook = json.loads(stdin) if stdin and stdin.strip() else {}
+    except Exception:
+        return {}
+    return hook if isinstance(hook, dict) else {}
+
+
 def _run(env, stdin):
     if platform.system() == "Windows":
         return json.dumps({"systemMessage": REFUSAL})
     if _IMPORT_ERROR is not None:
         raise _IMPORT_ERROR
-    try:
-        hook = json.loads(stdin) if stdin and stdin.strip() else {}
-    except ValueError:
-        hook = {}
-    cwd = hook.get("cwd") if isinstance(hook, dict) and isinstance(hook.get("cwd"), str) else None
+    started = time.monotonic()
+    warnings = []
+    hook = _step(warnings, "reading the hook input", lambda: _parse_stdin(stdin), {})
+    cwd = hook.get("cwd") if isinstance(hook.get("cwd"), str) else None
     cwd = cwd or os.getcwd()
     root = _plugin_root(env)
-    warnings = []
 
-    warn = _guard_selftest(env, root)
-    if warn:
-        warnings.append(warn)
-
-    data_dir = env.get("CLAUDE_PLUGIN_DATA") or None
-    current = state.read()
-    if data_dir and current.get("data_dir") != data_dir:
-        try:
-            state.write(data_dir=data_dir)
-        except OSError as exc:
-            warnings.append("anthology: could not write state.json (%s)" % exc.strerror)
-    if "setup_done" not in current:
-        warnings.append(NAG)
-    else:
-        if not _u1_rule_present(env, root):
-            warnings.append(MOVED)
-        warn = _reconcile_rtk(root, data_dir or current.get("data_dir"))
+    def add(warn):
         if warn:
             warnings.append(warn)
 
-    memory, messages = "", []
-    try:
-        memory, messages = memory_sync.run(cwd, env)
-    except Exception as exc:
-        messages = ["anthology memory: %s" % (str(exc) or type(exc).__name__)[:120]]
+    add(_step(warnings, "the guardrails self-test", lambda: _guard_selftest(env, root, cwd)))
 
-    guide = _read_guide(root)
+    data_dir = env.get("CLAUDE_PLUGIN_DATA") or None
+    current = _step(warnings, "reading state.json", state.read, {})
+
+    def record_data_dir():
+        if data_dir and current.get("data_dir") != data_dir:
+            try:
+                state.write(data_dir=data_dir)
+            except OSError as exc:
+                warnings.append("anthology: could not write state.json (%s)" % exc.strerror)
+
+    _step(warnings, "recording the plugin data folder", record_data_dir)
+    if "setup_done" not in current:
+        warnings.append(NAG)
+    else:
+        add(_step(warnings, "the plugin-read permission check", lambda: _setup_warning(env, root)))
+        if _elapsed(started) > DEADLINE - RTK_MIN_REMAINING:
+            warnings.append("anthology: skipped the rtk check this session (not enough time left)")
+        else:
+            add(_step(warnings, "the rtk check",
+                      lambda: _reconcile_rtk(root, data_dir or current.get("data_dir"))))
+
+    def memory_step():
+        try:
+            return memory_sync.run(cwd, env)
+        except Exception as exc:
+            return "", ["anthology memory: %s" % (str(exc) or type(exc).__name__)[:120]]
+
+    memory, messages = _step(warnings, "memory sync", memory_step, ("", []))
+
+    guide = _step(warnings, "reading the routing guide", lambda: _read_guide(root))
     if guide is None:
         warnings.append("anthology: the routing guide is missing from the plugin (templates/routing-guide.md)")
-    context = _compose(guide or "", memory, memory_sync.anthology_home(env))
+    context = _step(warnings, "assembling the session context",
+                    lambda: _compose(guide or "", memory, memory_sync.anthology_home(env)), guide or "")
 
     out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}
     message = "\n".join(warnings + list(messages))
@@ -186,8 +229,8 @@ def run(env=None, stdin=""):
     try:
         return _run(env, stdin)
     except Exception as exc:
-        return json.dumps({"systemMessage": "anthology: session start failed (%s); the routing guide "
-                                            "and the guardrails self-test did not run" % type(exc).__name__})
+        return json.dumps({"systemMessage": "anthology: session start did not complete (%s); the routing "
+                                            "guide may be missing" % type(exc).__name__})
 
 
 def main():
@@ -198,7 +241,7 @@ def main():
     try:
         out = run(dict(os.environ), raw)
     except Exception as exc:
-        out = json.dumps({"systemMessage": "anthology: session start failed (%s)" % type(exc).__name__})
+        out = json.dumps({"systemMessage": "anthology: session start did not complete (%s)" % type(exc).__name__})
     try:
         sys.stdout.write(out + "\n")
         sys.stdout.flush()

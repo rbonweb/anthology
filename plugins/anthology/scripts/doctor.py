@@ -19,12 +19,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import settings_patch  # noqa: E402
+
 BROWSEROS_APP = Path("/Applications/BrowserOS.app")
 DOCKER_TIMEOUT = 10
 SUPPORTED_SYSTEMS = ("Darwin", "Linux")
 DUPLICATE_NAMES = ("superpowers", "design-skills")
 DEFAULT_LOCK = Path(__file__).resolve().parent.parent / "rtk.lock"
-CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported")
+CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported", "plugin_read_rule")
 
 
 def _config_dir(env):
@@ -125,12 +128,27 @@ def _check_platform(env):
     return False, "Anthology supports macOS and Linux only"
 
 
-def check_env(env=None, lock=None):
+def _check_plugin_rule(env, plugin_root):
+    """The U1 plugin-read allow rule (same helper as session start). None until setup has run."""
+    state = _read_json(_config_dir(env) / "anthology" / "state.json")
+    if not isinstance(state, dict) or "setup_done" not in state:
+        return None, "setup has not run yet"
+    root = plugin_root or env.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent
+    status = settings_patch.plugin_rule_status(root, env)
+    if status == "ok":
+        return True, "the plugin-read permission matches this install"
+    if status == "unreadable":
+        return False, "settings.json cannot be read; fix it, then re-run /anthology:setup"
+    return False, "the plugin moved or the rule is gone; re-run /anthology:setup"
+
+
+def check_env(env=None, lock=None, plugin_root=None):
     env = dict(os.environ) if env is None else env
     runners = (
         ("python3", _check_python), ("node", _check_node), ("docker", _check_docker),
         ("browseros", _check_browseros), ("rtk", lambda e: _check_rtk(e, lock)),
-        ("platform_supported", _check_platform))
+        ("platform_supported", _check_platform),
+        ("plugin_read_rule", lambda e: _check_plugin_rule(e, plugin_root)))
     out = []
     for name, fn in runners:
         try:

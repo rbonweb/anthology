@@ -30,6 +30,14 @@ def ops():
     return settings_patch.setup_ops(PLUGIN_ROOT, profile_roots=PROFILE_ROOTS)
 
 
+def make_plugin_root(parent, name="anthology"):
+    """A minimal valid plugin folder `<parent>/anthology` (F21 needs a manifest named anthology)."""
+    root = Path(parent) / "anthology"
+    (root / ".claude-plugin").mkdir(parents=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+    return root
+
+
 def fixtures():
     """name -> settings text, covering the formats the property tests must keep byte-stable."""
     base2 = json.dumps(BASE, indent=2) + "\n"
@@ -132,8 +140,26 @@ class OpsTest(unittest.TestCase):
         import guardrails_loc
         rules = guardrails_loc.load_rules(PLUGIN_ROOT, {})
         deny = [o["value"] for o in settings_patch.setup_ops(PLUGIN_ROOT) if o["path"] == ["permissions", "deny"]]
-        self.assertEqual(len(deny), 2 * len(rules.PROFILE_ROOTS))
+        variants = getattr(rules, "_PREFIX_VARIANTS", ("",))
+        expected = []
+        for root in rules.PROFILE_ROOTS:
+            for v in (variants if root.startswith(".config/") else ("",)):
+                expected += ["Read(~/%s%s)" % (root, v), "Read(~/%s%s/**)" % (root, v)]
+        self.assertEqual(deny, expected)
         self.assertIn("Read(~/%s)" % rules.PROFILE_ROOTS[0], deny)
+
+    def test_deny_rules_cover_the_guards_linux_channel_variants(self):
+        deny = [o["value"] for o in settings_patch.setup_ops(PLUGIN_ROOT) if o["path"] == ["permissions", "deny"]]
+        for rule in ("Read(~/.config/google-chrome-beta)", "Read(~/.config/google-chrome-unstable/**)",
+                     "Read(~/.config/chromium-dev)", "Read(~/.config/chromium-canary/**)"):
+            self.assertIn(rule, deny)
+        # the macOS roots have no channel variants
+        self.assertNotIn("Read(~/Library/Application Support/Google-beta)", deny)
+
+    def test_injected_profile_roots_get_no_variants(self):
+        deny = [o["value"] for o in settings_patch.setup_ops(PLUGIN_ROOT, profile_roots=(".config/x",))
+                if o["path"] == ["permissions", "deny"]]
+        self.assertEqual(deny, ["Read(~/.config/x)", "Read(~/.config/x/**)"])
 
     def test_ops_are_json_serialisable(self):
         planned = settings_patch.plan(json.dumps(BASE), ops())
@@ -200,11 +226,130 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(diff, "")
 
 
+class PluginRootGuardTest(unittest.TestCase):
+    """F21: the U1 allow rule must never be broader than the plugin folder's own parent."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(os.path.realpath(tmp.name))
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.env = {"HOME": str(self.home)}
+
+    def refuses(self, root, fragment=""):
+        with self.assertRaises(ValueError) as ctx:
+            settings_patch.setup_ops(root, profile_roots=PROFILE_ROOTS, env=self.env)
+        self.assertIn(fragment, str(ctx.exception))
+
+    def test_a_proper_root_is_accepted(self):
+        root = make_plugin_root(self.tmp / "plugins")
+        ops_ = settings_patch.setup_ops(root, profile_roots=PROFILE_ROOTS, env=self.env)
+        self.assertIn(settings_patch.plugin_read_rule(root), [o["value"] for o in ops_])
+
+    def test_empty_relative_missing_and_non_folder_roots(self):
+        self.refuses("", "absolute")
+        self.refuses("plugins/anthology", "absolute")
+        self.refuses(str(self.tmp / "missing" / "anthology"), "not a folder")
+        (self.tmp / "file").write_text("x", encoding="utf-8")
+        self.refuses(str(self.tmp / "file"), "not a folder")
+
+    def test_root_without_an_anthology_manifest(self):
+        bare = self.tmp / "plugins" / "anthology"
+        bare.mkdir(parents=True)
+        self.refuses(bare, "not the anthology plugin")
+        self.refuses(make_plugin_root(self.tmp / "other", name="something-else"), "not the anthology plugin")
+
+    def test_filesystem_root_and_top_level_folders(self):
+        self.refuses("/", "not")
+        top = self.tmp  # make the parent an ancestor of HOME
+        root = make_plugin_root(top)
+        self.refuses(root, "home folder")
+
+    def test_parent_that_is_the_home_folder(self):
+        root = make_plugin_root(self.home)
+        self.refuses(root, "home folder")
+
+    def test_parent_that_is_an_ancestor_of_home(self):
+        deep_home = self.tmp / "a" / "b" / "home"
+        deep_home.mkdir(parents=True)
+        root = make_plugin_root(self.tmp / "a")
+        with self.assertRaises(ValueError):
+            settings_patch.setup_ops(root, profile_roots=PROFILE_ROOTS, env={"HOME": str(deep_home)})
+
+    def test_glob_and_rule_metacharacters_in_the_path(self):
+        for ch in ("*", "?", "[", "]", "{", "}", "(", ")", "\\"):
+            parent = self.tmp / ("plug" + ch + "ins")
+            try:
+                parent.mkdir()
+            except OSError:
+                continue
+            self.refuses(make_plugin_root(parent), "pattern")
+
+    def test_a_symlinked_root_is_judged_by_its_real_location(self):
+        real = make_plugin_root(self.home)  # unsafe place
+        link = self.tmp / "safe" / "anthology"
+        link.parent.mkdir()
+        os.symlink(str(real), str(link))
+        self.refuses(link, "home folder")
+
+
+class PluginRuleStatusTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(os.path.realpath(tmp.name))
+        self.env = {"HOME": str(self.tmp), "CLAUDE_CONFIG_DIR": str(self.tmp / "c")}
+        (self.tmp / "c").mkdir()
+        self.path = self.tmp / "c" / "settings.json"
+        self.rule = settings_patch.plugin_read_rule(PLUGIN_ROOT)
+
+    def status(self):
+        return settings_patch.plugin_rule_status(PLUGIN_ROOT, self.env)
+
+    def test_states(self):
+        self.assertEqual(self.status(), "missing")  # no file
+        self.path.write_text(json.dumps({"permissions": {"allow": [self.rule]}}), encoding="utf-8")
+        self.assertEqual(self.status(), "ok")
+        self.path.write_text(json.dumps({"permissions": {"allow": ["Read(//old/**)"]}}), encoding="utf-8")
+        self.assertEqual(self.status(), "missing")
+        self.path.write_text("{nope", encoding="utf-8")
+        self.assertEqual(self.status(), "unreadable")
+
+    def test_bom_is_stripped(self):
+        self.path.write_text("\ufeff" + json.dumps({"permissions": {"allow": [self.rule]}}), encoding="utf-8")
+        self.assertEqual(self.status(), "ok")
+
+    def test_allow_must_be_a_list_not_a_string(self):
+        self.path.write_text(json.dumps({"permissions": {"allow": "xx" + self.rule + "yy"}}), encoding="utf-8")
+        self.assertEqual(self.status(), "missing")
+
+    def test_a_pathologically_deep_file_is_unreadable_not_a_crash(self):
+        self.path.write_text("[" * 100000, encoding="utf-8")
+        self.assertEqual(self.status(), "unreadable")
+
+
+class StyleTest(unittest.TestCase):
+    def test_inline_one_item_array_keeps_the_files_comma_space_style(self):
+        text = '{"permissions": {"allow": ["Bash(ls)"]}}'
+        new, _ = settings_patch.apply(text, ops())
+        self.assertIn('["Bash(ls)", "Bash(rtk *)", ', new)
+        self.assertIn('}, "worktree"', new)
+        planned = settings_patch.plan(text, ops())
+        self.assertEqual(settings_patch.revert(new, planned)[0], text)
+
+    def test_diff_has_no_context_lines(self):
+        text = json.dumps({"env": {"SECRET_TOKEN": "hunter2"}, "permissions": {"allow": ["Bash(ls)"]}}, indent=2) + "\n"
+        _, diff = settings_patch.apply(text, ops())
+        self.assertNotIn("hunter2", diff)
+        self.assertNotIn("SECRET_TOKEN", diff)
+        self.assertIn('+      "Bash(rtk *)"', diff)
+
+
 class ReconcileTest(unittest.TestCase):
     def test_plugin_moved_replaces_only_the_stale_rule_we_added(self):
         text = json.dumps({"permissions": {"allow": ["Read(//somewhere/else/**)"]}}, indent=2) + "\n"
-        old_root = Path(tempfile.mkdtemp()) / "plugins" / "anthology"
-        old_root.mkdir(parents=True)
+        old_root = make_plugin_root(Path(os.path.realpath(tempfile.mkdtemp())) / "plugins")
         first_ops = settings_patch.setup_ops(old_root, profile_roots=PROFILE_ROOTS)
         t1, _, stored1 = settings_patch.reconcile(text, first_ops, [])
         self.assertIn(settings_patch.plugin_read_rule(old_root), json.loads(t1)["permissions"]["allow"])

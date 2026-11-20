@@ -54,7 +54,7 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - `rtk bypass <cmd>` only when a result is unusable.
 
 ## 8. Memory
-- project, feedback, reference notes: repo `.claude/memory/` (approved repos only). user notes: personal memory, indexed above.
+- project, feedback, reference notes: repo `.claude/memory/` (approved repos only). user notes: personal memory, indexed below.
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
 - Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit memory as `chore(memory): ...`.

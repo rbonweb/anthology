@@ -32,6 +32,10 @@ NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, m
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 
 
+BLOCKS = ('import sys\nsys.stdin.read()\nsys.stderr.write("Blocked by anthology-guardrails (G1): x\\n")\n'
+          'sys.exit(2)\n')
+
+
 class FakeRtk:
     """Stands in for rtk_install (not on every branch); records the reconcile call."""
 
@@ -122,9 +126,23 @@ class OutputTest(SessionCase):
         state.write(setup_done="0.1.0")
         self.assertIn(MOVED, self.go()["systemMessage"].splitlines())
 
-    def test_unreadable_settings_after_setup_warns(self):
+    def test_unreadable_settings_after_setup_has_its_own_wording(self):
         state.write(setup_done="0.1.0")
         write(self.config / "settings.json", "{nope")
+        msg = self.go()["systemMessage"]
+        self.assertNotIn(MOVED, msg.splitlines())
+        self.assertIn("could not read settings.json", msg)
+
+    def test_settings_with_a_bom_and_the_rule_are_quiet(self):
+        state.write(setup_done="0.1.0")
+        rule = settings_patch.plugin_read_rule(PLUGIN)
+        write(self.config / "settings.json", "\ufeff" + json.dumps({"permissions": {"allow": [rule]}}))
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_allow_that_is_a_string_is_not_a_match(self):
+        state.write(setup_done="0.1.0")
+        rule = settings_patch.plugin_read_rule(PLUGIN)
+        write(self.config / "settings.json", json.dumps({"permissions": {"allow": "x" + rule + "y"}}))
         self.assertIn(MOVED, self.go()["systemMessage"].splitlines())
 
     def test_current_u1_rule_is_quiet(self):
@@ -163,7 +181,7 @@ class OutputTest(SessionCase):
 
     def test_the_guide_is_never_truncated_even_if_it_alone_is_over_budget(self):
         self.mark_setup()
-        root = self.fake_plugins('import sys\nsys.exit(2)\n')
+        root = self.fake_plugins(BLOCKS)
         (root / "templates" / "routing-guide.md").write_text("# Anthology routing guide\n" + "x" * 9500,
                                                            encoding="utf-8")
         out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
@@ -205,7 +223,7 @@ class OutputTest(SessionCase):
 
     def test_missing_guide_file_is_a_warning_not_a_crash(self):
         self.mark_setup()
-        root = self.fake_plugins("import sys\nsys.exit(2)\n")
+        root = self.fake_plugins(BLOCKS)
         (root / "templates" / "routing-guide.md").unlink()
         out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
         self.assertIn("routing guide", out["systemMessage"])
@@ -238,10 +256,45 @@ class OutputTest(SessionCase):
 
 class FailureTest(SessionCase):
     def test_injected_exception_gives_a_short_system_message(self):
-        with mock.patch.object(session_start, "_guard_selftest", side_effect=RuntimeError("boom")):
+        with mock.patch.object(session_start, "_plugin_root", side_effect=RuntimeError("boom")):
             out = json.loads(session_start.run(dict(os.environ), "{}"))
         self.assertIn("anthology", out["systemMessage"])
         self.assertLessEqual(len(out["systemMessage"]), 300)
+        self.assertNotIn("did not run", out["systemMessage"])
+
+    def test_every_step_is_isolated_and_the_guide_is_always_delivered(self):
+        self.mark_setup()
+        for name, exc in (("_guard_selftest", RuntimeError("boom")), ("_setup_warning", RecursionError()),
+                          ("_reconcile_rtk", OSError("x")), ("_read_guide", UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")),
+                          ("_parse_stdin", ValueError("x"))):
+            with self.subTest(name), mock.patch.object(session_start, name, side_effect=exc):
+                out = self.go()
+                if name != "_read_guide":
+                    self.assertIn("# Anthology routing guide", self.context(out))
+                self.assertIn("anthology:", out["systemMessage"])
+                # the steps that did not fail are not blamed
+                self.assertNotIn("memory sync failed", out["systemMessage"])
+
+    def test_a_failing_guard_does_not_claim_the_other_steps_failed(self):
+        self.mark_setup()
+        with mock.patch.object(session_start, "_guard_selftest", side_effect=RuntimeError("boom")):
+            out = self.go()
+        lines = out["systemMessage"].splitlines()
+        self.assertEqual(lines, ["anthology: the guardrails self-test failed (RuntimeError)"])
+
+    def test_pathologically_nested_stdin_and_settings_still_deliver_the_guide(self):
+        self.mark_setup()
+        write(self.config / "settings.json", "[" * 200000)
+        out = json.loads(session_start.run(dict(os.environ), "[" * 200000))
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    def test_non_utf8_guide_is_a_warning_not_a_crash(self):
+        self.mark_setup()
+        root = self.fake_plugins(BLOCKS)
+        (root / "templates" / "routing-guide.md").write_bytes(b"\xff\xfe\x00bad")
+        self.mark_setup(root)
+        out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        self.assertIn("routing guide", out["systemMessage"])
 
     def test_main_exits_zero_even_when_run_raises(self):
         buf = io.StringIO()
@@ -381,7 +434,7 @@ class GuardSelfTestTest(SessionCase):
         self.assertRegex(out["systemMessage"].lower(), r"did not block")
 
     def test_guard_that_blocks_is_quiet(self):
-        root = self.fake_plugins("import sys\nsys.stdin.read()\nsys.exit(2)\n")
+        root = self.fake_plugins(BLOCKS)
         self.mark_setup(root)
         self.assertNotIn("systemMessage", self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}))
 
@@ -393,14 +446,14 @@ class GuardSelfTestTest(SessionCase):
         self.assertRegex(out["systemMessage"].lower(), r"timed out|did not finish")
 
     def test_guardrails_not_found_warns(self):
-        root = self.fake_plugins("import sys\nsys.exit(2)\n")
+        root = self.fake_plugins(BLOCKS)
         shutil.rmtree(str(root.parent / "anthology-guardrails"))
         self.mark_setup(root)
         out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
         self.assertRegex(out["systemMessage"].lower(), r"guardrails.*(not found|missing)")
 
     def test_guardrails_without_the_sample_warns(self):
-        root = self.fake_plugins("import sys\nsys.exit(2)\n", rules=False)
+        root = self.fake_plugins(BLOCKS, rules=False)
         self.mark_setup(root)
         out = self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
         self.assertRegex(out["systemMessage"].lower(), r"guardrails")
@@ -412,7 +465,7 @@ class GuardSelfTestTest(SessionCase):
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
         guard = self.tmp / "installs" / "guard-new"
         guard_old = self.tmp / "installs" / "guard-old"
-        for d, body in ((guard, "import sys\nsys.stdin.read()\nsys.exit(2)\n"),
+        for d, body in ((guard, BLOCKS),
                         (guard_old, "import sys\nsys.exit(0)\n")):
             (d / "scripts").mkdir(parents=True)
             (d / "scripts" / "guard.py").write_text(body, encoding="utf-8")
@@ -426,6 +479,109 @@ class GuardSelfTestTest(SessionCase):
                 {"scope": "user", "installPath": str(self.tmp / "gone"), "lastUpdated": "2027-01-01T00:00:00Z"}]}}))
         self.mark_setup(root)
         self.assertNotIn("systemMessage", self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}))
+
+
+class GuardLocationTest(SessionCase):
+    """F20: the self-test proves the guardrails are installed and enabled, not just that a file blocks."""
+
+    def installed(self, plugins):
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": plugins}))
+
+    def guard_install(self, name="guard"):
+        d = self.tmp / "installs" / name
+        (d / "scripts").mkdir(parents=True)
+        (d / "scripts" / "guard.py").write_text(BLOCKS, encoding="utf-8")
+        (d / "scripts" / "guard_rules.py").write_text(
+            'SELF_TEST_SAMPLE = {"tool_name": "Bash", "tool_input": {"command": "x"}}\nPROFILE_ROOTS = ()\n',
+            encoding="utf-8")
+        return d
+
+    def test_anthology_installed_without_guardrails_warns_even_if_a_sibling_folder_exists(self):
+        self.mark_setup()
+        self.installed({"anthology@anthology": [{"scope": "user", "installPath": str(PLUGIN)}]})
+        msg = self.go()["systemMessage"]
+        self.assertRegex(msg.lower(), r"anthology-guardrails is not installed")
+
+    def test_disabled_in_user_settings_warns(self):
+        self.mark_setup()
+        data = json.loads((self.config / "settings.json").read_text(encoding="utf-8"))
+        data["enabledPlugins"] = {"anthology-guardrails@anthology": False}
+        write(self.config / "settings.json", json.dumps(data))
+        self.assertRegex(self.go()["systemMessage"].lower(), r"guardrails is disabled")
+
+    def test_disabled_in_project_and_local_settings_warns(self):
+        self.mark_setup()
+        for name in ("settings.json", "settings.local.json"):
+            proj = self.tmp / ("proj-" + name)
+            write(proj / ".claude" / name, json.dumps({"enabledPlugins": {"anthology-guardrails@x": False}}))
+            self.assertRegex(self.go(cwd=proj)["systemMessage"].lower(), r"guardrails is disabled")
+
+    def test_enabled_true_is_fine(self):
+        self.mark_setup()
+        data = json.loads((self.config / "settings.json").read_text(encoding="utf-8"))
+        data["enabledPlugins"] = {"anthology-guardrails@anthology": True}
+        write(self.config / "settings.json", json.dumps(data))
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_registry_entry_wins_over_the_sibling_folder(self):
+        root = self.fake_plugins("import sys\nsys.exit(0)\n")  # a sibling that would NOT block
+        self.mark_setup(root)
+        self.installed({"anthology-guardrails@anthology": [
+            {"scope": "user", "installPath": str(self.guard_install())}]})
+        self.assertNotIn("systemMessage", self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}))
+
+    def test_project_scoped_install_of_another_project_is_ignored(self):
+        self.mark_setup()
+        other, mine = self.tmp / "other-proj", self.tmp / "my-proj"
+        other.mkdir()
+        mine.mkdir()
+        self.installed({
+            "anthology@anthology": [{"scope": "user", "installPath": str(PLUGIN)}],
+            "anthology-guardrails@anthology": [
+                {"scope": "project", "projectPath": str(other), "installPath": str(self.guard_install("a"))}]})
+        self.assertIn("not installed", self.go(cwd=mine)["systemMessage"])
+        (other / "sub").mkdir()
+        self.assertNotIn("systemMessage", self.go(cwd=other / "sub"))
+
+    def test_newest_applicable_scope_wins(self):
+        self.mark_setup()
+        proj = self.tmp / "proj"
+        proj.mkdir()
+        bad = self.tmp / "installs" / "bad"
+        (bad / "scripts").mkdir(parents=True)
+        (bad / "scripts" / "guard.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+        (bad / "scripts" / "guard_rules.py").write_text(
+            'SELF_TEST_SAMPLE = {"tool_name": "Bash", "tool_input": {"command": "x"}}\nPROFILE_ROOTS = ()\n',
+            encoding="utf-8")
+        self.installed({"anthology-guardrails@anthology": [
+            {"scope": "user", "installPath": str(bad), "lastUpdated": "2026-01-01T00:00:00Z"},
+            {"scope": "project", "projectPath": str(proj), "installPath": str(self.guard_install()),
+             "lastUpdated": "2026-06-01T00:00:00Z"}]})
+        self.assertNotIn("systemMessage", self.go(cwd=proj))
+        self.assertIn("did not block", self.go(cwd=self.tmp)["systemMessage"].lower())
+
+    def test_exit_2_without_the_guards_message_is_not_a_pass(self):
+        root = self.fake_plugins("import sys\nsys.stdin.read()\nsys.exit(2)\n")
+        self.mark_setup(root)
+        self.assertRegex(self.go(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})["systemMessage"].lower(),
+                         r"did not block")
+
+
+class DeadlineTest(SessionCase):
+    def test_rtk_reconcile_is_skipped_with_a_note_when_time_is_short(self):
+        self.mark_setup()
+        with mock.patch.object(session_start, "_elapsed", return_value=session_start.DEADLINE - 10):
+            out = self.go()
+        self.assertEqual(self.rtk.calls, [])
+        self.assertIn("anthology: skipped the rtk check this session (not enough time left)",
+                      out["systemMessage"].splitlines())
+        self.assertIn("# Anthology routing guide", self.context(out))
+
+    def test_rtk_reconcile_runs_when_there_is_time(self):
+        self.mark_setup()
+        with mock.patch.object(session_start, "_elapsed", return_value=1):
+            self.go()
+        self.assertEqual(len(self.rtk.calls), 1)
 
 
 class ShellWrapperTest(MemCase):
@@ -454,6 +610,22 @@ class ShellWrapperTest(MemCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout.decode("utf-8"))
         self.assertIn("# Anthology routing guide", out["hookSpecificOutput"]["additionalContext"])
+
+    def shim_dir(self, body):
+        d = self.tmp / "shim"
+        d.mkdir(exist_ok=True)
+        shim = d / "python3"
+        shim.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        shim.chmod(0o755)
+        return str(d)
+
+    def test_python3_that_does_not_run_gets_the_same_loud_message(self):
+        proc = self.run_sh(self.shim_dir("exit 1"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout.decode("utf-8"))
+        self.assertEqual(list(out), ["systemMessage"])
+        self.assertIn("python3", out["systemMessage"])
+        self.assertIn("3.9", out["systemMessage"])
 
     def test_script_uses_only_sh_builtins_on_the_missing_path(self):
         text = self.SH.read_text(encoding="utf-8")
@@ -535,6 +707,10 @@ class GuideTest(unittest.TestCase):
         self.assertIn("anthology-mem search", self.text)
         self.assertIn("[[note-name]]", self.text)
         self.assertRegex(self.text, r"Never save secrets")
+
+    def test_personal_index_is_below_the_guide(self):
+        self.assertIn("personal memory, indexed below", self.text)
+        self.assertNotIn("indexed above", self.text)
 
     def test_no_personal_details(self):
         self.assertNotRegex(self.text, r"/U" + r"sers/|/home/\w|@\w+\.\w+")

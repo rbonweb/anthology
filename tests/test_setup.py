@@ -94,7 +94,8 @@ class PreviewTest(SetupCase):
         out = self.preview()
         self.assertTrue(out["supported"])
         self.assertEqual({c["name"] for c in out["doctor"]["checks"]},
-                         {"python3", "node", "docker", "browseros", "rtk", "platform_supported"})
+                         {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
+                          "plugin_read_rule"})
         self.assertEqual(out["duplicates"], [])
         s = out["settings"]
         self.assertEqual(s["sha256"], sha(text))
@@ -297,7 +298,8 @@ class ApplyRemoveTest(SetupCase):
     def test_guardrails_not_found_stops_with_a_message(self):
         self.write_settings()
         lone = self.tmp / "lone" / "anthology"
-        lone.mkdir(parents=True)
+        (lone / ".claude-plugin").mkdir(parents=True)
+        shutil.copy(str(PLUGIN / ".claude-plugin" / "plugin.json"), str(lone / ".claude-plugin" / "plugin.json"))
         res = anthology_setup.apply(lone, sha(self.settings.read_text(encoding="utf-8")), cwd=self.tmp)
         self.assertFalse(res["ok"])
         self.assertIn("guardrails", res["error"])
@@ -359,6 +361,169 @@ class ApplyRemoveTest(SetupCase):
         self.assertTrue(res["ok"])
         self.assertIn("refusing", res["memory"]["approve_error"])
         self.assertEqual(res["memory"]["approved_key"], "k")
+
+
+class FixRound1Test(SetupCase):
+    """Review round 1: plugin-root guard (F21), concurrent edits, remove preview, containment."""
+
+    def unsafe_root(self):
+        """A plugin folder directly inside the (temp) home folder: its parent is HOME."""
+        root = self.home / "anthology"
+        (root / ".claude-plugin").mkdir(parents=True)
+        shutil.copy(str(PLUGIN / ".claude-plugin" / "plugin.json"), str(root / ".claude-plugin" / "plugin.json"))
+        shutil.copytree(str(PLUGIN.parent / "anthology-guardrails" / "scripts"),
+                        str(self.home / "anthology-guardrails" / "scripts"))
+        return root
+
+    def test_unsafe_plugin_root_is_refused_in_preview_and_apply_with_nothing_written(self):
+        self.write_settings()
+        root = self.unsafe_root()
+        out = anthology_setup.preview(root, cwd=self.tmp)
+        self.assertIn("home folder", out["settings"]["error"])
+        self.assertFalse(out["settings"]["changed"])
+        res = anthology_setup.apply(root, sha(self.settings.read_text(encoding="utf-8")), cwd=self.tmp)
+        self.assertFalse(res["ok"])
+        self.assertIn("home folder", res["error"])
+        self.assertEqual(self.rtk.calls, [])
+        self.assertFalse(state.state_path().exists())
+        self.assertNotIn("Read(//", self.settings.read_text(encoding="utf-8"))
+
+    def test_empty_plugin_root_is_refused(self):
+        self.write_settings()
+        res = anthology_setup.apply("", sha(self.settings.read_text(encoding="utf-8")), cwd=self.tmp)
+        self.assertFalse(res["ok"])
+        self.assertIn("absolute", res["error"])
+
+    def test_edit_during_the_rtk_download_is_never_overwritten(self):
+        self.write_settings()
+        digest = self.preview()["settings"]["sha256"]
+        edited = json.dumps(dict(SETTINGS, model="sonnet"), indent=2) + "\n"
+
+        def reconcile(data_dir, lock, fetch, timeout):
+            self.settings.write_text(edited, encoding="utf-8")  # the user edits while we "download"
+
+        self.rtk.reconcile = reconcile
+        res = anthology_setup.apply(PLUGIN, digest, cwd=self.tmp)
+        self.assertFalse(res["ok"])
+        self.assertIn("changed during setup", res["error"])
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), edited)
+        self.assertFalse(state.read().get("settings_ops"))
+        self.assertNotIn("setup_done", state.read())
+
+    def test_edit_right_before_the_write_is_never_overwritten(self):
+        self.write_settings()
+        digest = self.preview()["settings"]["sha256"]
+        edited = json.dumps(dict(SETTINGS, model="sonnet"), indent=2) + "\n"
+        real_write = state.write
+
+        def write_then_edit(**kw):
+            out = real_write(**kw)
+            if "settings_ops" in kw and kw["settings_ops"]:
+                self.settings.write_text(edited, encoding="utf-8")
+            return out
+
+        with mock.patch.object(anthology_setup.state, "write", side_effect=write_then_edit):
+            res = anthology_setup.apply(PLUGIN, digest, cwd=self.tmp)
+        self.assertFalse(res["ok"])
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), edited)
+        self.assertEqual(state.read().get("settings_ops"), [])
+
+    def test_ops_are_recorded_before_settings_json_is_written(self):
+        text = self.write_settings()
+        digest = self.preview()["settings"]["sha256"]
+        with mock.patch.object(anthology_setup.settings_patch, "write_text", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                anthology_setup.apply(PLUGIN, digest, cwd=self.tmp)
+        self.assertTrue(state.read()["settings_ops"])
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+
+    def test_diff_has_no_neighbouring_secret_lines(self):
+        self.write_settings(dict(SETTINGS, env={"SECRET_TOKEN": "hunter2"}))
+        out = self.preview()
+        self.assertNotIn("hunter2", json.dumps(out))
+        res = self.apply()
+        self.assertNotIn("hunter2", json.dumps(res))
+
+    def test_remove_preview_writes_nothing_and_shows_the_diff(self):
+        text = self.write_settings()
+        self.apply()
+        write(self.data_dir / "rtk" / "1.0" / "rtk", "bin")
+        applied = self.settings.read_text(encoding="utf-8")
+        before = snapshot(self.tmp)
+        out = anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["preview"])
+        self.assertTrue(out["settings"]["changed"])
+        self.assertIn('-      "Bash(rtk *)"', out["settings"]["diff"])
+        self.assertIn('"baseRef"', out["settings"]["diff"])
+        self.assertEqual(out["rtk"]["dir"], str(self.data_dir / "rtk"))
+        self.assertEqual(out["state"]["path"], str(state.state_path()))
+        self.assertTrue(out["state"]["exists"])
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), applied)
+        self.assertNotEqual(applied, text)
+
+    def test_remove_returns_the_same_diff(self):
+        self.write_settings()
+        self.apply()
+        preview = anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True)
+        res = self.remove()
+        self.assertEqual(res["settings"]["diff"], preview["settings"]["diff"])
+
+    @needs_git
+    def test_remove_preview_lists_the_approvals_each_flag_would_drop(self):
+        self.write_settings()
+        repo = self.make_repo(remote="https://example.invalid/acme/app.git")
+        memory_sync._save_approved({"version": 1, "repos": {"a/b": {}}})
+        self.apply(cwd=repo)
+        out = anthology_setup.remove(PLUGIN, cwd=repo, preview=True)
+        self.assertEqual(out["memory"]["unapprove"], ["example.invalid/acme/app"])
+        self.assertEqual(out["memory"]["unapprove_all"], ["a/b", "example.invalid/acme/app"])
+        self.assertTrue(memory_sync.is_approved("a/b"))
+
+    def test_remove_preview_error_for_unparseable_settings(self):
+        self.write_settings()
+        self.apply()
+        write(self.settings, "{nope")
+        out = anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True)
+        self.assertFalse(out["ok"])
+        self.assertIn("not valid JSON", out["error"])
+
+    def test_remove_preview_cli_flag(self):
+        self.write_settings()
+        self.apply()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = anthology_setup.main(["remove", "--preview", "--plugin-root", str(PLUGIN), "--cwd", str(self.tmp)])
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(buf.getvalue())["preview"])
+        self.assertTrue(state.state_path().exists())
+
+    def test_rtk_is_never_deleted_when_data_dir_is_the_config_folder_or_above_plugins_data(self):
+        self.write_settings()
+        self.apply()
+        for data in (self.config, self.config / "plugins", self.config / "plugins" / "data", self.home):
+            write(data / "rtk" / "precious.txt", "keep")
+            state.write(data_dir=str(data))
+            env = dict(os.environ)
+            env.pop("CLAUDE_PLUGIN_DATA")
+            res = anthology_setup.remove(PLUGIN, cwd=self.tmp, env=env)
+            self.assertTrue((data / "rtk" / "precious.txt").exists(), data)
+            self.assertTrue([w for w in res["warnings"] if "rtk" in w], data)
+            self.apply()
+
+    def test_rtk_dir_that_resolves_elsewhere_is_left_alone(self):
+        self.write_settings()
+        self.apply()
+        elsewhere = self.config / "elsewhere" / "rtk"
+        write(elsewhere / "precious.txt", "keep")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(elsewhere.parent), str(self.data_dir / "sub"))
+        state.write(data_dir=str(self.data_dir / "sub"))
+        env = dict(os.environ)
+        env.pop("CLAUDE_PLUGIN_DATA")
+        anthology_setup.remove(PLUGIN, cwd=self.tmp, env=env)
+        self.assertTrue((elsewhere / "precious.txt").exists())
 
 
 class RemoveTest(SetupCase):

@@ -54,19 +54,24 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 
 ## Remove (`/anthology:setup remove`)
 
-1. Preview first, so the user sees what is there:
+1. Preview the removal. This writes nothing:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" preview --plugin-root "${CLAUDE_PLUGIN_ROOT}" --json
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" remove --preview --plugin-root "${CLAUDE_PLUGIN_ROOT}"
    ```
 
-2. Say what remove does: it takes out the settings.json entries Anthology added (and restores
-   `worktree.baseRef` to its previous value), deletes the downloaded rtk and Anthology's
-   `state.json`. Rules the user added themselves are never touched. Memory notes, `.gitattributes`
-   and the personal-memory folder are never deleted.
-3. Ask one yes/no question: also drop the repo memory approval(s)? Recommend **no**: keeping them
-   means memory keeps working if Anthology is reinstalled.
-4. Run it, adding `--unapprove` (this repo) or `--unapprove-all` only if the user said yes:
+   If it reports an error (for example settings.json is not valid JSON), show the message and stop.
+2. Show every change it would make:
+   - `settings.diff` as a diff: the settings.json entries Anthology added come out, and
+     `worktree.baseRef` goes back to its previous value. Rules the user added themselves are never touched.
+   - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).
+   - `state.path`: Anthology's `state.json`, which would be deleted.
+   - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
+     and `memory.unapprove_all` list the repo approvals that the optional flags would drop.
+3. Ask the user to confirm (yes/no) before anything is removed. If there are approvals listed, in the same
+   question ask whether to also drop them, recommending **no**: keeping them means memory keeps working
+   if Anthology is reinstalled.
+4. After the confirmation, run it, adding `--unapprove` (this repo) or `--unapprove-all` only if the user said yes:
 
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" remove --plugin-root "${CLAUDE_PLUGIN_ROOT}"

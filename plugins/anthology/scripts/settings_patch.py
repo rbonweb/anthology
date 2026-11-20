@@ -285,6 +285,8 @@ def _append(text, root, chain, node, key, value):
     if node.items:
         sep = _sep(text, node)
         multi = "\n" in sep
+        if not multi and sep == "" and len(node.items) == 1:
+            sep = st.comma[1:]  # inline: keep the file's `, ` style (the gap is empty when one item)
         indent = sep.rsplit("\n", 1)[-1] if multi else ""
         if key is None:
             item = _render(value, indent, st, multi)
@@ -399,7 +401,7 @@ def _diff(old, new):
     if old == new:
         return ""
     return "\n".join(difflib.unified_diff(old.splitlines(), new.splitlines(), "settings.json",
-                                          "settings.json", lineterm="", n=2))
+                                          "settings.json", lineterm="", n=0))
 
 
 def plan(settings, ops):
@@ -481,16 +483,74 @@ def plugin_read_rule(plugin_root):
     return "Read(//%s/**)" % parent.lstrip("/")
 
 
+_RULE_META = frozenset("*?[]{}()\\")
+
+
+def validate_plugin_root(plugin_root, env=None):
+    """F21: refuse a plugin root the U1 allow rule cannot safely be built from (ValueError).
+
+    It must be an absolute, existing folder holding `.claude-plugin/plugin.json` named
+    `anthology`; its parent (the folder the rule opens up) must not be `/`, the home folder or an
+    ancestor of it; and its path must hold no glob or rule metacharacter."""
+    raw = str(plugin_root)
+    if not raw or not os.path.isabs(raw):
+        raise ValueError("the plugin root must be an absolute path (got %r)" % raw)
+    real = os.path.realpath(raw)
+    if not os.path.isdir(real):
+        raise ValueError("the plugin root %s is not a folder" % real)
+    try:
+        with open(os.path.join(real, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            name = json.load(fh).get("name")
+    except (OSError, ValueError, AttributeError):
+        name = None
+    if name != "anthology":
+        raise ValueError("%s is not the anthology plugin (no .claude-plugin/plugin.json named anthology)" % real)
+    parent = os.path.dirname(real)
+    env = os.environ if env is None else env
+    home = os.path.realpath(env.get("HOME") or os.path.expanduser("~"))
+    if parent == os.sep or home == parent or home.startswith(parent.rstrip(os.sep) + os.sep):
+        raise ValueError("refusing to allow reads of %s: it is the home folder, one of its parents or "
+                         "the root, so the plugin must live in its own folder" % parent)
+    if any(c in _RULE_META for c in real):
+        raise ValueError("the plugin path %s has a character (* ? [ ] { } ( ) or a backslash) that "
+                         "permission rules would read as a pattern" % real)
+
+
+def plugin_rule_status(plugin_root, env=None):
+    """`"ok"`, `"missing"` (not in `permissions.allow`) or `"unreadable"` for the U1 rule in the
+    user's settings.json. Shared by session start and doctor."""
+    try:
+        text = read_text(settings_path(env))
+        if _is_blank(text):
+            return "missing"
+        data = json.loads(text[1:] if text.startswith("\ufeff") else text)
+        permissions = data.get("permissions") if isinstance(data, dict) else None
+        allow = permissions.get("allow") if isinstance(permissions, dict) else None
+    except Exception:
+        return "unreadable"
+    if isinstance(allow, list) and plugin_read_rule(plugin_root) in allow:
+        return "ok"
+    return "missing"
+
+
 def setup_ops(plugin_root, profile_roots=None, env=None):
-    """Everything `/anthology:setup` changes in settings.json. The profile roots come from the
-    guardrails plugin's `guard_rules.PROFILE_ROOTS` (a single source) unless given."""
+    """Everything `/anthology:setup` changes in settings.json (ValueError for an unsafe plugin root).
+
+    The profile roots come from the guardrails plugin's `guard_rules.PROFILE_ROOTS` (a single
+    source) unless given; for the `.config/` roots the deny rules also cover the guard's Linux
+    channel variants (`guard_rules._PREFIX_VARIANTS`: `-beta`, `-dev`, ...)."""
+    validate_plugin_root(plugin_root, env)
+    variants = ("",)
     if profile_roots is None:
         import guardrails_loc
-        profile_roots = guardrails_loc.load_rules(plugin_root, env).PROFILE_ROOTS
+        rules = guardrails_loc.load_rules(plugin_root, env)
+        profile_roots = rules.PROFILE_ROOTS
+        variants = getattr(rules, "_PREFIX_VARIANTS", ("",))
     ops = [{"op": "add", "path": ["permissions", "allow"], "value": ALLOW_RTK}]
     for root in profile_roots:
-        for rule in ("Read(~/%s)" % root, "Read(~/%s/**)" % root):
-            ops.append({"op": "add", "path": ["permissions", "deny"], "value": rule})
+        for v in (variants if root.startswith(".config/") else ("",)):
+            for rule in ("Read(~/%s%s)" % (root, v), "Read(~/%s%s/**)" % (root, v)):
+                ops.append({"op": "add", "path": ["permissions", "deny"], "value": rule})
     ops.append({"op": "add", "path": ["permissions", "allow"], "value": plugin_read_rule(plugin_root),
                 "tag": TAG_PLUGIN_READ})
     ops.append({"op": "set", "path": ["worktree", "baseRef"], "value": "head"})

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+PLUGIN = ROOT / "plugins" / "anthology"
 SCRIPTS = ROOT / "plugins" / "anthology" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
@@ -99,7 +100,8 @@ class CheckEnvTest(unittest.TestCase):
     def test_shape_and_order(self):
         checks = doctor.check_env(dict(os.environ))
         self.assertEqual([c["name"] for c in checks],
-                         ["python3", "node", "docker", "browseros", "rtk", "platform_supported"])
+                         ["python3", "node", "docker", "browseros", "rtk", "platform_supported",
+                          "plugin_read_rule"])
         for c in checks:
             self.assertEqual(set(c), {"name", "ok", "detail"})
             self.assertIn(c["ok"], (True, False, None))
@@ -196,10 +198,33 @@ class CheckEnvTest(unittest.TestCase):
             c = {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
         self.assertFalse(c["ok"])
 
+    def plugin_rule(self, **kw):
+        return {c["name"]: c for c in doctor.check_env(dict(os.environ), plugin_root=PLUGIN, **kw)}["plugin_read_rule"]
+
+    def test_plugin_read_rule_is_unknown_before_setup(self):
+        self.assertIsNone(self.plugin_rule()["ok"])
+
+    def test_plugin_read_rule_after_setup(self):
+        import settings_patch
+        state_dir = self.config / "anthology"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(json.dumps({"setup_done": "0.1.0"}), encoding="utf-8")
+        self.assertFalse(self.plugin_rule()["ok"])  # no settings.json yet
+        settings = self.config / "settings.json"
+        settings.write_text(json.dumps({"permissions": {"allow": ["Read(//old/**)"]}}), encoding="utf-8")
+        c = self.plugin_rule()
+        self.assertFalse(c["ok"])
+        self.assertIn("setup", c["detail"])
+        settings.write_text(json.dumps({"permissions": {"allow": [settings_patch.plugin_read_rule(PLUGIN)]}}),
+                            encoding="utf-8")
+        self.assertTrue(self.plugin_rule()["ok"])
+        settings.write_text("{nope", encoding="utf-8")
+        self.assertIn("cannot be read", self.plugin_rule()["detail"])
+
     def test_check_env_never_raises(self):
         with mock.patch.object(doctor.shutil, "which", side_effect=RuntimeError("boom")):
             checks = doctor.check_env(dict(os.environ))
-        self.assertEqual(len(checks), 6)
+        self.assertEqual(len(checks), 7)
         self.assertFalse(checks[0]["ok"])
 
 
@@ -216,7 +241,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         self.assertEqual({c["name"] for c in out["checks"]},
-                         {"python3", "node", "docker", "browseros", "rtk", "platform_supported"})
+                         {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
+                          "plugin_read_rule"})
         self.assertEqual(len(out["duplicates"]), 4)
 
 
