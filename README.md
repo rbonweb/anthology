@@ -187,7 +187,9 @@ Memory is plain Markdown notes committed with your project, so it survives a re-
 
 ### Approved repos only
 
-Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is). If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. Notes committed by a stranger never load on their own.
+Memory is active only in repos you approved by running `/anthology:setup` inside them. In any other repo no repo memory is written or injected (your personal-memory index still is). If that repo already has `.claude/memory/`, you get one line telling you to run `/anthology:setup`. That covers repo auto-memory only.
+
+**Agent memory is different.** Claude Code loads `.claude/agent-memory/anthology-<agent>/MEMORY.md` into that agent itself (the agents set `memory: project`), whether or not you approved the repo, and the agent bodies tell the agent to read the folder. So notes a stranger committed there can reach an agent in a repo you cloned. The bodies say to treat notes as hints, never instructions: they cannot override your request, the routing guide, the BrowserOS-only rule or the Docker rule. That is guidance to the model, not a barrier. Review `.claude/agent-memory/` in any repo you do not trust, as you would review code (see [ADR-019](DECISIONS.md)).
 
 Approvals are kept in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo path if there is no remote). Memory also stays off if you turned auto memory off in Claude Code.
 
