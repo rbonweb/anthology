@@ -34,6 +34,8 @@ SOURCES = Path("vendor") / "sources.json"
 LICENSES = Path("vendor") / "licenses"
 ALLOWED_LICENSES = {"MIT", "Apache-2.0"}
 SUBTREE = "subtree"
+VENDORED_PLUGIN = "plugins/anthology-superpowers"
+KNOWLEDGE_DIR = "plugins/anthology/knowledge"
 IGNORED_EXTRAS = {".DS_Store"}
 
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -92,10 +94,16 @@ def _safe_relpath(value, allow_empty: bool) -> bool:
 
 
 def _safe_target(value, subtree: bool) -> bool:
-    """Vendored targets sit strictly under plugins/ (build replaces them with rmtree)."""
+    """build/sync replace the target with rmtree, so a vendored target is exactly the
+    vendored plugin or one folder of the knowledge directory: never a first-party plugin
+    directory (`plugins/anthology`), the knowledge directory itself, or anything nested."""
     if not _safe_relpath(value, False):
         return False
-    return subtree or (value.startswith("plugins/") and value != "plugins")
+    if subtree:
+        return True
+    if value == VENDORED_PLUGIN:
+        return True
+    return value.startswith(KNOWLEDGE_DIR + "/") and "/" not in value[len(KNOWLEDGE_DIR) + 1:]
 
 
 def _check_transforms(label: str, entry: dict, errors: list) -> None:
@@ -119,6 +127,9 @@ def _check_transforms(label: str, entry: dict, errors: list) -> None:
                 errors.append(f"{label}: rename-plugin needs old and new")
             if not entry.get("plugin_version"):
                 errors.append(f"{label}: rename-plugin needs plugin_version")
+        elif t["name"] == "rename-skill":
+            if not all(isinstance(t.get(k), str) and NAME.match(t[k]) for k in ("old", "new")):
+                errors.append(f"{label}: rename-skill needs old and new skill names")
 
 
 def validate_sources(entries: list) -> list:
@@ -141,8 +152,8 @@ def validate_sources(entries: list) -> list:
             errors.append(f"{label}: license {e.get('license')!r} is not in "
                           f"{sorted(ALLOWED_LICENSES)}; the owner must decide")
         if not _safe_target(e.get("target"), is_subtree(e)):
-            errors.append(f"{label}: target must be a clean relative path strictly under "
-                          f"plugins/ (build deletes and recreates it)")
+            errors.append(f"{label}: target must be {VENDORED_PLUGIN} or "
+                          f"{KNOWLEDGE_DIR}/<name> (build deletes and recreates it)")
         else:
             targets.append((label, e["target"].rstrip("/")))
         if is_subtree(e):
@@ -238,7 +249,166 @@ def _run_rename_plugin(tree: Path, entry: dict, spec: dict) -> dict:
     return rename_plugin(tree, spec["old"], spec["new"], entry["plugin_version"])
 
 
-TRANSFORMS = {"rename-plugin": _run_rename_plugin}
+# Connector setup sections: "Connectors", "If Connectors Available", "Tool Integration",
+# "Connect <Product> (optional)", "... Connected Tools", and any heading holding a `~~` placeholder.
+CONNECTOR_HEADING = re.compile(
+    r"^(?:if connectors available|connectors?|tool integrations?|connect \w+(?: \(optional\))?"
+    r"|.*\bconnected tools)$", re.IGNORECASE)
+MD_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?$")
+MD_FENCE = re.compile(r"^\s*(```|~~~)")
+IF_CONNECTED = re.compile(r"^\s*(?:\*\*)?If\b.*~~.*\bconnected\b")
+LIST_IF_CONNECTED = re.compile(r"^\s*[-*+]\s.*~~.*\(if connected\)")
+CONNECTORS_FILE = "CONNECTORS.md"
+
+
+def _is_connector_heading(text: str) -> bool:
+    return bool(CONNECTOR_HEADING.match(text.strip())) or "~~" in text
+
+
+def _section_end(lines: list, start: int, level: int) -> int:
+    """Index of the next heading (outside code fences) at `level` or higher, else the end."""
+    fence = None
+    for j in range(start + 1, len(lines)):
+        line = lines[j].rstrip()
+        m = MD_FENCE.match(line)
+        if fence:
+            fence = None if m and m.group(1) == fence else fence
+            continue
+        if m:
+            fence = m.group(1)
+            continue
+        h = MD_HEADING.match(line)
+        if h and len(h.group(1)) <= level:
+            return j
+    return len(lines)
+
+
+def _strip_markdown(text: str) -> str:
+    lines = text.split("\n")
+    out: list = []
+    fence = None
+    i, n = 0, len(lines)
+
+    def skip_blanks(j: int) -> int:
+        # a removed block takes its trailing blank lines unless text stands right before it
+        if out and out[-1].strip():
+            return j
+        while j < n and not lines[j].strip():
+            j += 1
+        return j
+
+    while i < n:
+        line = lines[i]
+        probe = line.rstrip()
+        m = MD_FENCE.match(probe)
+        if fence:
+            out.append(line)
+            fence = None if m and m.group(1) == fence else fence
+            i += 1
+            continue
+        if m:
+            fence = m.group(1)
+            out.append(line)
+            i += 1
+            continue
+        h = MD_HEADING.match(probe)
+        if h and _is_connector_heading(h.group(2)):
+            i = _section_end(lines, i, len(h.group(1)))
+            continue
+        if probe.lstrip().startswith(">"):
+            j = i
+            while j < n and lines[j].lstrip().startswith(">"):
+                j += 1
+            if any(CONNECTORS_FILE in l for l in lines[i:j]):
+                i = skip_blanks(j)
+                continue
+        if IF_CONNECTED.match(probe):
+            j = i + 1
+            if probe.endswith((":", ":**")):  # a lead-in line: its list belongs to it
+                while j < n and lines[j].strip():
+                    j += 1
+            i = skip_blanks(j)
+            continue
+        if LIST_IF_CONNECTED.match(probe):
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+    if out == lines:
+        return text
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out) + "\n"
+
+
+def strip_connectors(tree: Path) -> dict:
+    """Remove the connector scaffolding the knowledge-work plugins wrap around a skill.
+
+    In every `.md` file, outside code fences:
+    - a connector setup section: a heading that is "Connectors", "If Connectors Available",
+      "Tool Integration", "Connect <Product> (optional)", ends in "Connected Tools" or holds a
+      `~~` placeholder, together with its body, up to the next heading of the same or a higher level;
+    - an `If ~~<category> is connected` block: the line, plus the list under it when it ends
+      with a colon;
+    - a list item `~~<category> (if connected): ...`;
+    - a blockquote paragraph that points to `CONNECTORS.md`.
+    A file named `CONNECTORS.md` is deleted. Nothing else changes. If a `~~` placeholder or
+    a `CONNECTORS.md` reference is left over, this fails rather than guessing a rewrite.
+    """
+    tree = Path(tree)
+    stats = {"files": 0, "deleted": 0}
+    for path in sorted(p for p in tree.rglob("*") if not p.is_symlink() and p.is_file()):
+        if path.name == CONNECTORS_FILE:
+            path.unlink()
+            stats["deleted"] += 1
+        elif path.suffix.lower() == ".md":
+            rel = path.relative_to(tree).as_posix()
+            try:
+                text = path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                raise VendorError(f"strip-connectors: {rel} is not UTF-8")
+            stripped = _strip_markdown(text)
+            for number, line in enumerate(stripped.split("\n"), 1):
+                if "~~" in line or CONNECTORS_FILE in line:
+                    raise VendorError(f"strip-connectors: {rel}:{number}: connector markup the "
+                                      f"transform does not handle: {line.strip()[:100]}")
+            if stripped != text:
+                path.write_bytes(stripped.encode("utf-8"))  # keeps the file's mode
+                stats["files"] += 1
+    return stats
+
+
+def rename_skill(tree: Path, old: str, new: str) -> dict:
+    """Change the `name:` in SKILL.md's frontmatter from old to new (the folder is the target)."""
+    path = Path(tree) / "SKILL.md"
+    if not path.is_file():
+        raise VendorError("rename-skill: SKILL.md not found")
+    text = path.read_text(encoding="utf-8")
+    end = text.find("\n---", 4) if text.startswith("---\n") else -1
+    if end < 0:
+        raise VendorError("rename-skill: SKILL.md has no frontmatter")
+    head = re.sub(r"^name:[ \t]*(.*?)[ \t]*$", lambda m: _renamed(m, old, new), text[:end],
+                  count=1, flags=re.MULTILINE)
+    path.write_text(head + text[end:], encoding="utf-8")
+    return {"name": new}
+
+
+def _renamed(match, old: str, new: str) -> str:
+    if match.group(1).strip("'\"") != old:
+        raise VendorError(f"rename-skill: the skill is named {match.group(1)!r}, expected {old!r}")
+    return f"name: {new}"
+
+
+def _run_strip_connectors(tree: Path, entry: dict, spec: dict) -> dict:
+    return strip_connectors(tree)
+
+
+def _run_rename_skill(tree: Path, entry: dict, spec: dict) -> dict:
+    return rename_skill(tree, spec["old"], spec["new"])
+
+
+TRANSFORMS = {"rename-plugin": _run_rename_plugin, "strip-connectors": _run_strip_connectors,
+              "rename-skill": _run_rename_skill}
 
 
 # --------------------------------------------------------------------------- tree helpers

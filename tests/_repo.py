@@ -29,3 +29,23 @@ def knowledge_path(ref):
 
 def superpowers_skill_path(name):
     return SUPERPOWERS / "skills" / name / "SKILL.md"
+
+
+# The 22 connector-free knowledge folders (Part 1 section 6): folder name -> (upstream repo
+# slug, path inside it). `code-review` is shipped as `code-review-checklist`.
+_KWP = "anthropics-knowledge-work-plugins"
+_UX = "uxkin-agent"
+STRIPPED_KNOWLEDGE = {
+    **{n: (_KWP, f"engineering/skills/{n}") for n in (
+        "architecture", "system-design", "testing-strategy", "tech-debt", "documentation",
+        "deploy-checklist")},
+    "code-review-checklist": (_KWP, "engineering/skills/code-review"),
+    **{n: (_KWP, f"design/skills/{n}") for n in ("design-handoff", "research-synthesis")},
+    **{n: (_KWP, f"product-management/skills/{n}") for n in (
+        "write-spec", "sprint-planning", "roadmap-update", "competitive-brief",
+        "synthesize-research", "product-brainstorming")},
+    **{n: (_KWP, f"marketing/skills/{n}") for n in (
+        "seo-audit", "campaign-plan", "content-creation", "email-sequence")},
+    **{n: (_UX, f"plugins/website-design/skills/{n}") for n in (
+        "landing-page", "web-review", "web-design-system")},
+}

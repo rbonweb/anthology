@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _repo import ROOT
+from _repo import ROOT, STRIPPED_KNOWLEDGE
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import vendor  # noqa: E402
@@ -48,7 +48,7 @@ def entry(name, **kw):
         "commit": SHA_A,
         "license": "MIT",
         "license_file": "LICENSE",
-        "target": f"plugins/{name}",
+        "target": f"plugins/anthology/knowledge/{name}",
         "transform": [],
     }
     e.update(kw)
@@ -101,7 +101,8 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.validate_sources(entries), [])
         self.assertEqual(
             {e["name"] for e in entries},
-            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines"})
+            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines"}
+            | set(STRIPPED_KNOWLEDGE))
 
     def test_real_pins_match_the_plan(self):
         pins = {e["name"]: e for e in vendor.load_sources(ROOT)}
@@ -116,6 +117,28 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(pins["web-design-guidelines"]["path"], "skills/web-design-guidelines")
         self.assertIsNone(pins["web-design-guidelines"]["license_file"])
         self.assertEqual(pins["web-design-guidelines"]["license_note"], "README")
+
+    def test_the_22_knowledge_entries(self):
+        pins = {e["name"]: e for e in vendor.load_sources(ROOT)}
+        self.assertEqual(len(STRIPPED_KNOWLEDGE), 22)
+        for name, (slug, path) in STRIPPED_KNOWLEDGE.items():
+            e = pins[name]
+            self.assertEqual(vendor.source_slug(e), slug, name)
+            self.assertEqual(e["path"], path, name)
+            self.assertEqual(e["target"], f"plugins/anthology/knowledge/{name}", name)
+            self.assertEqual(e["license"], "Apache-2.0" if slug.startswith("anthropics") else "MIT", name)
+            self.assertEqual(e["license_file"], "LICENSE", name)
+            self.assertEqual(e["transform"][0], {"name": "strip-connectors"}, name)
+            expected = [{"name": "strip-connectors"}]
+            if name == "code-review-checklist":
+                expected.append({"name": "rename-skill", "old": "code-review", "new": name})
+            self.assertEqual(e["transform"], expected, name)
+        kwp = {e["commit"] for e in pins.values() if vendor.source_slug(e) == "anthropics-knowledge-work-plugins"}
+        self.assertEqual(kwp, {"0e0fcacddcc892eb92a1b7873ff9d68159c47571"})
+        ux = {e["commit"] for e in pins.values() if vendor.source_slug(e) == "uxkin-agent"}
+        self.assertEqual(ux, {"07e8f5f61421c7268fddc1511878fb09945da854"})
+        self.assertEqual({e["ref"] for e in pins.values() if vendor.source_slug(e) == "uxkin-agent"},
+                         {"website-design"})
 
     def test_valid_entry_has_no_errors(self):
         self.assertEqual(vendor.validate_sources([entry("x")]), [])
@@ -148,8 +171,8 @@ class SourcesJsonTest(unittest.TestCase):
             self.assertTrue(vendor.validate_sources([e]), field)
 
     def test_duplicate_names_and_targets_rejected(self):
-        self.assertTrue(vendor.validate_sources([entry("x"), entry("x", target="plugins/y")]))
-        self.assertTrue(vendor.validate_sources([entry("x"), entry("y", target="plugins/x")]))
+        self.assertTrue(vendor.validate_sources([entry("x"), entry("x", target="plugins/anthology/knowledge/y")]))
+        self.assertTrue(vendor.validate_sources([entry("x"), entry("y", target="plugins/anthology/knowledge/x")]))
 
     def test_target_must_stay_inside_the_repo(self):
         for bad in ("/etc", "../x", "plugins/../../x", ""):
@@ -161,7 +184,17 @@ class SourcesJsonTest(unittest.TestCase):
                     ".git", "vendor", "scripts", "tests", "plugins", "plugins/", ".github",
                     "pluginsx/y", "other/plugins/x"):
             self.assertTrue(vendor.validate_sources([entry("x", target=bad)]), bad)
-        for good in ("plugins/x", "plugins/anthology/knowledge/x"):
+
+    def test_target_is_on_the_allowlist(self):
+        # build/sync rmtree the target: only the vendored plugin and one folder per knowledge
+        # entry may be replaced, never first-party plugin directories or their parents.
+        for bad in ("plugins/anthology", "plugins/anthology/", "plugins/anthology/knowledge",
+                    "plugins/anthology/knowledge/a/b", "plugins/anthology/skills/x",
+                    "plugins/anthology/.claude-plugin", "plugins/anthology-guardrails",
+                    "plugins/anthology-superpowers/skills", "plugins/x", "plugins/anthology/knowledgex/a"):
+            self.assertTrue(vendor.validate_sources([entry("x", target=bad)]), bad)
+        for good in ("plugins/anthology-superpowers", "plugins/anthology/knowledge/x",
+                     "plugins/anthology/knowledge/code-review-checklist"):
             self.assertEqual(vendor.validate_sources([entry("x", target=good)]), [], good)
 
     def test_subtree_target_is_still_a_clean_relative_path(self):
@@ -187,14 +220,23 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertTrue(vendor.validate_sources([entry("x", transform=t)]))
         self.assertEqual(vendor.validate_sources([entry("x", transform=t, plugin_version="0.1.0")]), [])
 
+    def test_strip_connectors_and_rename_skill_are_known_transforms(self):
+        self.assertEqual(vendor.validate_sources([entry("x", transform=["strip-connectors"])]), [])
+        t = [{"name": "rename-skill", "old": "a", "new": "x"}]
+        self.assertEqual(vendor.validate_sources([entry("x", transform=t)]), [])
+        for bad in ({"name": "rename-skill", "old": "a"}, {"name": "rename-skill", "new": "b"},
+                    {"name": "rename-skill", "old": "a", "new": "../b"},
+                    {"name": "rename-skill", "old": "", "new": "b"}):
+            self.assertTrue(vendor.validate_sources([entry("x", transform=[bad])]), bad)
+
     def test_missing_license_file_requires_a_note(self):
         self.assertTrue(vendor.validate_sources([entry("x", license_file=None)]))
         self.assertEqual(
             vendor.validate_sources([entry("x", license_file=None, license_note="README")]), [])
 
     def test_same_repo_entries_must_agree_on_the_license_file(self):
-        a = entry("a", repo="https://github.com/o/r", target="p/a", license_file="LICENSE")
-        b = entry("b", repo="https://github.com/o/r", target="p/b", license_file="OTHER")
+        a = entry("a", repo="https://github.com/o/r", license_file="LICENSE")
+        b = entry("b", repo="https://github.com/o/r", license_file="OTHER")
         self.assertTrue(vendor.validate_sources([a, b]))
 
     def test_subtree_entries_are_not_checked_for_pins(self):
@@ -281,6 +323,217 @@ class RenamePluginTest(FixtureCase):
             vendor.rename_plugin(tree, self.OLD, self.NEW, plugin_version="0.1.0")
 
 
+CONNECTOR_DOC = """\
+---
+name: demo
+description: Demo.
+---
+
+# /demo
+
+> If you see unfamiliar placeholders or need to check which tools are connected, see [CONNECTORS.md](../../CONNECTORS.md).
+
+Intro paragraph.
+
+## Steps
+
+### 1. Gather
+
+If **~~project tracker** is connected:
+- Pull the tickets
+- Link them
+
+If no tracker is connected:
+- Ask the user
+
+**If ~~SEO tools are connected:**
+- Pull keywords
+
+**If ~~product analytics are connected:**
+- Cross-reference traffic
+
+Keep this paragraph.
+
+- **~~knowledge base** (if connected): Search the wiki
+- **Pasted text**: Notes
+
+If ~~product analytics is connected, reference benchmarks.
+
+Last sentence of the step.
+
+```
+## If Connectors Available
+kept inside a fence
+```
+
+## If Connectors Available
+
+If **~~knowledge base** is connected:
+- Search prior docs
+
+### Nested heading inside the section
+
+Still connector text.
+
+## Tool Integration
+
+### If ~~email marketing is connected (e.g., Klaviyo)
+- Set up the flow
+
+### If no tools are connected
+- Paste the copy
+
+## Tips
+
+1. Keep this tip.
+"""
+
+CONNECTOR_DOC_STRIPPED = """\
+---
+name: demo
+description: Demo.
+---
+
+# /demo
+
+Intro paragraph.
+
+## Steps
+
+### 1. Gather
+
+If no tracker is connected:
+- Ask the user
+
+Keep this paragraph.
+
+- **Pasted text**: Notes
+
+Last sentence of the step.
+
+```
+## If Connectors Available
+kept inside a fence
+```
+
+## Tips
+
+1. Keep this tip.
+"""
+
+
+class StripConnectorsTest(FixtureCase):
+    def run_strip(self, files):
+        tree = self.tmp / "tree"
+        for rel, text in files.items():
+            write(tree, rel, text)
+        stats = vendor.strip_connectors(tree)
+        return tree, stats
+
+    def test_removes_connector_sections_blocks_and_references_only(self):
+        tree, stats = self.run_strip({"SKILL.md": CONNECTOR_DOC})
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"),
+                         CONNECTOR_DOC_STRIPPED)
+        self.assertEqual(stats["files"], 1)
+
+    def test_headings_and_fences_are_respected(self):
+        # a heading-looking line inside a code fence neither starts nor ends a section
+        doc = ("# T\n\n## If Connectors Available\n\ntext\n\n```\n## Not a heading\n```\n\nmore\n\n"
+               "## Tips\n\nkept\n")
+        tree, _ = self.run_strip({"SKILL.md": doc})
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "# T\n\n## Tips\n\nkept\n")
+
+    def test_fenced_connector_text_is_not_stripped_but_still_fails_the_guard(self):
+        with self.assertRaises(vendor.VendorError):
+            self.run_strip({"SKILL.md": "# T\n\n```\nIf ~~x is connected:\n- y\n```\n"})
+
+    def test_section_at_the_end_of_a_file_leaves_one_final_newline(self):
+        tree, _ = self.run_strip({"SKILL.md": "# T\n\ntext\n\n## Connectors\n\nIf ~~a is connected:\n- b\n"})
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "# T\n\ntext\n")
+
+    def test_connect_setup_heading_with_a_url(self):
+        doc = ("# T\n\n## Connect UXKIN (optional)\n\nadd `https://uxkin.com/mcp`\n\n"
+               "## 1. Start\n\nkept\n")
+        tree, _ = self.run_strip({"SKILL.md": doc})
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "# T\n\n## 1. Start\n\nkept\n")
+
+    def test_connected_tools_heading_is_a_connector_section(self):
+        doc = "# T\n\n### 3. Pull Context from Connected Tools\n\nIf **~~a** is connected:\n- b\n\n### 4. Next\n\nkept\n"
+        tree, _ = self.run_strip({"SKILL.md": doc})
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "# T\n\n### 4. Next\n\nkept\n")
+
+    def test_idempotent(self):
+        tree, _ = self.run_strip({"SKILL.md": CONNECTOR_DOC, "references/a.md": CONNECTOR_DOC})
+        once = {p.name + str(p.parent): p.read_bytes() for p in tree.rglob("*.md")}
+        stats = vendor.strip_connectors(tree)
+        self.assertEqual(once, {p.name + str(p.parent): p.read_bytes() for p in tree.rglob("*.md")})
+        self.assertEqual(stats["files"], 0)
+
+    def test_files_without_connectors_are_byte_identical(self):
+        raw = b"# Plain\r\n\r\nNo connectors here.\r\n"
+        tree, stats = self.run_strip({"SKILL.md": raw, "scripts/run.sh": "#!/bin/sh\n~~ not markdown\n"})
+        self.assertEqual((tree / "SKILL.md").read_bytes(), raw)
+        self.assertEqual((tree / "scripts/run.sh").read_text(), "#!/bin/sh\n~~ not markdown\n")
+        self.assertEqual(stats["files"], 0)
+
+    def test_deletes_a_connectors_file_in_the_tree(self):
+        tree, stats = self.run_strip({"SKILL.md": "# T\n", "CONNECTORS.md": "# Connectors\n",
+                                      "references/CONNECTORS.md": "x\n"})
+        self.assertFalse((tree / "CONNECTORS.md").exists())
+        self.assertFalse((tree / "references/CONNECTORS.md").exists())
+        self.assertEqual(stats["deleted"], 2)
+
+    def test_unhandled_placeholder_fails_loudly_instead_of_guessing(self):
+        for doc in ("Open the ~~project tracker and look.\n", "See [x](CONNECTORS.md) for details.\n"):
+            with self.assertRaises(vendor.VendorError) as ctx:
+                self.run_strip({"SKILL.md": doc})
+            self.assertIn("SKILL.md:1", str(ctx.exception))
+
+    def test_preserves_the_executable_bit(self):
+        tree = self.tmp / "tree"
+        write(tree, "x.md", "# T\n\n## Connectors\n\nIf ~~a is connected:\n- b\n", exec_bit=True)
+        vendor.strip_connectors(tree)
+        self.assertTrue(os.access(tree / "x.md", os.X_OK))
+
+    def test_pipeline_applies_it_from_sources_json(self):
+        e = self.add_upstream("conn", {"LICENSE": MIT_TEXT, "SKILL.md": CONNECTOR_DOC},
+            transform=["strip-connectors"])
+        self.build_all([e])
+        self.assertEqual(self.check(), [])
+        shipped = (self.root / e["target"] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("~~", shipped)
+        self.assertNotIn("CONNECTORS.md", shipped)
+
+
+class RenameSkillTest(FixtureCase):
+    def make(self, text):
+        tree = self.tmp / "tree"
+        write(tree, "SKILL.md", text)
+        return tree
+
+    def test_renames_the_frontmatter_name_only(self):
+        tree = self.make("---\nname: code-review\ndescription: Review code.\n---\n\n# /code-review\n")
+        vendor.rename_skill(tree, "code-review", "code-review-checklist")
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"),
+                         "---\nname: code-review-checklist\ndescription: Review code.\n---\n\n# /code-review\n")
+
+    def test_a_different_name_is_an_error(self):
+        tree = self.make("---\nname: other\n---\nbody\n")
+        with self.assertRaises(vendor.VendorError):
+            vendor.rename_skill(tree, "code-review", "x")
+
+    def test_missing_skill_file_or_frontmatter_is_an_error(self):
+        with self.assertRaises(vendor.VendorError):
+            vendor.rename_skill(self.tmp / "nowhere", "a", "b")
+        with self.assertRaises(vendor.VendorError):
+            vendor.rename_skill(self.make("no frontmatter\n"), "a", "b")
+
+    def test_is_not_confused_by_a_name_line_in_the_body(self):
+        tree = self.make("---\nname: a\n---\n\nname: a\n")
+        vendor.rename_skill(tree, "a", "b")
+        self.assertEqual((tree / "SKILL.md").read_text(encoding="utf-8"), "---\nname: b\n---\n\nname: a\n")
+
+
 class PipelineTest(FixtureCase):
     def setUp(self):
         super().setUp()
@@ -306,40 +559,40 @@ class PipelineTest(FixtureCase):
 
     def test_build_copies_whole_repo_without_git_dir(self):
         self.build_all(self.entries)
-        target = self.root / "plugins/plain"
+        target = self.root / "plugins/anthology/knowledge/plain"
         self.assertEqual(sorted(str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()),
                          ["LICENSE", "README.md", "scripts/run.sh", "skills/a/SKILL.md"])
         self.assertFalse((target / ".git").exists())
 
     def test_build_preserves_exec_bit(self):
         self.build_all(self.entries)
-        self.assertTrue(os.access(self.root / "plugins/plain/scripts/run.sh", os.X_OK))
-        self.assertFalse(os.access(self.root / "plugins/plain/README.md", os.X_OK))
+        self.assertTrue(os.access(self.root / "plugins/anthology/knowledge/plain/scripts/run.sh", os.X_OK))
+        self.assertFalse(os.access(self.root / "plugins/anthology/knowledge/plain/README.md", os.X_OK))
 
     def test_build_uses_only_the_pinned_subpath(self):
         self.build_all(self.entries)
-        target = self.root / "plugins/sub"
+        target = self.root / "plugins/anthology/knowledge/sub"
         self.assertEqual(sorted(str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()),
                          ["LICENSE.txt", "SKILL.md"])
 
     def test_build_applies_rename(self):
         self.build_all(self.entries)
-        target = self.root / "plugins/ren"
+        target = self.root / "plugins/anthology/knowledge/ren"
         self.assertEqual((target / "skills/x/SKILL.md").read_text(), "Use new:thing\n")
         manifest = json.loads((target / ".claude-plugin/plugin.json").read_text())
         self.assertEqual((manifest["name"], manifest["version"]), ("new", "0.1.0"))
 
     def test_build_replaces_existing_target(self):
         self.build_all(self.entries)
-        write(self.root, "plugins/plain/stale.txt", "stale")
+        write(self.root, "plugins/anthology/knowledge/plain/stale.txt", "stale")
         vendor.build(self.root, "plain", fetch=self.fetch)
-        self.assertFalse((self.root / "plugins/plain/stale.txt").exists())
+        self.assertFalse((self.root / "plugins/anthology/knowledge/plain/stale.txt").exists())
 
     def test_build_out_dir_leaves_the_repo_alone(self):
         self.set_sources(self.entries)
         out = self.tmp / "out"
         vendor.build(self.root, "plain", out=out, fetch=self.fetch)
-        self.assertTrue((out / "plugins/plain/README.md").is_file())
+        self.assertTrue((out / "plugins/anthology/knowledge/plain/README.md").is_file())
         self.assertFalse((self.root / "plugins").exists())
 
     def test_unknown_name(self):
@@ -353,26 +606,26 @@ class PipelineTest(FixtureCase):
 
     def test_check_flags_modified_file(self):
         self.build_all(self.entries)
-        write(self.root, "plugins/plain/README.md", "edited\n")
+        write(self.root, "plugins/anthology/knowledge/plain/README.md", "edited\n")
         problems = self.check()
         self.assertTrue(any("README.md" in p and "differs" in p for p in problems), problems)
 
     def test_check_flags_extra_and_missing_files(self):
         self.build_all(self.entries)
-        write(self.root, "plugins/plain/extra.md", "x")
-        (self.root / "plugins/plain/README.md").unlink()
+        write(self.root, "plugins/anthology/knowledge/plain/extra.md", "x")
+        (self.root / "plugins/anthology/knowledge/plain/README.md").unlink()
         problems = "\n".join(self.check())
         self.assertIn("extra.md", problems)
         self.assertIn("README.md", problems)
 
     def test_check_flags_lost_exec_bit(self):
         self.build_all(self.entries)
-        (self.root / "plugins/plain/scripts/run.sh").chmod(0o644)
+        (self.root / "plugins/anthology/knowledge/plain/scripts/run.sh").chmod(0o644)
         self.assertTrue(any("run.sh" in p and "mode" in p for p in self.check()))
 
     def test_check_flags_missing_target(self):
         self.build_all(self.entries)
-        shutil.rmtree(self.root / "plugins/plain")
+        shutil.rmtree(self.root / "plugins/anthology/knowledge/plain")
         self.assertTrue(any("plain" in p for p in self.check()))
 
     def test_directory_symlinks_fail_loudly_in_pristine_trees(self):
@@ -382,27 +635,27 @@ class PipelineTest(FixtureCase):
             vendor.build(self.root, "plain", fetch=self.fetch)
         self.assertIn("linkdir", str(ctx.exception))
         self.assertIn("symlinks to directories", str(ctx.exception))
-        self.assertFalse((self.root / "plugins/plain").exists())
+        self.assertFalse((self.root / "plugins/anthology/knowledge/plain").exists())
         self.assertTrue(any("linkdir" in p for p in self.check()))
 
     def test_check_flags_a_directory_symlink_in_the_committed_tree(self):
         self.build_all(self.entries)
-        os.symlink("skills", self.root / "plugins/plain/linkdir")
+        os.symlink("skills", self.root / "plugins/anthology/knowledge/plain/linkdir")
         problems = self.check()
         self.assertTrue(any("linkdir" in p and "symlinks to directories" in p for p in problems), problems)
 
     def test_file_symlinks_are_copied_and_compared(self):
         os.symlink("README.md", self.pristine["plain"] / "link.md")
         self.build_all(self.entries)
-        self.assertEqual(os.readlink(self.root / "plugins/plain/link.md"), "README.md")
+        self.assertEqual(os.readlink(self.root / "plugins/anthology/knowledge/plain/link.md"), "README.md")
         self.assertEqual(self.check(), [])
-        (self.root / "plugins/plain/link.md").unlink()
-        os.symlink("LICENSE", self.root / "plugins/plain/link.md")
+        (self.root / "plugins/anthology/knowledge/plain/link.md").unlink()
+        os.symlink("LICENSE", self.root / "plugins/anthology/knowledge/plain/link.md")
         self.assertTrue(any("link.md" in p for p in self.check()))
 
     def test_check_ignores_ds_store_but_not_other_extras(self):
         self.build_all(self.entries)
-        write(self.root, "plugins/plain/.DS_Store", "x")
+        write(self.root, "plugins/anthology/knowledge/plain/.DS_Store", "x")
         self.assertEqual(self.check(), [])
 
     def test_check_flags_upstream_change_at_same_pin(self):
@@ -446,7 +699,7 @@ class LicenseTest(FixtureCase):
                                    license_file=None, license_note="README")
 
     def test_fetch_licenses_copies_unchanged_one_per_repo(self):
-        a2 = entry("a2", repo=self.a["repo"], target="plugins/a2")
+        a2 = entry("a2", repo=self.a["repo"], target="plugins/anthology/knowledge/a2")
         self.pristine["a2"] = self.pristine["a"]
         self.build_all([self.a, a2])
         licenses = sorted(p.name for p in (self.root / "vendor/licenses").iterdir())
@@ -512,7 +765,7 @@ class SyncAndDiffTest(FixtureCase):
         report = vendor.sync(self.root, "p", "v2", fetch=self.fetch, resolve=self.resolve)
         pinned = vendor.load_sources(self.root)[0]
         self.assertEqual((pinned["ref"], pinned["commit"]), ("v2", SHA_B))
-        self.assertEqual((self.root / "plugins/p/skills/a/SKILL.md").read_text(), "v2\n")
+        self.assertEqual((self.root / "plugins/anthology/knowledge/p/skills/a/SKILL.md").read_text(), "v2\n")
         self.assertEqual(report["rejects"], [])
         self.assertEqual(self.check(), [])
         self.assertFalse((self.root / ".git").exists())
@@ -542,8 +795,8 @@ class SyncAndDiffTest(FixtureCase):
         self.assertEqual(vendor.diff_entry(self.root, "p", fetch=self.fetch), "")
 
     def test_diff_shows_shipped_changes_as_a_patch(self):
-        write(self.root, "plugins/p/skills/a/SKILL.md", "v1\nlocal edit\n")
-        write(self.root, "plugins/p/new.md", "new\n")
+        write(self.root, "plugins/anthology/knowledge/p/skills/a/SKILL.md", "v1\nlocal edit\n")
+        write(self.root, "plugins/anthology/knowledge/p/new.md", "new\n")
         text = vendor.diff_entry(self.root, "p", fetch=self.fetch)
         self.assertIn("--- a/skills/a/SKILL.md", text)
         self.assertIn("+++ b/skills/a/SKILL.md", text)
@@ -553,24 +806,24 @@ class SyncAndDiffTest(FixtureCase):
 
     @unittest.skipUnless(shutil.which("git"), "git is not installed")
     def test_diff_output_round_trips_through_a_patch(self):
-        write(self.root, "plugins/p/skills/a/SKILL.md", "v1\nlocal edit\n")
-        write(self.root, "plugins/p/new.md", "new\n")
-        (self.root / "plugins/p/LICENSE").unlink()
+        write(self.root, "plugins/anthology/knowledge/p/skills/a/SKILL.md", "v1\nlocal edit\n")
+        write(self.root, "plugins/anthology/knowledge/p/new.md", "new\n")
+        (self.root / "plugins/anthology/knowledge/p/LICENSE").unlink()
         patch = self.root / "vendor/patches/p.patch"
         patch.parent.mkdir()
         patch.write_text(vendor.diff_entry(self.root, "p", fetch=self.fetch), encoding="utf-8")
-        shipped = {p: p.read_bytes() for p in (self.root / "plugins/p").rglob("*") if p.is_file()}
+        shipped = {p: p.read_bytes() for p in (self.root / "plugins/anthology/knowledge/p").rglob("*") if p.is_file()}
         sources = json.loads((self.root / "vendor/sources.json").read_text())
         sources["sources"][0]["transform"] = [{"patch": "vendor/patches/p.patch"}]
         (self.root / "vendor/sources.json").write_text(json.dumps(sources, indent=2) + "\n")
         vendor.build(self.root, "p", fetch=self.fetch)
-        self.assertEqual(shipped, {p: p.read_bytes() for p in (self.root / "plugins/p").rglob("*")
+        self.assertEqual(shipped, {p: p.read_bytes() for p in (self.root / "plugins/anthology/knowledge/p").rglob("*")
                                    if p.is_file()})
         self.assertEqual(self.check(), [])
 
     @unittest.skipUnless(shutil.which("git"), "git is not installed")
     def test_sync_reports_patch_rejects(self):
-        write(self.root, "plugins/p/skills/a/SKILL.md", "v1\nlocal edit\n")
+        write(self.root, "plugins/anthology/knowledge/p/skills/a/SKILL.md", "v1\nlocal edit\n")
         patch = self.root / "vendor/patches/p.patch"
         patch.parent.mkdir()
         patch.write_text(vendor.diff_entry(self.root, "p", fetch=self.fetch), encoding="utf-8")
