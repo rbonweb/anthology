@@ -20,3 +20,32 @@ jobs:
           PYTHON_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/python.Dockerfile)
           docker run --rm -v "$PWD":/w -w /w "$PYTHON_IMAGE" \
             sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
+
+  test-py39:
+    # The vendoring script must keep running on the macOS system python3 (3.9).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests in the pinned Python 3.9 image
+        run: |
+          PYTHON_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/python39.Dockerfile)
+          docker run --rm -v "$PWD":/w -w /w "$PYTHON_IMAGE" \
+            sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
+
+  vendor-check:
+    # Needs git and network (the Docker test image has neither): rebuild every vendored
+    # tree from its pinned upstream and diff it against the committed tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: vendor.py check
+        run: python3 scripts/vendor.py check
+      - name: Vendor tests that need git (skipped in the Docker image)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_vendor.py' -v

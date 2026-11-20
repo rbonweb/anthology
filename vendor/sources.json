@@ -1,0 +1,57 @@
+{
+  "sources": [
+    {
+      "name": "superpowers",
+      "repo": "https://github.com/obra/superpowers",
+      "path": "",
+      "ref": "v7.0.2",
+      "commit": "22f0b463e7a5e579904dd6211a520321035526f7",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology-superpowers",
+      "transform": [
+        {
+          "name": "rename-plugin",
+          "old": "superpowers",
+          "new": "anthology-superpowers"
+        }
+      ],
+      "plugin_version": "0.1.0",
+      "upstream_version": "7.0.2"
+    },
+    {
+      "name": "design-skills",
+      "repo": "https://github.com/cuellarfr/design-skills",
+      "path": "",
+      "ref": "main",
+      "commit": "7e25e66e87f64f9d3dea22198f9e29937e7c48f5",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-skills",
+      "transform": []
+    },
+    {
+      "name": "frontend-design",
+      "repo": "https://github.com/anthropics/skills",
+      "path": "skills/frontend-design",
+      "ref": "main",
+      "commit": "e4bb5d960d87126ff3b3a8af1a104b7db67560ba",
+      "license": "Apache-2.0",
+      "license_file": "skills/frontend-design/LICENSE.txt",
+      "target": "plugins/anthology/knowledge/frontend-design",
+      "transform": []
+    },
+    {
+      "name": "web-design-guidelines",
+      "repo": "https://github.com/vercel-labs/agent-skills",
+      "path": "skills/web-design-guidelines",
+      "ref": "main",
+      "commit": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62",
+      "license": "MIT",
+      "license_file": null,
+      "license_note": "README",
+      "target": "plugins/anthology/knowledge/web-design-guidelines",
+      "transform": []
+    }
+  ]
+}
