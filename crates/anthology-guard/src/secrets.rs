@@ -21,11 +21,13 @@ pub const GUARD_SECRET_PATTERNS: &[(&str, bool)] = &[
 mod tests {
     use super::*;
 
+    // fancy-regex, so a look-around added on the Python side still compiles here. GD1 switches
+    // this to `pycompat::re::compile` once P1 lands (GC-6).
     #[test]
     fn there_are_eight_patterns_and_each_compiles() {
         assert_eq!(GUARD_SECRET_PATTERNS.len(), 8);
         for (pattern, ignorecase) in GUARD_SECRET_PATTERNS {
-            regex::RegexBuilder::new(pattern)
+            fancy_regex::RegexBuilder::new(pattern)
                 .case_insensitive(*ignorecase)
                 .build()
                 .unwrap_or_else(|e| panic!("{pattern}: {e}"));

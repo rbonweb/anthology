@@ -28,9 +28,15 @@ pub enum Int {
 }
 
 /// A JSON object in insertion order. A repeated key keeps its first position and takes the
-/// last value, as a Python `dict` does.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// last value, as a Python `dict` does. Equality ignores the order, as `dict ==` does.
+#[derive(Clone, Debug, Default)]
 pub struct Map(Vec<(String, Value)>);
+
+impl PartialEq for Map {
+    fn eq(&self, other: &Map) -> bool {
+        self.len() == other.len() && self.iter().all(|(k, v)| other.get(k) == Some(v))
+    }
+}
 
 impl Map {
     /// An empty object.
@@ -96,6 +102,21 @@ mod tests {
         m.insert("a".into(), s("3"));
         let entries: Vec<_> = m.iter().collect();
         assert_eq!(entries, vec![("a", &s("3")), ("b", &s("2"))]);
+    }
+
+    #[test]
+    fn equality_ignores_the_order_like_a_dict() {
+        let mut a = Map::new();
+        a.insert("x".into(), s("1"));
+        a.insert("y".into(), s("2"));
+        let mut b = Map::new();
+        b.insert("y".into(), s("2"));
+        b.insert("x".into(), s("1"));
+        assert_eq!(a, b);
+        b.insert("x".into(), s("3"));
+        assert_ne!(a, b);
+        b.remove("x");
+        assert_ne!(a, b);
     }
 
     #[test]

@@ -1,11 +1,9 @@
 //! The workspace and rtk build with the same Rust channel (GC-18, m-17). Only the channel must be
 //! equal; the components and targets may differ.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+use repo_tests::repo;
 
 /// The `channel` of a rust-toolchain.toml's `[toolchain]` table.
 fn channel(path: &Path) -> String {
@@ -33,9 +31,8 @@ fn channel(path: &Path) -> String {
 
 #[test]
 fn the_workspace_channel_equals_rtks() {
-    let root = repo_root();
-    let ours = channel(&root.join("rust-toolchain.toml"));
-    let rtk = channel(&root.join("rtk/rust-toolchain.toml"));
+    let ours = channel(&repo::path("rust-toolchain.toml"));
+    let rtk = channel(&repo::path("rtk/rust-toolchain.toml"));
     assert_eq!(ours, rtk, "rust-toolchain.toml and rtk/rust-toolchain.toml");
 }
 

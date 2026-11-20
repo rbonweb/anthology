@@ -1,8 +1,9 @@
 //! The shipped binary has no `serde_json`: JSON goes through `pycompat::json` only (GC-16, m-11).
 //! cargo-deny bans are graph-wide, so this checks the normal-dependency tree of anthology-cli.
 
-use std::path::Path;
 use std::process::Command;
+
+use repo_tests::repo;
 
 /// The release targets (design §10).
 const SHIPPED: [&str; 4] = [
@@ -15,7 +16,7 @@ const SHIPPED: [&str; 4] = [
 #[test]
 fn the_anthology_cli_tree_has_no_serde_json() {
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = repo::root();
     // Every shipped target; cargo may download the other targets' crates (not built).
     let out = Command::new(cargo)
         .args(["tree", "--locked", "-p", "anthology-cli", "-e", "normal"])

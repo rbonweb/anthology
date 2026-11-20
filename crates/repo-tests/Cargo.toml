@@ -13,6 +13,10 @@ workspace = true
 [dependencies]
 anthology-core.workspace = true
 anthology-pycompat.workspace = true
+# MT1: test_roster's startup_budget and `mem` parser ports, test_taste_bridge's gzip bodies.
+anthology-dev.workspace = true
+anthology-memory.workspace = true
+flate2.workspace = true
 regex.workspace = true
 yaml-rust2.workspace = true
 sha2.workspace = true

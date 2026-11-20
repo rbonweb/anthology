@@ -1,6 +1,9 @@
 //! Command dispatch (plan §1.3). Every command is registered here; its lane fills `run` in
 //! `cmd/<name>.rs` and never edits this file. Until then the command exits 70 with
 //! `anthology: <command> is not ported yet`.
+//!
+//! F3 adds one `pub fn env() -> anthology_core::Env` here (the process environment, `HOME` from
+//! the environment or else the passwd entry; GC-2), so every command builds its `Env` the same way.
 
 pub mod doctor;
 pub mod guard;
@@ -54,7 +57,7 @@ impl Output {
 
 const USAGE: &str = "usage: anthology <command> [args]
 commands:
-  guard hook
+  guard hook [--shim]
   hook session-start
   setup preview|apply|remove
   doctor

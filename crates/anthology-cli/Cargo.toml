@@ -16,8 +16,13 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# GD2: a test build whose guard hook panics on a marker input (m-5).
+# Test builds of the binary (m-R10): each forwards the library feature of the same name.
+# GD2: the guard hook panics on a marker input (m-5).
 panic-on-marker = ["anthology-guard/panic-on-marker"]
+# GD2: the 8 s hook watchdog made short.
+test-watchdog = ["anthology-guard/test-watchdog"]
+# F3 and the lanes: `fsx::fault` reachable from the binary's tests.
+test-faults = ["anthology-core/test-faults"]
 
 [dependencies]
 anthology-core.workspace = true

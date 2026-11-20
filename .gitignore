@@ -9,3 +9,6 @@ evals/results/
 # The replay corpus is local only (design §13.7), in case someone copies it into the repo.
 /port/replay/
 replay-corpus*
+# The replay HMAC key and the per-tool runner-4 list are local only too (m2-8).
+hmac.key
+runner4-*.tsv

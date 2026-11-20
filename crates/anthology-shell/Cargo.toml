@@ -15,7 +15,8 @@ description = "Structural shell lexer and analyze(), shared by the anthology gua
 unused_dependencies = "allow"
 
 [dependencies]
-regex = "1.13.2"
+# "1.12", not the root's 1.13.2: rtk's own lock (regex 1.12.x) keeps its version (RG1).
+regex = "1.12"
 fancy-regex = "0.20.2"
 
 [dev-dependencies]

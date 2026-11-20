@@ -24,6 +24,9 @@ anthology-shell = { path = "../crates/anthology-shell" }
 anthology-guard = { path = "../crates/anthology-guard" }
 anthology-settings = { path = "../crates/anthology-settings" }
 anthology-memory = { path = "../crates/anthology-memory" }
+# portable_import: `Env` and a scratch tree to check that no write leaves the allowed set.
+anthology-core = { path = "../crates/anthology-core" }
+tempfile = "=3.27.0"
 
 [[bin]]
 name = "json_loads"

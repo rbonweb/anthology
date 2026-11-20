@@ -25,6 +25,7 @@ anthology-settings = { path = "crates/anthology-settings" }
 anthology-memory = { path = "crates/anthology-memory" }
 anthology-runtime = { path = "crates/anthology-runtime" }
 anthology-testkit = { path = "crates/anthology-testkit" }
+anthology-dev = { path = "crates/anthology-dev" }
 
 # Design §11.2.
 regex = "=1.13.2"
@@ -50,7 +51,7 @@ rustls = { version = "=0.23.46", default-features = false, features = ["ring", "
 
 [workspace.lints.cargo]
 # F1 declares each crate's final dependency list before the code that uses it exists (plan §0.2).
-# Back to "warn" once every lane has landed.
+# Back to "warn" at CO1, once every lane has landed (also in anthology-shell and fuzz).
 unused_dependencies = "allow"
 
 [profile.release]

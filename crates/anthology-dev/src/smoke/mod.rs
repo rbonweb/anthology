@@ -1,6 +1,7 @@
 //! `anthology-dev smoke` (evals/smoke/smoke.py). Owner: EV1.
 
 pub mod cases;
+pub mod runner;
 
 use std::ffi::OsString;
 use std::io::Read;

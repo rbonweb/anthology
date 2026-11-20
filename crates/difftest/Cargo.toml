@@ -27,3 +27,6 @@ proptest.workspace = true
 tempfile.workspace = true
 lexopt.workspace = true
 sha2.workspace = true
+# D-5: decode gzip and SQLite artifacts to compare their content (mem, memory.portable).
+flate2.workspace = true
+rusqlite.workspace = true

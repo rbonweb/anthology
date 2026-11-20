@@ -313,8 +313,10 @@ dependencies = [
  "anthology-settings",
  "anthology-shell",
  "anthology-testkit",
+ "flate2",
  "lexopt",
  "proptest",
+ "rusqlite",
  "sha2",
  "tempfile",
 ]
@@ -719,8 +721,11 @@ name = "repo-tests"
 version = "0.1.0"
 dependencies = [
  "anthology-core",
+ "anthology-dev",
+ "anthology-memory",
  "anthology-pycompat",
  "anthology-testkit",
+ "flate2",
  "proptest",
  "regex",
  "sha2",

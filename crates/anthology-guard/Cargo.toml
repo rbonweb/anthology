@@ -13,6 +13,8 @@ workspace = true
 [features]
 # GD2: a test build whose hook panics on a marker input (m-5).
 panic-on-marker = []
+# GD2: the 8 s hook watchdog made short, so its limit line can be tested (m-R10).
+test-watchdog = []
 
 [dependencies]
 anthology-shell.workspace = true

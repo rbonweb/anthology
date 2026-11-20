@@ -3,6 +3,9 @@
 //! `data` and `secrets` are F1's; the rest is GD's. The `pub` items of `check`, `hook`, `paths`
 //! and `rules` are re-exported at the crate root, where plan §3.5 publishes them. Keep `pub`
 //! names unique across those modules and use `pub(crate)` for helpers.
+//!
+//! A duplicate `pub` name across these modules fails clippy here (`ambiguous_glob_reexports`,
+//! denied by `-D warnings`): rename it in your module, or make it `pub(crate)`.
 #![forbid(unsafe_code)]
 
 pub mod check;

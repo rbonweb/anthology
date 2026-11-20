@@ -3,6 +3,7 @@
 pub mod collect;
 pub mod compare;
 pub mod envelope;
+pub mod hmac;
 pub mod report;
 pub mod runners;
 

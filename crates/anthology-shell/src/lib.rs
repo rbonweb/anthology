@@ -3,6 +3,9 @@
 //! Every module's `pub` items are re-exported at the crate root, where plan §3.4 publishes them,
 //! so a lane fills its module without editing this file. Keep `pub` names unique across modules
 //! and use `pub(crate)` for helpers.
+//!
+//! A duplicate `pub` name across these modules fails clippy here (`ambiguous_glob_reexports`,
+//! denied by `-D warnings`): rename it in your module, or make it `pub(crate)`.
 #![forbid(unsafe_code)]
 
 pub mod analyze;

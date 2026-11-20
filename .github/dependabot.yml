@@ -6,6 +6,8 @@ updates:
       interval: weekly
   - package-ecosystem: cargo
     directory: /
+    # The workspace lives on the port's integration branch until cutover; CO2 drops this line.
+    target-branch: rust
     schedule:
       interval: weekly
   - package-ecosystem: pip
