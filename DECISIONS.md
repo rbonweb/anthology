@@ -653,3 +653,23 @@ The defence is model guidance plus review, not a barrier; a note can still misle
 **Consequences**
 
 A first session after setup leaves old notes out of the repo and the main session's repo index until the user promotes them, which is the intended privacy default. Cost if wrong: a user who wanted automatic repo migration runs setup once and picks notes. Evidence: stream P1 tests, `tests/test_smoke.py`.
+
+## ADR-021: quoted secret keys in the privacy scan and G6
+
+- **Date:** 2026-11-20
+- **Task:** fix-wave lane FW-Q
+- **Status:** Accepted
+
+**Context**
+
+The secret-assignment patterns (`password`, `api key`, and the broader `password|passwd|secret|api key|token` one in `memory_privacy.SECRET_PATTERNS`, whose first two are mirrored by guard rule G6) required the separator right after the key. A JSON- or dict-quoted key (`"password": "…"`, `'api_token': '…'`, `{"token":"…"}`) has a closing quote in between and was missed.
+
+**Decision**
+
+- Each of those patterns allows one closing quote (`"` or `'`) between the key and the `:`/`=` separator. The G6 patterns and their copies in `SECRET_PATTERNS` stay byte-identical (a test checks it); the unquoted forms behave as before.
+- After a quoted key the value must be a scalar. The value does not count if it is empty (`""`), `null`/`none`/`true`/`false`, an object or array (starts with `{` or `[`), or an immediate `,`/`}`/`]`. So JSON schemas (`"password": {"type": "string"}`), blank fields and prose such as "the password field" stay clean. The broad pattern also keeps its 8-character minimum.
+- Every pattern stays linear (one optional quote, no nested quantifiers); a test asserts that 4x the input costs less than 6x.
+
+**Consequences**
+
+A quoted key with a real-looking value is refused or blocked like an unquoted one. A string value that spells `null` or `true` after a quote is not flagged (`"token": "null"`). Cost if wrong: a rare false negative on such a placeholder, or a false positive on a quoted example value that looks real. Evidence: `QuotedKeyTest` in `tests/test_memory_privacy.py` and the G6 rows in `tests/test_guard_rules.py`.
