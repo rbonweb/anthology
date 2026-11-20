@@ -121,14 +121,32 @@ fn never_ending_mode_keeps_sending_until_the_client_leaves() {
 }
 
 #[test]
-fn dropping_the_server_stops_it() {
-    let server = TestServer::https();
-    let addr = server.addr();
-    server.route("/n", Route::ok(b"").never_ending());
-    let stream = TcpStream::connect(addr).expect("connect");
+fn dropping_the_server_ends_a_never_ending_response() {
+    // (Whether the port refuses connections afterwards is not checked: a parallel test may
+    // be given the same port at once.)
+    let server = TestServer::http();
+    server.route(
+        "/n",
+        Route::ok(b"z").never_ending_with(100, Duration::from_millis(1)),
+    );
+    let mut stream = TcpStream::connect(server.addr()).expect("connect");
+    stream
+        .write_all(b"GET /n HTTP/1.1\r\nHost: x\r\n\r\n")
+        .expect("send");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let mut buf = [0u8; 4096];
+    assert!(stream.read(&mut buf).expect("read") > 0);
+    let start = Instant::now();
     drop(server);
-    drop(stream);
-    assert!(TcpStream::connect(addr).is_err(), "still listening");
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => assert!(start.elapsed() < Duration::from_secs(5), "still streaming"),
+        }
+    }
+    assert!(start.elapsed() < Duration::from_secs(5));
 }
 
 #[test]
