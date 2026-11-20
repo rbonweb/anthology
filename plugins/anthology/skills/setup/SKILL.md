@@ -28,7 +28,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    - `browseros_tools` false: agents call `mcp__browseros-neo__*`, so the BrowserOS MCP server must be
      named exactly `browseros-neo` (user, local, project or managed scope; a plugin-provided server gets
      a different tool prefix). Show the `detail`, which names what was found, and ask the user to
-     rename it. `null` means no BrowserOS server is configured (the BrowserOS check above covers it).
+     rename it. `null` means no BrowserOS server is configured (the BrowserOS check above covers it),
+     or that the only one was found in the project's `.mcp.json` and is not approved (the `detail`
+     says so): ask the user to approve it in Claude Code, or add the server at user scope.
    - `subagent_model` false: show the `detail` warning clearly. `CLAUDE_CODE_SUBAGENT_MODEL` overrides
      every agent's model, so the roster's opus/sonnet/haiku tiers do not apply. Anthology never
      changes it, and whether to keep it is the user's choice. Continue either way.
@@ -41,7 +43,11 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    - rtk `null`: the rtk wiring is not part of this install yet; the rtk step is skipped.
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the
    separate installs conflict. Show each `command` (`claude plugin uninstall <plugin> -s <scope>`)
-   and ask the user to run them. Do not run them for the user.
+   and ask the user to run them. Do not run them for the user. When an item's `command` is `null`
+   its scope or name was not one Claude Code accepts: show the `plugin` and `scope` as given and
+   offer no command (the user can look the install up with `claude plugin list`). If
+   `installed_plugins` is `unreadable`, say that Claude Code's `installed_plugins.json` could not be
+   read, so duplicates were not checked; setup can continue.
 4. Show every change listed below, then ask for one confirmation: apply these changes and, if
    `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
    (recommend none):

@@ -265,11 +265,13 @@ def preview(plugin_root, cwd=None, env=None):
         repo = {"root": str(info[0]), "key": info[1], "approved": memory_sync.is_approved(info[1], env=env)}
     legacy = legacy_notes(info[0], env) if info is not None else []
     personal = _personal_dir(env)
+    installed, installed_state = doctor.installed_plugins_state(env)
     return {
         "supported": True,
         "doctor": {"checks": doctor.check_env(env, lock=_lock_path(plugin_root), plugin_root=plugin_root,
                                          cwd=cwd)},
-        "duplicates": doctor.find_duplicates(doctor.installed_plugins(env)),
+        "duplicates": doctor.find_duplicates(installed),
+        "installed_plugins": installed_state,
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,
         "memory": {"repo": repo, "personal_dir": str(personal), "personal_exists": personal.is_dir(),

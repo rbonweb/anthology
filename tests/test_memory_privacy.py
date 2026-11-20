@@ -197,6 +197,182 @@ class QuotedKeyScalingTest(unittest.TestCase):
         self.assertLess(large, max(6 * small, 0.2), "%.3fs then %.3fs" % (small, large))
 
 
+# Key names are split so no assignment-shaped literal sits in this file (gitleaks scans the repo).
+PW, TOK, SEC, AK = "pass" + "word", "to" + "ken", "sec" + "ret", "api" + "_key"
+VALUE = "hunter2" + "xyz"
+SQ = "'"
+
+
+class QuotedKeyTest(unittest.TestCase):
+    """A JSON- or dict-quoted key (`"key": "value"`) is an assignment too (FW-Q). Ruling: after a
+    quoted key the value must be a scalar that is not empty, exactly null/true/false, or an
+    object/array (a JSON schema, a typed field); and a value that is wholly a template placeholder
+    (`<...>`, `${...}`, a run of `*`, `.` or `x`), quoted or not, is not a secret."""
+
+    FLAGGED = (
+        '"%s": "%s"' % (PW, VALUE),
+        "%s%s_%s%s: %s%s%s" % (SQ, "api", "token", SQ, SQ, VALUE, SQ),
+        '"%s": "%s"' % (SEC, VALUE),
+        '{"%s":"%s"}' % (TOK, VALUE),
+        '"%s" : "%s"' % (AK, VALUE),
+        '"%s"=%s' % (PW, VALUE),
+        '{"user": "bob", "%s": "%s", "x": 1}' % (PW, VALUE),
+        '"%s": %s' % (TOK, VALUE),                      # an unquoted scalar value
+        '"%s":"%s"' % (PW.upper(), VALUE),
+        "%s%s: %s%s%s" % (SQ, PW, SQ, VALUE, SQ),
+        # a value that only starts with null/none/true/false is a value (fix round 1, I-1)
+        '"%s": "true-love-99"' % PW,
+        '"%s": "True!Love#2024"' % PW,
+        '"%s": "null.void.12345"' % AK,
+        '"%s": "None-of-your-biz1"' % PW,
+        '"%s": "false/positive/xyz"' % TOK,
+        '"%s": falsetto12345' % TOK,
+        # JSON inside a double-quoted shell string keeps its backslashes (I-2)
+        '{\\"%s\\": \\"%s\\"}' % (PW, VALUE),
+        '{\\"%s\\":\\"%s\\"}' % (AK, VALUE),
+        'curl -d "{\\"%s\\": \\"%s\\"}"' % (TOK, VALUE),
+        # a placeholder with more after it is not a placeholder (I-3)
+        '"%s": "<a>b"' % PW,
+        '"%s": "${X}tail"' % PW,
+        '"%s": "***real"' % PW,
+        "%s=<a>b" % PW,
+        "%s: ${X}tail" % PW,
+        "%s=***real" % PW,
+        '"%s": "string"' % PW,                          # not a placeholder: a schema uses {"type": ...}
+        '"%s": "<a>bcdefgh"' % TOK,
+        "%s=xray1234" % SEC,
+        # a `,` `}` `]` inside the quotes does not end a value that starts like a placeholder (round 2)
+        '"%s": "true,horse,battery"' % PW,
+        '"%s": "x,Hunter2xyz"' % PW,
+        '"%s": "X}9aBcdEf"' % PW,
+        '"%s": "*]q8Zr!kP"' % PW,
+        '"%s": "<a>,realsecret1"' % PW,
+        '"%s": "null, real-secret-99"' % PW,
+        '"%s": "${A},realsecret1"' % PW,
+        '"%s": "x,abcdef123"' % AK,
+        '"%s": "x,abcdef123456"' % TOK,
+        '"%s": "true,abcdefgh12"' % SEC,
+        '{\\"%s\\": \\"x,%s\\"}' % (PW, VALUE),
+    )
+    ALLOWED = (
+        '"%s": {"type": "string"}' % PW,
+        '"%s": {"type": "string", "description": "the secret"}' % SEC,
+        '"%s": ""' % PW,
+        "%s%s%s: %s%s" % (SQ, PW, SQ, SQ, SQ),
+        '"%s": null' % TOK,
+        '"%s": null,' % TOK,
+        '"%s": true' % PW,
+        '"%s": false' % SEC,
+        '"%s": []' % TOK,
+        '"%s": [{"type": "string"}, {"type": "number"}]' % TOK,
+        '"%s": "", "user": "bobbyxyz1234"' % PW,
+        '{"%s":"","%s":null}' % (PW, TOK),
+        "the %s field" % PW,
+        "the %s field is required" % PW,
+        'the "%s" property' % PW,
+        'send the "%s" header' % TOK,
+        '"%s"' % PW,
+        '"%s", "%s"' % (PW, TOK),
+        '"%s": "true"' % PW,
+        '"%s": none }' % TOK,
+        '{\\"%s\\": \\"\\"}' % PW,
+        '{\\"%s\\": null}' % TOK,
+        # template placeholders, quoted or not (I-3)
+        '"%s": "<placeholder>"' % PW,
+        '"%s": "x"' % PW,
+        "%s%s%s: %s%s%s" % (SQ, PW, SQ, SQ, "false", SQ),
+        '%s="false"' % PW,
+        "%s='none'" % PW,
+        '"%s": "None"' % TOK,
+        '"%s": "<your-password>"' % PW,
+        '"%s": "${X}"' % PW,
+        '"%s": "${DB_PASS}"' % SEC,
+        '"%s": "***"' % PW,
+        '"%s": "..."' % TOK,
+        '"%s": "xxxxxxxxxx"' % AK,
+        '"%s": "XXXX"' % PW,
+        "%s%s%s: %s<token-here>%s" % (SQ, TOK, SQ, SQ, SQ),
+        '{"username": "<user>", "%s": "<pass>"}' % PW,
+        "%s=<your-%s>" % (PW, PW),
+        "%s: ${DB_PASS}" % PW,
+        "%s=<your-token-here>" % TOK,
+        "%s=********" % SEC,
+        "%s: xxxxxxxxxxxx" % AK,
+        "%s=..." % PW,
+        '%s: "<your-%s>"' % (PW, PW),
+    )
+
+    def test_quoted_keys_with_a_value_are_flagged(self):
+        for text in self.FLAGGED:
+            self.assertIn("secret:credential-assignment", kinds("x\n" + text + "\n"), text)
+            self.assertNotIn(VALUE, repr(memory_privacy.privacy_findings(text, home=HOME, hostname=HOST)))
+
+    def test_empty_null_and_schema_values_stay_clean(self):
+        for text in self.ALLOWED:
+            self.assertEqual(kinds(text), [], text)
+
+    def test_the_guard_flags_and_clears_the_same_rows(self):
+        guard = _load_guard_rules()
+        for text in self.FLAGGED:
+            if any(k in text.lower() for k in (PW, AK)):       # G6 covers password and api key only
+                self.assertTrue(guard._has_secret(text), text)
+        for text in self.ALLOWED:
+            self.assertFalse(guard._has_secret(text), text)
+
+    def test_quoted_key_patterns_scan_in_linear_time(self):
+        guard = _load_guard_rules()
+        patterns = [rx for _label, rx in memory_privacy.SECRET_PATTERNS if _label == "credential-assignment"]
+        patterns += [rx for rx in guard._SECRET_PATTERNS if "password" in rx.pattern or "key" in rx.pattern]
+        self.assertGreaterEqual(len(patterns), 5)
+
+        def best_cost(text):
+            best = None
+            for _ in range(2):
+                start = time.monotonic()
+                for rx in patterns:
+                    rx.search(text)
+                took = time.monotonic() - start
+                best = took if best is None else min(best, took)
+            return best
+
+        # Asserted on scaling, not wall time: 4x the input costs ~4x when linear, far more when
+        # quadratic; the limit is 6x (floored at 0.1 s so a very fast scan cannot flake).
+        repeated = {
+            "closing quotes": '%s"' % PW,
+            "quote then blanks": '%s"%s' % (PW, " " * 4),
+            "key quote colon": '%s":' % PW,
+            "key quote colon blanks": '"%s": %s' % (TOK, " " * 16),
+            "key quote colon quotes": '"%s": %s' % (SEC, '"' * 6),
+            "single quotes": "%s' " % AK,
+            "null values": '"%s": null, ' % TOK,
+            "empty values": '"%s": "", ' % PW,
+            "object values": '"%s": {"a": 1}, ' % SEC,
+            "short values": '"%s": "ab" ' % PW,
+            "escaped quotes": '\\"%s\\": \\"' % PW,
+            "escaped null": '\\"%s\\": null, ' % TOK,
+            "angle placeholders": '%s=<a> ' % PW,
+            "open angles": '%s=<' % PW,
+            "template placeholders": '"%s": "${X}" ' % SEC,
+            "open templates": '"%s": "${' % SEC,
+            "star runs": '%s=*** ' % TOK,
+            "x then more": '%s=xxxx, y ' % PW,
+            "prefix words": '"%s": "true-' % TOK,
+            "quoted skip then comma": '"%s": "x,' % PW,
+            "quoted skip then brace": '"%s": "true}' % TOK,
+        }
+        for label, unit in repeated.items():
+            with self.subTest(shape=label):
+                small, large = best_cost(unit * 20000), best_cost(unit * 80000)
+                self.assertLess(large, max(6 * small, 0.1), "%.4fs then %.4fs" % (small, large))
+        for label, tail in (("blanks", " "), ("quotes", '"'), ("open braces", "{"), ("letters", "a"),
+                            ("escapes", "\\"), ("angles", "<"), ("stars", "*"), ("x run", "x"),
+                            ("dollar braces", "${")):
+            with self.subTest(run=label):
+                small = best_cost('"%s":' % PW + tail * 200000)
+                large = best_cost('"%s":' % PW + tail * 800000)
+                self.assertLess(large, max(6 * small, 0.1), "%.4fs then %.4fs" % (small, large))
+
+
 class ExemptionTest(unittest.TestCase):
     def test_home_segments_are_case_sensitive(self):
         # macOS spells it /Users/ and Linux /home/: API routes such as /users/42 are not homes

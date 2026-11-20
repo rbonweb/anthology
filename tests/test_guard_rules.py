@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest import mock
 
 from _repo import ROOT
 
@@ -20,6 +21,8 @@ GH_PAT = "github" + "_pat_" + "abcdef"
 SK_KEY = "sk" + "-" + "a1b2c3d4e5f6g7h8i9"
 SLACK = "xox" + "b-123"
 PRIVATE_KEY = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+PW = "pass" + "word"
+PWV = "hunter2" + "xyz"
 
 
 def bash(command):
@@ -324,6 +327,33 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": ".claude/memory/a.md", "content": "api-key=abc"}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": "apikey: abc"}),
             ("Write", {"file_path": ".claude/memory/a.md", "content": "role " + "ASIA" + "ABCDEFGHIJKLMNOP"}),
+            # a JSON- or dict-quoted key is an assignment too (FW-Q)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "' + PWV + '"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": "{'" + PW + "': '" + PWV + "'}"}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '{"' + PW + '":"' + PWV + '"}'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"api' + '_key": "' + PWV + '"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"apiKey" : ' + PWV}),
+            ("Edit", {"file_path": ".claude/memory/a.md", "old_string": "a",
+                      "new_string": '"' + PW.upper() + '"=' + PWV}),
+            # a value that only starts with null/none/true/false is a value (fix round 1, I-1)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "true-love-99"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "True!Love#2024"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"api' + '_key": "' + "nu" + "ll.void." + '12345"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "None-of-your-biz1"'}),
+            # a placeholder with more after it is a value (I-3)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "<a>b"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "${X}tail"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "***real"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": PW + "=<a>b"}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "string"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": PW + ": xray1234"}),
+            # a `,` `}` `]` inside the quotes does not end a value that starts like a placeholder (round 2)
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "true,horse,battery"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "x,Hunter2xyz"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "X}9aBcdEf"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "*]q8Zr!kP"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "<a>,realsecret1"'}),
+            ("Write", {"file_path": ".claude/memory/a.md", "content": '"' + PW + '": "null, real-secret-99"'}),
             ("Write", {"file_path": ".Claude/Memory/a.md", "content": GH_TOKEN}),
             ("MultiEdit", {"file_path": ".claude/memory/a.md", "edits": [
                 {"old_string": "x", "new_string": "fine"},
@@ -335,7 +365,7 @@ class RuleTableTest(unittest.TestCase):
         mem = ".claude/memory/reference-aws.md"
         self.assert_table("G6", [
             bash(f'echo "{AWS_KEY}" >> {mem}'),
-            bash("printf 'password: x' | tee .claude/agent-memory/r/n.md"),
+            bash("printf 'password: hunter2' | tee .claude/agent-memory/r/n.md"),
             bash(f"echo {GH_TOKEN} > {mem}"),
             bash(f"echo {GH_TOKEN} >| {mem}"),
             bash(f"echo {GH_TOKEN} &> {mem}"),
@@ -358,7 +388,13 @@ class RuleTableTest(unittest.TestCase):
             bash(f"sed -i 's/a/{GH_TOKEN}/' {mem}"),
             bash(f"perl -pi -e 's/a/{GH_TOKEN}/' {mem}"),
             bash(f"bash -c 'echo {GH_TOKEN} >> {mem}'"),
-            bash(f"echo password=x | sudo tee {mem}"),
+            bash(f"echo password=hunter2 | sudo tee {mem}"),
+            # JSON in a double-quoted shell string keeps its backslashes (fix round 1, I-2)
+            bash('echo "{\\"' + PW + '\\": \\"' + PWV + '\\"}" > ' + mem),
+            bash('printf "%s" "{\\"api' + '_key\\":\\"' + PWV + '\\"}" >> ' + mem),
+            bash("echo '{\"" + PW + "\": \"" + PWV + "\"}' > " + mem),
+            bash("echo '\"" + PW + "\": \"true,horse,battery\"' > " + mem),
+            bash('echo "{\\"' + PW + '\\": \\"x,' + PWV + '\\"}" > ' + mem),
         ])
 
     def test_chains_wrappers_and_prefixes(self):
@@ -1007,6 +1043,26 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": mem, "content": "the sk-learn library is used"}),
             ("Write", {"file_path": mem, "content": "AKIA prefix marks AWS keys"}),
             ("Write", {"file_path": mem, "content": "Use `password` fields carefully"}),
+            # quoted keys with an empty, null or schema-shaped value are not assignments (FW-Q)
+            ("Write", {"file_path": mem, "content": '"' + PW + '": {"type": "string"}'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": ""'}),
+            ("Write", {"file_path": mem, "content": "{'" + PW + "': ''}"}),
+            ("Write", {"file_path": mem, "content": '"api' + '_key": null'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": true, "api_key": []'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "<placeholder>"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "${X}"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "***"'}),
+            ("Write", {"file_path": mem, "content": '"api' + '_key": "..."'}),
+            ("Write", {"file_path": mem, "content": PW + "=<your-" + PW + ">"}),
+            ("Write", {"file_path": mem, "content": PW + ": ${DB_PASS}"}),
+            ("Write", {"file_path": mem, "content": '{"username": "<user>", "' + PW + '": "<pass>"}'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "true"'}),
+            ("Write", {"file_path": mem, "content": '"' + PW + '": "x"'}),
+            ("Write", {"file_path": mem, "content": PW + "='none'"}),
+            ("Write", {"file_path": mem, "content": '{\\"' + PW + '\\": \\"\\"}'}),
+            bash("echo '{\"" + PW + "\": null}' > " + mem),
+            ("Write", {"file_path": mem, "content": "the " + PW + " field"}),
+            ("Write", {"file_path": mem, "content": 'the "' + PW + '" property is required'}),
             ("Write", {"file_path": mem, "content": "A PRIVATE KEY is never stored"}),
             ("Edit", {"file_path": mem, "old_string": GH_TOKEN, "new_string": "[redacted]"}),
             ("Read", {"file_path": mem}),
@@ -1789,6 +1845,30 @@ class RuleTableTest(unittest.TestCase):
                 bash("fish -c" + q + "; echo \""),
                 bash("fish -C " + q + " -c exit; echo \""),
             ])
+        # fish reading its script from stdin: a value option (known or not) must not turn the
+        # piped text into "a script file's argument" (fix FW-Q).
+        piped = "echo 'npx playwright install' | "
+        self.assert_table("G1", [
+            bash(piped + "fish --debug-stack-frames 3"),
+            bash(piped + "fish --debug-stack 3"),
+            bash(piped + "fish --debug-stack-frames=3"),
+            bash(piped + "fish --debug-output f"),
+            bash(piped + "fish --some-future-flag value"),
+            bash(piped + "fish --private --another-future-flag value"),
+            bash(piped + "fish --login"),
+        ])
+        # the table of value options is not what keeps this closed: without it the form still holds
+        with mock.patch.object(guard_rules, "_FISH_LONG_VALUE", ("--command", "--init-command")):
+            self.assert_table("G1", [
+                bash(piped + "fish --debug-stack-frames 3"),
+                bash(piped + "fish --debug-stack-frames=3"),
+                bash(piped + "fish --debug-output f"),
+            ])
+        self.assert_table(None, [
+            bash(piped + "fish script.fish"),
+            bash(piped + "fish --login script.fish"),
+            bash(piped + "fish --no-config script.fish extra"),
+        ])
         self.assert_table("G3", [       # docker exempts G1 and G2, not G3
             bash("docker run img fish --debug-stack-frames 3 -c 'cat ~/.config/chromium/Default/Cookies'"),
         ])

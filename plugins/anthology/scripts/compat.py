@@ -9,18 +9,56 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 WRAPPERS = ("anthology-mem", "rtk", "rtk-hook")
 SUBAGENT_MODEL = "CLAUDE_CODE_SUBAGENT_MODEL"
+REPO_READ_LIMIT = 2 * 1024 * 1024  # files a cloned repo controls: Claude Code's own settings limit
 
 
-def read_json(path):
-    """The parsed JSON file, or None when it is missing or malformed. Tolerates a BOM."""
+def decode_text(raw):
+    """Text of a JSON file the way Claude Code reads settings: UTF-16LE when it starts with that BOM,
+    else UTF-8 with invalid bytes replaced; one leading BOM dropped. UTF-16BE with a BOM is decoded
+    too, which Claude Code does not do (it reads that as UTF-8 and ignores the file): a harmless
+    superset."""
+    if raw.startswith(b"\xff\xfe"):
+        text = raw[2:].decode("utf-16-le", errors="replace")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw[2:].decode("utf-16-be", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def read_json(path, limit=None):
+    """The parsed JSON file, or None when it is missing or malformed. Decoded like Claude Code
+    does (`decode_text`: a UTF-8 or UTF-16 BOM is fine, bad bytes do not matter).
+
+    With `limit` (bytes) the file must also be a regular file (a symlink to one is fine; a device
+    or FIFO is not) of at most `limit` bytes, else it is skipped like an absent file. Use it for
+    files a cloned repo controls (`REPO_READ_LIMIT`): they are read at every session start."""
+    if limit is None:
+        try:
+            return json.loads(decode_text(Path(path).read_bytes()))
+        except (OSError, ValueError, RecursionError):
+            return None
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))  # a FIFO must not block
+    except (OSError, ValueError):
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(limit + 1)
+        if len(raw) > limit:
+            return None
+        return json.loads(decode_text(raw))
     except (OSError, ValueError, RecursionError):
         return None
+    finally:
+        os.close(fd)
 
 
 def config_dir(env):
@@ -107,6 +145,7 @@ def subagent_model_source(env, cwd):
     candidates.append(("the project's .claude/settings.json", top / ".claude" / "settings.json"))
     candidates.append(("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json"))
     for label, path in candidates:
-        if _env_has_model(read_json(path)):
+        # user settings are the owner's; the project's two files come with the clone, so they are bounded
+        if _env_has_model(read_json(path, None if label == "user settings.json" else REPO_READ_LIMIT)):
             return label
     return None

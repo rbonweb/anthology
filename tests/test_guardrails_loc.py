@@ -8,9 +8,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import unittest
+from unittest import mock
 
-from _mem import ROOT, MemCase, write
+from _mem import ROOT, SCRIPTS as SCRIPTS_DIR, MemCase, write
 
 import guardrails_loc  # noqa: E402
 from test_session_start import PLUGIN, SessionCase  # noqa: E402
@@ -273,6 +276,358 @@ class LiveMissingTest(LiveRootCase):
     def test_live_folder_with_guard_py_is_unaffected(self):
         self.diverging()
         self.assertEqual(self.inspect(), (self.live, None))
+
+
+class CacheSnapshotGoneTest(LiveRootCase):
+    """m13: a directory marketplace runs the live folder, so a missing cache snapshot is irrelevant."""
+
+    def installed(self, install_path=None, extra=None):
+        # anthology itself is installed too, so "no usable guardrails entry" is not a dev session
+        extra = dict(extra or {}, **{"anthology@anthology": [{
+            "scope": "user", "installPath": str(self.tmp / "anthology"), "version": "0.1.0"}]})
+        super().installed(install_path, extra)
+
+    def live_only(self, cache_dir=False):
+        self.copy_guardrails(self.live, marker="live-marker")
+        if cache_dir:
+            (self.cache / "scripts").mkdir(parents=True)  # the snapshot exists but has no guard.py
+        self.manifest()
+        self.directory_known()
+        self.installed()
+
+    def test_missing_cache_folder_still_resolves_to_the_live_folder(self):
+        self.live_only()
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_cache_folder_without_guard_py_still_resolves_to_the_live_folder(self):
+        self.live_only(cache_dir=True)
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_neither_folder_has_guard_py_is_not_installed(self):
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_cache_gone_with_a_non_directory_marketplace_is_not_installed(self):
+        self.copy_guardrails(self.live)
+        self.manifest()
+        self.known({"source": "github", "repo": "owner/anthology"})
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_cache_gone_and_live_source_escaping_is_not_installed_not_the_cache(self):
+        outside = self.tmp / "outside" / "anthology-guardrails"
+        self.copy_guardrails(outside)
+        self.manifest(source="../outside/anthology-guardrails")
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+    def test_disabled_still_wins_when_the_cache_is_gone(self):
+        self.live_only()
+        write(self.config / "settings.json",
+              json.dumps({"enabledPlugins": {"anthology-guardrails@anthology": False}}))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_project_scoped_entry_for_another_project_is_still_skipped(self):
+        self.live_only()
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "anthology@anthology": [{"scope": "user", "installPath": str(self.tmp / "anthology")}],
+            "anthology-guardrails@anthology": [{
+                "scope": "project", "projectPath": str(self.tmp / "elsewhere"),
+                "installPath": str(self.cache), "lastUpdated": "2026-01-01T00:00:00Z"}]}}))
+        self.assertEqual(self.inspect(), (None, "not_installed"))
+
+
+DISABLE = {"enabledPlugins": {"anthology-guardrails@anthology": False}}
+
+
+class BoundedReadTest(LiveRootCase):
+    """m15 (same class): settings files in the working folder are read only when regular and at most
+    Claude Code's own 2 MiB. One that exists but is refused counts as DISABLED (fail closed): the
+    cap must never turn "the guardrails are off" into "active"."""
+
+    def project_settings(self, name="settings.json"):
+        return self.tmp / ".claude" / name
+
+    def test_limit_is_claude_codes_own(self):
+        self.assertEqual(guardrails_loc.REPO_READ_LIMIT, 2 * 1024 * 1024)
+
+    def test_oversized_project_settings_count_as_disabled(self):
+        self.diverging()
+        pad = "A" * (guardrails_loc.REPO_READ_LIMIT + 10)
+        write(self.project_settings(), json.dumps(dict(DISABLE, pad=pad)))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_oversized_project_settings_without_the_flag_also_count_as_disabled(self):
+        self.diverging()
+        write(self.project_settings("settings.local.json"), json.dumps({"pad": "A" * (3 << 20)}))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_one_and_a_half_mib_that_disables_the_guard_is_honoured(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps(dict(DISABLE, pad="A" * (3 << 19))))
+        size = os.path.getsize(str(self.project_settings()))
+        self.assertTrue(1 << 20 < size < guardrails_loc.REPO_READ_LIMIT, size)
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_one_and_a_half_mib_without_the_flag_is_read_and_active(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps({"pad": "A" * (3 << 19)}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_file_exactly_at_the_limit_is_read_one_byte_over_is_refused(self):
+        self.diverging()
+        base = json.dumps({"pad": ""})
+        at_limit = json.dumps({"pad": "A" * (guardrails_loc.REPO_READ_LIMIT - len(base))})
+        self.assertEqual(len(at_limit.encode("utf-8")), guardrails_loc.REPO_READ_LIMIT)
+        write(self.project_settings(), at_limit)
+        self.assertEqual(self.inspect(), (self.live, None))  # read, and it does not disable
+        write(self.project_settings(), at_limit.replace('"pad": "', '"pad": "A'))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))  # refused: fail closed
+
+    def test_small_project_settings_still_disable_and_plain_ones_do_not(self):
+        self.diverging()
+        write(self.project_settings(), json.dumps(DISABLE))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+        write(self.project_settings(), json.dumps({"enabledPlugins": {"other@x": False}}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_absent_and_empty_repo_settings_are_not_refusals(self):
+        self.diverging()
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.project_settings(), "")  # Claude Code reads an empty file as {}
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.project_settings(), " \n")
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_repo_settings_file_that_does_not_parse_counts_as_disabled(self):
+        self.diverging()
+        for name in ("settings.json", "settings.local.json"):
+            for text in ("{not json", "[1, 2", '{"a": }', "\x00"):
+                write(self.project_settings(name), text)
+                self.assertEqual(self.inspect(), (self.live, "disabled"), (name, text))
+            self.project_settings(name).unlink()
+
+    def test_a_malformed_users_own_settings_file_is_ignored(self):
+        self.diverging()
+        write(self.config / "settings.json", "{not json")
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_non_regular_file_counts_as_disabled_even_when_it_reads_as_nothing(self):
+        # /dev/null reads as empty, so only the regular-file check can refuse it
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        os.symlink(os.devnull, str(self.project_settings()))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_a_fifo_with_data_counts_as_disabled_without_blocking(self):
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        fifo = str(self.project_settings())
+        os.mkfifo(fifo)
+        fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        os.write(fd, b"{}")
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_an_unreadable_repo_settings_file_counts_as_disabled(self):
+        self.diverging()
+        write(self.project_settings(), "{}")
+        real_open = os.open
+
+        def deny(path, *args, **kw):
+            if str(path) == str(self.project_settings()):
+                raise PermissionError(13, "denied")
+            return real_open(path, *args, **kw)
+
+        with mock.patch.object(guardrails_loc.os, "open", side_effect=deny):
+            self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_device_symlink_is_not_read_and_counts_as_disabled(self):
+        self.diverging()
+        (self.tmp / ".claude").mkdir()
+        os.symlink("/dev/zero", str(self.project_settings()))
+        probe = ("import resource, sys\n"
+                 "try:\n    resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))\n"
+                 "except (ValueError, OSError):\n    sys.exit(77)\n"
+                 "sys.path.insert(0, %r)\nimport guardrails_loc\n"
+                 "print(guardrails_loc.inspect(%r, {'CLAUDE_CONFIG_DIR': %r}, %r)[1])\n"
+                 % (str(SCRIPTS_DIR), str(PLUGIN), str(self.config), str(self.tmp)))
+        proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 77:
+            self.skipTest("cannot limit memory here")
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        self.assertEqual(proc.stdout.strip(), "disabled")
+
+
+class DecodeLikeClaudeCodeTest(LiveRootCase):
+    """I-1b: Claude Code decodes a settings file leniently (UTF-16LE with a BOM, else UTF-8 with bad
+    bytes replaced) before JSON.parse. A file it honours must never read as "no file" here."""
+
+    FLAG = '"enabledPlugins":{"anthology-guardrails@anthology":false}'
+
+    def settings(self, raw, name="settings.json"):
+        path = self.tmp / ".claude" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    def disabled(self):
+        return guardrails_loc._disabled({"CLAUDE_CONFIG_DIR": str(self.config)}, str(self.tmp))
+
+    def test_utf16le_with_a_bom_is_decoded(self):
+        self.settings(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertTrue(self.disabled())
+        self.settings(b"\xff\xfe" + '{"other": 1}'.encode("utf-16-le"))
+        self.assertFalse(self.disabled())  # decoded and read, not refused
+
+    def test_utf16be_with_a_bom_is_decoded(self):
+        self.settings(b"\xfe\xff" + ("{%s}" % self.FLAG).encode("utf-16-be"))
+        self.assertTrue(self.disabled())
+        self.settings(b"\xfe\xff" + '{"other": 1}'.encode("utf-16-be"))
+        self.assertFalse(self.disabled())  # decoded and read, not refused
+
+    def test_utf8_bom_is_stripped(self):
+        self.settings(b"\xef\xbb\xbf" + ("{%s}" % self.FLAG).encode("utf-8"))
+        self.assertTrue(self.disabled())
+
+    def test_an_invalid_byte_in_an_unrelated_value_does_not_hide_the_flag(self):
+        self.settings(('{%s,"env":{"X":"a' % self.FLAG).encode("utf-8") + b'\xff"}}')
+        self.assertTrue(self.disabled())
+        self.settings(b'{"env":{"X":"a\xff"}}')
+        self.assertFalse(self.disabled())  # replaced and parsed: no flag, nothing refused
+
+    def test_a_deeply_nested_value_counts_as_disabled(self):
+        deep = "[" * 200000 + "]" * 200000  # RecursionError on every Python (5000 is enough on 3.9 only)
+        self.settings(('{%s,"zz":%s}' % (self.FLAG, deep)).encode("utf-8"))
+        self.assertTrue(self.disabled())
+        self.settings(('{"zz":%s}' % deep).encode("utf-8"), "settings.local.json")
+        self.assertTrue(self.disabled())
+
+    def test_the_same_through_inspect(self):
+        self.diverging()
+        self.settings(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_a_utf8_bom_is_stripped_in_every_file(self):
+        # only the BOM strip separates these from "invalid": a user file would be ignored, a repo one refused
+        bom = b"\xef\xbb\xbf"
+        (self.config).mkdir(parents=True, exist_ok=True)
+        (self.config / "settings.json").write_bytes(bom + ("{%s}" % self.FLAG).encode("utf-8"))
+        self.assertTrue(self.disabled())
+        (self.config / "settings.json").unlink()
+        self.settings(bom + b'{"other": 1}')
+        self.assertFalse(self.disabled())
+
+    def test_the_users_own_files_are_decoded_the_same_way(self):
+        self.diverging()
+        write(self.config / "settings.json", "")
+        (self.config / "settings.json").write_bytes(b"\xff\xfe" + ("{%s}" % self.FLAG).encode("utf-16-le"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+
+class EnabledValueTest(LiveRootCase):
+    """I-2: Claude Code turns a plugin on only for the literal `true` (its schema is boolean or a list
+    of versions, and a list "leaves it off"). A present entry of any other value is off, in any scope."""
+
+    KEY = "anthology-guardrails@anthology"
+
+    def put(self, where, value):
+        path = {"user": self.config / "settings.json", "repo": self.tmp / ".claude" / "settings.json",
+                "local": self.tmp / ".claude" / "settings.local.json"}[where]
+        write(path, json.dumps({"enabledPlugins": {self.KEY: value}}))
+
+    def disabled(self):
+        return guardrails_loc._disabled({"CLAUDE_CONFIG_DIR": str(self.config)}, str(self.tmp))
+
+    def test_a_non_true_entry_in_the_repo_settings_beats_a_user_true(self):
+        self.diverging()
+        self.put("user", True)
+        for value in ([], ["0.1.0"], "yes", "true", None, 0, 1, {}, {"a": 1}, False):
+            for where in ("repo", "local"):
+                self.put(where, value)
+                self.assertTrue(self.disabled(), (where, value))
+                self.assertEqual(self.inspect(), (self.live, "disabled"), (where, value))
+                (self.tmp / ".claude" / ("settings.json" if where == "repo" else "settings.local.json")).unlink()
+
+    def test_a_non_true_entry_in_the_user_settings_disables_too(self):
+        self.diverging()
+        for value in ([], ["0.1.0"], "yes", None, False):
+            self.put("user", value)
+            self.assertTrue(self.disabled(), value)
+
+    def test_true_and_an_absent_entry_are_active(self):
+        self.diverging()
+        self.assertFalse(self.disabled())
+        for where in ("user", "repo", "local"):
+            self.put(where, True)
+        self.assertFalse(self.disabled())
+        self.assertEqual(self.inspect(), (self.live, None))
+        write(self.tmp / ".claude" / "settings.json", json.dumps({"enabledPlugins": {"other@x": []}}))
+        write(self.tmp / ".claude" / "settings.local.json", json.dumps({"enabledPlugins": {}}))
+        self.assertFalse(self.disabled())
+
+    def test_only_the_guardrails_plugin_key_matches(self):
+        # A similar-looking plugin name must not count: the match is the exact `anthology-guardrails@` prefix.
+        self.diverging()
+        for key in ("anthology-guardrails-extra@x", "my-anthology-guardrails@x", "anthology-guardrails",
+                    "ANTHOLOGY-GUARDRAILS@anthology"):
+            write(self.tmp / ".claude" / "settings.json", json.dumps({"enabledPlugins": {key: False}}))
+            self.assertFalse(self.disabled(), key)
+
+    def test_another_marketplace_entry_with_a_list_counts_the_same(self):
+        self.diverging()
+        write(self.tmp / ".claude" / "settings.json",
+              json.dumps({"enabledPlugins": {"anthology-guardrails@other": ["1"]}}))
+        self.assertTrue(self.disabled())
+
+
+class UsersOwnFilesAreUncappedTest(LiveRootCase):
+    """The user's own settings.json, installed_plugins.json and known_marketplaces.json are not
+    repo-controlled: any size is read (they still must be regular files)."""
+
+    BIG = 3 << 20
+
+    def test_a_huge_user_settings_file_that_disables_the_guard_is_honoured(self):
+        self.diverging()
+        write(self.config / "settings.json", json.dumps(dict(DISABLE, pad="A" * self.BIG)))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_a_huge_user_settings_file_without_the_flag_does_not_disable(self):
+        self.diverging()
+        write(self.config / "settings.json", json.dumps({"pad": "A" * self.BIG}))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_huge_installed_plugins_file_is_read(self):
+        self.diverging()
+        data = json.loads((self.config / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        data["pad"] = "A" * self.BIG
+        write(self.config / "plugins" / "installed_plugins.json", json.dumps(data))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_huge_known_marketplaces_file_is_read(self):
+        self.diverging()
+        path = self.config / "plugins" / "known_marketplaces.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["pad"] = "A" * self.BIG
+        write(path, json.dumps(data))
+        self.assertEqual(self.inspect(), (self.live, None))
+
+    def test_a_non_regular_user_settings_file_fails_closed(self):
+        self.diverging()
+        os.symlink(os.devnull, str(self.config / "settings.json"))
+        self.assertEqual(self.inspect(), (self.live, "disabled"))
+
+    def test_the_live_marketplace_json_is_repo_controlled_and_capped(self):
+        self.diverging()
+        write(self.market / ".claude-plugin" / "marketplace.json", json.dumps({
+            "name": "anthology", "pad": "A" * (guardrails_loc.REPO_READ_LIMIT + 10),
+            "plugins": [{"name": "anthology-guardrails", "source": "./plugins/anthology-guardrails"}]}))
+        self.assertEqual(self.inspect(), (None, "live_missing"))
 
 
 class LoadRulesFollowTest(LiveRootCase):
