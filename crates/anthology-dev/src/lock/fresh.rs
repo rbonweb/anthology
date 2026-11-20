@@ -59,6 +59,9 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .arg(root)
         .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false"])
         .args(args)
+        // Only reads: no index refresh, so a read-only git directory works (scripts/dev.sh
+        // mounts a linked worktree's common git directory read-only).
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
