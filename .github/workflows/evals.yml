@@ -54,6 +54,8 @@ jobs:
         if: steps.key.outputs.present == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Optional: an Anthropic-compatible endpoint. Exported below only when the secret is set.
+          ANTHROPIC_BASE_URL_SECRET: ${{ secrets.ANTHROPIC_BASE_URL }}
           MAX_COST_USD: ${{ inputs.max_cost_usd || '20' }}
           CLAUDE_BIN: ci/claude-code/node_modules/.bin/claude
           DISABLE_AUTOUPDATER: "1"
@@ -64,6 +66,8 @@ jobs:
           # their own environment per run (evals/smoke/smoke.py).
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"
         run: |
+          if [ -n "$ANTHROPIC_BASE_URL_SECRET" ]; then export ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL_SECRET"; fi
+          unset ANTHROPIC_BASE_URL_SECRET
           status=0
           scripts/run-evals.sh --ci --max-cost-usd "$MAX_COST_USD" || status=$?
           if [ "$status" = 3 ]; then
