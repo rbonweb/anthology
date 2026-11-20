@@ -350,14 +350,17 @@ fn path_package_names(root: &Path) -> BTreeSet<String> {
         return BTreeSet::new();
     };
     let mut names = BTreeSet::new();
-    for (key, path) in path_dependencies(&manifest) {
+    for (_key, path) in path_dependencies(&manifest) {
         if !under_crates(&path) {
             continue;
         }
         let Ok(crate_manifest) = fs::read_to_string(root.join(&path).join("Cargo.toml")) else {
             continue;
         };
-        names.insert(package_name(&crate_manifest).unwrap_or(key));
+        // No fallback to the dependency key: a name that cannot be read allows nothing.
+        if let Some(name) = package_name(&crate_manifest) {
+            names.insert(name);
+        }
     }
     names
 }

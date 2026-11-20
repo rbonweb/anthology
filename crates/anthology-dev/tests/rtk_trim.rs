@@ -749,6 +749,10 @@ mod decl_test {
             "fn",
             "gone"
         ));
+        // Fail closed: a non-ASCII character next to the name is a boundary (Python's `\w`
+        // would not count a combining mark, and Rust cannot tell yet), so the trim stops.
+        assert!(declaration_present("fn gone\u{93e}() {}", "fn", "gone"));
+        assert!(declaration_present("fn gone\u{e9}() {}", "fn", "gone"));
         // A name that is a prefix of a longer one is not the name.
         assert!(!declaration_present("fn gone_more() {}", "fn", "gone"));
         assert!(!declaration_present("fn gone2() {}", "fn", "gone"));
@@ -1172,16 +1176,17 @@ mod allowlist_test {
     }
 
     #[test]
-    fn a_missing_crate_manifest_allows_nothing_and_a_nameless_one_falls_back_to_the_key() {
+    fn a_missing_crate_manifest_allows_nothing_and_a_nameless_one_allows_nothing() {
         let repo = Repo::new(SHELL_DEP);
         fs::remove_file(repo.f.root.join("crates/anthology-shell/Cargo.toml")).unwrap();
         let out = repo.guard(&before_lock(), &after_with_closure());
         assert_eq!(out.code, 1);
-        // A manifest without a `[package]` name: the dependency key names the package.
+        // A manifest without a readable `[package]` name allows nothing (no fallback to the
+        // dependency key, which a renamed dependency could use to name the root package).
         repo.f
             .write("crates/anthology-shell/Cargo.toml", "[lib]\npath = \"x\"\n");
         let out = repo.guard(&before_lock(), &after_with_closure());
-        assert_eq!(out.code, 0, "{}", text(&out.stderr));
+        assert_eq!(out.code, 1, "{}", text(&out.stderr));
     }
 
     #[test]

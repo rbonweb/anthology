@@ -49,9 +49,14 @@ pub fn first_declaration(sig: &str) -> Option<(&'static str, &str)> {
 
 /// `re.search(r"\b%s\s+%s\b" % (keyword, name), text) is not None`, for a `keyword` and a `name`
 /// that are made of word characters only (as `first_declaration` returns them).
+///
+/// Fail closed until P1 has the Unicode tables (TODO P1): a non-ASCII character next to the
+/// keyword or the name counts as a boundary, so the trim stops (the name looks present) where
+/// Python might skip, and never skips where Python would stop.
 pub fn declaration_present(text: &str, keyword: &str, name: &str) -> bool {
+    let word = |c: char| c.is_ascii() && is_word(c);
     text.match_indices(keyword).any(|(at, _)| {
-        if !boundary_before_word(text, at) {
+        if !text[..at].chars().next_back().is_none_or(|c| !word(c)) {
             return false;
         }
         let rest = &text[at + keyword.len()..];
@@ -61,6 +66,6 @@ pub fn declaration_present(text: &str, keyword: &str, name: &str) -> bool {
         }
         after_space
             .strip_prefix(name)
-            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !is_word(c)))
+            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !word(c)))
     })
 }

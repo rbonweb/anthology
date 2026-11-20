@@ -4,6 +4,8 @@
 //! Python's whitespace (`str.isspace`, and `\s` in a `str` pattern) is the Unicode White_Space
 //! set plus U+001C..U+001F, which Rust's `char::is_whitespace` lacks.
 //!
+//! TODO P1: replace these helpers with `pycompat::str` / `pycompat::re` once they exist.
+//!
 //! Known gap (ruling, P1 owns the Unicode tables): Python's `\w` is `str.isalnum()` or `_`, i.e.
 //! categories L* and N*. `char::is_alphanumeric` also counts the `Other_Alphabetic` marks (some
 //! combining characters), so those differ. Every identifier the trim looks for is ASCII.

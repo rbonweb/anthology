@@ -7,8 +7,11 @@
 #    the ordered, idempotent edits (rm/sub/cut/drop). An anchor that no longer matches stops
 #    it with exit 1, naming the file and the anchor, so an upstream refactor of a trimmed
 #    region is noticed.
+#    `scripts/dev.sh` builds anthology-dev in the pinned image, so each run (the trim and the
+#    lock guard) needs the network on a cold cache (apt and the cargo registry).
 # 2. Cargo.lock is pruned by `cargo metadata --offline` in the pinned image (the FROM line of
-#    ci/images/rust.Dockerfile), online only when the registry volume lacks a crate. With an
+#    ci/images/rust.Dockerfile), online only when the registry volume lacks a crate. The whole
+#    repository is mounted, because rtk/Cargo.toml may name path dependencies under ../crates/. With an
 #    existing lockfile cargo only drops unused packages; a guard fails (and restores the old
 #    lockfile) if any package is added or any locked version changes. The one exception is a
 #    path dependency of rtk/Cargo.toml on a workspace crate under ../crates/ and its dependency
@@ -31,9 +34,11 @@ if [ "$ops" != "no changes" ]; then
 fi
 
 lock="$root/rtk/Cargo.lock"
-# The copy of the lockfile stays inside the repository, so the container can read it.
-before_rel="rtk/Cargo.lock.rtk-trim-before.$$"
+# The copy of the lockfile stays inside the repository (in the git-ignored target/), so the
+# container can read it and it is never committed.
+before_rel="target/rtk-trim/Cargo.lock.before.$$"
 before="$root/$before_rel"
+mkdir -p "$root/target/rtk-trim"
 trap 'rm -f "$before"' EXIT
 cp "$lock" "$before"
 
@@ -45,10 +50,10 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 metadata() {
     docker run --rm \
-        -v "$root/rtk":/w \
+        -v "$root":/w \
         -v anthology-cargo:/usr/local/cargo/registry \
         -e OWNER="$owner" \
-        -w /w "$image" sh -c '
+        -w /w/rtk "$image" sh -c '
             status=0
             cargo metadata "$@" --format-version 1 >/dev/null || status=$?
             [ -z "$OWNER" ] || chown "$OWNER" Cargo.lock
