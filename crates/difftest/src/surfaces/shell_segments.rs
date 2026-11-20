@@ -1,18 +1,94 @@
 //! The `shell.segments` difftest surface: `anthology_shell::segments` (and the shell option parsers it uses)
 //! against guard_rules.py through `port/difftest/oracle/shell.py`.
 //!
-//! Until F4's `Surface` trait lands, the generator, the seeds, the sweeps and the Rust side live here as free
-//! functions, driven by `crates/difftest/examples/shell_interim.rs` (lead ruling R8).
-#![allow(dead_code)] // until F4's Surface trait wires surface()
+//! Cases (`{"op": ...}`, oracle module docs): `segments` (text, depth), `shell_parse` (prog, args, i) and
+//! `script_starts` (words). Both sides print the canonical JSON of the result (`COMPACT_SORTED`, equal to
+//! the oracle's `json.dumps(sort_keys=True, separators=(",", ":"))`), with groups numbered by first
+//! appearance. Seeds: `port/difftest/seeds/shell.jsonl` (`port/extract/shell_seeds.py`), the hand-written
+//! `TRICKY` cases and sweeps of every code point through the Unicode-sensitive predicates. Generated: a
+//! grammar over the lexer's whole surface, mutated and spliced seeds, deep nesting and option lists.
+//! `shell.analyze` reuses the helpers and the generator here.
+
+use std::collections::HashMap;
 
 use anthology_pycompat::json::{self, COMPACT_SORTED, Int, Map, Value};
-use anthology_shell::{Lexed, ShellMode, script_starts, segments, shell_parse};
+use anthology_shell::{GroupId, Lexed, ShellMode, script_starts, segments, shell_parse};
+
+use crate::case::{Case, Rng, Surface, repo_root};
+use crate::observe::{Observed, from_oracle};
+use crate::oracle::Oracle;
 
 /// The surface name (plan §1.4).
 pub const NAME: &str = "shell.segments";
 
+/// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`); set
+/// `false` only for a surface that cannot run there, and say why.
+pub const ON_MACOS: bool = true;
+
+/// The registered implementation.
+pub fn surface() -> Option<Box<dyn Surface>> {
+    Some(Box::new(ShellSegments))
+}
+
 /// The committed seed file (`port/extract/shell_seeds.py`), relative to the repository root.
 pub(crate) const SEEDS: &str = "port/difftest/seeds/shell.jsonl";
+
+const OPS: &[&str] = &["segments", "shell_parse", "script_starts"];
+
+struct ShellSegments;
+
+impl Surface for ShellSegments {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+
+    fn seeds(&self) -> Vec<Case> {
+        let mut out: Vec<Case> = load_seeds(OPS)
+            .into_iter()
+            .enumerate()
+            .map(|(k, data)| Case::new(format!("seed:{}", k + 1), data))
+            .collect();
+        out.extend(
+            sweep_cases()
+                .into_iter()
+                .enumerate()
+                .map(|(k, data)| Case::new(format!("sweep:{}", k + 1), data)),
+        );
+        out
+    }
+
+    fn generate(&self, rng: &mut Rng, n: usize) -> Vec<Case> {
+        generate(rng.next_u64(), n, &load_seeds(OPS))
+            .into_iter()
+            .enumerate()
+            .map(|(k, data)| Case::new(format!("gen:{}", k + 1), data))
+            .collect()
+    }
+
+    fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
+        from_oracle(&oracle.call("shell", &c.data))
+    }
+
+    fn run_rust(&self, c: &Case) -> Observed {
+        observed(run_rust(&c.data))
+    }
+}
+
+/// The seed cases of the given ops, in file order. Panics with the path when the file is unreadable.
+pub(crate) fn load_seeds(ops: &[&str]) -> Vec<Value> {
+    let path = repo_root().join(SEEDS);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("difftest: cannot read {}: {e}", path.display()));
+    seed_cases(&text, ops)
+}
+
+/// What the Rust side printed: the canonical result on stdout, or exit 2 for an op it does not own.
+pub(crate) fn observed(result: Option<Value>) -> Observed {
+    match result {
+        Some(v) => Observed::text(0, &json::dumps(&v, &COMPACT_SORTED), ""),
+        None => Observed::text(2, "", "shell: unknown op"),
+    }
+}
 
 // ------------------------------------------------------------------ values
 
@@ -36,13 +112,32 @@ pub(crate) fn obj(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(map)
 }
 
-/// The oracle's result envelope for a successful call: the canonical JSON of `result` on stdout.
-pub(crate) fn ok(result: &Value) -> Value {
-    obj(vec![
-        ("exit", int(0)),
-        ("stdout", Value::Str(json::dumps(result, &COMPACT_SORTED))),
-        ("stderr", s("")),
-    ])
+/// Group ordinals by first appearance (the oracle numbers Python's group objects the same way).
+#[derive(Default)]
+pub(crate) struct Ordinals {
+    ids: HashMap<GroupId, usize>,
+    order: Vec<GroupId>,
+}
+
+impl Ordinals {
+    pub(crate) fn of(&mut self, id: GroupId) -> usize {
+        *self.ids.entry(id).or_insert_with(|| {
+            self.order.push(id);
+            self.order.len() - 1
+        })
+    }
+
+    /// The groups in ordinal order, each as the list of its texts.
+    pub(crate) fn texts(&self, groups: &[anthology_shell::Group]) -> Value {
+        let by_id: HashMap<GroupId, &Vec<String>> =
+            groups.iter().map(|g| (g.id, &g.texts)).collect();
+        Value::Array(
+            self.order
+                .iter()
+                .map(|id| strs(by_id.get(id).map_or(&[][..], |t| t.as_slice())))
+                .collect(),
+        )
+    }
 }
 
 pub(crate) fn field<'v>(data: &'v Value, key: &str) -> Option<&'v Value> {
@@ -92,16 +187,10 @@ fn pairs(items: &[(usize, String)]) -> Value {
 
 /// The oracle's `_segments` rendering: groups numbered by first appearance.
 pub(crate) fn render_lexed(lexed: &Lexed) -> Value {
-    let mut order: Vec<anthology_shell::GroupId> = Vec::new();
+    let mut ordinals = Ordinals::default();
     let mut segments = Vec::new();
     for seg in &lexed.segments {
-        let ordinal = match order.iter().position(|g| *g == seg.group) {
-            Some(k) => k,
-            None => {
-                order.push(seg.group);
-                order.len() - 1
-            }
-        };
+        let ordinal = ordinals.of(seg.group);
         let redirs = seg
             .redirs
             .iter()
@@ -113,27 +202,15 @@ pub(crate) fn render_lexed(lexed: &Lexed) -> Value {
             ("group", int(ordinal)),
         ]));
     }
-    let groups = order
-        .iter()
-        .map(|id| {
-            let texts = lexed
-                .groups
-                .iter()
-                .find(|g| g.id == *id)
-                .map(|g| g.texts.clone())
-                .unwrap_or_default();
-            strs(&texts)
-        })
-        .collect();
     obj(vec![
         ("lenient", Value::Bool(lexed.lenient)),
         ("incomplete", Value::Bool(lexed.incomplete)),
         ("segments", Value::Array(segments)),
-        ("groups", Value::Array(groups)),
+        ("groups", ordinals.texts(&lexed.groups)),
     ])
 }
 
-/// Run one case's data in Rust; `None` for an op this surface does not own.
+/// Run one case's data in Rust: the result to print, or `None` for an op this surface does not own.
 pub(crate) fn run_rust(data: &Value) -> Option<Value> {
     let result = match field_str(data, "op") {
         "segments" => render_lexed(&segments(
@@ -156,17 +233,17 @@ pub(crate) fn run_rust(data: &Value) -> Option<Value> {
         )]),
         _ => return None,
     };
-    Some(ok(&result))
+    Some(result)
 }
 
 // ------------------------------------------------------------------ randomness
 
 /// SplitMix64: small, deterministic, good enough to drive a generator.
-pub(crate) struct Rng(u64);
+pub(crate) struct GenRng(u64);
 
-impl Rng {
-    pub(crate) fn new(seed: u64) -> Rng {
-        Rng(seed ^ 0x9E37_79B9_7F4A_7C15)
+impl GenRng {
+    pub(crate) fn new(seed: u64) -> GenRng {
+        GenRng(seed ^ 0x9E37_79B9_7F4A_7C15)
     }
 
     pub(crate) fn next_u64(&mut self) -> u64 {
@@ -361,7 +438,7 @@ pub(crate) const WORDS: &[&str] = &[
 const HEREDOC_NAMES: &[&str] = &["EOF", "X", "_a.b-c", "END", "eof", "9x", "A B"];
 
 pub(crate) struct Gen<'r> {
-    pub(crate) rng: &'r mut Rng,
+    pub(crate) rng: &'r mut GenRng,
     /// Nesting levels left: a nested command at 0 is a plain word.
     pub(crate) left: usize,
 }
@@ -562,7 +639,7 @@ impl Gen<'_> {
 }
 
 /// Mutate a seed text: 1-4 random edits with metachar-heavy insertions.
-pub(crate) fn mutate(rng: &mut Rng, text: &str) -> String {
+pub(crate) fn mutate(rng: &mut GenRng, text: &str) -> String {
     let mut chars: Vec<char> = text.chars().collect();
     for _ in 0..1 + rng.below(4) {
         let at = rng.below(chars.len() + 1);
@@ -714,7 +791,7 @@ pub(crate) fn sweep_cases() -> Vec<Value> {
     out
 }
 
-fn shell_parse_case(rng: &mut Rng) -> Value {
+fn shell_parse_case(rng: &mut GenRng) -> Value {
     const ARGS: &[&str] = &[
         "-c",
         "-e",
@@ -787,7 +864,7 @@ fn shell_parse_case(rng: &mut Rng) -> Value {
     ])
 }
 
-fn script_starts_case(rng: &mut Rng) -> Value {
+fn script_starts_case(rng: &mut GenRng) -> Value {
     const PROGS: &[&str] = &[
         "bash",
         "sh",
@@ -831,7 +908,7 @@ fn script_starts_case(rng: &mut Rng) -> Value {
 /// `n` generated cases for seed `seed`: grammar commands, mutated and spliced seeds, deep nesting, and
 /// shell argument lists.
 pub(crate) fn generate(seed: u64, n: usize, seeds: &[Value]) -> Vec<Value> {
-    let mut rng = Rng::new(seed);
+    let mut rng = GenRng::new(seed);
     let texts: Vec<&str> = seeds
         .iter()
         .filter(|c| field_str(c, "op") == "segments")
