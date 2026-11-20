@@ -165,7 +165,10 @@ class KindTest(unittest.TestCase):
             "secret:cloud-secret-key": ("aws_secret_" + "access_key = " + "wJalrXUtnFEMI" + "K7MDENGbPxRfiCY",
                                         "AWS_SECRET_" + "ACCESS_KEY=" + "wJalrXUtnFEMI" + "K7MDENG",
                                         "secret-" + "access-key: " + "abcdefgh12345678",
-                                        "access_" + "key = " + "abcdefgh12345678"),
+                                        "access_" + "key = " + "abcdefgh12345678",
+                                        '"aws_secret_' + 'access_key": "' + "wJalrXUtnFEMI" + 'K7MDENG"',
+                                        '"Secret' + 'AccessKey": "' + "wJalrXUtnFEMI" + 'K7MDENG"',
+                                        "'secret_" + "key': '" + "abcdefgh12345678'"),
             "secret:url-credentials": ("postgres" + "://app:" + "Sup3rS3cr" + "etPw@db.acme.zz/prod",
                                        "see https" + "://bob:" + "hunter22xx" + "@host.acme.zz/x",
                                        "redis" + "://:" + "pw12345678" + "@cache.acme.zz"),
@@ -175,6 +178,23 @@ class KindTest(unittest.TestCase):
                 found = memory_privacy.privacy_findings("x\n" + text + "\n", home=HOME, hostname=HOST)
                 self.assertIn({"kind": kind, "line": 2}, found, text)
                 self.assertNotIn(text, repr(found))
+
+
+class QuotedKeyScalingTest(unittest.TestCase):
+    def test_quoted_secret_key_scan_scales_linearly(self):
+        # 4x the input must cost well under 10x (the quadratic cost); the limit is 6x
+        def cost(k):
+            text = ('secret_key" ' + "a" * 20 + " ") * k
+            best = None
+            for _ in range(2):
+                start = time.monotonic()
+                memory_privacy.privacy_findings(text, home="/" + "srv/zed", hostname=HOST)
+                took = time.monotonic() - start
+                best = took if best is None else min(best, took)
+            return best
+
+        small, large = cost(10000), cost(40000)
+        self.assertLess(large, max(6 * small, 0.2), "%.3fs then %.3fs" % (small, large))
 
 
 class ExemptionTest(unittest.TestCase):
@@ -245,6 +265,7 @@ class HostileInputTest(unittest.TestCase):
             "url credentials, no at sign": "a://b:" * (n // 6),
             "url user then long password": "a://b:" + "c" * n,
             "secret key assignments": "secret_key" * (n // 10),
+            "quoted secret keys": 'secret_key"' * (n // 11),
         }
         for label, text in cases.items():
             self.assertFast(text, label)

@@ -1334,7 +1334,10 @@ class UserNotesLeaveTheRepoTest(MemCase):
         self.assertEqual(len(warned), 1, msgs)
         self.assertIn("not moved", warned[0])
         self.assertNotIn("feedback-mine", ctx)  # not read through the link either
-        self.assertIn("not loaded", ctx)
+        self.assertIn("Personal memory is unavailable", ctx)
+        self.assertNotIn("Save notes about the user", ctx)  # no instruction to write through the link
+        self.assertEqual(memory_sync.note_sources(None, self.anth), [])  # `anthology-mem search` skips it
+        self.assertNotIn("personal", [s for s, _ in memory_sync.note_sources(self.root, self.anth)])
 
     def test_a_symlinked_personal_folder_is_reported_outside_an_approved_repo_too(self):
         target = self.tmp / "dotfiles-memory"

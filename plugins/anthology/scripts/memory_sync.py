@@ -42,6 +42,8 @@ REPO_EXCLUDE = ("user",)
 USER_REASON = "type: user notes are personal; they never go into a repo"  # never listed in a repo or agent index: they belong in personal memory
 PERSONAL_SAVE = ("Save notes about the user (type: user: role, preferences) here as "
                  "%s/user-<slug>.md, never in the repo.")
+PERSONAL_UNAVAILABLE = ("Personal memory is unavailable: %s is a symlink or not a folder, so do not "
+                        "read or write notes there.")
 MAX_LINE = 200
 
 Budget = collections.namedtuple("Budget", "lines bytes")
@@ -993,7 +995,7 @@ def note_sources(root, home):
                 if d.is_dir() and not d.is_symlink():
                     out.append(("agent", d))
     personal = Path(str(home)) / "personal-memory"
-    if personal.is_dir():
+    if personal.is_dir() and not personal.is_symlink():  # never indexed through a link (ADR-020)
         out.append(("personal", personal))
     return out
 
@@ -1132,8 +1134,9 @@ def _run(cwd, env):
             messages.append(HINT)
     personal = home / "personal-memory"
     text = ""
-    if _personal_unsafe(personal, messages):
-        text = "(not loaded: this folder is a symlink or not a folder)\n"
+    unsafe = _personal_unsafe(personal, messages)
+    if unsafe:
+        text = ""
     elif personal.is_dir():
         try:
             regenerate_index(personal)
@@ -1141,8 +1144,11 @@ def _run(cwd, env):
         except OSError as exc:
             messages.append("anthology memory: personal memory index: %s" % exc.strerror)
     # Always shown, with its path, even when empty or missing (the folder is not created here).
-    sections = ["## Personal memory (%s)\n%s\n\n%s" % (
-        personal, PERSONAL_SAVE % personal, text if text.strip() else "(no notes yet)\n")]
+    if unsafe:
+        sections = ["## Personal memory\n" + PERSONAL_UNAVAILABLE % personal + "\n"]
+    else:
+        sections = ["## Personal memory (%s)\n%s\n\n%s" % (
+            personal, PERSONAL_SAVE % personal, text if text.strip() else "(no notes yet)\n")]
     if cover:
         sections.append(cover)
     return "\n".join(sections), messages
