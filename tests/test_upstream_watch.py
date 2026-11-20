@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import upstream_watch as uw  # noqa: E402
+from _agents import make_repo  # noqa: E402
 
 FIX = ROOT / "tests" / "fixtures" / "upstream_watch"
 SP_REPO = "https://github.com/obra/superpowers"
@@ -952,6 +953,176 @@ class RealGitTests(unittest.TestCase):
         self.assertIn("refs/tags/v1.0.0^{}", refs)  # annotated tag: peeled entry present
         self.assertIn("refs/tags/v1.1.0", refs)
         self.assertNotIn("refs/tags/v1.1.0^{}", refs)
+
+
+class StartupBudgetSectionTests(unittest.TestCase):
+    """PLAN section 14: each issue carries the startup-budget delta when agents read the source."""
+    BUDGETS = {"reader": 1000, "skilled": 1000, "bare": 1000}
+
+    def setUp(self):
+        tmp, self.root = make_root([
+            git_entry(name="alpha", target="plugins/anthology/knowledge/alpha"),
+            git_entry(name="beta", target="plugins/anthology/knowledge/beta"),
+            tag_entry(target="plugins/anthology-superpowers"),
+            git_entry(name="unread", target="plugins/anthology/knowledge/unread"),
+            {"name": "rtk", "target": "rtk", "upstream": {"repo": "https://github.com/rtk-ai/rtk"}}])
+        self.addCleanup(tmp.cleanup)
+        make_repo(self.root)
+        patch = mock.patch.dict(uw._BUDGET.BUDGET, self.BUDGETS, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def change(self, key, kind="git"):
+        return uw.Change(key=key, kind=kind, old="v1", new="v2", new_target="v2",
+                         command=f"python3 scripts/vendor.py sync {key} --ref v2")
+
+    def section(self, key, kind="git"):
+        found = uw.startup_budget_sections(self.root, [self.change(key, kind)])
+        return found.get(key)
+
+    def test_a_startup_file_source_lists_current_size_against_budget(self):
+        heading, text = self.section("alpha")[0]
+        self.assertEqual(heading, "Startup budget")
+        now = uw._BUDGET.startup_bytes(self.root, "reader")
+        self.assertIn(f"| `reader` | {now} | 1000 | {now * 100 // 1000}% |", text)
+        self.assertNotIn("`skilled`", text)
+        self.assertNotIn("`bare`", text)
+
+    def test_every_agent_reading_the_source_is_listed(self):
+        text = self.section("beta")[0][1]
+        self.assertIn("| `reader` |", text)
+        self.assertIn("| `skilled` |", text)
+
+    def test_a_preloaded_skill_source_counts(self):
+        text = self.section("superpowers")[0][1]
+        self.assertIn("| `skilled` |", text)
+        self.assertNotIn("`reader`", text)
+
+    def test_the_sync_command_gives_the_size_after_the_sync(self):
+        text = self.section("beta")[0][1]
+        self.assertIn("Size after the sync: not computed here", text)
+        self.assertIn("```sh\npython3 scripts/startup_budget.py reader skilled\n```", text)
+
+    def test_sources_no_agent_reads_get_no_section(self):
+        self.assertIsNone(self.section("unread"))
+        self.assertIsNone(self.section("rtk", kind="subtree"))
+        self.assertIsNone(self.section("claude-code", kind="claude-code"))
+        self.assertEqual(uw.startup_budget_sections(self.root, []), {})
+
+    def test_over_budget_is_marked(self):
+        with mock.patch.dict(uw._BUDGET.BUDGET, {"reader": 5}):
+            text = self.section("alpha")[0][1]
+        self.assertRegex(text, r"\| `reader` \| \d+ \| 5 \| \d+% OVER \|")
+
+    def test_missing_budget_and_unreadable_files_are_shown_not_raised(self):
+        with mock.patch.dict(uw._BUDGET.BUDGET, {}, clear=True):
+            self.assertIn("no budget", self.section("alpha")[0][1])
+        (self.root / "plugins/anthology/knowledge/alpha/SKILL.md").unlink()
+        self.assertIn("| `reader` | unreadable |", self.section("alpha")[0][1])
+
+    def test_the_section_lands_in_the_issue_body_before_the_command(self):
+        change = self.change("alpha")
+        extra = uw.startup_budget_sections(self.root, [change])
+        body = uw.render_body(change, extra["alpha"])
+        self.assertIn("### Startup budget\n", body)
+        self.assertLess(body.index("### Startup budget"), body.index("### Update"))
+        self.assertNotIn("Startup budget", uw.render_body(change))
+
+    def test_sync_issues_writes_the_section_into_the_issue(self):
+        change = self.change("alpha")
+        gh = FakeGitHub()
+        uw.sync_issues([change], gh, extra_sections=uw.startup_budget_sections(self.root, [change]))
+        self.assertIn("### Startup budget", gh.writes()[0][2])
+
+    def test_sanitisation_leaves_no_markdown_html_or_mentions(self):
+        hostile = "a@octocat <img src=x onerror=alert(1)> [x](http://e.example) `` ```\n# h | * _"
+        text = uw.render_startup_budget(hostile, [(hostile, 5, 10), ("@team\n### Update", None, None)])
+        for bad in ("@", "<", ">", "[", "]", "\\", "*", "!", "&"):
+            self.assertNotIn(bad, text)
+        # only the two code fences this function writes itself are present
+        self.assertEqual(text.count("```"), 2)
+        self.assertEqual(text.count("\n### "), 0)
+        # each hostile agent name stays on its own table row
+        self.assertEqual(sum(1 for l in text.splitlines() if l.startswith("| `")), 2)
+
+    def test_sanitise_prose_whitelists_one_line_of_plain_text(self):
+        self.assertEqual(uw.sanitise_prose("@octocat <b>hi</b> [a](b)\nnext"), "octocat bhi/b a(b)next")
+        self.assertEqual(len(uw.sanitise_prose("x" * 500)), 80)
+
+    def test_agent_files_with_hostile_names_are_ignored(self):
+        make_repo(self.root)
+        evil = self.root / "plugins/anthology/agents/evil@octocat.md"
+        evil.write_text((self.root / "plugins/anthology/agents/reader.md").read_text())
+        text = self.section("alpha")[0][1]
+        self.assertNotIn("octocat", text)
+
+
+class StartupBudgetMainTests(unittest.TestCase):
+    def world(self):
+        tmp, root = make_root([tag_entry(target="plugins/anthology-superpowers"), url_entry()])
+        self.addCleanup(tmp.cleanup)
+        make_repo(root)
+        net = FakeNet({SP_REPO: refs_of("ls_remote_tags.txt")}, {
+            compare_url(SP_REPO, S["5"], S["a"]): compare_json(["x.md"]),
+            UI_MANIFEST: fixture("manifest_new.txt"), NPM_URL: fixture("npm_same.json")})
+        return root, net
+
+    def run_main(self, root, net, gh, dry_run=False):
+        out = io.StringIO()
+        argv = ["--root", str(root)] + (["--dry-run"] if dry_run else [])
+        env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r"}
+        code = uw.main(argv, env=env, net=net, gh=gh, stdout=out)
+        return code, out.getvalue()
+
+    def test_main_creates_issues_with_the_section_only_where_agents_read_the_source(self):
+        root, net = self.world()
+        gh = FakeGitHub()
+        code, _ = self.run_main(root, net, gh)
+        self.assertEqual(code, 0)
+        bodies = {c[1]: c[2] for c in gh.writes()}
+        sp = next(b for t, b in bodies.items() if "superpowers" in t)
+        ui = next(b for t, b in bodies.items() if "ui-taste" in t)
+        self.assertIn("### Startup budget", sp)
+        self.assertIn("| `skilled` |", sp)
+        self.assertNotIn("Startup budget", ui)
+
+    def test_dry_run_prints_the_section(self):
+        root, net = self.world()
+        gh = FakeGitHub()
+        code, out = self.run_main(root, net, gh, dry_run=True)
+        self.assertEqual(code, 0)
+        self.assertIn("### Startup budget", out)
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_failing_budget_calculation_never_blocks_the_issues(self):
+        root, net = self.world()
+        gh = FakeGitHub()
+        with mock.patch.object(uw, "startup_budget_sections", side_effect=OSError("boom")):
+            code, out = self.run_main(root, net, gh)
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING startup budget not computed (OSError)", out)
+        self.assertEqual(len(gh.writes()), 2)
+        self.assertNotIn("Startup budget", gh.writes()[0][2])
+
+    def test_a_dismissed_release_stays_dismissed_when_only_the_sizes_moved(self):
+        root, net = self.world()
+        change = uw.Checker(root, net).check_entry(json.loads((root / "vendor/sources.json").read_text())["sources"][0])
+        old_sections = {change.key: [("Startup budget", "| `skilled` | 1 | 2 | 50% |")]}
+        closed = bot_issue(change, 9, state="closed", body=uw.render_body(change, old_sections[change.key]))
+        gh = FakeGitHub([closed])
+        code, _ = self.run_main(root, net, gh)
+        self.assertEqual(code, 0)
+        self.assertEqual([c for c in gh.writes() if "superpowers" in c[1]], [])
+
+    def test_an_open_issue_is_updated_when_the_sizes_moved(self):
+        root, net = self.world()
+        change = uw.Checker(root, net).check_entry(json.loads((root / "vendor/sources.json").read_text())["sources"][0])
+        stale = bot_issue(change, 9, body=uw.render_body(change, [("Startup budget", "old")]))
+        gh = FakeGitHub([stale])
+        self.run_main(root, net, gh)
+        updates = [c for c in gh.writes() if c[0] == "update"]
+        self.assertEqual([c[1] for c in updates], [9])
+        self.assertIn("| `skilled` |", updates[0][3])
 
 
 if __name__ == "__main__":

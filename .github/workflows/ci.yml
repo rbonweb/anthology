@@ -180,8 +180,8 @@ jobs:
   startup-budget:
     # Runs two tests in the pinned Python image: test_roster `startup_budget` (the per-agent startup
     # budget, PLAN section 5) and test_session_start `budget` (the session-start output budget, U8's
-    # 9,000 characters). The budgets themselves live in those tests (stream A: test_roster.
-    # test_startup_budget; stream F: the session-start output budget), not here. Each part runs once
+    # 9,000 characters). The per-agent budgets live in scripts/startup_budget.py (enforced by
+    # test_roster.test_startup_budget) and the session-start output budget in its test, not here. Each part runs once
     # its product files exist; from then on a missing test module fails (ImportError) and a filter
     # that matches no test fails (Python 3.12 unittest exits 5 when no test ran).
     runs-on: ubuntu-latest

@@ -202,7 +202,7 @@ To change the baseline on purpose, re-record it from a CI run as above and expla
 
 ### Startup budgets
 
-Each agent's startup reading (its body, the Startup files it must read, and its preloaded skills) has a byte budget in the `BUDGET` dict in `tests/test_roster.py`, set at the measured size plus 15%. This makes upstream growth show up in a sync PR instead of silently raising the cost of every call.
+Each agent's startup reading (its body, the Startup files it must read, and its preloaded skills) has a byte budget in the `BUDGET` dict in `scripts/startup_budget.py` (the test is `test_roster`), set at the measured size plus 15%. This makes upstream growth show up in a sync PR instead of silently raising the cost of every call. `python3 scripts/startup_budget.py [agent ...]` prints each agent's current size against its budget. Upstream-watch issues for a source that an agent reads at startup carry a "Startup budget" section with the current sizes; run that command after `vendor.py sync` to get the sizes after the sync.
 
 When a sync fails a budget:
 

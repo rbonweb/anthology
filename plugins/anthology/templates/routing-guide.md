@@ -58,4 +58,6 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
 - Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit memory as `chore(memory): ...`.
+- Agents save notes with `anthology-mem save`. Docs-only and read-only agents leave them uncommitted: commit their `.claude/agent-memory/` changes.
+- Act on each report's "Worth remembering": save what is worth keeping; delete the notes it flags as wrong (`save` cannot delete).
 - Never save secrets: repo memory is visible to everyone with the repo.
