@@ -1,0 +1,112 @@
+{
+  "upstream": {
+    "repo": "leonxlnx/taste-skill",
+    "tag": "v2.5.1",
+    "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+    "path": "skills/taste-skill"
+  },
+  "script_rule": {
+    "text": "A file under the skill folder (paths relative to it, '/' separators) is a script when ANY of: (1) its lowercased extension is in `extensions`; (2) its first two bytes are '#!'; (3) its extension is '.js' and its UTF-8 text (errors replaced) matches `js_node_regex` (Python re.search, no flags). On the pristine upstream at the pin it yields exactly the 20 keys of `scripts` (no .js file matches (3) there); on the shipped tree it must yield exactly the keep + port keys plus the `added` keys.",
+    "extensions": [".mjs", ".cjs", ".sh", ".bash", ".zsh", ".py", ".rb", ".pl", ".ps1", ".bat", ".cmd", ".ts", ".mts", ".cts"],
+    "shebang": true,
+    "js_node_regex": "\\brequire\\s*\\(|\\bfrom\\s*['\"](?:node:|(?:fs|path|os|http|https|net|child_process|url|zlib|crypto|util|stream|worker_threads)['\"/])|\\bimport\\s*\\(\\s*['\"]node:|\\bchild_process\\b|\\bprocess\\.(?:argv|exit|env|cwd)\\b"
+  },
+  "chrome_regex": "remote-debugging|user-data-dir|CHROME_PATH|Google Chrome|chrome\\.exe|/usr/bin/(google-chrome|chromium)|playwright|puppeteer",
+  "checks": [
+    "the pristine scripts (script_rule over upstream) are exactly the keys of `scripts`",
+    "action keep: shipped and byte-identical to pristine",
+    "action port: shipped",
+    "action drop: not shipped",
+    "every key of `added` is shipped and absent from pristine",
+    "the shipped scripts (script_rule over the shipped tree) are exactly the keep and port keys plus the `added` keys",
+    "no shipped file (read as bytes, case-insensitive) and no shipped path matches chrome_regex"
+  ],
+  "serve": "Host Node, Chrome-free: `node <skill>/scripts/neo.mjs serve [--root <built folder>]`, started once from the project folder as a background command (Bash run_in_background). It serves the root on 127.0.0.1 (first free port in 5300-5309), writes .taste-skill/neo.json (pid, port, tokens, root, harness URL) and prints the harness URL. The agent opens that URL in its own BrowserOS Neo tab (mcp__browseros-neo__tabs action=new) and pins it with one mcp__browseros-neo__run call (Emulation.setDeviceMetricsOverride 1600x1200 at deviceScaleFactor 1, Page.bringToFront). The ported scripts talk only to the hub over 127.0.0.1 HTTP; the hub hands their jobs to the harness page, which runs them in same-origin iframes sized to each width. No CDP port, no browser launch. `neo.mjs stop` ends it; it also exits after 2 h without API calls. Python http.server is not used (it cannot take the harness's results). A dev-server URL is not checked: the gate checks a file or a built folder (--root dist / out).",
+  "widths": {
+    "gate_checker": "consistency.mjs --quick --widths 1440,390 plus its 320x640 narrow walk (upstream, unchanged)",
+    "gate_layout": ["1440x900", "390x844"],
+    "gate_eyes": ["1440x900", "768x1024", "390x844"],
+    "step6_eyes": ["1440x900", "1024x768", "820x1180", "768x1024", "390x844"]
+  },
+  "scripts": {
+    "scripts/consistency.mjs": {
+      "action": "port", "how": "bridge", "chrome": true,
+      "why": "The main checker (about 150 check ids, the gate's core). Its value is the Node-side judgement over dozens of dependent in-page reads per width, so it cannot become one probe; its Chrome layer is a small launcher (findChrome, launch, class CDP, class Tab).",
+      "browseros": "findChrome/launch/CDP/Tab replaced by NeoTab from scripts/neo.mjs (same open/send/goto/eval/shot/close shape); its own http server replaced by the hub URL. Every DOM read runs unchanged in a BrowserOS Neo harness iframe at each width. Screenshot pixel reads, hover, the Tab-key walk, reduced-motion, scripts-off, slow-line, gl-fallback and form interception cannot run there: skipped and listed in report.notChecked, covered by the BrowserOS Neo eyes step."
+    },
+    "scripts/gate.mjs": {
+      "action": "port", "how": "bridge", "chrome": false,
+      "why": "The finish gate. It launches no browser itself but runs the two Chrome checkers with --profile, and its checker-gaming regexes contain the literal automation-tool names.",
+      "browseros": "Before the browser checks it asks neo.mjs for status: no hub, no harness, harness hidden, page outside the hub root, or a URL target -> GATE: SETUP naming the neo.mjs serve / harness step. --profile plumbing removed. The two regex literals rewritten with one-letter character classes (same matches). Hook mode stays in the code but is no longer wired or documented; SKILL.md runs the manual gate before finishing."
+    },
+    "scripts/perf.mjs": {
+      "action": "port", "how": "bridge", "chrome": true,
+      "why": "Budget verdicts from in-page observers (FCP, LCP, CLS, long tasks, WebGL, image audit) plus byte counts; the in-page parts are already strings (PROBE, SNAP, SETTLE, AUDIT).",
+      "browseros": "measure() rewritten over NeoTab: PROBE as a hub-injected init script, the same SETTLE/SNAP/AUDIT evals, bytes and request types from the hub's request log (own origin) plus in-page resource timing (other origins). Its gzip server and Chrome launcher removed. Timing comes from BrowserOS on a real GPU: compare pages with each other."
+    },
+    "scripts/shoot.mjs": {
+      "action": "drop", "chrome": true,
+      "why": "Pure screenshot tool (stitched full page, section tiles) built on CDP captures; nothing in it survives without a host browser.",
+      "browseros": "The eyes recipe (SKILL.md step 6, references/gate.md): per width one mcp__browseros-neo__run call sets device metrics, reloads, scrolls to each section top, captures with page.cdp('Page.captureScreenshot') and saves shots/<w>-<nn>.jpg through the hub's save endpoint; the agent reads every file. share.jpg = shots/1440-01.jpg."
+    },
+    "scripts/effects.mjs": {
+      "action": "port", "how": "trim", "chrome": true,
+      "why": "Kit CLI; only the dev subcommands `shot` and `perf` launch Chrome. index/list/pick/gallery/publish/serve are Chrome-free and used by the deal.",
+      "browseros": "`shot` and `perf` removed (findChrome, CDP, inProject, launch, shot, perf); looking at an effect is the eyes recipe on its demo page."
+    },
+    "scripts/moments.mjs": {
+      "action": "port", "how": "trim", "chrome": true,
+      "why": "Kit CLI; only `shoot` (contact sheets of the moment demos) launches Chrome. pick/check/list/index/gallery/serve/sheet are Chrome-free; pageKind is imported by effects.mjs.",
+      "browseros": "`shoot` removed (findChrome, inProject, cmdShoot); references/moments.md shows a demo's start/middle/end through the eyes recipe."
+    },
+    "scripts/icons.mjs": {
+      "action": "port", "how": "trim", "chrome": true,
+      "why": "The icon resolver (find/apps/list/fetch/scan/check) is Chrome-free and used on every page; only the maintenance subcommand `measure` launches Chrome.",
+      "browseros": "`measure` removed; its output (index.json \"boxes\") already ships with the pinned index."
+    },
+    "scripts/copy-lint.mjs": { "action": "keep", "chrome": false, "why": "Static copy lint, fs/path only; the gate runs it." },
+    "scripts/photos.mjs": { "action": "keep", "chrome": false, "why": "Photo library, live search and credits; Node fetch and optional ffmpeg, no browser." },
+    "scripts/start.mjs": { "action": "keep", "chrome": false, "why": "Palette and type deal, css and brand output, arms the gate marker; fs/path only." },
+    "assets/layout/check.mjs": {
+      "action": "port", "how": "bridge", "chrome": true,
+      "why": "The layout checker the gate runs at 1440x900 and 390x844; its measurement is assets/layout/layout-check.js plus the STRESS function, both already in-page.",
+      "browseros": "Inline Chrome/CDP block replaced by one NeoTab: per size resize + goto + the same evals (layout-check.js + lyCheck, overflow, STRESS). --shots is not available (prints a pointer to the eyes recipe)."
+    },
+    "assets/layout/deal.mjs": { "action": "keep", "chrome": false, "why": "Hero dealer; fs/path only." },
+    "assets/backgrounds/check.mjs": {
+      "action": "drop", "chrome": true,
+      "why": "Kit-maintenance contrast measurement of every ground on every palette from screenshot pixels; not a page step (backgrounds.md states the result; consistency.mjs checks the page's own text contrast).",
+      "browseros": "None needed on a page; references/backgrounds.md drops the instruction to run it and keeps the 7:1 / 4.5:1 rule."
+    },
+    "assets/backgrounds/pick.mjs": { "action": "keep", "chrome": false, "why": "CSS-ground dealer; fs/path only." },
+    "assets/components/fx-map/bake.mjs": { "action": "keep", "chrome": false, "why": "Bakes map data with fs only." },
+    "assets/objects/_print-core/lint-glsl.mjs": { "action": "keep", "chrome": false, "why": "Static GLSL lint in Node." },
+    "assets/objects/_scenes/lint-glsl.mjs": { "action": "keep", "chrome": false, "why": "Static GLSL lint in Node." },
+    "assets/objects/product-render/make-posters.mjs": {
+      "action": "port", "how": "bridge", "chrome": true,
+      "why": "Makes the product render's posters and stills (needed when a brief asks for 3D); the rendering already happens in make-posters.html, which leaves its files in window.__files.",
+      "browseros": "Step 2's server + Chrome launcher replaced by one NeoTab (900x900): goto make-posters.html on the hub, poll dataset.ready, pull each file and the manifest through eval, write them beside the spec as before. --check (no browser) unchanged. Renders on BrowserOS's GPU."
+    },
+    "assets/scenes/_demo/shoot.mjs": {
+      "action": "port", "how": "bridge", "chrome": true,
+      "why": "Scene tools: `index` (Chrome-free, needed after a meta.json change), `make` (saves an object still from window.__out), `probe` (one expression at one scroll progress), `shoot` (contact sheets from screenshots).",
+      "browseros": "chrome() helper replaced by a NeoTab-backed one keeping { S, ev, nav, logs, close, kill }; `make` and `probe` run through the bridge; `shoot` removed (eyes recipe on the scene demo at 1440x900 and 390x844, start/middle/end); `index` unchanged."
+    },
+    "assets/ui/_lab/build-index.mjs": { "action": "keep", "chrome": false, "why": "Builds the UI fragment index; fs/path only." }
+  },
+  "added": {
+    "scripts/neo.mjs": {
+      "chrome": false,
+      "why": "The BrowserOS Neo bridge: `serve` (static server for the page root + job hub + harness page), `stop`, `status`, and the client module (connect, status, NeoTab) the ported scripts import. Node 22+, built-ins only."
+    }
+  },
+  "brand_icons_dropped": {
+    "why": "Catalogue data naming the two automation tools; dropped so the Chrome-string scan stays strict with no allowlist.",
+    "files_deleted": ["assets/icons/demo/playwright.svg", "assets/icons/demo/puppeteer.svg"],
+    "files_edited": ["assets/icons/index.json", "assets/icons/demo/icons-credits.json", "assets/icons/demo.html", "references/icons.md"]
+  },
+  "frontmatter": {
+    "hooks": "removed (the Stop hook that ran scripts/gate.mjs --hook claude)",
+    "replacement": "SKILL.md step 6 ends with the manual gate after the eyes pass and forbids finishing on a FAIL with rounds left; step 7's report starts with the GATE: line; references/gate.md 'As a hook' becomes 'Before you finish'."
+  }
+}

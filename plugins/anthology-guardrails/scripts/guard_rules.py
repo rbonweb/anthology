@@ -97,20 +97,9 @@ def _find_heredoc_end(text, i, delimiter):
     return -1, -1
 
 
-_WORD_BREAK = " \t\n;&|()<>"   # a `#` right after one of these (or at the start) opens a comment
-
-
-def _comment_at(text, j, start):
-    """True when the `#` at text[j] starts a comment: it begins a word (outside quotes, which the
-    callers have already skipped). `${x#y}`, `$#` and `a#b` are not comments."""
-    return text[j] == "#" and (j == start or text[j - 1] in _WORD_BREAK)
-
-
-def _scan_paren(text, i, comments=False):
+def _scan_paren(text, i):
     """Return (inner, index after `)`) for the parenthesis opened just before text[i].
-    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over. With
-    `comments`, a `# comment` is skipped to the end of its line too (array bodies, where a quote
-    or `(` in a comment must not hide the real `)`)."""
+    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over."""
     depth, j, n = 1, i, len(text)
     delimiters = []
     unterminated = set()                                  # delimiters already searched in vain
@@ -118,10 +107,6 @@ def _scan_paren(text, i, comments=False):
         c = text[j]
         if c == "\\":
             j += 2
-            continue
-        if comments and _comment_at(text, j, i):
-            k = text.find("\n", j)                        # a backslash in a comment is literal
-            j = n if k < 0 else k
             continue
         if c == "<":
             match = _HEREDOC_START.match(text, j)
@@ -145,9 +130,6 @@ def _scan_paren(text, i, comments=False):
             j = n if k < 0 else k + 1
             continue
         if c == '"':
-            if comments:                                  # `"$(...)"` holds comments of its own
-                j = _skip_double_quoted(text, j + 1, comments=True)
-                continue
             j += 1
             while j < n and text[j] != '"':
                 j += 2 if text[j] == "\\" else 1          # `\"` does not close the quote
@@ -200,55 +182,6 @@ def _body_substitutions(body):
     return found
 
 
-def _array_lines(inner):
-    """Split an array body into its lines, keeping quoted text, `$(...)` (heredocs included),
-    backticks and `# comments` whole. Each line is later lexed as `echo <line>`."""
-    lines, start, j, n = [], 0, 0, len(inner)
-    while j < n:
-        c = inner[j]
-        if c == "\\":
-            j += 2
-        elif c == "'":
-            k = inner.find("'", j + 1)
-            j = n if k < 0 else k + 1
-        elif c == '"':
-            j = _skip_double_quoted(inner, j + 1, comments=True)
-        elif c == "`":
-            k = inner.find("`", j + 1)
-            j = n if k < 0 else k + 1
-        elif c == "$" and inner[j + 1:j + 2] == "(":
-            j = _scan_paren(inner, j + 2, comments=True)[1]
-        elif _comment_at(inner, j, 0):
-            k = inner.find("\n", j)
-            j = n if k < 0 else k
-        elif c == "\n":
-            lines.append(inner[start:j])
-            start = j = j + 1
-        else:
-            j += 1
-    lines.append(inner[start:])
-    return [line for line in lines if line.strip()]
-
-
-def _skip_double_quoted(text, j, comments=False):
-    """Index just past the double quote that closes the one opened before text[j]."""
-    n = len(text)
-    while j < n:
-        c = text[j]
-        if c == '"':
-            return j + 1
-        if c == "\\":
-            j += 2
-        elif c == "$" and text[j + 1:j + 2] == "(":
-            j = _scan_paren(text, j + 2, comments)[1]
-        elif c == "`":
-            k = text.find("`", j + 1)
-            j = n if k < 0 else k + 1
-        else:
-            j += 1
-    return n
-
-
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
     their segments spliced in ahead of the segment that contains them (execution order)."""
@@ -265,6 +198,9 @@ class _Lexer:
         self.heredocs = []       # (delimiter, group) registered on the current line
         self.unterminated = set()  # delimiters whose terminator was not found
         self.quoted = False      # the word being built contains a quote or escape
+        self.array = None        # elements of the `name=( ... )` being lexed, else None
+        self.array_word = ""     # its `name=` / `name+=` prefix
+        self.array_start = 0     # index just past its `(`
 
     # -- building words and segments
     def add(self, chars):
@@ -278,6 +214,9 @@ class _Lexer:
         self.cur = []
         self.has_word = False
         quoted, self.quoted = self.quoted, False
+        if self.array is not None:
+            self.array.append(word)
+            return
         op, self.pending = self.pending, None
         if op is None:
             self.seg.tokens.append(word)
@@ -296,6 +235,38 @@ class _Lexer:
         if new_group:
             self.group = _Group()
         self.seg = _Seg(self.group)
+
+    def open_array(self, i):
+        """At the `(` of `name=(`: lex the elements as words until the closing `)`."""
+        self.array_word = "".join(self.cur)
+        self.cur, self.has_word, self.quoted = [], False, False
+        self.array, self.array_start = [], i + 1
+        return i + 1
+
+    def array_char(self, i):
+        """A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run."""
+        text, c = self.text, self.text[i]
+        if c in "<>" and text[i + 1:i + 2] == "(":
+            inner, j = _scan_paren(text, i + 2)
+            self.nested(inner)
+            return j
+        self.end_word()
+        if c == ")":
+            self.close_array(i)
+            return i + 1
+        if c == "\n":
+            return self.take_heredocs(i + 1)
+        return i + 1
+
+    def close_array(self, i):
+        """The elements become the arguments of an `echo` (their paths are checked and none is
+        a program), and `name=( ... )` stays one assignment word of the current command."""
+        elements, self.array = self.array, None
+        if elements:
+            seg = _Seg(_Group())
+            seg.tokens = ["echo"] + elements
+            self.out.append(seg)
+        self.add(self.array_word + "(" + self.text[self.array_start:i] + ")")
 
     def nested(self, inner):
         if self.depth < _MAX_DEPTH:
@@ -331,6 +302,8 @@ class _Lexer:
             elif c in " \t\r":
                 self.end_word()
                 i += 1
+            elif self.array is not None and c in "\n;&|<>()":
+                i = self.array_char(i)
             elif c == "\n":
                 self.end_seg(new_group=True)
                 i = self.take_heredocs(i + 1)
@@ -338,12 +311,7 @@ class _Lexer:
                 j = text.find("\n", i)
                 i = n if j < 0 else j
             elif c == "(" and self.has_word and _ARRAY_ASSIGNMENT.match("".join(self.cur)):
-                inner, i = _scan_paren(text, i + 1, comments=True)  # `names=(a b)` is an array
-                self.add("(" + inner + ")")
-                # The elements are analyzed as the arguments of an `echo` (so their substitutions
-                # run and their paths are checked), without reading element 0 as a program.
-                for line in _array_lines(inner):
-                    self.nested("echo " + line)
+                i = self.open_array(i)                    # `names=(a b)` is an array, not a subshell
             elif c in ";()":
                 self.end_seg(new_group=True)
                 i += 1
@@ -359,6 +327,9 @@ class _Lexer:
             else:
                 self.add(c)
                 i += 1
+        if self.array is not None:                        # unclosed `name=(`: keep its elements
+            self.end_word()
+            self.close_array(n)
         self.end_seg(new_group=True)
         return self.out
 

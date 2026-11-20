@@ -387,6 +387,52 @@
           "name": "strip-connectors"
         }
       ]
+    },
+    {
+      "name": "ui-taste",
+      "url": "https://uizze.sh/.well-known/skills/ui-taste/",
+      "path": "",
+      "ref": "uizze-design-v14",
+      "checksum": "405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ui-taste",
+      "transform": [
+        {
+          "patch": "vendor/patches/ui-taste.patch"
+        }
+      ]
+    },
+    {
+      "name": "caveman",
+      "repo": "https://github.com/juliusbrussee/caveman",
+      "path": "skills/caveman",
+      "ref": "v4.1.0",
+      "commit": "1e91f1306d602d4ca23618701b1185575ae1869b",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/caveman",
+      "transform": [
+        {
+          "patch": "vendor/patches/caveman.patch"
+        }
+      ]
+    },
+    {
+      "name": "design-taste-frontend",
+      "repo": "https://github.com/leonxlnx/taste-skill",
+      "path": "skills/taste-skill",
+      "ref": "v2.5.1",
+      "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-taste-frontend",
+      "transform": [
+        {
+          "patch": "vendor/patches/design-taste-frontend.patch"
+        }
+      ],
+      "portmap": "vendor/patches/design-taste-frontend.portmap.json"
     }
   ]
 }

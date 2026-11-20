@@ -1253,6 +1253,15 @@ class RuleTableTest(unittest.TestCase):
             bash("arr=(a#b)\nnpx playwright install"),
             bash("arr=(${x#y})\nnpx playwright install"),
             bash("arr=(\"a # it's\")\nnpx playwright install"),
+            # round 5: array elements go through the main lexer (backticks, `${...}`, `$'...'`)
+            bash("arr=(`echo a #`)\nnpx playwright install"),
+            bash("arr=(`echo a # it's`)\nnpx playwright install"),
+            bash("arr=(${x:-a #b})\nnpx playwright install"),
+            bash("arr=(${x:-a #b} c)\nnpx playwright install"),
+            bash("arr=($'it\\'s')\n# it's\nnpx playwright install"),
+            bash("arr=(<(npx playwright install))"),
+            bash("arr=(a) npx playwright install"),
+            bash("declare -a arr=(a # it's\n b)\nnpx playwright install"),
         ])
         self.assert_table("G4", [
             bash("deps=(\n x # it's\n)\nagent-browser open https://x"),
