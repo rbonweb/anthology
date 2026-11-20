@@ -134,6 +134,50 @@ fn os_error_str(e: std::io::Error, filename: &str) -> String {
     .py_str()
 }
 
+/// The entry names of `dir`; any error (a directory that cannot be listed, a bad entry) gives
+/// `None`, as pathlib's `scandir` listing swallows it.
+fn list_names(dir: &Path) -> Option<Vec<OsString>> {
+    fs::read_dir(dir)
+        .ok()?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
+/// `sorted(plugins_dir.glob("*/.claude-plugin/plugin.json"))` as Python 3.12 evaluates it: each
+/// part is matched by name against a directory listing (case-sensitively, hidden names
+/// included); a listing that fails is skipped; `*` and `.claude-plugin` must be directories
+/// (symlinks followed) and `plugin.json` may be anything, a dangling symlink included. Sorted by
+/// plugin directory name (pathlib compares path components).
+fn glob_manifests(plugins_dir: &Path) -> Vec<(OsString, PathBuf)> {
+    if !plugins_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut names = list_names(plugins_dir).unwrap_or_default();
+    names.sort();
+    let mut found = Vec::new();
+    for name in names {
+        let dir = plugins_dir.join(&name);
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(inner) = list_names(&dir) else {
+            continue;
+        };
+        let cp = dir.join(".claude-plugin");
+        if !inner.iter().any(|n| n == ".claude-plugin") || !cp.is_dir() {
+            continue;
+        }
+        let Some(files) = list_names(&cp) else {
+            continue;
+        };
+        if files.iter().any(|n| n == "plugin.json") {
+            found.push((name, cp.join("plugin.json")));
+        }
+    }
+    found
+}
+
 /// `check_dependents`: the problems (one message each) for plugins under `root/plugins` whose
 /// dependency range on `plugin` excludes `version`.
 pub fn check_dependents(root: &Path, plugin: &str, version: &str) -> Result<Vec<String>, Failure> {
@@ -156,33 +200,7 @@ fn check_dependents_in(
         r => format!("{r}/{rel}"),
     };
     let plugins_dir = cwd.join(root).join("plugins");
-    // `Path.glob("*/.claude-plugin/plugin.json")`: nothing unless `plugins` is a directory; a
-    // directory it cannot list gives nothing; a symlinked plugin directory is followed and a
-    // hidden one is included.
-    if !plugins_dir.is_dir() {
-        return Ok(problems);
-    }
-    let listing = match fs::read_dir(&plugins_dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(problems),
-        Err(e) => return Err(Failure::Os(os_error_str(e, &shown("plugins")))),
-    };
-    let mut names: Vec<OsString> = Vec::new();
-    for entry in listing {
-        match entry {
-            Ok(entry) => names.push(entry.file_name()),
-            Err(e) => return Err(Failure::Os(os_error_str(e, &shown("plugins")))),
-        }
-    }
-    // `sorted()` of the paths: same-shape paths compare by their name component.
-    names.sort();
-    for name in names {
-        let dir = plugins_dir.join(&name);
-        let manifest = dir.join(".claude-plugin").join("plugin.json");
-        if !dir.is_dir() || !dir.join(".claude-plugin").is_dir() || fs::metadata(&manifest).is_err()
-        {
-            continue;
-        }
+    for (name, manifest) in glob_manifests(&plugins_dir) {
         let dependent = name.to_string_lossy().into_owned();
         let rel = format!("plugins/{dependent}/.claude-plugin/plugin.json");
         let bytes = fs::read(&manifest).map_err(|e| Failure::Os(os_error_str(e, &shown(&rel))))?;
@@ -225,7 +243,7 @@ fn check_dependents_in(
                 Err(RangeError::Unsupported(_)) => problems.push(format!(
                     "{rel} depends on {plugin} with range {}: can't check range (supported: \
                      ~X, ~X.Y, ~X.Y.Z, ^X, ^X.Y, ^X.Y.Z, X.Y.Z, >=X.Y.Z)",
-                    py_repr(rng).unwrap_or_default()
+                    py_repr(rng)
                 )),
                 Err(RangeError::BadVersion(m)) => return Err(ReleaseError(m).into()),
                 Err(RangeError::Uncaught { ty, msg }) => {
@@ -648,9 +666,20 @@ pub fn run_in(args: &[OsString], stdin: &mut dyn Read, env: &Env, cwd: &Path) ->
     }
 }
 
+/// The file `open(path)` would open: an empty `path` is `ENOENT` (joined to `cwd` it would be
+/// the directory itself).
+fn open_path(cwd: &Path, path: &OsStr) -> Result<PathBuf, Failure> {
+    if path.is_empty() {
+        let enoent = std::io::Error::from_raw_os_error(2);
+        return Err(Failure::Os(os_error_str(enoent, "")));
+    }
+    Ok(cwd.join(path))
+}
+
 fn read_text(cwd: &Path, path: &OsStr) -> Result<String, Failure> {
     let shown = path.to_string_lossy();
-    let bytes = fs::read(cwd.join(path)).map_err(|e| Failure::Os(os_error_str(e, &shown)))?;
+    let bytes =
+        fs::read(open_path(cwd, path)?).map_err(|e| Failure::Os(os_error_str(e, &shown)))?;
     match String::from_utf8(bytes) {
         Ok(text) => Ok(text),
         Err(e) => Err(Failure::Uncaught(Uncaught::new(
@@ -662,7 +691,7 @@ fn read_text(cwd: &Path, path: &OsStr) -> Result<String, Failure> {
 
 fn write_text(cwd: &Path, path: &OsStr, text: &str) -> Result<(), Failure> {
     let shown = path.to_string_lossy();
-    fs::write(cwd.join(path), text).map_err(|e| Failure::Os(os_error_str(e, &shown)))
+    fs::write(open_path(cwd, path)?, text).map_err(|e| Failure::Os(os_error_str(e, &shown)))
 }
 
 fn execute(cmd: &str, a: &argp::Parsed, cwd: &Path, out: &mut Output) -> Result<i32, Failure> {

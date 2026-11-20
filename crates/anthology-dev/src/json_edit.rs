@@ -7,57 +7,58 @@ use anthology_pycompat::json::{self, Int, PY_DEFAULT, Value};
 
 use crate::memory_diff::pystr;
 
-/// The nesting depth past which `repr` raises `RecursionError` here (CPython's limit is about
-/// 1,000 frames; the exact depth is D-1).
-pub const REPR_MAX_DEPTH: usize = 900;
-
-/// Python's `repr(v)` (`str(v)` too, for everything but a top-level string). `None` where
-/// Python would raise `RecursionError`.
-pub fn py_repr(v: &Value) -> Option<String> {
-    let mut out = String::new();
-    repr_into(v, 0, &mut out).then_some(out)
-}
-
-fn repr_into(v: &Value, depth: usize, out: &mut String) -> bool {
-    if depth > REPR_MAX_DEPTH {
-        return false;
+/// Python's `repr(v)` (`str(v)` too, for everything but a top-level string). Iterative, so
+/// there is no depth limit: CPython 3.12 prints it too up to a nesting of about 10,000, and
+/// beyond that it raises `RecursionError` (D-1), where this still prints.
+pub fn py_repr(v: &Value) -> String {
+    enum Todo<'a> {
+        Val(&'a Value),
+        Lit(&'static str),
+        Key(&'a str),
     }
-    match v {
-        Value::Null => out.push_str("None"),
-        Value::Bool(true) => out.push_str("True"),
-        Value::Bool(false) => out.push_str("False"),
-        Value::Int(Int::Small(n)) => out.push_str(&n.to_string()),
-        Value::Int(Int::Big(s)) => out.push_str(s),
-        Value::Float(f) => out.push_str(&float_repr(*f)),
-        Value::Str(s) => out.push_str(&str_repr(s)),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                if !repr_into(item, depth + 1, out) {
-                    return false;
-                }
-            }
-            out.push(']');
-        }
-        Value::Object(map) => {
-            out.push('{');
-            for (i, (k, item)) in map.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
+    let mut out = String::new();
+    let mut stack = vec![Todo::Val(v)];
+    while let Some(todo) = stack.pop() {
+        match todo {
+            Todo::Lit(s) => out.push_str(s),
+            Todo::Key(k) => {
                 out.push_str(&str_repr(k));
                 out.push_str(": ");
-                if !repr_into(item, depth + 1, out) {
-                    return false;
-                }
             }
-            out.push('}');
+            Todo::Val(v) => match v {
+                Value::Null => out.push_str("None"),
+                Value::Bool(true) => out.push_str("True"),
+                Value::Bool(false) => out.push_str("False"),
+                Value::Int(Int::Small(n)) => out.push_str(&n.to_string()),
+                Value::Int(Int::Big(s)) => out.push_str(s),
+                Value::Float(f) => out.push_str(&float_repr(*f)),
+                Value::Str(s) => out.push_str(&str_repr(s)),
+                Value::Array(items) => {
+                    out.push('[');
+                    stack.push(Todo::Lit("]"));
+                    for (i, item) in items.iter().enumerate().rev() {
+                        stack.push(Todo::Val(item));
+                        if i > 0 {
+                            stack.push(Todo::Lit(", "));
+                        }
+                    }
+                }
+                Value::Object(map) => {
+                    out.push('{');
+                    stack.push(Todo::Lit("}"));
+                    let entries: Vec<(&str, &Value)> = map.iter().collect();
+                    for (i, (k, item)) in entries.into_iter().enumerate().rev() {
+                        stack.push(Todo::Val(item));
+                        stack.push(Todo::Key(k));
+                        if i > 0 {
+                            stack.push(Todo::Lit(", "));
+                        }
+                    }
+                }
+            },
         }
     }
-    true
+    out
 }
 
 /// `repr(float)`: `json.dumps` already prints `float.__repr__` for finite values.
@@ -280,7 +281,7 @@ mod tests {
     use super::*;
 
     fn r(text: &str) -> String {
-        py_repr(&json::loads(text).expect("json")).expect("repr")
+        py_repr(&json::loads(text).expect("json"))
     }
 
     #[test]
@@ -306,8 +307,11 @@ mod tests {
     }
 
     #[test]
-    fn deep_nesting_is_a_recursion_error() {
+    fn deep_nesting_prints_in_full() {
         let deep = format!("{}{}", "[".repeat(2000), "]".repeat(2000));
-        assert!(py_repr(&json::loads(&deep).expect("json")).is_none());
+        assert_eq!(py_repr(&json::loads(&deep).expect("json")), deep);
+        let objs = format!("{}1{}", "{\"a\": ".repeat(2000), "}".repeat(2000));
+        let want = format!("{}1{}", "{'a': ".repeat(2000), "}".repeat(2000));
+        assert_eq!(py_repr(&json::loads(&objs).expect("json")), want);
     }
 }

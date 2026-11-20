@@ -138,6 +138,154 @@ mod release_edit_cli {
     }
 
     #[test]
+    fn a_leading_dashdash_is_dropped_before_the_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        fs::write(cwd.join("f"), "x").unwrap();
+        let ok = |a: &[&str], out: &str| {
+            let r = release(cwd, a);
+            assert_eq!((r.code, r.out.as_str()), (0, out), "{a:?}: {}", r.err);
+        };
+        ok(&["--", "check-version", "1.0.0", "1.0.1", "1"], "bump\n");
+        ok(
+            &["--", "check-version", "--", "1.0.0", "1.0.1", "1"],
+            "bump\n",
+        );
+        ok(
+            &["--", "check-version", "1.0.0", "--", "1.0.1", "1"],
+            "bump\n",
+        );
+        let r = release(
+            cwd,
+            &["--", "changelog-move", "f", "p", "1.0.0", "--date", "x"],
+        );
+        assert_eq!(
+            (r.code, r.err.as_str()),
+            (1, "release: date 'x' is not YYYY-MM-DD\n")
+        );
+        let tail = |a: &[&str]| {
+            let r = release(cwd, a);
+            assert_eq!(r.code, 2, "{a:?}");
+            r.err.lines().last().unwrap().to_string()
+        };
+        assert_eq!(
+            tail(&[
+                "--",
+                "changelog-move",
+                "f",
+                "p",
+                "1.0.0",
+                "--",
+                "--date",
+                "x"
+            ]),
+            "anthology-dev release-edit: error: unrecognized arguments: --date x"
+        );
+        assert_eq!(
+            tail(&["--"]),
+            "anthology-dev release-edit: error: the following arguments are required: cmd"
+        );
+        let choices = "plugin-version, check-version, check-dependents, changelog-check, \
+                       changelog-move, set-version, set-source-version";
+        for (a, bad) in [
+            (&["--", "--", "x"][..], "--"),
+            (&["--", "-x"][..], "-x"),
+            (&["--", "bogus"][..], "bogus"),
+            (&["--", "-h"][..], "-h"),
+        ] {
+            assert_eq!(
+                tail(a),
+                format!(
+                    "anthology-dev release-edit: error: argument cmd: invalid choice: '{bad}' \
+                     (choose from {choices})"
+                )
+            );
+        }
+        assert_eq!(
+            tail(&["-x", "--", "check-version", "1", "2", "1"]),
+            "anthology-dev release-edit: error: unrecognized arguments: -x"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_option_prefix_is_an_error() {
+        let cwd = Path::new(".");
+        let r = release(cwd, &["changelog-move", "a", "b", "c", "--=x"]);
+        assert_eq!(r.code, 2);
+        assert!(
+            r.err.ends_with(
+                "anthology-dev release-edit changelog-move: error: ambiguous option: --=x \
+                 could match --help, --date\n"
+            ),
+            "{}",
+            r.err
+        );
+        let r = bump(cwd, &Env::default(), &["a", "b", "--=x"]);
+        assert_eq!(r.code, 2);
+        assert!(
+            r.err.ends_with(
+                "anthology-dev version-bump: error: ambiguous option: --=x could match \
+                 --help, --repo\n"
+            ),
+            "{}",
+            r.err
+        );
+    }
+
+    #[test]
+    fn an_empty_path_is_enoent() {
+        let tmp = tempfile::tempdir().unwrap();
+        for a in [
+            &["plugin-version", ""][..],
+            &["set-version", "", "1.0.0"][..],
+            &["changelog-check", "", "p"][..],
+        ] {
+            let r = release(tmp.path(), a);
+            assert_eq!(r.code, 1, "{a:?}");
+            assert!(r.err.starts_with("release: [Errno 2] "), "{}", r.err);
+            assert!(r.err.ends_with(": ''\n"), "{}", r.err);
+        }
+    }
+
+    #[test]
+    fn a_dangling_plugin_json_symlink_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins/x/.claude-plugin");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", dir.join("plugin.json")).unwrap();
+        let r = release(tmp.path(), &["check-dependents", ".", "core", "1.0.0"]);
+        assert_eq!(r.code, 1);
+        assert!(r.err.starts_with("release: [Errno 2] "), "{}", r.err);
+        assert!(
+            r.err
+                .ends_with(": 'plugins/x/.claude-plugin/plugin.json'\n"),
+            "{}",
+            r.err
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_range_is_printed_in_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins/a/.claude-plugin");
+        fs::create_dir_all(&dir).unwrap();
+        let deep = format!("{}{}", "[".repeat(1000), "]".repeat(1000));
+        fs::write(
+            dir.join("plugin.json"),
+            format!("{{\"dependencies\": [{{\"name\": \"core\", \"version\": {deep}}}]}}"),
+        )
+        .unwrap();
+        let r = release(tmp.path(), &["check-dependents", ".", "core", "1.0.0"]);
+        assert_eq!(r.code, 1);
+        assert!(
+            r.err
+                .contains(&format!("with range {deep}: can't check range")),
+            "{}",
+            &r.err[..r.err.len().min(200)]
+        );
+    }
+
+    #[test]
     fn changelog_move_takes_a_date_and_refuses_a_bad_one() {
         let tmp = tempfile::tempdir().unwrap();
         let text = "## p\n\n### [Unreleased]\n\n- x\n";

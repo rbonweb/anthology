@@ -214,12 +214,7 @@ fn tuple_lt(a: [&str; 3], b: &[String; 3]) -> bool {
 /// docstring for the partial forms and the prerelease rule. `rng` is any JSON value, because a
 /// non-string must raise `UnsupportedRange` as it does in Python.
 pub fn range_accepts(rng: &Value, version: &str) -> Result<bool, RangeError> {
-    let unsupported = || {
-        RangeError::Unsupported(format!(
-            "can't check range {}",
-            py_repr(rng).unwrap_or_default()
-        ))
-    };
+    let unsupported = || RangeError::Unsupported(format!("can't check range {}", py_repr(rng)));
     let Some(s) = rng.as_str() else {
         return Err(unsupported());
     };

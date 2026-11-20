@@ -70,6 +70,8 @@ enum Kind {
     Value(usize, Option<String>),
     /// Starts with `-` and is none of the above.
     Unknown,
+    /// A long-option prefix that fits several options: the error message.
+    Ambiguous(String),
 }
 
 /// argparse's `_negative_number_matcher`, `^-\d+$|^-\d*\.\d+$` (Unicode `\d`; `$` also matches
@@ -114,13 +116,22 @@ fn classify(p: &Parser<'_>, s: &str) -> Kind {
             None => (s, None),
         };
         let mut hits: Vec<Kind> = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
         if "--help".starts_with(prefix) {
             hits.push(Kind::Help(explicit.clone()));
+            names.push("--help");
         }
         for (i, o) in p.opts.iter().enumerate() {
             if o.long.starts_with(prefix) {
                 hits.push(Kind::Value(i, explicit.clone()));
+                names.push(o.long);
             }
+        }
+        if hits.len() > 1 {
+            return Kind::Ambiguous(format!(
+                "ambiguous option: {s} could match {}",
+                names.join(", ")
+            ));
         }
         if hits.len() == 1 {
             return hits.remove(0);
@@ -147,6 +158,13 @@ pub fn parse_known(p: &Parser<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let n = strs.len();
+    // argparse classifies every argument before the first `--` up front, so an ambiguous
+    // option abbreviation is reported before anything else.
+    for s in strs.iter().take_while(|s| *s != "--") {
+        if let Kind::Ambiguous(m) = classify(p, s) {
+            return Err(Stop::Error(m));
+        }
+    }
     let mut out = Parsed::default();
     let mut dashdash = false;
     // The index just after the last positional (a `--` right there is swallowed with it).
@@ -189,6 +207,7 @@ pub fn parse_known(p: &Parser<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
                 out.extras.push(s.clone());
                 i += 1;
             }
+            Kind::Ambiguous(m) => return Err(Stop::Error(m)),
             Kind::Help(None) => return Err(Stop::Help),
             Kind::Help(Some(explicit)) => {
                 return Err(Stop::Error(format!(
@@ -243,8 +262,14 @@ pub fn find_command(p: &Parser<'_>, args: &[OsString]) -> Result<(usize, Vec<Str
     for (i, a) in args.iter().enumerate() {
         let s = a.to_string_lossy();
         if s == "--" {
-            // The subparsers action keeps `--` as its first value: an invalid choice.
-            return Ok((i, extras));
+            // Python 3.12.16 drops one leading `--`; the next argument is the command, taken
+            // as is (even `--`, `-h` or `-x`). Nothing after it: no command.
+            return match args.get(i + 1) {
+                Some(_) => Ok((i + 1, extras)),
+                None => Err(Stop::Error(
+                    "the following arguments are required: cmd".into(),
+                )),
+            };
         }
         match classify(p, &s) {
             Kind::Positional => return Ok((i, extras)),
@@ -255,6 +280,7 @@ pub fn find_command(p: &Parser<'_>, args: &[OsString]) -> Result<(usize, Vec<Str
                     str_repr(&explicit)
                 )));
             }
+            Kind::Ambiguous(m) => return Err(Stop::Error(m)),
             Kind::Value(..) | Kind::Unknown => extras.push(s.into_owned()),
         }
     }

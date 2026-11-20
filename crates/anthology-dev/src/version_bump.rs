@@ -51,7 +51,7 @@ pub fn changed_plugins<S: AsRef<str>>(paths: &[S]) -> Vec<String> {
 
 /// A version that is not a string cannot be valid semver; its `{!r}` is the Python repr.
 fn repr(v: &Value) -> String {
-    py_repr(v).unwrap_or_default()
+    py_repr(v)
 }
 
 /// `verdict`: `(ok, reason)` for one changed plugin. The versions are the JSON values found in
@@ -213,12 +213,6 @@ impl Git<'_> {
             .ok()
             .and_then(|v| v.as_object().and_then(|m| m.get("version")).cloned())
             .unwrap_or(Value::Null);
-        if py_repr(&version).is_none() {
-            return Err(Stop::Uncaught(Uncaught::new(
-                "RecursionError",
-                "maximum recursion depth exceeded while decoding a JSON array from a unicode string",
-            )));
-        }
         Ok((true, version))
     }
 
