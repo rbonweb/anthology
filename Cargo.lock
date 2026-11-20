@@ -306,6 +306,7 @@ name = "difftest"
 version = "0.1.0"
 dependencies = [
  "anthology-core",
+ "anthology-dev",
  "anthology-guard",
  "anthology-memory",
  "anthology-pycompat",
