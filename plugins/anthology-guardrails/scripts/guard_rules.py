@@ -19,6 +19,7 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 import re
+import urllib.parse
 
 # Home-relative profile roots (also used by the native deny rules in the anthology plugin).
 PROFILE_ROOTS = (
@@ -49,7 +50,16 @@ _MAX_CWD_DEPTH = 64     # stop tracking `cd` chains deeper than this many compon
 _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
-_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
+_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish"))
+# Long shell options that take the next word as their value (bash `--rcfile x`, zsh `--emulate sh`).
+_SHELL_VALUE_OPTIONS = frozenset(("--rcfile", "--init-file", "--emulate"))
+# Programs whose arguments (and fed stdin text) are inline code: `python3 -c`, `node -e`, ...
+_INTERPRETER = re.compile(
+    r"(?:python|pypy|ruby|perl|php|lua)[0-9.]*\Z"
+    r"|(?:node|nodejs|deno|bun|tsx|ts-node|osascript|rscript)\Z")
+# rtk subcommands that run a command (rtk/src/lib.rs `Commands`); `proxy` aliases `bypass`.
+_RTK_PASSTHROUGH = frozenset(("bypass", "proxy"))
+_RTK_RUNNERS = frozenset(("run", "err", "test", "summary"))
 _DOCKER = frozenset(("docker", "docker-compose"))
 _JS_PACKAGE_MANAGERS = frozenset(("npm", "pnpm", "yarn", "bun"))
 
@@ -455,11 +465,10 @@ def _lenient_segments(text):
         seg = _Seg(_Group())
         seg.tokens = tokens
         out.append(seg)
-        for k, token in enumerate(tokens[:-1]):          # `bash -c <rest of the line>`
-            if _SHELL_C_FLAG.match(token):
-                extra = _Seg(_Group())
-                extra.tokens = tokens[k + 1:]
-                out.append(extra)
+        for start in _script_starts(tokens):              # `bash -c <rest of the line>`
+            extra = _Seg(_Group())
+            extra.tokens = tokens[start:]
+            out.append(extra)
     return out
 
 
@@ -594,20 +603,121 @@ def _python_runner_start(name, tokens):
     return -1
 
 
-def _shell_args(args):
-    """Classify a shell's arguments: ('c', script) | ('file', None) | ('stdin', None)."""
-    i, n = 0, len(args)
+def _parse_shell_args(args, i=0):
+    """Parse a bash/sh/zsh/dash/ksh argument list (bash(1) "Invocation").
+
+    Options end at the first non-option word, `--` or a lone `-`. A short cluster (`-euo`,
+    `+O`) sets every letter, and each `o`/`O` in it takes the next word as its value; `c`
+    anywhere means command mode. `--rcfile`, `--init-file` and `--emulate` take a value
+    unless written `--x=v`; other long options take none.
+
+    Parsing starts at args[i]. Returns (mode, index of the first word after the options):
+    mode 'c' (that word is the script), 'stdin' (`-s`, no words left, or `-c` without a
+    script) or 'file'."""
+    n = len(args)
+    command = stdin = False
     while i < n:
         token = args[i]
-        if token in ("-o", "+o", "-O", "+O"):
-            i += 2
-        elif _SHELL_C_FLAG.match(token):
-            return ("c", args[i + 1]) if i + 1 < n else ("stdin", None)
-        elif token.startswith(("-", "+")):
+        if token in ("--", "-"):
             i += 1
+            break
+        if token.startswith("--"):
+            i += 2 if token in _SHELL_VALUE_OPTIONS else 1
+        elif len(token) > 1 and token[0] in "-+":
+            letters = token[1:]
+            command = command or "c" in letters
+            stdin = stdin or "s" in letters
+            i += 1 + letters.count("o") + letters.count("O")
         else:
-            return "file", None
-    return "stdin", None
+            break
+    i = min(i, n)
+    if command:
+        return ("c", i) if i < n else ("stdin", i)
+    return ("stdin" if stdin or i >= n else "file"), i
+
+
+def _shell_args(args):
+    """Classify a shell's arguments: ('c', script) | ('file', None) | ('stdin', None)."""
+    mode, start = _parse_shell_args(args)
+    return mode, (args[start] if mode == "c" else None)
+
+
+def _embedded_shells(words):
+    """(mode, start) from `_parse_shell_args` for each shell program among `words` (`docker
+    run img bash -euo pipefail -c X`). A shell's own options are skipped, not rescanned."""
+    k, n = 0, len(words)
+    while k < n:
+        if _prog_name(words[k]) in _SHELLS:
+            mode, start = _parse_shell_args(words, k + 1)
+            yield mode, start
+            k = max(start, k + 1)
+        else:
+            k += 1
+
+
+def _script_starts(words):
+    """Indexes in `words` where an embedded `-c` script starts: after a shell program's
+    options (`sh -euo pipefail -c X`), or after a `-c` flag of another program (`npx -c X`)."""
+    starts, k, n = [], 0, len(words)
+    while k < n - 1:
+        word = words[k]
+        if _prog_name(word) in _SHELLS:
+            mode, start = _parse_shell_args(words, k + 1)
+            if mode == "c":
+                starts.append(start)
+            k = max(start, k + 1)
+            continue
+        if _SHELL_C_FLAG.match(word):
+            starts.append(k + 1)
+        k += 1
+    return starts
+
+
+def _rtk_command(toks):
+    """`rtk ...` -> the command it runs. `bypass`/`proxy`/`run`/`err`/`test`/`summary` run a
+    command; any other subcommand wraps a fixed tool (`rtk npx ...`, `rtk git ...`) and the
+    words after the global flags stand.
+
+    `rtk run -c|--command <script> [--shell X]` and `rtk err|test|summary --shell X <script>`
+    become `X -c <script>` (X defaults to `sh`), so a shell recurses and an interpreter gets
+    the inline-code scan. A lone argument holding whitespace is also run as a script."""
+    i = _skip_flags(toks, 1, frozenset())
+    sub = toks[i] if i < len(toks) else ""
+    if sub in _RTK_PASSTHROUGH:
+        return toks[_skip_flags(toks, i + 1, frozenset()):]
+    if sub not in _RTK_RUNNERS:
+        return toks[i:]
+    shell = script = None
+    i, n = i + 1, len(toks)
+    while i < n:
+        token = toks[i]
+        value = toks[i + 1] if i + 1 < n else None
+        if token == "--":
+            i += 1
+            break
+        if token == "--shell":
+            shell, i = value, i + 2
+        elif token.startswith("--shell="):
+            shell, i = token[len("--shell="):], i + 1
+        elif sub == "run" and token == "--command":
+            script, i = value, i + 2
+        elif sub == "run" and token.startswith("--command="):
+            script, i = token[len("--command="):], i + 1
+        elif sub == "run" and token[:1] == "-" and token[1:2] not in ("", "-") and "c" in token:
+            attached = token[token.index("c") + 1:]       # `-c X`, `-vc X`, `-cX`
+            script, i = (attached, i + 1) if attached else (value, i + 2)
+        elif token.startswith("-") and len(token) > 1:
+            i += 1                                        # `--skip-env`, `-v`, ...
+        else:
+            break
+    rest = toks[i:]
+    if sub == "run" and script is not None:
+        return [shell or "sh", "-c", script]
+    if sub != "run" and shell and rest:
+        return [shell, "-c", " ".join(rest)]
+    if len(rest) == 1 and len(rest[0].split()) > 1:
+        return ["sh", "-c", rest[0]]                      # `rtk err "npx playwright install"`
+    return rest
 
 
 def _strip_prefixes(tokens):
@@ -641,10 +751,7 @@ def _strip_prefixes(tokens):
                 return ["which"] + toks[2:], scripts      # lookup, not execution
             toks = toks[_skip_flags(toks, 1, frozenset()):]
         elif name == "rtk":
-            i = _skip_flags(toks, 1, frozenset())
-            if i < len(toks) and toks[i] in ("bypass", "proxy"):
-                i = _skip_flags(toks, i + 1, frozenset())
-            toks = toks[i:]
+            toks = _rtk_command(toks)
         elif name in _RUNNERS:
             toks = _runner_program(toks, 1, scripts)
         elif name in _PYTHON_RUNNERS and _python_runner_start(name, toks) > 0:
@@ -686,7 +793,7 @@ def _strip_prefixes(tokens):
 
 class _Entry:
     """A flattened command ready for the per-rule predicates."""
-    __slots__ = ("raw", "redirs", "prog", "prog_path", "args", "cwd", "exempt", "group")
+    __slots__ = ("raw", "redirs", "prog", "prog_path", "args", "cwd", "exempt", "group", "code")
 
     def __init__(self, raw, redirs, cmd, cwd, exempt, group):
         self.raw = raw                                    # every word, wrappers included
@@ -697,6 +804,8 @@ class _Entry:
         self.cwd = cwd                                    # tracked `cd` directory, normalized
         self.exempt = exempt                              # docker: G1 and G2 do not apply
         self.group = group
+        # inline code an interpreter runs: its arguments, plus text fed to its stdin
+        self.code = list(self.args) if _INTERPRETER.match(self.prog) else []
 
 
 class _Context:
@@ -716,10 +825,9 @@ def _first_arg(args):
 def _reads_stdin_as_shell(entry):
     """True for a shell fed from stdin (`bash`, `sh -s`) or a docker command that runs one."""
     if entry.prog in _SHELLS:
-        return _shell_args(entry.args)[0] == "stdin"
+        return _parse_shell_args(entry.args)[0] == "stdin"
     if entry.prog in _DOCKER:
-        return any(_prog_name(a) in _SHELLS and _shell_args(entry.args[k + 1:])[0] == "stdin"
-                   for k, a in enumerate(entry.args))
+        return any(mode == "stdin" for mode, _start in _embedded_shells(entry.args))
     return False
 
 
@@ -734,10 +842,9 @@ def _add_command(tokens, redirs, group, ctx, exempt, depth):
     ctx.entries.append(entry)
     for script in scripts:
         _collect(script, ctx, exempt, depth + 1)
-    if entry.prog in _DOCKER:                             # `docker run img sh -c "..."`
-        for k, token in enumerate(entry.args[:-1]):
-            if _SHELL_C_FLAG.match(token):
-                _collect(entry.args[k + 1], ctx, True, depth + 1)
+    if entry.prog in _DOCKER:                             # `docker run img sh -euc "..."`
+        for start in _script_starts(entry.args):
+            _collect(entry.args[start], ctx, True, depth + 1)
     elif entry.prog == "find":
         _collect_find_exec(entry, ctx, depth)
     elif entry.prog in ("cd", "pushd"):
@@ -782,13 +889,17 @@ def _collect(text, ctx, exempt, depth):
     by_group = {}
     for entry in new_entries:
         by_group.setdefault(id(entry.group), []).append(entry)
+    # Text that reaches an interpreter's stdin is code: `python3 - <<EOF`, `echo ... | node`.
     for entries in by_group.values():
         shell = next((e for e in entries if _reads_stdin_as_shell(e)), None)
-        if shell is None:
+        interpreters = [e for e in entries if _INTERPRETER.match(e.prog)]
+        if shell is None and not interpreters:
             continue
         texts = list(entries[0].group.texts)
         texts += [_echo_text(e) for e in entries if e.prog in ("echo", "printf")]
-        for body in texts:
+        for entry in interpreters:
+            entry.code.extend(texts)
+        for body in texts if shell is not None else ():
             _collect(body, ctx, shell.exempt, depth + 1)
 
 
@@ -831,7 +942,10 @@ def _normalize(path, home, cwd):
 def _component_matches(candidate, protected, prefix):
     if _GLOB_CHARS.search(candidate):
         variants = _PREFIX_VARIANTS if prefix else ("",)
-        return any(fnmatch.fnmatchcase(protected + v, candidate) for v in variants)
+        try:
+            return any(fnmatch.fnmatchcase(protected + v, candidate) for v in variants)
+        except re.error:                                  # `[z-a]`: matches nothing
+            return False
     return candidate.startswith(protected) if prefix else candidate == protected
 
 
@@ -844,9 +958,9 @@ def _is_home_dir(comps, home_comps):
         len(comps) == 2 and comps[0] in ("home", "users")) or comps == ["root"]
 
 
-def _contains_sequence(path, sequences, prefix_flags=None, home_comps=()):
-    """True when `path` holds one of the component sequences: anywhere if absolute, from the
-    start (after any `..` or `$var` components) if relative.
+def _contains_sequence(path, sequences, prefix_flags=None, home_comps=(), anywhere=False):
+    """True when `path` holds one of the component sequences: anywhere if absolute (or if
+    `anywhere`), from the start (after any `..` or `$var` components) if relative.
 
     A window of nothing but wildcards (`**/*`, `*/*`) names no particular path and does not
     match, unless it starts directly under a home directory (`~/*/*/*` reaches `~/.config/...`)."""
@@ -856,7 +970,7 @@ def _contains_sequence(path, sequences, prefix_flags=None, home_comps=()):
     if not absolute:
         while leading < len(comps) and (comps[leading] == ".." or "$" in comps[leading]):
             leading += 1
-    last_start = len(comps) if absolute else leading
+    last_start = len(comps) if absolute or anywhere else leading
     for index, sequence in enumerate(sequences):
         prefix = prefix_flags[index] if prefix_flags else False
         size = len(sequence)
@@ -872,11 +986,17 @@ def _contains_sequence(path, sequences, prefix_flags=None, home_comps=()):
     return False
 
 
+_ENCODED_FILE_URL = re.compile(r"file:.*%[0-9a-f]{2}", re.IGNORECASE | re.DOTALL)
+
+
 def _path_candidates(token):
-    """The token itself, the part after the first `=`, and each `:`-separated piece."""
+    """The token itself, the part after the first `=`, and each `:`-separated piece. A part
+    that is a percent-encoded `file:` URL also yields its decoded form (other URLs are not
+    decoded: a search for `Library%2FApplication%20Support%2FGoogle` is not a path)."""
     parts = [token]
     if "=" in token:
         parts.append(token.split("=", 1)[1])
+    parts += [urllib.parse.unquote(p) for p in parts if _ENCODED_FILE_URL.match(p)]
     pieces = list(parts)
     for part in parts:
         if ":" in part:
@@ -888,14 +1008,20 @@ _PROFILE_SEQUENCES = tuple(seq for seq, _ in _PROFILE_COMPONENTS)
 _PROFILE_PREFIX_FLAGS = tuple(flag for _, flag in _PROFILE_COMPONENTS)
 
 
-def _is_profile_path(candidate, home, cwd):
+def _is_profile_path(candidate, home, cwd, anywhere=False):
     home_comps = [c for c in _normalize(home, home, None).split("/") if c] if home else []
     for base in (None, cwd) if cwd else (None,):
         path = _normalize(candidate, home, base)
         if path and _contains_sequence(
-                path, _PROFILE_SEQUENCES, _PROFILE_PREFIX_FLAGS, home_comps):
+                path, _PROFILE_SEQUENCES, _PROFILE_PREFIX_FLAGS, home_comps, anywhere):
             return True
     return False
+
+
+def _is_profile_path_in_code(candidate, home, cwd):
+    """A code literal carries prefixes (`{home}/`, `${process.env.HOME}/`), so a relative
+    candidate matches the root sequence anywhere, not only from its first component."""
+    return _is_profile_path(candidate, home, cwd, anywhere=True)
 
 
 def _is_memory_path(candidate, home, cwd):
@@ -937,6 +1063,46 @@ def _words_hit(words, predicate, home, cwd):
             if any(predicate(candidate, home, cwd) for candidate in candidates):
                 return True
     return False
+
+
+_CODE_LITERAL = re.compile("'([^']*)'|\"([^\"]*)\"|`([^`]*)`")
+_CODE_PUNCTUATION = "()[]{}<>,;'\"`"
+# Pieces between quote characters and newlines: a stray `'` in a comment (`# Chrome's ...`)
+# can pair with a literal's opening quote, so the literals alone are not enough.
+_CODE_QUOTE_SPLIT = re.compile("['\"`\n]")
+# A code candidate can name a profile root only if it has a separator and a root-like word
+# or a glob; the rest is dropped before path matching (keeps huge programs cheap).
+_CODE_ROOT_HINT = re.compile(r"librar|config|chrom|google|[*?\[]", re.IGNORECASE)
+
+
+def _code_candidates(text):
+    """Path candidates in a piece of code: the contents of every '...', "..." and `...`
+    literal (no nesting; triple quotes fall out naturally) and every whitespace-separated
+    word with surrounding punctuation stripped. An escaped space (backslash, space) is a
+    space. Names assembled piecewise (`Path.home() / "Library" / ...`) are not seen (R1)."""
+    text = text.replace("\\ ", " ")
+    found = {literal.strip() for match in _CODE_LITERAL.finditer(text)
+             for literal in match.groups() if literal}
+    found.update(piece.strip() for piece in _CODE_QUOTE_SPLIT.split(text))
+    found.update(word.strip(_CODE_PUNCTUATION) for word in text.split())
+    found.discard("")
+    return found
+
+
+def _may_name_profile(candidate):
+    """Cheap prefilter: a `/` (or an encoded `%2F`, or a backslash) and a root-like word."""
+    lowered = candidate.lower()
+    return ("/" in candidate or "\\" in candidate or "%2f" in lowered) and bool(
+        _CODE_ROOT_HINT.search(candidate))
+
+
+def _code_hits_profile(texts, home, cwd):
+    """True when a profile path is spelled inside any of the code texts (G3)."""
+    candidates = set()
+    for text in texts:
+        candidates |= _code_candidates(text)
+    return _words_hit([c for c in candidates if _may_name_profile(c)],
+                      _is_profile_path_in_code, home, cwd)
 
 
 # ------------------------------------------------------------- rules
@@ -1090,7 +1256,8 @@ def _g2(entry):
 
 def _g3(entry, home):
     words = list(entry.raw) + [target for _, target in entry.redirs]
-    return _words_hit(words, _is_profile_path, home, entry.cwd)
+    return (_words_hit(words, _is_profile_path, home, entry.cwd)
+            or _code_hits_profile(entry.code, home, entry.cwd))
 
 
 # G4 ------------------------------------------------------------------
@@ -1225,6 +1392,26 @@ def _path_strings(value, skip, in_path_key=False, depth=0):
             yield from _path_strings(item, skip, in_path_key, depth + 1)
 
 
+_CODE_KEYS = frozenset(("script", "code", "expression", "func"))
+
+
+def _code_strings(value, in_code_key=False, depth=0):
+    """Strings under keys named `script`, `code`, `expression` or `func` (at any depth): code
+    a tool runs, such as BrowserOS Neo `run {code}` or `evaluate_in_page {code|func}`."""
+    if depth > _MAX_WALK_DEPTH:
+        return
+    if isinstance(value, str):
+        if in_code_key:
+            yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            code_key = in_code_key or (isinstance(key, str) and key.lower() in _CODE_KEYS)
+            yield from _code_strings(item, code_key, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _code_strings(item, in_code_key, depth + 1)
+
+
 def _search_roots(tool_input, keys):
     """Glob/Grep: the directory joined with each pattern, so `Google/**` under a parent dir
     is seen as the profile path it will walk."""
@@ -1250,7 +1437,8 @@ def _check(tool_name, tool_input, home):
     grep = name == "Grep"
     skip = _PLAIN_TEXT_KEYS | {"pattern"} if grep else _PLAIN_TEXT_KEYS
     paths = list(_path_strings(inp, skip)) + _search_roots(inp, ("glob",) if grep else ("pattern", "glob"))
-    if _words_hit(paths, _is_profile_path, home, None):
+    if _words_hit(paths, _is_profile_path, home, None) or _code_hits_profile(
+            _code_strings(inp), home, None):
         return "G3"
     for entry in entries:
         if _g3(entry, home):
