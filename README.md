@@ -39,19 +39,20 @@ Check [Requirements](#requirements) first.
 
 It checks your machine, then shows every change and applies them only after you confirm once.
 
-1. **Doctor.** Checks `python3`, `node`, `docker`, BrowserOS Neo, rtk and the platform. On Windows it refuses and stops.
+1. **Doctor.** Checks that `python3`, `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
 2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
 3. **rtk.** Downloads the pinned rtk binary and verifies its sha256.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
-   - denies `Read(...)` on the Chrome and Chromium profile folders and their parent folders, for macOS and Linux;
+   - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes;
+   - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
 5. **Memory.** Approves the current repo for memory, which also adds two `merge=union` lines to the repo's `.gitattributes` (you can decline this step), and creates the personal-memory folder.
 
 When it finishes, restart the session so the new permissions and the rtk hook take effect. Nothing is written to `~/.claude/CLAUDE.md`.
 
-After setup, some things happen on their own at session start: Anthology reconciles the rtk binary with `rtk.lock`, and in approved repos it keeps memory working (see [Memory](#memory)).
+After setup, some things happen on their own at session start: Anthology delivers the routing guide, runs the guardrails self-test (see [Guardrails](#guardrails)), reconciles the rtk binary with `rtk.lock`, and in approved repos keeps memory working (see [Memory](#memory)). Until you have run `/anthology:setup` it prints a one-line reminder to do so, and it warns you if the plugin has moved so that agents can no longer read their knowledge files; re-run `/anthology:setup` to fix that.
 
 ## The product
 
@@ -117,7 +118,7 @@ These run only when you ask for them.
 
 Two layers keep agents from installing browser tooling on your machine, touching your Chrome, using any browser other than BrowserOS Neo, or writing secrets into memory.
 
-1. **Deny rules.** Setup adds `Read(...)` deny rules for the Chrome and Chromium profile folders (and their parents) to `~/.claude/settings.json`. They cover Claude Code's built-in file tools and the Bash file commands it recognises, and a hook cannot override them.
+1. **Deny rules.** Setup adds `Read(...)` deny rules for the Chrome and Chromium data folders to `~/.claude/settings.json`. They cover Claude Code's built-in file tools and the Bash file commands it recognises, and a hook cannot override them.
 2. **A hook.** `anthology-guardrails` runs a `PreToolUse` hook on every tool call. It blocks with a message that names the alternative.
 
 | ID | Blocks | Points the agent to |
@@ -239,7 +240,7 @@ Links are the `[[note-name]]` links in the notes, plus relations such as `supers
 
 **Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
-**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` allow, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
+**Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
 ```text
 claude plugin uninstall anthology@anthology --prune -y
@@ -257,7 +258,7 @@ claude plugin uninstall anthology@anthology --prune -y
 - BrowserOS Neo, for all browser work.
 - git.
 
-`/anthology:setup` checks all of these and tells you what is missing.
+`/anthology:setup` checks that `python3`, `node`, Docker (installed and running) and BrowserOS Neo are present, and tells you what is missing. It does not check versions, git or the Claude Code version.
 
 ## Replacing the official superpowers and design-skills
 

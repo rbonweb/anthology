@@ -515,3 +515,46 @@ Every fork change keeps a named test, permanently in CI (`rtk/tests/`, through t
 - `fork_9_awareness_exact`.
 
 Run against plain upstream v1.2.1, all of them fail except `fork_5`: the fork's cd-chain change was a regression test only (upstream already rewrote after `cd`), so `fork_5` pins that behaviour.
+
+---
+
+## ADR-016: rtk trim, Claude Code only and no telemetry
+
+- **Date:** 2026-11-20
+- **Task:** Task 9
+- **Status:** Accepted
+
+**Context**
+
+The imported rtk (ADR-015) carries the BUSL-1.1 engine, telemetry and integrations for many other AI tools. Anthology ships rtk for Claude Code only, under Apache-2.0, without telemetry, and the trim has to survive every upstream sync.
+
+**Decision**
+
+The shipped rtk is the Apache-2.0 edition, Claude Code only, without telemetry. `scripts/rtk-trim.sh` produces it: a thin bash entry that runs `scripts/rtk_trim.py` (stdlib, Python 3.9+), then the lockfile step. The Python is an ordered list of operations over four idempotent primitives: `rm`; `sub` (exact replacement); `cut` (exact deletion); `drop` (an item by its exact first line, body-tolerant). Every one of them stops with exit 1 and `rtk-trim: <file>: <reason>: <anchor>` when its anchor no longer matches. So an upstream refactor of a trimmed region is noticed, and a second run prints `rtk-trim: no changes`. The commit `refactor(rtk): Claude Code only, no telemetry (scripted trim)` is the script's output; nothing under `rtk/` is hand-edited.
+
+- **Removed.** `engine/`, `plugin/`, `proxy/` (all BUSL-1.1), `examples/`, the `engine`/`example-plugins` features and the 12 engine-only source files. Telemetry goes: `telemetry.rs`, `telemetry_cmd.rs`, `rtk telemetry`, the daily ping and the consent prompt in `rtk init`. So does every non-Claude `rtk init` target and `rtk hook` processor (the `hook_cmd.rs` handlers of Copilot/VS Code, Gemini, Antigravity, Vibe, Trae, Codex, Cursor, Droid and OpenCode). Also removed: the translated READMEs, `Formula/`, `install.sh`, `INSTALL.md`, the release-please files, the fork's dev tooling dir, upstream's CI dir, `.semgrep.yml`, `openclaw/`, `scripts/`, `hooks/<11 other hosts>/`, the docs of removed features, and the tests of removed code (13 files, about 130 unit tests).
+- **Kept.**
+  - `src/hooks/init/{mod,claude,agents_md}.rs` (`agents_md.rs` holds the marker-block helpers that `claude.rs` uses);
+  - `rtk hook claude` and `rtk hook check`, and every command filter (including `opencode run`);
+  - `text/` (`rtk-text`, Apache-2.0);
+  - `permissions_opencode.rs` (the shared rule judging calls it);
+  - `llm_proxy.rs` (a loopback-only client of the optional proxy daemon, woven into `gain`/`claude`);
+  - Windows code.
+- **The engine's `#[cfg(feature = "engine")]` code stays, dead, and can never be enabled.** The feature is gone, and the cfg is declared in `[lints.rust] unexpected_cfgs` check-cfg. Why: deleting 123 cfg sites in high-churn files would make every sync conflict. Cost if wrong: dead source text only.
+- **`dead_code = "allow"` for the rtk crate.** Why: removing entry points under upstream's `warnings = "deny"` turns about 75 inert callees across 10 shared files into errors, and chasing them means about 100 more conflict-prone edits for no runtime change. Cost if wrong: inert callees stay in the source (not in the LTO binary); `test_rtk_claude_only` guards what matters.
+- **Permitted dependencies.** `[dependencies]` anyhow, base16ct, chrono, clap, codepage, colored, crossterm, dirs, encoding_rs, flate2, ignore, oem_cp, quick-xml, ratatui, regex, rtk-text, rusqlite, serde, serde_json, sha2, tempfile, toml, toml_edit, ureq, walkdir, which. Per target: libc (unix), windows-sys (windows), mimalloc (musl). Build: toml. Dev: temp-env. `rtk-text`: regex. The workspace members are `.` and `text`, and these two are the only manifests. `getrandom` is removed. `ureq` is kept: its only live caller is the proxy health check, a loopback GET reached by `rtk llm-proxy`, `rtk claude` and `rtk gain` on a TTY, never by the hook, rewrite or filters.
+- **`Cargo.lock` is pruned** by `cargo metadata --offline --format-version 1` in the pinned image, falling back to online only if the registry volume lacks a crate. A guard compares the `[[package]]` name+version pairs before and after. It exits 1, and restores the old lockfile, if any package is added or any version changes. Result: 19 packages pruned, none added or changed. The container runs as root, and on Linux it chowns `Cargo.lock` back to the caller afterwards. It does not use `--user`. Why: with `--user`, `cargo metadata` fails with `Permission denied` on a cold registry volume, or on one another uid owns, as soon as it must fetch online, which a sync that adds a crate does (checked). Cost if wrong: none (the file ends up owned by the caller either way).
+- **Fork change 8 (custom `[upstream.*]` headers, `cc11f851`) is dropped with the engine**, per the stream ruling. It lived only in `classify.rs`, `task_cmd.rs` and the `rtk-engine` schema. `tests/fork_8_upstream_headers.rs` is deleted by the trim and `FORK_TESTS` lists the 8 remaining named tests. This settles the question ADR-015 left open for Task 9. Cost if wrong: the owner loses custom headers for remote pipelines, which exist only in the BUSL edition.
+- **What changes for Claude.** For `rtk hook claude` on PreToolUse, nothing. The engine's pipeline pre-step returned "not handled" without user pipelines, so the same `process_claude_payload` path runs. Lost with the engine (Anthology never wired them): PostToolUse output compression, SessionStart handling and user pipelines (`rtk pipeline/methods/plugins/tasks`). Do not wire PostToolUse to `rtk hook claude`: the oss build would answer with a PreToolUse-shaped rewrite. `rtk init -g` (Claude) works; the agent flags are gone.
+- **Syncs.** `sync-rtk.sh` now requires the trim (it fails without it). When the subtree pull stops on conflicts, it removes with `git rm` every "deleted by us" (`DU`) path inside a path the trim removes, and commits the merge if nothing else conflicts. Upstream edits to `engine/` and similar paths would otherwise stop every sync. Any other conflict still stops the sync for review. For a content conflict inside a trimmed region, take upstream's hunk and re-run the trim: drops are body-tolerant, and subs and cuts stop loudly when upstream changed the anchored text.
+- **Noted for Task 11.** `bin/rtk` should export `RTK_SUPPRESS_HOOK_WARNING=1`. Otherwise rtk's daily `hook_check` finds no `rtk hook claude` entry in Claude's settings.json, because Anthology registers the hook in the plugin's hooks.json, and prints "run rtk init -g", which would install the duplicate hook the design forbids.
+
+**Consequences**
+
+Each of the fork's changes keeps one permanent named test, now 8 instead of 9. The checks that keep the trim honest:
+
+- `tests/test_rtk_claude_only.py` is the allowlist. It checks the init keep-list, the Cargo dependencies per section, the members line and manifest set, and that there is no telemetry. It also checks: none of the about 100 removed paths exist, `HookCommands` is `{Claude, Check}`, there is no `AgentTarget`, the check-cfg and `dead_code` lines are present, there are 8 fork tests, and the scripts are wired. Adding a hook integration module or a dependency that is not on the list is a deliberate decision, not a test fix.
+- `tests/test_rtk_trim.py` unit-tests the primitives (apply once, no-op once applied, raise on a missing anchor or a changed signature), the lock guard and the conflict filter.
+- `scripts/rtk-net-test.sh` runs in CI's `rtk-test` job after `scripts/rtk-test.sh`. It builds the release binary in the pinned image (target volume `anthology-rtk-release`) and a throwaway image from the same pinned image plus git (inline Dockerfile on stdin, so `ci/images/` is unchanged). It then asserts the exact outputs under `docker run --network none`: only `lo`; `rtk git status`; `rtk rewrite "git log -5"` (exit 3); `rtk hook claude` with and without a rewrite; the `rtk hook` subcommands `claude`, `check` (and clap's `help`); and `rtk telemetry` unrecognized.
+
+Results: `scripts/rtk-test.sh` gives 4775 passed, 0 failed, 8 ignored (60 test binaries). `scripts/rtk-net-test.sh` gives PASS.

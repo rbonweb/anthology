@@ -34,14 +34,14 @@ What Anthology changes outside the plugin, by who writes it:
 
 **`/anthology:setup`, after it shows the changes and you confirm once:**
 
-- `~/.claude/settings.json`: the `Bash(rtk *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
+- `~/.claude/settings.json`: the `Bash(rtk *)` allow, the `Bash(anthology-mem save *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
 - The rtk download.
 - Approving the current repo for memory. You can decline this step. It adds the two `merge=union` lines to the repo's `.gitattributes`.
 - Creating the personal-memory folder.
 
 **Session start, automatically:**
 
-- It reconciles the rtk binary with `rtk.lock` (a download into the plugin's data folder) and writes `~/.claude/anthology/state.json`.
+- It runs the guardrails on a known-bad sample, reconciles the rtk binary with `rtk.lock` (a download into the plugin's data folder) and writes `~/.claude/anthology/state.json`.
 - In approved repos only: it writes `autoMemoryDirectory` into `.claude/settings.local.json` and a git exclude entry for that file, regenerates the `MEMORY.md` indexes, and copies notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder (never overwriting anything).
 - The memory search index lives in the plugin's data folder.
 
