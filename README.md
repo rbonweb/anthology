@@ -14,7 +14,7 @@ It ships three plugins. Installing `anthology` brings the other two with it:
 | `anthology-guardrails` | The hook that blocks the things agents must not do (see [Guardrails](#guardrails)) |
 | `anthology-superpowers` | The superpowers skills for the main session, renamed so they do not clash with the official copy |
 
-More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECISIONS.md](DECISIONS.md) · [LICENSE](LICENSE) (Apache-2.0).
+More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECISIONS.md](DECISIONS.md) · [LICENSE](LICENSE) (Apache-2.0). Each plugin ships its license text, and each vendored folder ships its upstream license (and NOTICE, where upstream has one).
 
 ## Install
 
@@ -34,7 +34,7 @@ More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECIS
 
    From a terminal: `claude plugin install anthology@anthology`.
 
-3. Turn on auto-update for the `anthology` marketplace in `/plugin`. Third-party marketplaces default to off, and a plugin only reaches you when it updates.
+3. Turn on auto-update: run `/plugin`, open the **Marketplaces** tab, select `anthology` and enable auto-update. Auto-update is off by default for every marketplace that is not Anthropic's own, so without this step you only get new versions when you update by hand (see [Updating](#updating-and-removing)).
 4. Run `/anthology:setup` in each repo you want memory in. The first run also does the one-time machine setup.
 
 Check [Requirements](#requirements) first.
@@ -254,7 +254,7 @@ It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` 
 
 ## Updating and removing
 
-**Updating.** With auto-update on, plugin updates arrive on their own. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
+**Updating.** Auto-update is off by default for third-party marketplaces such as `anthology`. Turn it on in `/plugin` > **Marketplaces** > `anthology` (install step 3). Claude Code then checks the marketplace after a session starts and updates the installed plugins on disk; it shows "Plugin updated", and the new version loads after `/reload-plugins` or at your next launch. Setting `DISABLE_AUTOUPDATER=1`, `DISABLE_UPDATES=1` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also turns plugin auto-update off unless you set `FORCE_AUTOUPDATE_PLUGINS=1`. Without auto-update, update by hand: `/plugin` > **Marketplaces** > `anthology` > **Update marketplace** updates the marketplace and its installed plugins, or run `claude plugin marketplace update anthology` and then `claude plugin update anthology@anthology` (and the same for `anthology-guardrails` and `anthology-superpowers`). The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
 **Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value), deletes the downloaded rtk and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
