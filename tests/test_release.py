@@ -403,6 +403,8 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn("### [Unreleased]\n\n### [0.1.1] - ", log)
         self.assertEqual(log.count("- G."), 1)
         self.assertIn("anthology-guardrails--v0.1.1", self.git("tag", "-l"))
+        self.assertEqual(self.git("tag", "-l", "-n1", "anthology-guardrails--v0.1.1"),
+                         "anthology-guardrails--v0.1.1 anthology-guardrails 0.1.1")
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual(self.remote_refs(), remote_before)
         self.assertIn("plugin tag plugins/anthology-guardrails -m anthology-guardrails %s",
@@ -493,6 +495,71 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn("~0.1", r.stdout)
         self.assertEqual(self.state(), before)
         self.assertEqual(self.log.read_text(), "")
+
+    def test_push_from_detached_head_is_refused_with_nothing_changed(self):
+        self.git("checkout", "-q", "--detach")
+        before = self.state()
+        remote_before = self.remote_refs()
+        r = self.release("anthology-guardrails", "0.1.1", "--push")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("checked-out branch", r.stdout)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(self.remote_refs(), remote_before)
+        self.assertEqual(self.log.read_text(), "")
+
+    def test_rejected_branch_push_gives_a_recovery_hint_and_no_tag(self):
+        other = Path(self._tmp.name) / "other"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(other)], check=True)
+        for key, value in (("user.name", "Test"), ("user.email", "test@users.noreply.github.com"),
+                           ("commit.gpgsign", "false")):
+            self.git("config", key, value, cwd=other)
+        (other / "diverge.txt").write_text("x\n", encoding="utf-8")
+        self.git("add", "diverge.txt", cwd=other)
+        self.git("commit", "-q", "-m", "diverge", cwd=other)
+        self.git("push", "-q", "origin", "main", cwd=other)
+        remote_before = self.remote_refs()
+        r = self.release("anthology-guardrails", "0.1.1", "--push")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("release commit exists locally", r.stdout)
+        self.assertIn("git push origin HEAD", r.stdout)
+        self.assertIn("git reset --hard HEAD~1", r.stdout)
+        self.assertEqual(self.git("tag", "-l"), "")
+        self.assertEqual(self.remote_refs(), remote_before)
+        self.assertEqual(self.git("log", "-1", "--format=%s"), "release: anthology-guardrails 0.1.1")
+
+    def test_dry_run_failure_after_the_worktree_exists_cleans_up(self):
+        self.write("CHANGELOG.md", FAKE_CHANGELOG.replace(
+            "- G.\n", "- G.\n\n### [0.1.1] - 2026-01-01\n\n- old\n"))
+        self.git("commit", "-q", "-a", "-m", "changelog")
+        before = self.state()
+        r = self.release("anthology-guardrails", "0.1.1", "--dry-run")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("already has a 0.1.1 section", r.stdout)
+        self.assertNotIn("restored", r.stdout)
+        self.assertEqual(self.state(), before)
+
+    def test_dry_run_needs_no_identity_and_skips_hooks(self):
+        # No user.name/user.email anywhere, and a pre-commit hook that would leave a marker.
+        home = Path(self._tmp.name) / "home"
+        home.mkdir()
+        self.git("config", "--unset", "user.name")
+        self.git("config", "--unset", "user.email")
+        marker = Path(self._tmp.name) / "hook-ran"
+        hook = self.repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+        hook.chmod(0o755)
+        env = self.env()
+        env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home),
+                    "GIT_CONFIG_NOSYSTEM": "1"})
+        r = subprocess.run(["bash", str(self.repo / "scripts" / "release.sh"),
+                            "anthology-guardrails", "0.1.1", "--dry-run"],
+                           cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(marker.exists())
+        local = subprocess.run(["git", "-C", str(self.repo), "config", "--local", "--get-regexp",
+                                "^user[.]"], stdout=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(local.stdout, "")  # the placeholder identity was never written
 
     def test_push_publishes_branch_and_tag(self):
         r = self.release("anthology-guardrails", "0.1.1", "--push")

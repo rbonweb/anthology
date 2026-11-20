@@ -11,6 +11,7 @@
 #                 CHANGELOG diff, then discard it; the checkout, index and tags are untouched
 #
 # Nothing is ever pushed without --push. The `claude` binary is $CLAUDE_BIN if set.
+# $RELEASE_DATE (YYYY-MM-DD) overrides today's date in the new CHANGELOG heading.
 # The text and JSON edits live in scripts/release_edit.py. Works with bash 3.2 (macOS).
 set -euo pipefail
 
@@ -74,6 +75,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v "$CLAUDE" >/dev/null 2>&1 || die "'$CLAUDE' not found (install Claude Code, or set CLAUDE_BIN)"
 if [ "$PUSH" = 1 ]; then
   git remote get-url "$REMOTE" >/dev/null 2>&1 || die "no git remote named '$REMOTE'"
+  git symbolic-ref -q HEAD >/dev/null 2>&1 || die "--push needs a checked-out branch (HEAD is detached)"
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
@@ -96,11 +98,11 @@ TMPDIR_DRY=""
 EDITED=""
 cleanup() {
   status=$?
-  if [ -n "$EDITED" ]; then
-    # Edits were made but never committed: put the files back.
+  if [ -n "$EDITED" ] && [ "$DRY_RUN" != 1 ]; then
+    # Files were rewritten but the release commit was never made: put them back.
     # shellcheck disable=SC2086
     (cd "$WORK" && git reset -q HEAD -- $EDITED && git checkout -q -- $EDITED) || true
-    echo "release: failed before committing; reverted $EDITED" >&2
+    echo "release: failed before committing; restored $EDITED" >&2
   fi
   if [ -n "$TMPDIR_DRY" ]; then
     git -C "$ROOT" worktree remove --force "$TMPDIR_DRY/wt" >/dev/null 2>&1 || true
@@ -116,19 +118,23 @@ if [ "$DRY_RUN" = 1 ]; then
   TMPDIR_DRY=$(mktemp -d "${TMPDIR:-/tmp}/anthology-release.XXXXXX")
   git worktree add -q --detach "$TMPDIR_DRY/wt" HEAD
   WORK="$TMPDIR_DRY/wt"
+  # The throwaway commit must not sign, run hooks or need a configured identity; the
+  # placeholder identity is passed per command and never written to any config.
   GIT_COMMIT_OPTS="-c commit.gpgsign=false"
+  if [ -z "$(git config user.name 2>/dev/null || true)" ]; then
+    GIT_COMMIT_OPTS="$GIT_COMMIT_OPTS -c user.name=release-dry-run"
+  fi
   if [ -z "$(git config user.email 2>/dev/null || true)" ]; then
-    export GIT_AUTHOR_NAME="release dry run" GIT_AUTHOR_EMAIL="noreply@example.invalid"
-    export GIT_COMMITTER_NAME="release dry run" GIT_COMMITTER_EMAIL="noreply@example.invalid"
+    GIT_COMMIT_OPTS="$GIT_COMMIT_OPTS -c user.email=noreply@example.invalid"
   fi
 fi
 
 # ---- edits ---------------------------------------------------------------------------
 
 FILES="CHANGELOG.md"
-EDITED="CHANGELOG.md"
 python3 "$EDIT" changelog-move "$WORK/CHANGELOG.md" "$PLUGIN" "$VERSION" \
   ${RELEASE_DATE:+--date "$RELEASE_DATE"}
+EDITED="$FILES"
 
 if [ "$MODE" = bump ]; then
   python3 "$EDIT" set-version "$WORK/$MANIFEST_REL" "$VERSION"
@@ -145,10 +151,13 @@ fi
 
 # ---- commit ----------------------------------------------------------------------------
 
+NO_VERIFY=""
+if [ "$DRY_RUN" = 1 ]; then NO_VERIFY="--no-verify"; fi
+
 # shellcheck disable=SC2086
 git -C "$WORK" add -- $FILES
 # shellcheck disable=SC2086
-git -C "$WORK" $GIT_COMMIT_OPTS commit -q -m "release: $PLUGIN $VERSION" -- $FILES
+git -C "$WORK" $GIT_COMMIT_OPTS commit -q $NO_VERIFY -m "release: $PLUGIN $VERSION" -- $FILES
 EDITED=""
 
 # ---- tag -------------------------------------------------------------------------------
@@ -168,7 +177,7 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 if [ "$PUSH" = 1 ]; then
-  git push "$REMOTE" HEAD
+  git push "$REMOTE" HEAD || die "the release commit exists locally but the push of the branch failed (no tag was created). Fix the cause (e.g. git pull --rebase $REMOTE), then run: git push $REMOTE HEAD && $CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG' --push --remote $REMOTE   -- or undo the release commit with: git reset --hard HEAD~1"
   "$CLAUDE" plugin tag "plugins/$PLUGIN" -m "$TAG_MSG" --push --remote "$REMOTE" \
     || die "the release commit was pushed but tagging failed; fix the cause and run: $CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG' --push --remote $REMOTE"
   echo "released and pushed $TAG to $REMOTE"
