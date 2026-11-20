@@ -155,6 +155,21 @@ class SourcesJsonTest(unittest.TestCase):
         for bad in ("/etc", "../x", "plugins/../../x", ""):
             self.assertTrue(vendor.validate_sources([entry("x", target=bad)]), bad)
 
+    def test_target_cannot_name_the_root_or_a_critical_directory(self):
+        # build/sync rmtree the target, so these would delete the checkout, .git or vendor/
+        for bad in (".", "./", "plugins/.", "./plugins/x", "plugins/./x", "plugins//x", "plugins/x/",
+                    ".git", "vendor", "scripts", "tests", "plugins", "plugins/", ".github",
+                    "pluginsx/y", "other/plugins/x"):
+            self.assertTrue(vendor.validate_sources([entry("x", target=bad)]), bad)
+        for good in ("plugins/x", "plugins/anthology/knowledge/x"):
+            self.assertEqual(vendor.validate_sources([entry("x", target=good)]), [], good)
+
+    def test_subtree_target_is_still_a_clean_relative_path(self):
+        e = {"name": "rtk", "managed_by": "subtree", "license": "Apache-2.0"}
+        for bad in (".", "../x", "/x", "a/./b"):
+            self.assertTrue(vendor.validate_sources([dict(e, target=bad)]), bad)
+        self.assertEqual(vendor.validate_sources([dict(e, target="rtk")]), [])
+
     def test_path_must_stay_inside_the_upstream_repo(self):
         for bad in ("/etc", "../x", "a/../../x"):
             self.assertTrue(vendor.validate_sources([entry("x", path=bad)]), bad)
@@ -359,6 +374,31 @@ class PipelineTest(FixtureCase):
         self.build_all(self.entries)
         shutil.rmtree(self.root / "plugins/plain")
         self.assertTrue(any("plain" in p for p in self.check()))
+
+    def test_directory_symlinks_fail_loudly_in_pristine_trees(self):
+        os.symlink("skills", self.pristine["plain"] / "linkdir")
+        self.set_sources([self.plain])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "plain", fetch=self.fetch)
+        self.assertIn("linkdir", str(ctx.exception))
+        self.assertIn("symlinks to directories", str(ctx.exception))
+        self.assertFalse((self.root / "plugins/plain").exists())
+        self.assertTrue(any("linkdir" in p for p in self.check()))
+
+    def test_check_flags_a_directory_symlink_in_the_committed_tree(self):
+        self.build_all(self.entries)
+        os.symlink("skills", self.root / "plugins/plain/linkdir")
+        problems = self.check()
+        self.assertTrue(any("linkdir" in p and "symlinks to directories" in p for p in problems), problems)
+
+    def test_file_symlinks_are_copied_and_compared(self):
+        os.symlink("README.md", self.pristine["plain"] / "link.md")
+        self.build_all(self.entries)
+        self.assertEqual(os.readlink(self.root / "plugins/plain/link.md"), "README.md")
+        self.assertEqual(self.check(), [])
+        (self.root / "plugins/plain/link.md").unlink()
+        os.symlink("LICENSE", self.root / "plugins/plain/link.md")
+        self.assertTrue(any("link.md" in p for p in self.check()))
 
     def test_check_ignores_ds_store_but_not_other_extras(self):
         self.build_all(self.entries)

@@ -86,7 +86,16 @@ def _safe_relpath(value, allow_empty: bool) -> bool:
         return allow_empty
     if value.startswith("/") or "\\" in value:
         return False
-    return ".." not in value.split("/")
+    # No "..", no "." and no empty components ("a//b", "./", "a/"): a target like "." or
+    # "plugins/." would otherwise name the repo root or a parent of what build replaces.
+    return all(part not in ("", ".", "..") for part in value.split("/"))
+
+
+def _safe_target(value, subtree: bool) -> bool:
+    """Vendored targets sit strictly under plugins/ (build replaces them with rmtree)."""
+    if not _safe_relpath(value, False):
+        return False
+    return subtree or (value.startswith("plugins/") and value != "plugins")
 
 
 def _check_transforms(label: str, entry: dict, errors: list) -> None:
@@ -131,8 +140,9 @@ def validate_sources(entries: list) -> list:
         if e.get("license") not in ALLOWED_LICENSES:
             errors.append(f"{label}: license {e.get('license')!r} is not in "
                           f"{sorted(ALLOWED_LICENSES)}; the owner must decide")
-        if not _safe_relpath(e.get("target"), False):
-            errors.append(f"{label}: target must be a relative path inside the repo")
+        if not _safe_target(e.get("target"), is_subtree(e)):
+            errors.append(f"{label}: target must be a clean relative path strictly under "
+                          f"plugins/ (build deletes and recreates it)")
         else:
             targets.append((label, e["target"].rstrip("/")))
         if is_subtree(e):
@@ -237,11 +247,22 @@ def _norm_mode(path: Path) -> int:
     return 0o755 if os.stat(path).st_mode & 0o111 else 0o644
 
 
+def _reject_dir_symlinks(dirpath: Path, dirnames: list, base: Path) -> None:
+    """os.walk does not descend into symlinks to directories, so they would be dropped
+    silently (and `check` could not notice). They are not supported: fail loudly."""
+    for d in dirnames:
+        if (dirpath / d).is_symlink():
+            rel = (dirpath / d).relative_to(base).as_posix()
+            raise VendorError(f"{rel}: symlinks to directories are not supported "
+                              f"(not followed, not copied); remove it or handle it with a transform")
+
+
 def copy_tree(src: Path, dst: Path) -> None:
     """Copy src to dst without any `.git` directory; modes normalized to 644/755."""
     dst.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(src):
         dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        _reject_dir_symlinks(Path(dirpath), dirnames, src)
         rel = Path(dirpath).relative_to(src)
         (dst / rel).mkdir(parents=True, exist_ok=True)
         for name in sorted(filenames):
@@ -258,6 +279,7 @@ def snapshot(tree: Path) -> dict:
     out: dict = {}
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames.sort()
+        _reject_dir_symlinks(Path(dirpath), dirnames, tree)
         for name in filenames:
             p = Path(dirpath) / name
             rel = p.relative_to(tree).as_posix()
@@ -500,10 +522,9 @@ def check(root: Path, fetch=None) -> list:
             built = Path(tmp) / e["name"]
             try:
                 build_tree(root, e, fetch(e), built)
+                problems += compare_trees(built, root / e["target"], e["target"])
             except VendorError as exc:
                 problems.append(f"{e['name']}: {exc}")
-                continue
-            problems += compare_trees(built, root / e["target"], e["target"])
     try:
         problems += check_licenses(root, entries, fetch)
     except VendorError as exc:

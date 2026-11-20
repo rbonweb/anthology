@@ -12,3 +12,10 @@ updates:
     directory: /ci/images
     schedule:
       interval: weekly
+    ignore:
+      # The images are pinned to python:3.9 (macOS system python) and python:3.12;
+      # a major/minor bump would silently change what CI covers. Digest and patch bumps flow.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
