@@ -1,0 +1,104 @@
+schema_version: "1.0"
+name: knowledge-ui-designer
+description: 'anthology:ui-designer reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:ui-designer agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:ui-designer"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: Glob
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: Glob
+  - name: read-frontend-design
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/frontend-design/SKILL\.md'
+  - name: order-frontend-design
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/frontend-design/SKILL\.md'}
+    after: Glob
+  - name: read-design-taste-frontend
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-taste-frontend/SKILL\.md'
+  - name: order-design-taste-frontend
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-taste-frontend/SKILL\.md'}
+    after: Glob
+  - name: read-ui-taste
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/ui-taste/SKILL\.md'
+  - name: order-ui-taste
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/ui-taste/SKILL\.md'}
+    after: Glob
+  - name: read-landing-page
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/landing-page/SKILL\.md'
+  - name: order-landing-page
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/landing-page/SKILL\.md'}
+    after: Glob
+  - name: read-web-design-system
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/web-design-system/SKILL\.md'
+  - name: order-web-design-system
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/web-design-system/SKILL\.md'}
+    after: Glob
+  - name: read-design-handoff
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-handoff/SKILL\.md'
+  - name: order-design-handoff
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-handoff/SKILL\.md'}
+    after: Glob
+  - name: read-ds-design-systems
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/design-systems/SKILL\.md'
+  - name: order-ds-design-systems
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-systems/SKILL\.md'}
+    after: Glob
+  - name: read-ds-interaction-design
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/interaction-design/SKILL\.md'
+  - name: order-ds-interaction-design
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/interaction-design/SKILL\.md'}
+    after: Glob
+  - name: read-ds-design-elevation
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/design-elevation/SKILL\.md'
+  - name: order-ds-design-elevation
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-elevation/SKILL\.md'}
+    after: Glob

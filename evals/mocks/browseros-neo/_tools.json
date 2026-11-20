@@ -1,0 +1,129 @@
+{
+  "tools": [
+    {
+      "name": "tabs",
+      "description": "Manage browser tabs: list open pages (with their page ids), show the active page, open a new page in the background (snapshot attached), or close one. Use the returned page id with snapshot/act/navigate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "active",
+              "new",
+              "close"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL for action=\"new\" (defaults to about:blank)."
+          },
+          "page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Page id for action=\"close\"."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "navigate",
+      "description": "Navigate a page: load a url, or go back/forward/reload. Returns a fresh snapshot of the resulting page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Page id from `tabs`."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "url",
+              "back",
+              "forward",
+              "reload"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required when action is \"url\"."
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "screenshot",
+      "description": "Capture a screenshot of the page, returned inline. prefer snapshot for structure/actions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ]
+          },
+          "fullPage": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Capture beyond the viewport."
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "snapshot",
+      "description": "Capture the page as an indented accessibility tree. Each actionable element carries a stable [ref=eN] you pass to `act`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Page id from `tabs` or `navigate`."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "interactive"
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

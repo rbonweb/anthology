@@ -1,0 +1,25 @@
+schema_version: "1.0"
+name: skills-hidden
+description: 'Knowledge skills are not listed to the model; the agents are.'
+tags: [probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Reply with the single word OK.'
+  max_turns: 1
+  timeout_seconds: 180
+  model: haiku
+  allowed_tools: []
+runs: 1
+graders:
+  - name: no-knowledge-skills
+    type: regex
+    target: trace
+    pattern: '"skills":\[[^\]]*"(?:[\w-]+:)?(?:caveman|frontend-design|design-taste-frontend|ui-taste|code-review-checklist|landing-page|write-spec|seo-audit|ux-research)"'
+    match: not_contains
+  - name: agents-listed
+    type: regex
+    target: trace
+    pattern: '"agents":\[[^\]]*"anthology:scout"'

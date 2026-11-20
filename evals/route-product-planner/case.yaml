@@ -1,0 +1,20 @@
+schema_version: "1.0"
+name: route-product-planner
+description: 'The main session delegates the product-planner job to anthology:product-planner.'
+tags: [routing]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'You are working in an empty scratch folder. Delegate the following job to the single most suitable specialist agent; do not do it yourself and do not ask questions. Tell the agent to keep its answer under 150 words. Job: Write a product spec (PRD) for adding shared team workspaces to our app, with goals, non-goals and success metrics.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: opus
+  allowed_tools: [Agent, Read, Glob, Grep, ToolSearch]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:product-planner"'
