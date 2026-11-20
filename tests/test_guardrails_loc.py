@@ -571,6 +571,14 @@ class EnabledValueTest(LiveRootCase):
         write(self.tmp / ".claude" / "settings.local.json", json.dumps({"enabledPlugins": {}}))
         self.assertFalse(self.disabled())
 
+    def test_only_the_guardrails_plugin_key_matches(self):
+        # A similar-looking plugin name must not count: the match is the exact `anthology-guardrails@` prefix.
+        self.diverging()
+        for key in ("anthology-guardrails-extra@x", "my-anthology-guardrails@x", "anthology-guardrails",
+                    "ANTHOLOGY-GUARDRAILS@anthology"):
+            write(self.tmp / ".claude" / "settings.json", json.dumps({"enabledPlugins": {key: False}}))
+            self.assertFalse(self.disabled(), key)
+
     def test_another_marketplace_entry_with_a_list_counts_the_same(self):
         self.diverging()
         write(self.tmp / ".claude" / "settings.json",
