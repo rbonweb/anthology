@@ -228,11 +228,21 @@ class HostileInputTest(unittest.TestCase):
 
     def test_many_url_tokens_on_one_line(self):
         # each token's end is found without reading to the end of the line
+        # Asserted on scaling, not wall time, so a fast or slow host cannot hide or fake a regression:
+        # 4x the tokens costs ~4x when linear and 10x+ when quadratic (round 2 code); the limit is 6x.
+        def cost(k):
+            text = ("a://h" + U + "/x" + sep) * k
+            best = None
+            for _ in range(2):
+                start = time.monotonic()
+                self.assertEqual(memory_privacy.privacy_findings(text, home="/" + "srv/zed", hostname=HOST), [])
+                took = time.monotonic() - start
+                best = took if best is None else min(best, took)
+            return best
+
         for sep in (" ", "\t"):
-            text = ("a://h" + U + "/x" + sep) * (1600000 // 14)
-            start = time.monotonic()
-            self.assertEqual(memory_privacy.privacy_findings(text, home="/" + "srv/zed", hostname=HOST), [])
-            self.assertLess(time.monotonic() - start, 2.0, repr(sep))
+            small, large = cost(40000), cost(160000)
+            self.assertLess(large, max(6 * small, 0.2), "%r: %.3fs then %.3fs" % (sep, small, large))
 
 
 def _load_guard_rules():
