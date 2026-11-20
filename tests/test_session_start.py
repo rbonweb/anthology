@@ -19,6 +19,7 @@ from unittest import mock
 
 from _mem import ROOT, SCRIPTS, MemCase, needs_git, note_text, write
 
+import _rtk  # noqa: E402
 import memory_sync  # noqa: E402
 import session_start  # noqa: E402
 import settings_patch  # noqa: E402
@@ -37,13 +38,25 @@ BLOCKS = ('import sys\nsys.stdin.read()\nsys.stderr.write("Blocked by anthology-
 
 
 class FakeRtk:
-    """Stands in for rtk_install (not on every branch); records the reconcile call."""
+    """Stands in for rtk_install with its real interface (load_lock, reconcile returning the
+    {"rtk_path", "warning", "installed"} dict); records the calls. tests/test_session_start.py
+    RealRtkTest runs the real module, so this fake cannot drift from it unnoticed."""
 
-    def __init__(self, result=None, exc=None):
+    LOCK = {"version": "9.9.9", "sha256": {}}
+
+    def __init__(self, result=None, exc=None, lock_exc=None):
         self.calls = []
-        self.result, self.exc = result, exc
+        self.lock_paths = []
+        self.result = result or {"rtk_path": None, "warning": None, "installed": False}
+        self.exc, self.lock_exc = exc, lock_exc
 
-    def reconcile(self, data_dir, lock, fetch, timeout):
+    def load_lock(self, path):
+        self.lock_paths.append(path)
+        if self.lock_exc:
+            raise self.lock_exc
+        return self.LOCK
+
+    def reconcile(self, data_dir, lock, fetch=None, timeout=30, system=None, machine=None):
         self.calls.append((data_dir, lock, fetch, timeout))
         if self.exc:
             raise self.exc
@@ -366,9 +379,16 @@ class RtkTest(SessionCase):
         self.assertEqual(len(self.rtk.calls), 1)
         data_dir, lock, fetch, timeout = self.rtk.calls[0]
         self.assertEqual(data_dir, self.data)
-        self.assertEqual(lock, PLUGIN / "rtk.lock")
+        self.assertEqual(self.rtk.lock_paths, [PLUGIN / "rtk.lock"])
+        self.assertEqual(lock, FakeRtk.LOCK)  # the parsed lock, not a path
         self.assertIsNone(fetch)
-        self.assertEqual(timeout, 20)
+        self.assertEqual(timeout, session_start.RTK_TIMEOUT)
+
+    def test_worst_case_reconcile_fits_the_hook_timeout(self):
+        # rtk_install downloads for at most 4 x timeout plus one socket timeout; it only starts
+        # when RTK_MIN_REMAINING is left of the DEADLINE, which is itself under the 60 s hook timeout.
+        self.assertLessEqual(5 * session_start.RTK_TIMEOUT, session_start.RTK_MIN_REMAINING)
+        self.assertLess(session_start.DEADLINE, 60)
 
     def test_data_dir_falls_back_to_state(self):
         self.mark_setup()
@@ -380,9 +400,30 @@ class RtkTest(SessionCase):
 
     def test_returned_warning_is_shown(self):
         self.mark_setup()
-        self.rtk.result = "rtk download failed: offline"
+        self.rtk.result = {"rtk_path": None, "warning": "rtk download failed: offline", "installed": False}
         out = self.go()
         self.assertIn("rtk download failed: offline", out["systemMessage"].splitlines())
+
+    def test_a_clean_result_adds_no_warning(self):
+        self.mark_setup()
+        self.rtk.result = {"rtk_path": str(self.data / "rtk" / "x" / "rtk"), "warning": None, "installed": True}
+        self.assertNotIn("systemMessage", self.go())
+
+    def test_a_missing_lock_is_the_not_wired_note(self):
+        self.mark_setup()
+        self.rtk.lock_exc = RuntimeError("cannot read")
+        with mock.patch.object(Path, "exists", return_value=False):
+            warning = session_start._reconcile_rtk(PLUGIN, self.data)
+        self.assertEqual(warning, "anthology: rtk wiring not present yet; skipped")
+        self.assertEqual(self.rtk.calls, [])
+
+    def test_an_invalid_lock_is_a_warning_and_nothing_is_reconciled(self):
+        self.mark_setup()
+        self.rtk.lock_exc = RuntimeError("rtk.lock is not valid JSON")
+        out = self.go()
+        self.assertIn("rtk.lock is not valid", out["systemMessage"])
+        self.assertEqual(self.rtk.calls, [])
+        self.assertIn("# Anthology routing guide", self.context(out))
 
     def test_exception_becomes_a_warning(self):
         self.mark_setup()
@@ -397,6 +438,45 @@ class RtkTest(SessionCase):
         with mock.patch.dict(sys.modules, {"rtk_install": None}):
             out = self.go()
         self.assertIn("anthology: rtk wiring not present yet; skipped", out["systemMessage"].splitlines())
+
+
+class RealRtkTest(MemCase):
+    """The real rtk_install behind session start's adapter, with a fake download."""
+
+    def test_installs_records_the_path_and_is_quiet_the_second_time(self):
+        import rtk_install
+        blob = _rtk.tarball()
+        root = self.tmp / "plugin"
+        _rtk.write_lock(root / "rtk.lock", blob)
+        fetch = _rtk.FakeFetch(blob)
+        want = str(self.data / "rtk" / _rtk.VERSION / "rtk")
+        with mock.patch.object(rtk_install, "default_fetch", fetch), \
+                mock.patch("platform.system", return_value=_rtk.LINUX[0]), \
+                mock.patch("platform.machine", return_value=_rtk.LINUX[1]):
+            self.assertIsNone(session_start._reconcile_rtk(root, self.data))
+            self.assertEqual(state.read()["rtk_path"], want)
+            self.assertTrue(os.access(want, os.X_OK))
+            self.assertIsNone(session_start._reconcile_rtk(root, self.data))
+        self.assertEqual(len(fetch.calls), 1)
+        self.assertEqual(fetch.calls[0][2], session_start.RTK_TIMEOUT)
+
+    def test_a_failed_download_is_a_warning_and_state_is_untouched(self):
+        import rtk_install
+        blob = _rtk.tarball()
+        root = self.tmp / "plugin"
+        _rtk.write_lock(root / "rtk.lock", blob)
+        with mock.patch.object(rtk_install, "default_fetch", _rtk.FakeFetch(b"not the pinned tarball")), \
+                mock.patch("platform.system", return_value=_rtk.LINUX[0]), \
+                mock.patch("platform.machine", return_value=_rtk.LINUX[1]):
+            warning = session_start._reconcile_rtk(root, self.data)
+        self.assertIn("rtk is not installed or up to date", warning)
+        self.assertNotIn("rtk_path", state.read())
+
+    def test_a_missing_lock_is_the_not_wired_note(self):
+        root = self.tmp / "no-lock"
+        root.mkdir()
+        self.assertEqual(session_start._reconcile_rtk(root, self.data),
+                         "anthology: rtk wiring not present yet; skipped")
 
 
 class GuardSelfTestTest(SessionCase):
@@ -648,10 +728,11 @@ class ShellWrapperTest(MemCase):
 
 
 class HooksJsonTest(unittest.TestCase):
-    def test_hooks_json_has_the_session_start_entry_only(self):
+    def test_hooks_json_has_the_session_start_entry_and_the_rtk_pretooluse_entry(self):
         data = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data), {"hooks"})
-        self.assertEqual(set(data["hooks"]), {"SessionStart"})
+        # SessionStart is this plugin's; PreToolUse is the rtk rewrite hook (tests/test_rtk_install.py).
+        self.assertEqual(set(data["hooks"]), {"SessionStart", "PreToolUse"})
         entries = data["hooks"]["SessionStart"]
         self.assertEqual(len(entries), 1)
         self.assertNotIn("matcher", entries[0])

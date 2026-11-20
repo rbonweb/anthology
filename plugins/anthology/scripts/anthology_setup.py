@@ -36,7 +36,7 @@ import settings_patch  # noqa: E402
 import state  # noqa: E402
 
 REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
-RTK_TIMEOUT = 120   # seconds: setup is where the first download happens
+RTK_TIMEOUT = 60    # seconds per read (overall deadline about 4x): setup is where the first download happens
 
 
 def _sha256(text):
@@ -74,17 +74,15 @@ def _rtk_preview(root, data_dir):
     except ImportError:
         return {"skipped": "rtk wiring not present"}
     try:
-        lock = json.loads(_lock_path(root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        lock = None
-    if not isinstance(lock, dict):
+        lock = rtk_install.load_lock(_lock_path(root))
+    except Exception:
         return {"skipped": "rtk wiring not present (no rtk.lock)"}
     try:
         target = rtk_install.target(platform.system(), platform.machine())
     except Exception as exc:
         return {"error": str(exc) or type(exc).__name__}
-    version = lock.get("version")
-    dest = Path(data_dir) / "rtk" / str(version) / "rtk" if data_dir and version else None
+    version = lock["version"]
+    dest = Path(data_dir) / "rtk" / version / "rtk" if data_dir else None
     return {"version": version, "target": target, "dest": str(dest) if dest else None}
 
 
@@ -99,12 +97,18 @@ def _rtk_apply(root, data_dir):
             "rtk was not installed: the plugin data folder is not known yet; it is installed at the "
             "next session start")
     try:
-        result = rtk_install.reconcile(Path(data_dir), _lock_path(root), None, RTK_TIMEOUT)
+        lock = rtk_install.load_lock(_lock_path(root))
     except Exception as exc:
         return "failed", "rtk install failed: %s" % (str(exc) or type(exc).__name__)[:200]
-    if isinstance(result, str) and result:
-        return "warning", result
-    return "installed", None
+    try:
+        result = rtk_install.reconcile(Path(data_dir), lock, None, RTK_TIMEOUT)
+    except Exception as exc:
+        return "failed", "rtk install failed: %s" % (str(exc) or type(exc).__name__)[:200]
+    warning = result.get("warning") if isinstance(result, dict) else None
+    if isinstance(warning, str) and warning:
+        return "warning", warning
+    installed = isinstance(result, dict) and result.get("installed")
+    return ("installed" if installed else "up to date"), None
 
 
 # -- settings -------------------------------------------------------------------------------------

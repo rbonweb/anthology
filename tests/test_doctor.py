@@ -16,6 +16,7 @@ PLUGIN = ROOT / "plugins" / "anthology"
 SCRIPTS = ROOT / "plugins" / "anthology" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import _rtk  # noqa: E402
 import doctor  # noqa: E402
 
 INSTALLED = {
@@ -171,32 +172,96 @@ class CheckEnvTest(unittest.TestCase):
             self.assertIsNone(self.checks()["rtk"]["ok"])
             self.assertIn("not wired yet", self.checks()["rtk"]["detail"])
 
-    def test_rtk_verified_against_the_lock(self):
-        binary = self.tmp / "rtk"
+    def write_state(self, **kv):
+        state_dir = self.config / "anthology"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "state.json").write_text(json.dumps(kv), encoding="utf-8")
+
+    def rtk_check(self, lock):
+        return {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
+
+    def test_rtk_is_checked_through_the_lock_and_the_installed_marker(self):
+        data = self.tmp / "data"
+        binary = data / "rtk" / "1.0.0" / "rtk"
+        binary.parent.mkdir(parents=True)
         binary.write_text("x", encoding="utf-8")
-        state = self.config / "anthology"
-        state.mkdir()
-        (state / "state.json").write_text(json.dumps({"rtk_path": str(binary)}), encoding="utf-8")
+        self.write_state(rtk_path=str(binary), data_dir=str(data))
         lock = self.tmp / "rtk.lock"
-        lock.write_text(json.dumps({"version": "1", "targets": {"linux-x86": {"sha256": "ab" * 32}}}),
-                        encoding="utf-8")
-        fake = types.SimpleNamespace(target=lambda system, machine: "linux-x86",
-                                     verify=lambda path, sha: sha == "ab" * 32)
+        lock.write_text("{}", encoding="utf-8")
+        parsed = {"version": "1.0.0", "sha256": {"linux-x86": "ab" * 32}}
+        calls = []
+
+        def check_installed(data_dir, lock_data, target=None):
+            calls.append((str(data_dir), lock_data, target))
+            return True
+
+        fake = types.SimpleNamespace(load_lock=lambda path: parsed,
+                                     target=lambda system, machine: "linux-x86",
+                                     check_installed=check_installed)
         with mock.patch.dict(sys.modules, {"rtk_install": fake}):
-            c = {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
-            self.assertTrue(c["ok"])
-            fake.verify = lambda path, sha: False
-            c = {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
+            c = self.rtk_check(lock)
+            self.assertTrue(c["ok"], c)
+            self.assertEqual(calls, [(str(data), parsed, "linux-x86")])
+            fake.check_installed = lambda *a: False
+            c = self.rtk_check(lock)
             self.assertFalse(c["ok"])
             self.assertIn("setup", c["detail"])
 
-    def test_rtk_missing_binary_is_not_ok(self):
-        lock = self.tmp / "rtk.lock"
-        lock.write_text("{}", encoding="utf-8")
-        fake = types.SimpleNamespace(target=lambda s, m: "t", verify=lambda p, h: True)
+    def test_rtk_outside_the_locked_version_dir_is_not_ok(self):
+        data = self.tmp / "data"
+        binary = data / "rtk" / "0.9.0" / "rtk"  # an older version than the lock's
+        binary.parent.mkdir(parents=True)
+        binary.write_text("x", encoding="utf-8")
+        self.write_state(rtk_path=str(binary), data_dir=str(data))
+        fake = types.SimpleNamespace(load_lock=lambda path: {"version": "1.0.0"},
+                                     target=lambda s, m: "t", check_installed=lambda *a: True)
         with mock.patch.dict(sys.modules, {"rtk_install": fake}):
-            c = {x["name"]: x for x in doctor.check_env(dict(os.environ), lock=lock)}["rtk"]
+            c = self.rtk_check(self.tmp / "rtk.lock")
         self.assertFalse(c["ok"])
+
+    def test_rtk_missing_binary_is_not_ok(self):
+        fake = types.SimpleNamespace(load_lock=lambda path: {"version": "1.0.0"},
+                                     target=lambda s, m: "t", check_installed=lambda *a: True)
+        with mock.patch.dict(sys.modules, {"rtk_install": fake}):
+            c = self.rtk_check(self.tmp / "rtk.lock")
+            self.assertFalse(c["ok"])
+            self.write_state(rtk_path=str(self.tmp / "gone" / "rtk"))
+            self.assertFalse(self.rtk_check(self.tmp / "rtk.lock")["ok"])
+
+    def test_rtk_unreadable_lock_is_not_wired_yet(self):
+        def load_lock(path):
+            raise RuntimeError("cannot read")
+
+        fake = types.SimpleNamespace(load_lock=load_lock, target=lambda s, m: "t",
+                                     check_installed=lambda *a: True)
+        with mock.patch.dict(sys.modules, {"rtk_install": fake}):
+            c = self.rtk_check(self.tmp / "rtk.lock")
+        self.assertIsNone(c["ok"])
+        self.assertIn("not wired yet", c["detail"])
+
+    def test_real_rtk_install_installed_binary_passes_and_tampering_fails(self):
+        import rtk_install
+        blob = _rtk.tarball()
+        lock = self.tmp / "rtk.lock"
+        _rtk.write_lock(lock, blob)
+        data = self.tmp / "plugin-data"
+        with mock.patch("platform.machine", return_value=_rtk.LINUX[1]):
+            self.assertFalse(self.rtk_check(lock)["ok"])  # nothing installed yet
+            result = rtk_install.reconcile(data, rtk_install.load_lock(lock), _rtk.FakeFetch(blob), 5)
+            self.assertIsNone(result["warning"], result)
+            c = self.rtk_check(lock)
+            self.assertTrue(c["ok"], c)
+            os.chmod(result["rtk_path"], 0o600)  # no longer executable
+            self.assertFalse(self.rtk_check(lock)["ok"])
+            os.chmod(result["rtk_path"], 0o755)
+            self.assertTrue(self.rtk_check(lock)["ok"])
+            # a lock bumped to a version that is not installed yet
+            _rtk.write_lock(lock, blob, version="1.3.0-anthology.1")
+            self.assertFalse(self.rtk_check(lock)["ok"])
+
+    def test_real_rtk_install_missing_lock_is_not_wired_yet(self):
+        c = self.rtk_check(self.tmp / "absent.lock")
+        self.assertIsNone(c["ok"])
 
     def plugin_rule(self, **kw):
         return {c["name"]: c for c in doctor.check_env(dict(os.environ), plugin_root=PLUGIN, **kw)}["plugin_read_rule"]
