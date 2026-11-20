@@ -459,3 +459,22 @@ fn python_whitespace_and_error_text() {
         )
     );
 }
+
+#[test]
+fn ignorecase_folds_dotted_and_dotless_i_like_python() {
+    // Python's IGNORECASE matches U+0130 and U+0131 to `i` (controller ruling (a)).
+    for doc in [
+        "# T\n\n## Tool Integratıon\n\nx\n\n## Next\n\ny\n",
+        "# T\n\n## TOOL İNTEGRATION\n\nx\n\n## Next\n\ny\n",
+    ] {
+        assert_eq!(
+            vendor::strip_markdown(doc).unwrap(),
+            "# T\n\n## Next\n\ny\n"
+        );
+    }
+    let doc = "# T\n\n## Connectors\n\nx\n\n### İf no tools are connected\n- c\n";
+    assert_eq!(
+        vendor::strip_markdown(doc).unwrap(),
+        "# T\n\n## Connectors\n\n### İf no tools are connected\n- c\n"
+    );
+}

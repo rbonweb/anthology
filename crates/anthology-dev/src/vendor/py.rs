@@ -8,11 +8,76 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use anthology_pycompat::json::{self, Int, Value};
+use anthology_pycompat::pyerr::PyExc;
 
 /// Python's `\w` in a str pattern: `str.isalnum()` or `_` (P1: `pycompat::re::W`).
 pub const W: &str = r"[\p{L}\p{N}_]";
+/// The inside of [`W`], for building classes such as `[\w-]` (P1: from `pycompat::re::W`).
+pub const W_INNER: &str = r"\p{L}\p{N}_";
+/// Python's `\d` in a str pattern: Unicode decimal digits, `Nd` (P1: `pycompat::re::D`).
+pub const D: &str = r"\d";
 /// Python's `\s` in a str pattern: `str.isspace()` (P1: `pycompat::re::S`).
 pub const S: &str = r"[\s\x1c-\x1f]";
+
+/// SWAP(P1): Python's IGNORECASE matches U+0130 (`İ`, whose simple lowercase is `i`) and
+/// U+0131 (`ı`, an sre case equivalence of `i`) to `i` and `I`; Rust's simple case folding does
+/// not. This rewrites each literal `i`/`I` of a `(?i)` pattern into a class holding all four.
+/// Replace it with pycompat's fold once P1 provides one.
+pub fn py_casefold_pattern(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len() + 16);
+    let mut in_class = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                out.push(c);
+                if let Some(&e) = chars.get(i + 1) {
+                    out.push(e);
+                    i += 1;
+                    if matches!(e, 'p' | 'P' | 'x') && chars.get(i + 1) == Some(&'{') {
+                        while let Some(&b) = chars.get(i + 1) {
+                            out.push(b);
+                            i += 1;
+                            if b == '}' {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            '(' if !in_class && chars.get(i + 1) == Some(&'?') => {
+                // A group's flags or kind (`(?i)`, `(?:`, `(?!`) are not literals.
+                out.push_str("(?");
+                i += 1;
+                while let Some(&f) = chars.get(i + 1) {
+                    if !(f.is_ascii_alphabetic() || f == '-') {
+                        break;
+                    }
+                    out.push(f);
+                    i += 1;
+                }
+            }
+            '[' if !in_class => {
+                in_class = true;
+                out.push(c);
+            }
+            ']' if in_class => {
+                in_class = false;
+                out.push(c);
+            }
+            'i' | 'I' if in_class => {
+                out.push(c);
+                out.push_str("\u{130}\u{131}");
+            }
+            'i' | 'I' => out.push_str("[iI\u{130}\u{131}]"),
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
 
 /// `str.isspace()` for one code point (P1: `pycompat::str::is_space`).
 pub fn is_space(c: char) -> bool {
@@ -165,23 +230,14 @@ pub fn decode_utf8(raw: &[u8]) -> Result<String, String> {
 
 /// `str(OSError)` for a failed file operation: `[Errno N] <text>: '<path>'`.
 pub fn os_error_text(e: &std::io::Error, path: &Path) -> String {
-    match e.raw_os_error() {
-        Some(n) => format!(
-            "[Errno {n}] {}: {}",
-            strerror(e),
-            repr_str(&path.to_string_lossy())
-        ),
-        None => format!("{e}: {}", repr_str(&path.to_string_lossy())),
-    }
-}
-
-/// The text of an OS error without Rust's ` (os error N)` suffix.
-fn strerror(e: &std::io::Error) -> String {
-    let text = e.to_string();
-    match text.rfind(" (os error ") {
-        Some(i) => text[..i].to_string(),
-        None => text,
-    }
+    let exc = match PyExc::from(std::io::Error::new(e.kind(), e.to_string())) {
+        PyExc::OSError { errno, .. } => PyExc::OSError {
+            errno: e.raw_os_error().unwrap_or(errno),
+            filename: Some(path.to_string_lossy().into_owned()),
+        },
+        other => other,
+    };
+    exc.py_str()
 }
 
 /// `s.lower()` (P1: `pycompat::str::lower`).
@@ -491,7 +547,13 @@ pub fn parse_template(t: &str) -> Result<Vec<Piece>, String> {
                 if name.is_empty() {
                     return Err("missing group name".to_string());
                 }
-                match name.trim().trim_start_matches('+').parse::<u64>() {
+                // 3.12 accepts only ASCII digits as a group number (gh-91760).
+                let number = if name.bytes().all(|b| b.is_ascii_digit()) {
+                    name.parse::<u64>().map_err(|_| ())
+                } else {
+                    Err(())
+                };
+                match number {
                     Ok(0) => {
                         if !lit.is_empty() {
                             out.push(Piece::Lit(std::mem::take(&mut lit)));
@@ -672,6 +734,14 @@ mod tests {
         assert_eq!(
             decode_utf8(b"\xed\xa0\x80").unwrap_err(),
             "'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte"
+        );
+    }
+
+    #[test]
+    fn casefold_pattern_rewrites_literal_i_only() {
+        assert_eq!(
+            py_casefold_pattern(r"(?i)\Aif\b[\p{L}i](?:x)\x{69}"),
+            "(?i)\\A[iI\u{130}\u{131}]f\\b[\\p{L}i\u{130}\u{131}](?:x)\\x{69}"
         );
     }
 

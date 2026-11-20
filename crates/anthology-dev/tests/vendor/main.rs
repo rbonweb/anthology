@@ -8,4 +8,5 @@ mod rename_plugin_test;
 mod rename_skill_test;
 mod sources_json_test;
 mod strip_connectors_test;
+mod tree_test;
 mod url_source_validation_test;

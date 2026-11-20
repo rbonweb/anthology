@@ -357,7 +357,7 @@ fn check_url_entry(label: &str, entry: &Entry, errors: &mut Vec<String>) {
             "{label}: url must be an https URL ending in a slash"
         ));
     }
-    if py::truthy(entry.get("repo")) || !entry.get("commit").is_none_or(Value::is_null) {
+    if py::truthy(entry.get("repo")) || !is_none(entry.get("commit")) {
         errors.push(format!("{label}: a url source has no repo or commit"));
     }
     if !entry.contains_key("checksum") {

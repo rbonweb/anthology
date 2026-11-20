@@ -1,4 +1,4 @@
-//! Trees: copying, walking, snapshotting and comparing (vendor.py "tree helpers"), and `check`.
+//! Trees: copying, walking, snapshotting and comparing (vendor.py "tree helpers").
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -21,6 +21,22 @@ pub fn rel_posix(p: &Path, base: &Path) -> String {
         .unwrap_or(p)
         .to_string_lossy()
         .into_owned()
+}
+
+/// `p.relative_to(base).as_posix()` as raw OS bytes: a key that keeps distinct non-UTF-8 names
+/// distinct and sorts as Python's surrogate-escaped strings do (by raw bytes, controller
+/// ruling (b)).
+pub fn rel_bytes(p: &Path, base: &Path) -> Vec<u8> {
+    p.strip_prefix(base)
+        .unwrap_or(p)
+        .as_os_str()
+        .as_encoded_bytes()
+        .to_vec()
+}
+
+/// A [`rel_bytes`] key as text, for messages.
+pub fn show(rel: &[u8]) -> String {
+    String::from_utf8_lossy(rel).into_owned()
 }
 
 /// `Path.is_symlink()`.
@@ -183,15 +199,16 @@ pub enum Snap {
     File { exec: bool, data: Vec<u8> },
 }
 
-/// `snapshot(tree)`: rel path → link target, or exec bit and bytes.
-pub fn snapshot(tree: &Path) -> Result<BTreeMap<String, Snap>> {
+/// `snapshot(tree)`: rel path → link target, or exec bit and bytes. Keys are the rel paths' raw
+/// bytes ([`rel_bytes`]), so the map sorts as Python sorts the keys.
+pub fn snapshot(tree: &Path) -> Result<BTreeMap<Vec<u8>, Snap>> {
     let mut out = BTreeMap::new();
     os_walk(tree, |w| {
         sort_names(&mut w.dirs);
         reject_dir_symlinks(&w.path, &w.dirs, tree)?;
         for name in &w.files {
             let p = w.path.join(name);
-            let rel = rel_posix(&p, tree);
+            let rel = rel_bytes(&p, tree);
             if is_symlink(&p) {
                 let target = fs::read_link(&p).map_err(|e| os_err(&e, &p))?;
                 out.insert(rel, Snap::Link(target.into_os_string()));
@@ -219,15 +236,16 @@ pub fn compare_trees(expected: &Path, actual: &Path, label: &str) -> Result<Vec<
     }
     let want = snapshot(expected)?;
     let have = snapshot(actual)?;
-    let mut rels: Vec<&String> = want.keys().chain(have.keys()).collect();
-    rels.sort();
-    rels.dedup();
+    let mut keys: Vec<&Vec<u8>> = want.keys().chain(have.keys()).collect();
+    keys.sort();
+    keys.dedup();
     let mut problems = Vec::new();
-    for rel in rels {
-        match (want.get(rel), have.get(rel)) {
+    for key in keys {
+        let rel = show(key);
+        match (want.get(key), have.get(key)) {
             (_, None) => problems.push(format!("{label}: missing from the committed tree: {rel}")),
             (None, Some(_)) => {
-                if !IGNORED_EXTRAS.contains(&py::basename(rel)) {
+                if !IGNORED_EXTRAS.contains(&py::basename(&rel)) {
                     problems.push(format!("{label}: extra file not in the build: {rel}"));
                 }
             }

@@ -14,7 +14,7 @@ use fancy_regex::{BytesMode, RegexBuilder};
 use regex::Regex;
 
 use super::compare::{is_file, is_symlink, os_err, rel_posix, rglob};
-use super::py::{self, Piece, S, W};
+use super::py::{self, D, Piece, S, W, W_INNER};
 use super::{Entry, Result, VendorError};
 
 /// The transform names (vendor.py `TRANSFORMS`).
@@ -43,7 +43,8 @@ fn limit(name: &str, e: &fancy_regex::Error) -> VendorError {
     VendorError(format!("{name}: regex limit ({e})"))
 }
 
-/// Python's `re.escape` is not needed for matching: an escaped literal matches the same text.
+/// Each byte of `old` as a literal: ASCII alphanumerics and `_` as is, every other byte as `\xNN`,
+/// which fancy-regex's ASCII bytes mode reads as that byte (the same text `re.escape` matches).
 fn escape_bytes(b: &[u8]) -> String {
     let mut out = String::new();
     for &c in b {
@@ -181,16 +182,16 @@ fn patterns() -> &'static Patterns {
         Patterns {
             // Connector setup sections: "Connectors", "If Connectors Available", "Tool
             // Integration", "Connect <Product> (optional)", "... Connected Tools".
-            connector_heading: re(format!(
+            connector_heading: re(py::py_casefold_pattern(&format!(
                 r"(?i)\A(?:if connectors available|connectors?|tool integrations?|connect {W}+(?: \(optional\))?|.*\bconnected tools)\n?\z"
-            )),
+            ))),
             md_heading: re(r"\A(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?\n?\z".to_string()),
             md_fence: re(format!(r"\A{S}*(`{{3,}}|~{{3,}})(.*)\n?\z")),
             // What stays when the connector setup around it goes.
-            fallback: re(format!(
+            fallback: re(py::py_casefold_pattern(&format!(
                 r"(?i)\A{S}*(?:[-*+]{S}+)?(?:\*\*)?(?:if{S}+(?:no|none|neither)\b.*\bconnected\b|if\b.*\bnot{S}+connected\b|without\b.*\btools?\b)"
-            )),
-            list_marker: re(format!(r"\A{S}*(?:[-*+]|\d+[.)]){S}")),
+            ))),
+            list_marker: re(format!(r"\A{S}*(?:[-*+]|{D}+[.)]){S}")),
             if_placeholder_connected: re(format!(r"\A{S}*(?:\*\*)?If\b.*~~.*\bconnected\b")),
             if_tools_connected: fancy_regex::Regex::new(&format!(
                 r"\A{S}*(?:[-*+]{S}+)?(?:\*\*)?If{S}+(?!no\b).*\btools?{S}+(?:is|are|weren't|were){S}+connected\b"
@@ -356,7 +357,8 @@ pub fn strip_markdown(text: &str) -> Result<String> {
         let probe = py::rstrip(line);
         if let Some((marker, _)) = fence(probe) {
             let end = fence_end(&lines, i, marker);
-            let block = &lines[i..=end.max(i).min(n - 1)];
+            // `_fence_end` returns an index in `i..n`.
+            let block = &lines[i..=end];
             if !block.iter().any(|l| p.supercharged_box.is_match(l)) {
                 out.extend_from_slice(block);
                 i = end + 1;
@@ -425,11 +427,12 @@ pub fn strip_markdown(text: &str) -> Result<String> {
                 continue;
             }
         }
-        let tools = p
-            .if_tools_connected
-            .is_match(probe)
-            .map_err(|e| limit("strip-connectors IF_TOOLS_CONNECTED", &e))?;
-        if p.if_placeholder_connected.is_match(probe) || tools {
+        // In Python's order: the fancy pattern runs only when the plain one did not match.
+        let block = p.if_placeholder_connected.is_match(probe)
+            || p.if_tools_connected
+                .is_match(probe)
+                .map_err(|e| limit("strip-connectors IF_TOOLS_CONNECTED", &e))?;
+        if block {
             i = skip_blanks(&out, if_block_end(&lines, i));
             continue;
         }
@@ -547,10 +550,7 @@ pub fn rename_skill(tree: &Path, old: &str, new: &str) -> Result<json::Map> {
         Some(m) => format!("{}name: {new}{}", &front[..m.start()], &front[m.end()..]),
         None => front.to_string(),
     };
-    let body_pattern = format!(
-        r"(?<!{W})/{}(?![\p{{L}}\p{{N}}_\-])",
-        fancy_regex::escape(old)
-    );
+    let body_pattern = format!(r"(?<!{W})/{}(?![{W_INNER}\-])", fancy_regex::escape(old));
     let body_re = fancy_regex::Regex::new(&body_pattern)
         .map_err(|e| VendorError(format!("rename-skill: bad pattern: {e}")))?;
     let pieces =
