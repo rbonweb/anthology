@@ -1,0 +1,6 @@
+# Allowed divergences of the core.state surface (GC-16). The oracle
+# (port/difftest/oracle/core_state.py) marks each case it adjusted.
+
+[[divergence]]
+class = "D-6"
+reason = "F-19: a prior state.json holding a lone surrogate escape. Python then rewrites the whole file with ensure_ascii=True; Rust decoded U+FFFD and writes UTF-8. The oracle's expected result replaces lone surrogates at decode time."
