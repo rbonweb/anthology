@@ -234,6 +234,9 @@ _FIXED_VALID = [
     "9007199254740993.0", "0.000001", "0.0000001", "1e-6", "123456.789e3", "-1.5E-10",
     "1" + "0" * 400 + ".5", "0." + "0" * 400 + "1", "1" * 5000 + ".0", "1" * 5000 + "e-5000",
     "NaN", "Infinity", "-Infinity", "[NaN, Infinity, -Infinity, -0.0, 0.0]",
+    # exact ties between two shortest digit strings: repr and JS both pick the even one
+    "1000000000000000.25", "90339556295875.125", "-34144067629171.0625", "26363981746409.3125",
+    "1000000000000000.75", "[0.5, 2.5, 0.125, 1e23, 8.5e-323]",
     # strings
     '""', '"abc"', '"\\"\\\\\\/\\b\\f\\n\\r\\t"', '"\\u0000\\u001f\\u007f\\u0080\\u009f"',
     '"' + "".join("\\u%04x" % c for c in range(32)) + '"', '"\\u00e9\\u00E9"', '"\\u0041"',
@@ -272,6 +275,9 @@ _FIXED_INVALID = [
     "\ufeff{}", "\ufeff", "\ufeff 1", " \ufeff1", "[1, 2", '{"a": [1, {"b": ', "[" * 20,
     '{"a": 1, "a": 2', "\x00", "/* c */ 1", "[1] // c", "'a'", "undefined", "[-]", "[.1]",
     "{\"a\": 1, }", "[\"a\",]", '{"a":1,"b"}',
+    # whitespace that JSON does not allow between tokens (Python's str.isspace() is wider)
+    "1\x0b", "[1,\x0c2]", "\x1c1", "[\x851]", '{"a":\x0b1}', "\x0c", "[1\x1c]", '{"a"\x85:1}',
+    "\u2028 1", "[1,\u2029 2]", '{\x1f"a": 1}', "\x0b\x0c\x1c\x1d\x1e\x1f\x85",
     # past the 4300-digit int limit: a ValueError, not a JSONDecodeError
     "1" * 4301, "-" + "9" * 4301, '{"n": [1, ' + "7" * 6000 + "]}", "1" * 4301 + ".0x",
 ]
@@ -490,6 +496,68 @@ def _bytes_to_cases(raws):
                "preset": "PY_DEFAULT_UNICODE" if i % 2 == 0 else "COMPACT_SORTED"}
 
 
+def _bulk_byte_cases(r, count):
+    """Documents with many strings, each holding several invalid UTF-8 sequences."""
+    for _ in range(count):
+        items = []
+        for k in range(r.randrange(10, 25)):
+            parts = [r.choice(_BAD_BYTES) if r.random() < 0.6 else r.choice(_GOOD_BYTES)
+                     for _ in range(r.randrange(2, 7))]
+            items.append(b'"k%d": "' % k + b"".join(parts) + b'"')
+        yield b"{" + b", ".join(items) + b"}"
+
+
+def _float_cases(r):
+    """Doubles in arrays: [2^43, 2^53) with random low bits (where exact shortest-digit ties
+    are common) and random 64-bit patterns. Ties must print the even digit."""
+    batches = []
+    for _ in range(20):
+        batches.append([r.randrange(2 ** 52, 2 ** 53) * 2.0 ** -r.randrange(0, 10)
+                        * r.choice([1, -1]) for _ in range(300)])
+    for _ in range(8):
+        floats = []
+        while len(floats) < 300:
+            f = struct.unpack("<d", struct.pack("<Q", r.getrandbits(64)))[0]
+            if f == f and f not in (float("inf"), float("-inf")):
+                floats.append(f)
+        batches.append(floats)
+    for i, floats in enumerate(batches):
+        yield {"op": "loads_dumps", "text": "[" + ",".join(map(repr, floats)) + "]",
+               "preset": PRESET_NAMES[i % len(PRESET_NAMES)]}
+
+
+_ODD_WS = "\x0b\x0c\x1c\x1d\x1e\x1f\x85\u00a0\u2028\u3000\ufeff"
+
+
+def _odd_whitespace_cases(r, count):
+    """Whitespace Python's `str.isspace()` accepts but JSON does not, between tokens."""
+    for _ in range(count):
+        text = _rand_text(r, 2)
+        spots = [i for i in range(1, len(text) + 1) if text[i - 1] in "[{,:"] or [0]
+        i = r.choice(spots)
+        yield {"op": "loads_dumps", "text": text[:i] + r.choice(_ODD_WS) + text[i:],
+               "preset": "PY_DEFAULT"}
+
+
+_BAD_ENDINGS = [", x]", ", ]", " 1]", ', "\\x"]', ', "a\x01"]', ', "\\ud800\\u12"]', "",
+                ', {"k" 1}]', ", 01]", ', "abc', ", [1 2]]", ", -]", ", tru]", ']]', ', "\\u12"]']
+
+
+def _position_cases(r, count):
+    """Errors after astral and BMP characters and CR/LF line breaks: code-point positions and
+    line/column numbers."""
+    for _ in range(count):
+        items = []
+        for _ in range(r.randrange(1, 6)):
+            chars = [r.choice(["\U0001f600", "\U00010000", "\U0010ffff", "é", "中", "a",
+                               "\\n", "\\r\\n", "\\ud83d\\ude00"]) for _ in range(r.randrange(0, 6))]
+            items.append('"' + "".join(chars) + '"')
+        seps = [r.choice([", ", ",\r\n", ",\n", ",\r", ",\n\n "]) for _ in items[1:]]
+        body = items[0] + "".join(s + item for s, item in zip(seps, items[1:]))
+        yield {"op": "loads_dumps", "text": "[" + r.choice(["", "\r\n", "\n "]) + body
+               + r.choice(_BAD_ENDINGS), "preset": "PY_DEFAULT"}
+
+
 def _deep_cases():
     d = 10_000
     arrays = "[" * d + "]" * d
@@ -519,6 +587,11 @@ def _cases():
     yield from _mutation_cases(random.Random(20261121), 900)
     yield from _bytes_to_cases(_byte_cases(random.Random(20261122), 300))
     yield from _deep_cases()
+    # Added after review round 1 (new seeds, so the cases above stay as they were).
+    yield from _float_cases(random.Random(20261123))
+    yield from _bytes_to_cases(_bulk_byte_cases(random.Random(20261124), 20))
+    yield from _odd_whitespace_cases(random.Random(20261125), 150)
+    yield from _position_cases(random.Random(20261126), 150)
 
 
 def golden(path):

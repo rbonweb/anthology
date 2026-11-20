@@ -11,9 +11,17 @@
 //!
 //! # Depth
 //!
-//! Parsing, printing, [`Clone`], [`PartialEq`] and dropping a [`Value`] are all iterative, so any
-//! depth works on a small thread stack (the guard parses hostile input, and a stack overflow there
-//! would abort the binary). `Debug` stays derived (recursive): do not `{:?}` hostile values.
+//! Parsing, printing, [`Clone`], [`PartialEq`], [`Debug`](fmt::Debug) and dropping a [`Value`]
+//! are all iterative, so any depth works on a small thread stack (the guard parses hostile input,
+//! and a stack overflow there would abort the binary). `Debug` prints the JSON text (Python's
+//! `json.dumps(v, ensure_ascii=False)`), cut after 4 KiB.
+//!
+//! # Equality is structural
+//!
+//! `==` on [`Value`] compares variants: `Int(1) != Float(1.0)` and `Bool(true) != Int(1)`,
+//! although Python's `==` calls both pairs equal. Objects ignore key order, as `dict ==` does.
+//! A port of a Python `==` between JSON values that may mix ints, floats and bools needs its own
+//! comparison.
 //!
 //! # No by-value destructuring of `Value`
 //!
@@ -42,8 +50,8 @@ pub use dump::{
 pub use js::js_stringify;
 pub use parse::{loads, loads_bytes_lossy, loads_utf8_sig};
 
-/// A JSON value, as Python's `json.loads` returns it. See the module docs on destructuring.
-#[derive(Debug)]
+/// A JSON value, as Python's `json.loads` returns it. See the module docs on destructuring and
+/// on equality.
 pub enum Value {
     Null,
     Bool(bool),
@@ -54,8 +62,12 @@ pub enum Value {
     Object(Map),
 }
 
-/// A JSON integer: `Small` when it fits an `i64`, else `Big` with its canonical decimal text
-/// (an optional `-`, no leading zeros).
+/// A JSON integer: `Small` when it fits an `i64`, else `Big` with its decimal text.
+///
+/// `Big` must be canonical and outside the `i64` range: an optional `-`, then digits with no
+/// leading zero, as `str(int)` prints it. `loads` only builds such values. A hand-built
+/// `Big("007")` or `Big("5")` would print as is and compare unequal to `Small(5)`; `dumps` checks
+/// this with a `debug_assert!`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Int {
     Small(i64),
@@ -273,8 +285,29 @@ fn eq_pairs<'a>(mut stack: Vec<(&'a Value, &'a Value)>) -> bool {
     true
 }
 
+/// The most bytes `Debug` prints.
+const DEBUG_MAX: usize = 4096;
+
+impl fmt::Debug for Value {
+    /// The JSON text (`PY_DEFAULT_UNICODE`; iterative), cut after [`DEBUG_MAX`] bytes with a
+    /// marker naming how many bytes were left out.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = dumps(self, &PY_DEFAULT_UNICODE);
+        if text.len() <= DEBUG_MAX {
+            return f.write_str(&text);
+        }
+        let mut cut = DEBUG_MAX;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        write!(f, "{}…<{} more bytes>", &text[..cut], text.len() - cut)
+    }
+}
+
 impl PartialEq for Value {
-    /// Iterative. Floats compare as `f64` (NaN is unequal to itself); objects ignore order.
+    /// Iterative and structural, not Python `==`: `Int(1) != Float(1.0)`, `Bool(true) !=
+    /// Int(1)`, and `Int::Small(5) != Int::Big("5")` (a non-canonical `Big`). Floats compare as
+    /// `f64` (NaN is unequal to itself; `-0.0 == 0.0`); objects ignore order.
     fn eq(&self, other: &Value) -> bool {
         eq_pairs(vec![(self, other)])
     }
@@ -522,6 +555,27 @@ mod tests {
         assert_eq!(c, v);
         let keys: Vec<_> = c.as_object().unwrap().iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["z", "a"]);
+    }
+
+    #[test]
+    fn debug_prints_the_json_text_and_survives_any_depth() {
+        let v = loads(r#"{"a": [1, 1.0, "é", null]}"#).unwrap();
+        assert_eq!(format!("{v:?}"), r#"{"a": [1, 1.0, "é", null]}"#);
+        let mut m = Map::new();
+        m.insert("k".into(), Value::Bool(true));
+        assert_eq!(format!("{m:?}"), r#"Map([("k", true)])"#);
+        let d = 200_000;
+        let deep = loads(&("[".repeat(d) + &"]".repeat(d))).unwrap();
+        let text = format!("{deep:?}");
+        assert!(text.starts_with("[[[["), "{}", &text[..8]);
+        assert!(text.ends_with(&format!("…<{} more bytes>", 2 * d - DEBUG_MAX)));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "is not canonical")]
+    fn dumps_rejects_a_non_canonical_big_int_in_debug_builds() {
+        dumps(&Value::Int(Int::Big("5".into())), &PY_DEFAULT);
     }
 
     #[test]

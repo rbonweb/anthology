@@ -401,6 +401,40 @@ fn deep_errors_and_built_values_on_a_small_stack() {
     });
 }
 
+/// The committed `json_loads` fuzz seeds pass the fuzz target's checks here too, so the corpus
+/// stays meaningful without a nightly toolchain.
+#[test]
+fn the_fuzz_seeds_pass_the_fuzz_checks() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fuzz/corpus/json_loads");
+    let mut seeds = 0;
+    for entry in std::fs::read_dir(dir).expect("the seed corpus") {
+        let data = std::fs::read(entry.expect("entry").path()).expect("seed");
+        seeds += 1;
+        let _ = loads_utf8_sig(&data);
+        let Ok(v) = loads_bytes_lossy(&data) else {
+            continue;
+        };
+        let mut stack = vec![&v];
+        let mut finite = true;
+        while let Some(x) = stack.pop() {
+            match x {
+                Value::Float(f) => finite &= f.is_finite(),
+                Value::Array(a) => stack.extend(a),
+                Value::Object(m) => stack.extend(m.iter().map(|(_, x)| x)),
+                _ => {}
+            }
+        }
+        for (name, o) in PRESETS {
+            let text = dumps(&v, &o);
+            if finite {
+                assert!(loads(&text).expect("reads back") == v, "{name}");
+            }
+        }
+        assert!(loads(&js_stringify(&v)).is_ok());
+    }
+    assert!(seeds >= 5, "{seeds} seeds");
+}
+
 /// A named operation timed on a JSON text.
 type Check<'a> = (&'a str, &'a dyn Fn(&str));
 

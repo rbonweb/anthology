@@ -141,7 +141,10 @@ impl<'a> Writer<'a, '_> {
             Value::Bool(true) => self.out.push_str("true"),
             Value::Bool(false) => self.out.push_str("false"),
             Value::Int(Int::Small(i)) => self.out.push_str(&i.to_string()),
-            Value::Int(Int::Big(s)) => self.out.push_str(s),
+            Value::Int(Int::Big(s)) => {
+                debug_assert!(is_canonical_big(s), "Int::Big({s:?}) is not canonical");
+                self.out.push_str(s);
+            }
             Value::Float(f) => self.out.push_str(&py_repr(*f)),
             Value::Str(s) => write_str(&mut self.out, s, self.o.ensure_ascii),
             Value::Array(a) if a.is_empty() => self.out.push_str("[]"),
@@ -169,6 +172,15 @@ impl<'a> Writer<'a, '_> {
             }
         }
     }
+}
+
+/// Whether `s` is a valid `Int::Big`: `-?[1-9][0-9]*`, outside the `i64` range.
+fn is_canonical_big(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    digits.bytes().all(|b| b.is_ascii_digit())
+        && !digits.starts_with('0')
+        && !digits.is_empty()
+        && s.parse::<i64>().is_err()
 }
 
 /// A JSON string: `encode_basestring_ascii` (escape all but printable ASCII; astral characters as
