@@ -102,6 +102,7 @@ def _scan_paren(text, i):
     Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over."""
     depth, j, n = 1, i, len(text)
     delimiters = []
+    unterminated = set()                                  # delimiters already searched in vain
     while j < n:
         c = text[j]
         if c == "\\":
@@ -110,7 +111,8 @@ def _scan_paren(text, i):
         if c == "<":
             match = _HEREDOC_START.match(text, j)
             if match:
-                delimiters.append(match.group(2))
+                if match.group(2) not in unterminated:
+                    delimiters.append(match.group(2))
                 j = match.end()
                 continue
         if c == "\n" and delimiters:
@@ -119,6 +121,8 @@ def _scan_paren(text, i):
                 after = _find_heredoc_end(text, pos, delimiter)[1]
                 if after >= 0:
                     pos = after
+                else:
+                    unterminated.add(delimiter)
             j = pos - 1                                   # the loop's `j += 1` lands on `pos`
             delimiters = []
         if c in "'\"":
@@ -151,6 +155,27 @@ _HEREDOC_DELIMITER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\Z")
 _ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\Z")
 
 
+def _body_substitutions(body):
+    """The `$(...)` and backtick spans inside an unquoted heredoc body (bash runs them)."""
+    found, j, n = [], 0, len(body)
+    while j < n:
+        c = body[j]
+        if c == "\\":
+            j += 2
+        elif c == "$" and body[j + 1:j + 2] == "(":
+            inner, j = _scan_paren(body, j + 2)
+            found.append(inner)
+        elif c == "`":
+            k = body.find("`", j + 1)
+            if k < 0:
+                break
+            found.append(body[j + 1:k])
+            j = k + 1
+        else:
+            j += 1
+    return found
+
+
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
     their segments spliced in ahead of the segment that contains them (execution order)."""
@@ -166,6 +191,7 @@ class _Lexer:
         self.pending = None      # redirection operator waiting for its target word
         self.heredocs = []       # (delimiter, group) registered on the current line
         self.unterminated = set()  # delimiters whose terminator was not found
+        self.quoted = False      # the word being built contains a quote or escape
 
     # -- building words and segments
     def add(self, chars):
@@ -178,11 +204,12 @@ class _Lexer:
         word = "".join(self.cur)
         self.cur = []
         self.has_word = False
+        quoted, self.quoted = self.quoted, False
         op, self.pending = self.pending, None
         if op is None:
             self.seg.tokens.append(word)
         elif op in ("<<", "<<-"):
-            self.heredocs.append((word, self.group))
+            self.heredocs.append((word, self.group, quoted))
         elif op == "<<<":
             self.group.texts.append(word)
         else:
@@ -208,16 +235,19 @@ class _Lexer:
         while i < n:
             c = text[i]
             if c == "\\":
+                self.quoted = True
                 if i + 1 < n and text[i + 1] != "\n":
                     self.add(text[i + 1])
                 i += 2
             elif c == "'":
+                self.quoted = True
                 j = text.find("'", i + 1)
                 if j < 0:
                     raise _Unbalanced()
                 self.add(text[i + 1:j])
                 i = j + 1
             elif c == '"':
+                self.quoted = True
                 i = self.double_quoted(i)
             elif c == "`":
                 j = _find_backtick(text, i + 1)
@@ -237,6 +267,9 @@ class _Lexer:
             elif c == "(" and self.has_word and _ARRAY_ASSIGNMENT.match("".join(self.cur)):
                 inner, i = _scan_paren(text, i + 1)       # `names=(a b)` is an array, not a subshell
                 self.add("(" + inner + ")")
+                # The elements are analyzed as the arguments of an `echo` (so their substitutions
+                # run and their paths are checked), without reading element 0 as a program.
+                self.nested("echo " + inner.replace("\n", " "))
             elif c in ";()":
                 self.end_seg(new_group=True)
                 i += 1
@@ -303,6 +336,7 @@ class _Lexer:
             self.add(text[i:k + 1])
             return k + 1
         if nxt == "'":
+            self.quoted = True
             j, n = i + 2, len(text)
             buf = []
             while j < n and text[j] != "'":
@@ -346,14 +380,18 @@ class _Lexer:
     def take_heredocs(self, i):
         """At the start of the line after a heredoc operator: capture the body (if closed)."""
         text = self.text
-        for delimiter, group in self.heredocs:
+        for delimiter, group, quoted in self.heredocs:
             if delimiter in self.unterminated or not _HEREDOC_DELIMITER.match(delimiter):
                 continue
             body_end, after = _find_heredoc_end(text, i, delimiter)
             if after < 0:
                 self.unterminated.add(delimiter)          # later lines cannot close it either
                 continue
-            group.texts.append(text[i:body_end])
+            body = text[i:body_end]
+            group.texts.append(body)
+            if not quoted and self.depth < _MAX_DEPTH:    # an unquoted body runs its `$(...)`
+                for inner in _body_substitutions(body):
+                    self.out.extend(_segments(inner, self.depth + 1))
             i = after
         self.heredocs = []
         return i
@@ -423,9 +461,13 @@ _PM_VALUE_FLAGS = frozenset(("--filter", "-F", "-C", "--dir", "--prefix", "-w", 
                              "--cwd", "--registry"))
 _RUNNERS = frozenset(("npx", "bunx", "pnpx", "uvx"))
 _RUNNER_VALUE_FLAGS = frozenset(("-p", "--package", "-w", "--workspace", "--from", "--with",
-                                 "--python", "-n", "--name", "--prefix"))
+                                 "--python", "-n", "--name", "--prefix", "--project", "--directory",
+                                 "--env-file", "--extra", "--group", "-P"))
 _RUNNER_SUBCOMMANDS = frozenset(("exec", "dlx", "x"))
 # Python project runners: `<name> [<middle>] run [options] <program> ...`
+_PYTHON_GLOBAL_VALUE_FLAGS = frozenset((
+    "-C", "--directory", "--project", "-e", "--env", "-p", "--python", "--config-file",
+    "--cache-dir", "--env-file", "-n", "--name", "--prefix"))
 _PYTHON_RUNNERS = {"uv": ("run", "tool run"), "poetry": ("run",), "pipenv": ("run",),
                    "pdm": ("run",), "hatch": ("run",), "rye": ("run",), "conda": ("run",)}
 _PM_VERBS = frozenset((
@@ -497,11 +539,13 @@ def _runner_program(tokens, i, scripts):
 
 
 def _python_runner_start(name, tokens):
-    """Index of the first word after `uv run` / `uv tool run` / `poetry run` ..., or -1."""
+    """Index of the first word after `uv run` / `uv tool run` / `poetry run` ..., or -1.
+    Global flags (`poetry -C sub run`, `uv --directory e2e run`, `hatch -e test run`) may precede."""
+    start = _skip_flags(tokens, 1, _PYTHON_GLOBAL_VALUE_FLAGS)
     for subcommand in _PYTHON_RUNNERS[name]:
         words = subcommand.split()
-        if tokens[1:1 + len(words)] == words:
-            return 1 + len(words)
+        if tokens[start:start + len(words)] == words:
+            return start + len(words)
     return -1
 
 
@@ -746,9 +790,21 @@ def _component_matches(candidate, protected, prefix):
     return candidate.startswith(protected) if prefix else candidate == protected
 
 
-def _contains_sequence(path, sequences, prefix_flags=None):
+_WILDCARD_ONLY = re.compile(r"[*?]+\Z")
+
+
+def _is_home_dir(comps, home_comps):
+    """True when the components name a home directory: `home`'s, `/home/<u>`, `<root>/<u>`."""
+    return (bool(home_comps) and comps == home_comps) or (
+        len(comps) == 2 and comps[0] in ("home", "users")) or comps == ["root"]
+
+
+def _contains_sequence(path, sequences, prefix_flags=None, home_comps=()):
     """True when `path` holds one of the component sequences: anywhere if absolute, from the
-    start (after any `..` or `$var` components) if relative."""
+    start (after any `..` or `$var` components) if relative.
+
+    A window of nothing but wildcards (`**/*`, `*/*`) names no particular path and does not
+    match, unless it starts directly under a home directory (`~/*/*/*` reaches `~/.config/...`)."""
     comps = [c for c in path.split("/") if c and c != "."]
     absolute = path.startswith("/")
     leading = 0
@@ -761,10 +817,12 @@ def _contains_sequence(path, sequences, prefix_flags=None):
         size = len(sequence)
         for start in range(0, min(last_start, len(comps) - size) + 1):
             window = comps[start:start + size]
-            # A window made only of wildcards (`**/*`, `*/*`) names no particular path.
-            if all(_component_matches(c, p, prefix and k == size - 1)
-                   for k, (c, p) in enumerate(zip(window, sequence))) \
-                    and not all(_GLOB_CHARS.search(c) for c in window):
+            if not all(_component_matches(c, p, prefix and k == size - 1)
+                       for k, (c, p) in enumerate(zip(window, sequence))):
+                continue
+            if not all(_WILDCARD_ONLY.match(c) for c in window):
+                return True
+            if absolute and _is_home_dir(comps[:start], home_comps):
                 return True
     return False
 
@@ -786,9 +844,11 @@ _PROFILE_PREFIX_FLAGS = tuple(flag for _, flag in _PROFILE_COMPONENTS)
 
 
 def _is_profile_path(candidate, home, cwd):
+    home_comps = [c for c in _normalize(home, home, None).split("/") if c] if home else []
     for base in (None, cwd) if cwd else (None,):
         path = _normalize(candidate, home, base)
-        if path and _contains_sequence(path, _PROFILE_SEQUENCES, _PROFILE_PREFIX_FLAGS):
+        if path and _contains_sequence(
+                path, _PROFILE_SEQUENCES, _PROFILE_PREFIX_FLAGS, home_comps):
             return True
     return False
 

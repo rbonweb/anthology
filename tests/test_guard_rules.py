@@ -157,6 +157,33 @@ class RuleTableTest(unittest.TestCase):
             bash("ls ~/.config/*/Default"),
             bash("ls ~/.config/*"),
             bash("ls ~/.config/g*"),
+            # partly literal globs are not wildcard-only (review N2)
+            bash("cat ~/.c*/c*/Default/Cookies"),
+            bash("cat ~/.conf*/chrom*/Default/Cookies"),
+            bash("cat ~/.*/*/Default/Cookies"),
+            bash("cat ~/Libr*/Appl*/Goo*/Chrome/Default/Cookies"),
+            bash("cat ~/L*/A*/G*/Chrome/Default/Cookies"),
+            bash("cat $HOME/.c?nfig/chr?mium/Default/Cookies"),
+            bash("cat ~/.[c]onfig/[c]hromium/Default/Cookies"),
+            bash("cd ~ && cat .c*/c*/Default/Cookies"),
+            # wildcard-only windows directly under a home directory still reach the roots (N2 ruling)
+            bash("ls ~/*/*/*"),
+            bash("cat ~/*/*/*/Chrome/Default/Cookies"),
+            bash("ls ~/*/*"),
+            bash("ls $HOME/**/*"),
+            bash("ls " + OTHER_HOME + "/*/*"),
+            bash("ls /home/someone/*/*"),
+            bash("ls /root/*/*"),
+            bash("cd ~ && ls */*/*"),
+            # array elements are paths too (review N1)
+            bash("files=(~/.config/chromium/Default/Cookies); cat \"${files[0]}\""),
+            bash("files=(/tmp/a ~/Library/Application\\ Support/Google/Chrome/Default/Cookies); "
+                 "cp \"${files[@]}\" /tmp"),
+            bash("files=(\"$HOME/.config/chromium/Default/Cookies\")"),
+            bash("files+=(~/.config/chromium/Default/Cookies)"),
+            bash("declare -a f=(~/.config/chromium/Default/Cookies)"),
+            bash("local f=(~/.config/chromium/Default/Cookies)"),
+            bash("files=(\n  ~/.config/chromium/Default/Cookies\n)"),
             # -C <dir> changes directory for tar / git / make (review M4)
             bash("tar czf /tmp/p.tgz -C ~/.config chromium"),
             bash("tar xf /tmp/p.tgz --directory ~/.config google-chrome"),
@@ -216,6 +243,14 @@ class RuleTableTest(unittest.TestCase):
             ("Write", {"file_path": "~/.config/chromium/x", "content": "hi"}),
             ("NotebookEdit", {"notebook_path": "~/.config/chromium/n.ipynb", "new_source": "x"}),
             ("Read", {"file_path": OTHER_HOME + "/.config/google-chrome/Default/Cookies"}),
+            # partly literal globs and wildcard-only windows under home (review N2)
+            ("Glob", {"pattern": ".c*/c*/Default/Cookies", "path": HOME}),
+            ("Glob", {"pattern": "L*/A*/G*/**/Cookies", "path": HOME}),
+            ("Glob", {"pattern": HOME + "/.c*/c*/Default/Cookies"}),
+            ("Read", {"file_path": HOME + "/.c*/c*/Default/Cookies"}),
+            ("Grep", {"pattern": "x", "path": HOME, "glob": ".c*/chrom*/**"}),
+            ("Glob", {"pattern": "**/*", "path": HOME}),
+            ("Glob", {"pattern": "*/*/*", "path": "~"}),
             # nested values are visited too
             ("SomeTool", {"outer": {"paths": ["a", "~/.config/google-chrome/Default"]}}),
             ("SomeTool", {"params": [{"file_path": "~/.config/google-chrome/Default"}]}),
@@ -421,6 +456,19 @@ class RuleTableTest(unittest.TestCase):
             bash("uv run python -m playwright install"),
             bash("uv run --with playwright playwright install"),
             bash("uv tool run playwright install"),
+            # value flags and global flags around `run` (round 2)
+            bash("uv run --project e2e npx playwright install"),
+            bash("uv run --directory e2e playwright install"),
+            bash("uv run --env-file .env playwright install"),
+            bash("uv run --extra dev playwright install"),
+            bash("uv run --group test playwright install"),
+            bash("uv --directory e2e run playwright install"),
+            bash("uv --project e2e run --extra dev npx playwright install"),
+            bash("poetry -C sub run playwright install"),
+            bash("poetry run -P sub playwright install"),
+            bash("hatch -e test run playwright install"),
+            bash("pdm -p sub run playwright install"),
+            bash("pipenv --python 3.12 run playwright install"),
             bash("poetry run playwright install"),
             bash("pipenv run playwright install"),
             bash("pdm run playwright install"),
@@ -458,6 +506,20 @@ class RuleTableTest(unittest.TestCase):
             bash("git commit -m \"$(cat <<'EOF'\nit's fine\nEOF\n)\" && npx playwright install"),
             bash("echo $(npx playwright install)"),
             bash("x=\"$(\nnpx playwright install\n)\""),
+            # an unquoted heredoc body runs its substitutions (review N4a)
+            bash("git commit -F - <<EOF\nuse `npx playwright install` now\nEOF"),
+            bash("cat <<EOF\n$(npx playwright install)\nEOF"),
+            bash("git commit -m \"$(cat <<EOF\nit's `npx playwright install`\nEOF\n)\""),
+            bash("cat <<-EOF\n\t$(npx playwright install)\n\tEOF"),
+            bash("cat <<EOF\nline 1\nsafe $(echo $(npx playwright install)) tail\nEOF"),
+            bash("git commit -m \"$(cat <<EOF\nok\n$(npx playwright install)\nEOF\n)\""),
+            # array literals: substitutions inside them run (review N1)
+            bash("arr=($(npx playwright install))"),
+            bash("arr=(`npx playwright install`)"),
+            bash("arr=(\"$(npx playwright install)\")"),
+            bash("arr+=($(npx playwright install))"),
+            bash("declare -a arr=($(npx playwright install))"),
+            bash("arr=(a b\n  $(npx playwright install)\n)"),
             # nesting up to the depth cap (review M9)
             bash("echo $(echo $(echo $(echo $(echo $(echo $(echo $(npx playwright install)))))))"),
             # macOS / coreutils wrappers, quoting tricks and substituted program names
@@ -621,6 +683,15 @@ class RuleTableTest(unittest.TestCase):
             bash("du -sh " + HOME + "/proj/*/*"),
             bash("ls ?/?/?"),
             bash("cd ~/proj && ls */*"),
+            bash("ls src/*/*"),
+            bash("ls ./*/*/*"),
+            bash("ls ../*/*"),
+            bash("cd " + HOME + "/proj/sub && ls */*/*"),
+            bash("ls ~/proj/*/*"),
+            bash("ls ~/*"),
+            bash("ls ~/*.md"),
+            ("Glob", {"pattern": "**/*", "path": "~/proj"}),
+            ("Glob", {"pattern": "*/*/*", "path": HOME + "/proj/src"}),
         ])
 
     def test_allowed_free_text_fields_are_not_paths(self):
@@ -679,7 +750,24 @@ class RuleTableTest(unittest.TestCase):
             bash("printf '%s\\n' --remote-debugging-port=9222"),
             bash("browsers=(chromium firefox); echo ${browsers[@]}"),
             bash("names+=(chromium) && echo done"),
-            bash("sudo -iu bob ls"),
+            # array elements are data, not a command (known limit R25: a command built in a
+            # variable, `"${cmd[@]}"`, is not resolved)
+            bash("tools=(agent-browser); echo ${#tools[@]}"),
+            bash("cmd=(chromium --remote-debugging-port=9222); echo ${cmd[@]}"),
+            bash("tools=(agent-browser); \"${tools[0]}\" open x"),
+            bash("cmd=(chromium --remote-debugging-port=9222); \"${cmd[@]}\""),
+            bash("files=(a.txt b.txt)\nls \"${files[@]}\""),
+            bash("files=(\n  a.txt\n  b.txt\n)"),
+            bash("arr=($(ls) \"$(date)\" `pwd`)"),
+            bash("declare -a f=(src/*.py)"),
+            # unquoted heredoc bodies without a blocked command, and quoted ones stay data
+            bash("cat <<EOF\n$(date) and `pwd`\nEOF"),
+            bash("git commit -F - <<'EOF'\nuse `npx playwright install` now\nEOF"),
+            bash("cat <<'EOF'\n$(npx playwright install)\nEOF"),
+            bash("git commit -m \"$(cat <<'EOF'\nit's `npx playwright install`\nEOF\n)\""),
+            bash("cat <<\"EOF\"\n$(npx playwright install)\nEOF"),
+            bash("cat <<\\EOF\n$(npx playwright install)\nEOF"),
+            bash("cat <<EOF\n\\$(npx playwright install)\nEOF"),            bash("sudo -iu bob ls"),
             bash("rtk proxy -- git status"),
             bash("xargs --max-args 1 echo"),
             bash("tar czf /tmp/p.tgz -C src docs"),
@@ -1121,6 +1209,18 @@ class RuleTableTest(unittest.TestCase):
             with self.subTest(home=repr(home)):
                 guard_rules.check("Bash", {"command": "cd ~ && ls .config"}, home)
                 guard_rules.check("Read", {"file_path": "~/.config/chromium"}, home)
+
+    def test_unterminated_heredocs_stay_cheap(self):
+        """Delimiters whose terminator never appears are searched for once, not per line (N3)."""
+        import time
+        for name, command in (
+                ("nested substitution", '"$(' * 12 + "cat <<X\n" * 2000),
+                ("lexer", "cat <<X\n" * 2000),
+                ("nested array", "a=(" * 12 + "cat <<X\n" * 2000)):
+            with self.subTest(case=name):
+                start = time.perf_counter()
+                guard_rules.check("Bash", {"command": command}, HOME)
+                self.assertLess(time.perf_counter() - start, 0.2)
 
     def test_check_survives_deep_nesting(self):
         nested = {}
