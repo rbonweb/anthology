@@ -56,6 +56,11 @@ SECRET_PATTERNS = (
                 r"|[\"']\s*[:=]\s*[\"']?(?![\"'{\[\]},\s]|(?:null|none|true|false)\b)\S{8,})", re.I)),
     # A look-behind, not \b: `-` is in the class, so \b would start a scan at every `-eyJ` (quadratic).
     ("jwt", re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    # An AWS-style `aws_secret_access_key = …`, also JSON-quoted (`"SecretAccessKey": "…"`); the token
+    # pattern above needs `secret` to be followed by `=`. One optional quote keeps the scan linear.
+    ("cloud-secret-key", re.compile(r"(?:secret|access)[_-]?(?:access[_-]?)?key[\x22']?\s*[:=]\s*\S{8,}", re.I)),
+    # `scheme://user:password@host`: the userinfo of a connection URL. Each run stops at `/`, so the scan is linear.
+    ("url-credentials", re.compile(r"://[^\s/:@]*:[^\s/@]+@")),
     ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")),
     ("google-api-key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
     ("stripe-live-key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{8,}")),

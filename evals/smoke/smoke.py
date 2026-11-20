@@ -764,7 +764,8 @@ def _approved_repo(ctx: Ctx, tmp: Path) -> Path:
 
 
 def smoke_auto_memory_dir(ctx: Ctx) -> Result:
-    """U7: the memory sync points autoMemoryDirectory at the repo, migrates old notes, and saves go there."""
+    """U7: the memory sync points autoMemoryDirectory at the repo, copies old notes to personal memory only
+    (B3: never into the repo on their own), and new saves go to the repo."""
     if not has_session_start(ROOT / "plugins/anthology/hooks/hooks.json"):
         return SKIP, "no SessionStart memory sync yet (stream F)"
     flags = ["--permission-mode", "bypassPermissions", "--model", "sonnet", *plugin_flags(), "--max-turns", "6"]
@@ -787,13 +788,16 @@ def smoke_auto_memory_dir(ctx: Ctx) -> Result:
         if not setting or os.path.realpath(setting) != os.path.realpath(str(mem)):
             return FAIL, f"settings.local.json autoMemoryDirectory is {setting!r}, want {mem}"
         ctx.prompt_run(tmp, "Reply OK.", flags, cwd=repo, extra_env=NO_SCRUB)
-        if not find_text(mem, "amber"):
-            return FAIL, "the amber note is not under .claude/memory/ after session 2 (migration)"
+        personal = tmp / "cfg" / "anthology" / "personal-memory"  # CLAUDE_CONFIG_DIR is tmp/cfg
+        if find_text(mem, "amber"):
+            return FAIL, "the amber note was copied into the repo's .claude/memory/ after session 2; legacy notes stay personal (B3)"
+        if not find_text(personal, "amber"):
+            return FAIL, "the amber note is not in personal memory (cfg/anthology/personal-memory) after session 2 (migration)"
         ctx.prompt_run(tmp, "Remember that the smoke probe shape is cyan-circle; save it to auto memory now.", flags,
                        cwd=repo, extra_env=NO_SCRUB)
         if not find_text(mem, "cyan-circle"):
             return FAIL, "the cyan-circle note is not under .claude/memory/ after session 3"
-    return PASS, "autoMemoryDirectory set, old note migrated, new note saved in the repo"
+    return PASS, "autoMemoryDirectory set, old note copied to personal memory only, new note saved in the repo"
 
 
 def smoke_writer_memory_commit(ctx: Ctx) -> Result:
