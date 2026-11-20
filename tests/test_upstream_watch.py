@@ -15,8 +15,10 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,11 +85,13 @@ class FakeGitHub:
     """Records every call; `issues` is what the 'open issues' listing returns."""
 
     def __init__(self, issues=()):
-        self.issues = list(issues)
+        self.issues = issues if isinstance(issues, Exception) else list(issues)
         self.calls = []
 
-    def list_open_issues(self):
+    def list_issues(self):
         self.calls.append(("list",))
+        if isinstance(self.issues, Exception):
+            raise self.issues
         return list(self.issues)
 
     def create_issue(self, title, body):
@@ -100,6 +104,15 @@ class FakeGitHub:
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("create", "update")]
+
+
+def bot_issue(change, number=7, **kw):
+    """An issue as the API returns one the watcher itself created."""
+    issue = {"number": number, "state": "open", "title": uw.render_title(change),
+             "body": uw.render_body(change), "labels": [{"name": "upstream-watch"}],
+             "user": {"login": "github-actions[bot]"}}
+    issue.update(kw)
+    return issue
 
 
 def git_entry(**kw):
@@ -188,6 +201,9 @@ class TagPinnedTests(unittest.TestCase):
         net = self.net(drop=("refs/tags/v7.10.0", "refs/tags/v7.1.0", "refs/tags/v7.1.0^{}"))
         self.assertIsNone(check(tag_entry(), net))  # only rc/beta/nightly are newer
 
+    def test_pin_newer_than_every_tag_is_no_change(self):
+        self.assertIsNone(check(tag_entry(ref="v8.0.0"), self.net()))
+
     def test_up_to_date(self):
         net = self.net("ls_remote_up_to_date.txt")
         self.assertIsNone(check(tag_entry(), net))
@@ -237,6 +253,11 @@ class BranchPinnedTests(unittest.TestCase):
                                         "skills/frontend-design/examples/hero.md"])
         self.assertEqual(change.command, "python3 scripts/vendor.py sync frontend-design --ref main")
         self.assertIn(S["2"], uw.render_body(change))
+
+    def test_files_heading_keeps_the_backticks_around_the_path(self):
+        net = self.net(S["2"], fixture("compare_path_changed.json"))
+        body = uw.render_body(check(git_entry(), net))
+        self.assertIn("Changed files under `skills/frontend-design` (2):", body)
 
     def test_prefix_match_is_by_directory(self):
         net = self.net(S["2"], fixture("compare_path_changed.json"))
@@ -304,6 +325,16 @@ class BranchPinnedTests(unittest.TestCase):
         text = uw.render_title(change) + uw.render_body(change) + json.dumps(change.to_json())
         for needle in ("SECRET-COMMIT-MESSAGE", "mallory", "Mallory"):
             self.assertNotIn(needle, text)
+
+
+class LsRemoteFailureCacheTests(unittest.TestCase):
+    def test_an_unreachable_repo_is_tried_once_per_run(self):
+        net = FakeNet({SKILLS_REPO: OSError("unreachable")})
+        checker = uw.Checker(ROOT, net)
+        for name in ("one", "two", "three"):
+            with self.assertRaises(uw.WatchError):
+                checker.check_entry(git_entry(name=name))
+        self.assertEqual(net.ls_calls, [SKILLS_REPO])
 
 
 class UrlSourceTests(unittest.TestCase):
@@ -399,6 +430,11 @@ class ClaudeCodeTests(unittest.TestCase):
         with self.assertRaises(uw.WatchError):
             self.check(b"not json")
 
+    def test_overlong_or_newline_terminated_version_is_an_error(self):
+        for version in ("2.1.400-" + "a" * 64, "2.1.400\n"):
+            with self.assertRaises(uw.WatchError, msg=repr(version)):
+                self.check(json.dumps({"version": version}).encode())
+
     def test_prerelease_latest_is_not_newer_than_its_release(self):
         self.assertIsNone(self.check(b'{"version": "2.1.329-beta.1"}'))
 
@@ -460,6 +496,17 @@ class HostileInputTests(unittest.TestCase):
         for name in ("a`b", "a b", "x\ny", "../x", "a$(id)", ""):
             with self.assertRaises(uw.WatchError, msg=repr(name)):
                 check(git_entry(name=name), FakeNet())
+
+    def test_trailing_newline_is_rejected_everywhere(self):
+        net = FakeNet({SKILLS_REPO: {"refs/heads/main": S["1"]}, SP_REPO: refs_of("ls_remote_tags.txt")},
+                      {UI_MANIFEST: fixture("manifest_old.txt")})
+        cases = [git_entry(name="demo\n"), git_entry(ref="main\n"), git_entry(commit=S["1"] + "\n"),
+                 git_entry(repo=SKILLS_REPO + "\n"), git_entry(path="skills\n"),
+                 tag_entry(ref="v7.0.2\n"), url_entry(checksum=OLD_SUM + "\n"),
+                 url_entry(url=UI_URL + "\n")]
+        for entry in cases:
+            with self.assertRaises(uw.WatchError, msg=repr(entry)):
+                check(entry, net)
 
     def test_hostile_commit_sha_errors(self):
         with self.assertRaises(uw.WatchError):
@@ -540,9 +587,7 @@ class SyncIssuesTests(unittest.TestCase):
                          command=f"python3 scripts/vendor.py sync {key} --ref {new}")
 
     def issue(self, change, number=7, **kw):
-        issue = {"number": number, "title": uw.render_title(change), "body": uw.render_body(change)}
-        issue.update(kw)
-        return issue
+        return bot_issue(change, number, **kw)
 
     def test_creates_when_absent(self):
         gh = FakeGitHub()
@@ -575,14 +620,50 @@ class SyncIssuesTests(unittest.TestCase):
     def test_ignores_other_keys_and_pull_requests(self):
         other = self.issue(self.change(key="other"), number=3)
         pull = self.issue(self.change(), number=4, pull_request={"url": "x"})
-        unmarked = {"number": 5, "title": "Upstream: demo", "body": "no marker here"}
+        unmarked = self.issue(self.change(), number=5, body="no marker here")
         gh = FakeGitHub([other, pull, unmarked])
         actions = uw.sync_issues([self.change()], gh)
         self.assertEqual([c[0] for c in gh.writes()], ["create"])
         self.assertEqual(actions[0]["action"], "create")
 
+    def test_human_authored_or_unlabelled_issues_are_ignored(self):
+        human = self.issue(self.change(), number=8, user={"login": "mallory"})
+        no_user = self.issue(self.change(), number=9, user=None)
+        unlabelled = self.issue(self.change(), number=10, labels=[{"name": "bug"}])
+        gh = FakeGitHub([human, no_user, unlabelled])
+        actions = uw.sync_issues([self.change()], gh)
+        self.assertEqual([c[0] for c in gh.writes()], ["create"])
+        self.assertEqual(actions[0]["action"], "create")
+
+    def test_the_newest_issue_per_key_decides(self):
+        stale_open = self.issue(self.change(new="v1.0.5"), number=3)
+        current_closed = self.issue(self.change(), number=9, state="closed")
+        gh = FakeGitHub([stale_open, current_closed])
+        actions = uw.sync_issues([self.change()], gh)
+        self.assertEqual(gh.writes(), [])
+        self.assertEqual(actions[0]["action"], "dismissed")
+
+    def test_closed_issue_with_the_same_body_is_dismissed(self):
+        gh = FakeGitHub([self.issue(self.change(), number=4, state="closed")])
+        actions = uw.sync_issues([self.change()], gh)
+        self.assertEqual(gh.writes(), [])
+        self.assertEqual((actions[0]["action"], actions[0]["number"]), ("dismissed", 4))
+
+    def test_closed_issue_with_a_different_body_gets_a_new_issue(self):
+        gh = FakeGitHub([self.issue(self.change(new="v1.0.5"), number=4, state="closed")])
+        actions = uw.sync_issues([self.change()], gh)
+        self.assertEqual([c[0] for c in gh.writes()], ["create"])
+        self.assertEqual(actions[0]["action"], "create")
+
+    def test_a_newer_open_issue_is_patched_not_the_closed_one(self):
+        closed = self.issue(self.change(new="v1.0.4"), number=2, state="closed")
+        opened = self.issue(self.change(new="v1.0.5"), number=6)
+        gh = FakeGitHub([closed, opened])
+        uw.sync_issues([self.change()], gh)
+        self.assertEqual([c[:2] for c in gh.writes()], [("update", 6)])
+
     def test_marker_must_start_the_body(self):
-        quoted = {"number": 6, "title": "t", "body": "see <!-- upstream-watch:demo --> in the text"}
+        quoted = self.issue(self.change(), number=6, body="see <!-- upstream-watch:demo --> in the text")
         gh = FakeGitHub([quoted])
         uw.sync_issues([self.change()], gh)
         self.assertEqual([c[0] for c in gh.writes()], ["create"])
@@ -667,7 +748,7 @@ class MainTests(unittest.TestCase):
     def test_output_false_when_the_claude_code_issue_already_matches(self):
         root, net = self.fake_world()
         tmp = uw.Checker(root, net).check_claude_code()
-        gh = FakeGitHub([{"number": 9, "title": uw.render_title(tmp), "body": uw.render_body(tmp)}])
+        gh = FakeGitHub([bot_issue(tmp, 9)])
         with tempfile.TemporaryDirectory() as d:
             out_file = Path(d) / "out"
             env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_OUTPUT": str(out_file)}
@@ -678,13 +759,33 @@ class MainTests(unittest.TestCase):
     def test_output_true_when_the_claude_code_issue_moved(self):
         root, net = self.fake_world()
         old = uw.Checker(root, FakeNet(http={NPM_URL: b'{"version": "2.1.350"}'})).check_claude_code()
-        gh = FakeGitHub([{"number": 9, "title": uw.render_title(old), "body": uw.render_body(old)}])
+        gh = FakeGitHub([bot_issue(old, 9)])
         with tempfile.TemporaryDirectory() as d:
             out_file = Path(d) / "out"
             env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_OUTPUT": str(out_file)}
             self.run_main(["--root", str(root)], env=env, net=net, gh=gh)
             self.assertEqual(out_file.read_text(), "claude_code_changed=true\n")
             self.assertIn("update", [c[0] for c in gh.calls])
+
+    def test_output_false_when_the_claude_code_issue_was_closed_as_dismissed(self):
+        root, net = self.fake_world()
+        current = uw.Checker(root, net).check_claude_code()
+        gh = FakeGitHub([bot_issue(current, 9, state="closed")])
+        with tempfile.TemporaryDirectory() as d:
+            out_file = Path(d) / "out"
+            env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_OUTPUT": str(out_file)}
+            self.run_main(["--root", str(root)], env=env, net=net, gh=gh)
+            self.assertEqual(out_file.read_text(), "claude_code_changed=false\n")
+            self.assertEqual(len(gh.writes()), 2)  # superpowers and ui-taste only
+
+    def test_dry_run_survives_a_failing_issue_listing(self):
+        root, net = self.fake_world()
+        gh = FakeGitHub(OSError("listing failed"))
+        code, out = self.run_main(["--dry-run", "--root", str(root)], net=net, gh=gh)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot list issues", out)
+        self.assertEqual(gh.writes(), [])
+        self.assertIn("<!-- upstream-watch:superpowers -->", out)
 
     def test_output_false_when_no_new_release(self):
         root, net = self.fake_world(claude_new=False)
@@ -755,6 +856,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 class GitHubClientTests(unittest.TestCase):
     def setUp(self):
+        proxy_vars = {k: "" for k in os.environ if k.lower().endswith("_proxy")}
+        patcher = mock.patch.dict(os.environ, {**proxy_vars, "no_proxy": "127.0.0.1", "NO_PROXY": "127.0.0.1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         _Handler.log = []
         _Handler.pages = {}
         self.server = HTTPServer(("127.0.0.1", 0), _Handler)
@@ -766,10 +871,10 @@ class GitHubClientTests(unittest.TestCase):
 
     def test_paginates_open_issues_with_the_label_filter(self):
         _Handler.pages = {1: [{"number": i} for i in range(100)], 2: [{"number": 100}], 3: []}
-        issues = self.client.list_open_issues()
+        issues = self.client.list_issues()
         self.assertEqual(len(issues), 101)
         paths = [entry[1] for entry in _Handler.log]
-        self.assertTrue(all("/repos/o/r/issues?labels=upstream-watch&state=open&per_page=100" in p for p in paths))
+        self.assertTrue(all("/repos/o/r/issues?labels=upstream-watch&state=all&per_page=100" in p for p in paths))
         self.assertEqual(len(paths), 2)  # a short second page ends it
         headers = {k.lower(): v for k, v in _Handler.log[0][2].items()}
         self.assertEqual(headers["authorization"], "Bearer tok")
@@ -784,6 +889,48 @@ class GitHubClientTests(unittest.TestCase):
         self.assertEqual((m1, p1, b1), ("POST", "/repos/o/r/issues",
                                         {"title": "T", "body": "B", "labels": ["upstream-watch"]}))
         self.assertEqual((m2, p2, b2), ("PATCH", "/repos/o/r/issues/7", {"title": "T2", "body": "B2"}))
+
+
+class RedirectTests(unittest.TestCase):
+    def follow(self, old, new):
+        request = urllib.request.Request(old, headers={"Authorization": "Bearer secret", "Accept": "x"})
+        request.add_unredirected_header("Authorization", "Bearer secret")
+        handler = uw._DropAuthOffHost()
+        return handler.redirect_request(request, None, 302, "Found", {}, new)
+
+    def test_authorization_is_dropped_when_the_host_changes(self):
+        new = self.follow("https://api.example.test/a", "https://other.example.test/b")
+        self.assertNotIn("authorization", [k.lower() for k in new.headers])
+        self.assertNotIn("authorization", [k.lower() for k in new.unredirected_hdrs])
+        self.assertIn("Accept", new.headers)
+
+    def test_authorization_is_dropped_on_a_scheme_downgrade(self):
+        new = self.follow("https://api.example.test/a", "http://api.example.test/b")
+        self.assertNotIn("authorization", [k.lower() for k in new.headers])
+
+    def test_authorization_is_kept_on_the_same_host(self):
+        new = self.follow("https://api.example.test/a", "https://api.example.test/b")
+        self.assertIn("Authorization", {**new.headers, **new.unredirected_hdrs})
+
+
+class GitEnvTests(unittest.TestCase):
+    def test_git_env_is_minimal(self):
+        hostile = {"GITHUB_TOKEN": "t", "GH_TOKEN": "t", "GIT_ASKPASS": "x", "AWS_SECRET_ACCESS_KEY": "s",
+                   "PATH": "/usr/bin", "HOME": "/home/x"}
+        with mock.patch.dict(os.environ, hostile):
+            env = uw.git_env()
+        self.assertEqual(env, {"PATH": "/usr/bin", "HOME": "/home/x", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"})
+
+    def test_ls_remote_runs_git_with_that_env_and_no_shell(self):
+        done = subprocess.CompletedProcess([], 0, stdout=f"{S['1']}\trefs/heads/main\n", stderr="")
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}), \
+                mock.patch.object(uw.subprocess, "run", return_value=done) as run:
+            refs = uw.RealNet().ls_remote(SKILLS_REPO)
+        self.assertEqual(refs, {"refs/heads/main": S["1"]})
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][:4], ["git", "ls-remote", "--", SKILLS_REPO])
+        self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
+        self.assertFalse(kwargs.get("shell", False))
 
 
 class RealGitTests(unittest.TestCase):

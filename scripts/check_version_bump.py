@@ -28,7 +28,7 @@ _NUM = r"(0|[1-9][0-9]*)"
 _PRE_ID = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 _BUILD_ID = r"[0-9A-Za-z-]+"
 SEMVER_RE = re.compile(
-    rf"^{_NUM}\.{_NUM}\.{_NUM}(?:-({_PRE_ID}(?:\.{_PRE_ID})*))?(?:\+({_BUILD_ID}(?:\.{_BUILD_ID})*))?$"
+    rf"^{_NUM}\.{_NUM}\.{_NUM}(?:-({_PRE_ID}(?:\.{_PRE_ID})*))?(?:\+({_BUILD_ID}(?:\.{_BUILD_ID})*))?"
 )
 
 
@@ -38,7 +38,7 @@ def parse_semver(version) -> Optional[tuple]:
     """Return (major, minor, patch, prerelease identifiers) or None if not valid semver."""
     if not isinstance(version, str):
         return None
-    m = SEMVER_RE.match(version)
+    m = SEMVER_RE.fullmatch(version)
     if not m:
         return None
     pre = m.group(4).split(".") if m.group(4) else []
@@ -160,7 +160,10 @@ def run(base: str, head: str, repo: str) -> int:
     if _git(repo, "cat-file", "-e", f"{mb_c}:{GATE_PATH}").returncode != 0:
         print("version gate: base predates the gate; skipping")
         return 0
-    paths = _git_ok(repo, "diff", "--name-only", "--no-renames", mb_c, head_c).splitlines()
+    # -z: NUL-separated and never quoted (core.quotePath would hide non-ASCII paths from the filter)
+    diff = _git_ok(repo, "-c", "core.quotePath=false", "diff", "--name-only", "-z", "--no-renames",
+                   mb_c, head_c)
+    paths = [p for p in diff.split("\0") if p]
     plugins = changed_plugins(paths)
     if not plugins:
         print("version gate: no plugin changed")

@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +33,8 @@ class SemverTests(unittest.TestCase):
 
     def test_parse_invalid(self):
         for v in ("", "1", "1.2", "1.2.3.4", "01.2.3", "1.02.3", "1.2.3-", "1.2.3-01", "v1.2.3",
-                  "1.2.3+", "1.2.3-a..b", "a.b.c", " 1.2.3", None, 3, "1.2.3-alpha_1"):
+                  "1.2.3+", "1.2.3-a..b", "a.b.c", " 1.2.3", None, 3, "1.2.3-alpha_1",
+                  "1.2.3\n", "1.2.3-rc.1\n", "1.2.3+b\n"):
             self.assertIsNone(cvb.parse_semver(v), repr(v))
 
     def test_precedence(self):
@@ -138,9 +139,10 @@ class GitIntegrationTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def run_gate(self, base, head):
-        buf = io.StringIO()
-        with redirect_stdout(buf):
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
             code = cvb.main([base, head, "--repo", str(self.repo)])
+        self.stderr = err.getvalue()
         return code, buf.getvalue()
 
     def base_with_plugin(self, version="0.1.0"):
@@ -245,6 +247,7 @@ class GitIntegrationTests(unittest.TestCase):
         base = self.base_with_plugin()
         code, out = self.run_gate("f" * 40, base)
         self.assertEqual(code, 2, out)
+        self.assertIn("version gate: cannot resolve", self.stderr)
 
     def test_no_merge_base_exits_2(self):
         base = self.base_with_plugin()
@@ -254,6 +257,17 @@ class GitIntegrationTests(unittest.TestCase):
         other = self.commit("unrelated history")
         code, out = self.run_gate(base, other)
         self.assertEqual(code, 2, out)
+        self.assertIn("version gate: no merge base", self.stderr)
+
+    def test_non_ascii_path_under_a_plugin_still_needs_a_bump(self):
+        # git quotes non-ASCII paths ("plugins/p/caf\303\251.md") unless told not to; the
+        # gate must still see them as plugin files.
+        base = self.base_with_plugin()
+        self.write("plugins/p/café.md", "one\n")
+        head = self.commit("add a non-ascii file")
+        code, out = self.run_gate(base, head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("plugins/p changed without a version bump", out)
 
 
 if __name__ == "__main__":

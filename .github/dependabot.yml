@@ -23,3 +23,6 @@ updates:
     directory: /ci/claude-code
     schedule:
       interval: weekly
+    cooldown:
+      # A freshly published release waits three days before it gets a PR.
+      default-days: 3

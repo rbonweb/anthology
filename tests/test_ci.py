@@ -79,10 +79,18 @@ class CiJobTests(unittest.TestCase):
     def setUp(self):
         self.jobs = load_workflow(ROOT / ".github/workflows/ci.yml")["jobs"]
 
+    @staticmethod
+    def checkout_of(job):
+        return next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+
     def test_version_bump_job(self):
         self.assertIn("version-bump", self.jobs)
-        checkout = self.jobs["version-bump"]["steps"][0]
-        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        job = self.jobs["version-bump"]
+        self.assertEqual(self.checkout_of(job)["with"]["fetch-depth"], 0)
+        gate = next(s for s in job["steps"] if "check_version_bump.py" in s.get("run", ""))
+        self.assertEqual(gate["env"]["BASE"], "${{ github.event.pull_request.base.sha || github.event.before }}")
+        self.assertEqual(gate["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha || github.sha }}")
+        self.assertIn('"$BASE" "$HEAD_SHA"', gate["run"])
 
     def test_plugin_validate_matrix_is_exactly_the_plugins(self):
         job = self.jobs["plugin-validate"]
@@ -92,7 +100,14 @@ class CiJobTests(unittest.TestCase):
 
     def test_gitleaks_job(self):
         self.assertIn("gitleaks", self.jobs)
-        self.assertEqual(self.jobs["gitleaks"]["steps"][0]["with"]["fetch-depth"], 0)
+        job = self.jobs["gitleaks"]
+        self.assertEqual(self.checkout_of(job)["with"]["fetch-depth"], 0)
+        scan = next(s for s in job["steps"] if "docker run" in s.get("run", ""))
+        self.assertIn('-v "$PWD":/repo:ro', scan["run"])  # the scan only reads the checkout
+
+    def test_new_jobs_have_a_timeout(self):
+        for name in ("version-bump", "plugin-validate", "gitleaks"):
+            self.assertEqual(self.jobs[name].get("timeout-minutes"), 15, name)
 
     def test_every_plugin_has_a_validate_target(self):
         on_disk = {p.name for p in (ROOT / "plugins").iterdir() if p.is_dir()}
@@ -114,11 +129,27 @@ class UpstreamWatchWorkflowTests(unittest.TestCase):
         self.assertEqual(len(triggers["schedule"]), 1)
         self.assertIn("workflow_dispatch", triggers)
 
+    def test_jobs_have_a_timeout(self):
+        for name, job in self.wf["jobs"].items():
+            self.assertEqual(job.get("timeout-minutes"), 15, name)
+
+    def test_evals_are_dispatched_on_the_default_branch(self):
+        step = next(s for s in self.wf["jobs"]["trigger-evals"]["steps"] if "gh workflow run" in s.get("run", ""))
+        self.assertEqual(step["env"]["REF"], "${{ github.event.repository.default_branch }}")
+
     def test_evals_trigger_follows_the_watch_output(self):
         job = self.wf["jobs"]["trigger-evals"]
         self.assertEqual(job["needs"], "watch")
         self.assertIn("needs.watch.outputs.claude_code_changed == 'true'", job["if"])
         self.assertIn("claude_code_changed", self.wf["jobs"]["watch"]["outputs"])
+
+
+class DependabotTests(unittest.TestCase):
+    def test_claude_code_updates_wait_three_days(self):
+        config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text(encoding="utf-8"))
+        entry = next(u for u in config["updates"] if u["package-ecosystem"] == "npm")
+        self.assertEqual(entry["directory"], "/ci/claude-code")
+        self.assertEqual(entry["cooldown"], {"default-days": 3})
 
 
 if __name__ == "__main__":

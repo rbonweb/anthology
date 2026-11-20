@@ -54,6 +54,7 @@ jobs:
     # A plugin whose files changed must carry a higher plugin.json version than at the
     # merge base. Needs git history, which the Docker test image does not have.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +75,7 @@ jobs:
   plugin-validate:
     # Validate each plugin with the Claude Code version pinned in ci/claude-code.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       DISABLE_AUTOUPDATER: "1"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
@@ -96,6 +98,7 @@ jobs:
 
   gitleaks:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -104,6 +107,6 @@ jobs:
       - name: Scan the full history for secrets
         run: |
           GITLEAKS_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/gitleaks.Dockerfile)
-          docker run --rm -v "$PWD":/repo \
+          docker run --rm -v "$PWD":/repo:ro \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
             "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml /repo

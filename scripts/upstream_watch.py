@@ -7,7 +7,9 @@ Watches, generically, every entry of `vendor/sources.json` (git sources pinned t
 branch, url + checksum sources, subtree sources) plus the Claude Code version pinned in
 `ci/claude-code/package.json`. For each upstream change it opens one GitHub issue (label
 `upstream-watch`, hidden marker `<!-- upstream-watch:<key> -->` in the body) or updates the
-open one. Issues are never closed here. Nothing is ever merged or vendored: the issue names
+open one. Only issues authored by the Actions bot are managed, and per key the newest decides:
+a closed issue whose body still matches means the release was dismissed (nothing is written);
+a closed issue with an older target gets a new issue. Issues are never closed here. Nothing is ever merged or vendored: the issue names
 the command to run on a branch, and CI plus the evals are the gate.
 
 `--dry-run` checks everything and prints the issues it would create or update; it makes no
@@ -37,6 +39,7 @@ import subprocess
 import sys
 import unicodedata
 import urllib.request
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -52,9 +55,11 @@ HTTP_TIMEOUT = 30
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_FILES_SHOWN = 50
 MAX_PATH_LEN = 200
+MAX_VERSION_LEN = 64
+BOT_LOGIN = "github-actions[bot]"  # the only author whose issues the watcher manages
 COMPARE_FILE_LIMIT = 300  # the compare API returns at most this many files
 
-TAG_PIN_RE = re.compile(r"^(v?)(\d+)\.(\d+)(?:\.(\d+))?$")
+TAG_PIN_RE = re.compile(r"^(v?)([0-9]+)\.([0-9]+)(?:\.([0-9]+))?$")
 SAFE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,127}$")
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -102,7 +107,7 @@ def sanitise_inline(text) -> str:
 
 
 def _expect(pattern, value, what: str) -> str:
-    if not isinstance(value, str) or not pattern.match(value):
+    if not isinstance(value, str) or not pattern.fullmatch(value):
         raise WatchError(f"{what} is not in the expected format")
     return value
 
@@ -164,7 +169,8 @@ def render_body(change: Change, extra_sections: Sequence[Tuple[str, str]] = ()) 
     files = [f for f in (sanitise_path(f) for f in change.files) if f]
     if files:
         total = max(change.files_total, len(files))
-        summary.append(f"- {sanitise_inline(change.files_heading)} ({total}):")
+        # The heading is built by this module (its own backticks around the path stay).
+        summary.append(f"- {' '.join(change.files_heading.split())} ({total}):")
         summary.append("")
         summary.append("```text")
         summary.extend(files[:MAX_FILES_SHOWN])
@@ -188,7 +194,7 @@ def parse_ls_remote(text: str) -> Dict[str, str]:
     refs: Dict[str, str] = {}
     for line in text.splitlines():
         sha, sep, ref = line.partition("\t")
-        if sep and SHA1_RE.match(sha) and ref:
+        if sep and SHA1_RE.fullmatch(sha) and ref:
             refs[ref] = sha
     return refs
 
@@ -199,14 +205,14 @@ def _version_tuple(match) -> Tuple[int, int, int]:
 
 def latest_stable_tag(refs: Dict[str, str], pinned_ref: str) -> Optional[Tuple[str, str]]:
     """Highest stable semver tag sharing the pin's `v` prefix convention, with its commit."""
-    pin = TAG_PIN_RE.match(pinned_ref)
+    pin = TAG_PIN_RE.fullmatch(pinned_ref)
     best = None
     for ref in refs:
         if not ref.startswith("refs/tags/") or ref.endswith("^{}"):
             continue
         name = ref[len("refs/tags/"):]
-        m = TAG_PIN_RE.match(name)
-        if not m or m.group(1) != pin.group(1) or not SAFE_TAG_RE.match(name):
+        m = TAG_PIN_RE.fullmatch(name)
+        if not m or m.group(1) != pin.group(1) or not SAFE_TAG_RE.fullmatch(name):
             continue
         version = _version_tuple(m)
         if best is None or version > best[0]:
@@ -235,7 +241,7 @@ def classify(entry) -> str:
 def parse_manifest(data: bytes) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for line in data.decode("utf-8", "replace").splitlines():
-        m = MANIFEST_LINE_RE.match(line.strip())
+        m = MANIFEST_LINE_RE.fullmatch(line.strip())
         if m:
             out[m.group(2).strip()] = m.group(1).lower()
     return out
@@ -250,21 +256,48 @@ def _under(path: str, filename) -> bool:
 
 # ---- I/O (real implementations) ----------------------------------------------------------
 
+class _DropAuthOffHost(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but never carry `Authorization` to another host or scheme."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            old_parts, new_parts = urlparse(req.full_url), urlparse(new.full_url)
+            if (old_parts.scheme, old_parts.netloc) != (new_parts.scheme, new_parts.netloc):
+                for store in (new.headers, new.unredirected_hdrs):
+                    for name in [n for n in store if n.lower() == "authorization"]:
+                        del store[name]
+        return new
+
+
+def _open(request):
+    """urlopen with a timeout and the redirect handler above (built per call: honours env proxies)."""
+    return urllib.request.build_opener(_DropAuthOffHost()).open(request, timeout=HTTP_TIMEOUT)
+
+
+def git_env() -> Dict[str, str]:
+    """A minimal environment for git: no GITHUB_TOKEN/GH_TOKEN reaches third-party hosts."""
+    env = {"LANG": "C", "GIT_TERMINAL_PROMPT": "0"}
+    for name in ("PATH", "HOME"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    return env
+
+
 class RealNet:
     """git ls-remote through subprocess (no shell) and urllib with a timeout."""
 
     def ls_remote(self, repo: str) -> Dict[str, str]:
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         proc = subprocess.run(
             ["git", "ls-remote", "--", repo, "refs/tags/*", "refs/heads/*"],
-            capture_output=True, text=True, timeout=120, env=env, check=False)
+            capture_output=True, text=True, timeout=120, env=git_env(), check=False)
         if proc.returncode != 0:
             raise WatchError(f"git ls-remote failed (exit {proc.returncode})")
         return parse_ls_remote(proc.stdout)
 
     def http_get(self, url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        with _open(request) as response:
             data = response.read(MAX_RESPONSE_BYTES + 1)
         if len(data) > MAX_RESPONSE_BYTES:
             raise WatchError("response too large")
@@ -288,14 +321,15 @@ class GitHubClient:
             "User-Agent": USER_AGENT,
             "Content-Type": "application/json",
         })
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        with _open(request) as response:
             return json.loads(response.read(MAX_RESPONSE_BYTES).decode("utf-8"))
 
-    def list_open_issues(self) -> List[dict]:
+    def list_issues(self) -> List[dict]:
+        """Every labelled issue, open and closed (pull requests included; callers skip them)."""
         issues: List[dict] = []
         for page in range(1, 51):
             batch = self._request(
-                "GET", f"/repos/{self.repo}/issues?labels={LABEL}&state=open&per_page=100&page={page}")
+                "GET", f"/repos/{self.repo}/issues?labels={LABEL}&state=all&per_page=100&page={page}")
             issues.extend(batch)
             if len(batch) < 100:
                 break
@@ -319,7 +353,7 @@ class Checker:
         self.root = Path(root)
         self.net = net
         self.token = token
-        self._refs_cache: Dict[str, Dict[str, str]] = {}
+        self._refs_cache: Dict[str, object] = {}  # repo -> refs dict, or the WatchError it failed with
         self._compare_cache: Dict[Tuple[str, str, str], dict] = {}
 
     # -- plumbing
@@ -328,11 +362,14 @@ class Checker:
         if repo not in self._refs_cache:
             try:
                 self._refs_cache[repo] = self.net.ls_remote(repo)
-            except WatchError:
-                raise
+            except WatchError as exc:
+                self._refs_cache[repo] = exc
             except Exception as exc:
-                raise WatchError(f"cannot list refs ({type(exc).__name__})")
-        return self._refs_cache[repo]
+                self._refs_cache[repo] = WatchError(f"cannot list refs ({type(exc).__name__})")
+        cached = self._refs_cache[repo]
+        if isinstance(cached, WatchError):  # an unreachable repo is not retried for every entry
+            raise cached
+        return cached
 
     def _get_json(self, url: str, headers: Optional[Dict[str, str]] = None):
         try:
@@ -346,7 +383,7 @@ class Checker:
         """GitHub compare API for `old...new`, cached per (repo, old, new)."""
         key = (repo, old, new)
         if key not in self._compare_cache:
-            m = GITHUB_REPO_RE.match(repo)
+            m = GITHUB_REPO_RE.fullmatch(repo)
             if not m:
                 raise WatchError("not a GitHub repository")
             url = f"{GITHUB_API}/repos/{m.group(1)}/{m.group(2)}/compare/{old}...{new}"
@@ -382,7 +419,7 @@ class Checker:
         if kind == "subtree":
             return self._check_git(name, kind, entry["upstream"], "")
         path = entry.get("path", "")
-        if not isinstance(path, str) or not SAFE_PATH_RE.match(path):
+        if not isinstance(path, str) or not SAFE_PATH_RE.fullmatch(path):
             raise WatchError("path is not in the expected format")
         return self._check_git(name, kind, entry, path)
 
@@ -391,7 +428,7 @@ class Checker:
         ref = spec.get("ref")
         pinned = validate_sha(spec.get("commit"), "pinned commit")
         refs = self._refs(repo)
-        if isinstance(ref, str) and TAG_PIN_RE.match(ref):
+        if isinstance(ref, str) and TAG_PIN_RE.fullmatch(ref):
             return self._check_tag(name, kind, repo, ref, pinned, path, refs)
         _expect(SAFE_BRANCH_RE, ref, "ref")
         return self._check_branch(name, kind, repo, ref, pinned, path, refs)
@@ -407,7 +444,7 @@ class Checker:
         details = [("Source", repo)]
         if path:
             details.append(("Path", path))
-        m = GITHUB_REPO_RE.match(repo)
+        m = GITHUB_REPO_RE.fullmatch(repo)
         if m:
             details.append(("Compare", f"https://github.com/{m.group(1)}/{m.group(2)}/compare/"
                                        f"{old_commit}...{new_commit}"))
@@ -418,7 +455,7 @@ class Checker:
         if latest is None:
             raise WatchError("no stable version tags found upstream")
         tag, new_commit = latest
-        if _version_tuple(TAG_PIN_RE.match(tag)) <= _version_tuple(TAG_PIN_RE.match(ref)):
+        if _version_tuple(TAG_PIN_RE.fullmatch(tag)) <= _version_tuple(TAG_PIN_RE.fullmatch(ref)):
             return None
         validate_sha(new_commit, "upstream tag commit")
         change = Change(
@@ -426,7 +463,7 @@ class Checker:
             command=self._command(name, kind, tag),
             details=[("Pinned", f"{ref} ({pinned})"), ("Latest stable", f"{tag} ({new_commit})")]
             + self._repo_details(repo, path, pinned, new_commit))
-        if GITHUB_REPO_RE.match(repo):
+        if GITHUB_REPO_RE.fullmatch(repo):
             try:
                 self._summarise(change, self._compare(repo, pinned, new_commit), path, tag_diff=True)
             except WatchError:
@@ -445,7 +482,7 @@ class Checker:
             command=self._command(name, kind, ref),
             details=[("Branch", ref), ("Pinned commit", pinned), ("Upstream head", head)]
             + self._repo_details(repo, path, pinned, head))
-        if not GITHUB_REPO_RE.match(repo):
+        if not GITHUB_REPO_RE.fullmatch(repo):
             change.notes.append("Not a GitHub repository: only the commit range is shown.")
             return change
         if not self._summarise(change, self._compare(repo, pinned, head), path, tag_diff=False):
@@ -461,7 +498,7 @@ class Checker:
         if truncated:
             change.notes.append("The compare API truncated the file list: diff too large to summarise.")
             return True
-        scope = f"under `{sanitise_inline(path)}`" if path else "in the repository"
+        scope = f"under `{sanitise_path(path)}`" if path else "in the repository"
         change.files = names
         change.files_total = len(names)
         change.files_heading = "Changed files " + scope
@@ -518,6 +555,8 @@ class Checker:
             raise WatchError("cannot read the pinned Claude Code version")
         latest = self._get_json(CLAUDE_CODE_LATEST_URL)
         latest = latest.get("version") if isinstance(latest, dict) else None
+        if isinstance(latest, str) and len(latest) > MAX_VERSION_LEN:
+            raise WatchError("Claude Code version from the registry is too long")
         if _SEMVER.parse_semver(pinned) is None or _SEMVER.parse_semver(latest) is None:
             raise WatchError("Claude Code version is not valid semver")
         if _SEMVER.compare_semver(latest, pinned) <= 0:
@@ -567,14 +606,32 @@ def _normal(text) -> str:
     return (text or "").replace("\r\n", "\n").strip()
 
 
+def _has_label(issue: dict) -> bool:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):
+        return False
+    return any((l.get("name") if isinstance(l, dict) else l) == LABEL for l in labels)
+
+
+def _is_ours(issue) -> bool:
+    """An issue the watcher manages: bot-authored, labelled, not a pull request."""
+    if not isinstance(issue, dict) or "pull_request" in issue or not _has_label(issue):
+        return False
+    user = issue.get("user")
+    return isinstance(user, dict) and user.get("login") == BOT_LOGIN
+
+
 def index_issues(issues) -> Dict[str, dict]:
-    """Open issues by marker key (lowest number wins); pull requests and unmarked issues skipped."""
+    """The newest (highest number) managed issue per marker key, open or closed.
+
+    Pull requests, issues without the label, issues not authored by the Actions bot and bodies
+    that do not start with the marker are ignored.
+    """
     index: Dict[str, dict] = {}
-    for issue in sorted((i for i in issues if isinstance(i, dict) and "pull_request" not in i),
-                        key=lambda i: i.get("number", 0)):
+    for issue in sorted((i for i in issues if _is_ours(i)), key=lambda i: i.get("number", 0)):
         m = MARKER_RE.match(_normal(issue.get("body")))
-        if m and m.group(1) not in index:
-            index[m.group(1)] = issue
+        if m:
+            index[m.group(1)] = issue  # ascending order: the last one is the newest
     return index
 
 
@@ -582,14 +639,16 @@ def sync_issues(changes: Sequence[Change], gh, dry_run: bool = False,
                 extra_sections: Optional[Dict[str, Sequence[Tuple[str, str]]]] = None) -> List[dict]:
     """Create or update one issue per change. Returns one action record per change.
 
-    Actions: create, update, unchanged, error, and (dry run without a client) create-or-update.
-    In a dry run the client is only read from, never written to.
+    Per key the newest managed issue decides. Open: identical -> unchanged, else update. Closed
+    with an identical body: the release was dismissed, nothing is written ("dismissed"). Closed
+    with a different body: a new issue is created. Other actions: error, and (dry run without a
+    client) create-or-update. In a dry run the client is only read from, never written to.
     """
     actions: List[dict] = []
     index: Optional[Dict[str, dict]] = None
     if gh is not None:
         try:
-            index = index_issues(gh.list_open_issues())
+            index = index_issues(gh.list_issues())
         except Exception as exc:
             return [{"key": c.key, "action": "error", "error": f"cannot list issues ({type(exc).__name__})"}
                     for c in changes]
@@ -603,6 +662,11 @@ def sync_issues(changes: Sequence[Change], gh, dry_run: bool = False,
             existing = index.get(change.key)
             if existing is None:
                 record["action"] = "create"
+            elif existing.get("state") == "closed":
+                if _normal(existing.get("body")) == _normal(body):
+                    record.update(action="dismissed", number=existing["number"])
+                else:
+                    record["action"] = "create"
             elif _normal(existing.get("body")) == _normal(body) and existing.get("title") == title:
                 record.update(action="unchanged", number=existing["number"])
             else:
@@ -631,7 +695,7 @@ def _print_report(out, changes, actions, errors, dry_run) -> None:
         print(f"[{verb}] {render_title(change)}", file=out)
         if dry_run:
             print("-" * 72, file=out)
-            print(by_key[change.key]["body"], file=out)
+            print(by_key.get(change.key, {}).get("body") or render_body(change), file=out)
             print("-" * 72, file=out)
     for error in errors:
         print(f"ERROR {error['key']}: {error['error']}", file=out)
