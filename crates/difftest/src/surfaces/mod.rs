@@ -76,3 +76,67 @@ pub const ALL: &[&str] = &[
     dev_rtk_trim::NAME,
     dev_smoke::NAME,
 ];
+
+/// A surface module's `surface()`.
+type MakeSurface = fn() -> Option<Box<dyn crate::case::Surface>>;
+
+/// Each surface's `surface()`, in [`ALL`] order (`None` until its lane ports it).
+const IMPLS: &[MakeSurface] = &[
+    pycompat_json::surface,
+    pycompat_str::surface,
+    pycompat_re::surface,
+    pycompat_difflib::surface,
+    pycompat_fnmatch::surface,
+    pycompat_quote::surface,
+    pycompat_path::surface,
+    pycompat_pyerr::surface,
+    pycompat_ipaddress::surface,
+    pycompat_shlex::surface,
+    pycompat_argparse::surface,
+    core_state::surface,
+    core_lock::surface,
+    shell_segments::surface,
+    shell_analyze::surface,
+    guard_check::surface,
+    guard_hook::surface,
+    settings::surface,
+    privacy_findings::surface,
+    notes_parse::surface,
+    memory_sync::surface,
+    mem::surface,
+    memory_portable::surface,
+    rtk_install_reconcile::surface,
+    doctor::surface,
+    hook_session_start::surface,
+    setup::surface,
+    dev_vendor::surface,
+    dev_version_bump::surface,
+    dev_release_edit::surface,
+    dev_memory_diff::surface,
+    dev_startup_budget::surface,
+    dev_eval_baseline::surface,
+    dev_upstream_watch::surface,
+    dev_rtk_trim::surface,
+    dev_smoke::surface,
+];
+
+/// Every surface name with its implementation, in [`ALL`] order.
+pub fn registry() -> Vec<(&'static str, Option<Box<dyn crate::case::Surface>>)> {
+    ALL.iter()
+        .zip(IMPLS)
+        .map(|(name, make)| (*name, make()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_registry_follows_all_and_each_surface_has_its_name() {
+        assert_eq!(super::IMPLS.len(), super::ALL.len());
+        for (name, surface) in super::registry() {
+            if let Some(s) = surface {
+                assert_eq!(s.name(), name);
+            }
+        }
+    }
+}
