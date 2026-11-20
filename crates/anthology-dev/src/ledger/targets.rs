@@ -24,12 +24,17 @@ pub const LIST_ALL: &str = "rust-tests-all.txt";
 pub const LIST_IGNORED_PLAIN: &str = "rust-tests-ignored-plain.txt";
 pub const LIST_IGNORED_ALL: &str = "rust-tests-ignored-all.txt";
 
-/// What cargo compiles (`listed`) and what of that it would skip as ignored (`ignored`).
+/// What cargo compiles (`listed`) and what of that it would skip as ignored (`ignored`), on one
+/// platform (`linux` or `macos`): each platform's CI job makes its own.
 #[derive(Debug, Default)]
 pub struct Listings {
     pub listed: Listing,
     pub ignored: Listing,
+    pub platform: String,
 }
+
+/// The platforms every ported target must run on, unless its row is `platform:<one>`.
+pub const PLATFORMS: &[&str] = &["linux", "macos"];
 
 /// `cargo test -- --list` entries: (package, with `-` as `_`, or `None` when the output does not
 /// say; the target root relative to the package, such as `tests/ledger.rs`; the test path).
@@ -230,13 +235,46 @@ fn reach(
     }
 }
 
+/// The `.rs` files of `crates/<dir>/` (every directory but `target`), sorted.
+fn crate_rs_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() != "target" {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A file of the crate that defines `macro_rules! <name>` (so `name!` is not the trusted one).
+fn local_definition(crate_dir: &Path, name: &str, cache: &mut ScanCache) -> Option<PathBuf> {
+    crate_rs_files(crate_dir)
+        .into_iter()
+        .find(|f| scanned(cache, f).is_some_and(|s| s.macro_defs.iter().any(|d| d == name)))
+}
+
 /// Checks a `ported` row's `rust_test` (`crates/<dir>/<file.rs>::<mod>::…::<fn>`, named like the
-/// Python method `method`). `listings` are the binding `--list` gate (absent with `--no-fresh`).
+/// Python method `method`). `listings` are the binding `--list` gate for one platform (absent with
+/// `--no-fresh`). `only_on` is the row's `platform:<p>` note: the test runs on that platform only,
+/// so a platform `cfg` is allowed and another platform's listing does not need it.
 pub fn check(
     root: &Path,
     target: &str,
     method: &str,
     listings: Option<&Listings>,
+    only_on: Option<&str>,
     cache: &mut ScanCache,
 ) -> Option<String> {
     if target.is_empty() {
@@ -281,28 +319,41 @@ pub fn check(
     let Some(scan) = scanned(cache, &full) else {
         return Some(format!("Rust test file {file} is missing"));
     };
-    match scan.tests.iter().find(|t| t.path == segments) {
+    let test = scan.tests.iter().find(|t| t.path == segments).cloned();
+    match test {
         None => {
             return Some(format!(
                 "Rust test {target} is missing (no #[test] fn there)"
             ));
         }
         Some(t) if t.ignored => return Some(format!("Rust test {target} is #[ignore]d")),
-        Some(t) if t.gated => {
+        Some(t) if t.gated && only_on.is_none() => {
             return Some(format!(
                 "Rust test {target} is behind a cfg other than test or feature (it must run on \
                  Linux and macOS)"
             ));
         }
         Some(t) => {
-            if let Some(m) = &t.in_macro
-                && !rust_scan::TRUSTED_TEST_MACROS.contains(&m.as_str())
+            if let Some(m) = t
+                .macros
+                .iter()
+                .find(|m| !rust_scan::TRUSTED_TEST_MACROS.contains(&m.as_str()))
             {
                 return Some(format!(
                     "Rust test {target} is inside `{m}!`, whose expansion the ledger cannot check \
                      (trusted test macros: {})",
                     rust_scan::TRUSTED_TEST_MACROS.join(", ")
                 ));
+            }
+            let crate_dir = root.join("crates").join(dir);
+            for m in &t.macros {
+                if let Some(def) = local_definition(&crate_dir, m, cache) {
+                    return Some(format!(
+                        "Rust test {target} is inside `{m}!`, but {} defines its own \
+                         `macro_rules! {m}`: only the external crate's macro is trusted",
+                        def.strip_prefix(root).unwrap_or(&def).display()
+                    ));
+                }
             }
         }
     }
@@ -328,8 +379,10 @@ pub fn check(
         ));
     }
 
-    // Binding: cargo listed it.
-    if let Some(listings) = listings {
+    // Binding: cargo listed it on this platform (unless the row runs on another one only).
+    if let Some(listings) = listings
+        && only_on.is_none_or(|p| p == listings.platform)
+    {
         let Some(package) = package_name(root, dir) else {
             return Some(format!("crates/{dir}/Cargo.toml has no [package] name"));
         };
@@ -345,15 +398,16 @@ pub fn check(
             })
             .collect();
         let found_in = |l: &Listing| names.iter().any(|(r, n)| l.contains(&package, r, n));
+        let on = &listings.platform;
         if found_in(&listings.ignored) {
             return Some(format!(
-                "Rust test {target} is ignored: `cargo test -- --list --ignored` lists it"
+                "Rust test {target} is ignored on {on}: `cargo test -- --list --ignored` lists it"
             ));
         }
         if !found_in(&listings.listed) {
             return Some(format!(
-                "Rust test {target} is not in the `cargo test -- --list` output (plain or \
-                 --all-features): cargo does not compile or run it"
+                "Rust test {target} is not in the `cargo test -- --list` output on {on} (plain or \
+                 --all-features): cargo does not compile or run it there"
             ));
         }
     }

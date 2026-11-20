@@ -169,6 +169,11 @@ pub struct CheckArgs {
     pub fresh: Option<PathBuf>,
     /// Skip the fresh comparison and the `cargo test -- --list` gate (static checks only).
     pub no_fresh: bool,
+    /// Listing-only: `cargo test -- --list [--ignored]` output of one platform (the four
+    /// `rust-tests-*.txt` files), without the Python extraction. `rust-test-macos` uses it.
+    pub listings: Option<PathBuf>,
+    /// The platform the listings come from (`linux` by default with `--fresh`).
+    pub platform: Option<String>,
     /// Python modules (`test_x`) given with `--files`.
     pub files: Vec<String>,
     pub task: Option<String>,
@@ -228,19 +233,43 @@ impl CheckArgs {
                 }
                 Long("report") => out.report = true,
                 Long("no-fresh") => out.no_fresh = true,
+                Long("listings") => {
+                    out.listings = Some(parser.value().map_err(|e| e.to_string())?.into());
+                }
+                Long("platform") => {
+                    let platform = os_to_string(parser.value().map_err(|e| e.to_string())?)?;
+                    if !targets::PLATFORMS.contains(&platform.as_str()) {
+                        return Err(format!("--platform is linux or macos, not {platform}"));
+                    }
+                    out.platform = Some(platform);
+                }
                 Value(v) => return Err(format!("unexpected argument: {}", v.to_string_lossy())),
                 other => return Err(other.unexpected().to_string()),
             }
         }
-        match (&out.fresh, out.no_fresh) {
-            (Some(_), true) => Err("give --fresh DIR or --no-fresh, not both".into()),
-            (None, false) => Err(
-                "needs --fresh DIR (ci/jobs/ledger.sh makes one and passes it) \
-                                  or --no-fresh (static checks only)"
-                    .into(),
-            ),
-            _ => Ok(out),
+        let modes = [out.fresh.is_some(), out.no_fresh, out.listings.is_some()];
+        match modes.iter().filter(|m| **m).count() {
+            0 => {
+                return Err(
+                    "needs --fresh DIR (ci/jobs/ledger.sh makes one and passes it), \
+                            --listings DIR --platform P (listing-only), or --no-fresh (static \
+                            checks only)"
+                        .into(),
+                );
+            }
+            1 => {}
+            _ => return Err("give one of --fresh, --listings and --no-fresh".into()),
         }
+        if out.listings.is_some() && out.platform.is_none() {
+            return Err("--listings needs --platform linux|macos".into());
+        }
+        if out.no_fresh && out.platform.is_some() {
+            return Err("--platform goes with --fresh or --listings".into());
+        }
+        if out.fresh.is_some() && out.platform.is_none() {
+            out.platform = Some("linux".into());
+        }
+        Ok(out)
     }
 }
 
@@ -726,37 +755,28 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
         }
         Err(e) => problems.push(format!("cannot read {INVENTORY_FILE}: {e}")),
     }
-    let mut listing = None;
-    match &args.fresh {
-        Some(fresh) => {
+    let platform = args.platform.clone().unwrap_or_default();
+    let listing = match (&args.fresh, &args.listings) {
+        (Some(fresh), _) => {
             check_fresh(root, fresh, problems);
-            let mut l = targets::Listings::default();
-            for (name, ignored) in [
-                (FRESH_LIST_PLAIN, false),
-                (FRESH_LIST_ALL, false),
-                (FRESH_LIST_IGNORED_PLAIN, true),
-                (FRESH_LIST_IGNORED_ALL, true),
-            ] {
-                match read(&fresh.join(name)) {
-                    Ok(text) if ignored => l.ignored.add(&text),
-                    Ok(text) => l.listed.add(&text),
-                    Err(e) => problems.push(format!("fresh extraction: {e}")),
-                }
-            }
-            if l.listed.is_empty() {
-                problems.push(format!(
-                    "fresh extraction: no tests in {FRESH_LIST_PLAIN} or {FRESH_LIST_ALL} \
-                     (`cargo test --workspace --locked -- --list` output)"
-                ));
-            }
-            listing = Some(l);
+            Some(load_listings(fresh, &platform, problems))
         }
-        None => out.notes.push(format!(
-            "--no-fresh: {IDS_FILE}, {ROWS_FILE} and {INVENTORY_FILE} are taken as current, and \
-             Rust targets are checked statically only (no `cargo test -- --list`); \
-             ci/jobs/ledger.sh checks both"
-        )),
-    }
+        (None, Some(dir)) => {
+            out.notes.push(format!(
+                "--listings: the {platform} cargo listings are checked; {IDS_FILE}, {ROWS_FILE} \
+                 and {INVENTORY_FILE} are taken as current (ci/jobs/ledger.sh compares them)"
+            ));
+            Some(load_listings(dir, &platform, problems))
+        }
+        (None, None) => {
+            out.notes.push(format!(
+                "--no-fresh: {IDS_FILE}, {ROWS_FILE} and {INVENTORY_FILE} are taken as current, \
+                 and Rust targets are checked statically only (no `cargo test -- --list`); \
+                 ci/jobs/ledger.sh and rust-test-macos check both"
+            ));
+            None
+        }
+    };
 
     // Modules: from the id list, and the files on disk.
     let mut by_module: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -880,8 +900,24 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
                 Status::Ported => {
                     let method = method_of(&row.id);
                     let listed = listing.as_ref();
+                    let only_on = match platform_note(&row.note) {
+                        Ok(None) => None,
+                        Ok(Some(p)) => {
+                            if let Err(e) = python_platform_conditional(root, &row.id) {
+                                problems.push(format!(
+                                    "{at}: `platform:{p}` is allowed only for a Python test that \
+                                     is itself platform-conditional; {e}"
+                                ));
+                            }
+                            Some(p)
+                        }
+                        Err(e) => {
+                            problems.push(format!("{at}: {e}"));
+                            None
+                        }
+                    };
                     if let Some(p) =
-                        targets::check(root, &row.rust_test, method, listed, &mut scanned)
+                        targets::check(root, &row.rust_test, method, listed, only_on, &mut scanned)
                     {
                         problems.push(format!("{at}: {p}"));
                     }
@@ -992,6 +1028,134 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
         out.summary.push((module.to_string(), counts));
     }
     Ok(out)
+}
+
+/// The four listing files of `dir` (one platform's `cargo test -- --list [--ignored]`, plain and
+/// `--all-features`).
+fn load_listings(dir: &Path, platform: &str, problems: &mut Vec<String>) -> targets::Listings {
+    let mut l = targets::Listings {
+        platform: platform.to_string(),
+        ..targets::Listings::default()
+    };
+    for (name, ignored) in [
+        (FRESH_LIST_PLAIN, false),
+        (FRESH_LIST_ALL, false),
+        (FRESH_LIST_IGNORED_PLAIN, true),
+        (FRESH_LIST_IGNORED_ALL, true),
+    ] {
+        match read(&dir.join(name)) {
+            Ok(text) if ignored => l.ignored.add(&text),
+            Ok(text) => l.listed.add(&text),
+            Err(e) => problems.push(format!("{platform} listings: {e}")),
+        }
+    }
+    if l.listed.is_empty() {
+        problems.push(format!(
+            "{platform} listings: no tests in {FRESH_LIST_PLAIN} or {FRESH_LIST_ALL} \
+             (`cargo test --workspace --locked -- --list` output)"
+        ));
+    }
+    l
+}
+
+/// The `platform:<linux|macos>` token of a ported row's note: the Rust test runs on that
+/// platform only.
+fn platform_note(note: &str) -> Result<Option<&'static str>, String> {
+    let mut found = None;
+    for word in note.split_whitespace() {
+        let word = word.trim_end_matches([',', ';', '.', ')']);
+        if let Some(p) = word.strip_prefix("platform:") {
+            let Some(known) = targets::PLATFORMS.iter().find(|k| **k == p) else {
+                return Err(format!(
+                    "`platform:{p}` is not platform:linux or platform:macos"
+                ));
+            };
+            if found.replace(*known).is_some() {
+                return Err("more than one `platform:` in the note".into());
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// `Ok` when the Python test `id` is platform-conditional in its source: a `skipIf`/`skipUnless`
+/// decorator on the method or its class that reads `sys.platform` or `platform.system()`, or a
+/// `skipTest` in the method body next to one of them.
+pub fn python_platform_conditional(root: &Path, id: &str) -> Result<(), String> {
+    let parts: Vec<&str> = id.split('.').collect();
+    let (module, class, method) = (parts[0], parts[1], parts[parts.len() - 1]);
+    let path = root.join("tests").join(format!("{module}.py"));
+    let text = fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read tests/{module}.py to check it: {e}"))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let reads_platform = |t: &str| t.contains("sys.platform") || t.contains("platform.system(");
+    // The decorators right above line `at` (multi-line ones included): from the topmost `@` line
+    // at the same indent, up to a blank line or any other line at that indent.
+    let decorators = |at: usize| -> String {
+        let at_indent = indent(lines[at]);
+        let mut top = None;
+        let mut i = at;
+        while i > 0 {
+            i -= 1;
+            let l = lines[i];
+            if l.trim().is_empty() {
+                break;
+            }
+            let decorator = l.trim_start().starts_with('@');
+            let closing = l.trim_start().starts_with([')', ']', '}']);
+            if indent(l) <= at_indent && !decorator && !closing {
+                break;
+            }
+            if indent(l) == at_indent && decorator {
+                top = Some(i);
+            }
+        }
+        top.map(|t| lines[t..at].join("\n")).unwrap_or_default()
+    };
+    let skip_decorated = |text: &str| {
+        (text.contains("skipIf") || text.contains("skipUnless")) && reads_platform(text)
+    };
+    let class_at = lines.iter().position(|l| {
+        l.trim_start().starts_with(&format!("class {class}("))
+            || l.trim_start().starts_with(&format!("class {class}:"))
+    });
+    if let Some(c) = class_at
+        && skip_decorated(&decorators(c))
+    {
+        return Ok(());
+    }
+    let def = format!("def {method}(");
+    // The method in its own class, else (inherited) wherever the file defines it.
+    let in_class = class_at.and_then(|c| {
+        let class_indent = indent(lines[c]);
+        lines[c + 1..]
+            .iter()
+            .take_while(|l| l.trim().is_empty() || indent(l) > class_indent)
+            .position(|l| l.trim_start().starts_with(&def))
+            .map(|p| c + 1 + p)
+    });
+    let Some(d) = in_class.or_else(|| lines.iter().position(|l| l.trim_start().starts_with(&def)))
+    else {
+        return Err(format!("no `def {method}` in tests/{module}.py"));
+    };
+    if skip_decorated(&decorators(d)) {
+        return Ok(());
+    }
+    let def_indent = indent(lines[d]);
+    let body: Vec<&str> = lines[d + 1..]
+        .iter()
+        .take_while(|l| l.trim().is_empty() || indent(l) > def_indent)
+        .copied()
+        .collect();
+    let body = body.join("\n");
+    if body.contains("skipTest") && reads_platform(&body) {
+        return Ok(());
+    }
+    Err(format!(
+        "{id} has no skipIf/skipUnless on sys.platform or platform.system() (nor a platform \
+         skipTest)"
+    ))
 }
 
 /// The reason after `rows:computed` in `note`, if the token is there.

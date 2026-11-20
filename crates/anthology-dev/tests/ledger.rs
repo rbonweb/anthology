@@ -130,7 +130,9 @@ fn fresh_copy(root: &Path) -> tempfile::TempDir {
 /// `(exit code, stdout, stderr)` of `ledger check --root <root> <extra>`. Without `--fresh` or
 /// `--no-fresh` in `extra`, a fresh copy of the committed files and the listing is passed.
 fn check(root: &Path, extra: &[&str]) -> (i32, String, String) {
-    let given = extra.iter().any(|a| *a == "--fresh" || *a == "--no-fresh");
+    let given = extra
+        .iter()
+        .any(|a| ["--fresh", "--no-fresh", "--listings"].contains(a));
     let fresh = (!given).then(|| fresh_copy(root));
     let fresh_arg = fresh
         .as_ref()
@@ -340,7 +342,7 @@ fn a_target_cargo_lists_as_ignored_fails() {
     assert_fails(
         dir.path(),
         &[],
-        "Rust test crates/alpha/tests/alpha.rs::test_one is ignored: `cargo test -- --list --ignored` lists it",
+        "Rust test crates/alpha/tests/alpha.rs::test_one is ignored on linux: `cargo test -- --list --ignored` lists it",
     );
     let fresh = fresh_copy(dir.path());
     fs::remove_file(fresh.path().join(ledger::FRESH_LIST_IGNORED_PLAIN)).expect("rm");
@@ -407,6 +409,198 @@ fn a_module_moved_by_a_cfg_attr_path_fails() {
         &[],
         "uses #[path], which the ledger does not follow",
     );
+}
+
+/// A listing-only directory (one platform's four listing files) from the fixture listings.
+fn listings_dir(root: &Path) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (from, to) in [
+        (LISTING, ledger::FRESH_LIST_PLAIN),
+        (LISTING, ledger::FRESH_LIST_ALL),
+        (IGNORED, ledger::FRESH_LIST_IGNORED_PLAIN),
+        (IGNORED, ledger::FRESH_LIST_IGNORED_ALL),
+    ] {
+        fs::copy(root.join(from), dir.path().join(to)).expect("copy");
+    }
+    dir
+}
+
+#[test]
+fn a_platform_cfg_on_a_trusted_macro_invocation_fails() {
+    let dir = repo();
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one() {}\n",
+        "#[cfg(target_os = \"linux\")]\nproptest::proptest! {\n    #[test]\n    \
+         fn test_one(x in 0..3u8) { let _ = x; }\n}\n",
+    );
+    assert_fails(dir.path(), &[], "behind a cfg other than test or feature");
+}
+
+#[test]
+fn an_untrusted_macro_around_a_trusted_one_fails() {
+    let dir = repo();
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one() {}\n",
+        "macro_rules! lin2 { ($($i:item)*) => { $(#[cfg(target_os = \"linux\")] $i)* }; }\n\
+         lin2! {\n    proptest::proptest! {\n        #[test]\n        \
+         fn test_one(x in 0..3u8) { let _ = x; }\n    }\n}\n",
+    );
+    assert_fails(dir.path(), &[], "is inside `lin2!`");
+}
+
+#[test]
+fn a_local_macro_named_like_a_trusted_one_is_not_trusted() {
+    let dir = repo();
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one() {}\n",
+        "proptest! {\n    #[test]\n    fn test_one(x in 0..3u8) { let _ = x; }\n}\n",
+    );
+    // Defined in another file of the same crate.
+    put(
+        dir.path(),
+        "crates/alpha/src/lib.rs",
+        "#[macro_export]\nmacro_rules! proptest {\n    ($i:item) => { #[cfg(target_os = \"linux\")] $i };\n}\n",
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "but crates/alpha/src/lib.rs defines its own `macro_rules! proptest`",
+    );
+}
+
+#[test]
+fn the_listing_only_mode_checks_one_platform() {
+    let dir = repo();
+    let listings = listings_dir(dir.path());
+    let l = listings.path().to_str().expect("utf-8");
+    let stdout = assert_passes(dir.path(), &["--listings", l, "--platform", "macos"]);
+    assert!(stdout.contains("ledger: ok"), "{stdout}");
+    // Not compiled on macOS.
+    replace(dir.path(), LISTING, "test_one: test\n", "");
+    let listings = listings_dir(dir.path());
+    let l = listings.path().to_str().expect("utf-8");
+    assert_fails(
+        dir.path(),
+        &["--listings", l, "--platform", "macos"],
+        "is not in the `cargo test -- --list` output on macos",
+    );
+    // Ignored on macOS.
+    let dir = repo();
+    put(
+        dir.path(),
+        IGNORED,
+        "     Running tests/alpha.rs (/target/debug/build/alpha/1a/out/alpha-1a)\n\
+         test_one: test\n",
+    );
+    let listings = listings_dir(dir.path());
+    let l = listings.path().to_str().expect("utf-8");
+    assert_fails(
+        dir.path(),
+        &["--listings", l, "--platform", "macos"],
+        "is ignored on macos",
+    );
+}
+
+/// The fixture's Python source for `test_memory_sync`, with `test_one` decorated by `decorator`.
+fn python_source(root: &Path, decorator: &str) {
+    put(
+        root,
+        "tests/test_memory_sync.py",
+        &format!(
+            "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
+             {decorator}\n    def test_one(self):\n        pass\n\n    def test_two(self):\n        \
+             pass\n"
+        ),
+    );
+}
+
+#[test]
+fn a_platform_note_needs_a_platform_conditional_python_test() {
+    let dir = repo();
+    // A Linux-only Rust test.
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one",
+        "#[cfg(target_os = \"linux\")]\n#[test]\nfn test_one",
+    );
+    assert_fails(dir.path(), &[], "behind a cfg other than test or feature");
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "crates/alpha/tests/alpha.rs::test_one\n",
+        "crates/alpha/tests/alpha.rs::test_one\tplatform:linux (the Python test is Linux-only)\n",
+    );
+    // The Python test is not platform-conditional: the note is refused.
+    python_source(dir.path(), "# no decorator");
+    assert_fails(
+        dir.path(),
+        &[],
+        "`platform:linux` is allowed only for a Python test that is itself platform-conditional",
+    );
+    // It is: Linux checks it, macOS does not need it.
+    python_source(
+        dir.path(),
+        "@unittest.skipUnless(sys.platform.startswith(\"linux\"), \"Linux only\")",
+    );
+    assert_passes(dir.path(), &[]);
+    replace(dir.path(), LISTING, "test_one: test\n", "");
+    let listings = listings_dir(dir.path());
+    let l = listings.path().to_str().expect("utf-8");
+    assert_passes(dir.path(), &["--listings", l, "--platform", "macos"]);
+    assert_fails(
+        dir.path(),
+        &[],
+        "is not in the `cargo test -- --list` output on linux",
+    );
+    // A typo is not a platform.
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "platform:linux",
+        "platform:win",
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "`platform:win` is not platform:linux or platform:macos",
+    );
+}
+
+#[test]
+fn a_platform_skip_in_the_class_or_the_body_counts() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let id = "test_memory_sync.AlphaTest.test_one";
+    put(
+        root.path(),
+        "tests/test_memory_sync.py",
+        "import platform\nimport unittest\n\n\n@unittest.skipIf(\n    platform.system() == \"Darwin\",\n    \
+         \"not on macOS\",\n)\nclass AlphaTest(unittest.TestCase):\n    def test_one(self):\n        pass\n",
+    );
+    assert_eq!(ledger::python_platform_conditional(root.path(), id), Ok(()));
+    put(
+        root.path(),
+        "tests/test_memory_sync.py",
+        "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
+         def test_one(self):\n        if sys.platform != \"darwin\":\n            \
+         self.skipTest(\"macOS only\")\n",
+    );
+    assert_eq!(ledger::python_platform_conditional(root.path(), id), Ok(()));
+    // A skip on another method does not count.
+    put(
+        root.path(),
+        "tests/test_memory_sync.py",
+        "import sys\nimport unittest\n\n\nclass AlphaTest(unittest.TestCase):\n    \
+         @unittest.skipIf(sys.platform == \"darwin\", \"x\")\n    def test_zero(self):\n        \
+         pass\n\n    def test_one(self):\n        pass\n",
+    );
+    assert!(ledger::python_platform_conditional(root.path(), id).is_err());
 }
 
 #[test]
@@ -1027,6 +1221,31 @@ fn usage_errors_exit_2() {
     assert!(String::from_utf8_lossy(&bare.stderr).contains("needs --fresh DIR"));
     assert_eq!(
         dispatch(&["ledger", "check", "--fresh", "x", "--no-fresh"]).code,
+        2
+    );
+    assert_eq!(
+        dispatch(&["ledger", "check", "--listings", "x"]).code,
+        2,
+        "--listings needs --platform"
+    );
+    assert_eq!(
+        dispatch(&[
+            "ledger",
+            "check",
+            "--listings",
+            "x",
+            "--platform",
+            "windows"
+        ])
+        .code,
+        2
+    );
+    assert_eq!(
+        dispatch(&["ledger", "check", "--no-fresh", "--platform", "macos"]).code,
+        2
+    );
+    assert_eq!(
+        dispatch(&["ledger", "check", "--fresh", "x", "--listings", "y"]).code,
         2
     );
 }

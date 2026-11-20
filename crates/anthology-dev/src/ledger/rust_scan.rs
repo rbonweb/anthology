@@ -15,14 +15,16 @@ pub struct TestFn {
     pub ignored: bool,
     /// Behind a `cfg` other than `test`/`feature` (on the fn, an enclosing module or the file).
     pub gated: bool,
-    /// Written inside the body of this macro invocation (`name! { … }`), whose expansion may add
-    /// attributes (`#[ignore]`, a `cfg`) the scanner cannot see. `None` outside any invocation.
-    pub in_macro: Option<String>,
+    /// The macro invocations (`name! { … }`) the fn is written inside, outermost first. Their
+    /// expansion may add attributes (`#[ignore]`, a `cfg`) the scanner cannot see. A gating or
+    /// ignoring attribute on an invocation item itself is folded into `gated`/`ignored`.
+    pub macros: Vec<String>,
 }
 
 /// Macros whose bodies keep `#[test]` items as written (the test-defining macros the ledger
-/// trusts). A test inside any other macro invocation is unverifiable. Add a testkit macro here
-/// when F4 defines one.
+/// trusts), and only as the external crate's macro: a crate that defines its own
+/// `macro_rules!` of that name loses the trust. A test inside any other macro invocation is
+/// unverifiable. Add a testkit macro here when F4 defines one.
 pub const TRUSTED_TEST_MACROS: &[&str] = &["proptest"];
 
 /// An out-of-line `mod name;` declaration: inline `mod` names, then its own name.
@@ -42,6 +44,8 @@ pub struct Scan {
     pub mods: Vec<ModDecl>,
     /// A gating `#![cfg(…)]` at the top of the file.
     pub file_gated: bool,
+    /// The names this file defines with `macro_rules!`.
+    pub macro_defs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +320,9 @@ fn macro_invocations(toks: &[Tok]) -> Vec<(String, usize, usize)> {
 pub fn scan(src: &str) -> Scan {
     let toks = tokens(src);
     let invocations = macro_invocations(&toks);
+    // The outer attributes of each invocation item, by its opening delimiter: (gated, ignored).
+    let mut invocation_attrs: std::collections::HashMap<usize, (bool, bool)> =
+        std::collections::HashMap::new();
     let mut out = Scan::default();
     let mut pending: Vec<String> = Vec::new();
     // (name, the brace depth inside the module, gated)
@@ -376,8 +383,27 @@ pub fn scan(src: &str) -> Scan {
                 i += 1;
             }
             Tok::Ident(w) if w == "macro_rules" => {
+                if let (Some(Tok::Punct('!')), Some(Tok::Ident(name))) =
+                    (toks.get(i + 1), toks.get(i + 2))
+                {
+                    out.macro_defs.push(name.clone());
+                }
                 await_body = true;
                 pending.clear();
+                i += 1;
+            }
+            Tok::Ident(_)
+                if toks.get(i + 1) == Some(&Tok::Punct('!'))
+                    && matches!(toks.get(i + 2), Some(Tok::Punct('{' | '(' | '['))) =>
+            {
+                // A macro invocation item: `#[cfg(…)] name! { … }` applies before expansion.
+                invocation_attrs.insert(
+                    i + 2,
+                    (
+                        pending.iter().any(|a| is_gating_attr(a)),
+                        pending.iter().any(|a| is_ignore_attr(a)),
+                    ),
+                );
                 i += 1;
             }
             Tok::Ident(w) if w == "mod" && bodies.is_empty() => {
@@ -410,17 +436,22 @@ pub fn scan(src: &str) -> Scan {
                 {
                     let mut path: Vec<String> = mods.iter().map(|m| m.0.clone()).collect();
                     path.push(name.clone());
+                    let mut enclosing: Vec<&(String, usize, usize)> =
+                        invocations.iter().filter(|m| m.1 < i && i < m.2).collect();
+                    enclosing.sort_by_key(|m| m.1);
+                    let attrs = |pick: fn(&(bool, bool)) -> bool| {
+                        enclosing
+                            .iter()
+                            .any(|m| invocation_attrs.get(&m.1).is_some_and(pick))
+                    };
                     out.tests.push(TestFn {
                         path,
-                        ignored: pending.iter().any(|a| is_ignore_attr(a)),
+                        ignored: pending.iter().any(|a| is_ignore_attr(a)) || attrs(|a| a.1),
                         gated: out.file_gated
                             || mods.iter().any(|m| m.2)
-                            || pending.iter().any(|a| is_gating_attr(a)),
-                        in_macro: invocations
-                            .iter()
-                            .filter(|m| m.1 < i && i < m.2)
-                            .max_by_key(|m| m.1)
-                            .map(|m| m.0.clone()),
+                            || pending.iter().any(|a| is_gating_attr(a))
+                            || attrs(|a| a.0),
+                        macros: enclosing.iter().map(|m| m.0.clone()).collect(),
                     });
                 }
                 await_body = true;
@@ -563,20 +594,52 @@ mod tests {
             #[test]
             fn plain() {}
         "#;
-        let found: Vec<(String, Option<String>)> = scan(src)
+        let found: Vec<(String, Vec<String>)> = scan(src)
             .tests
             .into_iter()
-            .map(|t| (t.path.join("::"), t.in_macro))
+            .map(|t| (t.path.join("::"), t.macros))
+            .collect();
+        let v = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            vec![
+                ("property".into(), v(&["proptest"])),
+                ("wrapped".into(), v(&["ig"])),
+                ("nested".into(), v(&["outer", "inner"])),
+                ("plain".into(), v(&[])),
+            ]
+        );
+    }
+
+    #[test]
+    fn attributes_on_a_macro_invocation_apply_to_its_tests() {
+        let src = r#"
+            #[cfg(target_os = "linux")]
+            proptest::proptest! {
+                #[test]
+                fn linux_only(x in 0..3u8) { let _ = x; }
+            }
+            #[ignore]
+            proptest::proptest! {
+                #[test]
+                fn ignored(x in 0..3u8) { let _ = x; }
+            }
+            macro_rules! proptest { ($i:item) => { $i }; }
+        "#;
+        let scanned = scan(src);
+        let found: Vec<(String, bool, bool)> = scanned
+            .tests
+            .iter()
+            .map(|t| (t.path.join("::"), t.ignored, t.gated))
             .collect();
         assert_eq!(
             found,
             vec![
-                ("property".into(), Some("proptest".into())),
-                ("wrapped".into(), Some("ig".into())),
-                ("nested".into(), Some("inner".into())),
-                ("plain".into(), None),
+                ("linux_only".into(), false, true),
+                ("ignored".into(), true, false)
             ]
         );
+        assert_eq!(scanned.macro_defs, vec!["proptest".to_string()]);
     }
 
     #[test]

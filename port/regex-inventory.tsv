@@ -35,24 +35,17 @@ scripts/vendor.py	portmap_problems:chrome	dynamic,unresolved	«portmap['chrome_r
 scripts/vendor.py	portmap_scripts:node_js	dynamic,unresolved	«rule['js_node_regex']»
 scripts/vendor.py	rename_plugin:token	lookahead,neg-lookbehind,dynamic	(?<![\w./-])«re.escape(old.encode())»:(?=[a-z0-9-])
 scripts/vendor.py	rename_skill:(body, count)	neg-lookahead,neg-lookbehind,dynamic	(?<![\w])/«re.escape(old)»(?![\w-])
-tests/test_docs.py	ReadmeTest.test_no_credit_sections:assertNotRegex	dynamic,unresolved	«re.compile('credit|acknowledg|thanks', re.I)»
 tests/test_evals_layout.py	CaseLayoutTests.test_graders:re.compile	dynamic,unresolved	«pattern»
-tests/test_evals_layout.py	startup_refs:nxt	dynamic,unresolved	«'^#{1,%d}[ \\t]+\\S' % len(m.group(1))»
 tests/test_knowledge.py	<module>:CONNECTED_LEAD_IN	neg-lookahead	^\s*(?:[-*+]\s+)?(?:\*\*)?If\s+(?!no\b).*\btools?\s+(?:is|are|weren't|were)\s+connected\b
 tests/test_knowledge.py	KnowledgeFoldersTest.test_code_review_checklist_never_points_at_the_builtin_command:re.findall	neg-lookahead	/code-review(?!-checklist)
 tests/test_memory_portable.py	MaliciousArchiveTest.assert_rejected:assertRegex	dynamic,unresolved	«reason»
-tests/test_memory_privacy.py	FindingShapeTest.test_memory_privacy_imports_no_anthology_module:assertNotRegex	dynamic,unresolved	«'(?m)^\\s*(import|from)\\s+%s\\b' % mod»
 tests/test_memory_sync.py	ContextBudgetTest.sections:parts	lookahead	(?m)^(?=## (?:Personal|Repo) memory \()
 tests/test_repo_layout.py	<module>:UNPREFIXED_REF	lookahead,neg-lookbehind	(?<![\w./-])superpowers:(?=[a-z0-9-])
-tests/test_repo_layout.py	PinnedImagesTest.test_dockerfiles_pinned_by_digest:assertRegex	dynamic,unresolved	«self.FROM»
 tests/test_roster.py	RosterTest.test_no_edit_agents_may_only_edit_their_memory_dir:assertNotRegex	neg-lookahead	never edits files\b(?! outside)
 tests/test_rtk_layout.py	SyncScriptTest.test_validates_the_tag:pattern	dynamic,unresolved	«match.group(1)»
-tests/test_session_start.py	GuideTest.test_size_and_shape:assertRegex	dynamic,unresolved	«'(?m)^## %d\\. ' % n»
-tests/test_session_start.py	SkillsFolderTest.test_every_skill_is_manual_only:assertRegex	dynamic,unresolved	«'(?m)^name: %s$' % name»
 tests/test_settings_patch.py	RoundTripTest.test_inserted_lines_copy_the_files_style:assertNotRegex	neg-lookbehind	(?<!\r)\n
 tests/test_smoke.py	HelperTests.test_startup_regex_does_not_confuse_a_design_skill_with_a_plain_one:assertNotRegex	dynamic,unresolved	«smoke.startup_regex('ds/ux-writing')»
 tests/test_smoke.py	HelperTests.test_startup_regex_does_not_confuse_a_design_skill_with_a_plain_one:assertNotRegex	dynamic,unresolved	«smoke.startup_regex('tech-debt')»
 tests/test_smoke.py	HelperTests.test_startup_regex_does_not_confuse_a_design_skill_with_a_plain_one:assertRegex	dynamic,unresolved	«smoke.startup_regex('ds/ux-writing')»
 tests/test_superpowers_browser.py	<module>:COMPILED	dynamic,unresolved	«p»
 tests/test_superpowers_browser.py	<module>:_CMD	neg-lookahead	(open|xdg-open|start|wslview)(?![\w.-])
-tests/test_vendor.py	CompatibilityTest.test_cli_is_runnable_and_lists_commands:assertRegex	dynamic,unresolved	\b«cmd»\b

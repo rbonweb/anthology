@@ -35,9 +35,13 @@ How (the syntax tree is read; nothing is imported or run):
   into a pattern elsewhere, is flagged `backref,unresolved`, except as the replacement argument
   of `sub`/`subn`.
 - Pattern arguments are resolved as far as the source allows: `+` chains, f-strings, `%`
-  formatting and `"".join([...])` of string constants (module or function-local). A pattern
-  argument with a part that stays unknown (a parameter, a call other than `re.escape`) is flagged
-  `unresolved` whatever it holds: fail closed, for a person to review.
+  formatting (an unknown value under `%d`-style integer conversions is digits) and
+  `"".join([...])` of string constants (module or function-local); a compiled pattern (a name or
+  `self.NAME` bound to `re.compile(...)`, or an inline `re.compile(...)`), whose own argument is
+  checked where it is written; and the variable of a `for` or comprehension over a literal list or
+  tuple written inline, never rebound in the loop, by trying every value. A pattern argument with
+  a part that stays unknown (a parameter, a call other than `re.escape`) is flagged `unresolved`
+  whatever it holds: fail closed, for a person to review.
 
 Columns (tab-separated, sorted): `file`, `where` (`<scope>:<target>`: the enclosing function or
 class, `<module>` at top level, then the assigned name or the called function), `constructs`
@@ -51,8 +55,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import itertools
 import json
 import os
+import re
 import sys
 import warnings
 
@@ -200,6 +206,9 @@ def constructs_of(text: str, pattern_position: bool, template: bool = False) -> 
     return found
 
 
+PERCENT_SPEC = re.compile(r"%(?:\([^)]*\))?[#0\- +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?([a-zA-Z%])")
+
+
 def is_escape(node: ast.AST) -> bool:
     """`re.escape(...)`: run-time text that can only be literal in a pattern."""
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
@@ -252,14 +261,9 @@ class FileScan(ast.NodeVisitor):
         self.seen: set[int] = set()
         # The replacement arguments of `sub`/`subn` calls (templates, not patterns).
         self.templates: set[int] = set()
-        # Loop variables over literal string collections (innermost scope last).
-        self.loop_names: list[set[str]] = [set()]
-        # Module-level `NAME = [..]`/`(..)` literals, for loops over a named collection.
-        self.module_values = {
-            st.targets[0].id: st.value for st in tree.body
-            if isinstance(st, ast.Assign) and len(st.targets) == 1
-            and isinstance(st.targets[0], ast.Name) and isinstance(st.value, (ast.List, ast.Tuple))
-        }
+        # Loop variables over inline literal string collections, never rebound in the loop
+        # (innermost scope last): name -> the literal values.
+        self.loop_names: list[dict] = [{}]
         # Names that mean the `re` module, and names bound to `re` functions.
         self.re_modules: set[str] = set()
         self.re_funcs: dict[str, str] = {}
@@ -277,8 +281,12 @@ class FileScan(ast.NodeVisitor):
                 for alias in node.names:
                     if alias.name in RE_FUNCS:
                         self.re_funcs[alias.asname or alias.name] = alias.name
-        # Names bound to `re.compile(...)`: the module, then each enclosing function.
+        # Names bound to `re.compile(...)`: the module, then each enclosing function; and the class
+        # attributes of each enclosing class (for `self.NAME`).
         self.compiled: list[set] = [self.compiled_names(tree.body)]
+        self.class_compiled: list[set] = []
+        # While a pattern is rendered once per value of its loop variables: name -> value node.
+        self.bindings: dict = {}
 
     def lookup(self, name: str):
         for scope in reversed(self.consts):
@@ -302,7 +310,9 @@ class FileScan(ast.NodeVisitor):
                     continue
                 inner = value.value
                 plain = value.conversion == -1 and value.format_spec is None
-                if plain and isinstance(inner, ast.Name) and self.lookup(inner.id) is not None:
+                known = isinstance(inner, ast.Name) and (
+                    inner.id in self.bindings or self.lookup(inner.id) is not None)
+                if plain and known:
                     text, d, u = self.render(inner, inline, depth)
                 else:
                     text, d, u = "«" + ast.unparse(inner) + "»", True, not is_escape(inner)
@@ -317,9 +327,20 @@ class FileScan(ast.NodeVisitor):
                 and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
             items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
             rendered = [self.render(item, inline, depth) for item in items]
-            if not any(u for _, _, u in rendered):
+            convs = [m.group(1) for m in PERCENT_SPEC.finditer(node.left.value)
+                     if m.group(1) != "%"]
+            values = []
+            for (text, _, unknown), conv in zip(rendered, convs + [""] * len(rendered)):
+                if unknown and conv and conv in "diouxX":
+                    values.append(0)  # an integer conversion: digits whatever the value
+                elif unknown:
+                    values = None
+                    break
+                else:
+                    values.append(text)
+            if values is not None and len(convs) == len(rendered):
                 try:
-                    text = node.left.value % tuple(t for t, _, _ in rendered)
+                    text = node.left.value % tuple(values)
                     return text, any(d for _, d, _ in rendered), False
                 except (TypeError, ValueError):
                     pass
@@ -334,6 +355,15 @@ class FileScan(ast.NodeVisitor):
                 and node.func.attr == "encode" and not node.keywords \
                 and all(isinstance(a, ast.Constant) for a in node.args):
             return self.render(node.func.value, inline, depth)
+        if isinstance(node, ast.Call) and self.re_call(node.func) == "re.compile":
+            # An inline compiled pattern: its argument is checked as a pattern of its own.
+            return "«" + ast.unparse(node) + "»", True, False
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in ("self", "cls") and self.class_compiled \
+                and node.attr in self.class_compiled[-1]:
+            return "«" + ast.unparse(node) + "»", True, False
+        if isinstance(node, ast.Name) and node.id in self.bindings:
+            return self.render(self.bindings[node.id], inline, depth + 1)
         if isinstance(node, ast.Name):
             value = self.lookup(node.id)
             if value is not None:
@@ -368,8 +398,22 @@ class FileScan(ast.NodeVisitor):
         if id(node) in self.seen or id(node) in self.docstrings:
             return
         text, _, _ = self.render(node, inline=False)
-        full, dynamic, unresolved = self.render(node, inline=True)
-        found = constructs_of(full, pattern_position, template=id(node) in self.templates)
+        template = id(node) in self.templates
+        loops = self.loop_names[-1]
+        used = sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name) and n.id in loops})
+        combos = list(itertools.islice(
+            itertools.product(*(loops[n] for n in used)), 257)) if used else [()]
+        found, dynamic, unresolved = set(), False, False
+        if len(combos) > 256:  # too many to try: fail closed
+            combos, unresolved = [()], True
+        for combo in combos:
+            self.bindings = dict(zip(used, combo))
+            try:
+                full, d, u = self.render(node, inline=True)
+            finally:
+                self.bindings = {}
+            found |= constructs_of(full, pattern_position, template=template)
+            dynamic, unresolved = dynamic or d, unresolved or u
         if pattern_position and unresolved:
             found.add("unresolved")
         if not found:
@@ -395,7 +439,9 @@ class FileScan(ast.NodeVisitor):
 
     def visit_ClassDef(self, node):  # noqa: N802
         self.scope.append(node.name)
+        self.class_compiled.append(self.compiled_names(node.body))
         self.generic_visit(node)
+        self.class_compiled.pop()
         self.scope.pop()
 
     def visit_Assign(self, node):  # noqa: N802
@@ -445,30 +491,41 @@ class FileScan(ast.NodeVisitor):
         self.generic_visit(node)
 
     def loop_value(self, node: ast.AST) -> bool:
-        """`node` is the variable of a `for` or comprehension over a literal list or tuple (or a
-        name bound to one): each of its values is a candidate of its own, checked where written."""
+        """`node` is the variable of a `for` or comprehension over a literal list or tuple written
+        inline: each of its values is a candidate of its own, checked where written."""
         return isinstance(node, ast.Name) and node.id in self.loop_names[-1]
 
-    def push_loops(self, generators_or_fors) -> None:
-        names = set(self.loop_names[-1])
+    def push_loops(self, generators_or_fors, scope_nodes) -> None:
+        names = dict(self.loop_names[-1])
         for g in generators_or_fors:
+            if not isinstance(g.target, ast.Name):
+                continue
+            name = g.target.id
+            names.pop(name, None)  # a loop over anything else rebinds it: no trust
             iterable = g.iter
-            if isinstance(iterable, ast.Name):
-                iterable = self.module_values.get(iterable.id, iterable)
-            if isinstance(g.target, ast.Name) and isinstance(iterable, (ast.List, ast.Tuple)) \
-                    and all(is_str_expr(e) for e in iterable.elts):
-                names.add(g.target.id)
+            if not (isinstance(iterable, (ast.List, ast.Tuple))
+                    and all(is_str_expr(e) for e in iterable.elts)):
+                continue
+            rebound = any(
+                (isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+                 and n is not g.target)
+                or (isinstance(n, ast.arg) and n.arg == name)
+                for scope in scope_nodes for n in ast.walk(scope))
+            if not rebound:
+                names[name] = iterable.elts
         self.loop_names.append(names)
 
     def visit_comprehension_owner(self, node):
-        self.push_loops(node.generators)
+        parts = [getattr(node, f) for f in ("elt", "key", "value") if hasattr(node, f)]
+        parts += [cond for g in node.generators for cond in g.ifs]
+        self.push_loops(node.generators, parts)
         self.generic_visit(node)
         self.loop_names.pop()
 
     visit_ListComp = visit_SetComp = visit_GeneratorExp = visit_DictComp = visit_comprehension_owner
 
     def visit_For(self, node):  # noqa: N802
-        self.push_loops([node])
+        self.push_loops([node], node.body + node.orelse)
         self.generic_visit(node)
         self.loop_names.pop()
 
@@ -567,8 +624,9 @@ def main(argv=None) -> int:
 # Each case: source, then the (where, constructs) rows it must give. `ci/jobs/ledger.sh` runs this
 # before the extraction, so a detection gap fails the job.
 SELF_TEST_CASES = [
-    ('PATS = [r"([\'\\"]).*?\\1"]\nC = [re.compile(p) for p in PATS]\n',
-     [("<module>:PATS", "backref")]),
+    # A loop over a named collection is not trusted (fail closed); an inline literal one is.
+    ('import re\nPATS = [r"([\'\\"]).*?\\1"]\nC = [re.compile(p) for p in PATS]\n',
+     [("<module>:PATS", "backref"), ("<module>:C", "dynamic,unresolved")]),
     ('import re\ndef f(s):\n    local = r"(\\w+) \\1"\n    return re.search(local, s)\n',
      [("f:local", "backref"), ("f:re.search", "backref")]),
     # The aliases: names only, so the pattern argument is the only way to see the pattern.
@@ -592,8 +650,30 @@ SELF_TEST_CASES = [
     # and a loop over literal patterns checks each literal where it is written.
     ('import re\ndef g(p, s):\n    return re.search(p, s)\ndef h(w, s):\n'
      '    return re.search(re.escape(w) + "x", s)\n'
-     'PATS = (r"a", r"b(?=c)")\nC = [re.compile(p) for p in PATS]\n',
-     [("g:re.search", "dynamic,unresolved"), ("<module>:PATS", "lookahead")]),
+     'C = [re.compile(p) for p in (r"a", r"b(?=c)")]\n',
+     [("g:re.search", "dynamic,unresolved"), ("<module>:C", "lookahead")]),
+    # Loop trust fails closed when the variable is rebound in the loop or by a nested def.
+    ('import re\ndef f(q, s):\n    for p in (r"a", r"b"):\n        p = q + p\n'
+     '        re.search(p, s)\n'
+     'def g(s):\n    for p in (r"a", r"b"):\n        def h(p):\n            return re.search(p, s)\n',
+     [("f:re.search", "dynamic,unresolved"), ("g.h:re.search", "dynamic,unresolved")]),
+    # Resolved: every value of an inline literal loop, `%d`, `self.NAME` and an inline compile.
+    ('import re\nimport unittest\nfor cmd in ("ls", "cat"):\n    re.search(rf"\\b{cmd}\\b", "x")\n'
+     'def f(m):\n    return re.compile("^#{1,%d} x" % len(m))\n'
+     'class T(unittest.TestCase):\n    FROM = re.compile(r"^FROM ")\n'
+     '    def test(self):\n        self.assertRegex("x", self.FROM)\n'
+     '        self.assertNotRegex("x", re.compile("credit|thanks", re.I))\n',
+     []),
+    # A value of a literal loop that makes a construct is found.
+    ('import re\nfor tail in ("x", "(?=y)"):\n    re.search(r"a" + tail, "s")\n',
+     [("<module>:?", "lookahead"), ("<module>:re.search", "lookahead")]),
+    # The textual fallback, on fragments that do not parse: atomic, conditional, possessive.
+    ('import re\ndef f(q):\n    a = re.compile(q + r"(?>a")\n    b = re.compile(q + r"(?(1)a|b")\n'
+     '    c = re.compile(q + r"a++(")\n',
+     [("f:a", "atomic,dynamic,unresolved"), ("f:b", "conditional,dynamic,unresolved"),
+      ("f:c", "possessive,dynamic,unresolved")]),
+    # A compiled name passed on is resolved; without that it would be listed `unresolved`.
+    ('import re\nX = re.compile(r"a")\ndef t(self, s):\n    return re.search(X, s)\n', []),
     ('N = r"(?P<q>a)(?P=q)"\n', [("<module>:N", "named-backref")]),
     ('K = r"(a)?(?(1)b|c)"\n', [("<module>:K", "conditional")]),
     ('A = r"(?>ab|a)c"\n', [("<module>:A", "atomic")]),
