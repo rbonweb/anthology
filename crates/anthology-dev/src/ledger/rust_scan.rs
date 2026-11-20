@@ -15,7 +15,15 @@ pub struct TestFn {
     pub ignored: bool,
     /// Behind a `cfg` other than `test`/`feature` (on the fn, an enclosing module or the file).
     pub gated: bool,
+    /// Written inside the body of this macro invocation (`name! { … }`), whose expansion may add
+    /// attributes (`#[ignore]`, a `cfg`) the scanner cannot see. `None` outside any invocation.
+    pub in_macro: Option<String>,
 }
+
+/// Macros whose bodies keep `#[test]` items as written (the test-defining macros the ledger
+/// trusts). A test inside any other macro invocation is unverifiable. Add a testkit macro here
+/// when F4 defines one.
+pub const TRUSTED_TEST_MACROS: &[&str] = &["proptest"];
 
 /// An out-of-line `mod name;` declaration: inline `mod` names, then its own name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,9 +278,44 @@ fn is_gating_attr(text: &str) -> bool {
     }
 }
 
+/// Macro invocations `path::name! { … }` (or `( … )`, `[ … ]`): (name, open index, close index).
+/// `macro_rules! name { … }` is a definition, not an invocation.
+fn macro_invocations(toks: &[Tok]) -> Vec<(String, usize, usize)> {
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        let (Some(Tok::Ident(name)), Some(Tok::Punct('!')), Some(Tok::Punct(open))) =
+            (toks.get(i), toks.get(i + 1), toks.get(i + 2))
+        else {
+            continue;
+        };
+        let close = match open {
+            '{' => '}',
+            '(' => ')',
+            '[' => ']',
+            _ => continue,
+        };
+        let mut depth = 0usize;
+        let mut end = toks.len();
+        for (j, tok) in toks.iter().enumerate().skip(i + 2) {
+            if *tok == Tok::Punct(*open) {
+                depth += 1;
+            } else if *tok == Tok::Punct(close) {
+                depth -= 1;
+                if depth == 0 {
+                    end = j;
+                    break;
+                }
+            }
+        }
+        out.push((name.clone(), i + 2, end));
+    }
+    out
+}
+
 /// Scans `src`.
 pub fn scan(src: &str) -> Scan {
     let toks = tokens(src);
+    let invocations = macro_invocations(&toks);
     let mut out = Scan::default();
     let mut pending: Vec<String> = Vec::new();
     // (name, the brace depth inside the module, gated)
@@ -351,7 +394,8 @@ pub fn scan(src: &str) -> Scan {
                         out.mods.push(ModDecl {
                             path,
                             gated,
-                            has_path: pending.iter().any(|a| attr_name(a) == "path"),
+                            // `#[path = …]`, or one a `cfg_attr` adds.
+                            has_path: pending.iter().any(|a| words(a).any(|w| w == "path")),
                         });
                         i += 3;
                     }
@@ -372,6 +416,11 @@ pub fn scan(src: &str) -> Scan {
                         gated: out.file_gated
                             || mods.iter().any(|m| m.2)
                             || pending.iter().any(|a| is_gating_attr(a)),
+                        in_macro: invocations
+                            .iter()
+                            .filter(|m| m.1 < i && i < m.2)
+                            .max_by_key(|m| m.1)
+                            .map(|m| m.0.clone()),
                     });
                 }
                 await_body = true;
@@ -500,6 +549,40 @@ mod tests {
         "#;
         assert_eq!(names(src), vec![("visible".into(), false, false)]);
         assert!(scan(src).mods.is_empty());
+    }
+
+    #[test]
+    fn tests_inside_macro_invocations_name_the_macro() {
+        let src = r#"
+            proptest::proptest! {
+                #[test]
+                fn property(x in 0..10u8) { let _ = x; }
+            }
+            ig! { #[test] fn wrapped() {} }
+            outer!(inner! { #[test] fn nested() {} });
+            #[test]
+            fn plain() {}
+        "#;
+        let found: Vec<(String, Option<String>)> = scan(src)
+            .tests
+            .into_iter()
+            .map(|t| (t.path.join("::"), t.in_macro))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("property".into(), Some("proptest".into())),
+                ("wrapped".into(), Some("ig".into())),
+                ("nested".into(), Some("inner".into())),
+                ("plain".into(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_in_any_attribute_counts() {
+        let src = "#[cfg_attr(all(), path = \"real.rs\")]\nmod m;\n";
+        assert!(scan(src).mods[0].has_path);
     }
 
     #[test]

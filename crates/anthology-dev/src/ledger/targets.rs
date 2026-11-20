@@ -17,9 +17,19 @@ use std::path::{Component, Path, PathBuf};
 
 use super::rust_scan::{self, Scan};
 
-/// The two listing files in the fresh-extraction directory.
+/// The listing files in the fresh-extraction directory: `-- --list` and `-- --list --ignored`
+/// (which lists only the ignored tests), each plain and with `--all-features`.
 pub const LIST_PLAIN: &str = "rust-tests-plain.txt";
 pub const LIST_ALL: &str = "rust-tests-all.txt";
+pub const LIST_IGNORED_PLAIN: &str = "rust-tests-ignored-plain.txt";
+pub const LIST_IGNORED_ALL: &str = "rust-tests-ignored-all.txt";
+
+/// What cargo compiles (`listed`) and what of that it would skip as ignored (`ignored`).
+#[derive(Debug, Default)]
+pub struct Listings {
+    pub listed: Listing,
+    pub ignored: Listing,
+}
 
 /// `cargo test -- --list` entries: (package, with `-` as `_`, or `None` when the output does not
 /// say; the target root relative to the package, such as `tests/ledger.rs`; the test path).
@@ -221,12 +231,12 @@ fn reach(
 }
 
 /// Checks a `ported` row's `rust_test` (`crates/<dir>/<file.rs>::<mod>::…::<fn>`, named like the
-/// Python method `method`). `listing` is the binding `--list` gate (absent with `--no-fresh`).
+/// Python method `method`). `listings` are the binding `--list` gate (absent with `--no-fresh`).
 pub fn check(
     root: &Path,
     target: &str,
     method: &str,
-    listing: Option<&Listing>,
+    listings: Option<&Listings>,
     cache: &mut ScanCache,
 ) -> Option<String> {
     if target.is_empty() {
@@ -284,7 +294,17 @@ pub fn check(
                  Linux and macOS)"
             ));
         }
-        Some(_) => {}
+        Some(t) => {
+            if let Some(m) = &t.in_macro
+                && !rust_scan::TRUSTED_TEST_MACROS.contains(&m.as_str())
+            {
+                return Some(format!(
+                    "Rust test {target} is inside `{m}!`, whose expansion the ledger cannot check \
+                     (trusted test macros: {})",
+                    rust_scan::TRUSTED_TEST_MACROS.join(", ")
+                ));
+            }
+        }
     }
 
     // Static: the file is reached from a test target root.
@@ -309,19 +329,28 @@ pub fn check(
     }
 
     // Binding: cargo listed it.
-    if let Some(listing) = listing {
+    if let Some(listings) = listings {
         let Some(package) = package_name(root, dir) else {
             return Some(format!("crates/{dir}/Cargo.toml has no [package] name"));
         };
-        let listed = reached.iter().any(|(root_rel, segs)| {
-            let name: Vec<&str> = segs
-                .iter()
-                .chain(segments.iter())
-                .map(String::as_str)
-                .collect();
-            listing.contains(&package, root_rel, &name.join("::"))
-        });
-        if !listed {
+        let names: Vec<(String, String)> = reached
+            .iter()
+            .map(|(root_rel, segs)| {
+                let name: Vec<&str> = segs
+                    .iter()
+                    .chain(segments.iter())
+                    .map(String::as_str)
+                    .collect();
+                (root_rel.clone(), name.join("::"))
+            })
+            .collect();
+        let found_in = |l: &Listing| names.iter().any(|(r, n)| l.contains(&package, r, n));
+        if found_in(&listings.ignored) {
+            return Some(format!(
+                "Rust test {target} is ignored: `cargo test -- --list --ignored` lists it"
+            ));
+        }
+        if !found_in(&listings.listed) {
             return Some(format!(
                 "Rust test {target} is not in the `cargo test -- --list` output (plain or \
                  --all-features): cargo does not compile or run it"

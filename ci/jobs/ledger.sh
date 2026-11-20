@@ -10,10 +10,10 @@
 #    (test_ids.py), the subTest row counts (rows.py runs the suite once) and the regex inventory
 #    (regex_inventory.py, after its self-test), into target/ledger-fresh/.
 # 2. The pinned Rust image lists what cargo compiles and runs, `cargo test --workspace --locked
-#    -- --list`, plain and with --all-features (as rust-test.sh runs them), into the same
-#    directory, then runs `anthology-dev ledger check`: it compares the extraction with the
-#    committed port/ files, requires every `ported` Rust target in a listing, and checks every
-#    port/ledger/<module>.tsv.
+#    -- --list` and what it would skip, `-- --list --ignored`, each plain and with --all-features
+#    (as rust-test.sh runs them), into the same directory, then runs `anthology-dev ledger
+#    check`: it compares the extraction with the committed port/ files, requires every `ported`
+#    Rust target in a listing and in no ignored listing, and checks every port/ledger/<module>.tsv.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -52,12 +52,14 @@ exec "$root/scripts/rust-test.sh" run sh -c '
 set -eu
 fresh=$1
 shift
-for mode in plain all; do
+for mode in plain all ignored-plain ignored-all; do
     out="$fresh/rust-tests-$mode.txt"
     features=
-    [ "$mode" = plain ] || features=--all-features
-    # shellcheck disable=SC2086 # $features is empty or one option
-    if ! cargo test --workspace --locked $features -- --list >"$out" 2>&1; then
+    ignored=
+    case $mode in *all) features=--all-features ;; esac
+    case $mode in ignored-*) ignored=--ignored ;; esac
+    # shellcheck disable=SC2086 # $features and $ignored are empty or one option each
+    if ! cargo test --workspace --locked $features -- --list $ignored >"$out" 2>&1; then
         cat "$out" >&2
         echo "ledger: cargo test --list ($mode) failed" >&2
         exit 1

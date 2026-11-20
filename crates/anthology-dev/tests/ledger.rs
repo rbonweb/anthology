@@ -9,8 +9,10 @@ use std::path::Path;
 
 use anthology_dev::ledger::{self, CheckArgs, IdsArgs};
 
-/// The fixture's `cargo test -- --list` output (both listings), kept at this path in the fixture.
+/// The fixture's `cargo test -- --list` output (both listings), kept at this path in the fixture,
+/// and its `-- --list --ignored` output (both ignored listings).
 const LISTING: &str = "target/listing.txt";
+const IGNORED: &str = "target/ignored.txt";
 const DEFAULT_LISTING: &str = "   Compiling alpha v0.1.0 (/w/crates/alpha)
      Running tests/alpha.rs (/target/debug/build/alpha/1a/out/alpha-1a)
 tables::test_table: test
@@ -26,15 +28,15 @@ fn repo() -> tempfile::TempDir {
     put(
         root,
         "port/python-test-ids.txt",
-        "test_alpha.AlphaTest.test_one\n\
-         test_alpha.AlphaTest.test_table\n\
-         test_alpha.AlphaTest.test_two\n\
-         test_beta.BetaTest.test_three\n",
+        "test_memory_sync.AlphaTest.test_one\n\
+         test_memory_sync.AlphaTest.test_table\n\
+         test_memory_sync.AlphaTest.test_two\n\
+         test_rtk_lock.BetaTest.test_three\n",
     );
     put(
         root,
         "port/python-test-rows.tsv",
-        "test_alpha.AlphaTest.test_table\t3\n",
+        "test_memory_sync.AlphaTest.test_table\t3\n",
     );
     put(
         root,
@@ -44,16 +46,16 @@ fn repo() -> tempfile::TempDir {
     );
     put(
         root,
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "# python_id\tstatus\trust_test\tnote\n\
-         test_alpha.AlphaTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one\n\
-         test_alpha.AlphaTest.test_table\tported\tcrates/alpha/tests/alpha.rs::tables::test_table\n\
-         test_alpha.AlphaTest.test_two\tmerged:test_alpha.AlphaTest.test_one\n",
+         test_memory_sync.AlphaTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one\n\
+         test_memory_sync.AlphaTest.test_table\tported\tcrates/alpha/tests/alpha.rs::tables::test_table\n\
+         test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one\t\tcovered by test_one's table\n",
     );
     put(
         root,
-        "port/ledger/test_beta.tsv",
-        "test_beta.BetaTest.test_three\tdropped:superseded:F-3\t\treplaced by shims.rs\n",
+        "port/ledger/test_rtk_lock.tsv",
+        "test_rtk_lock.BetaTest.test_three\tdropped:superseded:F-3\t\treplaced by shims.rs\n",
     );
     put(
         root,
@@ -67,12 +69,18 @@ fn repo() -> tempfile::TempDir {
     );
     put(
         root,
-        "crates/alpha/tests/data/test_alpha.jsonl",
-        "{\"py\": \"test_alpha.AlphaTest.test_table\", \"row\": 0}\n\
-         {\"py\": \"test_alpha.AlphaTest.test_table\", \"row\": 1}\n\
-         {\"py\": \"test_alpha.AlphaTest.test_table\", \"row\": 2}\n",
+        "crates/alpha/tests/data/test_memory_sync.jsonl",
+        "{\"py\": \"test_memory_sync.AlphaTest.test_table\", \"row\": 0}\n\
+         {\"py\": \"test_memory_sync.AlphaTest.test_table\", \"row\": 1}\n\
+         {\"py\": \"test_memory_sync.AlphaTest.test_table\", \"row\": 2}\n",
     );
     put(root, LISTING, DEFAULT_LISTING);
+    put(
+        root,
+        IGNORED,
+        "     Running tests/alpha.rs (/target/debug/build/alpha/1a/out/alpha-1a)\n\n\
+         0 tests, 0 benchmarks\n",
+    );
     dir
 }
 
@@ -111,6 +119,8 @@ fn fresh_copy(root: &Path) -> tempfile::TempDir {
         (ledger::INVENTORY_FILE, ledger::FRESH_INVENTORY),
         (LISTING, ledger::FRESH_LIST_PLAIN),
         (LISTING, ledger::FRESH_LIST_ALL),
+        (IGNORED, ledger::FRESH_LIST_IGNORED_PLAIN),
+        (IGNORED, ledger::FRESH_LIST_IGNORED_ALL),
     ] {
         fs::copy(root.join(from), fresh.path().join(to)).expect("copy");
     }
@@ -172,22 +182,22 @@ fn a_missing_row_fails() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
-        "test_alpha.AlphaTest.test_two\tmerged:test_alpha.AlphaTest.test_one\n",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one\t\tcovered by test_one's table\n",
         "",
     );
     assert_fails(
         dir.path(),
         &[],
-        "test_alpha.AlphaTest.test_two: missing row",
+        "test_memory_sync.AlphaTest.test_two: missing row",
     );
 }
 
 #[test]
 fn a_missing_ledger_file_fails() {
     let dir = repo();
-    fs::remove_file(dir.path().join("port/ledger/test_beta.tsv")).expect("rm");
-    assert_fails(dir.path(), &[], "port/ledger/test_beta.tsv: missing");
+    fs::remove_file(dir.path().join("port/ledger/test_rtk_lock.tsv")).expect("rm");
+    assert_fails(dir.path(), &[], "port/ledger/test_rtk_lock.tsv: missing");
 }
 
 #[test]
@@ -318,6 +328,88 @@ fn a_target_behind_an_undefined_feature_fails_through_the_listing() {
 }
 
 #[test]
+fn a_target_cargo_lists_as_ignored_fails() {
+    // An ignore the source does not show (a macro, an attribute the scanner cannot read).
+    let dir = repo();
+    put(
+        dir.path(),
+        IGNORED,
+        "     Running tests/alpha.rs (/target/debug/build/alpha/1a/out/alpha-1a)\n\
+         test_one: test\n\n1 test, 0 benchmarks\n",
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "Rust test crates/alpha/tests/alpha.rs::test_one is ignored: `cargo test -- --list --ignored` lists it",
+    );
+    let fresh = fresh_copy(dir.path());
+    fs::remove_file(fresh.path().join(ledger::FRESH_LIST_IGNORED_PLAIN)).expect("rm");
+    let f = fresh.path().to_str().expect("utf-8");
+    assert_fails(dir.path(), &["--fresh", f], "rust-tests-ignored-plain.txt");
+}
+
+#[test]
+fn a_target_inside_an_untrusted_macro_fails() {
+    // `ig!` could add #[ignore] or a platform cfg in its expansion.
+    let dir = repo();
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one() {}\n",
+        "macro_rules! ig { ($i:item) => { #[cfg(target_os = \"linux\")] $i }; }\n\
+         ig! { #[test] fn test_one() {} }\n",
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "is inside `ig!`, whose expansion the ledger cannot check",
+    );
+    // proptest! is trusted.
+    let dir = repo();
+    replace(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "#[test]\nfn test_one() {}\n",
+        "proptest::proptest! {\n    #[test]\n    fn test_one(x in 0..3u8) { let _ = x; }\n}\n",
+    );
+    assert_passes(dir.path(), &[]);
+}
+
+#[test]
+fn a_module_moved_by_a_cfg_attr_path_fails() {
+    let dir = repo();
+    put(
+        dir.path(),
+        "crates/alpha/tests/a/main.rs",
+        "#[cfg_attr(all(), path = \"real.rs\")]\nmod m;\n",
+    );
+    put(
+        dir.path(),
+        "crates/alpha/tests/a/m.rs",
+        "#[test]\nfn test_one() {}\n",
+    );
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "crates/alpha/tests/alpha.rs::test_one\n",
+        "crates/alpha/tests/a/m.rs::test_one\n",
+    );
+    put(
+        dir.path(),
+        LISTING,
+        &format!(
+            "{DEFAULT_LISTING}     Running tests/a/main.rs (/target/debug/build/alpha/3c/out/a-3c)\n\
+             m::test_one: test\n"
+        ),
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "uses #[path], which the ledger does not follow",
+    );
+}
+
+#[test]
 fn a_target_cargo_does_not_list_fails() {
     let dir = repo();
     replace(dir.path(), LISTING, "test_one: test\n", "");
@@ -349,7 +441,7 @@ fn a_target_in_a_file_no_target_compiles_fails() {
         put(dir.path(), &format!("crates/alpha/{file}"), content);
         replace(
             dir.path(),
-            "port/ledger/test_alpha.tsv",
+            "port/ledger/test_memory_sync.tsv",
             "crates/alpha/tests/alpha.rs::test_one\n",
             &format!("crates/alpha/{file}::test_one\n"),
         );
@@ -378,7 +470,7 @@ fn a_target_in_a_module_file_is_followed_from_its_root() {
     );
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "crates/alpha/tests/alpha.rs::test_one\n",
         "crates/alpha/src/inner.rs::tests::test_one\n",
     );
@@ -409,27 +501,28 @@ fn one_rust_test_cannot_port_two_python_tests() {
     put(
         dir.path(),
         "port/python-test-ids.txt",
-        "test_alpha.AlphaTest.test_one\n\
-         test_alpha.AlphaTest.test_table\n\
-         test_alpha.AlphaTest.test_two\n\
-         test_beta.BetaTest.test_one\n\
-         test_beta.BetaTest.test_three\n",
+        "test_memory_sync.AlphaTest.test_one\n\
+         test_memory_sync.AlphaTest.test_table\n\
+         test_memory_sync.AlphaTest.test_two\n\
+         test_memory_sync.OtherTest.test_one\n\
+         test_rtk_lock.BetaTest.test_three\n",
     );
     append(
         dir.path(),
-        "port/ledger/test_beta.tsv",
-        "test_beta.BetaTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one\n",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.OtherTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one\n",
     );
     assert_fails(
         dir.path(),
         &[],
-        "rust_test crates/alpha/tests/alpha.rs::test_one is already the port of test_alpha.AlphaTest.test_one",
+        "rust_test crates/alpha/tests/alpha.rs::test_one is already the port of test_memory_sync.AlphaTest.test_one",
     );
     replace(
         dir.path(),
-        "port/ledger/test_beta.tsv",
-        "test_beta.BetaTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one",
-        "test_beta.BetaTest.test_one\tmerged:test_alpha.AlphaTest.test_one",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.OtherTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one",
+        "test_memory_sync.OtherTest.test_one\tmerged:test_memory_sync.AlphaTest.test_one\t\t\
+         the same Rust test, inherited",
     );
     assert_passes(dir.path(), &[]);
 }
@@ -439,7 +532,7 @@ fn a_rust_test_must_keep_the_python_method_name() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "alpha.rs::test_one\n",
         "alpha.rs::renamed\n",
     );
@@ -451,7 +544,7 @@ fn a_rust_test_path_must_stay_under_crates() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "crates/alpha/tests/alpha.rs::test_one",
         "crates/../../elsewhere.rs::test_one",
     );
@@ -463,20 +556,20 @@ fn a_lower_row_count_fails_unless_the_rows_are_computed_with_a_reason() {
     let dir = repo();
     put(
         dir.path(),
-        "crates/alpha/tests/data/test_alpha.jsonl",
-        "{\"py\": \"test_alpha.AlphaTest.test_table\", \"row\": 0}\n",
+        "crates/alpha/tests/data/test_memory_sync.jsonl",
+        "{\"py\": \"test_memory_sync.AlphaTest.test_table\", \"row\": 0}\n",
     );
     assert_fails(dir.path(), &[], "1 distinct Rust rows tagged \"py\"");
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "tables::test_table\n",
         "tables::test_table\trows:computed\n",
     );
     assert_fails(dir.path(), &[], "`rows:computed` needs a reason");
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
+        "port/ledger/test_memory_sync.tsv",
         "rows:computed\n",
         "rows:computed iterates the same files\n",
     );
@@ -486,7 +579,7 @@ fn a_lower_row_count_fails_unless_the_rows_are_computed_with_a_reason() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("test_alpha.AlphaTest.test_table\t3 rows\trows:computed iterates"),
+        stdout.contains("test_memory_sync.AlphaTest.test_table\t3 rows\trows:computed iterates"),
         "{stdout}"
     );
 }
@@ -496,8 +589,8 @@ fn repeated_row_lines_do_not_count_as_rows() {
     let dir = repo();
     put(
         dir.path(),
-        "crates/alpha/tests/data/test_alpha.jsonl",
-        &"{\"py\": \"test_alpha.AlphaTest.test_table\", \"row\": 0}\n".repeat(3),
+        "crates/alpha/tests/data/test_memory_sync.jsonl",
+        &"{\"py\": \"test_memory_sync.AlphaTest.test_table\", \"row\": 0}\n".repeat(3),
     );
     assert_fails(dir.path(), &[], "1 distinct Rust rows");
 }
@@ -505,14 +598,25 @@ fn repeated_row_lines_do_not_count_as_rows() {
 #[test]
 fn rows_in_another_crate_do_not_count() {
     let dir = repo();
-    let rows = fs::read_to_string(dir.path().join("crates/alpha/tests/data/test_alpha.jsonl"))
-        .expect("read");
-    fs::remove_file(dir.path().join("crates/alpha/tests/data/test_alpha.jsonl")).expect("rm");
-    put(dir.path(), "crates/beta/tests/data/test_alpha.jsonl", &rows);
+    let rows = fs::read_to_string(
+        dir.path()
+            .join("crates/alpha/tests/data/test_memory_sync.jsonl"),
+    )
+    .expect("read");
+    fs::remove_file(
+        dir.path()
+            .join("crates/alpha/tests/data/test_memory_sync.jsonl"),
+    )
+    .expect("rm");
+    put(
+        dir.path(),
+        "crates/beta/tests/data/test_memory_sync.jsonl",
+        &rows,
+    );
     assert_fails(
         dir.path(),
         &[],
-        "0 distinct Rust rows tagged \"py\" in crates/alpha/tests/data/test_alpha.jsonl",
+        "0 distinct Rust rows tagged \"py\" in crates/alpha/tests/data/test_memory_sync.jsonl",
     );
 }
 
@@ -522,7 +626,7 @@ fn a_merged_test_with_rows_needs_its_rows_too() {
     put(
         dir.path(),
         "port/python-test-rows.tsv",
-        "test_alpha.AlphaTest.test_table\t3\ntest_alpha.AlphaTest.test_two\t2\n",
+        "test_memory_sync.AlphaTest.test_table\t3\ntest_memory_sync.AlphaTest.test_two\t2\n",
     );
     assert_fails(dir.path(), &[], "test_two: 0 distinct Rust rows");
 }
@@ -532,17 +636,21 @@ fn a_todo_row_fails() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_beta.tsv",
+        "port/ledger/test_rtk_lock.tsv",
         "dropped:superseded:F-3\t\treplaced by shims.rs",
         "todo",
     );
     assert_fails(dir.path(), &[], "test_three: still todo");
-    assert_fails(dir.path(), &["--files", "tests/test_beta.py"], "still todo");
+    assert_fails(
+        dir.path(),
+        &["--files", "tests/test_rtk_lock.py"],
+        "still todo",
+    );
     // Another lane's file does not block a per-lane check …
-    assert_passes(dir.path(), &["--files", "tests/test_alpha.py"]);
+    assert_passes(dir.path(), &["--files", "tests/test_memory_sync.py"]);
     // … nor the CI report while nobody has started that module.
     let stdout = assert_passes(dir.path(), &["--report"]);
-    assert!(stdout.contains("test_beta"), "{stdout}");
+    assert!(stdout.contains("test_rtk_lock"), "{stdout}");
 }
 
 #[test]
@@ -550,9 +658,9 @@ fn a_todo_row_in_a_started_module_fails_the_report() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
-        "test_alpha.AlphaTest.test_two\tmerged:test_alpha.AlphaTest.test_one",
-        "test_alpha.AlphaTest.test_two\ttodo",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one",
+        "test_memory_sync.AlphaTest.test_two\ttodo",
     );
     assert_fails(dir.path(), &["--report"], "test_two: still todo");
 }
@@ -562,23 +670,23 @@ fn a_deferred_row_needs_an_explicit_task_and_blocks_only_that_task() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
-        "test_alpha.AlphaTest.test_two\tmerged:test_alpha.AlphaTest.test_one",
-        "test_alpha.AlphaTest.test_two\ttodo:MS2",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one",
+        "test_memory_sync.AlphaTest.test_two\ttodo:MS2",
     );
     // The plan's bare DoD command fails: deferring must be checked as a named task.
     assert_fails(
         dir.path(),
-        &["--files", "tests/test_alpha.py"],
+        &["--files", "tests/test_memory_sync.py"],
         "deferred to MS2; a --files check of a module with deferred rows needs --task",
     );
     assert_passes(
         dir.path(),
-        &["--files", "tests/test_alpha.py", "--task", "MS1"],
+        &["--files", "tests/test_memory_sync.py", "--task", "MS1"],
     );
     assert_fails(
         dir.path(),
-        &["--files", "tests/test_alpha.py", "--task", "MS2"],
+        &["--files", "tests/test_memory_sync.py", "--task", "MS2"],
         "still todo (deferred to MS2)",
     );
     assert_fails(dir.path(), &[], "test_two: still todo (deferred to MS2)");
@@ -589,9 +697,77 @@ fn a_deferred_row_needs_an_explicit_task_and_blocks_only_that_task() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("test_alpha.AlphaTest.test_two\ttodo:MS2"),
+        stdout.contains("test_memory_sync.AlphaTest.test_two\ttodo:MS2"),
         "{stdout}"
     );
+}
+
+#[test]
+fn a_deferred_row_must_name_an_owner_of_its_module() {
+    let dir = repo();
+    // MT1 is a task of the plan, but test_memory_sync belongs to MS1 and MS2 (plan §5).
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one",
+        "test_memory_sync.AlphaTest.test_two\ttodo:MT1",
+    );
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "deferred to MT1, which does not own test_memory_sync (plan §5 owners: MS1, MS2)",
+    );
+    // And a lane cannot check a module it does not own.
+    assert_fails(
+        dir.path(),
+        &["--files", "tests/test_memory_sync.py", "--task", "MT1"],
+        "--task MT1 does not own test_memory_sync",
+    );
+}
+
+#[test]
+fn the_module_owners_match_the_plan() {
+    let plan = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/superpowers/plans/2026-11-20-rust-port.md");
+    let text = fs::read_to_string(plan).expect("read the plan");
+    let table = text
+        .split("\n## 5. Ledger accounting summary")
+        .nth(1)
+        .expect("plan §5")
+        .split("\n## 6.")
+        .next()
+        .expect("§5 body");
+    let mut from_plan: Vec<(String, Vec<String>)> = Vec::new();
+    for line in table.lines().filter(|l| l.starts_with("| test_")) {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let owners: Vec<String> = cells[3]
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| ledger::TASKS.contains(w))
+            .map(str::to_string)
+            .collect();
+        for module in cells[1].split(',').map(str::trim) {
+            from_plan.push((module.to_string(), owners.clone()));
+        }
+    }
+    from_plan.sort();
+    let mut ours: Vec<(String, Vec<String>)> = ledger::MODULE_OWNERS
+        .iter()
+        .map(|(m, o)| (m.to_string(), o.iter().map(|t| t.to_string()).collect()))
+        .collect();
+    ours.sort();
+    assert_eq!(ours, from_plan);
+    // Every module of the committed id list has an owner.
+    let ids = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../port/python-test-ids.txt"),
+    )
+    .expect("read the id list");
+    for id in ids.lines() {
+        let module = id.split('.').next().expect("module");
+        assert!(
+            !ledger::owners_of(module).is_empty(),
+            "{module} has no owner"
+        );
+    }
 }
 
 #[test]
@@ -599,9 +775,9 @@ fn a_deferred_row_must_name_a_task_of_the_plan() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
-        "test_alpha.AlphaTest.test_two\tmerged:test_alpha.AlphaTest.test_one",
-        "test_alpha.AlphaTest.test_two\ttodo:ZZ9",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_two\tmerged:test_memory_sync.AlphaTest.test_one",
+        "test_memory_sync.AlphaTest.test_two\ttodo:ZZ9",
     );
     assert_fails(dir.path(), &["--report"], "needs a task of plan §4");
 }
@@ -631,15 +807,45 @@ fn the_task_list_matches_the_plan() {
 }
 
 #[test]
-fn merged_must_point_at_a_ported_row() {
+fn merged_must_point_at_a_ported_row_of_the_same_module_and_say_how() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_alpha.tsv",
-        "merged:test_alpha.AlphaTest.test_one",
-        "merged:test_beta.BetaTest.test_three",
+        "port/ledger/test_memory_sync.tsv",
+        "test_memory_sync.AlphaTest.test_one\tported\tcrates/alpha/tests/alpha.rs::test_one",
+        "test_memory_sync.AlphaTest.test_one\tdropped:py-compat\t\tno Rust equivalent",
     );
     assert_fails(dir.path(), &[], "which is not ported");
+
+    let dir = repo();
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "merged:test_memory_sync.AlphaTest.test_one",
+        "merged:test_rtk_lock.BetaTest.test_three",
+    );
+    assert_fails(dir.path(), &[], "which is in another module");
+
+    let dir = repo();
+    replace(
+        dir.path(),
+        "port/ledger/test_memory_sync.tsv",
+        "covered by test_one's table",
+        "",
+    );
+    assert_fails(dir.path(), &[], "a merged row needs a note");
+
+    // The report lists every merged row with its note.
+    let dir = repo();
+    let stdout = assert_passes(dir.path(), &["--report"]);
+    assert!(
+        stdout.contains("rows merged into another test (merged:): 1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("test_two\tmerged:test_memory_sync.AlphaTest.test_one\tcovered by"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -647,7 +853,7 @@ fn a_dropped_row_needs_a_note() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_beta.tsv",
+        "port/ledger/test_rtk_lock.tsv",
         "\t\treplaced by shims.rs",
         "",
     );
@@ -659,7 +865,7 @@ fn a_golden_row_needs_a_known_corpus() {
     let dir = repo();
     replace(
         dir.path(),
-        "port/ledger/test_beta.tsv",
+        "port/ledger/test_rtk_lock.tsv",
         "dropped:superseded:F-3\t\treplaced by shims.rs",
         "golden:guard.check",
     );
@@ -677,15 +883,19 @@ fn stale_and_misplaced_rows_fail() {
     let dir = repo();
     append(
         dir.path(),
-        "port/ledger/test_beta.tsv",
-        "test_beta.BetaTest.test_gone\ttodo\ntest_alpha.AlphaTest.test_one\ttodo\n",
+        "port/ledger/test_rtk_lock.tsv",
+        "test_rtk_lock.BetaTest.test_gone\ttodo\ntest_memory_sync.AlphaTest.test_one\ttodo\n",
     );
     assert_fails(
         dir.path(),
         &[],
         "test_gone is not in port/python-test-ids.txt (a stale row)",
     );
-    assert_fails(dir.path(), &[], "belongs in port/ledger/test_alpha.tsv");
+    assert_fails(
+        dir.path(),
+        &[],
+        "belongs in port/ledger/test_memory_sync.tsv",
+    );
     put(dir.path(), "port/ledger/test_gamma.tsv", "");
     assert_fails(
         dir.path(),
@@ -699,8 +909,8 @@ fn malformed_rows_fail() {
     let dir = repo();
     append(
         dir.path(),
-        "port/ledger/test_beta.tsv",
-        "test_beta.BetaTest.test_three\tdone\n",
+        "port/ledger/test_rtk_lock.tsv",
+        "test_rtk_lock.BetaTest.test_three\tdone\n",
     );
     assert_fails(dir.path(), &[], "unknown status \"done\"");
 }
@@ -720,13 +930,13 @@ fn a_python_test_missing_from_the_id_list_fails() {
     append(
         fresh.path(),
         ledger::FRESH_IDS,
-        "test_beta.BetaTest.test_zeta\n",
+        "test_rtk_lock.BetaTest.test_zeta\n",
     );
     let f = fresh.path().to_str().expect("utf-8");
     assert_fails(
         dir.path(),
         &["--fresh", f],
-        "Python test not in the id list: test_beta.BetaTest.test_zeta",
+        "Python test not in the id list: test_rtk_lock.BetaTest.test_zeta",
     );
 }
 
@@ -754,7 +964,7 @@ fn a_changed_row_count_fails() {
     put(
         fresh.path(),
         ledger::FRESH_ROWS,
-        "test_alpha.AlphaTest.test_table\t4\n",
+        "test_memory_sync.AlphaTest.test_table\t4\n",
     );
     let f = fresh.path().to_str().expect("utf-8");
     assert_fails(dir.path(), &["--fresh", f], "row count not committed");
@@ -767,11 +977,11 @@ fn ids_write_commits_the_fresh_files_and_syncs_every_ledger() {
     put(
         fresh.path(),
         ledger::FRESH_IDS,
-        "test_alpha.AlphaTest.test_one\n\
-         test_alpha.AlphaTest.test_table\n\
-         test_alpha.AlphaTest.test_two\n\
-         test_beta.BetaTest.test_three\n\
-         test_delta.DeltaTest.test_four\n",
+        "test_memory_sync.AlphaTest.test_one\n\
+         test_memory_sync.AlphaTest.test_table\n\
+         test_memory_sync.AlphaTest.test_two\n\
+         test_rtk_lock.BetaTest.test_three\n\
+         test_zz_new.DeltaTest.test_four\n",
     );
     let f = fresh.path().to_str().expect("utf-8");
     let a = IdsArgs::parse(&args(dir.path(), &["--fresh", f])).expect("arguments");
@@ -780,8 +990,8 @@ fn ids_write_commits_the_fresh_files_and_syncs_every_ledger() {
     let out = ledger::ids(&a);
     assert_eq!(out.code, 0, "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
-        fs::read_to_string(dir.path().join("port/ledger/test_delta.tsv")).expect("read"),
-        "# python_id\tstatus\trust_test\tnote\ntest_delta.DeltaTest.test_four\ttodo\n"
+        fs::read_to_string(dir.path().join("port/ledger/test_zz_new.tsv")).expect("read"),
+        "# python_id\tstatus\trust_test\tnote\ntest_zz_new.DeltaTest.test_four\ttodo\n"
     );
     // The new id is todo, so the full check fails on it and on nothing else.
     let (code, _, stderr) = check(dir.path(), &["--fresh", f]);
