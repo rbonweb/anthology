@@ -36,7 +36,7 @@ import settings_patch  # noqa: E402
 import state  # noqa: E402
 
 REFUSAL = "Anthology supports macOS and Linux only; it is inactive on Windows."
-RTK_TIMEOUT = 120   # seconds: setup is where the first download happens
+RTK_TIMEOUT = 60    # seconds per read (overall deadline about 4x): setup is where the first download happens
 
 
 def _sha256(text):
