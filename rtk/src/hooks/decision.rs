@@ -361,7 +361,7 @@ pub(crate) fn decide_for_claude_hook_at(
         Some(|| permissions.deny_rules()),
         cwd,
     );
-    super::anthology_gate::apply(gate, cmd, decision)
+    super::anthology_gate::apply(gate, cmd, decision, &permissions.gate)
 }
 
 fn decide_for_agent_at_with_attestation(

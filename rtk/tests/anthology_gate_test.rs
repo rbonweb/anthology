@@ -517,3 +517,235 @@ fn a_huge_read_operand_does_not_stall_the_hook() {
         started.elapsed()
     );
 }
+
+// --- review round 2 ---
+
+fn asked(sb: &Sandbox, cmds: &[&str]) {
+    for cmd in cmds {
+        assert!(
+            matches!(sb.hook(cmd), Said::Ask(_)),
+            "{cmd}: {:?}",
+            sb.hook(cmd)
+        );
+    }
+}
+
+/// N1: a word that expands may become a ruled command.
+#[test]
+fn a_word_that_may_expand_into_a_ruled_command_is_not_allowed() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    asked(
+        &sb,
+        &[
+            "x=push; rtk git $x",
+            "rtk git $X",
+            "rtk git ${X}",
+            "rtk git \"$x\"",
+            "x=push rtk git $x",
+            "rtk run git $x",
+            "rtk bypass git $x",
+            "rtk run -c 'x=push; git $x'",
+            "rtk run -c 'git ${x:-push}'",
+            "rtk run -c 'git pu${x}sh'",
+            "rtk git {push,}",
+            "rtk bypass git {push,}",
+            "rtk git $'push'",
+            "rtk git $'\\x70ush'",
+            "rtk git $\"push\"",
+            "rtk kubectl $'apply' -f x",
+            "rtk kubectl $a -f x.yaml",
+            "rtk git pu*h",
+            "rtk git pus?",
+            "rtk git pus[h]",
+        ],
+    );
+    // A top level the hook would rewrite is left to the host unrewritten.
+    for cmd in ["git $x", "git pu*h", "git {push,}"] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// N2: grammar words and lowercase assignments in front of a ruled command.
+#[test]
+fn shell_grammar_in_front_of_a_ruled_command_does_not_hide_it() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "if true; then rtk git push; fi",
+        "while true; do rtk git push; break; done",
+        "until false; do rtk git push; break; done",
+        "for i in 1; do rtk git push; done",
+        "if rtk git push; then :; fi",
+        "function f { rtk git push; }; f",
+        "coproc rtk git push",
+        "x=1 rtk git push",
+        "a=1 b=2 rtk git push",
+        "A=1 b=2 rtk git push",
+        "rtk run -c 'if true; then git push; fi'",
+        "rtk run -c 'while git push; do break; done'",
+        "rtk run -c 'until git push; do :; done'",
+        "rtk run -c 'for i in 1; do git push; done'",
+        "rtk run -c 'select i in 1; do git push; done'",
+        "rtk run -c 'function f { git push; }; f'",
+        "rtk run -c 'coproc git push'",
+        "rtk run -c 'x=1 git push'",
+        "rtk run -c 'a=1 b=2 git push'",
+        "rtk run -c 'A=1 b=2 git push'",
+        "rtk run -c 'time -p git push'",
+        "rtk run -c '! git push'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    asked(
+        &sb,
+        &[
+            "rtk run -c 'case x in x) echo;; esac'",
+            "rtk run -c '[[ -f x ]] && echo y'",
+        ],
+    );
+}
+
+/// N3 and N4: interpreters, other shells and programs that run their arguments.
+#[test]
+fn interpreters_and_launchers_inside_rtk_ask() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    asked(
+        &sb,
+        &[
+            "rtk bypass python3 -X dev -c 'import os; os.system(\"git push\")'",
+            "rtk bypass perl -I lib -e 'system(\"git push\")'",
+            "rtk bypass ruby -I lib -e 'x'",
+            "rtk bypass node -r fs -e 'x'",
+            "rtk bypass python3 <<< 'import os'",
+            "echo x | rtk bypass python3 -",
+            "rtk bypass python3 script.py",
+            "rtk bypass tcsh",
+            "rtk bypass csh -f script.csh",
+            "rtk bypass pwsh -c 'git push'",
+            "rtk bypass expect -c 'spawn git push'",
+            "rtk bypass tclsh <<< 'exec git push'",
+            "rtk bypass Rscript -e 'system(\"git push\")'",
+            "rtk bypass caffeinate git push",
+            "rtk bypass arch -arm64 git push",
+            "rtk bypass xcrun git push",
+            "rtk bypass script -q /dev/null git push",
+            "rtk bypass sandbox-exec -p x git push",
+            "rtk bypass watch git push",
+            "rtk bypass flock /tmp/l git push",
+            "rtk bypass setsid git push",
+            "rtk bypass unbuffer git push",
+            "rtk bypass ionice -c3 git push",
+            "rtk bypass chrt 0 git push",
+            "rtk bypass taskset 1 git push",
+            "rtk bypass gtimeout 5 git push",
+            "rtk bypass parallel git push ::: a",
+            "rtk bypass su -c 'git push'",
+            "rtk bypass ssh localhost git push",
+            "rtk grep \"git push\" docs/",
+        ],
+    );
+    assert_eq!(sb.hook("rtk bypass tcsh -c 'git push'"), Said::Deny);
+    // At top level a rewrite whose text holds a ruled head is the host's to judge.
+    for cmd in ["git log --grep='git push'", "ssh localhost git push"] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// N5: HOME and CDPATH assignments hidden behind quotes or computed names.
+#[test]
+fn a_hidden_home_or_cdpath_change_makes_tilde_unknown() {
+    let sb = Sandbox::new(Rules {
+        read_deny: &["~/.ssh/**"],
+        allow: &["rtk *"],
+        ..Rules::default()
+    });
+    asked(
+        &sb,
+        &[
+            "export HO\"ME\"=/; rtk read ~/.ssh/id_rsa",
+            "export H\\OME=/; rtk read ~/.ssh/id_rsa",
+            "v=HO; export ${v}ME=/; rtk read ~/.ssh/id_rsa",
+            "declare ${v}ME=/; rtk read ~/.ssh/id_rsa",
+        ],
+    );
+    assert_eq!(sb.hook("export FOO=1; rtk read ~/.ssh/id_rsa"), Said::Deny);
+}
+
+/// N6: with the work budget spent, a rule still means ask.
+#[test]
+fn a_command_too_long_to_scan_asks_when_a_rule_exists() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    let many = "true;".repeat(5000);
+    asked(
+        &sb,
+        &[
+            &format!("{many}\"r\"tk read secret.txt"),
+            &format!("{many}r\\tk read secret.txt"),
+        ],
+    );
+}
+
+/// N7 and Minor 1: operands that expand, and `key=value` operands.
+#[test]
+fn an_operand_that_expands_or_hides_a_path_is_not_allowed() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    asked(
+        &sb,
+        &[
+            "rtk bypass base64 secret.tx?",
+            "rtk bypass base64 secre*",
+            "rtk bypass base64 {secret,x}.txt",
+            "rtk bypass base64 $'secret.txt'",
+            "f=secret.txt; rtk bypass base64 $f",
+            "rtk bypass sed -n p \"$PWD/secret.txt\"",
+            "rtk bypass base64 ~root/.ssh/id_rsa",
+        ],
+    );
+    assert_eq!(sb.hook("rtk bypass dd if=secret.txt"), Said::Deny);
+}
+
+/// The backstops must not tax ordinary commands the rules cannot reach.
+#[test]
+fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
+    let sb = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["rtk *"],
+        ..Rules::default()
+    });
+    for cmd in [
+        "ls src/*.rs",
+        "git log -- *.rs",
+        "grep 'a.*b' f",
+        "cat README.md",
+        "git status",
+    ] {
+        match sb.hook(cmd) {
+            Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
+                assert!(rewritten.starts_with("rtk "), "{cmd}: {rewritten}");
+            }
+            other => panic!("{cmd} lost its rewrite: {other:?}"),
+        }
+    }
+}
+
+/// With no rule of any kind every backstop is silent.
+#[test]
+fn every_backstop_is_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "x=push; rtk git $x",
+        "rtk bypass caffeinate git push",
+        "if true; then rtk git push; fi",
+        "rtk bypass python3 script.py",
+        "rtk bypass base64 secre*",
+        "export HO\"ME\"=/; rtk read ~/.ssh/id_rsa",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+    assert!(
+        matches!(
+            sb.hook("git log --grep='git push'"),
+            Said::Rewrite(_) | Said::Allow(_)
+        ),
+        "an embedded word is no reason to hold back a rewrite"
+    );
+}
