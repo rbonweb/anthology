@@ -241,10 +241,12 @@ def _is_within(path, directory):
 
 def _check_db_location(sources, db_path):
     db = os.path.realpath(str(db_path))
-    for _scope, directory in sources:
+    for scope, directory in sources:
         src = os.path.realpath(str(directory))
         if _is_within(db, src):
             raise ValueError("the index database must not live inside a notes folder: %s" % db_path)
+        if scope == "personal":
+            continue  # R23a: HOME may itself be a git work tree (dotfiles); only repo notes matter
         probe = src
         while True:
             if os.path.lexists(os.path.join(probe, ".git")):

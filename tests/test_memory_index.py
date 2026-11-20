@@ -166,6 +166,19 @@ class BuildTest(IndexCase):
         self.assertTrue(self.db.exists())
         self.assertEqual(snapshot(self.tmp / "work"), before)
 
+    def test_personal_source_may_sit_in_a_git_work_tree(self):
+        """R23a: a HOME that is a dotfiles git repo must not break the personal index."""
+        (self.tmp / ".git").mkdir()  # self.tmp holds home, data and everything else
+        self.add(self.personal, "user-me.md", type_="user")
+        s = memory_index.build([("personal", self.personal)], self.db)
+        self.assertEqual(s["added"], 1)
+        with self.assertRaises(ValueError):  # still never inside the notes folder itself
+            memory_index.build([("personal", self.personal)], self.personal / "index.db")
+        # repo and agent sources keep the work-tree refusal
+        self.add(self.repo, "a.md")
+        with self.assertRaises(ValueError):
+            memory_index.build([("repo", self.repo)], self.data / "other.db")
+
     def test_db_path_for(self):
         p = memory_index.db_path_for(self.data, "github.com/acme/repo")
         self.assertEqual(p.parent, self.data / "memory-index")
