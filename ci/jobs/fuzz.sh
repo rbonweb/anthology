@@ -13,6 +13,8 @@ cd "$root/fuzz"
 seconds=${FUZZ_SECONDS:-600}
 rustup toolchain install
 cargo install cargo-fuzz --locked --version 0.13.2
+# A stale fuzz/Cargo.lock fails here instead of being re-resolved by `cargo fuzz build`.
+cargo metadata --locked --format-version 1 >/dev/null
 targets=$(cargo fuzz list)
 [ -n "$targets" ] || { echo "fuzz: no targets" >&2; exit 1; }
 for target in $targets; do

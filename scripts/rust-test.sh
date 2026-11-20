@@ -2,8 +2,10 @@
 # $RUST_TEST: the Rust workspace checks in the pinned Rust image. There is no host Rust (GC-18).
 #
 #   scripts/rust-test.sh                 # lint, then test: the Definition-of-Done run
-#   scripts/rust-test.sh lint            # cargo fmt --check, clippy -D warnings
-#   scripts/rust-test.sh test [ARGS]     # cargo test --workspace --locked [ARGS]
+#   scripts/rust-test.sh lint            # cargo fmt --check, clippy -D warnings (plain and
+#                                        #   --all-features)
+#   scripts/rust-test.sh test [ARGS]     # cargo test --workspace --locked [ARGS], then the same
+#                                        #   with --all-features (the test-only features, m-R10)
 #   scripts/rust-test.sh run CMD [ARGS]  # any command in the same container (dev.sh uses it)
 #
 # The image is the FROM line of ci/images/rust.Dockerfile. As in rtk-test.sh, the container
@@ -61,11 +63,14 @@ user=$(getent passwd "$uid" | cut -d: -f1)
 home=$(getent passwd "$uid" | cut -d: -f6)
 find /usr/local/cargo /target ! -uid "$uid" -exec chown -h "$uid:$uid" {} +
 lint="cargo fmt --all --check && rustfmt --edition 2024 --check fuzz/fuzz_targets/*.rs \
-&& cargo clippy --workspace --all-targets --locked -- -D warnings"
+&& cargo clippy --workspace --all-targets --locked -- -D warnings \
+&& cargo clippy --workspace --all-targets --locked --all-features -- -D warnings"
+# Plain first, so the shipped behaviour (the real watchdog) is tested; then the test features.
+tests="cargo test --workspace --locked \"\$@\" && cargo test --workspace --locked --all-features \"\$@\""
 case $mode in
     lint) set -- sh -c "$lint" ;;
-    test) set -- cargo test --workspace --locked "$@" ;;
-    all) set -- sh -c "$lint && cargo test --workspace --locked" ;;
+    test) set -- sh -c "$tests" rust-test "$@" ;;
+    all) set -- sh -c "$lint && $tests" rust-test ;;
 esac
 exec runuser -u "$user" -- env -i \
     HOME="$home" USER="$user" LANG=C.UTF-8 \
