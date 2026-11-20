@@ -1,9 +1,11 @@
-//! Finds the test functions in one Rust source file, without compiling it.
+//! Finds the test functions and `mod` declarations in one Rust source file, without compiling it.
 //!
-//! `ledger check` uses this to confirm that a `ported` row names a real `#[test]` that runs on
-//! both Linux and macOS: not `#[ignore]`d, and not behind a platform `cfg` (design §13.3). The
-//! scanner skips comments, strings and character literals, then follows `mod name { … }` nesting
-//! and the attributes in front of each `fn`.
+//! `ledger check` uses this as its static layer: a `ported` row must name a `#[test]` that is not
+//! `#[ignore]`d and not behind a `cfg` other than `test` or `feature = …` (a platform `cfg` would
+//! hide it on Linux or macOS), in a file that `mod` declarations reach from a test target root.
+//! The binding check is the `cargo test -- --list` output (design §13.3); this layer adds what one
+//! Linux listing cannot see. The scanner skips comments, strings and character literals, follows
+//! `mod name { … }` nesting, and ignores test functions inside a fn body or a `macro_rules!`.
 
 /// One test function: its path inside the file (`mod` names, then the function name).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,8 +13,27 @@ pub struct TestFn {
     pub path: Vec<String>,
     /// `#[ignore]`, or a `cfg_attr` that can add one.
     pub ignored: bool,
-    /// Behind a platform `cfg` (on the function, an enclosing module or the whole file).
+    /// Behind a `cfg` other than `test`/`feature` (on the fn, an enclosing module or the file).
     pub gated: bool,
+}
+
+/// An out-of-line `mod name;` declaration: inline `mod` names, then its own name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModDecl {
+    pub path: Vec<String>,
+    /// Behind a gating `cfg` (on the declaration or an enclosing inline module).
+    pub gated: bool,
+    /// Has a `#[path = …]` attribute (its file is not where the module rules put it).
+    pub has_path: bool,
+}
+
+/// What one file declares.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scan {
+    pub tests: Vec<TestFn>,
+    pub mods: Vec<ModDecl>,
+    /// A gating `#![cfg(…)]` at the top of the file.
+    pub file_gated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,19 +257,30 @@ fn is_ignore_attr(text: &str) -> bool {
     name == "ignore" || (name == "cfg_attr" && words(text).any(|w| w == "ignore"))
 }
 
+/// Words a `cfg` may use without gating the item: `test`, features, and `all(…)` of them.
+const NEUTRAL_CFG_WORDS: &[&str] = &["cfg", "test", "feature", "all"];
+
+/// A `cfg` that can switch the item off in a `cargo test` run (on Linux, macOS, or both): anything
+/// but `test` and features, and any `cfg_attr` that names a platform or adds a `cfg`.
 fn is_gating_attr(text: &str) -> bool {
-    attr_name(text) == "cfg" && words(text).any(|w| PLATFORM_WORDS.contains(&w))
+    match attr_name(text) {
+        "cfg" => words(text).any(|w| !NEUTRAL_CFG_WORDS.contains(&w)),
+        "cfg_attr" => words(text).any(|w| PLATFORM_WORDS.contains(&w) || w == "cfg"),
+        _ => false,
+    }
 }
 
-/// Every test function in `src`.
-pub fn scan(src: &str) -> Vec<TestFn> {
+/// Scans `src`.
+pub fn scan(src: &str) -> Scan {
     let toks = tokens(src);
-    let mut found = Vec::new();
+    let mut out = Scan::default();
     let mut pending: Vec<String> = Vec::new();
     // (name, the brace depth inside the module, gated)
     let mut mods: Vec<(String, usize, bool)> = Vec::new();
+    // Brace depths of fn and macro_rules! bodies: nothing inside them is a test item.
+    let mut bodies: Vec<usize> = Vec::new();
+    let mut await_body = false;
     let mut depth = 0usize;
-    let mut file_gated = false;
     let mut i = 0;
     while i < toks.len() {
         match &toks[i] {
@@ -261,7 +293,7 @@ pub fn scan(src: &str) -> Vec<TestFn> {
                         if is_gating_attr(&text) {
                             match mods.last_mut() {
                                 Some(m) if m.1 == depth => m.2 = true,
-                                _ if depth == 0 => file_gated = true,
+                                _ if depth == 0 => out.file_gated = true,
                                 _ => {}
                             }
                         }
@@ -275,6 +307,10 @@ pub fn scan(src: &str) -> Vec<TestFn> {
             }
             Tok::Punct('{') => {
                 depth += 1;
+                if await_body {
+                    bodies.push(depth);
+                    await_body = false;
+                }
                 pending.clear();
                 i += 1;
             }
@@ -282,48 +318,70 @@ pub fn scan(src: &str) -> Vec<TestFn> {
                 if mods.last().is_some_and(|m| m.1 == depth) {
                     mods.pop();
                 }
+                if bodies.last() == Some(&depth) {
+                    bodies.pop();
+                }
                 depth = depth.saturating_sub(1);
                 pending.clear();
+                // `struct S { f: fn() }`: a fn pointer type, not a fn with a body.
+                await_body = false;
                 i += 1;
             }
             Tok::Punct(';') => {
                 pending.clear();
+                await_body = false;
                 i += 1;
             }
-            Tok::Ident(w) if w == "mod" => {
-                if let (Some(Tok::Ident(name)), Some(Tok::Punct('{'))) =
-                    (toks.get(i + 1), toks.get(i + 2))
-                {
-                    let gated = pending.iter().any(|a| is_gating_attr(a));
-                    depth += 1;
-                    mods.push((name.clone(), depth, gated));
-                    i += 3;
-                } else {
-                    i += 1;
+            Tok::Ident(w) if w == "macro_rules" => {
+                await_body = true;
+                pending.clear();
+                i += 1;
+            }
+            Tok::Ident(w) if w == "mod" && bodies.is_empty() => {
+                let gated = mods.iter().any(|m| m.2) || pending.iter().any(|a| is_gating_attr(a));
+                match (toks.get(i + 1), toks.get(i + 2)) {
+                    (Some(Tok::Ident(name)), Some(Tok::Punct('{'))) => {
+                        depth += 1;
+                        mods.push((name.clone(), depth, gated));
+                        i += 3;
+                    }
+                    (Some(Tok::Ident(name)), Some(Tok::Punct(';'))) => {
+                        let mut path: Vec<String> = mods.iter().map(|m| m.0.clone()).collect();
+                        path.push(name.clone());
+                        out.mods.push(ModDecl {
+                            path,
+                            gated,
+                            has_path: pending.iter().any(|a| attr_name(a) == "path"),
+                        });
+                        i += 3;
+                    }
+                    _ => i += 1,
                 }
                 pending.clear();
             }
             Tok::Ident(w) if w == "fn" => {
-                if let Some(Tok::Ident(name)) = toks.get(i + 1)
+                if bodies.is_empty()
+                    && let Some(Tok::Ident(name)) = toks.get(i + 1)
                     && pending.iter().any(|a| is_test_attr(a))
                 {
                     let mut path: Vec<String> = mods.iter().map(|m| m.0.clone()).collect();
                     path.push(name.clone());
-                    found.push(TestFn {
+                    out.tests.push(TestFn {
                         path,
                         ignored: pending.iter().any(|a| is_ignore_attr(a)),
-                        gated: file_gated
+                        gated: out.file_gated
                             || mods.iter().any(|m| m.2)
                             || pending.iter().any(|a| is_gating_attr(a)),
                     });
                 }
+                await_body = true;
                 pending.clear();
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    found
+    out
 }
 
 #[cfg(test)]
@@ -332,6 +390,7 @@ mod tests {
 
     fn names(src: &str) -> Vec<(String, bool, bool)> {
         scan(src)
+            .tests
             .into_iter()
             .map(|t| (t.path.join("::"), t.ignored, t.gated))
             .collect()
@@ -382,7 +441,7 @@ mod tests {
                 ("top".into(), false, false),
                 ("tests::ignored".into(), true, false),
                 ("tests::linux_only".into(), false, true),
-                ("tests::ignored_on_macos".into(), true, false),
+                ("tests::ignored_on_macos".into(), true, true),
                 ("tests::tokio_test".into(), false, false),
                 ("tests::inner::gated_by_module".into(), false, true),
                 ("tests::after_inner".into(), false, false),
@@ -395,11 +454,78 @@ mod tests {
     fn an_inner_platform_cfg_gates_the_whole_file() {
         let src = "#![cfg(target_os = \"macos\")]\n#[test]\nfn a() {}\n";
         assert_eq!(names(src), vec![("a".into(), false, true)]);
+        assert!(scan(src).file_gated);
     }
 
     #[test]
-    fn a_feature_cfg_is_not_platform_gating() {
-        let src = "#[cfg(feature = \"test-faults\")]\n#[test]\nfn a() {}\n";
-        assert_eq!(names(src), vec![("a".into(), false, false)]);
+    fn test_and_feature_cfgs_do_not_gate_but_every_other_cfg_does() {
+        for neutral in [
+            "test",
+            "feature = \"test-faults\"",
+            "all(test, feature = \"x\")",
+        ] {
+            let src = format!("#[cfg({neutral})]\n#[test]\nfn a() {{}}\n");
+            assert_eq!(names(&src), vec![("a".into(), false, false)], "{neutral}");
+        }
+        for gating in [
+            "#[cfg(any())]",
+            "#[cfg(not(test))]",
+            "#[cfg(unix)]",
+            "#[cfg(miri)]",
+            "#[cfg_attr(target_os = \"linux\", cfg(any()))]",
+            "#[cfg_attr(test, cfg(any()))]",
+        ] {
+            let src = format!("{gating}\n#[test]\nfn a() {{}}\n");
+            assert_eq!(names(&src), vec![("a".into(), false, true)], "{gating}");
+        }
+    }
+
+    #[test]
+    fn tests_inside_fn_bodies_and_macro_rules_are_not_test_items() {
+        let src = r#"
+            fn outer() {
+                #[test]
+                fn hidden() {}
+                mod not_a_module_decl;
+            }
+            macro_rules! make {
+                () => {
+                    #[test]
+                    fn templated() {}
+                };
+            }
+            trait T { fn decl(&self); }
+            #[test]
+            fn visible() {}
+        "#;
+        assert_eq!(names(src), vec![("visible".into(), false, false)]);
+        assert!(scan(src).mods.is_empty());
+    }
+
+    #[test]
+    fn out_of_line_module_declarations() {
+        let src = r#"
+            mod plain;
+            #[cfg(target_os = "linux")]
+            mod linux;
+            #[path = "elsewhere.rs"]
+            mod moved;
+            #[cfg(any())]
+            mod outer { mod nested; }
+        "#;
+        let decl = |path: &[&str], gated, has_path| ModDecl {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            gated,
+            has_path,
+        };
+        assert_eq!(
+            scan(src).mods,
+            vec![
+                decl(&["plain"], false, false),
+                decl(&["linux"], true, false),
+                decl(&["moved"], false, true),
+                decl(&["outer", "nested"], true, false),
+            ]
+        );
     }
 }

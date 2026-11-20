@@ -1,13 +1,13 @@
-"""Every lookaround or backreference regex pattern in the Python the port replaces (plan GC-16).
+"""Every regex pattern in the Python the port replaces that the Rust `regex` crate cannot compile.
 
-Usage (repository root; any Python >= 3.9, the pinned 3.12 image in CI):
+Usage (repository root, the pinned Python 3.12 image, which `ci/jobs/ledger.sh` uses):
 
     python port/extract/regex_inventory.py [--out FILE]
 
 The output is the committed `port/regex-inventory.tsv`. Rust compiles a pattern listed there with
 `fancy-regex` (through `pycompat::re::compile`), and every other one with `regex` (design §11.1).
 `anthology-dev ledger check` compares a fresh run against the committed file, so a merge that adds
-a lookaround or backreference pattern without a row fails (N-I3).
+such a pattern without a row fails (N-I3).
 
 Scope: every `*.py` under `scripts/`, `evals/`, `tests/` and `plugins/*/` except
 `plugins/anthology-superpowers/` (which stays Python). `port/` (the oracle and these extractors)
@@ -15,22 +15,30 @@ is deleted at cutover and is out of scope. The vendor portmaps (`vendor/patches/
 are data the Python compiles with `re`, so every string under a key ending in `_regex` is a
 pattern too (DV1 compiles them through `pycompat::re::translate`).
 
-What counts as a pattern, found in the syntax tree (nothing is imported or run):
-- any string expression (a literal, an f-string, or a `+` chain of literals and names) whose text,
-  with module-level string constants inlined, holds a lookaround `(?=`, `(?!`, `(?<=`, `(?<!` or a
-  named backreference `(?P=`, outside a character class and not escaped. Docstrings are skipped;
-- the pattern argument of a `re` function (`compile`, `search`, `match`, `fullmatch`, `findall`,
-  `finditer`, `sub`, `subn`, `split`) or of `assertRegex`/`assertNotRegex`, which is also checked
-  for numeric backreferences (`\\1`..`\\99`). Only pattern positions are, because a `\\1` in a
-  replacement string is not one.
+How (the syntax tree is read; nothing is imported or run):
+- Candidates are every string expression that is not a docstring: a literal, an f-string or a `+`
+  chain, wherever it is (an assignment, a list or dict of patterns, a call argument), with module
+  and function-local string constants inlined. A name passed as the pattern argument of a `re`
+  function (`compile`, `search`, `match`, `fullmatch`, `findall`, `finditer`, `sub`, `subn`,
+  `split`, also through `import re as x` or `from re import compile`) or of
+  `assertRegex`/`assertNotRegex` is resolved the same way.
+- Each candidate is parsed by Python's own regex parser (`re._parser`). The constructs that
+  `regex` rejects are flagged: look-ahead and look-behind (`ASSERT`, `ASSERT_NOT`), numeric and
+  named backreferences (`GROUPREF`), conditionals (`GROUPREF_EXISTS`), atomic groups
+  (`ATOMIC_GROUP`) and possessive quantifiers (`POSSESSIVE_REPEAT`). A replacement template such
+  as `r"\\1"` does not parse as a pattern, so it is not flagged.
+- Outside a pattern argument, a candidate is flagged only when it also looks like a regex (it has
+  a group, a class, `.`, an anchor, an alternation or a repeat), so prose such as `"C++"` is not.
+- A candidate that does not parse (a fragment) is still flagged for a textual lookaround or
+  `(?P=`, outside a character class and not escaped.
 
 Columns (tab-separated, sorted): `file`, `where` (`<scope>:<target>`: the enclosing function or
 class, `<module>` at top level, then the assigned name or the called function), `constructs`
 (comma-separated: `lookahead`, `neg-lookahead`, `lookbehind`, `neg-lookbehind`, `backref`,
-`named-backref`, and `dynamic` when part of the text is only known at run time), `pattern`.
-In `pattern`, a module-level string constant is written `«NAME»`, any other run-time part
-`«expression»`, and a tab, line feed or carriage return as U+2409, U+240A, U+240D. A pattern that
-repeats in the same `where` gets `#2`, `#3`, ... appended to `where`.
+`named-backref`, `conditional`, `atomic`, `possessive`, and `dynamic` when part of the text is only
+known at run time), `pattern`. In `pattern`, a string constant is written `«NAME»`, any other
+run-time part `«expression»`, and a tab, line feed or carriage return as U+2409, U+240A, U+240D.
+A pattern that repeats in the same `where` gets `#2`, `#3`, ... appended to `where`.
 """
 from __future__ import annotations
 
@@ -39,6 +47,14 @@ import ast
 import json
 import os
 import sys
+import warnings
+
+try:  # 3.11+
+    from re import _constants as sre_c
+    from re import _parser as sre_p
+except ImportError:  # pragma: no cover - 3.9 and 3.10
+    import sre_constants as sre_c  # type: ignore[no-redef]
+    import sre_parse as sre_p  # type: ignore[no-redef]
 
 ROOTS = ("scripts", "evals", "tests", "plugins")
 SKIP_DIRS = {"__pycache__", "node_modules", ".git"}
@@ -46,10 +62,25 @@ SKIP_PREFIXES = ("plugins/anthology-superpowers/",)
 RE_FUNCS = {"compile", "search", "match", "fullmatch", "findall", "finditer", "sub", "subn",
             "split"}
 ASSERT_FUNCS = {"assertRegex", "assertNotRegex"}
+ORDER = ["lookahead", "neg-lookahead", "lookbehind", "neg-lookbehind", "backref", "named-backref",
+         "conditional", "atomic", "possessive", "dynamic"]
 HEADER = ("# Generated by port/extract/regex_inventory.py; do not edit by hand. Every Python "
-          "pattern with a lookaround or a backreference: Rust compiles these with fancy-regex "
-          "(design §11.1, plan GC-16).\n"
+          "pattern with a lookaround, a backreference, a conditional, an atomic group or a "
+          "possessive quantifier: Rust compiles these with fancy-regex (design §11.1, plan "
+          "GC-16).\n"
           "# file\twhere\tconstructs\tpattern\n")
+
+
+def _op(name):
+    return getattr(sre_c, name, None)
+
+
+OP_ASSERT, OP_ASSERT_NOT = _op("ASSERT"), _op("ASSERT_NOT")
+OP_GROUPREF, OP_GROUPREF_EXISTS = _op("GROUPREF"), _op("GROUPREF_EXISTS")
+OP_ATOMIC, OP_POSSESSIVE = _op("ATOMIC_GROUP"), _op("POSSESSIVE_REPEAT")
+REGEX_LIKE = {_op(n) for n in ("SUBPATTERN", "IN", "ANY", "AT", "BRANCH", "MAX_REPEAT",
+                               "MIN_REPEAT", "GROUPREF", "GROUPREF_EXISTS", "ASSERT",
+                               "ASSERT_NOT", "ATOMIC_GROUP")} - {None}
 
 
 def python_files(root: str) -> list[str]:
@@ -66,18 +97,13 @@ def python_files(root: str) -> list[str]:
     return sorted(out)
 
 
-def constructs_of(text: str, pattern_position: bool) -> set[str]:
-    """The lookaround and backreference constructs in regex `text` (a small tokenizer)."""
+def textual_lookarounds(text: str) -> set[str]:
+    """Lookaround and `(?P=` tokens in `text`, outside classes and escapes (for fragments)."""
     found = set()
     i, n, in_class = 0, len(text), False
     while i < n:
         ch = text[i]
         if ch == "\\":
-            nxt = text[i + 1] if i + 1 < n else ""
-            if pattern_position and not in_class and nxt in "123456789":
-                octal = text[i + 1:i + 4]
-                if not (len(octal) == 3 and all(c in "01234567" for c in octal)):
-                    found.add("backref")
             i += 2
             continue
         if in_class:
@@ -94,7 +120,7 @@ def constructs_of(text: str, pattern_position: bool) -> set[str]:
             if i < n and text[i] == "]":
                 i += 1
             continue
-        if ch == "(" and text.startswith("(?", i):
+        if text.startswith("(?", i):
             rest = text[i + 2:i + 4]
             if rest.startswith("="):
                 found.add("lookahead")
@@ -110,45 +136,117 @@ def constructs_of(text: str, pattern_position: bool) -> set[str]:
     return found
 
 
+def _walk(node, found: set, ops: set) -> None:
+    if isinstance(node, sre_p.SubPattern):
+        for op, av in node:
+            ops.add(op)
+            if op in (OP_ASSERT, OP_ASSERT_NOT):
+                ahead = av[0] == 1
+                name = ("lookahead" if ahead else "lookbehind")
+                found.add(name if op == OP_ASSERT else "neg-" + name)
+            elif op == OP_GROUPREF:
+                found.add("backref")
+            elif op == OP_GROUPREF_EXISTS:
+                found.add("conditional")
+            elif op == OP_ATOMIC:
+                found.add("atomic")
+            elif op == OP_POSSESSIVE:
+                found.add("possessive")
+            _walk(av, found, ops)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _walk(item, found, ops)
+
+
+def constructs_of(text: str, pattern_position: bool) -> set[str]:
+    """The constructs in `text` that the `regex` crate rejects (empty when there are none)."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parsed = sre_p.parse(text)
+    except Exception:  # not a whole pattern: a fragment, prose or a template
+        return textual_lookarounds(text)
+    found: set = set()
+    ops: set = set()
+    _walk(parsed, found, ops)
+    if found and not pattern_position and not (ops & REGEX_LIKE):
+        return set()
+    if "backref" in found and "(?P=" in text:
+        found.add("named-backref")
+        if not any(text[i] == "\\" and text[i + 1:i + 2].isdigit() for i in range(len(text) - 1)):
+            found.discard("backref")
+    return found
+
+
+def str_assignments(body) -> dict:
+    """`NAME = <string expression>` assignments among `body`'s statements (not nested defs)."""
+    out = {}
+    stack = list(body)
+    while stack:
+        stmt = stack.pop(0)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name) and is_str_expr(stmt.value):
+            out.setdefault(stmt.targets[0].id, stmt.value)
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(stmt, field, []) or [])
+    return out
+
+
+def is_str_expr(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (str, bytes))
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return has_literal(node)
+    return False
+
+
+def has_literal(node: ast.AST) -> bool:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return has_literal(node.left) or has_literal(node.right)
+    return (isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))) \
+        or isinstance(node, ast.JoinedStr)
+
+
 class FileScan(ast.NodeVisitor):
     def __init__(self, rel: str, tree: ast.Module):
         self.rel = rel
         self.rows: list[tuple[str, str, str, str]] = []
         self.scope: list[str] = []
         self.targets: list[str] = []
-        self.consts: dict[str, ast.AST] = {}
+        # Name scopes, innermost last: the module, then each enclosing function.
+        self.consts: list[dict] = [str_assignments(tree.body)]
         self.docstrings: set[int] = set()
         self.seen: set[int] = set()
+        # Names that mean the `re` module, and names bound to `re` functions.
+        self.re_modules: set[str] = set()
+        self.re_funcs: dict[str, str] = {}
         for node in ast.walk(tree):
             body = getattr(node, "body", None)
             if isinstance(body, list) and body and isinstance(body[0], ast.Expr) \
                     and isinstance(body[0].value, ast.Constant) \
                     and isinstance(body[0].value.value, (str, bytes)):
                 self.docstrings.add(id(body[0].value))
-        for stmt in tree.body:
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
-                    and isinstance(stmt.targets[0], ast.Name) and self.is_str_expr(stmt.value):
-                self.consts[stmt.targets[0].id] = stmt.value
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "re":
+                        self.re_modules.add(alias.asname or "re")
+            elif isinstance(node, ast.ImportFrom) and node.module == "re":
+                for alias in node.names:
+                    if alias.name in RE_FUNCS:
+                        self.re_funcs[alias.asname or alias.name] = alias.name
 
-    # ----------------------------------------------------------------- string expressions
-
-    def is_str_expr(self, node: ast.AST) -> bool:
-        if isinstance(node, ast.Constant):
-            return isinstance(node.value, (str, bytes))
-        if isinstance(node, ast.JoinedStr):
-            return True
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return self.has_literal(node)
-        return False
-
-    def has_literal(self, node: ast.AST) -> bool:
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return self.has_literal(node.left) or self.has_literal(node.right)
-        return (isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))) \
-            or isinstance(node, ast.JoinedStr)
+    def lookup(self, name: str):
+        for scope in reversed(self.consts):
+            if name in scope:
+                return scope[name]
+        return None
 
     def render(self, node: ast.AST, inline: bool, depth: int = 0) -> tuple[str, bool]:
-        """`(text, dynamic)`. With `inline`, module string constants are replaced by their text."""
+        """`(text, dynamic)`. With `inline`, string constants are replaced by their text."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value, False
         if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
@@ -166,10 +264,12 @@ class FileScan(ast.NodeVisitor):
             left, dl = self.render(node.left, inline, depth)
             right, dr = self.render(node.right, inline, depth)
             return left + right, dl or dr
-        if isinstance(node, ast.Name) and node.id in self.consts:
-            if inline and depth < 20:
-                return self.render(self.consts[node.id], inline, depth + 1)[0], False
-            return "«" + node.id + "»", False
+        if isinstance(node, ast.Name):
+            value = self.lookup(node.id)
+            if value is not None:
+                if inline and depth < 20:
+                    return self.render(value, inline, depth + 1)[0], False
+                return "«" + node.id + "»", False
         return "«" + ast.unparse(node) + "»", True
 
     def where(self, call: str | None) -> str:
@@ -183,27 +283,29 @@ class FileScan(ast.NodeVisitor):
         text, dynamic = self.render(node, inline=False)
         full, _ = self.render(node, inline=True)
         found = constructs_of(full, pattern_position)
-        if not pattern_position:
-            found.discard("backref")
         if not found:
             return
         self.seen.add(id(node))
         if dynamic:
             found.add("dynamic")
-        order = ["lookahead", "neg-lookahead", "lookbehind", "neg-lookbehind", "backref",
-                 "named-backref", "dynamic"]
-        self.rows.append((self.rel, self.where(call), ",".join(c for c in order if c in found),
+        self.rows.append((self.rel, self.where(call), ",".join(c for c in ORDER if c in found),
                           text))
 
     # ----------------------------------------------------------------- traversal
 
     def visit_FunctionDef(self, node):  # noqa: N802
         self.scope.append(node.name)
+        self.consts.append(str_assignments(node.body))
         self.generic_visit(node)
+        self.consts.pop()
         self.scope.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
-    visit_ClassDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node):  # noqa: N802
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
 
     def visit_Assign(self, node):  # noqa: N802
         names = [ast.unparse(t) for t in node.targets]
@@ -221,14 +323,19 @@ class FileScan(ast.NodeVisitor):
         self.generic_visit(node)
         self.targets.pop()
 
-    def visit_Call(self, node):  # noqa: N802
-        func = node.func
-        name = None
+    def re_call(self, func: ast.AST) -> str | None:
         if isinstance(func, ast.Attribute):
-            if isinstance(func.value, ast.Name) and func.value.id == "re" and func.attr in RE_FUNCS:
-                name = "re." + func.attr
-            elif func.attr in ASSERT_FUNCS:
-                name = func.attr
+            if isinstance(func.value, ast.Name) and func.value.id in self.re_modules \
+                    and func.attr in RE_FUNCS:
+                return "re." + func.attr
+            if func.attr in ASSERT_FUNCS:
+                return func.attr
+        if isinstance(func, ast.Name) and func.id in self.re_funcs:
+            return "re." + self.re_funcs[func.id]
+        return None
+
+    def visit_Call(self, node):  # noqa: N802
+        name = self.re_call(node.func)
         pattern = None
         if name and name.startswith("re."):
             pattern = node.args[0] if node.args else next(
@@ -237,12 +344,12 @@ class FileScan(ast.NodeVisitor):
             pattern = node.args[1] if len(node.args) > 1 else next(
                 (k.value for k in node.keywords if k.arg in ("expected_regex", "unexpected_regex")),
                 None)
-        if pattern is not None and (self.is_str_expr(pattern) or isinstance(pattern, ast.Name)):
+        if pattern is not None and (is_str_expr(pattern) or isinstance(pattern, ast.Name)):
             self.record(pattern, True, name)
         self.generic_visit(node)
 
     def visit_BinOp(self, node):  # noqa: N802
-        if self.is_str_expr(node):
+        if is_str_expr(node):
             self.record(node, False, None)
             return  # a maximal string expression: its parts are not patterns of their own
         self.generic_visit(node)
@@ -276,22 +383,24 @@ def portmap_rows(root: str) -> list[tuple[str, str, str, str]]:
             elif isinstance(value, str) and under_regex:
                 found = constructs_of(value, True)
                 if found:
-                    order = ["lookahead", "neg-lookahead", "lookbehind", "neg-lookbehind",
-                             "backref", "named-backref"]
-                    rows.append((rel, path, ",".join(c for c in order if c in found), value))
+                    rows.append((rel, path, ",".join(c for c in ORDER if c in found), value))
 
         walk(data, "$", False)
     return rows
+
+
+def scan_source(rel: str, source: bytes) -> list[tuple[str, str, str, str]]:
+    tree = ast.parse(source, filename=rel)
+    scan = FileScan(rel, tree)
+    scan.visit(tree)
+    return scan.rows
 
 
 def inventory(root: str) -> list[tuple[str, str, str, str]]:
     rows = portmap_rows(root)
     for rel in python_files(root):
         with open(os.path.join(root, rel), "rb") as fh:
-            tree = ast.parse(fh.read(), filename=rel)
-        scan = FileScan(rel, tree)
-        scan.visit(tree)
-        rows.extend(scan.rows)
+            rows.extend(scan_source(rel, fh.read()))
     # Name repeats within one `where`, in source order, then sort.
     counts: dict[tuple[str, str, str], int] = {}
     named = []
@@ -315,7 +424,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", default=".", help="the repository root")
     parser.add_argument("--out", help="write here instead of stdout")
+    parser.add_argument("--self-test", action="store_true",
+                        help="check the detection on built-in cases and exit")
     args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
     if not os.path.isdir(os.path.join(args.root, "tests")):
         raise SystemExit("regex_inventory: run from the repository root (no tests/ directory)")
     text = render_tsv(inventory(args.root))
@@ -324,6 +437,42 @@ def main(argv=None) -> int:
             fh.write(text)
     else:
         sys.stdout.write(text)
+    return 0
+
+
+# Each case: source, then the (where, constructs) rows it must give. `ci/jobs/ledger.sh` runs this
+# before the extraction, so a detection gap fails the job.
+SELF_TEST_CASES = [
+    ('PATS = [r"([\'\\"]).*?\\1"]\nC = [re.compile(p) for p in PATS]\n',
+     [("<module>:PATS", "backref")]),
+    ('import re\ndef f(s):\n    local = r"(\\w+) \\1"\n    return re.search(local, s)\n',
+     [("f:local", "backref"), ("f:re.search", "backref")]),
+    ('import re as _re\nX = _re.compile(r"(a)b\\1")\n', [("<module>:X", "backref")]),
+    ('D = {"k": r"(q)\\1"}\n', [("<module>:D", "backref")]),
+    ('from re import compile as c\nY = c(r"a(?=b)")\n', [("<module>:Y", "lookahead")]),
+    ('N = r"(?P<q>a)(?P=q)"\n', [("<module>:N", "named-backref")]),
+    ('K = r"(a)?(?(1)b|c)"\n', [("<module>:K", "conditional")]),
+    ('A = r"(?>ab|a)c"\n', [("<module>:A", "atomic")]),
+    ('P = r"[a-z]++x"\n', [("<module>:P", "possessive")]),
+    ('B = rb"(?<![\\w.])x"\n', [("<module>:B", "neg-lookbehind")]),
+    ('F = "(?!" + "x"\n', [("<module>:F", "neg-lookahead")]),
+    ('import re\nR = re.sub(r"(a)", r"\\1\\1", "a")\nT = "C++ and g++"\nU = "\\\\1 is a template"\n'
+     'def g():\n    """Docstring with (?=x) in it."""\n',
+     []),
+]
+
+
+def self_test() -> int:
+    failures = []
+    for source, want in SELF_TEST_CASES:
+        got = [(w, c) for _, w, c, _ in scan_source("case.py", source.encode())]
+        if sorted(got) != sorted(want):
+            failures.append(f"{source!r}: got {got}, want {want}")
+    for failure in failures:
+        sys.stderr.write("regex_inventory self-test: " + failure + "\n")
+    if failures:
+        return 1
+    sys.stderr.write(f"regex_inventory self-test: {len(SELF_TEST_CASES)} cases ok\n")
     return 0
 
 

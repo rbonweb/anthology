@@ -11,7 +11,8 @@ its last row, so its count would be wrong.
 
 - `--counts FILE` writes `python_id<TAB>rows`, sorted, for every id with at least one row. This is
   the committed `port/python-test-rows.tsv`; `anthology-dev ledger check` compares the Rust rows
-  (`crates/*/tests/data/<python_module>.jsonl`, tagged `"py"`) against it (design §13.3).
+  (`tests/data/<python_module>.jsonl` of the target's crate, lines tagged `"py"` with distinct
+  `"row": 0..n-1`, as the seeds below carry them) against it (design §13.3).
 - `--jsonl DIR` writes `DIR/<python_module>.jsonl`, one row per line:
   `{"py": "<id>", "row": <n>, "params": {...}}`. Rows are the seeds a lane copies into its
   `tests/data/` file. Values that are not JSON are tagged (`$bytes` as hex, `$set`, `$float` for
