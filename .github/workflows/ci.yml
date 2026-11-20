@@ -143,3 +143,18 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_taste_bridge.py' -v
+
+  setup-git:
+    # The session-start and setup tests that need git (repo approval, memory cover) skip in the
+    # Docker test images, which have no git, so they run here on the runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Session-start and setup tests with git
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --require-hashes -r tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests -p 'test_se*.py' -v
