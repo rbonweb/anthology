@@ -361,6 +361,33 @@ pub(crate) fn decide_for_claude_hook_at(
         Some(|| permissions.deny_rules()),
         cwd,
     );
+    // The host judges the text the hook hands back, and `Bash(rtk *)` allows
+    // whatever starts with `rtk`: read that text as the rtk command it is (`pnpm
+    // exec cat secret.txt` becomes `rtk pnpm exec cat secret.txt`).
+    let gate = match &decision {
+        HookDecision::AllowRewrite(rewritten) | HookDecision::AskRewrite(rewritten, _)
+            if rewritten != cmd =>
+        {
+            match super::anthology_gate::evaluate(
+                rewritten,
+                &permissions.gate,
+                PermissionVerdict::Default,
+                cwd,
+            ) {
+                super::anthology_gate::Gate::Deny => return HookDecision::Deny,
+                super::anthology_gate::Gate::Ask => super::anthology_gate::Gate::Ask,
+                super::anthology_gate::Gate::Defer => {
+                    if gate == super::anthology_gate::Gate::Ask {
+                        gate
+                    } else {
+                        return HookDecision::Defer;
+                    }
+                }
+                super::anthology_gate::Gate::Pass => gate,
+            }
+        }
+        _ => gate,
+    };
     super::anthology_gate::apply(gate, cmd, decision, &permissions.gate)
 }
 

@@ -644,9 +644,10 @@ fn interpreters_and_launchers_inside_rtk_ask() {
     );
     assert_eq!(sb.hook("rtk bypass tcsh -c 'git push'"), Said::Deny);
     assert_eq!(sb.hook("rtk bypass parallel git push ::: a"), Said::Deny);
-    // At top level a rewrite whose text holds a ruled head is the host's to judge.
-    for cmd in ["git log --grep='git push'", "ssh localhost git push"] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    // At top level a command rtk rewrites into text that holds a ruled head asks
+    // (the rewrite is gated too).
+    for cmd in ["ssh localhost git push", "git log --grep='git push'"] {
+        assert!(matches!(sb.hook(cmd), Said::Ask(_)), "{cmd}");
     }
 }
 
@@ -943,6 +944,203 @@ fn the_round_three_backstops_are_inert_in_a_bare_sandbox() {
         "echo push | rtk bypass xargs git",
         "rtk bypass ssh h 'x=push; git $x'",
         "rtk run -c 'time time git push'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+// --- review round 4 ---
+
+/// N-1: a command rtk rewrites into `rtk <launcher> ...` is gated as that text.
+#[test]
+fn the_text_the_hook_rewrites_a_command_into_is_gated_too() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "pnpm exec cat secret.txt",
+        "npx -c 'cat secret.txt'",
+        "pnpm exec base64 secret.txt",
+        "npx -c 'cat config/.e*'",
+        "npm exec -c 'f=secret; cat $f.txt'",
+        "bunx sh -c 'f=secret; cat $f.txt'",
+        "pnpm exec cat secre?.txt",
+        "find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
+    ] {
+        assert!(
+            matches!(sb.hook(cmd), Said::Ask(_) | Said::Deny | Said::Nothing),
+            "{cmd}"
+        );
+        assert!(
+            !matches!(sb.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
+            "{cmd} was rewritten with no decision: {:?}",
+            sb.hook(cmd)
+        );
+    }
+    let only = push_only_sandbox();
+    for cmd in [
+        "pnpm exec sh -c 'x=push; git $x'",
+        "x=it; pnpm exec g$x push",
+        "pnpm exec {git,} push",
+        "npx -c 'x=push; git $x'",
+        "npm exec -c 'x=push; git $x'",
+        "bunx sh -c 'x=push; git $x'",
+        "bun run sh -c 'x=push; git $x'",
+        "pnpm exec $'\\x67it' push",
+        "pnpm exec git pu*h",
+        "npm x -c 'x=push; git $x'",
+        "bun x sh -c 'x=push; git $x'",
+        "pnpm exec python3 -c 'import os; os.system(\"gi\"+\"t push\")'",
+        "npm exec -c 'echo Z2l0IHB1c2g= | base64 -d | sh'",
+        "pnpm exec git -c alias.p=push p",
+        "find . -maxdepth 0 -exec caffeinate sh -c 'echo Z2l0IHB1c2g= | base64 -d | sh' \\;",
+    ] {
+        let said = only.hook(cmd);
+        assert!(
+            !matches!(said, Said::Allow(_) | Said::Rewrite(_)),
+            "{cmd} was rewritten with no decision: {said:?}"
+        );
+    }
+}
+
+/// N-1 read from the other side: the commands the rewrite gate must not tax.
+#[test]
+fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
+    let sb = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["rtk *"],
+        read_deny: &["./secret.txt"],
+        ..Rules::default()
+    });
+    for cmd in [
+        "ruff check .",
+        "docker build -t app .",
+        "npx prettier --check .",
+        "git status",
+        "cargo test",
+        "cat README.md",
+        "grep 'a.*b' f",
+        "npx eslint .",
+        "pip install -e .",
+    ] {
+        match sb.hook(cmd) {
+            Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
+                assert!(rewritten.starts_with("rtk "), "{cmd}: {rewritten}");
+            }
+            // Some of these are not rewritten at all by rtk; that is no regression.
+            Said::Nothing => {}
+            other => panic!("{cmd} lost its rewrite: {other:?}"),
+        }
+    }
+    for cmd in [
+        "ruff check .",
+        "docker build -t app .",
+        "git status",
+        "cargo test",
+    ] {
+        assert!(
+            matches!(sb.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
+            "{cmd}: {:?}",
+            sb.hook(cmd)
+        );
+    }
+    let only = push_only_sandbox();
+    assert!(matches!(
+        only.hook("ls src/*.rs"),
+        Said::Allow(_) | Said::Rewrite(_)
+    ));
+}
+
+/// N-2: a script a launcher runs is read in full.
+#[test]
+fn a_script_behind_a_launcher_is_read_in_full() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    asked(
+        &sb,
+        &[
+            "rtk bypass caffeinate sh -c 'cat secret.txt'",
+            "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
+            "rtk bypass caffeinate sh -c 'head secret.txt'",
+            "rtk bypass caffeinate sh -c 'cat < secret.txt'",
+            "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
+            "rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'",
+            "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
+            "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
+        ],
+    );
+    let only = push_only_sandbox();
+    asked(
+        &only,
+        &[
+            "rtk bypass caffeinate sh -c 'echo Z2l0IHB1c2g= | base64 -d | sh'",
+            "rtk bypass caffeinate bash -c 'source /dev/stdin <<< \"x\"'",
+        ],
+    );
+}
+
+/// N-3 and N-4: rtk drops a `--`, and git can be told to run something else.
+#[test]
+fn a_double_dash_and_git_config_do_not_hide_a_denied_command() {
+    let only = push_only_sandbox();
+    for cmd in [
+        "rtk git -- push",
+        "rtk git -C . -- push",
+        "rtk git -- push --force origin main",
+    ] {
+        assert_eq!(only.hook(cmd), Said::Deny, "{cmd}");
+    }
+    asked(
+        &only,
+        &[
+            "rtk git -c alias.p=push p",
+            "PUSHVAR=push rtk git --config-env=alias.p=PUSHVAR p",
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push rtk git p",
+            "rtk git -c 'alias.p=!echo Z2l0IHB1c2g= | base64 -d | sh' p",
+            "rtk git -c diff.external='sh -c \"eval \\$X\"' diff",
+            "rtk git -c core.pager='x' log",
+        ],
+    );
+    let sb = Sandbox::rtk_allowed_with_rules();
+    asked(&sb, &["rtk kubectl -- apply -f x.yaml", "rtk aws -- s3 ls"]);
+}
+
+/// M-2: only options may stand between a rule's words.
+#[test]
+fn positional_words_between_a_rules_words_do_not_cost_the_rewrite() {
+    let only = push_only_sandbox();
+    for cmd in ["git stash push -m wip", "git log --grep push"] {
+        assert!(
+            matches!(only.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
+            "{cmd}: {:?}",
+            only.hook(cmd)
+        );
+    }
+    assert_eq!(only.hook("git -C . push"), Said::Deny);
+}
+
+/// N-5: no prompt for a bare `.` or an interpreter named as an operand.
+#[test]
+fn a_bare_dot_and_interpreter_operands_do_not_prompt() {
+    let only = push_only_sandbox();
+    for cmd in [
+        "rtk npx prettier --check .",
+        "rtk ruff check .",
+        "rtk docker build -t app .",
+        "rtk docker exec app python manage.py migrate",
+        "rtk uv run python script.py",
+        "rtk bypass rsync -a . /tmp/x",
+    ] {
+        assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// No rule anywhere: the round-4 spellings say nothing, as before.
+#[test]
+fn the_round_four_backstops_are_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "rtk git -- push",
+        "rtk git -c alias.p=push p",
+        "rtk bypass caffeinate sh -c 'cat secret.txt'",
+        "rtk pnpm exec cat secret.txt",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
