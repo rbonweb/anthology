@@ -49,3 +49,42 @@ STRIPPED_KNOWLEDGE = {
     **{n: (_UX, f"plugins/website-design/skills/{n}") for n in (
         "landing-page", "web-review", "web-design-system")},
 }
+
+
+# The 11-agent roster (Part 1 section 5). `knowledge`: refs for knowledge_path(), in Startup
+# order after caveman. `preloads`: anthology-superpowers skills in the agent's `skills`.
+# `edits`: "no" | "yes" | "docs" (docs-only: Markdown in the main clone, no worktree).
+_UI_KNOWLEDGE = ["frontend-design", "design-taste-frontend", "ui-taste", "landing-page",
+                 "web-design-system", "design-handoff", "ds/design-systems",
+                 "ds/interaction-design", "ds/design-elevation"]
+EXPECTED_ROSTER = {
+    "researcher": {"model": "opus", "edits": "no", "worktree": False, "preloads": [],
+                   "knowledge": ["competitive-brief", "synthesize-research",
+                                 "research-synthesis", "ds/ux-research", "ds/journey-mapping"]},
+    "architect": {"model": "opus", "edits": "no", "worktree": False,
+                  "preloads": ["writing-plans"],
+                  "knowledge": ["system-design", "architecture", "testing-strategy"]},
+    "implementer": {"model": "sonnet", "edits": "yes", "worktree": True,
+                    "preloads": ["test-driven-development", "verification-before-completion"],
+                    "knowledge": []},
+    "debugger": {"model": "sonnet", "edits": "yes", "worktree": True,
+                 "preloads": ["systematic-debugging"], "knowledge": []},
+    "reviewer": {"model": "opus", "edits": "no", "worktree": False, "preloads": [],
+                 "knowledge": ["code-review-checklist", "tech-debt", "deploy-checklist"]},
+    "scout": {"model": "haiku", "edits": "no", "worktree": False, "preloads": [],
+              "knowledge": []},
+    "docs-writer": {"model": "sonnet", "edits": "yes", "worktree": True, "preloads": [],
+                    "knowledge": ["documentation", "ds/ux-writing"]},
+    "ui-designer": {"model": "sonnet", "edits": "yes", "worktree": True, "preloads": [],
+                    "knowledge": _UI_KNOWLEDGE},
+    "ui-reviewer": {"model": "opus", "edits": "no", "worktree": False, "preloads": [],
+                    "knowledge": ["web-design-guidelines", "web-review", "ds/design-critique",
+                                  "ds/accessibility-audit"]},
+    "product-planner": {"model": "opus", "edits": "docs", "worktree": False, "preloads": [],
+                        "knowledge": ["write-spec", "sprint-planning", "roadmap-update",
+                                      "product-brainstorming", "ds/ux-strategy",
+                                      "ds/design-ops"]},
+    "marketer": {"model": "sonnet", "edits": "docs", "worktree": False, "preloads": [],
+                 "knowledge": ["seo-audit", "campaign-plan", "content-creation",
+                               "email-sequence"]},
+}

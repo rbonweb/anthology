@@ -5,7 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
-from _repo import ROOT, SUPERPOWERS, knowledge_path, load_frontmatter, superpowers_skill_path
+from _repo import (EXPECTED_ROSTER, ROOT, SUPERPOWERS, knowledge_path, load_frontmatter,
+                   superpowers_skill_path)
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import vendor  # noqa: E402
@@ -82,8 +83,7 @@ class PinnedImagesTest(unittest.TestCase):
             self.assertRegex(lines[0], self.FROM, f"{f.name}: FROM must be tag@sha256:digest")
 
 
-PRELOADS = ["writing-plans", "test-driven-development", "verification-before-completion",
-            "systematic-debugging"]  # Part 1 section 5; Task 6 replaces this with EXPECTED_ROSTER
+PRELOADS = sorted({s for a in EXPECTED_ROSTER.values() for s in a["preloads"]})
 DESIGN_SKILLS = ["accessibility-audit", "design-critique", "design-elevation", "design-ops",
                  "design-systems", "interaction-design", "journey-mapping", "ux-research",
                  "ux-strategy", "ux-writing"]
