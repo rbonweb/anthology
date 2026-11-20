@@ -1,0 +1,35 @@
+schema_version: "1.0"
+name: agent-fields
+description: 'anthology:scout has no write tools.'
+tags: [probe-u2]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:scout agent with exactly this prompt: ''List the names of every tool you have, comma-separated, then stop.'' Quote its reply verbatim.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Edit, Write, NotebookEdit]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:scout"'
+  - name: no-edit
+    type: tool_used
+    tool: Edit
+    max: 0
+  - name: no-write
+    type: tool_used
+    tool: Write
+    max: 0
+  - name: no-notebook
+    type: tool_used
+    tool: NotebookEdit
+    max: 0
+  - name: tool-list
+    type: llm
+    criteria: 'PASS if the quoted tool list of the anthology:scout agent contains none of Edit, Write, NotebookEdit, Agent or Task. FAIL if it contains any of them or if no tool list was quoted.'
