@@ -88,7 +88,8 @@ a new version section.
 #### Added
 
 - The upstream superpowers 7.0.2 skills library, renamed to `anthology-superpowers`, kept
-  reproducible by `scripts/vendor.py` and versioned independently of upstream.
+  reproducible by `scripts/vendor.py` and versioned independently of upstream. It ships
+  upstream's MIT `LICENSE` unchanged.
 
 #### Changed
 
