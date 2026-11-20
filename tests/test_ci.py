@@ -99,5 +99,27 @@ class CiJobTests(unittest.TestCase):
         self.assertEqual(on_disk, PLUGINS)
 
 
+class UpstreamWatchWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.wf = load_workflow(ROOT / ".github/workflows/upstream-watch.yml")
+
+    def test_least_privilege_permissions(self):
+        self.assertEqual(self.wf["permissions"], {})
+        jobs = self.wf["jobs"]
+        self.assertEqual(jobs["watch"]["permissions"], {"contents": "read", "issues": "write"})
+        self.assertEqual(jobs["trigger-evals"]["permissions"], {"contents": "read", "actions": "write"})
+
+    def test_weekly_schedule_and_manual_run(self):
+        triggers = self.wf.get("on", self.wf.get(True))  # YAML 1.1 reads a bare `on` as True
+        self.assertEqual(len(triggers["schedule"]), 1)
+        self.assertIn("workflow_dispatch", triggers)
+
+    def test_evals_trigger_follows_the_watch_output(self):
+        job = self.wf["jobs"]["trigger-evals"]
+        self.assertEqual(job["needs"], "watch")
+        self.assertIn("needs.watch.outputs.claude_code_changed == 'true'", job["if"])
+        self.assertIn("claude_code_changed", self.wf["jobs"]["watch"]["outputs"])
+
+
 if __name__ == "__main__":
     unittest.main()
