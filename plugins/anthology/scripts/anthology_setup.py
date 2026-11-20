@@ -115,12 +115,13 @@ def _rtk_apply(root, data_dir):
 
 
 def _settings_plan(root, env):
-    """`(path, text, new_text, diff, ops_to_store)`; ValueError / FileNotFoundError on bad input."""
+    """`(path, text, new_text, diff, ops_to_store, ops_version)`; ValueError / FileNotFoundError on
+    bad input."""
     path = settings_patch.settings_path(env)
     text = settings_patch.read_text(path)
     ops = settings_patch.setup_ops(root, env=env)
     new_text, diff, stored = settings_patch.reconcile(text, ops, state.read().get("settings_ops") or [])
-    return path, text, new_text, diff, stored
+    return path, text, new_text, diff, stored, settings_patch.ops_version(ops)
 
 
 def _settings_error(exc):
@@ -157,7 +158,7 @@ def preview(plugin_root, cwd=None, env=None):
     settings = {"path": str(settings_patch.settings_path(env)), "sha256": _sha256(text),
                 "bypass_note": settings_patch.BYPASS_NOTE}
     try:
-        _path, _text, new_text, diff, _stored = _settings_plan(plugin_root, env)
+        _path, _text, new_text, diff, _stored, _version = _settings_plan(plugin_root, env)
         settings.update(changed=new_text != text, diff=diff)
     except (ValueError, FileNotFoundError) as exc:
         settings.update(changed=False, diff="", error=_settings_error(exc))
@@ -204,7 +205,7 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
     if _sha256(settings_patch.read_text(path)) != expect_sha256:
         return stale
     try:
-        _path, text, new_text, diff, stored = _settings_plan(plugin_root, env)
+        _path, text, new_text, diff, stored, ops_version = _settings_plan(plugin_root, env)
     except (ValueError, FileNotFoundError) as exc:
         return {"ok": False, "error": _settings_error(exc)}
     before = state.read()
@@ -236,7 +237,8 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None):
         os.chmod(str(personal), 0o700)
     memory["personal_dir"] = str(personal)
 
-    done = {"setup_done": _plugin_version(plugin_root)}
+    # The op set this run applied: session start compares it with the current release's (I6).
+    done = {"setup_done": _plugin_version(plugin_root), "settings_ops_version": ops_version}
     if data_dir:
         done["data_dir"] = data_dir
     state.write(**done)

@@ -49,6 +49,7 @@ NO_DATA = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; 
 SUBAGENT_MODEL_SET = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model "
                       "and the roster's model tiers do not apply")
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
+OPS_CHANGED = "anthology settings changed in this release — run /anthology:setup to review"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test
 # rtk_install's download deadline is 4 x this timeout, overshooting by at most one socket
 # timeout: worst case 5 x 8 = 40 s.
@@ -115,6 +116,20 @@ def _setup_warning(env, root):
         return ("anthology: could not read settings.json to check the plugin-read permission; "
                 "fix the file, then re-run /anthology:setup if agents cannot read their knowledge")
     return None
+
+
+def _ops_warning(env, root, current):
+    """I6: setup's settings ops changed since setup last ran (a new release) and are not all in
+    settings.json. Only a note: settings change only through setup's confirmed diff."""
+    try:
+        ops = settings_patch.setup_ops(root, env=env)
+        if current.get("settings_ops_version") == settings_patch.ops_version(ops):
+            return None
+        ops = [op for op in ops if op.get("tag") != settings_patch.TAG_PLUGIN_READ]  # MOVED's job
+        pending = settings_patch.plan(settings_patch.read_text(settings_patch.settings_path(env)), ops)
+    except Exception:  # unusable plugin root, broken guardrails, bad settings: reported elsewhere
+        return None
+    return OPS_CHANGED if pending else None
 
 
 def _data_dir_warning(env):
@@ -253,6 +268,7 @@ def _run(env, stdin):
         warnings.append(NAG)
     else:
         add(_step(warnings, "the plugin-read permission check", lambda: _setup_warning(env, root)))
+        add(_step(warnings, "the settings version check", lambda: _ops_warning(env, root, current)))
         if _elapsed(started) > DEADLINE - RTK_MIN_REMAINING:
             warnings.append("anthology: skipped the rtk check this session (not enough time left)")
         else:

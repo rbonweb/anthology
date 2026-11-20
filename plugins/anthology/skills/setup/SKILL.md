@@ -45,7 +45,8 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 4. Show every change, then ask one yes/no question ("Apply these changes?"):
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
-   - **settings.json:** show `settings.diff` as a diff. Then print this note verbatim:
+   - **settings.json:** show `settings.diff` as a diff. Values setup does not change show as
+     `"<redacted>"`, so no secret in the file reaches the conversation. Then print this note verbatim:
      `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; the guardrails and deny rules still apply to the wrapped command."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
@@ -76,6 +77,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 2. Show every change it would make:
    - `settings.diff` as a diff: the settings.json entries Anthology added come out, and
      `worktree.baseRef` goes back to its previous value. Rules the user added themselves are never touched.
+     Values remove does not change show as `"<redacted>"`.
    - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`

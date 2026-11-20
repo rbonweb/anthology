@@ -8,6 +8,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -431,6 +432,128 @@ class DiffTest(unittest.TestCase):
         self.assertIn("--- settings.json", diff)
         self.assertIn("+++ settings.json", diff)
         self.assertIn('+      "Bash(rtk *)"', diff)
+
+
+SECRETS = ("hunter2", "sk-live-123", "s3cr3t-cookie", "Bearer abc.def", "XYZSECRET", "opus")
+
+
+class RedactTest(unittest.TestCase):
+    """Setup and remove diffs show values only where setup changes them: never one under `env`,
+    a secret-looking key or any other key."""
+
+    def check(self, text, diff_lines=(), undo_lines=()):
+        """The setup diff and the remove diff of `text`; checks both carry the change, no secret
+        and the expected lines."""
+        planned = settings_patch.plan(text, ops())
+        new, diff = settings_patch.apply(text, planned)
+        back, undo = settings_patch.revert(new, planned)
+        self.assertEqual(back, text)
+        for shown, lines in ((diff, diff_lines), (undo, undo_lines)):
+            self.assertIn("Bash(rtk *)", shown)
+            self.assertIn("baseRef", shown)
+            for secret in SECRETS:
+                self.assertNotIn(secret, shown)
+            for line in lines:
+                self.assertIn(line, shown.splitlines())
+        return diff, undo
+
+    def test_minified_file(self):
+        text = json.dumps({"env": {"API_TOKEN": "hunter2", "PLAIN": "sk-live-123"},
+                           "model": "opus",
+                           "permissions": {"allow": ["Bash(ls)"]},
+                           "mcp": {"headers": {"Authorization": "Bearer abc.def"}},
+                           "hooks": {"Stop": [{"command": "curl https://hooks.example/XYZSECRET"}]},
+                           "proxyUrl": "http://u:s3cr3t-cookie@proxy"},
+                          separators=(",", ":"))
+        diff, undo = self.check(text)
+        for shown in (diff, undo):
+            for part in ('"API_TOKEN":"<redacted>"', '"PLAIN":"<redacted>"', '"model":"<redacted>"',
+                         '"Authorization":"<redacted>"', '"command":"<redacted>"',
+                         '"proxyUrl":"<redacted>"', '"Bash(ls)","Bash(rtk *)"'):
+                self.assertIn(part, shown)
+
+    def test_one_line_env_as_the_last_key(self):
+        text = ('{\n  "model": "opus",\n  "permissions": {"allow": ["Bash(ls)"]},\n'
+                '  "env": {"API_TOKEN": "hunter2", "PLAIN": "sk-live-123", "N": 3}\n}\n')
+        env = '  "env": {"API_TOKEN": "<redacted>", "PLAIN": "<redacted>", "N": "<redacted>"}'
+        self.check(text, diff_lines=["-" + env, "+" + env + ","],
+                    undo_lines=["-" + env + ",", "+" + env])
+
+    def test_pretty_printed_file(self):
+        data = {"permissions": {"allow": ["Bash(ls)"]},
+                "awsAuthRefresh": "login --password hunter2",
+                "servers": [{"name": "x", "cookie": "s3cr3t-cookie", "env": {"K": ["sk-live-123"]}}],
+                "env": {"SECRET": "hunter2"}}
+        text = json.dumps(data, indent=2) + "\n"
+        # env is the last key: its closing brace gets the comma, its values stay out of the diff
+        self.check(text, diff_lines=["+  },"], undo_lines=["-  },"])
+        self.assertIn('    "SECRET": "<redacted>"', settings_patch.redact(text).splitlines())
+
+    def test_pretty_printed_file_with_a_one_line_secret_as_the_last_key(self):
+        text = json.dumps({"permissions": {"allow": ["Bash(ls)"]},
+                           "apiKeyHelper": "/bin/echo sk-live-123"}, indent=2) + "\n"
+        self.check(text, diff_lines=['-  "apiKeyHelper": "<redacted>"', '+  "apiKeyHelper": "<redacted>",'],
+                   undo_lines=['-  "apiKeyHelper": "<redacted>",', '+  "apiKeyHelper": "<redacted>"'])
+
+    def test_redaction_keeps_keys_layout_and_line_count(self):
+        text = json.dumps({"env": {"A": "1", "B": {"c": [1, "x"]}}, "model": "opus",
+                           "githubToken": "hunter2"}, indent=2) + "\n"
+        out = settings_patch.redact(text)
+        self.assertEqual(len(out.splitlines()), len(text.splitlines()))
+        self.assertEqual(json.loads(out), {"env": {"A": "<redacted>", "B": {"c": ["<redacted>", "<redacted>"]}},
+                                           "model": "<redacted>", "githubToken": "<redacted>"})
+        self.assertEqual(settings_patch.redact(""), "")
+
+    def test_diff_without_secrets_is_unchanged_by_redaction(self):
+        text = json.dumps({"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}, indent=2) + "\n"
+        new, diff = settings_patch.apply(text, settings_patch.plan(text, ops()))
+        raw = "\n".join(difflib.unified_diff(text.splitlines(), new.splitlines(), "settings.json",
+                                             "settings.json", lineterm="", n=0))
+        self.assertEqual(diff, raw)
+
+    def test_shown_paths_stay_visible(self):
+        text = json.dumps({"permissions": {"allow": ["Bash(ls)"], "deny": ["Read(x)"], "ask": ["y"]},
+                           "worktree": {"baseRef": "fresh", "other": "z"},
+                           "list": [{"permissions": {"allow": ["hidden"]}}]}, indent=2)
+        self.assertEqual(json.loads(settings_patch.redact(text)),
+                         {"permissions": {"allow": ["Bash(ls)"], "deny": ["Read(x)"], "ask": ["<redacted>"]},
+                          "worktree": {"baseRef": "fresh", "other": "<redacted>"},
+                          "list": [{"permissions": {"allow": ["<redacted>"]}}]})
+
+    def test_every_setup_op_is_on_a_shown_path(self):
+        """Otherwise the diff would hide a change setup makes."""
+        for op in settings_patch.setup_ops(PLUGIN_ROOT):
+            self.assertIn(tuple(op["path"]), settings_patch.SHOWN_PATHS, op)
+
+
+class OpsVersionTest(unittest.TestCase):
+    def test_same_ops_same_version(self):
+        self.assertEqual(settings_patch.ops_version(ops()), settings_patch.ops_version(ops()))
+        self.assertTrue(settings_patch.ops_version(ops()).startswith("%d-" % settings_patch.OPS_VERSION))
+
+    def test_any_change_to_the_op_list_changes_it(self):
+        base = settings_patch.ops_version(ops())
+        more = ops() + [{"op": "add", "path": ["permissions", "allow"], "value": "Bash(x *)"}]
+        edited = [dict(o, value="Bash(rtk status *)") if o["value"] == "Bash(rtk *)" else o for o in ops()]
+        roots = settings_patch.setup_ops(PLUGIN_ROOT, profile_roots=PROFILE_ROOTS + (".config/new",))
+        for other in (more, edited, ops()[:-1], roots):
+            self.assertNotEqual(settings_patch.ops_version(other), base)
+
+    def test_bumping_ops_version_changes_it(self):
+        base = settings_patch.ops_version(ops())
+        with mock.patch.object(settings_patch, "OPS_VERSION", settings_patch.OPS_VERSION + 1):
+            self.assertNotEqual(settings_patch.ops_version(ops()), base)
+
+    def test_the_plugin_location_is_not_part_of_it(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            one = settings_patch.setup_ops(make_plugin_root(a), profile_roots=PROFILE_ROOTS, env={"HOME": "/nonexistent-home"})
+            two = settings_patch.setup_ops(make_plugin_root(b), profile_roots=PROFILE_ROOTS, env={"HOME": "/nonexistent-home"})
+        self.assertNotEqual(one, two)
+        self.assertEqual(settings_patch.ops_version(one), settings_patch.ops_version(two))
+
+    def test_planned_undo_info_is_not_part_of_it(self):
+        planned = settings_patch.plan("{}", ops())
+        self.assertEqual(settings_patch.ops_version(planned), settings_patch.ops_version(ops()))
 
 
 class FilesTest(unittest.TestCase):

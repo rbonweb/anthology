@@ -297,8 +297,8 @@ class SelfTestFollowsTest(SessionCase, LiveRootCase):
     """session_start's self-test pipes the sample into the guard that actually runs."""
 
     def test_live_copy_blocks_while_the_cache_copy_does_not_is_quiet(self):
-        self.mark_setup()
         self.diverging(live_guard=None, cache_guard=EXIT_0)
+        self.mark_setup()  # after the layout exists: setup records the op set it gives
         self.assertNotIn("systemMessage", self.go())
 
     def test_live_copy_that_does_not_block_warns_though_the_cache_copy_does(self):
@@ -320,9 +320,9 @@ class SelfTestFollowsTest(SessionCase, LiveRootCase):
         self.assertLess(len(msg), 400)
 
     def test_github_marketplace_checks_the_cache_copy(self):
-        self.mark_setup()
         self.diverging(live_guard=EXIT_0, cache_guard=None)
         self.known({"source": "github", "repo": "owner/anthology"}, location=self.tmp / "gh")
+        self.mark_setup()  # after the layout exists: setup records the op set it gives
         self.assertNotIn("systemMessage", self.go())
 
 
