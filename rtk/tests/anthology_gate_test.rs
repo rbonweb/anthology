@@ -637,13 +637,13 @@ fn interpreters_and_launchers_inside_rtk_ask() {
             "rtk bypass chrt 0 git push",
             "rtk bypass taskset 1 git push",
             "rtk bypass gtimeout 5 git push",
-            "rtk bypass parallel git push ::: a",
             "rtk bypass su -c 'git push'",
             "rtk bypass ssh localhost git push",
             "rtk grep \"git push\" docs/",
         ],
     );
     assert_eq!(sb.hook("rtk bypass tcsh -c 'git push'"), Said::Deny);
+    assert_eq!(sb.hook("rtk bypass parallel git push ::: a"), Said::Deny);
     // At top level a rewrite whose text holds a ruled head is the host's to judge.
     for cmd in ["git log --grep='git push'", "ssh localhost git push"] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
@@ -748,4 +748,202 @@ fn every_backstop_is_inert_in_a_bare_sandbox() {
         ),
         "an embedded word is no reason to hold back a rewrite"
     );
+}
+
+// --- review round 3 ---
+
+fn push_only_sandbox() -> Sandbox {
+    Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["rtk *"],
+        ..Rules::default()
+    })
+}
+
+/// C-A: options between a rule's words.
+#[test]
+fn options_between_a_rules_words_do_not_hide_it() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "git -C . push origin main --force",
+        "git -C sub push",
+        "git --git-dir=.git push",
+        "git --work-tree=. push",
+        "git -c x.y=z push",
+        "git --no-pager push",
+        "GIT_DIR=.git git -C . push",
+        "cd sub && git -C .. push",
+        "rtk git -C . push",
+        "rtk -v git -C . push",
+        "rtk git -c x.y=z push",
+        "rtk git --no-pager push",
+        "rtk git --git-dir=.git push",
+        "rtk bypass git -C . push",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    asked(
+        &sb,
+        &[
+            "rtk kubectl --context c apply -f x.yaml",
+            "rtk kubectl -n prod apply -f x.yaml",
+        ],
+    );
+    assert_eq!(
+        sb.hook("kubectl -n prod apply -f x.yaml"),
+        Said::Nothing,
+        "the host judges the original"
+    );
+    let only = push_only_sandbox();
+    asked(&only, &["rtk git -C . $x"]);
+    assert!(matches!(
+        only.hook("git commit -m 'push fix'"),
+        Said::Allow(_) | Said::Rewrite(_)
+    ));
+}
+
+/// C-B: a crafted run of grammar words must not stall the hook.
+#[test]
+fn a_crafted_run_of_grammar_words_does_not_stall_the_hook() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    let started = std::time::Instant::now();
+    let inside = format!(
+        "rtk run -c '{}git push {}'",
+        "time ".repeat(20_000),
+        "x ".repeat(20_000)
+    );
+    assert!(matches!(sb.hook(&inside), Said::Ask(_) | Said::Deny));
+    let top = format!(
+        "{}rtk git status {}",
+        "time ".repeat(20_000),
+        "x ".repeat(20_000)
+    );
+    assert!(matches!(sb.hook(&top), Said::Ask(_) | Said::Deny));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// I-A: the command word is read by its basename.
+#[test]
+fn a_path_or_equals_sign_in_front_of_a_denied_program_does_not_hide_it() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "rtk /usr/bin/git push",
+        "rtk bypass /usr/bin/git push",
+        "rtk =git push",
+        "rtk /usr/bin/curl x",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    asked(&sb, &["rtk bypass caffeinate =git push"]);
+    if cfg!(any(target_os = "macos", windows)) {
+        for cmd in [
+            "rtk GIT push",
+            "rtk Git push",
+            "rtk bypass GIT push",
+            "rtk CURL x",
+        ] {
+            assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+        }
+    }
+}
+
+/// I-B: a denied command behind a launcher the gate does not model.
+#[test]
+fn a_denied_command_behind_an_unmodelled_launcher_is_asked_about() {
+    let sb = push_only_sandbox();
+    asked(
+        &sb,
+        &[
+            "rtk bypass caffeinate g''it push",
+            "rtk bypass caffeinate gi\\t push",
+            "rtk bypass caffeinate \"g\"it push",
+            "rtk bypass ssh h \"g\"\"it push\"",
+            "rtk bypass exec -a x g''it push",
+            "rtk bypass command -p g''it push",
+            "x=it; rtk bypass caffeinate g$x push",
+            "rtk bypass caffeinate {git,} push",
+            "rtk bypass caffeinate $'\\x67it' push",
+            "rtk bypass caffeinate git pu*h",
+            "rtk bypass caffeinate sh -c 'g\"\"it push'",
+            "rtk bypass caffeinate bash -c 'x=push; git $x'",
+            "echo 'git push' | rtk bypass caffeinate bash",
+            "rtk bypass caffeinate bash <<< 'g''it push'",
+            "echo 'git push' | rtk bypass caffeinate python3",
+            "rtk bypass caffeinate eval 'g\"\"it push'",
+            "rtk bypass env -i caffeinate g''it push",
+            "rtk bypass caffeinate env g''it push",
+            "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
+            "rtk bypass npm exec -c 'g\"\"it push'",
+            "rtk bypass watch -n1 'g\"\"it push'",
+            "rtk bypass ssh h 'x=push; git $x'",
+            "rtk git -c 'alias.p=!git push' p",
+        ],
+    );
+}
+
+/// I-C: arguments from stdin or the file system complete a rule's head.
+#[test]
+fn arguments_from_stdin_or_the_filesystem_are_asked_about() {
+    let sb = push_only_sandbox();
+    asked(
+        &sb,
+        &[
+            "echo push | rtk bypass xargs git",
+            "printf push | rtk bypass xargs -n1 git",
+            "rtk bypass xargs -a args.txt git",
+            "rtk bypass caffeinate xargs git <<< push",
+            "touch push; rtk bypass find . -name push -execdir git {} \\;",
+            "rtk bypass parallel git ::: push",
+        ],
+    );
+}
+
+/// The round-2 negatives still keep their rewrite, and so do the common commands a
+/// round-3 backstop could have caught by accident.
+#[test]
+fn the_round_three_backstops_leave_ordinary_commands_alone() {
+    let sb = push_only_sandbox();
+    for cmd in [
+        "ls src/*.rs",
+        "git log -- *.rs",
+        "grep 'a.*b' f",
+        "cat README.md",
+        "git status",
+        "git commit -m 'fix the push button'",
+        "git -C . status",
+    ] {
+        match sb.hook(cmd) {
+            Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
+                assert!(rewritten.starts_with("rtk "), "{cmd}: {rewritten}");
+            }
+            other => panic!("{cmd} lost its rewrite: {other:?}"),
+        }
+    }
+    for cmd in [
+        "rtk git status",
+        "rtk grep python src/",
+        "rtk git log --oneline",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// No rule anywhere: every round-3 spelling says nothing, as before.
+#[test]
+fn the_round_three_backstops_are_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "rtk git -C . push",
+        "rtk /usr/bin/git push",
+        "rtk bypass caffeinate g''it push",
+        "echo push | rtk bypass xargs git",
+        "rtk bypass ssh h 'x=push; git $x'",
+        "rtk run -c 'time time git push'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
 }

@@ -82,6 +82,28 @@
 //!   in any case) is peeled before a rule is matched; `for`, `select`, `case`,
 //!   `[[` inside rtk are asked.
 //! - When the work budget is spent and any rule exists, the hook asks.
+//! - Options between a rule's words (`git -C . push`, `kubectl -n prod apply`): git's
+//!   global options are peeled so the rule fires as a deny; for every other tool a
+//!   head's words found in order after its command word (before any `--`) make the
+//!   hook ask inside rtk and leave a top-level rewrite to the host. It also fires
+//!   on `git branch push` and the like.
+//! - The command word is read by its basename, a leading `=` dropped, and folded to
+//!   lower case on macOS and Windows (`/usr/bin/git`, `=git`, `GIT`).
+//! - Inside an expansion every word-suffix of a segment is read as a command of its
+//!   own, so `caffeinate X`, `ssh host X`, `exec -a x X` and any launcher the peel
+//!   does not model are covered whatever X's quoting. What only a suffix reaches
+//!   asks, it never denies; interpreters and shells are asked about in a suffix
+//!   unless the program takes data (`grep python src`). A quoted word that reads
+//!   like a script (`ssh h 'x=push; git $x'`) is read as one, rules only.
+//! - `xargs CMD`, `parallel CMD` and `{}` in a `find -exec*`/`-ok*` payload are read
+//!   as followed by a word that expands.
+//! - `rtk git show HEAD:secret.txt` prints a `Read()`-denied file's committed content:
+//!   a `REV:path` operand is not split. Claude Code does not apply Read rules to
+//!   `git show` either.
+//! - When the work budget is spent and any rule exists, the hook asks. Every peel
+//!   step and suffix reading is charged to it.
+//! - Globs are never expanded against the disk: `rtk git add src/*.rs` asks when a
+//!   `Read()` rule exists.
 //! - `env` (with its options), `xargs` (with its options) and `find -exec` payloads
 //!   are read, at top level too; an `xargs` or `env` option the gate does not know,
 //!   or an unterminated `-exec`, is opaque. A top-level `find` with such a payload
@@ -100,6 +122,7 @@ use crate::core::utils::strip_leading_bom;
 use crate::discover::lexer::{self, TokenKind, resolve_word_text};
 use crate::discover::registry;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// How many rtk or wrapper expansions deep the gate reads before it gives up and
@@ -133,8 +156,8 @@ const INTERPRETERS: &[&str] = &[
     "expect",
     "tclsh",
     "wish",
-    "Rscript",
-    "R",
+    "rscript",
+    "r",
     "julia",
     "pwsh",
     "powershell",
@@ -373,8 +396,12 @@ pub(crate) struct GateRules {
     /// The user's `transparent_prefixes`, normalized.
     prefixes: Vec<String>,
     project_roots: Vec<PathBuf>,
-    /// The literal leading words of each Bash deny and ask rule.
+    /// The literal leading words of each Bash deny and ask rule, the command word
+    /// normalized (see [`norm_command`]).
     heads: Vec<Vec<String>>,
+    /// The same heads cut into the words [`GateRules::embeds_head`] reads (split at
+    /// `=`, `:`, `!` and the like).
+    embed_heads: Vec<Vec<String>>,
     /// Some Bash rule has a `*` before its end, or no literal head: any command
     /// may extend it.
     wildcard: bool,
@@ -398,6 +425,60 @@ fn rule_head(pattern: &str) -> Option<Vec<String>> {
     (!words.is_empty()).then_some(words)
 }
 
+/// Where words of a command text break for [`GateRules::embeds_head`].
+fn is_word_break(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            ';' | '&' | '|' | '(' | ')' | '{' | '}' | '`' | '=' | '!' | ':' | '<' | '>'
+        )
+}
+
+/// Whether `head[1..]` appears in order among `words` (the words after the command
+/// word), stopping at the first `--`.
+fn later_words_follow(head: &[String], words: &[String]) -> bool {
+    let mut next = 1;
+    for word in words {
+        if word == "--" {
+            return false;
+        }
+        if *word == head[next] {
+            next += 1;
+            if next == head.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `prefix` (whose command word already equals `head[0]`) can still turn
+/// into `head`: each later word is an option, an option's value, or the next word
+/// of the head.
+fn opts_then_rest(head: &[String], prefix: &[String]) -> bool {
+    let mut next = 1;
+    let mut value = false;
+    for word in &prefix[1..] {
+        if word == "--" {
+            return false;
+        }
+        if value {
+            value = false;
+            continue;
+        }
+        if word.starts_with('-') {
+            value = !word.contains('=');
+            continue;
+        }
+        if next < head.len() && *word == head[next] {
+            next += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
 impl GateRules {
     pub(crate) fn new(
         deny: Vec<String>,
@@ -408,10 +489,26 @@ impl GateRules {
         project_roots: Vec<PathBuf>,
     ) -> Self {
         let mut heads = Vec::new();
+        let mut embed_heads = Vec::new();
         let mut wildcard = false;
         for pattern in deny.iter().chain(&ask) {
             match rule_head(pattern) {
-                Some(head) => heads.push(head),
+                Some(mut head) => {
+                    head[0] = norm_command(&head[0]);
+                    let cut: Vec<String> = head
+                        .join(" ")
+                        .chars()
+                        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+                        .collect::<String>()
+                        .split(is_word_break)
+                        .filter(|word| !word.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    if !cut.is_empty() {
+                        embed_heads.push(cut);
+                    }
+                    heads.push(head);
+                }
                 None => wildcard = true,
             }
         }
@@ -423,43 +520,111 @@ impl GateRules {
             prefixes: registry::normalize_transparent_prefixes(transparent_prefixes),
             project_roots,
             heads,
+            embed_heads,
             wildcard,
         }
     }
 
     /// Whether a command whose literal leading words are `prefix` (followed by
     /// something that expands at run time) could turn into one a Bash rule names:
-    /// the rule's head and the prefix agree as far as both go.
+    /// the rule's head and the prefix agree as far as both go, or the prefix opens
+    /// with the head's command word and only options (and their values) stand
+    /// between it and the head's later words (`git -C . $x`).
     fn extendable(&self, prefix: &[String]) -> bool {
-        self.wildcard
-            || self
-                .heads
-                .iter()
-                .any(|head| head.iter().zip(prefix).all(|(a, b)| a == b))
+        if self.wildcard {
+            return true;
+        }
+        let first = prefix.first().map(|word| norm_command(word));
+        self.heads.iter().any(|head| {
+            let strict = head.iter().zip(prefix).enumerate().all(|(at, (a, b))| {
+                if at == 0 {
+                    first.as_deref() == Some(a.as_str())
+                } else {
+                    a == b
+                }
+            });
+            strict || (first.as_deref() == Some(head[0].as_str()) && opts_then_rest(head, prefix))
+        })
     }
 
-    /// Whether `text` holds the words of a (non-wildcard) Bash rule's head
-    /// consecutively, anywhere, quoted or not: `python -c '...git push...'`,
-    /// `caffeinate git push`, `ssh h git push`.
+    /// Whether the unquoted `words` of a command hold a head's later words in order
+    /// after its command word, with anything between and before any `--`:
+    /// `git -C x push`, `kubectl -n prod apply`.
+    fn subsequence_hit(&self, words: &[String]) -> bool {
+        let Some(first) = words.first() else {
+            return false;
+        };
+        let first = norm_command(first);
+        self.heads
+            .iter()
+            .any(|head| head.len() > 1 && head[0] == first && later_words_follow(head, &words[1..]))
+    }
+
+    /// Whether some multi-word head's last word is one of `words` (after the first).
+    fn tail_word_in(&self, words: &[String]) -> bool {
+        self.heads.iter().any(|head| {
+            head.len() > 1
+                && words
+                    .iter()
+                    .skip(1)
+                    .any(|word| word == &head[head.len() - 1])
+        })
+    }
+
+    /// Whether `text` holds the words of a (non-wildcard) Bash rule's head, anywhere:
+    /// consecutive after the quotes are removed the way the shell removes them
+    /// (`g''it push`, `caffeinate git push`, `ssh h git push`, `-c 'alias.p=!git
+    /// push'`), or with options between them (`ssh h git -C . push`).
     fn embeds_head(&self, text: &str) -> bool {
         if self.heads.is_empty() {
             return false;
         }
-        let words: Vec<&str> = text
-            .split(|c: char| {
-                c.is_whitespace()
-                    || matches!(
-                        c,
-                        ';' | '&' | '|' | '(' | ')' | '{' | '}' | '\'' | '"' | '`' | '\\'
-                    )
-            })
+        let joined: String = text
+            .chars()
+            .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+            .collect();
+        let words: Vec<&str> = joined
+            .split(is_word_break)
             .filter(|word| !word.is_empty())
             .collect();
-        self.heads.iter().any(|head| {
-            words
-                .windows(head.len())
-                .any(|window| window.iter().zip(head).all(|(a, b)| *a == b.as_str()))
-        })
+        let consecutive = self.embed_heads.iter().any(|head| {
+            words.windows(head.len()).any(|window| {
+                norm_command(window[0]) == head[0]
+                    && window[1..]
+                        .iter()
+                        .zip(&head[1..])
+                        .all(|(a, b)| *a == b.as_str())
+            })
+        });
+        consecutive || self.option_split_in(text)
+    }
+
+    /// The subsequence test from every word of every segment of `text`.
+    fn option_split_in(&self, text: &str) -> bool {
+        let mut work = 0usize;
+        for segment in lexer::split_for_permissions(text) {
+            let (words, _) = lexer::words_and_spans(segment);
+            let words: Vec<String> = words
+                .iter()
+                .take(256)
+                .map(|word| resolve_word_text(word))
+                .collect();
+            for start in 0..words.len() {
+                work += 1;
+                let first = norm_command(&words[start]);
+                for head in self.heads.iter().filter(|h| h.len() > 1 && h[0] == first) {
+                    work += words.len() - start;
+                    if later_words_follow(head, &words[start + 1..]) {
+                        return true;
+                    }
+                }
+                if work > 400_000 {
+                    // Too much text to read it all: leave it to the host.
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Whether any rule exists for the gate to enforce.
@@ -499,6 +664,8 @@ pub(crate) fn evaluate(
         inner: false,
         in_rtk: false,
         payload: false,
+        soft: false,
+        open: false,
     };
     if scanner.scan_text(cmd, 0, ctx, &mut cwds).is_err() {
         return Gate::Deny;
@@ -532,6 +699,12 @@ struct Ctx {
     /// Inside the payload of an exec action (`find -exec`, `xargs`, `env`): what
     /// the gate cannot read there is deferred when the host would have rewritten it.
     payload: bool,
+    /// Reached only by guessing that something runs it (a quoted word that reads
+    /// like a script): a deny found there asks, and only the rules are matched.
+    soft: bool,
+    /// The text is a command whose last arguments arrive at run time (`xargs CMD`,
+    /// `parallel CMD`): it is read as followed by a word that expands.
+    open: bool,
 }
 
 /// One more text to scan, and how it was reached.
@@ -540,6 +713,23 @@ struct Expansion {
     text: String,
     via_rtk: bool,
     payload: bool,
+    /// See [`Ctx::soft`].
+    soft: bool,
+    /// See [`Ctx::open`].
+    open: bool,
+}
+
+/// Queue an expansion once: the first spelling (a hard one, read before the soft
+/// ones) wins.
+fn push_expansion(expansions: &mut Vec<Expansion>, new: Expansion) {
+    if !expansions.iter().any(|old| {
+        old.text == new.text
+            && old.via_rtk == new.via_rtk
+            && old.payload == new.payload
+            && old.open == new.open
+    }) {
+        expansions.push(new);
+    }
 }
 
 /// What the command itself can change under the gate's feet.
@@ -558,9 +748,12 @@ struct Parsed<'a> {
     form: &'a str,
     words: Vec<&'a str>,
     spans: Vec<usize>,
+    /// Every word, unquoted.
+    resolved: Vec<String>,
     /// The first word, unquoted.
     first: String,
-    /// The command word's basename, unquoted.
+    /// The command word as a rule sees it: its basename, a leading `=` (zsh's
+    /// `=git`) dropped, folded to lower case where the file system folds.
     name: String,
     /// The form with every word unquoted and joined by single spaces: what a rule
     /// that names `git push` has to match when the text says `git 'push'`.
@@ -572,16 +765,127 @@ impl<'a> Parsed<'a> {
         let (words, spans) = lexer::words_and_spans(form);
         let resolved: Vec<String> = words.iter().map(|word| resolve_word_text(word)).collect();
         let first = resolved.first().cloned().unwrap_or_default();
-        let name = basename(&first).to_string();
+        let name = norm_command(&first);
+        let unquoted = resolved.join(" ");
         Self {
             form,
             words,
             spans,
+            resolved,
             first,
             name,
-            unquoted: resolved.join(" "),
+            unquoted,
         }
     }
+
+    /// The normalized command word of the reading that starts at word `from`.
+    fn name_at(&self, from: usize) -> String {
+        if from == 0 {
+            self.name.clone()
+        } else {
+            norm_command(&self.resolved[from])
+        }
+    }
+
+    /// Every way a rule may name the command that starts at word `from`: as
+    /// written, unquoted, with the command word normalized, and past git's global
+    /// options.
+    fn readings_at(&self, from: usize) -> Vec<Cow<'_, str>> {
+        let mut out: Vec<Cow<str>> = Vec::new();
+        let Some(&at) = self.spans.get(from) else {
+            return out;
+        };
+        out.push(Cow::Borrowed(&self.form[at..]));
+        if from == 0 {
+            if self.unquoted != self.form {
+                out.push(Cow::Borrowed(self.unquoted.as_str()));
+            }
+        } else {
+            out.push(Cow::Owned(self.resolved[from..].join(" ")));
+        }
+        let name = self.name_at(from);
+        let tail = |k: usize| self.resolved.get(k..).unwrap_or_default().join(" ");
+        if name != self.resolved[from] {
+            out.push(Cow::Owned(join_command(&name, &tail(from + 1))));
+        }
+        if name == "git" {
+            let sub = git_subcommand_index(&self.resolved, &self.words, from);
+            if sub > from + 1 && sub < self.resolved.len() {
+                out.push(Cow::Owned(join_command("git", &tail(sub))));
+            }
+        }
+        out
+    }
+}
+
+/// A command word as a deny or ask rule sees it: the basename, a leading `=`
+/// dropped (zsh expands `=git` to the path of `git`), and lower case where the file
+/// system is case-insensitive (`GIT push` runs `git`).
+fn norm_command(word: &str) -> String {
+    let word = word.strip_prefix('=').unwrap_or(word);
+    let base = basename(word);
+    if cfg!(any(target_os = "macos", windows)) {
+        base.to_lowercase()
+    } else {
+        base.to_string()
+    }
+}
+
+/// The index of the first word after git's global options, starting from the
+/// word after `from` (`git -C x -c k=v push` -> the index of `push`).
+fn git_subcommand_index(resolved: &[String], raw: &[&str], from: usize) -> usize {
+    const WITH_VALUE: &[&str] = &[
+        "-C",
+        "-c",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--config-env",
+        "--super-prefix",
+    ];
+    const FLAGS: &[&str] = &[
+        "-p",
+        "-P",
+        "--paginate",
+        "--no-pager",
+        "--bare",
+        "--no-replace-objects",
+        "--literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+        "--icase-pathspecs",
+        "--no-optional-locks",
+        "--exec-path",
+        "--no-advice",
+    ];
+    const WITH_EQUALS: &[&str] = &[
+        "--git-dir=",
+        "--work-tree=",
+        "--namespace=",
+        "--exec-path=",
+        "--config-env=",
+        "--super-prefix=",
+    ];
+    let mut i = from + 1;
+    while let Some(word) = resolved.get(i) {
+        if is_expanding(raw[i]) {
+            break;
+        }
+        let word = word.as_str();
+        if WITH_VALUE.contains(&word) {
+            i += 2;
+        } else if FLAGS.contains(&word) || WITH_EQUALS.iter().any(|opt| word.starts_with(opt)) {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i.min(resolved.len())
+}
+
+/// Programs whose operands are data (names, patterns, refs), not commands.
+fn operands_are_data(name: &str) -> bool {
+    READ_COMMANDS.contains(&name) || matches!(name, "git" | "echo" | "printf")
 }
 
 struct Scanner<'a> {
@@ -679,20 +983,21 @@ impl<'a> Scanner<'a> {
         // outright; at top level it is opaque to the rtk segments of the text.
         let substitution =
             lexer::contains_substitution(text) || lexer::ansi_c_quote_defeats_lexer(text);
-        if ctx.in_rtk && substitution {
+        if ctx.in_rtk && !ctx.soft && substitution {
             self.ask = true;
         }
         // Inside rtk, a rule's own words anywhere in the text (a quoted script, an
         // argument of a program that runs its arguments) ask: the precise match
         // above would have denied what it could read.
         if ctx.in_rtk
+            && !ctx.soft
             && self.bash_rules
             && self.spend(1 + text.len() / 16)
             && self.rules.embeds_head(text)
         {
             self.ask = true;
         }
-        if self.reading() {
+        if self.reading() && !ctx.soft {
             self.check_input_redirects(text, ctx, cwds)?;
         }
         for segment in lexer::split_for_permissions(text) {
@@ -719,139 +1024,57 @@ impl<'a> Scanner<'a> {
 
         // Each segment read every way a rule may name it, as the ordinary gate
         // does: as written, without the grammar a split leaves behind, then
-        // past each assignment or wrapper in turn.
+        // past each assignment, wrapper and piece of shell grammar in turn.
         let residue = permissions::strip_grammar_residue(segment);
-        let peeled = registry::matching_readings(residue);
-        if !peeled.complete {
-            self.ask = true;
-        }
-        let mut forms: Vec<&str> = vec![segment, residue];
-        let positions = registry::shell_wrapper_positions(residue, &self.rules.prefixes);
-        for form in peeled.readings.iter().copied().chain(positions) {
-            if !form.is_empty() && !forms.contains(&form) {
-                forms.push(form);
-            }
-        }
-        // Past the shell's own grammar (`then git push`, `x=1 git push`, `time -p
-        // git push`), and past the wrappers that sit behind it.
-        let mut next = 0;
-        while next < forms.len() && forms.len() < MAX_FORMS {
-            let form = forms[next];
-            next += 1;
-            for stripped in grammar_peeled(form) {
-                for reading in registry::matching_readings(stripped).readings {
-                    if !reading.is_empty() && !forms.contains(&reading) {
-                        forms.push(reading);
-                    }
-                }
-            }
-        }
-        if forms.len() >= MAX_FORMS {
-            self.ask = true;
-        }
+        let Some(forms) = self.segment_forms(segment, residue) else {
+            return Ok(());
+        };
         if !self.spend(forms.len() * (1 + segment.len() / 16)) {
             return Ok(());
         }
         let parsed: Vec<Parsed> = forms.iter().map(|form| Parsed::new(form)).collect();
 
-        // A word that expands at run time after a literal prefix a rule can still
-        // extend (`git $x`, `git pu*h`, `$cmd push`) may become what it names.
-        if self.bash_rules && parsed.iter().any(|p| expansion_extends_rule(self.rules, p)) {
-            if ctx.inner {
-                self.ask = true;
-            } else {
-                self.defer = true;
-            }
-        }
-
-        // Rules are matched against the text as written and as the shell reads it
-        // once the quotes are gone: `git 'push'` is `git push` to a rule.
-        for reading in parsed
-            .iter()
-            .flat_map(|p| [p.form, p.unquoted.as_str()])
-            .filter(|reading| !reading.is_empty())
-        {
-            if self
-                .rules
-                .deny
-                .iter()
-                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
-            {
-                return Err(Denied);
-            }
-            if self
-                .rules
-                .ask
-                .iter()
-                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
-            {
-                self.ask = true;
-            }
-        }
-
         let mut expansions: Vec<Expansion> = Vec::new();
         for p in &parsed {
-            if p.words.is_empty() {
-                continue;
-            }
-            let name = p.name.as_str();
-            let args = &p.words[1..];
-            // Compound commands the segmenter leaves whole.
-            if ctx.in_rtk && matches!(name, "for" | "select" | "case" | "[[" | "function") {
-                self.opaque(ctx);
-            }
-            if self.reading() {
-                if READ_COMMANDS.contains(&name) {
-                    self.check_read(name, args, ctx, cwds, false)?;
-                } else if ctx.in_rtk && !is_assignment(name) {
-                    // Anything rtk runs can read a file: sed, awk, cp, jq...
-                    self.check_read(name, args, ctx, cwds, true)?;
+            self.check_rules(p, 0, ctx, false)?;
+        }
+        for p in &parsed {
+            self.run_view(p, 0, ctx, false, substitution, cwds, &mut expansions)?;
+        }
+
+        // Inside an expansion the command may sit behind a launcher the peel does not
+        // model (`caffeinate X`, `ssh host X`, `exec -a x X`): read every word-suffix
+        // of the segment as a command of its own. What only a suffix reaches asks,
+        // it never denies.
+        if ctx.inner {
+            let base = &parsed[1];
+            for from in 1..base.words.len() {
+                let rest = base.form.len() - base.spans[from];
+                if !self.spend(4 + rest / 8) {
+                    return Ok(());
                 }
+                self.check_rules(base, from, ctx, true)?;
+                self.run_view(base, from, ctx, true, substitution, cwds, &mut expansions)?;
             }
-            if (ctx.in_rtk || ctx.payload) && is_opaque_command(name, &p.words) {
-                self.opaque(ctx);
-            }
-            if SHELLS.contains(&name)
-                && let Some(script) = shell_wrapper_script(&p.words)
-            {
-                push_unique(
-                    &mut expansions,
-                    Expansion {
-                        text: script,
-                        via_rtk: false,
-                        payload: false,
-                    },
-                );
-            }
-            if let Some(inner) = rtk_inner(p.form, &p.words, &p.spans) {
-                self.ask |= inner.opaque || substitution;
-                for text in inner.texts {
-                    push_unique(
-                        &mut expansions,
-                        Expansion {
-                            text,
-                            via_rtk: true,
-                            payload: false,
-                        },
-                    );
+            // A quoted word that reads like a script (`ssh h 'x=push; git $x'`).
+            if !ctx.soft {
+                for (raw, text) in base.words.iter().zip(&base.resolved).skip(1) {
+                    let quoted = raw.contains(['\'', '"']);
+                    let script =
+                        text.contains(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'));
+                    if quoted && script {
+                        push_expansion(
+                            &mut expansions,
+                            Expansion {
+                                text: text.clone(),
+                                via_rtk: false,
+                                payload: false,
+                                soft: true,
+                                open: false,
+                            },
+                        );
+                    }
                 }
-            }
-            let payloads = exec_payloads(name, p.form, &p.words, &p.spans);
-            if payloads.unattested {
-                self.opaque(Ctx {
-                    payload: true,
-                    ..ctx
-                });
-            }
-            for text in payloads.texts {
-                push_unique(
-                    &mut expansions,
-                    Expansion {
-                        text,
-                        via_rtk: false,
-                        payload: true,
-                    },
-                );
             }
         }
 
@@ -869,10 +1092,222 @@ impl<'a> Scanner<'a> {
                 inner: true,
                 in_rtk: ctx.in_rtk || expansion.via_rtk,
                 payload: ctx.payload || expansion.payload,
+                soft: ctx.soft || expansion.soft,
+                open: expansion.open,
             };
             // A `cd` inside the expansion runs in a process of its own.
             let mut nested = cwds.clone();
-            self.scan_text(&expansion.text, depth + 1, nested_ctx, &mut nested)?;
+            match self.scan_text(&expansion.text, depth + 1, nested_ctx, &mut nested) {
+                // Only guessed to run: a deny found there is a question.
+                Err(Denied) if nested_ctx.soft => self.ask = true,
+                other => other?,
+            }
+        }
+        Ok(())
+    }
+
+    /// The forms of one segment: as written, past the shell's grammar and past each
+    /// assignment or wrapper. `None` once the work budget is gone. Every step is
+    /// charged, so a crafted run of `time time time ...` costs a bounded amount.
+    fn segment_forms<'s>(&mut self, segment: &'s str, residue: &'s str) -> Option<Vec<&'s str>> {
+        if !self.spend(1 + residue.len() / 2) {
+            return None;
+        }
+        let peeled = registry::matching_readings(residue);
+        if !peeled.complete {
+            self.ask = true;
+        }
+        if !self.spend(1 + residue.len() / 2) {
+            return None;
+        }
+        let positions = registry::shell_wrapper_positions(residue, &self.rules.prefixes);
+        let mut forms: Vec<&str> = vec![segment, residue];
+        for form in peeled.readings.iter().copied().chain(positions) {
+            if !form.is_empty() && !forms.contains(&form) {
+                forms.push(form);
+            }
+        }
+        // Past the shell's own grammar (`then git push`, `x=1 git push`, `time -p
+        // git push`), one step per form, and past the wrappers behind each step.
+        let mut next = 0;
+        let mut stripped: Vec<&str> = Vec::new();
+        while next < forms.len() && forms.len() < MAX_FORMS {
+            let form = forms[next];
+            next += 1;
+            if !self.spend(1 + form.len() / 2) {
+                return None;
+            }
+            let (words, spans) = lexer::words_and_spans(form);
+            stripped.clear();
+            grammar_step(form, &words, &spans, &mut stripped);
+            for &step in &stripped {
+                if step.is_empty() || forms.contains(&step) {
+                    continue;
+                }
+                forms.push(step);
+                if !self.spend(1 + step.len() / 2) {
+                    return None;
+                }
+                for reading in registry::matching_readings(step).readings {
+                    if !reading.is_empty() && !forms.contains(&reading) {
+                        forms.push(reading);
+                    }
+                }
+            }
+        }
+        if forms.len() >= MAX_FORMS {
+            self.ask = true;
+        }
+        Some(forms)
+    }
+
+    /// The Bash rules against one reading of a segment: the words from `from` on.
+    /// `suffix` is a reading that only a launcher's argument list reaches, where a
+    /// deny becomes an ask.
+    fn check_rules(
+        &mut self,
+        p: &Parsed,
+        from: usize,
+        ctx: Ctx,
+        suffix: bool,
+    ) -> Result<(), Denied> {
+        if p.words.len() <= from {
+            return Ok(());
+        }
+        // A word that expands at run time after a literal prefix a rule can still
+        // extend (`git $x`, `git pu*h`, `$cmd push`), or options between a rule's
+        // words (`git -C x push`): the rule may apply to what runs.
+        if self.bash_rules
+            && (view_extends(self.rules, p, from, ctx)
+                || self.rules.subsequence_hit(&p.resolved[from..]))
+        {
+            if ctx.inner {
+                self.ask = true;
+            } else {
+                self.defer = true;
+            }
+        }
+        // Rules are matched against the text as written, as the shell reads it once
+        // the quotes are gone (`git 'push'` is `git push`), with the command word
+        // reduced to its basename, and past git's global options.
+        for reading in p.readings_at(from) {
+            if reading.is_empty() {
+                continue;
+            }
+            if self
+                .rules
+                .deny
+                .iter()
+                .any(|pattern| permissions::command_matches_pattern(&reading, pattern))
+            {
+                if suffix {
+                    self.ask = true;
+                    continue;
+                }
+                return Err(Denied);
+            }
+            if self
+                .rules
+                .ask
+                .iter()
+                .any(|pattern| permissions::command_matches_pattern(&reading, pattern))
+            {
+                self.ask = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// What one reading of a segment runs: Read rules, opaque commands, and the
+    /// texts it hands to another command, which are queued in `expansions`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_view(
+        &mut self,
+        p: &Parsed,
+        from: usize,
+        ctx: Ctx,
+        suffix: bool,
+        substitution: bool,
+        cwds: &Cwds,
+        expansions: &mut Vec<Expansion>,
+    ) -> Result<(), Denied> {
+        let words = &p.words[from..];
+        if words.is_empty() {
+            return Ok(());
+        }
+        let name_owned = p.name_at(from);
+        let name = name_owned.as_str();
+        let args = &words[1..];
+        let spans = &p.spans[from..];
+        // Text only guessed to be a script is matched against the rules and no more.
+        let quiet = ctx.soft;
+        // The words after a program that takes data (`grep python src`) are not
+        // commands, so a suffix is not asked about for being an interpreter.
+        let guess = !quiet && !(suffix && operands_are_data(&p.name));
+        // Compound commands the segmenter leaves whole.
+        if guess && ctx.in_rtk && matches!(name, "for" | "select" | "case" | "[[" | "function") {
+            self.opaque(ctx);
+        }
+        if !quiet && !suffix && self.reading() {
+            if READ_COMMANDS.contains(&name) {
+                self.check_read(name, args, ctx, cwds, false)?;
+            } else if ctx.in_rtk && !is_assignment(name) {
+                // Anything rtk runs can read a file: sed, awk, cp, jq...
+                self.check_read(name, args, ctx, cwds, true)?;
+            }
+        }
+        if guess && (ctx.in_rtk || ctx.payload) && is_opaque_command(name, words) {
+            self.opaque(ctx);
+        }
+        if SHELLS.contains(&name)
+            && let Some(script) = shell_wrapper_script(words)
+        {
+            push_expansion(
+                expansions,
+                Expansion {
+                    text: script,
+                    via_rtk: false,
+                    payload: false,
+                    soft: suffix,
+                    open: false,
+                },
+            );
+        }
+        if let Some(inner) = rtk_inner(p.form, words, spans) {
+            if !quiet {
+                self.ask |= inner.opaque || (substitution && !suffix);
+            }
+            for text in inner.texts {
+                push_expansion(
+                    expansions,
+                    Expansion {
+                        text,
+                        via_rtk: true,
+                        payload: false,
+                        soft: suffix,
+                        open: false,
+                    },
+                );
+            }
+        }
+        let payloads = exec_payloads(name, p.form, words, spans);
+        if payloads.unattested && !quiet {
+            self.opaque(Ctx {
+                payload: true,
+                ..ctx
+            });
+        }
+        for text in payloads.texts {
+            push_expansion(
+                expansions,
+                Expansion {
+                    text,
+                    via_rtk: false,
+                    payload: true,
+                    soft: suffix,
+                    open: payloads.open,
+                },
+            );
         }
         Ok(())
     }
@@ -1027,7 +1462,8 @@ fn is_opaque_command(name: &str, words: &[&str]) -> bool {
 
 /// An interpreter (or PowerShell) by basename, any version suffix allowed.
 fn is_interpreter(name: &str) -> bool {
-    let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    let lower = name.to_lowercase();
+    let base = lower.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
     INTERPRETERS.contains(&base)
 }
 
@@ -1081,20 +1517,33 @@ fn is_expanding(word: &str) -> bool {
     false
 }
 
-/// A form whose literal leading words a Bash rule can still extend once a later
-/// word expands.
-fn expansion_extends_rule(rules: &GateRules, p: &Parsed) -> bool {
-    if p.words.is_empty() || is_assignment(&p.first) {
+/// Whether the command that starts at word `from` of `p` has literal leading words
+/// a Bash rule can still extend once a later word expands (`git $x`, `git pu*h`,
+/// `git -C . $x`), or whose last arguments arrive at run time (`xargs git`,
+/// `find -exec git {} \\;`).
+fn view_extends(rules: &GateRules, p: &Parsed, from: usize, ctx: Ctx) -> bool {
+    let words = &p.words[from..];
+    let resolved = &p.resolved[from..];
+    if words.is_empty() || is_assignment(&resolved[0]) {
         return false;
     }
-    let Some(at) = p.words.iter().position(|word| is_expanding(word)) else {
-        return false;
+    let expands = |word: &str| is_expanding(word) || (ctx.payload && word.contains("{}"));
+    let at = match words.iter().position(|word| expands(word)) {
+        Some(at) => at,
+        None if from == 0 && ctx.open => words.len(),
+        None => return false,
     };
-    let prefix: Vec<String> = p.words[..at]
-        .iter()
-        .map(|word| resolve_word_text(word))
-        .collect();
-    rules.extendable(&prefix)
+    if at == 0 {
+        // The command word itself expands. For a word inside a longer command,
+        // only a later literal word of a rule's head makes that worth a question
+        // (`caffeinate g$x push`), or `rtk ls src/*.rs` would ask.
+        return if from == 0 {
+            rules.extendable(&[])
+        } else {
+            rules.tail_word_in(resolved)
+        };
+    }
+    rules.extendable(&resolved[..at])
 }
 
 /// How many forms of one segment the gate keeps.
@@ -1105,58 +1554,38 @@ const GRAMMAR_LEADERS: &[&str] = &[
     "if", "then", "else", "elif", "while", "until", "do", "!", "{", "(",
 ];
 
-/// `form` with leading grammar peeled off, repeatedly, one remainder per step:
-/// reserved words, `time [-p]`, `coproc [NAME]`, `function NAME`, and `name=value`
-/// assignments in any case. The remainders are what a rule has to match.
-fn grammar_peeled(form: &str) -> Vec<&str> {
-    let mut out: Vec<&str> = Vec::new();
-    let mut pending = vec![form];
-    let mut steps = 0;
-    while let Some(mut rest) = pending.pop() {
-        loop {
-            steps += 1;
-            if steps > 64 {
-                return out;
-            }
-            let (words, spans) = lexer::words_and_spans(rest);
-            let Some(first) = words.first() else {
-                break;
-            };
-            let first = resolve_word_text(first);
-            let drop = match first.as_str() {
-                word if GRAMMAR_LEADERS.contains(&word) => 1,
-                "time" => {
-                    if words.get(1).is_some_and(|w| resolve_word_text(w) == "-p") {
-                        2
-                    } else {
-                        1
-                    }
-                }
-                "coproc" => {
-                    // `coproc NAME { ...; }` or `coproc cmd`: read both.
-                    if let Some(&at) = spans.get(2) {
-                        let after_name = rest[at..].trim_start();
-                        if !out.contains(&after_name) {
-                            out.push(after_name);
-                            pending.push(after_name);
-                        }
-                    }
-                    1
-                }
-                "function" => 2,
-                word if is_assignment(word) => 1,
-                _ => break,
-            };
-            let Some(&at) = spans.get(drop) else {
-                break;
-            };
-            rest = rest[at..].trim_start();
-            if !out.contains(&rest) {
-                out.push(rest);
+/// One step of peeling the shell's grammar off the front of `form`: a reserved
+/// word, `time [-p]`, `coproc [NAME]`, `function NAME`, or a `name=value`
+/// assignment in any case. The remainders are pushed to `out`; `words` and `spans`
+/// are `form` lexed once.
+fn grammar_step<'s>(form: &'s str, words: &[&str], spans: &[usize], out: &mut Vec<&'s str>) {
+    let Some(first) = words.first() else {
+        return;
+    };
+    let first = resolve_word_text(first);
+    let drop = match first.as_str() {
+        word if GRAMMAR_LEADERS.contains(&word) => 1,
+        "time" => {
+            if words.get(1).is_some_and(|w| resolve_word_text(w) == "-p") {
+                2
+            } else {
+                1
             }
         }
+        "coproc" => {
+            // `coproc NAME { ...; }` or `coproc cmd`: read both.
+            if let Some(&at) = spans.get(2) {
+                out.push(form[at..].trim_start());
+            }
+            1
+        }
+        "function" => 2,
+        word if is_assignment(word) => 1,
+        _ => return,
+    };
+    if let Some(&at) = spans.get(drop) {
+        out.push(form[at..].trim_start());
     }
-    out
 }
 
 /// Whether the command changes `HOME` or `CDPATH` (or may, by computing a name
@@ -1199,6 +1628,8 @@ struct Payloads {
     texts: Vec<String>,
     /// The action's command could not be read.
     unattested: bool,
+    /// The command's last arguments come from stdin or a file (`xargs`, `parallel`).
+    open: bool,
 }
 
 /// What `form` hands to another command: the payload of `find -exec`,
@@ -1242,7 +1673,54 @@ fn exec_payloads(name: &str, form: &str, words: &[&str], spans: &[usize]) -> Pay
                 }
             }
         }
+        "parallel" => {
+            out.open = true;
+            const WITH_VALUE: &[&str] = &[
+                "-j",
+                "-n",
+                "-N",
+                "-S",
+                "-a",
+                "-L",
+                "-I",
+                "-E",
+                "-d",
+                "-C",
+                "-P",
+                "--jobs",
+                "--sshlogin",
+                "--arg-file",
+                "--max-args",
+                "--colsep",
+                "--delimiter",
+                "--results",
+                "--joblog",
+            ];
+            let mut i = 1;
+            while i < words.len() {
+                let word = resolved(i);
+                if word == "--" {
+                    i += 1;
+                    break;
+                }
+                if !word.starts_with('-') || word == "-" {
+                    break;
+                }
+                i += if WITH_VALUE.contains(&word.as_str()) {
+                    2
+                } else {
+                    1
+                };
+            }
+            let end = (i..words.len())
+                .find(|&k| matches!(resolved(k).as_str(), ":::" | "::::" | ":::+" | "::::+"))
+                .unwrap_or(words.len());
+            if i < end {
+                out.texts.push(slice(i, end - 1));
+            }
+        }
         "xargs" => {
+            out.open = true;
             // Options that take the next word as their value.
             const WITH_VALUE: &[&str] = &["-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a"];
             const LONG_WITH_VALUE: &[&str] = &[
@@ -3815,7 +4293,6 @@ mod tests {
             "rtk bypass chrt 0 git push",
             "rtk bypass taskset 1 git push",
             "rtk bypass gtimeout 5 git push",
-            "rtk bypass parallel git push ::: a",
             "rtk bypass su -c 'git push'",
             "rtk bypass ssh localhost git push",
             "rtk grep \"git push\" docs/",
@@ -3894,6 +4371,27 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
+    }
+
+    /// Every remainder `grammar_step` reaches from `form`, step by step.
+    fn grammar_peeled(form: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        let mut at = 0;
+        let mut queue = vec![form];
+        while at < queue.len() && at < 32 {
+            let current = queue[at];
+            at += 1;
+            let (words, spans) = lexer::words_and_spans(current);
+            let mut step = Vec::new();
+            grammar_step(current, &words, &spans, &mut step);
+            for next in step {
+                if !out.contains(&next) {
+                    out.push(next);
+                    queue.push(next);
+                }
+            }
+        }
+        out
     }
 
     #[test]
@@ -4062,5 +4560,358 @@ mod tests {
         );
         // Allow-only configuration has no heads either.
         assert!(!none.embeds_head("git push"));
+    }
+
+    // --- review round 3 ---
+
+    fn push_only() -> GateRules {
+        rules(&["git push:*"], &[], &[])
+    }
+
+    #[test]
+    fn command_words_are_normalized() {
+        assert_eq!(norm_command("/usr/bin/git"), "git");
+        assert_eq!(norm_command("=git"), "git");
+        assert_eq!(norm_command("./x/git"), "git");
+        assert_eq!(norm_command("git"), "git");
+        if cfg!(any(target_os = "macos", windows)) {
+            assert_eq!(norm_command("GIT"), "git");
+        } else {
+            assert_eq!(norm_command("GIT"), "GIT");
+        }
+    }
+
+    #[test]
+    fn git_global_options_are_skipped_to_the_subcommand() {
+        let at = |text: &str| {
+            let (words, _) = lexer::words_and_spans(text);
+            let resolved: Vec<String> = words.iter().map(|w| resolve_word_text(w)).collect();
+            git_subcommand_index(&resolved, &words, 0)
+        };
+        assert_eq!(at("git push"), 1);
+        assert_eq!(at("git -C . push"), 3);
+        assert_eq!(at("git -c a=b -C x push"), 5);
+        assert_eq!(at("git --git-dir=.git --no-pager push"), 3);
+        assert_eq!(at("git --git-dir .git push"), 3);
+        assert_eq!(at("git -p -P --bare --paginate push"), 5);
+        assert_eq!(at("git --exec-path push"), 2);
+        assert_eq!(at("git -C $d push"), 3);
+        assert_eq!(at("git $x push"), 1);
+        assert_eq!(at("git"), 1);
+        assert_eq!(at("git -C"), 2);
+    }
+
+    #[test]
+    fn options_between_a_rules_words() {
+        let r = bash_rules();
+        let words = |text: &str| -> Vec<String> {
+            let (w, _) = lexer::words_and_spans(text);
+            w.iter().map(|w| resolve_word_text(w)).collect()
+        };
+        for hit in [
+            "git -C x push",
+            "git -c k=v push",
+            "git --git-dir=x push",
+            "kubectl -n prod apply -f x",
+            "kubectl --context c apply",
+            "/usr/bin/git -C . push",
+            "=git -C . push",
+            "git branch push",
+        ] {
+            assert!(r.subsequence_hit(&words(hit)), "{hit}");
+        }
+        for miss in [
+            "git commit -m 'push fix'",
+            "git checkout push-x",
+            "git log -- push",
+            "git status",
+            "kubectl get pods",
+            "echo git push",
+            "git",
+        ] {
+            assert!(!r.subsequence_hit(&words(miss)), "{miss}");
+        }
+        // The same test over a whole text, from any word.
+        for hit in [
+            "ssh h kubectl -n x apply",
+            "caffeinate git -C . push",
+            "echo hi; env A=1 git -c a=b push",
+        ] {
+            assert!(r.embeds_head(hit), "{hit}");
+        }
+        for miss in [
+            "git log -- *.rs",
+            "git commit -m \"fix push\"",
+            "grep 'a.*b' f",
+            "cat README.md",
+            "git status",
+        ] {
+            assert!(!r.embeds_head(miss), "{miss}");
+        }
+        // `extendable` skips options and their values.
+        let prefix = |text: &str| words(text);
+        assert!(r.extendable(&prefix("git -C .")));
+        assert!(r.extendable(&prefix("git -c a=b")));
+        assert!(r.extendable(&prefix("kubectl -n prod")));
+        assert!(!r.extendable(&prefix("git commit -m")));
+        assert!(!r.extendable(&prefix("git log --")));
+        assert!(!r.extendable(&prefix("ls")));
+    }
+
+    #[test]
+    fn embedded_heads_are_read_through_quotes_and_odd_separators() {
+        let r = push_only();
+        for text in [
+            "caffeinate g''it push",
+            "caffeinate gi\\t push",
+            "caffeinate \"g\"it push",
+            "ssh h \"g\"\"it push\"",
+            "git -c 'alias.p=!git push' p",
+            "x:git push",
+            "/usr/bin/git push",
+            "=git push",
+        ] {
+            assert!(r.embeds_head(text), "{text}");
+        }
+        assert!(!r.embeds_head("git status"));
+        assert!(!r.embeds_head("echo gi t push"));
+    }
+
+    #[test]
+    fn options_before_a_denied_subcommand_do_not_hide_it() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk git -C . push",
+            "rtk -v git -C . push",
+            "rtk git -c x.y=z push",
+            "rtk git --no-pager push",
+            "rtk git --git-dir=.git push",
+            "rtk bypass git -C . push",
+            "git -C . push origin main --force",
+            "git -C sub push",
+            "git --git-dir=.git push",
+            "git --work-tree=. push",
+            "git -c x.y=z push",
+            "git --no-pager push",
+            "GIT_DIR=.git git -C . push",
+            "cd sub && git -C .. push",
+            "git -C a -c b=c --no-pager push",
+            "git --git-dir .git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        for cmd in [
+            "rtk kubectl --context c apply -f x.yaml",
+            "rtk kubectl -n prod apply -f x.yaml",
+            "rtk run -c 'kubectl -n prod apply -f x'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        assert_eq!(gate("kubectl -n prod apply -f x.yaml", &r), Gate::Defer);
+        assert_eq!(gate("rtk git -C . $x", &push_only()), Gate::Ask);
+        assert_eq!(gate("git -C . $x", &push_only()), Gate::Defer);
+        // What no rule can reach stays as it was.
+        let only = push_only();
+        for cmd in [
+            "git commit -m \"push fix\"",
+            "git checkout push-x",
+            "git -C . status",
+            "rtk git -C . status",
+            "rtk git commit -m \"docs: push\"",
+            "rtk git log -- *.rs",
+            "git log -- *.rs",
+            "rtk ls src/*.rs",
+            "rtk git commit -m $msg",
+        ] {
+            assert_eq!(gate(cmd, &only), Gate::Pass, "{cmd}");
+        }
+        // `apply` leaves a rewrite whose text holds options between a rule's words.
+        let allow = HookDecision::AllowRewrite("rtk ssh h".into());
+        assert_eq!(
+            apply(Gate::Pass, "ssh h kubectl -n x apply", allow, &r),
+            HookDecision::Defer
+        );
+        assert_eq!(
+            apply(
+                Gate::Pass,
+                "git log -- *.rs",
+                HookDecision::AllowRewrite("rtk git log -- *.rs".into()),
+                &only
+            ),
+            HookDecision::AllowRewrite("rtk git log -- *.rs".into())
+        );
+    }
+
+    #[test]
+    fn a_crafted_run_of_grammar_words_costs_a_bounded_amount() {
+        let r = bash_rules();
+        let timed = |cmd: &str| {
+            let started = std::time::Instant::now();
+            let said = gate(cmd, &r);
+            (said, started.elapsed())
+        };
+        let two_seconds = std::time::Duration::from_secs(2);
+        let inside = format!(
+            "rtk run -c '{}git push {}'",
+            "time ".repeat(20_000),
+            "x ".repeat(20_000)
+        );
+        let (said, took) = timed(&inside);
+        assert_ne!(said, Gate::Pass);
+        assert!(took < two_seconds, "inside rtk run -c: {took:?}");
+        let top = format!(
+            "{}rtk git status {}",
+            "time ".repeat(20_000),
+            "x ".repeat(20_000)
+        );
+        let (said, took) = timed(&top);
+        assert_ne!(said, Gate::Pass);
+        assert!(took < two_seconds, "top level: {took:?}");
+        for cmd in [
+            format!("{}git push", "then ".repeat(60_000)),
+            format!("{}rtk git push", "a=1 ".repeat(60_000)),
+            format!("rtk run -c '{}git push'", "! ".repeat(60_000)),
+        ] {
+            let (said, took) = timed(&cmd);
+            assert_ne!(said, Gate::Pass);
+            assert!(took < two_seconds, "{took:?}");
+        }
+        // The input cap, 1 MiB.
+        let (said, took) = timed(&format!("{}git push", "time ".repeat(200_000)));
+        assert_ne!(said, Gate::Pass);
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        let (said, took) = timed(&format!("rtk run -c '{}git push'", "time ".repeat(200_000)));
+        assert_ne!(said, Gate::Pass);
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        // A long argument list is no reason to stall either.
+        let (_, took) = timed(&format!("rtk bypass echo {}", "word ".repeat(100_000)));
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+    }
+
+    #[test]
+    fn a_command_word_is_read_by_its_basename() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk /usr/bin/git push",
+            "rtk bypass /usr/bin/git push",
+            "rtk =git push",
+            "rtk bypass =git push",
+            "rtk /usr/bin/curl x",
+            "/usr/bin/git push",
+            "=git push",
+            "rtk run -c '/usr/bin/git push'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        assert_eq!(gate("rtk bypass caffeinate =git push", &r), Gate::Ask);
+        assert_eq!(
+            gate("rtk bypass caffeinate /usr/bin/git push", &r),
+            Gate::Ask
+        );
+        // Where the file system folds case the program name is read folded.
+        let folded = [
+            "rtk GIT push",
+            "rtk Git push",
+            "rtk bypass GIT push",
+            "rtk CURL x",
+        ];
+        for cmd in folded {
+            let expected = if cfg!(any(target_os = "macos", windows)) {
+                Gate::Deny
+            } else {
+                Gate::Pass
+            };
+            assert_eq!(gate(cmd, &r), expected, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_denied_command_behind_an_unmodelled_launcher_asks() {
+        let r = push_only();
+        for cmd in [
+            "rtk bypass caffeinate g''it push",
+            "rtk bypass caffeinate gi\\t push",
+            "rtk bypass caffeinate \"g\"it push",
+            "rtk bypass ssh h \"g\"\"it push\"",
+            "rtk bypass exec -a x g''it push",
+            "rtk bypass command -p g''it push",
+            "x=it; rtk bypass caffeinate g$x push",
+            "rtk bypass caffeinate {git,} push",
+            "rtk bypass caffeinate $'\\x67it' push",
+            "rtk bypass caffeinate git pu*h",
+            "rtk bypass caffeinate sh -c 'g\"\"it push'",
+            "rtk bypass caffeinate bash -c 'x=push; git $x'",
+            "echo 'git push' | rtk bypass caffeinate bash",
+            "rtk bypass caffeinate bash <<< 'g''it push'",
+            "echo 'git push' | rtk bypass caffeinate python3",
+            "rtk bypass caffeinate eval 'g\"\"it push'",
+            "rtk bypass env -i caffeinate g''it push",
+            "rtk bypass caffeinate env g''it push",
+            "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
+            "rtk bypass npm exec -c 'g\"\"it push'",
+            "rtk bypass watch -n1 'g\"\"it push'",
+            "rtk bypass ssh h 'x=push; git $x'",
+            "rtk git -c 'alias.p=!git push' p",
+            "rtk bypass caffeinate git -C . push",
+            "rtk bypass caffeinate /usr/bin/git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        // What the launcher runs is a question, never a deny, but an ordinary
+        // command in the same place passes.
+        for cmd in [
+            "rtk bypass caffeinate git status",
+            "rtk bypass ssh h ls -la",
+            "rtk bypass watch -n1 'git status'",
+            "rtk grep python src/",
+            "rtk grep -rn node src/",
+            "rtk git commit -m 'use python and node here'",
+            "rtk git log --oneline -n 5",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn arguments_from_stdin_or_the_filesystem_complete_a_head() {
+        let r = push_only();
+        for cmd in [
+            "echo push | rtk bypass xargs git",
+            "printf push | rtk bypass xargs -n1 git",
+            "rtk bypass xargs -a args.txt git",
+            "rtk bypass caffeinate xargs git <<< push",
+            "touch push; rtk bypass find . -name push -execdir git {} \\;",
+            "rtk bypass parallel git ::: push",
+            "echo push | xargs git",
+            "find . -execdir git {} \\;",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        for cmd in [
+            "rtk bypass xargs git status",
+            "xargs rm",
+            "find . -name x -exec grep foo {} \\;",
+            "find . -type f -exec git add {} \\;",
+            "rtk bypass parallel echo ::: a b",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        }
+        assert_eq!(gate("rtk bypass parallel git push ::: a", &r), Gate::Deny);
+    }
+
+    #[test]
+    fn every_round_three_backstop_is_inert_without_rules() {
+        let none = rules(&[], &[], &[]);
+        for cmd in [
+            "rtk git -C . push",
+            "rtk /usr/bin/git push",
+            "rtk bypass caffeinate g''it push",
+            "echo push | rtk bypass xargs git",
+            "rtk bypass ssh h 'x=push; git $x'",
+            "rtk run -c 'time time git push'",
+        ] {
+            assert_eq!(gate(cmd, &none), Gate::Pass, "{cmd}");
+        }
+        assert!(!none.embeds_head("ssh h git -C . push"));
     }
 }
