@@ -1131,6 +1131,24 @@ class SaveNoteTest(MemCase):
         self.assertEqual(snapshot(self.tmp), before)
         return str(cm.exception)
 
+    def test_privacy_check_is_the_single_wiring_point(self):
+        # Stream P adds memory_sync.privacy_findings(text) -> list; save must refuse on any
+        # finding, without echoing it. Until it lands, _privacy_check is a no-op.
+        seen = []
+
+        def findings(text):
+            seen.append(text)
+            return ["home path"] if "SECRETHOMEPATH" in text else []
+
+        with mock.patch.object(memory_sync, "privacy_findings", findings, create=True):
+            msg = self.assertRefused("personal or private data", body="see SECRETHOMEPATH here")
+            self.assertNotIn("SECRETHOMEPATH", msg)
+            self.save(slug="clean", body="Nothing private.")
+        self.assertTrue(any("Nothing private." in t for t in seen))
+        self.assertTrue(any("eval-probe" in t or "clean" in t for t in seen))
+        if not hasattr(memory_sync, "privacy_findings"):
+            self.save(slug="no-scanner", body="see SECRETHOMEPATH here")
+
     def test_creates_the_note_with_the_exact_shape(self):
         old_umask = os.umask(0o022)  # the mode below is only exact under the usual umask
         try:

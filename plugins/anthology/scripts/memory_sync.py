@@ -598,6 +598,20 @@ def _refuse_secrets(texts, env):
                             "(memory is committed to the repo)" % var)
 
 
+def _privacy_check(texts):
+    """The one privacy wiring point for `save`: refuse personal or private data (home paths,
+    emails, private hosts/IPs, SSH key paths, token shapes) before a note is written into the
+    repo. Uses `privacy_findings(text) -> list` from this module once it exists (stream P);
+    until then it is a no-op. Never echoes a finding."""
+    finder = globals().get("privacy_findings")
+    if finder is None:
+        return
+    for text in texts:
+        if finder(text):
+            raise SaveError("refusing to save: the note contains personal or private data "
+                            "(memory is committed to the repo)")
+
+
 def _yaml_quote(value):
     return "'" + value.replace("'", "''") + "'"
 
@@ -637,6 +651,7 @@ def save_note(root, agent, type_, slug, name, description, body, replace=False, 
     description = _check_line("description", description, MAX_DESCRIPTION)
     body = _check_body(body)
     _refuse_secrets((slug, name, description, body), env)
+    _privacy_check((slug, name, description, body))
     if slug.startswith(type_ + "-") and len(slug) > len(type_) + 1:
         slug = slug[len(type_) + 1:]  # `--type project --slug project-x` is project-x.md
     if not os.path.isdir(str(root)):
