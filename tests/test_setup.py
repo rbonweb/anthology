@@ -102,6 +102,7 @@ class PreviewTest(SetupCase):
         self.assertTrue(s["changed"])
         self.assertIn("+++ settings.json", s["diff"])
         self.assertIn("Bash(rtk *)", s["diff"])
+        self.assertIn("Bash(anthology-mem save", s["diff"])
         self.assertIn('"head"', s["diff"])
         self.assertEqual(s["bypass_note"], BYPASS)
         self.assertEqual(out["memory"]["personal_dir"], str(self.anth / "personal-memory"))

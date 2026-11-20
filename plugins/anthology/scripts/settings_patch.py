@@ -30,7 +30,13 @@ from pathlib import Path
 BYPASS_NOTE = ("Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; "
                "the guardrails and deny rules still apply to the wrapped command.")
 ALLOW_RTK = "Bash(rtk *)"
+# Lets read-only agents save memory notes (heredocs/redirects never match permission grants).
+ALLOW_MEM_SAVE = "Bash(anthology-mem save *)"
 TAG_PLUGIN_READ = "plugin-read"
+TAG_MEM_SAVE = "mem-save"
+# Ops whose value may change between runs (a moved plugin, a revised rule string): re-running
+# setup replaces the earlier value it added for the same tag.
+_REPLACEABLE_TAGS = (TAG_PLUGIN_READ, TAG_MEM_SAVE)
 
 _WS = " \t\r\n"
 _STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"', re.S)
@@ -546,7 +552,9 @@ def setup_ops(plugin_root, profile_roots=None, env=None):
         rules = guardrails_loc.load_rules(plugin_root, env)
         profile_roots = rules.PROFILE_ROOTS
         variants = getattr(rules, "_PREFIX_VARIANTS", ("",))
-    ops = [{"op": "add", "path": ["permissions", "allow"], "value": ALLOW_RTK}]
+    ops = [{"op": "add", "path": ["permissions", "allow"], "value": ALLOW_RTK},
+           {"op": "add", "path": ["permissions", "allow"], "value": ALLOW_MEM_SAVE,
+            "tag": TAG_MEM_SAVE}]
     for root in profile_roots:
         for v in (variants if root.startswith(".config/") else ("",)):
             for rule in ("Read(~/%s%s)" % (root, v), "Read(~/%s%s/**)" % (root, v)):
@@ -565,11 +573,12 @@ def reconcile(settings, desired, previous):
     """Re-run setup over text that may already carry an earlier run's entries.
 
     Returns `(new_text, diff, ops_to_store)`. A plugin-read rule we added earlier for a root
-    that is no longer current is replaced; every other earlier op is kept in the record, so
+    that is no longer current, or a memory-save rule whose string changed, is replaced; every other earlier op is kept in the record, so
     `remove` still undoes everything setup ever added."""
     previous = list(previous or [])
-    want = {o["value"] for o in desired if o.get("tag") == TAG_PLUGIN_READ}
-    stale = [o for o in previous if o.get("tag") == TAG_PLUGIN_READ and o["value"] not in want]
+    want = {(o.get("tag"), o["value"]) for o in desired if o.get("tag") in _REPLACEABLE_TAGS}
+    stale = [o for o in previous if o.get("tag") in _REPLACEABLE_TAGS
+             and (o["tag"], o["value"]) not in want]
     text = revert(settings, stale)[0] if stale else settings
     kept = [o for o in previous if o not in stale]
     new = plan(text, desired)

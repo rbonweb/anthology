@@ -128,6 +128,8 @@ class OpsTest(unittest.TestCase):
         data = json.loads(text)
         allow, deny = data["permissions"]["allow"], data["permissions"]["deny"]
         self.assertIn("Bash(rtk *)", allow)
+        self.assertIn(settings_patch.ALLOW_MEM_SAVE, allow)
+        self.assertTrue(settings_patch.ALLOW_MEM_SAVE.startswith("Bash(anthology-mem save"))
         for root in PROFILE_ROOTS:
             self.assertIn("Read(~/%s)" % root, deny)
             self.assertIn("Read(~/%s/**)" % root, deny)
@@ -359,6 +361,19 @@ class ReconcileTest(unittest.TestCase):
         self.assertIn(settings_patch.plugin_read_rule(PLUGIN_ROOT), allow)
         self.assertIn("Read(//somewhere/else/**)", allow)  # the user's own rule stays
         self.assertTrue(diff)
+        back, _ = settings_patch.revert(t2, stored2)
+        self.assertEqual(back, text)
+
+    def test_changed_mem_save_rule_replaces_only_the_one_we_added(self):
+        text = json.dumps(BASE, indent=2) + "\n"
+        old_ops = [dict(o, value="Bash(anthology-mem save:*)") if o.get("tag") == settings_patch.TAG_MEM_SAVE
+                   else o for o in ops()]
+        t1, _, stored1 = settings_patch.reconcile(text, old_ops, [])
+        self.assertIn("Bash(anthology-mem save:*)", json.loads(t1)["permissions"]["allow"])
+        t2, _, stored2 = settings_patch.reconcile(t1, ops(), stored1)
+        allow = json.loads(t2)["permissions"]["allow"]
+        self.assertNotIn("Bash(anthology-mem save:*)", allow)
+        self.assertIn(settings_patch.ALLOW_MEM_SAVE, allow)
         back, _ = settings_patch.revert(t2, stored2)
         self.assertEqual(back, text)
 
