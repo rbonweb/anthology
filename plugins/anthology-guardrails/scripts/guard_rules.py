@@ -44,12 +44,14 @@ SELF_TEST_SAMPLE = {
     "tool_input": {"command": "npx playwright install chromium"},
 }
 
-_MAX_DEPTH = 6          # nested shells / substitutions
+_MAX_DEPTH = 12         # nested shells / substitutions
+_MAX_CWD_DEPTH = 64     # stop tracking `cd` chains deeper than this many components
 _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
 _SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
 _DOCKER = frozenset(("docker", "docker-compose"))
+_JS_PACKAGE_MANAGERS = frozenset(("npm", "pnpm", "yarn", "bun"))
 
 
 # ------------------------------------------------------------------ lexer
@@ -77,14 +79,48 @@ class _Seg:
         self.group = group
 
 
+_HEREDOC_START = re.compile(r"<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\1")
+
+
+def _find_heredoc_end(text, i, delimiter):
+    """For a heredoc body starting at text[i]: (start of the terminator line, index just past
+    it), or (-1, -1) when the terminator never appears."""
+    n = len(text)
+    while i <= n:
+        end = text.find("\n", i)
+        stop = n if end < 0 else end
+        if text[i:stop].strip() == delimiter:
+            return i, min(stop + 1, n)
+        if end < 0:
+            break
+        i = end + 1
+    return -1, -1
+
+
 def _scan_paren(text, i):
-    """Return (inner, index after `)`) for the parenthesis opened just before text[i]."""
+    """Return (inner, index after `)`) for the parenthesis opened just before text[i].
+    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over."""
     depth, j, n = 1, i, len(text)
+    delimiters = []
     while j < n:
         c = text[j]
         if c == "\\":
             j += 2
             continue
+        if c == "<":
+            match = _HEREDOC_START.match(text, j)
+            if match:
+                delimiters.append(match.group(2))
+                j = match.end()
+                continue
+        if c == "\n" and delimiters:
+            pos = j + 1
+            for delimiter in delimiters:
+                after = _find_heredoc_end(text, pos, delimiter)[1]
+                if after >= 0:
+                    pos = after
+            j = pos - 1                                   # the loop's `j += 1` lands on `pos`
+            delimiters = []
         if c in "'\"":
             k = text.find(c, j + 1)
             j = n if k < 0 else k + 1
@@ -112,6 +148,7 @@ def _find_backtick(text, i):
 
 
 _HEREDOC_DELIMITER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\Z")
+_ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\Z")
 
 
 class _Lexer:
@@ -128,6 +165,7 @@ class _Lexer:
         self.has_word = False
         self.pending = None      # redirection operator waiting for its target word
         self.heredocs = []       # (delimiter, group) registered on the current line
+        self.unterminated = set()  # delimiters whose terminator was not found
 
     # -- building words and segments
     def add(self, chars):
@@ -196,6 +234,9 @@ class _Lexer:
             elif c == "#" and not self.has_word:
                 j = text.find("\n", i)
                 i = n if j < 0 else j
+            elif c == "(" and self.has_word and _ARRAY_ASSIGNMENT.match("".join(self.cur)):
+                inner, i = _scan_paren(text, i + 1)       # `names=(a b)` is an array, not a subshell
+                self.add("(" + inner + ")")
             elif c in ";()":
                 self.end_seg(new_group=True)
                 i += 1
@@ -304,23 +345,16 @@ class _Lexer:
 
     def take_heredocs(self, i):
         """At the start of the line after a heredoc operator: capture the body (if closed)."""
-        text, n = self.text, len(self.text)
+        text = self.text
         for delimiter, group in self.heredocs:
-            if not _HEREDOC_DELIMITER.match(delimiter):
+            if delimiter in self.unterminated or not _HEREDOC_DELIMITER.match(delimiter):
                 continue
-            pos, body = i, []
-            while pos <= n:
-                end = text.find("\n", pos)
-                stop = n if end < 0 else end
-                line = text[pos:stop]
-                if line.strip() == delimiter:
-                    group.texts.append("\n".join(body))
-                    i = min(stop + 1, n)
-                    break
-                body.append(line)
-                if end < 0:
-                    break
-                pos = end + 1
+            body_end, after = _find_heredoc_end(text, i, delimiter)
+            if after < 0:
+                self.unterminated.add(delimiter)          # later lines cannot close it either
+                continue
+            group.texts.append(text[i:body_end])
+            i = after
         self.heredocs = []
         return i
 
@@ -356,11 +390,12 @@ def _segments(text, depth=0):
 # ------------------------------------------------------------- prefixes
 
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{"))
+_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "coproc"))
 
 # Wrapper program -> flags that consume the following word.
 _WRAPPERS = {
-    "sudo": frozenset(("-u", "-g", "-C", "-h", "-p", "-r", "-t", "-D", "-R", "-T", "-U")),
+    "sudo": frozenset(("-u", "-g", "-C", "-h", "-p", "-r", "-t", "-D", "-R", "-T", "-U",
+                       "--user", "--group", "--host", "--prompt", "--chdir")),
     "doas": frozenset(("-u", "-C")),
     "env": frozenset(("-u", "-C", "--unset", "--chdir")),
     "exec": frozenset(("-a",)),
@@ -368,7 +403,8 @@ _WRAPPERS = {
     "nohup": frozenset(),
     "nice": frozenset(("-n", "--adjustment")),
     "timeout": frozenset(("-s", "-k", "--signal", "--kill-after")),
-    "xargs": frozenset(("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a")),
+    "xargs": frozenset(("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args",
+                        "--max-lines", "--max-procs", "--replace", "--delimiter")),
     "xvfb-run": frozenset(("-s", "-n", "-e", "-f", "-p", "--server-args", "--server-num",
                            "--error-file", "--auth-file")),
     "caffeinate": frozenset(("-t", "-w")),
@@ -387,8 +423,11 @@ _PM_VALUE_FLAGS = frozenset(("--filter", "-F", "-C", "--dir", "--prefix", "-w", 
                              "--cwd", "--registry"))
 _RUNNERS = frozenset(("npx", "bunx", "pnpx", "uvx"))
 _RUNNER_VALUE_FLAGS = frozenset(("-p", "--package", "-w", "--workspace", "--from", "--with",
-                                 "--python"))
+                                 "--python", "-n", "--name", "--prefix"))
 _RUNNER_SUBCOMMANDS = frozenset(("exec", "dlx", "x"))
+# Python project runners: `<name> [<middle>] run [options] <program> ...`
+_PYTHON_RUNNERS = {"uv": ("run", "tool run"), "poetry": ("run",), "pipenv": ("run",),
+                   "pdm": ("run",), "hatch": ("run",), "rye": ("run",), "conda": ("run",)}
 _PM_VERBS = frozenset((
     "add", "install", "i", "remove", "rm", "uninstall", "un", "r", "run", "exec", "dlx", "x",
     "init", "publish", "link", "unlink", "update", "upgrade", "up", "test", "start", "build",
@@ -419,7 +458,11 @@ def _skip_flags(tokens, i, value_flags):
         if token == "--":
             return i + 1
         if len(token) > 1 and token.startswith("-"):
-            i += 2 if token in value_flags else 1
+            # `-iu bob`: a combined short-flag group ending in a value flag takes the next word
+            takes_value = token in value_flags or (
+                token[1] != "-" and len(token) > 2 and token[-1].isalpha()
+                and "-" + token[-1] in value_flags)
+            i += 2 if takes_value else 1
         else:
             break
     return i
@@ -451,6 +494,15 @@ def _runner_program(tokens, i, scripts):
     if rest:
         rest[0] = _strip_version(rest[0])
     return rest
+
+
+def _python_runner_start(name, tokens):
+    """Index of the first word after `uv run` / `uv tool run` / `poetry run` ..., or -1."""
+    for subcommand in _PYTHON_RUNNERS[name]:
+        words = subcommand.split()
+        if tokens[1:1 + len(words)] == words:
+            return 1 + len(words)
+    return -1
 
 
 def _shell_args(args):
@@ -502,15 +554,19 @@ def _strip_prefixes(tokens):
         elif name == "rtk":
             i = _skip_flags(toks, 1, frozenset())
             if i < len(toks) and toks[i] in ("bypass", "proxy"):
-                i += 1
+                i = _skip_flags(toks, i + 1, frozenset())
             toks = toks[i:]
         elif name in _RUNNERS:
             toks = _runner_program(toks, 1, scripts)
+        elif name in _PYTHON_RUNNERS and _python_runner_start(name, toks) > 0:
+            toks = _runner_program(toks, _python_runner_start(name, toks), scripts)
         elif name in _JS_PACKAGE_MANAGERS and len(toks) > 1:
             i = _skip_flags(toks, 1, _PM_VALUE_FLAGS)
             verb = toks[i] if i < len(toks) else ""
-            if verb in _RUNNER_SUBCOMMANDS:
-                toks = _runner_program(toks, i + 1, scripts)
+            if verb in _RUNNER_SUBCOMMANDS or (verb == "run" and name != "npm"):
+                toks = _runner_program(toks, i + 1, scripts)  # `yarn run playwright ...`
+            elif verb == "workspace" and name == "yarn" and len(toks) > i + 2:
+                toks = ["yarn"] + toks[i + 2:]                # `yarn workspace <w> <rest>`
             elif name in ("yarn", "pnpm") and verb and verb not in _PM_VERBS:
                 toks = _runner_program(toks, i, scripts)  # `yarn playwright test` runs the bin
             else:
@@ -561,14 +617,31 @@ class _Context:
         self.entries = []
 
 
+_CHDIR_PROGRAMS = frozenset(("tar", "git", "make"))
+
+
 def _first_arg(args):
     return next((a for a in args if not a.startswith("-")), None)
+
+
+def _reads_stdin_as_shell(entry):
+    """True for a shell fed from stdin (`bash`, `sh -s`) or a docker command that runs one."""
+    if entry.prog in _SHELLS:
+        return _shell_args(entry.args)[0] == "stdin"
+    if entry.prog in _DOCKER:
+        return any(_prog_name(a) in _SHELLS and _shell_args(entry.args[k + 1:])[0] == "stdin"
+                   for k, a in enumerate(entry.args))
+    return False
 
 
 def _add_command(tokens, redirs, group, ctx, exempt, depth):
     cmd, scripts = _strip_prefixes(tokens)
     entry = _Entry(tokens, redirs, cmd, ctx.cwd, exempt, group)
     entry.exempt = exempt or entry.prog in _DOCKER
+    if entry.prog in _CHDIR_PROGRAMS:                     # `tar -C dir x`, `git -C dir ...`
+        for k, arg in enumerate(entry.args[:-1]):
+            if arg in ("-C", "--directory"):
+                entry.cwd = _normalize(entry.args[k + 1], ctx.home, ctx.cwd) or entry.cwd
     ctx.entries.append(entry)
     for script in scripts:
         _collect(script, ctx, exempt, depth + 1)
@@ -583,7 +656,9 @@ def _add_command(tokens, redirs, group, ctx, exempt, depth):
         if target is None:
             ctx.cwd = _normalize("~", ctx.home, None)
         elif target != "-":
-            ctx.cwd = _normalize(target, ctx.home, ctx.cwd)
+            new_cwd = _normalize(target, ctx.home, ctx.cwd)
+            if new_cwd.count("/") <= _MAX_CWD_DEPTH:      # keeps absurd `cd` chains linear
+                ctx.cwd = new_cwd
     return entry
 
 
@@ -619,8 +694,7 @@ def _collect(text, ctx, exempt, depth):
     for entry in new_entries:
         by_group.setdefault(id(entry.group), []).append(entry)
     for entries in by_group.values():
-        shell = next((e for e in entries
-                      if e.prog in _SHELLS and _shell_args(e.args)[0] == "stdin"), None)
+        shell = next((e for e in entries if _reads_stdin_as_shell(e)), None)
         if shell is None:
             continue
         texts = list(entries[0].group.texts)
@@ -687,8 +761,10 @@ def _contains_sequence(path, sequences, prefix_flags=None):
         size = len(sequence)
         for start in range(0, min(last_start, len(comps) - size) + 1):
             window = comps[start:start + size]
+            # A window made only of wildcards (`**/*`, `*/*`) names no particular path.
             if all(_component_matches(c, p, prefix and k == size - 1)
-                   for k, (c, p) in enumerate(zip(window, sequence))):
+                   for k, (c, p) in enumerate(zip(window, sequence))) \
+                    and not all(_GLOB_CHARS.search(c) for c in window):
                 return True
     return False
 
@@ -768,7 +844,6 @@ _PLAYWRIGHT_SUBCOMMANDS = frozenset((
     "wk", "webkit", "screenshot", "pdf"))
 _PUPPETEER = frozenset(("puppeteer", "@puppeteer/browsers"))
 _PUPPETEER_SUBCOMMANDS = frozenset(("browsers", "install"))
-_JS_PACKAGE_MANAGERS = frozenset(("npm", "pnpm", "yarn", "bun"))
 _JS_INSTALL_VERBS = frozenset(("i", "install", "add"))
 _PIP = re.compile(r"pip[0-9.]*\Z")
 _OS_INSTALLERS = frozenset(("brew", "apt", "apt-get", "dnf", "yum", "snap", "pacman"))
@@ -797,6 +872,14 @@ def _js_installs_puppeteer(entry):
     return any(_strip_version(w).lower() == "puppeteer" for w in words[1:])
 
 
+def _js_scaffolds_playwright(entry):
+    """`npm init playwright`, `yarn create playwright`: downloads browsers unless told not to."""
+    words = _positional(entry.args, _PM_VALUE_FLAGS)
+    return (len(words) > 1 and words[0] in ("init", "create")
+            and _strip_version(words[1]).lower() == "playwright"
+            and "--no-browsers" not in entry.args)
+
+
 def _pip_installs_playwright(entry):
     words = _positional(entry.args)
     if entry.prog == "uv":
@@ -816,7 +899,8 @@ def _os_installs_browser(entry):
     if entry.prog == "pacman":
         if not any(_PACMAN_SYNC.match(a) for a in entry.args):
             return False
-    elif not words or words[0] != "install":
+    elif not words or words[0] not in (
+            ("install", "reinstall", "upgrade") if entry.prog == "brew" else ("install",)):
         return False
     for package in words[0 if entry.prog == "pacman" else 1:]:
         name = _strip_version(package.lower().rsplit("/", 1)[-1])
@@ -834,8 +918,10 @@ def _g1(entry):
         return sub in _PLAYWRIGHT_SUBCOMMANDS
     if prog in _PUPPETEER:
         return sub in _PUPPETEER_SUBCOMMANDS
+    if prog == "create-playwright":
+        return "--no-browsers" not in entry.args
     if prog in _JS_PACKAGE_MANAGERS:
-        return _js_installs_puppeteer(entry)
+        return _js_installs_puppeteer(entry) or _js_scaffolds_playwright(entry)
     if _PIP.match(prog) or prog in ("pipx", "uv"):
         return _pip_installs_playwright(entry)
     if prog in _OS_INSTALLERS:
@@ -845,7 +931,8 @@ def _g1(entry):
 
 # G2 ------------------------------------------------------------------
 
-_SEARCH_PROGRAMS = frozenset(("grep", "egrep", "fgrep", "rg", "ag", "ack", "git"))
+# Programs that only look at / print the text `--remote-debugging-port` appears in.
+_SEARCH_PROGRAMS = frozenset(("grep", "egrep", "fgrep", "rg", "ag", "ack", "git", "echo", "printf"))
 
 
 def _chrome_app_name(name):
@@ -880,8 +967,8 @@ def _g2(entry):
     if entry.exempt:
         return False
     prog = entry.prog
-    if (prog.startswith(("google-chrome", "chromium", "google chrome"))
-            or prog in ("chrome", "chromedriver")
+    if (prog.startswith(("google-chrome", "chromium", "google chrome", "chrome-headless-shell"))
+            or prog in ("chrome", "chromedriver", "chrome-launcher")
             or "google chrome.app/" in entry.prog_path or "chromium.app/" in entry.prog_path):
         return True
     if prog == "open" and _open_launches_chrome(entry.args):
@@ -910,6 +997,7 @@ _G4_EXEMPT_PROGRAMS = frozenset((
     "cd", "pushd", "mkdir", "touch", "cp", "mv", "find", "du", "diff", "tree", "realpath",
     "basename", "dirname", "readlink", "chmod", "chown", "ln"))
 _UNINSTALL_VERBS = frozenset(("uninstall", "remove", "rm", "un", "r"))
+_INSPECT_VERBS = frozenset(("ls", "list", "view", "info", "why", "outdated"))
 
 
 def _names_agent_browser(token):
@@ -924,9 +1012,9 @@ def _g4(entry):
     if prog in _G4_EXEMPT_PROGRAMS:
         return False
     verb = _first_arg(entry.args)
-    if prog in _JS_PACKAGE_MANAGERS and verb in _UNINSTALL_VERBS:
+    if prog in _JS_PACKAGE_MANAGERS and verb in _UNINSTALL_VERBS | _INSPECT_VERBS:
         return False
-    if prog == "brew" and verb in ("uninstall", "remove", "rm"):
+    if prog == "brew" and verb in ("uninstall", "remove", "rm", "info", "list", "search"):
         return False
     return any(_names_agent_browser(t) for t in entry.raw)
 
@@ -1008,19 +1096,28 @@ def _g6_command(command, entries, home):
 _PLAIN_TEXT_KEYS = frozenset(_CONTENT_KEYS + ("old_string", "edits", "command"))
 
 
-def _path_strings(value, skip, depth=0):
-    """Every string value except written/replaced text, the shell command and `skip` keys."""
+_PATH_KEY_WORDS = ("path", "file", "dir", "folder", "uri", "url", "pattern", "glob", "source",
+                   "src", "dest", "destination", "target", "location", "root", "cwd")
+
+
+def _path_strings(value, skip, in_path_key=False, depth=0):
+    """Strings under path-like keys (at any depth, lists included). Free text such as a
+    prompt, a query or a todo is not a path. Keys in `skip` (written text, the shell
+    command) are never read."""
     if depth > _MAX_WALK_DEPTH:
         return
     if isinstance(value, str):
-        yield value
+        if in_path_key:
+            yield value
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in skip:
-                yield from _path_strings(item, skip, depth + 1)
+                path_like = in_path_key or (
+                    isinstance(key, str) and any(w in key.lower() for w in _PATH_KEY_WORDS))
+                yield from _path_strings(item, skip, path_like, depth + 1)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from _path_strings(item, skip, depth + 1)
+            yield from _path_strings(item, skip, in_path_key, depth + 1)
 
 
 def _search_roots(tool_input, keys):

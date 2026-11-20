@@ -114,6 +114,8 @@ class RuleTableTest(unittest.TestCase):
             bash("osascript -e 'tell application \"Google Chrome\" to activate'"),
             bash("osascript -e 'tell application \"Chromium\" to quit'"),
             bash("node server.js --remote-debugging-port=9222"),
+            bash("chrome-headless-shell --dump-dom https://x"),
+            bash("npx chrome-launcher"),
         ])
 
     def test_g3_profile_paths_in_shell(self):
@@ -153,6 +155,13 @@ class RuleTableTest(unittest.TestCase):
             bash("ls ~/.config/google-*"),
             bash("ls ~/.config/google-chrome-b*"),
             bash("ls ~/.config/*/Default"),
+            bash("ls ~/.config/*"),
+            bash("ls ~/.config/g*"),
+            # -C <dir> changes directory for tar / git / make (review M4)
+            bash("tar czf /tmp/p.tgz -C ~/.config chromium"),
+            bash("tar xf /tmp/p.tgz --directory ~/.config google-chrome"),
+            bash("git -C ~/Library/Application\\ Support ls-files Google"),
+            bash("make -C ~/.config/chromium all"),
             bash("ls ~/Library/Application\\ Support/{Google,Code}"),
             bash("cat ~/.config/{git,google-chrome}/Default/Cookies"),
             bash("ls ~/{.config/chromium,.zshrc}"),
@@ -208,7 +217,18 @@ class RuleTableTest(unittest.TestCase):
             ("NotebookEdit", {"notebook_path": "~/.config/chromium/n.ipynb", "new_source": "x"}),
             ("Read", {"file_path": OTHER_HOME + "/.config/google-chrome/Default/Cookies"}),
             # nested values are visited too
-            ("SomeTool", {"outer": {"inner": ["a", "~/.config/google-chrome/Default"]}}),
+            ("SomeTool", {"outer": {"paths": ["a", "~/.config/google-chrome/Default"]}}),
+            ("SomeTool", {"params": [{"file_path": "~/.config/google-chrome/Default"}]}),
+            ("SomeTool", {"source": "~/.config/chromium"}),
+            ("SomeTool", {"paths": ["x", "~/.config/chromium"]}),
+            ("SomeTool", {"target_dir": "~/Library/Application Support/Google"}),
+            ("SomeTool", {"cwd": "~/.config/google-chrome"}),
+            ("SomeTool", {"uri": "file://" + HOME + "/.config/chromium/Default"}),
+            ("LS", {"path": "~/.config/chromium"}),
+            ("NotebookRead", {"notebook_path": "~/.config/chromium/n.ipynb"}),
+            ("mcp__filesystem__read_file", {"path": "~/.config/google-chrome/Default/Cookies"}),
+            ("mcp__filesystem__read_multiple_files",
+             {"paths": ["a.txt", "~/.config/google-chrome/Default/Cookies"]}),
         ])
 
     def test_g4_agent_browser(self):
@@ -396,6 +416,50 @@ class RuleTableTest(unittest.TestCase):
             bash("yarn --cwd web playwright install"),
             bash("pnpm -C web add puppeteer"),
             bash("npm --prefix web install puppeteer"),
+            # Python and JS project runners (review I3)
+            bash("uv run playwright install chromium"),
+            bash("uv run python -m playwright install"),
+            bash("uv run --with playwright playwright install"),
+            bash("uv tool run playwright install"),
+            bash("poetry run playwright install"),
+            bash("pipenv run playwright install"),
+            bash("pdm run playwright install"),
+            bash("hatch run playwright install"),
+            bash("rye run playwright install"),
+            bash("conda run -n e2e playwright install"),
+            bash("conda run --prefix /opt/e2e playwright install"),
+            bash("yarn run playwright install"),
+            bash("bun run playwright install"),
+            bash("pnpm run playwright install"),
+            bash("pnpm --filter web run playwright install"),
+            bash("pnpm --filter web playwright install"),
+            bash("yarn workspace e2e playwright install"),
+            bash("yarn workspace e2e run playwright install"),
+            # the Playwright scaffolder downloads browsers (review I4, R21)
+            bash("npm init playwright@latest"),
+            bash("npm init playwright@latest -- --quiet --browser=chromium"),
+            bash("yarn create playwright"),
+            bash("pnpm create playwright"),
+            bash("bun create playwright"),
+            bash("npx create-playwright@latest"),
+            bash("create-playwright"),
+            bash("npm --prefix web init playwright"),
+            # reinstall / upgrade of a browser package (review M2)
+            bash("brew reinstall --cask google-chrome"),
+            bash("brew upgrade chromium"),
+            # wrapper flag forms (review M1)
+            bash("sudo -iu bob npx playwright install"),
+            bash("sudo --user bob npx playwright install"),
+            bash("rtk proxy -- npx playwright install"),
+            bash("xargs --max-args 1 npx playwright install"),
+            bash("coproc npx playwright install"),
+            # a substitution whose heredoc is closed is still analyzed (review I1)
+            bash("echo \"$(cat <<'EOF'\nx\nEOF\n)\"; npx playwright install"),
+            bash("git commit -m \"$(cat <<'EOF'\nit's fine\nEOF\n)\" && npx playwright install"),
+            bash("echo $(npx playwright install)"),
+            bash("x=\"$(\nnpx playwright install\n)\""),
+            # nesting up to the depth cap (review M9)
+            bash("echo $(echo $(echo $(echo $(echo $(echo $(echo $(npx playwright install)))))))"),
             # macOS / coreutils wrappers, quoting tricks and substituted program names
             bash("arch -arm64 npx playwright install"),
             bash("gtimeout 60 npx playwright install"),
@@ -521,6 +585,115 @@ class RuleTableTest(unittest.TestCase):
             bash("npm run test:e2e"),
         ])
 
+    def test_allowed_commit_and_pr_heredoc_messages(self):
+        """`"$(cat <<'EOF' ... EOF)"` bodies are text, however many quotes or `)` they hold (I1)."""
+        self.assert_table(None, [
+            bash("git commit -m \"$(cat <<'EOF'\nfeat: drop agent-browser\n\nIt's replaced by BrowserOS Neo.\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<'EOF'\nchore: e2e\n\nplaywright test now runs in docker; it's faster.\nEOF\n)\""),
+            bash("gh pr create --title x --body \"$(cat <<'EOF'\n## Summary\n- Removes agent-browser; we don't need it\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<'EOF'\nfix: it's done\n\nchromium is never launched\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<'EOF'\nfix: it's done\n\n~/.config/chromium is now protected\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<'EOF'\nfix: done\nagent-browser :)\nEOF\n)\""),
+            # same forms without apostrophes, with several, unquoted or dashed delimiters
+            bash("git commit -m \"$(cat <<'EOF'\nfix: done\nnpx playwright install (1)\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<EOF\nit's 'quoted' \"too\" (and) agent-browser\nEOF\n)\""),
+            bash("git commit -m \"$(cat <<-EOF\n\tagent-browser it's\n\tEOF\n)\""),
+            bash("git commit -m \"$(cat <<\"EOF\"\nchromium :) it's\nEOF\n)\" && git push"),
+            bash("x=$(cat <<'EOF'\nagent-browser it's :)\nEOF\n); echo $x"),
+            bash("cat <<'EOF' | git commit -F -\nfix: it's agent-browser :)\nEOF"),
+            bash("git commit -m \"$(cat <<'EOF'\nline\nEOF\n)\"\ngit status"),
+        ])
+
+    def test_allowed_wildcard_only_paths(self):
+        """Wildcard-only components name no particular path (I2)."""
+        self.assert_table(None, [
+            ("Glob", {"pattern": "**/*"}),
+            ("Glob", {"pattern": "**/*", "path": HOME + "/proj"}),
+            ("Glob", {"pattern": "src/**/*", "path": HOME + "/proj"}),
+            ("Glob", {"pattern": "**/*.py", "path": "src"}),
+            ("Glob", {"pattern": "*/*/*"}),
+            ("Grep", {"pattern": "TODO", "glob": "**/*"}),
+            ("Grep", {"pattern": "TODO", "path": HOME + "/proj", "glob": "*/*"}),
+            bash("ls */*"),
+            bash("ls -d */*/"),
+            bash("git add */*"),
+            bash("ls */*/*"),
+            bash("du -sh " + HOME + "/proj/*/*"),
+            bash("ls ?/?/?"),
+            bash("cd ~/proj && ls */*"),
+        ])
+
+    def test_allowed_free_text_fields_are_not_paths(self):
+        """Prompts, queries and todos may mention a profile root (R22)."""
+        self.assert_table(None, [
+            ("Agent", {"prompt": "~/.config/chromium must never be read; summarize docs"}),
+            ("Agent", {"prompt": "/home/tester/.config/google-chrome is off-limits",
+                       "description": "~/.config/chromium", "subagent_type": "general-purpose"}),
+            ("TodoWrite", {"todos": [{"content": "audit ~/.config/chromium", "status": "pending",
+                                      "activeForm": "~/.config/chromium audit"}]}),
+            ("WebSearch", {"query": "~/.config/chromium cookies"}),
+            ("Bash", {"command": "ls", "description": "~/.config/chromium"}),
+            ("SomeTool", {"message": "~/Library/Application Support/Google"}),
+            ("SomeTool", {"nested": {"text": ["~/.config/google-chrome"]}}),
+        ])
+
+    def test_allowed_round_1_neighbours(self):
+        self.assert_table(None, [
+            # runners and scaffolders that are not browser installs
+            bash("uv run pytest"),
+            bash("uv run python -m pytest"),
+            bash("uv run --with rich python app.py"),
+            bash("uv tool run ruff check ."),
+            bash("uv pip install requests"),
+            bash("poetry run pytest"),
+            bash("pipenv run python app.py"),
+            bash("conda run -n e2e python app.py"),
+            bash("npm run build"),
+            bash("npm run playwright"),
+            bash("yarn run build"),
+            bash("bun run dev"),
+            bash("pnpm run lint"),
+            bash("pnpm --filter web run build"),
+            bash("yarn workspace web build"),
+            bash("npm init -y"),
+            bash("npm init vite"),
+            bash("npm create vite@latest"),
+            bash("yarn create react-app x"),
+            bash("npx create-react-app x"),
+            bash("npm init playwright@latest -- --no-browsers"),
+            bash("npx create-playwright@latest --no-browsers"),
+            bash("npm init playwright -- --quiet --no-browsers"),
+            # inspection of agent-browser / browsers
+            bash("npm ls agent-browser"),
+            bash("npm view agent-browser version"),
+            bash("pnpm why agent-browser"),
+            bash("yarn list --pattern agent-browser"),
+            bash("npm outdated agent-browser"),
+            bash("brew info agent-browser"),
+            bash("brew list agent-browser"),
+            bash("brew search agent-browser"),
+            bash("brew list"),
+            bash("brew upgrade jq"),
+            bash("brew reinstall jq"),
+            bash("echo --remote-debugging-port"),
+            bash("printf '%s\\n' --remote-debugging-port=9222"),
+            bash("browsers=(chromium firefox); echo ${browsers[@]}"),
+            bash("names+=(chromium) && echo done"),
+            bash("sudo -iu bob ls"),
+            bash("rtk proxy -- git status"),
+            bash("xargs --max-args 1 echo"),
+            bash("tar czf /tmp/p.tgz -C src docs"),
+            bash("git -C ~/Library/Application\\ Support/Code status"),
+            bash("make -C src all"),
+            bash("tar czf /tmp/p.tgz -C ~/.config git"),
+            bash("coproc ls"),
+            # a container may run what the host may not, via heredoc too
+            bash("docker run -i img sh <<EOF\nnpx playwright install\nEOF"),
+            bash("docker exec -i c bash -s <<'EOF'\nchromium --headless\nEOF"),
+            bash("echo 'npx playwright install' | docker run -i img sh"),
+            bash("docker run -i img cat <<EOF\nagent-browser open x\nEOF"),
+        ])
+
     def test_allowed_docker_exemption(self):
         self.assert_table(None, [
             bash("docker run --rm mcr.microsoft.com/playwright:v1.49.0 npx playwright test"),
@@ -544,6 +717,10 @@ class RuleTableTest(unittest.TestCase):
             bash("docker run img sh -c 'agent-browser open x'"),
             bash("docker run img agent-browser open x"),
             bash("docker compose run e2e npx agent-browser open x"),
+            # a heredoc fed to a shell inside a container keeps G4 (review M5)
+            bash("docker run -i img sh <<EOF\nagent-browser open x\nEOF"),
+            bash("docker exec -i c bash -s <<'EOF'\nls\nagent-browser open x\nEOF"),
+            bash("echo 'agent-browser open x' | docker run -i img sh"),
         ])
         self.assert_table("G3", [
             bash("docker run -v ~/.config/google-chrome:/p img npx playwright test"),
@@ -907,6 +1084,10 @@ class RuleTableTest(unittest.TestCase):
             "open -a", "open -b", "cd", "pushd", "tee", "dd of=", "sed -i", "FOO=",
             huge, huge + "\nnpx playwright install", "x " * 100_000, "\n" * 100_000,
             "echo " + "'" * 100_001,
+            " && ".join(f"cd d{i}" for i in range(3000)),
+            "cat <<EOF x\n" * 2000,
+            "$(cat <<EOF\n" * 300,
+            "echo $(" * 40 + "ls" + ")" * 40,
         ]
         for command in odd_commands:
             with self.subTest(command=command[:60]):
