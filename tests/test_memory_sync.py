@@ -1,0 +1,841 @@
+"""Tests for scripts/memory_sync.py (repo memory: trust boundary, repairs, derived indexes).
+
+Cases that need git skip when it is missing (the Docker test images have none); the CI
+`memory-git` job and the host run them. Everything else (URL normalisation, index
+generation, migration, approvals) runs everywhere.
+"""
+import json
+import os
+import re
+import subprocess
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from _mem import MemCase, git, needs_git, note_text, snapshot, write
+
+import memory_sync  # noqa: E402  (path set up by _mem)
+
+HINT = "this repo has anthology memory; run /anthology:setup to use it"
+UNION_LINES = [".claude/memory/MEMORY.md merge=union",
+               ".claude/agent-memory/*/MEMORY.md merge=union"]
+
+
+def encode(path):
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(path)))
+
+
+def env():
+    return dict(os.environ)
+
+
+class NormalizeRemoteTest(unittest.TestCase):
+    """repo_key's URL normalisation (R4); pure strings, no git."""
+
+    def test_forms_that_name_the_same_repo(self):
+        for url in ("git@github.com:Acme/Repo.git",
+                    "https://github.com/acme/repo",
+                    "ssh://git@github.com/acme/repo.git/",
+                    "https://user:tok@github.com/acme/repo",
+                    "http://github.com/ACME/REPO.git",
+                    "git://github.com/acme/repo",
+                    "ssh://git@github.com:22/acme/repo.git",
+                    "https://github.com:443/acme/repo/",
+                    "github.com:acme/repo"):
+            self.assertEqual(memory_sync.normalize_remote(url), "github.com/acme/repo", url)
+
+    def test_credentials_never_survive(self):
+        key = memory_sync.normalize_remote("https://me:s3cret-token@git.example.invalid/a/b.git")
+        self.assertEqual(key, "git.example.invalid/a/b")
+        self.assertNotIn("s3cret", key)
+        self.assertNotIn("me", key.split("/")[0])
+
+    def test_non_default_port_is_kept(self):
+        self.assertEqual(memory_sync.normalize_remote("ssh://git@host.example.invalid:2222/a/b.git"),
+                         "host.example.invalid:2222/a/b")
+
+    def test_local_paths_become_path_keys(self):
+        tmp = os.path.realpath(os.environ.get("TMPDIR", "/tmp"))
+        self.assertEqual(memory_sync.normalize_remote("/srv/x.git"),
+                         "path:" + os.path.realpath("/srv/x"))
+        self.assertEqual(memory_sync.normalize_remote("file:///srv/x.git"),
+                         "path:" + os.path.realpath("/srv/x"))
+        self.assertTrue(memory_sync.normalize_remote(tmp + "/y.git").startswith("path:"))
+
+    def test_scp_form_with_absolute_path_is_not_a_local_path(self):
+        self.assertEqual(memory_sync.normalize_remote("git@host.example.invalid:/srv/x.git"),
+                         "host.example.invalid/srv/x")
+
+
+@needs_git
+class RepoKeyTest(MemCase):
+    def test_origin_url_is_normalised(self):
+        root = self.make_repo(remote="https://user:tok@github.com/Acme/Repo.git")
+        self.assertEqual(memory_sync.repo_key(root), "github.com/acme/repo")
+
+    def test_origin_wins_over_other_remotes(self):
+        root = self.make_repo(remote="https://github.com/acme/repo")
+        git(root, "remote", "add", "aaa", "https://github.com/other/thing")
+        self.assertEqual(memory_sync.repo_key(root), "github.com/acme/repo")
+
+    def test_alphabetically_first_remote_without_origin(self):
+        root = self.make_repo()
+        git(root, "remote", "add", "zeta", "https://github.com/z/z")
+        git(root, "remote", "add", "alpha", "https://github.com/a/a")
+        self.assertEqual(memory_sync.repo_key(root), "github.com/a/a")
+
+    def test_no_remote_is_the_realpath(self):
+        root = self.make_repo()
+        self.assertEqual(memory_sync.repo_key(root), "path:" + str(root))
+
+    def test_linked_worktree_shares_the_key(self):
+        root = self.make_repo()
+        write(root / "f", "x")
+        self.commit_all(root)
+        wt = self.tmp / "wt"
+        git(root, "worktree", "add", "-q", str(wt), "-b", "wt")
+        self.assertEqual(memory_sync.repo_key(wt), memory_sync.repo_key(root))
+        self.assertEqual(memory_sync.repo_key(wt), "path:" + str(root))
+
+    def test_not_a_repo_falls_back_to_the_path(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        self.assertEqual(memory_sync.repo_key(plain), "path:" + str(plain))
+
+
+class ApprovalTest(MemCase):
+    def test_approve_records_key_and_adds_union_attrs(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        key = memory_sync.approve(root)
+        self.assertEqual(key, "path:" + str(root))
+        self.assertTrue(memory_sync.is_approved(key))
+        data = json.loads((self.anth / "approved-repos.json").read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertRegex(data["repos"][key]["approved"], r"^\d{4}-\d{2}-\d{2}$")
+        attrs = (root / ".gitattributes").read_text().splitlines()
+        for line in UNION_LINES:
+            self.assertIn(line, attrs)
+
+    def test_unapprove(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        key = memory_sync.approve(root)
+        self.assertTrue(memory_sync.unapprove(key))
+        self.assertFalse(memory_sync.is_approved(key))
+        self.assertFalse(memory_sync.unapprove(key))
+
+    def test_invalid_file_means_nothing_approved_and_approve_recovers(self):
+        write(self.anth / "approved-repos.json", "{not json")
+        self.assertFalse(memory_sync.is_approved("anything"))
+        write(self.anth / "approved-repos.json", json.dumps(["list"]))
+        self.assertFalse(memory_sync.is_approved("anything"))
+        root = self.tmp / "r"
+        root.mkdir()
+        key = memory_sync.approve(root)
+        self.assertTrue(memory_sync.is_approved(key))
+
+    def test_no_temp_files_left_behind(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        memory_sync.approve(root)
+        self.assertEqual([p.name for p in self.anth.iterdir()], ["approved-repos.json"])
+
+    @needs_git
+    def test_credentials_are_never_stored(self):
+        root = self.make_repo(remote="https://user:tok3n@github.com/Acme/Repo.git")
+        key = memory_sync.approve(root)
+        self.assertEqual(key, "github.com/acme/repo")
+        self.assertNotIn("tok3n", (self.anth / "approved-repos.json").read_text())
+
+
+class UnionAttrsTest(MemCase):
+    def test_creates_and_is_idempotent(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        self.assertTrue(memory_sync.ensure_union_attrs(root))
+        first = (root / ".gitattributes").read_text()
+        self.assertEqual(first.splitlines(), UNION_LINES)
+        self.assertTrue(first.endswith("\n"))
+        self.assertFalse(memory_sync.ensure_union_attrs(root))
+        self.assertEqual((root / ".gitattributes").read_text(), first)
+
+    def test_keeps_existing_content_and_adds_missing_newline(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        write(root / ".gitattributes", "*.png binary")  # no trailing newline
+        self.assertTrue(memory_sync.ensure_union_attrs(root))
+        self.assertEqual((root / ".gitattributes").read_text().splitlines(),
+                         ["*.png binary"] + UNION_LINES)
+
+    def test_adds_only_the_missing_line(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        write(root / ".gitattributes", UNION_LINES[0] + "\n")
+        self.assertTrue(memory_sync.ensure_union_attrs(root))
+        self.assertEqual((root / ".gitattributes").read_text().splitlines(), UNION_LINES)
+
+
+class RegenerateIndexTest(MemCase):
+    def mem(self, notes):
+        d = self.tmp / "mem"
+        for fname, text in notes.items():
+            write(d / fname, text)
+        return d
+
+    def test_groups_by_type_newest_first(self):
+        d = self.mem({
+            "project-old.md": note_text("project-old", "project", "Old thing", "2026-01-01"),
+            "project-new.md": note_text("project-new", "project", "New thing", "2026-03-01"),
+            "user-me.md": note_text("user-me", "user", "About me", "2026-02-01"),
+            "feedback-x.md": note_text("feedback-x", "feedback", "Do x", "2026-02-02"),
+            "ref-a.md": note_text("ref-a", "reference", "Where a", None),
+            "zed.md": note_text("zed", "zeta", "Custom type", None),
+            "alpha.md": note_text("alpha", "aardvark", "Other custom", None),
+        })
+        self.assertTrue(memory_sync.regenerate_index(d))
+        lines = (d / "MEMORY.md").read_text().splitlines()
+        self.assertTrue(lines[0].startswith("<!-- Generated by anthology"))
+        self.assertEqual([l for l in lines if l.startswith("## ")],
+                         ["## user", "## feedback", "## project", "## reference",
+                          "## aardvark", "## zeta"])
+        self.assertIn("- [project-new](project-new.md) — New thing", lines)
+        self.assertLess(lines.index("- [project-new](project-new.md) — New thing"),
+                        lines.index("- [project-old](project-old.md) — Old thing"))
+
+    def test_dated_before_undated_ties_by_name(self):
+        d = self.mem({
+            "b.md": note_text("b", "project", "b", None),
+            "a.md": note_text("a", "project", "a", None),
+            "c.md": note_text("c", "project", "c", "2026-01-01"),
+            "d.md": note_text("d", "project", "d", "2026-01-01"),
+        })
+        memory_sync.regenerate_index(d)
+        entries = [l for l in (d / "MEMORY.md").read_text().splitlines() if l.startswith("- [")]
+        self.assertEqual([e.split("]")[0][3:] for e in entries], ["c", "d", "a", "b"])
+
+    def test_uses_name_over_stem_and_top_level_fields(self):
+        d = self.mem({"file-stem.md": note_text("Pretty Name", "feedback", "d", "2026-05-05",
+                                                 top_level_type=True)})
+        memory_sync.regenerate_index(d)
+        text = (d / "MEMORY.md").read_text()
+        self.assertIn("## feedback", text)
+        self.assertIn("- [Pretty Name](file-stem.md) — d", text)
+
+    def test_unparseable_frontmatter_is_listed_by_stem(self):
+        d = self.mem({"broken.md": "---\nname: [unclosed\n  : :\n", "plain.md": "no frontmatter\n"})
+        memory_sync.regenerate_index(d)
+        text = (d / "MEMORY.md").read_text()
+        self.assertIn("## other", text)
+        self.assertIn("[broken](broken.md)", text)
+        self.assertIn("[plain](plain.md)", text)
+
+    def test_skips_memory_md_symlinks_and_non_md(self):
+        d = self.mem({"a.md": note_text("a")})
+        write(d / "notes.txt", "x")
+        (d / "link.md").symlink_to(d / "a.md")
+        write(d / "MEMORY.md", "stale generated content that is not a note\n")
+        memory_sync.regenerate_index(d)
+        text = (d / "MEMORY.md").read_text()
+        self.assertEqual(text.count("](a.md)"), 1)
+        self.assertNotIn("link", text)
+        self.assertNotIn("notes.txt", text)
+        self.assertNotIn("stale generated", text)
+
+    def test_descriptions_are_single_lined_and_lines_capped(self):
+        d = self.mem({"a.md": "---\nname: a\ndescription: \"first\\nsecond   spaced\"\n---\nx\n",
+                      "b.md": note_text("b", desc="w" * 500)})
+        memory_sync.regenerate_index(d)
+        lines = (d / "MEMORY.md").read_text().splitlines()
+        self.assertTrue(all(len(l) <= 200 for l in lines))
+        self.assertFalse(any(l.startswith("second") for l in lines))
+
+    def test_deterministic_across_creation_order_and_mtimes(self):
+        notes = {f"n{i:02d}.md": note_text(f"n{i:02d}", ("project", "feedback", "user")[i % 3],
+                                          f"desc {i}", f"2026-01-{(i % 28) + 1:02d}")
+                 for i in range(30)}
+        a = self.tmp / "a"
+        b = self.tmp / "b"
+        for k in sorted(notes):
+            write(a / k, notes[k])
+        for n, k in enumerate(sorted(notes, reverse=True)):
+            write(b / k, notes[k])
+            os.utime(b / k, (1_000_000 + n * 1000, 1_000_000 + n * 1000))
+        memory_sync.regenerate_index(a)
+        memory_sync.regenerate_index(b)
+        self.assertEqual((a / "MEMORY.md").read_bytes(), (b / "MEMORY.md").read_bytes())
+
+    def test_generated_text_has_no_paths_or_times(self):
+        d = self.mem({"a.md": note_text("a")})
+        memory_sync.regenerate_index(d)
+        text = (d / "MEMORY.md").read_text()
+        self.assertNotIn(str(self.tmp), text)
+
+    def test_unchanged_run_writes_nothing(self):
+        d = self.mem({"a.md": note_text("a"), "b.md": note_text("b", "user")})
+        self.assertTrue(memory_sync.regenerate_index(d))
+        before = (d / "MEMORY.md").stat().st_mtime_ns
+        os.utime(d / "MEMORY.md", ns=(before - 5_000_000_000, before - 5_000_000_000))
+        before = (d / "MEMORY.md").stat().st_mtime_ns
+        self.assertFalse(memory_sync.regenerate_index(d))
+        self.assertEqual((d / "MEMORY.md").stat().st_mtime_ns, before)
+        write(d / "c.md", note_text("c"))
+        self.assertTrue(memory_sync.regenerate_index(d))
+        self.assertIn("](c.md)", (d / "MEMORY.md").read_text())
+
+    def test_no_notes_writes_nothing(self):
+        d = self.tmp / "empty"
+        d.mkdir()
+        self.assertFalse(memory_sync.regenerate_index(d))
+        self.assertFalse((d / "MEMORY.md").exists())
+        write(d / "MEMORY.md", "keep me\n")
+        self.assertFalse(memory_sync.regenerate_index(d))
+        self.assertEqual((d / "MEMORY.md").read_text(), "keep me\n")
+        self.assertFalse(memory_sync.regenerate_index(self.tmp / "missing"))
+
+    def test_300_notes_stay_within_budget_with_more_pointers(self):
+        notes = {}
+        types = ("feedback", "project", "reference")
+        for i in range(300):
+            t = types[i % 3]
+            notes[f"{t}-{i:03d}.md"] = note_text(f"{t}-{i:03d}", t, f"Description number {i}",
+                                                 f"2026-{(i // 28) % 12 + 1:02d}-{i % 28 + 1:02d}")
+        d = self.mem(notes)
+        memory_sync.regenerate_index(d)
+        raw = (d / "MEMORY.md").read_bytes()
+        lines = raw.decode().splitlines()
+        budget = memory_sync.DEFAULT_BUDGET
+        self.assertEqual((budget.lines, budget.bytes), (150, 20000))
+        self.assertLessEqual(len(lines), budget.lines)
+        self.assertLessEqual(len(raw), budget.bytes)
+        pointers = [l for l in lines if re.match(r"^- \d+ more — use `anthology-mem search`$", l)]
+        self.assertEqual(len(pointers), 3)
+        # every type keeps entries, and shown + hidden == 100 per type
+        shown = {}
+        current = None
+        for l in lines:
+            if l.startswith("## "):
+                current = l[3:]
+                shown[current] = 0
+            elif l.startswith("- ["):
+                shown[current] += 1
+        hidden = {}
+        current = None
+        for l in lines:
+            if l.startswith("## "):
+                current = l[3:]
+            m = re.match(r"^- (\d+) more", l)
+            if m:
+                hidden[current] = int(m.group(1))
+        for t in types:
+            self.assertGreater(shown[t], 0)
+            self.assertEqual(shown[t] + hidden[t], 100)
+        self.assertLess(max(shown.values()) - min(shown.values()), 2)
+
+    def test_most_recent_notes_survive_truncation(self):
+        notes = {f"p{i:03d}.md": note_text(f"p{i:03d}", "project", "d", f"2026-01-{i % 28 + 1:02d}")
+                 for i in range(60)}
+        notes["newest.md"] = note_text("newest", "project", "d", "2030-01-01")
+        d = self.mem(notes)
+        memory_sync.regenerate_index(d, memory_sync.Budget(10, 20000))
+        lines = (d / "MEMORY.md").read_text().splitlines()
+        self.assertLessEqual(len(lines), 10)
+        self.assertIn("[newest](newest.md)", lines[2])
+        self.assertTrue(lines[-1].endswith("more — use `anthology-mem search`"))
+
+    def test_byte_budget_is_enforced(self):
+        notes = {f"n{i:03d}.md": note_text(f"n{i:03d}", "project", "x" * 170, f"2026-01-{i % 28 + 1:02d}")
+                 for i in range(120)}
+        d = self.mem(notes)
+        memory_sync.regenerate_index(d)
+        raw = (d / "MEMORY.md").read_bytes()
+        self.assertLessEqual(len(raw), 20000)
+        self.assertLessEqual(len(raw.decode().splitlines()), 150)
+        self.assertIn("more — use `anthology-mem search`", raw.decode())
+
+
+class MigrateTest(MemCase):
+    def setUp(self):
+        super().setUp()
+        self.old = self.tmp / "old"
+        self.repo_mem = self.tmp / "repo" / ".claude" / "memory"
+        self.personal = self.anth / "personal-memory"
+        self.ledger = self.anth / "migrated.json"
+        write(self.old / "user-me.md", note_text("user-me", "user", "me"))
+        write(self.old / "feedback-a.md", note_text("feedback-a", "feedback", "a"))
+        write(self.old / "project-b.md", note_text("project-b", "project", "b"))
+        write(self.old / "MEMORY.md", "- index\n")
+
+    def migrate(self, **kw):
+        return memory_sync.migrate(self.old, self.repo_mem, self.personal, ledger=self.ledger,
+                                   today="2026-04-05", **kw)
+
+    def test_routes_user_to_personal_and_others_to_repo(self):
+        result = self.migrate()
+        self.assertEqual(sorted(result["copied"]), ["feedback-a.md", "project-b.md", "user-me.md"])
+        self.assertEqual(sorted(p.name for p in self.personal.iterdir()), ["user-me.md"])
+        self.assertEqual(sorted(p.name for p in self.repo_mem.iterdir()),
+                         ["feedback-a.md", "project-b.md"])
+        self.assertEqual((self.repo_mem / "project-b.md").read_bytes(),
+                         (self.old / "project-b.md").read_bytes())
+
+    def test_memory_md_and_symlinks_are_not_copied(self):
+        outside = self.tmp / "secret.md"
+        write(outside, "---\nname: s\n---\nsecret\n")
+        (self.old / "link.md").symlink_to(outside)
+        self.migrate()
+        names = {p.name for p in self.repo_mem.iterdir()} | {p.name for p in self.personal.iterdir()}
+        self.assertNotIn("MEMORY.md", names)
+        self.assertNotIn("link.md", names)
+
+    def test_second_run_copies_nothing(self):
+        self.migrate()
+        again = self.migrate()
+        self.assertEqual(again["copied"], [])
+        self.assertEqual(again["conflicts"], [])
+        self.assertEqual(sorted(again["skipped"]), ["feedback-a.md", "project-b.md", "user-me.md"])
+
+    def test_never_overwrites_differing_files(self):
+        write(self.repo_mem / "project-b.md", "mine, edited since\n")
+        result = self.migrate()
+        self.assertEqual((self.repo_mem / "project-b.md").read_text(), "mine, edited since\n")
+        self.assertEqual(result["conflicts"], ["project-b.md"])
+        copy = self.repo_mem / "project-b.migrated-2026-04-05.md"
+        self.assertEqual(copy.read_bytes(), (self.old / "project-b.md").read_bytes())
+
+    def test_conflict_name_is_made_unique(self):
+        write(self.repo_mem / "project-b.md", "mine\n")
+        write(self.repo_mem / "project-b.migrated-2026-04-05.md", "taken\n")
+        self.migrate()
+        self.assertEqual((self.repo_mem / "project-b.migrated-2026-04-05.md").read_text(), "taken\n")
+        self.assertEqual((self.repo_mem / "project-b.migrated-2026-04-05-2.md").read_bytes(),
+                         (self.old / "project-b.md").read_bytes())
+
+    def test_identical_existing_file_is_skipped(self):
+        write(self.repo_mem / "project-b.md", (self.old / "project-b.md").read_text())
+        result = self.migrate()
+        self.assertIn("project-b.md", result["skipped"])
+        self.assertEqual(result["conflicts"], [])
+
+    def test_ledger_stops_recopying_deleted_notes(self):
+        self.migrate()
+        (self.repo_mem / "project-b.md").unlink()
+        again = self.migrate()
+        self.assertNotIn("project-b.md", again["copied"])
+        self.assertFalse((self.repo_mem / "project-b.md").exists())
+        data = json.loads(self.ledger.read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertEqual(len(data["done"]), 3)
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", h) for h in data["done"]))
+
+    def test_without_a_ledger_a_deleted_note_is_copied_again_but_never_duplicated(self):
+        memory_sync.migrate(self.old, self.repo_mem, self.personal, today="2026-04-05")
+        again = memory_sync.migrate(self.old, self.repo_mem, self.personal, today="2026-04-05")
+        self.assertEqual(again["copied"], [])
+        self.assertEqual(again["conflicts"], [])
+        self.assertEqual(len(list(self.repo_mem.iterdir())), 2)
+
+    def test_missing_old_dir_is_a_noop(self):
+        result = memory_sync.migrate(self.tmp / "nope", self.repo_mem, self.personal,
+                                     ledger=self.ledger)
+        self.assertEqual(result, {"copied": [], "skipped": [], "conflicts": []})
+        self.assertFalse(self.repo_mem.exists())
+        self.assertFalse(self.personal.exists())
+
+
+class AutoMemoryOffTest(MemCase):
+    """R8: env var or setting turns run into a no-op."""
+
+    def test_env_values(self):
+        write(self.anth / "personal-memory" / "user-me.md", note_text("user-me", "user", "me"))
+        for value in ("1", "true", "TRUE", "yes", "on", "anything"):
+            e = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY=value)
+            self.assertEqual(memory_sync.run(self.tmp, e), ("", []), value)
+        self.assertFalse((self.anth / "personal-memory" / "MEMORY.md").exists())
+        for value in ("", "0", "false", "No", "FALSE"):
+            e = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY=value)
+            ctx, _ = memory_sync.run(self.tmp, e)
+            self.assertIn("user-me", ctx, value)
+
+    def test_user_setting(self):
+        write(self.anth / "personal-memory" / "user-me.md", note_text("user-me", "user", "me"))
+        write(self.config / "settings.json", json.dumps({"autoMemoryEnabled": False}))
+        self.assertEqual(memory_sync.run(self.tmp, env()), ("", []))
+        self.assertFalse((self.anth / "personal-memory" / "MEMORY.md").exists())
+
+    @needs_git
+    def test_project_setting_and_precedence(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        write(self.config / "settings.json", json.dumps({"autoMemoryEnabled": False}))
+        # a project settings file that re-enables beats the user file
+        write(root / ".claude" / "settings.json", json.dumps({"autoMemoryEnabled": True}))
+        memory_sync.run(root, env())
+        self.assertTrue((root / ".claude" / "settings.local.json").exists())
+        (root / ".claude" / "settings.local.json").unlink()
+        # and settings.local.json beats settings.json
+        write(root / ".claude" / "settings.json", json.dumps({"autoMemoryEnabled": True}))
+        write(root / ".claude" / "settings.local.json", json.dumps({"autoMemoryEnabled": False}))
+        before = snapshot(root)
+        self.assertEqual(memory_sync.run(root, env()), ("", []))
+        self.assertEqual(snapshot(root), before)
+
+    @needs_git
+    def test_disabled_repo_run_writes_nothing(self):
+        root = self.make_repo()
+        write(root / ".claude" / "memory" / "a.md", note_text("a"))
+        memory_sync.approve(root)
+        before = snapshot(root)
+        e = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
+        self.assertEqual(memory_sync.run(root, e), ("", []))
+        self.assertEqual(snapshot(root), before)
+
+
+class RunOutsideRepoTest(MemCase):
+    def test_personal_index_is_injected_anywhere(self):
+        write(self.anth / "personal-memory" / "user-me.md",
+              note_text("user-me", "user", "Likes terse answers"))
+        folder = self.tmp / "plain"
+        folder.mkdir()
+        ctx, msgs = memory_sync.run(folder, env())
+        self.assertEqual(msgs, [])
+        self.assertTrue(ctx.startswith("## "))
+        self.assertIn(str(self.anth / "personal-memory"), ctx.splitlines()[0])
+        self.assertIn("[user-me](user-me.md) — Likes terse answers", ctx)
+        self.assertEqual(list(folder.iterdir()), [])
+        self.assertTrue((self.anth / "personal-memory" / "MEMORY.md").exists())
+
+    def test_never_creates_the_personal_dir(self):
+        folder = self.tmp / "plain"
+        folder.mkdir()
+        self.assertEqual(memory_sync.run(folder, env()), ("", []))
+        self.assertFalse((self.anth / "personal-memory").exists())
+
+    def test_swallows_every_exception(self):
+        with mock.patch.object(memory_sync, "_run", side_effect=RuntimeError("boom")):
+            ctx, msgs = memory_sync.run(self.tmp, env())
+        self.assertEqual(ctx, "")
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(msgs[0].startswith("anthology memory: "))
+        self.assertIn("boom", msgs[0])
+
+    def test_unreadable_cwd_does_not_raise(self):
+        ctx, msgs = memory_sync.run(self.tmp / "does-not-exist", env())
+        self.assertEqual(ctx, "")
+
+
+@needs_git
+class TrustBoundaryTest(MemCase):
+    def setUp(self):
+        super().setUp()
+        self.root = self.make_repo()
+        write(self.root / ".claude" / "memory" / "feedback-x.md",
+              note_text("feedback-x", "feedback", "Prefer small commits", "2026-02-02"))
+        self.commit_all(self.root)
+
+    def test_unapproved_repo_gets_one_hint_and_no_writes(self):
+        old = self.config / "projects" / encode(self.root) / "memory"
+        write(old / "project-old.md", note_text("project-old"))
+        before = snapshot(self.root)
+        exclude = (self.root / ".git" / "info" / "exclude").read_bytes()
+        status = git(self.root, "status", "--porcelain").stdout
+        ctx, msgs = memory_sync.run(self.root, env())
+        self.assertEqual(ctx, "")
+        self.assertEqual(msgs, [HINT])
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual((self.root / ".git" / "info" / "exclude").read_bytes(), exclude)
+        self.assertEqual(git(self.root, "status", "--porcelain").stdout, status)
+        self.assertFalse((self.root / ".claude" / "settings.local.json").exists())
+        self.assertFalse((self.root / ".gitattributes").exists())
+        self.assertFalse((self.anth / "approved-repos.json").exists())
+        self.assertFalse((self.anth / "personal-memory").exists())
+
+    def test_hint_for_agent_memory_only(self):
+        other = self.make_repo("other")
+        write(other / ".claude" / "agent-memory" / "anthology-x" / "a.md", note_text("a"))
+        self.assertEqual(memory_sync.run(other, env()), ("", [HINT]))
+
+    def test_no_hint_without_committed_memory(self):
+        other = self.make_repo("other")
+        self.assertEqual(memory_sync.run(other, env()), ("", []))
+
+    def test_unapproved_notes_are_never_injected(self):
+        write(self.anth / "personal-memory" / "user-me.md", note_text("user-me", "user", "me"))
+        ctx, msgs = memory_sync.run(self.root, env())
+        self.assertNotIn("feedback-x", ctx)
+        self.assertIn("user-me", ctx)
+        self.assertEqual(msgs, [HINT])
+
+    def test_after_approve_the_repair_happens(self):
+        memory_sync.approve(self.root)
+        ctx, msgs = memory_sync.run(self.root, env())
+        settings = json.loads((self.root / ".claude" / "settings.local.json").read_text())
+        self.assertEqual(settings["autoMemoryDirectory"], str(self.root / ".claude" / "memory"))
+        index = (self.root / ".claude" / "memory" / "MEMORY.md").read_text()
+        self.assertIn("[feedback-x](feedback-x.md) — Prefer small commits", index)
+        self.assertIn(index, ctx)
+        self.assertTrue(ctx.startswith("## "))
+        self.assertIn(str(self.root / ".claude" / "memory"), ctx.splitlines()[0])
+        self.assertNotIn(HINT, msgs)
+        self.assertTrue(msgs)
+        # the generated index never names a clone path
+        self.assertNotIn(str(self.root), index)
+
+
+@needs_git
+class RepairTest(MemCase):
+    def approved_repo(self, name="repo"):
+        root = self.make_repo(name)
+        memory_sync.approve(root)
+        return root
+
+    def test_ensure_memory_dir_preserves_other_keys_and_order(self):
+        root = self.approved_repo()
+        sl = root / ".claude" / "settings.local.json"
+        write(sl, json.dumps({"zeta": 1, "permissions": {"allow": ["Bash(ls)"]}, "alpha": [1]}))
+        data, changed = memory_sync.ensure_memory_dir(root, sl)
+        self.assertTrue(changed)
+        self.assertEqual(list(data), ["zeta", "permissions", "alpha", "autoMemoryDirectory"])
+        on_disk = json.loads(sl.read_text())
+        self.assertEqual(list(on_disk), list(data))
+        self.assertEqual(on_disk["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertTrue(sl.read_text().endswith("}\n"))
+        self.assertTrue((root / ".claude" / "memory").is_dir())
+        mtime = sl.stat().st_mtime_ns
+        data2, changed2 = memory_sync.ensure_memory_dir(root, sl)
+        self.assertFalse(changed2)
+        self.assertEqual(data2, data)
+        self.assertEqual(sl.stat().st_mtime_ns, mtime)
+
+    def test_ensure_memory_dir_missing_file_creates_it(self):
+        root = self.approved_repo()
+        sl = root / ".claude" / "settings.local.json"
+        data, changed = memory_sync.ensure_memory_dir(root, sl)
+        self.assertTrue(changed)
+        self.assertEqual(data, {"autoMemoryDirectory": str(root / ".claude" / "memory")})
+        self.assertEqual(json.loads(sl.read_text()), data)
+
+    def test_ensure_memory_dir_corrects_a_stale_path(self):
+        root = self.approved_repo()
+        sl = root / ".claude" / "settings.local.json"
+        write(sl, json.dumps({"autoMemoryDirectory": "/some/old/clone/.claude/memory"}))
+        data, changed = memory_sync.ensure_memory_dir(root, sl)
+        self.assertTrue(changed)
+        self.assertEqual(data["autoMemoryDirectory"], str(root / ".claude" / "memory"))
+
+    def test_invalid_settings_are_left_alone(self):
+        root = self.approved_repo()
+        sl = root / ".claude" / "settings.local.json"
+        for text in ("{ not json", "[1, 2]", ""):
+            write(sl, text)
+            data, changed = memory_sync.ensure_memory_dir(root, sl)
+            self.assertFalse(changed)
+            self.assertEqual(sl.read_text(), text)
+            self.assertEqual(data, {})
+        write(sl, "{ not json")
+        ctx, msgs = memory_sync.run(root, env())
+        self.assertEqual(sl.read_text(), "{ not json")
+        self.assertTrue(any("settings.local.json" in m for m in msgs), msgs)
+
+    def test_ensure_ignored(self):
+        root = self.approved_repo()
+        exclude = root / ".git" / "info" / "exclude"
+        self.assertTrue(memory_sync.ensure_ignored(root))
+        self.assertEqual(exclude.read_text().splitlines().count("/.claude/settings.local.json"), 1)
+        write(root / ".claude" / "settings.local.json", "{}")
+        self.assertEqual(git(root, "check-ignore", "-q", ".claude/settings.local.json",
+                             check=False).returncode, 0)
+        self.assertFalse(memory_sync.ensure_ignored(root))
+
+    def test_ensure_ignored_noop_when_gitignore_already_covers_it(self):
+        root = self.approved_repo()
+        write(root / ".gitignore", ".claude/settings.local.json\n")
+        exclude = root / ".git" / "info" / "exclude"
+        before = exclude.read_bytes() if exclude.exists() else b""
+        self.assertFalse(memory_sync.ensure_ignored(root))
+        self.assertEqual(exclude.read_bytes() if exclude.exists() else b"", before)
+
+    def test_ensure_ignored_handles_missing_trailing_newline(self):
+        root = self.approved_repo()
+        exclude = root / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text("# keep\nfoo")
+        self.assertTrue(memory_sync.ensure_ignored(root))
+        self.assertEqual(exclude.read_text().splitlines(),
+                         ["# keep", "foo", "/.claude/settings.local.json"])
+
+    def test_linked_worktree_writes_the_right_exclude_file(self):
+        root = self.approved_repo()
+        write(root / "f", "x")
+        self.commit_all(root)
+        wt = Path(os.path.realpath(self.tmp / "wt"))
+        git(root, "worktree", "add", "-q", str(wt), "-b", "wt")
+        self.assertTrue(memory_sync.ensure_ignored(wt))
+        shared = git(wt, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").stdout.strip()
+        self.assertEqual(os.path.realpath(shared), os.path.realpath(str(root / ".git" / "info" / "exclude")))
+        self.assertIn("/.claude/settings.local.json", Path(shared).read_text().splitlines())
+        self.assertEqual(git(wt, "check-ignore", "-q", ".claude/settings.local.json",
+                             check=False).returncode, 0)
+        self.assertEqual(list((root / ".git").glob("worktrees/*/info/exclude")), [])
+        self.assertFalse(memory_sync.ensure_ignored(wt))
+
+    def test_run_in_a_linked_worktree_points_at_the_worktree(self):
+        root = self.approved_repo()
+        write(root / ".claude" / "memory" / "project-a.md", note_text("project-a", desc="A"))
+        self.commit_all(root)
+        wt = Path(os.path.realpath(self.tmp / "wt"))
+        git(root, "worktree", "add", "-q", str(wt), "-b", "wt")
+        ctx, msgs = memory_sync.run(wt, env())
+        settings = json.loads((wt / ".claude" / "settings.local.json").read_text())
+        self.assertEqual(settings["autoMemoryDirectory"], str(wt / ".claude" / "memory"))
+        self.assertIn("project-a", ctx)
+        self.assertFalse((root / ".claude" / "settings.local.json").exists())
+
+
+@needs_git
+class ReCloneTest(MemCase):
+    def test_new_clone_of_an_approved_repo(self):
+        bare = self.tmp / "origin.git"
+        bare.mkdir()
+        git(bare, "init", "-q", "--bare")
+        a = self.make_repo("clone-a", remote=str(bare))
+        write(a / ".claude" / "memory" / "feedback-x.md",
+              note_text("feedback-x", "feedback", "Prefer small commits", "2026-02-02"))
+        self.commit_all(a)
+        git(a, "push", "-q", "origin", "main")
+        memory_sync.approve(a)
+        memory_sync.run(a, env())
+
+        b = Path(os.path.realpath(self.tmp / "elsewhere" / "clone-b"))
+        b.parent.mkdir()
+        git(self.tmp, "clone", "-q", str(bare), str(b))
+        self.assertEqual(memory_sync.repo_key(a), memory_sync.repo_key(b))
+        self.assertTrue(memory_sync.is_approved(memory_sync.repo_key(b)))
+
+        ctx, msgs = memory_sync.run(b, env())
+        settings = json.loads((b / ".claude" / "settings.local.json").read_text())
+        self.assertEqual(settings["autoMemoryDirectory"], str(b / ".claude" / "memory"))
+        self.assertIn("[feedback-x](feedback-x.md)", ctx)
+        self.assertEqual(git(b, "check-ignore", "-q", ".claude/settings.local.json",
+                             check=False).returncode, 0)
+        self.assertNotIn(".claude/settings.local.json", git(b, "status", "--porcelain").stdout)
+
+        # a second run is a complete no-op
+        before = snapshot(b)
+        exclude = (b / ".git" / "info" / "exclude").read_bytes()
+        self.assertEqual(memory_sync.run(b, env()), ("", []))
+        self.assertEqual(snapshot(b), before)
+        self.assertEqual((b / ".git" / "info" / "exclude").read_bytes(), exclude)
+
+    def test_empty_repo_memory_cover_has_a_placeholder(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        ctx, msgs = memory_sync.run(root, env())
+        self.assertTrue(ctx.startswith("## "))
+        self.assertTrue(ctx.strip().splitlines()[-1].strip())
+        self.assertEqual(memory_sync.run(root, env()), ("", []))
+
+
+@needs_git
+class RunFlowTest(MemCase):
+    def test_personal_comes_before_the_repo_cover(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        write(root / ".claude" / "memory" / "project-a.md", note_text("project-a", desc="Repo thing"))
+        write(self.anth / "personal-memory" / "user-me.md", note_text("user-me", "user", "Me"))
+        ctx, _ = memory_sync.run(root, env())
+        heads = [l for l in ctx.splitlines() if l.startswith("## ") and ("memory" in l.lower())]
+        self.assertIn(str(self.anth / "personal-memory"), heads[0])
+        self.assertIn(str(root / ".claude" / "memory"), heads[1])
+        self.assertLess(ctx.index("user-me"), ctx.index("project-a"))
+
+    def test_agent_memory_indexes_are_regenerated(self):
+        root = self.make_repo()
+        memory_sync.approve(root)
+        agent = root / ".claude" / "agent-memory" / "anthology-writer"
+        write(agent / "feedback-q.md", note_text("feedback-q", "feedback", "Q"))
+        memory_sync.run(root, env())
+        self.assertIn("[feedback-q](feedback-q.md)", (agent / "MEMORY.md").read_text())
+
+    def test_migration_runs_in_approved_repos_only_and_includes_main_worktree(self):
+        root = self.make_repo()
+        write(root / "f", "x")
+        self.commit_all(root)
+        memory_sync.approve(root)
+        wt = Path(os.path.realpath(self.tmp / "wt"))
+        git(root, "worktree", "add", "-q", str(wt), "-b", "wt")
+        old_main = self.config / "projects" / encode(root) / "memory"
+        old_wt = self.config / "projects" / encode(wt) / "memory"
+        write(old_main / "project-m.md", note_text("project-m", "project", "from main"))
+        write(old_main / "user-u.md", note_text("user-u", "user", "personal one"))
+        write(old_wt / "feedback-w.md", note_text("feedback-w", "feedback", "from wt"))
+        ctx, msgs = memory_sync.run(wt, env())
+        repo_mem = wt / ".claude" / "memory"
+        self.assertTrue((repo_mem / "project-m.md").exists())
+        self.assertTrue((repo_mem / "feedback-w.md").exists())
+        self.assertFalse((repo_mem / "user-u.md").exists())
+        self.assertTrue((self.anth / "personal-memory" / "user-u.md").exists())
+        self.assertIn("personal one", ctx)
+        self.assertTrue((self.anth / "migrated.json").exists())
+        # old notes are still there (copied, never moved)
+        self.assertTrue((old_main / "project-m.md").exists())
+        # a later session does not duplicate
+        memory_sync.run(wt, env())
+        self.assertEqual(sorted(p.name for p in repo_mem.glob("*.md") if p.name != "MEMORY.md"),
+                         ["feedback-w.md", "project-m.md"])
+
+
+@needs_git
+class TeamMergeTest(MemCase):
+    def scenario(self, with_attrs):
+        root = self.make_repo()
+        mem = root / ".claude" / "memory"
+        write(mem / "project-base.md", note_text("project-base", "project", "Base", "2026-01-01"))
+        memory_sync.regenerate_index(mem)
+        if with_attrs:
+            memory_sync.ensure_union_attrs(root)
+        self.commit_all(root, "base")
+        git(root, "checkout", "-q", "-b", "one")
+        write(mem / "project-one.md", note_text("project-one", "project", "One", "2026-02-01"))
+        memory_sync.regenerate_index(mem)
+        self.commit_all(root, "one")
+        git(root, "checkout", "-q", "main")
+        git(root, "checkout", "-q", "-b", "two")
+        write(mem / "project-two.md", note_text("project-two", "project", "Two", "2026-02-02"))
+        memory_sync.regenerate_index(mem)
+        self.commit_all(root, "two")
+        git(root, "checkout", "-q", "one")
+        return root, mem, git(root, "merge", "--no-edit", "two", check=False)
+
+    def test_union_attrs_make_the_merge_succeed(self):
+        root, mem, merge = self.scenario(with_attrs=True)
+        self.assertEqual(merge.returncode, 0, merge.stdout + merge.stderr)
+        raw = (mem / "MEMORY.md").read_text()
+        self.assertIn("](project-one.md)", raw)
+        self.assertIn("](project-two.md)", raw)
+        self.assertNotIn("<<<<<<<", raw)
+        memory_sync.regenerate_index(mem)
+        text = (mem / "MEMORY.md").read_text()
+        for name in ("project-base", "project-one", "project-two"):
+            self.assertEqual(text.count(f"]({name}.md)"), 1, name)
+
+    def test_without_the_attrs_the_same_merge_conflicts(self):
+        root, mem, merge = self.scenario(with_attrs=False)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertIn("<<<<<<<", (mem / "MEMORY.md").read_text())
+
+    def test_regenerate_cleans_up_what_union_leaves_behind(self):
+        root = self.make_repo()
+        mem = root / ".claude" / "memory"
+        write(mem / "project-a.md", note_text("project-a", "project", "A", "2026-01-01"))
+        write(mem / "project-b.md", note_text("project-b", "project", "B", "2026-01-02"))
+        write(mem / "MEMORY.md", "<!-- old -->\n## project\n- [project-a](project-a.md) — A\n"
+                                 "- [project-b](project-b.md) — B\n- [project-a](project-a.md) — A\n")
+        self.assertTrue(memory_sync.regenerate_index(mem))
+        text = (mem / "MEMORY.md").read_text()
+        self.assertEqual(text.count("](project-a.md)"), 1)
+        self.assertEqual(text.count("](project-b.md)"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
