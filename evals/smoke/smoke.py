@@ -102,7 +102,7 @@ def snippet(text: str, n: int = 160) -> str:
 
 def run(argv: Sequence[str], cwd: Path, env: Dict[str, str], timeout: int = CLAUDE_TIMEOUT,
         stdin: Optional[str] = None) -> Proc:
-    feed = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    feed = {"input": stdin.encode("utf-8")} if stdin is not None else {"stdin": subprocess.DEVNULL}
     try:
         p = subprocess.run(list(argv), cwd=str(cwd), env=env, timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **feed)
@@ -578,9 +578,9 @@ def smoke_python_missing(ctx: Ctx) -> Result:
                 ok = isinstance(msg, str) and msg.strip() != "" and "python3" in msg
             except (ValueError, KeyError, TypeError):
                 ok = False
-            if not ok:
-                problems.append(f"{root.name}: {Path(argv[-1]).name} did not print one JSON object whose systemMessage "
-                                f"mentions python3 (exit {p.code}): {snippet(p.text, 100)}")
+            if p.code != 0 or not ok:
+                problems.append(f"{root.name}: {Path(argv[-1]).name} must exit 0 and print one JSON object whose "
+                                f"systemMessage mentions python3 (exit {p.code}): {snippet(p.text, 100)}")
             if root.name == "anthology-guardrails" and (bins["present"] / "python3").exists():
                 present = wrapper(root, argv, "present")
                 if present.out.strip():

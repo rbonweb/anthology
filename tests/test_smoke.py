@@ -338,11 +338,44 @@ class MainWithStubTests(unittest.TestCase):
         self.assertEqual(status, smoke.FAIL)
         self.assertIn("smoke budget exhausted", reason)
 
-    def test_python_missing_never_fails_the_run_while_the_wrapper_is_absent(self):
+    def test_python_missing_passes_against_the_real_session_start_wrapper(self):
+        self.assertTrue((smoke.ROOT / "plugins" / "anthology" / "scripts" / "session-start.sh").is_file())
         with no_auth_environ():
             code, out = run_main(["--claude", str(self.stub), "python-missing"])
-        self.assertRegex(out, r"^(SKIP|PASS) python-missing: ")
+        self.assertRegex(out, r"^PASS python-missing: 1 wrapper\(s\) warn about the missing python3")
         self.assertEqual(code, 0)
+
+    def make_tree(self, tmp, script):
+        scripts = Path(tmp) / "plugins" / "anthology" / "scripts"
+        hooks = Path(tmp) / "plugins" / "anthology" / "hooks"
+        scripts.mkdir(parents=True)
+        hooks.mkdir(parents=True)
+        (hooks / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh"]}]}]}}))
+        if script is not None:
+            (scripts / "session-start.sh").write_text(script)
+
+    def run_python_missing_in(self, script):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(smoke, "ROOT", Path(tmp)), no_auth_environ():
+            self.make_tree(tmp, script)
+            return run_main(["--claude", str(self.stub), "python-missing"])
+
+    def test_python_missing_skips_when_the_wrapper_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(smoke, "ROOT", Path(tmp)), no_auth_environ():
+            code, out = run_main(["--claude", str(self.stub), "python-missing"])
+        self.assertRegex(out, r"^SKIP python-missing: ")
+        self.assertEqual(code, 0)
+
+    def test_python_missing_fails_when_the_wrapper_prints_nothing(self):
+        code, out = self.run_python_missing_in("#!/bin/sh\nexit 0\n")
+        self.assertRegex(out, r"^FAIL python-missing: ")
+        self.assertNotEqual(code, 0)
+
+    def test_python_missing_fails_when_the_wrapper_exits_nonzero(self):
+        warn = """printf '%s\\n' '{"systemMessage":"python3 is missing"}'"""
+        code, out = self.run_python_missing_in("#!/bin/sh\n" + warn + "\nexit 1\n")
+        self.assertRegex(out, r"^FAIL python-missing: .*exit 1")
+        self.assertNotEqual(code, 0)
 
 
 if __name__ == "__main__":
