@@ -164,7 +164,9 @@ impl Rng {
         } else if k < 0.62 {
             0x7f + self.below(0x81) as u32
         } else if k < 0.80 {
-            0x100 + self.below(0xfefe) as u32
+            // 0x100..0xFFFE without the surrogates.
+            let c = 0x100 + self.below(0xfefe - 0x800) as u32;
+            if c >= 0xd800 { c + 0x800 } else { c }
         } else if k < 0.85 {
             *self.pick(&[
                 0x2028, 0x2029, 0xfeff, 0xffff, 0xfffe, 0xa0, 0x85, 0x3000, 0xfffd, 0x1c,

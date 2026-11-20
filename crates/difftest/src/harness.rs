@@ -4,9 +4,15 @@
 //! runs (`run_python`), the notes are taken, Rust runs (`run_rust`, a panic caught), and the
 //! case is judged against the surface's divergence file (`divergences` module docs):
 //!
-//! - an oracle error or a Rust panic is always unexplained;
+//! - an oracle error or a panic on either side is always unexplained;
 //! - every divergence mark needs an entry of its class matching the case;
-//! - a difference needs an entry with a `case` matching it.
+//! - a difference needs an entry with a `case` matching it. Such a waiver is reported apart
+//!   from the marks it might share a class with (`waived N diff(s) by <file>:<line>`), and a
+//!   glob entry that waives a generated case (`gen:<n>` ids depend on `--seed` and `--gen`)
+//!   gets a warning.
+//!
+//! The cases must be well formed: `generate(n)` returns exactly `n` cases and ids are unique,
+//! else the surface fails before anything runs.
 //!
 //! `--inject-diff` flips one bit of the first byte of Rust's stdout (or appends a byte to an
 //! empty stdout) for the surface's first case: the self-test that a diff fails and a matching
@@ -47,9 +53,17 @@ pub struct Failure {
 pub struct Report {
     pub name: String,
     pub cases: usize,
+    pub seeds: usize,
+    pub generated: usize,
     pub same: usize,
-    /// Passing cases that needed a divergence entry, by class.
+    /// Passing cases with an oracle- or hook-marked divergence, by class.
     pub explained: BTreeMap<Class, usize>,
+    /// Diffs waived by an entry with a `case`, by entry (`<file>:<line> (<class>, case <c>)`).
+    pub waived: BTreeMap<String, usize>,
+    /// Glob entries that waived a generated case's diff.
+    pub glob_gen_waivers: Vec<String>,
+    /// How often the oracle process had to be started again (each death failed its case).
+    pub restarts: usize,
     pub failures: Vec<Failure>,
     pub oracle_errors: usize,
     /// Unused divergence entries, as `<file>:<line> (<class>, case <c>)`.
@@ -62,8 +76,24 @@ pub struct Report {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Same,
-    Explained(Vec<Class>),
+    /// Passed with marked divergences (`marks`) and/or a waived diff (`waiver`: the entry's
+    /// label, and whether a glob waived a generated case).
+    Explained {
+        marks: Vec<Class>,
+        waiver: Option<(String, bool)>,
+    },
     Unexplained(String),
+}
+
+/// `<file>:<line> (<class>, case <c>)`.
+pub fn entry_label(label: &str, e: &crate::divergences::Entry) -> String {
+    format!(
+        "{}:{} ({}, case {})",
+        label,
+        e.line,
+        e.class,
+        e.case.as_deref().unwrap_or("any")
+    )
 }
 
 /// Judges one case (module docs).
@@ -88,25 +118,29 @@ pub fn judge(id: &str, equal: bool, notes: &Notes, div: &mut Divergences) -> Ver
             classes.push(class);
         }
     }
+    let mut waiver = None;
     if !equal {
+        let label = div.label.clone();
         match div.explain_diff(id) {
             Some(e) => {
-                if !classes.contains(&e.class) {
-                    classes.push(e.class);
-                }
+                let glob = e.case.as_deref().is_some_and(|c| c.contains(['*', '?']));
+                let gen_by_glob = glob && id.starts_with("gen:");
+                waiver = Some((entry_label(&label, e), gen_by_glob));
             }
             None => {
                 return Verdict::Unexplained(format!(
-                    "unexplained diff (no entry with a case matching {id} in {})",
-                    div.label
+                    "unexplained diff (no entry with a case matching {id} in {label})"
                 ));
             }
         }
     }
-    if classes.is_empty() {
+    if classes.is_empty() && waiver.is_none() {
         Verdict::Same
     } else {
-        Verdict::Explained(classes)
+        Verdict::Explained {
+            marks: classes,
+            waiver,
+        }
     }
 }
 
@@ -129,33 +163,60 @@ pub fn run_surface(
         ..Report::default()
     };
     let made = catch_unwind(AssertUnwindSafe(|| {
-        let mut cases = surface.seeds();
+        let seeds = surface.seeds();
         let mut rng = Rng::for_surface(opts.seed, surface.name());
-        cases.extend(surface.generate(&mut rng, opts.count));
-        cases
+        let generated = surface.generate(&mut rng, opts.count);
+        (seeds, generated)
     }));
-    let cases: Vec<Case> = match made {
+    let fail_cases = |report: &mut Report, reason: String| {
+        report.failures.push(Failure {
+            id: "(cases)".into(),
+            case: String::new(),
+            reason,
+            python: String::new(),
+            rust: String::new(),
+            diff: Vec::new(),
+        });
+    };
+    let (seeds, generated) = match made {
         Ok(c) => c,
         Err(p) => {
-            report.failures.push(Failure {
-                id: "(cases)".into(),
-                case: String::new(),
-                reason: format!("the surface panicked making its cases: {}", panic_text(&*p)),
-                python: String::new(),
-                rust: String::new(),
-                diff: Vec::new(),
-            });
+            let why = format!("the surface panicked making its cases: {}", panic_text(&*p));
+            fail_cases(&mut report, why);
             return report;
         }
     };
+    report.seeds = seeds.len();
+    report.generated = generated.len();
+    if generated.len() != opts.count {
+        let why = format!(
+            "generate(rng, {}) returned {} cases",
+            opts.count,
+            generated.len()
+        );
+        fail_cases(&mut report, why);
+        return report;
+    }
+    let cases: Vec<Case> = seeds.into_iter().chain(generated).collect();
+    let mut ids = std::collections::HashSet::new();
+    if let Some(dup) = cases.iter().find(|c| !ids.insert(c.id.as_str())) {
+        let why = format!("the case id {:?} is used twice", dup.id);
+        fail_cases(&mut report, why);
+        return report;
+    }
+    let starts_before = oracle.starts();
     for (i, case) in cases.iter().enumerate() {
         report.cases += 1;
         oracle.take_notes();
-        let python = surface.run_python(case, oracle);
+        let python = catch_unwind(AssertUnwindSafe(|| surface.run_python(case, &mut *oracle)));
         let notes = oracle.take_notes();
         if !notes.errors.is_empty() {
             report.oracle_errors += 1;
         }
+        let (python, py_panic) = match python {
+            Ok(o) => (o, None),
+            Err(p) => (Observed::default(), Some(panic_text(&*p))),
+        };
         let rust = catch_unwind(AssertUnwindSafe(|| surface.run_rust(case)));
         let (mut rust, panicked) = match rust {
             Ok(o) => (o, None),
@@ -168,15 +229,22 @@ pub fn run_surface(
             }
             report.injected = Some(case.id.clone());
         }
-        let verdict = match panicked {
-            Some(msg) => Verdict::Unexplained(format!("rust panicked: {msg}")),
-            None => judge(&case.id, python == rust, &notes, div),
+        let verdict = match (py_panic, panicked) {
+            (Some(msg), _) => Verdict::Unexplained(format!("the python side panicked: {msg}")),
+            (None, Some(msg)) => Verdict::Unexplained(format!("rust panicked: {msg}")),
+            (None, None) => judge(&case.id, python == rust, &notes, div),
         };
         match verdict {
             Verdict::Same => report.same += 1,
-            Verdict::Explained(classes) => {
-                for c in classes {
+            Verdict::Explained { marks, waiver } => {
+                for c in marks {
                     *report.explained.entry(c).or_default() += 1;
+                }
+                if let Some((label, gen_by_glob)) = waiver {
+                    if gen_by_glob && !report.glob_gen_waivers.contains(&label) {
+                        report.glob_gen_waivers.push(label.clone());
+                    }
+                    *report.waived.entry(label).or_default() += 1;
                 }
             }
             Verdict::Unexplained(reason) => report.failures.push(Failure {
@@ -189,18 +257,16 @@ pub fn run_surface(
             }),
         }
     }
+    let started = oracle.starts() - starts_before;
+    report.restarts = if starts_before == 0 {
+        started.saturating_sub(1)
+    } else {
+        started
+    };
     report.unused = div
         .unused()
         .iter()
-        .map(|e| {
-            format!(
-                "{}:{} ({}, case {})",
-                div.label,
-                e.line,
-                e.class,
-                e.case.as_deref().unwrap_or("any")
-            )
-        })
+        .map(|e| entry_label(&div.label, e))
         .collect();
     report
 }
@@ -213,12 +279,24 @@ impl Report {
         let mut m = Map::new();
         m.insert("surface".into(), s(&self.name));
         m.insert("cases".into(), int(self.cases));
+        m.insert("seeds".into(), int(self.seeds));
+        m.insert("generated".into(), int(self.generated));
         m.insert("same".into(), int(self.same));
         let mut ex = Map::new();
         for (c, n) in &self.explained {
             ex.insert(c.as_str().into(), int(*n));
         }
         m.insert("explained".into(), Value::Object(ex));
+        let mut waived = Map::new();
+        for (label, n) in &self.waived {
+            waived.insert(label.clone(), int(*n));
+        }
+        m.insert("waived".into(), Value::Object(waived));
+        m.insert(
+            "glob_gen_waivers".into(),
+            Value::Array(self.glob_gen_waivers.iter().map(|u| s(u)).collect()),
+        );
+        m.insert("restarts".into(), int(self.restarts));
         m.insert("unexplained".into(), int(self.failures.len()));
         m.insert("oracle_errors".into(), int(self.oracle_errors));
         m.insert(
@@ -350,7 +428,11 @@ mod tests {
         let r = run(ENTRIES, &OPTS);
         assert!(r.failures.is_empty(), "{:?}", r.failures);
         assert_eq!(r.explained.get(&Class::D6), Some(&1));
-        assert_eq!(r.explained.get(&Class::D2), Some(&1));
+        // A waived diff is reported by entry, not as a marked divergence.
+        assert_eq!(r.explained.get(&Class::D2), None);
+        assert_eq!(r.waived.get("fake.toml:4 (D-2, case s:diff)"), Some(&1));
+        assert!(r.glob_gen_waivers.is_empty());
+        assert_eq!((r.seeds, r.generated), (3, 20));
         assert!(r.unused.is_empty());
     }
 
@@ -415,7 +497,8 @@ mod tests {
                 Fake.run_rust(c)
             }
         }
-        let r = run_surface(&One(case), &mut oracle(), &mut div, &OPTS);
+        let opts = Options { count: 0, ..OPTS };
+        let r = run_surface(&One(case), &mut oracle(), &mut div, &opts);
         assert_eq!(r.failures.len(), 1);
         assert_eq!(r.failures[0].reason, "rust panicked: boom");
         let notes = Notes {
@@ -434,6 +517,82 @@ mod tests {
             judge("p", true, &notes, &mut div),
             Verdict::Unexplained(_)
         ));
+    }
+
+    #[test]
+    fn a_glob_that_waives_generated_diffs_is_flagged() {
+        struct Gen;
+        impl Surface for Gen {
+            fn name(&self) -> &'static str {
+                "gen"
+            }
+            fn seeds(&self) -> Vec<Case> {
+                Vec::new()
+            }
+            fn generate(&self, rng: &mut Rng, n: usize) -> Vec<Case> {
+                Fake.generate(rng, n)
+            }
+            fn run_python(&self, c: &Case, o: &mut Oracle) -> Observed {
+                Fake.run_python(c, o)
+            }
+            fn run_rust(&self, _: &Case) -> Observed {
+                Observed::text(0, "different", "")
+            }
+        }
+        let mut div = Divergences::parse(
+            "[[divergence]]\nclass = \"D-2\"\ncase = \"gen:*\"\nreason = \"all\"\n",
+            "g.toml",
+        )
+        .expect("valid");
+        let r = run_surface(&Gen, &mut oracle(), &mut div, &OPTS);
+        assert!(r.failures.is_empty());
+        assert_eq!(r.waived.get("g.toml:1 (D-2, case gen:*)"), Some(&20));
+        assert_eq!(r.glob_gen_waivers, ["g.toml:1 (D-2, case gen:*)"]);
+    }
+
+    #[test]
+    fn bad_case_lists_and_python_panics_fail() {
+        struct Short(bool);
+        impl Surface for Short {
+            fn name(&self) -> &'static str {
+                "short"
+            }
+            fn seeds(&self) -> Vec<Case> {
+                let c = Case::new("x", Value::Null);
+                if self.0 { vec![c.clone(), c] } else { vec![c] }
+            }
+            fn generate(&self, _: &mut Rng, n: usize) -> Vec<Case> {
+                (0..n / 2)
+                    .map(|i| Case::new(format!("gen:{i}"), Value::Null))
+                    .collect()
+            }
+            fn run_python(&self, _: &Case, _: &mut Oracle) -> Observed {
+                panic!("helper broke")
+            }
+            fn run_rust(&self, _: &Case) -> Observed {
+                Observed::default()
+            }
+        }
+        let mut div = Divergences::default();
+        let r = run_surface(&Short(false), &mut oracle(), &mut div, &OPTS);
+        assert_eq!(r.failures[0].reason, "generate(rng, 20) returned 10 cases");
+        let r = run_surface(
+            &Short(true),
+            &mut oracle(),
+            &mut div,
+            &Options { count: 0, ..OPTS },
+        );
+        assert_eq!(r.failures[0].reason, "the case id \"x\" is used twice");
+        let r = run_surface(
+            &Short(false),
+            &mut oracle(),
+            &mut div,
+            &Options { count: 0, ..OPTS },
+        );
+        assert_eq!(
+            r.failures[0].reason,
+            "the python side panicked: helper broke"
+        );
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! `snapshot`, `Tree` (F4, plan §3.7): a folder as data, to compare and to print.
 //!
 //! [`snapshot`] walks a folder without following symlinks. Every entry below it becomes one
-//! [`Entry`], keyed by its path relative to the folder, `/`-separated (the folder itself is not
+//! [`TreeEntry`], keyed by its path relative to the folder, `/`-separated (the folder itself is not
 //! an entry). Keys are sorted. A symlink target that starts with the folder's path (as given, or
 //! its realpath) is rewritten to start with `<ROOT>`, so trees from two sandboxes compare equal.
+//! A name that is not UTF-8 panics (two such names would otherwise collide as text keys).
 //!
 //! The JSON form ([`Tree::to_json`], [`Tree::from_json`]) is what a difftest oracle returns
 //! under `"files"`:
@@ -32,7 +33,7 @@ pub const ROOT_MARK: &str = "<ROOT>";
 
 /// One entry of a [`Tree`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Entry {
+pub enum TreeEntry {
     /// A regular file: its bytes and permission bits.
     File { bytes: Vec<u8>, mode: u32 },
     /// A folder and its permission bits.
@@ -45,7 +46,7 @@ pub enum Entry {
 
 /// A folder's entries by relative path, sorted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Tree(pub BTreeMap<String, Entry>);
+pub struct Tree(pub BTreeMap<String, TreeEntry>);
 
 /// Every entry under `dir`, never following symlinks. Panics when `dir` cannot be read.
 pub fn snapshot(dir: &Path) -> Tree {
@@ -63,7 +64,12 @@ pub fn snapshot(dir: &Path) -> Tree {
             .unwrap_or_else(|e| panic!("snapshot: cannot list {}: {e}", path.display()));
         for entry in entries {
             let entry = entry.unwrap_or_else(|e| panic!("snapshot: {}: {e}", path.display()));
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry.file_name().into_string().unwrap_or_else(|n| {
+                panic!(
+                    "snapshot: a name that is not UTF-8 under {}: {n:?}",
+                    path.display()
+                )
+            });
             let rel = if rel.is_empty() {
                 name
             } else {
@@ -77,18 +83,18 @@ pub fn snapshot(dir: &Path) -> Tree {
             let item = if kind.is_symlink() {
                 let target = fs::read_link(&full)
                     .unwrap_or_else(|e| panic!("snapshot: {}: {e}", full.display()));
-                Entry::Symlink {
+                TreeEntry::Symlink {
                     target: normalize_target(target.as_os_str().as_bytes(), &roots),
                 }
             } else if kind.is_dir() {
                 stack.push((full, rel.clone()));
-                Entry::Dir { mode }
+                TreeEntry::Dir { mode }
             } else if kind.is_file() {
                 let bytes =
                     fs::read(&full).unwrap_or_else(|e| panic!("snapshot: {}: {e}", full.display()));
-                Entry::File { bytes, mode }
+                TreeEntry::File { bytes, mode }
             } else {
-                Entry::Other {
+                TreeEntry::Other {
                     kind: other_kind(&kind),
                 }
             };
@@ -127,14 +133,14 @@ fn normalize_target(target: &[u8], roots: &[Vec<u8>]) -> String {
 
 impl Tree {
     /// The entry at `path`, if any.
-    pub fn get(&self, path: &str) -> Option<&Entry> {
+    pub fn get(&self, path: &str) -> Option<&TreeEntry> {
         self.0.get(path)
     }
 
     /// The bytes of the file at `path`, if it is a file.
     pub fn file(&self, path: &str) -> Option<&[u8]> {
         match self.0.get(path) {
-            Some(Entry::File { bytes, .. }) => Some(bytes),
+            Some(TreeEntry::File { bytes, .. }) => Some(bytes),
             _ => None,
         }
     }
@@ -150,7 +156,7 @@ impl Tree {
     }
 
     /// Paths and entries, sorted by path.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &Entry)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &TreeEntry)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
 
@@ -187,7 +193,7 @@ impl Tree {
         for (path, entry) in &self.0 {
             let mut e = Map::new();
             match entry {
-                Entry::File { bytes, mode } => {
+                TreeEntry::File { bytes, mode } => {
                     e.insert("type".into(), Value::Str("file".into()));
                     e.insert("mode".into(), Value::Str(format!("{mode:04o}")));
                     match std::str::from_utf8(bytes) {
@@ -195,15 +201,15 @@ impl Tree {
                         Err(_) => e.insert("hex".into(), Value::Str(hex(bytes))),
                     }
                 }
-                Entry::Dir { mode } => {
+                TreeEntry::Dir { mode } => {
                     e.insert("type".into(), Value::Str("dir".into()));
                     e.insert("mode".into(), Value::Str(format!("{mode:04o}")));
                 }
-                Entry::Symlink { target } => {
+                TreeEntry::Symlink { target } => {
                     e.insert("type".into(), Value::Str("symlink".into()));
                     e.insert("target".into(), Value::Str(target.clone()));
                 }
-                Entry::Other { kind } => {
+                TreeEntry::Other { kind } => {
                     e.insert("type".into(), Value::Str("other".into()));
                     e.insert("kind".into(), Value::Str(kind.clone()));
                 }
@@ -245,18 +251,18 @@ impl Tree {
                         }
                         _ => return Err(format!("files[{path:?}]: needs one of text or hex")),
                     };
-                    Entry::File {
+                    TreeEntry::File {
                         bytes,
                         mode: mode()?,
                     }
                 }
-                Some("dir") => Entry::Dir { mode: mode()? },
-                Some("symlink") => Entry::Symlink {
+                Some("dir") => TreeEntry::Dir { mode: mode()? },
+                Some("symlink") => TreeEntry::Symlink {
                     target: field("target")
                         .ok_or_else(|| format!("files[{path:?}]: no target"))?
                         .to_string(),
                 },
-                _ => Entry::Other {
+                _ => TreeEntry::Other {
                     kind: field("kind").unwrap_or("unknown").to_string(),
                 },
             };
@@ -266,18 +272,18 @@ impl Tree {
     }
 }
 
-fn describe(e: &Entry) -> String {
+fn describe(e: &TreeEntry) -> String {
     match e {
-        Entry::File { bytes, mode } => format!("file {mode:04o}, {} bytes", bytes.len()),
-        Entry::Dir { mode } => format!("dir {mode:04o}"),
-        Entry::Symlink { target } => format!("symlink -> {target}"),
-        Entry::Other { kind } => kind.clone(),
+        TreeEntry::File { bytes, mode } => format!("file {mode:04o}, {} bytes", bytes.len()),
+        TreeEntry::Dir { mode } => format!("dir {mode:04o}"),
+        TreeEntry::Symlink { target } => format!("symlink -> {target}"),
+        TreeEntry::Other { kind } => kind.clone(),
     }
 }
 
-fn change(a: &Entry, b: &Entry) -> String {
+fn change(a: &TreeEntry, b: &TreeEntry) -> String {
     match (a, b) {
-        (Entry::File { bytes: x, mode: mx }, Entry::File { bytes: y, mode: my }) => {
+        (TreeEntry::File { bytes: x, mode: mx }, TreeEntry::File { bytes: y, mode: my }) => {
             let mut parts = Vec::new();
             if mx != my {
                 parts.push(format!("mode {mx:04o} -> {my:04o}"));
@@ -348,30 +354,30 @@ mod tests {
         let (_dir, tree) = sample();
         let paths: Vec<&str> = tree.iter().map(|(p, _)| p).collect();
         assert_eq!(paths, ["a", "a/b", "a/b/t.txt", "abs", "bin", "out", "rel"]);
-        assert_eq!(tree.get("a"), Some(&Entry::Dir { mode: 0o750 }));
+        assert_eq!(tree.get("a"), Some(&TreeEntry::Dir { mode: 0o750 }));
         assert_eq!(tree.file("a/b/t.txt"), Some("hé\n".as_bytes()));
         assert_eq!(
             tree.get("bin"),
-            Some(&Entry::File {
+            Some(&TreeEntry::File {
                 bytes: vec![0, 0xff, 7],
                 mode: 0o600
             })
         );
         assert_eq!(
             tree.get("abs"),
-            Some(&Entry::Symlink {
+            Some(&TreeEntry::Symlink {
                 target: "<ROOT>/a/b".into()
             })
         );
         assert_eq!(
             tree.get("rel"),
-            Some(&Entry::Symlink {
+            Some(&TreeEntry::Symlink {
                 target: "a/b/t.txt".into()
             })
         );
         assert_eq!(
             tree.get("out"),
-            Some(&Entry::Symlink {
+            Some(&TreeEntry::Symlink {
                 target: "/elsewhere/x".into()
             })
         );
@@ -387,11 +393,14 @@ mod tests {
         let tree = snapshot(dir.path());
         assert_eq!(
             tree.get("l1"),
-            Some(&Entry::Symlink {
+            Some(&TreeEntry::Symlink {
                 target: "<ROOT>/x".into()
             })
         );
-        assert_eq!(tree.get("l2"), Some(&Entry::Symlink { target: sibling }));
+        assert_eq!(
+            tree.get("l2"),
+            Some(&TreeEntry::Symlink { target: sibling })
+        );
     }
 
     #[test]
@@ -407,15 +416,15 @@ mod tests {
         let (_dir, a) = sample();
         let mut b = a.clone();
         b.0.remove("rel");
-        b.0.insert("new".into(), Entry::Dir { mode: 0o700 });
+        b.0.insert("new".into(), TreeEntry::Dir { mode: 0o700 });
         b.0.insert(
             "a/b/t.txt".into(),
-            Entry::File {
+            TreeEntry::File {
                 bytes: b"hX\n".to_vec(),
                 mode: 0o644,
             },
         );
-        b.0.insert("a".into(), Entry::Symlink { target: "x".into() });
+        b.0.insert("a".into(), TreeEntry::Symlink { target: "x".into() });
         let lines = a.diff(&b);
         assert_eq!(lines.len(), 4, "{lines:?}");
         assert_eq!(lines[0], "~ a: dir 0750 -> symlink -> x");

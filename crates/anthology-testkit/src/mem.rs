@@ -8,7 +8,7 @@
 //! | `git(cwd, *args, check=True)` | [`git`] (panics unless 0), [`try_git`] |
 //! | `note_text(name, ...)` | [`note_text`] with a [`Note`] |
 //! | `write(path, text, mode)` | [`write`] |
-//! | `snapshot(root)` | [`snapshot`] |
+//! | `snapshot(root)` | [`snapshot`]: call it `mem::snapshot`, since the crate root's `snapshot` is `tree::snapshot`; a name that is not UTF-8 panics |
 //! | `MemCase` | [`MemCase`]: `tmp`, `home`, `config`, `anth`, `data`, `env`, `make_repo`, `commit_all` |
 //! | `MemCase.fake_repo` | [`MemCase::fake_repo`] makes the folder only: Python patched `memory_sync`'s `repo_root`, `repo_key`, `_main_root`, `settings_tracked` and `ensure_ignored`; Rust tests pass those through `memory::sync`'s `Deps` (GC-19) |
 //!
@@ -187,7 +187,12 @@ pub fn snapshot(root: &Path) -> BTreeMap<String, (Vec<u8>, i128)> {
             continue;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry.file_name().into_string().unwrap_or_else(|n| {
+                panic!(
+                    "snapshot: a name that is not UTF-8 under {}: {n:?}",
+                    dir.display()
+                )
+            });
             let rel = if rel.is_empty() {
                 name.clone()
             } else {

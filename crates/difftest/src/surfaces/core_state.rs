@@ -21,6 +21,10 @@ use crate::oracle::Oracle;
 /// The surface name (plan §1.4).
 pub const NAME: &str = "core.state";
 
+/// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`); set
+/// `false` only for a surface that cannot run there, and say why.
+pub const ON_MACOS: bool = true;
+
 /// The registered implementation.
 pub fn surface() -> Option<Box<dyn Surface>> {
     Some(Box::new(CoreState))
