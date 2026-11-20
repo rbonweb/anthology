@@ -25,7 +25,10 @@ tar -xzf "$tmp/deny.tar.gz" -C "$tmp"
 
 "$tmp/$name/cargo-deny" --locked check
 
-if cargo tree --locked -p anthology-cli -e normal --target all --prefix none | grep '^serde_json '; then
+shipped="--target aarch64-apple-darwin --target x86_64-apple-darwin \
+--target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl"
+# shellcheck disable=SC2086 # $shipped is a list of options
+if cargo tree --locked -p anthology-cli -e normal $shipped --prefix none | grep '^serde_json '; then
     echo "deny: serde_json is in the shipped graph (m-11)" >&2
     exit 1
 fi
