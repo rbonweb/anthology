@@ -296,6 +296,33 @@ fn many_heredoc_operators_stay_linear() {
 }
 
 #[test]
+fn the_lenient_fish_rescan_is_bounded_and_fails_closed() {
+    // Python's `_script_starts` rescans every later word per `fish` word, and the lenient lexer copies a
+    // segment per start: cubic. Rust stops at its work budget and sets `incomplete`.
+    let small = format!("' {}", "fish -cX ".repeat(20));
+    let lexed = segments(&small, 0);
+    assert!(lexed.lenient && !lexed.incomplete);
+    let big = format!("' {}", "fish -cX ".repeat(2000));
+    assert_quick("fish rescan", Duration::from_secs(2), || {
+        let lexed = segments(&big, 0);
+        assert!(lexed.lenient && lexed.incomplete);
+        let tokens: usize = lexed.segments.iter().map(|s| s.tokens.len()).sum();
+        assert!(tokens <= 4_000_000, "{tokens} tokens");
+    });
+    assert_quick("plain fish words", Duration::from_secs(2), || {
+        segments(&format!("' {}", "fish ".repeat(80_000)), 0);
+    });
+}
+
+#[test]
+fn a_repeated_unterminated_heredoc_is_searched_once() {
+    let text = format!("$(cat {}\nls)", "<<A ".repeat(20_000));
+    assert_quick("repeated delimiter", Duration::from_millis(500), || {
+        segments(&text, 0);
+    });
+}
+
+#[test]
 fn a_low_backtrack_limit_sets_incomplete() {
     // `_HEREDOC_START` runs where `_scan_paren` looks for heredocs: inside `$(...)` and heredoc bodies.
     // A mismatched quote makes it backtrack (the quote group retries empty).

@@ -14,6 +14,11 @@ pub struct Limits {
     pub backtrack_limit: usize,
 }
 
+/// Work units one `segments` call may spend in the lenient fallback (option rescans, starts found, tokens
+/// copied) before it stops and sets `incomplete`. Python's quadratic-to-cubic `_script_starts` path only
+/// reaches this past about a thousand `fish` words; below it the output is Python's exactly.
+pub(crate) const LEX_BUDGET: usize = 4_000_000;
+
 /// fancy-regex's own default (`RegexBuilder::backtrack_limit`), kept as GC-16 asks.
 pub(crate) const DEFAULT_BACKTRACK_LIMIT: usize = 1_000_000;
 

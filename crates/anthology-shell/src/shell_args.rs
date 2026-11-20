@@ -2,6 +2,8 @@
 //! `_embedded_shells`, `_script_starts`) and `_prog_name`. In SH1 (lead ruling R2), because the lenient lexer
 //! needs `_script_starts`.
 
+use std::collections::HashSet;
+
 use crate::lexer::pystr;
 
 /// The shells whose `-c` scripts and stdin are analyzed (`_SHELLS`).
@@ -167,8 +169,36 @@ fn fish_option_at(args: &[String], i: usize) -> (Vec<(usize, String)>, bool, boo
     (scripts, runs_c, takes_next)
 }
 
-/// `_parse_fish_args`: fish's options from `args[i]`, failing closed past options it may not know.
-pub fn parse_fish_args(args: &[String], mut i: usize) -> ShellParse {
+/// A work allowance for the option parsers. guard_rules.py's `_script_starts` is quadratic in its output
+/// (each `fish` word rescans every later word) and the lenient lexer then copies a segment per start, so a
+/// few kilobytes of `fish -cX` can ask for gigabytes; a failed allocation aborts the guard, and an abort does
+/// not block. Past the allowance the caller stops and sets `incomplete` (fail closed, D-7: Rust may block
+/// where Python would merely be slow).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budget(pub(crate) usize);
+
+impl Budget {
+    /// Spend `n` units; false (and nothing left) when there were not enough.
+    pub(crate) fn spend(&mut self, n: usize) -> bool {
+        match self.0.checked_sub(n) {
+            Some(left) => {
+                self.0 = left;
+                true
+            }
+            None => {
+                self.0 = 0;
+                false
+            }
+        }
+    }
+}
+
+/// `_parse_fish_args` within a budget: `None` when the budget ran out.
+pub(crate) fn parse_fish_args_in(
+    args: &[String],
+    mut i: usize,
+    budget: &mut Budget,
+) -> Option<ShellParse> {
     let n = args.len();
     let first = i;
     let (mut command, mut unknown) = (false, false);
@@ -194,10 +224,15 @@ pub fn parse_fish_args(args: &[String], mut i: usize) -> ShellParse {
         i += if takes_next { 2 } else { 1 };
     }
     i = i.min(n);
+    // Every later word is read as an option too (fail closed); `found not in scripts` keeps first-seen order.
+    if !budget.spend(n.saturating_sub(first)) {
+        return None;
+    }
     let mut scripts: Vec<(usize, String)> = Vec::new();
+    let mut seen: HashSet<(usize, String)> = HashSet::new();
     for k in first..n {
         for found in fish_option_at(args, k).0 {
-            if !scripts.contains(&found) {
+            if seen.insert(found.clone()) {
                 scripts.push(found);
             }
         }
@@ -209,46 +244,84 @@ pub fn parse_fish_args(args: &[String], mut i: usize) -> ShellParse {
     } else {
         ShellMode::Stdin
     };
-    ShellParse {
+    Some(ShellParse {
         mode,
         start: i,
         scripts,
+    })
+}
+
+fn parse_or_stdin(parsed: Option<ShellParse>, args: &[String], i: usize) -> ShellParse {
+    parsed.unwrap_or_else(|| ShellParse {
+        mode: ShellMode::Stdin,
+        start: i.min(args.len()),
+        scripts: Vec::new(),
+    })
+}
+
+/// `_parse_fish_args`: fish's options from `args[i]`, failing closed past options it may not know.
+pub fn parse_fish_args(args: &[String], i: usize) -> ShellParse {
+    parse_or_stdin(
+        parse_fish_args_in(args, i, &mut Budget(usize::MAX)),
+        args,
+        i,
+    )
+}
+
+/// `_shell_parse` within a budget: `None` when the budget ran out.
+pub(crate) fn shell_parse_in(
+    prog: &str,
+    args: &[String],
+    i: usize,
+    budget: &mut Budget,
+) -> Option<ShellParse> {
+    if prog == "fish" {
+        return parse_fish_args_in(args, i, budget);
     }
+    let (mode, start) = parse_shell_args(args, i);
+    let scripts = match args.get(start) {
+        Some(script) if mode == ShellMode::Command => vec![(start, script.clone())],
+        _ => Vec::new(),
+    };
+    Some(ShellParse {
+        mode,
+        start,
+        scripts,
+    })
 }
 
 /// `_shell_parse`: (mode, start, scripts) for shell `prog`'s arguments from `args[i]`.
 pub fn shell_parse(prog: &str, args: &[String], i: usize) -> ShellParse {
-    if prog == "fish" {
-        return parse_fish_args(args, i);
-    }
-    let (mode, start) = parse_shell_args(args, i);
-    let scripts = if mode == ShellMode::Command {
-        vec![(start, args[start].clone())]
-    } else {
-        Vec::new()
-    };
-    ShellParse {
-        mode,
-        start,
-        scripts,
-    }
+    parse_or_stdin(
+        shell_parse_in(prog, args, i, &mut Budget(usize::MAX)),
+        args,
+        i,
+    )
 }
 
-/// `_embedded_shells`: (mode, start) for each shell program among `words`; its own options are not rescanned.
-pub fn embedded_shells(words: &[String]) -> Vec<(ShellMode, usize)> {
+/// `_embedded_shells` within a budget: `None` when the budget ran out.
+pub(crate) fn embedded_shells_in(
+    words: &[String],
+    budget: &mut Budget,
+) -> Option<Vec<(ShellMode, usize)>> {
     let mut out = Vec::new();
     let (mut k, n) = (0, words.len());
     while k < n {
         let prog = prog_name(&words[k]);
         if SHELLS.contains(&prog.as_str()) {
-            let parsed = shell_parse(&prog, words, k + 1);
+            let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
             out.push((parsed.mode, parsed.start));
             k = parsed.start.max(k + 1);
         } else {
             k += 1;
         }
     }
-    out
+    Some(out)
+}
+
+/// `_embedded_shells`: (mode, start) for each shell program among `words`; its own options are not rescanned.
+pub fn embedded_shells(words: &[String]) -> Vec<(ShellMode, usize)> {
+    embedded_shells_in(words, &mut Budget(usize::MAX)).unwrap_or_default()
 }
 
 /// `_SHELL_C_FLAG.match(word)`: `-[A-Za-z]*c[A-Za-z]*\Z`.
@@ -259,23 +332,38 @@ fn is_shell_c_flag(word: &str) -> bool {
     }
 }
 
-/// `_script_starts`: (index of the word an embedded script starts in, the script's first word) for each one.
-pub fn script_starts(words: &[String]) -> Vec<(usize, String)> {
+/// `_script_starts` within a budget (each start found costs one unit too): `None` when it ran out.
+pub(crate) fn script_starts_in(
+    words: &[String],
+    budget: &mut Budget,
+) -> Option<Vec<(usize, String)>> {
     let mut starts = Vec::new();
     let (mut k, n) = (0, words.len());
     while k + 1 < n {
         let word = &words[k];
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
-            let parsed = shell_parse(&prog, words, k + 1);
+            let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
+            if !budget.spend(parsed.scripts.len()) {
+                return None;
+            }
             starts.extend(parsed.scripts);
             k = parsed.start.max(k + 1);
             continue;
         }
         if is_shell_c_flag(word) {
+            if !budget.spend(1) {
+                return None;
+            }
             starts.push((k + 1, words[k + 1].clone()));
         }
         k += 1;
     }
-    starts
+    Some(starts)
+}
+
+/// `_script_starts`: (index of the word an embedded script starts in, the script's first word) for each one.
+/// Quadratic in the number of `fish` words, as in Python; the lexer and `analyze` use a bounded form.
+pub fn script_starts(words: &[String]) -> Vec<(usize, String)> {
+    script_starts_in(words, &mut Budget(usize::MAX)).unwrap_or_default()
 }

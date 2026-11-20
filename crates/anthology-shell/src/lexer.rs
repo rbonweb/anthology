@@ -14,7 +14,8 @@ use std::sync::LazyLock;
 
 use crate::heredoc::{body_substitutions, find_heredoc_end, is_heredoc_delimiter};
 use crate::lenient::lenient_segments;
-use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_DEPTH};
+use crate::limits::{DEFAULT_BACKTRACK_LIMIT, LEX_BUDGET, Limits, MAX_DEPTH};
+use crate::shell_args::Budget;
 
 /// One redirection: its operator (`>`, `2>` is `>` with the fd dropped, `&>`, `<<`, ...) and target word.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -82,6 +83,8 @@ pub(crate) struct Shared<'r> {
     re: Option<&'r fancy_regex::Regex>,
     groups: Vec<Vec<String>>,
     pub(crate) incomplete: bool,
+    /// Work left for the lenient fallback (see `shell_args::Budget`).
+    pub(crate) budget: Budget,
     pub(crate) info: LexInfo,
 }
 
@@ -187,6 +190,11 @@ pub(crate) fn scan_paren<'t>(text: &'t str, i: usize, sh: &mut Shared<'_>) -> (&
         if c == b'\n' && !delimiters.is_empty() {
             let mut pos = j + 1;
             for delimiter in delimiters.drain(..) {
+                if unterminated.contains(delimiter) {
+                    // a repeat on this line of one just searched in vain: the search from the same
+                    // `pos` fails again (Python repeats it; the result is the same)
+                    continue;
+                }
                 match find_heredoc_end(text, pos, delimiter) {
                     Some((_, after)) => pos = after,
                     None => {
@@ -667,6 +675,10 @@ pub(crate) fn segments_inner(text: &str, depth: usize, sh: &mut Shared<'_>) -> V
 
 /// `_segments` with its flags: `(Lexed, LexInfo)`. `LexInfo.nested_lenient` is true for a top-level
 /// fallback too.
+///
+/// The flags are sticky: work whose output is thrown away (a nested lexer, or the whole lexer when the top
+/// level falls back to lenient) still leaves `incomplete`, `depth_capped` and `nested_lenient` set. So Rust
+/// may report `incomplete` (and the guard block) where Python allowed: a D-7 case, never the reverse.
 pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo) {
     let built;
     let re = if limits.backtrack_limit == DEFAULT_BACKTRACK_LIMIT {
@@ -680,6 +692,7 @@ pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo)
         groups: Vec::new(),
         incomplete: false,
         info: LexInfo::default(),
+        budget: Budget(LEX_BUDGET),
     };
     let (segments, lenient) = match Lexer::new(text, depth, &mut sh).run() {
         Ok(segments) => (segments, false),

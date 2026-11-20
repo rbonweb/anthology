@@ -8,6 +8,8 @@ Usage (repository root, the pinned Python 3.12 image of ci/images/python.Dockerf
 It runs the guard's Python tests in-process with `guard_rules._segments`, `_shell_parse`, `_script_starts`
 and `_analyze` wrapped, and records every call: `(text, depth)`, `(prog, args, i)`, `(words)` and
 `(command, home)` (string homes only; the guard passes "" for any other). Nested calls are recorded too.
+Only `test_guard_rules` runs the parser in-process: `test_guard_cli` runs guard.py as a subprocess, which
+these wrappers cannot see, and its commands (mainly `SELF_TEST_SAMPLE`'s) are also in `test_guard_rules`.
 Texts over MAX_CHARS code points are dropped (the lexer's own tests cover the big timing inputs), and so is
 any case that holds a secret-like fixture (the tests assemble them at run time so none is committed).
 
