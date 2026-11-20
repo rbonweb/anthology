@@ -14,11 +14,16 @@ Needs Python 3.9+ (the macOS system python3), the standard library, and `git`
 
 Fetching is a function `fetch(entry) -> Path` returning a pristine checkout of the
 upstream repo, so tests can stub it with local fixture trees.
+
+A source with `url` + `checksum` (no git) is a downloaded skill folder. Its pristine copy
+is committed in vendor/snapshots/<name>/ and re-verified on every build/check/diff, so CI
+never contacts the host; only `vendor.py fetch NAME` downloads and refreshes it.
 """
 from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -26,12 +31,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIRNAME = ".vendor-cache"
 SOURCES = Path("vendor") / "sources.json"
 LICENSES = Path("vendor") / "licenses"
+SNAPSHOTS = Path("vendor") / "snapshots"
+CHECKSUMS_NAME = "CHECKSUMS.sha256"
+MAX_DOWNLOAD = 10 * 1024 * 1024
 ALLOWED_LICENSES = {"MIT", "Apache-2.0"}
 SUBTREE = "subtree"
 VENDORED_PLUGIN = "plugins/anthology-superpowers"
@@ -41,6 +52,8 @@ IGNORED_EXTRAS = {".DS_Store"}
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+SOURCE_URL = re.compile(r"^https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._~-]+)+/$")
+CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
 
 
 class VendorError(Exception):
@@ -132,6 +145,23 @@ def _check_transforms(label: str, entry: dict, errors: list) -> None:
                 errors.append(f"{label}: rename-skill needs old and new skill names")
 
 
+def _check_url_entry(label: str, entry: dict, errors: list) -> None:
+    """A downloaded skill folder: https URL ending in a slash, a pinned checksum of its
+    CHECKSUMS.sha256, no git fields, and a license file inside the snapshot."""
+    url = entry["url"]
+    if not (isinstance(url, str) and SOURCE_URL.match(url)
+            and all(part not in (".", "..") for part in url.split("/")[3:])):
+        errors.append(f"{label}: url must be an https URL ending in a slash")
+    if entry.get("repo") or entry.get("commit") is not None:
+        errors.append(f"{label}: a url source has no repo or commit")
+    if "checksum" not in entry:
+        errors.append(f"{label}: a url source needs a checksum")
+    if entry.get("path") != "":
+        errors.append(f"{label}: a url source has an empty path")
+    if not _safe_relpath(entry.get("license_file"), False):
+        errors.append(f"{label}: a url source needs a license_file inside the snapshot")
+
+
 def validate_sources(entries: list) -> list:
     """Return a list of problems (empty when sources.json is valid)."""
     errors: list = []
@@ -186,6 +216,8 @@ def validate_sources(entries: list) -> list:
             if slug in license_files and license_files[slug] != e.get("license_file"):
                 errors.append(f"{label}: entries from one repo must agree on license_file")
             license_files.setdefault(slug, e.get("license_file"))
+        if "url" in e:
+            _check_url_entry(label, e, errors)
         _check_transforms(label, e, errors)
     for i, (a_label, a) in enumerate(targets):
         for b_label, b in targets[i + 1:]:
@@ -598,6 +630,175 @@ def git_resolve_ref(entry: dict, ref: str) -> str:
     raise VendorError(f"{entry['name']}: ref {ref!r} not found in {entry['repo']}")
 
 
+# --------------------------------------------------------------------------- url sources
+
+def parse_checksums(data: bytes) -> dict:
+    """`<sha256>  <path>` lines (sha256sum format) -> {path: sha256}. Paths must be plain
+    relative paths: they become file names on disk and in URLs."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise VendorError(f"{CHECKSUMS_NAME} is not UTF-8")
+    listed: dict = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        m = CHECKSUM_LINE.match(line)
+        if not m:
+            raise VendorError(f"{CHECKSUMS_NAME}:{number}: not a `<sha256>  <path>` line")
+        digest, rel = m.groups()
+        if (not _safe_relpath(rel, False) or rel == CHECKSUMS_NAME
+                or any(ord(c) < 32 or ord(c) == 127 for c in rel)):
+            raise VendorError(f"{CHECKSUMS_NAME}:{number}: unsafe path {rel!r}")
+        if rel in listed:
+            raise VendorError(f"{CHECKSUMS_NAME}:{number}: {rel} is listed twice")
+        listed[rel] = digest
+    if not listed:
+        raise VendorError(f"{CHECKSUMS_NAME} lists no files")
+    return listed
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _snapshot_files(tree: Path) -> list:
+    """Relative paths of every file; symlinks are not allowed in a snapshot."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(tree):
+        dirnames.sort()
+        _reject_dir_symlinks(Path(dirpath), dirnames, tree)
+        for name in filenames:
+            p = Path(dirpath) / name
+            if p.is_symlink():
+                raise VendorError(f"{p.relative_to(tree).as_posix()}: symlinks are not allowed in a snapshot")
+            found.append(p.relative_to(tree).as_posix())
+    return sorted(found)
+
+
+def verify_snapshot(entry: dict, tree: Path) -> None:
+    """The tree must be exactly the files listed in CHECKSUMS.sha256 plus that file, every
+    file must match its digest, and the CHECKSUMS.sha256 itself must match the pin."""
+    name, tree = entry["name"], Path(tree)
+    sums = tree / CHECKSUMS_NAME
+    if not sums.is_file() or sums.is_symlink():
+        raise VendorError(f"{name}: no snapshot at {SNAPSHOTS / name}; run `vendor.py fetch {name}`")
+    raw = sums.read_bytes()
+    if _sha256(raw) != entry.get("checksum"):
+        raise VendorError(f"{name}: {CHECKSUMS_NAME} does not match the pinned checksum in "
+                          f"vendor/sources.json")
+    listed = parse_checksums(raw)
+    present = set(_snapshot_files(tree)) - {CHECKSUMS_NAME}
+    problems = [f"missing {rel}" for rel in sorted(set(listed) - present)]
+    problems += [f"unlisted file {rel}" for rel in sorted(present - set(listed))]
+    problems += [f"{rel} does not match its checksum" for rel in sorted(present & set(listed))
+                 if _sha256((tree / rel).read_bytes()) != listed[rel]]
+    if problems:
+        raise VendorError(f"{name}: snapshot {SNAPSHOTS / name} is not what {CHECKSUMS_NAME} lists: "
+                          + "; ".join(problems))
+
+
+def snapshot_fetcher(root: Path):
+    """Return fetch(entry) -> the committed snapshot of a url source, verified (no network)."""
+    def fetch(entry: dict) -> Path:
+        if not entry.get("url"):
+            raise VendorError(f"{entry['name']}: not a url source")
+        tree = Path(root) / SNAPSHOTS / entry["name"]
+        verify_snapshot(entry, tree)
+        return tree
+    return fetch
+
+
+class _HttpsOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise VendorError(f"refusing a redirect to a non-https URL: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def http_get(url: str, timeout: int = 30) -> bytes:
+    """GET over https only (no other scheme, no redirect to one); the body is size-limited."""
+    if not url.startswith("https://"):
+        raise VendorError(f"refusing a non-https URL: {url}")
+    request = urllib.request.Request(url, headers={"User-Agent": "anthology-vendor"})
+    try:
+        with urllib.request.build_opener(_HttpsOnly).open(request, timeout=timeout) as response:
+            data = response.read(MAX_DOWNLOAD + 1)
+    except (OSError, ValueError) as exc:  # URLError and HTTPError are OSErrors
+        raise VendorError(f"cannot download {url}: {exc}")
+    if len(data) > MAX_DOWNLOAD:
+        raise VendorError(f"{url} is larger than {MAX_DOWNLOAD} bytes")
+    return data
+
+
+def _index_files(entry: dict, get) -> set:
+    index_url = entry["url"].rsplit("/", 2)[0] + "/index.json"
+    try:
+        skills = json.loads(get(index_url).decode("utf-8"))["skills"]
+        files = next(s["files"] for s in skills if s.get("name") == entry["name"])
+        if not (isinstance(files, list) and all(isinstance(f, str) for f in files)):
+            raise ValueError("files is not a list of paths")
+    except (ValueError, KeyError, TypeError, StopIteration):
+        raise VendorError(f"{entry['name']}: {index_url} has no usable file list for this skill")
+    return set(files)
+
+
+def download_snapshot(root: Path, entry: dict, get=None) -> Path:
+    """Download a url source into vendor/snapshots/<name>/.
+
+    The CHECKSUMS.sha256 must match the pin and the file list of the host's index.json;
+    every file must match its digest. The old snapshot is replaced only after all of that."""
+    errors = validate_sources([entry])
+    if errors:
+        raise VendorError("invalid source:\n  " + "\n  ".join(errors))
+    get = get or http_get
+    name, base = entry["name"], entry["url"]
+    raw = get(base + CHECKSUMS_NAME)
+    if _sha256(raw) != entry.get("checksum"):
+        raise VendorError(f"{name}: downloaded {CHECKSUMS_NAME} does not match the pinned "
+                          f"checksum; nothing was written")
+    listed = parse_checksums(raw)
+    advertised = _index_files(entry, get)
+    expected = set(listed) | {CHECKSUMS_NAME}
+    if advertised != expected:
+        diff = sorted(advertised ^ expected)
+        raise VendorError(f"{name}: index.json and {CHECKSUMS_NAME} disagree about: {', '.join(diff)}")
+    dest = Path(root) / SNAPSHOTS / name
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp, old = parent / f".tmp-{name}-{os.getpid()}", parent / f".old-{name}-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
+    try:
+        tmp.mkdir()
+        for rel, digest in sorted(listed.items()):
+            data = get(base + urllib.parse.quote(rel, safe="/"))
+            if _sha256(data) != digest:
+                raise VendorError(f"{name}: {rel} does not match its checksum; nothing was written")
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_bytes(data)
+            (tmp / rel).chmod(0o644)
+        (tmp / CHECKSUMS_NAME).write_bytes(raw)
+        (tmp / CHECKSUMS_NAME).chmod(0o644)
+        verify_snapshot(entry, tmp)
+        if dest.exists():
+            dest.rename(old)
+        try:
+            tmp.rename(dest)
+        except OSError:
+            if old.exists():
+                old.rename(dest)
+            raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
+    return dest
+
+
+def fetch_entry(root: Path, entry: dict, fetch, get=None) -> Path:
+    """What `vendor.py fetch` does for one source: url sources are downloaded into their
+    snapshot, git sources are fetched into the cache."""
+    return download_snapshot(root, entry, get=get) if entry.get("url") else fetch(entry)
+
+
 def apply_patch(tree: Path, patch: Path, reject: bool = False) -> list:
     """Apply a patch (-p1) to tree. Returns the rejected-hunk files (reject mode only)."""
     args = ["apply", "-p1", "--whitespace=nowarn"] + (["--reject"] if reject else [])
@@ -644,8 +845,14 @@ def install_tree(src: Path, dest: Path) -> None:
     copy_tree(src, dest)
 
 
+def dispatch_fetcher(root: Path, git_fetch):
+    """url sources come from their committed snapshot, everything else from git."""
+    snapshot_fetch = snapshot_fetcher(root)
+    return lambda entry: snapshot_fetch(entry) if entry.get("url") else git_fetch(entry)
+
+
 def _fetcher(root: Path, fetch):
-    return fetch or git_fetcher(Path(root) / CACHE_DIRNAME)
+    return fetch or dispatch_fetcher(root, git_fetcher(Path(root) / CACHE_DIRNAME))
 
 
 def build(root: Path, name: str, out=None, fetch=None, reject: bool = False) -> dict:
@@ -759,6 +966,9 @@ def sync(root: Path, name: str, ref: str, fetch=None, resolve=None) -> dict:
     entries = load_sources(root)
     _require_valid(entries)
     entry = find_entry(entries, name)
+    if entry.get("url"):
+        raise VendorError(f"{name} is a url source and has no ref to sync: update its checksum in "
+                          f"vendor/sources.json, then run `vendor.py fetch {name}`")
     commit = ref if SHA1.match(ref) else (resolve or git_resolve_ref)(entry, ref)
     old = {"ref": entry["ref"], "commit": entry["commit"]}
     entry["ref"], entry["commit"] = ref, commit
@@ -856,12 +1066,12 @@ def main(argv=None) -> int:
     p.add_argument("name")
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    fetch = git_fetcher(args.cache or root / CACHE_DIRNAME)
+    fetch = dispatch_fetcher(root, git_fetcher(args.cache or root / CACHE_DIRNAME))
     try:
         if args.command == "fetch":
             names = _names(root, args.names)
             for n in names:
-                print(f"fetched {n}: {fetch(find_entry(load_sources(root), n))}")
+                print(f"fetched {n}: {fetch_entry(root, find_entry(load_sources(root), n), fetch)}")
             for path in fetch_licenses(root, names=names, fetch=fetch):
                 print(f"license {path.relative_to(root)}")
         elif args.command == "build":

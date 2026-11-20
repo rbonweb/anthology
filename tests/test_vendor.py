@@ -7,6 +7,7 @@ checkout; the tests stub it. Real fetches run on the host and in the CI
 `vendor-check` job.
 """
 import ast
+import hashlib
 import json
 import os
 import re
@@ -101,7 +102,8 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.validate_sources(entries), [])
         self.assertEqual(
             {e["name"] for e in entries},
-            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines"}
+            {"superpowers", "design-skills", "frontend-design", "web-design-guidelines",
+             "ui-taste", "caveman"}
             | set(STRIPPED_KNOWLEDGE))
 
     def test_real_pins_match_the_plan(self):
@@ -247,6 +249,314 @@ class SourcesJsonTest(unittest.TestCase):
         self.assertEqual(vendor.source_slug(entry("x", repo="https://github.com/obra/superpowers")),
                          "obra-superpowers")
         self.assertEqual(vendor.source_slug(entry("x", repo="https://github.com/o/r.git/")), "o-r")
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def checksums_bytes(files):
+    return "".join(f"{sha(data)}  {rel}\n" for rel, data in sorted(files.items())).encode()
+
+
+URL_FILES = {
+    "SKILL.md": b"---\nname: ui\ndescription: d\n---\nbody\n",
+    "LICENSE": b"Apache License\nVersion 2.0\n",
+    "ref/a.md": b"a\n",
+    "scripts/x.mjs": b"export {};\n",
+}
+
+
+def url_base(name):
+    return f"https://example.test/.well-known/skills/{name}/"
+
+
+def url_entry(name, files=URL_FILES, **kw):
+    e = {
+        "name": name,
+        "url": url_base(name),
+        "path": "",
+        "ref": "v1",
+        "checksum": sha(checksums_bytes(files)),
+        "license": "Apache-2.0",
+        "license_file": "LICENSE",
+        "target": f"plugins/anthology/knowledge/{name}",
+        "transform": [],
+    }
+    e.update(kw)
+    return e
+
+
+def write_snapshot(root, name, files=URL_FILES):
+    base = Path(root) / "vendor" / "snapshots" / name
+    for rel, data in files.items():
+        write(base, rel, data)
+    write(base, "CHECKSUMS.sha256", checksums_bytes(files))
+    return base
+
+
+class FakeWeb:
+    """A getter serving one skill (files, CHECKSUMS.sha256, index.json) from memory."""
+
+    def __init__(self, name, files=URL_FILES, sums=None, index_files=None):
+        self.base = url_base(name)
+        self.index_url = self.base.rsplit(name + "/", 1)[0] + "index.json"
+        self.pages = {self.base + rel: data for rel, data in files.items()}
+        self.pages[self.base + "CHECKSUMS.sha256"] = checksums_bytes(files) if sums is None else sums
+        listed = index_files if index_files is not None else sorted(files) + ["CHECKSUMS.sha256"]
+        self.pages[self.index_url] = json.dumps({"skills": [
+            {"name": "other", "files": ["x"]}, {"name": name, "files": listed}]}).encode()
+        self.calls = []
+
+    def __call__(self, url):
+        self.calls.append(url)
+        if url not in self.pages:
+            raise vendor.VendorError(f"HTTP 404: {url}")
+        return self.pages[url]
+
+
+class UrlSourceValidationTest(unittest.TestCase):
+    def test_valid_url_entry_has_no_errors(self):
+        self.assertEqual(vendor.validate_sources([url_entry("ui")]), [])
+
+    def test_url_must_be_https_and_end_with_a_slash(self):
+        for bad in ("http://example.test/s/ui/", "file:///tmp/ui/", "ftp://example.test/ui/",
+                    "https://", "https:///ui/", "https://example.test/ui", "//example.test/ui/",
+                    "https://example.test/u i/", "https://user@example.test/ui/", ""):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", url=bad)]), bad)
+
+    def test_a_url_entry_needs_a_checksum_and_no_repo_or_commit(self):
+        e = url_entry("ui")
+        del e["checksum"]
+        self.assertTrue(vendor.validate_sources([e]))
+        for bad in ("abc", "C" * 64, "c" * 63, ""):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", checksum=bad)]), bad)
+        self.assertTrue(vendor.validate_sources([url_entry("ui", repo="https://github.com/a/b")]))
+        self.assertTrue(vendor.validate_sources([url_entry("ui", commit=SHA_A)]))
+
+    def test_a_url_entry_has_an_empty_path(self):
+        self.assertTrue(vendor.validate_sources([url_entry("ui", path="skills/ui")]))
+
+    def test_a_url_entry_needs_a_license_file_inside_the_snapshot(self):
+        e = url_entry("ui")
+        del e["license_file"]
+        self.assertTrue(vendor.validate_sources([e]))
+        self.assertTrue(vendor.validate_sources([url_entry("ui", license_file=None)]))
+        for bad in ("/etc/passwd", "../LICENSE", "a/../../x"):
+            self.assertTrue(vendor.validate_sources([url_entry("ui", license_file=bad)]), bad)
+
+    def test_the_license_slug_of_a_url_entry_is_its_name(self):
+        self.assertEqual(vendor.source_slug(url_entry("ui")), "ui")
+
+
+class UrlSourceTest(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.e = url_entry("ui")
+        self.set_sources([self.e])
+        self.snap = write_snapshot(self.root, "ui")
+
+    def fetch_offline(self):
+        return vendor.snapshot_fetcher(self.root)(self.e)
+
+    def test_offline_fetch_returns_the_verified_snapshot(self):
+        self.assertEqual(self.fetch_offline(), self.snap)
+
+    def test_the_default_fetcher_routes_url_entries_to_the_snapshot(self):
+        self.assertEqual(vendor._fetcher(self.root, None)(self.e), self.snap)
+
+    def test_a_tampered_file_is_rejected(self):
+        write(self.snap, "ref/a.md", b"changed\n")
+        with self.assertRaisesRegex(vendor.VendorError, "ref/a.md"):
+            self.fetch_offline()
+
+    def test_an_extra_file_is_rejected(self):
+        write(self.snap, "ref/extra.md", b"x\n")
+        with self.assertRaisesRegex(vendor.VendorError, "extra.md"):
+            self.fetch_offline()
+
+    def test_a_missing_file_is_rejected(self):
+        (self.snap / "ref/a.md").unlink()
+        with self.assertRaisesRegex(vendor.VendorError, "ref/a.md"):
+            self.fetch_offline()
+
+    def test_a_wrong_pin_is_rejected(self):
+        self.e["checksum"] = "0" * 64
+        with self.assertRaisesRegex(vendor.VendorError, "checksum"):
+            self.fetch_offline()
+
+    def test_a_rewritten_checksums_file_is_rejected_by_the_pin(self):
+        files = dict(URL_FILES, **{"ref/a.md": b"changed\n"})
+        write_snapshot(self.root, "ui", files)
+        with self.assertRaisesRegex(vendor.VendorError, "checksum"):
+            self.fetch_offline()
+
+    def test_a_missing_snapshot_is_rejected(self):
+        shutil.rmtree(self.snap)
+        with self.assertRaisesRegex(vendor.VendorError, "fetch ui"):
+            self.fetch_offline()
+
+    def test_a_symlink_in_the_snapshot_is_rejected(self):
+        (self.snap / "ref/a.md").unlink()
+        os.symlink("../SKILL.md", self.snap / "ref/a.md")
+        with self.assertRaises(vendor.VendorError):
+            self.fetch_offline()
+
+    def test_unsafe_paths_in_checksums_are_rejected(self):
+        for bad in ("../x", "/etc/passwd", "a/../../b", "a//b", "./a", "a\\b", "CHECKSUMS.sha256"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.parse_checksums(f"{'1' * 64}  {bad}\n".encode())
+
+    def test_malformed_checksums_are_rejected(self):
+        line = ("1" * 64 + "  a\n").encode()
+        for bad in (b"", b"nothex  a\n", b"1" * 64 + b" a\n", line + b"\n", line * 2, b"\xff\xfe"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.parse_checksums(bad)
+
+    def test_well_formed_checksums_parse(self):
+        self.assertEqual(vendor.parse_checksums(checksums_bytes(URL_FILES)),
+                         {rel: sha(data) for rel, data in URL_FILES.items()})
+
+    def test_build_check_and_license_work_without_git_or_network(self):
+        vendor.build(self.root, "ui")
+        target = self.root / "plugins/anthology/knowledge/ui"
+        self.assertEqual(sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()),
+                         sorted(list(URL_FILES) + ["CHECKSUMS.sha256"]))
+        vendor.fetch_licenses(self.root)
+        self.assertEqual((self.root / "vendor/licenses/ui.txt").read_bytes(), URL_FILES["LICENSE"])
+        self.assertEqual(vendor.check(self.root), [])
+
+    def test_check_reports_a_tampered_snapshot(self):
+        vendor.build(self.root, "ui")
+        vendor.fetch_licenses(self.root)
+        write(self.snap, "SKILL.md", b"changed\n")
+        self.assertTrue(any("SKILL.md" in p for p in vendor.check(self.root)))
+
+    def test_check_reports_a_drifted_license(self):
+        vendor.build(self.root, "ui")
+        vendor.fetch_licenses(self.root)
+        write(self.root, "vendor/licenses/ui.txt", "other\n")
+        self.assertTrue(any("ui.txt" in p for p in vendor.check(self.root)))
+
+    def test_diff_works_on_a_url_entry(self):
+        vendor.build(self.root, "ui")
+        write(self.root / "plugins/anthology/knowledge/ui", "SKILL.md", b"---\nname: ui\n---\nnew\n")
+        self.assertIn("-body", vendor.diff_entry(self.root, "ui"))
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_patch_on_a_url_entry_can_drop_the_shipped_checksums(self):
+        vendor.build(self.root, "ui")
+        target = self.root / "plugins/anthology/knowledge/ui"
+        (target / "CHECKSUMS.sha256").unlink()
+        write(self.root, "vendor/patches/ui.patch", vendor.diff_entry(self.root, "ui"))
+        self.e["transform"] = [{"patch": "vendor/patches/ui.patch"}]
+        self.set_sources([self.e])
+        vendor.build(self.root, "ui")
+        self.assertFalse((target / "CHECKSUMS.sha256").exists())
+        vendor.fetch_licenses(self.root)
+        self.assertEqual(vendor.check(self.root), [])
+
+    def test_sync_on_a_url_entry_is_an_error_with_a_hint(self):
+        with self.assertRaisesRegex(vendor.VendorError, r"checksum.*vendor\.py fetch ui"):
+            vendor.sync(self.root, "ui", "v2")
+
+
+class UrlDownloadTest(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.e = url_entry("ui")
+        self.set_sources([self.e])
+        self.snap = self.root / "vendor" / "snapshots" / "ui"
+
+    def download(self, web):
+        return vendor.download_snapshot(self.root, self.e, get=web)
+
+    def tree(self, base):
+        return {p.relative_to(base).as_posix(): p.read_bytes() for p in base.rglob("*") if p.is_file()}
+
+    def test_download_writes_a_verified_snapshot(self):
+        web = FakeWeb("ui")
+        self.assertEqual(self.download(web), self.snap)
+        self.assertEqual(self.tree(self.snap),
+                         dict(URL_FILES, **{"CHECKSUMS.sha256": checksums_bytes(URL_FILES)}))
+        self.assertEqual(vendor.snapshot_fetcher(self.root)(self.e), self.snap)
+        self.assertEqual(sorted(p.name for p in self.snap.parent.iterdir()), ["ui"])
+        self.assertEqual(web.calls[0], web.base + "CHECKSUMS.sha256")
+
+    def test_download_replaces_an_older_snapshot(self):
+        write_snapshot(self.root, "ui", {"SKILL.md": b"old\n", "LICENSE": b"old\n", "stale.md": b"s\n"})
+        self.download(FakeWeb("ui"))
+        self.assertFalse((self.snap / "stale.md").exists())
+        self.assertEqual((self.snap / "SKILL.md").read_bytes(), URL_FILES["SKILL.md"])
+
+    def assert_refused_and_untouched(self, web, pattern):
+        write_snapshot(self.root, "ui", {"SKILL.md": b"keep\n", "LICENSE": b"keep\n"})
+        before = self.tree(self.snap)
+        with self.assertRaisesRegex(vendor.VendorError, pattern):
+            self.download(web)
+        self.assertEqual(self.tree(self.snap), before)
+        self.assertEqual(sorted(p.name for p in self.snap.parent.iterdir()), ["ui"])
+
+    def test_a_wrong_pin_refuses_before_downloading_any_file(self):
+        self.e["checksum"] = "0" * 64
+        web = FakeWeb("ui")
+        self.assert_refused_and_untouched(web, "checksum")
+        self.assertEqual(web.calls, [web.base + "CHECKSUMS.sha256"])
+
+    def test_a_file_that_does_not_match_its_checksum_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.base + "ref/a.md"] = b"tampered\n"
+        self.assert_refused_and_untouched(web, "ref/a.md")
+
+    def test_a_missing_file_refuses(self):
+        web = FakeWeb("ui")
+        del web.pages[web.base + "ref/a.md"]
+        self.assert_refused_and_untouched(web, "404")
+
+    def test_an_index_that_lists_another_file_set_refuses(self):
+        everything = sorted(URL_FILES) + ["CHECKSUMS.sha256"]
+        self.assert_refused_and_untouched(FakeWeb("ui", index_files=everything + ["more.md"]), "more.md")
+        self.assert_refused_and_untouched(
+            FakeWeb("ui", index_files=[f for f in everything if f != "ref/a.md"]), "ref/a.md")
+
+    def test_an_index_without_the_skill_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.index_url] = b'{"skills": []}'
+        self.assert_refused_and_untouched(web, "index")
+
+    def test_a_malformed_index_refuses(self):
+        web = FakeWeb("ui")
+        web.pages[web.index_url] = b"not json"
+        self.assert_refused_and_untouched(web, "index")
+
+    def test_path_traversal_in_checksums_refuses_and_requests_nothing_else(self):
+        for bad in ("../evil.md", "/etc/passwd", "a/../../b.md"):
+            sums = checksums_bytes(URL_FILES) + f"{sha(b'x')}  {bad}\n".encode()
+            self.e["checksum"] = sha(sums)
+            web = FakeWeb("ui", sums=sums)
+            self.assert_refused_and_untouched(web, "unsafe")
+            self.assertEqual(web.calls, [web.base + "CHECKSUMS.sha256"], bad)
+        self.assertFalse((self.root / "vendor" / "evil.md").exists())
+        self.assertFalse((self.tmp / "evil.md").exists())
+
+    def test_the_getter_is_https_only(self):
+        for bad in ("http://example.test/x", "file:///etc/passwd", "ftp://example.test/x", "//x/y"):
+            with self.assertRaises(vendor.VendorError, msg=bad):
+                vendor.http_get(bad)
+
+    def test_an_invalid_entry_is_refused_before_any_request(self):
+        self.e["url"] = "http://example.test/.well-known/skills/ui/"
+        self.set_sources([self.e])
+        web = FakeWeb("ui")
+        with self.assertRaises(vendor.VendorError):
+            self.download(web)
+        self.assertEqual(web.calls, [])
+
+    def test_fetch_entry_downloads_url_entries_and_delegates_the_rest(self):
+        web = FakeWeb("ui")
+        self.assertEqual(vendor.fetch_entry(self.root, self.e, None, get=web), self.snap)
+        self.assertEqual(vendor.fetch_entry(self.root, entry("g"), lambda e: Path("/x/" + e["name"])),
+                         Path("/x/g"))
 
 
 class RenamePluginTest(FixtureCase):
