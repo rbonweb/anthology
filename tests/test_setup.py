@@ -100,7 +100,8 @@ class PreviewTest(SetupCase):
         self.assertTrue(out["supported"])
         self.assertEqual({c["name"] for c in out["doctor"]["checks"]},
                          {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
-                          "plugin_read_rule"})
+                          "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
+                          "agent_memory_path", "subagent_model"})
         self.assertEqual(out["duplicates"], [])
         s = out["settings"]
         self.assertEqual(s["sha256"], sha(text))
@@ -112,6 +113,16 @@ class PreviewTest(SetupCase):
         self.assertEqual(s["bypass_note"], BYPASS)
         self.assertEqual(out["memory"]["personal_dir"], str(self.anth / "personal-memory"))
         self.assertFalse(out["memory"]["personal_exists"])
+
+    def test_preview_runs_the_compat_checks_in_its_cwd(self):
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        proj = self.tmp / "proj"
+        write(proj / ".claude" / "settings.local.json", json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        checks = {c["name"]: c for c in self.preview(cwd=proj)["doctor"]["checks"]}
+        self.assertFalse(checks["subagent_model"]["ok"])
+        self.assertNotIn('"m"', json.dumps(checks["subagent_model"]))
+        checks = {c["name"]: c for c in self.preview(cwd=self.tmp)["doctor"]["checks"]}
+        self.assertTrue(checks["subagent_model"]["ok"])
 
     def test_missing_settings_file_previews_a_new_file(self):
         out = self.preview()

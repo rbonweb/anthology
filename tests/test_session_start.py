@@ -69,6 +69,7 @@ class SessionCase(MemCase):
         self.plugin_root = PLUGIN
         os.environ["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
         os.environ["CLAUDE_PLUGIN_DATA"] = str(self.data)
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
         self.rtk = FakeRtk()
         patcher = mock.patch.dict(sys.modules, {"rtk_install": self.rtk})
         patcher.start()
@@ -97,6 +98,7 @@ class SessionCase(MemCase):
         root = base / "anthology"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
         guard = base / "anthology-guardrails" / "scripts"
         guard.mkdir(parents=True)
         (guard / "guard.py").write_text(guard_body, encoding="utf-8")
@@ -265,6 +267,121 @@ class OutputTest(SessionCase):
         write(repo / ".claude" / "memory" / "project-a.md", note_text("project-a", "project", "First"))
         out = self.go(cwd=repo)
         self.assertIn(memory_sync.HINT, out["systemMessage"].splitlines())
+
+
+DATA_LINE = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory "
+             "search index have no data folder (compatibility check)")
+MODEL_LINE = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the "
+              "roster's model tiers do not apply")
+
+
+class CompatibilityLinesTest(SessionCase):
+    """PLAN section 14: cheap compatibility checks, one loud line each, only when broken."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        self.mark_setup()
+        self.repo = self.tmp / "work"
+        (self.repo / ".git").mkdir(parents=True)
+
+    def lines(self, **kw):
+        kw.setdefault("cwd", self.repo)
+        return self.go(**kw).get("systemMessage", "").splitlines()
+
+    def test_a_healthy_session_has_no_compat_lines(self):
+        self.assertEqual(self.lines(), [])
+
+    def test_missing_plugin_data_env(self):
+        os.environ.pop("CLAUDE_PLUGIN_DATA")
+        self.assertIn(DATA_LINE, self.lines())
+
+    def test_present_plugin_data_env_is_quiet(self):
+        self.assertNotIn(DATA_LINE, self.lines())
+
+    def copy_plugin(self, drop=(), unexec=()):
+        root = self.tmp / "plugcopy"
+        (root / "templates").mkdir(parents=True)
+        shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
+        for name in drop:
+            (root / "bin" / name).unlink()
+        for name in unexec:
+            (root / "bin" / name).chmod(0o644)
+        return root
+
+    def test_wrappers_missing_or_not_executable_are_named(self):
+        root = self.copy_plugin(drop=("rtk",), unexec=("anthology-mem",))
+        with mock.patch.object(session_start, "_guard_selftest", return_value=None):
+            lines = self.lines(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)})
+        hit = [l for l in lines if "bin/" in l]
+        self.assertEqual(len(hit), 1, lines)
+        self.assertIn("rtk", hit[0])
+        self.assertIn("anthology-mem", hit[0])
+        self.assertNotIn("rtk-hook", hit[0])
+
+    def test_wrappers_present_is_quiet(self):
+        root = self.copy_plugin()
+        self.mark_setup(root)
+        with mock.patch.object(session_start, "_guard_selftest", return_value=None):
+            self.assertEqual(self.lines(env_extra={"CLAUDE_PLUGIN_ROOT": str(root)}), [])
+
+    def test_a_user_agent_folder_next_to_anthology_folders_is_quiet(self):
+        mem = self.repo / ".claude" / "agent-memory"
+        (mem / "anthology-implementer").mkdir(parents=True)
+        (mem / "reviewer").mkdir()
+        self.assertEqual(self.lines(), [])
+        self.assertNotIn("agent_memory_warned", state.read())
+
+    def test_a_bare_agent_folder_alone_is_a_soft_warning_shown_once(self):
+        (self.repo / ".claude" / "agent-memory" / "reviewer").mkdir(parents=True)
+        hit = [l for l in self.lines() if "agent-memory" in l]
+        self.assertEqual(len(hit), 1)
+        self.assertIn("`.claude/agent-memory/reviewer/` exists but no `anthology-reviewer/` does", hit[0])
+        self.assertIn("agent of your own named reviewer", hit[0])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(len(state.read()["agent_memory_warned"]), 1)
+
+    def test_subagent_model_in_hook_env(self):
+        lines = self.lines(env_extra={"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"})
+        self.assertIn(MODEL_LINE, lines)
+        self.assertNotIn("SECRETMODEL", "\n".join(lines))
+
+    def test_subagent_model_in_settings_files(self):
+        write(self.config / "settings.json", json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        self.assertIn(MODEL_LINE, self.lines())
+        write(self.config / "settings.json", json.dumps({"permissions": {"allow": [
+            settings_patch.plugin_read_rule(PLUGIN)]}}))
+        self.assertNotIn(MODEL_LINE, self.lines())
+        write(self.repo / ".claude" / "settings.local.json",
+              json.dumps({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}))
+        self.assertIn(MODEL_LINE, self.lines())
+
+    def test_each_compat_step_is_isolated(self):
+        labels = {"_data_dir_warning": "the plugin data folder check",
+                  "_wrappers_warning": "the bin wrapper check",
+                  "_agent_memory_warning": "the agent-memory path check",
+                  "_subagent_model_warning": "the subagent model check"}
+        for name, label in labels.items():
+            with self.subTest(name), mock.patch.object(session_start, name, side_effect=RuntimeError("boom")):
+                out = self.go(cwd=self.repo)
+                self.assertIn("# Anthology routing guide", self.context(out))
+                self.assertEqual(out["systemMessage"].splitlines(),
+                                 ["anthology: %s failed (RuntimeError)" % label])
+
+    def test_a_broken_compat_import_only_loses_these_checks(self):
+        with mock.patch.object(session_start, "compat", None):
+            out = self.go(cwd=self.repo)
+        self.assertIn("# Anthology routing guide", self.context(out))
+        lines = out["systemMessage"].splitlines()
+        self.assertEqual(sum("failed" in l for l in lines), 3, lines)
+
+    def test_session_start_never_asks_docker(self):
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            self.go(cwd=self.repo)
+        for call in run.call_args_list:
+            self.assertNotEqual(Path(str(call[0][0][0])).name, "docker")
 
 
 class FailureTest(SessionCase):
@@ -543,6 +660,7 @@ class GuardSelfTestTest(SessionCase):
         root = base / "anthology" / "0.1.0"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        shutil.copytree(str(PLUGIN / "bin"), str(root / "bin"))
         guard = self.tmp / "installs" / "guard-new"
         guard_old = self.tmp / "installs" / "guard-old"
         for d, body in ((guard, BLOCKS),
@@ -608,6 +726,12 @@ class GuardLocationTest(SessionCase):
         root = self.config / "plugins" / "cache" / "anthology" / "anthology" / "0.1.0"
         (root / "templates").mkdir(parents=True)
         shutil.copy(str(GUIDE), str(root / "templates" / "routing-guide.md"))
+        # A real install ships its bin/ wrappers (session start warns when they are missing).
+        (root / "bin").mkdir()
+        for name in ("anthology-mem", "rtk", "rtk-hook"):
+            wrapper = root / "bin" / name
+            wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            wrapper.chmod(0o755)
         return root
 
     def test_registry_entry_wins_over_the_sibling_folder(self):
