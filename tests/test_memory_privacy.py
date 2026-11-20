@@ -69,6 +69,7 @@ class KindTest(unittest.TestCase):
                      "/System/Volumes/Data" + U + "/alice/x", "file://" + U + "/alice/x",
                      "C:" + U + "/alice/x", "/mnt/c" + U + "/alice",
                      "/api" + H + "/feed",  # an accepted false positive on the safe side
+                     "1://h" + U + "/alice/x", "+.-://h" + U + "/alice/x",  # no scheme letter
                      "PATH=/opt" + H + "/carol/bin"):
             self.assertEqual(kinds(text), ["home-path"], text)
 
@@ -179,7 +180,8 @@ class ExemptionTest(unittest.TestCase):
                 "198.51.100.7", "203.0.113.200", "v1.2.3.4", "1.2.3.4.5", "999.1.2.3",
                 "2001:db8::1", "at 12:30:45 today", "settings.local.json", "Path.home() call",
                 "https://example.com/home/index.html", "an .ssh folder", "src/home/view.py",
-                "see https://example.com" + U + "/alice/profile"):
+                "see https://example.com" + U + "/alice/profile",
+                "x1a://h" + U + "/alice", "svn+ssh://h" + U + "/alice"):
             self.assertEqual(kinds(text), [], text)
 
 
@@ -223,6 +225,14 @@ class HostileInputTest(unittest.TestCase):
         }
         for label, text in cases.items():
             self.assertFast(text, label)
+
+    def test_many_url_tokens_on_one_line(self):
+        # each token's end is found without reading to the end of the line
+        for sep in (" ", "\t"):
+            text = ("a://h" + U + "/x" + sep) * (1600000 // 14)
+            start = time.monotonic()
+            self.assertEqual(memory_privacy.privacy_findings(text, home="/" + "srv/zed", hostname=HOST), [])
+            self.assertLess(time.monotonic() - start, 2.0, repr(sep))
 
 
 def _load_guard_rules():

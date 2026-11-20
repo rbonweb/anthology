@@ -73,6 +73,7 @@ _HOME_PATH = re.compile(r"/(?:Users|home)/([A-Za-z0-9._-]+)")
 _ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 _PATH_CHARS = frozenset(_ALNUM + "._~$@%+/-")  # characters of a path run before a home segment
 _SCHEME_CHARS = frozenset(_ALNUM + "+.-")
+_TOKEN_END = re.compile(r"[ \t]")
 _EMAIL = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"
                     r"(?![\w-])")
 _IPV4 = re.compile(r"(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d|\.\d)")
@@ -166,17 +167,26 @@ def _ipv4_kind(groups):
     return "ip-address"
 
 
+def _has_scheme(line, start, p):
+    """True if a scheme (`[A-Za-z][A-Za-z0-9+.-]*`) ends at `p`: a letter in the run of scheme
+    characters right before `p`, within the token. Runs before two `://` never overlap."""
+    k = p
+    while k > start and line[k - 1] in _SCHEME_CHARS:
+        k -= 1
+        if line[k].isalpha():
+            return True
+    return False
+
+
 def _first_url_end(line, start):
     """End of the first `scheme://h` (a host character right after `://`) in the whitespace-
-    delimited token that starts at `start`, or None. `file:///x` has no host, so it is not one."""
-    end = len(line)
-    for ws in (" ", "\t"):
-        k = line.find(ws, start)
-        if k >= 0:
-            end = min(end, k)
+    delimited token that starts at `start`, or None. `file:///x` has no host, so it is not one.
+    Reads the token only (never to the end of the line), so all tokens together stay linear."""
+    ws = _TOKEN_END.search(line, start)
+    end = ws.start() if ws else len(line)
     p = line.find("://", start, end)
     while p >= 0:
-        if p > start and line[p - 1] in _SCHEME_CHARS and p + 3 < end and line[p + 3] != "/":
+        if p + 3 < end and line[p + 3] != "/" and _has_scheme(line, start, p):
             return p + 4
         p = line.find("://", p + 1, end)
     return None
