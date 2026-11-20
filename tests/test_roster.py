@@ -82,7 +82,7 @@ class RosterTest(unittest.TestCase):
                 self.assertEqual(meta["model"], spec["model"])
                 self.assertEqual(meta["memory"], "project")
                 self.assertIsInstance(meta["description"], str)
-                self.assertIn("when", meta["description"].lower())
+                self.assertTrue(meta["description"].startswith("Use when "))
                 self.assertNotIn("\n", meta["description"].strip())
 
     def test_disallowed_tools(self):
@@ -162,14 +162,55 @@ class RosterTest(unittest.TestCase):
                     self.assertIn("uncommitted", memory)
                 else:
                     self.assertIn("heredoc", memory)
+                    self.assertIn(f"mkdir -p .claude/agent-memory/anthology-{name} && cat >",
+                                  memory)
 
-    def test_writers_commit_use_docker_and_never_add_worktrees(self):
+    def test_memory_notes_are_one_per_file_with_the_indexed_frontmatter(self):
+        # memory_sync regenerates MEMORY.md from each note's name, description, metadata.type.
+        for name in EXPECTED_ROSTER:
+            with self.subTest(agent=name):
+                _, body = self.agent(name)
+                memory = sections(body)[1]["Memory"]
+                self.assertIn("one note per file", memory)
+                self.assertIn("`<type>-<topic-slug>.md`", memory)
+                self.assertIn("`name`, `description` and `metadata.type`", memory)
+                self.assertIn("Never hand-edit MEMORY.md", memory)
+
+    def test_no_edit_agents_may_only_edit_their_memory_dir(self):
+        for name, spec in EXPECTED_ROSTER.items():
+            if spec["edits"] != "no":
+                continue
+            with self.subTest(agent=name):
+                meta, body = self.agent(name)
+                self.assertIn("Do not edit files outside your memory dir",
+                              sections(body)[1]["Don't"])
+                self.assertNotRegex(meta["description"], r"never edits files\b(?! outside)")
+                self.assertNotRegex(body, r"[Dd]o not edit files[.,]")
+
+    def test_every_agent_carries_the_docker_rule(self):
+        # Section 7.5 is global and the routing guide does not reach subagents (U7), so each
+        # body must say it, whether the agent builds, runs tests or serves a page.
+        for name in EXPECTED_ROSTER:
+            with self.subTest(agent=name):
+                _, body = self.agent(name)
+                self.assertIn("Docker: run tests, builds and E2E suites in containers mounting "
+                              "only the current worktree root", body)
+                self.assertIn("run from that root", body)
+                self.assertIn("No host installs", body)
+                self.assertIn("Docker unavailable: stop and ask", body)
+
+    def test_ui_agents_serve_pages_from_docker_with_a_published_port(self):
+        for name in ("ui-designer", "ui-reviewer"):
+            with self.subTest(agent=name):
+                _, body = self.agent(name)
+                self.assertIn("from Docker with a published port", body)
+
+    def test_writers_commit_and_never_add_worktrees(self):
         for name, spec in EXPECTED_ROSTER.items():
             if spec["edits"] != "yes":
                 continue
             with self.subTest(agent=name):
                 _, body = self.agent(name)
-                self.assertIn("Docker", body)
                 self.assertRegex(body, r"[Nn]ever `git worktree add`")
                 self.assertIn("Commit before finishing", body)
 

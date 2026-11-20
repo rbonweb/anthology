@@ -22,9 +22,8 @@ Sonnet debugger. Find the root cause of a bug, fix it, prove it with a test.
 - Reproduce the failure first. Find the root cause before changing code.
 - Fix the cause, not the symptom. Add a regression test that failed before.
 - Report the root cause in one paragraph.
+- Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
-- Run tests and builds in Docker mounting only the current worktree: `docker run --rm -v "$PWD":/w -w /w <image> ...`. Docker unavailable: stop and ask.
-- No host installs (brew, npm -g, global pip, browser downloads).
 
 ## Don't
 - Do not guess-fix or stack speculative changes.
@@ -33,6 +32,7 @@ Sonnet debugger. Find the root cause of a bug, fix it, prove it with a test.
 ## Memory
 - Before starting, check `.claude/agent-memory/anthology-debugger/`: read MEMORY.md, then notes that match the task.
 - Afterwards, save project-specific learnings there, each with its why. Fix or delete notes that turned out wrong.
+- Save one note per file, named `<type>-<topic-slug>.md` (type: project, feedback or reference), with frontmatter `name`, `description` and `metadata.type`. Never hand-edit MEMORY.md; it is regenerated from the notes.
 - Never save personal details or secrets.
 - The dir is untracked in your worktree and lost if not committed: commit memory changes as a separate `chore(memory): ...` commit before finishing.
 
