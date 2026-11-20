@@ -184,11 +184,53 @@ class EscapingSourceTest(LiveRootCase):
         os.symlink(str(outside), str(self.market / "plugins" / "anthology-guardrails"))
         self.assert_not_accepted("./plugins/anthology-guardrails")
 
-    def test_source_without_guard_py_or_of_the_wrong_type_is_refused(self):
-        (self.market / "plugins" / "anthology-guardrails").mkdir(parents=True)
-        self.assert_not_accepted("./plugins/anthology-guardrails")
+    def test_symlink_escape_is_not_undone_by_the_sibling_fallback(self):
+        # the in-place layout: <market>/plugins/anthology next to an escaping anthology-guardrails link
+        outside = self.copy_guardrails(self.tmp / "sym-outside")
+        plugins = self.market / "plugins"
+        (plugins / "anthology").mkdir(parents=True)
+        os.symlink(str(outside), str(plugins / "anthology-guardrails"))
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        self.directory_known()
+        self.manifest("./plugins/anthology-guardrails")
+        self.installed()
+        self.assertEqual(self.inspect(plugins / "anthology"), (self.cache, None))
+        os.remove(str(self.config / "plugins" / "known_marketplaces.json"))  # the plain sibling fallback
+        self.assertEqual(self.inspect(plugins / "anthology"), (self.cache, None))
+
+    def test_dev_session_does_not_follow_an_escaping_sibling_link(self):
+        outside = self.copy_guardrails(self.tmp / "sym-outside")
+        (self.tmp / "dev" / "anthology").mkdir(parents=True)
+        os.symlink(str(outside), str(self.tmp / "dev" / "anthology-guardrails"))
+        self.assertEqual(self.inspect(self.tmp / "dev" / "anthology"), (None, "not_found"))
+
+    def test_source_of_the_wrong_type_is_refused(self):
         for source in ({"source": "github", "repo": "a/b"}, 5, "", None):
             self.assert_not_accepted(source)
+
+
+class LiveMissingTest(LiveRootCase):
+    """A listed in-place folder without guard.py is what the hook runs: never the cache copy instead."""
+
+    def test_live_folder_without_guard_py_is_live_missing_not_the_cache(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "live_missing"))
+        self.assertEqual(self.inspect(self.market / "plugins" / "anthology"), (None, "live_missing"))
+
+    def test_live_folder_that_does_not_exist_is_live_missing(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "live_missing"))
+
+    def test_live_folder_with_guard_py_is_unaffected(self):
+        self.diverging()
+        self.assertEqual(self.inspect(), (self.live, None))
 
 
 class LoadRulesFollowTest(LiveRootCase):
@@ -221,6 +263,17 @@ class SelfTestFollowsTest(SessionCase, LiveRootCase):
         self.mark_setup()
         self.diverging(live_guard=EXIT_0, cache_guard=None)
         self.assertIn("did not block", self.go()["systemMessage"].lower())
+
+    def test_live_folder_without_guard_py_warns_and_never_runs_the_cache_copy(self):
+        self.mark_setup()
+        self.copy_guardrails(self.cache)  # the real guard: it would block and pass the self-test
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        msg = self.go()["systemMessage"]
+        self.assertIn("anthology-guardrails folder this session runs has no guard.py", msg)
+        self.assertIn("reinstall", msg)
 
     def test_github_marketplace_checks_the_cache_copy(self):
         self.mark_setup()

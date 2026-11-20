@@ -68,6 +68,9 @@ def _guard_selftest(env, root, cwd=None):
     if problem == "not_installed":
         return ("anthology: anthology-guardrails is not installed, so the browser and secret "
                 "guardrails are NOT active; install it (/plugin)")
+    if problem == "live_missing":
+        return ("anthology: the anthology-guardrails folder this session runs has no guard.py "
+                "\u2014 reinstall")
     if base is None:
         return ("anthology: the guardrails plugin was not found, so the browser and secret "
                 "guardrails are NOT active; reinstall anthology-guardrails")
