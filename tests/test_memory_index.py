@@ -503,6 +503,23 @@ class SaveCliTest(MemCase):
         self.assertFalse(self.anth.exists())
         self.assertEqual(list(self.data.iterdir()), [])
 
+    def test_a_scanner_exception_is_a_one_line_error_and_writes_nothing(self):
+        # m5: the privacy scan raising must not surface as a traceback
+        import contextlib
+        import io
+        err, before = io.StringIO(), snapshot(self.tmp)
+        argv = ["save", "--agent", "scout", "--type", "project", "--slug", "boom", "--name", "n",
+                "--description", "d", "--body", "b"]
+        with mock.patch.object(os, "getcwd", return_value=str(self.repo)), \
+                mock.patch.object(memory_sync, "privacy_findings", side_effect=RuntimeError("scanner exploded")), \
+                contextlib.redirect_stderr(err):
+            code = memory_index.main(argv)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+        self.assertIn("privacy scan failed", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertEqual(snapshot(self.tmp), before)
+
     def test_saves_to_the_repo_root_from_a_subfolder(self):
         sub = self.repo / "src" / "deep"
         sub.mkdir(parents=True)

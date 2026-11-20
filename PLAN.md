@@ -262,7 +262,7 @@ There are **two layers**:
 | G5 | MCP tools whose names contain `playwright`, `puppeteer`, `chrome-devtools`, or `claude-in-chrome` | — |
 | G6 | Secret-looking content written into `.claude/memory/` or `.claude/agent-memory/`, via `Write`/`Edit` **or** Bash redirection/`tee`. Patterns: `AKIA…`, `ghp_`/`github_pat_`, `sk-…`, `xox[bp]-`, `-----BEGIN … PRIVATE KEY-----`, `password\s*[:=]`, `api[_-]?key\s*[:=]` | — |
 
-- Command parsing strips `rtk` / `rtk bypass` / `rtk proxy` prefixes the same way as `sudo`, so `rtk npx playwright install` is still G1.
+- Command parsing peels wrappers off the same way for every program: `sudo`, `env`, `nohup`, `timeout`, `xargs` and similar; package runners (`npx`, `uvx`, `uv run`, `yarn dlx`); and `rtk`, including the commands it runs (`rtk run -c`, `rtk run --shell X`, `rtk err|test|summary`, `rtk bypass`, `rtk proxy`). So `rtk npx playwright install` is still G1. Shell `-c` scripts (bash, sh, zsh, dash, ksh, and fish with its own `-c`/`--command`/`-C` options) are parsed again, and inline code run by an interpreter (`python3 -c`, `node -e`, `osascript -e`, heredocs and here-strings) is scanned for G3.
 - When the guard blocks a call, the block wins over an rtk rewrite/allow (checked as U6).
 - Rules match **commands**, not arbitrary text. `grep playwright package.json`, `grep -r agent-browser .` and `git commit -m "drop playwright"` are allowed. Every block message points to BrowserOS Neo (or Docker, for test suites).
 
@@ -365,7 +365,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 **Approved repos only (trust boundary).**
 - Memory is active only in repos the user approved by running `/anthology:setup` inside them.
 - Approvals live in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo root path if there's no remote). So **re-cloning the same repo into any folder works automatically**.
-- In an unapproved repo, nothing is written and nothing is injected. If it contains `.claude/memory/`, the user gets one line: "this repo has anthology memory; run /anthology:setup to use it". A stranger's committed notes never load on their own.
+- In an unapproved repo, anthology writes nothing and injects nothing of the repo's `.claude/memory/`. If the repo contains `.claude/memory/` or `.claude/agent-memory/`, the user gets one line saying repo notes load only after setup and that agent notes still reach their agents. A stranger's committed repo notes never load into the main session on their own. Agent memory is the exception: Claude Code loads `.claude/agent-memory/anthology-<agent>/MEMORY.md` into that agent whatever the approval state, and the agent bodies treat it as hints (ADR-019).
 
 **`memory_sync.py`** (run by `session_start.py`; stdlib; never fails a session):
 - **Skip** if the folder isn't an approved git repo, or if auto memory is off (`autoMemoryEnabled: false` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY`).
@@ -381,9 +381,9 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - These lines are added once, when the repo is approved.
   - GitHub's web merge button ignores merge drivers, so a PR may still show an index conflict there. Keeping both sides' lines, or merging locally, is always correct, since the index is regenerated anyway.
 - **Note collisions:** two people editing the same note is a genuine conflict, resolved like code. Notes are named `<type>-<topic-slug>.md`, so accidental collisions are rare.
-- **Migration:** if the old path-keyed folder `~/.claude/projects/<encoded path>/memory/` has notes, they're copied once:
-  - `type: user` notes go to personal memory;
-  - the rest go to the repo;
+- **Migration:** if the old path-keyed folder `~/.claude/projects/<encoded path>/memory/` has notes, they're copied once, all into personal memory (ADR-020, the B3 privacy ruling); nothing goes into the repo on its own:
+  - `/anthology:setup` can promote chosen notes into the repo's memory, only if they are not `type: user` and the privacy scan passes;
+  - `type: user` notes already in a repo are moved out to personal memory at each session start;
   - nothing is ever overwritten.
 
 **SQLite graph and search index (`memory_index.py`, `bin/anthology-mem`):**
@@ -588,7 +588,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
     - import never overwrites.
 
     Tasks 12 and 16.
-12. **Memory trust boundary:** an unapproved repo is never modified and its notes are never injected. Task 12.
+12. **Memory trust boundary:** an unapproved repo is never modified and its repo notes are never injected into the main session (agent memory loads into its own agent regardless; ADR-019). Task 12.
 13. **Upgrade path:** with an older installed version of each plugin, a new release reaches the user: the guide updates, rtk reconciles, the memory index rebuilds, and `remove` leaves nothing behind. Tasks 13, 14 and 16.
 
 ---
@@ -828,8 +828,8 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - [ ] **Step 2: Implement `check`.**
   - **Normalize:** expand `~`/`$HOME`/`${HOME}`, convert `\` → `/`, and lowercase for path matching.
   - **Split** on `;`, `&&`, `||`, `|`, `&` and newlines, respecting quotes (`shlex`).
-  - **Strip prefixes:** `VAR=val`, `sudo`, `env`, `command`, `exec`, `time`, `nohup`, `rtk`, `rtk bypass`, `rtk proxy`.
-  - **Recurse** into `bash|sh|zsh -c`.
+  - **Strip prefixes:** `VAR=val`, the wrapper programs (`sudo`, `env`, `command`, `exec`, `time`, `nohup`, `timeout`, `xargs` and the like), package runners (`npx`, `uvx`, `uv run`), and `rtk` with the commands it runs (`rtk run`, `err`, `test`, `summary`, `bypass`, `proxy`).
+  - **Recurse** into `bash|sh|zsh|dash|ksh|fish -c` (fish has its own option parser), and scan inline interpreter code and the `script`/`code`/`expression`/`func`/`fn` fields of tool inputs for G3.
   - **Docker exemption:** only G1 and G2.
   - **G4:** scan every token.
   - **G3 roots:** the profile dirs and their parents.
@@ -976,7 +976,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
   - **Team merge:**
     - two branches each add a note: the merge succeeds with the union attributes and conflicts without them (the control);
     - after `regenerate_index`, both notes are listed exactly once.
-  - **Migrate:** `type: user` notes go to personal memory and others to the repo; nothing is ever overwritten.
+  - **Migrate:** every old note goes to personal memory and none into the repo on its own (B3, ADR-020); a note named for promotion goes to the repo only if it is not `type: user` and the privacy scan passes; nothing is ever overwritten.
   - **Index:**
     - `search` finds a term in a note body;
     - `related` follows links and typed relations to depth 2;

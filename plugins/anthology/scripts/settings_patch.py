@@ -15,8 +15,10 @@ Ops are JSON-serialisable dicts:
 never ours) and records what is needed to undo each one exactly: the containers it created,
 the raw text of an empty container it filled, and the previous value of a replaced key.
 `revert(text, planned_ops)` removes only those entries, in reverse order. Every diff shown to
-the user (and so to Claude) shows values only where setup makes its changes; every other value
-(`env`, tokens, hook commands, URLs, ...) reads `"<redacted>"`, in any layout. `ops_version(ops)` fingerprints the op set, so session start
+the user (and so to Claude) shows values only under `permissions.allow`, `permissions.deny` and
+`worktree.baseRef`, all of them, including the user's own rule strings (a token inside one of those
+rules is shown). Every other value (`env`, tokens, hook commands, URLs, ...) reads `"<redacted>"`,
+in any layout. `ops_version(ops)` fingerprints the op set, so session start
 can tell when a release changed it. Python stdlib only (3.9+).
 """
 from __future__ import annotations
