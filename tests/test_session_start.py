@@ -736,7 +736,7 @@ class GuardLocationTest(SessionCase):
 
     def test_registry_entry_wins_over_the_sibling_folder(self):
         root = self.cached_root()
-        guard = root.parent.parent / "anthology-guardrails"  # a sibling that would NOT block
+        guard = root.parent / "anthology-guardrails"  # a sibling that would NOT block
         (guard / "scripts").mkdir(parents=True)
         (guard / "scripts" / "guard.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
         self.mark_setup(root)

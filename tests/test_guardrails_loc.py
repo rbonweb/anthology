@@ -114,14 +114,17 @@ class FallbackTest(LiveRootCase):
             write(self.config / "plugins" / "known_marketplaces.json", text)
             self.assertEqual(self.inspect(root), (sibling, None), text)
 
-    def test_missing_or_garbage_marketplace_json_falls_back(self):
+    def test_directory_marketplace_with_an_unusable_manifest_is_a_problem_not_the_sibling(self):
         root, sibling = self.sibling_case()
         self.directory_known()
-        self.assertEqual(self.inspect(root), (sibling, None))  # no marketplace.json
+        # a directory marketplace never runs the cache copy: an unusable manifest is a problem, not a fallback
+        self.assertEqual(self.inspect(root), (None, "live_missing"))  # no marketplace.json
         write(self.market / ".claude-plugin" / "marketplace.json", "{broken")
-        self.assertEqual(self.inspect(root), (sibling, None))
+        self.assertEqual(self.inspect(root), (None, "live_missing"))
         write(self.market / ".claude-plugin" / "marketplace.json", '{"plugins": "x"}')
-        self.assertEqual(self.inspect(root), (sibling, None))
+        self.assertEqual(self.inspect(root), (None, "live_missing"))
+        write(self.market / ".claude-plugin" / "marketplace.json", '{"plugins": []}')  # not listed
+        self.assertEqual(self.inspect(root), (None, "live_missing"))
 
     def test_plugin_root_inside_the_cache_uses_install_path(self):
         self.copy_guardrails(self.cache, guard=EXIT_0)
@@ -163,9 +166,8 @@ class EscapingSourceTest(LiveRootCase):
         self.directory_known()
         self.manifest(source)
         self.installed()
-        found, problem = self.inspect(self.tmp / "lone" / "anthology")
-        self.assertIsNone(problem)
-        self.assertEqual(found, self.cache, source)
+        # the cache copy is never what a directory marketplace runs: a refused source is a problem
+        self.assertEqual(self.inspect(self.tmp / "lone" / "anthology"), (None, "live_missing"), source)
 
     def test_parent_escape_is_refused(self):
         # a real guard.py sits at each escape target, so only the containment check can refuse it
@@ -184,11 +186,93 @@ class EscapingSourceTest(LiveRootCase):
         os.symlink(str(outside), str(self.market / "plugins" / "anthology-guardrails"))
         self.assert_not_accepted("./plugins/anthology-guardrails")
 
-    def test_source_without_guard_py_or_of_the_wrong_type_is_refused(self):
-        (self.market / "plugins" / "anthology-guardrails").mkdir(parents=True)
-        self.assert_not_accepted("./plugins/anthology-guardrails")
+    def test_symlink_escape_is_not_undone_by_the_sibling_fallback(self):
+        # the in-place layout: <market>/plugins/anthology next to an escaping anthology-guardrails link
+        outside = self.copy_guardrails(self.tmp / "sym-outside")
+        plugins = self.market / "plugins"
+        (plugins / "anthology").mkdir(parents=True)
+        os.symlink(str(outside), str(plugins / "anthology-guardrails"))
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        self.directory_known()
+        self.manifest("./plugins/anthology-guardrails")
+        self.installed()
+        self.assertEqual(self.inspect(plugins / "anthology"), (None, "live_missing"))
+        os.remove(str(self.config / "plugins" / "known_marketplaces.json"))  # the plain sibling fallback
+        self.assertEqual(self.inspect(plugins / "anthology"), (self.cache, None))
+
+    def test_sibling_link_to_the_folder_itself_is_refused(self):
+        # <plugins>/anthology-guardrails -> <plugins>, which itself has scripts/guard.py
+        plugins = self.tmp / "dev"
+        (plugins / "anthology").mkdir(parents=True)
+        write(plugins / "scripts" / "guard.py", EXIT_0)
+        os.symlink(str(plugins), str(plugins / "anthology-guardrails"))
+        self.assertEqual(self.inspect(plugins / "anthology"), (None, "not_found"))
+
+    def test_dev_session_does_not_follow_an_escaping_sibling_link(self):
+        outside = self.copy_guardrails(self.tmp / "sym-outside")
+        (self.tmp / "dev" / "anthology").mkdir(parents=True)
+        os.symlink(str(outside), str(self.tmp / "dev" / "anthology-guardrails"))
+        self.assertEqual(self.inspect(self.tmp / "dev" / "anthology"), (None, "not_found"))
+
+    def test_source_of_the_wrong_type_is_refused(self):
         for source in ({"source": "github", "repo": "a/b"}, 5, "", None):
             self.assert_not_accepted(source)
+
+
+class LiveMissingTest(LiveRootCase):
+    """A listed in-place folder without guard.py is what the hook runs: never the cache copy instead."""
+
+    def test_live_folder_without_guard_py_is_live_missing_not_the_cache(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "live_missing"))
+        self.assertEqual(self.inspect(self.market / "plugins" / "anthology"), (None, "live_missing"))
+
+    def test_live_folder_that_does_not_exist_is_live_missing(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "live_missing"))
+
+    def test_disabled_takes_priority_over_live_missing(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        write(self.config / "settings.json",
+              json.dumps({"enabledPlugins": {"anthology-guardrails@anthology": False}}))
+        self.assertEqual(self.inspect(), (None, "disabled"))
+
+    def test_unlisted_plugin_and_missing_manifest_are_live_missing(self):
+        self.copy_guardrails(self.cache, guard=EXIT_0)
+        self.directory_known()
+        self.installed()
+        self.assertEqual(self.inspect(), (None, "live_missing"))  # no marketplace.json
+        write(self.market / ".claude-plugin" / "marketplace.json", json.dumps({
+            "name": "anthology", "plugins": [{"name": "other", "source": "./plugins/other"}]}))
+        self.assertEqual(self.inspect(), (None, "live_missing"))
+
+    def test_load_rules_and_setup_never_take_rules_from_the_cache(self):
+        import settings_patch
+        self.copy_guardrails(self.cache, marker="cache-marker")
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        env = {"CLAUDE_CONFIG_DIR": str(self.config)}
+        with self.assertRaises(FileNotFoundError):
+            guardrails_loc.load_rules(PLUGIN, env, str(self.tmp))
+        with self.assertRaises(FileNotFoundError):
+            settings_patch.setup_ops(PLUGIN, env=env)
+
+    def test_live_folder_with_guard_py_is_unaffected(self):
+        self.diverging()
+        self.assertEqual(self.inspect(), (self.live, None))
 
 
 class LoadRulesFollowTest(LiveRootCase):
@@ -221,6 +305,19 @@ class SelfTestFollowsTest(SessionCase, LiveRootCase):
         self.mark_setup()
         self.diverging(live_guard=EXIT_0, cache_guard=None)
         self.assertIn("did not block", self.go()["systemMessage"].lower())
+
+    def test_live_folder_without_guard_py_warns_and_never_runs_the_cache_copy(self):
+        self.mark_setup()
+        self.copy_guardrails(self.cache)  # the real guard: it would block and pass the self-test
+        (self.live / "scripts").mkdir(parents=True)
+        self.manifest()
+        self.directory_known()
+        self.installed()
+        msg = self.go()["systemMessage"]
+        self.assertIn("anthology-guardrails folder this session runs has no guard.py", msg)
+        self.assertIn("guardrails may be OFF", msg)
+        self.assertRegex(msg, r"reinstall or repair")
+        self.assertLess(len(msg), 400)
 
     def test_github_marketplace_checks_the_cache_copy(self):
         self.mark_setup()
