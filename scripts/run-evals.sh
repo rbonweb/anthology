@@ -6,7 +6,7 @@ set -eu
 usage() {
   cat <<'USAGE'
 Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB] [--tag TAG]
-                            [--no-smoke] [-h]
+                            [--no-smoke] [--smoke-budget-usd USD] [-h]
 
   --max-cost-usd USD  hard cost ceiling for the run (default 20); a run that hits it is
                       partial and fails the comparison
@@ -14,13 +14,18 @@ Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB]
   --ci                also write $OUT/candidate-baseline.json when no baseline exists
   --case GLOB         run only the cases whose name matches GLOB (passed through)
   --tag TAG           run only the cases carrying TAG (passed through)
-  --no-smoke          accepted and ignored for now (the smoke cases are added separately)
+  --no-smoke          skip the smoke cases (evals/smoke/smoke.py) that run after the evals
+  --smoke-budget-usd USD
+                      --max-budget-usd for each `claude -p` the smokes run (default 1.00)
   -h, --help          this text
 
 With --case or --tag only part of the suite runs, so the comparison uses --allow-missing and
 --record is refused. The Claude binary is $CLAUDE_BIN, else ci/claude-code/node_modules/.bin/claude
 when it is executable, else `claude` on PATH. Results go to evals/results/<UTC timestamp>/.
-Exit status: the comparison's (0 pass, 1 regression, 2 invalid or partial result, 3 no baseline).
+The smoke cases run after the comparison, with the same Claude binary and results in
+$OUT/smoke.json. They are skipped with --no-smoke and (with a message) with --case or --tag.
+Exit status: the comparison's when it is non-zero (1 regression, 2 invalid or partial result,
+3 no baseline); else 4 if any smoke failed; else 0. A smoke that SKIPs (no credentials) is not a failure.
 USAGE
 }
 
@@ -31,6 +36,8 @@ RECORD=0
 CI=0
 CASE=""
 TAG=""
+SMOKE=1
+SMOKE_BUDGET=1.00
 while [ $# -gt 0 ]; do
   case "$1" in
     --max-cost-usd)
@@ -50,7 +57,12 @@ while [ $# -gt 0 ]; do
       TAG=$2
       shift
       ;;
-    --no-smoke) ;;
+    --no-smoke) SMOKE=0 ;;
+    --smoke-budget-usd)
+      [ $# -ge 2 ] || die "--smoke-budget-usd needs a value"
+      SMOKE_BUDGET=$2
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "run-evals: unknown option $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -60,6 +72,10 @@ done
 # A plain decimal number: digits with at most one dot, and at least one digit.
 case "$MAX" in
   ''|*[!0-9.]*|*.*.*|.) die "--max-cost-usd must be a decimal number, got: $MAX" ;;
+esac
+
+case "$SMOKE_BUDGET" in
+  ''|*[!0-9.]*|*.*.*|.) die "--smoke-budget-usd must be a decimal number, got: $SMOKE_BUDGET" ;;
 esac
 
 FILTERED=0
@@ -147,8 +163,28 @@ else
   fi
 fi
 
+# The U1-U9 smoke cases (no-model and multi-session checks the eval harness cannot express).
+SMOKE_FAILED=0
+if [ "$SMOKE" = 0 ]; then
+  echo "run-evals: smoke cases skipped (--no-smoke)"
+elif [ "$FILTERED" = 1 ]; then
+  echo "run-evals: smoke cases skipped: --case/--tag runs only part of the suite"
+else
+  set +e
+  "$PYTHON" evals/smoke/smoke.py --claude "$CLAUDE" --budget-usd "$SMOKE_BUDGET" --out "$OUT/smoke.json"
+  SMOKE_STATUS=$?
+  set -e
+  if [ "$SMOKE_STATUS" != 0 ]; then
+    SMOKE_FAILED=1
+    echo "run-evals: a smoke case failed (status $SMOKE_STATUS); see $OUT/smoke.json" >&2
+  fi
+fi
+
 # A plugin run that failed for another reason must not pass quietly.
 if [ "$CODE" = 0 ] && [ "$EVAL_STATUS" != 0 ] && [ "$EVAL_STATUS" != 2 ]; then
   exit "$EVAL_STATUS"
+fi
+if [ "$CODE" = 0 ] && [ "$SMOKE_FAILED" = 1 ]; then
+  exit 4
 fi
 exit "$CODE"
