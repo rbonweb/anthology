@@ -33,40 +33,9 @@ use cmds::system::{
 
 use anyhow::{Context, Result};
 use clap::error::ErrorKind;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-
-/// Target agent for hook installation.
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum AgentTarget {
-    /// Claude Code (default)
-    Claude,
-    /// Cursor Agent (editor and CLI)
-    Cursor,
-    /// Trae IDE
-    Trae,
-    /// Windsurf IDE (Cascade)
-    Windsurf,
-    /// Cline / Roo Code (VS Code)
-    Cline,
-    /// Kilo Code
-    Kilocode,
-    /// Google Antigravity
-    Antigravity,
-    /// Kimi AI
-    Kimi,
-    /// Pi coding agent
-    Pi,
-    /// Hermes CLI
-    Hermes,
-    /// Factory Droid CLI
-    Droid,
-    /// Mistral Vibe CLI
-    Vibe,
-    /// Oh My Pi (OMP)
-    Omp,
-}
 
 #[cfg(feature = "engine")]
 pub(crate) fn cli_subcommand_names() -> &'static [String] {
@@ -487,18 +456,6 @@ enum Commands {
         #[arg(short, long)]
         global: bool,
 
-        /// Install OpenCode plugin (in addition to Claude Code)
-        #[arg(long)]
-        opencode: bool,
-
-        /// Initialize for Gemini CLI instead of Claude Code
-        #[arg(long)]
-        gemini: bool,
-
-        /// Target agent to install hooks for (default: claude)
-        #[arg(long, value_enum)]
-        agent: Option<AgentTarget>,
-
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -531,13 +488,6 @@ enum Commands {
         #[arg(long)]
         uninstall: bool,
 
-        /// Target Codex CLI (uses PreToolUse hook + AGENTS.md + RTK.md)
-        #[arg(long)]
-        codex: bool,
-
-        /// Install GitHub Copilot integration (VS Code + CLI)
-        #[arg(long)]
-        copilot: bool,
         /// Preview changes without writing any files (combine with -v to show content)
         #[arg(long = "dry-run", conflicts_with = "show")]
         dry_run: bool,
@@ -766,12 +716,6 @@ enum Commands {
 
     /// Show RTK adoption across Claude Code sessions
     Session {},
-
-    /// Manage telemetry consent and data (RGPD/GDPR)
-    Telemetry {
-        #[command(subcommand)]
-        command: core::telemetry_cmd::TelemetrySubcommand,
-    },
 
     /// Transparent LLM proxy: run rtk-proxy and point AI agents at it
     LlmProxy {
@@ -1108,7 +1052,7 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Hook processors for LLM CLI tools (Gemini CLI, Copilot, etc.)
+    /// Hook processor for Claude Code, and `hook check`
     Hook {
         #[command(subcommand)]
         command: HookCommands,
@@ -1283,32 +1227,6 @@ enum TasksCommands {
 enum HookCommands {
     /// Process Claude Code PreToolUse hook (reads JSON from stdin)
     Claude,
-    /// Process Trae PreToolUse hook (reads JSON from stdin)
-    Trae,
-    /// Process Codex CLI PreToolUse hook (reads JSON from stdin)
-    Codex,
-    /// Process Cursor Agent hook (reads JSON from stdin)
-    Cursor,
-    /// Process Gemini CLI BeforeTool hook (reads JSON from stdin)
-    Gemini,
-    /// Process Copilot preToolUse hook (VS Code + Copilot CLI, reads JSON from stdin)
-    Copilot,
-    /// Process Factory Droid PreToolUse hook (reads JSON from stdin)
-    Droid,
-    /// Process Google Antigravity PreToolUse hook (reads JSON from stdin)
-    Antigravity,
-    /// Process Mistral Vibe CLI pre_tool hook (reads JSON from stdin)
-    Vibe,
-    /// Answer for OpenCode's plugin: the rewrite as JSON, or `{}` when
-    /// rewriting would change what OpenCode's own permission rules decide
-    Opencode {
-        /// Active OpenCode agent, when its rules scope permissions by one
-        #[arg(long)]
-        agent: Option<String>,
-        /// Raw command to judge and rewrite
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// Check how a command would be rewritten by the hook engine (dry-run)
     Check {
         /// Target agent
@@ -2349,53 +2267,6 @@ pub fn entry() -> i32 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn uninstall_init_dispatch<UninstallHermes, UninstallStandard>(
-    agent: Option<AgentTarget>,
-    global: bool,
-    gemini: bool,
-    codex: bool,
-    patch_mode: hooks::init::PatchMode,
-    ctx: hooks::init::InitContext,
-    uninstall_hermes: UninstallHermes,
-    uninstall_standard: UninstallStandard,
-) -> Result<i32>
-where
-    UninstallHermes: FnOnce(hooks::init::InitContext) -> Result<()>,
-    UninstallStandard: FnOnce(
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        hooks::init::PatchMode,
-        hooks::init::InitContext,
-    ) -> Result<i32>,
-{
-    if agent == Some(AgentTarget::Hermes) {
-        uninstall_hermes(ctx)?;
-        Ok(0)
-    } else if agent == Some(AgentTarget::Trae) {
-        hooks::init::uninstall_trae_mode(global, ctx)?;
-        Ok(0)
-    } else if agent == Some(AgentTarget::Antigravity) {
-        hooks::init::uninstall_antigravity_mode(global, ctx)?;
-        Ok(0)
-    } else if agent == Some(AgentTarget::Droid) {
-        hooks::init::uninstall_droid(global, ctx)?;
-        Ok(0)
-    } else if agent == Some(AgentTarget::Vibe) {
-        hooks::init::uninstall_vibe(ctx)?;
-        Ok(0)
-    } else {
-        let cursor = agent == Some(AgentTarget::Cursor);
-        let pi = agent == Some(AgentTarget::Pi);
-        let omp = agent == Some(AgentTarget::Omp);
-        uninstall_standard(global, gemini, codex, cursor, pi, omp, patch_mode, ctx)
-    }
-}
-
 fn is_native_test_expression(command: &[String]) -> bool {
     match command.first().map(String::as_str) {
         // `!` and `(` are shell syntax too, so they only mark a native
@@ -2494,27 +2365,8 @@ fn require_single_script(subcommand: &str, shell: Option<&str>, command: &[Strin
         .exit();
 }
 
-/// Whether this invocation runs the daily telemetry ping. A parsed
-/// `rtk hook …` command does not: the hook processors run before every
-/// command an agent runs. Anything clap rejects (help, version, a
-/// passthrough command) still runs it.
-fn pings_telemetry(parsed: &Result<Cli, clap::Error>) -> bool {
-    !matches!(
-        parsed,
-        Ok(Cli {
-            command: Commands::Hook { .. },
-            ..
-        })
-    )
-}
-
 fn run_cli() -> Result<i32> {
     let parsed = try_parse_cli_from(std::env::args_os());
-
-    // Fire-and-forget telemetry ping (1/day, non-blocking)
-    if pings_telemetry(&parsed) {
-        core::telemetry::maybe_ping();
-    }
 
     let cli = match parsed {
         Ok(cli) => cli,
@@ -3010,9 +2862,6 @@ fn run_cli() -> Result<i32> {
 
         Commands::Init {
             global,
-            opencode,
-            gemini,
-            agent,
             show,
             claude_md,
             hook_only,
@@ -3021,8 +2870,6 @@ fn run_cli() -> Result<i32> {
             trust_filters,
             no_trust_filters,
             uninstall,
-            codex,
-            copilot,
             dry_run,
         } => {
             let ctx = hooks::init::InitContext {
@@ -3042,80 +2889,13 @@ fn run_cli() -> Result<i32> {
                 hooks::init::PatchMode::Ask
             };
             if show {
-                hooks::init::show_config(codex, agent == Some(AgentTarget::Omp))?;
-            } else if uninstall && copilot {
-                if global {
-                    hooks::init::uninstall_copilot_global(ctx)?;
-                } else {
-                    hooks::init::uninstall_copilot(ctx)?;
-                }
+                hooks::init::show_config()?;
             } else if uninstall {
-                return uninstall_init_dispatch(
-                    agent,
-                    global,
-                    gemini,
-                    codex,
-                    patch_mode,
-                    ctx,
-                    hooks::init::uninstall_hermes,
-                    hooks::init::uninstall_with_patch_mode,
+                return hooks::init::uninstall_with_patch_mode(
+                    global, false, false, false, false, false, patch_mode, ctx,
                 );
-            } else if gemini {
-                hooks::init::run_gemini(global, hook_only, patch_mode, ctx)?;
-            } else if copilot {
-                if global {
-                    hooks::init::run_copilot_global(ctx)?;
-                } else {
-                    hooks::init::run_copilot(ctx)?;
-                }
-            } else if agent == Some(AgentTarget::Pi) {
-                hooks::init::run_pi_mode_with_patch_mode(global, patch_mode, ctx)?
-            } else if agent == Some(AgentTarget::Trae) {
-                hooks::init::run_trae_mode(global, ctx)?
-            } else if agent == Some(AgentTarget::Omp) {
-                hooks::init::run_omp_mode_with_patch_mode(global, patch_mode, ctx)?
-            } else if agent == Some(AgentTarget::Kilocode) {
-                if global {
-                    anyhow::bail!("Kilo Code is project-scoped. Use: rtk init --agent kilocode");
-                }
-                hooks::init::run_kilocode_mode(ctx)?;
-            } else if agent == Some(AgentTarget::Antigravity) {
-                hooks::init::run_antigravity_mode(global, ctx)?;
-            } else if agent == Some(AgentTarget::Kimi) {
-                if global {
-                    anyhow::bail!("Kimi AI is project-scoped. Use: rtk init --agent kimi");
-                }
-                hooks::init::run_kimi_mode(ctx)?;
-            } else if agent == Some(AgentTarget::Hermes) {
-                hooks::init::run_hermes_mode(ctx)?;
-            } else if agent == Some(AgentTarget::Droid) {
-                hooks::init::run_droid_mode(global, ctx)?;
-            } else if agent == Some(AgentTarget::Vibe) {
-                hooks::init::run_vibe_mode(global, hook_only, patch_mode, ctx)?;
             } else {
-                let install_opencode = opencode;
-                let install_cursor = agent == Some(AgentTarget::Cursor);
-                let install_windsurf = agent == Some(AgentTarget::Windsurf);
-                let install_cline = agent == Some(AgentTarget::Cline);
-                // Sibling agents (Cursor, Windsurf, Cline) fall through to this
-                // shared init path; only the default (no --agent) or an explicit
-                // Claude target should install Claude Code files. Without this
-                // guard, `rtk init -g --agent cursor` writes into ~/.claude (#2097).
-                let install_claude = !install_cursor && !install_windsurf && !install_cline;
-
-                hooks::init::run(
-                    global,
-                    install_claude,
-                    install_opencode,
-                    install_cursor,
-                    install_windsurf,
-                    install_cline,
-                    claude_md,
-                    hook_only,
-                    codex,
-                    patch_mode,
-                    ctx,
-                )?;
+                hooks::init::run(global, claude_md, hook_only, patch_mode, ctx)?;
                 let filter_trust = if trust_filters {
                     hooks::init::FilterTrust::Trust
                 } else if no_trust_filters || auto_patch {
@@ -3475,11 +3255,6 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Telemetry { command } => {
-            core::telemetry_cmd::run(&command)?;
-            0
-        }
-
         Commands::LlmProxy { command } => {
             llm_proxy::run(&command)?;
             0
@@ -3643,42 +3418,6 @@ fn run_cli() -> Result<i32> {
         Commands::Hook { command } => match command {
             HookCommands::Claude => {
                 hooks::hook_cmd::run_claude()?;
-                0
-            }
-            HookCommands::Trae => {
-                hooks::hook_cmd::run_trae()?;
-                0
-            }
-            HookCommands::Codex => {
-                hooks::hook_cmd::run_codex()?;
-                0
-            }
-            HookCommands::Cursor => {
-                hooks::hook_cmd::run_cursor()?;
-                0
-            }
-            HookCommands::Gemini => {
-                hooks::hook_cmd::run_gemini()?;
-                0
-            }
-            HookCommands::Copilot => {
-                hooks::hook_cmd::run_copilot()?;
-                0
-            }
-            HookCommands::Droid => {
-                hooks::hook_cmd::run_droid()?;
-                0
-            }
-            HookCommands::Antigravity => {
-                hooks::hook_cmd::run_antigravity()?;
-                0
-            }
-            HookCommands::Vibe => {
-                hooks::hook_cmd::run_vibe()?;
-                0
-            }
-            HookCommands::Opencode { agent, args } => {
-                hooks::hook_cmd::run_opencode(&args.join(" "), agent.as_deref())?;
                 0
             }
             HookCommands::Check { agent, command } => {
@@ -4104,7 +3843,6 @@ fn is_operational_command(cmd: &Commands) -> bool {
 mod tests {
     use super::*;
     use crate::core::test_isolation;
-    use std::cell::Cell;
 
     #[test]
     fn test_cargo_cli_preserves_global_options_and_separators() {
@@ -4350,31 +4088,6 @@ mod tests {
     }
 
     #[test]
-    fn test_try_parse_init_agent_hermes() {
-        let cli = try_parse_cli_from(["rtk", "init", "--agent", "hermes"]).unwrap();
-        match cli.command {
-            Commands::Init { agent, .. } => {
-                assert_eq!(agent, Some(AgentTarget::Hermes));
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_init_agent_trae_and_uninstall() {
-        let cli = try_parse_cli_from(["rtk", "init", "--agent", "trae", "--uninstall"]).unwrap();
-        match cli.command {
-            Commands::Init {
-                agent, uninstall, ..
-            } => {
-                assert_eq!(agent, Some(AgentTarget::Trae));
-                assert!(uninstall);
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
     fn test_try_parse_kubectl_get_alias() {
         let cli = try_parse_cli_from(["rtk", "kubectl", "get", "pods", "-n", "default"]).unwrap();
 
@@ -4426,115 +4139,6 @@ mod tests {
             }
             _ => panic!("Expected Grep command"),
         }
-    }
-
-    #[test]
-    fn test_try_parse_init_agent_hermes_uninstall() {
-        let cli = try_parse_cli_from(["rtk", "init", "--agent", "hermes", "--uninstall"]).unwrap();
-        match cli.command {
-            Commands::Init {
-                agent, uninstall, ..
-            } => {
-                assert_eq!(agent, Some(AgentTarget::Hermes));
-                assert!(uninstall);
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
-    fn test_init_uninstall_dispatch_routes_hermes_to_hermes_cleanup() {
-        let hermes_called = Cell::new(false);
-        let standard_called = Cell::new(false);
-        let ctx = hooks::init::InitContext {
-            verbose: 2,
-            dry_run: true,
-            ..Default::default()
-        };
-
-        let result = uninstall_init_dispatch(
-            Some(AgentTarget::Hermes),
-            true,
-            false,
-            false,
-            hooks::init::PatchMode::Ask,
-            ctx,
-            |ctx| {
-                hermes_called.set(true);
-                assert_eq!(ctx.verbose, 2);
-                assert!(ctx.dry_run);
-                Ok(())
-            },
-            |_, _, _, _, _, _, _, _| {
-                standard_called.set(true);
-                Ok(0)
-            },
-        );
-
-        assert!(result.is_ok());
-        assert!(hermes_called.get());
-        assert!(!standard_called.get());
-    }
-
-    #[test]
-    fn test_try_parse_init_agent_omp() {
-        let cli = try_parse_cli_from(["rtk", "init", "--agent", "omp"]).unwrap();
-        match cli.command {
-            Commands::Init { agent, .. } => {
-                assert_eq!(agent, Some(AgentTarget::Omp));
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_init_agent_omp_uninstall() {
-        let cli = try_parse_cli_from(["rtk", "init", "--uninstall", "--agent", "omp", "--global"])
-            .unwrap();
-        match cli.command {
-            Commands::Init {
-                uninstall,
-                agent,
-                global,
-                ..
-            } => {
-                assert!(uninstall);
-                assert_eq!(agent, Some(AgentTarget::Omp));
-                assert!(global);
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
-    fn test_init_uninstall_dispatch_routes_omp_to_standard_cleanup() {
-        let hermes_called = Cell::new(false);
-        let standard_called = Cell::new(false);
-        let ctx = hooks::init::InitContext::default();
-
-        let result = uninstall_init_dispatch(
-            Some(AgentTarget::Omp),
-            true,
-            false,
-            false,
-            hooks::init::PatchMode::Auto,
-            ctx,
-            |_c| {
-                hermes_called.set(true);
-                Ok(())
-            },
-            |global, _, _, _, _, omp, patch_mode, _| {
-                standard_called.set(true);
-                assert!(global);
-                assert!(omp);
-                assert_eq!(patch_mode, hooks::init::PatchMode::Auto);
-                Ok(0)
-            },
-        );
-
-        assert!(result.is_ok());
-        assert!(!hermes_called.get());
-        assert!(standard_called.get());
     }
 
     #[test]
@@ -5251,52 +4855,6 @@ mod tests {
     }
 
     #[test]
-    fn hook_commands_skip_the_telemetry_ping() {
-        for args in [&["rtk", "hook", "claude"][..], &["rtk", "hook", "codex"]] {
-            assert!(
-                !pings_telemetry(&try_parse_cli_from(args)),
-                "{args:?} must not ping"
-            );
-        }
-    }
-
-    #[test]
-    fn other_invocations_still_run_the_ping() {
-        for args in [
-            &["rtk", "ls"][..],
-            &["rtk", "gain"],
-            &["rtk", "--help"],
-            &["rtk", "--version"],
-            // Rejected by clap: an unknown command runs through the fallback,
-            // and a hook with a bad flag never reaches the hook processor.
-            &["rtk", "uname", "-s"],
-            &["rtk", "hook", "claude", "--bogus"],
-        ] {
-            assert!(
-                pings_telemetry(&try_parse_cli_from(args)),
-                "{args:?} must ping"
-            );
-        }
-    }
-
-    #[test]
-    fn test_hook_trae_parses() {
-        let cli = try_parse_cli_from(["rtk", "hook", "trae"]);
-        assert!(cli.is_ok());
-    }
-
-    #[test]
-    fn test_hook_codex_parses() {
-        let cli = try_parse_cli_from(["rtk", "hook", "codex"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Hook {
-                command: HookCommands::Codex
-            }
-        ));
-    }
-
-    #[test]
     fn test_hook_check_parses() {
         let cli = try_parse_cli_from(["rtk", "hook", "check", "git", "status"]).unwrap();
         match cli.command {
@@ -5800,40 +5358,6 @@ mod tests {
         // --pi has been removed; --agent pi is the canonical form
         let result = try_parse_cli_from(["rtk", "init", "--pi"]);
         assert!(result.is_err(), "--pi must be rejected as unknown argument");
-    }
-
-    #[test]
-    fn test_init_agent_pi_parses() {
-        let cli = try_parse_cli_from(["rtk", "init", "--agent", "pi"]).unwrap();
-        match cli.command {
-            Commands::Init { agent, .. } => {
-                assert_eq!(
-                    agent,
-                    Some(AgentTarget::Pi),
-                    "--agent pi must set Pi variant"
-                );
-            }
-            _ => panic!("Expected Init command"),
-        }
-    }
-
-    #[test]
-    fn test_init_uninstall_agent_pi_parses() {
-        let cli = try_parse_cli_from(["rtk", "init", "--uninstall", "--agent", "pi", "--global"])
-            .unwrap();
-        match cli.command {
-            Commands::Init {
-                uninstall,
-                agent,
-                global,
-                ..
-            } => {
-                assert!(uninstall);
-                assert_eq!(agent, Some(AgentTarget::Pi));
-                assert!(global);
-            }
-            _ => panic!("Expected Init command"),
-        }
     }
 
     // --- grep argument routing (clap layer) ---

@@ -1088,37 +1088,6 @@ mod tests {
         );
     }
 
-    /// Every install target `rtk` supports must resolve, or `rtk hook check`
-    /// rejects an agent the user really installed. Derived from `AgentTarget`
-    /// so a new variant fails here instead of silently going unanswerable.
-    #[test]
-    fn agent_path_covers_every_install_target() {
-        use clap::ValueEnum;
-
-        for variant in crate::AgentTarget::value_variants() {
-            let name = variant
-                .to_possible_value()
-                .expect("AgentTarget variant is not skipped")
-                .get_name()
-                .to_string();
-            assert!(
-                AgentPath::lookup(&name).is_some(),
-                "unmapped AgentTarget: {name}"
-            );
-            assert!(
-                AgentPath::AGENTS.contains(&name.as_str()),
-                "AgentTarget missing from the error message: {name}"
-            );
-        }
-
-        // Install targets reached by a flag rather than an `AgentTarget`
-        // variant, so the loop above cannot see them.
-        for name in ["codex", "copilot", "gemini", "openclaw", "opencode"] {
-            assert!(AgentPath::lookup(name).is_some(), "unmapped: {name}");
-            assert!(AgentPath::AGENTS.contains(&name), "not listed: {name}");
-        }
-    }
-
     /// OpenCode decides in-process against its own rules. On `ViaRewrite` the
     /// plugin and `rtk hook check --agent opencode` would silently drift back
     /// to judging against Claude Code's settings (#4195).

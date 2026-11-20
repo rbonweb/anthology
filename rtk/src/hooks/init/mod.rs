@@ -3,7 +3,7 @@
 //! `run` dispatches on the target agent; each agent's install and uninstall live in its own
 //! submodule, and the helpers shared between them stay here.
 use crate::hooks::constants::{
-    CLAUDE_DIR, CLAUDE_HOOK_COMMAND, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE,
+    CLAUDE_DIR, CLAUDE_HOOK_COMMAND, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE,
     SETTINGS_JSON,
 };
 use anyhow::{Context, Result};
@@ -23,51 +23,17 @@ use crate::core::test_isolation;
 use crate::core::user_dirs;
 
 mod agents_md;
-pub(crate) mod antigravity;
 pub(crate) mod claude;
-pub(crate) mod codex;
-mod copilot;
-pub(crate) mod cursor;
-pub(crate) mod droid;
-pub(crate) mod gemini;
-pub(crate) mod hermes;
-mod instructions_agents;
-pub(crate) mod opencode;
-pub(crate) mod pi;
-pub(crate) mod trae;
-pub(crate) mod vibe;
 
-// `agents_md` and `pi` hold helpers that several submodules share, so they are
-// glob-imported and reach siblings through `use super::*`; the remaining submodules are
-// imported by name here (and agent modules with hook probes are `pub(crate)` for `hook_check`).
+// anthology rtk-trim: Claude Code is the only init target. `agents_md` holds the
+// marker-block helpers claude.rs reaches through `use super::*`.
 use agents_md::*;
 use claude::{
     hook_already_present, hook_gaps, remove_settings_entries, run_claude_md_mode, run_default_mode,
     run_hook_only_mode,
 };
-pub use codex::UninstallCodexOutcome;
-use codex::{run_codex_mode, show_codex_config, uninstall_codex};
-use cursor::{
-    cursor_hook_already_present, install_cursor_hooks, remove_cursor_hooks, resolve_cursor_dir,
-};
-use gemini::uninstall_gemini;
-use instructions_agents::{run_cline_mode, run_windsurf_mode};
-use opencode::{
-    opencode_plugin_path, remove_opencode_plugin, resolve_opencode_dir, run_opencode_only_mode,
-};
-use pi::*;
 
-pub use antigravity::{run_antigravity_mode, uninstall_antigravity_mode};
 pub use claude::claude_hook_gaps;
-pub(crate) use copilot::{COPILOT_HOOK_JSON, copilot_user_dir};
-pub use copilot::{run_copilot, run_copilot_global, uninstall_copilot, uninstall_copilot_global};
-pub use droid::{run_droid_mode, uninstall_droid};
-pub use gemini::run_gemini;
-pub use hermes::{run_hermes_mode, uninstall_hermes};
-pub use instructions_agents::{run_kilocode_mode, run_kimi_mode};
-pub use pi::{run_omp_mode_with_patch_mode, run_pi_mode_with_patch_mode};
-pub use trae::{run_trae_mode, uninstall_trae_mode};
-pub use vibe::{run_vibe_mode, uninstall_vibe};
 
 // Embedded agent-neutral RTK awareness instructions, one file per `awareness.level`.
 pub(super) const RTK_AWARENESS_DEFAULT: &str = include_str!("../../../hooks/rtk-awareness.md");
@@ -430,113 +396,24 @@ Overall average: **60-90% less bash output** on common development operations.
 <!-- /rtk-instructions -->
 "##;
 
-/// Main entry point for `rtk init`
-#[allow(clippy::too_many_arguments)]
+/// Main entry point for `rtk init` (anthology rtk-trim: Claude Code only)
 pub fn run(
     global: bool,
-    install_claude: bool,
-    install_opencode: bool,
-    install_cursor: bool,
-    install_windsurf: bool,
-    install_cline: bool,
     claude_md: bool,
     hook_only: bool,
-    codex: bool,
     patch_mode: PatchMode,
     ctx: InitContext,
 ) -> Result<()> {
     let InitContext { dry_run, .. } = ctx;
-    // Validation: Codex mode conflicts
-    if codex {
-        if install_opencode {
-            anyhow::bail!("--codex cannot be combined with --opencode");
-        }
-        if claude_md {
-            anyhow::bail!("--codex cannot be combined with --claude-md");
-        }
-        if hook_only {
-            anyhow::bail!("--codex cannot be combined with --hook-only");
-        }
-        if matches!(patch_mode, PatchMode::Auto) {
-            anyhow::bail!("--codex cannot be combined with --auto-patch");
-        }
-        if matches!(patch_mode, PatchMode::Skip) {
-            anyhow::bail!("--codex cannot be combined with --no-patch");
-        }
-        run_codex_mode(global, ctx)?;
+    if claude_md {
+        run_claude_md_mode(global, ctx)?;
+    } else if hook_only {
+        run_hook_only_mode(global, patch_mode, None, ctx)?;
     } else {
-        // Validation: Global-only features
-        if install_opencode && !global {
-            anyhow::bail!("OpenCode plugin is global-only. Use: rtk init -g --opencode");
-        }
-
-        if install_cursor && !global {
-            anyhow::bail!("Cursor hooks are global-only. Use: rtk init -g --agent cursor");
-        }
-
-        if install_windsurf && !global {
-            anyhow::bail!("Windsurf support is global-only. Use: rtk init -g --agent windsurf");
-        }
-
-        // The OpenCode plugin is an independent target: install it before any
-        // agent so a Claude/Cursor failure cannot leave it missing, and vice
-        // versa. Its error is reported after the agent's.
-        let opencode_result = install_opencode.then(|| run_opencode_only_mode(ctx));
-        let opencode_plugin = opencode_result
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .and_then(|path| path.as_deref());
-
-        let agent_result = (|| -> Result<()> {
-            if install_windsurf {
-                run_windsurf_mode(ctx)?;
-            } else if install_cline {
-                run_cline_mode(ctx)?;
-            } else {
-                // Mode selection (Claude Code / OpenCode)
-                match (install_claude, install_opencode, claude_md, hook_only) {
-                    // The plugin was installed above, independently.
-                    (false, true, _, _) => {}
-                    (true, _, true, _) => run_claude_md_mode(global, ctx)?,
-                    (true, _, false, true) => {
-                        run_hook_only_mode(global, patch_mode, opencode_plugin, ctx)?
-                    }
-                    (true, _, false, false) => {
-                        run_default_mode(global, patch_mode, opencode_plugin, ctx)?
-                    }
-                    (false, false, _, _) => {
-                        if !install_cursor {
-                            anyhow::bail!(
-                                "at least one of install_claude or install_opencode must be true"
-                            )
-                        }
-                    }
-                }
-
-                // Cursor hooks: on their own, or next to the OpenCode plugin with --opencode
-                if install_cursor {
-                    install_cursor_hooks(ctx)?;
-                }
-            }
-            Ok(())
-        })();
-
-        match (opencode_result, agent_result) {
-            (Some(Err(opencode_error)), Err(agent_error)) => {
-                return Err(anyhow::anyhow!(
-                    "OpenCode install failed: {opencode_error:#}\nAgent install failed: {agent_error:#}"
-                ));
-            }
-            (Some(Err(error)), Ok(())) => {
-                return Err(error.context("OpenCode install failed"));
-            }
-            (_, Err(error)) => return Err(error),
-            _ => {}
-        }
+        run_default_mode(global, patch_mode, None, ctx)?;
     }
 
     if !dry_run {
-        prompt_telemetry_consent()?;
         // Best-effort: unconditionally re-run tracking-DB schema migrations during
         // install/upgrade (bypassing the `user_version` gate `Tracker::new()` uses
         // on its hot path). This both pre-warms the schema so the first PreToolUse
@@ -1334,76 +1211,6 @@ pub(super) fn prompt_user_consent(settings_path: &Path) -> Result<bool> {
     prompt_user_confirmation(&format!("Patch existing {}?", settings_path.display()))
 }
 
-pub fn save_telemetry_consent(accepted: bool) -> Result<()> {
-    let mut config = crate::core::config::Config::load().unwrap_or_default();
-    config.telemetry.consent_given = Some(accepted);
-    config.telemetry.enabled = accepted;
-    config.telemetry.consent_date = Some(chrono::Utc::now().to_rfc3339());
-    config
-        .save()
-        .context("Failed to save telemetry consent to config.toml")
-}
-
-fn prompt_telemetry_consent() -> Result<()> {
-    use std::io::{self, BufRead, IsTerminal};
-
-    let config = crate::core::config::Config::load().unwrap_or_default();
-    match config.telemetry.consent_given {
-        Some(true) => return Ok(()),
-        Some(false) => return Ok(()),
-        None => {}
-    }
-
-    // Explicit opt-out must short-circuit before the TTY heuristic: some
-    // non-interactive environments (devcontainer `postCreateCommand`, certain
-    // CI agents) hand rtk a pseudo-TTY, so `is_terminal()` returns true even
-    // though no human is available to answer — the prompt then hangs forever.
-    // Setting `RTK_TELEMETRY_DISABLED=1` is the documented workaround, so the
-    // init prompt has to honour it too, not only `telemetry::maybe_ping`.
-    if crate::core::telemetry_cmd::telemetry_disabled_by_env() {
-        return Ok(());
-    }
-
-    if !io::stdin().is_terminal() {
-        return Ok(());
-    }
-
-    eprintln!();
-    eprintln!("--- Telemetry ---");
-    eprintln!("RTK collects anonymous usage metrics once per day to improve filters.");
-    eprintln!();
-    eprintln!("  What:    command names (not arguments), token savings, OS, version");
-    eprintln!("  Why:     prioritize filter development for the most-used commands");
-    eprintln!("  Who:     RTK AI Labs, contact@rtk-ai.app");
-    eprintln!("  Rights:  disable anytime with `rtk telemetry disable`,");
-    eprintln!("           request erasure with `rtk telemetry forget`");
-    eprintln!("  Details: https://github.com/rtk-ai/rtk/blob/master/docs/TELEMETRY.md");
-    eprintln!();
-    eprint!("Enable anonymous telemetry? [y/N] ");
-
-    let stdin = io::stdin();
-    let mut line = String::new();
-    stdin
-        .lock()
-        .read_line(&mut line)
-        .context("Failed to read user input")?;
-
-    let accepted = {
-        let response = line.trim().to_lowercase();
-        response == "y" || response == "yes"
-    };
-
-    save_telemetry_consent(accepted)?;
-
-    if accepted {
-        eprintln!("  Telemetry enabled. Disable anytime: rtk telemetry disable");
-    } else {
-        eprintln!("  Telemetry disabled.");
-    }
-
-    Ok(())
-}
-
 pub(super) fn print_manual_instructions(hook_command: &str, include_opencode: bool) {
     let settings_path = resolve_claude_dir()
         .unwrap_or_else(|_| PathBuf::from(format!("~/{}", CLAUDE_DIR)))
@@ -1454,54 +1261,11 @@ pub fn uninstall_with_patch_mode(
     let InitContext {
         verbose, dry_run, ..
     } = ctx;
-    if codex {
-        let outcome = uninstall_codex(global, ctx)?;
-        if dry_run {
-            print_dry_run_footer();
-        }
-        let code = match outcome {
-            UninstallCodexOutcome::Clean => 0,
-            UninstallCodexOutcome::HookRefused => 2,
-        };
-        return Ok(code);
+    // anthology rtk-trim: Claude Code is the only uninstall target.
+    if gemini || codex || cursor || pi || omp {
+        anyhow::bail!("only Claude Code is supported by this rtk build");
     }
-
-    if cursor {
-        if !global {
-            anyhow::bail!("Cursor uninstall only works with --global flag");
-        }
-        let cursor_removed = remove_cursor_hooks(ctx).context("Failed to remove Cursor hooks")?;
-        if !cursor_removed.is_empty() {
-            let header = if dry_run {
-                "[dry-run] would uninstall RTK (Cursor):"
-            } else {
-                "RTK uninstalled (Cursor):"
-            };
-            println!("{}", header);
-            for item in &cursor_removed {
-                println!("  - {}", item);
-            }
-            if !dry_run {
-                println!("\nRestart Cursor to apply changes.");
-            }
-        } else {
-            println!("RTK Cursor support was not installed (nothing to remove)");
-        }
-        if dry_run {
-            print_dry_run_footer();
-        }
-        return Ok(0);
-    }
-
-    if pi {
-        uninstall_pi_with_patch_mode(global, patch_mode, ctx)?;
-        return Ok(0);
-    }
-
-    if omp {
-        uninstall_omp_with_patch_mode(global, patch_mode, ctx)?;
-        return Ok(0);
-    }
+    let _ = patch_mode;
 
     if !global {
         anyhow::bail!(
@@ -1511,32 +1275,6 @@ pub fn uninstall_with_patch_mode(
 
     let claude_dir = resolve_claude_dir()?;
     let mut removed = Vec::new();
-
-    // Also uninstall Gemini artifacts if --gemini or always (clean everything)
-    if gemini {
-        let gemini_removed = uninstall_gemini(ctx)?;
-        removed.extend(gemini_removed);
-        if !removed.is_empty() {
-            let header = if dry_run {
-                "[dry-run] would uninstall RTK (Gemini):"
-            } else {
-                "RTK uninstalled (Gemini):"
-            };
-            println!("{}", header);
-            for item in &removed {
-                println!("  - {}", item);
-            }
-            if !dry_run {
-                println!("\nRestart Gemini CLI to apply changes.");
-            }
-        } else {
-            println!("RTK Gemini support was not installed (nothing to remove)");
-        }
-        if dry_run {
-            print_dry_run_footer();
-        }
-        return Ok(0);
-    }
 
     // 1. Remove legacy hook file (if exists from old installation)
     let hook_path = claude_dir.join(HOOKS_SUBDIR).join(REWRITE_HOOK_FILE);
@@ -1652,16 +1390,6 @@ pub fn uninstall_with_patch_mode(
         removed.push("settings.json: removed env.ANTHROPIC_BASE_URL (RTK proxy)".to_string());
     }
 
-    // 5. Remove OpenCode plugin
-    let opencode_removed = remove_opencode_plugin(ctx)?;
-    for path in opencode_removed {
-        removed.push(format!("OpenCode plugin: {}", path.display()));
-    }
-
-    // 6. Remove Cursor hooks
-    let cursor_removed = remove_cursor_hooks(ctx)?;
-    removed.extend(cursor_removed);
-
     // Report results
     if removed.is_empty() {
         println!("RTK was not installed (nothing to remove)");
@@ -1680,7 +1408,7 @@ pub fn uninstall_with_patch_mode(
             println!("  - {}", item);
         }
         if !dry_run {
-            println!("\nRestart Claude Code, OpenCode, and Cursor (if used) to apply changes.");
+            println!("\nRestart Claude Code to apply changes.");
         }
     }
 
@@ -2045,14 +1773,7 @@ pub(super) fn resolve_claude_dir_from(
 }
 
 /// Show current rtk configuration
-pub fn show_config(codex: bool, omp: bool) -> Result<()> {
-    if omp {
-        return show_omp_config();
-    }
-    if codex {
-        return show_codex_config();
-    }
-
+pub fn show_config() -> Result<()> {
     show_claude_config()
 }
 
@@ -2226,73 +1947,6 @@ fn show_claude_config() -> Result<()> {
         println!("[--] settings.json: not found");
     }
 
-    // Check OpenCode plugin
-    match resolve_opencode_dir() {
-        Ok(opencode_dir) => {
-            let plugin = opencode_plugin_path(&opencode_dir);
-            if plugin.exists() {
-                println!("[ok] OpenCode: plugin installed ({})", plugin.display());
-            } else {
-                println!("[--] OpenCode: plugin not found");
-            }
-        }
-        _ => println!("[--] OpenCode: config dir not found"),
-    }
-
-    // Check Cursor hooks
-    match resolve_cursor_dir() {
-        Ok(cursor_dir) => {
-            let cursor_hook = cursor_dir.join(HOOKS_SUBDIR).join(REWRITE_HOOK_FILE);
-            let cursor_hooks_json = cursor_dir.join(HOOKS_JSON);
-
-            // Check for binary command in hooks.json first
-            let cursor_binary_registered = if cursor_hooks_json.exists() {
-                let content = fs::read_to_string(&cursor_hooks_json).unwrap_or_default();
-                if let Ok(root) = from_json_str::<serde_json::Value>(&content) {
-                    cursor_hook_already_present(&root)
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if cursor_binary_registered {
-                println!("[ok] Cursor hook: registered in hooks.json");
-            } else if cursor_hook.exists() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let meta = fs::metadata(&cursor_hook)?;
-                    let is_executable = meta.permissions().mode() & 0o111 != 0;
-
-                    if !is_executable {
-                        println!(
-                            "[warn] Cursor hook: {} (legacy script, NOT executable)",
-                            cursor_hook.display()
-                        );
-                    } else {
-                        println!(
-                            "[warn] Cursor hook: {} (legacy script — run `rtk init -g --agent cursor` to upgrade)",
-                            cursor_hook.display()
-                        );
-                    }
-                }
-
-                #[cfg(not(unix))]
-                {
-                    println!(
-                        "[warn] Cursor hook: {} (legacy script — run `rtk init -g --agent cursor` to upgrade)",
-                        cursor_hook.display()
-                    );
-                }
-            } else {
-                println!("[--] Cursor hook: not found");
-            }
-        }
-        _ => println!("[--] Cursor: home dir not found"),
-    }
-
     println!("\nUsage:");
     println!("  rtk init              # Full injection into local CLAUDE.md");
     println!("  rtk init -g           # Hook + RTK.md + @RTK.md + settings.json (recommended)");
@@ -2301,10 +1955,6 @@ fn show_claude_config() -> Result<()> {
     println!("  rtk init -g --uninstall     # Remove all RTK artifacts");
     println!("  rtk init -g --claude-md     # Legacy: full injection into ~/.claude/CLAUDE.md");
     println!("  rtk init -g --hook-only     # Hook only, no RTK.md");
-    println!("  rtk init --codex            # Configure local AGENTS.md + RTK.md + hooks.json");
-    println!("  rtk init -g --codex         # Configure global AGENTS.md + RTK.md + hooks.json");
-    println!("  rtk init -g --opencode      # Claude setup + OpenCode plugin");
-    println!("  rtk init -g --agent cursor  # Install Cursor Agent hooks");
 
     Ok(())
 }
@@ -2385,17 +2035,9 @@ mod tests {
         );
     }
 
-    use super::claude::{remove_hook_from_json, remove_legacy_hook_entries_from_json};
-    use super::codex::{codex_hook_already_present, remove_codex_hook_from_json};
-    use super::cursor::remove_legacy_cursor_hook_entries_from_json;
-    use super::trae::{
-        insert_trae_hook_entry, remove_trae_hook_from_json, trae_hook_already_present,
-    };
+    use super::claude::remove_legacy_hook_entries_from_json;
     use super::*;
-    use crate::hooks::constants::{
-        CLAUDE_PRE_MATCHER, CODEX_HOOK_COMMAND, CURSOR_HOOK_COMMAND, TRAE_HOOK_COMMAND,
-        TRAE_RUN_COMMAND_MATCHER,
-    };
+    use crate::hooks::constants::CLAUDE_PRE_MATCHER;
     use tempfile::TempDir;
 
     #[test]
@@ -2953,20 +2595,6 @@ level = "high"
                 {"hooks": []}
             ])
         );
-        let mut cursor = serde_json::json!({"hooks": {"preToolUse": [
-            {"command": legacy},
-            {"type": "prompt", "command": legacy},
-            {"command": CURSOR_HOOK_COMMAND}
-        ]}});
-        assert!(remove_legacy_cursor_hook_entries_from_json(&mut cursor));
-        assert!(!remove_legacy_cursor_hook_entries_from_json(&mut cursor));
-        assert_eq!(
-            cursor["hooks"]["preToolUse"],
-            serde_json::json!([
-                {"type": "prompt", "command": legacy},
-                {"command": CURSOR_HOOK_COMMAND}
-            ])
-        );
     }
 
     #[test]
@@ -2980,14 +2608,11 @@ level = "high"
             Some("^Ba"),
         ] {
             let mut root = serde_json::json!({"hooks": {"PreToolUse": [
-                {"hooks": [{"command": CODEX_HOOK_COMMAND}]}
+                {"hooks": [{"command": CLAUDE_HOOK_COMMAND}]}
             ]}});
             if let Some(matcher) = matcher {
                 root["hooks"]["PreToolUse"][0]["matcher"] = serde_json::json!(matcher);
             }
-            assert!(codex_hook_already_present(&root), "{matcher:?}");
-            root["hooks"]["PreToolUse"][0]["hooks"][0]["command"] =
-                serde_json::json!(CLAUDE_HOOK_COMMAND);
             assert!(
                 hook_already_present(&root, PRE_TOOL_USE_KEY, CLAUDE_HOOK_COMMAND),
                 "{matcher:?}"
@@ -3016,80 +2641,6 @@ level = "high"
                 root["hooks"]["PreToolUse"][0]["matcher"],
                 serde_json::json!(CLAUDE_PRE_MATCHER)
             );
-        }
-        for matcher in [
-            None,
-            Some(""),
-            Some("*"),
-            Some("Shell"),
-            Some("Read|Shell"),
-            Some("^Sh"),
-        ] {
-            let mut root =
-                serde_json::json!({"hooks": {"preToolUse": [{"command": CURSOR_HOOK_COMMAND}]}});
-            if let Some(matcher) = matcher {
-                root["hooks"]["preToolUse"][0]["matcher"] = serde_json::json!(matcher);
-            }
-            assert!(cursor_hook_already_present(&root), "{matcher:?}");
-        }
-    }
-
-    #[test]
-    fn test_grouped_registration_preserves_user_hooks_and_checks_matcher() {
-        for (command, tool) in [
-            (CLAUDE_HOOK_COMMAND, "Bash"),
-            (CODEX_HOOK_COMMAND, "Bash"),
-            (TRAE_HOOK_COMMAND, TRAE_RUN_COMMAND_MATCHER),
-        ] {
-            let present = |root: &serde_json::Value| match command {
-                CLAUDE_HOOK_COMMAND => hook_already_present(root, PRE_TOOL_USE_KEY, command),
-                CODEX_HOOK_COMMAND => codex_hook_already_present(root),
-                _ => trae_hook_already_present(root),
-            };
-            let mut root = serde_json::json!({"hooks": {"PreToolUse": [
-                {"matcher": "Read", "hooks": [{"type": "command", "command": command, "timeout": 99}]},
-                {"matcher": tool, "hooks": [{"type": "prompt", "command": command}]},
-                {"matcher": tool, "hooks": []}
-            ], "Stop": [{"command": "echo stop"}]}, "user": true});
-            assert_eq!(
-                present(&root),
-                command == CLAUDE_HOOK_COMMAND,
-                "inactive and prompt hooks do not count; claude presence is matcher-blind: {command}"
-            );
-            match command {
-                CLAUDE_HOOK_COMMAND | CODEX_HOOK_COMMAND => {
-                    insert_hook_entry(&mut root, PRE_TOOL_USE_KEY, CLAUDE_PRE_MATCHER, command)
-                        .unwrap()
-                }
-                _ => insert_trae_hook_entry(&mut root).unwrap(),
-            }
-            assert!(present(&root));
-            let groups = root["hooks"]["PreToolUse"].as_array_mut().unwrap();
-            groups.last_mut().unwrap()["hooks"]
-                .as_array_mut()
-                .unwrap()
-                .push(serde_json::json!({"type": "command", "command": "echo user"}));
-            let remove = |root: &mut serde_json::Value| match command {
-                CLAUDE_HOOK_COMMAND => remove_hook_from_json(root),
-                CODEX_HOOK_COMMAND => remove_codex_hook_from_json(root),
-                _ => remove_trae_hook_from_json(root),
-            };
-            assert!(remove(&mut root));
-            assert!(!remove(&mut root));
-            assert!(!present(&root));
-            assert_eq!(
-                root["hooks"]["PreToolUse"],
-                serde_json::json!([
-                    {"matcher": tool, "hooks": [{"type": "prompt", "command": command}]},
-                    {"matcher": tool, "hooks": []},
-                    {"matcher": tool, "hooks": [{"type": "command", "command": "echo user"}]}
-                ])
-            );
-            assert_eq!(
-                root["hooks"]["Stop"],
-                serde_json::json!([{"command": "echo stop"}])
-            );
-            assert_eq!(root["user"], true);
         }
     }
 
