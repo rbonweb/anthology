@@ -182,12 +182,24 @@ fn run(args: &Args) -> Result<bool, String> {
         let wanted = args.all || args.surfaces.iter().any(|s| s == name);
         match (wanted, surface) {
             (false, _) => {}
+            (true, Some(_)) if args.all && !surfaces::runs_here(name) => {
+                skipped.push((name, "Linux only"));
+            }
             (true, Some(s)) => chosen.push(s),
-            (true, None) if args.all => skipped.push(name),
+            (true, None) if args.all => skipped.push((name, "not ported yet")),
             (true, None) => return Err(format!("{name} is not ported yet")),
         }
     }
-    // Every divergence file is read before anything runs: a bad one is a usage error.
+    if let Some(name) = &args.inject
+        && !chosen.iter().any(|s| s.name() == name)
+    {
+        return Err(format!(
+            "--inject-diff {name}: that surface is not in this run"
+        ));
+    }
+    // Every divergence file is read before anything runs: a bad one, or one named after no
+    // surface (a typo), is a usage error.
+    check_divergence_folder(&div_dir)?;
     let mut divs = Vec::new();
     for s in &chosen {
         divs.push(Divergences::load(&div_dir, s.name())?);
@@ -211,8 +223,17 @@ fn run(args: &Args) -> Result<bool, String> {
         print_report(&r, args.show);
         reports.push(r);
     }
-    for name in &skipped {
-        println!("skip {name} (not ported yet)");
+    for (name, why) in &skipped {
+        println!("skip {name} ({why})");
+    }
+    if let Some(name) = &args.inject
+        && reports
+            .iter()
+            .any(|r| r.name == *name && r.injected.is_none())
+    {
+        return Err(format!(
+            "--inject-diff {name}: the surface ran no case to inject into"
+        ));
     }
     let unexplained: usize = reports.iter().map(|r| r.failures.len()).sum();
     println!(
@@ -221,9 +242,33 @@ fn run(args: &Args) -> Result<bool, String> {
         skipped.len()
     );
     if let Some(path) = &args.report {
-        write_report(path, args, &reports, &skipped)?;
+        let names: Vec<&str> = skipped.iter().map(|(n, _)| *n).collect();
+        write_report(path, args, &reports, &names)?;
     }
     Ok(unexplained == 0)
+}
+
+/// Every `*.toml` in `dir` is `<surface>.toml` for a registered surface, and parses.
+fn check_divergence_folder(dir: &std::path::Path) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("--divergences {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".toml") else {
+            continue;
+        };
+        if !surfaces::ALL.contains(&stem) {
+            return Err(format!(
+                "{}: no surface is named {stem:?} (difftest --list)",
+                path.display()
+            ));
+        }
+        Divergences::load(dir, stem)?;
+    }
+    Ok(())
 }
 
 fn print_report(r: &Report, show: usize) {
@@ -238,14 +283,33 @@ fn print_report(r: &Report, show: usize) {
     } else {
         format!(" ({})", classes.join(", "))
     };
+    let waived: usize = r.waived.values().sum();
     println!(
-        "{}: {} cases, {} same, {explained} explained{classes}, {} unexplained, {} oracle errors",
+        "{}: {} cases ({} seeds + {} generated), {} same, {explained} explained{classes}, \
+         {waived} waived, {} unexplained, {} oracle errors",
         r.name,
         r.cases,
+        r.seeds,
+        r.generated,
         r.same,
         r.failures.len(),
         r.oracle_errors
     );
+    for (entry, n) in &r.waived {
+        println!("{}: waived {n} diff(s) by {entry}", r.name);
+    }
+    for entry in &r.glob_gen_waivers {
+        println!(
+            "warning: {entry} waives generated cases by a glob (gen: ids change with --seed and \
+             --gen)"
+        );
+    }
+    if r.restarts > 0 {
+        println!(
+            "warning: {}: the oracle process died and was restarted {} time(s)",
+            r.name, r.restarts
+        );
+    }
     if let Some(id) = &r.injected {
         println!("{}: injected a diff into case {id}", r.name);
     }

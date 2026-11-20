@@ -23,6 +23,8 @@ anthology-settings.workspace = true
 anthology-memory.workspace = true
 anthology-runtime.workspace = true
 anthology-testkit.workspace = true
+# dev.* surfaces call the dev tool in-process (`<module>::run_in`), controller plumbing.
+anthology-dev.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 lexopt.workspace = true

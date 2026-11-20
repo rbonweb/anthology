@@ -6,13 +6,21 @@
 //! can deadlock.
 //!
 //! [`Output::code`] is the exit code; when a signal ends the program it is `128 + signal`, as a
-//! POSIX shell reports it (`SIGKILL` is 137). A program that outlives its timeout
-//! ([`run_program_timeout`]) is killed with `SIGKILL`, so its code is 137.
+//! POSIX shell reports it (`SIGKILL` is 137).
 //!
-//! The `anthology` binary is found through `ANTHOLOGY_BIN` when that is set, else beside the
-//! test binary: `current_exe()` is `target/<profile>/deps/<test>-<hash>`, so the binary is
-//! `target/<profile>/anthology`. cargo builds it for `cargo test --workspace` (and for any crate
-//! that depends on `anthology-cli`'s binary).
+//! Every program starts in its own process group. With a timeout ([`run_program_timeout`],
+//! [`run_sh_in`]) the whole call is bounded: past the deadline the **group** is killed with
+//! `SIGKILL` (code 137 when the program itself was still running), so grandchildren that hold
+//! the pipes open (a downloader, a watchdog's `sleep`) die too, and the output read so far is
+//! returned within a short grace period. Without a timeout the call waits for the pipes to close.
+//!
+//! The `anthology` binary is `ANTHOLOGY_BIN` when that is set, else the first `anthology` file
+//! in a folder above the test binary. cargo puts test binaries below `target/<profile>/`
+//! (`deps/<test>-<hash>`, or `build/<pkg>/<hash>/out/<test>-<hash>` with toolchain 1.100), and
+//! the binary at `target/<profile>/anthology`. `cargo test --workspace` builds every binary of
+//! the workspace before it runs any test, so the file is there and current. A crate tested on its
+//! own (`cargo test -p <crate>`) must build it first (`cargo build -p anthology-cli`) or set
+//! `ANTHOLOGY_BIN`; anthology-cli's own tests use `CARGO_BIN_EXE_anthology` instead.
 #![forbid(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
@@ -20,6 +28,7 @@ use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,16 +73,32 @@ pub fn anthology_bin() -> PathBuf {
     path
 }
 
-/// `ANTHOLOGY_BIN` when set and not empty, else `<exe>/../../anthology`.
+/// `ANTHOLOGY_BIN` when set and not empty, else the first `<folder>/anthology` file in a folder
+/// above `exe` (module docs). When there is none, `<profile>/anthology` for the message, the
+/// profile being the folder that holds `exe`'s `deps` or `build` folder.
 pub fn bin_path(var: Option<OsString>, exe: &Path) -> PathBuf {
     if let Some(v) = var.filter(|v| !v.is_empty()) {
         return PathBuf::from(v);
     }
-    let profile = exe
-        .parent()
+    if let Some(found) = exe
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("anthology"))
+        .find(|p| p.is_file())
+    {
+        return found;
+    }
+    exe.ancestors()
+        .find(|d| {
+            matches!(
+                d.file_name().and_then(|n| n.to_str()),
+                Some("deps" | "build")
+            )
+        })
         .and_then(Path::parent)
-        .unwrap_or(Path::new("."));
-    profile.join("anthology")
+        .or_else(|| exe.parent().and_then(Path::parent))
+        .unwrap_or(Path::new("."))
+        .join("anthology")
 }
 
 /// Runs `program` with `args`, `stdin`, exactly `env`, in `cwd`, until it exits.
@@ -81,8 +106,8 @@ pub fn run_program(program: &Path, args: &[&str], stdin: &[u8], env: &Env, cwd: 
     run_program_timeout(program, args, stdin, env, cwd, None)
 }
 
-/// [`run_program`], killing the program (code 137) when it runs past `timeout`. A program
-/// that cannot start panics with its path.
+/// [`run_program`], bounded by `timeout` (module docs). A program that cannot start panics
+/// with its path.
 pub fn run_program_timeout(
     program: &Path,
     args: &[&str],
@@ -91,10 +116,12 @@ pub fn run_program_timeout(
     cwd: &Path,
     timeout: Option<Duration>,
 ) -> Output {
+    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
+        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -104,44 +131,95 @@ pub fn run_program_timeout(
     let mut child = cmd
         .spawn()
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", program.display()));
+    let pid = child.id();
     let mut pipe_in = child.stdin.take().expect("stdin");
     let input = stdin.to_vec();
     // A program that exits without reading its input closes the pipe: that is not an error.
-    let writer = thread::spawn(move || {
+    thread::spawn(move || {
         let _ = pipe_in.write_all(&input);
     });
     let out = reader(child.stdout.take().expect("stdout"));
     let err = reader(child.stderr.take().expect("stderr"));
-    let status = match timeout {
-        None => child.wait().expect("wait"),
-        Some(t) => {
-            let deadline = Instant::now() + t;
-            loop {
-                if let Some(status) = child.try_wait().expect("wait") {
-                    break status;
+    let Some(t) = timeout else {
+        let status = child.wait().expect("wait");
+        return Output {
+            code: code_of(status),
+            stdout: out.recv().unwrap_or_default(),
+            stderr: err.recv().unwrap_or_default(),
+        };
+    };
+    let deadline = Instant::now() + t;
+    let mut killed = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_group(pid);
+            killed = true;
+            break child.wait().expect("wait");
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    // The program has exited; its pipes may still be held by what it started.
+    let mut collect = |rx: &mpsc::Receiver<Vec<u8>>| -> Vec<u8> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(b) => b,
+            Err(_) => {
+                if !killed {
+                    kill_group(pid);
+                    killed = true;
                 }
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    break child.wait().expect("wait");
-                }
-                thread::sleep(Duration::from_millis(5));
+                rx.recv_timeout(GRACE).unwrap_or_default()
             }
         }
     };
-    let _ = writer.join();
+    let stdout = collect(&out);
+    let stderr = collect(&err);
     Output {
         code: code_of(status),
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout,
+        stderr,
     }
 }
 
-fn reader(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+/// How long the pipes may stay open after the process group was killed.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// `SIGKILL` to the process group `pid` (made by `process_group(0)`), through the shell's
+/// `kill`, which takes a negative id: no `unsafe` code. No `--` before the id: dash's `kill`
+/// rejects it ("Illegal number"), and dash is Debian's `/bin/sh`.
+fn kill_group(pid: u32) {
+    let _ = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "kill -9 \"-$1\" 2>/dev/null",
+            "kill",
+            &pid.to_string(),
+        ])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn reader(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = pipe.read_to_end(&mut buf);
-        buf
-    })
+        // In chunks, so a killed group still returns what was written before.
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = pipe.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 /// The exit code, or `128 + signal`.
@@ -290,22 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn a_timeout_kills_with_sigkill() {
-        let start = Instant::now();
-        let out = run_program_timeout(
-            Path::new("/bin/sh"),
-            &["-c", "echo started; exec sleep 30"],
-            b"",
-            &env(),
-            Path::new("/"),
-            Some(Duration::from_millis(300)),
-        );
-        assert_eq!(out.code, 137);
-        assert_eq!(out.stdout_text(), "started\n");
-        assert!(start.elapsed() < Duration::from_secs(10));
-    }
-
-    #[test]
     fn large_input_and_output_do_not_deadlock() {
         let big = vec![b'x'; 4 << 20];
         let out = run_program(
@@ -333,30 +395,44 @@ mod tests {
     }
 
     #[test]
-    fn the_binary_is_the_override_or_beside_the_test_binary() {
-        let exe = Path::new("/t/target/debug/deps/x-123");
+    fn the_binary_is_the_override_or_in_a_folder_above_the_test_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("target/debug");
+        std::fs::create_dir_all(profile.join("deps")).expect("mkdir");
+        std::fs::create_dir_all(profile.join("build/p/h/out")).expect("mkdir");
+        // Not found: the old layout's guess, for the message.
+        let deps = profile.join("deps/x-123");
+        assert_eq!(bin_path(None, &deps), profile.join("anthology"));
+        std::fs::write(profile.join("anthology"), "").expect("write");
+        for exe in [deps, profile.join("build/p/h/out/x-123")] {
+            assert_eq!(
+                bin_path(None, &exe),
+                profile.join("anthology"),
+                "{}",
+                exe.display()
+            );
+            assert_eq!(
+                bin_path(Some(OsString::new()), &exe),
+                profile.join("anthology")
+            );
+            assert_eq!(
+                bin_path(Some("/opt/anthology".into()), &exe),
+                PathBuf::from("/opt/anthology")
+            );
+        }
+        // A folder named anthology is not the binary.
+        std::fs::remove_file(profile.join("anthology")).expect("rm");
+        std::fs::create_dir(profile.join("build/p/anthology")).expect("mkdir");
         assert_eq!(
-            bin_path(None, exe),
-            PathBuf::from("/t/target/debug/anthology")
-        );
-        assert_eq!(
-            bin_path(Some(OsString::new()), exe),
-            PathBuf::from("/t/target/debug/anthology")
-        );
-        assert_eq!(
-            bin_path(Some("/opt/anthology".into()), exe),
-            PathBuf::from("/opt/anthology")
+            bin_path(None, &profile.join("build/p/h/out/x")),
+            profile.join("anthology")
         );
     }
 
     #[test]
-    fn run_bin_runs_the_built_binary_when_there_is_one() {
-        let exe = std::env::current_exe().expect("exe");
-        let path = bin_path(std::env::var_os("ANTHOLOGY_BIN"), &exe);
-        if !path.is_file() {
-            eprintln!("skipped: no anthology binary at {}", path.display());
-            return;
-        }
+    fn run_bin_runs_the_built_binary() {
+        // `cargo test --workspace` builds the anthology binary first (module docs); a crate
+        // tested alone needs `cargo build -p anthology-cli` or ANTHOLOGY_BIN.
         let out = run_bin(&["--version"], b"", &env(), Path::new("/"));
         assert_eq!(out.code, 0, "{}", out.stderr_text());
         assert!(
@@ -380,6 +456,36 @@ mod tests {
         .expect_err("panics");
         let msg = err.downcast_ref::<String>().expect("message");
         assert!(msg.contains("/nonexistent/target/debug/anthology"), "{msg}");
+    }
+
+    #[test]
+    fn a_timeout_kills_grandchildren_that_hold_the_pipes() {
+        for script in [
+            "echo started; sleep 30; :",
+            "echo started; (sleep 30; :) & wait",
+            "echo started; sleep 30 & exit 0",
+        ] {
+            let start = Instant::now();
+            let out = run_program_timeout(
+                Path::new("/bin/sh"),
+                &["-c", script],
+                b"",
+                &env(),
+                Path::new("/"),
+                Some(Duration::from_millis(300)),
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{script}: {:?}",
+                start.elapsed()
+            );
+            assert_eq!(out.stdout_text(), "started\n", "{script}");
+            if !script.contains("exit 0") {
+                assert_eq!(out.code, 137, "{script}");
+            } else {
+                assert_eq!(out.code, 0, "{script}");
+            }
+        }
     }
 
     #[test]
