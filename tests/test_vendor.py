@@ -1182,12 +1182,16 @@ class LicenseTest(FixtureCase):
 
     def test_fixed_license_is_not_overwritten_or_compared_to_upstream(self):
         self.set_sources([self.b])
+        with self.assertRaises(vendor.VendorError):  # build needs the fixed text to ship it
+            vendor.build(self.root, "b", fetch=self.fetch)
+        write(self.root, "vendor/licenses/acme-b.txt", FIXED_MIT)
         vendor.build(self.root, "b", fetch=self.fetch)
-        vendor.fetch_licenses(self.root, fetch=self.fetch)  # must not invent a file
-        self.assertFalse((self.root / "vendor/licenses/acme-b.txt").exists())
+        vendor.fetch_licenses(self.root, fetch=self.fetch)  # must not overwrite it
+        self.assertEqual((self.root / "vendor/licenses/acme-b.txt").read_text(), FIXED_MIT)
+        self.assertEqual(self.check(), [])
+        (self.root / "vendor/licenses/acme-b.txt").unlink()
         self.assertTrue(any("acme-b.txt" in p for p in self.check()))  # missing fixed file
         write(self.root, "vendor/licenses/acme-b.txt", FIXED_MIT)
-        self.assertEqual(self.check(), [])
         write(self.root, "vendor/licenses/acme-b.txt", "MIT License\n\nCopyright (c) Vercel\n")
         self.assertTrue(any("README" in p for p in self.check()))  # note line is required
 
@@ -1248,9 +1252,11 @@ class SyncAndDiffTest(FixtureCase):
 
     @unittest.skipUnless(shutil.which("git"), "git is not installed")
     def test_diff_output_round_trips_through_a_patch(self):
+        write(self.pristine["p"], "old.md", "old\n")
+        vendor.build(self.root, "p", fetch=self.fetch)
         write(self.root, "plugins/anthology/knowledge/p/skills/a/SKILL.md", "v1\nlocal edit\n")
         write(self.root, "plugins/anthology/knowledge/p/new.md", "new\n")
-        (self.root / "plugins/anthology/knowledge/p/LICENSE").unlink()
+        (self.root / "plugins/anthology/knowledge/p/old.md").unlink()
         patch = self.root / "vendor/patches/p.patch"
         patch.parent.mkdir()
         patch.write_text(vendor.diff_entry(self.root, "p", fetch=self.fetch), encoding="utf-8")
@@ -1276,6 +1282,200 @@ class SyncAndDiffTest(FixtureCase):
         report = vendor.sync(self.root, "p", "v2", fetch=self.fetch, resolve=self.resolve)
         self.assertEqual(len(report["rejects"]), 1)
         self.assertIn("SKILL.md", report["rejects"][0])
+
+
+class ShipLicenseTest(FixtureCase):
+    """build_tree ships each source's license (and upstream NOTICE files) inside the target."""
+
+    NOTICE = "Thing\nCopyright 2026 Someone\n"
+
+    def sub(self, name="s", files=None, **kw):
+        """A source taking `skills/s` of a repo whose root holds LICENSE."""
+        base = {"LICENSE": MIT_TEXT, "skills/s/SKILL.md": "s\n"}
+        base.update(files or {})
+        kw.setdefault("path", "skills/s")
+        return self.add_upstream(name, base, **kw)
+
+    def target(self, name, rel=""):
+        return self.root / f"plugins/anthology/knowledge/{name}" / rel
+
+    def test_license_outside_the_folder_is_copied_unchanged(self):
+        raw = b"MIT License\r\n\r\nCopyright \xc2\xa9 x\r\n"
+        e = self.sub(files={"LICENSE": raw})
+        self.build_all([e])
+        self.assertEqual(self.target("s", "LICENSE").read_bytes(), raw)
+        self.assertEqual(self.target("s", "SKILL.md").read_text(), "s\n")
+        self.assertEqual(self.target("s", "LICENSE").stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.check(), [])
+
+    def test_license_file_keeps_its_basename(self):
+        e = self.sub(files={"legal/COPYING.txt": MIT_TEXT}, license_file="legal/COPYING.txt")
+        self.build_all([e])
+        self.assertEqual(self.target("s", "COPYING.txt").read_text(), MIT_TEXT)
+        self.assertFalse(self.target("s", "LICENSE").exists())
+
+    def test_license_inside_the_folder_is_not_duplicated(self):
+        e = self.sub(files={"skills/s/LICENSE.txt": MIT_TEXT}, license_file="skills/s/LICENSE.txt")
+        self.build_all([e])
+        names = sorted(p.name for p in self.target("s").iterdir())
+        self.assertEqual(names, ["LICENSE.txt", "SKILL.md"])
+        self.assertEqual(self.check(), [])
+
+    def test_license_inside_the_folder_must_be_there(self):
+        e = self.sub(files={"skills/s/LICENSE.txt": MIT_TEXT}, license_file="skills/s/LICENSE.txt")
+        (self.pristine["s"] / "skills/s/LICENSE.txt").unlink()
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+
+    def test_root_path_source_keeps_its_tree_byte_identical(self):
+        e = self.add_upstream("r", {"LICENSE": MIT_TEXT, "a.md": "a\n"})
+        self.build_all([e])
+        self.assertEqual(sorted(p.name for p in self.target("r").iterdir()), ["LICENSE", "a.md"])
+
+    def test_null_license_ships_the_fixed_text_as_license(self):
+        e = self.sub(files={"README.md": "License: MIT\n"}, license_file=None, license_note="README")
+        self.set_sources([e])
+        write(self.root, "vendor/licenses/acme-s.txt", FIXED_MIT)
+        vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertEqual(self.target("s", "LICENSE").read_text(), FIXED_MIT)
+        self.assertEqual(self.check(), [])
+
+    def test_missing_fixed_text_is_an_error(self):
+        e = self.sub(license_file=None, license_note="README")
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+
+    def test_license_extra_files_are_copied_unchanged(self):
+        e = self.sub(files={"NOTICE": self.NOTICE, "LICENSE-MIT": "MIT only\n"},
+                     license_extra=["NOTICE", "LICENSE-MIT"])
+        self.build_all([e])
+        self.assertEqual(self.target("s", "NOTICE").read_text(), self.NOTICE)
+        self.assertEqual(self.target("s", "LICENSE-MIT").read_text(), "MIT only\n")
+        self.assertEqual(self.target("s", "NOTICE").stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.check(), [])
+
+    def test_missing_or_empty_license_extra_is_an_error(self):
+        e = self.sub(license_extra=["NOTICE"])
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+        write(self.pristine["s"], "NOTICE", "  \n")
+        with self.assertRaises(vendor.VendorError):
+            vendor.build(self.root, "s", fetch=self.fetch)
+
+    def test_license_extra_validation(self):
+        def errors(**kw):
+            return vendor.validate_sources([self.sub(**kw)])
+
+        self.assertEqual(errors(license_extra=["NOTICE", "docs/LICENSE-MIT"]), [])
+        self.assertEqual(errors(license_extra=[]), [])
+        for bad in ("NOTICE", ["../NOTICE"], ["/NOTICE"], [""], [3], ["a//b"]):
+            self.assertTrue(any("license_extra" in m for m in errors(license_extra=bad)), bad)
+        self.assertTrue(any("clashes" in m for m in errors(license_extra=["NOTICE", "docs/NOTICE"])))
+        self.assertTrue(any("clashes" in m for m in errors(license_extra=["docs/LICENSE"])))
+        self.assertTrue(any("clashes" in m for m in errors(
+            license_file=None, license_note="README", license_extra=["LICENSE"])))
+
+    def test_license_extra_is_not_allowed_on_url_sources(self):
+        e = {"name": "u", "url": "https://example.com/.well-known/skills/u/", "path": "",
+             "ref": "main", "license": "MIT", "license_file": "LICENSE", "checksum": "a" * 64,
+             "target": "plugins/anthology/knowledge/u", "transform": [], "license_extra": ["NOTICE"]}
+        self.assertTrue(any("license_extra" in m for m in vendor.validate_sources([e])))
+
+    def test_identical_existing_file_is_fine(self):
+        e = self.sub(files={"skills/s/LICENSE": MIT_TEXT})
+        self.build_all([e])
+        self.assertEqual(self.target("s", "LICENSE").read_text(), MIT_TEXT)
+        self.assertEqual(self.check(), [])
+
+    def test_differing_existing_file_is_an_error(self):
+        e = self.sub(files={"skills/s/LICENSE": "other terms\n"})
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("LICENSE", str(ctx.exception))
+        self.assertTrue(any("LICENSE" in m for m in self.check()))
+
+    def test_differing_existing_extra_is_an_error(self):
+        e = self.sub(files={"NOTICE": self.NOTICE, "skills/s/NOTICE": "different\n"},
+                     license_extra=["NOTICE"])
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("NOTICE", str(ctx.exception))
+
+    def test_unshipped_root_notice_is_an_error(self):
+        e = self.sub(files={"NOTICE": self.NOTICE})
+        self.set_sources([e])
+        with self.assertRaises(vendor.VendorError) as ctx:
+            vendor.build(self.root, "s", fetch=self.fetch)
+        self.assertIn("NOTICE", str(ctx.exception))
+        self.assertIn("license_extra", str(ctx.exception))
+        self.assertTrue(any("license_extra" in m for m in self.check()))
+
+    def test_unshipped_notice_on_the_way_down_is_an_error(self):
+        for name in ("NOTICE.txt", "NOTICE.md"):
+            e = self.sub(files={f"skills/{name}": self.NOTICE})
+            self.set_sources([e])
+            with self.assertRaises(vendor.VendorError) as ctx:
+                vendor.build(self.root, "s", fetch=self.fetch)
+            self.assertIn(f"skills/{name}", str(ctx.exception))
+            (self.pristine["s"] / "skills" / name).unlink()
+
+    def test_listed_notice_on_the_way_down_is_shipped(self):
+        e = self.sub(files={"skills/NOTICE.md": self.NOTICE}, license_extra=["skills/NOTICE.md"])
+        self.build_all([e])
+        self.assertEqual(self.target("s", "NOTICE.md").read_text(), self.NOTICE)
+        self.assertEqual(self.check(), [])
+
+    def test_notice_inside_the_folder_ships_with_the_folder(self):
+        e = self.sub(files={"skills/s/NOTICE": self.NOTICE})
+        self.build_all([e])
+        self.assertEqual(self.target("s", "NOTICE").read_text(), self.NOTICE)
+
+    def test_notice_beside_the_path_is_not_required(self):
+        e = self.sub(files={"skills/other/NOTICE": self.NOTICE})
+        self.build_all([e])
+        self.assertFalse(self.target("s", "NOTICE").exists())
+
+    def test_notice_in_a_root_path_source_ships_with_the_tree(self):
+        e = self.add_upstream("r", {"LICENSE": MIT_TEXT, "NOTICE": self.NOTICE})
+        self.build_all([e])
+        self.assertEqual(self.target("r", "NOTICE").read_text(), self.NOTICE)
+
+    def test_check_flags_a_missing_or_altered_license_copy(self):
+        e = self.sub()
+        self.build_all([e])
+        self.assertEqual(self.check(), [])
+        write(self.target("s"), "LICENSE", "tampered\n")
+        self.assertTrue(any("LICENSE differs" in m for m in self.check()))
+        self.target("s", "LICENSE").unlink()
+        self.assertTrue(any("missing from the committed tree: LICENSE" in m for m in self.check()))
+
+    def test_check_flags_a_missing_extra(self):
+        e = self.sub(files={"NOTICE": self.NOTICE}, license_extra=["NOTICE"])
+        self.build_all([e])
+        self.target("s", "NOTICE").unlink()
+        self.assertTrue(any("NOTICE" in m for m in self.check()))
+
+    def test_diff_does_not_show_license_copies(self):
+        e = self.sub(files={"NOTICE": self.NOTICE}, license_extra=["NOTICE"])
+        self.build_all([e])
+        self.assertEqual(vendor.diff_entry(self.root, "s", fetch=self.fetch), "")
+        write(self.target("s"), "SKILL.md", "s\nlocal\n")
+        text = vendor.diff_entry(self.root, "s", fetch=self.fetch)
+        self.assertIn("SKILL.md", text)
+        self.assertNotIn("LICENSE", text)
+        self.assertNotIn("NOTICE", text)
+
+    def test_licenses_are_shipped_whether_or_not_patches_apply(self):
+        e = self.sub()
+        self.build_all([e])
+        built = self.tmp / "nopatch"
+        vendor.build_tree(self.root, e, self.pristine["s"], built, patches=False)
+        self.assertEqual((built / "LICENSE").read_text(), MIT_TEXT)
 
 
 class PortmapTest(FixtureCase):
