@@ -398,6 +398,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - `anthology-mem orphans` (notes nothing links to)
   - `anthology-mem stale` (superseded or old notes)
   - `anthology-mem rebuild`
+  - `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]` (writes one agent note with nested `metadata:`/`type:`; setup allows `Bash(anthology-mem save *)`; ADR-018)
 - **No embeddings (§2).** If semantic search is ever wanted, vectors can be added to this same derived index without changing the notes.
 
 **Self-learning:**

@@ -584,3 +584,26 @@ The trimmed rtk (ADR-016) has to reach users as a binary they can verify, and th
 **Consequences**
 
 A future rtk bump sets `rtk/Cargo.toml` to `-anthology.<n+1>`, regenerates the `Cargo.lock` entry, pushes the new tag and then rewrites `rtk.lock` from `checksums.txt`; the lock change is a change to `plugins/anthology`, so it ships with a new plugin release.
+
+## ADR-018: memory saves by read-only agents (`anthology-mem save`)
+
+- **Date:** 2026-11-20
+- **Task:** stream I (follow-up to Tasks 6, 12 and 13)
+- **Status:** Accepted
+
+**Context**
+
+Read-only agents (`disallowedTools` includes Write and Edit) were told to save memory notes with a Bash heredoc. On Claude Code 2.1.311, a Bash command with a heredoc or an output redirect never matches a permission pattern grant, so outside auto mode every save prompted the user, or was denied under `-p`. A flat `metadata.type:` key also indexed as type "other".
+
+**Decision**
+
+- Every agent saves memory with `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]`. The helper writes only `<git toplevel>/.claude/agent-memory/anthology-<agent>/<type>-<slug>.md` with nested `metadata:`/`type:` frontmatter and regenerates that folder's `MEMORY.md`.
+- Setup adds exactly one allow rule, `Bash(anthology-mem save *)` (`settings_patch.ALLOW_MEM_SAVE`); remove reverts it.
+- Verified with `claude -p` and a probe subagent: the rule auto-allows the command, including a quoted argument that spans lines. Still gated: `&&`/`;` compounds, redirects, `$(…)`, `PATH=`/`PYTHONPATH=` prefixes and an absolute path to the binary. A quoted line whose first non-blank character is `#` is not auto-allowed, so notes use bold lines instead of `#` headings.
+- A subagent's Bash environment carries no agent identity, so `--agent` is self-declared and validated against the roster. Types are project/feedback/reference; slugs are validated; symlinks are refused at every level; secret-shaped text is refused; an existing note is refused unless `--replace`. There is no delete subcommand, so the auto-allowed surface is write-only.
+- Every write runs the repo-memory privacy check (`memory_sync._privacy_check`).
+
+**Consequences**
+
+Agent memory saves are silent (no prompt) once setup has run. Cost if wrong: one helper and one line per agent body. Evidence: the stream I log.
+

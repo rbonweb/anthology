@@ -5,6 +5,9 @@ lives in the plugin data dir (never in a repo), carries a schema version, and is
 whenever that version changes. It is also the home of the small frontmatter parser that
 `memory_sync.py` shares.
 
+Commands: search, related, orphans, stale, rebuild, and `save` (write an agent memory note
+without a heredoc; needs no setup and no index).
+
 Python stdlib only (3.9+). Run through `bin/anthology-mem`.
 """
 from __future__ import annotations
@@ -582,13 +585,45 @@ def _parser():
     st = sub.add_parser("stale", help="superseded or old notes")
     st.add_argument("--days", type=int, default=180)
     sub.add_parser("rebuild", help="delete and rebuild the index")
+    sv = sub.add_parser("save", allow_abbrev=False,
+                        help="save an agent memory note (no heredoc needed)")
+    for flag in ("agent", "type", "slug", "name", "description", "body"):
+        sv.add_argument("--" + flag, required=True)
+    sv.add_argument("--replace", action="store_true", help="overwrite an existing note")
     for sp in sub.choices.values():
         sp.add_argument("--json", action="store_true", help="machine-readable output")
     return p
 
 
+def _save(args):
+    import memory_sync
+
+    root = memory_sync.repo_root(os.getcwd())
+    if root is None:
+        print("anthology-mem: not inside a git work tree; memory notes live in the repo",
+              file=sys.stderr)
+        return 1
+    try:
+        out = memory_sync.save_note(root, args.agent, args.type, args.slug, args.name,
+                                    args.description, args.body, replace=args.replace)
+    except memory_sync.SaveError as exc:
+        print("anthology-mem: %s" % exc, file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"action": out["action"], "path": out["relative"],
+                          "root": str(out["root"])}, sort_keys=True))
+    else:
+        print("%s %s in %s" % (out["action"], out["relative"], out["root"]))
+    if out["index_warning"]:
+        print("anthology-mem: note saved, but MEMORY.md was not regenerated: %s"
+              % out["index_warning"], file=sys.stderr)
+    return 0
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
+    if args.command == "save":  # needs no setup, data dir or index
+        return _save(args)
     import state  # lazy: the CLI is the only caller
     import memory_sync
 

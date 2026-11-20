@@ -48,7 +48,7 @@ It checks your machine, then shows every change and applies them only after you 
 3. **rtk.** Downloads the pinned rtk binary for your platform from this repo's releases, checks its sha256 against `rtk.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
-   - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes;
+   - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes (see [Saving notes](#saving-notes-anthology-mem-save));
    - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch.
@@ -235,6 +235,17 @@ anthology-mem rebuild                   delete and rebuild the index
 ```
 
 Links are the `[[note-name]]` links in the notes, plus relations such as `supersedes` and `depends_on` declared in a note's frontmatter. There are no embeddings, so nothing needs an API key or a model download.
+
+### Saving notes: `anthology-mem save`
+
+Roster agents save their notes through one command, so a read-only agent needs no Write tool, heredoc or redirect:
+
+```text
+anthology-mem save --agent <name> --type <project|feedback|reference> --slug <topic-slug> \
+  --name '<title>' --description '<one line>' --body '<text>' [--replace]
+```
+
+It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) is refused. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
 
 ### Export and import
 
