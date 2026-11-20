@@ -276,13 +276,20 @@ class HelperTests(unittest.TestCase):
     def test_memory_save_problems_name_each_failed_check(self):
         note = "---\nname: x\nmetadata:\n  type: project\n---\nbody\n"
         save = ("Bash", json.dumps({"command": "anthology-mem save --name project-eval-probe"}))
-        self.assertEqual(smoke.memory_save_problems([("Agent", "{}"), save], note, []), [])
-        self.assertEqual(smoke.memory_save_problems([save], note.replace("  type", "type"), []),
+        self.assertEqual(smoke.memory_save_problems([("Agent", "{}")], [save], note, []), [])
+        self.assertEqual(smoke.memory_save_problems([], [save], note.replace("  type", "type"), []),
                          ["the note lacks a nested `metadata: type: project`"])
+        # the save must come from the subagent: the main session saving it is not enough
+        self.assertEqual(smoke.memory_save_problems([save], [("Read", "{}")], note, []),
+                         ["anthology-mem save was not run by the subagent"])
+        # the heredoc and write-tool checks cover both sides
+        self.assertEqual(smoke.memory_save_problems([("Write", "{}")], [save, ("Bash", '{"command": "cat <<EOF"}')], note, []),
+                         ["a Bash call used a heredoc", "used Write"])
         problems = smoke.memory_save_problems(
-            [("Bash", json.dumps({"command": "cat <<EOF > n.md"})), ("Write", "{}"), ("Edit", "{}"), ("Write", "{}")],
+            [("Write", "{}")],
+            [("Bash", json.dumps({"command": "cat <<EOF > n.md"})), ("Edit", "{}"), ("Write", "{}")],
             None, ["/t/.claude/agent-memory/anthology:scout/n.md"])
-        self.assertEqual(problems, ["no Bash call to `anthology-mem save`", "a Bash call used a heredoc",
+        self.assertEqual(problems, ["anthology-mem save was not run by the subagent", "a Bash call used a heredoc",
                                     "used Edit, Write", "the note file was not written",
                                     "a path has the agent type's colon: /t/.claude/agent-memory/anthology:scout/n.md"])
 
@@ -434,12 +441,15 @@ class SmokeBodyTests(unittest.TestCase):
     def test_agent_memory_path_checks_the_stream_and_the_note(self):
         note = "---\nname: project-eval-probe\nmetadata:\n  type: project\n---\nbody\n"
 
-        def effects_for(text, command="anthology-mem save --type project"):
+        def effects_for(text, sub_command="anthology-mem save --type project", main_command="echo main"):
             def effects(n, call):
                 folder = call["cwd"] / ".claude" / "agent-memory" / "anthology-scout"
                 folder.mkdir(parents=True)
                 (folder / "project-eval-probe.md").write_text(text, encoding="utf-8")
-                return smoke.Proc(0, stream(bash_call(command)), "")
+                sub = call["tmp"] / "cfg" / "projects" / "p" / "sess" / "subagents" / "agent-1.jsonl"
+                sub.parent.mkdir(parents=True)
+                sub.write_text(stream(bash_call(sub_command)), encoding="utf-8")
+                return smoke.Proc(0, stream(bash_call(main_command)), "")
             return effects
 
         def make_repo(tmp):
@@ -458,9 +468,14 @@ class SmokeBodyTests(unittest.TestCase):
             self.assertIn("anthology:scout", call["prompt"])
             with self.fake_prompt_run(effects_for("no metadata", "cat <<EOF > n.md")):
                 status, reason = smoke.smoke_agent_memory_path(self.ctx)
+            self.assertEqual(status, smoke.FAIL)
+            for part in ("anthology-mem save was not run by the subagent", "heredoc", "nested"):
+                self.assertIn(part, reason)
+            # only the main session saved: the subagent did not
+            with self.fake_prompt_run(effects_for(note, "echo sub", "anthology-mem save --type project")):
+                status, reason = smoke.smoke_agent_memory_path(self.ctx)
         self.assertEqual(status, smoke.FAIL)
-        for part in ("no Bash call to `anthology-mem save`", "heredoc", "nested"):
-            self.assertIn(part, reason)
+        self.assertIn("anthology-mem save was not run by the subagent", reason)
 
 
 @unittest.skipUnless(os.path.exists("/bin/sh"), "no /bin/sh for the stub claude")

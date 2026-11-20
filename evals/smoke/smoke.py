@@ -466,12 +466,15 @@ def rtk_problems(results: Sequence[str], hooks: str) -> List[str]:
     return problems
 
 
-def memory_save_problems(calls: Sequence[Tuple[str, str]], note: Optional[str], stray: Sequence[str]) -> List[str]:
-    """What is wrong with an agent's memory save: via `anthology-mem save` only, a nested `type: project`, no colon path."""
+def memory_save_problems(main_calls: Sequence[Tuple[str, str]], sub_calls: Sequence[Tuple[str, str]],
+                         note: Optional[str], stray: Sequence[str]) -> List[str]:
+    """What is wrong with an agent's memory save: `anthology-mem save` run by the SUBAGENT (not the main session),
+    no heredoc or write tool in either, a nested `type: project`, no colon path."""
     problems = []
+    calls = [*main_calls, *sub_calls]
     bash = [i for n, i in calls if n == "Bash"]
-    if not any("anthology-mem save" in i for i in bash):
-        problems.append("no Bash call to `anthology-mem save`")
+    if not any(n == "Bash" and "anthology-mem save" in i for n, i in sub_calls):
+        problems.append("anthology-mem save was not run by the subagent")
     if any("<<" in i for i in bash):
         problems.append("a Bash call used a heredoc")
     used = sorted({n for n, _ in calls if n in ("Write", "Edit", "NotebookEdit")})
@@ -858,11 +861,12 @@ def smoke_agent_memory_path(ctx: Ctx) -> Result:
                                          "--max-turns", "12", "--output-format", "stream-json", "--verbose"],
                            cwd=repo, variadic=["Agent", "Read", "Glob", "Grep", "Bash(anthology-mem save *)"])
         # a stream-json event has the same message.content shape as a transcript line
-        calls = transcript_calls(p.out)
-        for f in subagent_files(tmp / "cfg"):
-            calls += transcript_calls(f.read_text(encoding="utf-8", errors="replace"))
+        main_calls = transcript_calls(p.out)
+        sub_calls = [c for f in subagent_files(tmp / "cfg")
+                     for c in transcript_calls(f.read_text(encoding="utf-8", errors="replace"))]
         note = repo / ".claude" / "agent-memory" / "anthology-scout" / "project-eval-probe.md"
-        problems = memory_save_problems(calls, note.read_text(encoding="utf-8") if note.is_file() else None,
+        problems = memory_save_problems(main_calls, sub_calls,
+                                        note.read_text(encoding="utf-8") if note.is_file() else None,
                                         colon_memory_paths(tmp))
     return (FAIL, f"{'; '.join(problems)} (exit {p.code}: {snippet(p.text, 80)})") if problems else (
         PASS, "the scout saved its note with anthology-mem save, no heredoc or write tool, in its own folder")

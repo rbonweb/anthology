@@ -456,10 +456,10 @@ class GrantTests(unittest.TestCase):
 
     def test_pattern_entries_in_allowed_tools_equal_a_grant(self):
         # A case may list `Bash(cmd)` / `Write(path)` itself, but only for a command the runner grants.
-        for name, case in self.cases.items():
-            for tool in case["execution"]["allowed_tools"]:
-                if "(" in tool:
-                    self.assertIn(tool, self.grants, name)
+        # Today no case lists one, so this fails the moment one appears without a matching grant.
+        entries = [(name, tool) for name, case in self.cases.items()
+                   for tool in case["execution"]["allowed_tools"] if "(" in tool]
+        self.assertEqual([(n, t) for n, t in entries if t not in self.grants], [])
 
     def test_every_write_style_grant_is_held_by_a_case(self):
         # A `Write(...)`, `Edit(...)` or `NotebookEdit(...)` grant only matters for a case that lists the tool.
