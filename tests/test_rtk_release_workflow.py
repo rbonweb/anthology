@@ -8,6 +8,8 @@ Rust image the tests run in.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -79,6 +81,24 @@ class RtkReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("rtk--v*", on["push"]["tags"])
         self.assertTrue(on["workflow_dispatch"]["inputs"]["tag"]["required"])
         self.assertIn("rtk/rust-toolchain.toml", on["pull_request"]["paths"])
+
+    def test_tag_is_validated_whole_string_under_bash(self):
+        step = next(s for s in steps_of(self.jobs["meta"]) if s.get("id") == "tag")
+        self.assertEqual(step.get("shell"), "bash")
+        run = step["run"]
+        self.assertIn("[[ $tag =~ ^rtk--v[0-9]+\\.[0-9]+\\.[0-9]+(-anthology\\.[0-9]+)?$ ]]", run)
+        self.assertNotIn("grep", run)  # a line-based grep accepts a multi-line dispatch input
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
+    def test_the_tag_check_rejects_multi_line_input(self):
+        step = next(s for s in steps_of(self.jobs["meta"]) if s.get("id") == "tag")
+        check = next(l.strip() for l in step["run"].splitlines() if "=~" in l)
+        cond = check[len("if ! "):-len("; then")]
+        for tag, ok in (("rtk--v1.2.1", True), ("rtk--v1.2.1-anthology.3", True),
+                        ("rtk--v1.2.1\nanything", False), ("evil\nrtk--v1.2.1", False),
+                        ("rtk--v1.2", False), ("rtk--v1.2.1-x", False)):
+            proc = subprocess.run(["bash", "-c", "tag=$1; " + cond, "bash", tag], capture_output=True)
+            self.assertEqual(proc.returncode == 0, ok, repr(tag))
 
     def test_every_job_has_a_timeout(self):
         for name, job in self.jobs.items():

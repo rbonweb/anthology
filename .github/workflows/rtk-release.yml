@@ -45,6 +45,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
         run: |
           set -eu
           case "$EVENT_NAME" in
@@ -55,7 +56,7 @@ jobs:
             workflow_dispatch) tag=$INPUT_TAG ;;
             *) tag=$REF_NAME ;;
           esac
-          if ! printf '%s\n' "$tag" | grep -Eq '^rtk--v[0-9]+\.[0-9]+\.[0-9]+(-anthology\.[0-9]+)?$'; then
+          if ! [[ $tag =~ ^rtk--v[0-9]+\.[0-9]+\.[0-9]+(-anthology\.[0-9]+)?$ ]]; then
             echo "::error::tag is not of the form rtk--v<major>.<minor>.<patch>[-anthology.<n>]"
             exit 1
           fi
