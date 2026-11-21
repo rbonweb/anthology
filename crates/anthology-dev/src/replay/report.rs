@@ -13,8 +13,9 @@
 //!
 //! **The corpus-string test** ([`check_report`]): after removing the fixed vocabulary, numbers,
 //! dates and 16/40/64-digit hex ids, the report must contain no corpus string (any corpus value,
-//! or any whitespace-separated word of one) longer than 3 characters, and no word outside the
-//! vocabulary. `replay report` runs it on the real corpus before it writes, and refuses to write
+//! or any whitespace-separated word of one) longer than 3 characters, no word outside the
+//! vocabulary, and no leftover fragment longer than 3 characters (which also catches
+//! punctuation or non-ASCII text that is not in the collected corpus). `replay report` runs it on the real corpus before it writes, and refuses to write
 //! a report that fails; CI runs it on a synthetic corpus, including an injected leak.
 
 use std::collections::BTreeMap;
@@ -440,11 +441,13 @@ pub struct ReportCheck {
     pub unknown: Vec<String>,
     /// Corpus strings longer than 3 characters found in the report.
     pub hits: Vec<String>,
+    /// Leftover fragments longer than 3 characters.
+    pub long_fragments: usize,
 }
 
 impl ReportCheck {
     pub fn ok(&self) -> bool {
-        self.unknown.is_empty() && self.hits.is_empty()
+        self.unknown.is_empty() && self.hits.is_empty() && self.long_fragments == 0
     }
 }
 
@@ -466,7 +469,11 @@ pub fn check_report(report: &str, corpus: &mut dyn Iterator<Item = String>) -> R
             }
         }
     }
-    ReportCheck { unknown, hits }
+    ReportCheck {
+        unknown,
+        hits,
+        long_fragments: long.len(),
+    }
 }
 
 /// Every string of the corpus in `dir` (call fields, input keys and values, texts), plus
@@ -598,6 +605,12 @@ mod tests {
         let check = check_report(&leak, &mut vec!["/.ssh/é".to_string()].into_iter());
         assert!(check.unknown.contains(&"ssh".to_string()));
         assert_eq!(check.hits, ["/.ssh/é"]);
+        // Text with no word in it, and not in the corpus, still fails: a long fragment.
+        let odd = format!("{}* ~~~~ é\n", render(&sample()));
+        let check = check_report(&odd, &mut std::iter::empty());
+        assert!(check.unknown.is_empty() && check.hits.is_empty());
+        assert_eq!(check.long_fragments, 1);
+        assert!(!check.ok());
     }
 
     #[test]

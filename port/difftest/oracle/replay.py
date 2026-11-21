@@ -8,8 +8,9 @@ Library surface: `run(case: dict) -> dict`. Cases:
 - `{"op": "check", "envelope_hex": H, "home": S}`: the envelope bytes decoded exactly as
   `guard.py`'s `decide` does (lossy UTF-8, then `json.loads`), then `guard_rules.check(...)`.
   `{"verdict": "allow" | "block:<rule>" | "malformed"}` (`malformed`: not JSON, not an object,
-  or `tool_name` not a string, which `guard.py` allows), or `{"raised": "<type>"}` when `check`
-  raised (`guard.py` fails open: the D-1 case).
+  or `tool_name` not a string, which `guard.py` allows), or `{"raised": "<type>"}` when the
+  decoding or `check` raised any other exception, such as `RecursionError` on deeply nested JSON
+  (`guard.py` fails open: the D-1 case).
 - `{"op": "analyze", "envelope_hex": H, "home": S}`: `guard_rules._analyze(command, home)` on
   the envelope's Bash `command`, as SH's oracle reports it (`Entry` minus `opaque`, groups
   numbered by first appearance), canonical JSON in `"analysis"`; `null` when the envelope has
@@ -63,11 +64,13 @@ def _clean(obj, flag):
 
 
 def _decode(envelope_hex):
-    """`guard.py`'s `decide` up to the check: the payload dict, or None when it allows."""
+    """`guard.py`'s `decide` up to the check: the payload dict, or None when it is malformed.
+    Any other exception (RecursionError on deep nesting) propagates: the caller reports it as
+    raised, since `guard.py` fails open on it just the same."""
     raw = bytes.fromhex(envelope_hex)
     try:
         data = json.loads(raw.decode("utf-8", errors="replace"))
-    except ValueError:
+    except ValueError:  # JSONDecodeError
         return None
     if not isinstance(data, dict) or not isinstance(data.get("tool_name"), str):
         return None
@@ -104,10 +107,10 @@ def _analysis(command, home):
 
 
 def _check(case):
-    data = _decode(case["envelope_hex"])
-    if data is None:
-        return {"verdict": "malformed"}
     try:
+        data = _decode(case["envelope_hex"])
+        if data is None:
+            return {"verdict": "malformed"}
         hit = G.check(data["tool_name"], data.get("tool_input"), case["home"])
     except Exception as exc:  # guard.py turns any exception into "allow"
         return {"raised": type(exc).__name__}
@@ -115,7 +118,10 @@ def _check(case):
 
 
 def _analyze(case):
-    data = _decode(case["envelope_hex"])
+    try:
+        data = _decode(case["envelope_hex"])
+    except Exception as exc:  # RecursionError on deep nesting: guard.py allows
+        return {"raised": type(exc).__name__}
     tool_input = data.get("tool_input") if data is not None else None
     if data is None or data["tool_name"] != "Bash" or not isinstance(tool_input, dict) \
             or not isinstance(tool_input.get("command"), str):

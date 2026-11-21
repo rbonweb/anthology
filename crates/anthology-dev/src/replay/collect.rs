@@ -14,7 +14,8 @@
 //!   `replay-corpus-texts.jsonl` and `replay-corpus-manifest.json`, mode 0600, written through
 //!   temporary files and renamed; plus `hmac.key` on first use. The replay folder is
 //!   `~/.claude/anthology/replay/` (GC-1), created 0700, and refused when it lies inside an
-//!   anthology checkout.
+//!   anthology checkout or any other git work tree (a dotfiles repository could commit it).
+//!   Temporary files are named so `.gitignore`'s `replay-corpus*` covers them too.
 //!
 //! Memory stays bounded by the number of distinct items (one hash each): records stream to the
 //! temporary files and get their counts in a final pass.
@@ -80,18 +81,27 @@ fn resolved(path: &Path, cwd: &Path) -> PathBuf {
     }
 }
 
-/// Refuses a replay folder inside an anthology checkout: the corpus must never be committed.
+/// Refuses a replay folder inside an anthology checkout or any git work tree: the corpus must
+/// never be committed.
 pub fn refuse_in_checkout(dir: &Path, cwd: &Path) -> Result<(), String> {
     let real = resolved(dir, cwd);
-    match real.ancestors().find(|a| is_checkout(a)) {
-        Some(top) => Err(format!(
+    if let Some(top) = real.ancestors().find(|a| is_checkout(a)) {
+        return Err(format!(
             "refusing to use {} for replay data: it is inside the anthology checkout {}; \
              the corpus is local only",
             dir.display(),
             top.display()
-        )),
-        None => Ok(()),
+        ));
     }
+    if let Some(top) = real.ancestors().find(|a| a.join(".git").exists()) {
+        return Err(format!(
+            "refusing to use {} for replay data: it is inside the git work tree {}; the corpus \
+             is local only (pass --dir outside any repository)",
+            dir.display(),
+            top.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Creates the replay folder (0700) after [`refuse_in_checkout`].
@@ -274,8 +284,8 @@ fn io_err(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
 pub fn collect(projects: &Path, dir: &Path, cwd: &Path) -> Result<Collected, String> {
     ensure_dir(dir, cwd)?;
     hmac::load_or_create(dir)?;
-    let calls_tmp = dir.join(".replay-corpus-calls.tmp");
-    let texts_tmp = dir.join(".replay-corpus-texts.tmp");
+    let calls_tmp = dir.join("replay-corpus-calls.tmp");
+    let texts_tmp = dir.join("replay-corpus-texts.tmp");
     let result = collect_into(projects, dir, &calls_tmp, &texts_tmp);
     let _ = fs::remove_file(&calls_tmp);
     let _ = fs::remove_file(&texts_tmp);
@@ -390,7 +400,7 @@ fn collect_into(
     let mut text = json::dumps(&Value::Object(m), &INDENT2_SORTED);
     text.push('\n');
     let manifest = dir.join(MANIFEST_FILE);
-    let tmp = dir.join(".replay-corpus-manifest.tmp");
+    let tmp = dir.join("replay-corpus-manifest.tmp");
     let mut out = private_file(&tmp)?;
     out.write_all(text.as_bytes())
         .and_then(|()| out.flush())
@@ -551,6 +561,12 @@ mod tests {
         let link = root.path().join("link");
         std::os::unix::fs::symlink(&checkout, &link).expect("symlink");
         assert!(refuse_in_checkout(&link.join("replay"), root.path()).is_err());
+        // Any other git work tree is refused too.
+        let dotfiles = root.path().join("dotfiles");
+        fs::create_dir_all(dotfiles.join(".git")).expect("mkdir");
+        let err =
+            refuse_in_checkout(&dotfiles.join(".claude/replay"), root.path()).expect_err("git");
+        assert!(err.contains("inside the git work tree"), "{err}");
         let outside = root.path().join("home/.claude/anthology/replay");
         ensure_dir(&outside, root.path()).expect("outside");
         let mode = fs::metadata(&outside).expect("meta").permissions().mode();

@@ -115,11 +115,20 @@ const OPTIONS: [&str; 11] = [
     "--out",
 ];
 
+/// Options without a value.
+const FLAGS: [&str; 1] = ["--allow-standins"];
+
 fn parse_opts(args: &[OsString]) -> Result<Opts, String> {
     let mut opts = Opts::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let a = a.to_str().ok_or("arguments must be UTF-8 option names")?;
+        if FLAGS.contains(&a) {
+            if opts.0.insert(a.to_string(), OsString::new()).is_some() {
+                return Err(format!("{a} given twice"));
+            }
+            continue;
+        }
         let (name, inline) = match a.split_once('=') {
             Some((n, v)) => (n, Some(OsString::from(v))),
             None => (a, None),
@@ -291,6 +300,7 @@ fn py_text(p: &PySide) -> String {
     match p {
         PySide::Value(v) => json::dumps(v, &json::PY_DEFAULT_UNICODE),
         PySide::Raised(t) => format!("raised {t}"),
+        PySide::TimedOut => "timed out".into(),
         PySide::Error(e) => format!("oracle error: {e}"),
     }
 }
@@ -321,6 +331,8 @@ fn replay_call(
     let mut py_raised = false;
     let hex_env = Value::Str(hmac::hex(&envelope));
     let home = Value::Str(ctx.home.to_string());
+    // The in-process verdict also corroborates a D-7 limit block from the hook.
+    let rust_verdict = compare::rust_check(&envelope, ctx.home);
     if ctx.surfaces.check {
         let req = compare::case(
             "check",
@@ -328,12 +340,11 @@ fn replay_call(
         );
         let (py, _) = oracle.ask(req, "verdict");
         py_raised = matches!(py, PySide::Raised(_));
-        let rust = compare::rust_check(&envelope, ctx.home);
         kinds.push((
             "check",
-            compare::classify_check(&py, &rust),
+            compare::classify_check(&py, &rust_verdict),
             py_text(&py),
-            rust,
+            rust_verdict.clone(),
         ));
     }
     let compared: Vec<(Runner, RunOut)> = outs
@@ -342,8 +353,16 @@ fn replay_call(
         .cloned()
         .collect();
     if compared.len() >= 2 {
-        let outcome = compare::classify_runners(&compared, py_raised);
-        let show = |o: &RunOut| format!("exit {} {}", o.code, String::from_utf8_lossy(&o.stderr));
+        let outcome = compare::classify_runners(&compared, py_raised, rust_verdict == "incomplete");
+        let show = |o: &RunOut| {
+            format!(
+                "exit {} ({} ms) stdout {:?} stderr {}",
+                o.code,
+                o.elapsed.as_millis(),
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            )
+        };
         let py = compared.first().map(|(_, o)| show(o)).unwrap_or_default();
         let rust = compared[1..]
             .iter()
@@ -399,6 +418,25 @@ fn replay_text(ctx: &Ctx<'_>, oracle: &mut Oracle, text: &str) -> TextDone {
     }
 }
 
+/// Progress lines on stderr every [`Progress::EVERY`] items (counts only). They go straight to
+/// the terminal: a long local run must show it is alive, and `Output` is written at the end.
+#[derive(Default)]
+struct Progress(AtomicUsize);
+
+impl Progress {
+    const EVERY: usize = 1000;
+
+    fn tick(&self, what: &str, total: usize) {
+        let n = self.0.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(Self::EVERY) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "anthology-dev replay run: {n}/{total} {what}"
+            );
+        }
+    }
+}
+
 /// Runs `n` items on `jobs` threads; `make(worker)` gives each thread its own `work(item)`. The
 /// results come back in item order.
 fn parallel<T, W, F>(jobs: usize, n: usize, make: F) -> Result<Vec<T>, String>
@@ -443,19 +481,43 @@ where
         .collect()
 }
 
-fn python_ok(python: &Path) -> Result<(), String> {
+/// `prog` as an absolute path: itself when it names a folder, else the first executable
+/// `<dir>/<prog>` on `path`. One resolution serves runner 1 and the oracle (GC-16: the
+/// authority is the Python the run names).
+fn resolve_program(prog: &Path, path: Option<&std::ffi::OsStr>) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let found = if prog.components().count() > 1 {
+        Some(prog.to_path_buf())
+    } else {
+        path.into_iter()
+            .flat_map(std::env::split_paths)
+            .map(|d| d.join(prog))
+            .find(|p| {
+                std::fs::metadata(p)
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            })
+    };
+    found
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .ok_or_else(|| format!("cannot find {} on PATH", prog.display()))
+}
+
+/// The Python version (`3.12.1`), or an error when it is not a working Python 3.9+.
+fn python_version(python: &Path) -> Result<String, String> {
     let out = runners::exec(
         python,
         &[
             "-c".as_ref(),
-            "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)".as_ref(),
+            "import sys; print('%d.%d.%d' % sys.version_info[:3]); \
+             sys.exit(0 if sys.version_info >= (3, 9) else 1)"
+                .as_ref(),
         ],
         b"",
-        &Env::default().with("PATH", "/usr/bin:/bin:/usr/local/bin"),
+        &Env::default(),
         Path::new("/"),
     );
     if out.code == 0 {
-        Ok(())
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(format!("{} is not a working Python 3.9+", python.display()))
     }
@@ -515,14 +577,21 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         Vec::new()
     };
     let explained = compare::load_explained(&dir)?;
-    let python = opts
-        .path("--python")
-        .unwrap_or_else(|| PathBuf::from("python3"));
     let needs_python =
         runners.contains(&Runner::Python) || surfaces.analyze || surfaces.check || surfaces.privacy;
-    if needs_python {
-        python_ok(&python)?;
-    }
+    let python_arg = opts
+        .path("--python")
+        .unwrap_or_else(|| PathBuf::from("python3"));
+    let (python, python_version) = if needs_python {
+        let p = resolve_program(&python_arg, env.get_os("PATH"))?;
+        let v = python_version(&p)?;
+        (p, v)
+    } else {
+        (python_arg, String::new())
+    };
+    let path_var = env
+        .get_os("PATH")
+        .map_or_else(|| OsString::from("/usr/bin:/bin"), OsString::from);
     let home = home_of(env);
     let hostname = anthology_core::sys::hostname()
         .map(|h| h.to_string_lossy().into_owned())
@@ -543,11 +612,14 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         hostname: &hostname,
     };
     let quarantined = AtomicUsize::new(0);
+    let progress = Progress::default();
+    let progress_texts = Progress::default();
     let done_calls = parallel(jobs, calls.len(), |w| {
         let mut slot = setup.slot(w)?;
-        let mut oracle = Oracle::new(&python, &repo);
-        let (ctx, calls, quarantined) = (&ctx, &calls, &quarantined);
+        let mut oracle = Oracle::new(&python, &repo, path_var.clone());
+        let (ctx, calls, quarantined, progress) = (&ctx, &calls, &quarantined, &progress);
         Ok(move |i: usize| {
+            progress.tick("calls", calls.len());
             let before = slot.quarantined;
             let done = replay_call(ctx, &mut slot, &mut oracle, &calls[i]);
             quarantined.fetch_add((slot.quarantined - before) as usize, Ordering::Relaxed);
@@ -555,19 +627,26 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         })
     })?;
     let done_texts = parallel(jobs, texts.len(), |_| {
-        let mut oracle = Oracle::new(&python, &repo);
-        let (ctx, texts) = (&ctx, &texts);
-        Ok(move |i: usize| replay_text(ctx, &mut oracle, &texts[i].1))
+        let mut oracle = Oracle::new(&python, &repo, path_var.clone());
+        let (ctx, texts, progress) = (&ctx, &texts, &progress_texts);
+        Ok(move |i: usize| {
+            progress.tick("texts", texts.len());
+            replay_text(ctx, &mut oracle, &texts[i].1)
+        })
     })?;
 
+    let (rust_commit, rust_commit_from) = match opts.str("--rust-commit")? {
+        Some(c) => (c.to_string(), "--rust-commit"),
+        None => (
+            head_commit(env, &repo),
+            "the checkout's HEAD; pass --rust-commit for a binary built elsewhere",
+        ),
+    };
     // Aggregate, in corpus order.
     let mut s = Summary {
         date: date.clone(),
         python_commit: head_commit(env, &repo),
-        rust_commit: match opts.str("--rust-commit")? {
-            Some(c) => c.to_string(),
-            None => head_commit(env, &repo),
-        },
+        rust_commit: rust_commit.clone(),
         manifest_sha256,
         calls_distinct: calls.len() as u64,
         calls_total: calls.iter().map(|c| c.count).sum(),
@@ -718,8 +797,25 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
             );
         }
     }
+    if needs_python {
+        let _ = writeln!(stdout, "python: {} {python_version}", python.display());
+    }
+    let _ = writeln!(stdout, "rust commit: {rust_commit} ({rust_commit_from})");
     let _ = writeln!(stdout, "run file: {}", run_file.display());
     let mut stderr = String::new();
+    if needs_python && !python_version.starts_with("3.12.") {
+        let _ = writeln!(
+            stderr,
+            "anthology-dev replay run: Python {python_version} is not 3.12, the authority (GC-16); \
+             pass --python"
+        );
+    }
+    if runners.contains(&Runner::Hook) != runners.contains(&Runner::Shim) {
+        stderr.push_str(
+            "anthology-dev replay run: only one of runners 2 and 3 ran, so the shim's \
+             transparency was not checked\n",
+        );
+    }
     if s.standins {
         stderr.push_str(
             "anthology-dev replay run: the guard check and shell analysis are SWAP(GD2) \
@@ -749,13 +845,19 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
     })
 }
 
-/// Writes `data` to `path`, mode 0600, through a temporary file in the same folder.
+/// Writes `data` to `path`, mode 0600, through a temporary file in the same folder whose name
+/// `.gitignore` covers too (`replay-corpus*`, `runner4-*.tsv`).
 fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    anthology_core::fsx::atomic_write(path, data, 0o600, &format!(".{name}."), ".tmp")
+    let (prefix, suffix) = if name.starts_with("runner4-") {
+        ("runner4-tmp-", ".tsv")
+    } else {
+        ("replay-corpus-tmp-", ".tmp")
+    };
+    anthology_core::fsx::atomic_write(path, data, 0o600, prefix, suffix)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e.py_str()))
 }
 
@@ -796,7 +898,7 @@ fn identity_strings(env: &Env) -> Vec<String> {
 }
 
 fn cmd_report(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
-    opts.only(&["--dir", "--date", "--repo", "--out"])?;
+    opts.only(&["--dir", "--date", "--repo", "--out", "--allow-standins"])?;
     let dir = opts.dir(env, cwd);
     collect::refuse_in_checkout(&dir, cwd)?;
     let date = match opts.str("--date")? {
@@ -818,15 +920,23 @@ fn cmd_report(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         Some(o) => cwd.join(o),
         None => repo_of(opts, cwd)?.join(format!("port/replay-reports/{date}.md")),
     };
+    if summary.standins && !opts.0.contains_key("--allow-standins") {
+        return Err(format!(
+            "{} used the SWAP(GD2) stand-ins for the guard and shell, so it proves nothing; \
+             replay again once GD2 has merged (or pass --allow-standins for a test report)",
+            run_file.display()
+        ));
+    }
     let rendered = report::render(&summary);
     let strings = report::corpus_strings(&dir, identity_strings(env))?;
     let check = report::check_report(&rendered, &mut strings.into_iter());
     if !check.ok() {
         let mut msg = format!(
-            "the report failed the corpus-string test ({} unknown words, {} corpus strings); \
-             nothing was written:",
+            "the report failed the corpus-string test ({} unknown words, {} corpus strings, {} \
+             long fragments); nothing was written:",
             check.unknown.len(),
-            check.hits.len()
+            check.hits.len(),
+            check.long_fragments
         );
         for w in check.unknown.iter().chain(&check.hits).take(10) {
             let shown: String = w.chars().take(40).collect();

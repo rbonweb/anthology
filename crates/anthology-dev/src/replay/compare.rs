@@ -12,26 +12,36 @@
 //!
 //! **Classification** ([`Outcome`]). Only GC-16 classes explain a difference, and only in the
 //! allowed direction ("Rust may block or report more, never less"):
-//! - D-1: Python raised (it fails open) and Rust blocks or reports.
+//! - D-1: the guard's Python raised (`guard.py` fails open: it allows) and Rust blocks by a rule.
 //! - D-6: Python's result held lone surrogates and equals Rust's once they are U+FFFD.
-//! - D-7: Rust hit a resource limit (the GC-14 limit block, an incomplete analysis, an
-//!   `unscannable` privacy finding) where Python finished.
+//! - D-7: Rust hit a resource limit where Python finished or was merely slow: an incomplete
+//!   check or analysis, an `unscannable` privacy finding, or the GC-14 limit block from the hook,
+//!   which counts only when it is corroborated (the in-process check is incomplete too, or
+//!   Python took [`SLOW`] or longer, or timed out); otherwise a fast Python allow against a limit
+//!   block could hide a Rust slowdown.
 //! - A **looser** difference (Rust allows what Python blocked, or reports fewer privacy
-//!   findings) and a difference between runners 2 and 3 (the shim must be transparent) can
-//!   never be explained.
+//!   findings; a privacy scan that raises is a refusal in Python, so Python raising against no
+//!   Rust finding is looser), a difference between runners 2 and 3 (the shim must be
+//!   transparent), and a Rust runner that timed out, could not start or wrote to stdout can never
+//!   be explained.
+//! - Python timing out ([`ORACLE_TIMEOUT`], or the runner bound) is a difference unless Rust hit a
+//!   limit on the same input (D-7).
 //! - Any other difference is unexplained until the owner records it, after looking at the local
 //!   details, in `<replay>/replay-corpus-explained.tsv` (`<id>\t<kind>\t<D-n>\t<note>`).
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use anthology_memory::privacy::{PrivacyDeps, UNSCANNABLE, privacy_findings};
 use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
 
-use super::runners::{RunOut, Runner};
+use super::runners::{RunOut, Runner, TIMED_OUT};
 
 // SWAP(GD2): delete `guard_standin` and import `anthology_guard::{check, Rule, Verdict}`.
 use guard_standin::{Verdict, check};
@@ -171,11 +181,26 @@ pub const CLASSES: [&str; 7] = ["D-1", "D-2", "D-3", "D-4", "D-5", "D-6", "D-7"]
 
 // --- runners -------------------------------------------------------------------------------
 
-/// Runners 1-3 (whichever ran) against each other. `py_raised`: Python's check raised on this
-/// call (from the check comparison), so `guard.py` allowed by failing open.
-pub fn classify_runners(outs: &[(Runner, RunOut)], py_raised: bool) -> Outcome {
+/// A Python guard this slow on a call makes a Rust limit block on it plausible (D-7).
+pub const SLOW: Duration = Duration::from_secs(1);
+
+/// Runners 1-3 (whichever ran) against each other (module docs). `py_raised`: Python's check
+/// raised on this call, so `guard.py` allowed by failing open; `rust_incomplete`: the
+/// in-process Rust check of the same envelope hit a limit.
+pub fn classify_runners(
+    outs: &[(Runner, RunOut)],
+    py_raised: bool,
+    rust_incomplete: bool,
+) -> Outcome {
     let get = |r: Runner| outs.iter().find(|(x, _)| *x == r).map(|(_, o)| o);
+    let rust: Vec<&RunOut> = [Runner::Hook, Runner::Shim]
+        .into_iter()
+        .filter_map(get)
+        .collect();
     let mut out = Outcome::Same;
+    if rust.iter().any(|o| o.no_answer() || !o.stdout.is_empty()) {
+        out = Outcome::Never;
+    }
     if let (Some(hook), Some(shim)) = (get(Runner::Hook), get(Runner::Shim))
         && hook != shim
     {
@@ -184,14 +209,19 @@ pub fn classify_runners(outs: &[(Runner, RunOut)], py_raised: bool) -> Outcome {
     let Some(py) = get(Runner::Python) else {
         return out;
     };
-    for rust in [Runner::Hook, Runner::Shim].into_iter().filter_map(get) {
-        let o = if rust == py {
+    let py_timed_out = py.code == TIMED_OUT;
+    for r in rust {
+        let limit = r.code == 2 && r.stdout.is_empty() && r.stderr == LIMIT_LINE;
+        let o = if r == py {
             Outcome::Same
-        } else if rust.code == 2 && rust.stderr == LIMIT_LINE && (py.allowed() || py.blocked()) {
+        } else if limit
+            && (py.allowed() || py.blocked() || py_timed_out)
+            && (rust_incomplete || py_timed_out || py.elapsed >= SLOW)
+        {
             Outcome::Explained("D-7")
-        } else if py.blocked() && !rust.blocked() {
+        } else if py.blocked() && !r.blocked() {
             Outcome::Never
-        } else if py.allowed() && py.stderr.is_empty() && py_raised && rust.blocked() {
+        } else if py.allowed() && py.stderr.is_empty() && py_raised && r.rule_block() {
             Outcome::Explained("D-1")
         } else {
             Outcome::Diff
@@ -232,6 +262,8 @@ fn allows(verdict: &str) -> bool {
 pub fn classify_check(py: &PySide, rust: &str) -> Outcome {
     match py {
         PySide::Error(_) => Outcome::Diff,
+        PySide::TimedOut if rust == "incomplete" => Outcome::Explained("D-7"),
+        PySide::TimedOut => Outcome::Diff,
         PySide::Raised(_) if allows(rust) => Outcome::Same,
         PySide::Raised(_) if rust == "panic" => Outcome::Diff,
         PySide::Raised(_) => Outcome::Explained("D-1"),
@@ -333,6 +365,8 @@ pub fn classify_analyze(py: &PySide, d6: bool, rust: &Value) -> Outcome {
     match py {
         PySide::Error(_) => Outcome::Diff,
         _ if rust.as_str() == Some("panic") => Outcome::Diff,
+        PySide::TimedOut if rust_incomplete => Outcome::Explained("D-7"),
+        PySide::TimedOut => Outcome::Diff,
         PySide::Raised(_) => Outcome::Explained("D-1"),
         PySide::Value(v) => {
             let Some(text) = v.as_str() else {
@@ -378,15 +412,17 @@ pub fn rust_privacy(text: &str, home: &str, hostname: &str) -> Option<Vec<(usize
 }
 
 /// Python's findings (`{"findings": [[line, kind], …]}` or `{"raised"}`) against Rust's
-/// (`None` when Rust panicked).
+/// (`None` when Rust panicked). Every caller of Python's scan refuses the text when it raises
+/// (`memory_sync._privacy_check`, `memory_portable._repo_block`, `promotion_block`), so Rust must
+/// refuse too: report at least one finding.
 pub fn classify_privacy(py: &PySide, rust: &Option<Vec<(usize, String)>>) -> Outcome {
     let Some(rust) = rust else {
         return Outcome::Diff;
     };
     let py = match py {
-        PySide::Error(_) => return Outcome::Diff,
-        PySide::Raised(_) if rust.is_empty() => return Outcome::Same,
-        PySide::Raised(_) => return Outcome::Explained("D-1"),
+        PySide::Error(_) | PySide::TimedOut => return Outcome::Diff,
+        PySide::Raised(_) if rust.is_empty() => return Outcome::Never,
+        PySide::Raised(_) => return Outcome::Same,
         PySide::Value(v) => match findings_of(v) {
             Some(f) => f,
             None => return Outcome::Diff,
@@ -422,6 +458,10 @@ fn findings_of(v: &Value) -> Option<Vec<(usize, String)>> {
 
 // --- the Python side ------------------------------------------------------------------------
 
+/// The bound on one oracle answer. Past it the oracle is killed (and restarted at the next
+/// request) and the answer is [`PySide::TimedOut`].
+pub const ORACLE_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// One Python answer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PySide {
@@ -429,35 +469,60 @@ pub enum PySide {
     Value(Value),
     /// Python raised this exception type.
     Raised(String),
+    /// Python did not answer within [`ORACLE_TIMEOUT`].
+    TimedOut,
     /// The oracle failed (a traceback, a dead process): always a difference.
     Error(String),
 }
 
+struct Proc {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<std::io::Result<String>>,
+}
+
+/// Why a request got no answer.
+enum NoAnswer {
+    TimedOut,
+    Failed(String),
+}
+
 /// `port/difftest/oracle/replay.py` through `_driver.py`: one long-lived process, one JSON line
-/// each way per request. A process that dies fails that request and is restarted at the next.
+/// each way per request, each answer bounded by a timeout. A process that dies or times out
+/// fails that request and is restarted at the next.
 pub struct Oracle {
     python: std::path::PathBuf,
     repo: std::path::PathBuf,
-    proc: Option<(Child, ChildStdin, BufReader<ChildStdout>)>,
+    path: OsString,
+    timeout: Duration,
+    proc: Option<Proc>,
 }
 
 impl Oracle {
-    pub fn new(python: &Path, repo: &Path) -> Oracle {
+    /// `python` (an absolute path), the checkout `repo`, and the `PATH` it runs with.
+    pub fn new(python: &Path, repo: &Path, path: OsString) -> Oracle {
         Oracle {
             python: python.to_path_buf(),
             repo: repo.to_path_buf(),
+            path,
+            timeout: ORACLE_TIMEOUT,
             proc: None,
         }
     }
 
-    fn start(&self) -> Result<(Child, ChildStdin, BufReader<ChildStdout>), String> {
-        let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+    /// The same with another answer bound (tests).
+    pub fn with_timeout(mut self, timeout: Duration) -> Oracle {
+        self.timeout = timeout;
+        self
+    }
+
+    fn start(&self) -> Result<Proc, String> {
         let mut child = Command::new(&self.python)
             .arg("-I")
             .arg(self.repo.join("port/difftest/oracle/_driver.py"))
             .current_dir(&self.repo)
             .env_clear()
-            .env("PATH", path)
+            .env("PATH", &self.path)
             .env("LANG", "C.UTF-8")
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
@@ -466,44 +531,63 @@ impl Oracle {
             .spawn()
             .map_err(|e| format!("cannot start {}: {e}", self.python.display()))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-        Ok((child, stdin, stdout))
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Proc {
+            child,
+            stdin,
+            lines,
+        })
     }
 
-    /// Sends `case` to the `replay` module; returns its answer object.
-    pub fn call(&mut self, case: Map) -> Result<Map, String> {
+    fn call(&mut self, case: Map) -> Result<Map, NoAnswer> {
         if self.proc.is_none() {
-            self.proc = Some(self.start()?);
+            self.proc = Some(self.start().map_err(NoAnswer::Failed)?);
         }
-        let (_, stdin, stdout) = self.proc.as_mut().expect("started");
+        let p = self.proc.as_mut().expect("started");
         let mut req = Map::new();
         req.insert("module".into(), Value::Str("replay".into()));
         req.insert("case".into(), Value::Object(case));
         let mut line = json::dumps(&Value::Object(req), &PY_DEFAULT);
         line.push('\n');
-        let mut answer = String::new();
-        let got = stdin
+        let answer = match p
+            .stdin
             .write_all(line.as_bytes())
-            .and_then(|()| stdin.flush())
-            .and_then(|()| stdout.read_line(&mut answer));
-        let parsed = match got {
-            Ok(0) => Err("the oracle exited without an answer".to_string()),
-            Ok(_) => json::loads(answer.trim_end())
-                .ok()
-                .and_then(|v| v.into_object())
-                .ok_or_else(|| "the oracle's answer is not a JSON object".to_string()),
-            Err(e) => Err(format!("the oracle pipe failed: {e}")),
+            .and_then(|()| p.stdin.flush())
+        {
+            Err(e) => Err(NoAnswer::Failed(format!("the oracle pipe failed: {e}"))),
+            Ok(()) => match p.lines.recv_timeout(self.timeout) {
+                Ok(Ok(answer)) => json::loads(answer.trim_end())
+                    .ok()
+                    .and_then(|v| v.into_object())
+                    .ok_or_else(|| {
+                        NoAnswer::Failed("the oracle's answer is not a JSON object".into())
+                    }),
+                Ok(Err(e)) => Err(NoAnswer::Failed(format!("the oracle pipe failed: {e}"))),
+                Err(RecvTimeoutError::Timeout) => Err(NoAnswer::TimedOut),
+                Err(RecvTimeoutError::Disconnected) => Err(NoAnswer::Failed(
+                    "the oracle exited without an answer".into(),
+                )),
+            },
         };
-        if parsed.is_err() {
+        if answer.is_err() {
             self.stop();
         }
-        parsed
+        answer
     }
 
-    /// An answer as a [`PySide`]: `key` holds the value.
+    /// An answer as a [`PySide`] (`key` holds the value) and its `"d6"` mark.
     pub fn ask(&mut self, case: Map, key: &str) -> (PySide, bool) {
         match self.call(case) {
-            Err(e) => (PySide::Error(e), false),
+            Err(NoAnswer::TimedOut) => (PySide::TimedOut, false),
+            Err(NoAnswer::Failed(e)) => (PySide::Error(e), false),
             Ok(m) => {
                 let d6 = m.get("d6").and_then(Value::as_bool) == Some(true);
                 if let Some(e) = m.get("error").and_then(Value::as_str) {
@@ -523,19 +607,19 @@ impl Oracle {
     }
 
     fn stop(&mut self) {
-        if let Some((mut child, stdin, _)) = self.proc.take() {
-            drop(stdin);
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut p) = self.proc.take() {
+            drop(p.stdin);
+            let _ = p.child.kill();
+            let _ = p.child.wait();
         }
     }
 }
 
 impl Drop for Oracle {
     fn drop(&mut self) {
-        if let Some((mut child, stdin, _)) = self.proc.take() {
-            drop(stdin); // EOF ends the driver's loop
-            let _ = child.wait();
+        if let Some(mut p) = self.proc.take() {
+            drop(p.stdin); // EOF ends the driver's loop
+            let _ = p.child.wait();
         }
     }
 }
@@ -596,56 +680,145 @@ mod tests {
         RunOut {
             code,
             stderr: stderr.to_vec(),
+            ..RunOut::default()
         }
     }
 
     const G1: &[u8] = b"Blocked by anthology-guardrails (G1): run it inside Docker (OrbStack); for browser work use BrowserOS Neo\n";
+    const SETUP: &[u8] = b"Blocked by anthology-guardrails (setup): the guard binary did not work (exit 70) and was set aside\n";
 
     #[test]
     fn runner_differences_are_classified() {
         let allow = out(0, b"");
         let block = out(2, G1);
         let limit = out(2, LIMIT_LINE);
-        let run = |outs: &[(Runner, &RunOut)], raised| {
+        let slow_allow = RunOut {
+            elapsed: SLOW,
+            ..allow.clone()
+        };
+        let slow_block = RunOut {
+            elapsed: SLOW * 2,
+            ..block.clone()
+        };
+        let run = |outs: &[(Runner, &RunOut)], raised, incomplete| {
             let v: Vec<(Runner, RunOut)> = outs.iter().map(|(r, o)| (*r, (*o).clone())).collect();
-            classify_runners(&v, raised)
+            classify_runners(&v, raised, incomplete)
         };
         use Runner::{Hook, Python, Shim};
+        let same = Outcome::Same;
         assert_eq!(
-            run(&[(Python, &block), (Hook, &block), (Shim, &block)], false),
-            Outcome::Same
+            run(
+                &[(Python, &block), (Hook, &block), (Shim, &block)],
+                false,
+                false
+            ),
+            same
+        );
+        // D-7 needs corroboration: a Rust limit in-process, or a slow (or timed-out) Python.
+        let d7 = Outcome::Explained("D-7");
+        assert_eq!(
+            run(
+                &[(Python, &allow), (Hook, &limit), (Shim, &limit)],
+                false,
+                true
+            ),
+            d7
         );
         assert_eq!(
-            run(&[(Python, &allow), (Hook, &limit), (Shim, &limit)], false),
-            Outcome::Explained("D-7")
+            run(
+                &[(Python, &slow_allow), (Hook, &limit), (Shim, &limit)],
+                false,
+                false
+            ),
+            d7
         );
         assert_eq!(
-            run(&[(Python, &block), (Hook, &limit)], false),
-            Outcome::Explained("D-7")
+            run(&[(Python, &slow_block), (Hook, &limit)], false, false),
+            d7
         );
         assert_eq!(
-            run(&[(Python, &allow), (Hook, &block)], true),
-            Outcome::Explained("D-1")
+            run(
+                &[(Python, &out(TIMED_OUT, b"")), (Hook, &limit)],
+                false,
+                false
+            ),
+            d7
         );
         assert_eq!(
-            run(&[(Python, &allow), (Hook, &block)], false),
+            run(
+                &[(Python, &allow), (Hook, &limit), (Shim, &limit)],
+                false,
+                false
+            ),
             Outcome::Diff
         );
         assert_eq!(
-            run(&[(Python, &block), (Hook, &allow)], true),
-            Outcome::Never
+            run(
+                &[(Python, &out(TIMED_OUT, b"")), (Hook, &block)],
+                false,
+                false
+            ),
+            Outcome::Diff
+        );
+        // D-1 only for a rule block.
+        assert_eq!(
+            run(&[(Python, &allow), (Hook, &block)], true, false),
+            Outcome::Explained("D-1")
         );
         assert_eq!(
-            run(&[(Python, &block), (Hook, &out(70, b"x"))], false),
-            Outcome::Never
+            run(&[(Python, &allow), (Hook, &out(2, SETUP))], true, false),
+            Outcome::Diff
+        );
+        assert_eq!(
+            run(&[(Python, &allow), (Hook, &block)], false, false),
+            Outcome::Diff
+        );
+        // Looser, and Rust without an answer or with stdout, are never explained.
+        let never = Outcome::Never;
+        assert_eq!(run(&[(Python, &block), (Hook, &allow)], true, true), never);
+        assert_eq!(
+            run(&[(Python, &block), (Hook, &out(70, b"x"))], false, false),
+            never
+        );
+        let hang = out(TIMED_OUT, b"");
+        assert_eq!(
+            run(
+                &[(Python, &hang), (Hook, &hang), (Shim, &hang)],
+                false,
+                false
+            ),
+            never
+        );
+        assert_eq!(
+            run(
+                &[
+                    (Python, &allow),
+                    (Hook, &out(crate::replay::runners::NOT_STARTED, b"x"))
+                ],
+                false,
+                false
+            ),
+            never
+        );
+        let chatty = RunOut {
+            stdout: b"{}".to_vec(),
+            ..allow.clone()
+        };
+        assert_eq!(
+            run(&[(Python, &chatty), (Hook, &chatty)], false, false),
+            never
         );
         // The shim must be transparent, whatever Python said.
         assert_eq!(
-            run(&[(Python, &allow), (Hook, &limit), (Shim, &block)], false),
-            Outcome::Never
+            run(
+                &[(Python, &allow), (Hook, &limit), (Shim, &block)],
+                false,
+                true
+            ),
+            never
         );
-        assert_eq!(run(&[(Hook, &allow), (Shim, &allow)], false), Outcome::Same);
-        assert_eq!(run(&[(Python, &allow)], false), Outcome::Same);
+        assert_eq!(run(&[(Hook, &allow), (Shim, &allow)], false, false), same);
+        assert_eq!(run(&[(Python, &allow)], false, false), same);
     }
 
     #[test]
@@ -774,15 +947,63 @@ mod tests {
         assert_eq!(classify_privacy(&py(&email), &None), Outcome::Diff);
         assert_eq!(
             classify_privacy(&PySide::Raised("X".into()), &Some(Vec::new())),
-            Outcome::Same
+            Outcome::Never
         );
         assert_eq!(
             classify_privacy(&PySide::Raised("X".into()), &Some(f(&email))),
-            Outcome::Explained("D-1")
+            Outcome::Same
         );
         let found =
             rust_privacy("mail me: someone@example.org\nok", "/home/u", "box").expect("no panic");
         assert!(found.iter().all(|(l, _)| *l == 1), "{found:?}");
+    }
+
+    #[test]
+    fn a_python_timeout_is_a_difference_unless_rust_hit_a_limit() {
+        assert_eq!(
+            classify_check(&PySide::TimedOut, "incomplete"),
+            Outcome::Explained("D-7")
+        );
+        assert_eq!(classify_check(&PySide::TimedOut, "allow"), Outcome::Diff);
+        let rust = rust_analyze("ls", "/h");
+        assert_eq!(
+            classify_analyze(&PySide::TimedOut, false, &rust),
+            Outcome::Diff
+        );
+        assert_eq!(
+            classify_privacy(&PySide::TimedOut, &Some(Vec::new())),
+            Outcome::Diff
+        );
+    }
+
+    #[test]
+    fn an_oracle_that_hangs_is_bounded() {
+        let Some(python) = [
+            "/usr/bin/python3",
+            "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3",
+        ]
+        .into_iter()
+        .map(Path::new)
+        .find(|p| p.is_file()) else {
+            eprintln!("skipped: no python3 here");
+            return;
+        };
+        let repo = tempfile::tempdir().expect("tempdir");
+        let oracle_dir = repo.path().join("port/difftest/oracle");
+        std::fs::create_dir_all(&oracle_dir).expect("mkdir");
+        std::fs::write(
+            oracle_dir.join("_driver.py"),
+            "import time\ntime.sleep(60)\n",
+        )
+        .expect("write");
+        let mut o = Oracle::new(python, repo.path(), "/usr/bin:/bin".into())
+            .with_timeout(Duration::from_millis(500));
+        let t0 = std::time::Instant::now();
+        assert_eq!(o.ask(case("check", &[]), "verdict").0, PySide::TimedOut);
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        // It is restarted at the next request (and times out again).
+        assert_eq!(o.ask(case("check", &[]), "verdict").0, PySide::TimedOut);
     }
 
     #[test]

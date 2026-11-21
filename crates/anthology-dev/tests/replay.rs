@@ -79,6 +79,12 @@ fn corpus() -> Corpus {
         assistant(session, &cwd, &tool_use("toolu_05", "mcp__synthsrv__lookup", r#"{"query":"quarterly widgets"}"#)),
         assistant(session, &cwd, &tool_use("toolu_06", "SomeFutureTool", r#"{"flag":true}"#)),
         assistant(session, &cwd, &tool_use("toolu_07", "Bash", r#"{"command":"echo café \ud800"}"#)),
+        // Deep nesting: Python's json raises RecursionError, guard.py fails open (D-1 territory).
+        assistant(
+            session,
+            &cwd,
+            &tool_use("toolu_08", "Bash", &format!(r#"{{"command":"echo deep","x":{}{}}}"#, "[".repeat(3000), "]".repeat(3000))),
+        ),
         r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"total 0\nreach me at widget.maker@synthetic-corp.test"}]},"toolUseResult":{"stdout":"total 0","stderr":""}}"#.to_string(),
         "this line is not JSON".to_string(),
     ]
@@ -113,7 +119,7 @@ fn collect_reads_subagents_deduplicates_and_keeps_the_corpus_private() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.starts_with(
-            "replay collect: 2 transcripts, 12 lines (1 skipped), 9 tool calls (8 distinct)"
+            "replay collect: 2 transcripts, 13 lines (1 skipped), 10 tool calls (9 distinct)"
         ),
         "{stdout}"
     );
@@ -134,7 +140,7 @@ fn collect_reads_subagents_deduplicates_and_keeps_the_corpus_private() {
         ids,
         [
             "toolu_11", "toolu_12", "toolu_01", "toolu_03", "toolu_04", "toolu_05", "toolu_06",
-            "toolu_07"
+            "toolu_07", "toolu_08"
         ]
     );
     let by_id = |id: &str| calls.iter().find(|c| c.tool_use_id == id).expect("call");
@@ -206,6 +212,11 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
     let bin = anthology_testkit::run::anthology_bin();
     let python = have_python();
     if !python {
+        // rust-test-macos is the one CI job where the authority comparisons run: never skip there.
+        assert!(
+            !(cfg!(target_os = "macos") && std::env::var_os("CI").is_some()),
+            "macOS CI must have a python3 3.9+ for the replay test"
+        );
         eprintln!("replay: no python3 3.9+ here; runner 1 and the Python surfaces are skipped");
     }
     let (runners, surfaces) = if python {
@@ -244,19 +255,19 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
         &fs::read_to_string(dir.join("run-2026-01-02.json")).expect("run file"),
     )
     .expect("summary");
-    assert_eq!((summary.calls_distinct, summary.calls_total), (8, 9));
-    assert_eq!(summary.bucket_distinct, [6, 1, 1]);
+    assert_eq!((summary.calls_distinct, summary.calls_total), (9, 10));
+    assert_eq!(summary.bucket_distinct, [7, 1, 1]);
     // Runner 4 (binary missing): only the read-only allowlist passes.
     assert_eq!(
         summary.runners.get(&4),
-        Some(&[[2, 4, 0], [0, 1, 0], [0, 1, 0]])
+        Some(&[[2, 5, 0], [0, 1, 0], [0, 1, 0]])
     );
     let tsv = fs::read_to_string(dir.join("runner4-2026-01-02.tsv")).expect("runner4 list");
     assert!(
         tsv.contains("\nmcp__synthsrv__lookup\tmcp\t1\t1\t0\t1\t0\n"),
         "{tsv}"
     );
-    assert!(tsv.contains("\nBash\tbuiltin\t4\t5\t0\t4\t0\n"), "{tsv}");
+    assert!(tsv.contains("\nBash\tbuiltin\t5\t6\t0\t5\t0\n"), "{tsv}");
     assert_eq!(mode(&dir.join("runner4-2026-01-02.tsv")), 0o600);
     if python {
         assert_eq!(
@@ -274,8 +285,11 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
             (summary.texts_distinct, summary.texts_distinct),
             "privacy is clean"
         );
-        assert_eq!(summary.compared.get("check").map(|c| c.0), Some(8));
-        assert_eq!(summary.compared.get("analyze").map(|c| c.0), Some(4));
+        assert_eq!(summary.compared.get("check").map(|c| c.0), Some(9));
+        assert_eq!(summary.compared.get("analyze").map(|c| c.0), Some(5));
+        let details = fs::read_to_string(dir.join("replay-corpus-details-2026-01-02.jsonl"))
+            .expect("details");
+        assert!(!details.contains("oracle error"), "{details}");
     }
     // SWAP(GD2): once the guard and shell are real, the whole run is clean:
     // assert_eq!(summary.unexplained(), 0, "{stderr}");
@@ -287,6 +301,7 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
             "report",
             "--date",
             "2026-01-02",
+            "--allow-standins",
             "--out",
             out_md.to_str().expect("utf8"),
         ]),
@@ -332,4 +347,57 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
         check.hits.contains(&"quarterly widgets".to_string()),
         "{check:?}"
     );
+}
+
+/// A stand-in `anthology` (a shell script) that allows every call: plain mode exits 0 silently,
+/// `--shim` writes the allow token. It proves runner 3's seeding (the shim takes the hot path and
+/// runs the seeded copy) and the runner 2 vs 3 comparison without waiting for GD2.
+#[test]
+fn runner_3_runs_the_seeded_binary_and_matches_runner_2() {
+    let c = corpus();
+    let repo = repo();
+    let dir = c.home.join(".claude/anthology/replay");
+    assert_eq!(replay::run_in(&args(&["collect"]), &c.env, &c.home).code, 0);
+    let bin = c.home.join("fake-anthology");
+    fs::write(
+        &bin,
+        "#!/bin/sh\ncase $1 in\n--version) echo 'anthology 0.1.0 (test)'; exit 0 ;;\n\
+         guard) cat >/dev/null; [ \"$3\" = --shim ] && printf 'anthology-guard:allow:v1\\n' >&2; exit 0 ;;\n\
+         esac\nexit 64\n",
+    )
+    .expect("write");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let out = replay::run_in(
+        &args(&[
+            "run",
+            "--runners",
+            "2,3,4",
+            "--surfaces",
+            "",
+            "--bin",
+            bin.to_str().expect("utf8"),
+            "--repo",
+            repo.to_str().expect("utf8"),
+            "--jobs",
+            "2",
+            "--date",
+            "2026-01-03",
+        ]),
+        &c.env,
+        &c.home,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.code, 0, "{stderr}");
+    assert!(!stderr.contains("quarantined"), "{stderr}");
+    let summary = report::Summary::from_json(
+        &fs::read_to_string(dir.join("run-2026-01-03.json")).expect("run file"),
+    )
+    .expect("summary");
+    assert_eq!(summary.compared.get("runners"), Some(&(9, 9)));
+    assert_eq!(
+        summary.runners.get(&3),
+        Some(&[[7, 0, 0], [1, 0, 0], [1, 0, 0]])
+    );
+    assert!(summary.diffs.is_empty());
+    assert!(!summary.standins);
 }

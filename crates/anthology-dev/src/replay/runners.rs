@@ -75,25 +75,50 @@ impl Runner {
     }
 }
 
-/// What a runner did with one call: its exit code and its stderr (stdout is not compared:
-/// the hook contract has it empty).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a runner did with one call: its exit code, stdout and stderr (compared byte for byte),
+/// and how long it took (not compared; it corroborates a D-7 limit block).
+#[derive(Clone, Debug, Default)]
 pub struct RunOut {
     pub code: i32,
+    pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub elapsed: Duration,
 }
 
+impl PartialEq for RunOut {
+    fn eq(&self, other: &RunOut) -> bool {
+        (self.code, &self.stdout, &self.stderr) == (other.code, &other.stdout, &other.stderr)
+    }
+}
+
+impl Eq for RunOut {}
+
 impl RunOut {
+    /// Exit 0 with an empty stdout (the hook contract: Claude Code parses stdout on exit 0).
     pub fn allowed(&self) -> bool {
-        self.code == 0
+        self.code == 0 && self.stdout.is_empty()
     }
 
     /// A well-formed guard block.
     pub fn blocked(&self) -> bool {
         self.code == 2
+            && self.stdout.is_empty()
             && self
                 .stderr
                 .starts_with(b"Blocked by anthology-guardrails (")
+    }
+
+    /// A block by one of the rules G1-G6 (not `(setup)` or `(internal)`).
+    pub fn rule_block(&self) -> bool {
+        self.blocked()
+            && self
+                .stderr
+                .starts_with(b"Blocked by anthology-guardrails (G")
+    }
+
+    /// The call hit [`TIMEOUT`] or could not start.
+    pub fn no_answer(&self) -> bool {
+        self.code == TIMED_OUT || self.code == NOT_STARTED
     }
 }
 
@@ -345,6 +370,7 @@ fn not_started(why: &str) -> RunOut {
     RunOut {
         code: NOT_STARTED,
         stderr: why.as_bytes().to_vec(),
+        ..RunOut::default()
     }
 }
 
@@ -374,11 +400,12 @@ pub fn exec_bounded(
         .env_clear()
         .process_group(0)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in env.iter() {
         cmd.env(k, v);
     }
+    let started = Instant::now();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return not_started(&format!("cannot run {}: {e}", program.display())),
@@ -391,21 +418,9 @@ pub fn exec_bounded(
             let _ = pipe.write_all(&input);
         });
     }
-    let (tx, rx) = mpsc::channel();
-    if let Some(mut pipe) = child.stderr.take() {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            while let Ok(n) = pipe.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-            }
-            let _ = tx.send(buf);
-        });
-    }
-    let deadline = Instant::now() + timeout;
+    let out = child.stdout.take().map(reader);
+    let err = child.stderr.take().map(reader);
+    let deadline = started + timeout;
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
@@ -420,15 +435,25 @@ pub fn exec_bounded(
         }
         thread::sleep(Duration::from_millis(1));
     };
-    let left = deadline.saturating_duration_since(Instant::now());
-    let stderr = match rx.recv_timeout(left.max(Duration::from_millis(100))) {
-        Ok(b) => b,
-        Err(_) => {
-            // Something the program started still holds the pipe.
-            kill_group(pid);
-            rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
+    let elapsed = started.elapsed();
+    let mut killed = timed_out;
+    let mut collect = |rx: Option<mpsc::Receiver<Vec<u8>>>| -> Vec<u8> {
+        let Some(rx) = rx else { return Vec::new() };
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left.max(Duration::from_millis(100))) {
+            Ok(b) => b,
+            Err(_) => {
+                // Something the program started still holds the pipe.
+                if !killed {
+                    kill_group(pid);
+                    killed = true;
+                }
+                rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
+            }
         }
     };
+    let stdout = collect(out);
+    let stderr = collect(err);
     let code = match status {
         _ if timed_out => TIMED_OUT,
         Some(s) => match (s.code(), s.signal()) {
@@ -438,7 +463,29 @@ pub fn exec_bounded(
         },
         None => NOT_STARTED,
     };
-    RunOut { code, stderr }
+    RunOut {
+        code,
+        stdout,
+        stderr,
+        elapsed,
+    }
+}
+
+/// The whole of `pipe`, read on its own thread.
+fn reader(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = pipe.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 /// `SIGKILL` to the process group `pid`, through the shell's `kill` (no `unsafe` code).
@@ -487,13 +534,10 @@ mod tests {
             &env,
             cwd,
         );
-        assert_eq!(
-            out,
-            RunOut {
-                code: 3,
-                stderr: b"in\n".to_vec()
-            }
-        );
+        assert_eq!((out.code, out.stderr.as_slice()), (3, &b"in\n"[..]));
+        let out = exec(sh, &["-c".as_ref(), "echo hi".as_ref()], b"", &env, cwd);
+        assert_eq!((out.code, out.stdout.as_slice()), (0, &b"hi\n"[..]));
+        assert!(!out.allowed(), "an exit 0 with stdout is not a clean allow");
         let out = exec_bounded(
             sh,
             &["-c".as_ref(), "printf x >&2; sleep 30 & wait".as_ref()],
