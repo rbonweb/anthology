@@ -16,8 +16,8 @@
 //! false) or 2 (unsupported platform). An exception Python would let reach `main` is the
 //! result `{"ok": false, "error": "<Class>: <msg>"}` (GC-5).
 //!
-//! Seams (GC-19): [`SetupDeps`]. The memory and doctor functions that MS2 and RT1b publish
-//! are stand-ins marked `SWAP(MS2)` / `SWAP(RT1b)` until those merge.
+//! Seams (GC-19): [`SetupDeps`]. The memory functions that MS2 publishes
+//! are stand-ins marked `SWAP(MS2)` until it merges; doctor is RT1b's.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
@@ -40,6 +40,7 @@ use sha2::{Digest, Sha256};
 
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
+use crate::doctor;
 use crate::guardrails_loc::{self, GUARDRAILS_PREFIX};
 use crate::rtk_install;
 use crate::session_start::{RealRtk, RtkWiring, StateWrite};
@@ -120,20 +121,31 @@ fn approve_default(root: &Path, env: &Env) -> Result<String, PyExc> {
     Ok(repo_key_default(root, env))
 }
 
-// SWAP(RT1b): `doctor::check_env(env, root, cwd, &DoctorDeps { rtk_lock: Some(root.join("rtk.lock")), ..Default::default() })`
-// mapped through `doctor::check_value`.
-fn checks_default(_env: &Env, _root: &Path, _cwd: &Path) -> Value {
-    Value::Array(Vec::new())
+/// `doctor.check_env(env, lock=_lock_path(root), plugin_root=root, cwd=cwd)`.
+fn checks_default(env: &Env, root: &Path, cwd: &Path) -> Value {
+    let deps = doctor::DoctorDeps {
+        rtk_lock: Some(root.join("rtk.lock")),
+        ..Default::default()
+    };
+    Value::Array(
+        doctor::check_env(env, root, cwd, &deps)
+            .iter()
+            .map(doctor::check_value)
+            .collect(),
+    )
 }
 
-// SWAP(RT1b): `doctor::installed_plugins_state`.
-fn installed_plugins_state_default(_env: &Env) -> (Option<Value>, &'static str) {
-    (None, "missing")
+fn installed_plugins_state_default(env: &Env) -> (Option<Value>, &'static str) {
+    doctor::installed_plugins_state(env)
 }
 
-// SWAP(RT1b): `doctor::find_duplicates_in` mapped through `doctor::duplicate_value`.
-fn find_duplicates_default(_installed: Option<&Value>) -> Value {
-    Value::Array(Vec::new())
+fn find_duplicates_default(installed: Option<&Value>) -> Value {
+    Value::Array(
+        doctor::find_duplicates_in(installed)
+            .iter()
+            .map(doctor::duplicate_value)
+            .collect(),
+    )
 }
 
 fn settings_write_default(path: &Path, text: &str) -> Result<(), PyExc> {

@@ -12,7 +12,7 @@
 //!
 //! Ledger exceptions (port/ledger/test_setup.tsv): the cases that need the real doctor (RT1b)
 //! or the real memory sync and approval (MS2) are `todo:RT4` until those merge; the cheap ones
-//! are written here, ignored as `SWAP(RT1b)` / `SWAP(MS2)`.
+//! are written here, ignored as `SWAP(MS2)`.
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -285,7 +285,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): the doctor check names come from the real doctor::check_env"]
     fn test_preview_reports_every_step() {
         let f = Fx::new();
         let text = f.c.write_settings(SETTINGS);
@@ -336,7 +335,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): the subagent_model check comes from the real doctor::check_env"]
     fn test_preview_runs_the_compat_checks_in_its_cwd() {
         let f = Fx::new();
         let proj = f.tmp().join("proj");
@@ -416,7 +414,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): duplicates come from the real doctor::find_duplicates"]
     fn test_duplicates_are_listed_with_uninstall_commands() {
         let f = Fx::new();
         installed(
@@ -432,7 +429,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): duplicates come from the real doctor::find_duplicates"]
     fn test_an_odd_scope_is_listed_without_a_command() {
         let f = Fx::new();
         installed(
@@ -446,7 +442,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): the state comes from the real doctor::installed_plugins_state"]
     fn test_an_unreadable_installed_plugins_file_is_reported_not_a_crash() {
         let f = Fx::new();
         installed(&f, &("[".repeat(200_000) + &"]".repeat(200_000)));
@@ -465,7 +460,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(RT1b): the state comes from the real doctor::installed_plugins_state"]
     fn test_a_missing_installed_plugins_file_is_reported() {
         let f = Fx::new();
         assert_eq!(text_at(&f.preview(None), &["installed_plugins"]), "missing");
