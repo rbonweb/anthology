@@ -23,7 +23,13 @@
 //! - `freeze` is that run, and writes each surface that ran clean (0 unexplained, 0 oracle
 //!   errors) to its golden ([`golden::path`]: `crates/<owner>/tests/golden/<surface>.jsonl`
 //!   under the repository, or under `--golden DIR`). A surface that did not run clean is not
-//!   written, and the exit is 1.
+//!   written, and the exit is 1. A case whose result differed but was waived by an entry also
+//!   keeps Rust's result, which `golden check` then pins. `--gen` must be at least
+//!   `golden::MIN_GEN` (1000) unless `--sample` (a self-test golden, which `golden check`
+//!   refuses as a repository golden).
+//! - `golden check` also refuses a thin golden: no case, a `gen:` count other than the
+//!   header's, or fewer cases than the surface's seeds plus that count. `golden bless` refuses
+//!   to run when `CI` is set.
 //! - `golden check` judges Rust against the goldens with no oracle (`--gen`, `--seed` and
 //!   `--python` do not apply; `--python` is accepted and ignored, for `scripts/difftest.sh`).
 //!   With `--all`, a ported surface without a golden is a `skip` while the oracle exists, and a
@@ -59,7 +65,7 @@ const USAGE: &str = "usage: difftest --list
        difftest (--surface A,B | --all) [--gen N] [--seed S] [--python P] [--report PATH]
                 [--divergences DIR] [--root DIR] [--show N]
        difftest freeze (--surface A,B | --all) [--gen N] [--seed S] [--python P] [--golden DIR]
-                [--report PATH] [--divergences DIR] [--root DIR] [--show N]
+                [--sample] [--report PATH] [--divergences DIR] [--root DIR] [--show N]
        difftest golden check|bless (--surface A,B | --all) [--golden DIR] [--report PATH]
                 [--divergences DIR] [--root DIR] [--show N]";
 
@@ -91,6 +97,8 @@ struct Args {
     divergences: Option<PathBuf>,
     root: Option<PathBuf>,
     golden: Option<PathBuf>,
+    /// `freeze --sample`: fewer than `golden::MIN_GEN` generated cases (a self-test).
+    sample: bool,
     show: usize,
     inject: Option<String>,
 }
@@ -110,6 +118,7 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args, String> {
         divergences: None,
         root: None,
         golden: None,
+        sample: false,
         show: 10,
         inject: None,
     };
@@ -158,6 +167,7 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args, String> {
                 a.divergences = Some(p.value().map_err(|e| e.to_string())?.into())
             }
             Long("root") => a.root = Some(p.value().map_err(|e| e.to_string())?.into()),
+            Long("sample") => a.sample = true,
             Long("golden") => a.golden = Some(p.value().map_err(|e| e.to_string())?.into()),
             Long("inject-diff") => a.inject = Some(text(p.value().map_err(|e| e.to_string())?)?),
             Long("help") | Short('h') => return Err(String::new()),
@@ -191,6 +201,19 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args, String> {
         }
         Mode::Live if a.golden.is_some() => {
             return Err("--golden goes with freeze or golden check|bless".into());
+        }
+        Mode::Freeze if !a.sample && a.count < golden::MIN_GEN => {
+            return Err(format!(
+                "freeze needs --gen {} or more (--sample freezes fewer, for a self-test; \
+                 golden check refuses a sample as a repository golden)",
+                golden::MIN_GEN
+            ));
+        }
+        Mode::Live | Mode::Check | Mode::Bless if a.sample => {
+            return Err("--sample goes with freeze".into());
+        }
+        Mode::Bless if std::env::var_os("CI").is_some_and(|v| !v.is_empty()) => {
+            return Err("golden bless is a deliberate local step; it refuses to run in CI".into());
         }
         _ => {}
     }
@@ -320,6 +343,7 @@ fn run(args: &Args) -> Result<bool, String> {
                     surface: s.name().to_string(),
                     seed: args.seed,
                     generated: args.count,
+                    sample: args.sample,
                 };
                 golden::write(&path, &header, &r.frozen)?;
                 println!(
@@ -380,6 +404,7 @@ fn run_golden(args: &Args) -> Result<bool, String> {
         match golden::read(&path, s.name())? {
             Some((header, mut cases)) => {
                 golden::resolve(s.as_ref(), &header, &mut cases)?;
+                golden::check_shape(s.as_ref(), &header, &cases, args.golden.is_none())?;
                 let div = Divergences::load(&div_dir, s.name())?;
                 work.push((s, path, header, cases, div));
             }
@@ -409,6 +434,7 @@ fn run_golden(args: &Args) -> Result<bool, String> {
             for (i, stored) in std::mem::take(&mut r.blessable) {
                 cases[i].expect = stored;
                 cases[i].marks.clear();
+                cases[i].rust = None;
             }
             golden::write(&path, &header, &cases)?;
             println!(

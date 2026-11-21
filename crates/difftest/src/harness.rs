@@ -224,16 +224,19 @@ pub fn run_surface(
             Ok(o) => (o, None),
             Err(p) => (Observed::default(), Some(panic_text(&*p))),
         };
+        let (rust, panicked) = rust_side(surface, case, opts.inject && i == 0, &mut report);
         if opts.record {
+            // A result that differs from Python's is only frozen clean when an entry waives
+            // it; Rust's own result is pinned too, so the waived case cannot drift.
             report.frozen.push(Frozen {
                 id: case.id.clone(),
                 data: case.data.clone(),
                 case_sha256: None,
                 expect: golden::form(&python),
                 marks: notes.marks.clone(),
+                rust: (python != rust).then(|| golden::form(&rust)),
             });
         }
-        let (rust, panicked) = rust_side(surface, case, opts.inject && i == 0, &mut report);
         let verdict = match (py_panic, panicked) {
             (Some(msg), _) => Verdict::Unexplained(format!("the python side panicked: {msg}")),
             (None, Some(msg)) => Verdict::Unexplained(format!("rust panicked: {msg}")),
@@ -332,13 +335,18 @@ pub fn run_frozen(
             marks: f.marks.clone(),
             errors: Vec::new(),
         };
+        // A case waived at the freeze pins Rust's result of then.
+        let drifted = f.rust.as_ref().is_some_and(|r| *r != stored);
         let mut verdict = match panicked {
             Some(ref msg) => Verdict::Unexplained(format!("rust panicked: {msg}")),
+            None if drifted => Verdict::Unexplained(
+                "a waived diff: Rust's result changed since the freeze, which pinned it".into(),
+            ),
             None => judge(&case.id, equal, &notes, div),
         };
         if let Verdict::Unexplained(reason) = &mut verdict
             && panicked.is_none()
-            && !equal
+            && (!equal || drifted)
         {
             if golden::has_digest(&f.expect) {
                 reason.push_str("; the golden keeps a digest of a big output");

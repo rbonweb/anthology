@@ -18,6 +18,7 @@ fn root() -> PathBuf {
 fn difftest(args: &[&str]) -> (i32, String) {
     let out = Command::new(BIN)
         .args(args)
+        .env_remove("CI")
         .current_dir(MANIFEST)
         .output()
         .expect("run difftest");
@@ -62,6 +63,7 @@ fn lock_golden(golden: &str) -> PathBuf {
 fn freeze_core_lock(python: &str, golden: &str) -> String {
     let (code, out) = difftest(&[
         "freeze",
+        "--sample",
         "--surface",
         "core.lock",
         "--gen",
@@ -92,7 +94,7 @@ fn a_frozen_golden_checks_clean_without_the_oracle_and_catches_a_diff() {
         lines.next(),
         Some(
             "{\"difftest_golden\": 1, \"surface\": \"core.lock\", \"seed\": 20261121, \
-             \"gen\": 0, \"cases\": 820}"
+             \"gen\": 0, \"cases\": 820, \"sample\": true}"
         )
     );
     assert!(
@@ -172,6 +174,81 @@ fn bless_records_rust_for_a_changed_case_only() {
 }
 
 #[test]
+fn a_waived_case_pins_rust_and_drift_fails() {
+    let Some((dir, python, golden)) = fake() else {
+        return;
+    };
+    let text = freeze_core_lock(&python, &golden);
+    let path = lock_golden(&golden);
+    // As if Python had answered golden:2 differently and an entry waived it at the freeze:
+    // the line keeps Python's answer as "expect" and Rust's own result as "rust".
+    let second = text.lines().nth(2).expect("golden:2");
+    let (head, expect) = second.split_once("\"expect\": ").expect("expect");
+    let (expect, tail) = expect.split_once(", \"marks\": ").expect("marks");
+    let python_said = expect.replacen("{\"exit\": ", "{\"exit\": 7", 1);
+    let pinned = |rust: &str| {
+        format!(
+            "{head}\"expect\": {python_said}, \"marks\": {}, \"rust\": {rust}}}",
+            tail.trim_end_matches('}')
+        )
+    };
+    let div = dir.path().join("div");
+    std::fs::create_dir_all(&div).expect("mkdir");
+    let mut toml = std::fs::read_to_string(root().join("port/difftest/divergences/core.lock.toml"))
+        .expect("read");
+    toml.push_str("\n[[divergence]]\nclass = \"D-2\"\ncase = \"golden:2\"\nreason = \"t\"\n");
+    std::fs::write(div.join("core.lock.toml"), toml).expect("write");
+    let d = div.to_string_lossy().into_owned();
+    let check = [
+        "golden",
+        "check",
+        "--surface",
+        "core.lock",
+        "--golden",
+        &golden,
+        "--divergences",
+        &d,
+    ];
+    std::fs::write(&path, text.replacen(second, &pinned(expect), 1)).expect("write");
+    let (code, out) = difftest(&check);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("core.lock: waived 1 diff(s) by "), "{out}");
+    // Rust's result differs from the pinned one: the waiver no longer hides it.
+    let drifted = expect.replacen("{\"exit\": ", "{\"exit\": 8", 1);
+    std::fs::write(&path, text.replacen(second, &pinned(&drifted), 1)).expect("write");
+    let (code, out) = difftest(&check);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains(
+            "FAIL core.lock golden:2: a waived diff: Rust's result changed since the freeze"
+        ),
+        "{out}"
+    );
+    // bless records Rust's result as the expectation and drops the pin.
+    let bless = [
+        "golden",
+        "bless",
+        "--surface",
+        "core.lock",
+        "--golden",
+        &golden,
+        "--divergences",
+        &d,
+    ];
+    let (code, out) = difftest(&bless);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(std::fs::read_to_string(&path).expect("read"), text);
+    // And bless refuses in CI.
+    let out = Command::new(BIN)
+        .args(bless)
+        .env("CI", "true")
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("refuses to run in CI"));
+}
+
+#[test]
 fn after_the_cutover_every_ported_surface_needs_a_golden() {
     let Some((dir, python, golden)) = fake() else {
         return;
@@ -185,6 +262,14 @@ fn after_the_cutover_every_ported_surface_needs_a_golden() {
         let p = e.expect("entry").path();
         std::fs::copy(&p, div.join(p.file_name().expect("name"))).expect("copy");
     }
+    // core.lock's seed corpus stays after the cutover (the golden check counts the seeds).
+    let seeds = cut.join("crates/anthology-core/tests/golden");
+    std::fs::create_dir_all(&seeds).expect("mkdir");
+    std::fs::copy(
+        root().join("crates/anthology-core/tests/golden/lock.jsonl"),
+        seeds.join("lock.jsonl"),
+    )
+    .expect("copy");
     let cut = cut.to_string_lossy().into_owned();
     let (code, out) = difftest(&[
         "golden", "check", "--all", "--golden", &golden, "--root", &cut,
@@ -210,6 +295,7 @@ fn freeze_writes_nothing_for_a_surface_that_is_not_clean() {
     // Generated cases are not in the fake's answers: oracle errors.
     let (code, out) = difftest(&[
         "freeze",
+        "--sample",
         "--surface",
         "core.lock",
         "--gen",
@@ -242,6 +328,11 @@ fn golden_usage_errors_exit_2() {
         (&["--all", "--golden", "/tmp"][..], "--golden goes with"),
         (&["frieze", "--all"][..], "unexpected argument \"frieze\""),
         (&["freeze", "--list"][..], "exactly one of"),
+        (
+            &["freeze", "--all", "--gen", "999"][..],
+            "freeze needs --gen 1000 or more",
+        ),
+        (&["--all", "--sample"][..], "--sample goes with freeze"),
         (
             &[
                 "golden",

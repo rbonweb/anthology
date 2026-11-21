@@ -97,7 +97,7 @@ echo "difftest-linux: an injected diff fails, and a matching divergence entry pa
 # the committed crates/*/tests/golden/ (the real freeze is a CO2 step).
 selftest="$root/target/difftest/golden-selftest"
 rm -rf "$selftest"
-if ! "$root/scripts/difftest.sh" freeze --surface core.lock,core.state --gen 200 \
+if ! "$root/scripts/difftest.sh" freeze --sample --surface core.lock,core.state --gen 200 \
     --golden /out/golden-selftest >"$log" 2>&1 \
     || ! "$root/scripts/difftest.sh" golden check --surface core.lock,core.state \
         --golden /out/golden-selftest >>"$log" 2>&1; then

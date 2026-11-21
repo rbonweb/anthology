@@ -79,7 +79,13 @@ pub struct Frozen {
     /// The stored form of the expected result ([`form`]).
     pub expect: Value,
     pub marks: Vec<String>,
+    /// Rust's stored result when it differed from `expect` at the freeze (a case a divergence
+    /// entry waived): `check` pins Rust to it, so a waived case cannot drift unseen.
+    pub rust: Option<Value>,
 }
+
+/// The fewest generated cases a repository golden may hold (`freeze` without `--sample`).
+pub const MIN_GEN: usize = 1000;
 
 /// A golden file's header.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +93,48 @@ pub struct Header {
     pub surface: String,
     pub seed: u64,
     pub generated: usize,
+    /// Frozen with `--sample` (fewer than [`MIN_GEN`] generated cases): a self-test or scratch
+    /// golden, which `check` refuses as a repository golden.
+    pub sample: bool,
+}
+
+/// Checks a read golden against its surface: at least one case, exactly `generated` `gen:`
+/// cases, and at least every seed besides; `repository` (no `--golden DIR`) also refuses a
+/// sample golden.
+pub fn check_shape(
+    surface: &dyn Surface,
+    header: &Header,
+    cases: &[Frozen],
+    repository: bool,
+) -> Result<(), String> {
+    let name = surface.name();
+    if cases.is_empty() {
+        return Err(format!("{name}: the golden holds no case"));
+    }
+    let generated = cases.iter().filter(|c| c.id.starts_with("gen:")).count();
+    if generated != header.generated {
+        return Err(format!(
+            "{name}: the golden holds {generated} generated case(s), its header says {}",
+            header.generated
+        ));
+    }
+    let seeds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| surface.seeds().len()))
+        .map_err(|_| format!("{name}: the surface panicked making its seeds"))?;
+    if cases.len() < seeds + header.generated {
+        return Err(format!(
+            "{name}: the golden holds {} case(s), fewer than the surface's {seeds} seeds + {} \
+             generated (a thin golden; freeze it again)",
+            cases.len(),
+            header.generated
+        ));
+    }
+    if repository && (header.sample || header.generated < MIN_GEN) {
+        return Err(format!(
+            "{name}: the repository golden is a sample ({} generated, under {MIN_GEN})",
+            header.generated
+        ));
+    }
+    Ok(())
 }
 
 fn int(n: i64) -> Value {
@@ -169,6 +217,9 @@ pub fn render(header: &Header, cases: &[Frozen]) -> String {
     h.insert("seed".into(), Value::Int(seed));
     h.insert("gen".into(), int(header.generated as i64));
     h.insert("cases".into(), int(cases.len() as i64));
+    if header.sample {
+        h.insert("sample".into(), Value::Bool(true));
+    }
     out.push_str(&json::dumps(&Value::Object(h), &PY_DEFAULT));
     out.push('\n');
     for c in cases {
@@ -183,6 +234,9 @@ pub fn render(header: &Header, cases: &[Frozen]) -> String {
         m.insert("expect".into(), c.expect.clone());
         let marks = c.marks.iter().map(|s| Value::Str(s.clone())).collect();
         m.insert("marks".into(), Value::Array(marks));
+        if let Some(r) = &c.rust {
+            m.insert("rust".into(), r.clone());
+        }
         out.push_str(&json::dumps(&Value::Object(m), &PY_DEFAULT));
         out.push('\n');
     }
@@ -258,12 +312,20 @@ pub fn parse(text: &str, label: &str, surface: &str) -> Result<(Header, Vec<Froz
             .map(|m| m.as_str().map(str::to_string))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| err(n, "a mark is not a string"))?;
+        let rust = o.remove("rust");
+        if rust
+            .as_ref()
+            .is_some_and(|r| r.as_object().and_then(|e| e.get("exit")).is_none())
+        {
+            return Err(err(n, "\"rust\" has no exit"));
+        }
         cases.push(Frozen {
             id,
             data,
             case_sha256,
             expect,
             marks,
+            rust,
         });
     }
     if count != Some(cases.len() as i64) {
@@ -279,6 +341,7 @@ pub fn parse(text: &str, label: &str, surface: &str) -> Result<(Header, Vec<Froz
         surface: surface.to_string(),
         seed,
         generated,
+        sample: h.get("sample").and_then(Value::as_bool) == Some(true),
     };
     Ok((header, cases))
 }
@@ -344,6 +407,7 @@ mod tests {
             case_sha256: None,
             expect: form(o),
             marks: marks.iter().map(|s| s.to_string()).collect(),
+            rust: None,
         }
     }
 
@@ -383,6 +447,7 @@ mod tests {
             surface: "big".into(),
             seed: 7,
             generated: 2,
+            sample: true,
         };
         let mut rng = Rng::for_surface(7, "big");
         let made: Vec<_> = Big
@@ -398,6 +463,7 @@ mod tests {
                 case_sha256: None,
                 expect: form(&Observed::text(0, "ok", "")),
                 marks: Vec::new(),
+                rust: None,
             })
             .collect();
         let text = render(&header, &cases);
@@ -443,12 +509,16 @@ mod tests {
         };
         let cases = vec![
             frozen("golden:1", &with_files, &[]),
-            frozen("gen:1", &raw, &["D-6", "D-2"]),
+            Frozen {
+                rust: Some(form(&Observed::text(1, "rust", ""))),
+                ..frozen("gen:1", &raw, &["D-6", "D-2"])
+            },
         ];
         let header = Header {
             surface: "core.lock".into(),
             seed: u64::MAX,
             generated: 1,
+            sample: false,
         };
         let text = render(&header, &cases);
         assert!(text.is_ascii());
@@ -489,6 +559,7 @@ mod tests {
                 surface: "s".into(),
                 seed: 1,
                 generated: 0,
+                sample: true,
             },
             &[],
         );
@@ -520,6 +591,53 @@ mod tests {
         ] {
             let e = parse(text, "g", "s").expect_err(text);
             assert!(e.contains(want), "{text}: {e}");
+        }
+    }
+
+    #[test]
+    fn thin_and_sample_goldens_are_refused() {
+        let header = |generated, sample| Header {
+            surface: "big".into(),
+            seed: 7,
+            generated,
+            sample,
+        };
+        let case = |id: &str| Frozen {
+            rust: None,
+            ..frozen(id, &Observed::default(), &[])
+        };
+        let full: Vec<Frozen> = ["s:1", "gen:1", "gen:2"].iter().map(|i| case(i)).collect();
+        assert!(check_shape(&Big, &header(2, true), &full, false).is_ok());
+        for (h, cases, repository, want) in [
+            (header(0, true), &[][..], false, "holds no case"),
+            (
+                header(3, true),
+                &full[..],
+                false,
+                "2 generated case(s), its header says 3",
+            ),
+            (
+                header(1, true),
+                &full[1..2],
+                false,
+                "holds 1 case(s), fewer than",
+            ),
+            (
+                header(2, true),
+                &full[1..],
+                false,
+                "holds 2 case(s), fewer than",
+            ),
+            (
+                header(2, true),
+                &full[..],
+                true,
+                "is a sample (2 generated, under 1000)",
+            ),
+            (header(2, false), &full[..], true, "is a sample"),
+        ] {
+            let e = check_shape(&Big, &h, cases, repository).expect_err(want);
+            assert!(e.contains(want), "{want}: {e}");
         }
     }
 
