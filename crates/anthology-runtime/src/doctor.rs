@@ -255,12 +255,45 @@ pub fn which(name: &str, env: &Env) -> Option<PathBuf> {
     None
 }
 
+/// True when `execve` would answer `ENOEXEC` for `program` (Python's `OSError`). On macOS, Rust
+/// spawns through `posix_spawn`, which silently falls back to running such a file with `/bin/sh`;
+/// Python's `execve` does not, so a file that is neither a `#!` script nor a Mach-O image is
+/// treated as a failed spawn there. Linux's `posix_spawn` already reports `ENOEXEC`.
+#[cfg(target_os = "macos")]
+fn lacks_exec_format(program: &OsStr) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    let Ok(mut f) = fs::File::open(program) else {
+        return false;
+    };
+    let Ok(n) = f.read(&mut head) else {
+        return false;
+    };
+    let head = &head[..n];
+    const MACHO: [[u8; 4]; 5] = [
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xcf, 0xfa, 0xed, 0xfe],
+        [0xca, 0xfe, 0xba, 0xbe],
+    ];
+    !(head.starts_with(b"#!") || MACHO.iter().any(|m| head == m))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn lacks_exec_format(_program: &OsStr) -> bool {
+    false
+}
+
 /// `subprocess.run(argv, stdout=DEVNULL, stderr=DEVNULL, timeout=…, env=env)`: the child gets
 /// exactly `env` and stdin from `/dev/null`, and is killed at the timeout.
 pub fn run_command(argv: &[&OsStr], env: &Env, timeout: Duration) -> RunResult {
     let Some((program, args)) = argv.split_first() else {
         return RunResult::Failed;
     };
+    if lacks_exec_format(program) {
+        return RunResult::Failed;
+    }
     let mut cmd = Command::new(program);
     cmd.args(args)
         .env_clear()
@@ -1432,6 +1465,26 @@ pub fn render(report: &Report, as_json: bool) -> (String, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `subprocess.run` raises `OSError` for a file `execve` cannot run (`ENOEXEC`); so must
+    /// `run_command` on every platform (macOS's `posix_spawn` would run it with `sh`).
+    #[test]
+    fn run_command_fails_on_a_file_without_exec_format() {
+        let run = |body: &[u8]| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let exe = dir.path().join("docker");
+            fs::write(&exe, body).expect("write");
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).expect("chmod");
+            run_command(
+                &[exe.as_os_str(), OsStr::new("info")],
+                &Env::default(),
+                Duration::from_secs(10),
+            )
+        };
+        assert_eq!(run(b"not a program\n"), RunResult::Failed);
+        assert_eq!(run(b""), RunResult::Failed);
+        assert_eq!(run(b"#!/bin/sh\nexit 3\n"), RunResult::Exited(3));
+    }
 
     #[test]
     fn safe_escapes_and_cuts() {
