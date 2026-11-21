@@ -1090,6 +1090,22 @@ fn seeds() -> Vec<(String, Value)> {
             ),
         ));
     }
+    // MX1 review M-8 (D-8): a forged date that would put `/` or `..` into the `.imported-`
+    // name of a conflict. Python builds the name from it; the port refuses the plan. Appended
+    // last so the other seeds keep their ids.
+    for (label, date) in [("slash", "../../esc"), ("dotdot", "a..b")] {
+        out.push((
+            format!("forged-date-{label}"),
+            case(
+                files(&[(pm("b", "user-p.md"), "my own different note\n".into())]),
+                Value::Object(inb.clone()),
+                vec![
+                    plan_step("b", "in/m.tar.gz", "2026-04-06"),
+                    apply_last("b", vec![arr(vec![path(&["date"]), s(date)])]),
+                ],
+            ),
+        ));
+    }
     out
 }
 

@@ -892,6 +892,35 @@ mod import_test {
         assert_eq!(tree(c.tmp()), before);
     }
 
+    /// Lead extra (MX1 review M-8, D-8 Rust stricter): a date that would put `/`, a NUL or
+    /// `..` into an `.imported-<date>` name is refused, by plan and by apply, before any write.
+    /// Python builds the name from it, so a forged `date` could steer the copy elsewhere.
+    #[test]
+    fn a_date_that_could_leave_the_folder_is_refused() {
+        let c = Case::new();
+        let (path, _) = c.archive();
+        let (env_b, anth_b) = c.second_machine("b");
+        let before = tree(c.tmp());
+        let refused = Err(Error::Rejected("malformed plan date".into()));
+        for bad in ["../../x", "2026/01/01", "2026-01\u{0}01", "..", "a..b"] {
+            let mut forged = plan(&path, &c.cwd, None, &env_b);
+            forged.insert("date".into(), s(bad));
+            assert_eq!(
+                try_apply(&c, &forged, &RealGit).map(|_| ()),
+                refused,
+                "{bad:?}"
+            );
+            let planned = portable::plan_import(&path, &c.cwd, Some(bad), &env_b, &RealGit);
+            assert_eq!(planned.map(|_| ()), refused, "{bad:?}");
+        }
+        assert_eq!(tree(c.tmp()), before);
+        assert!(!anth_b.join("personal-memory").exists());
+        // A plain date still works.
+        let mut ok = plan(&path, &c.cwd, None, &env_b);
+        ok.insert("date".into(), s("2026-04-06"));
+        assert!(try_apply(&c, &ok, &RealGit).is_ok());
+    }
+
     #[test]
     fn test_repo_parts_are_skipped_outside_an_approved_repo() {
         let c = Case::new();

@@ -105,7 +105,10 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         return;
     };
     let _ = portable::apply_import_env(&Value::Object(plan), &env, &NoGit);
-    let personal = home.join(".claude").join("anthology").join("personal-memory");
+    let personal = home
+        .join(".claude")
+        .join("anthology")
+        .join("personal-memory");
     for p in paths(&root).difference(&before) {
         assert!(
             p.starts_with(&personal) || personal.starts_with(p),

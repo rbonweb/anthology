@@ -25,3 +25,8 @@ reason = "`corrupt` and `tarhdr` cases (gen:*-corrupt, gen:*-tarhdr: byte-flippe
 [[divergence]]
 class = "D-7"
 reason = "`tarhdr` cases (gen:*-tarhdr): a GNU sparse map number (PAX 0.0 offset or numbytes, 0.1 GNU.sparse.map, 1.0 map line) outside a 64-bit integer, which Python keeps as a big int, is refused by the port ('not a readable memory archive: sparse value out of range') as it parses it. The oracle runs tarfile's 3.12 sparse parsers with that bound at the same point and marks the cases where it refused; all the output is then compared."
+
+[[divergence]]
+class = "D-8"
+case = "seed:*-forged-date-*"
+reason = "MX1 review M-8, owner direction (Rust stricter): a hand-forged plan whose date would put '/', a NUL or '..' into a conflict's '<name>.imported-<date>.md' name. Python builds the name from it (and fails, or writes elsewhere); the port rejects the plan ('malformed plan date') before writing anything."

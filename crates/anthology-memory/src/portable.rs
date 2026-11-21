@@ -11,7 +11,6 @@
 //! an empty environment. Paths are shown as `pathlib` prints them.
 
 pub mod load;
-mod ms_swap;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -31,8 +30,7 @@ use anthology_pycompat::pyerr::PyExc;
 use crate::privacy::{self, Finding, PrivacyDeps};
 use crate::tar_write::{gzip, pax_archive};
 
-// SWAP(MS1): `pub use crate::{approve, notes, render, repo};` once MS1 has merged.
-pub use ms_swap::{approve, notes, render, repo};
+pub use crate::{approve, notes, render, repo};
 
 /// `memory_portable.SECRET_PATTERNS`: the one shared list (`memory_privacy`).
 pub use crate::privacy::SECRET_PATTERNS;
@@ -481,6 +479,15 @@ fn same_as_existing(dir: &Path, name: &str, data: &[u8]) -> Result<bool, PyExc> 
     Ok(false)
 }
 
+/// The date that goes into `.imported-<date>` names, refused when it could leave the folder
+/// or cut the name: a `/`, a NUL or a `..` (D-8: Python builds the name from any date).
+fn checked_date(date: String) -> Result<String, Error> {
+    if date.contains('/') || date.contains('\0') || date.contains("..") {
+        return Err(rejected("malformed plan date"));
+    }
+    Ok(date)
+}
+
 /// `_imported_name(directory, name, date)`: `<stem>.imported-<date>[-N].md`, the first free.
 fn imported_name(dir: &Path, name: &str, date: &str) -> String {
     let stem = &name[..name.len() - 3];
@@ -524,7 +531,7 @@ pub fn plan_import(
     let loaded = load::load_archive(archive)?;
     let home = pure(&repo::anthology_home(env));
     let root = approved_root(cwd, env, git);
-    let date = iso(today);
+    let date = checked_date(iso(today))?;
     let pdeps = PrivacyDeps::from_env(env);
     let mut plan = Map::new();
     plan.insert("archive".into(), s(&realpath(archive).to_string_lossy()));
@@ -763,7 +770,7 @@ pub fn apply_import_env(plan: &Value, env: &Env, git: &dyn Git) -> Result<Map, E
         _ => Path::new("."),
     };
     let penv = env.clone().with_os("CLAUDE_CONFIG_DIR", shown(parent));
-    let date = iso_value(p.get("date"));
+    let date = checked_date(iso_value(p.get("date")))?;
     // `{b.get("file") for b in ... if isinstance(b, dict)}`: a list or dict `file` is
     // unhashable, a TypeError before anything is written (D-1: "malformed plan").
     let mut planned_blocked: BTreeSet<&str> = BTreeSet::new();
