@@ -59,6 +59,14 @@ class KnowledgeLicenseTest(unittest.TestCase):
         self.assertEqual((ROOT / e["target"] / "LICENSE").read_bytes(),
                          (ROOT / "vendor" / "licenses" / "vercel-labs-agent-skills.txt").read_bytes())
 
+    def test_the_fixed_text_ships_as_license_for_karpathy_guidelines(self):
+        e = {s["name"]: s for s in knowledge_sources()}["karpathy-guidelines"]
+        self.assertIsNone(e["license_file"])
+        text = (ROOT / e["target"] / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("MIT License", text)
+        self.assertIn("forrestchang", text)
+        self.assertIn("multica-ai/andrej-karpathy-skills", text.splitlines()[0])
+
     def test_caveman_ships_its_notice_and_the_mit_text(self):
         caveman = KNOWLEDGE / "caveman"
         self.assertTrue((caveman / "NOTICE").read_text(encoding="utf-8").strip())

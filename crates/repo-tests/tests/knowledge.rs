@@ -260,7 +260,7 @@ mod knowledge_folders_test {
     use super::*;
 
     #[test]
-    fn test_expected_set_is_the_22_plus_the_other_six() {
+    fn test_expected_set_is_the_22_plus_the_other_seven() {
         assert_eq!(repo::stripped_knowledge().len(), 22);
         assert_eq!(repo::expected_knowledge().len(), 29);
     }

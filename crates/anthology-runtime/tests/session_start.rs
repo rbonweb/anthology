@@ -2043,17 +2043,48 @@ mod skills_folder_test {
     use super::*;
 
     #[test]
-    fn test_skills_folder_is_exactly_setup_export_import() {
+    fn test_skills_folder_is_the_three_commands_and_large_builds() {
         let mut names: Vec<String> = fs::read_dir(real_plugin().join("skills"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["export", "import", "setup"]);
+        assert_eq!(names, vec!["export", "import", "large-builds", "setup"]);
     }
 
     #[test]
-    fn test_every_skill_is_manual_only() {
+    fn test_large_builds_is_model_invoked_and_names_real_skills() {
+        let text = fs::read_to_string(real_plugin().join("skills/large-builds/SKILL.md")).unwrap();
+        let head = text.split("\n---").next().unwrap();
+        let lines: Vec<&str> = head.lines().collect();
+        assert!(lines.contains(&"name: large-builds"));
+        assert!(lines.iter().any(|l| {
+            l.strip_prefix("description: ")
+                .and_then(|r| r.chars().next())
+                .is_some_and(|c| !c.is_whitespace())
+        }));
+        assert!(!head.contains("disable-model-invocation"));
+        // Python: re.findall(r"anthology-superpowers:([a-z-]+)", text)
+        let mut refs = std::collections::BTreeSet::new();
+        for (i, _) in text.match_indices("anthology-superpowers:") {
+            let rest = &text[i + "anthology-superpowers:".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                refs.insert(name);
+            }
+        }
+        assert!(!refs.is_empty());
+        let skills = real_plugin().join("../anthology-superpowers/skills");
+        for r in &refs {
+            assert!(skills.join(r).join("SKILL.md").is_file(), "{r}");
+        }
+    }
+
+    #[test]
+    fn test_every_command_skill_is_manual_only() {
         for name in ["setup", "export", "import"] {
             let text = fs::read_to_string(real_plugin().join("skills").join(name).join("SKILL.md"))
                 .unwrap();

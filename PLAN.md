@@ -482,6 +482,21 @@ The one-time platform probes become permanent eval or smoke cases. This is how a
 - `CONTRIBUTING.md`, including the maintainer runbook: syncs, releases, evals and the startup budget.
 - `DECISIONS.md`, where Part 3 of this plan moves at the docs task, so decisions outlive PLAN.md.
 
+
+### 15. After the first release (v0.1.0)
+
+Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this order.
+
+1. **rtk gate: `cd <dir> && …` and `… | head -n N` / `| tail -n N`.** Today the gate in the rtk fork (`rtk/src/hooks/anthology_gate.rs`) rejects these forms, so rtk never rewrites them. Across a mix of 32 everyday commands, accepting them adds 6 rewrites. This needs a fork change, a new rtk release (`1.2.1-anthology.5`) and an `rtk.lock` bump. It is security code, so it gets one security review covering:
+   - non-literal `cd` targets: `cd $X`, `cd ~user`, `cd -`, CDPATH, and symlinks into a denied directory;
+   - relative reads resolved against the new directory before the Read deny check (`cd secret && cat k.txt` must still be denied);
+   - `head -n $N` and `head -n "$(…)"`, and a second pipe after `| head -n N`;
+   - `;`, `||`, `&` and newline in place of `&&`;
+   - rtk's rewrite of the rest of the command, re-checked against the deny rules from the new directory.
+2. **Guard over-blocks left after v0.1.0.** A replay of real traffic found ordinary commands that the Rust guard refuses as "too complex" (G0) and the Python guard allowed: about 0.14% of calls. Most are long `python3 - <<EOF` edits that hit the brace or path caps, and `[…]` subscripts that contain a live `$(…)` or backticks (regexes, list literals). Each shape needs its own security ruling, and the frozen parity tables and every bypass payload must still block. Commands that write a script and then run it stay blocked on purpose.
+3. **Faster CI containers.** The test images reinstall packages on every run. Bake them into pinned images, so runs don't depend on the network inside containers (on one build machine it ran about 50x slower than the host).
+4. **Write-then-run in one command line.** The guard notices a command that writes a script and runs it in the same line only when the script is run as `sh FILE` or `source FILE`. It misses `chmod +x x && ./x`, `bash < x`, `. ./x`, `BASH_ENV=x bash …` and files written with `tee`. Extend the check to every way a shell can run a file the line just wrote, then list what is still out of reach (a file written by an earlier tool call) in the design's known limits.
+
 ---
 
 ## Part 2 — Build

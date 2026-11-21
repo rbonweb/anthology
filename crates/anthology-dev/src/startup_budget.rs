@@ -29,9 +29,9 @@ pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
 pub const BUDGET: [(&str, u64); 11] = [
     ("researcher", 89267),       // measured 77623
     ("architect", 23612),        // measured 20532
-    ("implementer", 25451),      // measured 22131 (karpathy-guidelines)
-    ("debugger", 21229),         // measured 18460 (karpathy-guidelines)
-    ("reviewer", 12553),         // measured 10915
+    ("implementer", 26561),      // measured 23096 (karpathy-guidelines)
+    ("debugger", 22167),         // measured 19275 (karpathy-guidelines)
+    ("reviewer", 16672),         // measured 14497 (karpathy-guidelines)
     ("scout", 5944),             // measured 5168
     ("docs-writer", 31376),      // measured 27283
     ("ui-designer", 128097),     // measured 111388

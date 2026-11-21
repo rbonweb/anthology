@@ -163,6 +163,21 @@ mod knowledge_license_test {
     }
 
     #[test]
+    fn test_the_fixed_text_ships_as_license_for_karpathy_guidelines() {
+        let e = source_named("karpathy-guidelines");
+        assert!(matches!(e.get("license_file"), Some(Value::Null)));
+        let text = repo::read(&format!("{}/LICENSE", e.target()));
+        assert!(text.contains("MIT License"));
+        assert!(text.contains("forrestchang"));
+        assert!(
+            text.lines()
+                .next()
+                .unwrap_or("")
+                .contains("multica-ai/andrej-karpathy-skills")
+        );
+    }
+
+    #[test]
     fn test_caveman_ships_its_notice_and_the_mit_text() {
         let caveman = format!("{KNOWLEDGE}/caveman");
         assert!(!repo::read(&format!("{caveman}/NOTICE")).trim().is_empty());
