@@ -1308,6 +1308,9 @@ struct Scanner<'a> {
     /// An rtk, wrapper or payload expansion was met.
     expanded: bool,
     budget: usize,
+    /// The disk lookups' own budget (RG2), apart from `budget`, so running out
+    /// of it never stops the text from being read.
+    probes: usize,
 }
 
 impl<'a> Scanner<'a> {
@@ -1342,6 +1345,7 @@ impl<'a> Scanner<'a> {
             exhausted: false,
             expanded: false,
             budget: WORK_BUDGET,
+            probes: WORK_BUDGET,
         }
     }
 
@@ -1367,22 +1371,25 @@ impl<'a> Scanner<'a> {
     }
 
     /// Spend the disk work of checking `words` path words against the `Read()`
-    /// matchers: [`PROBE_COST`] per word, working directory and matcher. When the
-    /// budget cannot pay for it, the budget is spent (the command asks) and the
-    /// matchers stop resolving symlinks: these words are still matched as
-    /// written, so a denied path named plainly stays a deny.
+    /// matchers: [`PROBE_COST`] per word, working directory and matcher, from the
+    /// probes' own budget. When it cannot pay, the matchers stop resolving
+    /// symlinks for the rest of the command and the command asks at the end;
+    /// the text is still read in full (within `budget`), so every path is still
+    /// matched as written and a plainly named deny, a Bash deny rule included,
+    /// stays a deny. Unverified paths ask: a deny only a symlink reaches is then
+    /// an ask.
     fn spend_probes(&mut self, words: usize, cwds: &Cwds) {
         let matchers = usize::from(self.reads.is_some()) + usize::from(self.read_asks.is_some());
         let cost = words
             .saturating_mul(cwds.states.len().max(1))
             .saturating_mul(matchers)
             .saturating_mul(PROBE_COST);
-        if cost <= self.budget {
-            self.budget -= cost;
+        if cost <= self.probes {
+            self.probes -= cost;
             return;
         }
-        self.exhausted = true;
-        self.budget = 0;
+        self.probes = 0;
+        self.ask = true;
         for matcher in [&mut self.reads, &mut self.read_asks].into_iter().flatten() {
             matcher.disk = false;
         }
@@ -7214,9 +7221,14 @@ mod tests {
     /// took 41 s with any rule (a `canonicalize` a word, then the rewrite read
     /// again); a timed-out hook is no decision, so `Bash(rtk *)` would allow it.
     fn megabyte_bound() -> std::time::Duration {
-        // The release build answers in about 0.1 s (the upstream verdict still
-        // reads the line); a debug build on a slow CI runner gets the room it needs.
-        std::time::Duration::from_millis(if cfg!(debug_assertions) { 10_000 } else { 500 })
+        // The release build answers in well under 0.5 s (the upstream verdict
+        // still reads the line); a debug build on a slow CI runner gets the room
+        // it needs.
+        std::time::Duration::from_millis(if cfg!(debug_assertions) {
+            10_000
+        } else {
+            2_000
+        })
     }
 
     #[test]
@@ -7317,6 +7329,18 @@ mod tests {
                 assert_eq!(gate_in(dir, &cmd, r), Gate::Deny, "{}", &cmd[..12]);
             }
             assert_eq!(gate_in(dir, &format!("cat {words} link"), r), Gate::Ask);
+            // Running out of disk lookups never stops the text from being read: a
+            // later command's deny, Bash or `Read()`, still denies (RG2 review).
+            let w: String = (0..9_000).map(|i| format!("f{i} ")).collect();
+            let both = rules(&["git push:*"], &[], &["./secret.txt", "**/.env"]);
+            for cmd in [
+                format!("cat {w}; rtk git push"),
+                format!("cat {w}; cat secret.txt"),
+            ] {
+                let (said, took) = timed(&|| gate_in(dir, &cmd, &both));
+                assert_eq!(said, Gate::Deny, "{}", &cmd[cmd.len() - 16..]);
+                assert!(took < megabyte_bound(), "{took:?}");
+            }
         });
     }
 
