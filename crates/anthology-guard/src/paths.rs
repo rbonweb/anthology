@@ -301,6 +301,49 @@ impl<'a> Paths<'a> {
         false
     }
 
+    /// Strict, a candidate longer than Python's [`MAX_PATH_STRING`] (which Python never read):
+    /// whether it can name one of `sequences` at all, a necessary condition checked in one scan
+    /// so a long ordinary word stays cheap. A window's last component equals (or starts with)
+    /// the sequence's last one, and comes from the candidate's text, the home or the `cd`
+    /// directory: so without a glob, a `$` or a `~` (which splice the home into a component),
+    /// the protected text must start a component of the candidate (at its start or after a `/`
+    /// or a backslash), or appear in the home or the directory.
+    fn long_word_may_hit(
+        &self,
+        candidate: &str,
+        cwd: Option<&str>,
+        sequences: &[(Vec<String>, bool)],
+    ) -> bool {
+        if candidate.contains(['*', '?', '[', '$', '~']) {
+            return true;
+        }
+        let lowered = pystr::lower(candidate);
+        let home = pystr::lower(self.home);
+        let cwd = pystr::lower(cwd.unwrap_or(""));
+        sequences.iter().any(|(sequence, _)| {
+            let Some(last) = sequence.last().map(String::as_str) else {
+                return true;
+            };
+            home.contains(last)
+                || cwd.contains(last)
+                || lowered
+                    .match_indices(last)
+                    .any(|(at, _)| at == 0 || matches!(lowered.as_bytes()[at - 1], b'/' | b'\\'))
+        })
+    }
+
+    /// Whether a strict check can skip `candidate` ([`Paths::long_word_may_hit`]).
+    fn skip_long(
+        &self,
+        candidate: &str,
+        cwd: Option<&str>,
+        sequences: &[(Vec<String>, bool)],
+    ) -> bool {
+        self.strict
+            && candidate.len() > MAX_PATH_STRING
+            && !self.long_word_may_hit(candidate, cwd, sequences)
+    }
+
     /// `_is_profile_path(candidate, home, cwd, anywhere)`.
     pub(crate) fn is_profile_path(
         &self,
@@ -311,6 +354,9 @@ impl<'a> Paths<'a> {
         let Ok(home_comps) = &self.home_comps else {
             return Err(Limit);
         };
+        if self.skip_long(candidate, cwd, &self.profile) {
+            return Ok(false);
+        }
         let hit = any_of(bases(cwd), |base| {
             let path = self.normalize(candidate, base)?;
             Ok(!path.is_empty()
@@ -321,6 +367,9 @@ impl<'a> Paths<'a> {
 
     /// `_is_memory_path(candidate, home, cwd)`.
     pub(crate) fn is_memory_path(&self, candidate: &str, cwd: Option<&str>) -> Result<bool, Limit> {
+        if self.skip_long(candidate, cwd, &self.memory) {
+            return Ok(false);
+        }
         any_of(bases(cwd), |base| {
             let path = self.normalize(candidate, base)?;
             Ok(!path.is_empty() && self.contains_sequence(&path, &self.memory, &[], false))

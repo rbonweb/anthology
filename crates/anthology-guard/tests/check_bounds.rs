@@ -308,6 +308,53 @@ fn a_long_profile_path_blocks() {
         both(&bash(&format!("cat {padded}")), HOME),
         (Verdict::Block(Rule::G3), Verdict::Allow)
     );
+    // long words without `~`, `$` or a glob take the one-scan path; it must still find these
+    let pad = "a/".repeat(3000);
+    for (command, home) in [
+        (format!("cat /{pad}.config/chromium/x"), HOME),
+        (
+            format!("cat /{}.config\\\\chromium", "a\\\\".repeat(3000)),
+            HOME,
+        ),
+        (format!("cat /{pad}.config/google-chrome-beta"), HOME),
+        (
+            format!("cat /{pad}.claude/memory/../../.config/chromium"),
+            HOME,
+        ),
+        (format!("cd /opt/.config && cat chromium/{pad}x"), HOME),
+        (
+            format!("cd /opt/.config/chromium && cat {}x", "b/../".repeat(1000)),
+            HOME,
+        ),
+        (format!("cat /{pad}.config/chromium/x"), "relative"),
+        (
+            format!("cat '/{pad}Library/Application Support/Google/x'"),
+            HOME,
+        ),
+    ] {
+        assert_eq!(
+            verdict_at(&command, home),
+            Verdict::Block(Rule::G3),
+            "{command:.60}"
+        );
+    }
+    // a long secret write into a long memory path (G6 reads memory paths the same way)
+    let write = obj(&[
+        (
+            "file_path",
+            Value::Str(format!("/{pad}repo/.claude/memory/a.md")),
+        ),
+        ("content", Value::Str(gh_token())),
+    ]);
+    assert_eq!(
+        check(&Value::Str("Write".into()), &write, HOME),
+        Verdict::Block(Rule::G6)
+    );
+    // the protected text inside a component is not a component
+    assert_eq!(
+        verdict(&format!("cat /{pad}x.config%2fchromium/y")),
+        Verdict::Allow
+    );
 }
 
 #[test]
