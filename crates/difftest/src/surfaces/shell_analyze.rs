@@ -780,6 +780,40 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         F124.iter()
             .map(|text| case(text.to_string(), "/home/tester")),
     );
+    // SH-F3: the stdin-reader variants (runtime substitutions, launchers as consumers, readers nested in
+    // a script or a compound body, missing launchers); the payloads of sh_fw_verify_payloads.txt
+    const F3: &[&str] = &[
+        r#"echo npx playwright install | sh -c "$(cat) ""#,
+        r#"echo npx playwright install | sh -c "$(cat);""#,
+        r#"echo npx playwright install | eval " $(cat)""#,
+        r#"echo npx playwright install | eval "$(cat);""#,
+        r#"echo npx playwright install | sh -c "`cat` ""#,
+        r#"echo npx playwright install > >(su)"#,
+        r#"echo npx playwright install | tee >(sudo -s)"#,
+        r#"su < <(echo npx playwright install)"#,
+        r#"sudo -s < <(echo npx playwright install)"#,
+        r#"echo npx playwright install > >(eval "$(cat)")"#,
+        r#"echo npx playwright install | bash -c sh"#,
+        r#"echo npx playwright install | sh -c 'eval "$(cat)"'"#,
+        r#"echo npx playwright install | su -c sh"#,
+        r#"echo npx playwright install | script -qc sh /dev/null"#,
+        r#"echo npx playwright install | if true; then sh; fi"#,
+        r#"echo npx playwright install | doas -s"#,
+        r#"echo npx playwright install | runuser -l root"#,
+        r#"echo npx playwright install | su root -s /bin/bash"#,
+        r#"echo npx playwright install | chroot /"#,
+        r#"echo npx playwright install | unshare"#,
+        r#"echo npx playwright install | nsenter -t 1"#,
+        r#"echo npx playwright install | toybox sh"#,
+        r#"echo npx playwright install | posh"#,
+        r#"echo npx playwright install | rbash"#,
+        r#"echo npx playwright install | unshare -r"#,
+        r#"echo npx playwright install | sh -c "$(cat) " > /dev/null"#,
+        r#"echo npx playwright install | find . -maxdepth 0 -exec sh \;"#,
+        r#"echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;"#,
+        r#"echo npx playwright install | sh -c "$(cat) " 2>/dev/null"#,
+    ];
+    out.extend(F3.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 
