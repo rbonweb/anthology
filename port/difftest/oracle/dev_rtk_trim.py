@@ -22,7 +22,12 @@ Cases (`"mode"`):
   "gone"}`). Exit 0 with the `changed` entries one per line on stdout, or exit 1 with
   `rtk-trim: <error>` on stderr. `files` is the full tree of `rtk/`.
 - `"lock-guard"`: `"before"` and `"after"` are written to `before.lock` and `after.lock`, then
-  `main(["--lock-guard", ...])`. `"trimmed-conflicts"`: `main(["--trimmed-conflicts"])` with
+  `main(["--lock-guard", ...])`. An optional `"manifest"` (text or null) is written to
+  `rtk/Cargo.toml` and `"crates"` (`{path: text}`, relative to the folder) beside it. Python
+  has no `../crates/` allowlist (m-14, Rust only), so when the manifest names a qualifying
+  path package whose lock entry (no `source`) is in `after`, the expected result is this
+  module's own reference of the m-14 rule (hand-written, below); in every other case, "the
+  allowlist allows nothing", the result is Python's own. `"trimmed-conflicts"`: `main(["--trimmed-conflicts"])` with
   `"status"` on stdin. `"removed-paths"`: `main(["--removed-paths"])`.
 
 Result: `{"exit", "stdout", "stderr"}` and, for `trim` and `prim`, `"files"` in the testkit
@@ -182,6 +187,128 @@ def _prim(case: dict) -> tuple:
     return 0, "".join(entry + "\n" for entry in t.changed), ""
 
 
+_ALLOWED_PREFIX = "../crates/"
+
+
+def _under_crates(path: str) -> bool:
+    if not path.startswith(_ALLOWED_PREFIX):
+        return False
+    parts = path[len(_ALLOWED_PREFIX):].split("/")
+    return bool(parts[0]) and all(p not in ("..", ".") for p in parts)
+
+
+def _package_name(text: str):
+    in_package = False
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if line.startswith("["):
+            in_package = line == "[package]"
+        elif in_package and "=" in line and line.split("=", 1)[0].strip() == "name":
+            value = line.split("=", 1)[1].strip()
+            return value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else None
+    return None
+
+
+def _path_package_names(manifest: str, tmp: str) -> set:
+    """Reference for m-14 over the one manifest shape the cases use:
+    `name = { path = "../crates/x" }` under `[dependencies]`."""
+    names = set()
+    in_dependencies = False
+    for raw in manifest.split("\n"):
+        line = raw.strip()
+        if line.startswith("["):
+            in_dependencies = line == "[dependencies]"
+            continue
+        if not in_dependencies or "=" not in line:
+            continue
+        value = line.split("=", 1)[1].strip()
+        if not (value.startswith("{") and value.endswith("}")):
+            continue
+        inner = value[1:-1].strip()
+        if not inner.startswith("path"):
+            continue
+        path = inner.split("=", 1)[1].strip().strip('"')
+        if not _under_crates(path):
+            continue
+        try:
+            with open(os.path.join(tmp, "rtk", path, "Cargo.toml"), encoding="utf-8") as f:
+                name = _package_name(f.read())
+        except OSError:
+            continue
+        if name:
+            names.add(name)
+    return names
+
+
+def _lock_entries(text: str) -> list:
+    entries: list = []
+    in_deps = False
+    for line in text.split("\n"):
+        if line.startswith("["):
+            in_deps = False
+            if line == "[[package]]":
+                entries.append({"name": "", "version": "", "source": False, "deps": []})
+            continue
+        if not entries:
+            continue
+        entry = entries[-1]
+        if in_deps:
+            if line.startswith(' "'):
+                entry["deps"].append(line.strip().strip(",").strip('"'))
+            else:
+                in_deps = False
+        elif line.startswith("dependencies = ["):
+            in_deps = True
+        elif line.startswith("source = "):
+            entry["source"] = True
+        elif line.startswith('name = "'):
+            entry["name"] = line[len('name = "'):-1]
+        elif line.startswith('version = "'):
+            entry["version"] = line[len('version = "'):-1]
+    return entries
+
+
+def _allowed_closure(names: set, after_text: str) -> set:
+    entries = _lock_entries(after_text)
+    seen: set = set()
+    queue = [i for i, e in enumerate(entries) if e["name"] in names and not e["source"]]
+    while queue:
+        i = queue.pop()
+        if i in seen:
+            continue
+        seen.add(i)
+        for dep in entries[i]["deps"]:
+            parts = dep.split()
+            for j, e in enumerate(entries):
+                if e["name"] == parts[0] and (len(parts) < 2 or e["version"] == parts[1]):
+                    queue.append(j)
+    return {(entries[i]["name"], entries[i]["version"]) for i in seen}
+
+
+def _lock_guard_with_allowlist(tmp: str, allowed: set) -> tuple:
+    old = rtk_trim.lock_packages(os.path.join(tmp, "before.lock"))
+    new = rtk_trim.lock_packages(os.path.join(tmp, "after.lock"))
+    added = sorted(new - old)
+    bad = [p for p in added if p not in allowed]
+
+    def join(pairs):
+        return ", ".join("%s %s" % p for p in pairs)
+
+    if bad:
+        return 1, "", ("rtk-trim: Cargo.lock: the lockfile step added or changed packages: "
+                       + join(bad) + "\n")
+    ok = [p for p in added if p in allowed]
+    out = ""
+    if ok:
+        out += "rtk-trim: Cargo.lock: %d packages added by the ../crates/ allowlist: %s\n" % (
+            len(ok), join(ok))
+    pruned = sorted(old - new)
+    if pruned:
+        out += ("rtk-trim: Cargo.lock: %d packages pruned, none added or changed: %s\n"
+                % (len(pruned), join(pruned)))
+    return 0, out, ""
+
+
 def _run_in(tmp: str, case: dict) -> dict:
     mode = case["mode"]
     files = None
@@ -193,7 +320,21 @@ def _run_in(tmp: str, case: dict) -> dict:
         for name in ("before", "after"):
             with open(os.path.join(tmp, name + ".lock"), "wb") as f:
                 f.write(case[name].encode("utf-8"))
-        code, out, err = _main(["--lock-guard", "before.lock", "after.lock"])
+        manifest = case.get("manifest")
+        if manifest is not None:
+            os.mkdir("rtk")
+            _write("rtk", "Cargo.toml", manifest)
+        for rel, text in case.get("crates", {}).items():
+            _write(".", rel, text)
+        allowed: set = set()
+        if manifest is not None:
+            names = _path_package_names(manifest, tmp)
+            if names:
+                allowed = _allowed_closure(names, case["after"])
+        if allowed:
+            code, out, err = _lock_guard_with_allowlist(tmp, allowed)
+        else:
+            code, out, err = _main(["--lock-guard", "before.lock", "after.lock"])
     elif mode == "prim":
         os.mkdir("rtk")
         for rel, text in case["files"].items():

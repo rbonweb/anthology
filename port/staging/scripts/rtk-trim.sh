@@ -11,9 +11,10 @@
 #    lock guard) needs the network on a cold cache (apt and the cargo registry).
 # 2. Cargo.lock is pruned by `cargo metadata --offline` in the pinned image (the FROM line of
 #    ci/images/rust.Dockerfile), online only when the registry volume lacks a crate. The whole
-#    repository is mounted, because rtk/Cargo.toml may name path dependencies under ../crates/. With an
-#    existing lockfile cargo only drops unused packages; a guard fails (and restores the old
-#    lockfile) if any package is added or any locked version changes. The one exception is a
+#    repository is mounted, because rtk/Cargo.toml may name path dependencies under
+#    ../crates/. With an existing lockfile cargo only drops unused packages; a guard fails
+#    (and restores the old lockfile) if any package is added or any locked version changes.
+#    The one exception is a
 #    path dependency of rtk/Cargo.toml on a workspace crate under ../crates/ and its dependency
 #    closure, which the guard accepts (`scripts/dev.sh rtk-trim --lock-guard`).
 #

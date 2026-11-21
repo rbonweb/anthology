@@ -10,7 +10,13 @@
 //!   every operation, which stands in for the pristine upstream tree.
 //! - `prim`: `rm`/`sub`/`cut`/`drop` on small random Rust-like files: exact, altered and absent
 //!   anchors, `done` markers, ambiguous anchors, items with and without closers.
-//! - `lock-guard`: random Cargo.lock pairs (CRLF and lone CR line ends, odd lines).
+//! - `lock-guard`: random Cargo.lock pairs (CRLF and lone CR line ends, odd lines), and pairs
+//!   with an `rtk/Cargo.toml` that names a path package (the m-14 `../crates/` allowlist, which
+//!   Python lacks). When the allowlist allows nothing (a `..` segment, a path outside
+//!   `../crates/`, an unreadable or nameless crate manifest, a registry package of that name,
+//!   no manifest) Python itself is the oracle and the result must be identical; when it allows
+//!   the closure, the oracle's own hand-written reference of the rule is. The finer manifest
+//!   shapes (table form, `package =` renames) are covered by `allowlist_test` only.
 //! - `trimmed-conflicts`: random `git status --porcelain` texts.
 //! - `removed-paths`.
 //!
@@ -18,9 +24,10 @@
 //! `trim` mode each file's text is its sha256. Rust runs `anthology_dev::rtk_trim::run_in` (the
 //! CLI) or `Trim` (the primitives) in-process; Python runs `rtk_trim.main` or `Trim`.
 //!
-//! The Rust side fails closed next to a non-ASCII character beside a dropped item's name (P1
-//! owns Python's `\w` tables), so the generators keep those characters out; one seed shows the
-//! allowed difference (`port/difftest/divergences/dev.rtk-trim.toml`).
+//! The Rust side fails closed next to ANY non-ASCII character beside a dropped item's name
+//! (P1 owns Python's `\w` tables): it stops where Python's `\w` may let the trim skip. The
+//! generators keep those characters out; the `seed:nonascii-*` seeds show the allowed
+//! difference (`port/difftest/divergences/dev.rtk-trim.toml`, D-3, scoped by case).
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -103,6 +110,10 @@ fn field<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.as_object()
         .and_then(|o| o.get(k))
         .unwrap_or_else(|| panic!("dev.rtk-trim: no {k:?}"))
+}
+
+fn maybe<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
+    v.as_object().and_then(|o| o.get(k))
 }
 
 fn text<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -286,6 +297,15 @@ fn run(case: &Value) -> Observed {
             for name in ["before", "after"] {
                 fs::write(cwd.join(format!("{name}.lock")), text(case, name)).expect("write");
             }
+            if let Some(manifest) = maybe(case, "manifest").and_then(Value::as_str) {
+                fs::create_dir(&rtk).expect("mkdir");
+                write_file(&rtk, "Cargo.toml", manifest);
+            }
+            if maybe(case, "crates").is_some() {
+                for (rel, content) in pairs(case, "crates") {
+                    write_file(cwd, rel, content);
+                }
+            }
             cli(cwd, &["--lock-guard", "before.lock", "after.lock"], "")
         }
         "prim" => {
@@ -392,6 +412,66 @@ fn lock_case(before: &str, after: &str) -> Value {
     ])
 }
 
+/// One `[[package]]` of a Cargo.lock, in cargo's layout.
+fn lp(name: &str, version: &str, source: bool, deps: &[&str]) -> String {
+    let mut out = format!("[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n");
+    if source {
+        out.push_str("source = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
+    }
+    if !deps.is_empty() {
+        out.push_str("dependencies = [\n");
+        for d in deps {
+            out.push_str(&format!(" \"{d}\",\n"));
+        }
+        out.push_str("]\n");
+    }
+    out
+}
+
+fn lock_of(packages: &[String]) -> String {
+    format!("version = 4\n\n{}", packages.join("\n"))
+}
+
+/// rtk's lock before a sync that adds `anthology-shell`.
+fn allow_before() -> String {
+    lock_of(&[
+        lp("rtk", "1.0.0", false, &["regex"]),
+        lp("regex", "1.0.0", true, &[]),
+        lp("a", "1.0.0", true, &[]),
+    ])
+}
+
+/// ... and after: the path package, its closure, and `extra` packages.
+fn allow_after(extra: &[String]) -> String {
+    let mut packages = vec![
+        lp("rtk", "1.0.0", false, &["anthology-shell", "regex"]),
+        lp("regex", "1.0.0", true, &[]),
+        lp("a", "1.0.0", true, &[]),
+        lp("anthology-shell", "0.1.0", false, &["fancy-regex", "regex"]),
+        lp("fancy-regex", "0.20.2", true, &["bit-set"]),
+        lp("bit-set", "0.8.0", true, &["bit-vec"]),
+        lp("bit-vec", "0.8.0", true, &[]),
+    ];
+    packages.extend_from_slice(extra);
+    lock_of(&packages)
+}
+
+fn manifest(path: &str) -> String {
+    format!(
+        "[package]\nname = \"rtk\"\nversion = \"1.0.0\"\n\n[dependencies]\nregex = \"1\"\nanthology-shell = {{ path = \"{path}\" }}\n"
+    )
+}
+
+fn allow_case(before: &str, after: &str, manifest: Option<&str>, crates: &[(&str, &str)]) -> Value {
+    obj(vec![
+        ("mode", s("lock-guard")),
+        ("before", s(before)),
+        ("after", s(after)),
+        ("manifest", opt(manifest)),
+        ("crates", map_of(crates)),
+    ])
+}
+
 fn conflicts_case(status: &str) -> Value {
     obj(vec![
         ("mode", s("trimmed-conflicts")),
@@ -405,6 +485,14 @@ fn m_replace(path: &str, find: &str, with: &str) -> Value {
         ("kind", s("replace")),
         ("find", s(find)),
         ("with", s(with)),
+    ])
+}
+
+fn m_append(path: &str, content: &str) -> Value {
+    obj(vec![
+        ("path", s(path)),
+        ("kind", s("append")),
+        ("text", s(content)),
     ])
 }
 
@@ -521,21 +609,79 @@ fn seeds() -> Vec<Case> {
             add(&format!("undo-{key}"), trim_case(vec![m], &[], &[]));
         }
     }
+    // Failures of the real trim: each seed undoes one operation and then breaks its anchor, or
+    // doubles it. `tests::the_failure_seeds_fail_as_named` pins the message of each.
+    let first_sub = ops.iter().find(|o| matches!(o, Op::Sub { .. }));
+    let first_cut = ops.iter().find(|o| matches!(o, Op::Cut { .. }));
+    let lib_drop = ops
+        .iter()
+        .find(|o| matches!(o, Op::Drop { path, .. } if *path == "src/lib.rs"));
+    if let Some(sub @ Op::Sub { path, .. }) = first_sub {
+        // The anchor text is restored, then one word of it is changed: the anchor is missing.
+        add(
+            "trim-changed-anchor",
+            trim_case(
+                vec![
+                    undo(sub, None).expect("a sub undoes"),
+                    m_replace(path, "engine", "engin3"),
+                ],
+                &[],
+                &[],
+            ),
+        );
+    }
+    if let Some(drop @ Op::Drop { path, .. }) = lib_drop {
+        // The dropped item is restored twice: its signature line occurs twice.
+        add(
+            "trim-duplicated-line",
+            trim_case(
+                vec![
+                    undo(drop, None).expect("a drop undoes"),
+                    // Line 2 of the restored block: `/// restored`, `#[inline]`, the signature.
+                    m_line(path, "dup_line", 2),
+                ],
+                &[],
+                &[],
+            ),
+        );
+        // The restored item's signature is changed (the name is still there).
+        if let Op::Drop { sig, .. } = drop {
+            add(
+                "trim-fail-drop-signature",
+                trim_case(
+                    vec![m_insert(path, 0, &format!("{sig} // changed\n}}"))],
+                    &[],
+                    &[],
+                ),
+            );
+        }
+    }
+    if let Some(cut @ Op::Cut { path, old, .. }) = first_cut {
+        // The cut text is restored twice: the anchor occurs twice.
+        add(
+            "trim-fail-ambiguous-cut",
+            trim_case(
+                vec![
+                    undo(cut, None).expect("a cut undoes"),
+                    undo(cut, None).expect("a cut undoes"),
+                ],
+                &[],
+                &[],
+            ),
+        );
+        // The cut text is restored with one character added: the anchor is gone, its token is not.
+        add(
+            "trim-fail-cut-token",
+            trim_case(
+                vec![m_insert(path, 0, &old.replacen('\n', "x\n", 1))],
+                &[],
+                &[],
+            ),
+        );
+    }
     add(
-        "trim-changed-anchor",
-        trim_case(
-            vec![m_replace(
-                "Cargo.toml",
-                "dead_code = \"allow\"",
-                "dead_code = \"warn\"",
-            )],
-            &[],
-            &[],
-        ),
-    );
-    add(
-        "trim-duplicated-line",
-        trim_case(vec![m_line("src/lib.rs", "dup_line", 10)], &[], &[]),
+        "trim-append",
+        trim_case(vec![m_append("src/lib.rs", "\n// tail\n")], &[], &[]),
     );
 
     // The unit tests of tests/test_rtk_trim.py.
@@ -744,6 +890,13 @@ fn seeds() -> Vec<Case> {
         ),
     );
     add(
+        "nonascii-before-keyword",
+        prim_case(
+            &[("f.rs", "\u{e9}fn gone() {\n}\n")],
+            vec![op_drop("f.rs", "fn gone(x: u8) {", None)],
+        ),
+    );
+    add(
         "nonascii-letter",
         prim_case(
             &[("f.rs", "fn gone\u{e9}() {\n}\n")],
@@ -767,6 +920,122 @@ fn seeds() -> Vec<Case> {
     add(
         "lock-crlf",
         lock_case(&LOCK.replace('\n', "\r\n"), &LOCK.replace('\n', "\r")),
+    );
+
+    // The `../crates/` allowlist (m-14). Python has none: the oracle runs Python when the
+    // allowlist allows nothing and its own reference of the rule when it allows something.
+    let (before, closure) = (allow_before(), allow_after(&[]));
+    let shell_path = "../crates/anthology-shell";
+    let shell = |name: &str| format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+    let valid: &[(&str, &str)] = &[(
+        "crates/anthology-shell/Cargo.toml",
+        &shell("anthology-shell"),
+    )];
+    add(
+        "allow-closure",
+        allow_case(&before, &closure, Some(&manifest(shell_path)), valid),
+    );
+    add(
+        "allow-closure-trailing-slash",
+        allow_case(
+            &before,
+            &closure,
+            Some(&manifest("../crates/anthology-shell/")),
+            valid,
+        ),
+    );
+    add(
+        "allow-closure-pruned",
+        allow_case(
+            &before,
+            &closure.replace(&lp("a", "1.0.0", true, &[]), ""),
+            Some(&manifest(shell_path)),
+            valid,
+        ),
+    );
+    add(
+        "allow-closure-version-change",
+        allow_case(
+            &before.replace(
+                &lp("regex", "1.0.0", true, &[]),
+                &lp("regex", "0.9.0", true, &[]),
+            ),
+            &closure,
+            Some(&manifest(shell_path)),
+            valid,
+        ),
+    );
+    add(
+        "allow-unrelated",
+        allow_case(
+            &before,
+            &allow_after(&[lp("evil", "6.6.6", true, &[])]),
+            Some(&manifest(shell_path)),
+            valid,
+        ),
+    );
+    add(
+        "allow-dotdot",
+        allow_case(
+            &before,
+            &closure,
+            Some(&manifest("../crates/../x")),
+            &[("x/Cargo.toml", &shell("anthology-shell"))],
+        ),
+    );
+    add(
+        "allow-outside-crates",
+        allow_case(
+            &before,
+            &closure,
+            Some(&manifest("../elsewhere/anthology-shell")),
+            &[(
+                "elsewhere/anthology-shell/Cargo.toml",
+                &shell("anthology-shell"),
+            )],
+        ),
+    );
+    add(
+        "allow-bare-crates",
+        allow_case(&before, &closure, Some(&manifest("../crates/")), valid),
+    );
+    add(
+        "allow-unreadable-crate-manifest",
+        allow_case(&before, &closure, Some(&manifest(shell_path)), &[]),
+    );
+    add(
+        "allow-nameless-crate-manifest",
+        allow_case(
+            &before,
+            &closure,
+            Some(&manifest(shell_path)),
+            &[("crates/anthology-shell/Cargo.toml", "[lib]\npath = \"x\"\n")],
+        ),
+    );
+    add(
+        "allow-other-crate-name",
+        allow_case(
+            &before,
+            &closure,
+            Some(&manifest(shell_path)),
+            &[("crates/anthology-shell/Cargo.toml", &shell("other"))],
+        ),
+    );
+    add(
+        "allow-registry-package-of-the-same-name",
+        allow_case(
+            &before,
+            &closure.replace(
+                &lp("anthology-shell", "0.1.0", false, &["fancy-regex", "regex"]),
+                &lp("anthology-shell", "0.1.0", true, &["fancy-regex", "regex"]),
+            ),
+            Some(&manifest(shell_path)),
+            valid,
+        ),
+    );
+    add(
+        "allow-no-rtk-manifest",
+        allow_case(&before, &closure, None, valid),
     );
 
     cases
@@ -965,7 +1234,11 @@ fn gen_trim(rng: &mut Rng) -> Value {
             }
             6 => {
                 let path = *rng.pick(&paths);
-                mutations.push(m_replace(path, "    ", "   "));
+                if rng.chance(0.7) {
+                    mutations.push(m_replace(path, "    ", "   "));
+                } else {
+                    mutations.push(m_append(path, "\nfn appended() {\n}\n"));
+                }
             }
             _ => {
                 let removed = rtk_trim::removed_paths();
@@ -1113,11 +1386,174 @@ fn gen_conflicts(rng: &mut Rng) -> Value {
     conflicts_case(&status)
 }
 
+/// A lock pair with an `rtk/Cargo.toml` that names (or fails to name) a `../crates/` path
+/// package, and the crate manifest it points at.
+fn gen_allow(rng: &mut Rng) -> Value {
+    let path = *rng.pick(&[
+        "../crates/anthology-shell",
+        "../crates/anthology-shell",
+        "../crates/anthology-shell",
+        "../crates/anthology-shell/",
+        "../crates/../x",
+        "../crates/",
+        "../elsewhere/anthology-shell",
+        "crates/anthology-shell",
+    ]);
+    let mut before = vec![
+        lp("rtk", "1.0.0", false, &["regex"]),
+        lp("regex", "1.0.0", true, &[]),
+        lp("a", "1.0.0", true, &[]),
+    ];
+    let shell_source = rng.chance(0.1);
+    let mut after = vec![
+        lp("rtk", "1.0.0", false, &["anthology-shell", "regex"]),
+        lp("regex", "1.0.0", true, &[]),
+        lp("a", "1.0.0", true, &[]),
+        lp(
+            "anthology-shell",
+            "0.1.0",
+            shell_source,
+            &["fancy-regex", "regex"],
+        ),
+        lp("fancy-regex", "0.20.2", true, &["bit-set", "regex"]),
+        lp("bit-set", "0.8.0", true, &["bit-vec"]),
+        lp("bit-vec", "0.8.0", true, &[]),
+    ];
+    match rng.below(5) {
+        0 => after.push(lp("evil", "6.6.6", true, &[])),
+        1 => after.retain(|p| !p.contains("name = \"a\"")),
+        2 => before[1] = lp("regex", "0.9.0", true, &[]),
+        3 => after.push(lp("bit-vec", "0.9.0", true, &[])),
+        _ => {}
+    }
+    if rng.chance(0.15) {
+        before.push(lp("bit-vec", "0.8.0", true, &[]));
+    }
+    let crate_manifest = match rng.below(8) {
+        0 => None,
+        1 => Some("[lib]\npath = \"x\"\n".to_string()),
+        2 => Some("[package]\nname = \"other\"\n".to_string()),
+        _ => Some("[package]\nname = \"anthology-shell\"\nversion = \"0.1.0\"\n".to_string()),
+    };
+    let rel = format!(
+        "{}/Cargo.toml",
+        path.trim_start_matches("../").trim_end_matches('/')
+    );
+    let crates: Vec<(&str, &str)> = crate_manifest
+        .iter()
+        .map(|m| (rel.as_str(), m.as_str()))
+        .collect();
+    let manifest_text = if rng.chance(0.1) {
+        None
+    } else {
+        Some(manifest(path))
+    };
+    allow_case(
+        &lock_of(&before),
+        &lock_of(&after),
+        manifest_text.as_deref(),
+        &crates,
+    )
+}
+
 fn gen_case(rng: &mut Rng) -> Value {
     match rng.below(20) {
-        0..=8 => gen_prim(rng),
-        9..=12 => gen_lock(rng),
+        0..=7 => gen_prim(rng),
+        8..=10 => gen_lock(rng),
+        11..=12 => gen_allow(rng),
         13..=15 => gen_conflicts(rng),
         _ => gen_trim(rng),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seed(id: &str) -> Observed {
+        let want = format!("seed:{id}");
+        let case = seeds()
+            .into_iter()
+            .find(|c| c.id == want)
+            .unwrap_or_else(|| panic!("no seed {want}"));
+        run(&case.data)
+    }
+
+    fn stderr(o: &Observed) -> String {
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    }
+
+    fn stdout(o: &Observed) -> String {
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    }
+
+    #[test]
+    fn the_failure_seeds_fail_as_named() {
+        for (id, message) in [
+            ("trim-changed-anchor", "anchor missing: "),
+            ("trim-duplicated-line", "signature occurs 2 times"),
+            ("trim-fail-drop-signature", "signature changed?"),
+            ("trim-fail-ambiguous-cut", "anchor occurs 2 times"),
+            ("trim-fail-cut-token", "still present"),
+        ] {
+            let o = seed(id);
+            assert_eq!(o.exit, 1, "{id}: {} {}", stdout(&o), stderr(&o));
+            assert!(stderr(&o).contains(message), "{id}: {}", stderr(&o));
+        }
+    }
+
+    #[test]
+    fn the_head_seeds_have_nothing_to_do_and_undo_all_does_everything() {
+        for id in ["trim-head", "trim-append"] {
+            let o = seed(id);
+            assert_eq!((o.exit, stdout(&o).as_str()), (0, "no changes\n"), "{id}");
+        }
+        let o = seed("trim-undo-all");
+        assert_eq!(o.exit, 0, "{}", stderr(&o));
+        assert!(stdout(&o).lines().count() > 200, "{}", stdout(&o));
+    }
+
+    #[test]
+    fn the_allowlist_seeds_allow_only_the_closure() {
+        for id in [
+            "allow-closure",
+            "allow-closure-trailing-slash",
+            "allow-closure-pruned",
+            "allow-closure-version-change",
+        ] {
+            let o = seed(id);
+            assert_eq!(o.exit, 0, "{id}: {}", stderr(&o));
+            assert!(
+                stdout(&o)
+                    .contains("packages added by the ../crates/ allowlist: anthology-shell 0.1.0"),
+                "{id}: {}",
+                stdout(&o)
+            );
+        }
+        let o = seed("allow-unrelated");
+        assert_eq!(o.exit, 1);
+        assert!(
+            stderr(&o).ends_with("packages: evil 6.6.6\n"),
+            "{}",
+            stderr(&o)
+        );
+        for id in [
+            "allow-dotdot",
+            "allow-outside-crates",
+            "allow-bare-crates",
+            "allow-unreadable-crate-manifest",
+            "allow-nameless-crate-manifest",
+            "allow-other-crate-name",
+            "allow-registry-package-of-the-same-name",
+            "allow-no-rtk-manifest",
+        ] {
+            let o = seed(id);
+            assert_eq!(o.exit, 1, "{id}: {}", stdout(&o));
+            assert!(
+                stderr(&o).contains("anthology-shell 0.1.0"),
+                "{id}: {}",
+                stderr(&o)
+            );
+        }
     }
 }

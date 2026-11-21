@@ -501,7 +501,8 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
 
 /// [`run`] with relative paths (`--root`, the lockfiles) taken from `cwd` instead of the process's
 /// working directory, so a caller (the difftest surface) can run it in-process without `chdir`.
-/// Messages still show the paths as given.
+/// Usage, not-a-directory and anchor messages show the paths as given; an I/O error message
+/// shows the joined path.
 pub fn run_in(cwd: &Path, args: &[OsString], stdin: &mut dyn Read) -> Output {
     let parsed = match parse(args) {
         Ok(parsed) => parsed,
