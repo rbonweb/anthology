@@ -12,6 +12,7 @@ other folder nothing is written and no repo notes are injected.
 """
 from __future__ import annotations
 
+import bisect
 import collections
 import datetime
 import hashlib
@@ -606,12 +607,49 @@ def _check_body(value):
     return value + "\n"
 
 
+_SECRET_FIELDS = ("slug", "name", "description", "body")
+
+
+def _secret_findings(texts):
+    """`[(field index, label, line)]`, sorted and unique, for every `SECRET_PATTERNS` match in
+    the fields joined by newlines (so a match that spans a field break is still found). The
+    line is 1-based within the field; never the matched text."""
+    joined = "\n".join(texts)
+    starts, pos = [], 0
+    for text in texts:
+        starts.append(pos)
+        pos += len(text) + 1
+    found = set()
+    for label, rx in memory_privacy.SECRET_PATTERNS:
+        for m in rx.finditer(joined):
+            idx = bisect.bisect_right(starts, m.start()) - 1
+            found.add((idx, label, joined.count("\n", starts[idx], m.start()) + 1))
+    return sorted(found)
+
+
+def _describe_secrets(findings):
+    """`url-credentials on line 3, password in the name`: kinds and places, never the text."""
+    parts, groups = [], {}
+    for idx, label, line in findings:
+        groups.setdefault((idx, label), []).append(line)
+    for (idx, label), lines in groups.items():
+        if _SECRET_FIELDS[idx] != "body":
+            parts.append("%s in the %s" % (label, _SECRET_FIELDS[idx]))
+        elif len(lines) == 1:
+            parts.append("%s on line %d" % (label, lines[0]))
+        else:
+            parts.append("%s on lines %s" % (label, ", ".join(str(n) for n in lines)))
+    return ", ".join(parts)
+
+
 def _refuse_secrets(texts, env):
     joined = "\n".join(texts)
     # memory_privacy.SECRET_PATTERNS is the one anthology-side list (a superset of G6, by a test)
-    if any(rx.search(joined) for _label, rx in memory_privacy.SECRET_PATTERNS):
-        raise SaveError("refusing to save: the note looks like it contains a secret "
-                        "(memory is committed to the repo)")
+    findings = _secret_findings(texts)
+    if findings:
+        raise SaveError("refusing to save: the note looks like it contains a secret (%s); memory "
+                        "is committed to the repo: remove or replace that value (e.g. refer to "
+                        "the env var name) and save again" % _describe_secrets(findings))
     for var, value in sorted((os.environ if env is None else env).items()):
         if (isinstance(value, str) and len(value) >= 8 and _SECRET_ENV_NAME.search(var)
                 and value in joined):

@@ -1711,6 +1711,26 @@ class SaveNoteTest(MemCase):
                     self.assertNotIn(secret, msg)
         self.assertFalse((self.root / ".claude").exists())
 
+    def test_secret_refusal_names_the_kind_and_line_never_the_value(self):
+        secret = "hunter" + "2-long-value"
+        url = "postgres://app:" + secret + "@db.example.com/x"
+        msg = self.assertRefused(body="first\nsecond\nconnect to " + url + "\nlast")
+        self.assertIn("(url-credentials on line 3)", msg)
+        self.assertIn("remove or replace that value", msg)
+        self.assertNotIn(secret, msg)
+        self.assertNotIn("\n", msg)
+        # several lines of one kind, and two kinds
+        aws = "AKIA" + "IOSFODNN7EXAMPLE"
+        msg = self.assertRefused(body=aws + "\nok\n" + aws + "\n" + url)
+        self.assertIn("aws-access-key on lines 1, 3", msg)
+        self.assertIn("url-credentials on line 4", msg)
+        self.assertNotIn(aws, msg)
+        self.assertNotIn(secret, msg)
+        # a single-line field is named, not numbered
+        msg = self.assertRefused(name="see " + aws)
+        self.assertIn("(aws-access-key in the name)", msg)
+        self.assertNotIn(aws, msg)
+
     def test_env_secret_values_are_refused_without_echoing_them(self):
         value = "vA1ue" + "-of-the-thing"
         env = {"MY_API_TOKEN": value, "HOME": "/home/x"}
