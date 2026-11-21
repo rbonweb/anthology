@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use anthology_core::clock::{self, Date};
 use anthology_core::git::{Git, RealGit};
 use anthology_core::{Env, fsx, paths};
-use anthology_pycompat::json::{self, Map, Value};
+use anthology_pycompat::json::{self, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
 use sha2::{Digest, Sha256};
@@ -182,17 +182,10 @@ fn exc_text(e: &PyExc) -> String {
 
 /// `exc.strerror`: the errno text of an `OSError`, else `str(exc)`.
 pub(crate) fn strerror(e: &PyExc) -> String {
-    let t = e.py_str();
-    if let PyExc::OSError { errno, .. } = e {
-        let head = format!("[Errno {errno}] ");
-        if let Some(rest) = t.strip_prefix(&head) {
-            return match rest.rfind(": '") {
-                Some(i) if rest.ends_with('\'') => rest[..i].to_string(),
-                _ => rest.to_string(),
-            };
-        }
+    match e {
+        PyExc::OSError { errno, .. } => anthology_pycompat::errno_tables::strerror(*errno),
+        other => other.py_str(),
     }
-    t
 }
 
 fn os_err(e: io::Error, p: &Path) -> PyExc {
@@ -203,6 +196,16 @@ fn os_err(e: io::Error, p: &Path) -> PyExc {
         },
         other => other,
     }
+}
+
+/// A panic's message, as `str(exc)`; `panic` when it has none.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|m| (*m).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "panic".into())
 }
 
 fn cut120(t: &str) -> String {
@@ -619,6 +622,10 @@ pub fn promotion_check(
 }
 
 /// `promotion_block`: why a note may not go into repo memory, or `None`.
+///
+/// Pass `home` (setup passes `$HOME`): this form has no `Env`, so `None` means no home-path
+/// check, where Python falls back to `os.environ["HOME"]`. [`promotion_check`] with
+/// [`SyncDeps::from_env`] has the fallback.
 pub fn promotion_block(
     info: &NoteInfo,
     data: &[u8],
@@ -718,7 +725,7 @@ pub fn try_migrate(
         && handled != done
     {
         let mut m = Map::new();
-        m.insert("version".into(), json::loads("1").unwrap_or(Value::Null));
+        m.insert("version".into(), Value::Int(Int::Small(1)));
         m.insert(
             "done".into(),
             Value::Array(handled.into_iter().map(Value::Str).collect()),
@@ -1050,12 +1057,23 @@ fn run_inner(cwd: &Path, env: &Env, deps: &SyncDeps<'_>) -> Result<(String, Vec<
     let mut cover = None;
     if let Some(root) = &root {
         if is_approved(&repo_key(root, env, deps.git), env) {
-            match sync_repo(root, &home, &config, env, &mut messages, deps) {
-                Ok(c) => cover = c,
-                Err(e) => messages.push(format!(
+            // `except Exception`: an error or a panic here still leaves the personal section.
+            let step = catch_unwind(AssertUnwindSafe(|| {
+                sync_repo(root, &home, &config, env, &mut messages, deps)
+            }));
+            let failed = match step {
+                Ok(Ok(c)) => {
+                    cover = c;
+                    None
+                }
+                Ok(Err(e)) => Some(exc_text(&e)),
+                Err(payload) => Some(panic_text(payload.as_ref())),
+            };
+            if let Some(why) = failed {
+                messages.push(format!(
                     "anthology memory: repo memory step failed: {}",
-                    cut120(&exc_text(&e))
-                )),
+                    cut120(&why)
+                ));
             }
         } else if root.join(".claude").join("memory").is_dir()
             || root.join(".claude").join("agent-memory").is_dir()
@@ -1104,18 +1122,13 @@ pub fn run(cwd: &Path, env: &Env, deps: &SyncDeps) -> (String, Vec<String>) {
             String::new(),
             vec![format!("anthology memory: {}", cut120(&exc_text(&e)))],
         ),
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|m| (*m).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "panic".into());
-            (
-                String::new(),
-                vec![format!("anthology memory: {}", cut120(&msg))],
-            )
-        }
+        Err(payload) => (
+            String::new(),
+            vec![format!(
+                "anthology memory: {}",
+                cut120(&panic_text(payload.as_ref()))
+            )],
+        ),
     }
 }
 

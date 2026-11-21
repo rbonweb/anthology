@@ -2965,3 +2965,101 @@ mod save_note_test {
         assert!(out.index_warning.unwrap().contains("MEMORY.md is a link"));
     }
 }
+
+/// Rust-only cases (no Python id): the never-block rulings and the error branches of `run`.
+mod ms2_rust_only {
+    use super::*;
+    use anthology_memory::sync::SweepResult;
+    use anthology_pycompat::pyerr::PyExc;
+
+    #[test]
+    fn a_fifo_ledger_never_blocks_the_session() {
+        let c = MemCase::new();
+        let g = fake_repo(&c, "repo", None);
+        approve_fake(&c, &g);
+        let old = c
+            .config
+            .join("projects")
+            .join(encode(&g.root))
+            .join("memory");
+        write(
+            &old.join("project-a.md"),
+            &Note::new("project-a").text(),
+            None,
+        );
+        let ledger = c.anth.join("migrated.json");
+        mkfifo(&ledger);
+        let (env, root, key) = (c.env.clone(), g.root.clone(), g.key.clone());
+        let out = run_with_timeout(10, move || {
+            let fake = FakeGit {
+                root: root.clone(),
+                key,
+            };
+            sync::run(&root, &env, &deps(&fake))
+        });
+        if out.is_none() {
+            unblock(&ledger);
+        }
+        let (ctx, _msgs) = out.expect("run blocked on a FIFO migrated.json");
+        assert!(ctx.contains("project-a"));
+    }
+
+    #[test]
+    fn a_fifo_hand_made_index_never_blocks_the_session() {
+        let c = MemCase::new();
+        let personal = c.anth.join("personal-memory");
+        fs::create_dir_all(&personal).unwrap();
+        let fifo = personal.join("MEMORY.md");
+        mkfifo(&fifo);
+        let (env, cwd) = (c.env.clone(), c.tmp.clone());
+        let out = run_with_timeout(10, move || sync::run(&cwd, &env, &SyncDeps::default()));
+        if out.is_none() {
+            unblock(&fifo);
+        }
+        let out = out.expect("run blocked on a FIFO MEMORY.md");
+        assert_eq!(out, (personal_only(&c.anth), vec![]));
+    }
+
+    fn boom(_: &Path, _: sync::MS1Budget, _: &[&str]) -> Result<bool, PyExc> {
+        Err(PyExc::Other("RuntimeError", "boom".into()))
+    }
+
+    #[test]
+    fn an_error_outside_the_repo_step_is_one_message_and_no_context() {
+        let c = MemCase::new();
+        fs::create_dir_all(c.anth.join("personal-memory")).unwrap();
+        let deps = SyncDeps {
+            regenerate_index: boom,
+            ..SyncDeps::default()
+        };
+        assert_eq!(
+            sync::run(&c.tmp, &c.env, &deps),
+            (String::new(), vec!["anthology memory: boom".to_string()])
+        );
+    }
+
+    fn kaboom(_: &Path, _: &Path, _: Option<Date>, _: &SyncDeps<'_>) -> Result<SweepResult, PyExc> {
+        panic!("kaboom")
+    }
+
+    #[test]
+    fn a_panic_in_the_repo_step_keeps_the_personal_section() {
+        let c = MemCase::new();
+        let g = fake_repo(&c, "repo", None);
+        approve_fake(&c, &g);
+        write(
+            &c.anth.join("personal-memory/user-me.md"),
+            &note("user-me", "user", "Me"),
+            None,
+        );
+        let deps = SyncDeps {
+            git: &g,
+            sweep_user_notes: kaboom,
+            ..SyncDeps::default()
+        };
+        let (ctx, msgs) = sync::run(&g.root, &c.env, &deps);
+        assert!(ctx.starts_with("## Personal memory ("));
+        assert!(ctx.contains("[user-me](user-me.md)"));
+        assert_eq!(msgs, ["anthology memory: repo memory step failed: kaboom"]);
+    }
+}
