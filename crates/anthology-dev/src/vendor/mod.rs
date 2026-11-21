@@ -10,6 +10,7 @@
 //! - [`py`]: the Python semantics vendor.py relies on.
 
 pub mod build;
+pub mod cli;
 pub mod compare;
 pub mod diff;
 pub mod fetch;
@@ -85,16 +86,5 @@ pub type Get<'a> = dyn Fn(&str) -> Result<Vec<u8>> + 'a;
 /// Runs `anthology-dev vendor …`; `args` are the arguments after `vendor`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
     let _ = stdin;
-    Output::not_ported_sub(
-        "vendor",
-        &[
-            "fetch",
-            "build",
-            "check",
-            "sync",
-            "diff",
-            "set-rtk-upstream",
-        ],
-        args,
-    )
+    cli::main(args)
 }

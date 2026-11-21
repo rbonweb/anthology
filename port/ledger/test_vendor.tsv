@@ -1,7 +1,7 @@
 # python_id	status	rust_test	note
-test_vendor.CompatibilityTest.test_cache_dir_is_git_ignored	todo
-test_vendor.CompatibilityTest.test_cli_is_runnable_and_lists_commands	todo
-test_vendor.CompatibilityTest.test_vendor_py_parses_as_python_39	todo
+test_vendor.CompatibilityTest.test_cache_dir_is_git_ignored	ported	crates/anthology-dev/tests/vendor/compatibility_test.rs::test_cache_dir_is_git_ignored
+test_vendor.CompatibilityTest.test_cli_is_runnable_and_lists_commands	ported	crates/anthology-dev/tests/vendor/compatibility_test.rs::test_cli_is_runnable_and_lists_commands
+test_vendor.CompatibilityTest.test_vendor_py_parses_as_python_39	dropped:py-compat		no Python left to parse; the Rust CLI is covered by compatibility_test.rs and cli.rs parser_matches_argparse_312
 test_vendor.LicenseTest.test_check_flags_empty_license	ported	crates/anthology-dev/tests/vendor/license_test.rs::test_check_flags_empty_license
 test_vendor.LicenseTest.test_check_flags_license_drift	ported	crates/anthology-dev/tests/vendor/license_test.rs::test_check_flags_license_drift
 test_vendor.LicenseTest.test_check_flags_missing_license	ported	crates/anthology-dev/tests/vendor/license_test.rs::test_check_flags_missing_license
