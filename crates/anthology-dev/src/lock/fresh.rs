@@ -332,7 +332,7 @@ impl ShippedSet {
             };
             let dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
             if !in_src(&file)
-                && let Some(n) = outline_mod(&text)
+                && let Some(n) = mod_word(&text)
             {
                 // Its file would sit beside this one, outside the compared tree.
                 return Err(format!(
@@ -591,6 +591,23 @@ fn mod_item(line: &str) -> Option<(bool, bool)> {
     } else {
         Some((true, true))
     }
+}
+
+/// The line number of the first whole-word `mod` outside `//` comment lines: the strict test
+/// for files outside `src/`, which catches every spelling of a module item (several items on a
+/// line, macro-generated or split declarations) at the price of refusing an inline one too.
+pub fn mod_word(text: &str) -> Option<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.lines()
+        .position(|l| {
+            let l = l.trim_start();
+            !l.starts_with("//")
+                && l.match_indices("mod").any(|(i, _)| {
+                    !l[..i].chars().next_back().is_some_and(word)
+                        && !l[i + 3..].chars().next().is_some_and(word)
+                })
+        })
+        .map(|i| i + 1)
 }
 
 /// The line number of the first `mod name;` (a module in its own file) in `text`.

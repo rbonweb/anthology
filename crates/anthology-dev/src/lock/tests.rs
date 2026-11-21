@@ -368,6 +368,18 @@ fn renamed_workspace_dependencies_are_found_by_their_package_key() {
 }
 
 #[test]
+fn any_mod_word_outside_comments_is_found() {
+    assert_eq!(mod_word("fn a() {} mod y;\n"), Some(1));
+    assert_eq!(mod_word("m!(mod);\n"), Some(1));
+    assert_eq!(mod_word("#[doc = \"]\"] mod y;\n"), Some(1));
+    assert_eq!(mod_word("pub\nmod\ny;\n"), Some(2));
+    assert_eq!(
+        mod_word("// mod y;\nfn module() {}\nlet modx = 1; let a_mod = 2;\n"),
+        None
+    );
+}
+
+#[test]
 fn module_items_are_told_apart() {
     assert_eq!(outline_mod("pub mod y;\n"), Some(1));
     assert_eq!(
