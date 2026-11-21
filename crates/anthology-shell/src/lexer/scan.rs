@@ -195,7 +195,16 @@ fn walk<'t>(
                 && (j == i
                     || matches!(
                         bytes[j - 1],
-                        b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b'(' | b')' | b'{' | b'}' | b'!'
+                        b' ' | b'\t'
+                            | b'\n'
+                            | b';'
+                            | b'&'
+                            | b'|'
+                            | b'('
+                            | b')'
+                            | b'{'
+                            | b'}'
+                            | b'!'
                     )) =>
             {
                 // `$(case a in a) x;; esac)`: bash matches a pattern's `)` with its `case`, which this

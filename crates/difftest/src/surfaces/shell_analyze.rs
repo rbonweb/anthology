@@ -664,7 +664,10 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "echo {0..20..5} {-2..1}",
         "ls ${HOME}/{a,b}",
     ];
-    out.extend(SEQ.iter().map(|text| case(text.to_string(), "/home/tester")));
+    out.extend(
+        SEQ.iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     // paramsub: `$(...)` in `${...}`; a backtick holding `)` and a `case` inside `$(` (the oracle applies them)
     const PARAMSUB: &[&str] = &[
         "echo ${x:-$(npx playwright install chromium)}",
@@ -719,6 +722,15 @@ pub(crate) fn fw_cases() -> Vec<Value> {
             .iter()
             .map(|text| case(text.to_string(), "/home/tester")),
     );
+    // SH-FW final review I-3: the shipped reading of a package manager's unknown options (an alternate)
+    const I3: &[&str] = &[
+        "pnpm --silent open -a Chromium https://x",
+        "yarn --silent open -a Chromium https://x",
+        "sudo pnpm --silent open -a Chromium https://x",
+        "npm --silent open exec playwright install",
+        "pnpm --silent install",
+    ];
+    out.extend(I3.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

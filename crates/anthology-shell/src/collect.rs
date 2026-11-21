@@ -1694,13 +1694,21 @@ impl<'a> Ctx<'a> {
             let result = brace_reading(&tokens, &mut self.work);
             if let Some(reading) = self.take(result)? {
                 braced = Some(alternates.len());
-                alternates.push((main_at, reading));
+                alternates.push((main_at, reading, false));
             }
         }
         let mut differs = false;
-        for (k, (at, alternate)) in alternates.into_iter().enumerate() {
-            let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
-            let other = self.take(result)?;
+        for (k, (at, alternate, verbatim)) in alternates.into_iter().enumerate() {
+            let other = if verbatim {
+                // the shipped reading of a package manager: its words are the command, as they are
+                Stripped {
+                    cmd: alternate.clone(),
+                    ..Stripped::default()
+                }
+            } else {
+                let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
+                self.take(result)?
+            };
             if braced == Some(k)
                 && other.cmd.first() != cmd.first()
                 && (other.cmd.len() < alternate.len()

@@ -141,7 +141,10 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
     alternate G1 blocks, so it joins fewer (the oracle and Rust are the stricter ones here)."""
     main = G._strip_prefixes(entry.raw)[0]
     for alternate in alternates:
-        cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
+        if isinstance(alternate, _Verbatim):              # I-3: the shipped npm/bun reading, as it stands
+            cmd, more = list(alternate), []
+        else:
+            cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
         if alternate is _BRACE_READING[0] and cmd[:1] != main[:1] and (
                 len(cmd) < len(alternate) or (cmd and _brace_risky(G._prog_name(cmd[0])))):
             raise G._TooComplex()                         # re-review C-3a
@@ -229,6 +232,44 @@ def _alternate_span(tokens, main_at):
 
 
 G._alternate_span = _alternate_span
+
+
+# --- I-3: the shipped reading of a package manager's options (Rust `shipped_pm_alternate`, D-8: Rust's
+# alternates are the stricter ones; the reference reads each unknown option as a flag with no value only).
+class _Verbatim(list):
+    """An alternate that is the command as it stands: not peeled again (the shipped npm/bun reading)."""
+
+
+def _shipped_pm_alternate(rel, at):
+    name = G._prog_name(rel[0])
+    if name not in G._JS_PACKAGE_MANAGERS:
+        return None
+    shipped = G._skip_flags(rel, 1, G._PM_VALUE_FLAGS)
+    if shipped == G._pm_verb_index(rel):
+        return None
+    verb = rel[shipped] if shipped < len(rel) else ""
+    if name in ("yarn", "pnpm") and verb and verb not in G._PM_VERBS:
+        start = shipped + (1 if verb == "--" else 0)
+        if start >= len(rel):
+            return None
+        return at + start, [G._strip_version(rel[start])] + rel[start + 1:], False
+    return at, _Verbatim(rel), True
+
+
+_alternates_before_i3 = G._alternates
+
+
+def _alternates_i3(tokens, start, end):
+    """`_alternates` plus the shipped reading of each package manager word from `start - 1` to `end`."""
+    out = list(_alternates_before_i3(tokens, start, end))
+    for j in range(max(start - 1, 0), min(end, len(tokens))):
+        got = _shipped_pm_alternate(tokens[j:], j)
+        if got is not None:
+            out.append(_Verbatim(got[1]) if got[2] else got[1])
+    return out
+
+
+G._alternates = _alternates_i3
 
 
 # --- part B

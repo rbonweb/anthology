@@ -753,8 +753,9 @@ pub(crate) struct StdinRun {
     pub(crate) replace: Option<String>,
 }
 
-/// An alternate reading: the index in the command of its first word, and its words.
-pub(crate) type Alternate = (usize, Vec<String>);
+/// An alternate reading: the index in the command of its first word, its words, and whether they are the
+/// reading as it stands (`verbatim`: not peeled again, the shipped reading of a package manager, I-3).
+pub(crate) type Alternate = (usize, Vec<String>, bool);
 
 /// `_strip_prefixes`' result.
 #[derive(Clone, Debug, Default)]
@@ -1435,10 +1436,69 @@ fn alternates_of(
                     return Err(TooComplex);
                 }
             }
-            out.push((k, alt));
+            out.push((k, alt, false));
         }
     }
     Ok(out)
+}
+
+/// Rust (SH-FW final review I-3): the shipped reading of a package manager's options, where each option the
+/// tables do not know is a flag with no value (`_skip_flags` of the shipped guard), for a package manager word
+/// at `tokens[at]` (`rel` is `tokens[at..]`) whose subcommand `pm_verb_index` reads elsewhere. A yarn or pnpm
+/// with a non-verb word there runs that word as a bin (`pnpm --silent open -a Chromium https://x` is
+/// `open -a Chromium https://x`): an alternate from that word. Otherwise the shipped reading is the package
+/// manager itself (npm, bun, or no subcommand), its words kept as they are.
+fn shipped_pm_alternate(rel: &[String], at: usize) -> Option<Alternate> {
+    let name = prog_name(rel.first()?);
+    if !has(JS_PACKAGE_MANAGERS, &name) {
+        return None;
+    }
+    let mut unused = false;
+    let shipped = skip_flags(
+        rel,
+        1,
+        PM_VALUE_FLAGS,
+        &|t| known_bool(t, PM_BOOL_FLAGS),
+        &mut unused,
+    );
+    let mut unknown = false;
+    if shipped == pm_verb_index(rel, &mut unknown) {
+        return None;
+    }
+    let verb = rel.get(shipped).map_or("", String::as_str);
+    if (name == "yarn" || name == "pnpm") && !verb.is_empty() && !has(PM_VERBS, verb) {
+        // `runner_program` breaks at a `--` it has skipped, so the bin is the word after it
+        let start = shipped + usize::from(verb == "--");
+        let first = rel.get(start)?;
+        let mut alt = Vec::with_capacity(rel.len() - start);
+        alt.push(strip_version(first));
+        alt.extend_from_slice(&rel[start + 1..]);
+        return Some((at + start, alt, false));
+    }
+    Some((at, rel.to_vec(), true))
+}
+
+/// The shipped readings (`shipped_pm_alternate`) of every package manager word from `start - 1` (the program
+/// the span follows) to `end`: the package manager of the command, or one it runs. Too complex past
+/// `MAX_ALTERNATES` alternates in `out`, before the next is built.
+fn shipped_pm_alternates(
+    tokens: &[String],
+    start: usize,
+    end: usize,
+    out: &mut Vec<Alternate>,
+    work: &mut Work,
+) -> Result<(), TooComplex> {
+    for j in start.saturating_sub(1)..end.min(tokens.len()) {
+        if !has(JS_PACKAGE_MANAGERS, &prog_name(&tokens[j])) {
+            continue;
+        }
+        if out.len() >= MAX_ALTERNATES {
+            return Err(TooComplex);
+        }
+        work.charge_extra(tokens[j..].iter().map(|w| WORD + w.len()).sum())?;
+        out.extend(shipped_pm_alternate(&tokens[j..], j));
+    }
+    Ok(())
 }
 
 /// `key` is `<section>.<subsection>.<name>` with a non-empty subsection (`key` lowercased, `name` too).
@@ -2290,11 +2350,12 @@ pub(crate) fn strip_prefixes(
         if let Some((start, end)) = alternate_span(tokens, main_at)
             && !has(QUIET_PROGRAMS, &main)
         {
-            let found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
+            let mut found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
+            shipped_pm_alternates(tokens, start, end, &mut found, work)?;
             work.charge_extra(
                 found
                     .iter()
-                    .flat_map(|(_, alt)| alt)
+                    .flat_map(|(_, alt, _)| alt)
                     .map(|w| WORD + w.len())
                     .sum(),
             )?;
