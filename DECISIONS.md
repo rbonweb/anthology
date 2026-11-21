@@ -707,3 +707,24 @@ Setup adds the owner's blanket `Bash(rtk *)` allow (ADR-017, PLAN §12), and Cla
 **Consequences**
 
 Users with deny, ask or Read rules get them enforced behind rtk, at the cost of an occasional prompt where a wrapped command cannot be read, and an unreadable settings file now prompts for every command. A later upstream sync must keep the three `// anthology fork:` call sites wired to the gate. Cost if wrong: a rule source Claude Code adds later is invisible to the hook until the gate reads it.
+
+## ADR-025: setup offers to remove `CLAUDE_CODE_SUBAGENT_MODEL`
+
+- **Date:** 2026-11-21
+- **Task:** owner request (setup handles `CLAUDE_CODE_SUBAGENT_MODEL`)
+- **Status:** Accepted (replaces "Anthology never changes it" from the section 14 compatibility checks)
+
+**Context**
+
+`CLAUDE_CODE_SUBAGENT_MODEL` overrides every agent's model, so the roster's opus/sonnet/haiku tiers do not apply. Doctor and session start only warned, and told users to remove it themselves.
+
+**Decision**
+
+- `compat.subagent_model_sources` lists every place it is set (user settings, the project's two settings files, managed settings, the process environment), never the value. The process environment counts only when its value matches none of those files, because Claude Code copies a settings file's `env` into the commands it runs.
+- When it is in the user `settings.json` env, the preview offers its removal as a separate opt-in change with its own redacted diff. `apply --remove-subagent-model`, passed only on a yes, removes it under the same digest check as setup's other settings changes.
+- The removal is a new settings op, `{"op": "unset", "path": ["env", "CLAUDE_CODE_SUBAGENT_MODEL"]}`. It is stored with the other ops, with the previous raw value. `remove` puts the value back as the env block's last key, unless the key is present again. That follows the `worktree.baseRef` convention: a value the user set since stays. The op is not part of `setup_ops`, so the ops version does not change.
+- Anywhere else, setup changes nothing and gives a one-line hint for that place. A key listed twice in the user `env` block is not offered: dropping one copy would leave the other in force, and undo could not restore both, so the hint asks the user to delete both lines.
+
+**Consequences**
+
+When the user settings.json is the only place, the tiers apply after one yes and a restart. A value set elsewhere, or a shell value hidden behind a settings value, still applies until it is removed there; session start keeps warning and points at `/anthology:setup`. Cost if wrong: a user who relied on the override loses it until `setup remove` or a manual edit. The previous value sits in `state.json` next to the other undo data.

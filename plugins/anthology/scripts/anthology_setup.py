@@ -3,6 +3,7 @@
 
     anthology_setup.py preview --plugin-root R [--cwd C] [--json]
     anthology_setup.py apply   --plugin-root R --expect-sha256 H [--cwd C] [--skip-approve] [--promote F]...
+                               [--remove-subagent-model]
     anthology_setup.py remove  --plugin-root R [--cwd C] [--preview] [--unapprove] [--unapprove-all]
 
 `preview` writes nothing: it reports the environment checks, duplicate plugins, the rtk step,
@@ -11,7 +12,10 @@ steps, including the old path-keyed memory notes of this repo (`memory.legacy_no
 refuses if settings.json changed since the preview (checked again after the rtk download, right
 before the write); after approving the repo it copies those legacy notes into personal memory,
 except the ones named with `--promote`, which go into the repo's memory if the privacy scan
-finds nothing (otherwise they stay personal and are listed in `memory.blocked`). `remove --preview` writes nothing and shows what remove
+finds nothing (otherwise they stay personal and are listed in `memory.blocked`). The preview's
+`subagent_model` says where `CLAUDE_CODE_SUBAGENT_MODEL` is set; when that is the user
+settings.json, it shows the separate, opt-in removal, which `apply --remove-subagent-model` makes
+(recorded, so `remove` puts the old value back). `remove --preview` writes nothing and shows what remove
 would change (settings diff, the rtk folder, state.json, approvals). `remove` undoes the
 settings edits, deletes the downloaded rtk and `state.json`, and optionally drops repo
 approvals; memory notes, `.gitattributes` and the personal-memory folder are never deleted.
@@ -35,6 +39,7 @@ _SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
+import compat  # noqa: E402
 import doctor  # noqa: E402
 import memory_sync  # noqa: E402
 import settings_patch  # noqa: E402
@@ -119,14 +124,33 @@ def _rtk_apply(root, data_dir):
 # -- settings -------------------------------------------------------------------------------------
 
 
-def _settings_plan(root, env):
+def _settings_plan(root, env, remove_model=False):
     """`(path, text, new_text, diff, ops_to_store, ops_version)`; ValueError / FileNotFoundError on
-    bad input."""
+    bad input. `remove_model` adds the opt-in removal of `env.CLAUDE_CODE_SUBAGENT_MODEL`, which
+    stays out of the op version."""
     path = settings_patch.settings_path(env)
     text = settings_patch.read_text(path)
     ops = settings_patch.setup_ops(root, env=env)
-    new_text, diff, stored = settings_patch.reconcile(text, ops, state.read().get("settings_ops") or [])
+    extra = [settings_patch.subagent_model_op()] if remove_model else []
+    new_text, diff, stored = settings_patch.reconcile(text, ops + extra, state.read().get("settings_ops") or [])
     return path, text, new_text, diff, stored, settings_patch.ops_version(ops)
+
+
+def _subagent_model(env, cwd, new_text):
+    """Where `CLAUDE_CODE_SUBAGENT_MODEL` is set (never its value). `removable` when setup can drop
+    it from the user settings.json it edits (`new_text` is that file after setup's other changes,
+    or None when it cannot be edited); `diff` shows that removal, redacted; `elsewhere` gives one
+    line on how to remove it by hand for every other place."""
+    where = compat.subagent_model_sources(env, cwd)
+    out = {"set_in": where, "removable": False, "diff": "", "elsewhere": []}
+    for label in where:
+        if label == compat.USER_SETTINGS and new_text is not None:
+            removed, diff = settings_patch.apply(new_text, [settings_patch.subagent_model_op()])
+            if removed != new_text:
+                out.update(removable=True, diff=diff)
+                continue
+        out["elsewhere"].append({"where": label, "how": compat.SUBAGENT_MODEL_HINTS[label]})
+    return out
 
 
 def _settings_error(exc):
@@ -253,6 +277,7 @@ def preview(plugin_root, cwd=None, env=None):
     text = settings_patch.read_text(settings_patch.settings_path(env))
     settings = {"path": str(settings_patch.settings_path(env)), "sha256": _sha256(text),
                 "bypass_note": settings_patch.BYPASS_NOTE}
+    new_text = None
     try:
         _path, _text, new_text, diff, _stored, _version = _settings_plan(plugin_root, env)
         settings.update(changed=new_text != text, diff=diff)
@@ -274,15 +299,19 @@ def preview(plugin_root, cwd=None, env=None):
         "installed_plugins": installed_state,
         "rtk": _rtk_preview(plugin_root, data_dir),
         "settings": settings,
+        "subagent_model": _subagent_model(env, cwd, new_text),
         "memory": {"repo": repo, "personal_dir": str(personal), "personal_exists": personal.is_dir(),
                    "legacy_notes": legacy},
     }
 
 
-def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, promote=()):
+def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, promote=(),
+          remove_subagent_model=False):
     """Apply the previewed setup. `promote` names legacy notes (bare file names from the
     preview's `memory.legacy_notes`) to move into the repo's memory instead of personal memory;
-    a note with privacy findings stays personal and is listed in `memory.blocked`."""
+    a note with privacy findings stays personal and is listed in `memory.blocked`.
+    `remove_subagent_model` (only when the user said yes) also drops
+    `env.CLAUDE_CODE_SUBAGENT_MODEL` from settings.json, recorded so `remove` restores it."""
     env = dict(os.environ) if env is None else dict(env)
     if _unsupported():
         return {"ok": False, "unsupported": True, "error": REFUSAL}
@@ -296,7 +325,7 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, pr
     if _sha256(settings_patch.read_text(path)) != expect_sha256:
         return {"ok": False, "error": "settings.json changed since the preview; run the preview again"}
     try:
-        _settings_plan(plugin_root, env)  # refuse early: nothing is downloaded for a bad plan
+        _settings_plan(plugin_root, env, remove_subagent_model)  # refuse early: nothing is downloaded for a bad plan
     except (ValueError, FileNotFoundError) as exc:
         return {"ok": False, "error": _settings_error(exc)}
 
@@ -312,9 +341,12 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, pr
     if _sha256(settings_patch.read_text(path)) != expect_sha256:
         return stale
     try:
-        _path, text, new_text, diff, stored, ops_version = _settings_plan(plugin_root, env)
+        _path, text, new_text, diff, stored, ops_version = _settings_plan(plugin_root, env,
+                                                                         remove_subagent_model)
     except (ValueError, FileNotFoundError) as exc:
         return {"ok": False, "error": _settings_error(exc)}
+    model_removed = bool(remove_subagent_model
+                         and settings_patch.plan(text, [settings_patch.subagent_model_op()]))
     before = state.read()
     created = bool(before.get("settings_created")) or not os.path.lexists(str(path))
     changed = new_text != text
@@ -353,7 +385,8 @@ def apply(plugin_root, expect_sha256, cwd=None, skip_approve=False, env=None, pr
         done["data_dir"] = data_dir
     state.write(**done)
     return {"ok": True, "settings": {"path": str(path), "changed": changed, "diff": diff},
-            "rtk": {"status": rtk_status}, "memory": memory, "warnings": warnings}
+            "rtk": {"status": rtk_status}, "subagent_model": {"removed": model_removed},
+            "memory": memory, "warnings": warnings}
 
 
 def _rtk_target(env):
@@ -489,6 +522,8 @@ def main(argv=None):
             p.add_argument("--skip-approve", action="store_true")
             p.add_argument("--promote", action="append", default=[], metavar="FILE",
                            help="move this legacy note into the repo's memory (repeatable)")
+            p.add_argument("--remove-subagent-model", action="store_true",
+                           help="also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json")
         if name == "remove":
             p.add_argument("--unapprove", action="store_true")
             p.add_argument("--unapprove-all", action="store_true")
@@ -500,7 +535,7 @@ def main(argv=None):
             result = preview(args.plugin_root, cwd=args.cwd)
         elif args.command == "apply":
             result = apply(args.plugin_root, args.expect_sha256, cwd=args.cwd, skip_approve=args.skip_approve,
-                           promote=args.promote)
+                           promote=args.promote, remove_subagent_model=args.remove_subagent_model)
         else:
             result = remove(args.plugin_root, cwd=args.cwd, unapprove=args.unapprove,
                             unapprove_all=args.unapprove_all, preview=args.preview)

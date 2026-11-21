@@ -920,6 +920,137 @@ class RemoveTest(SetupCase):
         self.assertNotIn("worktree", got)
 
 
+class SubagentModelTest(SetupCase):
+    """CLAUDE_CODE_SUBAGENT_MODEL: located in preview, removed from user settings.json only on yes."""
+    KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop(self.KEY, None)  # the host may be Claude Code itself
+        self.addCleanup(os.environ.pop, self.KEY, None)  # tests below set it
+        patcher = mock.patch.object(anthology_setup.compat, "MANAGED_SETTINGS_PATHS",
+                                    (self.tmp / "managed-settings.json",))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def with_model(self):
+        return self.write_settings({"model": "opus", "env": {"A": "1", self.KEY: "SECRETMODEL"}})
+
+    def test_not_set(self):
+        self.write_settings()
+        self.assertEqual(self.preview()["subagent_model"],
+                         {"set_in": [], "removable": False, "diff": "", "elsewhere": []})
+
+    def test_preview_offers_a_separate_redacted_removal_and_writes_nothing(self):
+        self.with_model()
+        before = snapshot(self.tmp)
+        out = self.preview()
+        self.assertEqual(snapshot(self.tmp), before)
+        sm = out["subagent_model"]
+        self.assertEqual(sm["set_in"], ["user settings.json"])
+        self.assertTrue(sm["removable"])
+        self.assertEqual(sm["elsewhere"], [])
+        self.assertIn('-    "CLAUDE_CODE_SUBAGENT_MODEL": "<redacted>"', sm["diff"])
+        self.assertNotIn(self.KEY, out["settings"]["diff"])  # not part of the main change
+        self.assertNotIn("SECRETMODEL", json.dumps(out))
+
+    def test_apply_removes_it_only_when_asked_and_remove_restores_it(self):
+        text = self.with_model()
+        self.assertTrue(self.apply()["ok"])
+        self.assertIn(self.KEY, json.loads(self.settings.read_text(encoding="utf-8"))["env"])
+        version = state.read()["settings_ops_version"]
+        res = self.apply(remove_subagent_model=True)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["subagent_model"], {"removed": True})
+        self.assertNotIn("SECRETMODEL", json.dumps(res))
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["env"], {"A": "1"})
+        self.assertEqual(state.read()["settings_ops_version"], version)  # the opt-in is not an op change
+        self.assertIn("unset", [o["op"] for o in state.read()["settings_ops"]])
+        self.assertTrue(self.apply()["ok"])  # a later run keeps the record
+        preview = self.remove(preview=True)
+        self.assertIn('+    "CLAUDE_CODE_SUBAGENT_MODEL": "<redacted>"', preview["settings"]["diff"])
+        self.assertNotIn("SECRETMODEL", json.dumps(preview))
+        self.assertTrue(self.remove()["ok"])
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+
+    def test_remove_keeps_a_value_set_again_since(self):
+        self.with_model()
+        self.apply(remove_subagent_model=True)
+        data = json.loads(self.settings.read_text(encoding="utf-8"))
+        data["env"][self.KEY] = "mine-now"
+        self.write_settings(data)
+        self.assertTrue(self.remove()["ok"])
+        data = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(data["env"][self.KEY], "mine-now")
+        self.assertNotIn("permissions", data)  # setup's own entries came out
+
+    def test_apply_with_the_flag_is_digest_protected(self):
+        self.with_model()
+        digest = self.preview()["settings"]["sha256"]
+        write(self.settings, self.settings.read_text(encoding="utf-8") + "\n")
+        res = self.apply(expect=digest, remove_subagent_model=True)
+        self.assertFalse(res["ok"])
+        self.assertIn(self.KEY, json.loads(self.settings.read_text(encoding="utf-8"))["env"])
+
+    def test_elsewhere_is_never_touched_and_says_how(self):
+        text = self.write_settings()
+        proj = self.tmp / "proj"
+        write(proj / ".claude" / "settings.local.json", json.dumps({"env": {self.KEY: "m"}}))
+        os.environ[self.KEY] = "from-the-shell"
+        out = self.preview(cwd=proj)["subagent_model"]
+        self.assertEqual(out["set_in"], ["the project's .claude/settings.local.json", "the process environment"])
+        self.assertFalse(out["removable"])
+        self.assertEqual(out["diff"], "")
+        self.assertEqual([e["where"] for e in out["elsewhere"]], out["set_in"])
+        for e in out["elsewhere"]:
+            self.assertIn(self.KEY, e["how"])
+        self.assertIn("shell profile", out["elsewhere"][1]["how"])
+        res = self.apply(cwd=proj, remove_subagent_model=True, skip_approve=True)
+        self.assertEqual(res["subagent_model"], {"removed": False})
+        self.assertEqual(json.loads((proj / ".claude" / "settings.local.json").read_text(encoding="utf-8")),
+                         {"env": {self.KEY: "m"}})
+        self.remove(cwd=proj)
+        self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+
+    def test_a_key_set_twice_is_not_offered(self):
+        text = '{"env": {"%s": "a", "%s": "b"}}\n' % (self.KEY, self.KEY)
+        write(self.settings, text)
+        out = self.preview()["subagent_model"]
+        self.assertEqual(out["set_in"], ["user settings.json"])
+        self.assertFalse(out["removable"])
+        self.assertEqual([e["where"] for e in out["elsewhere"]], ["user settings.json"])
+        self.assertIn("every", out["elsewhere"][0]["how"])
+        res = self.apply(remove_subagent_model=True, skip_approve=True)
+        self.assertEqual(res["subagent_model"], {"removed": False})
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["env"], {self.KEY: "b"})
+
+    def test_the_process_copy_of_the_user_setting_is_not_a_second_place(self):
+        self.with_model()
+        os.environ[self.KEY] = "SECRETMODEL"  # Claude Code copies settings env into the commands it runs
+        out = self.preview()["subagent_model"]
+        self.assertEqual(out["set_in"], ["user settings.json"])
+        self.assertTrue(out["removable"])
+
+    def test_unparseable_user_settings_offer_nothing(self):
+        write(self.settings, '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"},}')
+        out = self.preview()
+        self.assertIn("error", out["settings"])
+        sm = out["subagent_model"]
+        self.assertFalse(sm["removable"])
+        self.assertEqual(sm["set_in"], [])  # not valid JSON for Claude Code either
+
+    def test_cli_flag(self):
+        self.with_model()
+        digest = self.preview()["settings"]["sha256"]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = anthology_setup.main(["apply", "--plugin-root", str(PLUGIN), "--expect-sha256", digest,
+                                         "--cwd", str(self.tmp), "--skip-approve", "--remove-subagent-model"])
+        self.assertEqual(code, 0, buf.getvalue())
+        self.assertTrue(json.loads(buf.getvalue())["subagent_model"]["removed"])
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["env"], {"A": "1"})
+
+
 class CliTest(SetupCase):
     def run_main(self, *argv):
         buf = io.StringIO()

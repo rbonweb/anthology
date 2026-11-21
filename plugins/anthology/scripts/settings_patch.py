@@ -10,11 +10,13 @@ Ops are JSON-serialisable dicts:
 
     {"op": "add", "path": ["permissions", "allow"], "value": "Bash(rtk *)"}   # list entry
     {"op": "set", "path": ["worktree", "baseRef"], "value": "head"}           # object key
+    {"op": "unset", "path": ["env", "CLAUDE_CODE_SUBAGENT_MODEL"]}            # drop a key
 
 `plan(text, ops)` drops ops that are already satisfied (the user's own pre-existing rule is
 never ours) and records what is needed to undo each one exactly: the containers it created,
-the raw text of an empty container it filled, and the previous value of a replaced key.
-`revert(text, planned_ops)` removes only those entries, in reverse order. Every diff shown to
+the raw text of an empty container it filled, and the previous value of a replaced or dropped
+key. `revert(text, planned_ops)` removes only those entries, in reverse order, and puts a dropped
+key back unless the user has set it again. Every diff shown to
 the user (and so to Claude) shows values only under `permissions.allow`, `permissions.deny` and
 `worktree.baseRef`, all of them, including the user's own rule strings (a token inside one of those
 rules is shown). Every other value (`env`, tokens, hook commands, URLs, ...) reads `"<redacted>"`,
@@ -48,6 +50,8 @@ _REPLACEABLE_TAGS = (TAG_PLUGIN_READ, TAG_MEM_SAVE)
 # the version on its own. Session start only notes a changed version while an op is still missing
 # from settings.json, so a bump alone, or a release that only drops an op, shows nothing.
 OPS_VERSION = 1
+# The opt-in removal setup offers (never part of `setup_ops`, so never part of `ops_version`).
+SUBAGENT_MODEL_PATH = ("env", "CLAUDE_CODE_SUBAGENT_MODEL")
 REDACTED = "<redacted>"
 # The only places whose values a diff shows: where setup makes its changes.
 SHOWN_PATHS = (("permissions", "allow"), ("permissions", "deny"), ("worktree", "baseRef"))
@@ -365,7 +369,24 @@ def _create(text, op, path, leaf, created_upto, existing=None):
 
 def _apply_op(text, op):
     """Apply one op. Returns `(text, info)`; info is None when it was already satisfied."""
-    path, value = list(op["path"]), op["value"]
+    path = list(op["path"])
+    if op["op"] == "unset":
+        if not path or _is_blank(text):
+            return text, None
+        root = _parse(text)
+        try:
+            chain = _descend(root, path)
+        except ValueError:  # a parent on the path is not an object: nothing to drop
+            return text, None
+        if len(chain) - 1 != len(path):
+            return text, None
+        node, parent = chain[-1], chain[-2]
+        if sum(1 for m in parent.items if m.key == path[-1]) > 1:
+            return text, None  # set twice: dropping one copy would leave the other in force
+        idx = [m.value for m in parent.items].index(node)
+        return _remove_at(text, parent, idx), {"created": [], "previous": {"present": True,
+                                                                          "raw": text[node.start:node.end]}}
+    value = op["value"]
     if op["op"] == "add":
         if not _is_blank(text):
             root = _parse(text)
@@ -470,6 +491,19 @@ def _revert_op(text, op):
     root = _parse(text)
     chain = _descend(root, path)
     found = len(chain) - 1 == len(path)
+    if op["op"] == "unset":
+        prev = op.get("previous")
+        raw = prev.get("raw") if isinstance(prev, dict) else None
+        if found or not isinstance(raw, str) or not prev.get("present") \
+                or not all(isinstance(k, str) for k in path):
+            return text  # set again since (the user's value stays), or not a record setup wrote
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return text
+        if len(chain) == len(path):
+            return _append(text, root, chain, chain[-1], path[-1], value)
+        return _create(text, op, path, value, len(path) - 1, root)[0]
     value = op["value"]
     if op["op"] == "add":
         if found and chain[-1].kind == "array":
@@ -605,6 +639,11 @@ def setup_ops(plugin_root, profile_roots=None, env=None):
                 "tag": TAG_PLUGIN_READ})
     ops.append({"op": "set", "path": ["worktree", "baseRef"], "value": "head"})
     return ops
+
+
+def subagent_model_op():
+    """The opt-in op that drops `env.CLAUDE_CODE_SUBAGENT_MODEL` (setup asks first)."""
+    return {"op": "unset", "path": list(SUBAGENT_MODEL_PATH)}
 
 
 def ops_version(ops):

@@ -97,8 +97,10 @@ class EnvCase(unittest.TestCase):
         self.managed = self.tmp / "managed-mcp.json"
         self.cwd = self.tmp / "proj"
         self.cwd.mkdir()
+        self.managed_settings = self.tmp / "managed-settings.json"
         for patcher in (mock.patch.object(doctor, "SYSTEM_APPLICATIONS", self.apps),
-                        mock.patch.object(doctor, "MANAGED_MCP_PATHS", (self.managed,))):
+                        mock.patch.object(doctor, "MANAGED_MCP_PATHS", (self.managed,)),
+                        mock.patch.object(doctor.compat, "MANAGED_SETTINGS_PATHS", (self.managed_settings,))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -1037,7 +1039,8 @@ class SubagentModelTest(CompatBase):
         self.assertFalse(c["ok"])
         self.assertIn("process environment", c["detail"])
         self.assertNotIn("SECRETMODEL", c["detail"])
-        self.assertIn("Anthology never changes it", c["detail"])
+        self.assertIn("/anthology:setup", c["detail"])
+        self.assertNotIn("never changes it", c["detail"])
         self.assertIn("opus/sonnet/haiku", c["detail"])
 
     def test_empty_env_value_is_unset(self):
@@ -1048,6 +1051,38 @@ class SubagentModelTest(CompatBase):
         c = self.checks()["subagent_model"]
         self.assertFalse(c["ok"])
         self.assertIn("settings.json", c["detail"])
+        self.assertNotIn("SECRETMODEL", c["detail"])
+
+    def test_process_env_copied_from_a_settings_file_names_only_the_file(self):
+        # Claude Code copies a settings file's env into the commands it runs
+        _write(self.config / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        sources = doctor.compat.subagent_model_sources({**os.environ, "CLAUDE_CODE_SUBAGENT_MODEL": "m"}, self.cwd)
+        self.assertEqual(sources, ["user settings.json"])
+        sources = doctor.compat.subagent_model_sources({**os.environ, "CLAUDE_CODE_SUBAGENT_MODEL": "x"}, self.cwd)
+        self.assertEqual(sources, ["user settings.json", "the process environment"])
+
+    def test_every_place_is_listed_in_order(self):
+        for path in (self.config / "settings.json", self.cwd / ".claude" / "settings.local.json",
+                     self.managed_settings):
+            _write(path, {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        self.assertEqual(doctor.compat.subagent_model_sources(dict(os.environ), self.cwd),
+                         ["user settings.json", "the project's .claude/settings.local.json", "managed settings"])
+        c = self.checks()["subagent_model"]
+        self.assertIn("(user settings.json, the project's .claude/settings.local.json, managed settings)",
+                      c["detail"])
+        for label in doctor.compat.subagent_model_sources(dict(os.environ), self.cwd):
+            self.assertIn("CLAUDE_CODE_SUBAGENT_MODEL", doctor.compat.SUBAGENT_MODEL_HINTS[label])
+
+    def test_run_in_the_home_folder_the_user_file_is_listed_once(self):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.cwd / ".claude")}
+        _write(self.cwd / ".claude" / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        self.assertEqual(doctor.compat.subagent_model_sources(env, self.cwd), ["user settings.json"])
+
+    def test_set_in_managed_settings(self):
+        _write(self.managed_settings, {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"}})
+        c = self.checks()["subagent_model"]
+        self.assertFalse(c["ok"])
+        self.assertIn("managed settings", c["detail"])
         self.assertNotIn("SECRETMODEL", c["detail"])
 
     def test_set_in_project_settings_and_local(self):
