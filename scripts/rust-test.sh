@@ -82,9 +82,18 @@ exec runuser -u "$user" -- env -i \
 interactive=
 [ "$mode" != run ] || interactive=-i
 
+# A linked worktree's .git file points into the main checkout's git directory, outside /w.
+# Mount that directory read-only at its own path, so git works in the container there too
+# (`scripts/dev.sh lock check-fresh` reads the history; RL1).
+git_common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+case $git_common in
+    "" | "$root" | "$root"/*) git_common= ;;
+esac
+
 exec docker run --rm $interactive \
     -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-}" \
     -v "$root":/w \
+    ${git_common:+-v "$git_common:$git_common:ro"} \
     -v anthology-cargo:/usr/local/cargo/registry \
     -v "anthology-rustup-${digest:0:12}":/usr/local/rustup \
     -v "anthology-rust-target-$checkout":/target \
