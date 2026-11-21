@@ -275,12 +275,11 @@ fn is_symlink(p: &Path) -> bool {
 
 /// The classes anthology-settings reports as `"<Class>: …"` that setup does not catch (it
 /// catches ValueError and FileNotFoundError), so they reach `main`.
-const RAISED_CLASSES: [&str; 5] = [
+const RAISED_CLASSES: [&str; 4] = [
     "TypeError: ",
     "KeyError: ",
     "AttributeError: ",
     "RecursionError: ",
-    "UnicodeDecodeError: ",
 ];
 
 /// What setup's `except (ValueError, FileNotFoundError)` makes of an error.
@@ -293,12 +292,15 @@ enum Refusal {
 
 /// Sorts an anthology-settings error (its convention: a ValueError is `str(exc)`, any other
 /// class starts with the class name). A `JSONDecodeError`, a ValueError subclass, is shown
-/// without the class prefix the scanner gives it.
+/// without the class prefix the scanner gives it, and so is a `UnicodeDecodeError` (also one).
 fn classify(msg: String) -> Refusal {
     if RAISED_CLASSES.iter().any(|c| msg.starts_with(c)) {
         return Refusal::Raised(msg);
     }
-    match msg.strip_prefix("JSONDecodeError: ") {
+    match msg
+        .strip_prefix("JSONDecodeError: ")
+        .or_else(|| msg.strip_prefix("UnicodeDecodeError: "))
+    {
         Some(rest) => Refusal::Caught(rest.to_string()),
         None => Refusal::Caught(msg),
     }
@@ -1163,7 +1165,7 @@ fn rtk_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<Strin
 }
 
 /// Whether `installed_plugins.json` has an `anthology-guardrails@*` entry; a file that exists
-/// but cannot be read counts as one (keep the binary).
+/// but cannot be read, or has no `plugins` object, counts as one (keep the binary).
 fn guardrails_installed(env: &Env) -> bool {
     let p = compat::config_dir(env)
         .join("plugins")
@@ -1177,7 +1179,7 @@ fn guardrails_installed(env: &Env) -> bool {
     data.as_object()
         .and_then(|m| m.get("plugins"))
         .and_then(Value::as_object)
-        .is_some_and(|plugins| {
+        .is_none_or(|plugins| {
             plugins
                 .iter()
                 .any(|(k, _)| k.starts_with(GUARDRAILS_PREFIX))
@@ -1241,8 +1243,16 @@ fn try_remove(
     let text = read_settings(&path)?;
     let (mut new_text, mut diff) = (text.clone(), String::new());
     if st.get("settings_ops").is_some_and(truthy) {
-        let reverted = settings::stored_ops(st.get("settings_ops"))
-            .and_then(|ops| settings::revert_with_diff(&text, &ops));
+        // Python's `revert` returns on a blank file and parses the text before `list(ops)`, so
+        // a malformed `settings_ops` matters only for a settings file that parses.
+        let reverted = if settings::is_blank(&text) {
+            Ok((text.clone(), String::new()))
+        } else {
+            settings::revert_with_diff(&text, &[]).and_then(|_| {
+                settings::stored_ops(st.get("settings_ops"))
+                    .and_then(|ops| settings::revert_with_diff(&text, &ops))
+            })
+        };
         match reverted.map_err(classify) {
             Ok((n, d)) => (new_text, diff) = (n, d),
             Err(Refusal::Caught(m)) => {

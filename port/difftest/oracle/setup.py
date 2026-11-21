@@ -36,7 +36,7 @@ The forced changes are applied to Python's answer, nothing else:
   null>}`; apply (ok, or refused as changed during setup) `{"status": <the case's status, or
   "skipped: guardrails not found">}`; remove `{"status"}` and remove --preview `{"dir",
   "status"}` for `<ah>/bin`: `nothing to delete` when absent, `kept (anthology-guardrails still
-  uses it)` when `installed_plugins.json` has an `anthology-guardrails@*` entry or exists but
+  uses it)` when `installed_plugins.json` has an `anthology-guardrails@*` entry, has no `plugins` object or
   does not parse, else `delete` (preview) / `deleted` (the folder, or a symlink to it, is
   removed after the rest of remove; Rust deletes it before unapproving, which no case can
   tell apart since no case writes an approval);
@@ -145,7 +145,9 @@ def _guardrails_installed(env):
     if data is None:
         return True
     plugins = data.get("plugins") if isinstance(data, dict) else None
-    return isinstance(plugins, dict) and any(str(k).startswith("anthology-guardrails@") for k in plugins)
+    if not isinstance(plugins, dict):
+        return True  # an unexpected shape keeps the binary
+    return any(str(k).startswith("anthology-guardrails@") for k in plugins)
 
 
 def _bin_target(env):

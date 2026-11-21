@@ -1228,6 +1228,28 @@ mod fix_round1_test {
         assert!(text_at(&out, &["error"]).contains("not valid JSON"));
     }
 
+    /// Rust-only (review): Python's `revert` checks for a blank file and parses the text before
+    /// it reads the stored ops, so a malformed `settings_ops` is not an error then.
+    #[test]
+    fn a_malformed_settings_ops_matters_only_for_a_settings_file_that_parses() {
+        let f = Fx::new();
+        write(&state::path(f.env()), "{\"settings_ops\": 7}\n", None);
+        let out = f.remove(false, false, true);
+        assert!(ok(&out), "{out:?}");
+        write(&f.c.settings, "{nope", None);
+        let out = f.remove(false, false, true);
+        assert!(
+            text_at(&out, &["error"]).contains("not valid JSON"),
+            "{out:?}"
+        );
+        write(&f.c.settings, "{}\n", None);
+        let out = f.remove(false, false, true);
+        assert_eq!(
+            text_at(&out, &["error"]),
+            "TypeError: 'int' object is not iterable"
+        );
+    }
+
     #[test]
     fn test_remove_preview_cli_flag() {
         let f = Fx::new();
@@ -1582,6 +1604,19 @@ mod guard_binary {
             status(&f.remove(false, false, false)),
             "kept (anthology-guardrails still uses it)"
         );
+        // a registry of an unexpected shape keeps it too
+        for odd in ["[]", r#"{"version": 2}"#, r#"{"plugins": []}"#] {
+            write(
+                &f.c.mem.config.join("plugins/installed_plugins.json"),
+                odd,
+                None,
+            );
+            assert_eq!(
+                status(&f.remove(false, false, false)),
+                "kept (anthology-guardrails still uses it)",
+                "{odd}"
+            );
+        }
 
         installed_plugins(&f, &["anthology@m"]);
         let out = f.remove(false, false, true);
@@ -1683,10 +1718,25 @@ mod cli_test {
         .iter()
         .map(|a| a.to_string())
         .collect();
-        // Not a repo (the MS2 stand-in): the promote refusal proves both flags arrived.
-        let (code, out, _) = setup::main(&argv, f.env(), &f.deps());
+        // A repo with no legacy notes: the refusal names both flags' files.
+        let tmp = f.tmp().to_path_buf();
+        let repo_root = move |_: &Path, _: &Env| Some(tmp.clone());
+        let repo_key = |_: &Path, _: &Env| "k".to_string();
+        let approve = |_: &Path, _: &Env| Ok("k".to_string());
+        let deps = SetupDeps {
+            memory: MemoryDeps {
+                repo_root: &repo_root,
+                repo_key: &repo_key,
+                approve: &approve,
+            },
+            ..f.deps()
+        };
+        let (code, out, _) = setup::main(&argv, f.env(), &deps);
         assert_eq!(code, 1);
         let v = json::loads(&out).unwrap();
-        assert!(text_at(&v, &["error"]).contains("needs a git repo"));
+        assert!(
+            text_at(&v, &["error"]).contains("not one: clean.md, mail.md."),
+            "{out}"
+        );
     }
 }
