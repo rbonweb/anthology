@@ -203,7 +203,7 @@ def _compose(guide, memory, home):
     memory = memory.rstrip("\n")
     if not memory:
         return guide.rstrip("\n")
-    head = guide + "\n"
+    head = guide + "\n" if guide else ""
     room = CONTEXT_BUDGET - len(head)
     if len(memory) <= room:
         return head + memory
@@ -225,6 +225,14 @@ def _step(warnings, label, fn, default=None):
     except Exception as exc:  # includes RecursionError and UnicodeDecodeError
         warnings.append("anthology: %s failed (%s)" % (label, type(exc).__name__))
         return default
+
+
+def _is_subagent(hook):
+    """Claude Code puts `agent_id` in the hook input when the hook fires inside a subagent or
+    teammate (a SessionStart after it compacts). `agent_type` is not used: it is also set for a
+    main session started with `--agent`."""
+    agent_id = hook.get("agent_id")
+    return isinstance(agent_id, str) and agent_id != ""
 
 
 def _parse_stdin(stdin):
@@ -287,10 +295,17 @@ def _run(env, stdin):
             return "", ["anthology memory: %s" % (str(exc) or type(exc).__name__)[:120]]
 
     memory, messages = _step(warnings, "memory sync", memory_step, ("", []))
+    # A compact that runs in a git worktree the session moved into (or an agent's worktree)
+    # really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
+    if hook.get("source") == "compact":
+        messages = [m for m in messages if m != memory_sync.DIR_SET]
 
-    guide = _step(warnings, "reading the routing guide", lambda: _read_guide(root))
-    if guide is None:
-        warnings.append("anthology: the routing guide is missing from the plugin (templates/routing-guide.md)")
+    if _is_subagent(hook):  # the routing guide is for the lead only
+        guide = ""
+    else:
+        guide = _step(warnings, "reading the routing guide", lambda: _read_guide(root))
+        if guide is None:
+            warnings.append("anthology: the routing guide is missing from the plugin (templates/routing-guide.md)")
     context = _step(warnings, "assembling the session context",
                     lambda: _compose(guide or "", memory, memory_sync.anthology_home(env)), guide or "")
 

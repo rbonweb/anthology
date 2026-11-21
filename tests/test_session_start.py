@@ -133,6 +133,22 @@ class OutputTest(SessionCase):
             out = self.go(hook_input={"source": source})
             self.assertIn("# Anthology routing guide", self.context(out), source)
 
+    def test_a_subagent_gets_no_routing_guide(self):
+        self.mark_setup()
+        out = self.go(hook_input={"source": "compact", "agent_id": "a0b1c2d3e4f5a6b7c",
+                                  "agent_type": "anthology:implementer"})
+        context = self.context(out)
+        self.assertNotIn("# Anthology routing guide", context)
+        self.assertTrue(context.startswith("## Personal memory"), context[:80])
+        self.assertNotIn("systemMessage", out)
+
+    def test_only_a_non_empty_agent_id_marks_a_subagent(self):
+        self.mark_setup()
+        for extra in ({"agent_type": "reviewer"}, {"agent_id": ""}, {"agent_id": 7},
+                      {"agent_id": None}):
+            out = self.go(hook_input=dict(extra, source="compact"))
+            self.assertIn("# Anthology routing guide", self.context(out), extra)
+
     def test_setup_not_run_shows_the_one_line_nag(self):
         out = self.go()
         self.assertIn(NAG, out["systemMessage"].splitlines())
@@ -267,6 +283,18 @@ class OutputTest(SessionCase):
         self.assertIn("project-a", first)
         second = self.context(self.go(cwd=repo))
         self.assertNotIn("## Repo memory", second)
+
+    @needs_git
+    def test_the_memory_folder_notice_is_quiet_on_compact(self):
+        self.mark_setup()
+        repo = self.make_repo(remote="https://example.invalid/acme/app.git")
+        memory_sync.approve(repo)
+        out = self.go(cwd=repo, hook_input={"source": "compact"})
+        self.assertIn("## Repo memory", self.context(out))  # the setting was written and its index shown
+        self.assertNotIn(memory_sync.DIR_SET, out.get("systemMessage", ""))
+        (repo / ".claude" / "settings.local.json").unlink()
+        out = self.go(cwd=repo, hook_input={"source": "startup"})
+        self.assertIn(memory_sync.DIR_SET, out["systemMessage"].splitlines())
 
     @needs_git
     def test_unapproved_repo_with_memory_gets_the_hint(self):
