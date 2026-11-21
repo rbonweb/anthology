@@ -21,6 +21,8 @@
 //!   `[`-holding argument of `let`, `declare`, `read`, `printf -v`, `test -v`, `[[` ... runs its
 //!   substitutions (C-5).
 
+mod printf;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
