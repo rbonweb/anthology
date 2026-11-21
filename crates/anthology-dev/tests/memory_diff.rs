@@ -6,7 +6,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anthology_core::Env;
@@ -383,7 +383,10 @@ mod lead_extras {
         r.write("README.md", "hi\n");
         let base = r.commit("base");
         let args = [OsString::from(&base), OsString::from(&base)];
-        let env = base_env().with_os("GITHUB_STEP_SUMMARY", Path::new("/"));
+        // A directory of our own: macOS answers EEXIST for `/` (Python too), EISDIR for this.
+        let dir = r._tmp.path().join("summary-dir");
+        fs::create_dir(&dir).expect("mkdir");
+        let env = base_env().with_os("GITHUB_STEP_SUMMARY", &dir);
         let out = memory_diff::run_in(&args, &mut std::io::empty(), &env, &r.repo);
         assert_eq!(out.code, 1);
         assert!(out.stdout.is_empty());
