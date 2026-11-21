@@ -43,102 +43,13 @@ use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
 
 use super::runners::{RunOut, Runner, TIMED_OUT};
 
-// SWAP(GD2): delete `guard_standin` and import `anthology_guard::{check, Rule, Verdict}`.
-use guard_standin::{Verdict, check};
-// SWAP(GD2): delete `shell_standin` and import `anthology_shell::{Analysis, analyze}` (GD2's
-// merge brings SH2).
-use shell_standin::{Analysis, analyze};
+use anthology_guard::{Verdict, check};
+use anthology_shell::{Analysis, analyze};
 
 /// The GC-14 limit block line (`anthology guard hook`, D-7).
 pub const LIMIT_LINE: &[u8] = b"Blocked by anthology-guardrails (internal): the guard could not \
 finish analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the \
 command; if this keeps happening, disable anthology-guardrails with /plugin\n";
-
-/// Whether the guard and shell are the SWAP stand-ins (the run says so).
-pub const STANDINS: bool = true; // SWAP(GD2): false once the stand-ins are gone.
-
-/// The plan §3.5 guard surface, until GD merges. `check` allows everything, so a replay run
-/// before the swap shows every Python block as an unexplained (looser) difference: a stand-in
-/// can never make a run look clean.
-#[allow(dead_code, reason = "SWAP(GD2) stand-in for the plan §3.5 signatures")]
-mod guard_standin {
-    use anthology_pycompat::json::Value;
-
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    pub enum Rule {
-        G1,
-        G2,
-        G3,
-        G4,
-        G5,
-        G6,
-    }
-
-    impl Rule {
-        pub fn id(self) -> &'static str {
-            match self {
-                Rule::G1 => "G1",
-                Rule::G2 => "G2",
-                Rule::G3 => "G3",
-                Rule::G4 => "G4",
-                Rule::G5 => "G5",
-                Rule::G6 => "G6",
-            }
-        }
-    }
-
-    pub enum Verdict {
-        Allow,
-        Block(Rule),
-        Incomplete,
-    }
-
-    pub fn check(_tool_name: &Value, _tool_input: &Value, _home: &str) -> Verdict {
-        Verdict::Allow
-    }
-}
-
-/// The plan §3.4 shell surface, until SH merges (with GD). `analyze` finds nothing and is
-/// complete, so every real command is an unexplained difference before the swap.
-#[allow(dead_code, reason = "SWAP(GD2) stand-in for the plan §3.4 signatures")]
-mod shell_standin {
-    pub struct Redirect {
-        pub op: String,
-        pub target: String,
-    }
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct GroupId(pub u32);
-    pub struct Group {
-        pub id: GroupId,
-        pub texts: Vec<String>,
-    }
-    pub enum Opaque {}
-    pub struct Entry {
-        pub raw: Vec<String>,
-        pub redirs: Vec<Redirect>,
-        pub prog_path: String,
-        pub prog: String,
-        pub args: Vec<String>,
-        pub cwd: Option<String>,
-        pub exempt: bool,
-        pub group: GroupId,
-        pub code: Vec<String>,
-        pub opaque: Vec<Opaque>,
-    }
-    pub struct Analysis {
-        pub entries: Vec<Entry>,
-        pub groups: Vec<Group>,
-        pub incomplete: bool,
-    }
-
-    pub fn analyze(_command: &str, _home: &str) -> Analysis {
-        Analysis {
-            entries: Vec::new(),
-            groups: Vec::new(),
-            incomplete: false,
-        }
-    }
-}
 
 /// What one comparison found (module docs).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,7 +145,9 @@ pub fn classify_runners(
 // --- check ----------------------------------------------------------------------------------
 
 /// Rust's verdict on an envelope: `allow`, `block:<rule>`, `incomplete`, `malformed` (not an
-/// object, or `tool_name` not a string: the hook allows), or `panic`.
+/// object, or `tool_name` not a string: the hook allows), `toocomplex` (the shell work budget:
+/// a `(G0)` block Python has no equivalent of, so only the owner's explained file explains it),
+/// or `panic`.
 pub fn rust_check(envelope: &[u8], home: &str) -> String {
     let Ok(v) = json::loads_bytes_lossy(envelope) else {
         return "malformed".into();
@@ -250,6 +163,7 @@ pub fn rust_check(envelope: &[u8], home: &str) -> String {
         Ok(Verdict::Allow) => "allow".into(),
         Ok(Verdict::Block(rule)) => format!("block:{}", rule.id()),
         Ok(Verdict::Incomplete) => "incomplete".into(),
+        Ok(Verdict::TooComplex) => "toocomplex".into(),
         Err(_) => "panic".into(),
     }
 }

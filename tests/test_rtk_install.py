@@ -650,7 +650,8 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(set(hooks), {"hooks"})
         self.assertEqual(set(hooks["hooks"]), {"SessionStart", "PreToolUse"})
         self.assertEqual(hooks["hooks"]["PreToolUse"], [{"matcher": "Bash", "hooks": [
-            {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]}]}])
+            {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],
+             "timeout": 60, "onFailure": "block"}]}])
 
     def test_wrappers_are_executable_posix_sh(self):
         for name in ("rtk", "rtk-hook"):
