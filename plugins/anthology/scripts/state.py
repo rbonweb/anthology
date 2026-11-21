@@ -16,6 +16,14 @@ def state_path() -> Path:
     return Path(base) / "anthology" / "state.json"
 
 
+def rtk_data_dir() -> Path:
+    """rtk's history, recall store and tee spool: `<state.json's folder>/rtk`.
+
+    bin/rtk and bin/rtk-hook export RTK_DB_PATH, RTK_RECALL_DB and RTK_TEE_DIR under the same
+    folder (computed the same way in sh), and `/anthology:setup remove` deletes it."""
+    return state_path().parent / "rtk"
+
+
 def read() -> dict:
     """Return the state as a dict; a missing or unreadable file reads as empty."""
     try:

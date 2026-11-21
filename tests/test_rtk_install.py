@@ -733,6 +733,39 @@ class WrapperTest(Base):
                 self.assertEqual(res.returncode, 127)
                 self.assertIn("run /anthology:setup", res.stderr)
 
+    def env_fake(self):
+        fake = self.tmp / "env-rtk"
+        fake.write_text('#!/bin/sh\necho "db:$RTK_DB_PATH"\necho "recall:$RTK_RECALL_DB"\n'
+                        'echo "tee:$RTK_TEE_DIR"\n')
+        os.chmod(str(fake), 0o755)
+        return fake
+
+    def test_both_wrappers_keep_rtk_history_next_to_state_json(self):
+        # I4: rtk's tracking db (command lines), recall store and tee spool live under
+        # state.rtk_data_dir(), which remove deletes, never in rtk's default data folder.
+        state.write(rtk_path=str(self.env_fake()))
+        base = state.rtk_data_dir()
+        self.assertEqual(base, self.cfg / "anthology" / "rtk")
+        want = ["db:%s" % (base / "history.db"), "recall:%s" % (base / "recall.db"), "tee:%s" % (base / "tee")]
+        for name in ("rtk", "rtk-hook"):
+            with self.subTest(name=name):
+                res = self.run_bin(name, "x", stdin="{}")
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertEqual(res.stdout.splitlines(), want)
+
+    def test_wrappers_history_follows_home_when_config_dir_is_unset(self):
+        home = self.tmp / "home"
+        (home / ".claude" / "anthology").mkdir(parents=True)
+        (home / ".claude" / "anthology" / "state.json").write_text(
+            json.dumps({"rtk_path": str(self.env_fake())}, indent=2, sort_keys=True) + "\n")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)}
+        for name in ("rtk", "rtk-hook"):
+            with self.subTest(name=name):
+                res = subprocess.run([str(PLUGIN / "bin" / name)], input="{}", stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, universal_newlines=True, env=env)
+                self.assertEqual(res.stdout.splitlines()[0],
+                                 "db:%s" % (home / ".claude" / "anthology" / "rtk" / "history.db"))
+
     def test_hook_runs_rtk_hook_claude_with_stdin_passed_through(self):
         state.write(rtk_path=str(self.fake))
         res = self.run_bin("rtk-hook", stdin='{"tool_name":"Bash"}')
