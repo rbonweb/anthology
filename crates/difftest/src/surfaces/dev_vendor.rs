@@ -6,7 +6,7 @@
 //! (CHECKSUMS.sha256 parsing), `compare` and `diff` (two trees), `cli` (the argument parser
 //! and the commands on a repo with no sources), `pipeline` (build, fetch_licenses, a drift,
 //! check and diff on a url source, whose committed snapshot is the upstream, so nothing touches
-//! the network; with and without a port map) and `download` (download_snapshot over an
+//! the network; with and without a port map; then the CLI's check, diff and build on it) and `download` (download_snapshot over an
 //! in-memory web). Both sides print the same result; a VendorError is exit 1 with
 //! `VendorError: <message>`.
 //!
@@ -268,6 +268,9 @@ fn op(case: &Value, tmp: &Path) -> vendor::Result<Observed> {
                 Ok(lines(&vendor::check(&root, None)?))
             });
             step(&mut out, "diff", || vendor::diff_entry(&root, &name, None));
+            for argv in [&["check"][..], &["diff", "s"], &["build", "s"]] {
+                cli_step(&mut out, &root, argv);
+            }
             with_files(ok(out), &root)
         }
         other => panic!("dev.vendor: unknown op {other:?}"),
@@ -282,6 +285,20 @@ fn step(out: &mut String, title: &str, f: impl FnOnce() -> vendor::Result<String
         Ok(text) => out.push_str(&text),
         Err(e) => out.push_str(&format!("VendorError: {}\n", e.0)),
     }
+}
+
+/// The oracle's `_cli_step`: `main(["--root", root] + argv)`, its exit code, stdout and stderr.
+fn cli_step(out: &mut String, root: &Path, argv: &[&str]) {
+    let mut args: Vec<std::ffi::OsString> = vec!["--root".into(), root.into()];
+    args.extend(argv.iter().map(|a| a.into()));
+    let o = vendor::run(&args, &mut std::io::empty());
+    out.push_str(&format!(
+        "cli {}: exit {}\n{}stderr:\n{}",
+        argv.join(" "),
+        o.code,
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    ));
 }
 
 /// `path.relative_to(root).as_posix()`.
@@ -1121,9 +1138,36 @@ const SCRIPT_RELS: &[&str] = &[
 ];
 
 /// A port map in the shape of `vendor/patches/design-taste-frontend.portmap.json`.
-fn gen_portmap(rng: &mut Rng) -> String {
+/// Whether the port map's script rule (below) counts `rel` as a script, for the snapshot
+/// contents this generator writes (where `require(` is the only Node marker in a .js file).
+fn is_script(rel: &str, data: &[u8]) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let ext = match name.rfind('.') {
+        Some(i) if i > 0 => name[i..].to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    [".mjs", ".cjs", ".sh", ".py", ".ts"].contains(&ext.as_str())
+        || data.starts_with(b"#!")
+        || (ext == ".js" && String::from_utf8_lossy(data).contains("require("))
+}
+
+fn gen_portmap(rng: &mut Rng, files: &[SnapFile]) -> String {
     let real = r#"{"extensions": [".mjs", ".cjs", ".sh", ".py", ".ts"], "shebang": true, "js_node_regex": "\\brequire\\s*\\(|\\bfrom\\s*['\"](?:node:|(?:fs|path|os)['\"/])|\\bprocess\\.(?:argv|exit|env|cwd)\\b"}"#;
     let mut scripts = Vec::new();
+    if rng.chance(0.5) {
+        // The snapshot's own scripts, kept (or ported) unchanged: the success path.
+        for (rel, data, _) in files {
+            if is_script(rel, data) {
+                let action = if rng.chance(0.8) { "keep" } else { "port" };
+                scripts.push(format!("\"{rel}\": {{\"action\": \"{action}\"}}"));
+            }
+        }
+        let scripts = format!("{{{}}}", scripts.join(", "));
+        let chrome = r#""remote-debugging|user-data-dir|CHROME_PATH|playwright|puppeteer""#;
+        return format!(
+            r#"{{"script_rule": {real}, "scripts": {scripts}, "added": {{}}, "chrome_regex": {chrome}}}"#
+        );
+    }
     for rel in SCRIPT_RELS {
         if rng.chance(0.5) {
             let spec = match rng.below(6) {
@@ -1219,7 +1263,7 @@ fn gen_pipeline(rng: &mut Rng) -> Value {
         if rng.chance(0.9) {
             root.push((
                 "vendor/patches/s.portmap.json".into(),
-                file(&gen_portmap(rng), false),
+                file(&gen_portmap(rng, &files), false),
             ));
         }
     }

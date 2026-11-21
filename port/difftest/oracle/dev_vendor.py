@@ -21,8 +21,9 @@ dev_vendor.rs` builds the same ones):
   sources.json holds E (a url source, so its snapshot under `vendor/snapshots/` is the upstream
   and nothing touches the network): `build`, `fetch_licenses`, the EDITs (`{"edit": "write",
   "rel", "text"|"hex", "exec"}`, `{"edit": "delete", "rel"}`, `{"edit": "chmod", "rel",
-  "exec"}`), `check`, `diff_entry`; each step's output or VendorError under a `<step>:` line,
-  and `files` the repo afterwards.
+  "exec"}`), `check`, `diff_entry`; each step's output or VendorError under a `<step>:` line; then
+  `main` runs `check`, `diff s` and `build s` (exit code, stdout, stderr); `files` is the
+  repo afterwards.
 - `{"op": "download", "entry": E, "root": TREE, "pages": {url: hex}}`: `download_snapshot`
   with an in-memory getter (a missing page is `HTTP 404: <url>`); the result, the URLs asked
   for in order, and the repo afterwards.
@@ -95,6 +96,34 @@ def _drift(root, edits):
                 path.unlink()
         elif path.is_file() and not path.is_symlink():
             os.chmod(path, 0o755 if e.get("exec") else 0o644)
+
+
+def _main(root, argv):
+    """`main(["--root", root] + argv)`: (exit code, stdout, stderr)."""
+    v = _vendor()
+    out, err = io.StringIO(), io.StringIO()
+    code = 0
+    # argparse names the program after sys.argv[0] and wraps help at $COLUMNS.
+    saved = sys.argv[0], os.environ.get("COLUMNS")
+    sys.argv[0], os.environ["COLUMNS"] = "vendor.py", "80"
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = v.main(["--root", str(root)] + list(argv))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        sys.argv[0] = saved[0]
+        if saved[1] is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = saved[1]
+    return code, out.getvalue(), err.getvalue()
+
+
+def _cli_step(out, root, argv):
+    code, stdout, stderr = _main(root, argv)
+    out.append(f"cli {' '.join(argv)}: exit {code}\n{stdout}stderr:\n{stderr}")
 
 
 def _step(out, title, fn):
@@ -172,24 +201,8 @@ def _op(case, tmp):
         root = tmp / "root"
         (root / "vendor").mkdir(parents=True)
         (root / "vendor" / "sources.json").write_text('{"sources": []}\n', encoding="utf-8")
-        out, err = io.StringIO(), io.StringIO()
-        code = 0
-        # argparse names the program after sys.argv[0] and wraps help at $COLUMNS.
-        saved = sys.argv[0], os.environ.get("COLUMNS")
-        sys.argv[0], os.environ["COLUMNS"] = "vendor.py", "80"
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                try:
-                    code = v.main(["--root", str(root)] + list(case["argv"]))
-                except SystemExit as exc:
-                    code = exc.code if isinstance(exc.code, int) else 1
-        finally:
-            sys.argv[0] = saved[0]
-            if saved[1] is None:
-                os.environ.pop("COLUMNS", None)
-            else:
-                os.environ["COLUMNS"] = saved[1]
-        return {"exit": code, "stdout": out.getvalue(), "stderr": err.getvalue()}
+        code, out, err = _main(root, case["argv"])
+        return {"exit": code, "stdout": out, "stderr": err}
     if op in ("pipeline", "download"):
         root = tmp / "root"
         _write_tree(root, case["root"])
@@ -218,6 +231,9 @@ def _op(case, tmp):
         _drift(root, case["drift"])
         _step(out, "check", lambda: _lines(v.check(root)))
         _step(out, "diff", lambda: v.diff_entry(root, name))
+        _cli_step(out, root, ["check"])
+        _cli_step(out, root, ["diff", "s"])
+        _cli_step(out, root, ["build", "s"])
         return _ok("".join(out), _files(root))
     raise ValueError(f"unknown op {op!r}")
 
