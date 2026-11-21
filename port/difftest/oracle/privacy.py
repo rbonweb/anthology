@@ -97,7 +97,7 @@ def _constants():
     p = _PRIVACY
     out = []
     for name in ("_HOME_PATH", "_EMAIL", "_IPV4", "_IPV6", "_PRIVATE_HOST", "_SSH_COMMAND",
-                 "_USER_AT_HOST", "_SSH_PATH", "_KEY_NAME"):
+                 "_USER_AT_HOST", "_SSH_PATH", "_KEY_NAME", "_TOKEN_END"):
         rx = getattr(p, name)
         out.append("pattern\t%s\t%d\t%s" % (name, 1 if rx.flags & re.IGNORECASE else 0, rx.pattern))
     home = p._home_literal("/srv/x")

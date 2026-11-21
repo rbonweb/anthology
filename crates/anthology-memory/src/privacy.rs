@@ -179,6 +179,8 @@ const USER_AT_HOST: &str =
     r"(?<![\w.%+-])([A-Za-z0-9._-]+)@([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)";
 const SSH_PATH: &str = r"/\.ssh/[A-Za-z0-9._@+-]";
 const KEY_NAME: &str = r"(?<![\w-])id_(?:rsa|ed25519|ecdsa|dsa)(?![\w-])";
+/// `_TOKEN_END`, ported as [`is_token_end`] (a unit test checks that the two agree).
+const TOKEN_END: &str = r"[ \t]";
 /// `_home_literal` and `_hostname_patterns`: the parts around the escaped value.
 const HOME_TAIL: &str = r"(?![\w-])";
 const HOST_HEAD: &str = r"(?<![\w-])";
@@ -747,6 +749,12 @@ fn has_scheme(line: &[u8], start: usize, p: usize) -> bool {
     false
 }
 
+/// A byte `_TOKEN_END` matches. (Python's `max(line.rfind(" "), line.rfind("\t"))` in
+/// `_home_path_found` uses the same set.)
+fn is_token_end(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
 /// `_first_url_end`: the end of the first `scheme://h` in the token at `start`, as a byte offset
 /// one past the host's first byte (only compared with a match start, which is a `/`: the same
 /// order as Python's code-point offsets, since `p + 3` is a character boundary). Reads the token
@@ -754,7 +762,7 @@ fn has_scheme(line: &[u8], start: usize, p: usize) -> bool {
 fn first_url_end(line: &[u8], start: usize) -> Option<usize> {
     let end = line[start..]
         .iter()
-        .position(|&b| b == b' ' || b == b'\t')
+        .position(|&b| is_token_end(b))
         .map_or(line.len(), |k| start + k);
     let find = |from: usize| -> Option<usize> {
         line.get(from..end)?
@@ -803,7 +811,7 @@ fn home_path_found(line: &str, home_path: &regex::Regex) -> bool {
         let lo = tok.map_or(0, |(at, _)| at);
         let ws = b[lo..i]
             .iter()
-            .rposition(|&c| c == b' ' || c == b'\t')
+            .rposition(|&c| is_token_end(c))
             .map(|k| lo + k);
         let start = match (ws, tok) {
             (Some(ws), _) => ws + 1,
@@ -1001,6 +1009,7 @@ pub fn python_constants() -> String {
         ("_USER_AT_HOST", USER_AT_HOST, false),
         ("_SSH_PATH", SSH_PATH, false),
         ("_KEY_NAME", KEY_NAME, false),
+        ("_TOKEN_END", TOKEN_END, false),
     ] {
         line(&["pattern", name, if ic { "1" } else { "0" }, py]);
     }
@@ -1096,6 +1105,50 @@ mod tests {
         }
         for (py, ic) in anthology_guard::secrets::GUARD_SECRET_PATTERNS {
             pyre::translate(py, *ic).unwrap();
+        }
+    }
+
+    /// Every static look-around pattern gets its prefilter. A prefilter that stopped compiling
+    /// would be dropped silently (the scan stays correct, only slower), so this pins it.
+    #[test]
+    fn every_fancy_pattern_has_a_prefilter() {
+        let p = Patterns::compile(PrivacyLimits::default().backtrack_limit);
+        let mut all = vec![
+            ("_HOME_PATH", &p.home_path),
+            ("_EMAIL", &p.email),
+            ("_IPV4", &p.ipv4),
+            ("_IPV6", &p.ipv6),
+            ("_PRIVATE_HOST", &p.private_host),
+            ("_SSH_COMMAND", &p.ssh_command),
+            ("_USER_AT_HOST", &p.user_at_host),
+            ("_SSH_PATH", &p.ssh_path),
+            ("_KEY_NAME", &p.key_name),
+        ];
+        all.extend(p.secrets.iter().map(|(label, rx)| (*label, rx)));
+        let mut fancy = 0;
+        for (name, rx) in all {
+            if let Rx::Fancy(_, pre) = rx {
+                fancy += 1;
+                assert!(pre.is_some(), "{name}: no prefilter");
+            }
+        }
+        assert!(fancy >= 8, "only {fancy} look-around patterns");
+        for d in [
+            Dynamic::Home("/srv/x".into()),
+            Dynamic::Host("Box-\u{131}.k".into()),
+        ] {
+            let rx = build_dynamic(&d, 1_000_000).unwrap();
+            assert!(matches!(rx, Rx::Fancy(_, Some(_))));
+        }
+    }
+
+    #[test]
+    fn the_token_end_check_is_the_python_pattern() {
+        let rx = Rx::compile(TOKEN_END, false, 1_000_000);
+        let mut buf = [0; 4];
+        for c in (0..=0x10ffff_u32).filter_map(char::from_u32) {
+            let want = u8::try_from(c).is_ok_and(is_token_end);
+            assert_eq!(rx.search(c.encode_utf8(&mut buf)), Ok(want), "{c:?}");
         }
     }
 
