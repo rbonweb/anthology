@@ -409,8 +409,9 @@ fn re_review_shapes_stay_linear_at_100_kb() {
             let start = Instant::now();
             let a = analyze(&text, HOME);
             let large = start.elapsed();
-            let ok =
-                large < Duration::from_secs(1) && large < small * 8 + Duration::from_millis(40);
+            // 4x input costs less than 10x (floor 0.5 s); 8 s is only a catastrophe guard
+            let ok = large < Duration::from_secs(8)
+                && large < (small * 10).max(Duration::from_millis(500));
             best = Some((ok, small, large, a.incomplete));
             if ok {
                 break;

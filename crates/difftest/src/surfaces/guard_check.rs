@@ -8,7 +8,8 @@
 //! Seeds: every `case` row of `crates/anthology-guard/tests/data/test_guard_rules.jsonl` (`rows:*`), the
 //! shell seeds and hand-written commands of `shell.analyze` as Bash commands (`shell:*`), hand-written tool
 //! inputs (`tool:*`), and the FW-I payloads where Rust's G1 is stricter than Python (`fw:*`, D-8, owner
-//! direction). Generated (`gen:*`): `shell.analyze`'s command generator, secret-into-memory commands, and
+//! direction), and the inputs past Python's caps that Rust reads or blocks (`cap:*`, D-8, owner direction,
+//! LR-G). Generated (`gen:*`): `shell.analyze`'s command generator, secret-into-memory commands, and
 //! tool inputs built from path, code and secret vocabularies, all under a mix of homes and tool names. A
 //! generated case whose verdict changes when the D-8 readings are left out is dropped, so D-8 stays
 //! case-scoped (GC-16).
@@ -64,6 +65,9 @@ impl Surface for GuardCheck {
         }
         for (k, command) in FW_STRICTER.iter().enumerate() {
             out.push(Case::new(format!("fw:{}", k + 1), bash_case(command, HOME)));
+        }
+        for (k, data) in cap_stricter().into_iter().enumerate() {
+            out.push(Case::new(format!("cap:{}", k + 1), data));
         }
         out
     }
@@ -161,6 +165,75 @@ pub(crate) const FW_STRICTER: &[&str] = &[
     "apt-get --option x=y install chromium",
     "dnf --setopt x=y install chromium",
 ];
+
+/// Inputs past one of Python's caps, where guard.py stops reading and allows (LR-G, owner direction:
+/// past a cap the guard blocks). Rust reads them (G3) or blocks them as too complex (G0).
+/// Declared case by case as D-8 in `port/difftest/divergences/guard.check.toml`, in this order.
+pub(crate) fn cap_stricter() -> Vec<Value> {
+    let read =
+        |path: &str, home: &str| check_case(s("Read"), obj(vec![("file_path", s(path))]), home);
+    let mut nested = "npx playwright install chromium".to_string();
+    for k in 0..13 {
+        nested = format!("bash <<'E{k}'\n{nested}\nE{k}");
+    }
+    let mut deep = s("~/.config/chromium/Default/Cookies");
+    for _ in 0..13 {
+        deep = obj(vec![("path", deep)]);
+    }
+    let alts: Vec<String> = (0..32).map(|i| format!("a{i}")).collect();
+    vec![
+        // 1. a command nested past MAX_DEPTH: G0
+        bash_case(&nested, HOME),
+        // 2. a `cd` that `cd` tracking drops (MAX_CWD_DEPTH): G0
+        bash_case(
+            &format!(
+                "cd /{}.config && cat chromium/Default/Cookies",
+                "a/".repeat(64)
+            ),
+            HOME,
+        ),
+        // 3. a profile path under 13 nested keys (_MAX_WALK_DEPTH): G3
+        check_case(s("mcp__x__y"), deep, HOME),
+        // 4. a profile path over 4096 code points (_MAX_PATH_STRING): G3
+        read(
+            &format!("~/{}.config/chromium/Default/Cookies", "a/../".repeat(900)),
+            HOME,
+        ),
+        // 5. the 33rd brace alternative (_expand_braces' limit): G3
+        bash_case(
+            &format!("cat ~/{{{},.config/chromium}}/x", alts.join(",")),
+            HOME,
+        ),
+        // 6. a fifth brace group (_expand_braces' four rounds): G3
+        bash_case(
+            "cat ~/{a,b}/{a,b}/{a,b}/{a,b}/../../../../{.config,x}/chromium/x",
+            HOME,
+        ),
+        // 7. a brace expansion too large to check: G0 (quoted, so it is the guard's path reading)
+        bash_case(
+            &format!("cat \"/home/tester/{}\"", "{a,b}".repeat(13)),
+            HOME,
+        ),
+        // 8. a home path under a relative home: G3
+        read("~/.config/chromium/x", "relative/home"),
+        // 9. a `cd` into the home under a relative home: G3
+        bash_case("cd ~/.config && cat chromium/x", "relative"),
+        // 10. a secret redirected into home memory under a relative home: G6
+        bash_case(
+            &format!("echo {} > ~/.claude/agent-memory/a.md", secrets()[0]),
+            "relative",
+        ),
+        // 11. a secret written into home memory under a `~` home: G6
+        check_case(
+            s("Write"),
+            obj(vec![
+                ("file_path", s("~/.claude/agent-memory/a.md")),
+                ("content", s(&secrets()[0])),
+            ]),
+            "~",
+        ),
+    ]
+}
 
 // ------------------------------------------------------------------ vocabularies
 
@@ -527,7 +600,8 @@ pub(crate) fn generate(seed: u64, n: usize) -> Vec<Value> {
             let h = home(&mut rng);
             check_case(s(&tool), input, &h)
         };
-        // A D-8 shape (FW-I's G1 readings change the verdict) stays a case-scoped `fw:*` seed.
+        // A D-8 shape (FW-I's G1 readings, or the readings past Python's caps, change the verdict)
+        // stays a case-scoped `fw:*` or `cap:*` seed.
         if !is_d8(&case) {
             out.push(case);
         }
