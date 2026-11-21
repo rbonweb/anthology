@@ -68,7 +68,22 @@ _RULES = _load("_anthology_oracle_guard_rules", GUARD_RULES)
 # setup_ops(profile_roots=None) imports guardrails_loc and asks it for the guardrails plugin's
 # guard_rules; this stand-in answers with the repository's own guard_rules.py, so the default
 # branch (roots plus `.config/` channel variants) runs as written.
-sys.modules["guardrails_loc"] = types.SimpleNamespace(load_rules=lambda root, env=None: _RULES)
+_GUARDRAILS_LOC_STUB = types.SimpleNamespace(load_rules=lambda root, env=None: _RULES)
+
+
+def _setup_ops(*args, **kwargs):
+    """SP.setup_ops with the guardrails_loc stand-in installed only for the call: the driver runs
+    every oracle module in one process, and a global stub would replace the real module that the
+    runtime.guardrails_loc oracle loads."""
+    saved = sys.modules.get("guardrails_loc")
+    sys.modules["guardrails_loc"] = _GUARDRAILS_LOC_STUB
+    try:
+        return SP.setup_ops(*args, **kwargs)
+    finally:
+        if saved is None:
+            sys.modules.pop("guardrails_loc", None)
+        else:
+            sys.modules["guardrails_loc"] = saved
 
 PLACE = "<ROOT>"
 REAL = "<REAL>"
@@ -202,7 +217,7 @@ def _call(case, root):
             json.loads(t[1:] if t.startswith("\ufeff") else t)
         return {"status": SP.plugin_rule_status(c["root"], c["env"])}
     if op == "setup_ops":
-        ops = SP.setup_ops(c["root"], profile_roots=c.get("profile_roots"), env=c["env"])
+        ops = _setup_ops(c["root"], profile_roots=c.get("profile_roots"), env=c["env"])
         return {"ops": ops, "rule": SP.plugin_read_rule(c["root"])}
     if op == "write_text":
         SP.write_text(c["path"], text)

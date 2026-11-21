@@ -230,6 +230,7 @@ rewrite`, since it is inherited by every child process. See `decision.rs`'s
 - `rewrite_cmd.rs` — maps verdict to exit code (consumed by shell hook)
 - `hook_cmd.rs` — maps decisions to each agent's JSON protocol, including Codex `updatedInput`
 - `discover/shell_wrapper.rs` — shares conservative script-span parsing between rewrite and permission checks
+- `anthology_gate.rs` — Anthology fork (C1), Claude hook only: Claude Code judges the text the hook returns and the install allows `Bash(rtk *)`, so a deny or ask rule that names what an `rtk ...` prefix or a `sh -c` wrapper runs, and `Read()` deny rules, are enforced in the hook. A deny prints an explicit `permissionDecision: "deny"`; an ask prints `"ask"`. It also reads managed settings and `CLAUDE_PROJECT_DIR`. With no rule anywhere it does nothing. The module doc lists what a hook cannot see
 
 ## Exit Code Contract
 

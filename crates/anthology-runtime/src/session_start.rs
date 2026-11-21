@@ -530,14 +530,10 @@ fn setup_warning(env: &Env, root: &Path) -> Option<String> {
 /// Python's `setup_ops` loaded the profile roots from the located guardrails plugin and raised
 /// `FileNotFoundError` when there was none, which skipped the note; the roots are compiled in
 /// now (F-7), so the located folder is checked here, keeping that rule (setup refuses then).
-fn ops_warning(
-    env: &Env,
-    root: &Path,
-    cwd: &Path,
-    current: &Map,
-    deps: &SessionDeps<'_>,
-) -> Option<String> {
-    guardrails_loc::inspect(root, env, cwd).root?;
+/// As Python, the folder is looked up from the process cwd (`os.getcwd()`), not the hook's.
+fn ops_warning(env: &Env, root: &Path, current: &Map, deps: &SessionDeps<'_>) -> Option<String> {
+    let cwd = (deps.cwd)().ok()?;
+    guardrails_loc::inspect(root, env, &cwd).root?;
     let attempt = || -> Result<bool, ()> {
         let ops = (deps.settings.setup_ops)(root, env).map_err(drop)?;
         let version = settings::ops_version(&ops, &SettingsLimits::default());
@@ -586,12 +582,13 @@ pub fn reconcile_rtk(
         }
     };
     let Some(dir) = data_dir.as_str() else {
-        // `Path(data_dir)` raises inside the try around reconcile.
+        // `Path(data_dir)` raises inside the try around reconcile (CPython 3.12's text).
         return Ok(Some(format!(
             "anthology: rtk setup failed: {}",
             cut(
                 &format!(
-                    "expected str, bytes or os.PathLike object, not {}",
+                    "argument should be a str or an os.PathLike object where __fspath__ returns \
+                     a str, not '{}'",
                     py_type(data_dir)
                 ),
                 150
@@ -826,7 +823,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             label::OPS,
             |_| {
                 fault(deps, "_ops_warning")?;
-                Ok(ops_warning(env, &root, &cwd, &current, deps))
+                Ok(ops_warning(env, &root, &current, deps))
             },
             None,
         );

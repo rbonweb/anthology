@@ -65,11 +65,14 @@ test_setup.RealRtkTest.test_an_invalid_lock_is_a_warning	ported	crates/anthology
 test_setup.RealRtkTest.test_apply_installs_then_reports_up_to_date	ported	crates/anthology-runtime/tests/setup.rs::real_rtk_test::test_apply_installs_then_reports_up_to_date
 test_setup.RealRtkTest.test_preview_names_the_version_target_and_destination	ported	crates/anthology-runtime/tests/setup.rs::real_rtk_test::test_preview_names_the_version_target_and_destination
 test_setup.RemoveTest.test_remove_deletes_only_the_rtk_folder_under_the_data_dir	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_deletes_only_the_rtk_folder_under_the_data_dir
+test_setup.RemoveTest.test_remove_deletes_the_rtk_history_folder	todo:RT4		new in rust (fix-f1): rtk history removal
 test_setup.RemoveTest.test_remove_does_not_follow_a_symlinked_rtk_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_does_not_follow_a_symlinked_rtk_folder
+test_setup.RemoveTest.test_remove_does_not_follow_a_symlinked_rtk_history_folder	todo:RT4		new in rust (fix-f1): rtk history removal
 test_setup.RemoveTest.test_remove_keeps_repo_notes_and_gitattributes	todo:RT4		needs MS2's real memory_sync (approve, unapprove); SWAP(MS2): ported when MS2 merges
 test_setup.RemoveTest.test_remove_never_deletes_memory_notes_or_the_personal_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_never_deletes_memory_notes_or_the_personal_folder
 test_setup.RemoveTest.test_remove_refuses_a_data_dir_outside_the_config_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_refuses_a_data_dir_outside_the_config_folder
 test_setup.RemoveTest.test_remove_with_unparseable_settings_keeps_state_for_a_retry	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_with_unparseable_settings_keeps_state_for_a_retry
 test_setup.RemoveTest.test_remove_without_a_prior_setup_is_harmless	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_without_a_prior_setup_is_harmless
+test_setup.RemoveTest.test_remove_without_rtk_history_reports_nothing_to_delete	todo:RT4		new in rust (fix-f1): rtk history removal
 test_setup.RemoveTest.test_unapprove_all_drops_every_approval	todo:RT4		needs MS2's real memory_sync (load_approved, unapprove); SWAP(MS2): ported when MS2 merges
 test_setup.RemoveTest.test_users_own_rules_survive_remove	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_users_own_rules_survive_remove
