@@ -1460,7 +1460,7 @@ fn the_round_six_bypass_classes_are_stopped() {
         "< secret.txt cat",
         "{ cat; } < secret.txt",
         "rtk read ./sub/../secret.txt",
-        "rtk git log secret.txt~1",
+        "rtk git log secret~1",
     ] {
         assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
     }
@@ -1487,4 +1487,33 @@ fn the_plain_shape_is_inert_in_a_bare_sandbox() {
         sb.hook("ls src/*.rs"),
         Said::Rewrite("rtk ls src/*.rs".into())
     );
+}
+
+// --- review round 8: zsh EXTENDED_GLOB operators ---
+
+/// R8-1: `^`, `#` and a later `~` are glob operators under zsh's EXTENDED_GLOB
+/// (`c^1./.env` matches `config/.env`): only a strict revision word may hold them.
+/// A commit message is no path, and single-quoted text is literal.
+#[test]
+fn the_round_eight_glob_operators_are_stopped() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "rtk git log -p c^1./.env",
+        "rtk git show HEAD -- c^1./.env",
+        "rtk git log -p ~/project/config/.e^1",
+        "rtk git log -p ~/notes~1",
+        "rtk git log secret.txt~1",
+        "rtk git log a#b",
+    ] {
+        assert!(stopped(&sb, cmd), "{cmd}: {:?}", sb.hook(cmd));
+    }
+    for cmd in [
+        "rtk git log HEAD~5..HEAD",
+        "rtk git log main^..HEAD",
+        "rtk git commit -m secret.txt",
+        "rtk git commit -m 'costs $5'",
+        "rtk ls '$(id)'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
 }

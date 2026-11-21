@@ -90,9 +90,14 @@
 //!   word opening with `=` or `@` (an argument file to rustc, rustdoc and others).
 //!   `$`, a backquote, a backslash and `!` are refused outside quotes and inside
 //!   double quotes; inside single quotes every printable character is literal in
-//!   every POSIX shell and zsh (`-m 'feat!: x'`). The only `~` is a leading `~` or
-//!   `~/` (the home, from `$HOME`; an unset `HOME` asks), or a git revision suffix
-//!   (`HEAD~1`, `main^`, `HEAD~5..HEAD`).
+//!   every POSIX shell and zsh (`-m 'feat!: x'`). zsh's `EXTENDED_GLOB` makes `^`,
+//!   `#` and a later `~` glob operators (`c^1./.env` matches `config/.env`), so an
+//!   unquoted word holding one asks, with two exceptions: a `commit -m` message,
+//!   and a git revision of the strict shape `REF` then any of `~N`, `^N`, `~`, `^`
+//!   (or two of those joined by `..` or `...`), `REF` being letters, digits, `_`
+//!   and `-` with no `/` or `.` (`HEAD~1`, `main^`, `HEAD~5..HEAD`). A leading `~`
+//!   is the home only as `~` or `~/...` with no later `^`, `~` or `#` (from
+//!   `$HOME`; an unset `HOME` asks).
 //! - **`rtk <sub>` from [`PLAIN`].** The first word is `rtk` (so no assignment,
 //!   `cd`, `exec`, `eval`, `source`, launcher or rtk global flag in front), then
 //!   one of: `ls`, `tree`, `read`, `wc`, `diff`, `grep`, `rg`, `find`; `git status`,
@@ -114,12 +119,14 @@
 //!   filters) is resolved lexically against the hook's working directory (`..`
 //!   normalised) and through symlinks too. It asks when it is `-` or lies under
 //!   `/dev`, `/proc` or `/sys` (case folded on macOS and Windows), and meets the
-//!   `Read()` rules: deny is a deny, ask an ask. In a git command no word after the
-//!   subcommand holds a `:` (`REV:path` is a blob; `--pretty=format:%h` asks too),
-//!   except a `commit -m` message. For `x~1`, `x^1` and `x~1..y`, which zsh's
-//!   `extendedglob` reads as patterns for names starting with `x`, every such name
-//!   in the directory is checked too; a directory of more than 10 000 entries
-//!   asks.
+//!   `Read()` rules: deny is a deny, ask an ask (quoted text is literal: `'$x'` is a
+//!   name). git reads its pathspecs as globs, quoted or not, so a git word holding
+//!   `*`, `?`, `[` or `\` asks (`rtk git log -p 'secre[t].txt'`). In a git command no word after the subcommand holds a `:` (`REV:path`
+//!   is a blob; `--pretty=format:%h` asks too), except a `commit -m` message, which
+//!   is no path and is not checked. A strict revision word `x~1`, `x^1` or
+//!   `x^1..y` still matches, under `EXTENDED_GLOB`, the names in the working
+//!   directory that start with `x` (`secret^1` matches `secret.txt`): each such
+//!   name is checked too, and a directory of more than 10 000 entries asks.
 //!
 //! What is off the list asks: `rtk bypass`/`run`/`proxy`/`err`/`test`/`summary`,
 //! kubectl, oc, docker, dotnet, go, prettier, rspec, npm, npx, pnpm, yarn, bun,
@@ -3155,24 +3162,26 @@ struct PlainWord {
     /// It opens with an unquoted `~` (alone or `~/...`): the shell puts the home
     /// there.
     tilde: bool,
-    /// It has an unquoted `~` or `^` after a letter or digit (`HEAD~1`, `main^`,
-    /// `HEAD~5..HEAD`): allowed only as a git revision.
+    /// It has an unquoted `^`, `#` or a `~` after its first character: under zsh's
+    /// `EXTENDED_GLOB` those are glob operators. Allowed only as a git revision of
+    /// the strict shape [`strict_rev`], or in a commit message.
     revish: bool,
+    /// Some of it is quoted.
+    quoted: bool,
 }
 
 /// The words of `text` when it is one simple command with nothing the shell
 /// expands or runs besides it, else `None`. Outside quotes only letters, digits,
-/// spaces and `-_./:,=+%@` stand (plus a leading `~` or `~/` and a git
-/// `rev~N`/`rev^`, ranges included). Inside single quotes everything printable is
-/// literal; inside double quotes `$`, a backquote, a backslash and `!` are
-/// refused, so what a quote holds is literal in every POSIX shell and zsh.
+/// spaces and `-_./:,=+%@` stand, plus a leading `~` or `~/` and the zsh glob
+/// operators `^`, `#` and a later `~` (marked [`PlainWord::revish`] for the caller
+/// to refuse or admit). Inside single quotes everything printable is literal;
+/// inside double quotes `$`, a backquote, a backslash and `!` are refused, so what
+/// a quote holds is literal in every POSIX shell and zsh.
 fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
     let mut words = Vec::new();
     let mut current: Option<PlainWord> = None;
     let mut quote: Option<char> = None;
     let mut prev: Option<char> = None;
-    // Inside a `~N`/`^N` suffix: only digits, `~`, `^`, or a `.` that opens a range.
-    let mut suffix = false;
     for c in text.chars() {
         if !(c == ' ' || c == '\t' || c.is_ascii_graphic()) {
             return None;
@@ -3191,13 +3200,13 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
         if c == ' ' || c == '\t' {
             words.extend(current.take());
             prev = None;
-            suffix = false;
             continue;
         }
         let word = current.get_or_insert_with(|| PlainWord {
             text: String::new(),
             tilde: false,
             revish: false,
+            quoted: false,
         });
         let at_start = prev.is_none();
         match c {
@@ -3206,32 +3215,21 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
                 if word.tilde && word.text == "~" {
                     return None;
                 }
+                word.quoted = true;
                 quote = Some(c);
                 prev = Some(c);
-                suffix = false;
                 continue;
             }
             '~' if at_start => word.tilde = true,
-            '~' | '^'
-                if prev.is_some_and(|p| p.is_ascii_alphanumeric() || matches!(p, '~' | '^')) =>
-            {
-                word.revish = true;
-                suffix = true;
-            }
+            // A `#` opening a word starts a comment.
+            '#' if at_start => return None,
+            '~' | '^' | '#' => word.revish = true,
             '=' if at_start || prev == Some('=') => return None,
-            c if c.is_ascii_alphanumeric() || "-_./:,=+%@".contains(c) => {
-                if word.tilde && word.text == "~" && c != '/' {
-                    return None;
-                }
-                if suffix {
-                    if c == '.' {
-                        suffix = false;
-                    } else if !c.is_ascii_digit() {
-                        return None;
-                    }
-                }
-            }
+            c if c.is_ascii_alphanumeric() || "-_./:,=+%@".contains(c) => {}
             _ => return None,
+        }
+        if word.tilde && word.text == "~" && c != '/' {
+            return None;
         }
         word.text.push(c);
         prev = Some(c);
@@ -3243,11 +3241,41 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
     Some(words)
 }
 
+/// What git's pathspec matching reads as a wildcard, quoted on the line or not.
+const GIT_WILDCARDS: &[char] = &['*', '?', '[', '\\'];
+
+/// A git revision word zsh's `EXTENDED_GLOB` cannot turn into a path: `REF`, then
+/// any of `~N`, `^N`, `~`, `^` and nothing after; or two of those joined by `..`
+/// or `...`. `REF` is letters, digits, `_` and `-` (not first): no `/`, no `.`.
+fn strict_rev(text: &str) -> bool {
+    let one = |rev: &str| {
+        let end = rev.find(['~', '^']).unwrap_or(rev.len());
+        let (name, mut suffix) = rev.split_at(end);
+        if name.is_empty()
+            || name.starts_with('-')
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            return false;
+        }
+        while let Some(rest) = suffix.strip_prefix(['~', '^']) {
+            suffix = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        suffix.is_empty()
+    };
+    match text.split_once("...").or_else(|| text.split_once("..")) {
+        Some((from, to)) => one(from) && one(to),
+        None => one(text),
+    }
+}
+
 /// A value or operand to check as a path ([`plain_path`]).
 struct Check {
     text: String,
     tilde: bool,
     revish: bool,
+    quoted: bool,
 }
 
 impl Check {
@@ -3256,6 +3284,7 @@ impl Check {
             text: word.text.clone(),
             tilde: word.tilde,
             revish: word.revish,
+            quoted: word.quoted,
         }
     }
 
@@ -3265,6 +3294,7 @@ impl Check {
             text: text.to_string(),
             tilde: false,
             revish: word.revish,
+            quoted: word.quoted,
         }
     }
 }
@@ -3333,9 +3363,14 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     for check in &checks {
         let mut texts = vec![(check.text.clone(), check.tilde)];
         if check.revish {
-            // Under zsh's `extendedglob`, `x~1`, `x^1` and `x~1..y` are patterns
-            // for names that start with `x` (`secret^1` matches `secret.txt`):
-            // every such name in the directory is checked too.
+            // Under zsh's `EXTENDED_GLOB`, `^`, `#` and a later `~` are glob
+            // operators (`c^1./.env` matches `config/.env`): only a strict git
+            // revision stays, and since `x~1`, `x^1` and `x~1..y` still match
+            // names that start with `x` (`secret^1` matches `secret.txt`), every
+            // such name in the directory is checked too.
+            if check.quoted || check.tilde || !strict_rev(&check.text) {
+                return Gate::Ask;
+            }
             let stem = check.text.split(['~', '^']).next().unwrap_or_default();
             match stem_matches(stem, cwd.as_deref(), fold, STEM_SCAN_CAP) {
                 Some(names) => texts.extend(names.into_iter().map(|t| (t, false))),
@@ -3344,16 +3379,14 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
         }
         for (text, tilde) in texts {
             let verdict = plain_path(&text, tilde, cwd.as_deref(), fold, |path| {
-                let cwds = Cwds::new(None);
                 let verdict = |m: &Option<ReadMatcher>| {
                     m.as_ref()
-                        .map_or(WordVerdict::Allowed, |m| m.check_word(path, &cwds, true))
+                        .map_or(WordVerdict::Allowed, |m| m.check_literal(path))
                 };
                 match (verdict(&reads), verdict(&read_asks)) {
                     (WordVerdict::Denied, _) => Gate::Deny,
-                    (WordVerdict::Allowed, WordVerdict::Allowed) => Gate::Pass,
-                    // A quoted `*` or `?` the matcher reads as a glob: ask.
-                    _ => Gate::Ask,
+                    (_, WordVerdict::Denied) => Gate::Ask,
+                    _ => Gate::Pass,
                 }
             });
             gate = match (gate, verdict) {
@@ -3479,6 +3512,14 @@ fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool, cap: usize) -> Optio
 /// command no word but a free-text value ([`PlainSub::free`]) holds a `:`.
 fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> bool {
     let git = spec.operands == Operands::Git;
+    // A value with a zsh glob operator in it: a strict git revision only, a
+    // pattern value included (its expansion may add operands).
+    // git reads its pathspecs as globs, quoted or not (`'secre[t].txt'`), and a
+    // value may be one: in a git command no word holds a wildcard.
+    let value_rev_ok = |value: &Check| {
+        (!value.revish || (git && !value.quoted && !value.tilde && strict_rev(&value.text)))
+            && !(git && value.text.contains(GIT_WILDCARDS))
+    };
     let colon_ok =
         |name: &str, value: &str| !git || !value.contains(':') || spec.free.contains(&name);
     let mut operands: Vec<&PlainWord> = Vec::new();
@@ -3526,7 +3567,11 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 None => None,
             };
             if let Some(value) = value {
-                if !colon_ok(name, &value.text) {
+                // A commit message is no path: neither checked nor refused.
+                if spec.free.contains(&name) {
+                    continue;
+                }
+                if !colon_ok(name, &value.text) || !value_rev_ok(&value) {
                     return false;
                 }
                 if !pattern {
@@ -3545,7 +3590,7 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 let glued = &short[at + c.len_utf8()..];
                 if spec.glued.contains(&opt) {
                     // An optional value, taken only when glued (`-U5`, `-uno`).
-                    if !colon_ok(opt, glued) {
+                    if !colon_ok(opt, glued) || !value_rev_ok(&Check::value(glued, word)) {
                         return false;
                     }
                     if !glued.is_empty() {
@@ -3571,7 +3616,10 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 } else {
                     Check::value(glued, word)
                 };
-                if !colon_ok(opt, &value.text) {
+                if spec.free.contains(&opt) {
+                    break;
+                }
+                if !colon_ok(opt, &value.text) || !value_rev_ok(&value) {
                     return false;
                 }
                 if !pattern {
@@ -3596,7 +3644,13 @@ fn operands_pass(
         Operands::None => return operands.is_empty(),
         Operands::Names => return true,
         Operands::Paths => 0,
-        Operands::Git if operands.iter().any(|word| word.text.contains(':')) => return false,
+        Operands::Git
+            if operands
+                .iter()
+                .any(|word| word.text.contains(':') || word.text.contains(GIT_WILDCARDS)) =>
+        {
+            return false;
+        }
         Operands::Git => 0,
         Operands::PatternThenPaths if pattern_given => 0,
         Operands::PatternThenPaths if operands.is_empty() => return false,
@@ -4062,7 +4116,7 @@ impl ReadMatcher {
         let mut uncertain = false;
         let mut expanding = false;
         for candidate in read_candidates(name, args) {
-            match self.check_word(&candidate.text, cwds, generic) {
+            match self.check_word_as(&candidate.text, cwds, generic, !candidate.expands) {
                 WordVerdict::Denied => return ReadOutcome::Denied,
                 WordVerdict::Uncertain if !candidate.pattern => uncertain = true,
                 WordVerdict::Expanding if !candidate.pattern && (candidate.expands || !generic) => {
@@ -4080,15 +4134,36 @@ impl ReadMatcher {
         }
     }
 
+    /// Whether one absolute, literal path (no expansion: [`plain`] built it) is
+    /// denied, as written or with its symlinks resolved. A `*` or `$` in it is a
+    /// character of the name.
+    fn check_literal(&self, path: &str) -> WordVerdict {
+        let path = Path::new(path);
+        if self.denied(&normalize(path), true)
+            || std::fs::canonicalize(path).is_ok_and(|real| self.denied(&real, true))
+        {
+            WordVerdict::Denied
+        } else {
+            WordVerdict::Allowed
+        }
+    }
+
     /// Whether one path word is denied, allowed or cannot be resolved.
     fn check_word(&self, word: &str, cwds: &Cwds, generic: bool) -> WordVerdict {
+        self.check_word_as(word, cwds, generic, false)
+    }
+
+    /// [`ReadMatcher::check_word`] for a word the shell takes literally when
+    /// `literal` (quoted or escaped as written): a `$`, `*` or `{` in it is part
+    /// of the name, not an expansion.
+    fn check_word_as(&self, word: &str, cwds: &Cwds, generic: bool, literal: bool) -> WordVerdict {
         if word.is_empty() {
             return WordVerdict::Allowed;
         }
         if !generic && self.rules.iter().any(|rule| matches!(rule, Rule::All)) {
             return WordVerdict::Denied;
         }
-        if is_uncertain_word(word) {
+        if !literal && is_uncertain_word(word) {
             return WordVerdict::Expanding;
         }
         // `/proc/self/cwd/x`, `/proc/1/root/...`, `/dev/fd/3/x`: another name for a
@@ -4392,12 +4467,37 @@ fn read_candidates(name: &str, args: &[&str]) -> Vec<Candidate> {
                 || arg.starts_with("--file=")
         });
     let mut pattern_pending = search && !explicit_pattern;
+    // A `git commit` message is text, not a path.
+    let commit = name == "git"
+        && resolved
+            .iter()
+            .find(|arg| !arg.starts_with('-'))
+            .is_some_and(|sub| sub == "commit");
     let mut out = Vec::new();
     let mut options_done = false;
     let mut i = 0;
     while let Some(arg) = resolved.get(i) {
         let here = expanding[i];
         i += 1;
+        if commit && !options_done {
+            if arg == "--message" {
+                i += 1;
+                continue;
+            }
+            if arg.starts_with("--message=") {
+                continue;
+            }
+            // `-m`, `-am`, `-qsm`, `-mtext`: boolean flags, then `m` and its value.
+            if let Some(short) = arg.strip_prefix('-').filter(|s| !s.starts_with('-'))
+                && let Some(at) = short.find('m')
+                && short[..at].chars().all(|c| "aqsvn".contains(c))
+            {
+                if at + 1 == short.len() {
+                    i += 1;
+                }
+                continue;
+            }
+        }
         if options_done {
             push_operand(&mut out, arg, false, here);
             continue;
@@ -6992,20 +7092,55 @@ mod tests {
                 "rtk read link",
                 "rtk read config/.env",
                 "rtk git diff -- secret.txt",
-                "rtk git log secret.txt~1",
-                "rtk git log secret.txt~1..HEAD",
                 "rtk git log secret^..HEAD",
+                "rtk git log -p secret^1",
+                "rtk git log secret~1",
                 "rtk wc -l secret.txt",
                 "rtk grep -rn x secret.txt",
                 "rtk grep -e x -- secret.txt",
             ] {
                 assert_eq!(at(cmd), Gate::Deny, "{cmd}");
             }
-            assert_eq!(at("rtk read 'secre*'"), Gate::Ask);
+            // R8-1: under zsh's EXTENDED_GLOB these name `config/.env` or a file
+            // under the home; only a strict revision word may hold `^`, `~` or `#`.
+            for cmd in [
+                "rtk git log -p c^1./.env",
+                "rtk git log -p c^1../.env",
+                "rtk git show HEAD -- c^1./.env",
+                "rtk git diff HEAD~1 c^1./.env",
+                "rtk git log -p ~/x/secret^1",
+                "rtk git log -p ~/project/config/.e^1",
+                "rtk git log -p ~/notes~1",
+                "rtk git log secret.txt~1",
+                "rtk git log secret.txt~1..HEAD",
+                "rtk git log HEAD~1..origin/main",
+                "rtk git log a#b",
+                "rtk git log HEAD~1x",
+                "rtk git log 'HEAD'~1",
+                "rtk grep -e s^q .",
+                "rtk ls ~/x^1",
+                // git reads a quoted wildcard as a pathspec glob.
+                "rtk git log -p 'secre[t].txt'",
+                "rtk git diff 'secre?.txt'",
+                "rtk git add '*secret*'",
+                "rtk git checkout -- 'secre[t].txt'",
+                "rtk git log --format='%h' -- 'secre*'",
+            ] {
+                assert_eq!(at(cmd), Gate::Ask, "{cmd}");
+            }
             for cmd in [
                 "rtk read ok.txt",
                 "rtk grep -rn secret.txt .",
                 "rtk find . -name secret.txt",
+                // Single-quoted text is literal; a commit message is no path.
+                "rtk read 'secre*'",
+                "rtk ls '$(id)'",
+                "rtk git commit -m secret.txt",
+                "rtk git commit -m 'costs $5'",
+                "rtk git commit -m fix#12",
+                "rtk git log HEAD~5..HEAD",
+                "rtk git log main^..HEAD",
+                "rtk git diff HEAD~2...HEAD",
             ] {
                 assert_eq!(at(cmd), Gate::Pass, "{cmd}");
             }
