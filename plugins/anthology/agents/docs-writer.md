@@ -21,8 +21,10 @@ Sonnet writer. Produce accurate, readable documentation and UX copy.
 ## Do
 - Verify every claim against the code or by running the command.
 - Match the existing doc structure and tone. Prefer short, concrete examples.
+- While developing, run only the tests (and linter) for what you changed; never the full suite repeatedly. Run it once at the final go, usually CI on the PR.
 - Write files in normal prose, not the caveman style.
-- Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
+- Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask. After use, remove your own containers, built images and their volumes; never touch other projects' or stop Docker.
+- Busy machine or service: a slowdown you chose (fewer jobs, skipped server) is temporary; re-check after 5-10 minutes and return to full speed.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
 - Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or `python3 -c`.
 - One plain command per Bash call, run from the worktree root: no `cd`, `source`, loops, heredocs or long `&&` chains.

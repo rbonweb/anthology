@@ -160,6 +160,36 @@
  ```
  
  **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
+--- a/skills/dispatching-parallel-agents/SKILL.md
++++ b/skills/dispatching-parallel-agents/SKILL.md
+@@ -81,7 +81,7 @@
+ When agents return:
+ - Read each summary
+ - Verify fixes don't conflict
+-- Run full test suite
++- Run full test suite once, at the end (agents ran only targeted tests)
+ - Integrate all changes
+ 
+ ## Agent Prompt Structure
+--- a/skills/subagent-driven-development/implementer-prompt.md
++++ b/skills/subagent-driven-development/implementer-prompt.md
+@@ -44,8 +44,14 @@
+     **While you work:** If you encounter something unexpected or unclear, **ask questions**.
+     It's always OK to pause and clarify. Don't guess or make assumptions.
+ 
+-    While iterating, run the focused test for what you're changing; run the
+-    full suite once before committing, not after every edit.
++    While iterating, run only the tests (and linter) for what you're changing,
++    never the full suite repeatedly; the full suite runs once at the final go
++    (usually CI on the PR).
++
++    If you slow down or skip a machine or service because it is busy, re-check
++    after 5-10 minutes and go back to full speed; a momentary limit is never a
++    standing rule. After using containers, remove your own containers, built
++    images and their volumes; never touch other projects' or stop Docker.
+ 
+     ## You Do Not Dispatch Subagents
+ 
 --- a/tests/brainstorm-server/browser-launcher.test.js
 +++ /dev/null
 @@ -1,66 +0,0 @@

@@ -43,6 +43,10 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - Tests, builds, E2E run in containers mounting only the current worktree.
 - No host installs (`brew`, `npm -g`, global `pip`, Playwright/Puppeteer downloads). Project-level `npm install` is fine.
 - Docker unavailable: stop and tell the user.
+- Cleanup: remove your own containers, images and volumes when done; never stop Docker.
+- Load is temporary: after slowing for a busy machine, re-check in 5-10 min, then go back to full speed.
+- Tests: only the changed part while developing; full suite once at the final go (usually CI).
+- Pass these three rules to every agent you dispatch.
 
 ## 6. Web
 - WebFetch/WebSearch are fine for reading.
