@@ -128,15 +128,21 @@ fn connect(path: &Path) -> rusqlite::Result<Connection> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    Connection::open_with_flags(path, flags).map_err(|e| match e {
+    let conn = Connection::open_with_flags(path, flags).map_err(|e| match e {
         E::SqliteFailure(f, Some(m)) if f.code == ErrorCode::CannotOpen => {
             let suffix = format!(": {}", path.to_string_lossy());
             let m = m.strip_suffix(&suffix).map(str::to_string).unwrap_or(m);
             E::SqliteFailure(f, Some(m))
         }
         other => other,
-    })
+    })?;
+    // `sqlite3.connect`'s default `timeout=5.0`: wait for a lock instead of failing at once.
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(conn)
 }
+
+/// Python's `sqlite3.connect` default wait for a locked database.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // ---- small Python helpers --------------------------------------------------------------------
 
@@ -419,7 +425,13 @@ pub fn remove_db_files(db_path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn has_current_schema(db_path: &Path, limits: &Limits) -> bool {
+/// `_has_current_schema`: whether the index at `db_path` can be kept. A database that is busy or
+/// locked (or that cannot be read for an I/O error) is neither current nor stale: its error is
+/// returned and the file is left alone (D-8, LR-M: Python treats every `sqlite3.Error` as "stale"
+/// and deletes the database out from under the process holding the lock). Any other error is
+/// "stale", as in Python.
+fn has_current_schema(db_path: &Path, limits: &Limits) -> Result<bool, Error> {
+    use rusqlite::{Error as E, ffi::ErrorCode};
     let check = || -> rusqlite::Result<bool> {
         let conn = connect(db_path)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -429,7 +441,18 @@ fn has_current_schema(db_path: &Path, limits: &Limits) -> bool {
         conn.query_row("SELECT count(*) FROM files", [], |r| r.get::<_, i64>(0))?;
         Ok(true)
     };
-    check().unwrap_or(false)
+    match check() {
+        Ok(current) => Ok(current),
+        Err(E::SqliteFailure(f, m))
+            if matches!(
+                f.code,
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked | ErrorCode::SystemIoFailure
+            ) =>
+        {
+            Err(E::SqliteFailure(f, m).into())
+        }
+        Err(_) => Ok(false),
+    }
 }
 
 fn create_schema(conn: &Connection, limits: &Limits) -> Result<(), Error> {
@@ -629,7 +652,7 @@ pub fn build(sources: &[Source], db_path: &Path, limits: &Limits) -> Result<Stat
         mkdir_parents(parent)?;
     }
     let mut stats = Stats::default();
-    if db_path.exists() && !has_current_schema(db_path, limits) {
+    if db_path.exists() && !has_current_schema(db_path, limits)? {
         remove_db_files(db_path)?;
         stats.rebuilt = true;
     }
@@ -1598,6 +1621,41 @@ fn run_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A second connection holds the write lock: `build` waits, then reports "database is
+    /// locked" and leaves the database exactly as it was (it is never deleted or rebuilt).
+    #[test]
+    fn a_locked_database_is_reported_and_never_deleted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let notes = dir.path().join("notes");
+        fs::create_dir(&notes).expect("mkdir");
+        fs::write(notes.join("a.md"), "# a\n\nhello zebra\n").expect("write");
+        let db = dir.path().join("index.db");
+        let sources = [Source::new("personal", &notes)];
+        let limits = Limits::default();
+        let stats = build(&sources, &db, &limits).expect("first build");
+        assert_eq!(stats.added, 1);
+        let before = fs::read(&db).expect("read db");
+
+        let holder = connect(&db).expect("holder");
+        holder.execute_batch("BEGIN EXCLUSIVE").expect("lock");
+        let started = std::time::Instant::now();
+        let err = build(&sources, &db, &limits).expect_err("busy");
+        assert!(
+            started.elapsed() >= BUSY_TIMEOUT / 2,
+            "it waited for the lock"
+        );
+        assert!(err.py_str().contains("locked"), "{}", err.py_str());
+        assert!(db.exists(), "the database survived");
+        assert_eq!(fs::read(&db).expect("read db"), before);
+        holder.execute_batch("ROLLBACK").expect("unlock");
+        drop(holder);
+
+        let again = build(&sources, &db, &limits).expect("build after unlock");
+        assert!(!again.rebuilt, "no rebuild: the index was intact");
+        assert_eq!(again.added, 0);
+        assert_eq!((again.updated, again.removed), (0, 0));
+    }
 
     #[test]
     fn pathlib_str_normalizes_as_pathlib() {
