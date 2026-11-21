@@ -160,8 +160,6 @@ pub struct Summary {
     /// Kind → (compared, same).
     pub compared: BTreeMap<String, (u64, u64)>,
     pub diffs: Vec<DiffId>,
-    /// The run used the SWAP(GD2) stand-ins for the guard and shell.
-    pub standins: bool,
 }
 
 fn int(n: u64) -> Value {
@@ -230,7 +228,6 @@ impl Summary {
             })
             .collect();
         m.insert("diffs".into(), Value::Array(diffs));
-        m.insert("standins".into(), Value::Bool(self.standins));
         let mut text = json::dumps(&Value::Object(m), &INDENT2_SORTED);
         text.push('\n');
         text
@@ -285,7 +282,6 @@ impl Summary {
             runners,
             compared,
             diffs,
-            standins: m.get("standins")?.as_bool()?,
         })
     }
 
@@ -331,9 +327,6 @@ pub fn render(s: &Summary) -> String {
         "* corpus manifest sha256 {}",
         hex_of(&s.manifest_sha256, 64)
     );
-    if s.standins {
-        let _ = writeln!(out, "* stand-ins used");
-    }
     let _ = writeln!(out, "* calls total {}", s.calls_total);
     let _ = writeln!(out, "* calls distinct {}", s.calls_distinct);
     let _ = writeln!(out, "* texts total {}", s.texts_total);
@@ -525,7 +518,6 @@ mod tests {
             texts_distinct: 20,
             bucket_distinct: [6, 2, 1],
             bucket_total: [8, 3, 1],
-            standins: true,
             ..Summary::default()
         };
         s.runners.insert(1, [[5, 1, 0], [2, 0, 0], [1, 0, 0]]);
