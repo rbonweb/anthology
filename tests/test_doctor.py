@@ -115,7 +115,7 @@ class CheckEnvTest(EnvCase):
         self.assertEqual([c["name"] for c in checks],
                          ["python3", "node", "docker", "browseros", "rtk", "platform_supported",
                           "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
-                          "agent_memory_path", "subagent_model"])
+                          "agent_memory_path", "subagent_model", "rtk_savings"])
         for c in checks:
             self.assertEqual(set(c), {"name", "ok", "detail"})
             self.assertIn(c["ok"], (True, False, None))
@@ -302,8 +302,62 @@ class CheckEnvTest(EnvCase):
     def test_check_env_never_raises(self):
         with mock.patch.object(doctor.shutil, "which", side_effect=RuntimeError("boom")):
             checks = doctor.check_env(dict(os.environ), cwd=self.cwd)
-        self.assertEqual(len(checks), 12)
+        self.assertEqual(len(checks), 13)
         self.assertFalse(checks[0]["ok"])
+
+
+class RtkSavingsTest(EnvCase):
+    """`rtk_savings`: what rtk did, from its own history next to state.json."""
+
+    def history(self, decisions, commands, wal=True):
+        import sqlite3
+        db = self.config / "anthology" / "rtk" / "history.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(db))
+        if wal:
+            con.execute("PRAGMA journal_mode=WAL")  # as rtk keeps it
+        con.execute("CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, raw_cmd TEXT, decision TEXT)")
+        con.execute("CREATE TABLE commands (id INTEGER PRIMARY KEY, rtk_cmd TEXT, input_tokens INTEGER, "
+                    "saved_tokens INTEGER)")
+        con.executemany("INSERT INTO hook_decisions (raw_cmd, decision) VALUES (?, ?)", decisions)
+        con.executemany("INSERT INTO commands (rtk_cmd, input_tokens, saved_tokens) VALUES (?, ?, ?)", commands)
+        con.commit()
+        con.close()
+        return db
+
+    def savings(self):
+        return self.checks()["rtk_savings"]
+
+    def test_no_history_yet_is_none(self):
+        self.assertEqual(self.savings(), {"name": "rtk_savings", "ok": None, "detail": "rtk has no history yet"})
+        self.history([], [])
+        self.assertEqual(self.savings()["detail"], "rtk has no history yet")
+
+    def test_commands_and_tokens_from_the_history(self):
+        db = self.history([("git status", "defer")] * 2999 + [("cat a", "allow")],
+                          [("rtk read a", 1000, 35), ("rtk grep x", 233, 0)])
+        before = sorted(p.name for p in db.parent.iterdir()), db.read_bytes()
+        c = self.savings()
+        self.assertTrue(c["ok"])
+        self.assertEqual(c["detail"], "rtk ran 2 of the 3,000 commands the hook saw (0.1%) and saved 35 of their "
+                                      "1,233 output tokens (2.8%), from rtk's own history")
+        self.assertEqual((sorted(p.name for p in db.parent.iterdir()), db.read_bytes()), before)  # read only
+
+    def test_percentages_round_half_up_and_never_divide_by_zero(self):
+        self.history([("x", "defer")] * 16, [("rtk ls", 0, -5)])  # 6.25%; a negative saving counts as 0
+        self.assertEqual(self.savings()["detail"], "rtk ran 1 of the 16 commands the hook saw (6.3%) and saved 0 "
+                                                   "of their 0 output tokens (0.0%), from rtk's own history")
+
+    def test_unreadable_history_is_none(self):
+        db = self.history([("x", "defer")], [], wal=False)
+        db.write_bytes(b"not a database" * 100)
+        self.assertEqual(self.savings(), {"name": "rtk_savings", "ok": None, "detail": "rtk's history cannot be read"})
+        db.unlink()
+        import sqlite3
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE commands (input_tokens INTEGER, saved_tokens INTEGER)")
+        con.close()
+        self.assertEqual(self.savings()["detail"], "rtk's history cannot be read")  # no hook_decisions table
 
 
 def _run_probe(code, timeout=60):
@@ -1197,7 +1251,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual({c["name"] for c in out["checks"]},
                          {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
                           "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
-                          "agent_memory_path", "subagent_model"})
+                          "agent_memory_path", "subagent_model", "rtk_savings"})
         self.assertEqual(len(out["duplicates"]), 4)
 
 
