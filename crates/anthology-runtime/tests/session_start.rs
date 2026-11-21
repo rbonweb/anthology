@@ -9,11 +9,13 @@
 //! why it is a small copy of the plugin with a stand-in guard). The budget tests sit in modules
 //! named `budget` so `cargo test -p anthology-runtime budget` selects them.
 //!
+//! The memory step is the real `anthology_memory::sync::run` (MS2). Cases that need a repo
+//! (MemoryPrivacyTest, and the repo-cover and hint cases) skip when git is missing, as Python's
+//! `needs_git` does. The real-guard cases are in `crates/anthology-cli/tests/session_start.rs`.
+//!
 //! Ledger exceptions (port/ledger/test_session_start.tsv): the python3 and `session-start.sh`
 //! source tests are `dropped:superseded:F-3`, hooks.json is `dropped:superseded:F-2`, the
-//! python3-on-PATH and sample-loading self-test cases are `dropped:superseded:F-7`; the cases
-//! that need the real memory sync (MS2) or the real guard binary (GD2) are `todo:RT3` until
-//! those land.
+//! python3-on-PATH and sample-loading self-test cases are `dropped:superseded:F-7`.
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -23,6 +25,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anthology_core::git::RealGit;
 use anthology_core::lock::Lock;
 use anthology_core::{Env, state};
 use anthology_pycompat::json::{self, Map, Value};
@@ -34,7 +37,7 @@ use anthology_runtime::session_start::{
     RunSpec, SessionDeps, SessionLimits,
 };
 use anthology_settings::{self as settings, Op, SettingsDeps, TAG_PLUGIN_READ};
-use anthology_testkit::mem::write;
+use anthology_testkit::mem::{Note, needs_git, write};
 use anthology_testkit::session::{
     BLOCKS, EXIT_0, SessionCase, copy_bin, guard_plugin, guide_path, real_plugin, write_mode,
 };
@@ -510,6 +513,77 @@ mod output_test {
         let text = session_start::run(&f.env(), "not json", &f.deps());
         let out = json::loads(&text).unwrap();
         assert!(context(&out).contains("# Anthology routing guide"));
+    }
+
+    #[test]
+    fn test_total_context_stays_within_the_budget_with_a_300_note_personal_index() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let personal = f.c.mem.anth.join("personal-memory");
+        for i in 0..300 {
+            let name = format!("project-topic-{i:03}");
+            let note = Note::new(&name)
+                .type_("project")
+                .desc(&format!("A fairly descriptive note number {i}"))
+                .text();
+            write(&personal.join(format!("{name}.md")), &note, None);
+        }
+        let out = f.go();
+        let ctx = context(&out);
+        assert!(ctx.chars().count() <= session_start::CONTEXT_BUDGET);
+        assert!(ctx.contains("# Anthology routing guide"));
+        assert!(ctx.contains("## Personal memory"));
+        // `\d+ more .*anthology-mem search` on one line
+        let more = ctx.lines().any(|l| {
+            l.match_indices(" more ").any(|(i, _)| {
+                l[..i].ends_with(|c: char| c.is_ascii_digit())
+                    && l[i..].contains("anthology-mem search")
+            })
+        });
+        assert!(more, "{ctx}");
+        assert!(ctx.contains(&p(&personal.join("MEMORY.md"))));
+    }
+
+    #[test]
+    fn test_repo_cover_only_when_memory_sync_repaired() {
+        if !needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.mark_setup(None);
+        let repo =
+            f.c.mem
+                .make_repo("app", Some("https://example.invalid/acme/app.git"));
+        write(
+            &repo.join(".claude/memory/project-a.md"),
+            &Note::new("project-a").type_("project").desc("First").text(),
+            None,
+        );
+        anthology_memory::approve::approve(&repo, &f.env(), &RealGit).expect("approve");
+        let first = context(&f.go_cwd(&repo));
+        assert!(first.contains("## Repo memory"));
+        assert!(first.contains("project-a"));
+        let second = context(&f.go_cwd(&repo));
+        assert!(!second.contains("## Repo memory"));
+    }
+
+    #[test]
+    fn test_unapproved_repo_with_memory_gets_the_hint() {
+        if !needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.mark_setup(None);
+        let repo =
+            f.c.mem
+                .make_repo("other", Some("https://example.invalid/acme/other.git"));
+        write(
+            &repo.join(".claude/memory/project-a.md"),
+            &Note::new("project-a").type_("project").desc("First").text(),
+            None,
+        );
+        let out = f.go_cwd(&repo);
+        assert!(lines(&out).contains(&anthology_memory::sync::HINT.to_string()));
     }
 
     /// The 9,000 and 2,000 budgets (`cargo test -p anthology-runtime budget`).
@@ -1017,6 +1091,102 @@ mod compatibility_lines_test {
         for argv in seen.borrow().iter() {
             assert_ne!(argv[0].file_name(), Some(OsStr::new("docker")));
         }
+    }
+}
+
+// --- MemoryPrivacyTest --------------------------------------------------------------------
+
+/// `MemoryPrivacyTest`: B3 and C1 through the whole hook. Python stubbed memory_sync's git
+/// calls (`fake_repo`); the real sync needs a real repo, so these cases need git.
+mod memory_privacy_test {
+    use super::*;
+
+    /// `re.sub(r"[^A-Za-z0-9]", "-", str(path))`: the old per-path memory folder name.
+    fn encode(path: &Path) -> String {
+        path.to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect()
+    }
+
+    /// `setUp`: a session with setup run, and an approved repo with a remote.
+    fn set_up() -> Option<(Fx, PathBuf)> {
+        if !needs_git() {
+            return None;
+        }
+        let f = Fx::new();
+        f.mark_setup(None);
+        let root =
+            f.c.mem
+                .make_repo("app", Some("https://example.invalid/acme/app.git"));
+        anthology_memory::approve::approve(&root, &f.env(), &RealGit).expect("approve");
+        Some((f, root))
+    }
+
+    #[test]
+    fn test_legacy_notes_never_land_in_the_repo() {
+        let Some((f, root)) = set_up() else { return };
+        let old = f
+            .config()
+            .join("projects")
+            .join(encode(&root))
+            .join("memory");
+        // built from two halves, as the Python test is, so no host name appears in the source
+        let body = ["Builds run on build-", "box.lan.\n"].concat();
+        write(
+            &old.join("reference-build-host.md"),
+            &Note::new("reference-build-host")
+                .type_("reference")
+                .desc("The build host")
+                .body(&body)
+                .text(),
+            None,
+        );
+        write(
+            &old.join("project-plan.md"),
+            &Note::new("project-plan")
+                .type_("project")
+                .desc("The plan")
+                .text(),
+            None,
+        );
+        let out = f.go_cwd(&root);
+        let mut names: Vec<String> = fs::read_dir(root.join(".claude/memory"))
+            .expect("repo memory")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, Vec::<String>::new());
+        let personal = f.c.mem.anth.join("personal-memory");
+        assert!(personal.join("reference-build-host.md").is_file());
+        assert!(personal.join("project-plan.md").is_file());
+        assert!(f.c.mem.anth.join("migrated.json").is_file());
+        let m = sys(&out);
+        assert!(m.contains("into personal memory"), "{m}");
+        assert!(m.contains("/anthology:setup"), "{m}");
+    }
+
+    #[test]
+    fn test_user_notes_leave_the_repo_and_personal_memory_is_always_shown() {
+        let Some((f, root)) = set_up() else { return };
+        let personal = f.c.mem.anth.join("personal-memory");
+        let out = f.go_cwd(&root);
+        let ctx = context(&out);
+        assert!(ctx.contains(&format!("## Personal memory ({})", p(&personal))));
+        assert!(ctx.contains("Save notes about the user"));
+        assert!(!personal.exists());
+        write(
+            &root.join(".claude/memory/user-role.md"),
+            &Note::new("user-role").type_("user").desc("Role").text(),
+            None,
+        );
+        let out = f.go_cwd(&root);
+        assert!(!root.join(".claude/memory/user-role.md").exists());
+        assert!(personal.join("user-role.md").is_file());
+        assert!(sys(&out).contains("moved 1 user note(s) out of the repo"));
+        let ctx = context(&out);
+        assert!(ctx.contains("[user-role](user-role.md)"));
+        assert!(ctx.chars().count() <= session_start::CONTEXT_BUDGET);
     }
 }
 
