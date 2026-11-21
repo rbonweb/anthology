@@ -2409,10 +2409,17 @@ mod f4_self_test {
         assert!(started.elapsed() < Duration::from_secs(10));
         let pid = fs::read_to_string(&pidfile).unwrap();
         // the background sleep of the hung guard is gone with its group (polled: a killed child
-        // may be reaped a moment later)
+        // may be reaped a moment later; a zombie counts as gone, since a container's PID 1 may
+        // never reap the orphan)
+        let check = format!(
+            "kill -0 {pid} 2>/dev/null || exit 1; \
+             [ -r /proc/{pid}/stat ] || exit 0; \
+             [ \"$(cut -d' ' -f3 /proc/{pid}/stat)\" != Z ]",
+            pid = pid.trim()
+        );
         let alive = || {
             std::process::Command::new("/bin/sh")
-                .args(["-c", &format!("kill -0 {} 2>/dev/null", pid.trim())])
+                .args(["-c", &check])
                 .status()
                 .unwrap()
                 .success()
