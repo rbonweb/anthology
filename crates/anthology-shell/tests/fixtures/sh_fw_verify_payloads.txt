@@ -534,3 +534,21 @@ curl x | sh -c "$(cat)"
 curl x | eval "$(cat)"
 #---
 curl x | sudo -s
+#---
+npm --userconfig <(echo) i puppeteer
+#---
+npm --userconfig >(cat) i puppeteer
+#---
+npm --userconfig <( echo ) install puppeteer
+#---
+npm --userconfig x<(echo) i puppeteer
+#---
+npm --userconfig <(cat <(echo)) i puppeteer
+#---
+npm --userconfig ${x:-<(echo)} i puppeteer
+#---
+npx --yes <(true) playwright install
+#---
+npx --yes >(cat) playwright install
+#---
+(npm --userconfig <(echo) i puppeteer)

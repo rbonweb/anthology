@@ -369,9 +369,10 @@ fn opaque_marks_the_forms_python_misreads() {
     assert!(has(&analyze("sh install.sh", HOME), "sh", Opaque::Source));
     // fail closed (controller ruling): curl's output before a shell is too complex
     assert!(analyze("curl -s x | bash -s -- --version 1.2.3", HOME).incomplete);
+    // `cat` prints the path of the substitution, not its text: the pipeline into `sh` is too complex
+    assert!(analyze("cat <(echo npx playwright install) | sh", HOME).incomplete);
     for command in [
         "sh <(echo npx playwright install)",
-        "cat <(echo npx playwright install) | sh",
         "exec 3<<<'npx playwright install'; sh <&3",
     ] {
         assert!(

@@ -107,7 +107,12 @@ fn g1(e: &Entry) -> bool {
         return sub.is_some_and(|s| s == "browsers" || s == "install");
     }
     if ["npm", "pnpm", "yarn", "bun"].contains(&prog) {
-        let words = positional(&e.args, &[]);
+        // value flags as the guard's `FW_PM_VALUE_FLAGS` (the ones these fixtures use): `--userconfig <(echo)`
+        // takes the substitution as its value
+        let words = positional(
+            &e.args,
+            &["--userconfig", "--registry", "--cache", "--prefix", "--cwd"],
+        );
         return words
             .first()
             .is_some_and(|v| ["i", "install", "add"].contains(v))

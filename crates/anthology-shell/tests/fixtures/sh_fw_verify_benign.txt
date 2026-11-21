@@ -3253,3 +3253,11 @@ echo npx playwright install | sg docker -c 'cat'
 echo npx playwright install | script -c 'cat'
 #---
 echo npx playwright install | su root ls
+#---
+diff <(sort a) <(sort b)
+#---
+comm -12 <(ls a) <(ls b)
+#---
+tee >(gzip > f.gz) < x
+#---
+while read l; do :; done < <(ls)
