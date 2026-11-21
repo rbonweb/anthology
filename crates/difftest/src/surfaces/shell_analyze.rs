@@ -895,6 +895,42 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "x=$(git rev-parse HEAD)",
     ];
     out.extend(F8.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // SH-F2: xargs fed a process substitution, stdin read into a shell through a variable, a default in an
+    // argument (payloads), and the everyday forms that must stay allowed (controls); the oracle applies them too
+    const F2: &[&str] = &[
+        "xargs npx < <(echo playwright install)",
+        "xargs -a <(echo playwright install) npx",
+        "xargs --arg-file=<(echo playwright install) npx",
+        "xargs npm < <(printf 'i\\npuppeteer\\n')",
+        "parallel npx < <(echo playwright install)",
+        r#"echo npx playwright install | while read l; do sh -c "$l"; done"#,
+        r#"echo npx playwright install | while read -r l; do eval "$l"; done"#,
+        "echo npx playwright install | while read l; do $l; done",
+        r#"echo npx playwright install | for l in $(cat); do eval "$l"; done"#,
+        r#"echo npx playwright install | { read l; eval "$l"; }"#,
+        r#"echo npx playwright install | { l=$(cat); sh -c "$l"; }"#,
+        r#"while read l; do sh -c "$l"; done <<< "npx playwright install""#,
+        r#"(read l; eval "$l") <<< "npx playwright install""#,
+        "( sh ) <<< \"npx playwright install\"",
+        "{ sh; } <<< \"npx playwright install\"",
+        "npm ${x+i} puppeteer",
+        "npm ${x:-\"i\"} puppeteer",
+        "npm ${x:-i puppeteer}",
+        "npm i${x:-} puppeteer",
+        "npx playwright ${x:-install}",
+        "echo ${a:-${b:-${c:-x}}}",
+        "echo ${a:-${a:-${a:-${a:-${a:-${a:-${a:-${a:-${a:-${a:-x}}}}}}}}}}",
+        "xargs wc -l < <(git ls-files)",
+        "xargs -I{} cp {} dst/ < <(echo a.txt)",
+        r#"git ls-files | while read -r f; do wc -l "$f"; done"#,
+        r#"while IFS= read -r f; do wc -l "$f"; done < <(find . -name '*.rs')"#,
+        r#"echo a b | { read x y; echo "$x"; }"#,
+        r#"for f in $(git ls-files); do wc -l "$f"; done"#,
+        "cp ${SRC:-src}/a.txt ${DST:-dst}/",
+        "ls ${XDG_CONFIG_HOME:-${HOME}/.config}",
+        r#"echo "${1:-no args given}""#,
+    ];
+    out.extend(F2.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

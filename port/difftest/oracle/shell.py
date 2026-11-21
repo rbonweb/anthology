@@ -41,6 +41,8 @@ it to the reference too, so the difftest still checks everything else; each such
   pipelines whose bash behaviour the analysis does not model are too complex (`_fail_closed`,
   `_option_env_unmodelled`, `_add_command_checked`, and the checks in `_collect_once_body`), as in Rust's
   collect.rs.
+- SH-F2: xargs/parallel fed a `<(...)`, stdin read into a shell through a variable, and default values in any
+  word (the `# --- SH-F2` section below).
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -181,6 +183,7 @@ def _decode_ansi_c(piece):
 
 def _lenient_segments(text):
     """`_lenient_segments` with Rust's third reading (FW-H review R1-M1, D-8)."""
+    _LENIENT_USED[0] = True                               # SH-F2: no orphan texts are read from this lexing
     out = []
     G._charge(2 * len(text))
     if "<(" in text or ">(" in text or "|" in text:       # #89 review F-1 (lenient.rs)
@@ -760,11 +763,20 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
         raise G._TooComplex()                             # a sequence before or as the program word
     if _option_env_unmodelled(prefix, G._prog_name(cmd[0]) if cmd else "", cmd[1:]):
         raise G._TooComplex()
+    # SH-F2: the variables this command sets from what it reads, before it is itself read as a stdin reader
+    global _NAMES
+    if not hasattr(ctx, "read_names"):
+        ctx.read_names, ctx.setters = set(), set()
+    _NAMES = ctx.read_names
+    names = _setter_names(G._prog_name(cmd[0]) if cmd else "", cmd[1:], tokens, getattr(ctx, "subst", False))
+    ctx.read_names.update(names)
     saved, _RESOLVED = _RESOLVED, (tokens, words)
     try:
         entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
     finally:
         _RESOLVED = saved
+    if names:
+        ctx.setters.add(id(entry))
     if entry.prog in _EXPORTERS:
         for arg in entry.args:
             name, eq, value = arg.partition("=")
@@ -808,7 +820,8 @@ _COMPOUND = ("if", "while", "until", "for", "select", "case")          # SH-F3: 
 def _collect_once_body(text, ctx, exempt, depth):
     readers_at_start = ctx.readers                        # SH-F3
     new_entries, braced, after_compound = [], set(), set()
-    for seg in G._segments(text):
+    segs, orphan_texts = _segments_orphans(text)          # SH-F2
+    for seg in segs:
         ctx.braces = seg.braces
         ctx.quoted_braces = seg.quoted_braces
         ctx.holders = seg.holders
@@ -837,7 +850,12 @@ def _collect_once_body(text, ctx, exempt, depth):
     procsub = "<(" in text or ">(" in text
     fed_script = any(e.script_reads and (procsub or id(e) in piped_ids) for e in new_entries)
     fed_compound = any(e.raw[:1] and e.raw[0] in _COMPOUND for e in piped)
-    if fed_script or (fed_compound and ctx.readers > readers_at_start):
+    # SH-F2: so does a variable read from a pipe or a here-string, and a compound fed a here-string or a heredoc
+    setters = getattr(ctx, "setters", set())
+    fed_setter = any(id(e) in setters and (id(e) in piped_ids or e.group.texts) for e in new_entries)
+    fed_closer = orphan_texts or any(
+        (not e.raw or (len(e.raw) == 1 and e.raw[0] in _CLOSERS)) and e.group.texts for e in new_entries)
+    if fed_script or ((fed_compound or fed_setter or fed_closer) and ctx.readers > readers_at_start):
         raise G._TooComplex()
     for entries in by_group.values():
         shell = next((e for e in entries if G._reads_stdin_as_shell(e)), None)
@@ -900,6 +918,17 @@ def _collect_once_body(text, ctx, exempt, depth):
                 raise G._TooComplex()                     # fail closed: `sh < <(f)`
             for body in bodies:
                 G._collect(body, ctx, exempt, depth + 1)
+    if "<(" in text:                                      # SH-F2: an xargs/parallel layer fed a `<(...)`
+        fed_from_procsub = [e for e in new_entries if e.stdin_runs and (
+            any(op.startswith("<") and G._PROCSUB_PATH in target for op, target in e.redirs)
+            or any(G._PROCSUB_PATH in w for w in e.raw))]
+        if fed_from_procsub:
+            fed = []
+            for inner in G._process_substitutions(text):
+                fed += G._literal_output(inner, depth)
+            for entry in fed_from_procsub:
+                ctx.braces = id(entry) in braced
+                G._feed_stdin(entry, fed, ctx, depth)
     fd_shells = {id(e) for e in new_entries if G._reads_fd_as_shell(e)}
     for entry in new_entries if fd_shells else ():
         if id(entry) in fd_shells or (
@@ -1203,6 +1232,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
             alternate = list(tokens)
             alternate[main_at] = literal
             alternates.append(alternate)
+    if alternates is not None:                            # SH-F2: defaults in any word (prefixes.rs)
+        reading = _default_reading(tokens)
+        if reading is not None and reading not in alternates:
+            alternates.append(reading)
     return cmd, scripts
 
 
@@ -1244,6 +1277,181 @@ def _resolve_holders(tokens, holders):
             words = list(tokens)
         words[k] = program
     return words if words is not None else list(tokens)
+
+
+# --- SH-F2 (Rust: prefixes.rs `default_reading`; collect.rs `setter_names`, `uses_name`, `reads_stdin_as_shell`,
+# the fed checks of `collect_once`; lexer.rs `LexInfo::orphan_texts`).
+# (1) An xargs or parallel layer whose input is a `<(...)` (a `<` redirect from one, or one among its words:
+#     `xargs -a <(...)`) is fed the literal output of every `<(...)` in the text, as a pipe feeds it.
+# (2) A program word, a `-c` script or eval words that use a variable `read`/`mapfile` set (or a `for` or an
+#     assignment over a substitution) read stdin as commands; a text where such a setter is fed a pipe or a
+#     here-string, or a compound closer or an orphan pipeline is fed a here-string or heredoc, and that adds a
+#     stdin reader, is too complex.
+# (3) A default or alternate value in any word also reads as its text: one more alternate.
+
+_MAX_DEFAULT_DEPTH = 8
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_NAME_USE = re.compile(r"\$\{?[!#]?([A-Za-z_][A-Za-z0-9_]*)")
+_NAMES = set()                                            # the current pass's `ctx.read_names`
+_GROUPS = None                                            # the groups made while `_segments_orphans` lexes
+_LENIENT_USED = [False]
+
+
+class _Group(G._Group):
+    """`_Group`, noted while `_segments_orphans` lexes (lexer.rs keeps every group in its arena)."""
+    __slots__ = ()
+
+    def __init__(self):
+        super().__init__()
+        if _GROUPS is not None:
+            _GROUPS.append(self)
+
+
+G._Group = _Group
+
+
+def _segments_orphans(text):
+    """`_segments(text)`, and whether a here-string or heredoc went to a group no segment belongs to (`( sh ) <<<
+    X`); never after a lenient split (lexer.rs `orphan_texts`)."""
+    global _GROUPS
+    saved, _GROUPS = _GROUPS, []
+    _LENIENT_USED[0] = False
+    try:
+        segs = G._segments(text)
+        made, used = _GROUPS, {id(seg.group) for seg in segs}
+    finally:
+        _GROUPS = saved
+    orphan = not _LENIENT_USED[0] and any(g.texts and id(g) not in used for g in made)
+    return segs, orphan
+
+
+def _setter_names(prog, args, tokens, held):
+    """collect.rs `setter_names`: the variables a command sets from what it reads, lowercased."""
+    if prog == "read":
+        names = ["reply"] + [a.lower() for a in args if _NAME.match(a)]
+    elif prog in ("mapfile", "readarray"):
+        names = ["mapfile"] + [a.lower() for a in args if _NAME.match(a)]
+    elif prog in ("for", "select") and held:
+        names = [args[0].lower()] if args and _NAME.match(args[0]) else []
+    else:
+        names = []
+    if held:
+        names += [w.split("=", 1)[0].lower() for w in tokens if G._ASSIGNMENT.match(w)]
+    return names
+
+
+def _uses_name(text):
+    """collect.rs `uses_name`: `text` expands one of the read names."""
+    return any(m.group(1).lower() in _NAMES for m in _NAME_USE.finditer(text))
+
+
+_READS_STDIN_AS_SHELL = G._reads_stdin_as_shell
+
+
+def _reads_stdin_as_shell(entry):
+    """`_reads_stdin_as_shell`, and a program word, `-c` script or eval words that use a read name."""
+    if _NAMES and (
+            _uses_name(entry.prog_path)
+            or (entry.prog == "eval" and _uses_name(" ".join(entry.args)))
+            or (entry.prog in G._SHELLS and (lambda parsed: parsed[0] == "c" and any(
+                _uses_name(script) for _i, script in parsed[2]))(G._shell_parse(entry.prog, entry.args)))):
+        return True
+    return _READS_STDIN_AS_SHELL(entry)
+
+
+G._reads_stdin_as_shell = _reads_stdin_as_shell
+
+
+def _param_close(word, j):
+    """collect.rs `param_close`: the index of the `}` closing the `${` at `j`, or None (`_param_end`'s scan)."""
+    depth, k, n = 0, j + 1, len(word)
+    while k < n:
+        c = word[k]
+        if c == "\\":
+            k += 1
+        elif c in "'\"":
+            k += 1
+            while k < n and word[k] != c:
+                k += 2 if c == '"' and word[k] == "\\" else 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return k
+        k += 1
+    return None
+
+
+def _has_default(word):
+    return any(_DEFAULT_OP.match(word, at + 2) is not None
+               for at in range(len(word) - 1) if word.startswith("${", at))
+
+
+def _unquote(text):
+    """prefixes.rs `unquote`: quotes removed, each `\\x` read as `x`."""
+    out, k, n = [], 0, len(text)
+    while k < n:
+        c = text[k]
+        if c == "\\":
+            out.append(text[k + 1:k + 2])
+            k += 2
+        elif c == "'":
+            end = text.find("'", k + 1)
+            end = n if end < 0 else end
+            out.append(text[k + 1:end])
+            k = end + 1
+        elif c == '"':
+            k += 1
+            while k < n and text[k] != '"':
+                if text[k] == "\\":
+                    out.append(text[k + 1:k + 2])
+                    k += 2
+                else:
+                    out.append(text[k])
+                    k += 1
+            k += 1
+        else:
+            out.append(c)
+            k += 1
+    return "".join(out)
+
+
+def _expand_defaults(word, depth):
+    """prefixes.rs `expand_defaults`: each closed `${x:-W}` (and the other forms) replaced by W, read the same
+    way and unquoted; another `${...}` as written; too complex past `_MAX_DEFAULT_DEPTH` nested values."""
+    if depth > _MAX_DEFAULT_DEPTH:
+        raise G._TooComplex()
+    out, last, j, n = [], 0, 0, len(word)
+    while j + 1 < n:
+        if word[j] != "$" or word[j + 1] != "{":
+            j += 1
+            continue
+        close = _param_close(word, j)
+        if close is None:
+            break
+        match = _DEFAULT_OP.match(word, j + 2)
+        if match is not None:
+            out.append(word[last:j])
+            out.append(_unquote(_expand_defaults(word[match.end():close], depth + 1)))
+            last = close + 1
+        j = close + 1
+    out.append(word[last:])
+    return "".join(out)
+
+
+def _default_reading(tokens):
+    """prefixes.rs `default_reading`: the words with every default or alternate value read as its text, split
+    into words; None when no word holds one."""
+    if not any(_has_default(w) for w in tokens):
+        return None
+    out = []
+    for word in tokens:
+        if _has_default(word):
+            out += _expand_defaults(word, 0).split()
+        else:
+            out.append(word)
+    return out
 
 
 def run(case):

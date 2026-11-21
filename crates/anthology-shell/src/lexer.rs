@@ -85,6 +85,9 @@ pub(crate) struct LexInfo {
     pub(crate) depth_capped: bool,
     /// A nested lexer fell back to the lenient split.
     pub(crate) nested_lenient: bool,
+    /// SH-F2: a here-string or heredoc went to a pipeline no segment belongs to (`( sh ) <<< X`: the text
+    /// after the `)`). Only for a text lexed without the lenient split.
+    pub(crate) orphan_texts: bool,
 }
 
 /// `_TooComplex`: the work budget ran out.
@@ -231,7 +234,7 @@ pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usi
 
 /// The word a process substitution stands for in its command (bash passes `/dev/fd/N`; the number is not
 /// modelled, and no rule reads it).
-const PROCSUB_PATH: &str = "/dev/fd/63";
+pub(crate) const PROCSUB_PATH: &str = "/dev/fd/63";
 
 /// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
 type Pending = (Vec<String>, GroupId, bool, bool);
@@ -1099,6 +1102,12 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
     ids.sort_unstable();
     ids.dedup();
     let mut arena = std::mem::take(&mut sh.groups);
+    sh.info.orphan_texts = !lenient
+        && !sh.info.nested_lenient
+        && arena
+            .iter()
+            .enumerate()
+            .any(|(k, texts)| !texts.is_empty() && ids.binary_search(&(k as u32)).is_err());
     let groups = ids
         .into_iter()
         .map(|id| Group {

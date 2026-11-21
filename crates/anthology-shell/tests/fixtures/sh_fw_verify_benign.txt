@@ -3307,3 +3307,67 @@ exec > >(tee log) 2>&1
 diff <(sort a) <(sort b)
 #---
 mapfile -t a < <(git ls-files)
+#---
+while read l; do echo "$l"; done < f
+#---
+while read -r line; do echo "$line"; done < <(git ls-files)
+#---
+while IFS= read -r f; do wc -l "$f"; done < <(find . -name '*.rs')
+#---
+git ls-files | while read -r f; do wc -l "$f"; done
+#---
+cat list.txt | while read -r url; do curl -sO "$url"; done
+#---
+git branch --merged | while read b; do git branch -d "$b"; done
+#---
+ls | while read d; do (cd "$d" && git pull); done
+#---
+echo a b | { read x y; echo "$x"; }
+#---
+read -r -p "Continue? " ans; echo "$ans"
+#---
+for f in $(git ls-files); do wc -l "$f"; done
+#---
+v=$(cat VERSION); git tag "v$v"
+#---
+while read -r a b; do echo "$a=$b"; done <<< "$(env)"
+#---
+mapfile -t files < <(git ls-files); echo "${files[@]}"
+#---
+find . -name '*.txt' | xargs -I{} cp {} dst/
+#---
+ls | xargs -I {} cp {} /tmp/
+#---
+git ls-files -z | xargs -0 wc -l
+#---
+xargs -a files.txt rm
+#---
+xargs -a <(git ls-files) wc -l
+#---
+xargs wc -l < <(git ls-files)
+#---
+xargs -n1 echo < <(echo a b c)
+#---
+xargs -I{} cp {} dst/ < <(echo a.txt)
+#---
+cp ${SRC:-src}/a.txt ${DST:-dst}/
+#---
+echo ${HOME:-/root}
+#---
+mkdir -p ${BUILD_DIR:-build}
+#---
+npm run ${SCRIPT:-build}
+#---
+cd ${PROJECT_DIR:-.} && cargo build
+#---
+echo "${1:-no args given}"
+#---
+ls ${XDG_CONFIG_HOME:-${HOME}/.config}
+#---
+docker run -e PORT=${PORT:-8080} img
+#---
+git log -n ${N:-10} --oneline
+#---
+kubectl -n ${NS:-default} get pods
+#---
+npm install ${PKG:-lodash}
