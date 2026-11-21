@@ -79,7 +79,7 @@ pub const MODULE_OWNERS: &[(&str, &[&str])] = &[
     ("test_evals_layout", &["MT1", "CO2"]),
     ("test_guard_cli", &["GD2", "CO2"]),
     ("test_guard_rules", &["GD1"]),
-    ("test_guardrails_loc", &["RT1a"]),
+    ("test_guardrails_loc", &["RT1a", "RT3"]),
     ("test_knowledge", &["MT1", "CO2"]),
     ("test_licenses", &["MT1", "CO2"]),
     ("test_memory_diff", &["DV2"]),
