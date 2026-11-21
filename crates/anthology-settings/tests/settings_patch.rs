@@ -898,53 +898,58 @@ fn without_key(data: &Value, key: &str) -> Map {
     m
 }
 
-// Same name as RoundTripTest's test above, so class-prefixed (ledger: one Rust name per id).
-#[test]
-fn subagent_model_op_test_apply_then_revert_restores_the_original_bytes() {
-    let op = subagent_model_op();
-    for (name, text) in subagent_texts() {
-        let planned = plan(&text, std::slice::from_ref(&op)).unwrap();
-        assert_eq!(planned.stored.len(), 1, "{name}");
-        assert_eq!(
-            at(&planned.stored[0], &["previous"]),
-            &v(r#"{"present": true, "raw": "\"SECRETMODEL\""}"#),
-            "{name}"
-        );
-        let (new, _) = apply(&text, &planned.ops).unwrap();
-        let data = v(&new);
-        assert!(
-            !at(&data, &["env"])
-                .as_object()
-                .unwrap()
-                .contains_key(SUBAGENT_KEY),
-            "{name}"
-        );
-        assert_eq!(
-            without_key(&data, "env"),
-            without_key(&v(&text), "env"),
-            "{name}"
-        );
-        assert!(
-            plan(&new, std::slice::from_ref(&op))
-                .unwrap()
-                .stored
-                .is_empty(),
-            "{name}"
-        );
-        let back = revert(&new, &planned.stored).unwrap();
-        if name == "first-of-two" {
-            // put back as the env block's last key
-            let restored = v(&back);
-            assert_eq!(restored, v(&text), "{name}");
-            let keys: Vec<&str> = at(&restored, &["env"])
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, _)| k)
-                .collect();
-            assert_eq!(keys, ["B", SUBAGENT_KEY], "{name}");
-        } else {
-            assert_eq!(back, text, "{name}");
+// Same name as RoundTripTest's test above, so in its class's module (the ledger keeps the
+// Python method name).
+mod subagent_model_op_test {
+    use super::*;
+
+    #[test]
+    fn test_apply_then_revert_restores_the_original_bytes() {
+        let op = subagent_model_op();
+        for (name, text) in subagent_texts() {
+            let planned = plan(&text, std::slice::from_ref(&op)).unwrap();
+            assert_eq!(planned.stored.len(), 1, "{name}");
+            assert_eq!(
+                at(&planned.stored[0], &["previous"]),
+                &v(r#"{"present": true, "raw": "\"SECRETMODEL\""}"#),
+                "{name}"
+            );
+            let (new, _) = apply(&text, &planned.ops).unwrap();
+            let data = v(&new);
+            assert!(
+                !at(&data, &["env"])
+                    .as_object()
+                    .unwrap()
+                    .contains_key(SUBAGENT_KEY),
+                "{name}"
+            );
+            assert_eq!(
+                without_key(&data, "env"),
+                without_key(&v(&text), "env"),
+                "{name}"
+            );
+            assert!(
+                plan(&new, std::slice::from_ref(&op))
+                    .unwrap()
+                    .stored
+                    .is_empty(),
+                "{name}"
+            );
+            let back = revert(&new, &planned.stored).unwrap();
+            if name == "first-of-two" {
+                // put back as the env block's last key
+                let restored = v(&back);
+                assert_eq!(restored, v(&text), "{name}");
+                let keys: Vec<&str> = at(&restored, &["env"])
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                assert_eq!(keys, ["B", SUBAGENT_KEY], "{name}");
+            } else {
+                assert_eq!(back, text, "{name}");
+            }
         }
     }
 }
