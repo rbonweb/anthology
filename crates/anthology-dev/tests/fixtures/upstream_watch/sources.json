@@ -1,0 +1,52 @@
+{
+  "sources": [
+    {
+      "name": "superpowers",
+      "repo": "https://github.com/obra/superpowers",
+      "path": "",
+      "ref": "v7.0.2",
+      "commit": "5555555555555555555555555555555555555555",
+      "license": "MIT",
+      "target": "plugins/anthology-superpowers",
+      "transform": []
+    },
+    {
+      "name": "frontend-design",
+      "repo": "https://github.com/anthropics/skills",
+      "path": "skills/frontend-design",
+      "ref": "main",
+      "commit": "e4bb5d960d87126ff3b3a8af1a104b7db67560ba",
+      "license": "Apache-2.0",
+      "target": "plugins/anthology/knowledge/frontend-design",
+      "transform": []
+    },
+    {
+      "name": "ui-taste",
+      "url": "https://uizze.sh/.well-known/skills/ui-taste",
+      "checksum": "809bcbee72c89a3d1865809696f54c1274b977b9e53ce8bf322e9d4f8073b97f",
+      "license": "MIT",
+      "target": "plugins/anthology/knowledge/ui-taste"
+    },
+    {
+      "name": "rtk",
+      "managed_by": "subtree",
+      "target": "rtk",
+      "license": "Apache-2.0",
+      "fork": {
+        "repo": "https://github.com/rbonweb/rtk",
+        "ref": "develop",
+        "commit": "0123456789012345678901234567890123456789"
+      },
+      "upstream": {
+        "repo": "https://github.com/rtk-ai/rtk",
+        "ref": "v1.2.1",
+        "commit": "3333333333333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "mystery",
+      "target": "plugins/x",
+      "license": "MIT"
+    }
+  ]
+}
