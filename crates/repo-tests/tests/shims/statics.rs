@@ -104,7 +104,10 @@ fn lib_sh_cannot_end_or_replace_the_sourcing_shell() {
             continue;
         }
         if exec.is_match(line) {
-            assert_eq!(line, "        exec </dev/null >/dev/null 2>&1", "lib.sh exec");
+            assert_eq!(
+                line, "        exec </dev/null >/dev/null 2>&1",
+                "lib.sh exec"
+            );
             seen.0 += 1;
         }
         if trap.is_match(line) {
@@ -121,7 +124,9 @@ fn lib_sh_cannot_end_or_replace_the_sourcing_shell() {
     }
     assert_eq!(seen, (1, 1), "the watchdog's exec and trap");
     // Both sit in the watchdog's `( … ) &` subshell, before its sleep.
-    let start = lib.find("    (\n        exec </dev/null >/dev/null 2>&1\n").expect("watchdog");
+    let start = lib
+        .find("    (\n        exec </dev/null >/dev/null 2>&1\n")
+        .expect("watchdog");
     let rest = &lib[start..];
     assert!(rest.find("trap ").unwrap() < rest.find("    ) &").unwrap());
 }

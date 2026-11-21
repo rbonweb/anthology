@@ -234,8 +234,14 @@ fn the_tool_name_scan_ignores_the_callers_locale() {
             false,
         ),
         (b"{\"tool_name\":\"Read\",\"x\":\"\xff\"}".as_slice(), true),
-        (b"{\"tool_name\":\"Read\",\"x\":\"\0\",\"y\":{\"tool_name\":1}}".as_slice(), false),
-        (b"{\"tool_\0name\":\"Bash\",\"tool_name\":\"Read\"}".as_slice(), true),
+        (
+            b"{\"tool_name\":\"Read\",\"x\":\"\0\",\"y\":{\"tool_name\":1}}".as_slice(),
+            false,
+        ),
+        (
+            b"{\"tool_\0name\":\"Bash\",\"tool_name\":\"Read\"}".as_slice(),
+            true,
+        ),
     ] {
         assert_eq!(reference(p), want, "{:?}", String::from_utf8_lossy(p));
         let file = sb.root.join("payload");
