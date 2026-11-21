@@ -163,13 +163,6 @@ fn set_rtk_upstream_stdout_is_exactly_the_old_pin() {
         ],
         Some(fixture.path()),
     );
-    if out.status.code() == Some(70) {
-        assert!(out.stdout.is_empty(), "{out:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("vendor set-rtk-upstream is not ported")
-        );
-        return;
-    }
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), old_pin);
 }

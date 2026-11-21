@@ -58,6 +58,23 @@ pub fn anthology_home(env: &Env) -> PathBuf {
     config_dir(env).join("anthology")
 }
 
+/// `<ah>` as the bootstrap and the shims resolve it (`lib.sh` `anth_paths`), for every check of
+/// the installed binary: `$CLAUDE_CONFIG_DIR/anthology` when that is non-empty, else
+/// `$HOME/.claude/anthology`. `None` unless the folder it starts from is an absolute path. A
+/// relative one would select a binary under the working folder, which the guard's hot path runs
+/// unhashed. An unset or empty `HOME` is refused too, with no passwd fallback, because the shell
+/// has none.
+pub fn install_home(env: &Env) -> Option<PathBuf> {
+    let absolute = |v: &std::ffi::OsStr| v.as_bytes().first() == Some(&b'/');
+    match env.get_os("CLAUDE_CONFIG_DIR") {
+        Some(c) if !c.is_empty() => absolute(c).then(|| PathBuf::from(c).join("anthology")),
+        _ => match env.get_os("HOME") {
+            Some(h) if absolute(h) => Some(home(env).join(".claude").join("anthology")),
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +118,35 @@ mod tests {
     fn a_non_utf8_home_is_kept() {
         let env = Env::default().with_os("HOME", OsStr::from_bytes(b"/h/\xff/"));
         assert_eq!(home(&env).as_os_str().as_bytes(), b"/h/\xff");
+    }
+
+    #[test]
+    fn install_home_needs_an_absolute_folder_and_never_uses_passwd() {
+        let ah = |env: &Env| install_home(env);
+        assert_eq!(
+            ah(&with_home("/h/")),
+            Some(PathBuf::from("/h/.claude/anthology"))
+        );
+        assert_eq!(
+            ah(&with_home("/")),
+            Some(PathBuf::from("/.claude/anthology"))
+        );
+        let env = with_home("rel").with("CLAUDE_CONFIG_DIR", "/c");
+        assert_eq!(ah(&env), Some(PathBuf::from("/c/anthology")));
+        let env = with_home("/h").with("CLAUDE_CONFIG_DIR", "");
+        assert_eq!(ah(&env), Some(PathBuf::from("/h/.claude/anthology")));
+        for env in [
+            Env::default(),
+            with_home(""),
+            with_home("rel"),
+            with_home("./h"),
+            with_home("~"),
+            with_home("/h").with("CLAUDE_CONFIG_DIR", "config"),
+            with_home("/h").with("CLAUDE_CONFIG_DIR", "./c"),
+            Env::default().with("CLAUDE_CONFIG_DIR", ""),
+        ] {
+            assert_eq!(ah(&env), None, "{env:?}");
+        }
     }
 
     #[test]

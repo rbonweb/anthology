@@ -1954,6 +1954,50 @@ mod review_test {
         );
     }
 
+    /// Early whole-branch review M6 and M7: doctor reads `<ah>` and the markers as `lib.sh`
+    /// does.
+    #[test]
+    fn anthology_binary_reads_the_install_as_the_shims_do() {
+        let c = EnvCase::new();
+        let root = guardrails(&c, true);
+        let vdir = c.config.join("anthology/bin").join(VERSION);
+        // the first line of a marker counts, as `anth_first_line` reads it
+        let tarball = release::sha256_hex(TARBALL);
+        write(&vdir.join(".sha256"), &format!("{tarball}\njunk\n"));
+        let x = binary(&c, &root);
+        assert_eq!((x.ok, x.detail.as_str()), (Some(true), bootstrap::CHECK_OK));
+        write(&vdir.join(".sha256"), &format!("{tarball} \n"));
+        assert_eq!(binary(&c, &root).ok, Some(false));
+        write(&vdir.join(".sha256"), &tarball);
+        assert_eq!(binary(&c, &root).ok, Some(true));
+        // a relative, empty or unset <ah> base is refused
+        for env in [
+            c.env.clone().with("CLAUDE_CONFIG_DIR", "config"),
+            c.env.clone().with("CLAUDE_CONFIG_DIR", "").with("HOME", ""),
+            c.env.clone().without("CLAUDE_CONFIG_DIR").without("HOME"),
+            c.env
+                .clone()
+                .with("CLAUDE_CONFIG_DIR", "")
+                .with("HOME", "home"),
+        ] {
+            let all = c.checks_with(&env, &root, &c.cwd, &c.deps());
+            let x = &all["anthology_binary"];
+            assert_eq!(
+                (x.ok, x.detail.as_str()),
+                (Some(false), bootstrap::CHECK_NO_HOME),
+                "{env:?}"
+            );
+        }
+        // a symlinked <ah>/bin is refused, as `anth_installed` refuses it
+        let bin = c.config.join("anthology/bin");
+        let real = c.tmp.join("real-bin");
+        fs::rename(&bin, &real).expect("move");
+        std::os::unix::fs::symlink(&real, &bin).expect("link");
+        let x = binary(&c, &root);
+        assert_eq!(x.ok, Some(false));
+        assert!(x.detail.contains("is not installed"), "{x:?}");
+    }
+
     #[test]
     fn anthology_binary_still_checks_a_disabled_guardrails_and_names_a_missing_one() {
         let c = EnvCase::new();

@@ -385,3 +385,53 @@ fn the_shim_messages_name_the_real_install_folder() {
     assert!(bindir.is_dir());
     assert!(!Sandbox::base_path().is_empty());
 }
+
+/// Early whole-branch review M6: `<ah>` from a relative, empty or unset HOME or
+/// CLAUDE_CONFIG_DIR is never used. The guard closes (read-only tools still pass) and nothing
+/// runs or installs, even when the relative path names an installed, allowing binary under the
+/// hook's working folder.
+#[test]
+fn a_relative_or_empty_config_folder_closes_the_guard_and_runs_nothing() {
+    each_shell("relative config folder", |sh| {
+        // An empty value stands for an unset one: the scripts read both as `${X:-}`.
+        for (home, config) in [
+            (None, "config"),
+            (None, "./config"),
+            (Some("home"), ""),
+            (Some(""), ""),
+        ] {
+            let mut sb = sandbox();
+            sb.install(&fake(V, ALLOW), 0o755);
+            // `home/.claude/anthology` (relative to the working folder) is the install too.
+            std::os::unix::fs::symlink(&sb.config, sb.home.join(".claude")).unwrap();
+            let c = format!("{sh:?} HOME={home:?} CLAUDE_CONFIG_DIR={config:?}");
+            if let Some(h) = home {
+                sb.set_env("HOME", h);
+            }
+            sb.set_env("CLAUDE_CONFIG_DIR", config);
+            let before = sb.bin_entries();
+            assert_allowed(&guard(&sb, sh, READ), &c);
+            assert_block(&guard(&sb, sh, BASH), &no_home(), &c);
+            assert_block(&guard(&sb, sh, MCP), &no_home(), &c);
+            let run = boot(&sb, sh, &["guard", "--plugin", "guardrails", "--quiet"]);
+            assert_status(&run, &format!("status=failed:{R_HOME}"), &c);
+            let run = sb.run(sh, WRAP, &["doctor"], b"");
+            assert_eq!(
+                (run.code, run.out(), run.err()),
+                (
+                    Some(127),
+                    String::new(),
+                    format!("{}\n", wrapper_failed("anthology", R_HOME))
+                ),
+                "{c}"
+            );
+            let run = sb.run(sh, SESSION, &[], b"{}");
+            assert_eq!(
+                (run.code, run.out()),
+                (Some(0), format!("{}\n", sys_anthology(R_HOME))),
+                "{c}"
+            );
+            assert_eq!(sb.bin_entries(), before, "{c}: <ah>/bin changed");
+        }
+    });
+}
