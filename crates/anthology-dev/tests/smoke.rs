@@ -92,9 +92,15 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         true,
         &["test-driven-development", "verification-before-completion"],
-        &[],
+        &["karpathy-guidelines"],
     ),
-    ("debugger", "sonnet", true, &["systematic-debugging"], &[]),
+    (
+        "debugger",
+        "sonnet",
+        true,
+        &["systematic-debugging"],
+        &["karpathy-guidelines"],
+    ),
     (
         "reviewer",
         "opus",
