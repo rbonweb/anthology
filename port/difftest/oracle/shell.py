@@ -561,11 +561,17 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     option environment; an exported command variable runs its value."""
     if _fail_closed(tokens, getattr(ctx, "braces", False)):
         raise G._TooComplex()
-    entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
-    size = 1 + len(entry.args) if entry.prog_path or entry.args else 0
-    prefix = entry.raw[:len(entry.raw) - size]
-    if _option_env_unmodelled(prefix, entry.prog, entry.args):
+    # Rust stops before it adds the entry: read the command unbudgeted (`_add_command` reads it again)
+    left, paren_lines = G._STATE.left, G._STATE.paren_lines
+    G._STATE.left = float("inf")
+    try:
+        cmd = G._strip_prefixes(list(tokens))[0]
+    finally:
+        G._STATE.left, G._STATE.paren_lines = left, paren_lines
+    prefix = list(tokens)[:len(tokens) - len(cmd)]
+    if _option_env_unmodelled(prefix, G._prog_name(cmd[0]) if cmd else "", cmd[1:]):
         raise G._TooComplex()
+    entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
     if entry.prog in _EXPORTERS:
         for arg in entry.args:
             name, eq, value = arg.partition("=")
