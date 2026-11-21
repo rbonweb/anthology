@@ -773,6 +773,82 @@ class WrapperTest(Base):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(res.stdout.splitlines(), ["args:hook claude", "suppress:1", '{"tool_name":"Bash"}'])
 
+    ASK = ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite",'
+           '"updatedInput":{"command":"node --version; bun --version"},"permissionDecision":"ask"}}')
+    REWRITE = ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite",'
+               '"updatedInput":{"command":"rtk git status --short"}}}')
+    DENY = ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",'
+            '"permissionDecisionReason":"RTK: a deny rule matches"}}')
+
+    def answer_fake(self, answer, rc=0):
+        # A fake rtk that saves its stdin, prints one hook answer and exits with rc.
+        fake = self.tmp / "answer-rtk"
+        fake.write_text("#!/bin/sh\ncat > '%s'\nprintf '%%s\\n' '%s'\nexit %d\n"
+                        % (self.tmp / "stdin-seen", answer, rc))
+        os.chmod(str(fake), 0o755)
+        state.write(rtk_path=str(fake))
+
+    def hook_input(self, command):
+        return json.dumps({"tool_name": "Bash", "cwd": "/w", "tool_input": {"command": command}})
+
+    def test_hook_drops_an_ask_so_the_command_runs_as_typed(self):
+        # A hook ask prompts in every mode (bypass, auto), so it is dropped: no output, exit 0.
+        self.answer_fake(self.ASK)
+        stdin = self.hook_input("node --version; bun --version")
+        res = self.run_bin("rtk-hook", stdin=stdin)
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+        self.assertEqual((self.tmp / "stdin-seen").read_text(), stdin)  # rtk still read the call
+
+    def test_hook_keeps_an_ask_on_a_line_that_mentions_rtk(self):
+        # `Bash(rtk *)` would allow these as typed, so the ask stands.
+        self.answer_fake(self.ASK)
+        for command in ("rtk run -c 'kubectl apply'", "RTK bypass x", "r''tk run -c x", 'r"t"k x', "r\\tk x",
+                        "r\\\ntk x", "$'\\x72tk' x", "rtk x", "x; rtk git push"):
+            with self.subTest(command=command):
+                res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
+                self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
+        res = self.run_bin("rtk-hook", stdin=self.hook_input("rtk x").replace("rtk", "\\u0072tk"))
+        self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))  # a JSON escape counts
+
+    def test_hook_passes_rewrites_and_denies_through(self):
+        for answer in (self.REWRITE, self.DENY):
+            with self.subTest(answer=answer):
+                self.answer_fake(answer)
+                res = self.run_bin("rtk-hook", stdin=self.hook_input("git status --short"))
+                self.assertEqual((res.returncode, res.stdout), (0, answer + "\n"))
+
+    def test_hook_keeps_rtk_exit_status_and_output_on_failure(self):
+        for answer, rc in ((self.ASK, 2), (self.REWRITE, 1), ("not json", 0), ("not json", 3)):
+            with self.subTest(answer=answer, rc=rc):
+                self.answer_fake(answer, rc)
+                res = self.run_bin("rtk-hook", stdin=self.hook_input("node --version"))
+                self.assertEqual((res.returncode, res.stdout), (rc, answer + "\n"))
+
+    def test_hook_silent_rtk_stays_silent(self):
+        self.answer_fake("")
+        res = self.run_bin("rtk-hook", stdin=self.hook_input("ls; pwd"))
+        self.assertEqual((res.returncode, res.stdout), (0, ""))
+
+    def test_hook_drops_the_rewrite_with_the_ask(self):
+        # Nothing is printed, so the rewrite rtk carried on its ask is never applied.
+        self.answer_fake(self.ASK.replace("node --version; bun --version", "rtk git status; rtk ls"))
+        res = self.run_bin("rtk-hook", stdin=self.hook_input("git status; ls"))
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+
+    def test_hook_looks_for_rtk_in_the_command_only(self):
+        # A working folder, transcript or description that says rtk does not bring the prompt back.
+        self.answer_fake(self.ASK)
+        stdin = json.dumps({"session_id": "s", "transcript_path": "/x/rtk/t.jsonl", "cwd": "/x/rtk-proj",
+                            "tool_name": "Bash", "tool_input": {"command": "node --version",
+                                                                "description": "rtk check"}})
+        res = self.run_bin("rtk-hook", stdin=stdin)
+        self.assertEqual((res.returncode, res.stdout), (0, ""))
+        # Spacing around the key is read; an input with no "command" key is matched whole.
+        for stdin in ('{"cwd": "/w", "tool_input": {"command" :\n "rtk x"}}', '{"cwd": "/x/rtk"}'):
+            with self.subTest(stdin=stdin):
+                res = self.run_bin("rtk-hook", stdin=stdin)
+                self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
+
     def test_hook_via_sh_in_exec_form(self):
         state.write(rtk_path=str(self.fake))
         res = subprocess.run(["sh", str(PLUGIN / "bin" / "rtk-hook")], input="{}", stdout=subprocess.PIPE,
