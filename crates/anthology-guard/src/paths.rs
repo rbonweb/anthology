@@ -207,9 +207,11 @@ impl<'a> Paths<'a> {
             let end = last_start.min(comps.len() - size);
             for start in 0..=end {
                 let window = &comps[start..start + size];
-                let matched = window.iter().zip(sequence.iter()).enumerate().all(|(k, (c, p))| {
-                    self.component_matches(c, p, *prefix && k == size - 1)
-                });
+                let matched = window
+                    .iter()
+                    .zip(sequence.iter())
+                    .enumerate()
+                    .all(|(k, (c, p))| self.component_matches(c, p, *prefix && k == size - 1));
                 if !matched {
                     continue;
                 }
@@ -325,7 +327,10 @@ impl<'a> Paths<'a> {
         let mut candidates = HashSet::new();
         let mut limited = false;
         for text in texts {
-            if self.code_candidates(text.as_ref(), &mut candidates).is_err() {
+            if self
+                .code_candidates(text.as_ref(), &mut candidates)
+                .is_err()
+            {
                 limited = true;
             }
         }
@@ -526,7 +531,10 @@ mod tests {
 
     #[test]
     fn path_candidates_split_on_equals_and_colons_and_decode_file_urls() {
-        assert_eq!(path_candidates("a=b:c"), ["a=b:c", "b:c", "a=b", "c", "b", "c"]);
+        assert_eq!(
+            path_candidates("a=b:c"),
+            ["a=b:c", "b:c", "a=b", "c", "b", "c"]
+        );
         assert_eq!(
             path_candidates("file:%2Fx"),
             ["file:%2Fx", "file:/x", "file", "%2Fx", "file", "/x"]

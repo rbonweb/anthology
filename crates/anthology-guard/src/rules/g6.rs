@@ -123,7 +123,9 @@ fn entry_writes_memory(entry: &Entry, paths: &Paths<'_>) -> Result<bool, Limit> 
     let cwd = entry.cwd.as_deref();
     let redirected = any_of(&entry.redirs, |r| {
         if r.op.starts_with("&>") || r.op.starts_with('>') {
-            paths.words_hit(&[r.target.as_str()], cwd, |p, c, cwd| p.is_memory_path(c, cwd))
+            paths.words_hit(&[r.target.as_str()], cwd, |p, c, cwd| {
+                p.is_memory_path(c, cwd)
+            })
         } else {
             Ok(false)
         }
@@ -166,7 +168,14 @@ mod tests {
 
     #[test]
     fn in_place_flags() {
-        for a in ["-i", "-pi", "-Ei.bak", "-xyzib", "--in-place", "--in-place=.bak"] {
+        for a in [
+            "-i",
+            "-pi",
+            "-Ei.bak",
+            "-xyzib",
+            "--in-place",
+            "--in-place=.bak",
+        ] {
             assert!(in_place_flag(a), "{a}");
         }
         for a in ["-n", "-ab9i", "--inplace", "i", "-", "--i"] {

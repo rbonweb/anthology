@@ -114,11 +114,7 @@ fn check_case(tool: Value, input: Value, home: &str) -> Value {
 }
 
 fn bash_case(command: &str, home: &str) -> Value {
-    check_case(
-        s("Bash"),
-        obj(vec![("command", s(command))]),
-        home,
-    )
+    check_case(s("Bash"), obj(vec![("command", s(command))]), home)
 }
 
 /// Every row of the rule table that carries a `case` (`[tool, input]`).
@@ -137,7 +133,11 @@ fn row_cases() -> Vec<Case> {
         if pair.len() != 2 {
             continue;
         }
-        let py = field_str(&row, "py").rsplit('.').next().unwrap_or("").to_string();
+        let py = field_str(&row, "py")
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_string();
         let n = field(&row, "row").and_then(Value::as_i64).unwrap_or(0);
         out.push(Case::new(
             format!("rows:{py}:{n}"),
@@ -153,7 +153,6 @@ fn row_cases() -> Vec<Case> {
 pub(crate) const FW_STRICTER: &[&str] = &[
     "npm --loglevel silent i puppeteer",
     "npm --loglevel silent init playwright",
-    "pnpm --reporter silent add puppeteer",
     "npm --foo-bar silent i puppeteer",
     "npm --foo-bar silent init playwright",
     "sudo apt-get -o Dpkg::Options::=--force-confnew install chromium",
@@ -483,7 +482,11 @@ pub(crate) fn generate(seed: u64, n: usize) -> Vec<Value> {
         let roll = rng.below(100);
         let case = if roll < 50 {
             let data = commands.next().unwrap_or(Value::Null);
-            let tool = if rng.chance(90) { "Bash" } else { *rng.pick(TOOLS) };
+            let tool = if rng.chance(90) {
+                "Bash"
+            } else {
+                *rng.pick(TOOLS)
+            };
             check_case(
                 s(tool),
                 obj(vec![("command", s(field_str(&data, "command")))]),

@@ -419,7 +419,12 @@ mod tests {
         ] {
             assert!(is_browser_package(name), "{name}");
         }
-        for name in ["chromedriver2", "ungoogled-chromium-x", "jq", "google-chrom"] {
+        for name in [
+            "chromedriver2",
+            "ungoogled-chromium-x",
+            "jq",
+            "google-chrom",
+        ] {
             assert!(!is_browser_package(name), "{name}");
         }
     }

@@ -129,10 +129,13 @@ fn run(
     let paths = Paths::new(home, limits, &regexes.paths);
     let mut out = Outcome::default();
 
-    let g6 = crate::rules::either(g6_file_tool(input, &paths, &regexes.secrets), || match command {
-        Some(c) => g6_command(c, &analysis.entries, &paths, &regexes.secrets),
-        None => Ok(false),
-    });
+    let g6 = crate::rules::either(
+        g6_file_tool(input, &paths, &regexes.secrets),
+        || match command {
+            Some(c) => g6_command(c, &analysis.entries, &paths, &regexes.secrets),
+            None => Ok(false),
+        },
+    );
     if let Some(v) = out.hit(Rule::G6, g6) {
         return v;
     }

@@ -29,7 +29,11 @@ pub(crate) fn g3_input(tool_name: &str, input: &Value, paths: &Paths<'_>) -> Res
     let mut found = Vec::new();
     path_strings(input, &skip, &mut found);
     words.extend(found.iter().map(|s| (*s).to_string()));
-    let keys: &[&str] = if grep { &["glob"] } else { &["pattern", "glob"] };
+    let keys: &[&str] = if grep {
+        &["glob"]
+    } else {
+        &["pattern", "glob"]
+    };
     words.extend(search_roots(input, keys));
     either(
         paths.words_hit(&words, None, |p, c, cwd| p.is_profile_path(c, cwd, false)),

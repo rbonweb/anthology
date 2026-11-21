@@ -107,7 +107,9 @@ mod tests {
         assert!(open_launches_chrome(&args(&["-a", "Google Chrome"])));
         assert!(open_launches_chrome(&args(&["-na", "Chromium"])));
         assert!(open_launches_chrome(&args(&["-b", "com.google.Chrome"])));
-        assert!(open_launches_chrome(&args(&["/Applications/Google Chrome.app/"])));
+        assert!(open_launches_chrome(&args(&[
+            "/Applications/Google Chrome.app/"
+        ])));
         assert!(!open_launches_chrome(&args(&["-a", "Safari"])));
         // `-a`'s value is consumed, so a Chrome path right after it is the app's name
         assert!(!open_launches_chrome(&args(&["-a", "x", "-g"])));

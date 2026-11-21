@@ -92,7 +92,9 @@ pub(crate) fn either(
 
 /// `_first_arg(args)`: the first word that does not start with `-`.
 pub(crate) fn first_arg(args: &[String]) -> Option<&str> {
-    args.iter().map(String::as_str).find(|a| !a.starts_with('-'))
+    args.iter()
+        .map(String::as_str)
+        .find(|a| !a.starts_with('-'))
 }
 
 /// `_strip_version(word)`: `word` up to its last `@`, unless that `@` is the first character.

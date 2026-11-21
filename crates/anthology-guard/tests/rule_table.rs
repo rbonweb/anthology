@@ -221,7 +221,11 @@ mod rule_table_test {
         let other = ["/", "home/other"].concat();
         // Python passes "/home/other", "" and None (read as ""), and blocks each.
         for home in [other.as_str(), "", ""] {
-            assert_eq!(check(&tool, &read, home), Verdict::Block(Rule::G3), "{home:?}");
+            assert_eq!(
+                check(&tool, &read, home),
+                Verdict::Block(Rule::G3),
+                "{home:?}"
+            );
         }
         let (tool, input) = bash("cd ~ && ls .config/chromium");
         assert_eq!(check(&tool, &input, &other), Verdict::Block(Rule::G3));
@@ -285,7 +289,10 @@ mod rule_table_test {
             assert_eq!(got.id(), *rule);
             // the hook prints `got.message()`: the message belongs to the rule that blocked
             assert_eq!(
-                Rule::ALL.iter().find(|r| r.id() == *rule).map(|r| r.message()),
+                Rule::ALL
+                    .iter()
+                    .find(|r| r.id() == *rule)
+                    .map(|r| r.message()),
                 Some(got.message())
             );
         }
@@ -295,11 +302,17 @@ mod rule_table_test {
     fn test_self_test_sample_is_a_blocked_hook_input() {
         let sample = self_test_sample();
         let o = sample.as_object().unwrap();
-        assert_eq!(o.get("hook_event_name").and_then(Value::as_str), Some("PreToolUse"));
+        assert_eq!(
+            o.get("hook_event_name").and_then(Value::as_str),
+            Some("PreToolUse")
+        );
         assert_eq!(o.get("tool_name").and_then(Value::as_str), Some("Bash"));
         let input = o.get("tool_input").unwrap();
         assert_eq!(
-            input.as_object().and_then(|i| i.get("command")).and_then(Value::as_str),
+            input
+                .as_object()
+                .and_then(|i| i.get("command"))
+                .and_then(Value::as_str),
             Some("npx playwright install chromium")
         );
         assert_eq!(o.iter().count(), 3);
@@ -330,7 +343,11 @@ mod rule_table_test {
             paths.push(format!("{root}/Default/Cookies"));
         }
         let names: Vec<&str> = paths.iter().map(String::as_str).collect();
-        named_rows("test_every_profile_root_is_blocked_under_home", "path", &names);
+        named_rows(
+            "test_every_profile_root_is_blocked_under_home",
+            "path",
+            &names,
+        );
         for path in &paths {
             let read = obj(&[("file_path", Value::Str(format!("{HOME}/{path}")))]);
             assert_eq!(
@@ -339,7 +356,11 @@ mod rule_table_test {
                 "Read {path}"
             );
             let (tool, input) = bash(&format!("cat ~/{}", path.replace(' ', "\\ ")));
-            assert_eq!(check(&tool, &input, HOME), Verdict::Block(Rule::G3), "cat {path}");
+            assert_eq!(
+                check(&tool, &input, HOME),
+                Verdict::Block(Rule::G3),
+                "cat {path}"
+            );
         }
     }
 
@@ -468,7 +489,10 @@ mod rule_table_test {
             (a(vec![i(120)]), obj(&[])), // b"x"
             (s("Read"), obj(&[("file_path", Value::Null)])),
             (s("Read"), obj(&[("file_path", i(5))])),
-            (s("Read"), obj(&[("file_path", a(vec![s("~/.config/chromium")]))])),
+            (
+                s("Read"),
+                obj(&[("file_path", a(vec![s("~/.config/chromium")]))]),
+            ),
             (s("Read"), obj(&[("None", s("x"))])), // {None: "x"}
             (s("Read"), obj(&[("5", s("x"))])),    // {5: "x"}
             (
@@ -479,13 +503,25 @@ mod rule_table_test {
                 s("Write"),
                 obj(&[("file_path", memory()), ("content", Value::Null)]),
             ),
-            (s("Write"), obj(&[("file_path", memory()), ("content", i(5))])),
             (
                 s("Write"),
-                obj(&[("file_path", memory()), ("content", a(vec![s(&gh_token())]))]),
+                obj(&[("file_path", memory()), ("content", i(5))]),
             ),
-            (s("Write"), obj(&[("file_path", i(5)), ("content", s(&gh_token()))])),
-            (s("MultiEdit"), obj(&[("file_path", memory()), ("edits", Value::Null)])),
+            (
+                s("Write"),
+                obj(&[
+                    ("file_path", memory()),
+                    ("content", a(vec![s(&gh_token())])),
+                ]),
+            ),
+            (
+                s("Write"),
+                obj(&[("file_path", i(5)), ("content", s(&gh_token()))]),
+            ),
+            (
+                s("MultiEdit"),
+                obj(&[("file_path", memory()), ("edits", Value::Null)]),
+            ),
             (
                 s("MultiEdit"),
                 obj(&[
@@ -505,7 +541,10 @@ mod rule_table_test {
                 s("Grep"),
                 obj(&[("pattern", a(vec![s("a")])), ("path", obj(&[("b", i(1))]))]),
             ),
-            (s("Glob"), obj(&[("pattern", s("*")), ("path", Value::Null)])),
+            (
+                s("Glob"),
+                obj(&[("pattern", s("*")), ("path", Value::Null)]),
+            ),
             (
                 s("Tool"),
                 obj(&[(
@@ -519,7 +558,10 @@ mod rule_table_test {
                                 a(vec![
                                     i(1),
                                     i(2),
-                                    a(vec![i(3), a(vec![i(4), obj(&[("e", s("~/.config/chromium"))])])]),
+                                    a(vec![
+                                        i(3),
+                                        a(vec![i(4), obj(&[("e", s("~/.config/chromium"))])]),
+                                    ]),
                                 ]),
                             )]),
                         )]),
@@ -527,7 +569,10 @@ mod rule_table_test {
                 )]),
             ),
             (s("Tool"), obj(&[("a", deep)])),
-            (s("Tool"), obj(&[(&"k".repeat(1000), s(&"v".repeat(100_000)))])),
+            (
+                s("Tool"),
+                obj(&[(&"k".repeat(1000), s(&"v".repeat(100_000)))]),
+            ),
             (
                 s("Tool"),
                 obj(&[
@@ -632,7 +677,10 @@ mod rule_table_test {
         for _ in 0..5000 {
             nested = obj(&[("a", Value::Array(vec![nested]))]);
         }
-        assert_eq!(check(&Value::Str("Tool".into()), &nested, HOME), Verdict::Allow);
+        assert_eq!(
+            check(&Value::Str("Tool".into()), &nested, HOME),
+            Verdict::Allow
+        );
     }
 
     #[test]
@@ -677,7 +725,8 @@ mod rule_table_test {
 
     #[test]
     fn test_inline_code_scan_stays_cheap() {
-        let line = |k: usize| format!("x = os.path.join('src', 'pkg/mod_{k}.py'); print('done', x)\n");
+        let line =
+            |k: usize| format!("x = os.path.join('src', 'pkg/mod_{k}.py'); print('done', x)\n");
         let program: String = (0..4000).map(line).collect();
         assert!(program.len() > 200_000);
         let heredoc = format!(
@@ -751,7 +800,9 @@ mod rule_table_test {
 
     #[test]
     fn test_code_candidate_prefilter_stays_cheap() {
-        let literals: String = (0..60_000).map(|k| format!("v{k} = 'lit{k}/a/b/c'\n")).collect();
+        let literals: String = (0..60_000)
+            .map(|k| format!("v{k} = 'lit{k}/a/b/c'\n"))
+            .collect();
         let words = (0..200_000)
             .map(|k| format!("w{k}/x/y/z/q/r/s"))
             .collect::<Vec<_>>()
@@ -768,7 +819,11 @@ mod rule_table_test {
                 format!("python3 - <<'EOF'\n{literals}open('~/.config/chromium/x')\nEOF"),
                 Some("G3"),
             ),
-            ("200k path-like words", format!("python3 -c '{words}'"), None),
+            (
+                "200k path-like words",
+                format!("python3 -c '{words}'"),
+                None,
+            ),
             (
                 "200k path-like words + url",
                 format!("python3 -c '{words} {url}'"),
@@ -805,7 +860,8 @@ mod rule_table_test {
         );
         // the run still normalises when a space ends it
         let bs = "\\".repeat(50_000);
-        let command = format!("python3 -c 'open(\"~/Library/Application{bs} Support/Google/Chrome\")'");
+        let command =
+            format!("python3 -c 'open(\"~/Library/Application{bs} Support/Google/Chrome\")'");
         assert_eq!(rule_of(&bash_case(&command)).as_deref(), Some("G3"));
     }
 
