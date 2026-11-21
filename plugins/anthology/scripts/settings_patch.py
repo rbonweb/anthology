@@ -371,7 +371,7 @@ def _apply_op(text, op):
     """Apply one op. Returns `(text, info)`; info is None when it was already satisfied."""
     path = list(op["path"])
     if op["op"] == "unset":
-        if _is_blank(text):
+        if not path or _is_blank(text):
             return text, None
         chain = _descend(_parse(text), path)
         if len(chain) - 1 != len(path):
@@ -486,10 +486,15 @@ def _revert_op(text, op):
     chain = _descend(root, path)
     found = len(chain) - 1 == len(path)
     if op["op"] == "unset":
-        prev = op.get("previous") or {}
-        if found or not prev.get("present"):
-            return text  # set again since: the user's value stays
-        value = json.loads(prev["raw"])
+        prev = op.get("previous")
+        raw = prev.get("raw") if isinstance(prev, dict) else None
+        if found or not isinstance(raw, str) or not prev.get("present") \
+                or not all(isinstance(k, str) for k in path):
+            return text  # set again since (the user's value stays), or not a record setup wrote
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return text
         if len(chain) == len(path):
             return _append(text, root, chain, chain[-1], path[-1], value)
         return _create(text, op, path, value, len(path) - 1, root)[0]
