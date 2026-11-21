@@ -776,13 +776,16 @@ def _collect_once(text, ctx, exempt, depth):
 
 
 _CLOSERS = ("}", "fi", "done", "esac")
+_COMPOUND = ("if", "while", "until", "for", "select", "case")          # SH-F3: a body reads its pipe
 
 
 def _collect_once_body(text, ctx, exempt, depth):
+    readers_at_start = ctx.readers                        # SH-F3
     new_entries, braced, after_compound = [], set(), set()
     for seg in G._segments(text):
         ctx.braces = seg.braces
         ctx.quoted_braces = seg.quoted_braces
+        ctx.subst = seg.held                              # SH-F3: a `$(` or a backtick in the segment
         entry = G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth)
         new_entries.append(entry)
         if seg.braces:
@@ -800,6 +803,15 @@ def _collect_once_body(text, ctx, exempt, depth):
     by_group = {}
     for entry in new_entries:
         by_group.setdefault(id(entry.group), []).append(entry)
+    # SH-F3 (Rust: collect.rs, after `members`): a `-c`/`eval` script that holds a stdin reader is fed a pipe
+    # or a process substitution, and a compound body after a pipe holds one: too complex
+    piped = [e for entries in by_group.values() for e in entries[1:]]
+    piped_ids = {id(e) for e in piped}
+    procsub = "<(" in text or ">(" in text
+    fed_script = any(e.script_reads and (procsub or id(e) in piped_ids) for e in new_entries)
+    fed_compound = any(e.raw[:1] and e.raw[0] in _COMPOUND for e in piped)
+    if fed_script or (fed_compound and ctx.readers > readers_at_start):
+        raise G._TooComplex()
     for entries in by_group.values():
         shell = next((e for e in entries if G._reads_stdin_as_shell(e)), None)
         interpreters = [e for e in entries if G._INTERPRETER.match(e.prog)]
@@ -845,14 +857,16 @@ def _collect_once_body(text, ctx, exempt, depth):
         for entry in feeders:
             ctx.braces = id(entry) in braced
             G._feed_stdin(entry, fed, ctx, depth)
-    consumers = [e for e in new_entries if e.prog in G._SHELLS or e.prog in ("source", ".")]
+    # SH-F3: and every stdin reader (`> >(su)`, `< <(sudo -s)`, `> >(eval "$(cat)")`)
+    consumers = [e for e in new_entries
+                 if e.prog in G._SHELLS or e.prog in ("source", ".") or G._reads_stdin_as_shell(e)]
     written = {target for e in new_entries for op, target in e.redirs
                if op.startswith(">") or op.startswith("&>")}
     coproc = any(e.raw[:1] == ["coproc"] for e in new_entries)
     if ((consumers and (">(" in text or coproc))
             or (written and any(a in written for c in consumers for a in c.args))):
         raise G._TooComplex()                             # fail closed
-    if "<(" in text and any(e.prog in G._SHELLS or e.prog in ("source", ".") for e in new_entries):
+    if "<(" in text and consumers:                        # SH-F3: the consumers include the stdin readers
         for inner in G._process_substitutions(text):
             bodies = G._literal_output(inner, depth)
             if not bodies:

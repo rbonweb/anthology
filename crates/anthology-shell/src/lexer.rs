@@ -167,6 +167,8 @@ impl Work {
 /// State shared by one top-level lexer and every lexer nested in it: the group arena, the budget and flags.
 pub(crate) struct Shared {
     groups: Vec<Vec<String>>,
+    /// SH-F3: per group, for each segment pushed to it in order, whether it held a `$(` or backtick.
+    held: Vec<Vec<bool>>,
     pub(crate) work: Work,
     pub(crate) info: LexInfo,
 }
@@ -174,6 +176,7 @@ pub(crate) struct Shared {
 impl Shared {
     pub(crate) fn new_group(&mut self) -> GroupId {
         self.groups.push(Vec::new());
+        self.held.push(Vec::new());
         GroupId((self.groups.len() - 1) as u32)
     }
 
@@ -281,6 +284,8 @@ struct Lexer<'t, 'a> {
     marks: usize,
     /// A word of this segment held more `{`, `}` and `,` than were added unquoted.
     quoted_braces: bool,
+    /// SH-F3: a word of the segment being built held a `$(` or a backtick (not `<(`/`>(`, not `$((`).
+    held: bool,
     /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
     compound: bool,
     /// Elements of the `name=( ... )` being lexed.
@@ -332,6 +337,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             braces: false,
             marks: 0,
             quoted_braces: false,
+            held: false,
             compound: false,
             array: None,
             array_word: String::new(),
@@ -412,8 +418,10 @@ impl<'t, 'a> Lexer<'t, 'a> {
         self.pending = None;
         let braces = std::mem::take(&mut self.braces);
         let quoted_braces = std::mem::take(&mut self.quoted_braces);
+        let held = std::mem::take(&mut self.held);
         if (!self.tokens.is_empty() || !self.redirs.is_empty()) && self.charge_segment() {
             let group = self.group();
+            self.sh.held[group.0 as usize].push(held);
             self.out.push(Segment {
                 tokens: std::mem::take(&mut self.tokens),
                 redirs: std::mem::take(&mut self.redirs),
@@ -549,6 +557,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
     /// The backtick substitution `text[i+1..j]`: lexed as written and as bash runs it.
     fn backtick(&mut self, i: usize, j: usize, dq: bool) -> Result<(), TooComplex> {
         let text = self.text;
+        self.held = true;
         let raw = &text[i + 1..j];
         self.nested(raw, Some(i), false)?;
         if let Some(unescaped) = unescape_backticks(raw, dq, &mut self.sh.work)? {
@@ -706,6 +715,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 b'$' if byte_at(text, j + 1) == Some(b'(') => {
                     let (inner, k) = substitution(text, j, &mut self.memo, &mut self.sh.work)?;
                     let comsub = !inner.starts_with("((");
+                    self.held |= comsub;
                     self.nested(&inner, Some(j), comsub)?;
                     j = k;
                 }
@@ -770,6 +780,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             Some(b'(') => {
                 let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
                 let comsub = !inner.starts_with("((");
+                self.held |= comsub;
                 let first = self.out.len();
                 self.nested(&inner, Some(i), comsub)?;
                 if !comsub {
@@ -987,6 +998,8 @@ pub(crate) fn segments_in(
 pub(crate) struct LexOut {
     pub(crate) lexed: Lexed,
     pub(crate) info: LexInfo,
+    /// SH-F3: per segment of `lexed.segments`, whether it held a `$(` or a backtick.
+    pub(crate) held: Vec<bool>,
 }
 
 /// `_segments(text, depth)` at the top level, spending from `work` (`analyze` threads one budget through the
@@ -998,6 +1011,7 @@ pub(crate) struct LexOut {
 pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
     let mut sh = Shared {
         groups: Vec::new(),
+        held: Vec::new(),
         work: *work,
         info: LexInfo::default(),
     };
@@ -1017,6 +1031,18 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
         Ok((segments, lenient)) => (segments, lenient, false),
         Err(TooComplex) => (Vec::new(), false, true),
     };
+    // SH-F3: a segment's flag is the next one pushed to its group (a group's segments come from one lexer,
+    // in order); a lenient segment's group is new, so it has none and is not flagged
+    let mut seen: HashMap<u32, usize> = HashMap::new();
+    let held: Vec<bool> = segments
+        .iter()
+        .map(|seg| {
+            let k = seen.entry(seg.group.0).or_insert(0);
+            let flag = sh.held.get(seg.group.0 as usize).and_then(|f| f.get(*k));
+            *k += 1;
+            flag.copied().unwrap_or(false)
+        })
+        .collect();
     let mut ids: Vec<u32> = segments.iter().map(|s| s.group.0).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -1039,6 +1065,7 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
             incomplete,
         },
         info: sh.info,
+        held,
     }
 }
 

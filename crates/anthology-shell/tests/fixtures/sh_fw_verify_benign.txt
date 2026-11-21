@@ -3273,3 +3273,25 @@ git commit -m "fix a, b" -- src/{a,b}.rs
 rg 'foo, bar' src/{a,b}
 #---
 ls ${HOME}/{a,b}
+#---
+eval "$(ssh-agent -s)"
+#---
+eval "$(direnv hook bash)"
+#---
+eval $(minikube docker-env)
+#---
+sudo -i -u postgres psql
+#---
+su - postgres -c 'psql -l'
+#---
+script -q /dev/null ls
+#---
+sg docker -c 'docker ps'
+#---
+cat x | sudo tee f
+#---
+exec > >(tee log) 2>&1
+#---
+diff <(sort a) <(sort b)
+#---
+mapfile -t a < <(git ls-files)

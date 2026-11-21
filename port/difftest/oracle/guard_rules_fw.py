@@ -66,7 +66,7 @@ _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
 _SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "mksh", "hush", "yash",
-                     "csh", "tcsh"))
+                     "csh", "tcsh", "rbash", "posh"))
 # Long shell options that take the next word as their value (bash `--rcfile x`, zsh `--emulate sh`).
 _SHELL_VALUE_OPTIONS = frozenset(("--rcfile", "--init-file", "--emulate"))
 # Programs whose arguments (and fed stdin text) are inline code: `python3 -c`, `node -e`, ...
@@ -135,12 +135,13 @@ class _Group:
 
 class _Seg:
     """One simple command: its words and its redirections [(operator, target)]."""
-    __slots__ = ("tokens", "redirs", "group")
+    __slots__ = ("tokens", "redirs", "group", "held")
 
     def __init__(self, group):
         self.tokens = []
         self.redirs = []
         self.group = group
+        self.held = False                                 # SH-F3: a `$(` or a backtick is among its words
 
 
 # Heredocs follow bash (each rule below was checked against bash 3.2 and 5.2):
@@ -990,6 +991,7 @@ class _Lexer:
     def backtick(self, i, j, dq=False):
         """The backtick substitution text[i+1:j]: lexed as written and as bash runs it."""
         raw = self.text[i + 1:j]
+        self.seg.held = True
         self.nested(raw, i)
         unescaped = _unescape_backticks(raw, dq)
         if unescaped != raw:
@@ -1101,6 +1103,7 @@ class _Lexer:
                 j = k + 1
             elif c == "$" and text[j + 1:j + 2] == "(":
                 inner, k = _substitution(text, j, self.memo)
+                self.seg.held |= not inner.startswith("((")
                 self.nested(inner, j, comsub=not inner.startswith("(("))
                 j = k
             elif c == "$" and text[j + 1:j + 2] == "{":
@@ -1139,6 +1142,7 @@ class _Lexer:
         nxt = text[i + 1:i + 2]
         if nxt == "(":
             inner, j = _substitution(text, i, self.memo)
+            self.seg.held |= not inner.startswith("((")
             self.nested(inner, i, comsub=not inner.startswith("(("))
             return j
         if nxt == "{":
@@ -1312,6 +1316,7 @@ _WRAPPERS = {
     # util-linux, busybox and other programs that run the command after their options (FW-I)
     "builtin": frozenset(),
     "busybox": frozenset(),
+    "toybox": frozenset(),
     "chroot": frozenset(("--userspec", "--groups")),
     "nsenter": frozenset(("-t", "--target", "-S", "--setuid", "-G", "--setgid")),
     "unshare": frozenset(("-S", "--setuid", "-G", "--setgid", "-R", "--root", "-w", "--wd",
@@ -2169,7 +2174,7 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
         elif name == "env" and _env_split_string(toks) is not None:
             at, after, value = _env_split_string(toks)    # the split words are env's arguments
             toks = toks[:at] + _split_words(value) + toks[after:]
-        elif name == "busybox" and (len(toks) < 2 or toks[1].startswith("-")):
+        elif name in ("busybox", "toybox") and (len(toks) < 2 or toks[1].startswith("-")):
             break                                         # `busybox --list`: no applet
         elif name in _WRAPPERS:
             flags = _WRAPPERS[name]
@@ -2179,9 +2184,8 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
             i = _skip_flags(toks, 1, flags)
             if name in _WRAPPER_OPERANDS and i < len(toks):
                 i = _skip_flags(toks, i + _WRAPPER_OPERANDS[name], flags)
-            # `su [-] [user]` runs the user's shell too: at most one operand, the user, not a program
-            su_rest = toks[i + 1:] if name == "su" and toks[i:i + 1] == ["-"] else toks[i:]
-            bare = i >= len(toks) or (name == "su" and len(su_rest) <= 1)
+            # `su [-] [user] [options]` runs the user's shell too: at most one operand, the user, not a program
+            bare = i >= len(toks) or (name in ("su", "runuser") and _su_operands(toks[i:]) <= 1)
             if launches is not None and bare and _launches_shell(name, toks[:i], not scripts):
                 launches.append(True)                     # `sudo -s`: no program, a shell reads stdin
             if name == "watch" and not joined:            # watch runs its words via sh -c
@@ -2306,10 +2310,12 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
 class _Entry:
     """A flattened command ready for the per-rule predicates."""
     __slots__ = ("raw", "redirs", "prog", "prog_path", "args", "cwd", "exempt", "group", "code",
-                 "stdin_runs", "shell_launch")
+                 "stdin_runs", "shell_launch", "held", "script_reads")
 
     def __init__(self, raw, redirs, cmd, cwd, exempt, group):
         self.shell_launch = False                         # a shell launcher with no program (SH-seq I-2)
+        self.held = False                                 # SH-F3: its segment held a `$(` or a backtick
+        self.script_reads = False                         # SH-F3: a `-c`/`eval` script added a stdin reader
         self.raw = raw                                    # every word, wrappers included
         self.redirs = redirs
         self.prog_path = cmd[0].lower() if cmd else ""
@@ -2331,6 +2337,10 @@ class _Context:
         # (text, exempt, cwd at the start) -> (depth, cwd at the end) for every text analyzed:
         # the same text from the same state gives the same entries, so it is analyzed once.
         self.seen = {}
+        self.subst = False                                # SH-F3: the next command's segment held a substitution
+        self.readers = 0                                  # SH-F3: stdin-reading entries added so far
+        self.reads_seen = set()                           # SH-F3: texts whose analysis added one
+        self.exec_root = None                             # SH-F3: the find/fd command whose payloads run
 
 
 _CHDIR_PROGRAMS = frozenset(("tar", "git", "make"))
@@ -2351,11 +2361,33 @@ def _shell_script_file(entry):
 
 def _launches_shell(name, words, scripts_empty):
     """SH-seq I-2: a wrapper peeled with no program that starts a shell reading stdin: `sudo -s`/`-i`
-    (`--shell`, `--login`), or `su`/`script` with no script found."""
+    (`--shell`, `--login`), or `su`/`script` with no script found. SH-F3: `doas -s`; `chroot DIR`,
+    `unshare` and `nsenter -t PID` with no command."""
     if name == "sudo":
         return any(w in ("--shell", "--login") or (
             w[:1] == "-" and w[1:2] != "-" and ("s" in w[1:] or "i" in w[1:])) for w in words[1:])
-    return name in ("su", "script") and scripts_empty
+    if name == "doas":
+        return any(w[:1] == "-" and w[1:2] != "-" and "s" in w[1:] for w in words[1:])
+    if name in ("chroot", "unshare", "nsenter"):
+        return True
+    return name in ("su", "script", "runuser") and scripts_empty
+
+
+def _su_operands(words):
+    """SH-F3: the operands of `su` / `runuser` words: options and the values of `_SU_VALUE_FLAGS` do not
+    count, nor the `-` of a login shell (Rust: `prefixes::su_operands`)."""
+    count, k = 0, 0
+    while k < len(words):
+        word = words[k]
+        if word == "--":
+            return count + len(words) - k - 1
+        if word[:1] == "-" and len(word) > 1:
+            if word in _SU_VALUE_FLAGS:
+                k += 1
+        elif word != "-":
+            count += 1
+        k += 1
+    return count
 
 
 def _reads_stdin_substitution(text):
@@ -2380,7 +2412,8 @@ def _reads_stdin_substitution(text):
 def _reads_stdin_as_shell(entry):
     """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`),
     a shell or eval whose script is a stdin reader's substitution, a shell launcher with no program
-    (`sudo -s`, `newgrp`), or a docker command that runs one."""
+    (`sudo -s`, `newgrp`), or a docker command that runs one. SH-F3: a `-c`/`eval` script holding a
+    `$(` or a backtick counts (any runtime value), and so does a find/fd whose payload reads stdin."""
     if entry.shell_launch or entry.prog == "newgrp":
         return True
     if entry.prog in _SHELLS:
@@ -2388,10 +2421,11 @@ def _reads_stdin_as_shell(entry):
         if mode == "stdin":
             return True
         if mode == "c":
-            return any(s == "" or _reads_stdin_substitution(s) for _i, s in scripts)
+            return entry.held or any(s == "" or _reads_stdin_substitution(s) for _i, s in scripts)
         return bool(_STDIN_PATH.match(_shell_script_file(entry) or ""))
     if entry.prog == "eval":
-        return any(a == "" for a in entry.args) or _reads_stdin_substitution(" ".join(entry.args))
+        return entry.held or any(a == "" for a in entry.args) or _reads_stdin_substitution(
+            " ".join(entry.args))
     if entry.prog in ("source", "."):
         return bool(_STDIN_PATH.match(_first_arg(entry.args) or ""))
     if entry.prog in _DOCKER:
@@ -2420,14 +2454,19 @@ def _add_command(tokens, redirs, group, ctx, exempt, depth):
     entry.exempt = exempt or entry.prog in _DOCKER
     entry.stdin_runs = stdin_runs
     entry.shell_launch = bool(launches)
+    entry.held, ctx.subst = ctx.subst, False
     if entry.prog in _CHDIR_PROGRAMS:                     # `tar -C dir x`, `git -C dir ...`
         for k, arg in enumerate(entry.args[:-1]):
             if arg in ("-C", "--directory"):
                 entry.cwd = _normalize(entry.args[k + 1], ctx.home, ctx.cwd) or entry.cwd
     ctx.entries.append(entry)
+    if _reads_stdin_as_shell(entry):
+        ctx.readers += 1
+    readers = ctx.readers
     _add_alternates(alternates, scripts, entry, ctx, exempt)
     for script in scripts:
         _collect(script, ctx, exempt, depth + 1)
+    entry.script_reads = ctx.readers > readers
     if entry.prog in _DOCKER:                             # `docker run img sh -euc "..."`
         for _start, script in _script_starts(entry.args):
             _collect(script, ctx, True, depth + 1)
@@ -2460,18 +2499,36 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
             return
 
 
+def _exec_payload(entry, words, ctx, depth):
+    """SH-F3 (Rust: `exec_walk`): a payload runs with the stdin of its find/fd command, and a payload
+    that reads stdin makes the outermost command a stdin reader; a substitution in the command holds in
+    its payloads. A nested find/fd reports to the outermost command."""
+    root = ctx.exec_root
+    ctx.subst = root.held
+    child = _add_command(words, [], entry.group, ctx, entry.exempt, depth + 1)
+    if _reads_stdin_as_shell(child):
+        root.shell_launch = True
+
+
 def _collect_find_exec(entry, ctx, depth):
-    args = entry.args
-    k = 0
-    while k < len(args):
-        if args[k] in ("-exec", "-execdir", "-ok", "-okdir"):
-            end = k + 1
-            while end < len(args) and args[end] not in (";", "+"):
-                end += 1
-            if end > k + 1:
-                _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
-            k = end
-        k += 1
+    own = ctx.exec_root is None
+    if own:
+        ctx.exec_root = entry
+    try:
+        args = entry.args
+        k = 0
+        while k < len(args):
+            if args[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+                end = k + 1
+                while end < len(args) and args[end] not in (";", "+"):
+                    end += 1
+                if end > k + 1:
+                    _exec_payload(entry, args[k + 1:end], ctx, depth)
+                k = end
+            k += 1
+    finally:
+        if own:
+            ctx.exec_root = None
 
 
 def _collect_fd_exec(entry, ctx, depth):
@@ -2482,7 +2539,14 @@ def _collect_fd_exec(entry, ctx, depth):
     if k >= 0:
         end = next((j for j in range(k + 1, len(args)) if args[j] == ";"), len(args))
         if end > k + 1:
-            _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
+            own = ctx.exec_root is None
+            if own:
+                ctx.exec_root = entry
+            try:
+                _exec_payload(entry, args[k + 1:end], ctx, depth)
+            finally:
+                if own:
+                    ctx.exec_root = None
 
 
 def _echo_args_text(args):
@@ -2560,9 +2624,14 @@ def _collect(text, ctx, exempt, depth):
     key = (text, exempt, ctx.cwd)
     if key in ctx.seen and ctx.seen[key][0] <= depth:
         ctx.cwd = ctx.seen[key][1]                        # analyzed already: same entries, same cwd
+        if key in ctx.reads_seen:
+            ctx.readers += 1
         return
     ctx.seen[key] = (depth, ctx.cwd)
+    readers = ctx.readers
     _collect_once(text, ctx, exempt, depth)
+    if ctx.readers > readers:
+        ctx.reads_seen.add(key)
     ctx.seen[key] = (depth, ctx.cwd)
 
 
