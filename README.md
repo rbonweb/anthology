@@ -37,15 +37,42 @@ More: [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [DECIS
 3. Turn on auto-update: run `/plugin`, open the **Marketplaces** tab, select `anthology` and enable auto-update. Auto-update is off by default for every marketplace that is not Anthropic's own, so without this step you only get new versions when you update by hand (see [Updating](#updating-and-removing)).
 4. Run `/anthology:setup` in each repo you want memory in. The first run also does the one-time machine setup.
 
-Check [Requirements](#requirements) first.
+Check [Requirements](#requirements) first. The first session after you install downloads the plugins' `anthology` program; until it is installed, the guardrails block shell commands, file edits and MCP tools (see [The `anthology` binary](#the-anthology-binary)).
+
+### The `anthology` binary
+
+Both `anthology` and `anthology-guardrails` run one static program, `anthology`, written in Rust. It needs no language runtime on your machine.
+
+- **Where it comes from.** This repo's `anthology-release.yml` workflow builds and tests it on native runners and publishes it on the GitHub release tagged `anthology-bin--v<version>`: one `anthology-<target>.tar.gz` for each of macOS and Linux on arm64 and x86_64, plus `checksums.txt`. Each archive has a build-provenance attestation: `gh attestation verify anthology-<target>.tar.gz --repo rbonweb/anthology`.
+- **Pinned.** Each of the two plugins ships the same `anthology.lock`: the version, the release tag and a sha256 for each target's archive. It never means "latest": a new binary arrives only with a plugin update, which installs the new version beside the old one.
+- **Installed on first use.** At session start (or at the first tool call that needs it), the plugin's `sh` hook downloads the archive for your platform over HTTPS with `curl`, `wget` or `node`, checks its sha256 against `anthology.lock` before unpacking it, checks that the binary runs and reports the pinned version, and only then installs it in `~/.claude/anthology/bin/<version>/` (under `$CLAUDE_CONFIG_DIR` when that is set). Each session start re-checks the installed binary against the lock. A version that no lock pins and that has not been used for 30 days is deleted.
+- **Offline or air-gapped.** On a machine with access, download the `anthology-<target>.tar.gz` that `anthology.lock` names (the URL is `https://github.com/rbonweb/anthology/releases/download/<tag>/anthology-<target>.tar.gz`), copy it into `~/.claude/anthology/bin/` and start a new session. It is checked against the same pin; a file that does not match is not used, and the message says so.
+- **If it cannot be installed, the guardrails fail closed.** Read-only tools still work (`Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, `Skill`, `Task`, `Agent`, the to-do and plan tools and the like), so `/anthology:setup` can still load. Shell commands, file writes and edits, MCP tools and any tool not on that list are blocked until the binary is installed. A blocked call tries the install again at most once a minute, so the session heals once the network is back. Until the binary is installed, the `anthology` plugin's routing guide, memory and rtk are off.
+
+What you may see, and what to do (the text in parentheses names the cause):
+
+| The message says | What to do |
+|---|---|
+| At session start: `anthology-guardrails: could not install the guard binary (…)` or `anthology: could not install the anthology binary (…)` | Start a new session while online, or run `/anthology:setup` |
+| `Blocked by anthology-guardrails (setup): the guard binary is not installed (…)` | The same. Inside a session, waiting a minute and retrying also works |
+| `… the last install attempt was less than a minute ago` | Retry in a minute, or run `/anthology:setup` |
+| `… did not work (…) and was set aside` | Nothing: it is reinstalled on a later call (at most once a minute) |
+| `… failed to run 3 times in 24 hours` | A new session tries once more, at most once an hour. Or disable `anthology-guardrails` until a fixed version ships |
+| `… does not run on this machine` | A wrong architecture, or a home folder mounted `noexec`. Disable `anthology-guardrails`, fix the cause, start a new session |
+| `… no downloader (curl, wget or node) was found` | Install one, or download the archive by hand: the message gives the URL and the folder |
+| `… cannot be installed because <folder> is not writable` | Fix that folder's permissions, then start a new session |
+| `… there is no guard binary for this platform` | Anthology supports macOS and Linux on x86_64 and arm64 only. Disable `anthology-guardrails` to use Claude Code here |
+| `Blocked by anthology-guardrails (internal): …` | The guard itself failed or ran out of time on this input, and blocked it to be safe. Rephrase the command, or report it |
+
+**The way out that always works:** run `/plugin` and disable `anthology-guardrails`. `/plugin` never goes through the guard, so it works even when every tool call is blocked, and every `(setup)` and `(internal)` message names it. Disabling it turns all the guardrails off, so turn it back on once the cause is fixed.
 
 ### What `/anthology:setup` does
 
 It checks your machine, then shows every change and applies them only after you confirm once.
 
-1. **Doctor.** Checks that `python3`, `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. BrowserOS Neo is found as any `BrowserOS*.app` in `/Applications` or `~/Applications`, a `browseros` binary on your path, or an MCP server in any scope; a separate check says whether that server is named `browseros-neo`, because agents call `mcp__browseros-neo__*`. Doctor also checks the compatibility assumptions Anthology relies on: the plugin's `bin/` wrappers exist and (inside Claude Code) are on your path, the plugin data folder exists, and agent memory lands in `.claude/agent-memory/anthology-<agent>/`. If `CLAUDE_CODE_SUBAGENT_MODEL` is set, it says where (see "Agent models and `CLAUDE_CODE_SUBAGENT_MODEL`" below). After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
+1. **Doctor.** Checks that the `anthology` binary the guardrails use is installed and matches their `anthology.lock`, that `node` and `docker` are on your path (and Docker is running), that BrowserOS Neo is installed or configured as an MCP server, the rtk binary and the platform. BrowserOS Neo is found as any `BrowserOS*.app` in `/Applications` or `~/Applications`, a `browseros` binary on your path, or an MCP server in any scope; a separate check says whether that server is named `browseros-neo`, because agents call `mcp__browseros-neo__*`. Doctor also checks the compatibility assumptions Anthology relies on: the plugin's `bin/` wrappers exist and (inside Claude Code) are on your path, the plugin data folder exists, and agent memory lands in `.claude/agent-memory/anthology-<agent>/`. If `CLAUDE_CODE_SUBAGENT_MODEL` is set, it says where (see "Agent models and `CLAUDE_CODE_SUBAGENT_MODEL`" below). After a first setup it also checks that the plugin-read permission (below) still matches where the plugin is installed. On Windows it refuses and stops.
 2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
-3. **rtk.** Downloads the pinned rtk binary for your platform from this repo's releases, checks its sha256 against `rtk.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
+3. **Binaries.** Makes sure the `anthology` binary that `anthology-guardrails` pins is installed, with the same download and checks as at session start (see [The `anthology` binary](#the-anthology-binary)). Then it downloads the pinned rtk binary for your platform from this repo's releases, checks its sha256 against `rtk.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
 4. **Settings.** Edits `~/.claude/settings.json`:
    - allows `Bash(rtk *)`. This also auto-approves `rtk bypass <cmd>` (see [rtk](#rtk));
    - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes (see [Saving notes](#saving-notes-anthology-mem-save));
@@ -147,7 +174,7 @@ Two layers keep agents from installing browser tooling on your machine, touching
 
 Commands inside `docker` or `docker-compose` are exempt from G1 and G2 only. Rules match commands, not arbitrary text: `grep playwright package.json` and `git commit -m "drop playwright"` are allowed.
 
-If the guard cannot run (for example `python3` is missing), you get a loud message at session start instead of silence.
+If the guard cannot run (its binary is missing, broken or cannot be installed), it fails closed: read-only tools still work, everything else is blocked with a message that says why and names the fix (see [The `anthology` binary](#the-anthology-binary)), and session start says so loudly.
 
 #### Known limits
 
@@ -160,7 +187,8 @@ The guard is built to stop accidental browser installs and launches by cooperati
 - Browser profile protection covers the known profile folders and their parents. Grandparent folders (for example `find ~ -name Cookies`) and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - A hook sees the command Claude runs, not what a script does inside. A script that launches Chrome internally is invisible to it. That is why the knowledge we ship never launches Chrome.
 - Secret detection covers what is written in the command text, `Write` and `Edit`. Copying a secret **file** into a memory folder is not caught.
-- The guard ignores malformed input rather than blocking, so it can never brick a session. If it cannot run at all, you get a loud message at session start.
+- The guard ignores malformed input rather than blocking. If it cannot run at all, it blocks every tool call that is not read-only until its binary is installed, and `/plugin` can always disable it.
+- While its binary is missing, the read-only tools it lets through (`Read`, `Grep`, `Glob`, `WebFetch` and the like) are not checked for browser profile paths. The native `Read` deny rules that setup adds still apply to them.
 
 See [SECURITY.md](SECURITY.md) for the full threat model.
 
@@ -278,7 +306,7 @@ It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` 
 
 ## Updating and removing
 
-**Updating.** Auto-update is off by default for third-party marketplaces such as `anthology`. Turn it on in `/plugin` > **Marketplaces** > `anthology` (install step 3). Claude Code then checks the marketplace after a session starts and updates the installed plugins on disk; it shows "Plugin updated", and the new version loads after `/reload-plugins` or at your next launch. Setting `DISABLE_AUTOUPDATER=1`, `DISABLE_UPDATES=1` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also turns plugin auto-update off unless you set `FORCE_AUTOUPDATE_PLUGINS=1`. Without auto-update, update by hand: run `claude plugin marketplace update anthology`, then `claude plugin update anthology@anthology` (and the same for `anthology-guardrails` and `anthology-superpowers`), and restart Claude Code. The routing guide updates with the plugin, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
+**Updating.** Auto-update is off by default for third-party marketplaces such as `anthology`. Turn it on in `/plugin` > **Marketplaces** > `anthology` (install step 3). Claude Code then checks the marketplace after a session starts and updates the installed plugins on disk; it shows "Plugin updated", and the new version loads after `/reload-plugins` or at your next launch. Setting `DISABLE_AUTOUPDATER=1`, `DISABLE_UPDATES=1` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also turns plugin auto-update off unless you set `FORCE_AUTOUPDATE_PLUGINS=1`. Without auto-update, update by hand: run `claude plugin marketplace update anthology`, then `claude plugin update anthology@anthology` (and the same for `anthology-guardrails` and `anthology-superpowers`), and restart Claude Code. The routing guide updates with the plugin, the `anthology` binary that the new `anthology.lock` pins is installed beside the old one at the next session start, rtk is reconciled to the pinned version at each session start, and the memory index format is versioned and rebuilt when it changes.
 
 **Removing.** Run `/anthology:setup remove`. It takes out the settings entries Anthology added (the `Bash(rtk *)` and `Bash(anthology-mem save *)` allows, the Chrome deny rules and the plugin-read allow; rules you added yourself are never touched; `worktree.baseRef` goes back to its previous value, and so does `CLAUDE_CODE_SUBAGENT_MODEL` if setup removed it), deletes the downloaded rtk, rtk's local history (`~/.claude/anthology/rtk/`) and `~/.claude/anthology/state.json`, and optionally removes the repo approvals. It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or your exports. Then uninstall the plugin:
 
@@ -288,17 +316,19 @@ claude plugin uninstall anthology@anthology --prune -y
 
 `--prune -y` also removes the dependencies that were installed automatically. Uninstalling without `--keep-data` also removes the plugin's data folder (the rtk binaries and the memory search index).
 
+Remove keeps the `anthology` binaries in `~/.claude/anthology/bin/` while `anthology-guardrails` is still installed, because its guard needs them. After you uninstall, delete that folder yourself (about 6 MB per version).
+
 ## Requirements
 
-- macOS or Linux. Setup refuses on Windows.
+- macOS or Linux, on arm64 or x86_64. Setup refuses on Windows.
 - Claude Code `2.1.311` or newer.
-- Python 3 (3.9 or newer; macOS's own `python3` is enough). Anthology's scripts use only the standard library.
+- For the one-time download of the `anthology` binary: network access to GitHub, one of `curl`, `wget` or `node`, one of `sha256sum`, `shasum` or `openssl`, and `tar`. macOS and most Linux systems have these. `node` is the last resort, and behind a proxy it works only on node 24 or newer. Offline, copy the archive in by hand (see [The `anthology` binary](#the-anthology-binary)).
 - Node 22 or newer.
 - Docker, for tests, builds and end-to-end suites.
 - BrowserOS Neo, for all browser work.
 - git.
 
-`/anthology:setup` checks that `python3`, `node`, Docker (installed and running) and BrowserOS Neo are present, and tells you what is missing. It does not check versions, git or the Claude Code version.
+`/anthology:setup` checks that the `anthology` binary is installed, that `node`, Docker (installed and running) and BrowserOS Neo are present, and tells you what is missing. It does not check versions, git or the Claude Code version.
 
 ## Replacing the official superpowers and design-skills
 

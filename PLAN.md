@@ -570,7 +570,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **No user-facing modes, levels or toggles.**
 - **Generated, never hand-edited:** `knowledge/**` and `plugins/anthology-superpowers/**` must equal `vendor.py` output (`vendor.py check` in CI).
 - **Models:** agent models use aliases only: `opus`, `sonnet`, `haiku`.
-- **Runtime scripts:** Python 3 **stdlib only**, compatible with **Python 3.9+** (macOS ships 3.9 as `/usr/bin/python3`): use `from __future__ import annotations`, and no `match` or 3.10+ APIs. CI runs the unit tests on pinned Python 3.9 and 3.12 images. Test-only deps are pinned with hashes in `tests/requirements.txt`.
+- **Runtime scripts:** **Rust**, one static `anthology` binary (`crates/anthology-cli`) built with the toolchain pinned in `rust-toolchain.toml`, released as `anthology-bin--v<version>` and pinned per plugin by `anthology.lock` (DECISIONS ADR-027 to ADR-029). The plugin side is POSIX `sh` shims only. CI runs `cargo test --workspace --locked` in the pinned Rust image and on macOS; dependencies are pinned in `Cargo.lock` and gated by `cargo deny`.
 - **`$TEST`**, the canonical test command (image pinned by digest, recorded in Task 1):
   `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:<digest> sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
 - **`$RTK_TEST`**:

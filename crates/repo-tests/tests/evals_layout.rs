@@ -1396,10 +1396,10 @@ mod workflow_tests {
             runs.iter()
                 .any(|r| r.contains("npm ci --prefix ci/claude-code"))
         );
-        assert!(runs.iter().any(|r| r.contains("scripts/run-evals.sh --ci")));
+        assert!(runs.iter().any(|r| r.contains("ci/jobs/evals.sh --ci")));
         let run_step = steps
             .iter()
-            .find(|s| text_of(&s["run"]).contains("scripts/run-evals.sh --ci"))
+            .find(|s| text_of(&s["run"]).contains("ci/jobs/evals.sh --ci"))
             .unwrap();
         let env = &run_step["env"];
         assert_eq!(

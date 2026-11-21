@@ -1,7 +1,7 @@
 name: upstream-watch
 
 # Weekly: compare every vendored pin, the rtk upstream and the latest Claude Code release with
-# upstream, and keep one issue per change (scripts/upstream_watch.py). Nothing is merged here;
+# upstream, and keep one issue per change (anthology-dev upstream-watch). Nothing is merged here;
 # the issue names the command to run on a branch, and CI plus the evals are the gate.
 on:
   schedule:
@@ -31,7 +31,9 @@ jobs:
         id: watch
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/upstream_watch.py
+        # Host cargo (rust-toolchain.toml pins it), not scripts/dev.sh: dev.sh clears the
+        # environment, and the watch needs GITHUB_TOKEN, GITHUB_REPOSITORY and GITHUB_OUTPUT.
+        run: cargo run --locked --release -p anthology-dev -- upstream-watch
 
   trigger-evals:
     # A new Claude Code release also runs the evals. Issues created with GITHUB_TOKEN do not
