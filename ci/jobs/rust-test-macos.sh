@@ -33,3 +33,13 @@ for mode in plain all ignored-plain ignored-all; do
 done
 cargo run --locked --quiet -p anthology-dev -- \
     ledger check --report --listings "$listings" --platform macos
+
+# BS1 shims on macOS (controller, BS1 hand-back): the runner's real shells and downloaders, and
+# the network cases against the testkit TLS server, with github.com mapped to 127.0.0.1 (the
+# shims-distros containers do the same). Last, so nothing above resolves github.com to it.
+if [ "${CI:-}" = true ]; then
+    grep -qE '^127\.0\.0\.1[[:space:]]+github\.com$' /etc/hosts ||
+        printf '127.0.0.1 github.com\n' | sudo tee -a /etc/hosts >/dev/null
+    ANTHOLOGY_SHIMS_NET=1 ANTHOLOGY_SHIMS_REQUIRE=dash,bash,macsh,nonroot,curl,node \
+        cargo test --locked -p repo-tests --test shims
+fi
