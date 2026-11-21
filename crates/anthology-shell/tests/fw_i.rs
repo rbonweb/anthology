@@ -481,25 +481,25 @@ fn alternates_are_skipped_after_quiet_programs_and_stop_at_remote_ones() {
 #[test]
 fn alternate_readings_are_capped() {
     // R1 ruling: at most 256 words per alternate, at most 64 alternates (both only for a misread command;
-    // the main parse is never truncated)
+    // the main parse is never truncated). SH-FW review I-3: a cap that would drop input is too complex
+    // (fw_review_a.rs).
     let pkgs: String = (0..300).map(|k| format!(" p{k}")).collect();
     assert_runs(&[&format!("sudo apt-get install -y{pkgs} chromium")]);
-    assert_clear(&[&format!("sudo -uroot apt-get install -y{pkgs} chromium")]);
     let command = format!(
         "timeout 5 mytool{} npx playwright install",
         " sh".repeat(70)
     );
-    assert_clear(&[&command]);
-    let a = analyze(&command, HOME);
-    assert!(a.alternates.len() <= 64, "{}", a.alternates.len());
-    let a = analyze(&format!("timeout 5 mytool npx{pkgs}"), HOME);
+    for command in [
+        format!("sudo -uroot apt-get install -y{pkgs} chromium"),
+        command,
+        format!("timeout 5 mytool npx{pkgs}"),
+    ] {
+        let a = analyze(&command, HOME);
+        assert!(a.incomplete, "{}", summary(&a));
+    }
+    let a = analyze(&format!("timeout 5 mytool npx{}", &pkgs[..200]), HOME);
     assert!(!a.incomplete);
     assert!(!a.alternates.is_empty());
-    assert!(
-        a.alternates.iter().all(|e| e.args.len() < 256),
-        "{}",
-        summary(&a)
-    );
 }
 
 // ------------------------------------------------------------------ 3. xargs and parallel
@@ -1067,14 +1067,16 @@ fn long_everyday_commands_finish_within_the_budget() {
         format!("timeout 600 mytool{files}"),
         format!("npx --foo-bar baz{files}"),
         format!("sudo npm i -D{pkgs}"),
-        format!("parallel gzip :::{files}"),
+        // SH-FW review I-3: more than 64 `:::` inputs are too complex (fw_review_a.rs)
+        format!("parallel gzip :::{}", &files[..886]),
         format!("echo{files} | xargs npx prettier --check"),
         format!("env -S 'npx eslint'{files}"),
         format!("watch -n1 npx eslint{files}"),
         format!("fd -e ts -x npx prettier --check{files}"),
         format!("doppler run -- npx eslint{files}"),
         format!("sudo{} ls", " sudo".repeat(63)),
-        format!("{}ls", "sudo env nohup ".repeat(30)),
+        // 63 wrappers: more than 64 alternates would be too complex (SH-FW review I-3)
+        format!("{}ls", "sudo env nohup ".repeat(21)),
     ] {
         let (took, done) = timed(&command);
         assert!(done, "{}...: incomplete", &command[..60]);

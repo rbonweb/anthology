@@ -8,7 +8,13 @@
 //! - a package manager's `--` ends the alternate span only when its verb is not `exec`/`dlx`/`x` (FW-I
 //!   review R1-I1: `npm exec --omit dev -- playwright install`);
 //! - `doppler`/`op`/`dotenvx`/`infisical run` give their `--command` as a script and run the words after `--`
-//!   (FW-I review R1-M3).
+//!   (FW-I review R1-M3);
+//! - SH-FW review, part A: tar's `--checkpoint-action` in any getopt spelling (C-1); git's transport options
+//!   (`clone -u`, `--upload-pack`, `--receive-pack`, `--exec`), its `remote.*.uploadpack`/`receivepack` and
+//!   `difftool`/`mergetool.*.cmd` keys, and `ext::` URLs (C-2); a cap that would drop input (more than
+//!   `MAX_ALTERNATES` alternates, an alternate cut short before the main program, more than `MAX_FED` GNU
+//!   parallel inputs or combinations) is too complex (I-3); the wrappers `gosu`, `su-exec`, `chronic`,
+//!   `torsocks`, `nodenv exec` and `micromamba run` (M-3).
 
 pub(crate) mod hidden;
 
@@ -289,11 +295,28 @@ const WRAPPERS: &[(&str, &[&str])] = &[
         "cpulimit",
         &["-l", "--limit", "-p", "--pid", "-e", "--exe", "-c", "--cpu"],
     ),
+    ("gosu", &[]),
+    ("su-exec", &[]),
+    ("chronic", &[]),
+    (
+        "torsocks",
+        &[
+            "-u",
+            "-p",
+            "-a",
+            "-P",
+            "--user",
+            "--pass",
+            "--address",
+            "--port",
+        ],
+    ),
 ];
 
 /// Wrappers whose first word(s) after the options are operands (`_WRAPPER_OPERANDS`).
 const WRAPPER_OPERANDS: &[&str] = &[
-    "timeout", "gtimeout", "chroot", "flock", "taskset", "chrt", "setarch", "script",
+    "timeout", "gtimeout", "chroot", "flock", "taskset", "chrt", "setarch", "script", "gosu",
+    "su-exec",
 ];
 
 /// Options that give a program a shell command line (`_WRAPPER_SCRIPT_OPTIONS`).
@@ -316,6 +339,7 @@ const SUBCOMMAND_WRAPPERS: &[(&str, &[&str])] = &[
     ("volta", &["run"]),
     ("fnm", &["exec"]),
     ("nvm", &["exec"]),
+    ("nodenv", &["exec"]),
     ("pixi", &["run", "exec"]),
     ("perf", &["stat", "record", "trace"]),
 ];
@@ -531,6 +555,7 @@ const PYTHON_RUNNERS: &[(&str, &[&[&str]])] = &[
     ("hatch", &[&["run"]]),
     ("rye", &[&["run"]]),
     ("conda", &[&["run"]]),
+    ("micromamba", &[&["run"]]),
 ];
 pub(crate) const PM_VERBS: &[&str] = &[
     "add",
@@ -1170,8 +1195,9 @@ fn parallel_replace(options: &[String]) -> String {
     replace
 }
 
-/// `_parallel_inputs`: one list per `:::`-style separator, each at most `MAX_FED` words.
-fn parallel_inputs(words: &[String]) -> Vec<Vec<String>> {
+/// `_parallel_inputs`: one list per `:::`-style separator. Rust: a source of more than `MAX_FED` words is too
+/// complex (Python drops the rest; SH-FW review I-3).
+fn parallel_inputs(words: &[String]) -> Result<Vec<Vec<String>>, TooComplex> {
     let mut groups: Vec<Vec<String>> = Vec::new();
     for word in words {
         if has(PARALLEL_INPUTS, word) {
@@ -1180,14 +1206,11 @@ fn parallel_inputs(words: &[String]) -> Vec<Vec<String>> {
             last.push(word.clone());
         }
     }
-    groups
-        .into_iter()
-        .filter(|g| !g.is_empty())
-        .map(|mut g| {
-            g.truncate(MAX_FED);
-            g
-        })
-        .collect()
+    groups.retain(|g| !g.is_empty());
+    if groups.iter().any(|g| g.len() > MAX_FED) {
+        return Err(TooComplex);
+    }
+    Ok(groups)
 }
 
 /// `_PARALLEL_POSITION.sub(...)`: each `{N}` replaced by the N-th input of `combo` when it has one.
@@ -1217,7 +1240,8 @@ fn put_positions(line: &str, combo: &[&String]) -> Option<String> {
 }
 
 /// `_parallel_lines`: the command lines GNU parallel runs, at most `MAX_FED`. Rust: each line's size is
-/// charged before it is built (a line of many `{}` and a long input would otherwise be quadratic).
+/// charged before it is built (a line of many `{}` and a long input would otherwise be quadratic), and more
+/// than `MAX_FED` combinations are too complex (Python drops the rest; SH-FW review I-3).
 pub(crate) fn parallel_lines(
     line: &str,
     replace: &str,
@@ -1238,7 +1262,7 @@ pub(crate) fn parallel_lines(
     let mut index = vec![0usize; groups.len()];
     loop {
         if out.len() >= MAX_FED {
-            break;
+            return Err(TooComplex);
         }
         let combo: Vec<&String> = index
             .iter()
@@ -1275,7 +1299,6 @@ pub(crate) fn parallel_lines(
             index[g] = 0;
         }
     }
-    Ok(out)
 }
 
 /// `_unknown_option_before`: `toks[i - 1]` is an option whose value-taking the tables do not know.
@@ -1356,8 +1379,18 @@ fn alternate_span(tokens: &[String], main_at: usize) -> Option<(usize, usize)> {
 }
 
 /// `_alternates(tokens, start, end)`: each word naming a program the peeling or G1 knows starts one, up to
-/// the first word naming a program in `ELSEWHERE`. Each with the index of its first word in `tokens`.
-fn alternates_of(tokens: &[String], start: usize, end: usize) -> Vec<Alternate> {
+/// the first word naming a program in `ELSEWHERE`. Each with the index of its first word in `tokens`. Rust
+/// (SH-FW review I-3): where Python drops input, the analysis is too complex: more than `MAX_ALTERNATES`
+/// alternates, or one cut at `MAX_ALTERNATE_WORDS` that does not start at the main program (`main_at`) and
+/// does not read as it either (its stripped command is not the start of `main`, the main reading, which keeps
+/// every word: `sudo -u x timeout 5 npx eslint <300 files>` is complete).
+fn alternates_of(
+    tokens: &[String],
+    start: usize,
+    end: usize,
+    (main_at, main): (usize, &[String]),
+    work: &mut Work,
+) -> Result<Vec<Alternate>, TooComplex> {
     let mut out = Vec::new();
     for k in start..end.min(tokens.len()) {
         let word = strip_version(&tokens[k]);
@@ -1366,24 +1399,91 @@ fn alternates_of(tokens: &[String], start: usize, end: usize) -> Vec<Alternate> 
             break;
         }
         if is_alternate_start(&name) {
+            if out.len() >= MAX_ALTERNATES {
+                return Err(TooComplex);
+            }
             let stop = (k + MAX_ALTERNATE_WORDS).min(tokens.len());
             let mut alt = Vec::with_capacity(stop - k);
             alt.push(word);
             if k + 1 < stop {
                 alt.extend(tokens[k + 1..stop].iter().cloned());
             }
-            out.push((k, alt));
-            if out.len() >= MAX_ALTERNATES {
-                break;
+            if k != main_at && stop < tokens.len() {
+                work.charge_extra(alt.iter().map(|w| WORD + w.len()).sum())?;
+                let read = strip_prefixes(&alt, None, None, false, work)?.cmd;
+                if read.is_empty() || !main.starts_with(&read) {
+                    return Err(TooComplex);
+                }
             }
+            out.push((k, alt));
         }
     }
-    out
+    Ok(out)
 }
 
-/// `_git_command_value`: the shell command git config `key` = `value` runs.
+/// `key` is `<section>.<subsection>.<name>` with a non-empty subsection (`key` lowercased, `name` too).
+fn git_subsection_key(key: &str, section: &str, name: &str) -> bool {
+    key.strip_prefix(section)
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_suffix(name))
+        .and_then(|r| r.strip_suffix('.'))
+        .is_some_and(|middle| !middle.is_empty())
+}
+
+/// The command a git `ext::` URL runs: its words split at unescaped blanks (`% ` is a blank in a word, `%%`
+/// a `%`), quoted for the shell; git runs them without one (git-remote-ext).
+fn git_ext_command(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("ext::")?;
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' => match chars.next() {
+                Some(' ') => word.push(' '),
+                Some('%') => word.push('%'),
+                Some(other) => {
+                    word.push('%');
+                    word.push(other);
+                }
+                None => word.push('%'),
+            },
+            ' ' => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            _ => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    let quoted: Vec<String> = words.iter().map(|w| pystr::shlex_quote(w)).collect();
+    Some(quoted.join(" "))
+}
+
+/// `_git_command_value`: the shell command git config `key` = `value` runs. Rust (SH-FW review C-2): also
+/// `remote.*.uploadpack`/`receivepack`, `difftool.*.cmd`, `mergetool.*.cmd`, an `ext::` URL in
+/// `remote.*.url`/`pushurl`, and an `ext::` base in `url.*.insteadOf`/`pushInsteadOf`.
 fn git_command_value(key: &str, value: &str) -> Option<String> {
+    let original = key;
     let key = pystr::lower(key);
+    if git_subsection_key(&key, "remote", "uploadpack")
+        || git_subsection_key(&key, "remote", "receivepack")
+        || git_subsection_key(&key, "difftool", "cmd")
+        || git_subsection_key(&key, "mergetool", "cmd")
+    {
+        return Some(value.to_string());
+    }
+    if git_subsection_key(&key, "remote", "url") || git_subsection_key(&key, "remote", "pushurl") {
+        return git_ext_command(value);
+    }
+    if key.starts_with("url.ext::") {
+        // the subsection keeps its case: `url.<base>.insteadOf`
+        let base = original.get(4..original.rfind('.').unwrap_or(4))?;
+        return git_ext_command(base);
+    }
     if key.starts_with("alias.")
         || (key.starts_with("credential.") && key.ends_with(".helper"))
         || key == "credential.helper"
@@ -1520,18 +1620,82 @@ fn positional<'a>(args: &'a [String], value_flags: &[&str]) -> Vec<&'a String> {
     words
 }
 
-/// `_git_scripts`: commands a git invocation runs from its config or its command-running subcommands.
+/// git's own options that take a value (`_GIT_VALUE_FLAGS`).
+const GIT_VALUE_FLAGS: &[&str] = &[
+    "-c",
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+    "--super-prefix",
+    "--list-cmds",
+];
+
+/// The subcommand of a git invocation (`""` when none) and the words after it.
+fn git_subcommand(args: &[String]) -> (&str, &[String]) {
+    let mut unused = false;
+    let i = skip_flags(args, 0, GIT_VALUE_FLAGS, &|_| true, &mut unused);
+    match args.get(i) {
+        Some(sub) => (sub.as_str(), &args[i + 1..]),
+        None => ("", &[]),
+    }
+}
+
+/// Rust-only (SH-FW review C-2): git subcommands' options whose value git runs as a command (a long name may
+/// be shortened, as git's parse-options allows). `clone -u` is `--upload-pack` too.
+const GIT_COMMAND_OPTIONS: &[(&str, &[&str])] = &[
+    ("clone", &["--upload-pack"]),
+    ("fetch", &["--upload-pack"]),
+    ("pull", &["--upload-pack"]),
+    ("ls-remote", &["--upload-pack", "--exec"]),
+    ("fetch-pack", &["--upload-pack", "--exec"]),
+    ("push", &["--receive-pack", "--exec"]),
+    ("send-pack", &["--receive-pack", "--exec"]),
+    ("archive", &["--exec"]),
+];
+
+/// Rust-only (SH-FW review C-2): the commands a git invocation runs from its transport options
+/// (`clone -u X`, `--upload-pack X`, `push --receive-pack=X`, `archive --exec X`) and its `ext::` URLs.
+fn git_transport_scripts(args: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = args.iter().filter_map(|a| git_ext_command(a)).collect();
+    let (sub, rest) = git_subcommand(args);
+    let Some(longs) = table(GIT_COMMAND_OPTIONS, sub) else {
+        return out;
+    };
+    for (k, arg) in rest.iter().enumerate() {
+        let following = rest.get(k + 1).map(String::as_str);
+        let (name, value) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        if name.len() > 2 && name.starts_with("--") && longs.iter().any(|o| o.starts_with(name)) {
+            out.extend(value.or(following).map(str::to_string));
+        } else if sub == "clone"
+            && let Some(letters) = arg.strip_prefix('-').filter(|l| !l.starts_with('-'))
+        {
+            for (at, c) in letters.char_indices() {
+                if c == 'u' {
+                    let attached = &letters[at + c.len_utf8()..];
+                    out.extend(if attached.is_empty() {
+                        following.map(str::to_string)
+                    } else {
+                        Some(attached.to_string())
+                    });
+                    break;
+                }
+                if "obcj".contains(c) {
+                    break; // the rest is that option's value
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `_git_scripts`: commands a git invocation runs from its config or its command-running subcommands. Rust:
+/// also `git_transport_scripts` (SH-FW review C-2).
 fn git_scripts(args: &[String]) -> Vec<String> {
-    const GIT_VALUE_FLAGS: &[&str] = &[
-        "-c",
-        "-C",
-        "--git-dir",
-        "--work-tree",
-        "--namespace",
-        "--config-env",
-        "--super-prefix",
-        "--list-cmds",
-    ];
     const GIT_CONFIG_VALUE_FLAGS: &[&str] = &[
         "-f",
         "--file",
@@ -1552,11 +1716,7 @@ fn git_scripts(args: &[String]) -> Vec<String> {
         }
     }
     let mut unused = false;
-    let i = skip_flags(args, 0, GIT_VALUE_FLAGS, &|_| true, &mut unused);
-    let (sub, rest): (&str, &[String]) = match args.get(i) {
-        Some(sub) => (sub.as_str(), &args[i + 1..]),
-        None => ("", &[]),
-    };
+    let (sub, rest) = git_subcommand(args);
     match sub {
         "config" => {
             let mut words = positional(rest, GIT_CONFIG_VALUE_FLAGS);
@@ -1596,13 +1756,21 @@ fn git_scripts(args: &[String]) -> Vec<String> {
         }
         _ => {}
     }
+    out.extend(git_transport_scripts(args).into_iter().map(Some));
     out.into_iter()
         .flatten()
         .filter(|s| !s.is_empty())
         .collect()
 }
 
-/// `_tar_scripts`: commands GNU tar runs.
+/// GNU tar's `--checkpoint-action` as getopt reads it: the whole name or any prefix longer than
+/// `--checkpoint` (Rust-only, SH-FW review C-1).
+fn is_checkpoint_action(name: &str) -> bool {
+    name.len() > "--checkpoint".len() && "--checkpoint-action".starts_with(name)
+}
+
+/// `_tar_scripts`: commands GNU tar runs. Rust: `--checkpoint-action` in any spelling, its value after `=`
+/// or in the next word (SH-FW review C-1).
 fn tar_scripts(args: &[String]) -> Vec<String> {
     const OPTIONS: &[&str] = &[
         "--to-command",
@@ -1622,8 +1790,13 @@ fn tar_scripts(args: &[String]) -> Vec<String> {
             out.push(following);
         } else if arg.starts_with("-I") || arg.starts_with("-F") {
             out.push(Some(arg[2..].to_string()));
-        } else if let Some(v) = arg.strip_prefix("--checkpoint-action=exec=") {
-            out.push(Some(v.to_string()));
+        } else if is_checkpoint_action(name) {
+            let action = value.or(following.as_deref());
+            out.push(
+                action
+                    .and_then(|a| a.strip_prefix("exec="))
+                    .map(str::to_string),
+            );
         } else if name.starts_with("--")
             && name.chars().count() > 4
             && OPTIONS.iter().any(|o| o.starts_with(name))
@@ -1860,7 +2033,7 @@ pub(crate) fn strip_prefixes(
                 scripts.extend(parallel_lines(
                     &line,
                     &replace,
-                    &parallel_inputs(&rest[cut..]),
+                    &parallel_inputs(&rest[cut..])?,
                     work,
                 )?);
             }
@@ -2010,7 +2183,7 @@ pub(crate) fn strip_prefixes(
         if let Some((start, end)) = alternate_span(tokens, main_at)
             && !has(QUIET_PROGRAMS, &main)
         {
-            let found = alternates_of(tokens, start, end);
+            let found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
             work.charge_extra(
                 found
                     .iter()
