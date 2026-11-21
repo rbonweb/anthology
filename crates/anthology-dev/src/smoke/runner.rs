@@ -486,12 +486,14 @@ fn real_approved_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
         ],
     )?;
     let env = env_of(&without_auth(build_env(&ctx.env, tmp, None)));
-    super::approve::approve(&repo, &env, &anthology_core::git::RealGit).map_err(|e| {
-        format!(
-            "RuntimeError: approve failed: {}",
-            ctx.snippet(&format!("{}: {}", e.type_name(), e.py_str()), 160)
-        )
-    })?;
+    anthology_memory::approve::approve(&repo, &env, &anthology_core::git::RealGit).map_err(
+        |e| {
+            format!(
+                "RuntimeError: approve failed: {}",
+                ctx.snippet(&format!("{}: {}", e.type_name(), e.py_str()), 160)
+            )
+        },
+    )?;
     Ok(repo)
 }
 
