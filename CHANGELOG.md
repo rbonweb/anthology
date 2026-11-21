@@ -106,6 +106,10 @@ a new version section.
   and a redirect before the command (`< secret.txt cat`) now meet your deny rules. Rules
   restrict commands, not what an allowed program loads from files. Without rules nothing
   changes.
+- The rtk hook no longer prompts for commands that do not mention `rtk` (`node --version;
+  bun --version`), also in bypass and auto mode: it drops rtk's ask, and the command runs
+  as typed under your own mode and rules, as without rtk. An ask on a line that mentions
+  `rtk`, a deny and an rtk failure still pass through.
 - rtk's local history (command lines, recall store, tee spool) is kept in
   `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
   document what it stores and for how long.

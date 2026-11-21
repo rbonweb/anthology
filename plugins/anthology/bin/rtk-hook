@@ -25,4 +25,25 @@ RTK_TEE_DIR=$rtk_data/tee
 export RTK_DB_PATH RTK_RECALL_DB RTK_TEE_DIR
 RTK_SUPPRESS_HOOK_WARNING=1
 export RTK_SUPPRESS_HOOK_WARNING
-exec "$rtk_path" hook claude
+# A hook "ask" prompts in every permission mode, bypass and auto included, and rtk asks for
+# many commands it leaves as typed (`node --version; bun --version`). So an ask is dropped:
+# the command then runs as typed, under the user's own mode and rules, as it would without rtk.
+# Kept: a deny, a non-zero exit, and an ask on a line that mentions rtk, which `Bash(rtk *)`
+# would otherwise allow. The rtk test mirrors the gate's `mentions_rtk` on the raw hook input
+# (quotes and backslashes removed, a line continuation joined, case folded; a `$'` or `\u`
+# escape counts as a mention). Matching the whole input, not just the command, only keeps
+# more asks.
+input=$(cat)
+out=$(printf '%s' "$input" | "$rtk_path" hook claude)
+rc=$?
+if [ "$rc" -eq 0 ] &&
+   printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"ask"' &&
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+  case $input in
+    *"\$'"*|*'\u'*) ;;
+    *) printf '%s' "$input" | LC_ALL=C sed 's/\\n//g' | LC_ALL=C tr -d "\\\\\"'" |
+         LC_ALL=C grep -qi rtk || exit 0 ;;
+  esac
+fi
+[ -z "$out" ] || printf '%s\n' "$out"
+exit "$rc"
