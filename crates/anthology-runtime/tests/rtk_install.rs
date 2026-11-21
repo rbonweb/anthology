@@ -1519,7 +1519,7 @@ mod wrapper_test {
             "test_rtk_install",
             "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk",
         );
-        assert_eq!(table.len(), 10);
+        assert_eq!(table.len(), 28);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));
@@ -1549,6 +1549,27 @@ mod wrapper_test {
             "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk",
         );
         assert_eq!(table.len(), 22);
+        for row in table {
+            let command = row.str("command");
+            let res = w.run_bin("rtk-hook", &[], &hook_input(command));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word() {
+        // `rtk` glued after a letter or underscore cannot invoke rtk, so the ask is dropped.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word",
+        );
+        assert_eq!(table.len(), 4);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));
