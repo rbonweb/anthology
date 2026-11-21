@@ -349,6 +349,49 @@ mod output_test {
     }
 
     #[test]
+    fn test_a_subagent_gets_no_routing_guide() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let out = f.go_d(
+            &f.deps(),
+            None,
+            &f.env(),
+            &[
+                ("source", "compact"),
+                ("agent_id", "a0b1c2d3e4f5a6b7c"),
+                ("agent_type", "anthology:implementer"),
+            ],
+        );
+        let ctx = context(&out);
+        assert!(!ctx.contains("# Anthology routing guide"), "{ctx}");
+        assert!(ctx.starts_with("## Personal memory"), "{ctx}");
+        assert!(!has_msg(&out), "{out:?}");
+    }
+
+    #[test]
+    fn test_only_a_non_empty_agent_id_marks_a_subagent() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        for extra in [
+            r#""agent_type": "reviewer""#,
+            r#""agent_id": """#,
+            r#""agent_id": 7"#,
+            r#""agent_id": null"#,
+        ] {
+            let stdin = format!(
+                r#"{{"hook_event_name": "SessionStart", "source": "compact", "cwd": {}, {extra}}}"#,
+                json::dumps(&Value::Str(p(f.tmp())), &json::PY_DEFAULT)
+            );
+            let text = session_start::run(&f.env(), &stdin, &f.deps());
+            let out = json::loads(&text).expect("JSON");
+            assert!(
+                context(&out).contains("# Anthology routing guide"),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
     fn test_setup_not_run_shows_the_one_line_nag() {
         let f = Fx::new();
         let out = f.go();
@@ -565,6 +608,26 @@ mod output_test {
         assert!(first.contains("project-a"));
         let second = context(&f.go_cwd(&repo));
         assert!(!second.contains("## Repo memory"));
+    }
+
+    #[test]
+    fn test_the_memory_folder_notice_is_quiet_on_compact() {
+        if !needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.mark_setup(None);
+        let repo =
+            f.c.mem
+                .make_repo("app", Some("https://example.invalid/acme/app.git"));
+        anthology_memory::approve::approve(&repo, &f.env(), &RealGit).expect("approve");
+        let dir_set = anthology_memory::sync::DIR_SET;
+        let out = f.go_d(&f.deps(), Some(&repo), &f.env(), &[("source", "compact")]);
+        assert!(context(&out).contains("## Repo memory"), "{out:?}");
+        assert!(!msg(&out).unwrap_or_default().contains(dir_set), "{out:?}");
+        fs::remove_file(repo.join(".claude/settings.local.json")).expect("remove");
+        let out = f.go_d(&f.deps(), Some(&repo), &f.env(), &[("source", "startup")]);
+        assert!(lines(&out).iter().any(|l| l == dir_set), "{out:?}");
     }
 
     #[test]

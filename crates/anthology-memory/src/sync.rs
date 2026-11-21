@@ -46,6 +46,9 @@ use crate::repo::{legacy_dirs, repo_key, repo_root, unsafe_dir};
 /// `HINT`: an unapproved repo that has memory notes.
 pub const HINT: &str = "this repo has memory notes; repo notes load only after /anthology:setup, \
                         but notes in .claude/agent-memory still reach their agents, so review them";
+/// `DIR_SET`: this clone's `autoMemoryDirectory` was written in this run.
+pub const DIR_SET: &str = "anthology memory: set autoMemoryDirectory for this clone; its memory \
+                           index is injected for this session";
 /// `EXCLUDE_LINE`: what `ensure_ignored` adds to the repo's exclude file.
 pub const EXCLUDE_LINE: &str = "/.claude/settings.local.json";
 
@@ -1034,11 +1037,7 @@ fn sync_repo(
     if !changed {
         return Ok(None);
     }
-    messages.push(
-        "anthology memory: set autoMemoryDirectory for this clone; its memory index is injected \
-         for this session"
-            .into(),
-    );
+    messages.push(DIR_SET.into());
     let text = context_index(&repo_mem, REPO_EXCLUDE)?;
     let text = if pystr::strip_ws(&text).is_empty() {
         "(no notes yet)\n".to_string()

@@ -632,6 +632,9 @@ fn seeds() -> Vec<Value> {
     let mut garbage = B::new().setup_done();
     garbage.stdin = "not json".into();
     out.push(garbage.build());
+    let mut subagent = B::new().setup_done();
+    subagent.stdin = r#"{"source": "compact", "cwd": "@ROOT@/w", "agent_id": "a1"}"#.into();
+    out.push(subagent.build());
     // OpsVersionTest
     out.push(
         B::new()
@@ -1286,6 +1289,14 @@ fn gen_case(rng: &mut Rng) -> Value {
             b.stdin = r#"{"cwd": "@ROOT@"}"#.into();
             b.cwd = "@ROOT@".into();
         }
+        // A compact, in the main session or in a subagent (`agent_id`).
+        6 => b.stdin = r#"{"source": "compact", "cwd": "@ROOT@/w"}"#.into(),
+        7 => b.stdin = r#"{"source": "compact", "cwd": "@ROOT@/w", "agent_id": "a1"}"#.into(),
+        8 => {
+            let id = ["\"\"", "7", "null", "[\"a1\"]"][rng.below(4) as usize];
+            b.stdin = format!(r#"{{"source": "compact", "cwd": "@ROOT@/w", "agent_id": {id}}}"#);
+        }
+        9 => b.stdin = r#"{"cwd": "@ROOT@/w", "agent_type": "reviewer"}"#.into(),
         _ => {}
     }
     b = gen_memory(rng, b);
