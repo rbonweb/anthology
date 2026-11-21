@@ -803,12 +803,22 @@ class WrapperTest(Base):
         # `Bash(rtk *)` would allow these as typed, so the ask stands.
         self.answer_fake(self.ASK)
         for command in ("rtk run -c 'kubectl apply'", "RTK bypass x", "r''tk run -c x", 'r"t"k x', "r\\tk x",
-                        "r\\\ntk x", "$'\\x72tk' x", "rtk x", "x; rtk git push"):
+                        "r\\\ntk x", "$'\\x72tk' x", "rtk x", "x; rtk git push", "$'\\162tk' x", "r$'tk' x",
+                        "grep 'a$' f; $'\\x72tk' x", "ls\n$'\\x72tk' x", "ls;\t$'\\x72tk' x", "x=$'\\x72tk'; $x y"):
             with self.subTest(command=command):
                 res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
                 self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
         res = self.run_bin("rtk-hook", stdin=self.hook_input("rtk x").replace("rtk", "\\u0072tk"))
         self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))  # a JSON escape counts
+
+    def test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk(self):
+        # A `$'` that ends a quoted regex, or an ANSI-C string with no escape, is not rtk.
+        self.answer_fake(self.ASK)
+        for command in ("ls | grep -v '^a$'", "sed -n '/a$/p' f", "grep -c '^$' f", "echo $'a b'",
+                        "grep 'a$' f | grep -v 'b\\|c'", 'grep -E \'a$\' f | grep -v "b\\|c"'):
+            with self.subTest(command=command):
+                res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
+                self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
 
     def test_hook_passes_rewrites_and_denies_through(self):
         for answer in (self.REWRITE, self.DENY):
