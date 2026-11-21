@@ -44,6 +44,7 @@
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 6, "params": {"command": "rtk x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 7, "params": {"command": "x; rtk git push"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 8, "params": {"command": "r$'tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 9, "params": {"command": "\"r\"tk x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 0, "params": {"command": "$'\\x72tk' x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 1, "params": {"command": "$'\\162tk' x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 2, "params": {"command": "grep 'a$' f; $'\\x72tk' x"}}
