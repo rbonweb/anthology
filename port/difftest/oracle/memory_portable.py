@@ -131,7 +131,7 @@ def _content(rel, data, today):
         except Exception:  # noqa: BLE001 — not this side's own archive
             return "sha256:" + _sha(data)
         tar = tar.replace(today.encode(), b"<TODAY>")
-        return "gzip:%s tar:%d:%s" % (data[:10].hex(), len(tar), _sha(tar))
+        return "gzip:%s tar:%d:%s raw:%s" % (data[:10].hex(), len(tar), _sha(tar), _sha(data))
     try:
         return "text:" + json.dumps(data.decode("utf-8"), ensure_ascii=False)
     except UnicodeDecodeError:

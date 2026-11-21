@@ -33,9 +33,13 @@
 //!
 //! The Linux oracle image has no git and `plain/` is never in a repository: every repo or
 //! agent note takes the "not an approved repo" path (skipped, or a forged repo plan refused),
-//! and Rust runs with a `Git` that is missing too. The oracle marks D-1 where Python raises an
-//! exception the port does not name (a hand-forged plan of the wrong shape); the D-2 hook
-//! hides the library text after `not a readable memory archive: `.
+//! and Rust runs with a `Git` that is missing too.
+//!
+//! Divergences: the oracle marks D-1 where Python raises an exception the port does not name
+//! (a hand-forged plan of the wrong shape) and D-4 where argparse output was shown (the
+//! parser is named `anthology memory`, as the port's CLI); the D-2 hook hides the library text
+//! after `not a readable memory archive: `; the D-5 hook replaces an exported archive's own
+//! sha256 (the tree's `raw:<hex>`, and wherever a plan prints it) by `<export N>`.
 //!
 //! Case ids carry their category, `seed:<n>-<label>` and `gen:<n>-<category>`
 //! (`flow`, `cli`, `archive`, `corrupt`, `forged`), so divergence entries are case-scoped.
@@ -98,6 +102,9 @@ impl Surface for Portable {
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
         let mut o = from_oracle(&oracle.call("memory_portable", &c.data));
+        if d5_export_shas(&mut o) {
+            oracle.mark("D-5");
+        }
         Normalizer::new()
             .d2_prefix(LIBTEXT_PREFIX)
             .apply_python(&mut o, oracle);
@@ -106,9 +113,31 @@ impl Surface for Portable {
 
     fn run_rust(&self, c: &Case) -> Observed {
         let mut o = run_rust(&c.data);
+        d5_export_shas(&mut o);
         Normalizer::new().d2_prefix(LIBTEXT_PREFIX).apply(&mut o);
         o
     }
+}
+
+/// The D-5 hook: an exported archive's own sha256 (the tree line's `raw:<hex>`, and wherever
+/// a plan or the CLI shows it) depends on the deflate bytes, so it becomes `<export N>`, N the
+/// archive's place in the tree. Its header and decompressed tar stream are still compared.
+/// Returns whether it changed anything.
+fn d5_export_shas(o: &mut Observed) -> bool {
+    let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+    let tree_at = text.find("=== tree ===\n").unwrap_or(text.len());
+    let shas: Vec<String> = text[tree_at..]
+        .lines()
+        .filter(|l| l.starts_with("f "))
+        .filter_map(|l| l.rsplit_once(" raw:").map(|(_, h)| h.to_string()))
+        .collect();
+    for (n, h) in shas.iter().enumerate() {
+        text = text
+            .replace(&format!(" raw:{h}"), "")
+            .replace(h, &format!("<export {}>", n + 1));
+    }
+    o.stdout = text.into_bytes();
+    !shas.is_empty()
 }
 
 // ---- the Rust side ---------------------------------------------------------------------------
@@ -298,10 +327,11 @@ fn content(rel: &str, data: &[u8], today: &str) -> String {
             Ok(_) => {
                 let tar = replace_bytes(&tar, today.as_bytes(), b"<TODAY>");
                 format!(
-                    "gzip:{} tar:{}:{}",
+                    "gzip:{} tar:{}:{} raw:{}",
                     hex(&data[..10.min(data.len())]),
                     tar.len(),
-                    sha(&tar)
+                    sha(&tar),
+                    sha(data)
                 )
             }
             Err(_) => format!("sha256:{}", sha(data)),
@@ -1042,6 +1072,8 @@ const MANIFESTS: &[&str] = &[
 
 // ---- the generator ---------------------------------------------------------------------------
 
+/// Note file names. No two differ only in case: macOS folders are case-insensitive, Linux's
+/// (the oracle's) are not, so `MEMORY.md` next to `memory.md` would differ by platform.
 const NOTE_NAMES: &[&str] = &[
     "user-me.md",
     "feedback-x.md",
@@ -1050,7 +1082,6 @@ const NOTE_NAMES: &[&str] = &[
     "a.b-c_d.md",
     "x.md",
     "MEMORY.md",
-    "memory.md",
     "notes.txt",
     ".hidden.md",
     "has space.md",

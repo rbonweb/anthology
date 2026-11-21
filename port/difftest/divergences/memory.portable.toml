@@ -1,12 +1,14 @@
 # Allowed divergences of the memory.portable surface (GC-16). The oracle
 # (port/difftest/oracle/memory_portable.py) marks D-1 and D-4 where it adjusted Python's
-# result; the surface's D-2 hook marks every case whose output it rewrote. The entries carry
-# no `case` on purpose: such an entry covers those marks only and can never waive a diff
-# between the two sides (an entry with a `case` would also waive any other diff in the cases
-# it matches). The marks fall only in the case categories named below (ids
+# result; the surface's D-2 and D-5 hooks mark every case whose output they rewrote. The
+# entries carry no `case` on purpose: such an entry covers those marks only and can never
+# waive a diff between the two sides (an entry with a `case` would also waive any other diff
+# in the cases it matches). The marks fall only in the case categories named below (ids
 # `seed:<n>-<label>`, `gen:<n>-<category>`, crates/difftest/src/surfaces/memory_portable.rs).
-# The gzip files themselves are never compared byte for byte (D-5): the surface compares their
-# 10-byte header and their decompressed tar stream, so D-5 needs no entry.
+
+[[divergence]]
+class = "D-5"
+reason = "Cases that export (seed:1..4, gen:*-flow, gen:*-cli): the exported .tar.gz is not compared byte for byte, since the port's deflate bytes differ from zlib's. Its 10-byte gzip header and its decompressed tar stream (length and sha256) are compared exactly; its own sha256, which a plan and the CLI's dry run print, is shown as <export N> on both sides."
 
 [[divergence]]
 class = "D-4"
