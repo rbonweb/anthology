@@ -171,6 +171,11 @@ fn a_substitution_at_program_position_inside_an_arithmetic_expansion_is_too_comp
         "echo $(( $($(echo npm) i puppeteer) ))",
         "echo $(( 1 + $(`echo npx` playwright install) ))",
         "echo $(( $(true\n`echo npx` playwright install) ))",
+        // review C-1: a `$((` that does not close with `))` is a command substitution, not arithmetic
+        "echo $(((1)) ; `echo npx` playwright install)",
+        "echo $(((echo a) ; `echo npx` playwright install) )",
+        "$(((true)); echo npx) playwright install",
+        "\"$(((true)); echo npx)\" playwright install",
     ] {
         assert!(
             analyze(command, HOME).incomplete,

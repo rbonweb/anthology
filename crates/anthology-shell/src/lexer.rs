@@ -784,12 +784,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     j = k + 1;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'(') => {
-                    let (inner, k) = substitution(text, j, &mut self.memo, &mut self.sh.work)?;
-                    let comsub = !inner.starts_with("((");
-                    if comsub {
+                    let (inner, k, arith) =
+                        substitution(text, j, &mut self.memo, &mut self.sh.work)?;
+                    if !arith {
                         self.subs.push(inner.to_string()); // F-8: the word holds a substitution
                     }
-                    self.nested(&inner, Some(j), comsub)?;
+                    self.nested(&inner, Some(j), !arith)?;
                     j = k;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'{') => {
@@ -851,13 +851,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
         let text = self.text;
         match byte_at(text, i + 1) {
             Some(b'(') => {
-                let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
-                let comsub = !inner.starts_with("((");
-                if comsub {
+                let (inner, j, arith) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
+                if !arith {
                     self.subs.push(inner.to_string()); // F-8: the word holds a substitution
                 }
                 // an arithmetic segment runs no program word; the commands of a `$(...)` in it do (DT-4)
-                self.nested_text(&inner, Some(i), comsub, !comsub)?;
+                self.nested_text(&inner, Some(i), !arith, arith)?;
                 return Ok(j);
             }
             Some(b'{') => {

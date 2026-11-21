@@ -38,6 +38,35 @@ fn a_hidden_program_word_inside_an_arithmetic_expansion_is_too_complex() {
             "x=$(( $(`echo agent-browser` open x) ))",
             "echo $(( $(true; `echo agent-browser` open x) ))",
             r#"echo $(( $(`echo op``echo en` -a "Google Chrome") ))"#,
+            // deeper: every nested lexer starts with no arithmetic text of its own
+            "echo $(( $(( $(( $(`echo agent-browser` open x) )) )) ))",
+            "echo $(( $(echo $(( $(`echo agent-browser` open x) )) ) ))",
+            "echo $(( `\\`echo agent-browser\\` open x` ))",
+            "echo $(( a[$(`echo agent-browser` open x)] ))",
+            "echo $(( $[ $(`echo agent-browser` open x) ] ))",
+            "echo $(( $(cat <(`echo agent-browser` open x)) ))",
+            "echo $(( $(cat <<EOF\nx\nEOF\n`echo agent-browser` open x) ))",
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+/// Review C-1: a `$((` that does not close with `))` is a command substitution whose text starts with
+/// `(`, a subshell or an arithmetic command (`$(((1)); X)`). bash runs it as one, so it is no arithmetic
+/// text, and the word holds a substitution.
+#[test]
+fn a_command_substitution_that_starts_with_two_parentheses_is_not_arithmetic() {
+    assert_all(
+        &[
+            "echo $(((echo a) ; `echo agent-browser` open x) )",
+            "echo $(((1)) ; `echo agent-browser` open x)",
+            r#"echo $(((1)) ; $(echo open) -a "Google Chrome")"#,
+            "x=$(((echo a); `echo agent-browser` open x) )",
+            "$(((true)); echo agent-browser) open x",
+            "\"$(((true)); echo agent-browser)\" open x",
+            r#"$(((true)) ; echo open) -a "Google Chrome""#,
+            // was G1 (the install read as written), now too complex like any hidden program word
+            "$(((1)) ; echo npx) playwright install",
         ],
         Verdict::TooComplex,
     );
