@@ -1,0 +1,6 @@
+# Allowed divergences of the setup surface (GC-16). The oracle (port/difftest/oracle/setup.py)
+# marks each case it adjusted; no entry waives a diff.
+
+[[divergence]]
+class = "D-4"
+reason = "argparse usage text at exit 2: the prog is 'anthology setup' (the anthology binary's subcommand) where Python's was the script name 'anthology_setup.py'. The oracle runs Python with sys.argv[0] = 'anthology setup' and marks every case where argparse exited; the rest of the usage and error text is compared byte for byte."
