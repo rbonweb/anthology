@@ -1436,18 +1436,47 @@ mod main_with_stub_tests {
     #[test]
     fn test_python_missing_passes_against_the_real_session_start_wrapper() {
         let f = fixture();
-        assert!(
-            repo_root()
-                .join("plugins/anthology/scripts/session-start.sh")
-                .is_file()
-        );
         let (code, out) = run_main(
             &["--claude", &s(&f.stub), "python-missing"],
             no_auth_env(),
             deps(),
         );
+        if repo_root().join("plugins/anthology/scripts").is_dir() {
+            assert!(
+                out.starts_with("PASS python-missing: 1 wrapper(s) warn about the missing python3"),
+                "{out}"
+            );
+        } else {
+            // After CO2 deleted the Python plugin scripts.
+            assert!(
+                out.starts_with("SKIP python-missing: no Python plugin scripts (after CO2)"),
+                "{out}"
+            );
+        }
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_python_missing_skips_once_the_python_plugin_scripts_are_gone() {
+        let f = fixture();
+        let tree = tempfile::tempdir().expect("temp dir");
+        let root = fs::canonicalize(tree.path()).expect("canonical");
+        // The post-cutover layout: the sh SessionStart hook runs the Rust shim.
+        let hooks = root.join("plugins/anthology/hooks");
+        fs::create_dir_all(&hooks).expect("mkdir");
+        fs::write(
+            hooks.join("hooks.json"),
+            r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"]}]}]}}"#,
+        )
+        .expect("write");
+        fs::write(hooks.join("session-start.sh"), "#!/bin/sh\nexit 0\n").expect("write");
+        let (code, out) = run_main(
+            &["--claude", &s(&f.stub), "python-missing"],
+            no_auth_env(),
+            deps_at(&root),
+        );
         assert!(
-            out.starts_with("PASS python-missing: 1 wrapper(s) warn about the missing python3"),
+            out.starts_with("SKIP python-missing: no Python plugin scripts (after CO2)"),
             "{out}"
         );
         assert_eq!(code, 0);
