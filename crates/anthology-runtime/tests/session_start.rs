@@ -2012,7 +2012,7 @@ mod skills_folder_test {
         let text = fs::read_to_string(real_plugin().join("skills/setup/SKILL.md")).unwrap();
         for want in [
             "--plugin-root \"${CLAUDE_PLUGIN_ROOT}\"",
-            "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py",
+            "\"${CLAUDE_PLUGIN_ROOT}/bin/anthology\" setup ",
             "/anthology:setup remove",
             "rtk bypass <cmd>",
             "--expect-sha256",

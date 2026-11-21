@@ -99,3 +99,75 @@ fn test_skill_bodies_follow_the_flow() {
     }
     assert!(import_body.find("--dry-run") < import_body.find("--yes"));
 }
+
+// ---- The skills after the switch (F-8, GC-14) -----------------------------------------------
+
+/// What every skill command runs after the cutover (F-8): the plugin's `bin/anthology` wrapper.
+const ANTHOLOGY: &str = "\"${CLAUDE_PLUGIN_ROOT}/bin/anthology\"";
+
+/// The fenced command lines of a skill body.
+fn commands(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fenced = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if fenced && !line.trim().is_empty() {
+            out.push(line.trim().to_string());
+        }
+    }
+    out
+}
+
+/// test_memory_portable `SkillsTest.test_export_and_import_skills`: both skills are manual-only
+/// and run `anthology memory export|import` through the plugin's wrapper (F-8).
+#[test]
+fn test_export_and_import_skills() {
+    for name in ["export", "import"] {
+        let (meta, body) = skill(name);
+        assert_eq!(meta["name"].as_str(), Some(name));
+        assert!(
+            meta["description"].as_str().is_some_and(|d| !d.is_empty()),
+            "{name}: description"
+        );
+        assert_eq!(
+            meta["disable-model-invocation"].as_bool(),
+            Some(true),
+            "{name}"
+        );
+        let want = format!("{ANTHOLOGY} memory {name} ");
+        assert!(
+            commands(&body).iter().any(|c| c.starts_with(&want)),
+            "{name}: {want}"
+        );
+    }
+}
+
+/// F-8: every command a skill runs is `bin/anthology <subcommand>`, and no skill names Python.
+#[test]
+fn every_skill_command_runs_the_anthology_wrapper() {
+    for (name, sub) in [
+        ("setup", "setup"),
+        ("export", "memory"),
+        ("import", "memory"),
+    ] {
+        let (_, body) = skill(name);
+        let cmds = commands(&body);
+        assert!(!cmds.is_empty(), "{name}: no command");
+        for c in cmds {
+            assert!(c.starts_with(&format!("{ANTHOLOGY} {sub} ")), "{name}: {c}");
+        }
+        assert!(!body.to_lowercase().contains("python"), "{name}: python");
+    }
+}
+
+/// GC-14: the setup skill says what to do when a Bash call is blocked with "(setup)".
+#[test]
+fn the_setup_skill_carries_the_gc_14_guidance() {
+    let (_, body) = skill("setup");
+    let line = "If a Bash call is blocked with \"(setup)\", wait a minute and run the same command \
+                once more: the guard reinstalls its binary. If it is still blocked, tell the user \
+                to start a new session while online, or to disable anthology-guardrails with \
+                /plugin.";
+    assert!(body.lines().any(|l| l == line), "setup: the GC-14 line");
+}

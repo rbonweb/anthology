@@ -56,5 +56,5 @@ test_memory_portable.MaliciousArchiveTest.test_total_size_over_50_mib_single_mem
 test_memory_portable.SecretsTest.test_each_pattern_has_a_label	ported	crates/anthology-memory/tests/memory_portable.rs::secrets_test::test_each_pattern_has_a_label
 test_memory_portable.SecretsTest.test_export_reports_labels_not_values	ported	crates/anthology-memory/tests/memory_portable.rs::secrets_test::test_export_reports_labels_not_values
 test_memory_portable.SecretsTest.test_import_plan_reports_labels_not_values	ported	crates/anthology-memory/tests/memory_portable.rs::secrets_test::test_import_plan_reports_labels_not_values
-test_memory_portable.SkillsTest.test_export_and_import_skills	todo:CO2		the export/import skill files move to the plugin in CO2
+test_memory_portable.SkillsTest.test_export_and_import_skills	ported	crates/repo-tests/tests/cutover_skills.rs::test_export_and_import_skills	F-8: the skills run "${CLAUDE_PLUGIN_ROOT}/bin/anthology" memory export|import, not python3 memory_portable.py
 test_memory_portable.SkillsTest.test_skill_bodies_follow_the_flow	ported	crates/repo-tests/tests/cutover_skills.rs::test_skill_bodies_follow_the_flow
