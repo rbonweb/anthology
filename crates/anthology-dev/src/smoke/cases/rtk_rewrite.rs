@@ -5,7 +5,6 @@
 use crate::smoke::runner::*;
 
 pub fn run(ctx: &Ctx) -> Res<Outcome> {
-    let root = ctx.root()?;
     let prompt = "Run these three Bash commands, one per tool call, in this order: first `git init -q rtkrepo`, then \
 `git -C rtkrepo status`, then `npx playwright test --list`. Report each command's output verbatim.";
     let mut flags = sv(["--model", "haiku"]);
@@ -34,14 +33,16 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         "CLAUDE_CONFIG_DIR".to_string(),
         cfg.to_string_lossy().into_owned(),
     )]);
-    // Still the Python installer until CO2; EV1b swaps it for the Rust binary.
+    // The Rust installer (`anthology rtk-install`, RT2) with the staged plugin's rtk.lock; it
+    // records rtk_path in the scratch config's state.json, which bin/rtk-hook reads.
+    let lock = ctx.staged_plugins()?.join("anthology").join("rtk.lock");
     let argv = vec![
-        "python3".to_string(),
-        root.join("plugins/anthology/scripts/rtk_install.py")
-            .to_string_lossy()
-            .into_owned(),
+        ctx.anthology_bin()?.to_string_lossy().into_owned(),
+        "rtk-install".to_string(),
         "--data-dir".to_string(),
         tmp.join("data").to_string_lossy().into_owned(),
+        "--lock".to_string(),
+        lock.to_string_lossy().into_owned(),
     ];
     let install = ctx.run(
         &argv,
