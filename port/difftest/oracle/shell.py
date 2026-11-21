@@ -27,6 +27,9 @@ it to the reference too, so the difftest still checks everything else; each such
 - FW-H review R1-M1: the lenient split also reads each closed `$'...'` decoded (`_lenient_segments` below).
 - FW-I review R1-I1: a package manager's `--` ends the alternate span unless its verb is `exec`/`dlx`/`x`
   (`_alternate_span` below).
+- SH-FW review C-3: a command's brace expressions give one more alternate reading with them expanded, at
+  most 64 words (`_add_alternates_braces` below); C-4: echo/printf text fed to a shell or to xargs/parallel
+  is also fed decoded, not to an interpreter's code (`_collect_once`, `_literal_output` below).
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -206,6 +209,167 @@ def _alternate_span(tokens, main_at):
 
 
 G._alternate_span = _alternate_span
+
+
+# --- part B
+# SH-FW review, part B (D-8, Rust stricter; crates/anthology-shell/src/collect.rs).
+
+_MAX_BRACE_WORDS = 64
+
+
+def _brace_at(word):
+    """The first brace expression of `word`, as (open, close, commas), or None: a `{` (not `${`) with its
+    matching `}` and a comma at its own level; one whose text holds a quote character is skipped."""
+    stack, first = [], None
+    for j, c in enumerate(word):
+        if c == "{":
+            stack.append([j, j > 0 and word[j - 1] == "$", False, []])
+        elif c == "," and stack:
+            stack[-1][3].append(j)
+        elif c in "\"'" and stack:
+            stack[-1][2] = True
+        elif c == "}" and stack:
+            at, param, quote, commas = stack.pop()
+            if stack:
+                stack[-1][2] = stack[-1][2] or quote
+            if not param and not quote and commas and (first is None or at < first[0]):
+                first = (at, j, commas)
+    return first
+
+
+def _expand_braces(word, level, out):
+    """Bash's brace expansion of `word`, appended to `out`; too complex past `_MAX_BRACE_WORDS`."""
+    found = _brace_at(word)
+    if found is None:
+        if len(out) >= _MAX_BRACE_WORDS:
+            raise G._TooComplex()
+        out.append(word)
+        return
+    if level >= _MAX_BRACE_WORDS:
+        raise G._TooComplex()
+    open_, close, commas = found
+    start = open_ + 1
+    for end in commas + [close]:
+        _expand_braces(word[:open_] + word[start:end] + word[close + 1:], level + 1, out)
+        start = end + 1
+
+
+def _brace_reading(tokens):
+    """C-3: `tokens` with every brace expression expanded, empty words dropped; None without one."""
+    words, reading, found = [], [], False
+    for token in tokens:
+        if "{" not in token or _brace_at(token) is None:
+            reading.append(token)
+            continue
+        found = True
+        before = len(words)
+        _expand_braces(token, 0, words)
+        reading += [w for w in words[before:] if w]
+    return reading if found else None
+
+
+_add_alternates_before_b = G._add_alternates
+
+
+def _add_alternates_braces(alternates, scripts, entry, ctx, exempt):
+    """C-3: the command with its brace expressions expanded is one more alternate reading."""
+    reading = _brace_reading(entry.raw)
+    if reading is not None:
+        alternates = alternates + [reading]
+    _add_alternates_before_b(alternates, scripts, entry, ctx, exempt)
+
+
+G._add_alternates = _add_alternates_braces
+
+
+def _echo_octal(text):
+    """`\\0nnn` (echo -e, printf's `%b`) as `$'...'`'s `\\nnn`."""
+    return G.re.sub(r"\\(\\|0(?=[0-7]))", lambda m: "\\\\" if m.group(1) == "\\" else "\\", text)
+
+
+def _echo_decoded(prog, args):
+    """C-4: what an echo/printf writes with its escapes decoded (`$'...'`, and `\\0nnn` as echo -e reads it);
+    for printf also its arguments after the format alone. Each reading once, in that order."""
+    words = list(args)
+    while words and G.re.match(r"-[neE]+\Z", words[0]):
+        words.pop(0)
+    sources = [" ".join(words)]
+    if prog == "printf":
+        rest = words[1:] if words[:1] == ["--"] else words
+        if len(rest) > 1:
+            sources.append(" ".join(rest[1:]))
+    out = []
+    for source in sources:
+        for decoded in (G._ansi_c_decode(source), G._ansi_c_decode(_echo_octal(source))):
+            if decoded not in out:
+                out.append(decoded)
+    return out
+
+
+def _literal_output(text, depth):
+    """`_literal_output`, with each echo/printf text also decoded (C-4)."""
+    texts, groups = [], set()
+    for seg in G._segments(text, depth + 1):
+        cmd = G._strip_prefixes(seg.tokens)[0]
+        if cmd and G._prog_name(cmd[0]) in ("echo", "printf"):
+            decoded = _echo_decoded(G._prog_name(cmd[0]), cmd[1:])
+            texts.append(G._echo_args_text(cmd[1:]))
+            texts += [t for t in decoded if t not in texts]
+        if id(seg.group) not in groups:
+            groups.add(id(seg.group))
+            texts.extend(seg.group.texts)
+    return texts
+
+
+def _dedupe(items):
+    return [item for k, item in enumerate(items) if item not in items[:k]]
+
+
+G._literal_output = _literal_output
+
+
+def _collect_once(text, ctx, exempt, depth):
+    """`_collect_once`, with each echo/printf text also fed decoded to a shell and to xargs/parallel, not
+    to an interpreter's code (C-4)."""
+    new_entries = []
+    for seg in G._segments(text):
+        new_entries.append(G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth))
+    by_group = {}
+    for entry in new_entries:
+        by_group.setdefault(id(entry.group), []).append(entry)
+    for entries in by_group.values():
+        shell = next((e for e in entries if G._reads_stdin_as_shell(e)), None)
+        interpreters = [e for e in entries if G._INTERPRETER.match(e.prog)]
+        feeders = [e for e in entries if e.stdin_runs]
+        if shell is None and not interpreters and not feeders:
+            continue
+        texts, decoded = list(entries[0].group.texts), []
+        for e in entries:
+            if e.prog in ("echo", "printf"):
+                texts.append(G._echo_text(e))
+                decoded += _echo_decoded(e.prog, e.args)
+        fed = list(texts)
+        fed += [t for t in _dedupe(decoded) if t not in fed]
+        for entry in interpreters:
+            G._charge(sum(map(len, texts)))
+            entry.code.extend(texts)
+        for body in fed if shell is not None else ():
+            G._collect(body, ctx, shell.exempt, depth + 1)
+        for entry in feeders:
+            G._feed_stdin(entry, fed, ctx, depth)
+    if "<(" in text and any(e.prog in G._SHELLS or e.prog in ("source", ".") for e in new_entries):
+        for inner in G._process_substitutions(text):
+            for body in G._literal_output(inner, depth):
+                G._collect(body, ctx, exempt, depth + 1)
+    fd_shells = {id(e) for e in new_entries if G._reads_fd_as_shell(e)}
+    for entry in new_entries if fd_shells else ():
+        if id(entry) in fd_shells or (
+                not entry.prog and entry.raw and G._prog_name(entry.raw[0]) == "exec"):
+            for body in entry.group.texts:
+                G._collect(body, ctx, exempt, depth + 1)
+
+
+G._collect_once = _collect_once
 
 
 def _entry(e, groups):

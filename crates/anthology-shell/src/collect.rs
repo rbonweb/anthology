@@ -14,14 +14,19 @@
 //!   `RecursionError` near 500 levels) and stops past `FIND_EXEC_CAP` levels (D-1);
 //! - every `fd -x`/`--exec` group ended by `;` is a command, not only the first (D-8, FW-I review R1-M2);
 //! - alternate readings are all kept in `Analysis.alternates` for G1 (lead ruling Q3=A), where Python checks
-//!   G1 as it goes and keeps the first that hits.
+//!   G1 as it goes and keeps the first that hits;
+//! - SH-FW review, part B: an fd cluster ending in `x`/`X` (`-Hx`) starts an exec group (I-1); more than
+//!   `MAX_FED` fed lines is too complex (I-3); a command's brace expressions give an alternate reading with
+//!   them expanded (C-3); echo/printf text fed to a shell or to xargs/parallel is also fed decoded (C-4); a
+//!   `[`-holding argument of `let`, `declare`, `read`, `printf -v`, `test -v`, `[[` ... runs its
+//!   substitutions (C-5).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::analyze::Entry;
-use crate::lexer::scan::scan_paren;
-use crate::lexer::words::Memo;
+use crate::lexer::scan::{body_substitutions, scan_paren};
+use crate::lexer::words::{Memo, ansi_c_decode};
 use crate::lexer::{
     Group, GroupId, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
     skip_escape,
@@ -34,7 +39,7 @@ use crate::prefixes::{
     parallel_lines, pm_runs_own_verb, strip_prefixes,
 };
 use crate::shell_args::{
-    SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
+    Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
 };
 
 const DOCKER: &[&str] = &["docker", "docker-compose"];
@@ -186,12 +191,182 @@ pub fn normalize_with(
 /// `_echo_args_text`: an `echo`/`printf`'s words as the text it writes (leading `-n`/`-e`/`-E` words dropped,
 /// `\n` a newline).
 fn echo_text(args: &[String]) -> String {
+    echo_words(args).join(" ").replace("\\n", "\n")
+}
+
+/// The words an `echo`/`printf` writes: leading `-n`/`-e`/`-E` words dropped.
+fn echo_words(args: &[String]) -> &[String] {
     let flag = |a: &String| {
         a.strip_prefix('-')
             .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| matches!(b, b'n' | b'e' | b'E')))
     };
     let start = args.iter().position(|a| !flag(a)).unwrap_or(args.len());
-    args[start..].join(" ").replace("\\n", "\n")
+    &args[start..]
+}
+
+/// `\0nnn` (echo -e, printf's `%b`) as `$'...'`'s `\nnn`.
+fn echo_octal(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut last, mut j) = (0, 0);
+    while j + 1 < b.len() {
+        if b[j] != b'\\' {
+            j += 1;
+            continue;
+        }
+        if b[j + 1] == b'0' && b.get(j + 2).is_some_and(|c| (b'0'..=b'7').contains(c)) {
+            out.push_str(&text[last..=j]);
+            last = j + 2;
+        }
+        j += 2;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// SH-FW review C-4 (Rust stricter, D-8): what an `echo`/`printf` writes with its escapes decoded, as bash 5's
+/// `$'...'` reads them and with `\0nnn` read as echo -e and printf's `%b` read it; for printf also its
+/// arguments after the format alone (`printf '%b' X`, `printf '%s' X`). Each reading once, in that order.
+fn echo_decoded(prog: &str, args: &[String], work: &mut Work) -> Result<Vec<String>, TooComplex> {
+    let words = echo_words(args);
+    let mut sources = vec![words.join(" ")];
+    if prog == "printf" {
+        let rest = match words.first() {
+            Some(w) if w == "--" => &words[1..],
+            _ => words,
+        };
+        if rest.len() > 1 {
+            sources.push(rest[1..].join(" "));
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for source in sources {
+        for decoded in [
+            ansi_c_decode(&source, false, work)?,
+            ansi_c_decode(&echo_octal(&source), false, work)?,
+        ] {
+            if !out.contains(&decoded) {
+                out.push(decoded);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// SH-FW review C-5 (Rust stricter, D-8): programs that evaluate an arithmetic subscript in their arguments
+/// (`let 'a[$(cmd)]=1'`), and those that do once a `-v` is among them (`printf -v`, `test -v`).
+const SUBSCRIPT_PROGRAMS: &[&str] = &[
+    "let", "declare", "typeset", "local", "readonly", "export", "read", "[[",
+];
+const SUBSCRIPT_V_PROGRAMS: &[&str] = &["printf", "test", "["];
+
+/// Words that the brace expressions of one command may give (`{a,b}{c,d}` gives 4).
+const MAX_BRACE_WORDS: usize = 64;
+
+/// The first brace expression of `word`, as (open, close, commas): a `{` (not `${`) with its matching `}` and
+/// a comma at its own level between them. One whose text holds a quote character is not one: past quote
+/// removal, that was quoted text (a JSON body).
+fn brace_at(word: &str) -> Option<(usize, usize, Vec<usize>)> {
+    struct Open {
+        at: usize,
+        param: bool,
+        quote: bool,
+        commas: Vec<usize>,
+    }
+    let b = word.as_bytes();
+    let mut stack: Vec<Open> = Vec::new();
+    let mut first: Option<(usize, usize, Vec<usize>)> = None;
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'{' => stack.push(Open {
+                at: j,
+                param: j > 0 && b[j - 1] == b'$',
+                quote: false,
+                commas: Vec::new(),
+            }),
+            b',' => {
+                if let Some(top) = stack.last_mut() {
+                    top.commas.push(j);
+                }
+            }
+            b'"' | b'\'' => {
+                if let Some(top) = stack.last_mut() {
+                    top.quote = true;
+                }
+            }
+            b'}' => {
+                if let Some(open) = stack.pop() {
+                    if let Some(parent) = stack.last_mut() {
+                        parent.quote |= open.quote;
+                    }
+                    if !open.param
+                        && !open.quote
+                        && !open.commas.is_empty()
+                        && first.as_ref().is_none_or(|(at, _, _)| open.at < *at)
+                    {
+                        first = Some((open.at, j, open.commas));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    first
+}
+
+/// Bash's brace expansion of `word`, appended to `out` in bash's order, on the Rust-only budget. Too complex
+/// past `MAX_BRACE_WORDS` words in `out`, or `MAX_BRACE_WORDS` levels deep (each level has two alternatives
+/// at least, so at least as many words would follow).
+fn expand_braces(
+    word: &str,
+    level: usize,
+    out: &mut Vec<String>,
+    work: &mut Work,
+) -> Result<(), TooComplex> {
+    work.charge_extra(WORD + 2 * word.len())?;
+    let Some((open, close, commas)) = brace_at(word) else {
+        if out.len() >= MAX_BRACE_WORDS {
+            return Err(TooComplex);
+        }
+        out.push(word.to_string());
+        return Ok(());
+    };
+    if level >= MAX_BRACE_WORDS {
+        return Err(TooComplex);
+    }
+    let (pre, post) = (&word[..open], &word[close + 1..]);
+    let mut start = open + 1;
+    for end in commas.into_iter().chain([close]) {
+        let alternative = format!("{pre}{}{post}", &word[start..end]);
+        expand_braces(&alternative, level + 1, out, work)?;
+        start = end + 1;
+    }
+    Ok(())
+}
+
+/// SH-FW review C-3 (Rust stricter, D-8): `tokens` with every brace expression expanded and the empty words
+/// that gives dropped, or `None` when no token has one. Tokens are past quote removal, so a quoted `{a,b}` is
+/// expanded too: the reading is an alternate, checked against G1 only.
+fn brace_reading(tokens: &[String], work: &mut Work) -> Result<Option<Vec<String>>, TooComplex> {
+    let mut words = Vec::new();
+    let mut reading = Vec::new();
+    let mut found = false;
+    for token in tokens {
+        if !token.contains('{') {
+            reading.push(token.clone());
+            continue;
+        }
+        work.charge_extra(token.len())?;
+        if brace_at(token).is_none() {
+            reading.push(token.clone());
+            continue;
+        }
+        found = true;
+        let before = words.len();
+        expand_braces(token, 0, &mut words, work)?;
+        reading.extend(words[before..].iter().filter(|w| !w.is_empty()).cloned());
+    }
+    Ok(found.then_some(reading))
 }
 
 /// `_first_arg`: the first argument that is not an option.
@@ -215,8 +390,17 @@ fn is_fd_path(path: &str) -> bool {
 }
 
 /// The commands `find -exec`/`-execdir`/`-ok`/`-okdir` (each ended by `;` or `+`) or fd's `-x`/`--exec`/`-X`/
-/// `--exec-batch` (ended by `;`) run. Rust stricter (FW-I review R1-M2): every fd group, not only the first.
+/// `--exec-batch` (ended by `;`) run. Rust stricter (FW-I review R1-M2): every fd group, not only the first;
+/// and (SH-FW review I-1, D-8) a cluster of fd's no-value flags ending in `x`/`X` (`-Hx`) starts one too.
 fn exec_payloads(prog: &str, args: &[String]) -> Vec<Vec<String>> {
+    let fd_exec = |arg: &str| {
+        FD_EXEC.contains(&arg)
+            || arg
+                .strip_prefix('-')
+                .filter(|l| !l.starts_with('-'))
+                .and_then(|l| l.strip_suffix(['x', 'X']))
+                .is_some_and(|l| l.bytes().all(|b| b"HIsigFalLpu01q".contains(&b)))
+    };
     let mut out = Vec::new();
     let mut k = 0;
     if prog == "find" {
@@ -235,7 +419,7 @@ fn exec_payloads(prog: &str, args: &[String]) -> Vec<Vec<String>> {
         }
     } else if FD_PROGRAMS.contains(&prog) {
         while k < args.len() {
-            if FD_EXEC.contains(&args[k].as_str()) {
+            if fd_exec(&args[k]) {
                 let end = (k + 1..args.len())
                     .find(|&j| args[j] == ";")
                     .unwrap_or(args.len());
@@ -336,6 +520,17 @@ impl<'a> Ctx<'a> {
                 None
             }
         }
+    }
+
+    /// `f`, written against Python's budget, run on the Rust-only one (work the reference does not do).
+    fn on_extra<T>(&mut self, f: impl FnOnce(&mut Work) -> Result<T, TooComplex>) -> Option<T> {
+        let mut work = self.work;
+        work.budget = self.work.extra;
+        let result = f(&mut work);
+        let spent_extra = self.work.extra.0 - work.extra.0;
+        self.work.extra = Budget(work.budget.0.saturating_sub(spent_extra));
+        self.work.paren_lines |= work.paren_lines;
+        self.take(result)
     }
 
     fn normalize(&mut self, path: &str, cwd: Option<&str>) -> String {
@@ -455,13 +650,26 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             let mut texts = self.group_texts(group);
+            let mut decoded = Vec::new();
             for &e in &entries {
                 let entry = &self.entries[e];
                 if entry.prog == "echo" || entry.prog == "printf" {
                     texts.push(echo_text(&entry.args));
+                    let result = echo_decoded(&entry.prog, &entry.args, &mut self.work);
+                    let Some(found) = self.take(result) else {
+                        return;
+                    };
+                    decoded.extend(found);
                 }
             }
-            if !self.spend(texts.iter().map(|t| WORD + t.len()).sum()) {
+            // C-4: a shell and xargs/parallel also get the decoded texts; an interpreter's `code` does not
+            let mut fed = texts.clone();
+            for text in decoded {
+                if !fed.contains(&text) {
+                    fed.push(text);
+                }
+            }
+            if !self.spend(fed.iter().map(|t| 2 * (WORD + t.len())).sum()) {
                 return;
             }
             for &e in &interpreters {
@@ -486,14 +694,18 @@ impl<'a> Ctx<'a> {
                     );
                 }
                 let exempt = self.entries[shell].exempt;
-                for body in &texts {
+                for body in &fed {
                     if self.collect(body, exempt, depth + 1) {
                         mark(&mut self.entries[shell].opaque, Opaque::DepthCap);
                     }
                 }
             }
             if !feeders.is_empty() {
-                let lines = fed_lines(&texts);
+                // I-3: lines past the cap would be dropped unread
+                let Some(lines) = fed_lines(&fed) else {
+                    self.halt();
+                    return;
+                };
                 for &e in &feeders {
                     self.feed_stdin(e, &lines, depth);
                 }
@@ -680,10 +892,20 @@ impl<'a> Ctx<'a> {
                 && matches!(prog_name(first).as_str(), "echo" | "printf")
             {
                 let out = echo_text(&stripped.cmd[1..]);
-                if !self.spend(WORD + out.len()) {
+                let result = echo_decoded(&prog_name(first), &stripped.cmd[1..], &mut self.work);
+                let decoded = self.take(result)?;
+                if !self
+                    .spend(WORD + out.len() + decoded.iter().map(|d| WORD + d.len()).sum::<usize>())
+                {
                     return None;
                 }
                 texts.push(out);
+                // C-4: a shell runs what it prints, escapes decoded
+                for text in decoded {
+                    if !texts.contains(&text) {
+                        texts.push(text);
+                    }
+                }
             }
             if let Some(group) = by_id.remove(&seg.group) {
                 texts.extend(group);
@@ -861,6 +1083,11 @@ impl<'a> Ctx<'a> {
         // One that starts among the peeled words (before the program the main parse found) means the tables
         // may have misread an option's value: the entry is marked (lead ruling R16).
         let main_at = tokens.len().saturating_sub(cmd.len());
+        // C-3: the command with its brace expressions expanded is one more (it marks nothing)
+        let result = brace_reading(&tokens, &mut self.work);
+        if let Some(reading) = self.take(result)? {
+            alternates.push((main_at, reading));
+        }
         let mut differs = false;
         for (at, alternate) in alternates {
             let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
@@ -979,6 +1206,25 @@ impl<'a> Ctx<'a> {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
             }
         }
+        // C-5: bash evaluates a subscript as arithmetic, running its substitutions even inside single quotes
+        if SUBSCRIPT_PROGRAMS.contains(&prog.as_str())
+            || (SUBSCRIPT_V_PROGRAMS.contains(&prog.as_str()) && args.iter().any(|a| a == "-v"))
+        {
+            for arg in args.iter().filter(|a| a.contains('[')) {
+                let scripts = self.on_extra(|work| {
+                    let found = body_substitutions(arg, true, work)?;
+                    Ok(found
+                        .into_iter()
+                        .map(|s| s.2.into_owned())
+                        .collect::<Vec<String>>())
+                })?;
+                for script in scripts {
+                    if self.collect(&script, exempt, depth + 1) {
+                        mark(&mut self.entries[e].opaque, Opaque::DepthCap);
+                    }
+                }
+            }
+        }
         if DOCKER.contains(&prog.as_str()) {
             // `docker run img sh -euc "..."`
             let Some(starts) = script_starts_in(&args, &mut self.work.extra) else {
@@ -1008,19 +1254,20 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped, at most `MAX_FED`.
-fn fed_lines(texts: &[String]) -> Vec<String> {
+/// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped. More than `MAX_FED` is too complex
+/// (`None`; SH-FW review I-3: the reference drops the rest unread).
+fn fed_lines(texts: &[String]) -> Option<Vec<String>> {
     let mut lines = Vec::new();
     for text in texts {
         for line in pystr::splitlines(text) {
             let line = pystr::strip_ws(line);
             if !line.is_empty() {
-                lines.push(line.to_string());
                 if lines.len() >= MAX_FED {
-                    return lines;
+                    return None;
                 }
+                lines.push(line.to_string());
             }
         }
     }
-    lines
+    Some(lines)
 }
