@@ -181,12 +181,16 @@ def _decode_ansi_c(piece):
     return "".join(out)
 
 
+_COMPOUND_HEREDOC = re.compile(r"(?:done|fi|esac|[})])[ \t]*<<")   # lenient.rs `compound_heredoc`
+
+
 def _lenient_segments(text):
     """`_lenient_segments` with Rust's third reading (FW-H review R1-M1, D-8)."""
     _LENIENT_USED[0] = True                               # SH-F2: no orphan texts are read from this lexing
     out = []
     G._charge(2 * len(text))
-    if "<(" in text or ">(" in text or "|" in text:       # #89 review F-1 (lenient.rs)
+    if ("<(" in text or ">(" in text or "|" in text or "<<<" in text   # #89 F-1, SH-F2 M-2 (lenient.rs)
+            or _COMPOUND_HEREDOC.search(text)):
         raise G._TooComplex()
     for piece in G.re.split(r"[;&|\n()`]+|\$\(", text):
         spaced = piece.replace("'", " ").replace('"', " ").split()
@@ -767,9 +771,12 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     global _NAMES
     if not hasattr(ctx, "read_names"):
         ctx.read_names, ctx.setters = set(), set()
+        ctx.feeders, ctx.script_feeds = 0, set()
     _NAMES = ctx.read_names
-    names = _setter_names(G._prog_name(cmd[0]) if cmd else "", cmd[1:], tokens, getattr(ctx, "subst", False))
+    names = _setter_names(G._prog_name(cmd[0]) if cmd else "", cmd[1:], tokens, getattr(ctx, "subst", False),
+                          ctx.read_names)
     ctx.read_names.update(names)
+    feeders = ctx.feeders
     saved, _RESOLVED = _RESOLVED, (tokens, words)
     try:
         entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
@@ -777,11 +784,27 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
         _RESOLVED = saved
     if names:
         ctx.setters.add(id(entry))
+    # SH-F2 review I-2: a shell's positional parameters that use a read name, put in place in its script
+    if ctx.read_names and entry.prog in G._SHELLS and entry.prog != "fish":
+        mode, start, _scripts = G._shell_parse(entry.prog, entry.args)
+        if mode == "c" and start < len(entry.args):
+            params = entry.args[start + 1:]
+            if any(_uses_name(a, True, ctx.read_names.__contains__) for a in params):
+                text = _positional_script(entry.args[start], params)
+                if text != entry.args[start]:
+                    readers = ctx.readers
+                    G._collect(text, ctx, exempt, depth + 1)
+                    if ctx.readers > readers:
+                        entry.script_reads = True
     if entry.prog in _EXPORTERS:
         for arg in entry.args:
             name, eq, value = arg.partition("=")
             if eq and name in _COMMAND_ENV and value:
                 G._collect(value, ctx, exempt, depth + 1)
+    if ctx.feeders > feeders:                             # review I-1: its scripts or payloads added a layer
+        ctx.script_feeds.add(id(entry))
+    if entry.stdin_runs:
+        ctx.feeders += 1
     return entry
 
 
@@ -819,6 +842,7 @@ _COMPOUND = ("if", "while", "until", "for", "select", "case")          # SH-F3: 
 
 def _collect_once_body(text, ctx, exempt, depth):
     readers_at_start = ctx.readers                        # SH-F3
+    feeders_at_start = getattr(ctx, "feeders", 0)         # SH-F2 review I-1
     new_entries, braced, after_compound = [], set(), set()
     segs, orphan_texts = _segments_orphans(text)          # SH-F2
     for seg in segs:
@@ -848,14 +872,31 @@ def _collect_once_body(text, ctx, exempt, depth):
     piped = [e for entries in by_group.values() for e in entries[1:]]
     piped_ids = {id(e) for e in piped}
     procsub = "<(" in text or ">(" in text
-    fed_script = any(e.script_reads and (procsub or id(e) in piped_ids) for e in new_entries)
+    script_feeds = getattr(ctx, "script_feeds", set())   # review I-1: a script that added a layer, a here-string
+    fed_script = any((e.script_reads or id(e) in script_feeds) and (procsub or id(e) in piped_ids or e.group.texts)
+                     for e in new_entries)
     fed_compound = any(e.raw[:1] and e.raw[0] in _COMPOUND for e in piped)
-    # SH-F2: so does a variable read from a pipe or a here-string, and a compound fed a here-string or a heredoc
+    # SH-F2: so does a variable read from a pipe or a here-string, and a compound fed a here-string or a heredoc;
+    # review I-1, I-2: a bare `exec` given one, and a call of a function the text defines, piped or given one
     setters = getattr(ctx, "setters", set())
     fed_setter = any(id(e) in setters and (id(e) in piped_ids or e.group.texts) for e in new_entries)
-    fed_closer = orphan_texts or any(
-        (not e.raw or (len(e.raw) == 1 and e.raw[0] in _CLOSERS)) and e.group.texts for e in new_entries)
-    if fed_script or ((fed_compound or fed_setter or fed_closer) and ctx.readers > readers_at_start):
+
+    fd_reader = any(G._reads_fd_as_shell(e) for e in new_entries)
+
+    def closer(k, e):
+        opener = not fd_reader and not e.prog and e.raw and G._prog_name(e.raw[0]) == "exec"
+        call = defined.get(e.prog, k) < k
+        return (((not e.raw or opener or (len(e.raw) == 1 and e.raw[0] in _CLOSERS)) and e.group.texts)
+                or (call and (id(e) in piped_ids or e.group.texts)))
+    fed_closer = orphan_texts or any(closer(k, e) for k, e in enumerate(new_entries))
+    # review I-2: a reader added before the name it uses was read
+    if ctx.readers == readers_at_start and getattr(ctx, "read_names", None) and any(
+            G._reads_stdin_as_shell(e) for e in new_entries):
+        ctx.readers += 1
+    readers_added = ctx.readers > readers_at_start
+    feeders_added = getattr(ctx, "feeders", 0) > feeders_at_start
+    if (fed_script or ((fed_compound or fed_setter) and readers_added)
+            or (fed_closer and (readers_added or feeders_added))):
         raise G._TooComplex()
     for entries in by_group.values():
         shell = next((e for e in entries if G._reads_stdin_as_shell(e)), None)
@@ -918,10 +959,8 @@ def _collect_once_body(text, ctx, exempt, depth):
                 raise G._TooComplex()                     # fail closed: `sh < <(f)`
             for body in bodies:
                 G._collect(body, ctx, exempt, depth + 1)
-    if "<(" in text:                                      # SH-F2: an xargs/parallel layer fed a `<(...)`
-        fed_from_procsub = [e for e in new_entries if e.stdin_runs and (
-            any(op.startswith("<") and G._PROCSUB_PATH in target for op, target in e.redirs)
-            or any(G._PROCSUB_PATH in w for w in e.raw))]
+    if "<(" in text:                                      # SH-F2 (review I-1): every xargs/parallel layer
+        fed_from_procsub = [e for e in new_entries if e.stdin_runs]
         if fed_from_procsub:
             fed = []
             for inner in G._process_substitutions(text):
@@ -1105,7 +1144,7 @@ _NESTED = G._Lexer.nested
 _BACKTICK = G._Lexer.backtick
 _DOLLAR_FN = G._Lexer.dollar
 _PAREN = G._Lexer.paren
-_DEFAULT_OP = re.compile(r"(?:[A-Za-z0-9_]+|[@*?$!-])(?::[-+=]|[-+=])")
+_DEFAULT_OP = re.compile(r"(?:[A-Za-z0-9_]+(?:\[[^\]]*\])?|[@*?$!-])(?::[-+=]|[-+=])")   # SH-F2 I-3: `a[0]`
 _LITERAL_CHARS = frozenset("._+@/-")
 
 
@@ -1288,10 +1327,16 @@ def _resolve_holders(tokens, holders):
 #     here-string, or a compound closer or an orphan pipeline is fed a here-string or heredoc, and that adds a
 #     stdin reader, is too complex.
 # (3) A default or alternate value in any word also reads as its text: one more alternate.
+# The #103 review (review-sh-f2.md): (1) feeds every layer of a text holding `<(`, and here-strings given to a
+# script, a bare `exec` or a function call count with layers too (I-1); (2) follows copies, namerefs, `${!n}`,
+# positional parameters, readers before their `read`, function calls, and `sh <(...)` (I-2); (3) reads
+# subscripted names and `$'...'`/`$"..."` values (I-3); the lenient split fails closed on `<<<` and on a
+# heredoc after a compound (M-2).
 
 _MAX_DEFAULT_DEPTH = 8
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_NAME_USE = re.compile(r"\$\{?[!#]?([A-Za-z_][A-Za-z0-9_]*)")
+_NAME_USE = re.compile(r"\$(\{)?([!#])?([A-Za-z_][A-Za-z0-9_]*)")
+_POSITIONAL = re.compile(r"\$(?:\{([0-9]+|[@*])\}|([0-9@*]))")
 _NAMES = set()                                            # the current pass's `ctx.read_names`
 _GROUPS = None                                            # the groups made while `_segments_orphans` lexes
 _LENIENT_USED = [False]
@@ -1325,8 +1370,9 @@ def _segments_orphans(text):
     return segs, orphan
 
 
-def _setter_names(prog, args, tokens, held):
-    """collect.rs `setter_names`: the variables a command sets from what it reads, lowercased."""
+def _setter_names(prog, args, tokens, held, known):
+    """collect.rs `setter_names`: the variables a command sets from what it reads, lowercased (copies and
+    namerefs included, review I-2)."""
     if prog == "read":
         names = ["reply"] + [a.lower() for a in args if _NAME.match(a)]
     elif prog in ("mapfile", "readarray"):
@@ -1335,27 +1381,58 @@ def _setter_names(prog, args, tokens, held):
         names = [args[0].lower()] if args and _NAME.match(args[0]) else []
     else:
         names = []
-    if held:
-        names += [w.split("=", 1)[0].lower() for w in tokens if G._ASSIGNMENT.match(w)]
+    nameref = prog in ("declare", "local", "typeset") and any(
+        len(a) > 1 and a.startswith("-") and "n" in a[1:] for a in args)
+    for word in tokens:
+        if not G._ASSIGNMENT.match(word):
+            continue
+        name, value = word.split("=", 1)
+        read = bool(known) or bool(names)
+        uses = _uses_name(value, read, lambda n: n in known or n in names)
+        if held or uses or (nameref and read):
+            names.append(name.lower())
     return names
 
 
-def _uses_name(text):
-    """collect.rs `uses_name`: `text` expands one of the read names."""
-    return any(m.group(1).lower() in _NAMES for m in _NAME_USE.finditer(text))
+def _uses_name(text, any_read, is_read):
+    """collect.rs `uses_name`: `text` expands a name `is_read` accepts, or, when `any_read`, a `${!n}`."""
+    for m in _NAME_USE.finditer(text):
+        if m.group(1) and m.group(2) == "!" and any_read:
+            return True
+        if is_read(m.group(3).lower()):
+            return True
+    return False
+
+
+def _positional_script(script, params):
+    """collect.rs `positional_script`: the script with `$1`, `${10}`, `$@`, `$*` ... put in place."""
+    def value(m):
+        key = m.group(1) or m.group(2)
+        if key in "@*":
+            return " ".join(params[1:])
+        n = int(key)
+        return params[n] if n < len(params) else ""
+    return _POSITIONAL.sub(value, script)
 
 
 _READS_STDIN_AS_SHELL = G._reads_stdin_as_shell
 
 
 def _reads_stdin_as_shell(entry):
-    """`_reads_stdin_as_shell`, and a program word, `-c` script or eval words that use a read name."""
-    if _NAMES and (
-            _uses_name(entry.prog_path)
-            or (entry.prog == "eval" and _uses_name(" ".join(entry.args)))
-            or (entry.prog in G._SHELLS and (lambda parsed: parsed[0] == "c" and any(
-                _uses_name(script) for _i, script in parsed[2]))(G._shell_parse(entry.prog, entry.args)))):
-        return True
+    """`_reads_stdin_as_shell`, and a program word, `-c` script or eval words that use a read name; once a name
+    is read, a shell or `source` whose script is a file descriptor (review I-2)."""
+    if _NAMES:
+        uses = lambda text: _uses_name(text, True, _NAMES.__contains__)   # noqa: E731
+        if uses(entry.prog_path) or (entry.prog == "eval" and uses(" ".join(entry.args))):
+            return True
+        if entry.prog in ("source", ".") and G._FD_PATH.match(G._first_arg(entry.args) or ""):
+            return True
+        if entry.prog in G._SHELLS:
+            mode, start, scripts = G._shell_parse(entry.prog, entry.args)
+            if mode == "c" and any(uses(script) for _i, script in scripts):
+                return True
+            if mode == "file" and start < len(entry.args) and G._FD_PATH.match(entry.args[start]):
+                return True
     return _READS_STDIN_AS_SHELL(entry)
 
 
@@ -1396,6 +1473,16 @@ def _unquote(text):
         if c == "\\":
             out.append(text[k + 1:k + 2])
             k += 2
+        elif c == "$" and text[k + 1:k + 2] == "'":           # review I-3: `$'...'` decoded
+            got = G._ansi_c(text, k + 2)
+            if got is None:
+                out.append(text[k + 2:])
+                k = n
+            else:
+                out.append(got[0])
+                k = got[1]
+        elif c == "$" and text[k + 1:k + 2] == '"':           # `$"..."` is `"..."`
+            k += 1
         elif c == "'":
             end = text.find("'", k + 1)
             end = n if end < 0 else end

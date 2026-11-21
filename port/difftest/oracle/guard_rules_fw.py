@@ -2235,7 +2235,8 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
                 if _needs_shell(template):
                     scripts.append(line)
                 scripts.extend(_parallel_lines(line, replace, _parallel_inputs(rest[cut:])))
-            if cut == len(rest) and stdin_runs is not None and not fed:
+            if ((cut == len(rest) or any(t in ("::::", "::::+") for t in rest[cut:]))   # SH-F2: a file input
+                    and stdin_runs is not None and not fed):
                 fed = True
                 stdin_runs.append(("parallel", template, replace))
             toks = template

@@ -159,12 +159,12 @@ fn row_cases() -> Vec<Case> {
     out
 }
 
-/// Commands where Rust blocks and Python allows, by name (`fw:<name>`; named, not numbered, so a new
-/// one cannot re-point an entry). Declared case by case as D-8 in
-/// `port/difftest/divergences/guard.check.toml`:
+/// Commands where Rust blocks and the shipped Python allows, by name (`fw:<name>`; named, not numbered, so
+/// a new one cannot re-point an entry):
 /// - FW-I payloads where Rust's G1 reads a package manager's or an OS installer's options as FW-I does
-///   (bash-verified installs);
-/// - text nested past anthology-shell's depth cap (final review I-1: G0).
+///   (bash-verified installs); the oracle now reads them the same way, so they need no entry;
+/// - text nested past anthology-shell's depth cap (final review I-1: G0), declared case by case as D-8 in
+///   `port/difftest/divergences/guard.check.toml`.
 fn fw_stricter() -> Vec<(&'static str, String)> {
     let nested = (0..13).fold("npx playwright install".to_string(), |c, _| {
         format!("echo $({c})")

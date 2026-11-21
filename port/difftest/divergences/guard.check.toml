@@ -6,41 +6,6 @@ reason = 'Python raised inside _check (RecursionError on hostile nesting, for on
 
 [[divergence]]
 class = "D-8"
-case = "fw:npm-loglevel-i"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --loglevel silent i puppeteer` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:npm-loglevel-init"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --loglevel silent init playwright` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:npm-foo-bar-i"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --foo-bar silent i puppeteer` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:npm-foo-bar-init"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --foo-bar silent init playwright` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:apt-get-o"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `sudo apt-get -o Dpkg::Options::=--force-confnew install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:apt-get-option"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `apt-get --option x=y install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
-case = "fw:dnf-setopt"
-reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `dnf --setopt x=y install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
-
-[[divergence]]
-class = "D-8"
 case = "fw:depth-cap-substitutions"
 reason = 'Rust stricter: final review I-1. 13 nested `$(echo ...)` around `npx playwright install` go past the depth cap (12), so the text inside was never analyzed: Rust blocks it as too complex (G0); the Python on rust allows it unanalyzed.'
 

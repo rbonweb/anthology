@@ -40,6 +40,11 @@
 //!   assignment over a substitution) read stdin as commands, and a text that feeds such a setter, or feeds a
 //!   compound closer or an orphan pipeline a here-string or heredoc, while it adds a stdin reader, is too
 //!   complex (`echo X | while read l; do sh -c "$l"; done`, `{ sh; } <<< X`).
+//! - SH-F2 review: every xargs/parallel layer of a text holding `<(` is fed (I-1); a layer added by a script,
+//!   a bare `exec` or a function call given a here-string, and a piped or fed function call, count as fed
+//!   (I-1, I-2); read names propagate through copies, namerefs and `${!n}`, a shell's positional
+//!   parameters are put in place in its script, a reader added before its `read` counts, and a shell or
+//!   `source` of a descriptor reads stdin once a name is read (I-2).
 
 mod printf;
 
@@ -50,8 +55,8 @@ use crate::analyze::Entry;
 use crate::lexer::scan::{body_substitutions, scan_paren};
 use crate::lexer::words::{Memo, ansi_c_decode};
 use crate::lexer::{
-    Group, GroupId, Holder, LexOut, PROCSUB_PATH, Reading, Redirect, TooComplex, Work, find_from,
-    lex_in, pystr, skip_escape,
+    Group, GroupId, Holder, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
+    skip_escape,
 };
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
@@ -823,9 +828,17 @@ fn is_name(word: &str) -> bool {
 
 /// SH-F2: the variables a command sets from what it reads, lowercased: every name among the words of `read`
 /// (and `REPLY`) or of `mapfile`/`readarray` (and `MAPFILE`); with a substitution in its segment (`held`), the
-/// name of a `for`/`select` and of each assignment (`for l in $(cat)`, `l=$(cat)`). Option values that look
-/// like names count too.
-fn setter_names(prog: &str, args: &[String], tokens: &[String], held: bool) -> Vec<String> {
+/// name of a `for`/`select`; and each assignment whose segment is `held` or whose value uses a name already
+/// read (`known`, or one set earlier in the same command: `x=$l`, `export x=$l`). Review I-2: a nameref
+/// (`declare -n r=l`, `local -n`, `typeset -n`) sets every name it assigns once any name is read. Option
+/// values that look like names count too.
+fn setter_names(
+    prog: &str,
+    args: &[String],
+    tokens: &[String],
+    held: bool,
+    known: &HashSet<String>,
+) -> Vec<String> {
     let lower = |w: &str| w.to_ascii_lowercase();
     let mut names: Vec<String> = match prog {
         "read" => std::iter::once("reply".to_string())
@@ -842,9 +855,17 @@ fn setter_names(prog: &str, args: &[String], tokens: &[String], held: bool) -> V
             .collect(),
         _ => Vec::new(),
     };
-    if held {
-        for word in tokens.iter().filter(|w| is_assignment(w)) {
-            if let Some((name, _)) = word.split_once('=') {
+    let nameref = matches!(prog, "declare" | "local" | "typeset")
+        && args
+            .iter()
+            .any(|a| a.len() > 1 && a.starts_with('-') && a[1..].contains('n'));
+    for word in tokens.iter().filter(|w| is_assignment(w)) {
+        if let Some((name, value)) = word.split_once('=') {
+            let read = !known.is_empty() || !names.is_empty();
+            let uses = uses_name(value, read, |n| {
+                known.contains(n) || names.iter().any(|m| m == n)
+            });
+            if held || uses || (nameref && read) {
                 names.push(lower(name));
             }
         }
@@ -852,14 +873,17 @@ fn setter_names(prog: &str, args: &[String], tokens: &[String], held: bool) -> V
     names
 }
 
-/// SH-F2: `text` expands one of `names` (`$l`, `${l}`, `${l:-x}`, `${#l}`, `${!l}`), compared lowercased.
-fn uses_name(text: &str, names: &HashSet<String>) -> bool {
+/// SH-F2: `text` expands a name `is_read` accepts (lowercased: `$l`, `${l}`, `${l:-x}`, `${#l}`), or, when
+/// `any_read` (some name is read), an indirect `${!n}` (review I-2).
+fn uses_name(text: &str, any_read: bool, is_read: impl Fn(&str) -> bool) -> bool {
     let b = text.as_bytes();
     (0..b.len()).filter(|&i| b[i] == b'$').any(|i| {
         let mut j = i + 1;
-        if b.get(j) == Some(&b'{') {
+        let braced = b.get(j) == Some(&b'{');
+        if braced {
             j += 1;
         }
+        let bang = b.get(j) == Some(&b'!');
         if matches!(b.get(j), Some(b'!' | b'#')) {
             j += 1;
         }
@@ -869,11 +893,67 @@ fn uses_name(text: &str, names: &HashSet<String>) -> bool {
         {
             return false;
         }
+        if braced && bang && any_read {
+            return true;
+        }
         let end = (j..b.len())
             .find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_'))
             .unwrap_or(b.len());
-        names.contains(&text[j..end].to_ascii_lowercase())
+        is_read(&text[j..end].to_ascii_lowercase())
     })
+}
+
+/// SH-F2 review I-2: `sh -c S $0 $1 ...` read with its positional parameters put in place (`$1`, `${10}`, `$@`,
+/// `$*`, `${@}`), so `sh -c 'eval "$1"' _ "$l"` reads as `eval "$l"`. `params[0]` is `$0`.
+fn positional_script(script: &str, params: &[String]) -> String {
+    let b = script.as_bytes();
+    let mut out = String::new();
+    let (mut last, mut i) = (0, 0);
+    while i < b.len() {
+        if b[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let found = if b.get(i + 1) == Some(&b'{') {
+            let j = i + 2;
+            let k = (j..b.len())
+                .find(|&k| !b[k].is_ascii_digit())
+                .unwrap_or(b.len());
+            if k > j && b.get(k) == Some(&b'}') {
+                Some((&script[j..k], k + 1))
+            } else if matches!(b.get(j), Some(b'@' | b'*')) && b.get(j + 1) == Some(&b'}') {
+                Some((&script[j..j + 1], j + 2))
+            } else {
+                None
+            }
+        } else if b
+            .get(i + 1)
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'@' | b'*'))
+        {
+            Some((&script[i + 1..i + 2], i + 2))
+        } else {
+            None
+        };
+        let Some((key, end)) = found else {
+            i += 1;
+            continue;
+        };
+        let value = match key {
+            "@" | "*" => params.get(1..).unwrap_or(&[]).join(" "),
+            n => n
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| params.get(n))
+                .cloned()
+                .unwrap_or_default(),
+        };
+        out.push_str(&script[last..i]);
+        out.push_str(&value);
+        last = end;
+        i = end;
+    }
+    out.push_str(&script[last..]);
+    out
 }
 
 /// `_FD_PATH`: a numbered file descriptor.
@@ -983,6 +1063,10 @@ pub(crate) struct Ctx<'a> {
     read_names: HashSet<String>,
     /// SH-F2: the entries that set one.
     setters: HashSet<usize>,
+    /// SH-F2 review I-1: how many xargs/parallel layers (`stdin_runs`) have been added.
+    feeders: usize,
+    /// SH-F2 review I-1: the entries whose scripts or payloads added one.
+    script_feeders: HashSet<usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1011,6 +1095,8 @@ impl<'a> Ctx<'a> {
             reads_seen: HashSet::new(),
             read_names: HashSet::new(),
             setters: HashSet::new(),
+            feeders: 0,
+            script_feeders: HashSet::new(),
         }
     }
 
@@ -1210,6 +1296,7 @@ impl<'a> Ctx<'a> {
     /// `_collect_once`.
     fn collect_once(&mut self, text: &str, exempt: bool, depth: usize) {
         let readers_at_start = self.readers;
+        let feeders_at_start = self.feeders;
         let LexOut {
             lexed,
             info,
@@ -1282,9 +1369,13 @@ impl<'a> Ctx<'a> {
             .flat_map(|es| es.iter().skip(1).copied())
             .collect();
         let procsub = text.contains("<(") || text.contains(">(");
-        let fed_script = new_entries
-            .iter()
-            .any(|e| self.script_readers.contains(e) && (procsub || piped.contains(e)));
+        let piped_set: HashSet<usize> = piped.iter().copied().collect();
+        // SH-F2 review I-1: a script or payload that added an xargs/parallel layer counts too, and so does a
+        // here-string or heredoc given to the command (`bash -c 'xargs npx' <<< X`)
+        let fed_script = new_entries.iter().any(|&e| {
+            (self.script_readers.contains(&e) || self.script_feeders.contains(&e))
+                && (procsub || piped_set.contains(&e) || self.has_texts(self.entries[e].group))
+        });
         let fed_compound = piped.iter().any(|&e| {
             self.entries[e]
                 .raw
@@ -1293,27 +1384,53 @@ impl<'a> Ctx<'a> {
         });
         // SH-F2: so does a variable read from a pipe or a here-string (`echo X | { read l; eval "$l"; }`), and
         // a compound fed a here-string or a heredoc (`while read l; do sh -c "$l"; done <<< X`, `{ sh; } <<< X`)
-        let piped_set: HashSet<usize> = piped.iter().copied().collect();
         let fed_setter = new_entries.iter().any(|&e| {
             self.setters.contains(&e)
                 && (piped_set.contains(&e) || self.has_texts(self.entries[e].group))
         });
+        let Some(defined) = self.defined_names(&new_entries) else {
+            return;
+        };
+        // review I-1, I-2: a bare `exec` given a here-string (unless a shell reads a descriptor: `exec 3<<<X;
+        // sh <&3` runs X, read below), and a call of a function the text defines that is piped or given a
+        // here-string (`f <<< X`, `echo X | f`), feed what runs after or inside them
+        let fd_reader = new_entries.iter().any(|&e| self.reads_fd_as_shell(e));
         let fed_closer = info.orphan_texts
             || new_entries.iter().any(|&e| {
-                let raw = &self.entries[e].raw;
-                (raw.is_empty()
+                let entry = &self.entries[e];
+                let raw = &entry.raw;
+                let opener = !fd_reader
+                    && entry.prog.is_empty()
+                    && raw.first().is_some_and(|w| prog_name(w) == "exec");
+                let call = defined.get(&entry.prog).is_some_and(|&at| at < e);
+                ((raw.is_empty()
+                    || opener
                     || (raw.len() == 1 && matches!(raw[0].as_str(), "}" | "fi" | "done" | "esac")))
-                    && self.has_texts(self.entries[e].group)
+                    && self.has_texts(entry.group))
+                    || (call && (piped_set.contains(&e) || self.has_texts(entry.group)))
             });
+        // review I-2: a reader added before the name it uses was read (`while :; do eval "$l"; read l; done`)
+        if self.readers == readers_at_start && !self.read_names.is_empty() {
+            for &e in &new_entries {
+                match self.reads_stdin_as_shell(e) {
+                    Some(true) => {
+                        self.readers += 1;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return,
+                }
+            }
+        }
+        let readers_added = self.readers > readers_at_start;
+        let feeders_added = self.feeders > feeders_at_start;
         if fed_script
-            || ((fed_compound || fed_setter || fed_closer) && self.readers > readers_at_start)
+            || ((fed_compound || fed_setter) && readers_added)
+            || (fed_closer && (readers_added || feeders_added))
         {
             self.halt();
             return;
         }
-        let Some(defined) = self.defined_names(&new_entries) else {
-            return;
-        };
         // I-2a: `new_entries[..fed_from]` printed into an earlier compound-headed pipeline already
         let mut fed_from = 0;
         for group in order {
@@ -1503,21 +1620,14 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        // SH-F2: an xargs or parallel layer whose input is a process substitution (`xargs npx < <(echo X)`,
-        // `xargs -a <(echo X) npx`) is fed the literal output of every `<(...)` in the text, as a pipe feeds it
+        // SH-F2: every xargs or parallel layer of a text holding a process substitution is fed the literal
+        // output of every `<(...)` in it, as a pipe feeds it (`xargs npx < <(echo X)`, `xargs -a <(echo X) npx`;
+        // review I-1: through a compound, a function, `cat` or `exec` too)
         if text.contains("<(") {
             let fed_from_procsub: Vec<usize> = new_entries
                 .iter()
                 .copied()
-                .filter(|&e| {
-                    let entry = &self.entries[e];
-                    self.stdin_runs.get(&e).is_some_and(|runs| !runs.is_empty())
-                        && (entry
-                            .redirs
-                            .iter()
-                            .any(|r| r.op.starts_with('<') && r.target.contains(PROCSUB_PATH))
-                            || entry.raw.iter().any(|w| w.contains(PROCSUB_PATH)))
-                })
+                .filter(|e| self.stdin_runs.get(e).is_some_and(|runs| !runs.is_empty()))
                 .collect();
             if !fed_from_procsub.is_empty() {
                 let Some(inners) = self.process_substitutions(text) else {
@@ -1752,15 +1862,24 @@ impl<'a> Ctx<'a> {
             return Some(true);
         }
         // SH-F2: a program word, a `-c` script or eval words that use a variable read from stdin
-        // (`while read l; do sh -c "$l"; done`, `for l in $(cat); do eval "$l"; done`, `$l`)
+        // (`while read l; do sh -c "$l"; done`, `for l in $(cat); do eval "$l"; done`, `$l`); review I-2: and,
+        // once a name is read, a shell or `source` whose script is a file descriptor (`sh <(echo "$l")`)
         if !self.read_names.is_empty() {
-            let uses = |text: &str| uses_name(text, &self.read_names);
+            let names = &self.read_names;
+            let uses = |text: &str| uses_name(text, true, |n| names.contains(n));
             if uses(&entry.prog_path)
                 || (prog == "eval" && uses(&entry.args.join(" ")))
+                || ((prog == "source" || prog == ".")
+                    && first_arg(&entry.args).is_some_and(is_fd_path))
                 || (SHELLS.contains(&prog) && {
                     let parsed = shell_parse(prog, &entry.args, 0);
-                    parsed.mode == ShellMode::Command
-                        && parsed.scripts.iter().any(|(_, script)| uses(script))
+                    match parsed.mode {
+                        ShellMode::Command => parsed.scripts.iter().any(|(_, script)| uses(script)),
+                        ShellMode::File => {
+                            entry.args.get(parsed.start).is_some_and(|f| is_fd_path(f))
+                        }
+                        _ => false,
+                    }
                 })
             {
                 return Some(true);
@@ -1836,9 +1955,14 @@ impl<'a> Ctx<'a> {
         depth: usize,
         from_text: &[Opaque],
     ) -> Option<usize> {
+        let feeders = self.feeders;
         let e = self.add_one(tokens, redirs, group, exempt, depth, from_text)?;
         if self.entries[e].prog == "find" || FD_PROGRAMS.contains(&self.entries[e].prog.as_str()) {
             self.exec_walk(e, depth);
+        }
+        // SH-F2 review I-1: the scripts or payloads of `e` added an xargs/parallel layer
+        if self.feeders > feeders + usize::from(self.stdin_runs.contains_key(&e)) {
+            self.script_feeders.insert(e);
         }
         if self.halted { None } else { Some(e) }
     }
@@ -1959,7 +2083,7 @@ impl<'a> Ctx<'a> {
             return None;
         }
         // SH-F2: the variables this command sets from what it reads, before it is itself read as a stdin reader
-        let names = setter_names(&prog, &args, &tokens, subst);
+        let names = setter_names(&prog, &args, &tokens, subst, &self.read_names);
         if !self.spend(names.iter().map(|n| WORD + n.len()).sum()) {
             return None;
         }
@@ -2151,6 +2275,7 @@ impl<'a> Ctx<'a> {
         let e = self.entries.len() - 1;
         if !runs.is_empty() {
             self.stdin_runs.insert(e, runs);
+            self.feeders += 1;
         }
         if peeled.shell_launch {
             self.launchers.insert(e);
@@ -2163,6 +2288,29 @@ impl<'a> Ctx<'a> {
         }
         if self.reads_stdin_as_shell(e) == Some(true) {
             self.readers += 1;
+        }
+        // SH-F2 review I-2: a shell's positional parameters that use a read name, put in place in its script
+        // (`sh -c 'eval "$1"' _ "$l"`)
+        if !self.read_names.is_empty() && SHELLS.contains(&prog.as_str()) && prog != "fish" {
+            let parsed = shell_parse(&prog, &args, 0);
+            if parsed.mode == ShellMode::Command
+                && let Some(script) = args.get(parsed.start)
+            {
+                let params = args.get(parsed.start + 1..).unwrap_or(&[]);
+                let names = &self.read_names;
+                if params
+                    .iter()
+                    .any(|p| uses_name(p, true, |n| names.contains(n)))
+                {
+                    let text = positional_script(script, params);
+                    if !self.spend(WORD + text.len()) {
+                        return None;
+                    }
+                    if text != *script {
+                        scripts.push(text);
+                    }
+                }
+            }
         }
         let readers = self.readers;
         for script in &scripts {

@@ -931,6 +931,44 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         r#"echo "${1:-no args given}""#,
     ];
     out.extend(F2.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // The #103 review (review-sh-f2.md): I-1 to I-3 and M-2 payloads, and the controls; the oracle applies them
+    const F2R: &[&str] = &[
+        "{ xargs npx; } < <(echo playwright install)",
+        "f() { xargs npx; }; f < <(echo playwright install)",
+        "cat <(echo playwright install) | xargs npx",
+        "exec < <(echo playwright install); xargs npx",
+        "{ xargs npx; } <<< \"playwright install\"",
+        "bash -c 'xargs npx' <<< \"playwright install\"",
+        "exec <<< \"playwright install\"; xargs npx",
+        "parallel npx :::: <(echo playwright install)",
+        r#"echo npx playwright install | while read l; do sh -c 'eval "$1"' _ "$l"; done"#,
+        r#"echo npx playwright install | while read l; do bash -c '"$@"' _ $l; done"#,
+        r#"echo npx playwright install | { read l; x=$l; eval "$x"; }"#,
+        r#"echo npx playwright install | { read l; n=l; eval "${!n}"; }"#,
+        r#"echo npx playwright install | { read l; declare -n r=l; eval "$r"; }"#,
+        r#"echo npx playwright install | while :; do eval "$l"; read l || break; done"#,
+        r#"f() { read l; eval "$l"; }; echo npx playwright install | f"#,
+        r#"echo npx playwright install | while read l; do sh <(echo "$l"); done"#,
+        "f() { sh; }; echo npx playwright install | f",
+        "npm ${a[0]:-i} puppeteer",
+        "${a[0]:-npx} playwright install",
+        "npm ${x:-$'\\x69'} puppeteer",
+        "npm ${x:-$\"i\"} puppeteer",
+        "( sh ) <<< \"npx playwright install\"\necho \"a",
+        "while read l; do sh -c \"$l\"; done <<EOF\nnpx playwright install\nEOF\necho \"a",
+        "exec 3<<<'npx playwright install'; sh <&3",
+        r#"git ls-files | while read -r f; do sh -c 'wc -l "$1"' _ "$f"; done"#,
+        r#"git ls-files | while read f; do x=$f; echo "$x"; done"#,
+        r#"build() { make "$@"; }; echo y | build"#,
+        "xargs rm < <(echo tmp.txt)",
+        "diff <(xargs -n1 < a) <(xargs -n1 < b)",
+        "parallel -j4 convert {} {.}.png :::: files.txt",
+        "git commit -m \"$(cat <<'EOF'\nfix: it's done\nEOF\n)\"\necho \"a",
+    ];
+    out.extend(
+        F2R.iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     out
 }
 
