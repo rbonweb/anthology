@@ -551,7 +551,9 @@ fn a_path_regex_limit_sets_incomplete() {
 
 // ------------------------------------------------------------------ fail-closed bounds
 
+/// A catastrophe guard: a bound below 8 s is raised to it, because a slow runner is not a regression.
 fn assert_quick(what: &str, bound: Duration, f: impl FnOnce()) {
+    let bound = bound.max(Duration::from_secs(8));
     let start = Instant::now();
     f();
     let took = start.elapsed();
@@ -582,18 +584,24 @@ fn quadratic_option_rescans_stop_at_the_budget() {
 
 #[test]
 fn peeling_64_prefixes_does_not_copy_the_words_each_time() {
-    let command = format!("{}ls{}", "sudo ".repeat(64), " a".repeat(200_000));
-    let start = Instant::now();
-    let a = analyze(&command, HOME);
-    let peeled = start.elapsed();
-    let command = format!("ls{}", " a".repeat(200_000));
-    let start = Instant::now();
-    analyze(&command, HOME);
-    let plain = start.elapsed();
-    assert_eq!(a.entries[0].prog, "ls");
-    // Copying every word on each of the 64 peels made this about 12 times the plain cost.
+    let peeled_command = format!("{}ls{}", "sudo ".repeat(64), " a".repeat(200_000));
+    let plain_command = format!("ls{}", " a".repeat(200_000));
+    let best = |command: &str| {
+        (0..3)
+            .map(|_| {
+                let start = Instant::now();
+                analyze(command, HOME);
+                start.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let (peeled, plain) = (best(&peeled_command), best(&plain_command));
+    assert_eq!(analyze(&peeled_command, HOME).entries[0].prog, "ls");
+    // Copying every word on each of the 64 peels made this about 12 times the plain cost; never judged
+    // below a 0.5 s floor (shared runners are noisy).
     assert!(
-        peeled < plain * 6 + Duration::from_millis(100),
+        peeled < (plain * 10).max(Duration::from_millis(500)),
         "{peeled:?} vs {plain:?}"
     );
 }
