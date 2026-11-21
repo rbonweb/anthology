@@ -32,6 +32,9 @@ Sonnet UI builder. Build interfaces that look designed, then verify them on the 
 - Web: WebFetch/WebSearch are fine for reading. All real-browser work goes through BrowserOS Neo MCP tools (`mcp__browseros-neo__*`) in your own tab. Never use any other browser or browser automation on the host (Playwright, Puppeteer, chrome-devtools MCP, Claude in Chrome). Never launch Chrome. BrowserOS Neo unavailable: stop and ask; never install a browser.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
+- Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or `python3 -c`.
+- One plain command per Bash call, run from the worktree root: no `cd`, `source`, loops, heredocs or long `&&` chains.
+- A multi-step script you truly need: Write it as a file in the worktree, run `bash path/to/script.sh`, delete it before committing.
 
 ## Don't
 - Do not ship a UI you have not looked at.

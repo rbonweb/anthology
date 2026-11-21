@@ -92,7 +92,7 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 | `architect` | opus | no | Architecture, system design, test strategy, plans | system-design, architecture, testing-strategy; preloaded: writing-plans |
 | `implementer` | sonnet | yes, in a worktree | Building from a clear plan | preloaded: test-driven-development, verification-before-completion |
 | `debugger` | sonnet | yes, in a worktree | Reproducible bugs | preloaded: systematic-debugging |
-| `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist, tech-debt, deploy-checklist |
+| `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist; tech-debt and deploy-checklist only when they apply |
 | `scout` | haiku | no | Finding code, running tests, summarizing output | none |
 | `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing |
 | `ui-designer` | sonnet | yes, in a worktree | Building UI | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation |
