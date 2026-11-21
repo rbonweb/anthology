@@ -504,6 +504,11 @@ def _brace_sequence(word):
     return False
 
 
+def _brace_item_space(word):
+    found = _brace_at(word)
+    return found is not None and any(c in _WHITE_SPACE for c in word[found[0]:found[1] + 1])
+
+
 def _subscript_runs(word):
     open_ = False
     for j, c in enumerate(word):
@@ -518,8 +523,7 @@ def _subscript_runs(word):
 
 def _fail_closed(tokens, braces):
     return any(
-        (braces and "{" in t and (_brace_sequence(t)
-                                  or (any(c in _WHITE_SPACE for c in t) and _brace_at(t) is not None)))
+        (braces and "{" in t and (_brace_sequence(t) or _brace_item_space(t)))
         or _subscript_runs(t)
         for t in tokens)
 
@@ -670,7 +674,8 @@ def _collect_once_body(text, ctx, exempt, depth):
     consumers = [e for e in new_entries if e.prog in G._SHELLS or e.prog in ("source", ".")]
     written = {target for e in new_entries for op, target in e.redirs
                if op.startswith(">") or op.startswith("&>")}
-    if ((consumers and ">(" in text) or any(e.raw[:1] == ["coproc"] for e in new_entries)
+    coproc = any(e.raw[:1] == ["coproc"] for e in new_entries)
+    if ((consumers and (">(" in text or coproc))
             or (written and any(a in written for c in consumers for a in c.args))):
         raise G._TooComplex()                             # fail closed
     if "<(" in text and any(e.prog in G._SHELLS or e.prog in ("source", ".") for e in new_entries):

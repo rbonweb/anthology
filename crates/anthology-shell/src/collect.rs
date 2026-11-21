@@ -440,11 +440,15 @@ const COMMAND_ENV: &[&str] = &[
 /// segment had an unquoted `{`.
 fn fail_closed(tokens: &[String], braces: bool) -> bool {
     tokens.iter().any(|t| {
-        (braces
-            && t.contains('{')
-            && (brace_sequence(t) || (t.contains(char::is_whitespace) && brace_at(t).is_some())))
+        (braces && t.contains('{') && (brace_sequence(t) || brace_item_space(t)))
             || subscript_runs(t)
     })
+}
+
+/// A brace expression whose items hold whitespace (a quoted item, `{'a b',c}`); whitespace elsewhere in the
+/// word (`Application\ Support/{a,b}`) is fine.
+fn brace_item_space(word: &str) -> bool {
+    brace_at(word).is_some_and(|(open, close, _)| word[open..=close].contains(char::is_whitespace))
 }
 
 /// A brace sequence `{x..y}` (not `${`): bash expands it to a list of words.
@@ -1039,11 +1043,11 @@ impl<'a> Ctx<'a> {
                 SHELLS.contains(&prog) || prog == "source" || prog == "."
             })
             .collect();
-        // fail closed: `> >(sh)`, `coproc`, a shell running a file the text wrote
-        if (!consumers.is_empty() && text.contains(">("))
-            || new_entries
-                .iter()
-                .any(|&e| self.entries[e].raw.first().is_some_and(|w| w == "coproc"))
+        // fail closed: `> >(sh)`, `coproc` with a shell, a shell running a file the text wrote
+        let coproc = new_entries
+            .iter()
+            .any(|&e| self.entries[e].raw.first().is_some_and(|w| w == "coproc"));
+        if (!consumers.is_empty() && (text.contains(">(") || coproc))
             || self.runs_written_file(&new_entries, &consumers)
         {
             self.halt();

@@ -451,8 +451,9 @@ fn what_the_gate_cannot_read_is_asked_or_left_unrewritten() {
         "rtk bypass python3 -c 'import os; os.system(\"curl x\")'",
         "rtk bypass busybox sh -c 'curl x'",
     ] {
+        // a deny is stricter than an ask: the shell analysis (SH-FW) reads busybox's `sh -c` script
         assert!(
-            matches!(sb.hook(cmd), Said::Ask(_)),
+            matches!(sb.hook(cmd), Said::Ask(_) | Said::Deny),
             "{cmd}: {:?}",
             sb.hook(cmd)
         );
@@ -532,8 +533,10 @@ fn a_huge_read_operand_does_not_stall_the_hook() {
 
 fn asked(sb: &Sandbox, cmds: &[&str]) {
     for cmd in cmds {
+        // a deny is stricter than an ask: the shell analysis (SH-FW) now reads the ruled command itself
+        // (`$'\x67it'`, `script ... git push`, xargs fed `push`), so the rule denies it
         assert!(
-            matches!(sb.hook(cmd), Said::Ask(_)),
+            matches!(sb.hook(cmd), Said::Ask(_) | Said::Deny),
             "{cmd}: {:?}",
             sb.hook(cmd)
         );

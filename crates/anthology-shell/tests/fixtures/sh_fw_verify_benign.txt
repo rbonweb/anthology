@@ -3209,3 +3209,7 @@ line2997
 line2998
 line2999
 EOF
+#---
+coproc ls
+#---
+ls ~/Library/Application\ Support/{Code,Notes}
