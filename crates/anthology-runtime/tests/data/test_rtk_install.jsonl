@@ -31,3 +31,7 @@
 {"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 5, "params": {"value": "<tmp>/fake-rtk\"; touch /tmp/pwned; \""}}
 {"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 6, "params": {"value": "C:\\rtk.exe"}}
 {"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 7, "params": {"value": "<tmp>/fake-rtk\\"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 1, "params": {"name": "rtk-hook"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 1, "params": {"name": "rtk-hook"}}

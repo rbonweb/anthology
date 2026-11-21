@@ -1,6 +1,8 @@
 //! Hook installation and lifecycle management for AI coding agents.
 
 pub mod constants;
+// anthology fork: the Claude hook's deny/ask/Read() enforcement past rtk prefixes (C1).
+pub mod anthology_gate;
 // Shares `hook_cmd`'s constraint: it runs inside the hook, where stray output
 // corrupts the JSON protocol. `from_agent` is the one exception and carries its
 // own allow -- it is reached only from the `rtk hook check` CLI.

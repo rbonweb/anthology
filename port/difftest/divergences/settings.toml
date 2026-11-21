@@ -1,0 +1,6 @@
+# Allowed divergences of the settings surface (GC-16). The oracle
+# (port/difftest/oracle/settings.py) marks each case it adjusted; no entry waives a diff.
+
+[[divergence]]
+class = "D-1"
+reason = "Python raised something other than ValueError, so its caller crashes: a TypeError, KeyError or AttributeError on a malformed stored op from state.json (the oracle then expects Rust to fail with the same exception class, its message free), or a RecursionError from json.loads on a document deeper than CPython's C stack allows (the oracle expects what Rust gives with no depth limit: the scanner's own refusal, or plugin_rule_status reading the document)."

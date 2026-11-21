@@ -56,11 +56,17 @@ fn probe_fails(version_line: Option<&str>, binary: Option<Vec<u8>>, ctx: &str) {
         assert_status(&run, &format!("status=failed:{R_PROBE}"), &c);
         assert_not_installed(&sb, &c);
         let b = one_broken(&sb, &c);
-        assert_eq!(
-            std::fs::read(b.join("anthology")).unwrap(),
-            bin,
-            "{c}: the staged binary"
-        );
+        let kept = std::fs::read(b.join("anthology")).unwrap_or_else(|e| {
+            let inside: Vec<_> = std::fs::read_dir(&b)
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name()).collect())
+                .unwrap_or_default();
+            panic!(
+                "{c}: the staged binary is not in {}: {e}; it holds {inside:?}; <ah>/bin holds {:?}; the run: {run:?}",
+                b.display(),
+                sb.bin_entries()
+            )
+        });
+        assert_eq!(kept, bin, "{c}: the staged binary");
         // The guard shim names it.
         let sb2 = Sandbox::new(release_of(V, &bin));
         sb2.seed();
@@ -191,6 +197,52 @@ fn parallel_guard_calls_never_give_a_wrong_verdict_or_a_corrupt_install() {
         }
         assert!(allowed >= 1, "{sh:?}: someone installed");
         assert_current(&sb, &fake(V, ALLOW), &format!("{sh:?}"));
+    });
+}
+
+/// The rate-limit stamp under a storm of parallel callers, with a stale stamp to retire each
+/// round: every caller either takes the stamp or is rate-limited, never "cannot write" in a
+/// writable folder (the flake of the parallel guard test: one call retired another's fresh
+/// stamp between a third call's failed create and its re-test).
+#[test]
+fn parallel_stamps_are_rate_limited_never_cannot_write() {
+    each_shell("parallel stamps", |sh| {
+        let sb = sandbox();
+        std::fs::create_dir_all(sb.bindir()).unwrap();
+        let harness = sb.root.join("stamp.sh");
+        std::fs::write(
+            &harness,
+            format!(
+                ". '{}'\nif anth_stamp \"$1\" 1 rate-limited; then echo ok; else echo \"$ANTH_REASON\"; fi\n",
+                sb.root.join(G_LIB).display()
+            ),
+        )
+        .unwrap();
+        let stamp = sb.bindir().join(".attempt");
+        let sb = Arc::new(sb);
+        for round in 0..25 {
+            let _ = std::fs::remove_file(&stamp);
+            std::fs::write(&stamp, b"").unwrap();
+            age(&stamp, 600);
+            let handles: Vec<_> = (0..12)
+                .map(|_| {
+                    let sb = sb.clone();
+                    let arg = stamp.to_str().unwrap().to_string();
+                    std::thread::spawn(move || sb.run(sh, "stamp.sh", &[&arg], b"").out())
+                })
+                .collect();
+            let outs: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            for o in &outs {
+                assert!(
+                    o == "ok\n" || o == "rate-limited\n",
+                    "{sh:?} round {round}: {o:?} in {outs:?}"
+                );
+            }
+            assert!(
+                outs.iter().any(|o| o == "ok\n"),
+                "{sh:?} round {round}: nobody took the stamp: {outs:?}"
+            );
+        }
     });
 }
 
