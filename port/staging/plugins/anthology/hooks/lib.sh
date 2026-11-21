@@ -880,7 +880,7 @@ anth_guard_offline() {
 # inherited; stdout to /dev/null). ANTH_RC = its status, ANTH_ERR = its stderr, byte for byte
 # (no trailing newline stripped: the sentinel keeps them). Command substitution would drop a
 # NUL, so every NUL becomes \001 first: stray bytes can never complete the token. The first
-# command of the pipeline still inherits stdin. ANTH_RC is digits only, else empty (a late
+# command of the pipeline still inherits stdin. ANTH_RC is digits only, else ? (a late
 # writer after the sentinel). The binary runs in a subshell, so the shell's own notes, such as
 # a report that it was killed by a signal, go to /dev/null, not into ANTH_ERR or the hook's
 # stderr.
@@ -899,7 +899,7 @@ anth_guard_run() {
     fi
     ANTH_RC=${ANTH_ERR##*x}
     ANTH_ERR=${ANTH_ERR%x*}
-    anth_only "$ANTH_RC" 0123456789 || ANTH_RC=
+    anth_only "$ANTH_RC" 0123456789 || ANTH_RC='?'
 }
 
 # anth_guard_settle: after a run that was not the allow token. ANTH_MSG = the binary's own
