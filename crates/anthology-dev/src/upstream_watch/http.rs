@@ -145,8 +145,7 @@ impl Http {
                     .headers()
                     .get("location")
                     .or_else(|| resp.headers().get("uri"))
-                    .and_then(|v| v.to_str().ok())
-                    .map(|v| v.trim().to_string());
+                    .map(|v| location_text(v.as_bytes()));
                 let Some(location) = location else {
                     return Err(http_error());
                 };
@@ -212,6 +211,29 @@ fn send(
         }
     };
     result.map_err(|e| describe(&e))
+}
+
+/// A `Location` header's bytes as urllib reads them (Latin-1, then `quote(...,
+/// encoding="iso-8859-1", safe=punctuation)`): surrounding whitespace trimmed, and every byte
+/// outside visible ASCII percent-encoded, so a non-ASCII target is followed, not refused.
+pub fn location_text(raw: &[u8]) -> String {
+    let start = raw
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(raw.len());
+    let end = raw
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |i| i + 1);
+    let mut out = String::with_capacity(end - start);
+    for &b in &raw[start..end] {
+        if b.is_ascii_graphic() {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// `redirect_request`'s method rule: `GET` stays `GET`; a `POST` on 301, 302 or 303 becomes a
@@ -593,6 +615,7 @@ mod tests {
             Ok("https://b.test/p%20q")
         );
         assert!(redirect_target("https://a.test/", "file:///etc/passwd").is_err());
+        assert_eq!(location_text(b" /caf\xe9 x\t"), "/caf%E9%20x");
         assert_eq!(
             scheme_netloc("HTTPS://u@h.test:8443/p?q"),
             ("https".to_string(), "u@h.test:8443".to_string())

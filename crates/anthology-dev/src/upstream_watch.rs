@@ -723,7 +723,8 @@ pub struct RunOut {
 pub type RunFn = fn(&[String], &[(String, String)], Duration) -> Result<RunOut, String>;
 
 /// The real [`RunFn`]. stdin is `/dev/null`; both pipes are read by their own threads; past
-/// the timeout the child is killed and reaped.
+/// the timeout the child is killed and reaped. As `communicate(timeout)`, the timeout also
+/// covers reading both pipes to their end (a grandchild holding a pipe open cannot hang it).
 pub fn run_subprocess(
     argv: &[String],
     env: &[(String, String)],
@@ -738,13 +739,15 @@ pub fn run_subprocess(
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| exc_name(&e))?;
     let pipe = |p: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut b = Vec::new();
             if let Some(mut p) = p {
                 let _ = p.read_to_end(&mut b);
             }
-            b
-        })
+            let _ = tx.send(b);
+        });
+        rx
     };
     let out = pipe(
         child
@@ -773,12 +776,16 @@ pub fn run_subprocess(
             Err(e) => return Err(exc_name(&e)),
         }
     };
+    let left = || timeout.saturating_sub(start.elapsed());
+    let (Ok(stdout), Ok(stderr)) = (out.recv_timeout(left()), err.recv_timeout(left())) else {
+        return Err("TimeoutExpired".into());
+    };
     Ok(RunOut {
         code: status
             .code()
             .unwrap_or_else(|| status.signal().map_or(-1, |s| -s)),
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout,
+        stderr,
     })
 }
 
@@ -1525,8 +1532,13 @@ fn normal(text: Option<&Value>) -> Result<String, Error> {
 /// `_without_budget(text)`: the normalised body without its "Startup budget" section (up to
 /// the next `### ` heading). A backtrack-limit error names the pattern.
 pub fn without_budget(text: &str) -> Result<String, Uncaught> {
-    BUDGET_SECTION_RE
-        .try_replacen(text, 0, "")
+    without_budget_with(&BUDGET_SECTION_RE, text)
+}
+
+/// [`without_budget`] with the compiled pattern as a parameter (the test seam for its
+/// backtrack limit).
+fn without_budget_with(re: &fancy_regex::Regex, text: &str) -> Result<String, Uncaught> {
+    re.try_replacen(text, 0, "")
         .map(|c| c.into_owned())
         .map_err(|e| Uncaught::new("RegexError", format!("_without_budget: {e}")))
 }
@@ -1939,7 +1951,7 @@ pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, deps: &Deps<'_>) -> O
     );
     print_report(&mut out, &changes, &actions, &errors, dry_run);
 
-    if let Some(target) = parsed.value("--json") {
+    if let Some(target) = parsed.value("--json").filter(|t| !t.is_empty()) {
         let mut doc = Map::new();
         doc.insert(
             "changes".into(),
@@ -2006,6 +2018,24 @@ pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, deps: &Deps<'_>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backtrack_limit_is_exit_1_naming_the_pattern() {
+        // The real pattern stays far below fancy-regex's limit (a 1 MiB body passes below), so
+        // a pattern that backtracks by construction drives the error path.
+        let re = fancy_regex::RegexBuilder::new(r"(?=x)(x*)*y")
+            .backtrack_limit(1)
+            .build()
+            .expect("pattern");
+        let err = without_budget_with(&re, &"x".repeat(64)).expect_err("the limit is hit");
+        assert_eq!(err.ty, "RegexError");
+        assert!(err.msg.starts_with("_without_budget: "), "{}", err.msg);
+        let out = err.into_output("upstream-watch", b"report\n".to_vec());
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, b"report\n");
+        let stderr = String::from_utf8(out.stderr).expect("utf-8");
+        assert!(stderr.starts_with("anthology-dev upstream-watch: RegexError: _without_budget: "));
+    }
 
     #[test]
     fn without_budget_cuts_to_the_next_heading_or_the_end() {

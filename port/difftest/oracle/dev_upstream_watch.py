@@ -25,8 +25,9 @@ Library surface: `run(case: dict) -> dict`. The case layout is documented in
 F-17 (plan GC-15) is applied to Python's result before the comparison: the commands an issue
 names are `scripts/dev.sh vendor ...` and `scripts/dev.sh startup-budget ...`, where the
 Python writes `python3 scripts/vendor.py ...` and `python3 scripts/startup_budget.py ...`. The
-oracle rewrites them where the Python builds them (every `Change.command`, and the Startup
-budget section's command line), so no other text is touched.
+oracle rewrites them where the Python builds them (every `Change.command` the checker builds,
+and the Startup budget section's command line), so no other text is touched; the `render` op
+renders the case's command verbatim.
 
 Python 3.9+ and the standard library only.
 """
@@ -81,6 +82,7 @@ def _uw():
             return render(key, rows).replace(
                 "```sh\npython3 scripts/startup_budget.py ", "```sh\nscripts/dev.sh startup-budget ", 1)
 
+        uw.PlainChange = uw.Change  # the `render` op renders the case's command verbatim
         uw.Change = F17Change
         uw.render_startup_budget = render_startup_budget
         _UW = uw
@@ -194,7 +196,7 @@ def _lib(case):
             value = uw._without_budget(case["text"])
         elif op == "render":
             c = case["change"]
-            change = uw.Change(
+            change = uw.PlainChange(
                 key=c["key"], kind=c["kind"], old=c["old"], new=c["new"],
                 new_target=c["new_target"], command=c["command"],
                 details=[tuple(d) for d in c["details"]], files=list(c["files"]),

@@ -381,7 +381,7 @@ pub(crate) fn s(t: &str) -> Value {
     Value::Str(t.to_string())
 }
 
-pub(crate) fn arr(items: &[&str]) -> Value {
+fn arr(items: &[&str]) -> Value {
     Value::Array(items.iter().map(|t| s(t)).collect())
 }
 

@@ -681,6 +681,13 @@ fn seeds() -> Vec<Value> {
         &real,
         false,
     ));
+    // An empty --json is no --json (`if args.json:`).
+    out.push(world(
+        Value::Null,
+        &["--dry-run", "--root", ".", "--json", ""],
+        &[],
+        false,
+    ));
     // Unwritable outputs: --json and GITHUB_OUTPUT naming a folder.
     out.push(world(
         Value::Null,
