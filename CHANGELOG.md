@@ -99,7 +99,8 @@ a new version section.
   `rtk` passes without a prompt only in the plain shape: one `rtk ls`, `tree`, `read`, `wc`,
   `diff`, `grep`, `rg`, `find`, everyday `rtk git` or `rtk cargo build/test/check/clippy/fmt`
   command with listed options and literal paths, and no pipe, `&&`, `;`, redirect,
-  substitution, variable, glob or `cd` in front. Everything else asks, and rtk rewrites
+  substitution, variable, glob, `@file` word or `cd` in front (and nothing after cargo's
+  `--`, no `:` in a git word but a commit message, no `git add -f`). Everything else asks, and rtk rewrites
   only into that shape. A rule's command text anywhere in such a line asks, however
   quoted. A dashed git builtin (`git-push`), words after a redirect (`git >/dev/null push`)
   and a redirect before the command (`< secret.txt cat`) now meet your deny rules. Rules

@@ -87,9 +87,12 @@
 //!   spaces, tabs and `-_./:,=+%@` stand. So no `;`, `&`, `|`, newline, subshell,
 //!   group, redirect of any kind (`<`, `>`, a here-string, a here-document, an fd
 //!   duplication), substitution, glob, brace or extglob character, comment, or a
-//!   word opening with `=`. `$`, a backquote, a backslash and `!` are refused even
-//!   inside quotes, so a quoted span is literal in every POSIX shell and zsh. The
-//!   only `~` is a leading `~/`, or a git revision suffix (`HEAD~1`, `main^`).
+//!   word opening with `=` or `@` (an argument file to rustc, rustdoc and others).
+//!   `$`, a backquote, a backslash and `!` are refused outside quotes and inside
+//!   double quotes; inside single quotes every printable character is literal in
+//!   every POSIX shell and zsh (`-m 'feat!: x'`). The only `~` is a leading `~` or
+//!   `~/` (the home, from `$HOME`; an unset `HOME` asks), or a git revision suffix
+//!   (`HEAD~1`, `main^`, `HEAD~5..HEAD`).
 //! - **`rtk <sub>` from [`PLAIN`].** The first word is `rtk` (so no assignment,
 //!   `cd`, `exec`, `eval`, `source`, launcher or rtk global flag in front), then
 //!   one of: `ls`, `tree`, `read`, `wc`, `diff`, `grep`, `rg`, `find`; `git status`,
@@ -100,17 +103,23 @@
 //!   and options with one; an unknown option, an abbreviation, or an option off the
 //!   list (`git -C`, `git log --output`, `git diff --ext-diff`, `git commit -F`,
 //!   `grep -f`/`--pre`, `rg -z`, `find -exec`/`-delete`/`-fprint*`/`-newer`, `cargo
-//!   --config`/`-Z`/`+toolchain`/`--target`/`--manifest-path`, clippy's `-C`) asks.
-//!   After cargo's `--` only libtest's, clippy's lint-level or rustfmt's `--check`
-//!   and `--edition` options stand.
+//!   --config`/`-Z`/`+toolchain`/`--target`/`--manifest-path`, `git add -f`) asks.
+//!   Any word after cargo's `--` asks (it goes to rustc, rustdoc or the test
+//!   binary). An option whose value is optional takes it only glued, as the program
+//!   does (`--pretty=x`, `-U5`, `-uno`); a bare one never takes the next word. An
+//!   option that takes the next word as its value asks when that word opens with
+//!   `-`, so a value never hides an option.
 //! - **Literal paths.** Every operand and option value that is not a pattern (grep's
 //!   pattern and `-e`, `--include`/`--glob`, find's `-name`/`-path`, libtest's
 //!   filters) is resolved lexically against the hook's working directory (`..`
 //!   normalised) and through symlinks too. It asks when it is `-` or lies under
 //!   `/dev`, `/proc` or `/sys` (case folded on macOS and Windows), and meets the
-//!   `Read()` rules: deny is a deny, ask an ask. A git operand has no `:` (`REV:path`
-//!   is a blob); for `x~1` and `x^1`, which zsh's `extendedglob` reads as patterns
-//!   for names starting with `x`, every such name in the directory is checked too.
+//!   `Read()` rules: deny is a deny, ask an ask. In a git command no word after the
+//!   subcommand holds a `:` (`REV:path` is a blob; `--pretty=format:%h` asks too),
+//!   except a `commit -m` message. For `x~1`, `x^1` and `x~1..y`, which zsh's
+//!   `extendedglob` reads as patterns for names starting with `x`, every such name
+//!   in the directory is checked too; a directory of more than 10 000 entries
+//!   asks.
 //!
 //! What is off the list asks: `rtk bypass`/`run`/`proxy`/`err`/`test`/`summary`,
 //! kubectl, oc, docker, dotnet, go, prettier, rspec, npm, npx, pnpm, yarn, bun,
@@ -133,6 +142,8 @@
 //!
 //! - Files a recursive search descends into (`grep -r x .`, `find . -name x`) are
 //!   not matched against `Read()` rules: only the paths named on the command line.
+//!   A glob value that selects files within it (`rg -g secret.txt`, `grep -r
+//!   --include secret.txt x .`) is a pattern, not a path, and is not checked either.
 //! - Inside an rtk expansion every command's operand words are checked against
 //!   `Read()` deny rules, whatever the command (`rtk sed -n p secret.txt`). What
 //!   reads a file without naming it as an operand is not seen: `rtk deps`
@@ -149,8 +160,12 @@
 //!   ruling above.
 //! - Plain git commands that print a file's content without naming it: `git show
 //!   REV`, `git log -p`, `git diff` print the diffs of every changed file, a
-//!   `Read()`-denied one included. Claude Code does not apply Read rules to them
-//!   either.
+//!   `Read()`-denied one included; so does a blob id another command printed
+//!   (`git ls-files -s`, then `git show <blob>`). Claude Code does not apply Read
+//!   rules to them either.
+//! - What an argument file holds (`@file`, read by rustc, rustdoc and others): a
+//!   word opening with `@` asks, but a file a program loads that way on its own
+//!   (a cargo config's `rustflags`) is the program's business.
 //! - Opaque inside an rtk expansion (the hook asks) when any deny or ask rule of
 //!   any kind exists: `eval`, `source`, `.`, `trap`, `alias`; a command word with
 //!   `$` or a glob; any shell with no parseable `-c` (stdin, a script file, tcsh
@@ -191,9 +206,6 @@
 //!   like a script (`ssh h 'x=push; git $x'`) is read as one, rules only.
 //! - `xargs CMD`, `parallel CMD` and `{}` in a `find -exec*`/`-ok*` payload are read
 //!   as followed by a word that expands.
-//! - `rtk git show HEAD:secret.txt` prints a `Read()`-denied file's committed content:
-//!   a `REV:path` operand is not split (nor for `git cat-file -p`, `git log -p`,
-//!   `git grep x REV`). Claude Code does not apply Read rules to them either.
 //! - A bare `.` or `source` with nothing after it, and a shell or interpreter
 //!   named as an operand (`ruff check .`, `docker exec app python x.py`, `uv run
 //!   python x.py`), are not commands: they ask only after a launcher the gate
@@ -2603,9 +2615,24 @@ struct PlainSub {
     /// Values that are patterns, not files: not checked as paths.
     patterns: &'static [&'static str],
     operands: Operands,
-    /// What may follow a `--` that ends the options: for cargo, the test binary's
-    /// or clippy's options. `None`: operands only.
-    after_dashes: Option<&'static PlainSub>,
+    /// Options whose value is optional and taken only when glued (`--pretty=x`,
+    /// `-U5`, `-uno`): a bare one never takes the next word.
+    glued: &'static [&'static str],
+    /// Options whose value is free text, never an operand (`commit -m`): it may
+    /// hold a `:` in a git command.
+    free: &'static [&'static str],
+}
+
+impl PlainSub {
+    const fn glued(mut self, glued: &'static [&'static str]) -> Self {
+        self.glued = glued;
+        self
+    }
+
+    const fn free(mut self, free: &'static [&'static str]) -> Self {
+        self.free = free;
+        self
+    }
 }
 
 const GIT_LOG_FLAGS: &[&str] = &[
@@ -2635,13 +2662,14 @@ const GIT_LOG_FLAGS: &[&str] = &[
     "--regexp-ignore-case",
     "--date-order",
     "--topo-order",
+    // Optional values, glued only: `--pretty=oneline`, `--format=%h`.
+    "--pretty",
+    "--format",
 ];
 const GIT_LOG_VALUES: &[&str] = &[
     "-n",
     "--max-count",
     "--skip",
-    "--format",
-    "--pretty",
     "--author",
     "--committer",
     "--grep",
@@ -2689,11 +2717,13 @@ const fn sub(
         values,
         patterns: &[],
         operands,
-        after_dashes: None,
+        glued: &[],
+        free: &[],
     }
 }
 
 const CARGO_FLAGS: &[&str] = &[
+    "-r",
     "--release",
     "--all",
     "--workspace",
@@ -2733,35 +2763,6 @@ const CARGO_VALUES: &[&str] = &[
     "--color",
     "--profile",
 ];
-const LIBTEST: PlainSub = PlainSub {
-    words: &[],
-    flags: &[
-        "--nocapture",
-        "--ignored",
-        "--include-ignored",
-        "--exact",
-        "--show-output",
-        "-q",
-        "--quiet",
-    ],
-    values: &["--test-threads", "--skip"],
-    patterns: &["--skip"],
-    operands: Operands::Names,
-    after_dashes: None,
-};
-const CLIPPY_LINTS: PlainSub = PlainSub {
-    words: &[],
-    flags: &[],
-    values: &[
-        "-D", "-W", "-A", "-F", "--deny", "--warn", "--allow", "--forbid",
-    ],
-    patterns: &[
-        "-D", "-W", "-A", "-F", "--deny", "--warn", "--allow", "--forbid",
-    ],
-    operands: Operands::None,
-    after_dashes: None,
-};
-const RUSTFMT_OPTS: PlainSub = sub(&[], &["--check"], &["--edition"], Operands::None);
 
 const GREP_FLAGS: &[&str] = &[
     "-r",
@@ -2883,7 +2884,8 @@ const PLAIN: &[PlainSub] = &[
         values: GREP_VALUES,
         patterns: GREP_PATTERNS,
         operands: Operands::PatternThenPaths,
-        after_dashes: None,
+        glued: &[],
+        free: &[],
     },
     PlainSub {
         words: &["rg"],
@@ -2891,7 +2893,8 @@ const PLAIN: &[PlainSub] = &[
         values: GREP_VALUES,
         patterns: GREP_PATTERNS,
         operands: Operands::PatternThenPaths,
-        after_dashes: None,
+        glued: &[],
+        free: &[],
     },
     sub(
         &["git", "status"],
@@ -2906,11 +2909,12 @@ const PLAIN: &[PlainSub] = &[
             "--ignored",
             "--show-stash",
             "-z",
-            "-u",
+            "--untracked-files",
         ],
-        &["--untracked-files"],
+        &[],
         Operands::Git,
-    ),
+    )
+    .glued(&["-u"]),
     sub(
         &["git", "log"],
         GIT_LOG_FLAGS,
@@ -2920,9 +2924,10 @@ const PLAIN: &[PlainSub] = &[
     sub(
         &["git", "diff"],
         GIT_DIFF_FLAGS,
-        &["-U", "--unified", "--diff-filter"],
+        &["--diff-filter"],
         Operands::Git,
-    ),
+    )
+    .glued(&["-U", "--unified"]),
     sub(
         &["git", "show"],
         &[
@@ -2938,9 +2943,10 @@ const PLAIN: &[PlainSub] = &[
             "--no-color",
             "--abbrev-commit",
         ],
-        &["--format", "--pretty"],
+        &[],
         Operands::Git,
-    ),
+    )
+    .glued(&["--format", "--pretty", "-U", "--unified"]),
     sub(
         &["git", "branch"],
         &[
@@ -2991,8 +2997,6 @@ const PLAIN: &[PlainSub] = &[
             "--dry-run",
             "-v",
             "--verbose",
-            "-f",
-            "--force",
             "-N",
             "--intent-to-add",
         ],
@@ -3015,7 +3019,8 @@ const PLAIN: &[PlainSub] = &[
         ],
         &["-m", "--message"],
         Operands::Git,
-    ),
+    )
+    .free(&["-m", "--message"]),
     sub(
         &["git", "checkout"],
         &[
@@ -3091,7 +3096,8 @@ const PLAIN: &[PlainSub] = &[
         values: CARGO_VALUES,
         patterns: &[],
         operands: Operands::Names,
-        after_dashes: Some(&LIBTEST),
+        glued: &[],
+        free: &[],
     },
     sub(
         &["cargo", "build"],
@@ -3111,7 +3117,8 @@ const PLAIN: &[PlainSub] = &[
         values: CARGO_VALUES,
         patterns: &[],
         operands: Operands::None,
-        after_dashes: Some(&CLIPPY_LINTS),
+        glued: &[],
+        free: &[],
     },
     PlainSub {
         words: &["cargo", "fmt"],
@@ -3119,13 +3126,14 @@ const PLAIN: &[PlainSub] = &[
         values: &["-p", "--package"],
         patterns: &[],
         operands: Operands::None,
-        after_dashes: Some(&RUSTFMT_OPTS),
+        glued: &[],
+        free: &[],
     },
 ];
 
 /// `find`'s expression words: without a value, and with one.
 const FIND_FLAGS: &[&str] = &[
-    "-print", "-print0", "-empty", "-prune", "-not", "-o", "-or", "-a", "-and", "(", ")",
+    "-print", "-print0", "-empty", "-prune", "-not", "!", "-o", "-or", "-a", "-and", "(", ")",
 ];
 const FIND_VALUES: &[&str] = &[
     "-name",
@@ -3144,30 +3152,36 @@ const FIND_PATTERNS: &[&str] = &["-name", "-iname", "-path", "-ipath"];
 /// One word of a plain line, quotes removed.
 struct PlainWord {
     text: String,
-    /// It opens with an unquoted `~/`: the shell puts the home there.
+    /// It opens with an unquoted `~` (alone or `~/...`): the shell puts the home
+    /// there.
     tilde: bool,
-    /// It has an unquoted `~` or `^` after a letter or digit (`HEAD~1`, `main^`):
-    /// allowed only as a git revision.
+    /// It has an unquoted `~` or `^` after a letter or digit (`HEAD~1`, `main^`,
+    /// `HEAD~5..HEAD`): allowed only as a git revision.
     revish: bool,
 }
 
 /// The words of `text` when it is one simple command with nothing the shell
 /// expands or runs besides it, else `None`. Outside quotes only letters, digits,
-/// spaces and `-_./:,=+%@` stand (plus a leading `~/` and a git `rev~N`/`rev^`);
-/// `$`, a backquote, a backslash and `!` are refused even inside quotes, so what
-/// a quote holds is literal in every POSIX shell and zsh.
+/// spaces and `-_./:,=+%@` stand (plus a leading `~` or `~/` and a git
+/// `rev~N`/`rev^`, ranges included). Inside single quotes everything printable is
+/// literal; inside double quotes `$`, a backquote, a backslash and `!` are
+/// refused, so what a quote holds is literal in every POSIX shell and zsh.
 fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
     let mut words = Vec::new();
     let mut current: Option<PlainWord> = None;
     let mut quote: Option<char> = None;
     let mut prev: Option<char> = None;
+    // Inside a `~N`/`^N` suffix: only digits, `~`, `^`, or a `.` that opens a range.
+    let mut suffix = false;
     for c in text.chars() {
-        if !(c == ' ' || c == '\t' || c.is_ascii_graphic()) || matches!(c, '$' | '`' | '\\' | '!') {
+        if !(c == ' ' || c == '\t' || c.is_ascii_graphic()) {
             return None;
         }
         if let Some(q) = quote {
             if c == q {
                 quote = None;
+            } else if q == '"' && matches!(c, '$' | '`' | '\\' | '!') {
+                return None;
             } else {
                 current.as_mut()?.text.push(c);
             }
@@ -3177,6 +3191,7 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
         if c == ' ' || c == '\t' {
             words.extend(current.take());
             prev = None;
+            suffix = false;
             continue;
         }
         let word = current.get_or_insert_with(|| PlainWord {
@@ -3187,26 +3202,33 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
         let at_start = prev.is_none();
         match c {
             '\'' | '"' => {
+                // A quote inside `~...` before its `/` turns the expansion off.
+                if word.tilde && word.text == "~" {
+                    return None;
+                }
                 quote = Some(c);
                 prev = Some(c);
+                suffix = false;
                 continue;
             }
-            '~' if at_start => {
-                // Only `~/...`: checked once the next character is known.
-                word.tilde = true;
-            }
+            '~' if at_start => word.tilde = true,
             '~' | '^'
                 if prev.is_some_and(|p| p.is_ascii_alphanumeric() || matches!(p, '~' | '^')) =>
             {
                 word.revish = true;
+                suffix = true;
             }
             '=' if at_start || prev == Some('=') => return None,
             c if c.is_ascii_alphanumeric() || "-_./:,=+%@".contains(c) => {
                 if word.tilde && word.text == "~" && c != '/' {
                     return None;
                 }
-                if word.revish && !(c.is_ascii_digit() || matches!(c, '~' | '^')) {
-                    return None;
+                if suffix {
+                    if c == '.' {
+                        suffix = false;
+                    } else if !c.is_ascii_digit() {
+                        return None;
+                    }
                 }
             }
             _ => return None,
@@ -3218,10 +3240,6 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
         return None;
     }
     words.extend(current.take());
-    // A lone `~`, or `~` then a quote.
-    if words.iter().any(|w| w.tilde && !w.text.starts_with("~/")) {
-        return None;
-    }
     Some(words)
 }
 
@@ -3262,6 +3280,10 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     let Some(words) = plain_words(cmd) else {
         return Gate::Ask;
     };
+    // `@FILE` is an argument file to rustc, rustdoc and many other parsers.
+    if words.iter().any(|word| word.text.starts_with('@')) {
+        return Gate::Ask;
+    }
     let Some((first, rest)) = words.split_first() else {
         return Gate::Ask;
     };
@@ -3285,7 +3307,7 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
                 }
         })
     };
-    if !found {
+    if !found || checks.iter().any(|check| check.text.starts_with('@')) {
         return Gate::Ask;
     }
     let cwd = cwd
@@ -3311,15 +3333,14 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     for check in &checks {
         let mut texts = vec![(check.text.clone(), check.tilde)];
         if check.revish {
-            // Under zsh's `extendedglob`, `x~1` and `x^1` are patterns for names
-            // that start with `x` (`secret^1` matches `secret.txt`): every such
-            // name in the directory is checked too.
+            // Under zsh's `extendedglob`, `x~1`, `x^1` and `x~1..y` are patterns
+            // for names that start with `x` (`secret^1` matches `secret.txt`):
+            // every such name in the directory is checked too.
             let stem = check.text.split(['~', '^']).next().unwrap_or_default();
-            texts.extend(
-                stem_matches(stem, cwd.as_deref(), fold)
-                    .into_iter()
-                    .map(|t| (t, false)),
-            );
+            match stem_matches(stem, cwd.as_deref(), fold, STEM_SCAN_CAP) {
+                Some(names) => texts.extend(names.into_iter().map(|t| (t, false))),
+                None => return Gate::Ask,
+            }
         }
         for (text, tilde) in texts {
             let verdict = plain_path(&text, tilde, cwd.as_deref(), fold, |path| {
@@ -3346,9 +3367,10 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
 }
 
 /// One literal path: resolved lexically against the working directory (`..`
-/// normalised), asked about under `/dev`, `/proc` or `/sys` (case folded where the
-/// file system folds it), and when it is `-` (standard input); else what `read`
-/// says about the absolute path (which also resolves symlinks).
+/// normalised; a leading `~` is `$HOME`, and an unset `HOME` asks), asked about
+/// under `/dev`, `/proc` or `/sys` (case folded where the file system folds it),
+/// and when it is `-` (standard input); else what `read` says about the absolute
+/// path (which also resolves symlinks).
 fn plain_path(
     text: &str,
     tilde: bool,
@@ -3363,8 +3385,9 @@ fn plain_path(
         return Gate::Ask;
     }
     let path = if tilde {
-        match user_dirs::home() {
-            Some(home) => home.join(&text[2..]),
+        let home_set = crate::core::user_env::var("HOME").is_some_and(|home| !home.is_empty());
+        match user_dirs::home().filter(|_| home_set) {
+            Some(home) => home.join(text.trim_start_matches('~').trim_start_matches('/')),
             None => return Gate::Ask,
         }
     } else if Path::new(text).is_absolute() {
@@ -3405,9 +3428,13 @@ fn plain_path(
     }
 }
 
+/// How many directory entries [`stem_matches`] reads before it gives up (asks).
+const STEM_SCAN_CAP: usize = 10_000;
+
 /// The stem itself and every entry of its directory whose name starts with the
-/// stem's last component (case folded where the file system folds it).
-fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool) -> Vec<String> {
+/// stem's last component (case folded where the file system folds it); `None`
+/// when the directory holds more than `cap` entries, so a name may go unchecked.
+fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool, cap: usize) -> Option<Vec<String>> {
     let mut out = vec![stem.to_string()];
     let (dir, prefix) = match stem.rsplit_once('/') {
         Some((dir, prefix)) => (if dir.is_empty() { "/" } else { dir }, prefix),
@@ -3416,10 +3443,7 @@ fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool) -> Vec<String> {
     let base = if Path::new(dir).is_absolute() {
         PathBuf::from(dir)
     } else {
-        match cwd {
-            Some(cwd) => cwd.join(dir),
-            None => return out,
-        }
+        cwd?.join(dir)
     };
     let prefix = if fold {
         prefix.to_lowercase()
@@ -3427,7 +3451,10 @@ fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool) -> Vec<String> {
         prefix.to_string()
     };
     if let Ok(entries) = std::fs::read_dir(&base) {
-        for entry in entries.flatten().take(10_000) {
+        for (seen, entry) in entries.flatten().enumerate() {
+            if seen >= cap {
+                return None;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             let folded = if fold {
                 name.to_lowercase()
@@ -3443,13 +3470,17 @@ fn stem_matches(stem: &str, cwd: Option<&Path>, fold: bool) -> Vec<String> {
             }
         }
     }
-    out
+    Some(out)
 }
 
 /// Whether `args` pass `spec`: every option listed; each value and operand that
-/// is not a pattern queued in `checks`.
+/// is not a pattern queued in `checks`. A value that may be a separate word never
+/// opens with `-` (it might be an option the program reads as one), and in a git
+/// command no word but a free-text value ([`PlainSub::free`]) holds a `:`.
 fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> bool {
     let git = spec.operands == Operands::Git;
+    let colon_ok =
+        |name: &str, value: &str| !git || !value.contains(':') || spec.free.contains(&name);
     let mut operands: Vec<&PlainWord> = Vec::new();
     let mut pattern_given = false;
     let mut i = 0;
@@ -3460,9 +3491,9 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
             return false;
         }
         if text == "--" {
-            if let Some(after) = spec.after_dashes {
-                return plain_args(after, &args[i..], checks)
-                    && operands_pass(spec, &operands, pattern_given, checks);
+            // cargo hands what follows to rustc, rustdoc or the test binary.
+            if spec.words.first() == Some(&"cargo") && i < args.len() {
+                return false;
             }
             if !git && args[i..].iter().any(|word| word.revish) {
                 return false;
@@ -3476,15 +3507,17 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 None => (text.to_string(), None),
             };
             let name = name.as_str();
-            if !(spec.flags.contains(&name) || spec.values.contains(&name)) {
+            let takes_next = spec.values.contains(&name);
+            if !(takes_next || spec.flags.contains(&name) || spec.glued.contains(&name)) {
                 return false;
             }
             let pattern = spec.patterns.contains(&name);
             pattern_given |= pattern && name == "--regexp";
             let value = match inline {
                 Some(value) => Some(Check::value(value, word)),
-                None if spec.values.contains(&name) => {
-                    let Some(value) = args.get(i) else {
+                None if takes_next => {
+                    let Some(value) = args.get(i).filter(|value| !value.text.starts_with('-'))
+                    else {
                         return false;
                     };
                     i += 1;
@@ -3492,8 +3525,13 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 }
                 None => None,
             };
-            if let Some(value) = value.filter(|_| !pattern) {
-                checks.push(value);
+            if let Some(value) = value {
+                if !colon_ok(name, &value.text) {
+                    return false;
+                }
+                if !pattern {
+                    checks.push(value);
+                }
             }
             continue;
         }
@@ -3504,6 +3542,17 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
             for (at, c) in short.char_indices() {
                 let opt = format!("-{c}");
                 let opt = opt.as_str();
+                let glued = &short[at + c.len_utf8()..];
+                if spec.glued.contains(&opt) {
+                    // An optional value, taken only when glued (`-U5`, `-uno`).
+                    if !colon_ok(opt, glued) {
+                        return false;
+                    }
+                    if !glued.is_empty() {
+                        checks.push(Check::value(glued, word));
+                    }
+                    break;
+                }
                 if spec.flags.contains(&opt) {
                     continue;
                 }
@@ -3512,9 +3561,9 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 }
                 let pattern = spec.patterns.contains(&opt);
                 pattern_given |= pattern && opt == "-e";
-                let glued = &short[at + c.len_utf8()..];
                 let value = if glued.is_empty() {
-                    let Some(value) = args.get(i) else {
+                    let Some(value) = args.get(i).filter(|value| !value.text.starts_with('-'))
+                    else {
                         return false;
                     };
                     i += 1;
@@ -3522,6 +3571,9 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
                 } else {
                     Check::value(glued, word)
                 };
+                if !colon_ok(opt, &value.text) {
+                    return false;
+                }
                 if !pattern {
                     checks.push(value);
                 }
@@ -3562,7 +3614,7 @@ fn find_args(args: &[PlainWord], checks: &mut Vec<Check>) -> bool {
     }
     let mut i = 0;
     while let Some(word) = args.get(i) {
-        if word.text.starts_with('-') || matches!(word.text.as_str(), "(" | ")") {
+        if word.text.starts_with('-') || matches!(word.text.as_str(), "(" | ")" | "!") {
             break;
         }
         checks.push(Check::of(word));
@@ -3577,7 +3629,7 @@ fn find_args(args: &[PlainWord], checks: &mut Vec<Check>) -> bool {
         if !FIND_VALUES.contains(&text) {
             return false;
         }
-        let Some(value) = args.get(i) else {
+        let Some(value) = args.get(i).filter(|value| !value.text.starts_with('-')) else {
             return false;
         };
         i += 1;
@@ -6736,12 +6788,44 @@ mod tests {
             "rtk find . -name '*.rs'",
             "rtk find src -type f -name '*.rs' -maxdepth 2",
             "rtk cargo test",
-            "rtk cargo test --release -p rtk -- --nocapture",
-            "rtk cargo clippy --all-targets -- -D warnings",
-            "rtk cargo fmt --all -- --check",
+            "rtk cargo test --release -p rtk",
+            "rtk cargo clippy --all-targets",
+            "rtk cargo fmt --all --check",
             "rtk cargo build --release",
+            // Round 8: every listed sub, and the needless asks of round 7.
+            "rtk git blame -L 10,20 src/main.rs",
+            "rtk git switch -c feature/x",
+            "rtk git rev-parse --show-toplevel",
+            "rtk git rev-parse --short HEAD",
+            "rtk git ls-files -m",
+            "rtk diff a.txt b.txt",
+            "rtk cargo check --all-targets",
+            "rtk cargo build -r",
+            "rtk cargo test -r",
+            "rtk git status -uno",
+            "rtk git status --untracked-files=no",
+            "rtk git diff -U5 HEAD",
+            "rtk git diff --unified=1",
+            "rtk git show --pretty=oneline HEAD",
+            "rtk git log --pretty HEAD~3",
+            "rtk git commit -m 'feat!: breaking'",
+            "rtk git commit -m 'costs $5'",
+            "rtk git commit -m 'a `b` c\\d'",
+            "rtk git commit -am \"fix: x\"",
+            "rtk find . '!' -name x",
+            "rtk git log HEAD~5..HEAD",
+            "rtk git diff --stat HEAD~1..HEAD",
+            "rtk git log main^..HEAD",
+            "rtk ls ~",
+            "rtk ls ~/x",
         ] {
-            assert_eq!(at(cmd), Gate::Pass, "{cmd}");
+            let got = crate::core::user_env::with_vars(&[("HOME", Some("/home/u"))], || at(cmd));
+            assert_eq!(got, Gate::Pass, "{cmd}");
+        }
+        // HOME unset: a `~` names nothing the hook can check.
+        for cmd in ["rtk ls ~", "rtk ls ~/x"] {
+            let got = crate::core::user_env::with_vars(&[("HOME", None)], || at(cmd));
+            assert_eq!(got, Gate::Ask, "{cmd}");
         }
         for cmd in [
             // Not one simple command, or something the shell expands or redirects.
@@ -6766,8 +6850,8 @@ mod tests {
             "rtk ls src/?.rs",
             "rtk ls src/[ab].rs",
             "rtk ls {a,b}",
-            "rtk ls ~",
             "rtk ls ~root",
+            "rtk ls ~''/x",
             "rtk ls a~b",
             "rtk ls '~/x' ~x",
             "rtk ls =ls",
@@ -6811,6 +6895,45 @@ mod tests {
             "rtk cargo +nightly test",
             "rtk cargo test --target ./t.json",
             "rtk cargo test -- --logfile x",
+            // Round 8, I-1: an optional git value is glued only, and no git word
+            // but a commit message holds a `:`.
+            "rtk git show --pretty HEAD:secret.txt",
+            "rtk git log --pretty HEAD:secret.txt",
+            "rtk git log --format HEAD:secret.txt",
+            "rtk git diff -U HEAD:secret.txt --unified HEAD:ok.txt",
+            "rtk git status --untracked-files HEAD:secret.txt",
+            "rtk git status -u HEAD:x",
+            "rtk git show --pretty=format:%h HEAD",
+            "rtk git log --author=a:b",
+            "rtk git log --grep x:y",
+            "rtk git branch --contains HEAD:x",
+            "rtk git diff -UHEAD:x",
+            // I-2: after cargo's `--` nothing passes; no word opens with `@`.
+            "rtk cargo clippy -- -D warnings",
+            "rtk cargo clippy -- -D unknown-lints -D @secret.txt",
+            "rtk cargo test -- --nocapture",
+            "rtk cargo fmt -- --check",
+            "rtk cargo test @x",
+            "rtk cargo build --features=@x",
+            "rtk cargo build -p@x",
+            "rtk read @x",
+            "rtk grep -rn @x .",
+            // M-2: git add -f.
+            "rtk git add -f config",
+            "rtk git add --force config",
+            "rtk git add -Af .",
+            // M-3: a separate value never opens with `-`.
+            "rtk cargo build --bin --config=build.rustc-wrapper=/tmp/x",
+            "rtk cargo test --test --config=x",
+            "rtk cargo build -p --config=x",
+            "rtk cargo build --features --config=x",
+            "rtk git log -n --output=x",
+            "rtk tree -L -o x",
+            "rtk find . -name -x",
+            // Quotes still matter where the shell expands.
+            "rtk git commit -m \"costs $5\"",
+            "rtk git commit -m \"wow!\"",
+            "rtk git log HEAD~x",
             "rtk cargo run",
             "rtk ls --colo",
             // A rule's text anywhere.
@@ -6843,6 +6966,22 @@ mod tests {
         );
     }
 
+    /// A directory too large to scan for `x~1`'s possible names asks (`None`).
+    #[test]
+    fn a_stem_scan_past_its_cap_gives_up() {
+        let tmp = test_isolation::tempdir();
+        for name in ["a1", "a2", "b"] {
+            std::fs::write(tmp.path().join(name), "x").expect("write");
+        }
+        let found = stem_matches("a", Some(tmp.path()), false, 10).expect("under the cap");
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(
+            stem_matches("a", Some(tmp.path()), false, 3).map(|v| v.len()),
+            Some(3)
+        );
+        assert_eq!(stem_matches("a", Some(tmp.path()), false, 2), None);
+    }
+
     #[test]
     fn plain_paths_meet_the_read_rules() {
         in_sandbox(|dir, r| {
@@ -6854,6 +6993,8 @@ mod tests {
                 "rtk read config/.env",
                 "rtk git diff -- secret.txt",
                 "rtk git log secret.txt~1",
+                "rtk git log secret.txt~1..HEAD",
+                "rtk git log secret^..HEAD",
                 "rtk wc -l secret.txt",
                 "rtk grep -rn x secret.txt",
                 "rtk grep -e x -- secret.txt",
