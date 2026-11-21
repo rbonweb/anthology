@@ -115,7 +115,12 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "opus",
         false,
         &[],
-        &["code-review-checklist", "tech-debt", "deploy-checklist"],
+        &[
+            "code-review-checklist",
+            "karpathy-guidelines",
+            "tech-debt",
+            "deploy-checklist",
+        ],
     ),
     ("scout", "haiku", false, &[], &[]),
     (

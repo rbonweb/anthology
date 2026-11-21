@@ -57,9 +57,9 @@ mod budget {
     pub const BUDGET: [(&str, usize); 11] = [
         ("researcher", 89267),
         ("architect", 23612),
-        ("implementer", 25451),
-        ("debugger", 21229),
-        ("reviewer", 12553),
+        ("implementer", 26561),
+        ("debugger", 22167),
+        ("reviewer", 16672),
         ("scout", 5944),
         ("docs-writer", 31376),
         ("ui-designer", 128097),

@@ -207,7 +207,12 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "no",
             false,
             vec![],
-            vec!["code-review-checklist", "tech-debt", "deploy-checklist"],
+            vec![
+                "code-review-checklist",
+                "karpathy-guidelines",
+                "tech-debt",
+                "deploy-checklist",
+            ],
         ),
         spec("scout", "haiku", "no", false, vec![], vec![]),
         spec(
