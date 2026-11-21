@@ -7,7 +7,7 @@
 //! token[-1] in value_flags`, and every value flag is `-` plus an ASCII letter, so the membership test alone
 //! decides it.
 
-use super::pystr_tables::{CASE_IGNORABLE, CASED, DIGIT, LOWER, SPACE};
+use super::pystr_tables::{CASE_IGNORABLE, CASED, LOWER, SPACE};
 
 fn in_ranges(table: &[(u32, u32)], c: char) -> bool {
     let c = c as u32;
@@ -29,9 +29,11 @@ pub(crate) fn is_space(c: char) -> bool {
     in_ranges(SPACE, c)
 }
 
-/// `s.isdigit()`: false for the empty string.
+/// `s.isdigit()`: false for the empty string. Unused since fix-wave H (a redirection's fd is `isascii() and
+/// isdigit()`, ASCII digits only); kept with the generated table.
+#[cfg(test)]
 pub(crate) fn is_digit_str(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| in_ranges(DIGIT, c))
+    !s.is_empty() && s.chars().all(|c| in_ranges(super::pystr_tables::DIGIT, c))
 }
 
 /// `s.strip()`.
@@ -83,6 +85,117 @@ pub(crate) fn lower(s: &str) -> String {
         }
     }
     out
+}
+
+/// `s.splitlines()`: lines split at `\n`, `\r`, `\r\n`, `\v`, `\f`, `\x1c`-`\x1e`, `\x85`, U+2028 and U+2029,
+/// the separators dropped.
+pub(crate) fn splitlines(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !matches!(
+            c,
+            '\n' | '\r'
+                | '\x0b'
+                | '\x0c'
+                | '\x1c'
+                | '\x1d'
+                | '\x1e'
+                | '\u{85}'
+                | '\u{2028}'
+                | '\u{2029}'
+        ) {
+            continue;
+        }
+        out.push(&s[start..i]);
+        let mut end = i + c.len_utf8();
+        if c == '\r' && chars.peek().is_some_and(|&(_, d)| d == '\n') {
+            chars.next();
+            end += 1;
+        }
+        start = end;
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
+/// `shlex.split(text)` (POSIX mode, no comments), or `None` where Python raises `ValueError` (an unclosed
+/// quote or a trailing escape).
+pub(crate) fn shlex_split(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' | '\r' | '\n' => {
+                if started && (!token.is_empty() || quoted) {
+                    out.push(std::mem::take(&mut token));
+                }
+                started = false;
+                quoted = false;
+            }
+            '\\' => {
+                let next = chars.next()?;
+                token.push(next);
+                started = true;
+            }
+            '\'' => {
+                quoted = true;
+                started = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        d => token.push(d),
+                    }
+                }
+            }
+            '"' => {
+                quoted = true;
+                started = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => {
+                            let next = chars.next()?;
+                            if next != '\\' && next != '"' {
+                                token.push('\\');
+                            }
+                            token.push(next);
+                        }
+                        d => token.push(d),
+                    }
+                }
+            }
+            _ => {
+                token.push(c);
+                started = true;
+            }
+        }
+    }
+    if started && (!token.is_empty() || quoted) {
+        out.push(token);
+    }
+    Some(out)
+}
+
+/// `shlex.quote(word)`.
+pub(crate) fn shlex_quote(word: &str) -> String {
+    if word.is_empty() {
+        return "''".to_string();
+    }
+    let safe = word
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&b));
+    if safe {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\"'\"'"))
+    }
 }
 
 #[cfg(test)]

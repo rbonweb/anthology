@@ -732,6 +732,9 @@ pub fn apply_import(plan: &Value, git: &dyn Git) -> Result<Map, Error> {
     apply_import_env(plan, &Env::default(), git)
 }
 
+/// The longest file name (one path part) Linux and macOS take.
+const NAME_MAX: usize = 255;
+
 /// A destination folder's key: `(scope, agent)`.
 type Place = (String, Option<String>);
 
@@ -827,7 +830,25 @@ pub fn apply_import_env(plan: &Value, env: &Env, git: &dyn Git) -> Result<Map, E
     }
     let no_root = PathBuf::new();
     let root = root.unwrap_or(&no_root);
-    // Pre-flight every destination before the first write.
+    // Pre-flight every destination before the first write. A path part longer than the file
+    // system's limit is refused here, for every entry, so an import is all-or-nothing on
+    // validation (D-8, LR-M: Python writes the earlier notes, then fails on the long one).
+    for w in &work {
+        let too_long =
+            |part: &str| rejected(format!("a name is longer than {NAME_MAX} bytes: {part}"));
+        // A conflict is written as `<stem>.imported-<date>.md`, which is longer than the name.
+        let imported = if w.key == "conflicts" {
+            w.name.len().saturating_sub(3) + ".imported-".len() + date.len() + ".md".len()
+        } else {
+            0
+        };
+        if w.name.len().max(imported) > NAME_MAX {
+            return Err(too_long(&w.name));
+        }
+        if let Some(agent) = w.agent.as_deref().filter(|a| a.len() > NAME_MAX) {
+            return Err(too_long(agent));
+        }
+    }
     let mut targets: Vec<(Place, (PathBuf, Vec<String>))> = Vec::new();
     for w in &work {
         let (base, parts) = location(&w.scope, w.agent.as_deref(), home, root);

@@ -19,7 +19,9 @@
           {
             "type": "command",
             "command": "sh",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],
+            "timeout": 60,
+            "onFailure": "block"
           }
         ]
       }

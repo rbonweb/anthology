@@ -5,7 +5,12 @@ library's `json`. F4's driver loads this module by file path.
 
 Library surface: `run(case: dict) -> dict` (the case's `data`, or a dict holding it under "data").
 
-Case data (`plugins/anthology-guardrails/scripts/` is the oracle):
+Case data. The rules are guard_rules.py's; the shell analysis under them is the shell oracle's
+(`port/difftest/oracle/shell.py`: the vendored fix-wave H/I reference `guard_rules_fw.py` with the Rust-stricter
+rules applied, lane SH), because Rust's guard runs on `anthology_shell::analyze`. The alternate readings
+are recorded, not checked: Rust's guard does not check `Analysis.alternates` against G1 yet (GD follow-up,
+lead ruling Q3=A); when it does, this oracle checks them too. `guard.py`
+(`plugins/anthology-guardrails/scripts/`) runs on that module as well:
 - `{"op": "check", "tool": T, "input": I, "home": H}`: `guard_rules.check(T, I, H)`, rendered as the
   canonical JSON of `[rule, message]` or `null`. `check` turns any exception into `None`; this module
   calls `_check` itself, so an exception is seen: it answers `null` with `"divergence": "D-1"` (Python
@@ -33,14 +38,82 @@ GUARD = os.path.join(SCRIPTS, "guard.py")
 
 
 def _load():
-    path = os.path.join(SCRIPTS, "guard_rules.py")
-    spec = importlib.util.spec_from_file_location("anthology_oracle_guard_rules_gd", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shell.py")
+    spec = importlib.util.spec_from_file_location("anthology_oracle_shell_gd", path)
+    shell = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shell)
+    sys.modules["guard_rules"] = shell.G                  # what guard.py imports
+    return shell
 
 
-G = _load()
+SHELL = _load()
+G = SHELL.G
+
+# Rust's guard reports a rule an analyzed entry hits before it reports an unfinished analysis (crates/
+# anthology-guard/src/check.rs): when the analysis stops (`_TooComplex`), the entries collected so far are
+# checked first, and only when none hits is it G0. The contexts of one check are kept for that.
+_CONTEXTS = []
+
+
+class _Context(G._Context):
+    def __init__(self, home):
+        super().__init__(home)
+        _CONTEXTS.append(self)
+
+
+G._Context = _Context
+
+
+def _stopped_rule(name, inp, home, command):
+    """`_check_reading` over the entries collected before the analysis stopped, unbudgeted."""
+    entries = [e for ctx in _CONTEXTS for e in ctx.entries]
+    G._STATE.reset(None)
+    if G._g6_file_tool(inp, home) or (command and G._g6_command(command, entries, home)):
+        return "G6"
+    grep = name == "Grep"
+    skip = G._PLAIN_TEXT_KEYS | {"pattern"} if grep else G._PLAIN_TEXT_KEYS
+    paths = list(G._path_strings(inp, skip)) + G._search_roots(
+        inp, ("glob",) if grep else ("pattern", "glob"))
+    if G._words_hit(paths, G._is_profile_path, home, None) or G._code_hits_profile(
+            G._code_strings(inp), home, None):
+        return "G3"
+    for entry in entries:
+        for rule, test in (("G3", lambda e: G._g3(e, home)), ("G4", G._g4), ("G1", G._g1), ("G2", G._g2)):
+            if test(entry):
+                return rule
+    return "G0"
+
+
+def _rule(tool, tool_input, home):
+    """`check`'s rule (None, a rule id, or "G0"); other exceptions propagate."""
+    name = tool if isinstance(tool, str) else ""
+    inp = tool_input if isinstance(tool_input, dict) else {}
+    home = home if isinstance(home, str) else ""
+    command = inp.get("command") if isinstance(inp.get("command"), str) else None
+    G._STATE.reset(G._WORK_PER_CHAR * (len(command) if command else 0) + G._WORK_BASE)
+    del SHELL._ALTERNATES[:]
+    del _CONTEXTS[:]
+    try:
+        return G._check(tool, tool_input, home)
+    except G._TooComplex:
+        return _stopped_rule(name, inp, home, command)
+    finally:
+        G._STATE.reset(None)
+        del _CONTEXTS[:]
+
+
+def _guard_check(tool_name, tool_input, home):
+    """`check`, as guard.py calls it, with Rust's order on a stopped analysis."""
+    try:
+        rule = _rule(tool_name, tool_input, home)
+    except Exception:  # a guard bug must never brick a session
+        return None
+    if rule == "G0":
+        return "G0", G.TOO_COMPLEX
+    return (rule, G.MESSAGES[rule]) if rule else None
+
+
+G.check = _guard_check
 
 
 def canonical(obj):
@@ -49,11 +122,14 @@ def canonical(obj):
 
 def _check(tool, tool_input, home):
     try:
-        rule = G._check(tool, tool_input, home)
+        rule = _rule(tool, tool_input, home)
     except Exception as exc:  # check() would return None (allow): Rust may block or match (D-1)
         return {"exit": 0, "stdout": canonical(None), "stderr": "", "divergence": "D-1",
                 "python": type(exc).__name__}
-    result = [rule, G.MESSAGES[rule]] if rule else None
+    if rule == "G0":
+        result = ["G0", G.TOO_COMPLEX]
+    else:
+        result = [rule, G.MESSAGES[rule]] if rule else None
     return {"exit": 0, "stdout": canonical(result), "stderr": ""}
 
 
@@ -110,8 +186,7 @@ def _raises(stdin, home):
         return True  # RecursionError on deep JSON: Rust parses it and checks (F-10)
     try:
         if isinstance(data, dict) and isinstance(data.get("tool_name"), str):
-            G._check(data["tool_name"], data.get("tool_input"),
-                     home or os.path.expanduser("~"))
+            _rule(data["tool_name"], data.get("tool_input"), home or os.path.expanduser("~"))
     except Exception:
         return True
     return False

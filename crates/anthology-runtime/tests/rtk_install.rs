@@ -1165,7 +1165,8 @@ mod files_test {
         assert_eq!(names, ["PreToolUse", "SessionStart"]);
         let want = json::loads(
             r#"[{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]}]}]"#,
+                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],
+                 "timeout": 60, "onFailure": "block"}]}]"#,
         )
         .expect("want");
         assert_eq!(inner.get("PreToolUse"), Some(&want));
