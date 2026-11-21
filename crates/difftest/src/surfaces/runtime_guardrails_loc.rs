@@ -2011,10 +2011,12 @@ fn gen_agent_memory(rng: &mut Rng, mut b: B) -> Value {
             4 => "notes".to_string(),
             _ => format!("Anthology-{agent}"),
         };
-        if used.contains(&name) {
+        // macOS folders are case-insensitive: `Anthology-x` and `anthology-x` are one entry
+        let folded = name.to_ascii_lowercase();
+        if used.contains(&folded) {
             continue;
         }
-        used.push(name.clone());
+        used.push(folded);
         let path = format!("{mem}/{name}");
         match rng.below(6) {
             0 => {
