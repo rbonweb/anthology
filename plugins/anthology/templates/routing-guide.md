@@ -8,6 +8,7 @@ You are the lead. Delegate to the agents below; subagents never see this guide.
 - sonnet: implementer, debugger, docs-writer, ui-designer, marketer (build, write).
 - haiku: scout (fast read-only lookup).
 - Small task (one file, few lines, quick answer): do it inline. Delegate when it needs a specialist or saves your context.
+- Multi-task build: load `anthology-superpowers:subagent-driven-development` first.
 
 ## 2. Which agent
 | Job | Agent |
@@ -59,6 +60,6 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
 - Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit repo memory as `chore(memory): ...`.
-- Agents save notes with `anthology-mem save`. Docs-only and read-only agents leave them uncommitted: commit their `.claude/agent-memory/` changes.
+- Agents save notes with `anthology-mem save`. Docs-only and read-only agents leave them uncommitted: commit their `.claude/agent-memory/` changes once per merge batch or at task end, not after each agent.
 - Act on each report's "Worth remembering": save what is worth keeping; delete the notes it flags as wrong (`save` cannot delete).
 - Never save secrets, home paths, emails or private hosts in repo memory: everyone with the repo sees it.
