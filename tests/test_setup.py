@@ -927,6 +927,7 @@ class SubagentModelTest(SetupCase):
     def setUp(self):
         super().setUp()
         os.environ.pop(self.KEY, None)  # the host may be Claude Code itself
+        self.addCleanup(os.environ.pop, self.KEY, None)  # tests below set it
         patcher = mock.patch.object(anthology_setup.compat, "MANAGED_SETTINGS_PATHS",
                                     (self.tmp / "managed-settings.json",))
         patcher.start()
@@ -1010,6 +1011,18 @@ class SubagentModelTest(SetupCase):
                          {"env": {self.KEY: "m"}})
         self.remove(cwd=proj)
         self.assertEqual(self.settings.read_text(encoding="utf-8"), text)
+
+    def test_a_key_set_twice_is_not_offered(self):
+        text = '{"env": {"%s": "a", "%s": "b"}}\n' % (self.KEY, self.KEY)
+        write(self.settings, text)
+        out = self.preview()["subagent_model"]
+        self.assertEqual(out["set_in"], ["user settings.json"])
+        self.assertFalse(out["removable"])
+        self.assertEqual([e["where"] for e in out["elsewhere"]], ["user settings.json"])
+        self.assertIn("every", out["elsewhere"][0]["how"])
+        res = self.apply(remove_subagent_model=True, skip_approve=True)
+        self.assertEqual(res["subagent_model"], {"removed": False})
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["env"], {self.KEY: "b"})
 
     def test_the_process_copy_of_the_user_setting_is_not_a_second_place(self):
         self.with_model()

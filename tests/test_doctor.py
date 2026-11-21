@@ -1073,6 +1073,11 @@ class SubagentModelTest(CompatBase):
         for label in doctor.compat.subagent_model_sources(dict(os.environ), self.cwd):
             self.assertIn("CLAUDE_CODE_SUBAGENT_MODEL", doctor.compat.SUBAGENT_MODEL_HINTS[label])
 
+    def test_run_in_the_home_folder_the_user_file_is_listed_once(self):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.cwd / ".claude")}
+        _write(self.cwd / ".claude" / "settings.json", {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}})
+        self.assertEqual(doctor.compat.subagent_model_sources(env, self.cwd), ["user settings.json"])
+
     def test_set_in_managed_settings(self):
         _write(self.managed_settings, {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"}})
         c = self.checks()["subagent_model"]

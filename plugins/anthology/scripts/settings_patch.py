@@ -373,10 +373,16 @@ def _apply_op(text, op):
     if op["op"] == "unset":
         if not path or _is_blank(text):
             return text, None
-        chain = _descend(_parse(text), path)
+        root = _parse(text)
+        try:
+            chain = _descend(root, path)
+        except ValueError:  # a parent on the path is not an object: nothing to drop
+            return text, None
         if len(chain) - 1 != len(path):
             return text, None
         node, parent = chain[-1], chain[-2]
+        if sum(1 for m in parent.items if m.key == path[-1]) > 1:
+            return text, None  # set twice: dropping one copy would leave the other in force
         idx = [m.value for m in parent.items].index(node)
         return _remove_at(text, parent, idx), {"created": [], "previous": {"present": True,
                                                                           "raw": text[node.start:node.end]}}

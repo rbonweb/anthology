@@ -135,7 +135,8 @@ USER_SETTINGS = "user settings.json"
 PROCESS_ENV = "the process environment"
 # One line per place `CLAUDE_CODE_SUBAGENT_MODEL` can be set: how to remove it there by hand.
 SUBAGENT_MODEL_HINTS = {
-    USER_SETTINGS: "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of your user settings.json",
+    USER_SETTINGS: "delete every `CLAUDE_CODE_SUBAGENT_MODEL` line from the `env` block of your user "
+                   "settings.json",
     PROCESS_ENV: "delete the line that sets `CLAUDE_CODE_SUBAGENT_MODEL` from your shell profile (for example "
                  "~/.zshrc or ~/.bashrc), then open a new terminal and restart Claude Code",
     "the project's .claude/settings.json": "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of the "
@@ -159,9 +160,12 @@ def subagent_model_sources(env, cwd):
     "user settings.json", "the project's .claude/settings.json", "the project's
     .claude/settings.local.json", "managed settings", "the process environment". Claude Code
     copies a settings file's `env` into the environment of the commands it runs, so the process
-    environment counts only when its value matches none of those files (a shell profile, say)."""
+    environment counts only when its value matches none of those files (a shell profile, say).
+    A project file that is the user settings.json itself (Claude Code run in the home folder)
+    is that file, not a second place."""
     top = repo_top(cwd) or Path(str(cwd))
-    candidates = [(USER_SETTINGS, config_dir(env) / "settings.json", None),
+    user = config_dir(env) / "settings.json"
+    candidates = [(USER_SETTINGS, user, None),
                   # the project's two files come with the clone, so they are bounded
                   ("the project's .claude/settings.json", top / ".claude" / "settings.json", REPO_READ_LIMIT),
                   ("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json",
@@ -169,6 +173,8 @@ def subagent_model_sources(env, cwd):
     candidates += [("managed settings", path, None) for path in MANAGED_SETTINGS_PATHS]
     found, values = [], set()
     for label, path, limit in candidates:
+        if label != USER_SETTINGS and os.path.realpath(str(path)) == os.path.realpath(str(user)):
+            continue
         value = _env_model(read_json(path, limit))
         if value is not None:
             values.add(value)
