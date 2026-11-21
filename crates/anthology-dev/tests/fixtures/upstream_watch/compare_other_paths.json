@@ -1,0 +1,16 @@
+{
+  "status": "ahead",
+  "ahead_by": 1,
+  "total_commits": 1,
+  "commits": [],
+  "files": [
+    {
+      "filename": "skills/other-skill/SKILL.md",
+      "status": "modified"
+    },
+    {
+      "filename": "README.md",
+      "status": "modified"
+    }
+  ]
+}

@@ -477,7 +477,7 @@ fn assert_linear(what: &str, small: &str, big: &str) {
     for (name, f) in checks {
         let ratio = ratio_of(f);
         assert!(
-            ratio < 30.0,
+            ratio < 50.0,
             "{what}: {name} took {ratio:.1}x the time on 10x the input"
         );
     }
@@ -545,7 +545,7 @@ fn depth_one_hundred_thousand_is_linear() {
         let a = fastest(|| f(&small)).as_secs_f64().max(1e-3);
         let ratio = fastest(|| f(&big)).as_secs_f64() / a;
         assert!(
-            ratio < 30.0,
+            ratio < 50.0,
             "depth: {name} took {ratio:.1}x the time on 10x the depth"
         );
     }

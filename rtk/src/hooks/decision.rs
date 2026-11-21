@@ -345,12 +345,58 @@ pub(crate) fn decide_for_claude_hook_at(
     permissions: &super::permissions::ClaudeHookPermissions,
     cwd: Option<&str>,
 ) -> HookDecision {
-    decide_for_agent_at_with_attestation(
+    // anthology fork: the Claude host judges the text the hook hands back, and
+    // the install allows `Bash(rtk *)`, so a deny or ask rule that names what an
+    // `rtk ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
+    // enforced here (`anthology_gate`).
+    use super::anthology_gate::{Gate, evaluate, mentions_rtk, plain};
+    let rules = &permissions.gate;
+    let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
+    // With any deny, ask or `Read()` rule, a line that may run rtk passes without
+    // a prompt only in the plain shape (one listed `rtk` command, listed options,
+    // literal paths); anything else asks, before a defer could leave `rtk ...` to
+    // the `Bash(rtk *)` allow rule.
+    if rules.active() && gate != Gate::Deny && mentions_rtk(cmd) {
+        gate = match (gate, plain(cmd, rules, cwd)) {
+            (_, Gate::Deny) => Gate::Deny,
+            (Gate::Pass, Gate::Pass) => Gate::Pass,
+            _ => Gate::Ask,
+        };
+    }
+    match gate {
+        Gate::Deny => return HookDecision::Deny,
+        Gate::Defer => return HookDecision::Defer,
+        Gate::Ask | Gate::Pass => {}
+    }
+    let decision = decide_for_agent_at_with_attestation(
         cmd,
         permissions.verdict,
         Some(|| permissions.deny_rules()),
         cwd,
-    )
+    );
+    // The host judges the text the hook hands back, and `Bash(rtk *)` allows
+    // whatever starts with `rtk`. With rules, rtk rewrites only into the plain
+    // shape; otherwise the original goes back unrewritten (an ask stays an ask).
+    let (gate, decision) = match &decision {
+        HookDecision::AllowRewrite(rewritten) | HookDecision::AskRewrite(rewritten, _)
+            if rules.active() && rewritten != cmd =>
+        {
+            let judged = evaluate(rewritten, rules, PermissionVerdict::Default, cwd);
+            let shape = plain(rewritten, rules, cwd);
+            if judged == Gate::Deny || shape == Gate::Deny {
+                return HookDecision::Deny;
+            }
+            let ask = gate == Gate::Ask || judged == Gate::Ask;
+            match (shape, ask) {
+                (Gate::Pass, true) => (Gate::Ask, decision),
+                (Gate::Pass, false) if judged == Gate::Pass => (gate, decision),
+                (_, true) => (Gate::Ask, HookDecision::Defer),
+                _ => return HookDecision::Defer,
+            }
+        }
+        _ => (gate, decision),
+    };
+    super::anthology_gate::apply(gate, cmd, decision, &permissions.gate)
 }
 
 fn decide_for_agent_at_with_attestation(
