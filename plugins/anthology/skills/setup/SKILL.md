@@ -57,7 +57,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`. Every value under
      those three is shown as it is, including your own rules, so a token written inside one of your allow or
      deny rules would reach the conversation. Then print this note verbatim:
-     `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; the guardrails and deny rules still apply to the wrapped command."
+     `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
@@ -102,6 +102,8 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      Values outside `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`;
      those three are shown as they are, including your own rules.
    - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).
+   - `rtk_history.dir`: rtk's local history (the command lines it saw, its recall store and tee spool),
+     which would be deleted (`status` says `delete`, `nothing to delete` or why it is left in place).
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
      and `memory.unapprove_all` list the repo approvals that the optional flags would drop.
