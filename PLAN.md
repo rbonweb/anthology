@@ -493,6 +493,8 @@ Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this
    - `head -n $N` and `head -n "$(…)"`, and a second pipe after `| head -n N`;
    - `;`, `||`, `&` and newline in place of `&&`;
    - rtk's rewrite of the rest of the command, re-checked against the deny rules from the new directory.
+2. **Guard over-blocks left after v0.1.0.** A replay of real traffic found ordinary commands that the Rust guard refuses as "too complex" (G0) and the Python guard allowed: about 0.14% of calls. Most are long `python3 - <<EOF` edits that hit the brace or path caps, and `[…]` subscripts that contain a live `$(…)` or backticks (regexes, list literals). Each shape needs its own security ruling, and the frozen parity tables and every bypass payload must still block. Commands that write a script and then run it stay blocked on purpose.
+3. **Faster CI containers.** The test images reinstall packages on every run. Bake them into pinned images, so runs don't depend on the network inside containers (on one build machine it ran about 50x slower than the host).
 
 ---
 
