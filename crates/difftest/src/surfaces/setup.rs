@@ -1415,7 +1415,7 @@ fn gen_case(rng: &mut Rng) -> Value {
                     .put(dir("elsewhere"))
                     .put(link("w/.claude/memory", "@ROOT@/elsewhere"))
             }
-            3 => b = b.put(file(*rng.pick(&["w/.claude", "w/.claude/memory"]), "x")),
+            3 => b = b.put(file(rng.pick(&["w/.claude", "w/.claude/memory"]), "x")),
             4 => b = b.ledger(&[rng.index(n), rng.index(n)]),
             _ => {}
         }
@@ -1431,7 +1431,7 @@ fn gen_case(rng: &mut Rng) -> Value {
     } else if rng.chance(0.03) {
         b = b.put(file(
             "cfg/anthology/approved-repos.json",
-            *rng.pick(&["not json", "[]", "{}"]),
+            rng.pick(&["not json", "[]", "{}"]),
         ));
     }
     b.guard_binary = match rng.below(6) {
