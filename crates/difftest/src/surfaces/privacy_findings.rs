@@ -5,17 +5,26 @@
 //!   and hostname. Both sides print one `<line>\t<kind>` line per finding, then
 //!   `describe: <text>`. Python never reports `unscannable`, so a Rust one (a backtrack limit
 //!   hit, I-9) is a diff: zero unexplained diffs also proves that no case hits the limit.
-//! - `{"op": "patterns"}`: `SECRET_PATTERNS`, so the Rust copy cannot drift from the Python.
-//! - `{"op": "classes"}`: the generated `\w`/`\s`/`\d` tables, against the oracle's `re`.
+//! - `{"op": "patterns"}` and `{"op": "constants"}`: `SECRET_PATTERNS`, then every other
+//!   pattern, the two dynamic templates and the exemption tables, so the Rust copy cannot drift
+//!   from the Python.
+//! - `{"op": "classes"}`: the generated `\w`/`\s`/`\d`, lowercase and extra-case tables,
+//!   against the oracle's own `re`.
+//! - `{"op": "fold", "chars"}`: for every character CPython's IGNORECASE tables touch, which of
+//!   them its hostname literal matches (Rust compiles the literal it writes; Python
+//!   `re.compile(re.escape(c), re.I)`).
 //!
 //! Seeds are the inputs of `tests/test_memory_privacy.py` and their neighbours. Generated cases
 //! splice fragments of every kind (and near misses) with boundary characters (marks, `No`
 //! digits, `Pc`, joiners, İ ı ſ K, the `\s` oddities, Unicode digits, code points new after
-//! Unicode 15.0), random text and hostile repeats of up to about 50 KB per line. Fixture
-//! secrets and paths are assembled at run time.
+//! Unicode 15.0), random text and hostile repeats of up to about 50 KB per line, with host
+//! names of cased letters from CPython's case tables and the home and host values respelled.
+//! Fixture secrets and paths are assembled at run time.
 
 use anthology_memory::privacy::{self, PrivacyDeps, PrivacyLimits};
-use anthology_pycompat::json::{Map, Value};
+use std::sync::OnceLock;
+
+use anthology_pycompat::json::{Int, Map, Value};
 
 use crate::case::{Case, Rng, Surface};
 use crate::observe::{Observed, from_oracle};
@@ -41,9 +50,18 @@ impl Surface for PrivacyFindings {
     }
 
     fn seeds(&self) -> Vec<Case> {
+        let mut fold = Map::new();
+        fold.insert("op".into(), Value::Str("fold".into()));
+        let chars = privacy::case_candidates()
+            .into_iter()
+            .map(|c| Value::Int(Int::Small(i64::from(c))))
+            .collect();
+        fold.insert("chars".into(), Value::Array(chars));
         let mut out = vec![
             Case::new("seed:patterns", op("patterns")),
+            Case::new("seed:constants", op("constants")),
             Case::new("seed:classes", op("classes")),
+            Case::new("seed:fold", Value::Object(fold)),
         ];
         let home = format!("{}/zed", u());
         let host = host();
@@ -127,18 +145,43 @@ fn run(case: &Value) -> Observed {
                 .collect();
             Observed::text(0, &out, "")
         }
+        "constants" => Observed::text(0, &privacy::python_constants(), ""),
         "classes" => {
-            use privacy::pyclass::{D, DIGIT_ZEROS, S, W};
+            use privacy::pyclass::{D, DIGIT_ZEROS, EXTRA_CASES, LOWER, S, W};
             let ranges = |name: &str, r: &[(u32, u32)]| {
                 let parts: Vec<String> = r.iter().map(|(a, b)| format!("{a:x}-{b:x}")).collect();
                 format!("{name} {}\n", parts.join(" "))
             };
             let zeros: Vec<String> = DIGIT_ZEROS.iter().map(|z| format!("{z:x}")).collect();
+            let lower: Vec<String> = LOWER.iter().map(|(a, b)| format!("{a:x}:{b:x}")).collect();
+            let extra: Vec<String> = EXTRA_CASES
+                .iter()
+                .map(|(k, vs)| {
+                    let vs: Vec<String> = vs.iter().map(|v| format!("{v:x}")).collect();
+                    format!("{k:x}:{}", vs.join(","))
+                })
+                .collect();
             let out = ranges("w", W)
                 + &ranges("s", S)
                 + &ranges("d", D)
-                + &format!("zeros {}\n", zeros.join(" "));
+                + &format!("zeros {}\n", zeros.join(" "))
+                + &format!("lower {}\n", lower.join(" "))
+                + &format!("extra {}\n", extra.join(" "));
             Observed::text(0, &out, "")
+        }
+        "fold" => {
+            let chars: Vec<u32> = case
+                .as_object()
+                .and_then(|o| o.get("chars"))
+                .and_then(Value::as_array)
+                .expect("privacy.findings: fold needs chars")
+                .iter()
+                .map(|v| match v {
+                    Value::Int(Int::Small(n)) => u32::try_from(*n).expect("a code point"),
+                    other => panic!("privacy.findings: not a code point: {other:?}"),
+                })
+                .collect();
+            Observed::text(0, &privacy::ignorecase_fold(&chars), "")
         }
         other => panic!("privacy.findings: unknown op {other:?}"),
     }
@@ -470,6 +513,13 @@ const BOUNDARY: &[char] = &[
 ];
 
 /// Hostile units, repeated up to about 50 KB.
+fn hostile() -> Vec<String> {
+    let mut units: Vec<String> = HOSTILE.iter().map(|s| (*s).to_string()).collect();
+    units.push(format!("{}/x", u()));
+    units.push(format!("a://h{}/x ", u()));
+    units
+}
+
 const HOSTILE: &[&str] = &[
     "a",
     "a/",
@@ -497,8 +547,6 @@ const HOSTILE: &[&str] = &[
     "%en0",
     "id_",
     "ssh ",
-    "/Users/x",
-    "a://h/Users/x ",
 ];
 
 fn pick_home(rng: &mut Rng) -> String {
@@ -541,14 +589,73 @@ fn pick_host(rng: &mut Rng) -> String {
         "box.".into(),
         "\u{130}stanbul-box".into(),
         "\u{dc}n\u{ef}-box".into(),
+        "k\u{131}wi-box".into(),
+        "\u{131}stanbul".into(),
+        "\u{17f}erver-01".into(),
+        "\u{1e9e}tra\u{df}e-box".into(),
+        "\u{3a3}\u{3bf}\u{3c6}\u{3af}\u{3b1}-box".into(),
+        "\u{3c2}\u{3d1}\u{3f0}\u{3f1}-box".into(),
+        "\u{1c5}ungla-box".into(),
+        "\u{13a0}\u{13a1}\u{13a2}-box".into(),
         "nas.lan".into(),
         "a.b".into(),
         "x-y".into(),
     ];
-    if rng.chance(0.1) {
+    let k = rng.f64();
+    if k < 0.08 {
         return rng.ascii_string(12);
     }
+    if k < 0.16 {
+        // Cased letters of every kind CPython's IGNORECASE tables touch.
+        let cased = cased_letters();
+        let n = rng.index(6) + 4;
+        let name: String = (0..n).map(|_| *rng.pick(cased)).collect();
+        return format!("{name}-box");
+    }
     rng.pick(&choices).clone()
+}
+
+fn cased_letters() -> &'static [char] {
+    static CASED: OnceLock<Vec<char>> = OnceLock::new();
+    CASED.get_or_init(|| {
+        privacy::case_candidates()
+            .into_iter()
+            .filter_map(char::from_u32)
+            .collect()
+    })
+}
+
+/// `v` in a random spelling: upper, lower, the other case of some letters, or with İ ı ſ K
+/// written as the ASCII letters they fold to (and back).
+fn respell(rng: &mut Rng, v: &str) -> String {
+    match rng.index(5) {
+        0 => v.to_uppercase(),
+        1 => v.to_lowercase(),
+        2 => v
+            .chars()
+            .map(|c| match c {
+                '\u{131}' | '\u{130}' => 'i',
+                '\u{17f}' => 's',
+                '\u{212a}' => 'k',
+                'i' => '\u{130}',
+                's' => '\u{17f}',
+                'k' => '\u{212a}',
+                other => other,
+            })
+            .collect(),
+        3 => v
+            .chars()
+            .flat_map(|c| {
+                let flip: Vec<char> = if rng.chance(0.5) {
+                    c.to_uppercase().collect()
+                } else {
+                    c.to_lowercase().collect()
+                };
+                flip
+            })
+            .collect(),
+        _ => v.to_string(),
+    }
 }
 
 fn piece(rng: &mut Rng, frags: &[String], home: &str, host: &str) -> String {
@@ -568,13 +675,18 @@ fn piece(rng: &mut Rng, frags: &[String], home: &str, host: &str) -> String {
     } else if k < 0.88 {
         // The dynamic patterns' values, in other cases and next to other characters.
         let v = if rng.chance(0.5) { home } else { host };
-        if rng.chance(0.3) {
-            v.to_uppercase()
+        let v = v.trim().trim_end_matches('.');
+        // Sometimes the short name of an FQDN, which the scan also looks for.
+        let short = rng.chance(0.3);
+        let v = if short {
+            v.split('.').next().unwrap_or(v)
         } else {
-            v.to_string()
-        }
+            v
+        };
+        respell(rng, v)
     } else if k < 0.94 {
-        let unit = *rng.pick(HOSTILE);
+        let units = hostile();
+        let unit = rng.pick(&units).clone();
         let max = (50_000 / unit.len().max(1)).max(1);
         let n = if rng.chance(0.7) {
             rng.index(64) + 1
@@ -638,7 +750,7 @@ fn seed_texts() -> Vec<String> {
         out.push(format!("\u{b2}{f}\u{b2}"));
     }
     // Hostile shapes at a moderate size (each well under the default budget).
-    for unit in HOSTILE {
+    for unit in hostile() {
         out.push(unit.repeat(20_000 / unit.len().max(1)));
     }
     out
@@ -706,6 +818,38 @@ fn seed_dynamic() -> Vec<(String, String, String)> {
             "\u{fc}n\u{ef}-box".into(),
         ),
         ("on corp7 now".into(), home.clone(), "corp7.acme.zz".into()),
+        // ı folds with i, I and İ in CPython (review I-1).
+        (
+            "on kiwi-box now".into(),
+            home.clone(),
+            "k\u{131}wi-box".into(),
+        ),
+        (
+            "on KIWI-BOX now".into(),
+            home.clone(),
+            "k\u{131}wi-box".into(),
+        ),
+        (
+            "on k\u{130}wi-box".into(),
+            home.clone(),
+            "k\u{131}wi-box".into(),
+        ),
+        ("Istanbul".into(), home.clone(), "\u{131}stanbul".into()),
+        (
+            "on server-01".into(),
+            home.clone(),
+            "\u{17f}erver-01".into(),
+        ),
+        (
+            "on \u{3c3}\u{3bf}\u{3c6}\u{3b9}\u{3b1}-box".into(),
+            home.clone(),
+            "\u{3a3}\u{3bf}\u{3c6}\u{3af}\u{3b1}-box".into(),
+        ),
+        (
+            "on stra\u{df}e-box".into(),
+            home.clone(),
+            "\u{1e9e}tra\u{df}e-box".into(),
+        ),
         ("plain text".into(), home, String::new()),
     ]
 }

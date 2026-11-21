@@ -11,11 +11,22 @@
 //! - `\\b` is CPython's word boundary over that `\\w`, written as look-arounds. Rust's `\\b`
 //!   differs next to marks, `No` digits and `Pc` (D-3), and here that would lose findings.
 //! - `$` (no MULTILINE) is the end, or just before a final `\\n`: `(?=\\n?\\z)`.
-//! - `re.IGNORECASE` never uses the engines' `(?i)`: CPython matches a cased literal `x`
-//!   against `c.lower()` and its fixed equivalences (`i`/`ı`, `s`/`ſ`), so an ASCII letter
-//!   becomes `[xX]`, `i` becomes `[iIİı]`, `s` `[sSſ]` and `k` `[kKK]` (checked over every code
-//!   point in the 3.12 image). Uncased characters and the classes above match the same under
-//!   it. A non-ASCII cased literal in a static pattern is refused.
+//! - `re.IGNORECASE` never uses the engines' `(?i)`. CPython (`_compiler._compile` and
+//!   `_optimize_charset`) lowers each cased member `x` of a literal or class with
+//!   `_sre.unicode_tolower`, adds `_casefix._EXTRA_CASES` of the result, and matches a character
+//!   `c` when `unicode_tolower(c)` is in that set. The translation writes that set out as a
+//!   class, from CPython's own tables ([`super::pyclass::LOWER`] and `EXTRA_CASES`), so it is
+//!   exact for every character: `i` becomes `[iIİı]`, `k` `[kK]` plus the Kelvin sign, and `ı`
+//!   `[iIİı]` too. Uncased
+//!   characters match only themselves (no character lowers to one), and the `\\w`/`\\s`/`\\d`
+//!   classes are unchanged by lowering (both checked over every code point in the 3.12 image).
+//!
+//! [`Mode::Prefilter`] writes the same pattern with every assertion left out (look-arounds,
+//! `\\b`, `$`, `^`). Leaving an assertion out only widens what a pattern matches, so when that
+//! pattern (plain `regex`, linear, no limits) finds nothing on a line, the exact pattern cannot
+//! either, and the scan skips it.
+
+use std::collections::BTreeSet;
 
 use super::pyclass;
 
@@ -26,22 +37,26 @@ pub struct Translated {
     pub fancy: bool,
 }
 
-/// How a non-ASCII cased literal is handled under IGNORECASE.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum NonAsciiCase {
-    /// A translation error (the static patterns are ASCII).
-    Refuse,
-    /// The engine's own `(?i:c)` (the machine's hostname, which is data, not code).
-    EngineFold,
+/// What to translate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// The pattern, exactly.
+    Exact,
+    /// A pattern that matches wherever the exact one does: every assertion left out.
+    Prefilter,
 }
 
 /// Translates the Python pattern `py`, compiled with `re.IGNORECASE` when `ignorecase`.
 pub fn translate(py: &str, ignorecase: bool) -> Result<Translated, String> {
+    translate_mode(py, ignorecase, Mode::Exact)
+}
+
+pub fn translate_mode(py: &str, ignorecase: bool, mode: Mode) -> Result<Translated, String> {
     let mut t = Translator {
         chars: py.chars().collect(),
         i: 0,
         ignorecase,
-        non_ascii: NonAsciiCase::Refuse,
+        mode,
         out: String::new(),
         fancy: false,
         depth: 0,
@@ -54,19 +69,19 @@ pub fn translate(py: &str, ignorecase: bool) -> Result<Translated, String> {
 }
 
 /// `s` as a literal (Python `re.escape(s)`), compiled with IGNORECASE when `ignorecase`.
-pub fn literal(s: &str, ignorecase: bool, non_ascii: NonAsciiCase) -> Result<String, String> {
+pub fn literal(s: &str, ignorecase: bool) -> String {
     let mut out = String::new();
     for c in s.chars() {
-        push_literal(&mut out, c, ignorecase, non_ascii)?;
+        push_literal(&mut out, c, ignorecase);
     }
-    Ok(out)
+    out
 }
 
 struct Translator {
     chars: Vec<char>,
     i: usize,
     ignorecase: bool,
-    non_ascii: NonAsciiCase,
+    mode: Mode,
     out: String,
     fancy: bool,
     depth: usize,
@@ -87,6 +102,10 @@ impl Translator {
     fn err(&self, what: &str) -> String {
         let at: String = self.chars.iter().collect();
         format!("pyre: {what} at {} in {at:?}", self.i)
+    }
+
+    fn prefilter(&self) -> bool {
+        self.mode == Mode::Prefilter
     }
 
     fn run(&mut self) -> Result<(), String> {
@@ -154,13 +173,17 @@ impl Translator {
                 }
                 '^' => {
                     self.i += 1;
-                    self.out.push_str(r"\A");
+                    if !self.prefilter() {
+                        self.out.push_str(r"\A");
+                    }
                     quantifiable = false;
                 }
                 '$' => {
                     self.i += 1;
-                    self.out.push_str(r"(?=\n?\z)");
-                    self.fancy = true;
+                    if !self.prefilter() {
+                        self.out.push_str(r"(?=\n?\z)");
+                        self.fancy = true;
+                    }
                     quantifiable = false;
                 }
                 '.' => {
@@ -170,8 +193,7 @@ impl Translator {
                 }
                 _ => {
                     self.i += 1;
-                    push_literal(&mut self.out, c, self.ignorecase, self.non_ascii)
-                        .map_err(|e| self.err(&e))?;
+                    push_literal(&mut self.out, c, self.ignorecase);
                     quantifiable = true;
                 }
             }
@@ -218,8 +240,8 @@ impl Translator {
 
     fn group_open(&mut self) -> Result<(), String> {
         self.i += 1;
-        self.depth += 1;
         if self.peek(0) != Some('?') {
+            self.depth += 1;
             self.out.push('(');
             return Ok(());
         }
@@ -231,12 +253,67 @@ impl Translator {
             (Some('<'), Some('!')) => "(?<!",
             _ => return Err(self.err("unsupported group")),
         };
-        if opener != "(?:" {
-            self.fancy = true;
-        }
         self.i += opener.chars().count() - 1;
+        if opener == "(?:" {
+            self.depth += 1;
+            self.out.push_str(opener);
+            return Ok(());
+        }
+        if self.prefilter() {
+            // Check the whole assertion as the exact mode would, then leave it out.
+            let start = self.i;
+            let inner = self.skip_group()?;
+            translate_mode(&inner, self.ignorecase, Mode::Exact)
+                .map_err(|e| format!("{e} (in the assertion at {start})"))?;
+            if matches!(self.peek(0), Some('*' | '+' | '?' | '{')) {
+                return Err(self.err("a repeated assertion"));
+            }
+            return Ok(());
+        }
+        self.depth += 1;
+        self.fancy = true;
         self.out.push_str(opener);
         Ok(())
+    }
+
+    /// The source of a group body after its opener, through its closing `)` (consumed).
+    fn skip_group(&mut self) -> Result<String, String> {
+        let start = self.i;
+        let mut depth = 1usize;
+        let mut in_class = false;
+        while let Some(c) = self.peek(0) {
+            match c {
+                '\\' => {
+                    self.i += 2;
+                    continue;
+                }
+                '[' if !in_class => {
+                    in_class = true;
+                    // A `]` right after `[` or `[^` is a member.
+                    self.i += 1;
+                    if self.peek(0) == Some('^') {
+                        self.i += 1;
+                    }
+                    if self.peek(0) == Some(']') {
+                        self.i += 1;
+                    }
+                    continue;
+                }
+                ']' if in_class => in_class = false,
+                '(' if !in_class => depth += 1,
+                ')' if !in_class => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inner: String = self.chars[start..self.i].iter().collect();
+                        self.i += 1;
+                        return Ok(inner);
+                    }
+                }
+                _ => {}
+            }
+            self.i += 1;
+        }
+        Err(self.err("unbalanced `(`"))
     }
 
     /// An escape outside a class; returns whether it can take a quantifier.
@@ -253,20 +330,21 @@ impl Translator {
             'd' => self.out.push_str(&class_text(pyclass::D, false)),
             'D' => self.out.push_str(&class_text(pyclass::D, true)),
             'b' | 'B' => {
-                let w = class_text(pyclass::W, false);
-                let boundary = if e == 'b' {
-                    format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
-                } else {
-                    format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w}))")
-                };
-                self.out.push_str(&boundary);
-                self.fancy = true;
+                if !self.prefilter() {
+                    let w = class_text(pyclass::W, false);
+                    let boundary = if e == 'b' {
+                        format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
+                    } else {
+                        format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w}))")
+                    };
+                    self.out.push_str(&boundary);
+                    self.fancy = true;
+                }
                 return Ok(false);
             }
             _ => {
                 let c = self.simple_escape(e)?;
-                push_literal(&mut self.out, c, self.ignorecase, self.non_ascii)
-                    .map_err(|m| self.err(&m))?;
+                push_literal(&mut self.out, c, self.ignorecase);
             }
         }
         Ok(true)
@@ -342,12 +420,17 @@ impl Translator {
                 Item::Set(r) => sets.extend(r),
             }
         }
-        let mut explicit = normalize(explicit);
+        let mut members = normalize(explicit);
         if self.ignorecase {
-            explicit = self.fold_ranges(explicit)?;
+            let size: u32 = members.iter().map(|(lo, hi)| hi - lo + 1).sum();
+            if size > 0x2_0000 {
+                return Err(self.err("an IGNORECASE class range too large to fold"));
+            }
+            let points = members.iter().flat_map(|&(lo, hi)| lo..=hi);
+            members = fold(points);
         }
-        explicit.extend(sets);
-        Ok(class_text(&normalize(explicit), negated))
+        members.extend(sets);
+        Ok(class_text(&normalize(members), negated))
     }
 
     fn class_atom(&mut self) -> Result<Item, String> {
@@ -368,100 +451,56 @@ impl Translator {
             _ => Item::Char(self.simple_escape(e)?),
         })
     }
+}
 
-    /// Explicit class members under IGNORECASE: every ASCII letter brings its other case and
-    /// its fixed equivalents; a non-ASCII cased member is refused (it would need CPython's
-    /// case tables, and no static pattern has one).
-    fn fold_ranges(&self, ranges: Vec<(u32, u32)>) -> Result<Vec<(u32, u32)>, String> {
-        let mut out = ranges.clone();
-        for &(lo, hi) in &ranges {
-            for cp in lo..=hi.min(0x7f) {
-                let c = char::from(cp as u8);
-                if c.is_ascii_alphabetic() {
-                    let folded = fold_chars(c.to_ascii_lowercase()).chars();
-                    out.extend(folded.map(|f| (f as u32, f as u32)));
-                }
-            }
-            if hi > 0x7f && (lo.max(0x80)..=hi).filter_map(char::from_u32).any(is_cased) {
-                return Err(self.err("a non-ASCII cased class member under IGNORECASE"));
-            }
-        }
-        Ok(normalize(out))
+/// `_sre.unicode_tolower(cp)`.
+fn py_lower(cp: u32) -> u32 {
+    pyclass::LOWER
+        .binary_search_by_key(&cp, |&(k, _)| k)
+        .map_or(cp, |i| pyclass::LOWER[i].1)
+}
+
+/// `_casefix._EXTRA_CASES[lo]`, or nothing.
+fn extra_cases(lo: u32) -> &'static [u32] {
+    pyclass::EXTRA_CASES
+        .binary_search_by_key(&lo, |&(k, _)| k)
+        .map_or(&[], |i| pyclass::EXTRA_CASES[i].1)
+}
+
+/// Every character CPython's IGNORECASE matches for the members `points` (a literal or the
+/// explicit members of a class): each lowered, with its extra cases, then every character whose
+/// lowercase is one of those.
+fn fold(points: impl Iterator<Item = u32>) -> Vec<(u32, u32)> {
+    let mut lowered: BTreeSet<u32> = BTreeSet::new();
+    for cp in points {
+        let lo = py_lower(cp);
+        lowered.insert(lo);
+        lowered.extend(extra_cases(lo));
     }
-}
-
-/// CPython's `_sre.unicode_iscased`.
-fn is_cased(c: char) -> bool {
-    !c.to_lowercase().eq(std::iter::once(c)) || !c.to_uppercase().eq(std::iter::once(c))
-}
-
-/// Every character an ASCII lowercase letter `x` matches under IGNORECASE (CPython 3.12).
-fn fold_chars(x: char) -> &'static str {
-    const ALL: [&str; 26] = [
-        "aA",
-        "bB",
-        "cC",
-        "dD",
-        "eE",
-        "fF",
-        "gG",
-        "hH",
-        "iI\u{130}\u{131}",
-        "jJ",
-        "kK\u{212a}",
-        "lL",
-        "mM",
-        "nN",
-        "oO",
-        "pP",
-        "qQ",
-        "rR",
-        "sS\u{17f}",
-        "tT",
-        "uU",
-        "vV",
-        "wW",
-        "xX",
-        "yY",
-        "zZ",
-    ];
-    ALL[(x as u8 - b'a') as usize]
+    let mut out: Vec<(u32, u32)> = lowered
+        .iter()
+        .filter(|&&x| py_lower(x) == x)
+        .map(|&x| (x, x))
+        .collect();
+    out.extend(
+        pyclass::LOWER
+            .iter()
+            .filter(|(_, lo)| lowered.contains(lo))
+            .map(|&(k, _)| (k, k)),
+    );
+    normalize(out)
 }
 
 /// One literal character, folded under IGNORECASE.
-fn push_literal(
-    out: &mut String,
-    c: char,
-    ignorecase: bool,
-    non_ascii: NonAsciiCase,
-) -> Result<(), String> {
+fn push_literal(out: &mut String, c: char, ignorecase: bool) {
     if ignorecase {
-        // CPython folds by `lower()`: İ and the Kelvin sign lower into ASCII letters.
-        let lo = c.to_lowercase().next().unwrap_or(c);
-        if lo.is_ascii_alphabetic() {
-            let set: Vec<(u32, u32)> = fold_chars(lo)
-                .chars()
-                .map(|f| (f as u32, f as u32))
-                .collect();
-            out.push_str(&class_text(&normalize(set), false));
-            return Ok(());
-        }
-        if !c.is_ascii() && is_cased(c) {
-            return match non_ascii {
-                NonAsciiCase::Refuse => {
-                    Err(format!("a non-ASCII cased literal {c:?} under IGNORECASE"))
-                }
-                NonAsciiCase::EngineFold => {
-                    out.push_str("(?i:");
-                    push_escaped(out, c);
-                    out.push(')');
-                    Ok(())
-                }
-            };
+        let set = fold(std::iter::once(c as u32));
+        if set != [(c as u32, c as u32)] {
+            out.push_str(&class_text(&set, false));
+            return;
         }
     }
     push_escaped(out, c);
-    Ok(())
 }
 
 /// `c` as a literal in either engine's syntax.
@@ -533,6 +572,23 @@ fn class_text(ranges: &[(u32, u32)], negated: bool) -> String {
     s
 }
 
+/// The characters [`literal`] can fold into or out of (every lowercase mapping's two ends and
+/// every extra case, plus ASCII letters): the candidates of the difftest's `fold` check.
+pub fn case_candidates() -> Vec<u32> {
+    let mut all: BTreeSet<u32> = (u32::from(b'A')..=u32::from(b'Z'))
+        .chain(u32::from(b'a')..=u32::from(b'z'))
+        .collect();
+    for &(k, v) in pyclass::LOWER {
+        all.insert(k);
+        all.insert(v);
+    }
+    for &(k, vs) in pyclass::EXTRA_CASES {
+        all.insert(k);
+        all.extend(vs);
+    }
+    all.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,19 +618,34 @@ mod tests {
         assert!(!d.is_match("²").unwrap());
     }
 
+    /// The sets CPython 3.12 matches, checked over every code point in the pinned image.
     #[test]
     fn ignorecase_is_cpythons() {
-        let i = fancy("^i$", true);
-        for c in ["i", "I", "\u{130}", "\u{131}"] {
-            assert!(i.is_match(c).unwrap(), "{c:?}");
-        }
+        let set = |c: char| -> String {
+            let v = fold(std::iter::once(c as u32));
+            v.iter()
+                .flat_map(|&(lo, hi)| lo..=hi)
+                .filter_map(char::from_u32)
+                .collect()
+        };
+        assert_eq!(set('i'), "Iiİı");
+        assert_eq!(set('\u{131}'), "Iiİı");
+        assert_eq!(set('\u{130}'), "Iiİı");
+        assert_eq!(set('s'), "Ssſ");
+        assert_eq!(set('k'), "Kk\u{212a}");
+        assert_eq!(set('a'), "Aa");
+        assert_eq!(set('-'), "-");
+        assert_eq!(set('é'), "Éé");
         let k = fancy("^[a-z]$", true);
         for c in ["K", "\u{212a}", "\u{17f}", "\u{131}", "\u{130}"] {
             assert!(k.is_match(c).unwrap(), "{c:?}");
         }
         assert!(!k.is_match("é").unwrap());
-        assert!(translate("é", true).is_err());
-        assert!(translate("é", false).is_ok());
+        assert!(fancy("^é$", true).is_match("É").unwrap());
+        let host = regex::Regex::new(&format!("^{}$", literal("k\u{131}wi", true))).unwrap();
+        for text in ["kiwi", "KIWI", "kİwi", "\u{212a}\u{131}wi"] {
+            assert!(host.is_match(text), "{text}");
+        }
     }
 
     #[test]
@@ -607,6 +678,8 @@ mod tests {
         ] {
             assert!(translate(py, false).is_err(), "{py}");
         }
+        assert!(translate_mode(r"(?!x)*", false, Mode::Prefilter).is_err());
+        assert!(translate_mode(r"a(?!\q)", false, Mode::Prefilter).is_err());
     }
 
     #[test]
@@ -623,5 +696,26 @@ mod tests {
         let neg = fancy(r"^[^\s/:@]+$", false);
         assert!(neg.is_match("abc").unwrap());
         assert!(!neg.is_match("a:b").unwrap());
+    }
+
+    #[test]
+    fn a_prefilter_drops_only_assertions() {
+        let pre = |py: &str| translate_mode(py, false, Mode::Prefilter).unwrap();
+        let t = pre(r"(?<![\w-])id_(?:rsa|dsa)(?![\w-])$");
+        assert!(!t.fancy);
+        let rx = regex::Regex::new(&t.pattern).unwrap();
+        assert!(rx.is_match("xid_rsa-"));
+        assert!(!rx.is_match("id_ecdsa"));
+        let t = pre(r"\bgh[pousr]_(?=[)\]])x");
+        assert!(regex::Regex::new(&t.pattern).unwrap().is_match("_ghp_x"));
+        // A `)` or `]` inside a class or an escape does not end the skipped assertion.
+        let t = pre(r"a(?![)\]](?:b|\))c)d");
+        assert_eq!(
+            regex::Regex::new(&t.pattern)
+                .unwrap()
+                .find("ad")
+                .map(|m| m.as_str()),
+            Some("ad")
+        );
     }
 }

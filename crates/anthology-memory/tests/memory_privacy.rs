@@ -1009,7 +1009,7 @@ mod shared_secret_patterns_test {
 
     #[test]
     fn test_shape() {
-        for (label, pattern, _) in SECRET_PATTERNS {
+        for (label, pattern, ignorecase) in SECRET_PATTERNS {
             let mut chars = label.chars();
             assert!(
                 chars.next().is_some_and(|c| c.is_ascii_lowercase()),
@@ -1019,8 +1019,9 @@ mod shared_secret_patterns_test {
                 chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
                 "{label}"
             );
-            // Python: `hasattr(rx, "search")`, i.e. it compiles; this searches with it.
-            let _ = search_any(&[(pattern, false)], "");
+            // Python: `hasattr(rx, "search")`, i.e. it compiled. A pattern that does not
+            // compile counts as a match (fail closed), and none matches the empty text.
+            assert!(!search_any(&[(pattern, *ignorecase)], ""), "{label}");
         }
     }
 
@@ -1052,12 +1053,18 @@ mod backtrack_limit {
             },
         };
         let mail = at(&["alice", "mail.acme.zz"]);
-        // Every search pops at least once: a budget of 0 leaves every line unscannable.
-        let found = privacy_findings(&format!("a\n{mail}"), Some("/srv/zed"), Some(""), &low(0));
-        assert_eq!(found, vec![f(UNSCANNABLE, 1), f(UNSCANNABLE, 2)]);
+        // Every backtracking search pops at least once, so a budget of 0 leaves every line that
+        // passes a prefilter unscannable; a line no prefilter accepts never needs the engine.
+        let found = privacy_findings(
+            &format!("{mail}\nplain words\nsee {mail}"),
+            Some("/srv/zed"),
+            Some(""),
+            &low(0),
+        );
+        assert_eq!(found, vec![f(UNSCANNABLE, 1), f(UNSCANNABLE, 3)]);
         assert_eq!(
             describe(&found),
-            "text the privacy scan could not finish (lines 1, 2)"
+            "text the privacy scan could not finish (lines 1, 3)"
         );
         // A small budget: the long line is unscannable, the short ones keep their findings.
         let text = format!("{} {mail}\nok\nsee {mail}", "x".repeat(5_000));

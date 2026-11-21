@@ -10,7 +10,10 @@
 //! Semantics are CPython 3.12's: every pattern keeps its Python source ([`SECRET_PATTERNS`] and
 //! the module patterns below, verbatim) and goes through one strict translator (`pyre`) that
 //! uses CPython's `\w`, `\s`, `\d` and word boundary and its IGNORECASE rules. Patterns with a
-//! look-around after translation run on `fancy-regex`; the rest on `regex` (GC-16).
+//! look-around after translation run on `fancy-regex`; the rest on `regex` (GC-16). Each
+//! look-around pattern also has a prefilter on `regex`: the same pattern with its assertions
+//! left out, which matches wherever the exact one does. A line it does not match is skipped
+//! without backtracking (most lines, for most patterns), so the scan runs at DFA speed there.
 //!
 //! **Limits.** The input may be hostile (an imported archive); every pattern is linear, as in
 //! Python. fancy-regex counts backtracks over a whole search, about 1 to 9 per byte of a line
@@ -18,8 +21,10 @@
 //! of `n` bytes gets `max(backtrack_limit, backtrack_per_byte * 2^ceil(log2 n))` (power-of-two
 //! tiers, each compiled once): a quadratic blow-up still trips it quickly. fancy-regex also has a
 //! fixed backtrack stack (`StackOverflow`), which a greedy run of about a million characters of
-//! one class reaches; that line is unscannable too. Any engine error on a line is an
-//! `unscannable` finding on it, and every other check on the line still runs.
+//! one class reaches when the prefilter lets the line through (a line of a million `a`s gives
+//! `_EMAIL` nothing to find, but `secret_key` repeated a million times reaches it); that line is
+//! unscannable too. Any engine error on a line is an `unscannable` finding on it, and every other
+//! check on the line still runs.
 //!
 //! It is an accident guard, not a guarantee: it knows common formats only. `SECRET_PATTERNS` is
 //! the one secret-pattern list on the anthology side; a test keeps every guard G6 pattern in it.
@@ -244,29 +249,39 @@ struct Unfinished;
 #[derive(Debug)]
 enum Rx {
     Plain(regex::Regex),
-    Fancy(fancy_regex::Regex),
+    /// A look-around pattern, and its prefilter: the same pattern with every assertion left
+    /// out (`pyre::Mode::Prefilter`), on `regex`. Where the prefilter finds nothing the exact
+    /// pattern cannot match either, so the backtracking search is skipped (`None`: no
+    /// prefilter, always search).
+    Fancy(fancy_regex::Regex, Option<regex::Regex>),
+}
+
+fn plain_regex(pattern: &str) -> Result<regex::Regex, String> {
+    regex::RegexBuilder::new(pattern)
+        .size_limit(64 << 20)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 impl Rx {
-    /// Compiles a translated pattern.
-    fn try_build(t: &pyre::Translated, limit: usize) -> Result<Rx, String> {
+    /// Compiles a translated pattern, with the prefilter pattern `pre` for a fancy one (a
+    /// prefilter that does not compile is dropped: the exact search then always runs).
+    fn try_build(t: &pyre::Translated, pre: Option<&str>, limit: usize) -> Result<Rx, String> {
         if t.fancy {
             let rx = fancy_regex::RegexBuilder::new(&t.pattern)
                 .backtrack_limit(limit)
                 .build()
                 .map_err(|e| e.to_string())?;
-            Ok(Rx::Fancy(rx))
+            Ok(Rx::Fancy(rx, pre.and_then(|p| plain_regex(p).ok())))
         } else {
-            let rx = regex::RegexBuilder::new(&t.pattern)
-                .size_limit(64 << 20)
-                .build()
-                .map_err(|e| e.to_string())?;
-            Ok(Rx::Plain(rx))
+            Ok(Rx::Plain(plain_regex(&t.pattern)?))
         }
     }
 
     fn try_compile(py: &str, ignorecase: bool, limit: usize) -> Result<Rx, String> {
-        Rx::try_build(&pyre::translate(py, ignorecase)?, limit)
+        let exact = pyre::translate(py, ignorecase)?;
+        let pre = pyre::translate_mode(py, ignorecase, pyre::Mode::Prefilter).ok();
+        Rx::try_build(&exact, pre.as_ref().map(|p| p.pattern.as_str()), limit)
     }
 
     /// A static pattern: one that does not translate or compile is a bug (a unit test compiles
@@ -280,7 +295,8 @@ impl Rx {
     fn search(&self, line: &str) -> Result<bool, Unfinished> {
         match self {
             Rx::Plain(rx) => Ok(rx.is_match(line)),
-            Rx::Fancy(rx) => rx.is_match(line).map_err(|_| Unfinished),
+            Rx::Fancy(_, Some(pre)) if !pre.is_match(line) => Ok(false),
+            Rx::Fancy(rx, _) => rx.is_match(line).map_err(|_| Unfinished),
         }
     }
 
@@ -301,7 +317,8 @@ impl Rx {
                     }
                 }
             }
-            Rx::Fancy(rx) => {
+            Rx::Fancy(_, Some(pre)) if !pre.is_match(line) => {}
+            Rx::Fancy(rx, _) => {
                 for caps in rx.captures_iter(line) {
                     let caps = caps.map_err(|_| Unfinished)?;
                     groups.clear();
@@ -319,7 +336,7 @@ impl Rx {
     fn plain(&self) -> &regex::Regex {
         match self {
             Rx::Plain(rx) => rx,
-            Rx::Fancy(_) => unreachable!("privacy: _HOME_PATH is a plain pattern"),
+            Rx::Fancy(..) => unreachable!("privacy: _HOME_PATH is a plain pattern"),
         }
     }
 }
@@ -422,27 +439,26 @@ fn dynamic_for(which: &Dynamic, limit: usize) -> Arc<Option<Rx>> {
 
 fn build_dynamic(which: &Dynamic, limit: usize) -> Result<Rx, String> {
     let part = |py: &str, ic: bool| pyre::translate(py, ic).map(|t| t.pattern);
-    let pattern = match which {
+    // The literal alone is the prefilter: only the look-arounds around it are left out.
+    let (pattern, lit) = match which {
         Dynamic::Python(py, ic) => return Rx::try_compile(py, *ic, limit),
         // `re.escape(home) + r"(?![\w-])"`.
         Dynamic::Home(home) => {
-            let lit = pyre::literal(home, false, pyre::NonAsciiCase::Refuse)?;
-            format!("{lit}{}", part(HOME_TAIL, false)?)
+            let lit = pyre::literal(home, false);
+            (format!("{lit}{}", part(HOME_TAIL, false)?), lit)
         }
-        // `r"(?<![\w-])" + re.escape(n) + r"(?![\w-])"`, re.IGNORECASE. A hostname is data: a
-        // non-ASCII cased letter in it uses the engine's own case folding (documented residual).
+        // `r"(?<![\w-])" + re.escape(n) + r"(?![\w-])"`, re.IGNORECASE.
         Dynamic::Host(name) => {
-            let lit = pyre::literal(name, true, pyre::NonAsciiCase::EngineFold)?;
-            format!("{}{lit}{}", part(HOST_HEAD, true)?, part(HOST_TAIL, true)?)
+            let lit = pyre::literal(name, true);
+            let head = part(HOST_HEAD, true)?;
+            (format!("{head}{lit}{}", part(HOST_TAIL, true)?), lit)
         }
     };
-    Rx::try_build(
-        &pyre::Translated {
-            pattern,
-            fancy: true,
-        },
-        limit,
-    )
+    let exact = pyre::Translated {
+        pattern,
+        fancy: true,
+    };
+    Rx::try_build(&exact, Some(&lit), limit)
 }
 
 /// The patterns of one scan, per line budget.
@@ -598,43 +614,49 @@ fn exempt_email(local: &str, domain: &str) -> bool {
 fn ipv4_kind(groups: &[Option<&str>]) -> Option<&'static str> {
     let mut o = [0u32; 4];
     for (k, slot) in o.iter_mut().enumerate() {
-        *slot = py_int(groups.get(k + 1).copied().flatten()?)?;
+        // `_IPV4`'s groups are `\d{1,3}`, so every one has a value (the `classes` op pins the
+        // digit table); if one ever did not, report an address rather than nothing.
+        let Some(value) = groups.get(k + 1).copied().flatten().and_then(py_int) else {
+            return Some("ip-address");
+        };
+        *slot = value;
     }
     if o.iter().any(|&x| x > 255) {
         return None;
     }
     let addr = (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
-    let within = |net: u32, bits: u32| {
-        let mask = if bits == 0 {
-            0
-        } else {
-            u32::MAX << (32 - bits)
-        };
+    let within = |&(net, bits): &(u32, u32)| {
+        let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
         addr & mask == net & mask
     };
-    let exempt = [
-        (0x7f00_0000, 8),
-        (0, 32),
-        (0xffff_ffff, 32),
-        (0xc000_0200, 24),
-        (0xc633_6400, 24),
-        (0xcb00_7100, 24),
-    ];
-    if exempt.iter().any(|&(n, b)| within(n, b)) {
+    if EXEMPT_V4.iter().any(within) {
         return None;
     }
-    let private = [
-        (0x0a00_0000, 8),
-        (0xac10_0000, 12),
-        (0xc0a8_0000, 16),
-        (0x6440_0000, 10),
-        (0xa9fe_0000, 16),
-    ];
-    if private.iter().any(|&(n, b)| within(n, b)) {
+    if PRIVATE_V4.iter().any(within) {
         return Some("private-ip");
     }
     Some("ip-address")
 }
+
+/// `_PRIVATE_V4`: RFC 1918, CGNAT, link-local, as (network, prefix length).
+const PRIVATE_V4: &[(u32, u32)] = &[
+    (0x0a00_0000, 8),
+    (0xac10_0000, 12),
+    (0xc0a8_0000, 16),
+    (0x6440_0000, 10),
+    (0xa9fe_0000, 16),
+];
+/// `_EXEMPT_V4`: loopback, the unspecified and broadcast addresses, the documentation ranges.
+const EXEMPT_V4: &[(u32, u32)] = &[
+    (0x7f00_0000, 8),
+    (0, 32),
+    (0xffff_ffff, 32),
+    (0xc000_0200, 24),
+    (0xc633_6400, 24),
+    (0xcb00_7100, 24),
+];
+/// `_PRIVATE_V6`: ULA and link-local, as (first hextet of the network, prefix length ≤ 16).
+const PRIVATE_V6: &[(u16, u32)] = &[(0xfc00, 7), (0xfe80, 10)];
 
 /// `ipaddress.IPv6Address(text)` (CPython 3.12 `_ip_int_from_string`, without a zone), as the
 /// first hextet, or `None` when Python raises. Only the first hextet decides the two private
@@ -706,7 +728,10 @@ fn ipv6_first_hextet(text: &str) -> Option<u16> {
 
 /// `fc00::/7` or `fe80::/10`.
 fn private_v6(first: u16) -> bool {
-    first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+    PRIVATE_V6.iter().any(|&(net, bits)| {
+        let mask = u16::MAX << (16 - bits);
+        first & mask == net & mask
+    })
 }
 
 /// `_has_scheme`: a scheme (`[A-Za-z][A-Za-z0-9+.-]*`) ends at byte `p`, within the token that
@@ -954,6 +979,100 @@ pub fn search_any(patterns: &[(&str, bool)], text: &str) -> bool {
         let which = Dynamic::Python(py.to_string(), ic);
         search_built(&dynamic_for(&which, limit), text).unwrap_or(true)
     })
+}
+
+/// Every pattern and table of the scan other than [`SECRET_PATTERNS`], printed as the
+/// `privacy.findings` difftest's `constants` op prints the Python's, so a Python change that
+/// this copy misses is a diff. For the difftest only.
+#[doc(hidden)]
+pub fn python_constants() -> String {
+    let mut out = String::new();
+    let mut line = |parts: &[&str]| {
+        out.push_str(&parts.join("\t"));
+        out.push('\n');
+    };
+    for (name, py, ic) in [
+        ("_HOME_PATH", HOME_PATH, false),
+        ("_EMAIL", EMAIL, false),
+        ("_IPV4", IPV4, false),
+        ("_IPV6", IPV6, false),
+        ("_PRIVATE_HOST", PRIVATE_HOST, true),
+        ("_SSH_COMMAND", SSH_COMMAND, false),
+        ("_USER_AT_HOST", USER_AT_HOST, false),
+        ("_SSH_PATH", SSH_PATH, false),
+        ("_KEY_NAME", KEY_NAME, false),
+    ] {
+        line(&["pattern", name, if ic { "1" } else { "0" }, py]);
+    }
+    // `_home_literal("/srv/x")` and `_hostname_patterns("abcd")` (`re.escape` keeps both).
+    line(&["dynamic", "home", "0", &format!("/srv/x{HOME_TAIL}")]);
+    line(&[
+        "dynamic",
+        "host",
+        "1",
+        &format!("{HOST_HEAD}abcd{HOST_TAIL}"),
+    ]);
+    let labels: Vec<String> = LABELS
+        .iter()
+        .filter(|(k, _)| *k != UNSCANNABLE)
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    line(&["table", "_LABELS", &labels.join("|")]);
+    let chars =
+        |f: fn(u8) -> bool| -> String { (0..128u8).filter(|&b| f(b)).map(char::from).collect() };
+    line(&["table", "_PATH_CHARS", &chars(is_path_char)]);
+    line(&["table", "_SCHEME_CHARS", &chars(is_scheme_char)]);
+    let v4 = |nets: &[(u32, u32)]| -> String {
+        let all: Vec<String> = nets
+            .iter()
+            .map(|&(n, bits)| format!("{}/{bits}", std::net::Ipv4Addr::from(n)))
+            .collect();
+        all.join(" ")
+    };
+    line(&["table", "_PRIVATE_V4", &v4(PRIVATE_V4)]);
+    line(&["table", "_EXEMPT_V4", &v4(EXEMPT_V4)]);
+    let v6: Vec<String> = PRIVATE_V6
+        .iter()
+        .map(|&(n, bits)| format!("{n:x}::/{bits}"))
+        .collect();
+    line(&["table", "_PRIVATE_V6", &v6.join(" ")]);
+    line(&["table", "_RESERVED_DOMAINS", &RESERVED_DOMAINS.join(" ")]);
+    line(&["table", "_RESERVED_TLDS", &RESERVED_TLDS.join(" ")]);
+    line(&["table", "_PUBLIC_FORGES", &PUBLIC_FORGES.join(" ")]);
+    let mut generic = GENERIC_HOSTNAMES.to_vec();
+    generic.sort_unstable();
+    line(&["table", "_GENERIC_HOSTNAMES", &generic.join(" ")]);
+    out
+}
+
+/// The characters the difftest's `fold` op checks: every end of a lowercase mapping and every
+/// extra case of CPython's tables, and the ASCII letters. For the difftest only.
+#[doc(hidden)]
+pub fn case_candidates() -> Vec<u32> {
+    pyre::case_candidates()
+}
+
+/// For each of `chars`, the members of `chars` its IGNORECASE literal (as the hostname pattern
+/// writes it) matches, printed as the `fold` op prints CPython's. For the difftest only.
+#[doc(hidden)]
+pub fn ignorecase_fold(chars: &[u32]) -> String {
+    let chars: Vec<char> = chars.iter().filter_map(|&c| char::from_u32(c)).collect();
+    let mut out = String::new();
+    let mut buf = [0u8; 4];
+    for &c in &chars {
+        let rx = plain_regex(&format!(
+            r"\A(?:{})\z",
+            pyre::literal(c.encode_utf8(&mut buf), true)
+        ))
+        .unwrap_or_else(|e| panic!("privacy: the literal of {c:?}: {e}"));
+        let hits: Vec<String> = chars
+            .iter()
+            .filter(|&&d| rx.is_match(d.encode_utf8(&mut [0u8; 4])))
+            .map(|&d| format!("{:x}", d as u32))
+            .collect();
+        out.push_str(&format!("{:x} {}\n", c as u32, hits.join(" ")));
+    }
+    out
 }
 
 /// A search with a dynamic pattern; one that could not be built cannot finish (fail closed).
