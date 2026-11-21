@@ -317,6 +317,10 @@ struct Lexer<'t, 'a> {
     subs: Vec<String>,
     /// The holders of the segment being built (`Holder`, F-8).
     holders: Vec<Holder>,
+    /// The text of a `$((...))`: its own segments are arithmetic and run no program word
+    /// (`Segment::arith`, no `Holder`). The commands of a substitution inside it are lexed by
+    /// their own lexer, so they keep their program words.
+    arith_text: bool,
 }
 
 impl<'t, 'a> Lexer<'t, 'a> {
@@ -366,6 +370,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             overflow: false,
             subs: Vec::new(),
             holders: Vec::new(),
+            arith_text: false,
         }
     }
 
@@ -454,7 +459,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         let quoted_braces = std::mem::take(&mut self.quoted_braces);
         // an arithmetic segment runs no program word: its substitutions are lexed and analyzed as commands anyway
         let mut holders = std::mem::take(&mut self.holders);
-        if self.arith.is_some() {
+        if self.arith.is_some() || self.arith_text {
             holders.clear();
         }
         // SH-F3: the segment held a `$(` or a backtick (`end_word` derives it from the words' substitutions)
@@ -465,7 +470,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 tokens: std::mem::take(&mut self.tokens),
                 redirs: std::mem::take(&mut self.redirs),
                 group,
-                arith: false,
+                arith: self.arith_text,
                 braces,
                 after_compound: std::mem::take(&mut self.compound),
                 quoted_braces,
@@ -528,7 +533,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 tokens,
                 redirs: Vec::new(),
                 group,
-                arith: false,
+                arith: self.arith_text,
                 braces: false,
                 after_compound: false,
                 quoted_braces: false,
@@ -544,6 +549,17 @@ impl<'t, 'a> Lexer<'t, 'a> {
     /// Lex a substitution's text. `pos` is where it starts in this text (for the unclosed-body bookkeeping);
     /// `comsub`: it is the text of a `$(...)` / `<(...)`.
     fn nested(&mut self, inner: &str, pos: Option<usize>, comsub: bool) -> Result<(), TooComplex> {
+        self.nested_text(inner, pos, comsub, false)
+    }
+
+    /// [`Lexer::nested`]; `arith`: `inner` is the text of a `$((...))` (`Lexer::arith_text`).
+    fn nested_text(
+        &mut self,
+        inner: &str,
+        pos: Option<usize>,
+        comsub: bool,
+        arith: bool,
+    ) -> Result<(), TooComplex> {
         self.has_word = true;
         if self.depth >= MAX_DEPTH {
             if !inner.is_empty() {
@@ -559,7 +575,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             k > 0 && self.covered[k - 1].0 < p && p < self.covered[k - 1].1
         });
         let full = self.full && !self.swallowed;
-        let segments = segments_in(inner, self.depth + 1, full, shallow, comsub, self.sh)?;
+        let segments = segments_in(inner, self.depth + 1, full, shallow, comsub, arith, self.sh)?;
         self.out.extend(segments);
         Ok(())
     }
@@ -768,12 +784,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     j = k + 1;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'(') => {
-                    let (inner, k) = substitution(text, j, &mut self.memo, &mut self.sh.work)?;
-                    let comsub = !inner.starts_with("((");
-                    if comsub {
+                    let (inner, k, arith) =
+                        substitution(text, j, &mut self.memo, &mut self.sh.work)?;
+                    if !arith {
                         self.subs.push(inner.to_string()); // F-8: the word holds a substitution
                     }
-                    self.nested(&inner, Some(j), comsub)?;
+                    self.nested(&inner, Some(j), !arith)?;
                     j = k;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'{') => {
@@ -835,19 +851,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
         let text = self.text;
         match byte_at(text, i + 1) {
             Some(b'(') => {
-                let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
-                let comsub = !inner.starts_with("((");
-                if comsub {
+                let (inner, j, arith) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
+                if !arith {
                     self.subs.push(inner.to_string()); // F-8: the word holds a substitution
                 }
-                let first = self.out.len();
-                self.nested(&inner, Some(i), comsub)?;
-                if !comsub {
-                    for (seg, holders, _) in &mut self.out[first..] {
-                        seg.arith = true;
-                        holders.clear(); // an arithmetic segment runs no program word
-                    }
-                }
+                // an arithmetic segment runs no program word; the commands of a `$(...)` in it do (DT-4)
+                self.nested_text(&inner, Some(i), !arith, arith)?;
                 return Ok(j);
             }
             Some(b'{') => {
@@ -1011,8 +1020,15 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     for (pos, end, inner, comsub) in
                         body_substitutions(&body, false, &mut self.sh.work)?
                     {
-                        let segments =
-                            segments_in(&inner, self.depth + 1, self.full, false, comsub, self.sh)?;
+                        let segments = segments_in(
+                            &inner,
+                            self.depth + 1,
+                            self.full,
+                            false,
+                            comsub,
+                            false,
+                            self.sh,
+                        )?;
                         self.out.extend(segments);
                         if after.is_none() && body_end - i == body.len() {
                             // the rest is lexed again: see `nested`
@@ -1033,17 +1049,21 @@ impl<'t, 'a> Lexer<'t, 'a> {
 }
 
 /// `_segments(text, depth, full, shallow, comsub)` inside one top-level call: the lexer, else the lenient
-/// fallback.
+/// fallback. `arith`: `text` is the text of a `$((...))` (`Lexer::arith_text`); the lenient fallback's
+/// segments are all marked arithmetic then (they carry no `Holder` either way).
 pub(crate) fn segments_in(
     text: &str,
     depth: usize,
     full: bool,
     shallow: bool,
     comsub: bool,
+    arith: bool,
     sh: &mut Shared,
 ) -> Result<Vec<(Segment, Vec<Holder>, bool)>, TooComplex> {
     sh.work.charge(text.len() + 1)?;
-    match Lexer::new(text, depth, full, shallow, comsub, sh).run() {
+    let mut lexer = Lexer::new(text, depth, full, shallow, comsub, sh);
+    lexer.arith_text = arith;
+    match lexer.run() {
         Ok(segments) => Ok(segments),
         Err(LexError::TooComplex) => Err(TooComplex),
         Err(LexError::Unbalanced) => {
@@ -1051,7 +1071,10 @@ pub(crate) fn segments_in(
             lenient_segments(text, sh).map(|segments| {
                 segments
                     .into_iter()
-                    .map(|s| (s, Vec::new(), false))
+                    .map(|mut s| {
+                        s.arith |= arith;
+                        (s, Vec::new(), false)
+                    })
                     .collect()
             })
         }

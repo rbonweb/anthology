@@ -30,3 +30,13 @@ reason = "`tarhdr` cases (gen:*-tarhdr): a GNU sparse map number (PAX 0.0 offset
 class = "D-8"
 case = "seed:*-forged-date-*"
 reason = "MX1 review M-8, owner direction (Rust stricter): a hand-forged plan whose date would put '/', a NUL or '..' into a conflict's '<name>.imported-<date>.md' name. Python builds the name from it (and fails, or writes elsewhere); the port rejects the plan ('malformed plan date') before writing anything."
+
+[[divergence]]
+class = "D-8"
+case = "gen:2435-tarhdr"
+reason = "LR-M (#79), late review I-2 (Rust stricter): a personal note whose name is 4066 bytes (a path part longer than 255). On Linux the tar filter's path for it stays under PATH_MAX (4096), so the load and the plan pass on both sides; on macOS (PATH_MAX 1024) both refuse it at load, so this case differs on Linux only. Python's import --yes then fails on the name with OSError ENAMETOOLONG (exit 1), after making the personal-memory folders. The port checks every destination first and refuses the whole import before writing anything ('rejected: a name is longer than 255 bytes', exit 2)."
+
+[[divergence]]
+class = "D-8"
+case = "gen:5936-tarhdr"
+reason = "LR-M (#79), as gen:2435-tarhdr: a personal note whose name is 304 bytes, so the load and the plan pass on Linux and macOS alike. Python's import --yes --json fails on it with OSError ENAMETOOLONG (exit 1) after making the personal-memory folders; the port refuses the whole import before any write (exit 2) and leaves the tree untouched."
