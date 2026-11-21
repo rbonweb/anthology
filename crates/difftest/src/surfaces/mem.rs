@@ -17,7 +17,15 @@
 //! Python raised (Rust prints `anthology-mem: <Type>: <message>`).
 //!
 //! The Linux oracle image has no git, and the working folder is never in a repository, so
-//! every case uses personal memory; `save` is the "not inside a git work tree" refusal.
+//! every `cli` case uses personal memory; `save` is the "not inside a git work tree" refusal.
+//! A step may also be `{"touch": [rel]}` (mtime + 10 s, content kept: the mtime-only update).
+//!
+//! `{"op": "build", "files": {...}, "sources": [[scope, rel], ...], "steps": [...]}` covers
+//! the repo and agent scopes without git: it calls `build(sources, <ROOT>/data/memory-index/
+//! test.db)` and the queries directly. A step is a file step or `{"q": [...]}`: `["build"]`
+//! prints the stats, `["search", q]`, `["related", name, depth]`, `["orphans"]` and
+//! `["stale", days, today]` print one `|`-joined line per row; a caught error prints
+//! `error <str(exc)>`. The database dump follows, as for `cli`.
 
 use std::fs;
 use std::path::Path;
@@ -68,7 +76,10 @@ impl Surface for Mem {
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
-        run_rust(&c.data)
+        match field(&c.data, "op").and_then(Value::as_str) {
+            Some("build") => run_build(&c.data),
+            _ => run_rust(&c.data),
+        }
     }
 }
 
@@ -192,6 +203,134 @@ fn dump(data: &Path) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+/// A `write`, `remove` or `touch` step (mtime + 10 s, size and bytes kept); false for any
+/// other step.
+fn file_step(tmp: &Path, step: &Value) -> bool {
+    if let Some(files) = field(step, "write") {
+        write_files(tmp, Some(files));
+    } else if let Some(gone) = field(step, "remove").and_then(Value::as_array) {
+        for rel in gone {
+            let _ = fs::remove_file(tmp.join(rel.as_str().unwrap_or("")));
+        }
+    } else if let Some(touched) = field(step, "touch").and_then(Value::as_array) {
+        for rel in touched {
+            let path = tmp.join(rel.as_str().unwrap_or(""));
+            if let Ok(m) = fs::metadata(&path).and_then(|m| m.modified()) {
+                let f = fs::File::options().write(true).open(&path).expect("open");
+                f.set_modified(m + std::time::Duration::from_secs(10))
+                    .expect("utime");
+            }
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
+fn strs(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `build` op: `index::build` and the queries called directly (module docs).
+fn run_build(case: &Value) -> Observed {
+    let dir = tempfile::Builder::new()
+        .prefix("mi1-rust-")
+        .tempdir()
+        .expect("tempdir");
+    let tmp = fs::canonicalize(dir.path()).expect("realpath");
+    write_files(&tmp, field(case, "files"));
+    let sources: Vec<index::Source> = field(case, "sources")
+        .and_then(Value::as_array)
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .map(|pair| {
+            let pair = strs(Some(pair));
+            index::Source::new(&pair[0], tmp.join(&pair[1]))
+        })
+        .collect();
+    let db = tmp.join(
+        field(case, "db")
+            .and_then(Value::as_str)
+            .unwrap_or("data/memory-index/test.db"),
+    );
+    let mut out = String::new();
+    let steps = field(case, "steps")
+        .and_then(Value::as_array)
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    for step in steps {
+        if file_step(&tmp, step) {
+            continue;
+        }
+        let q = field(step, "q")
+            .and_then(Value::as_array)
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
+        let text = |i: usize| q.get(i).and_then(Value::as_str).unwrap_or("").to_string();
+        let int = |i: usize| match q.get(i) {
+            Some(Value::Int(anthology_pycompat::json::Int::Small(n))) => *n,
+            _ => 0,
+        };
+        let line = |label: &str, cells: &[&str]| format!("{label} {}\n", cells.join("|"));
+        let result: Result<String, index::Error> = match text(0).as_str() {
+            "build" => index::build(&sources, &db, &index::Limits::default()).map(|st| {
+                format!(
+                    "build added={} updated={} removed={} rebuilt={}\n",
+                    st.added,
+                    st.updated,
+                    st.removed,
+                    if st.rebuilt { "True" } else { "False" }
+                )
+            }),
+            "search" => index::search(&text(1), &db, 20).map(|rows| {
+                rows.iter()
+                    .map(|r| line("hit", &[&r.name, &r.scope, &r.file, &r.snippet]))
+                    .collect()
+            }),
+            "related" => index::related(&text(1), int(2), &db).map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        let d = r.distance.to_string();
+                        line(
+                            "rel",
+                            &[&d, &r.name, &r.scope, &r.kind, r.direction, &r.file],
+                        )
+                    })
+                    .collect()
+            }),
+            "orphans" => index::orphans(&db).map(|rows| {
+                rows.iter()
+                    .map(|r| line("orphan", &[&r.name, &r.scope, &r.file]))
+                    .collect()
+            }),
+            "stale" => {
+                let today = index::fromisoformat(&text(2)).expect("a date");
+                let days = anthology_pycompat::json::Int::Small(int(1));
+                index::stale(&db, &days, today).map(|rows| {
+                    rows.iter()
+                        .map(|r| line("stale", &[&r.name, &r.scope, &r.reason, &r.file]))
+                        .collect()
+                })
+            }
+            other => panic!("unknown query {other:?}"),
+        };
+        match result {
+            Ok(t) => out.push_str(&t),
+            Err(e) => out.push_str(&format!("error {}\n", e.py_str())),
+        }
+    }
+    out.push_str("=== db ===\n");
+    out.push_str(&dump(&tmp.join("data")));
+    Observed::text(0, &out.replace(&tmp.display().to_string(), "<ROOT>"), "")
+}
+
 fn run_rust(case: &Value) -> Observed {
     let dir = tempfile::Builder::new()
         .prefix("mi1-rust-")
@@ -236,14 +375,7 @@ fn run_rust(case: &Value) -> Observed {
         .map(|a| a.as_slice())
         .unwrap_or(&[]);
     for step in steps {
-        if let Some(files) = field(step, "write") {
-            write_files(&tmp, Some(files));
-            continue;
-        }
-        if let Some(gone) = field(step, "remove").and_then(Value::as_array) {
-            for rel in gone {
-                let _ = fs::remove_file(tmp.join(rel.as_str().unwrap_or("")));
-            }
+        if file_step(&tmp, step) {
             continue;
         }
         let args: Vec<String> = field(step, "args")
@@ -682,7 +814,84 @@ fn gen_args(rng: &mut Rng) -> Vec<String> {
     a
 }
 
+const REPO: &str = "work/.claude/memory/";
+const AGENTS: [&str; 2] = [
+    "work/.claude/agent-memory/anthology-w/",
+    "work/.claude/agent-memory/anthology-x/",
+];
+
+/// A `build` case: notes spread over a repo, two agent folders and personal memory, the
+/// sources passed directly (no git), builds, edits, touches and queries in between.
+fn generate_build(rng: &mut Rng) -> Value {
+    let dirs = [REPO, AGENTS[0], AGENTS[1], P];
+    let mut notes: Vec<(String, String)> = Vec::new();
+    for (i, (rel, text)) in gen_files(rng).into_iter().chain(gen_files(rng)).enumerate() {
+        let name = rel.rsplit('/').next().unwrap_or("n.md").to_string();
+        let dir = dirs[i % dirs.len()];
+        notes.push((format!("{dir}{name}"), text));
+    }
+    let fs_: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let mut sources = vec![
+        Value::Array(vec![s("repo"), s(REPO.trim_end_matches('/'))]),
+        Value::Array(vec![s("agent"), s(AGENTS[0].trim_end_matches('/'))]),
+        Value::Array(vec![s("agent"), s(AGENTS[1].trim_end_matches('/'))]),
+        Value::Array(vec![s("personal"), s(P.trim_end_matches('/'))]),
+    ];
+    if rng.chance(0.2) {
+        sources.remove(rng.index(sources.len()));
+    }
+    let q = |items: Vec<Value>| obj(vec![("q", Value::Array(items))]);
+    let int = |n: i64| Value::Int(anthology_pycompat::json::Int::Small(n));
+    let mut steps = vec![q(vec![s("build")])];
+    for _ in 0..=rng.below(4) {
+        match rng.below(9) {
+            0 if !notes.is_empty() => {
+                let rel = &notes[rng.index(notes.len())].0;
+                steps.push(obj(vec![("touch", Value::Array(vec![s(rel)]))]));
+                steps.push(q(vec![s("build")]));
+            }
+            1 if !notes.is_empty() => {
+                let rel = notes[rng.index(notes.len())].0.clone();
+                steps.push(obj(vec![("write", files(&[(&rel, &gen_note(rng))]))]));
+                steps.push(q(vec![s("build")]));
+            }
+            2 if !notes.is_empty() => {
+                let rel = &notes[rng.index(notes.len())].0;
+                steps.push(obj(vec![("remove", Value::Array(vec![s(rel)]))]));
+                steps.push(q(vec![s("build")]));
+            }
+            3 | 4 => {
+                let terms: Vec<&str> = (0..=rng.below(2)).map(|_| *rng.pick(WORDS)).collect();
+                steps.push(q(vec![s("search"), s(&terms.join(" "))]));
+            }
+            5 | 6 => steps.push(q(vec![
+                s("related"),
+                s(rng.pick(NAMES)),
+                int(rng.range(-1, 4)),
+            ])),
+            7 => steps.push(q(vec![s("orphans")])),
+            _ => steps.push(q(vec![
+                s("stale"),
+                int(*rng.pick(&[0, 10, 180, 3000])),
+                s(rng.pick(&["2026-06-01", "2019-06-01", "2020-W10-2"])),
+            ])),
+        }
+    }
+    obj(vec![
+        ("op", s("build")),
+        ("files", files(&fs_)),
+        ("sources", Value::Array(sources)),
+        ("steps", Value::Array(steps)),
+    ])
+}
+
 fn generate(rng: &mut Rng) -> Value {
+    if rng.chance(0.4) {
+        return generate_build(rng);
+    }
     let init = gen_files(rng);
     let fs_: Vec<(&str, &str)> = init.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut steps = Vec::new();
@@ -695,6 +904,10 @@ fn generate(rng: &mut Rng) -> Value {
         if rng.chance(0.15) && !init.is_empty() {
             let gone = &init[rng.index(init.len())].0;
             steps.push(obj(vec![("remove", Value::Array(vec![s(gone)]))]));
+        }
+        if rng.chance(0.15) && !init.is_empty() {
+            let touched = &init[rng.index(init.len())].0;
+            steps.push(obj(vec![("touch", Value::Array(vec![s(touched)]))]));
         }
         let a = gen_args(rng);
         steps.push(obj(vec![(

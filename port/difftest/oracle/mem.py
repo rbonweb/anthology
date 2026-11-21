@@ -50,6 +50,9 @@ def _index():
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
     import memory_index
+    # The Rust port always has FTS5; a sqlite3 without it would compare the LIKE fallback.
+    if not memory_index._fts5_available(sqlite3.connect(":memory:")):
+        raise RuntimeError("this python's sqlite3 has no FTS5")
     return memory_index
 
 
@@ -92,6 +95,65 @@ def _write(tmp, files):
         path.write_bytes(text.encode("utf-8"))
 
 
+def _file_step(tmp, step):
+    """Applies a `write`, `remove` or `touch` step; False for any other step."""
+    if "write" in step:
+        _write(tmp, step["write"])
+    elif "remove" in step:
+        for rel in step["remove"]:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(os.path.join(tmp, rel))
+    elif "touch" in step:
+        for rel in step["touch"]:
+            path = os.path.join(tmp, rel)
+            with contextlib.suppress(FileNotFoundError):
+                st = os.stat(path)
+                os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000_000))
+    else:
+        return False
+    return True
+
+
+def _rows(label, rows, keys):
+    return "".join("%s %s\n" % (label, "|".join(str(r[k]) for k in keys)) for r in rows)
+
+
+def _build(case):
+    """`build` and the queries, called directly with repo, agent and personal sources."""
+    mod = _index()
+    tmp = os.path.realpath(tempfile.mkdtemp(prefix="mi1-oracle-"))
+    out = []
+    try:
+        _write(tmp, case.get("files"))
+        sources = [(scope, Path(tmp) / rel) for scope, rel in case.get("sources") or []]
+        db = Path(tmp) / (case.get("db") or "data/memory-index/test.db")
+        for step in case.get("steps") or []:
+            if _file_step(tmp, step):
+                continue
+            q = step["q"]
+            try:
+                if q[0] == "build":
+                    st = mod.build(sources, db)
+                    out.append("build added=%d updated=%d removed=%d rebuilt=%s\n" % (
+                        st["added"], st["updated"], st["removed"], st["rebuilt"]))
+                elif q[0] == "search":
+                    out.append(_rows("hit", mod.search(q[1], db), ("name", "scope", "file", "snippet")))
+                elif q[0] == "related":
+                    out.append(_rows("rel", mod.related(q[1], q[2], db),
+                                     ("distance", "name", "scope", "kind", "direction", "file")))
+                elif q[0] == "orphans":
+                    out.append(_rows("orphan", mod.orphans(db), ("name", "scope", "file")))
+                elif q[0] == "stale":
+                    out.append(_rows("stale", mod.stale(db, days=q[1], today=q[2]),
+                                     ("name", "scope", "reason", "file")))
+            except (ValueError, sqlite3.Error, OSError) as exc:
+                out.append("error %s\n" % exc)
+        out.append("=== db ===\n" + _dump(str(Path(tmp) / "data")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return {"exit": 0, "stdout": "".join(out).replace(tmp, "<ROOT>"), "stderr": ""}
+
+
 def _cli(case):
     mod = _index()
     tmp = os.path.realpath(tempfile.mkdtemp(prefix="mi1-oracle-"))
@@ -118,13 +180,7 @@ def _cli(case):
             os.environ["CLAUDE_PLUGIN_DATA"] = data
         sys.argv = ["memory_index.py"]
         for step in case.get("steps") or []:
-            if "write" in step:
-                _write(tmp, step["write"])
-                continue
-            if "remove" in step:
-                for rel in step["remove"]:
-                    with contextlib.suppress(FileNotFoundError):
-                        os.unlink(os.path.join(tmp, rel))
+            if _file_step(tmp, step):
                 continue
             args = list(step.get("args") or [])
             out, err = io.StringIO(), io.StringIO()
@@ -155,4 +211,6 @@ def _cli(case):
 def run(case):
     if case.get("op") == "cli":
         return _cli(case)
+    if case.get("op") == "build":
+        return _build(case)
     raise ValueError("unknown op %r" % (case.get("op"),))

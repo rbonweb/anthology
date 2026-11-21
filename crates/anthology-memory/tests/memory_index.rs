@@ -18,9 +18,7 @@ use std::time::Duration;
 use anthology_core::Env;
 use anthology_core::clock::Date;
 use anthology_core::git::RealGit;
-use anthology_memory::index::{
-    self, Error, Limits, MemDeps, SCHEMA_VERSION, Source, Stats, notes, repo,
-};
+use anthology_memory::index::{self, Error, Limits, SCHEMA_VERSION, Source, Stats, notes, repo};
 use anthology_pycompat::json::{self, Int, Value};
 use anthology_testkit::mem::{MemCase, Note, git, needs_git, note_text, snapshot, write};
 use anthology_testkit::run::Output;
@@ -955,6 +953,27 @@ mod cli_test {
         assert_ne!(p.code, 0);
     }
 
+    /// Python prints sqlite3's message alone (rusqlite appends the path to it).
+    #[test]
+    fn an_unopenable_database_prints_sqlites_message_alone() {
+        if anthology_testkit::bs::is_root() {
+            return;
+        }
+        let c = CliCase::new();
+        let dir = c.index_dir();
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+        let p = run_mem(&c.case.env, &c.cwd, &["orphans"]);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(
+            (p.code, p.stderr_text()),
+            (
+                1,
+                "anthology-mem: unable to open database file\n".to_string()
+            )
+        );
+    }
+
     #[test]
     fn test_approved_repo_contributes_repo_and_agent_notes() {
         if !needs_git() {
@@ -1113,67 +1132,6 @@ mod save_cli_test {
         );
         assert!(!s.case.anth.exists());
         assert_eq!(fs::read_dir(&s.case.data).expect("ls").count(), 0);
-    }
-
-    /// m5: the privacy scan failing must not surface as a traceback. Python patched
-    /// `memory_sync.privacy_findings` to raise under `save_note`; here `MemDeps.save` stands in
-    /// for `save_note` and refuses as it does then (save_note's own scan-failure branch is
-    /// MS2's, in `test_memory_sync`): one line on stderr, exit 1, nothing written.
-    #[test]
-    fn test_a_scanner_exception_is_a_one_line_error_and_writes_nothing() {
-        if !needs_git() {
-            return;
-        }
-        let s = SaveCase::new();
-        let before = snapshot(&s.case.tmp);
-        #[allow(clippy::too_many_arguments)]
-        fn failing(
-            _: &Path,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: bool,
-            _: Option<Date>,
-            _: &Env,
-        ) -> Result<index::save::Saved, index::save::SaveError> {
-            Err(index::save::SaveError(
-                "refusing to save: the privacy scan failed (RuntimeError); nothing was written"
-                    .into(),
-            ))
-        }
-        let argv: Vec<std::ffi::OsString> = [
-            "save",
-            "--agent",
-            "scout",
-            "--type",
-            "project",
-            "--slug",
-            "boom",
-            "--name",
-            "n",
-            "--description",
-            "d",
-            "--body",
-            "b",
-        ]
-        .iter()
-        .map(Into::into)
-        .collect();
-        let deps = MemDeps {
-            cwd: Some(s.repo.clone()),
-            save: failing,
-            ..MemDeps::default()
-        };
-        let out = index::main(&argv, &s.case.env, &deps);
-        assert_eq!(out.code, 1);
-        let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert_eq!(err.lines().count(), 1, "{err}");
-        assert!(err.contains("privacy scan failed"));
-        assert!(!err.contains("Traceback"));
-        assert_eq!(snapshot(&s.case.tmp), before);
     }
 
     #[test]

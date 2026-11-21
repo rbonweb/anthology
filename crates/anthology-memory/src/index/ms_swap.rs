@@ -284,10 +284,7 @@ pub mod notes {
     pub fn parse_note(path: &Path) -> Option<NoteInfo> {
         let data = std::fs::read(path).ok()?;
         let name = path.file_name()?.to_string_lossy().into_owned();
-        let stem = match name.rfind('.') {
-            Some(i) if i > 0 && i < name.len() - 1 => name[..i].to_string(),
-            _ => name,
-        };
+        let stem = String::from_utf8_lossy(crate::index::py_stem(name.as_bytes())).into_owned();
         Some(parse_text(&String::from_utf8_lossy(&data), &stem))
     }
 }
@@ -356,7 +353,9 @@ pub mod repo {
         let u = anthology_pycompat::str::strip_ws(url);
         let mut path: Option<String> = None;
         let mut key = String::new();
-        if u.len() >= 7 && u[..7].eq_ignore_ascii_case("file://") {
+        if u.get(..7)
+            .is_some_and(|h| h.eq_ignore_ascii_case("file://"))
+        {
             path = Some(u[7..].to_string());
         } else if let Some((_, rest)) = u.split_once("://") {
             let (authority, tail) = rest.split_once('/').unwrap_or((rest, ""));
@@ -659,7 +658,9 @@ pub mod save {
 
     fn ensure_real_dir(path: &Path, rel: &str) -> Result<(), SaveError> {
         if fs::symlink_metadata(path).is_err()
-            && let Err(e) = fs::create_dir(path)
+            && let Err(e) =
+                std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o755)
+                    .create(path)
             && e.kind() != std::io::ErrorKind::AlreadyExists
         {
             let exc = PyExc::from(e);

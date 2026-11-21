@@ -35,7 +35,7 @@ use anthology_pycompat::str::{char_slice, lower, split_ws, strip_ws};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-// SWAP(MS1|MS2): `use crate::{approve, notes, repo, save};` once MS1 and MS2 have merged.
+// SWAP(MS1|MS2): `pub use crate::{approve, notes, repo, save};` once MS1 and MS2 have merged.
 pub use ms_swap::{approve, notes, repo, save};
 
 use notes::NoteInfo;
@@ -123,15 +123,22 @@ fn os_error(e: std::io::Error, path: &Path) -> Error {
     })
 }
 
-/// `sqlite3.connect(path)`: read-write, created when missing; a path is never a URI.
+/// `sqlite3.connect(path)`: read-write, created when missing. (The bundled SQLite is built with
+/// `SQLITE_USE_URI`, as the oracle image's is, so a `file:` name is a URI on both sides.) A
+/// failed open's message is SQLite's alone: rusqlite appends `: <path>` to it, Python does not.
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
-    use rusqlite::OpenFlags;
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
+    use rusqlite::{Error as E, OpenFlags, ffi::ErrorCode};
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    Connection::open_with_flags(path, flags).map_err(|e| match e {
+        E::SqliteFailure(f, Some(m)) if f.code == ErrorCode::CannotOpen => {
+            let suffix = format!(": {}", path.to_string_lossy());
+            let m = m.strip_suffix(&suffix).map(str::to_string).unwrap_or(m);
+            E::SqliteFailure(f, Some(m))
+        }
+        other => other,
+    })
 }
 
 // ---- small Python helpers --------------------------------------------------------------------
@@ -388,10 +395,7 @@ fn mkdir_parents(p: &Path) -> Result<(), Error> {
                     mkdir_parents(q)?;
                     match fs::create_dir(p) {
                         Ok(()) => Ok(()),
-                        Err(e) if p.is_dir() => {
-                            let _ = e;
-                            Ok(())
-                        }
+                        Err(_) if p.is_dir() => Ok(()),
                         Err(e) => Err(os_error(e, p)),
                     }
                 }
@@ -1028,7 +1032,7 @@ pub fn stale(db_path: &Path, days: &Int, today: Date) -> Result<Vec<StaleNote>, 
     };
     // `timedelta(days=n)`: a C int first, then at most 999,999,999 days.
     let n = match days {
-        Int::Small(n) if n.abs() <= 999_999_999 => *n,
+        Int::Small(n) if n.unsigned_abs() <= 999_999_999 => *n,
         Int::Small(n) if i32::try_from(*n).is_ok() => {
             return Err(Error::Uncaught(
                 "OverflowError",
@@ -1138,20 +1142,6 @@ pub struct Output {
     pub code: i32,
 }
 
-/// `memory_sync.save_note`, the seam the CLI saves through.
-pub type SaveFn = fn(
-    &Path,
-    &str,
-    &str,
-    &str,
-    &str,
-    &str,
-    &str,
-    bool,
-    Option<Date>,
-    &Env,
-) -> Result<Saved, SaveError>;
-
 /// The CLI's seams (GC-19).
 pub struct MemDeps<'a> {
     /// `os.getcwd()`; `None` is the process's working folder.
@@ -1159,8 +1149,6 @@ pub struct MemDeps<'a> {
     pub git: &'a dyn Git,
     /// `datetime.date.today()` (`stale`).
     pub today: fn() -> Date,
-    /// `memory_sync.save_note` (Python's tests patch the privacy scan under it).
-    pub save: SaveFn,
     pub limits: Limits,
 }
 
@@ -1170,7 +1158,6 @@ impl Default for MemDeps<'_> {
             cwd: None,
             git: &RealGit,
             today: today_local,
-            save: save::save_note,
             limits: Limits::default(),
         }
     }
@@ -1313,35 +1300,20 @@ fn arg_int(p: &argparse::Parsed, dest: &str) -> Int {
     }
 }
 
-fn cwd_of(deps: &MemDeps) -> Result<PathBuf, Error> {
+/// `os.getcwd()`; its failure is uncaught in Python (`FileNotFoundError` and the like).
+fn cwd_of(deps: &MemDeps) -> Result<PathBuf, (&'static str, String)> {
     match &deps.cwd {
         Some(c) => Ok(c.clone()),
-        None => std::env::current_dir().map_err(|e| match PyExc::from(e) {
-            PyExc::OSError { errno, .. } => Error::Uncaught(
-                if errno == 2 {
-                    "FileNotFoundError"
-                } else {
-                    "OSError"
-                },
-                PyExc::OSError {
-                    errno,
-                    filename: None,
-                }
-                .py_str(),
-            ),
-            other => Error::Uncaught("OSError", other.py_str()),
+        None => std::env::current_dir().map_err(|e| {
+            let exc = PyExc::from(e);
+            (exc.type_name(), exc.py_str())
         }),
     }
 }
 
-fn uncaught(out: &mut Out, e: &Error) {
-    let ty = match e {
-        Error::Uncaught(ty, _) => ty,
-        Error::Value(_) => "ValueError",
-        Error::Sqlite(_) => "OperationalError",
-        Error::Os(p) => p.type_name(),
-    };
-    out.err(&format!("anthology-mem: {ty}: {}", e.py_str()));
+/// Python's traceback, written as the one exception line (D-1).
+fn uncaught(out: &mut Out, ty: &str, msg: &str) {
+    out.err(&format!("anthology-mem: {ty}: {msg}"));
 }
 
 fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
@@ -1351,8 +1323,8 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     };
     let cwd = match cwd_of(deps) {
         Ok(c) => c,
-        Err(e) => {
-            uncaught(&mut out, &e);
+        Err((ty, msg)) => {
+            uncaught(&mut out, ty, &msg);
             return out.done(1);
         }
     };
@@ -1360,7 +1332,7 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         out.err("anthology-mem: not inside a git work tree; memory notes live in the repo");
         return out.done(1);
     };
-    let saved = (deps.save)(
+    let saved: Result<Saved, SaveError> = save::save_note(
         &root,
         &arg_str(p, "agent"),
         &arg_str(p, "type"),
@@ -1448,17 +1420,15 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
         stderr: String::new(),
     };
     let state = anthology_core::state::read(env);
+    // A truthy `data_dir` that is not a str: Python 3.12's `Path()` raises a TypeError, after
+    // the repo lookup (`not_str` holds its type name until then).
+    let mut not_str: Option<&'static str> = None;
     let data_dir: Option<PathBuf> = match state.get("data_dir") {
         Some(v) if truthy(v) => match v {
             Value::Str(t) => Some(PathBuf::from(t)),
             other => {
-                // Python 3.12: `Path(<not a str>)` raises this TypeError after the repo lookup.
-                let ty = py_type_name(other);
-                out.err(&format!(
-                    "anthology-mem: TypeError: argument should be a str or an os.PathLike \
-                     object where __fspath__ returns a str, not '{ty}'"
-                ));
-                return out.done(1);
+                not_str = Some(py_type_name(other));
+                Some(PathBuf::new())
             }
         },
         _ => env
@@ -1473,8 +1443,8 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
     let home = repo::anthology_home(env);
     let cwd = match cwd_of(deps) {
         Ok(c) => c,
-        Err(e) => {
-            uncaught(&mut out, &e);
+        Err((ty, msg)) => {
+            uncaught(&mut out, ty, &msg);
             return out.done(1);
         }
     };
@@ -1486,8 +1456,7 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
     // `note_sources(None, home)` is personal only (§3.6 takes a root, so the other scopes are
     // filtered out).
     let (key, sources): (String, Vec<Source>) = match (&root, approved_key) {
-        (Some(r), Some(_)) => {
-            let key = repo::repo_key(r, env, deps.git);
+        (Some(r), Some(key)) => {
             let src = repo::note_sources(r, &home)
                 .into_iter()
                 .map(|n| Source::new(&n.scope, n.dir))
@@ -1503,11 +1472,19 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
             ("personal".to_string(), src)
         }
     };
+    if let Some(ty) = not_str {
+        let msg = format!(
+            "argument should be a str or an os.PathLike object where __fspath__ returns a str, \
+             not '{ty}'"
+        );
+        uncaught(&mut out, "TypeError", &msg);
+        return out.done(1);
+    }
     let db = db_path_for(&data_dir, &key);
     match run_query(&mut out, &command, &parsed, &sources, &db, deps) {
         Ok(()) => out.done(0),
-        Err(e @ Error::Uncaught(..)) => {
-            uncaught(&mut out, &e);
+        Err(Error::Uncaught(ty, msg)) => {
+            uncaught(&mut out, ty, &msg);
             out.done(1)
         }
         Err(e) => {

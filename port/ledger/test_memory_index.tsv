@@ -9,7 +9,7 @@ test_memory_index.BuildTest.test_stats_and_incremental	ported	crates/anthology-m
 test_memory_index.CliTest.test_approved_repo_contributes_repo_and_agent_notes	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_approved_repo_contributes_repo_and_agent_notes
 test_memory_index.CliTest.test_data_dir_falls_back_to_plugin_data_env	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_data_dir_falls_back_to_plugin_data_env
 test_memory_index.CliTest.test_every_query_sees_fresh_notes	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_every_query_sees_fresh_notes
-test_memory_index.CliTest.test_missing_python3_message_and_exit_code	dropped:superseded:F-7		no python3; the wrapper's binary-missing exit 127 (GC-14) is BS1's crates/repo-tests/tests/shims.rs
+test_memory_index.CliTest.test_missing_python3_message_and_exit_code	dropped:superseded:F-7		no python3; the wrapper's binary-missing exit 127 (GC-14) is crates/repo-tests/tests/shims/entry.rs::the_wrappers_install_when_missing_and_exit_127_when_they_cannot
 test_memory_index.CliTest.test_related_orphans_stale_rebuild	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_related_orphans_stale_rebuild
 test_memory_index.CliTest.test_search_json_builds_the_index_in_the_data_dir	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_search_json_builds_the_index_in_the_data_dir
 test_memory_index.CliTest.test_search_text_output	ported	crates/anthology-memory/tests/memory_index.rs::cli_test::test_search_text_output
@@ -38,7 +38,7 @@ test_memory_index.QueryTest.test_search_terms_are_anded_and_case_insensitive	por
 test_memory_index.QueryTest.test_stale_superseded_and_old	ported	crates/anthology-memory/tests/memory_index.rs::query_test::test_stale_superseded_and_old
 test_memory_index.QueryTest.test_unknown_relation_kinds_are_ignored	ported	crates/anthology-memory/tests/memory_index.rs::query_test::test_unknown_relation_kinds_are_ignored
 test_memory_index.SaveCliTest.test_a_body_with_literal_newlines_in_one_argument	ported	crates/anthology-memory/tests/memory_index.rs::save_cli_test::test_a_body_with_literal_newlines_in_one_argument
-test_memory_index.SaveCliTest.test_a_scanner_exception_is_a_one_line_error_and_writes_nothing	ported	crates/anthology-memory/tests/memory_index.rs::save_cli_test::test_a_scanner_exception_is_a_one_line_error_and_writes_nothing	the patched privacy scan under save_note is MemDeps.save (GC-19); save_note's own scan-failure branch is MS2's
+test_memory_index.SaveCliTest.test_a_scanner_exception_is_a_one_line_error_and_writes_nothing	dropped:python-runtime		Python's privacy scan can raise (the patch makes it); Rust's privacy_findings cannot: a regex limit is an unscannable finding (I-9), so save_note has no scan-failure branch
 test_memory_index.SaveCliTest.test_a_single_token_value_starting_with_a_dash_is_a_flag_unless_joined_with_equals	ported	crates/anthology-memory/tests/memory_index.rs::save_cli_test::test_a_single_token_value_starting_with_a_dash_is_a_flag_unless_joined_with_equals
 test_memory_index.SaveCliTest.test_a_type_prefixed_slug_is_not_doubled	ported	crates/anthology-memory/tests/memory_index.rs::save_cli_test::test_a_type_prefixed_slug_is_not_doubled
 test_memory_index.SaveCliTest.test_a_value_starting_with_dashes_is_taken_as_a_value	ported	crates/anthology-memory/tests/memory_index.rs::save_cli_test::test_a_value_starting_with_dashes_is_taken_as_a_value
