@@ -126,7 +126,15 @@ pub fn expected_knowledge() -> BTreeSet<String> {
         .map(|(n, _, _)| n)
         .collect();
     set.extend(UNCHANGED_KNOWLEDGE.iter().map(|s| (*s).to_string()));
-    set.extend(["ui-taste", "caveman", "design-taste-frontend"].map(String::from));
+    set.extend(
+        [
+            "ui-taste",
+            "caveman",
+            "design-taste-frontend",
+            "karpathy-guidelines",
+        ]
+        .map(String::from),
+    );
     set
 }
 
@@ -183,7 +191,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "yes",
             true,
             vec!["test-driven-development", "verification-before-completion"],
-            vec![],
+            vec!["karpathy-guidelines"],
         ),
         spec(
             "debugger",
@@ -191,7 +199,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "yes",
             true,
             vec!["systematic-debugging"],
-            vec![],
+            vec!["karpathy-guidelines"],
         ),
         spec(
             "reviewer",
@@ -299,7 +307,7 @@ mod tests {
     fn the_roster_data_matches_tests_repo_py() {
         assert_eq!(expected_roster().len(), 11);
         assert_eq!(stripped_knowledge().len(), 22);
-        assert_eq!(expected_knowledge().len(), 28);
+        assert_eq!(expected_knowledge().len(), 29);
         assert_eq!(roster_agent("ui-designer").knowledge.len(), 9);
         assert!(knowledge_path("ds/x").ends_with("design-skills/skills/x/SKILL.md"));
     }
