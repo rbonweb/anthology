@@ -75,6 +75,39 @@ fn text(b: &[u8]) -> String {
 // ------------------------------------------------------------------------------------------
 // lock write and lock check
 
+/// `gh release view TAG -R REPO --json assets` for a release whose tarballs have `digests`
+/// (by target), plus its checksums.txt.
+fn release_json(repo: &str, tag: &str, digests: [(&str, String); 4]) -> String {
+    let base = format!("https://github.com/{repo}/releases/download/{tag}");
+    let mut items: Vec<String> = digests
+        .iter()
+        .map(|(t, d)| {
+            format!(
+                "{{\"name\":\"anthology-{t}.tar.gz\",\"digest\":\"sha256:{d}\",\"url\":\"{base}/anthology-{t}.tar.gz\"}}"
+            )
+        })
+        .collect();
+    items.push(format!(
+        "{{\"name\":\"checksums.txt\",\"digest\":\"sha256:{}\",\"url\":\"{base}/checksums.txt\"}}",
+        hex('e')
+    ));
+    format!("{{\"assets\":[{}]}}\n", items.join(","))
+}
+
+/// The listing that matches [`checksums_text`].
+fn good_release(repo: &str, tag: &str) -> String {
+    release_json(
+        repo,
+        tag,
+        [
+            ("aarch64-apple-darwin", hex('a')),
+            ("x86_64-apple-darwin", hex('b')),
+            ("x86_64-unknown-linux-musl", hex('c')),
+            ("aarch64-unknown-linux-musl", hex('d')),
+        ],
+    )
+}
+
 /// A plugins folder with both plugin directories.
 fn plugins(dir: &Path) -> PathBuf {
     let p = dir.join("plugins");
@@ -89,6 +122,11 @@ fn lock_write_writes_both_locks_in_the_design_layout() {
     let tmp = tempfile::tempdir().unwrap();
     let p = plugins(tmp.path());
     std::fs::write(tmp.path().join("checksums.txt"), checksums_text()).unwrap();
+    std::fs::write(
+        tmp.path().join("release.json"),
+        good_release("rbonweb/anthology", TAG),
+    )
+    .unwrap();
     let out = dev(
         tmp.path(),
         &[
@@ -98,6 +136,8 @@ fn lock_write_writes_both_locks_in_the_design_layout() {
             TAG,
             "--checksums",
             "checksums.txt",
+            "--release-json",
+            "release.json",
         ],
     );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -121,6 +161,11 @@ fn lock_write_takes_the_repo_and_the_plugins_dir() {
     let staging = tmp.path().join("port/staging");
     let p = plugins(&staging);
     std::fs::write(tmp.path().join("sums"), checksums_text()).unwrap();
+    std::fs::write(
+        tmp.path().join("rel"),
+        good_release("someone/fork", "anthology-bin--v1.2.3-rc.1"),
+    )
+    .unwrap();
     let out = dev(
         tmp.path(),
         &[
@@ -130,6 +175,8 @@ fn lock_write_takes_the_repo_and_the_plugins_dir() {
             "anthology-bin--v1.2.3-rc.1",
             "--checksums",
             "sums",
+            "--release-json",
+            "rel",
             "--repo",
             "someone/fork",
             "--plugins-dir",
@@ -155,6 +202,7 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let p = plugins(tmp.path());
     std::fs::write(tmp.path().join("good"), checksums_text()).unwrap();
+    std::fs::write(tmp.path().join("r"), good_release("rbonweb/anthology", TAG)).unwrap();
     let three: String = checksums_text()
         .lines()
         .take(3)
@@ -169,6 +217,7 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
         &["--tag", TAG, "--checksums", "missing"],
         &["--tag", TAG, "--checksums", "good", "--repo", "../x"],
     ] {
+        let args = &[args, &["--release-json", "r"][..]].concat();
         let out = dev(tmp.path(), &[&["lock", "write"][..], args].concat());
         assert_eq!(
             out.status.code(),
@@ -179,9 +228,18 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
         assert!(!p.join("anthology/anthology.lock").exists(), "{args:?}");
     }
     for args in [
-        &["--checksums", "good"][..],
-        &["--tag", TAG],
-        &["--tag", TAG, "--checksums", "good", "extra"],
+        &["--checksums", "good", "--release-json", "r"][..],
+        &["--tag", TAG, "--release-json", "r"],
+        &["--tag", TAG, "--checksums", "good"],
+        &[
+            "--tag",
+            TAG,
+            "--checksums",
+            "good",
+            "--release-json",
+            "r",
+            "extra",
+        ],
     ] {
         let out = dev(tmp.path(), &[&["lock", "write"][..], args].concat());
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -189,7 +247,16 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
     std::fs::remove_dir(p.join("anthology-guardrails")).unwrap();
     let out = dev(
         tmp.path(),
-        &["lock", "write", "--tag", TAG, "--checksums", "good"],
+        &[
+            "lock",
+            "write",
+            "--tag",
+            TAG,
+            "--checksums",
+            "good",
+            "--release-json",
+            "r",
+        ],
     );
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -197,6 +264,83 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
         "{}",
         text(&out.stderr)
     );
+}
+
+/// Early whole-branch review M14: the checksums must be the named tag's release assets.
+#[test]
+fn lock_write_refuses_checksums_that_are_not_the_tags_release() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = plugins(tmp.path());
+    std::fs::write(tmp.path().join("sums"), checksums_text()).unwrap();
+    const REPO: &str = "rbonweb/anthology";
+    let good = good_release(REPO, TAG);
+    let swapped = release_json(
+        REPO,
+        TAG,
+        [
+            ("aarch64-apple-darwin", hex('a')),
+            ("x86_64-apple-darwin", hex('b')),
+            ("x86_64-unknown-linux-musl", hex('f')),
+            ("aarch64-unknown-linux-musl", hex('d')),
+        ],
+    );
+    let x86_mac = format!(
+        "https://github.com/{REPO}/releases/download/{TAG}/anthology-x86_64-apple-darwin.tar.gz"
+    );
+    let twice = good.replace(
+        "{\"name\":\"checksums.txt\"",
+        &format!(
+            "{{\"name\":\"copy\",\"digest\":\"sha256:{}\",\"url\":\"{x86_mac}\"}},{{\"name\":\"checksums.txt\"",
+            hex('b')
+        ),
+    );
+    let first = format!(
+        "has no single asset https://github.com/{REPO}/releases/download/{TAG}/anthology-aarch64-apple-darwin.tar.gz"
+    );
+    for (case, listing, want) in [
+        ("another digest", swapped, "the checksums file says ccc"),
+        (
+            "another tag's listing",
+            good_release(REPO, "anthology-bin--v0.0.9"),
+            first.as_str(),
+        ),
+        (
+            "another repo's listing",
+            good_release("someone/fork", TAG),
+            first.as_str(),
+        ),
+        (
+            "no digest",
+            good.replace(&format!("\"sha256:{}\"", hex('d')), "null"),
+            "digest is \"\"",
+        ),
+        ("an asset listed twice", twice, "has no single asset"),
+        (
+            "not JSON",
+            "release not found\n".into(),
+            "is not `gh release view",
+        ),
+        ("no assets key", "{}\n".into(), "is not `gh release view"),
+    ] {
+        std::fs::write(tmp.path().join("rel"), &listing).unwrap();
+        let out = dev(
+            tmp.path(),
+            &[
+                "lock",
+                "write",
+                "--tag",
+                TAG,
+                "--checksums",
+                "sums",
+                "--release-json",
+                "rel",
+            ],
+        );
+        let err = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{case}: {err}");
+        assert!(err.contains(want), "{case}: {err}");
+        assert!(!p.join("anthology/anthology.lock").exists(), "{case}");
+    }
 }
 
 /// `lock check` on locks with these texts; returns (code, stderr).

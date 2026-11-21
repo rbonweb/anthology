@@ -1,23 +1,36 @@
-//! The structural shell lexer: `segments()` (SH1). A port of guard_rules.py's `_Lexer`, `_scan_paren`,
-//! `_find_backtick` and `_segments`.
+//! The structural shell lexer: `segments()` (SH1, fix-wave H). A port of guard_rules.py's `_Lexer`,
+//! `_find_backtick` and `_segments` as fix-wave H left them (heredoc delimiter words, terminators, `$'...'`
+//! decoding, arithmetic, `${...}` and backtick unescaping; owner direction 2026-11-21: those fixes are Rust
+//! requirements).
 //!
 //! Python indexes code points; this port indexes bytes of the `&str`. Every decision is taken at an ASCII
 //! byte (always a char boundary), the code point after a backslash is skipped whole, and every character
 //! copied into a word is copied whole, so each Python `i += 1`/`i += 2`/`find`/slice has an exact byte
 //! equivalent and no slice can fall inside a character.
+//!
+//! Work is bounded by one budget for the whole analysis (`Work`): every scan charges the bytes it visited,
+//! as Python charges characters (`_charge`). Past it the result is `incomplete` and the guard blocks.
 
 pub(crate) mod pystr;
 mod pystr_tables;
+pub(crate) mod scan;
+pub(crate) mod words;
 
-use std::collections::HashSet;
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
 
-use crate::heredoc::{body_substitutions, find_heredoc_end, is_heredoc_delimiter};
+use crate::heredoc::{find_heredoc_end, join_continuations};
 use crate::lenient::lenient_segments;
-use crate::limits::{DEFAULT_BACKTRACK_LIMIT, LEX_BUDGET, Limits, MAX_DEPTH};
+use crate::limits::{Limits, MAX_DEPTH, extra_limit, work_limit};
 use crate::shell_args::Budget;
+use scan::{
+    MAX_UNCLOSED, body_substitutions, bracket_pairs, scan_paren, scan_paren_ex, substitution,
+};
+use words::{
+    HeredocWord, Memo, ansi_c, backtick_end, brace_end, heredoc_after, input_operator,
+    skip_continuations, unescape_backticks,
+};
 
-/// One redirection: its operator (`>`, `2>` is `>` with the fd dropped, `&>`, `<<`, ...) and target word.
+/// One redirection: its operator (`>`, `2>` is `>` with the fd dropped, `&>`, `<<<`, ...) and target word.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Redirect {
     pub op: String,
@@ -34,6 +47,14 @@ pub struct Segment {
     pub tokens: Vec<String>,
     pub redirs: Vec<Redirect>,
     pub group: GroupId,
+    /// Rust-only: lexed from the text of a `$((...))` (an arithmetic expression read as commands, as Python
+    /// does), so a `*` program word there is multiplication, not a glob (`opaque`).
+    pub(crate) arith: bool,
+    /// Rust-only: an unquoted `{` was among its words, so bash brace-expands them (SH-FW re-review F-1).
+    pub(crate) braces: bool,
+    /// Rust-only: the first command after a `|` that had no command before it in its pipeline, the head
+    /// being a subshell (`( echo X ) | sh`, SH-FW re-review I-2a).
+    pub(crate) after_compound: bool,
 }
 
 /// A pipeline's literal stdin text (heredoc bodies, here-strings).
@@ -45,7 +66,7 @@ pub struct Group {
 
 /// `segments()`'s result. `groups` holds exactly the groups some segment references, ascending by id.
 /// `lenient`: the text had an unbalanced quote or substitution, so the whitespace fallback produced the
-/// segments. `incomplete`: a regex backtrack limit was hit (fail closed: the guard blocks, design §9.5).
+/// segments. `incomplete`: the work budget ran out (fail closed: the guard blocks, "too complex").
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Lexed {
     pub segments: Vec<Segment>,
@@ -61,37 +82,93 @@ pub(crate) struct LexInfo {
     pub(crate) depth_capped: bool,
     /// A nested lexer fell back to the lenient split.
     pub(crate) nested_lenient: bool,
-    /// The heredoc regex hit its backtrack limit (`incomplete` is set too; `incomplete` alone may also be the
-    /// work budget).
-    pub(crate) regex_limited: bool,
 }
 
-/// `_Unbalanced`: an unterminated quote or substitution.
-pub(crate) struct Unbalanced;
+/// `_TooComplex`: the work budget ran out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TooComplex;
 
-const HEREDOC_START: &str = r#"^<<(?!<)-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_.-]*)\1"#;
-
-fn heredoc_regex(limit: usize) -> Option<fancy_regex::Regex> {
-    fancy_regex::RegexBuilder::new(HEREDOC_START)
-        .backtrack_limit(limit)
-        .build()
-        .ok()
+/// Why a lexer stopped.
+pub(crate) enum LexError {
+    Unbalanced,
+    TooComplex,
 }
 
-static HEREDOC_DEFAULT: LazyLock<Option<fancy_regex::Regex>> =
-    LazyLock::new(|| heredoc_regex(DEFAULT_BACKTRACK_LIMIT));
+impl From<TooComplex> for LexError {
+    fn from(_: TooComplex) -> LexError {
+        LexError::TooComplex
+    }
+}
 
-/// State shared by one top-level lexer and every lexer nested in it: the group arena, the regex and flags.
-pub(crate) struct Shared<'r> {
-    re: Option<&'r fancy_regex::Regex>,
-    groups: Vec<Vec<String>>,
-    pub(crate) incomplete: bool,
-    /// Work left for the lenient fallback (see `shell_args::Budget`).
+/// How a heredoc body inside `$(...)` is read (`_STATE.reading`, see `heredoc::comsub_cut`): one reading per
+/// pass over the command; the other two run only when a line that matters was seen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub(crate) enum Reading {
+    /// bash 5: a delimiter line with a `)` after it ends the body.
+    #[default]
+    Bash5,
+    /// bash 3.2: only the exact terminator ends it.
+    Exact,
+    /// Any parenthesis after the delimiter ends it.
+    Wide,
+}
+
+/// The work budgets and the reading of the pass in progress (`_STATE`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Work {
+    /// Python's budget, spent where `_charge` spends it (`charge`).
     pub(crate) budget: Budget,
+    /// The budget of Rust's own work (`charge_extra`, and the shell option rescans).
+    pub(crate) extra: Budget,
+    pub(crate) reading: Reading,
+    /// A delimiter line with a parenthesis after it was seen inside `$(...)`: the other readings matter.
+    pub(crate) paren_lines: bool,
+    /// Rust-only: the work in progress is beyond what the reference does (input it drops), so `charge`
+    /// spends the Rust-only budget (SH-FW re-review F-2).
+    pub(crate) redirect: bool,
+}
+
+impl Work {
+    pub(crate) fn new(budget: usize, extra: usize, reading: Reading) -> Work {
+        Work {
+            budget: Budget(budget),
+            extra: Budget(extra),
+            reading,
+            paren_lines: false,
+            redirect: false,
+        }
+    }
+
+    /// `_charge`: spend `units` of Python's budget.
+    pub(crate) fn charge(&mut self, units: usize) -> Result<(), TooComplex> {
+        if self.redirect {
+            return self.charge_extra(units);
+        }
+        if self.budget.spend(units) {
+            Ok(())
+        } else {
+            Err(TooComplex)
+        }
+    }
+
+    /// Spend `units` of the Rust-only budget.
+    pub(crate) fn charge_extra(&mut self, units: usize) -> Result<(), TooComplex> {
+        if self.extra.spend(units) {
+            Ok(())
+        } else {
+            Err(TooComplex)
+        }
+    }
+}
+
+/// State shared by one top-level lexer and every lexer nested in it: the group arena, the budget and flags.
+pub(crate) struct Shared {
+    groups: Vec<Vec<String>>,
+    pub(crate) work: Work,
     pub(crate) info: LexInfo,
 }
 
-impl Shared<'_> {
+impl Shared {
     pub(crate) fn new_group(&mut self) -> GroupId {
         self.groups.push(Vec::new());
         GroupId((self.groups.len() - 1) as u32)
@@ -100,35 +177,6 @@ impl Shared<'_> {
     fn push_text(&mut self, group: GroupId, text: String) {
         if let Some(texts) = self.groups.get_mut(group.0 as usize) {
             texts.push(text);
-        }
-    }
-
-    /// `_HEREDOC_START.match(text, j)`: (delimiter, index just past the match). A backtrack-limit error (or a
-    /// regex that failed to build, which cannot happen for this constant pattern) is "no match" and sets
-    /// `incomplete`.
-    pub(crate) fn heredoc_start<'t>(
-        &mut self,
-        text: &'t str,
-        j: usize,
-    ) -> Option<(&'t str, usize)> {
-        let Some(re) = self.re else {
-            self.incomplete = true;
-            self.info.regex_limited = true;
-            return None;
-        };
-        let rest = text.get(j..)?;
-        match re.captures(rest) {
-            Ok(Some(caps)) => {
-                let whole = caps.get(0)?;
-                let name = caps.get(2)?;
-                Some((&rest[name.start()..name.end()], j + whole.end()))
-            }
-            Ok(None) => None,
-            Err(_) => {
-                self.incomplete = true;
-                self.info.regex_limited = true;
-                None
-            }
         }
     }
 }
@@ -157,6 +205,11 @@ pub(crate) fn find_from(text: &str, from: usize, needle: u8) -> Option<usize> {
     bytes.iter().position(|&b| b == needle).map(|k| from + k)
 }
 
+/// The index just past the character at `k` (Python's `k + 1`).
+fn after_char(text: &str, k: usize) -> usize {
+    k + char_at(text, k).map_or(1, char::len_utf8)
+}
+
 /// `_ARRAY_ASSIGNMENT.match(word)`: `[A-Za-z_][A-Za-z0-9_]*\+?=\Z`.
 fn is_array_assignment(word: &str) -> bool {
     let Some(name) = word.strip_suffix('=') else {
@@ -168,95 +221,18 @@ fn is_array_assignment(word: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-/// `_scan_paren`: (inner, index after `)`) for the parenthesis opened just before `text[i]`. Quotes, escapes
-/// and heredoc bodies are skipped over; an unclosed one runs to the end of the text.
-pub(crate) fn scan_paren<'t>(text: &'t str, i: usize, sh: &mut Shared<'_>) -> (&'t str, usize) {
-    let bytes = text.as_bytes();
-    let n = text.len();
-    let mut depth = 1usize;
-    let mut j = i;
-    let mut delimiters: Vec<&'t str> = Vec::new();
-    let mut unterminated: HashSet<&'t str> = HashSet::new();
-    while j < n {
-        let c = bytes[j];
-        if c == b'\\' {
-            j = skip_escape(text, j);
-            continue;
-        }
-        if c == b'<'
-            && let Some((name, end)) = sh.heredoc_start(text, j)
-        {
-            if !unterminated.contains(name) {
-                delimiters.push(name);
-            }
-            j = end;
-            continue;
-        }
-        if c == b'\n' && !delimiters.is_empty() {
-            let mut pos = j + 1;
-            for delimiter in delimiters.drain(..) {
-                if unterminated.contains(delimiter) {
-                    // a repeat on this line of one just searched in vain: the search from the same
-                    // `pos` fails again (Python repeats it; the result is the same)
-                    continue;
-                }
-                match find_heredoc_end(text, pos, delimiter) {
-                    Some((_, after)) => pos = after,
-                    None => {
-                        unterminated.insert(delimiter);
-                    }
-                }
-            }
-            j = pos; // Python: `j = pos - 1`, then the loop's `j += 1`
-            continue;
-        }
-        if c == b'\'' {
-            j = find_from(text, j + 1, b'\'').map_or(n, |k| k + 1);
-            continue;
-        }
-        if c == b'"' {
-            j += 1;
-            while j < n && bytes[j] != b'"' {
-                j = if bytes[j] == b'\\' {
-                    skip_escape(text, j)
-                } else {
-                    j + 1
-                };
-            }
-            j += 1;
-            continue;
-        }
-        if c == b'(' {
-            depth += 1;
-        } else if c == b')' {
-            depth -= 1;
-            if depth == 0 {
-                return (&text[i..j], j + 1);
-            }
-        }
-        j += 1;
-    }
-    (text.get(i..).unwrap_or(""), n)
-}
-
 /// `_find_backtick`: the closing backtick at or after `i`, skipping escapes.
-pub(crate) fn find_backtick(text: &str, i: usize) -> Result<usize, Unbalanced> {
-    let bytes = text.as_bytes();
-    let mut j = i;
-    while j < text.len() {
-        match bytes[j] {
-            b'\\' => j = skip_escape(text, j),
-            b'`' => return Ok(j),
-            _ => j += 1,
-        }
-    }
-    Err(Unbalanced)
+pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usize, LexError> {
+    backtick_end(text, i, work)?.ok_or(LexError::Unbalanced)
 }
 
-struct Lexer<'t, 'a, 'r> {
+/// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
+type Pending = (Vec<String>, GroupId, bool, bool);
+
+struct Lexer<'t, 'a> {
     text: &'t str,
     depth: usize,
-    sh: &'a mut Shared<'r>,
+    sh: &'a mut Shared,
     out: Vec<Segment>,
     /// The current group, created on first use (Python creates one per segment break; only identity matters).
     group: Option<GroupId>,
@@ -265,21 +241,57 @@ struct Lexer<'t, 'a, 'r> {
     cur: String,
     has_word: bool,
     /// A redirection operator waiting for its target word.
-    pending: Option<&'t str>,
-    /// (delimiter, group, quoted) registered on the current line.
-    heredocs: Vec<(String, GroupId, bool)>,
-    /// Delimiters whose terminator was not found.
-    unterminated: HashSet<String>,
+    pending: Option<&'static str>,
+    heredocs: Vec<Pending>,
+    /// A heredoc never closed: bash reads the rest as its body.
+    swallowed: bool,
+    /// Heredocs whose terminator was searched for in vain.
+    unclosed: usize,
+    /// False: an unclosed heredoc's body is not scanned.
+    full: bool,
+    /// True: substitutions inside are not lexed.
+    shallow: bool,
+    /// The text of a `$(...)`.
+    comsub: bool,
+    /// Substitution indexes an extra scan has lexed already.
+    scanned: HashSet<usize>,
+    /// (start, end) spans the unclosed-body scan has lexed, ascending.
+    covered: Vec<(usize, usize)>,
+    /// `(` depth.
+    parens: isize,
+    /// The `(` depth an open `((...))` command starts at.
+    arith: Option<isize>,
+    /// A `((` ran to the end: later ones are not looked at.
+    arith_unclosed: bool,
     /// The word being built contains a quote or escape.
     quoted: bool,
+    /// A `|`/`|&` with no command after it yet: a segment break there keeps the pipeline (Rust stricter,
+    /// SH-FW review I-2; the oracle applies it to the reference too).
+    piped: bool,
+    /// An unquoted `{` was added to this segment's words (`Segment::braces`).
+    braces: bool,
+    /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
+    compound: bool,
     /// Elements of the `name=( ... )` being lexed.
     array: Option<Vec<String>>,
     array_word: String,
     array_start: usize,
+    memo: Memo,
+    /// `_bracket_pairs(text)`, made at the first `$[`.
+    brackets: Option<HashMap<usize, usize>>,
+    /// The widest span `scan_expanded` took, without and with `dq`.
+    expanded: [Option<(usize, usize)>; 2],
 }
 
-impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
-    fn new(text: &'t str, depth: usize, sh: &'a mut Shared<'r>) -> Self {
+impl<'t, 'a> Lexer<'t, 'a> {
+    fn new(
+        text: &'t str,
+        depth: usize,
+        full: bool,
+        shallow: bool,
+        comsub: bool,
+        sh: &'a mut Shared,
+    ) -> Self {
         Lexer {
             text,
             depth,
@@ -292,11 +304,26 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
             has_word: false,
             pending: None,
             heredocs: Vec::new(),
-            unterminated: HashSet::new(),
+            swallowed: false,
+            unclosed: 0,
+            full,
+            shallow,
+            comsub,
+            scanned: HashSet::new(),
+            covered: Vec::new(),
+            parens: 0,
+            arith: None,
+            arith_unclosed: false,
             quoted: false,
+            piped: false,
+            braces: false,
+            compound: false,
             array: None,
             array_word: String::new(),
             array_start: 0,
+            memo: Memo::default(),
+            brackets: None,
+            expanded: [None, None],
         }
     }
 
@@ -322,17 +349,13 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
         }
         let word = std::mem::take(&mut self.cur);
         self.has_word = false;
-        let quoted = std::mem::replace(&mut self.quoted, false);
+        self.quoted = false;
         if let Some(array) = self.array.as_mut() {
             array.push(word);
             return;
         }
         match self.pending.take() {
             None => self.tokens.push(word),
-            Some("<<" | "<<-") => {
-                let group = self.group();
-                self.heredocs.push((word, group, quoted));
-            }
             Some("<<<") => {
                 let group = self.group();
                 self.sh.push_text(group, word);
@@ -344,19 +367,33 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
         }
     }
 
-    fn end_seg(&mut self, new_group: bool) {
+    /// End the segment; `new_group`: the pipeline ends too, unless no command followed a `|` yet (a newline,
+    /// heredoc bodies, comments or blank lines after a `|` do not end it).
+    fn end_seg(&mut self, mut new_group: bool) {
+        let empty = !self.has_word && self.tokens.is_empty() && self.redirs.is_empty();
+        if new_group && self.piped && empty {
+            new_group = false;
+        } else {
+            self.compound |= !new_group && empty && !self.piped;
+            self.piped = !new_group;
+        }
         self.end_word();
         self.pending = None;
+        let braces = std::mem::take(&mut self.braces);
         if !self.tokens.is_empty() || !self.redirs.is_empty() {
             let group = self.group();
             self.out.push(Segment {
                 tokens: std::mem::take(&mut self.tokens),
                 redirs: std::mem::take(&mut self.redirs),
                 group,
+                arith: false,
+                braces,
+                after_compound: std::mem::take(&mut self.compound),
             });
         }
         if new_group {
             self.group = None;
+            self.compound = false;
         }
     }
 
@@ -371,23 +408,23 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
     }
 
     /// A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run.
-    fn array_char(&mut self, i: usize) -> usize {
+    fn array_char(&mut self, i: usize) -> Result<usize, LexError> {
         let text = self.text;
         let c = text.as_bytes()[i];
         if (c == b'<' || c == b'>') && byte_at(text, i + 1) == Some(b'(') {
-            let (inner, j) = scan_paren(text, i + 2, self.sh);
-            self.nested(inner);
-            return j;
+            let (inner, j) = scan_paren(text, i + 2, &mut self.memo, &mut self.sh.work)?;
+            self.nested(inner, Some(i), true)?;
+            return Ok(j);
         }
         self.end_word();
         if c == b')' {
             self.close_array(i);
-            return i + 1;
+            return Ok(i + 1);
         }
         if c == b'\n' {
             return self.take_heredocs(i + 1);
         }
-        i + 1
+        Ok(i + 1)
     }
 
     /// The elements become the arguments of an `echo`, and `name=( ... )` stays one assignment word.
@@ -402,6 +439,9 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                 tokens,
                 redirs: Vec::new(),
                 group,
+                arith: false,
+                braces: false,
+                after_compound: false,
             });
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
@@ -409,17 +449,74 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
         self.add(&word);
     }
 
-    fn nested(&mut self, inner: &str) {
-        if self.depth < MAX_DEPTH {
-            let segments = segments_inner(inner, self.depth + 1, self.sh);
-            self.out.extend(segments);
-        } else if !inner.is_empty() {
-            self.sh.info.depth_capped = true;
-        }
+    /// Lex a substitution's text. `pos` is where it starts in this text (for the unclosed-body bookkeeping);
+    /// `comsub`: it is the text of a `$(...)` / `<(...)`.
+    fn nested(&mut self, inner: &str, pos: Option<usize>, comsub: bool) -> Result<(), TooComplex> {
         self.has_word = true;
+        if self.depth >= MAX_DEPTH {
+            if !inner.is_empty() {
+                self.sh.info.depth_capped = true;
+            }
+            return Ok(());
+        }
+        if self.shallow || pos.is_some_and(|p| self.scanned.contains(&p)) {
+            return Ok(());
+        }
+        let shallow = pos.is_some_and(|p| {
+            let k = self.covered.partition_point(|&(start, _)| start <= p);
+            k > 0 && self.covered[k - 1].0 < p && p < self.covered[k - 1].1
+        });
+        let full = self.full && !self.swallowed;
+        let segments = segments_in(inner, self.depth + 1, full, shallow, comsub, self.sh)?;
+        self.out.extend(segments);
+        Ok(())
     }
 
-    fn run(mut self) -> Result<Vec<Segment>, Unbalanced> {
+    /// Text bash expands like a double-quoted string (arithmetic, `${...}`): its `$(...)` and backticks run
+    /// whatever the quotes around them, so they are lexed too. `record` marks them so the command lexing of
+    /// the same text does not lex them twice.
+    fn scan_expanded(
+        &mut self,
+        start: usize,
+        end: usize,
+        dq: bool,
+        record: bool,
+    ) -> Result<(), TooComplex> {
+        let slot = usize::from(dq);
+        if let Some((s, e)) = self.expanded[slot]
+            && s <= start
+            && end <= e
+        {
+            return Ok(());
+        }
+        if self.expanded[slot].is_none_or(|(_, e)| end > e) {
+            self.expanded[slot] = Some((start, end));
+        }
+        let has_word = self.has_word;
+        let text = self.text;
+        let part = text.get(start..end).unwrap_or("");
+        for (pos, _, inner, comsub) in body_substitutions(part, dq, &mut self.sh.work)? {
+            self.nested(&inner, None, comsub)?;
+            if record {
+                self.scanned.insert(start + pos);
+            }
+        }
+        self.has_word = has_word;
+        Ok(())
+    }
+
+    /// The backtick substitution `text[i+1..j]`: lexed as written and as bash runs it.
+    fn backtick(&mut self, i: usize, j: usize, dq: bool) -> Result<(), TooComplex> {
+        let text = self.text;
+        let raw = &text[i + 1..j];
+        self.nested(raw, Some(i), false)?;
+        if let Some(unescaped) = unescape_backticks(raw, dq, &mut self.sh.work)? {
+            self.nested(&unescaped, Some(i), false)?;
+        }
+        Ok(())
+    }
+
+    fn run(mut self) -> Result<Vec<Segment>, LexError> {
         let text = self.text;
         let bytes = text.as_bytes();
         let n = text.len();
@@ -441,7 +538,7 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                 },
                 b'\'' => {
                     self.quoted = true;
-                    let j = find_from(text, i + 1, b'\'').ok_or(Unbalanced)?;
+                    let j = find_from(text, i + 1, b'\'').ok_or(LexError::Unbalanced)?;
                     self.add(&text[i + 1..j]);
                     i = j + 1;
                 }
@@ -450,8 +547,8 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                     i = self.double_quoted(i)?;
                 }
                 b'`' => {
-                    let j = find_backtick(text, i + 1)?;
-                    self.nested(&text[i + 1..j]);
+                    let j = find_backtick(text, i + 1, &mut self.sh.work)?;
+                    self.backtick(i, j, false)?;
                     i = j + 1;
                 }
                 b'$' => i = self.dollar(i)?,
@@ -460,11 +557,11 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                     i += 1;
                 }
                 b'\n' | b';' | b'&' | b'|' | b'<' | b'>' | b'(' | b')' if self.array.is_some() => {
-                    i = self.array_char(i);
+                    i = self.array_char(i)?;
                 }
                 b'\n' => {
                     self.end_seg(true);
-                    i = self.take_heredocs(i + 1);
+                    i = self.take_heredocs(i + 1)?;
                 }
                 b'#' if !self.has_word => i = find_from(text, i, b'\n').unwrap_or(n),
                 b'(' if self.has_word && is_array_assignment(&self.cur) => {
@@ -472,10 +569,11 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                     i = self.open_array(i);
                 }
                 b';' | b'(' | b')' => {
+                    self.paren(c, i)?;
                     self.end_seg(true);
                     i += 1;
                 }
-                b'&' if byte_at(text, i + 1) != Some(b'>') => {
+                b'&' if byte_at(text, skip_continuations(text, i + 1)) != Some(b'>') => {
                     self.end_seg(true);
                     i += 1;
                 }
@@ -485,15 +583,14 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                     self.end_seg(double);
                     i += if double || next == Some(b'&') { 2 } else { 1 };
                 }
-                b'<' | b'>' | b'&' => i = self.redirect(i),
-                _ => match char_at(text, i) {
-                    Some(ch) => {
-                        let mut buf = [0u8; 4];
-                        self.add(ch.encode_utf8(&mut buf));
-                        i += ch.len_utf8();
-                    }
-                    None => i += 1, // unreachable: `i` is always a char boundary
-                },
+                b'<' | b'>' | b'&' => i = self.redirect(i)?,
+                _ => {
+                    let ch = char_at(text, i).unwrap_or('\u{fffd}');
+                    self.braces |= ch == '{';
+                    let mut buf = [0u8; 4];
+                    self.add(ch.encode_utf8(&mut buf));
+                    i += ch.len_utf8();
+                }
             }
         }
         if self.array.is_some() {
@@ -505,7 +602,37 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
         Ok(self.out)
     }
 
-    fn double_quoted(&mut self, i: usize) -> Result<usize, Unbalanced> {
+    /// Track `(` depth. A `((` with no word before it that closes with `))` is an arithmetic command: its
+    /// `<<` is a shift, and its `$(...)` run even inside single quotes. Any other `((` is two subshells.
+    fn paren(&mut self, c: u8, i: usize) -> Result<(), TooComplex> {
+        if c == b'(' {
+            if self.arith.is_none()
+                && !self.arith_unclosed
+                && !self.has_word
+                && byte_at(self.text, i + 1) == Some(b'(')
+            {
+                let s = scan_paren_ex(self.text, i + 1, true, &mut self.memo, &mut self.sh.work)?;
+                if s.closes {
+                    self.arith = Some(self.parens);
+                    let end = s.end.unwrap_or(self.text.len());
+                    self.scan_expanded(i + 2, end.saturating_sub(2), false, true)?;
+                } else {
+                    self.arith_unclosed = s.end.is_some_and(|e| e >= self.text.len());
+                }
+            }
+            self.parens += 1;
+        } else if c == b')' {
+            self.parens -= 1;
+            if let Some(a) = self.arith
+                && self.parens <= a + 1
+            {
+                self.arith = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn double_quoted(&mut self, i: usize) -> Result<usize, LexError> {
         let text = self.text;
         let bytes = text.as_bytes();
         let n = text.len();
@@ -526,195 +653,304 @@ impl<'t, 'a, 'r> Lexer<'t, 'a, 'r> {
                     }
                 },
                 b'`' => {
-                    let k = find_backtick(text, j + 1)?;
-                    self.nested(&text[j + 1..k]);
+                    let k = find_backtick(text, j + 1, &mut self.sh.work)?;
+                    self.backtick(j, k, true)?;
                     j = k + 1;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'(') => {
-                    let (inner, after) = scan_paren(text, j + 2, self.sh);
-                    self.nested(inner);
-                    j = after;
+                    let (inner, k) = substitution(text, j, &mut self.memo, &mut self.sh.work)?;
+                    let comsub = !inner.starts_with("((");
+                    self.nested(&inner, Some(j), comsub)?;
+                    j = k;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'{') => {
-                    let end = find_from(text, j + 2, b'}').map_or(n, |k| k + 1);
-                    self.cur.push_str(&text[j..end]);
-                    j = end;
+                    let k = self.brace_end(j)?;
+                    self.scan_expanded(j + 2, k, true, false)?;
+                    let after = after_char(text, k);
+                    self.cur.push_str(text.get(j..after).unwrap_or(""));
+                    j = after;
                 }
-                _ => match char_at(text, j) {
-                    Some(ch) => {
-                        self.cur.push(ch);
-                        j += ch.len_utf8();
+                b'$' if byte_at(text, j + 1) == Some(b'[') => {
+                    if let Some(k) = self.bracket_end(j)? {
+                        self.scan_expanded(j + 2, k, true, true)?;
                     }
-                    None => j += 1,
-                },
+                    self.cur.push('$');
+                    j += 1;
+                }
+                _ => {
+                    let ch = char_at(text, j).unwrap_or('\u{fffd}');
+                    self.cur.push(ch);
+                    j += ch.len_utf8();
+                }
             }
         }
-        Err(Unbalanced)
+        Err(LexError::Unbalanced)
     }
 
-    fn dollar(&mut self, i: usize) -> Result<usize, Unbalanced> {
+    /// The index of the `}` closing the `${` at `i`; when it never closes, the first `}` (or the last
+    /// character), as before fix-wave H.
+    fn brace_end(&mut self, i: usize) -> Result<usize, TooComplex> {
         let text = self.text;
-        let bytes = text.as_bytes();
-        let n = text.len();
+        if let Some(k) = brace_end(text, i + 2, Some(&mut self.memo), &mut self.sh.work)? {
+            return Ok(k);
+        }
+        Ok(match find_from(text, i + 2, b'}') {
+            Some(k) => k,
+            // the last character's start (Python's `len(text) - 1`)
+            None => text.char_indices().next_back().map_or(0, |(k, _)| k),
+        })
+    }
+
+    /// The index of the `]` closing the `$[` at `i`.
+    fn bracket_end(&mut self, i: usize) -> Result<Option<usize>, TooComplex> {
+        if self.brackets.is_none() {
+            self.brackets = Some(bracket_pairs(self.text, &mut self.sh.work)?);
+        }
+        Ok(self
+            .brackets
+            .as_ref()
+            .and_then(|pairs| pairs.get(&(i + 1)).copied()))
+    }
+
+    fn dollar(&mut self, i: usize) -> Result<usize, LexError> {
+        let text = self.text;
         match byte_at(text, i + 1) {
             Some(b'(') => {
-                let (inner, j) = scan_paren(text, i + 2, self.sh);
-                self.nested(inner);
-                Ok(j)
+                let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
+                let comsub = !inner.starts_with("((");
+                let first = self.out.len();
+                self.nested(&inner, Some(i), comsub)?;
+                if !comsub {
+                    for seg in &mut self.out[first..] {
+                        seg.arith = true;
+                    }
+                }
+                return Ok(j);
             }
             Some(b'{') => {
-                let end = find_from(text, i + 2, b'}').map_or(n, |k| k + 1);
-                self.add(&text[i..end]);
-                Ok(end)
+                let k = self.brace_end(i)?;
+                self.scan_expanded(i + 2, k, false, false)?;
+                let after = after_char(text, k);
+                self.add(text.get(i..after).unwrap_or(""));
+                return Ok(after);
+            }
+            Some(b'[') => {
+                // `$[...]`: old arithmetic syntax
+                if let Some(k) = self.bracket_end(i)? {
+                    self.scan_expanded(i + 2, k, false, true)?;
+                }
             }
             Some(b'\'') => {
                 self.quoted = true;
-                let mut j = i + 2;
-                let mut buf = String::new();
-                while j < n && bytes[j] != b'\'' {
-                    if bytes[j] == b'\\' && j + 1 < n {
-                        j += 1;
-                    }
-                    match char_at(text, j) {
-                        Some(ch) => {
-                            buf.push(ch);
-                            j += ch.len_utf8();
-                        }
-                        None => j += 1,
-                    }
-                }
-                if j >= n {
-                    return Err(Unbalanced);
-                }
-                self.add(&buf);
-                Ok(j + 1)
+                let (decoded, end) =
+                    ansi_c(text, i + 2, &mut self.sh.work)?.ok_or(LexError::Unbalanced)?;
+                self.add(&decoded);
+                return Ok(end);
             }
-            Some(b'"') => Ok(i + 1),
-            _ => {
-                self.add("$");
-                Ok(i + 1)
-            }
+            Some(b'"') => return Ok(i + 1),
+            _ => {}
         }
+        self.add("$");
+        Ok(i + 1)
     }
 
-    fn redirect(&mut self, i: usize) -> usize {
+    fn redirect(&mut self, i: usize) -> Result<usize, LexError> {
         let text = self.text;
-        if self.has_word && pystr::is_digit_str(&self.cur) {
-            // `2>file`: the fd number is not a word (`quoted` is left as Python leaves it)
+        if self.has_word
+            && self.pending.is_none()
+            && !self.quoted
+            && !self.cur.is_empty()
+            && self.cur.bytes().all(|b| b.is_ascii_digit())
+        {
+            // `2>file`: the fd number is not a word
             self.cur.clear();
             self.has_word = false;
         } else {
-            self.end_word();
+            self.end_word(); // `"2"<<`, `2>&1<<`: a word, a target
         }
-        let mut j = if byte_at(text, i) == Some(b'&') {
-            i + 1
+        let (op, j): (&'static str, usize) = if byte_at(text, i) == Some(b'<') {
+            input_operator(text, i)
         } else {
-            i
+            // `>`, `>>`, `>|`, `>&`, `&>`, `&>>`
+            let mut j = skip_continuations(text, i + 1);
+            let amp = byte_at(text, i) == Some(b'&');
+            if amp {
+                j = skip_continuations(text, j + 1);
+            }
+            let next = byte_at(text, j);
+            let op = match (amp, next) {
+                (false, Some(b'>')) => ">>",
+                (false, Some(b'|')) => ">|",
+                (false, Some(b'&')) => ">&",
+                (false, _) => ">",
+                (true, Some(b'>')) => "&>>",
+                (true, Some(b'|')) => "&>|",
+                (true, Some(b'&')) => "&>&",
+                (true, _) => "&>",
+            };
+            if matches!(next, Some(b'>' | b'|' | b'&')) {
+                j = skip_continuations(text, j + 1);
+            }
+            (op, j)
         };
-        if byte_at(text, j) == Some(b'>') {
-            j += 1;
-            if matches!(byte_at(text, j), Some(b'>' | b'|' | b'&')) {
-                j += 1;
+        if op == "<<" || op == "<<-" {
+            if self.arith.is_some() {
+                return Ok(j); // `((`: a shift
             }
-        } else {
-            j += 1;
-            match byte_at(text, j) {
-                Some(b'<') => {
-                    j += 1;
-                    if matches!(byte_at(text, j), Some(b'<' | b'-')) {
-                        j += 1;
-                    }
-                }
-                Some(b'>' | b'&') => j += 1,
-                _ => {}
-            }
+            return self.heredoc(op, j);
         }
         if byte_at(text, j) != Some(b'(') {
             // `<(cmd)` is a substitution, not a file
-            self.pending = text.get(i..j);
+            self.pending = Some(op);
         }
-        j
+        Ok(j)
     }
 
-    /// At the start of the line after a heredoc operator: capture each body (if closed).
-    fn take_heredocs(&mut self, mut i: usize) -> usize {
-        let text = self.text;
-        for (delimiter, group, quoted) in std::mem::take(&mut self.heredocs) {
-            if self.unterminated.contains(&delimiter) || !is_heredoc_delimiter(&delimiter) {
-                continue;
+    /// After `<<` / `<<-`: register the heredoc its delimiter word opens. Whether the body is literal depends
+    /// on that word alone, never on the word before the operator.
+    fn heredoc(&mut self, op: &str, j: usize) -> Result<usize, LexError> {
+        match heredoc_after(self.text, j, &mut self.sh.work)? {
+            HeredocWord::None => Ok(j),
+            HeredocWord::Unclosed => Err(LexError::Unbalanced), // bash reads the rest into the word
+            HeredocWord::Word {
+                delimiters,
+                quoted,
+                subs,
+                end,
+            } => {
+                for inner in subs {
+                    // bash does not run these; lexing them only blocks more
+                    self.nested(inner, None, false)?;
+                }
+                self.has_word = false;
+                let group = self.group();
+                self.heredocs.push((delimiters, group, quoted, op == "<<-"));
+                Ok(end)
             }
-            let Some((body_end, after)) = find_heredoc_end(text, i, &delimiter) else {
-                // later lines cannot close it either
-                self.unterminated.insert(delimiter);
-                continue;
-            };
-            let body = &text[i..body_end];
-            self.sh.push_text(group, body.to_string());
-            if !quoted {
-                // an unquoted body runs its `$(...)`
-                if self.depth < MAX_DEPTH {
-                    for inner in body_substitutions(body, self.sh) {
-                        let segments = segments_inner(inner, self.depth + 1, self.sh);
-                        self.out.extend(segments);
+        }
+    }
+
+    /// At the start of the line after heredoc operators: capture each body as bash reads it. A body that is
+    /// never closed runs to the end of the input: it is scanned, and the lines after it are still lexed as
+    /// commands too (fail closed). After `MAX_UNCLOSED` bodies that never close, later heredocs are not
+    /// looked for.
+    fn take_heredocs(&mut self, mut i: usize) -> Result<usize, LexError> {
+        let text = self.text;
+        let n = text.len();
+        for (delimiters, group, quoted, strip_tabs) in std::mem::take(&mut self.heredocs) {
+            if self.unclosed >= MAX_UNCLOSED {
+                break;
+            }
+            let found = find_heredoc_end(
+                text,
+                i,
+                &delimiters,
+                strip_tabs,
+                !quoted,
+                self.comsub,
+                &mut self.sh.work,
+            )?;
+            let (body_end, after) = match found {
+                Some((body_end, after)) => (body_end, Some(after)),
+                None => {
+                    self.unclosed += 1;
+                    if self.swallowed || !self.full {
+                        self.swallowed = true;
+                        continue;
                     }
-                } else if body.contains("$(") || body.contains('`') {
+                    self.swallowed = true;
+                    (n, None)
+                }
+            };
+            let raw = &text[i..body_end];
+            let body = if quoted {
+                raw.to_string()
+            } else {
+                join_continuations(raw, &mut self.sh.work)?
+            };
+            self.sh.push_text(group, body.clone());
+            if !quoted {
+                if self.depth < MAX_DEPTH && !self.shallow {
+                    // bash runs these
+                    for (pos, end, inner, comsub) in
+                        body_substitutions(&body, false, &mut self.sh.work)?
+                    {
+                        let segments =
+                            segments_in(&inner, self.depth + 1, self.full, false, comsub, self.sh)?;
+                        self.out.extend(segments);
+                        if after.is_none() && body_end - i == body.len() {
+                            // the rest is lexed again: see `nested`
+                            self.scanned.insert(i + pos);
+                            self.covered.push((i + pos, i + end));
+                        }
+                    }
+                } else if self.depth >= MAX_DEPTH && (body.contains("$(") || body.contains('`')) {
                     self.sh.info.depth_capped = true;
                 }
             }
-            i = after;
+            if let Some(after) = after {
+                i = after;
+            }
         }
-        i
+        Ok(i)
     }
 }
 
-/// `_segments(text, depth)` inside one top-level call: the lexer, else the lenient fallback.
-pub(crate) fn segments_inner(text: &str, depth: usize, sh: &mut Shared<'_>) -> Vec<Segment> {
-    match Lexer::new(text, depth, sh).run() {
-        Ok(segments) => segments,
-        Err(Unbalanced) => {
+/// `_segments(text, depth, full, shallow, comsub)` inside one top-level call: the lexer, else the lenient
+/// fallback.
+pub(crate) fn segments_in(
+    text: &str,
+    depth: usize,
+    full: bool,
+    shallow: bool,
+    comsub: bool,
+    sh: &mut Shared,
+) -> Result<Vec<Segment>, TooComplex> {
+    sh.work.charge(text.len() + 1)?;
+    match Lexer::new(text, depth, full, shallow, comsub, sh).run() {
+        Ok(segments) => Ok(segments),
+        Err(LexError::TooComplex) => Err(TooComplex),
+        Err(LexError::Unbalanced) => {
             sh.info.nested_lenient = true;
             lenient_segments(text, sh)
         }
     }
 }
 
-/// `_segments` with its flags: `(Lexed, LexInfo)`. `LexInfo.nested_lenient` is true for a top-level
-/// fallback too.
-///
-/// The flags are sticky: work whose output is thrown away (a nested lexer, or the whole lexer when the top
-/// level falls back to lenient) still leaves `incomplete`, `depth_capped` and `nested_lenient` set. So Rust
-/// may report `incomplete` (and the guard block) where Python allowed: a D-7 case, never the reverse.
-pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo) {
-    lex_in(text, depth, limits, &mut Budget(LEX_BUDGET))
+/// `lex`'s result: the segments, what could not be seen into, and whether a heredoc line inside `$(...)` made
+/// the other readings matter.
+pub(crate) struct LexOut {
+    pub(crate) lexed: Lexed,
+    pub(crate) info: LexInfo,
 }
 
-/// `lex` spending from a caller's budget (`analyze` threads one budget through the whole analysis).
-pub(crate) fn lex_in(
-    text: &str,
-    depth: usize,
-    limits: &Limits,
-    budget: &mut Budget,
-) -> (Lexed, LexInfo) {
-    let built;
-    let re = if limits.backtrack_limit == DEFAULT_BACKTRACK_LIMIT {
-        HEREDOC_DEFAULT.as_ref()
-    } else {
-        built = heredoc_regex(limits.backtrack_limit);
-        built.as_ref()
-    };
+/// `_segments(text, depth)` at the top level, spending from `work` (`analyze` threads one budget through the
+/// whole analysis). Over budget: no segments and `incomplete` (Python raises `_TooComplex`, and the guard
+/// blocks).
+///
+/// The flags are sticky: work whose output is thrown away (a nested lexer, or the whole lexer when the top
+/// level falls back to lenient) still leaves `depth_capped` and `nested_lenient` set.
+pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
     let mut sh = Shared {
-        re,
         groups: Vec::new(),
-        incomplete: false,
+        work: *work,
         info: LexInfo::default(),
-        budget: *budget,
     };
-    let (segments, lenient) = match Lexer::new(text, depth, &mut sh).run() {
-        Ok(segments) => (segments, false),
-        Err(Unbalanced) => {
-            sh.info.nested_lenient = true;
-            (lenient_segments(text, &mut sh), true)
-        }
+    let result = match sh.work.charge(text.len() + 1) {
+        Err(TooComplex) => Err(TooComplex),
+        Ok(()) => match Lexer::new(text, depth, true, false, false, &mut sh).run() {
+            Ok(segments) => Ok((segments, false)),
+            Err(LexError::TooComplex) => Err(TooComplex),
+            Err(LexError::Unbalanced) => {
+                sh.info.nested_lenient = true;
+                lenient_segments(text, &mut sh).map(|segments| (segments, true))
+            }
+        },
+    };
+    *work = sh.work;
+    let (segments, lenient, incomplete) = match result {
+        Ok((segments, lenient)) => (segments, lenient, false),
+        Err(TooComplex) => (Vec::new(), false, true),
     };
     let mut ids: Vec<u32> = segments.iter().map(|s| s.group.0).collect();
     ids.sort_unstable();
@@ -730,24 +966,27 @@ pub(crate) fn lex_in(
                 .unwrap_or_default(),
         })
         .collect();
-    let lexed = Lexed {
-        segments,
-        groups,
-        lenient,
-        incomplete: sh.incomplete,
-    };
-    *budget = sh.budget;
-    (lexed, sh.info)
+    LexOut {
+        lexed: Lexed {
+            segments,
+            groups,
+            lenient,
+            incomplete,
+        },
+        info: sh.info,
+    }
 }
 
-/// `segments()` with explicit limits (a test lowers `backtrack_limit`).
+/// `segments()` with explicit limits (kept for the published API; the lexer no longer uses a regex).
 pub fn segments_with(text: &str, depth: usize, limits: &Limits) -> Lexed {
-    lex(text, depth, limits).0
+    let _ = limits;
+    let mut work = Work::new(work_limit(text), extra_limit(text), Reading::Bash5);
+    lex_in(text, depth, &mut work).lexed
 }
 
 /// Split a command string into simple commands (guard_rules.py `_segments(text, depth)`). Nested `$(...)`,
-/// backticks, `( ... )` and unquoted heredoc-body substitutions are lexed recursively (to `MAX_DEPTH`), and
-/// their segments come before the segment that contains them (execution order).
+/// backticks, `( ... )`, `${...}`, arithmetic and unquoted heredoc-body substitutions are lexed recursively
+/// (to `MAX_DEPTH`), and their segments come before the segment that contains them (execution order).
 pub fn segments(text: &str, depth: usize) -> Lexed {
     segments_with(text, depth, &Limits::default())
 }

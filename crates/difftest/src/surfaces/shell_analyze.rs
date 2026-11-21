@@ -2,14 +2,15 @@
 //! through `port/difftest/oracle/shell.py` (`Entry` minus `opaque`, plan SH2).
 //!
 //! Case: `{"op": "analyze", "command": C, "home": H}`. Both sides print the canonical JSON of every entry's
-//! `_Entry` fields, groups numbered by first appearance among the entries, and `incomplete` (always false
-//! in Python). Seeds: the analyze seeds of `port/difftest/seeds/shell.jsonl`, the hand-written `TRICKY`
+//! `_Entry` fields, then every alternate reading's (`Analysis.alternates`), groups numbered by first
+//! appearance among them, and `incomplete` (false in Python, which raises `_TooComplex` instead: an
+//! oracle-marked D-7). The reference is the fix-wave H+I `guard_rules_fw.py` (see the oracle). Seeds: the analyze seeds of `port/difftest/seeds/shell.jsonl`, the hand-written `TRICKY`
 //! commands, and a sweep of every code point through `lower()` (with Final_Sigma contexts) via the program
 //! name. Generated: wrapper/runner/shell/docker/find/cd compositions, mutated seeds, the segments grammar,
 //! and odd homes.
 
 use anthology_pycompat::json::Value;
-use anthology_shell::{Analysis, analyze};
+use anthology_shell::{Analysis, Entry, analyze};
 
 use super::shell_segments::{
     Gen, GenRng, Ordinals, field_str, int, load_seeds, mutate, obj, observed, s, strs, sweep_chars,
@@ -40,11 +41,17 @@ impl Surface for ShellAnalyze {
     }
 
     fn seeds(&self) -> Vec<Case> {
-        let mut out: Vec<Case> = load_seeds(OPS)
+        let mut out: Vec<Case> = fw_cases()
             .into_iter()
             .enumerate()
-            .map(|(k, data)| Case::new(format!("seed:{}", k + 1), data))
+            .map(|(k, data)| Case::new(format!("fw:{}", k + 1), data))
             .collect();
+        out.extend(
+            load_seeds(OPS)
+                .into_iter()
+                .enumerate()
+                .map(|(k, data)| Case::new(format!("seed:{}", k + 1), data)),
+        );
         out.extend(
             fixed_cases()
                 .into_iter()
@@ -71,34 +78,51 @@ impl Surface for ShellAnalyze {
     }
 }
 
-/// The oracle's `_analyze` rendering.
+fn render_entry(e: &Entry, ordinals: &mut Ordinals) -> Value {
+    let redirs = e
+        .redirs
+        .iter()
+        .map(|r| Value::Array(vec![s(&r.op), s(&r.target)]))
+        .collect();
+    obj(vec![
+        ("raw", strs(&e.raw)),
+        ("redirs", Value::Array(redirs)),
+        ("prog_path", s(&e.prog_path)),
+        ("prog", s(&e.prog)),
+        ("args", strs(&e.args)),
+        ("cwd", e.cwd.as_deref().map_or(Value::Null, s)),
+        ("exempt", Value::Bool(e.exempt)),
+        ("group", int(ordinals.of(e.group))),
+        ("code", strs(&e.code)),
+    ])
+}
+
+/// The oracle's `_analyze` rendering. An incomplete analysis renders as nothing but `incomplete` (what it found
+/// before it stopped is not a result: the guard blocks), as the oracle renders the reference's `_TooComplex`.
 pub(crate) fn render_analysis(analysis: &Analysis) -> Value {
+    if analysis.incomplete {
+        return obj(vec![
+            ("incomplete", Value::Bool(true)),
+            ("entries", Value::Array(Vec::new())),
+            ("alternates", Value::Array(Vec::new())),
+            ("groups", Value::Array(Vec::new())),
+        ]);
+    }
     let mut ordinals = Ordinals::default();
     let entries = analysis
         .entries
         .iter()
-        .map(|e| {
-            let redirs = e
-                .redirs
-                .iter()
-                .map(|r| Value::Array(vec![s(&r.op), s(&r.target)]))
-                .collect();
-            obj(vec![
-                ("raw", strs(&e.raw)),
-                ("redirs", Value::Array(redirs)),
-                ("prog_path", s(&e.prog_path)),
-                ("prog", s(&e.prog)),
-                ("args", strs(&e.args)),
-                ("cwd", e.cwd.as_deref().map_or(Value::Null, s)),
-                ("exempt", Value::Bool(e.exempt)),
-                ("group", int(ordinals.of(e.group))),
-                ("code", strs(&e.code)),
-            ])
-        })
+        .map(|e| render_entry(e, &mut ordinals))
+        .collect();
+    let alternates = analysis
+        .alternates
+        .iter()
+        .map(|e| render_entry(e, &mut ordinals))
         .collect();
     obj(vec![
         ("incomplete", Value::Bool(analysis.incomplete)),
         ("entries", Value::Array(entries)),
+        ("alternates", Value::Array(alternates)),
         ("groups", ordinals.texts(&analysis.groups)),
     ])
 }
@@ -272,6 +296,65 @@ const PREFIXES: &[&str] = &[
     "find / -ok",
     "cd",
     "pushd",
+    // fix-wave I
+    "su -c",
+    "su root -c",
+    "runuser -u x --",
+    "script -qc",
+    "flock /tmp/l",
+    "flock /tmp/l -c",
+    "chroot /",
+    "nsenter -t 1",
+    "unshare -r",
+    "setsid -f",
+    "stdbuf -o L",
+    "busybox",
+    "parallel",
+    "parallel -j2 -I@@",
+    "sg grp",
+    "sg - grp -c",
+    "watch -n1",
+    "entr -s",
+    "gdb -q --args",
+    "nix develop -c",
+    "nix-shell --run",
+    "mise exec --",
+    "mise x",
+    "direnv exec .",
+    "devbox run",
+    "pixi run",
+    "perf stat",
+    "concurrently -n a",
+    "hyperfine -w 3",
+    "nodemon --exec",
+    "xargs -0",
+    "xargs --replace",
+    "xargs -i",
+    "xargs -L1 -I%",
+    "dotenv -e .env",
+    "env-cmd -f x",
+    "systemd-run --user",
+    "ltrace -o x",
+    "cpulimit -l 5",
+    "chpst -u x",
+    "corepack",
+    "cross-env A=1",
+    "GIT_PAGER=x",
+    "GIT_SSH_COMMAND='ssh -i k'",
+    "GIT_CONFIG_PARAMETERS=\"'core.pager'='x'\"",
+    "npm --loglevel x exec",
+    "npm exec --omit dev --",
+    "pnpm dlx --foo x --",
+    "pnpm run e2e --",
+    "yarn --frozen-lockfile",
+    "bun x --",
+    "uvx --with x",
+    "pipx run --spec x",
+    "python3 -Im",
+    "python3 -W ignore -m",
+    "env -u X -S",
+    "env -S'sudo -u x'",
+    "sudo --",
 ];
 
 /// Programs and their arguments.
@@ -345,6 +428,36 @@ const PROGRAMS: &[&str] = &[
     "@scope/pkg@3",
     "@playwright/test",
     "playwright@latest install",
+    // fix-wave I
+    "git -c core.pager='less -R' log",
+    "git -c alias.x='!ls' x",
+    "git config core.pager 'x y'",
+    "git bisect run make test",
+    "git submodule foreach 'git pull'",
+    "git rebase -x 'make' main",
+    "git difftool --extcmd=x",
+    "tar --to-command='cat' -xf a",
+    "tar --use-comp=zstd -cf a x",
+    "tar -I 'zstd -19' -cf a x",
+    "rsync -e 'ssh -p 2' a b:c",
+    "rsync -avze ssh a b:c",
+    "trap 'ls' EXIT",
+    "trap -- 'x' INT",
+    "trap '' INT",
+    "parallel echo ::: a b ::: c",
+    "parallel '{1} {2}' ::: a ::: b",
+    "sh /dev/stdin",
+    "source /dev/stdin",
+    "sh <&3",
+    "bash /dev/fd/3 3<<<'ls'",
+    "exec 3<<<'ls'",
+    "sh <(echo ls)",
+    "fd . -x ls",
+    "fd -e js --exec-batch wc",
+    "nodemon -x 'npm test'",
+    "concurrently 'a b' 'c'",
+    "$'\\x6epx' x",
+    "x=$(( 2 * 3 ))",
 ];
 
 const SHAPES: &[&str] = &[
@@ -378,6 +491,20 @@ const SHAPES: &[&str] = &[
     "npx -c '{q}'",
     "eval '{q}'",
     "{c} 2>&1 >/dev/null",
+    // fix-wave I
+    "echo '{q}' | xargs sh -c",
+    "printf '{q}\\n' | xargs -I{} sh -c '{}'",
+    "echo '{q}' | xargs",
+    "echo '{q}' | parallel",
+    "sh <(echo '{q}')",
+    "cat <(echo '{q}') | sh",
+    "exec 3<<<'{q}'; sh <&3",
+    "watch -n1 {c}",
+    "sg grp '{q}'",
+    "su -c '{q}' root",
+    "env -S'{q}'",
+    "git -c core.pager='{q}' log",
+    "trap '{q}' EXIT",
 ];
 
 /// A command composed from the vocabulary above.
@@ -403,6 +530,129 @@ fn compose(rng: &mut GenRng) -> String {
 
 fn compose_flat(rng: &mut GenRng) -> String {
     format!("{} {}", rng.pick(PREFIXES), rng.pick(PROGRAMS))
+}
+
+/// Fix-wave H and I reviewer payloads (`fw:<n>`, in this order: `shell.analyze.toml` names the first seven).
+/// 1-7 are Rust stricter than the reference (D-8); the rest the oracle reads as Rust does.
+pub(crate) fn fw_cases() -> Vec<Value> {
+    const FW: &[&str] = &[
+        // FW-I review R1-M2: every fd -x group
+        "fdfind hostname /etc -x echo hi \\; -x npx playwright install",
+        "fd . -x echo a \\; --exec npx playwright install",
+        // FW-I review R1-M3: secret loaders run their command
+        "doppler run --command 'npx playwright install'",
+        "doppler run -- npx playwright install",
+        "op run --env-file .env -- npx playwright install",
+        "dotenvx run -f .env -- npx playwright install",
+        "infisical run --command='npx playwright install'",
+        // FW-I review R1-I1 and its negative control
+        "npm exec --omit dev -- playwright install",
+        "pnpm dlx --some-flag v -- playwright install",
+        "pnpm run e2e -- playwright test",
+        // FW-H review R1-M1
+        "$'\\x6epx' playwright install\n'",
+        "npx $'pl\\x61ywright' install\necho '",
+        // the negative control the owner named
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        // SH-FW review (one Opus review of the hardening): C-1 tar --checkpoint-action
+        "tar -cf b.tar --checkpoint=1 --checkpoint-action exec='npx playwright install' a",
+        "tar -cf b.tar --checkpoint=1 --checkpoint-act=exec='npx playwright install' a",
+        // C-2 git options, keys and ext:: URLs that run a command
+        "git clone -u 'npx playwright install' . ../c",
+        "git push --receive-pack='npx playwright install' . HEAD:refs/heads/z",
+        "git archive --remote=. --exec='npx playwright install' HEAD",
+        "git -c remote.o.url=. -c remote.o.uploadpack='npx playwright install' fetch o",
+        "git -c difftool.z.cmd='npx playwright install' difftool --cached -y --tool=z",
+        "git -c protocol.ext.allow=always ls-remote 'ext::npx playwright install'",
+        // M-3 wrappers
+        "gosu root npx playwright install",
+        "micromamba run -n x npx playwright install",
+        // I-1 fd clusters
+        "fdfind -Hx npx playwright install",
+        "fd -HIx npx playwright install",
+        // C-5 subscripts
+        "let 'a[$(npx playwright install)]=1'",
+        "[[ 'a[$(npx playwright install)]' -eq 0 ]]",
+        "printf -v 'a[$(npx playwright install)]' x",
+        "test -v 'a[$(npx playwright install)]'",
+        // C-3 brace expansion, C-4 decoded echo/printf text, I-2 a newline after a pipe
+        "{npx,playwright,install}",
+        "echo -e 'npx\\x20playwright install' | sh",
+        "printf 'npx\\x20playwright install' | sh",
+        "echo npx playwright install |\nsh",
+        // M-4 everyday controls
+        "eval \"$(fnm env)\"",
+        "bash <(curl -fsSL https://example.com/install.sh)",
+        "npx prettier --check src playwright test",
+    ];
+    let mut out: Vec<Value> = FW
+        .iter()
+        .map(|text| case(text.to_string(), "/home/tester"))
+        .collect();
+    // I-3: caps that drop input (the re-review lifted the fed and parallel ones, F-2)
+    out.push(case(
+        format!(
+            "printf '{}npx playwright install\\n' | xargs -I{{}} sh -c '{{}}'",
+            "true\\n".repeat(64)
+        ),
+        "/home/tester",
+    ));
+    out.push(case(
+        format!(
+            "parallel ::: {}'npx playwright install'",
+            "true ".repeat(64)
+        ),
+        "/home/tester",
+    ));
+    out.push(case(
+        format!(
+            "timeout 5 mytool{} npx playwright install",
+            " sh".repeat(70)
+        ),
+        "/home/tester",
+    ));
+    // SH-FW re-review: fw:40 on, in this order (`shell.analyze.toml` names the Rust-only ones)
+    const REREVIEW: &[&str] = &[
+        // C-2a, C-1a (Rust-only)
+        "git -c alias.cl=clone cl -u 'npx playwright install' . ../c",
+        "TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=npx\\ playwright\\ install' tar -cf b.tar a",
+        // C-3a, C-4a (the oracle applies them too)
+        "{echo,'npx playwright install'} | sh",
+        "{xargs,npx} <<< 'playwright install'",
+        "printf -- 'npx\\x20playwright install' | sh",
+        "printf 'npx %s install\\n' playwright | sh",
+        "printf '%c%s' n 'px playwright install' | sh",
+        // C-5a (the fail-closed families: the oracle applies them too)
+        "printf -v'a[$(npx playwright install)]' x",
+        "a=(1); unset 'a[$(npx playwright install)]'",
+        // I-2a (the oracle applies it too), and `function f` bodies (Rust-only)
+        "( echo npx playwright install ) | sh",
+        "if true; then echo npx playwright install; fi | sh",
+        "f() { echo npx playwright install; }; f | sh",
+        "function f { npx playwright install; }; f",
+        // F-1 controls: quoted braces are not brace expressions, 70-word lists are fine
+        "awk '/a/{print $1,$2,$3,$4} /b/{print $1,$2,$3,$4} /c/{print $1,$2,$3,$4,$5}' log.txt",
+        "mkdir -p app/{models,views,controllers,helpers,mailers,jobs,channels}/{admin,api,web,shared,internal,public,legacy,v2,v3,v4}",
+        "rm -f build/{a,b,c,d,e,f,g,h}.{js,map,d.ts,css,html,json,txt,md,yml}",
+        "echo '{a,b}' \"{c,d}\" \\{e,f}",
+    ];
+    out.extend(
+        REREVIEW
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
+    // F-2 controls: more than 64 inputs or lines are read, not too complex (Rust-only past the 64th)
+    let hosts: String = (0..70).map(|k| format!(" host{k}")).collect();
+    out.push(case(
+        format!("parallel ssh {{}} uptime :::{hosts}"),
+        "/home/tester",
+    ));
+    let lines: String = (0..70).map(|k| format!("echo {k}\n")).collect();
+    out.push(case(
+        format!("xargs -n1 echo <<'EOF'\n{lines}EOF"),
+        "/home/tester",
+    ));
+    out
 }
 
 /// Hand-written commands where a port could plausibly differ, and the `lower()` sweep.

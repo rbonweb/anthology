@@ -92,7 +92,9 @@ def generate():
         "",
     ]
     lines += table("SPACE", "`str.isspace()`.", ranges(space)) + [""]
-    lines += table("DIGIT", "`str.isdigit()`.", ranges(digit)) + [""]
+    digits = table("DIGIT", "`str.isdigit()`.", ranges(digit))
+    digits.insert(1, "#[allow(dead_code)] // read by the tests")  # unused since fix-wave H
+    lines += digits + [""]
     lines += table("CASE_IGNORABLE", "Skipped by CPython's Final_Sigma rule.", ranges(ignorable)) + [""]
     lines += table("CASED", "Cased and not case-ignorable (what the Final_Sigma rule reads).",
                    ranges(cased)) + [""]

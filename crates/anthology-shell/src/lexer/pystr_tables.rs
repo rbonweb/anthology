@@ -20,6 +20,7 @@ pub(crate) static SPACE: &[(u32, u32)] = &[
 ];
 
 /// `str.isdigit()`.
+#[allow(dead_code)] // read by the tests
 pub(crate) static DIGIT: &[(u32, u32)] = &[
     (0x0030, 0x0039),
     (0x00B2, 0x00B3),

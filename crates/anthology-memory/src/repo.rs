@@ -21,8 +21,19 @@ use anthology_pycompat::str::{lower, split_ws, strip_ws};
 
 use crate::notes::py_name_key;
 
-/// `memory_sync.config_dir(env)` and `anthology_home(env)` (GC-1).
-pub use anthology_core::paths::{anthology_home, config_dir};
+/// `memory_sync.config_dir(env)` (GC-1): a `pathlib.Path`, so it is normalised as pathlib holds
+/// it (`CLAUDE_CONFIG_DIR=/a//cfg/` is `/a/cfg`), which every path memory prints shows.
+pub fn config_dir(env: &Env) -> PathBuf {
+    let raw = anthology_core::paths::config_dir(env);
+    PathBuf::from(OsString::from_vec(crate::index::pathlib_str(
+        raw.as_os_str().as_bytes(),
+    )))
+}
+
+/// `memory_sync.anthology_home(env)`: `<config>/anthology`.
+pub fn anthology_home(env: &Env) -> PathBuf {
+    config_dir(env).join("anthology")
+}
 
 /// `memory_sync._DEFAULT_PORTS`.
 const DEFAULT_PORTS: [&str; 3] = ["22", "443", "80"];
@@ -421,6 +432,22 @@ fn expanduser(path: &str, env: &Env) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_dir_is_a_pathlib_path() {
+        for (cfg, want) in [
+            ("/r//cfg", "/r/cfg"),
+            ("/r/cfg/", "/r/cfg"),
+            ("/r/./cfg", "/r/cfg"),
+            ("//r/cfg", "//r/cfg"),
+        ] {
+            let env = Env::default().with("CLAUDE_CONFIG_DIR", cfg);
+            assert_eq!(config_dir(&env), PathBuf::from(want), "{cfg}");
+            assert_eq!(anthology_home(&env), Path::new(want).join("anthology"));
+        }
+        let env = Env::default().with("HOME", "/h//u/");
+        assert_eq!(config_dir(&env), PathBuf::from("/h/u/.claude"));
+    }
 
     #[test]
     fn dirname_and_basename_follow_posixpath() {

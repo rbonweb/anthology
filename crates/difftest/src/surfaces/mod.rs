@@ -13,6 +13,7 @@ pub mod dev_upstream_watch;
 pub mod dev_vendor;
 pub mod dev_version_bump;
 pub mod doctor;
+pub mod fake_git;
 pub mod guard_check;
 pub mod guard_hook;
 pub mod hook_session_start;

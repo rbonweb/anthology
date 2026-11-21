@@ -1,6 +1,6 @@
 //! `GuardSelfTestTest` rows that run the real guard (`tests/test_session_start.py`): the staged
-//! `hooks/guard.sh` with this build's `anthology` installed as the guardrails' binary. They need
-//! GD2's `guard hook`, so they are ignored (and `todo:RT3` in the ledger) until GD2 merges.
+//! `hooks/guard.sh` with this build's `anthology` installed as the guardrails' binary, and the
+//! `anthology guard hook` process fed the compiled-in self-test sample.
 #![forbid(unsafe_code)]
 
 use std::io::Write;
@@ -15,7 +15,6 @@ use anthology_testkit::bs::{self, Release, Sandbox};
 const BIN: &str = env!("CARGO_BIN_EXE_anthology");
 
 #[test]
-#[ignore = "SWAP(GD2): needs `anthology guard hook`"]
 fn test_real_guard_blocks_the_sample_quietly() {
     let binary = std::fs::read(BIN).expect("the anthology binary");
     let sb = Sandbox::new(Release::new(
@@ -35,7 +34,6 @@ fn test_real_guard_blocks_the_sample_quietly() {
 }
 
 #[test]
-#[ignore = "SWAP(GD2): needs `anthology guard hook`"]
 fn test_sample_is_piped_as_json_and_blocked_with_exit_2() {
     let sample = json::dumps(&data::self_test_sample(), &json::PY_DEFAULT);
     let mut child = Command::new(BIN)

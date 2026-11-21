@@ -78,6 +78,12 @@ pub fn lock_invalid() -> String {
     )
 }
 
+pub fn no_home() -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary cannot be found because {R_HOME}; set it to an absolute path, then start a new session{P}"
+    )
+}
+
 pub fn unsupported(os: &str, arch: &str) -> String {
     format!(
         "Blocked by anthology-guardrails (setup): there is no guard binary for this platform ({os}/{arch}); Anthology supports macOS and Linux on x86_64 and arm64. Disable anthology-guardrails (/plugin) to use Claude Code here"
@@ -130,6 +136,7 @@ pub const R_MEMBER: &str = "the archive has no anthology binary";
 pub const R_LOCK: &str = "anthology.lock is not valid";
 pub const R_WRITE: &str = "cannot write the install folder";
 pub const R_SHA_TOOL: &str = "no sha256 tool";
+pub const R_HOME: &str = "HOME or CLAUDE_CONFIG_DIR is not an absolute path";
 
 pub fn r_seed(target: &str) -> String {
     format!("seed file anthology-{target}.tar.gz does not match anthology.lock")

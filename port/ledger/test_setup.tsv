@@ -1,6 +1,6 @@
 # python_id	status	rust_test	note
 test_setup.ApplyRemoveTest.test_absent_rtk_wiring_is_skipped	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_absent_rtk_wiring_is_skipped
-test_setup.ApplyRemoveTest.test_apply_approves_the_repo_and_remove_keeps_it_unless_asked	todo:RT4		needs MS2's real memory_sync (approve, is_approved, unapprove); SWAP(MS2): ported when MS2 merges
+test_setup.ApplyRemoveTest.test_apply_approves_the_repo_and_remove_keeps_it_unless_asked	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_apply_approves_the_repo_and_remove_keeps_it_unless_asked
 test_setup.ApplyRemoveTest.test_apply_creates_the_personal_folder_with_mode_0700	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_apply_creates_the_personal_folder_with_mode_0700
 test_setup.ApplyRemoveTest.test_apply_refuses_when_settings_changed_since_the_preview	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_apply_refuses_when_settings_changed_since_the_preview
 test_setup.ApplyRemoveTest.test_apply_reports_installed_and_up_to_date	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_apply_reports_installed_and_up_to_date
@@ -13,10 +13,10 @@ test_setup.ApplyRemoveTest.test_plugin_moved_replaces_the_stale_plugin_read_rule
 test_setup.ApplyRemoveTest.test_round_trip_leaves_settings_byte_identical_and_state_gone	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_round_trip_leaves_settings_byte_identical_and_state_gone
 test_setup.ApplyRemoveTest.test_round_trip_with_crlf_and_no_settings_file	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_round_trip_with_crlf_and_no_settings_file
 test_setup.ApplyRemoveTest.test_rtk_exception_is_a_warning	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_rtk_exception_is_a_warning
-test_setup.ApplyRemoveTest.test_skip_approve	todo:RT4		needs MS2's real memory_sync (repo_root, is_approved); SWAP(MS2): ported when MS2 merges
+test_setup.ApplyRemoveTest.test_skip_approve	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_skip_approve
 test_setup.ApplyRemoveTest.test_symlinked_settings_are_written_through	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_symlinked_settings_are_written_through
 test_setup.ApplyRemoveTest.test_unparseable_settings_stop_apply_before_anything_else	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_unparseable_settings_stop_apply_before_anything_else
-test_setup.ApplyRemoveTest.test_unsafe_target_is_reported_not_raised_and_setup_carries_on	todo:RT4		needs MS2's real memory_sync (approve's UnsafeTarget on a symlinked .gitattributes); SWAP(MS2): ported when MS2 merges
+test_setup.ApplyRemoveTest.test_unsafe_target_is_reported_not_raised_and_setup_carries_on	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_unsafe_target_is_reported_not_raised_and_setup_carries_on
 test_setup.ApplyRemoveTest.test_unsafe_target_with_a_stubbed_approve	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_unsafe_target_with_a_stubbed_approve
 test_setup.ApplyRemoveTest.test_windows_is_refused_without_touching_anything	ported	crates/anthology-runtime/tests/setup.rs::apply_remove_test::test_windows_is_refused_without_touching_anything
 test_setup.CliTest.test_apply_and_remove_flags	ported	crates/anthology-cli/src/cmd/setup.rs::tests::test_apply_and_remove_flags
@@ -32,19 +32,19 @@ test_setup.FixRound1Test.test_env_and_secret_values_never_reach_any_diff_in_any_
 test_setup.FixRound1Test.test_ops_are_recorded_before_settings_json_is_written	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_ops_are_recorded_before_settings_json_is_written	Python's raised OSError is apply's {ok: false, error: 'OSError: disk full'} result (what main prints)
 test_setup.FixRound1Test.test_remove_preview_cli_flag	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_remove_preview_cli_flag
 test_setup.FixRound1Test.test_remove_preview_error_for_unparseable_settings	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_remove_preview_error_for_unparseable_settings
-test_setup.FixRound1Test.test_remove_preview_lists_the_approvals_each_flag_would_drop	todo:RT4		needs MS2's real memory_sync (load_approved, approve); SWAP(MS2): ported when MS2 merges
+test_setup.FixRound1Test.test_remove_preview_lists_the_approvals_each_flag_would_drop	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_remove_preview_lists_the_approvals_each_flag_would_drop
 test_setup.FixRound1Test.test_remove_preview_writes_nothing_and_shows_the_diff	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_remove_preview_writes_nothing_and_shows_the_diff
 test_setup.FixRound1Test.test_remove_returns_the_same_diff	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_remove_returns_the_same_diff
 test_setup.FixRound1Test.test_rtk_dir_that_resolves_elsewhere_is_left_alone	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_rtk_dir_that_resolves_elsewhere_is_left_alone
 test_setup.FixRound1Test.test_rtk_is_never_deleted_when_data_dir_is_the_config_folder_or_above_plugins_data	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_rtk_is_never_deleted_when_data_dir_is_the_config_folder_or_above_plugins_data
 test_setup.FixRound1Test.test_unsafe_plugin_root_is_refused_in_preview_and_apply_with_nothing_written	ported	crates/anthology-runtime/tests/setup.rs::fix_round1_test::test_unsafe_plugin_root_is_refused_in_preview_and_apply_with_nothing_written	the guardrails sibling has hooks/guard.sh (F-6)
-test_setup.LegacyPromotionTest.test_a_promoted_user_note_is_blocked	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_cli_promote_flag_is_repeatable	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_explicit_selection_moves_only_the_clean_ones	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_preview_marks_identical_notes_and_lists_ledgered_ones	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_refusals_write_nothing	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
-test_setup.LegacyPromotionTest.test_without_promote_everything_stays_personal	todo:RT4		needs MS2's real memory_sync (legacy_dirs, migrate, privacy scan, regenerate_index; plus a hostname seam for socket.gethostname); SWAP(MS2): ported when MS2 merges
+test_setup.LegacyPromotionTest.test_a_promoted_user_note_is_blocked	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_a_promoted_user_note_is_blocked
+test_setup.LegacyPromotionTest.test_cli_promote_flag_is_repeatable	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_cli_promote_flag_is_repeatable
+test_setup.LegacyPromotionTest.test_explicit_selection_moves_only_the_clean_ones	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_explicit_selection_moves_only_the_clean_ones
+test_setup.LegacyPromotionTest.test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing
+test_setup.LegacyPromotionTest.test_preview_marks_identical_notes_and_lists_ledgered_ones	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_preview_marks_identical_notes_and_lists_ledgered_ones
+test_setup.LegacyPromotionTest.test_refusals_write_nothing	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_refusals_write_nothing
+test_setup.LegacyPromotionTest.test_without_promote_everything_stays_personal	ported	crates/anthology-runtime/tests/setup.rs::legacy_promotion_test::test_without_promote_everything_stays_personal
 test_setup.PreviewTest.test_a_missing_installed_plugins_file_is_reported	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_a_missing_installed_plugins_file_is_reported
 test_setup.PreviewTest.test_an_odd_scope_is_listed_without_a_command	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_an_odd_scope_is_listed_without_a_command
 test_setup.PreviewTest.test_an_unreadable_installed_plugins_file_is_reported_not_a_crash	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_an_unreadable_installed_plugins_file_is_reported_not_a_crash
@@ -54,7 +54,7 @@ test_setup.PreviewTest.test_not_a_git_repo_is_reported	ported	crates/anthology-r
 test_setup.PreviewTest.test_preview_reports_every_step	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_preview_reports_every_step	anthology_binary replaces python3 (F-5)
 test_setup.PreviewTest.test_preview_runs_the_compat_checks_in_its_cwd	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_preview_runs_the_compat_checks_in_its_cwd
 test_setup.PreviewTest.test_preview_writes_nothing	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_preview_writes_nothing
-test_setup.PreviewTest.test_repo_step_names_the_key	todo:RT4		needs MS2's real memory_sync (repo_root, repo_key, is_approved); SWAP(MS2): ported when MS2 merges; written in crates/anthology-runtime/tests/setup.rs, ignored until then
+test_setup.PreviewTest.test_repo_step_names_the_key	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_repo_step_names_the_key
 test_setup.PreviewTest.test_rtk_step_comes_from_the_lock	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_rtk_step_comes_from_the_lock	the guardrails sibling has hooks/guard.sh (F-6); the target is rtk_install.target for the uname seam (Python's fake returned test-target)
 test_setup.PreviewTest.test_rtk_step_skipped_when_wiring_is_absent	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_rtk_step_skipped_when_wiring_is_absent
 test_setup.PreviewTest.test_the_skill_tells_the_agent_what_to_do_without_a_command	ported	crates/anthology-runtime/tests/setup.rs::preview_test::test_the_skill_tells_the_agent_what_to_do_without_a_command
@@ -68,11 +68,11 @@ test_setup.RemoveTest.test_remove_deletes_only_the_rtk_folder_under_the_data_dir
 test_setup.RemoveTest.test_remove_deletes_the_rtk_history_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_deletes_the_rtk_history_folder
 test_setup.RemoveTest.test_remove_does_not_follow_a_symlinked_rtk_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_does_not_follow_a_symlinked_rtk_folder
 test_setup.RemoveTest.test_remove_does_not_follow_a_symlinked_rtk_history_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_does_not_follow_a_symlinked_rtk_history_folder
-test_setup.RemoveTest.test_remove_keeps_repo_notes_and_gitattributes	todo:RT4		needs MS2's real memory_sync (approve, unapprove); SWAP(MS2): ported when MS2 merges
+test_setup.RemoveTest.test_remove_keeps_repo_notes_and_gitattributes	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_keeps_repo_notes_and_gitattributes
 test_setup.RemoveTest.test_remove_never_deletes_memory_notes_or_the_personal_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_never_deletes_memory_notes_or_the_personal_folder
 test_setup.RemoveTest.test_remove_refuses_a_data_dir_outside_the_config_folder	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_refuses_a_data_dir_outside_the_config_folder
 test_setup.RemoveTest.test_remove_with_unparseable_settings_keeps_state_for_a_retry	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_with_unparseable_settings_keeps_state_for_a_retry
 test_setup.RemoveTest.test_remove_without_a_prior_setup_is_harmless	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_without_a_prior_setup_is_harmless
 test_setup.RemoveTest.test_remove_without_rtk_history_reports_nothing_to_delete	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_remove_without_rtk_history_reports_nothing_to_delete
-test_setup.RemoveTest.test_unapprove_all_drops_every_approval	todo:RT4		needs MS2's real memory_sync (load_approved, unapprove); SWAP(MS2): ported when MS2 merges
+test_setup.RemoveTest.test_unapprove_all_drops_every_approval	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_unapprove_all_drops_every_approval
 test_setup.RemoveTest.test_users_own_rules_survive_remove	ported	crates/anthology-runtime/tests/setup.rs::remove_test::test_users_own_rules_survive_remove

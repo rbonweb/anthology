@@ -5,8 +5,7 @@
 use std::time::{Duration, Instant};
 
 use anthology_shell::{
-    Lexed, Limits, MAX_DEPTH, Redirect, SHELLS, ShellMode, prog_name, script_starts, segments,
-    segments_with, shell_parse,
+    Lexed, MAX_DEPTH, Redirect, SHELLS, ShellMode, prog_name, script_starts, segments, shell_parse,
 };
 use proptest::prelude::*;
 
@@ -91,9 +90,10 @@ fn a_here_string_is_group_text() {
 }
 
 #[test]
-fn fd_numbers_including_unicode_digits_are_not_words() {
+fn only_unquoted_ascii_fd_numbers_are_not_words() {
+    // fix-wave H: an fd is `isascii() and isdigit()` and unquoted (bash reads `²>g` and `"2">h` as words)
     let lexed = segments("a 2>f \u{b2}>g \"2\">h 2>&1 &>i", 0);
-    assert_eq!(toks(&lexed), [["a"]]);
+    assert_eq!(toks(&lexed), [["a", "\u{b2}", "2"]]);
     assert_eq!(
         lexed.segments[0].redirs,
         [
@@ -107,11 +107,13 @@ fn fd_numbers_including_unicode_digits_are_not_words() {
 }
 
 #[test]
-fn a_quoted_fd_word_leaves_the_next_word_quoted_as_in_python() {
-    // Python quirk kept for parity: `"2"` is dropped as an fd but `quoted` stays set, so the heredoc
-    // counts as quoted and its body's `$(...)` is not lexed.
+fn a_quoted_fd_word_is_a_word_and_the_heredoc_stays_unquoted() {
+    // fix-wave H: `"2"` is a word, and only the delimiter word decides whether the body is quoted
     let lexed = segments("\"2\"<<EOF\n$(npx playwright install)\nEOF", 0);
-    assert!(lexed.segments.is_empty());
+    assert_eq!(
+        toks(&lexed),
+        [vec!["2"], vec!["npx", "playwright", "install"]]
+    );
     let plain = segments("2<<EOF\n$(npx playwright install)\nEOF", 0);
     assert_eq!(toks(&plain), [["npx", "playwright", "install"]]);
 }
@@ -155,7 +157,11 @@ fn quotes_escapes_and_parameter_braces() {
     let lexed = segments("echo $'it\\'s' \"${x#\\\"}\" ${y}z", 0);
     assert_eq!(toks(&lexed), [["echo", "it's", "${x#\\\"}", "${y}z"]]);
     let backticks = segments("x=`a \\`b\\``", 0);
-    assert_eq!(toks(&backticks), [vec!["a", "`b`"], vec!["x="]]);
+    // fix-wave H: the backtick text is unescaped and lexed again, so the inner backticks run too
+    assert_eq!(
+        toks(&backticks),
+        [vec!["a", "`b`"], vec!["b"], vec!["a", ""], vec!["x="]]
+    );
 }
 
 #[test]
@@ -179,11 +185,12 @@ fn unbalanced_quotes_fall_back_to_the_lenient_split() {
         toks(&lexed),
         [
             vec!["echo", "don", "t"],
+            vec!["echo", "dont"],
             vec!["bash", "-c", "-e", "npx", "playwright", "install"],
             vec!["npx", "playwright", "install"],
         ]
     );
-    assert_eq!(group_ordinals(&lexed), [0, 1, 2]);
+    assert_eq!(group_ordinals(&lexed), [0, 1, 2, 3]);
 }
 
 #[test]
@@ -305,7 +312,8 @@ fn the_lenient_fish_rescan_is_bounded_and_fails_closed() {
     let big = format!("' {}", "fish -cX ".repeat(2000));
     assert_quick("fish rescan", Duration::from_secs(2), || {
         let lexed = segments(&big, 0);
-        assert!(lexed.lenient && lexed.incomplete);
+        // over the budget: no segments, incomplete (Python: `_TooComplex`)
+        assert!(lexed.incomplete);
         let tokens: usize = lexed.segments.iter().map(|s| s.tokens.len()).sum();
         assert!(tokens <= 4_000_000, "{tokens} tokens");
     });
@@ -334,24 +342,6 @@ fn a_repeated_unterminated_heredoc_is_searched_once() {
     assert_quick("repeated delimiter", Duration::from_millis(500), || {
         segments(&text, 0);
     });
-}
-
-#[test]
-fn a_low_backtrack_limit_sets_incomplete() {
-    // `_HEREDOC_START` runs where `_scan_paren` looks for heredocs: inside `$(...)` and heredoc bodies.
-    // A mismatched quote makes it backtrack (the quote group retries empty).
-    let text = "echo $(cat <<\"EOF'\nx\n)";
-    assert!(!segments(text, 0).incomplete);
-    assert_eq!(Limits::default().backtrack_limit, 1_000_000);
-    let low = Limits { backtrack_limit: 0 };
-    let lexed = segments_with(text, 0, &low);
-    assert!(lexed.incomplete);
-    // a limit error is "no match": lexing goes on and still finds the commands
-    assert_eq!(toks(&lexed).last().map(|t| t[0]), Some("echo"));
-    // inside an unquoted heredoc body's substitution, and nested deeper
-    assert!(segments_with("cat <<EOF\n$(cat <<\"X'\n)\nEOF\n", 0, &low).incomplete);
-    assert!(segments_with("a $(b $(c <<\"X'\n))", 0, &low).incomplete);
-    assert!(!segments_with("echo hi", 0, &low).incomplete);
 }
 
 #[test]

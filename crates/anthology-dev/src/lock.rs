@@ -1,9 +1,13 @@
 //! `anthology-dev lock`: the two plugins' `anthology.lock` (GC-17, design §8.2, §8.5, §10).
 //! Owner: RL1.
 //!
-//! - `lock write --tag TAG --checksums FILE [--repo OWNER/NAME] [--plugins-dir DIR]` pins a
-//!   release: the version is `TAG` without `anthology-bin--v`, the four hashes come from the
-//!   release's `checksums.txt` (`sha256sum anthology-*.tar.gz | LC_ALL=C sort -k2`). It writes
+//! - `lock write --tag TAG --checksums FILE --release-json FILE [--repo OWNER/NAME]
+//!   [--plugins-dir DIR]` pins a release: the version is `TAG` without `anthology-bin--v`, the
+//!   four hashes come from the release's `checksums.txt` (`sha256sum anthology-*.tar.gz |
+//!   LC_ALL=C sort -k2`). Each must be GitHub's own digest of the asset at the GC-17 URL for
+//!   `REPO` and `TAG`, read from `--release-json` (the output of `gh release view TAG -R REPO
+//!   --json assets`, saved on the host: the tool's container has no `gh`), so another tag's
+//!   checksums cannot be pinned ([`verify_release_digests`]). It writes
 //!   `DIR/anthology/anthology.lock` and `DIR/anthology-guardrails/anthology.lock`, byte for byte
 //!   the design §8.2 layout (`anthology_core::lock::render_anthology`).
 //! - `lock check [--plugins-dir DIR]`: both locks exist, each passes
@@ -37,7 +41,7 @@ pub const DEFAULT_REPO: &str = "rbonweb/anthology";
 /// GC-14's reason for any invalid anthology lock.
 pub const INVALID: &str = "anthology.lock is not valid";
 
-const USAGE: &str = "usage: anthology-dev lock write --tag TAG --checksums FILE [--repo OWNER/NAME] [--plugins-dir DIR]
+const USAGE: &str = "usage: anthology-dev lock write --tag TAG --checksums FILE --release-json FILE [--repo OWNER/NAME] [--plugins-dir DIR]
        anthology-dev lock check [--plugins-dir DIR]
        anthology-dev lock check-fresh [--plugins-dir DIR]";
 
@@ -97,6 +101,8 @@ fn usage_line(message: &str) -> Output {
 pub struct WriteArgs {
     pub tag: String,
     pub checksums: PathBuf,
+    /// `gh release view TAG -R REPO --json assets`, saved.
+    pub release_json: PathBuf,
     pub repo: String,
     pub plugins_dir: PathBuf,
 }
@@ -110,7 +116,8 @@ fn os_string(value: OsString, what: &str) -> Result<String, String> {
 impl WriteArgs {
     pub fn parse(args: &[OsString]) -> Result<WriteArgs, String> {
         use lexopt::prelude::*;
-        let (mut tag, mut checksums, mut repo, mut dir) = (None, None, None, None);
+        let (mut tag, mut checksums, mut release, mut repo, mut dir) =
+            (None, None, None, None, None);
         let mut parser = lexopt::Parser::from_args(args.iter().cloned());
         while let Some(arg) = parser.next().map_err(|e| e.to_string())? {
             match arg {
@@ -122,6 +129,9 @@ impl WriteArgs {
                 }
                 Long("checksums") => {
                     checksums = Some(PathBuf::from(parser.value().map_err(|e| e.to_string())?))
+                }
+                Long("release-json") => {
+                    release = Some(PathBuf::from(parser.value().map_err(|e| e.to_string())?))
                 }
                 Long("repo") => {
                     repo = Some(os_string(
@@ -139,6 +149,7 @@ impl WriteArgs {
         Ok(WriteArgs {
             tag: tag.ok_or("--tag is required")?,
             checksums: checksums.ok_or("--checksums is required")?,
+            release_json: release.ok_or("--release-json is required")?,
             repo: repo.unwrap_or_else(|| DEFAULT_REPO.to_string()),
             plugins_dir: dir.unwrap_or_else(|| PathBuf::from("plugins")),
         })
@@ -259,11 +270,55 @@ fn lock_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+/// Every digest of `checksums` is GitHub's own `sha256:` digest of the one release asset whose
+/// `url` is the GC-17 download URL for `repo` and `tag` (`assets_json` is `gh release view TAG
+/// -R REPO --json assets`). This ties the checksums file to the named tag's release: another
+/// tag's file, another tag's listing, or a hand-edited file fails.
+pub fn verify_release_digests(
+    checksums: &BTreeMap<Target, String>,
+    assets_json: &str,
+    repo: &str,
+    tag: &str,
+) -> Result<(), String> {
+    let bad = || "the release listing is not `gh release view --json assets` output".to_string();
+    let root = anthology_pycompat::json::loads(assets_json).map_err(|_| bad())?;
+    let assets = root
+        .as_object()
+        .and_then(|m| m.get("assets"))
+        .and_then(|a| a.as_array())
+        .ok_or_else(bad)?;
+    for (target, want) in checksums {
+        let url = format!(
+            "https://github.com/{repo}/releases/download/{tag}/anthology-{}.tar.gz",
+            target.triple()
+        );
+        let mut found = assets
+            .iter()
+            .filter_map(|a| a.as_object())
+            .filter(|a| a.get("url").and_then(|n| n.as_str()) == Some(url.as_str()));
+        let (Some(asset), None) = (found.next(), found.next()) else {
+            return Err(format!("the release listing has no single asset {url}"));
+        };
+        let name = format!("anthology-{}.tar.gz", target.triple());
+        let digest = asset.get("digest").and_then(|d| d.as_str()).unwrap_or("");
+        if digest.strip_prefix("sha256:") != Some(want.as_str()) {
+            return Err(format!(
+                "{name}: the checksums file says {want}, but the {tag} release asset's digest is \
+                 {digest:?}; use that release's checksums.txt"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn write(a: &WriteArgs) -> Result<String, String> {
     let text = std::fs::read_to_string(&a.checksums)
         .map_err(|e| format!("cannot read {}: {e}", a.checksums.display()))?;
     let digests = parse_checksums(&text)?;
-    let lock = render(&a.tag, &a.repo, digests)?;
+    let release = std::fs::read_to_string(&a.release_json)
+        .map_err(|e| format!("cannot read {}: {e}", a.release_json.display()))?;
+    let lock = render(&a.tag, &a.repo, digests.clone())?;
+    verify_release_digests(&digests, &release, &a.repo, &a.tag)?;
     let paths = lock_paths(&a.plugins_dir)?;
     for (i, path) in paths.iter().enumerate() {
         write_atomic(path, lock.as_bytes()).map_err(|e| {

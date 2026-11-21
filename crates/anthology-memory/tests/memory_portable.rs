@@ -1551,3 +1551,33 @@ mod cli_test {
         assert!(!r.stderr_text().contains("Traceback"));
     }
 }
+
+/// LR-M: an over-long name is refused before the first write.
+mod lr_m {
+    use super::*;
+
+    #[test]
+    fn an_over_long_name_refuses_the_whole_import_before_anything_is_written() {
+        let c = Case::new();
+        let (env_b, anth_b) = c.second_machine("b");
+        let long = format!("personal/{}.md", "n".repeat(300));
+        let ok = note("a-note", "user", "fine", "2026-04-05");
+        let path = make_archive(
+            &c.tmp().join("long.tar.gz"),
+            &[
+                ("personal/a-note.md", Spec::File(ok.into_bytes())),
+                (long.as_str(), Spec::File(b"too long\n".to_vec())),
+            ],
+            true,
+            false,
+        );
+        let plan = plan(&path, &c.cwd, Some("2026-04-06"), &env_b);
+        assert_eq!(list(&plan, "new").len(), 2, "planning lets both through");
+        let err = try_apply(&c, &plan, &RealGit).expect_err("refused");
+        let Error::Rejected(msg) = err else {
+            panic!("not a rejection: {err:?}");
+        };
+        assert!(msg.contains("longer than 255 bytes"), "{msg}");
+        assert!(tree(&anth_b).is_empty(), "nothing was written");
+    }
+}
