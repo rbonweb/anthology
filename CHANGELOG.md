@@ -31,9 +31,14 @@ a new version section.
   warns when setup has not run or the plugin has moved. A problem in any step becomes a
   warning and never fails the session.
 - Routing guide (`templates/routing-guide.md`): model roles, which agent for which job,
-  worktree, Docker and blocked-agent rules, and the lead's memory duties, including
-  committing the `.claude/agent-memory/` notes that read-only and docs-only agents leave
-  uncommitted and acting on each report's "Worth remembering" items.
+  worktree, Docker and blocked-agent rules, the build skill to load for multi-task builds,
+  and the lead's memory duties, including committing the `.claude/agent-memory/` notes that
+  read-only and docs-only agents leave uncommitted (once per merge batch or at task end)
+  and acting on each report's "Worth remembering" items.
+- Worktree agents (implementer, debugger, docs-writer, ui-designer) change files with
+  Edit/Write and keep one plain command per Bash call, because Claude Code refuses
+  commands in a worktree that it cannot check; a multi-step script goes in a file run
+  with `bash`. The reviewer reads tech-debt and deploy-checklist only when they apply.
 - Memory as committed Markdown notes: main session in `.claude/memory/`, each agent in
   `.claude/agent-memory/anthology-<agent>/`, personal notes outside any repo. Repo memory
   (`.claude/memory/`) is read and kept up only in repos approved through `/anthology:setup`.
