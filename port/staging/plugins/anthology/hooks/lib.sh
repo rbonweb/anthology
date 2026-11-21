@@ -318,6 +318,15 @@ anth_quarantine() {
     fi
 }
 
+# anth_decimal S: S is a positive canonical decimal: digits, the first one not 0.
+anth_decimal() {
+    anth_only "$1" 0123456789 || return 1
+    case $1 in
+        0*) return 1 ;;
+    esac
+    return 0
+}
+
 # anth_strikes: ANTH_STRIKES = .broken-<version>-<epoch>-* directories whose name epoch is
 # within 86,400 s of now. Only the name counts, never an mtime.
 anth_strikes() {
@@ -328,10 +337,17 @@ anth_strikes() {
         [ -d "$_s_d" ] || continue
         _s_rest=${_s_d##*/}
         _s_rest=${_s_rest#".broken-$ANTH_VERSION-"}
+        # Exactly the shapes anth_broken_name makes, <epoch>-<pid>[-<n>], each a canonical
+        # decimal. Anything else (a prerelease's quarantine, a hand-made name) is no strike. A
+        # leading zero is rejected before the arithmetic: as an octal error it would end the
+        # caller's shell (guard.sh must only ever exit 0 or 2).
         _s_epoch=${_s_rest%%-*}
         _s_pid=${_s_rest#*-}
         [ "$_s_pid" != "$_s_rest" ] || continue
-        if ! anth_only "$_s_epoch" 0123456789 || ! anth_only "$_s_pid" 0123456789-; then
+        _s_n=${_s_pid#*-}
+        [ "$_s_n" != "$_s_pid" ] || _s_n=2
+        _s_pid=${_s_pid%%-*}
+        if ! anth_decimal "$_s_epoch" || ! anth_decimal "$_s_pid" || ! anth_decimal "$_s_n"; then
             continue
         fi
         [ "${#_s_epoch}" -le 12 ] || continue
@@ -791,7 +807,7 @@ anth_guard_buffer() {
 # plain string of letters (design §9.3); prints nothing when there are none, several, or the
 # value is anything else.
 anth_tool_name() {
-    tr '\n\r\000' '   ' <"$1" 2>/dev/null | LC_ALL=C awk '
+    LC_ALL=C tr '\n\r\000' '   ' <"$1" 2>/dev/null | LC_ALL=C awk '
         { s = s $0 }
         END {
             n = 0
@@ -862,24 +878,28 @@ anth_guard_offline() {
 
 # anth_guard_run [FILE]: runs the binary as `guard hook --shim` (stdin from FILE, else
 # inherited; stdout to /dev/null). ANTH_RC = its status, ANTH_ERR = its stderr, byte for byte
-# (no trailing newline stripped: the sentinel keeps them). The binary runs in a subshell, so
-# the shell's own notes, such as a report that it was killed by a signal, go to /dev/null, not
-# into ANTH_ERR or the hook's stderr.
+# (no trailing newline stripped: the sentinel keeps them). Command substitution would drop a
+# NUL, so every NUL becomes \001 first: stray bytes can never complete the token. The first
+# command of the pipeline still inherits stdin. ANTH_RC is digits only, else empty (a late
+# writer after the sentinel). The binary runs in a subshell, so the shell's own notes, such as
+# a report that it was killed by a signal, go to /dev/null, not into ANTH_ERR or the hook's
+# stderr.
 anth_guard_run() {
     ANTH_RC='' ANTH_ERR=''
     if [ -n "${1:-}" ]; then
         ANTH_ERR=$({
             ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null <"$1")
             printf 'x%s' "$?" >&3
-        } 3>&1 2>/dev/null)
+        } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     else
         ANTH_ERR=$({
             ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null)
             printf 'x%s' "$?" >&3
-        } 3>&1 2>/dev/null)
+        } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     fi
     ANTH_RC=${ANTH_ERR##*x}
     ANTH_ERR=${ANTH_ERR%x*}
+    anth_only "$ANTH_RC" 0123456789 || ANTH_RC=
 }
 
 # anth_guard_settle: after a run that was not the allow token. ANTH_MSG = the binary's own

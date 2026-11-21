@@ -39,6 +39,8 @@ fi
 anth_out=$("$ANTH_BIN" hook session-start; printf 'x%s' "$?")
 anth_rc=${anth_out##*x}
 anth_out=${anth_out%x*}
+# Digits only: a late writer after the sentinel must not reach the JSON below.
+anth_only "$anth_rc" 0123456789 || anth_rc=unknown
 while :; do
     case $anth_out in
         *"$ANTH_NL") anth_out=${anth_out%"$ANTH_NL"} ;;

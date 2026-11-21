@@ -8,7 +8,7 @@
 #   (b) In each image: install the test CA, add the job-start packages, create a non-root user
 #       and run the binary as that user, with ANTHOLOGY_SHIMS_NET=1 and the image's REQUIRE
 #       list. github.com resolves to 127.0.0.1 and port 443 may be bound unprivileged.
-#   (c) On this host: npm ci --prefix ci/claude-code, then validate scratch copies of
+#   (c) On this host: npm ci of ci/claude-code into a scratch folder, then validate copies of
 #       plugins/anthology and plugins/anthology-guardrails with port/staging overlaid.
 #
 # It runs the same on an arm64 Docker VM. Nothing here pipes test output through tail: the log
@@ -115,11 +115,15 @@ done
 
 # --- (c) claude plugin validate --strict with the staging overlay ---------------------------
 echo "shims-distros: claude plugin validate --strict (staging overlay)"
-npm ci --prefix "$root/ci/claude-code" >/dev/null
-claude=$root/ci/claude-code/node_modules/.bin/claude
-"$claude" --version
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/shims-validate.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
+# The pinned Claude Code, installed into the scratch folder so the checkout stays clean.
+mkdir "$scratch/claude-code"
+cp "$root/ci/claude-code/package.json" "$root/ci/claude-code/package-lock.json" \
+    "$scratch/claude-code/"
+npm ci --prefix "$scratch/claude-code" >/dev/null
+claude=$scratch/claude-code/node_modules/.bin/claude
+"$claude" --version
 for plugin in anthology anthology-guardrails; do
     cp -R "$root/plugins/$plugin" "$scratch/$plugin"
     cp -R "$root/port/staging/plugins/$plugin/." "$scratch/$plugin/"

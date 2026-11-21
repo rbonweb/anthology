@@ -159,6 +159,31 @@ fn matrix_foreign_stderr_and_wrong_tokens() {
         0o755,
         Why::Exact("exit 0: anthology-guard:allow:v1"),
     );
+    // Command substitution drops NULs; a NUL anywhere must still break the token (review C1).
+    row(
+        "token, NUL, newline",
+        &script("printf 'anthology-guard:allow:v1\\000\\n' >&2; exit 0"),
+        0o755,
+        Why::Exact("exit 0: anthology-guard:allow:v1?"),
+    );
+    row(
+        "NUL, token, newline",
+        &script("printf '\\000anthology-guard:allow:v1\\n' >&2; exit 0"),
+        0o755,
+        Why::Exact("exit 0: ?anthology-guard:allow:v1"),
+    );
+    row(
+        "a NUL inside the token",
+        &script("printf 'anthology-guard:\\000allow:v1\\n' >&2; exit 0"),
+        0o755,
+        Why::Exact("exit 0: anthology-guard:?allow:v1"),
+    );
+    row(
+        "token, newline, NUL",
+        &script("printf 'anthology-guard:allow:v1\\n\\000' >&2; exit 0"),
+        0o755,
+        Why::Exact("exit 0: anthology-guard:allow:v1"),
+    );
     row(
         "token on stdout",
         &script("printf 'anthology-guard:allow:v1\\n'; exit 0"),
@@ -313,15 +338,16 @@ fn the_allow_token_allows_on_the_hot_path_with_stdin_inherited() {
 
 #[test]
 fn a_hanging_binary_never_allows() {
-    let sh = bs::shells("hang")[0];
-    let sb = sandbox();
-    sb.install(&fake(V, "exec sleep 600"), 0o755);
-    let mut spec = sb.spec(sh, GUARD, &[], BASH);
-    spec.timeout = std::time::Duration::from_secs(3);
-    let run = sb.run_spec(spec);
-    // Claude Code's 60 s timeout and onFailure block take over (design §9.2, m-R6).
-    assert!(run.timed_out, "{run:?}");
-    assert_ne!(run.code, Some(0));
+    each_shell("hang", |sh| {
+        let sb = sandbox();
+        sb.install(&fake(V, "exec sleep 600"), 0o755);
+        let mut spec = sb.spec(sh, GUARD, &[], BASH);
+        spec.timeout = std::time::Duration::from_secs(3);
+        let run = sb.run_spec(spec);
+        // Claude Code's 60 s timeout and onFailure block take over (design §9.2, m-R6).
+        assert!(run.timed_out, "{sh:?}: {run:?}");
+        assert_ne!(run.code, Some(0), "{sh:?}");
+    });
 }
 
 #[test]
@@ -392,7 +418,31 @@ fn three_strikes_are_counted_by_the_name_epoch() {
             b"file",
         )
         .unwrap();
+        // A future epoch, leading zeros (an octal error would end the shell: review C2), and a
+        // prerelease's quarantines, which the version's glob also matches.
+        strike(&sb, V, n + 200_000, "8");
+        for odd in [
+            format!(".broken-{V}-08-1"),
+            format!(".broken-{V}-0089-1"),
+            format!(".broken-{V}-0{}-1", n - 5),
+            format!(".broken-{V}-{}-007", n - 5),
+            format!(".broken-{V}-{}-7-0", n - 5),
+            format!(".broken-{V}-08-{}-9", n - 5),
+            format!(".broken-{V}-5-{}-10", n - 5),
+            format!(".broken-{V}-{}--1", n - 5),
+        ] {
+            std::fs::create_dir_all(sb.bindir().join(odd)).unwrap();
+        }
         strike(&sb, V, n - 30, "7");
+        // Missing, with all of them present: a GC-14 block, never a shell error.
+        let mut spec = sb.spec(sh, GUARD, &[], BASH);
+        spec.env
+            .push(("ANTHOLOGY_GUARD_NO_FETCH".into(), "1".into()));
+        assert_block(
+            &sb.run_spec(spec),
+            &not_installed("not attempted"),
+            &format!("{sh:?} odd names, missing"),
+        );
         sb.install(&script("exit 5"), 0o755);
         assert_block(
             &guard(&sb, sh, BASH),

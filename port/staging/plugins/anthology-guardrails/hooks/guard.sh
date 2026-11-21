@@ -11,6 +11,8 @@ anth_loaded=
 anth_input=
 anth_call=
 ANTH_MSG=
+# A hook timeout or an interrupt still blocks, and takes the stdin buffer with it.
+trap '[ -z "$anth_input" ] || rm -f "$anth_input"; exit 2' HUP INT TERM
 case $0 in
     */*) anth_hooks=${0%/*} ;;
     *) anth_hooks=. ;;

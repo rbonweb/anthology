@@ -24,7 +24,9 @@ fn code_lines(text: &str) -> Vec<&str> {
 
 /// `exit` used as a command word in `line` (not `process.exit`, not inside a word).
 fn exit_words(line: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"(^|[\s;&|(){}])exit(\s+[^\s;&|)]+)?").unwrap();
+    // The argument stops at a quote too, so a trap string's `…; exit 2'` reads as `exit 2`; a
+    // quoted argument such as `exit "$rc"` leaves a bare `exit`, which the callers reject.
+    let re = regex::Regex::new(r#"(^|[\s;&|(){}])exit(\s+[^\s;&|)'"]+)?"#).unwrap();
     re.captures_iter(line)
         .map(|c| {
             c.get(0)
@@ -69,6 +71,59 @@ fn lib_sh_exits_only_inside_the_watchdog() {
         lib[..i].ends_with("        _w_s=\n"),
         "the exit sits in the watchdog subshell"
     );
+}
+
+/// guard.sh sources lib.sh into its own shell, so nothing in lib.sh may end, replace or
+/// re-route that shell: no top-level command at all (only function definitions and `ANTH_`
+/// assignments), and `exec`, `trap` and `set -e` only where the watchdog's background subshell
+/// uses them.
+#[test]
+fn lib_sh_cannot_end_or_replace_the_sourcing_shell() {
+    let lib = staged("anthology/hooks/lib.sh");
+    let def = regex::Regex::new(r"^[a-z_][a-z0-9_]*\(\) \{$").unwrap();
+    let assign = regex::Regex::new(r"^ANTH_[A-Z0-9_]+=").unwrap();
+    let mut prev = "";
+    for line in lib.lines() {
+        let top = !line.is_empty() && !line.starts_with([' ', '\t', '#']);
+        if top {
+            assert!(
+                def.is_match(line)
+                    || line == "}"
+                    || assign.is_match(line)
+                    || (line == "'" && prev == "ANTH_NL='"),
+                "lib.sh: a top-level command runs in the sourcing shell: {line}"
+            );
+        }
+        prev = line;
+    }
+    let word = |w: &str| regex::Regex::new(&format!(r"(^|[\s;&|(){{}}]){w}(\s|$)")).unwrap();
+    let (exec, trap) = (word("exec"), word("trap"));
+    let mut seen = (0, 0);
+    for line in code_lines(&lib) {
+        if line.starts_with("ANTH_NODE_GET=") {
+            continue;
+        }
+        if exec.is_match(line) {
+            assert_eq!(line, "        exec </dev/null >/dev/null 2>&1", "lib.sh exec");
+            seen.0 += 1;
+        }
+        if trap.is_match(line) {
+            assert_eq!(
+                line, "        trap 'kill \"$_w_s\" 2>/dev/null; exit 0' TERM",
+                "lib.sh trap"
+            );
+            seen.1 += 1;
+        }
+        assert!(
+            !line.contains("set -e") && !line.contains("errexit"),
+            "lib.sh: no set -e: {line}"
+        );
+    }
+    assert_eq!(seen, (1, 1), "the watchdog's exec and trap");
+    // Both sit in the watchdog's `( … ) &` subshell, before its sleep.
+    let start = lib.find("    (\n        exec </dev/null >/dev/null 2>&1\n").expect("watchdog");
+    let rest = &lib[start..];
+    assert!(rest.find("trap ").unwrap() < rest.find("    ) &").unwrap());
 }
 
 #[test]

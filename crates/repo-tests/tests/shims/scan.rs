@@ -187,9 +187,15 @@ fn payload() -> impl Strategy<Value = Vec<u8>> {
         ws(),
         ws(),
         name(),
-        prop::bool::ANY,
+        prop::collection::vec(
+            (
+                prop::sample::select(vec![0u8, 0xff, 0xc3, 0xfe]),
+                any::<prop::sample::Index>(),
+            ),
+            0..3,
+        ),
     )
-        .prop_map(|(extra, w1, w2, top, nul)| {
+        .prop_map(|(extra, w1, w2, top, stray)| {
             let mut parts = vec![format!("\"tool_name\"{w1}:{w2}\"{top}\"")];
             for (i, (k, a, b, v)) in extra.into_iter().enumerate() {
                 if i % 2 == 0 {
@@ -198,12 +204,52 @@ fn payload() -> impl Strategy<Value = Vec<u8>> {
                     parts.push(format!("{k}{a}:{b}{v}"));
                 }
             }
-            let mut text = format!("{{{}}}", parts.join(", "));
-            if nul {
-                text.push('\0');
+            let mut bytes = format!("{{{}}}", parts.join(", ")).into_bytes();
+            // A NUL or a byte that is not UTF-8 anywhere, a key's insides included: the scan
+            // must read every byte whatever the locale (review C1/I1).
+            for (b, at) in stray {
+                let i = at.index(bytes.len() + 1);
+                bytes.insert(i, b);
             }
-            text.into_bytes()
+            bytes
         })
+}
+
+/// The locale of the caller must not change the verdict: with a UTF-8 locale, a byte that is
+/// not UTF-8 before a nested second key must not hide that key (review I1).
+#[test]
+fn the_tool_name_scan_ignores_the_callers_locale() {
+    let locale = if cfg!(target_os = "macos") {
+        "en_US.UTF-8"
+    } else {
+        "C.UTF-8"
+    };
+    let mut sb = harness();
+    sb.set_env("LANG", locale);
+    sb.set_env("LC_ALL", locale);
+    for (p, want) in [
+        (
+            b"{\"tool_name\":\"Read\",\"x\":\"\xff\xfe\",\"tool_input\":{\"tool_name\":\"Bash\"}}"
+                .as_slice(),
+            false,
+        ),
+        (b"{\"tool_name\":\"Read\",\"x\":\"\xff\"}".as_slice(), true),
+        (b"{\"tool_name\":\"Read\",\"x\":\"\0\",\"y\":{\"tool_name\":1}}".as_slice(), false),
+        (b"{\"tool_\0name\":\"Bash\",\"tool_name\":\"Read\"}".as_slice(), true),
+    ] {
+        assert_eq!(reference(p), want, "{:?}", String::from_utf8_lossy(p));
+        let file = sb.root.join("payload");
+        std::fs::write(&file, p).unwrap();
+        for sh in bs::shells("tool_name scan, UTF-8 locale") {
+            let run = sb.run(sh, "scan.sh", &[file.to_str().unwrap()], b"");
+            let got = match run.out().as_str() {
+                "allow\n" => true,
+                "block\n" => false,
+                other => panic!("{sh:?}: {other:?} {}", run.err()),
+            };
+            assert_eq!(got, want, "{sh:?}: {:?}", String::from_utf8_lossy(p));
+        }
+    }
 }
 
 proptest! {
@@ -213,16 +259,18 @@ proptest! {
     fn the_tool_name_scan_matches_the_reference(p in payload()) {
         let want = reference(&p);
         prop_assert_eq!(shell_verdict(&p), want, "payload {:?}", String::from_utf8_lossy(&p));
-        // Soundness: an allowed payload that is JSON has an allowlisted top-level tool_name.
-        // The scan reads raw keys, so this holds for keys written without `\u` escapes, as
-        // Claude Code's serializer writes them (design §9.3).
+        // Soundness: when an allowed payload is JSON with a string top-level tool_name, that
+        // tool is on the allowlist. (Without one, the binary itself allows the call as a
+        // malformed envelope, design §9.5, so allowing it loses nothing.) The scan reads raw
+        // keys, so this holds for keys written without `\u` escapes, as Claude Code's
+        // serializer writes them (design §9.3).
         let escaped = p.windows(2).any(|w| w == b"\\u");
         if want
             && !escaped
             && let Ok(v) = json::loads(&String::from_utf8_lossy(&p))
             && let Some(obj) = v.as_object()
+            && let Some(t) = obj.get("tool_name").and_then(|t| t.as_str())
         {
-            let t = obj.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
             prop_assert!(READONLY.contains(&t), "allowed {:?}", String::from_utf8_lossy(&p));
         }
     }
