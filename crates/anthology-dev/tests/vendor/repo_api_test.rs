@@ -16,14 +16,14 @@ fn text<'a>(e: &'a vendor::Entry, k: &str) -> &'a str {
 
 /// test_licenses `knowledge_sources()`.
 #[test]
-fn knowledge_sources_are_the_28_vendored_knowledge_targets() {
+fn knowledge_sources_are_the_29_vendored_knowledge_targets() {
     let entries = vendor::load_sources(&repo_root()).unwrap();
     let knowledge: Vec<_> = vendor::vendored(&entries)
         .unwrap()
         .into_iter()
         .filter(|e| text(e, "target").starts_with("plugins/anthology/knowledge/"))
         .collect();
-    assert_eq!(knowledge.len(), 28);
+    assert_eq!(knowledge.len(), 29);
 }
 
 /// test_repo_layout `test_every_source_has_a_target_and_a_license`.

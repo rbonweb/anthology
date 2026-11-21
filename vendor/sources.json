@@ -442,6 +442,22 @@
       "portmap": "vendor/patches/design-taste-frontend.portmap.json"
     },
     {
+      "name": "karpathy-guidelines",
+      "repo": "https://github.com/multica-ai/andrej-karpathy-skills",
+      "path": "skills/karpathy-guidelines",
+      "ref": "main",
+      "commit": "2c606141936f1eeef17fa3043a72095b4765b9c2",
+      "license": "MIT",
+      "license_file": null,
+      "license_note": "README",
+      "target": "plugins/anthology/knowledge/karpathy-guidelines",
+      "transform": [
+        {
+          "patch": "vendor/patches/karpathy-guidelines.patch"
+        }
+      ]
+    },
+    {
       "name": "rtk",
       "managed_by": "subtree",
       "target": "rtk",
