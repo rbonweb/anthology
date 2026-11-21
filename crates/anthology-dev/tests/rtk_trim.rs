@@ -670,14 +670,6 @@ mod pystr_test {
         assert_eq!(repr("tab\there"), "'tab\\there'");
         assert_eq!(repr(""), "''");
     }
-
-    #[test]
-    fn word_and_space_classes() {
-        assert!(is_word('a') && is_word('Z') && is_word('_') && is_word('9') && is_word('\u{e9}'));
-        assert!(!is_word('-') && !is_word(' ') && !is_word('.'));
-        assert!(is_space(' ') && is_space('\t') && is_space('\u{1c}') && is_space('\u{a0}'));
-        assert!(!is_space('a') && !is_space('\u{200b}'));
-    }
 }
 
 mod decl_test {
@@ -749,10 +741,11 @@ mod decl_test {
             "fn",
             "gone"
         ));
-        // Fail closed: a non-ASCII character next to the name is a boundary (Python's `\w`
-        // would not count a combining mark, and Rust cannot tell yet), so the trim stops.
+        // Python's `\w`: a combining mark beside the name is a boundary, a letter is not.
         assert!(declaration_present("fn gone\u{93e}() {}", "fn", "gone"));
-        assert!(declaration_present("fn gone\u{e9}() {}", "fn", "gone"));
+        assert!(!declaration_present("fn gone\u{e9}() {}", "fn", "gone"));
+        assert!(!declaration_present("\u{e9}fn gone() {}", "fn", "gone"));
+        assert!(declaration_present("\u{93e}fn gone() {}", "fn", "gone"));
         // A name that is a prefix of a longer one is not the name.
         assert!(!declaration_present("fn gone_more() {}", "fn", "gone"));
         assert!(!declaration_present("fn gone2() {}", "fn", "gone"));

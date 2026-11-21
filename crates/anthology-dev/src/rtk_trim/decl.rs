@@ -6,10 +6,10 @@
 //!   Rust shape because the pattern is built at run time): [`declaration_present`].
 //!
 //! Neither pattern has a lookaround or a backreference. `\w` and `\s` are Python's
-//! (`pystr::is_word`, `pystr::is_space`). The quirk of the first one is kept on purpose: in
+//! (`pycompat::str::is_word`, `pycompat::str::is_space`). The quirk of the first one is kept on purpose: in
 //! `const fn foo` the keyword is `const` and the name is `fn`.
 
-use super::pystr::{is_space, is_word};
+use anthology_pycompat::str::{is_space, is_word};
 
 /// The keyword alternatives, in the order of the pattern.
 const KEYWORDS: [&str; 7] = ["fn", "struct", "enum", "mod", "const", "static", "type"];
@@ -50,13 +50,11 @@ pub fn first_declaration(sig: &str) -> Option<(&'static str, &str)> {
 /// `re.search(r"\b%s\s+%s\b" % (keyword, name), text) is not None`, for a `keyword` and a `name`
 /// that are made of word characters only (as `first_declaration` returns them).
 ///
-/// Fail closed until P1 has the Unicode tables (TODO P1): a non-ASCII character next to the
-/// keyword or the name counts as a boundary, so the trim stops (the name looks present) where
-/// Python might skip, and never skips where Python would stop.
+/// `\b` is Python's: a non-ASCII letter or digit next to the keyword or the name is part of a
+/// longer word (no boundary), a combining mark is not.
 pub fn declaration_present(text: &str, keyword: &str, name: &str) -> bool {
-    let word = |c: char| c.is_ascii() && is_word(c);
     text.match_indices(keyword).any(|(at, _)| {
-        if !text[..at].chars().next_back().is_none_or(|c| !word(c)) {
+        if !boundary_before_word(text, at) {
             return false;
         }
         let rest = &text[at + keyword.len()..];
@@ -66,6 +64,6 @@ pub fn declaration_present(text: &str, keyword: &str, name: &str) -> bool {
         }
         after_space
             .strip_prefix(name)
-            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !word(c)))
+            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !is_word(c)))
     })
 }

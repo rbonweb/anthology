@@ -349,9 +349,15 @@ pub(crate) fn decide_for_claude_hook_at(
     // the install allows `Bash(rtk *)`, so a deny or ask rule that names what an
     // `rtk ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
     // enforced here (`anthology_gate`).
-    use super::anthology_gate::{Gate, evaluate, mentions_rtk, plain};
+    use super::anthology_gate::{Gate, evaluate, mentions_rtk, plain, unread};
     let rules = &permissions.gate;
     let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
+    // A line too long to read within the gate's work budget asks as written
+    // (unless the gate's scan denied it), before the plain shape or a rewrite
+    // reads it again (RG2).
+    if gate == Gate::Ask && unread(cmd) {
+        return HookDecision::AskRewrite(cmd.to_string(), AskOwner::Hook);
+    }
     // With any deny, ask or `Read()` rule, a line that may run rtk passes without
     // a prompt only in the plain shape (one listed `rtk` command, listed options,
     // literal paths); anything else asks, before a defer could leave `rtk ...` to
