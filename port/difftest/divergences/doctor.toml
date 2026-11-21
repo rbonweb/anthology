@@ -1,0 +1,6 @@
+# Allowed divergences of the doctor surface (GC-16). The oracle
+# (port/difftest/oracle/doctor.py) marks each case it adjusted; no entry waives a diff.
+
+[[divergence]]
+class = "D-1"
+reason = "Python's json.loads raised RecursionError on a user settings.json deeper than CPython's C stack allows, so plugin_rule_status said unreadable; Rust reads the document (ST1's ruling) and answers from its content. The generator's deep documents are bare lists, so the oracle expects missing: plugin_read_rule says the rule is gone instead of that settings.json cannot be read (both FAIL)."
