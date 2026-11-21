@@ -38,6 +38,7 @@ fn test_real_sources_validate() {
         "ui-taste",
         "caveman",
         "design-taste-frontend",
+        "karpathy-guidelines",
         "rtk",
     ]
     .iter()

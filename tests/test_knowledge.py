@@ -14,7 +14,7 @@ from _repo import KNOWLEDGE, ROOT, STRIPPED_KNOWLEDGE, load_frontmatter
 
 UNCHANGED = {"frontend-design", "web-design-guidelines", "design-skills"}
 EXPECTED_KNOWLEDGE = set(STRIPPED_KNOWLEDGE) | UNCHANGED | {
-    "ui-taste", "caveman", "design-taste-frontend"}
+    "ui-taste", "caveman", "design-taste-frontend", "karpathy-guidelines"}
 FORBIDDEN_IN_STRIPPED = ("~~", "CONNECTORS.md", "uxkin.com/mcp", "find_ui_materials",
                          "find_ui_references", "ui-design-mcp", "SUPERCHARGED")
 # "If the UXKIN tools are connected ..." lead-ins; "If no tool is connected" and "If tools are
@@ -38,7 +38,7 @@ def skill_files(folder):
 class KnowledgeFoldersTest(unittest.TestCase):
     def test_expected_set_is_the_22_plus_the_other_six(self):
         self.assertEqual(len(STRIPPED_KNOWLEDGE), 22)
-        self.assertEqual(len(EXPECTED_KNOWLEDGE), 28)
+        self.assertEqual(len(EXPECTED_KNOWLEDGE), 29)
 
     def test_no_unexpected_folders(self):
         self.assertEqual(present() - EXPECTED_KNOWLEDGE, set())

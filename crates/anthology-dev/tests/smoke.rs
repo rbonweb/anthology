@@ -34,6 +34,15 @@ const NAMES: [&str; 12] = [
     "rtk-rewrite",
     "agent-memory-path",
 ];
+/// The smokes EV1b adds after `guard-timeout`.
+const EV1B_NAMES: [&str; 6] = [
+    "binary-missing",
+    "live-seed",
+    "live-setup",
+    "live-mem",
+    "live-session-start",
+    "live-guard",
+];
 const MODEL_SMOKES: [&str; 10] = [
     "eval-ceiling",
     "context-cap",
@@ -92,9 +101,15 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         true,
         &["test-driven-development", "verification-before-completion"],
-        &[],
+        &["karpathy-guidelines"],
     ),
-    ("debugger", "sonnet", true, &["systematic-debugging"], &[]),
+    (
+        "debugger",
+        "sonnet",
+        true,
+        &["systematic-debugging"],
+        &["karpathy-guidelines"],
+    ),
     (
         "reviewer",
         "opus",
@@ -161,11 +176,19 @@ fn repo_root() -> PathBuf {
         .expect("repository root")
 }
 
-/// `Deps::default()` with the `root` seam pointing at `root`.
+/// `Deps::default()` with the `root` seam pointing at `root`, and the staged plugins being
+/// `<root>/plugins` itself (no copy; the tests that need the staged shims use the real `stage`).
 fn deps_at(root: &Path) -> Deps {
     let root = root.to_path_buf();
+    let plugins = root.join("plugins");
     Deps {
         root: Box::new(move || Ok(root.clone())),
+        stage: Box::new(move |_ctx| {
+            Ok(Staged {
+                plugins: plugins.clone(),
+                keep: None,
+            })
+        }),
         ..Deps::default()
     }
 }
@@ -195,6 +218,9 @@ fn run_main(argv: &[&str], env: Env, deps: Deps) -> (i32, String) {
         String::from_utf8(out.stdout).expect("utf-8 output"),
     )
 }
+
+/// The `anthology` path the tests hand to smokes that only pass it on.
+const FAKE_BIN: &str = "/nonexistent/anthology";
 
 fn ctx_with(env: Env, deps: Deps) -> Ctx {
     Ctx::new("claude", "1.00", 10.0, env, deps)
@@ -313,13 +339,14 @@ fn first_run(ctx: &Ctx, body: fn(&Ctx) -> Res<Outcome>) -> Outcome {
 mod list_and_env_tests {
     use super::*;
 
-    /// m-8: the twelve names, then `guard-timeout` appended last.
+    /// m-8: the twelve names, then `guard-timeout`, then the EV1b smokes.
     #[test]
     fn test_list_prints_exactly_the_twelve_names() {
         let (code, out) = run_main(&["--list"], no_auth_env(), deps());
         assert_eq!(code, 0);
         let mut want: Vec<&str> = NAMES.to_vec();
         want.push("guard-timeout");
+        want.extend(EV1B_NAMES);
         assert_eq!(out.split_whitespace().collect::<Vec<_>>(), want);
     }
 
@@ -1055,7 +1082,7 @@ mod smoke_body_tests {
         });
         let out = out.to_string();
         let calls = fake_prompt_run(&mut deps, move |_, _| Proc::new(0, &out, ""));
-        let ctx = ctx_with(no_auth_env(), deps);
+        let ctx = ctx_with(no_auth_env(), deps).with_anthology(Some(FAKE_BIN.to_string()), true);
         let result = first_run(&ctx, cases::rtk_rewrite::run);
         let installs = installs.borrow().clone();
         (result, installs, calls)
@@ -1071,17 +1098,20 @@ mod smoke_body_tests {
         let ((status, reason), installs, calls) = run_rtk(&out, 0);
         assert_eq!(status, Status::Pass, "{reason}");
         let (argv, env) = &installs[0];
+        // EV1b: the Rust installer, `anthology rtk-install`, with the staged plugin's rtk.lock.
+        assert_eq!(argv[0], FAKE_BIN);
+        assert_eq!(argv[1..3], ["rtk-install", "--data-dir"]);
+        assert!(argv[3].ends_with("data"));
         assert_eq!(
-            argv[1..3],
+            argv[4..],
             [
+                "--lock".to_string(),
                 repo_root()
-                    .join("plugins/anthology/scripts/rtk_install.py")
+                    .join("plugins/anthology/rtk.lock")
                     .to_string_lossy()
-                    .into_owned(),
-                "--data-dir".to_string()
+                    .into_owned()
             ]
         );
-        assert!(argv[3].ends_with("data"));
         let cfg = env["CLAUDE_CONFIG_DIR"].clone();
         assert!(cfg.ends_with("home/.claude"), "{cfg}");
         assert_eq!(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1"); // keep the default scrub
@@ -1795,7 +1825,7 @@ mod framework_extra {
                 .join("plugins/anthology/.claude-plugin/plugin.json")
                 .is_file()
         );
-        assert_eq!(smoke::names().len(), 13);
+        assert_eq!(smoke::names().len(), 19);
     }
 }
 

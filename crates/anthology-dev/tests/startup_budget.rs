@@ -278,8 +278,8 @@ mod lead_extras {
             [
                 ("researcher", 89267),
                 ("architect", 23612),
-                ("implementer", 21607),
-                ("debugger", 17388),
+                ("implementer", 25451),
+                ("debugger", 21229),
                 ("reviewer", 12553),
                 ("scout", 5944),
                 ("docs-writer", 31376),
