@@ -368,6 +368,10 @@ anth_watch() {
     shift
     "$@" </dev/null &
     _w_p=$!
+    # bootstrap.sh's EXIT trap removes $ANTH_TMP, and a fast-failing probe can send TERM to the
+    # watcher before it has reset the traps it inherited: bash then runs that trap in the
+    # subshell and deletes the staging folder under the parent. The subshell sees it empty.
+    _w_t=$ANTH_TMP ANTH_TMP=
     (
         exec </dev/null >/dev/null 2>&1
         _w_s=
@@ -378,6 +382,7 @@ anth_watch() {
         kill -9 "$_w_p" 2>/dev/null
     ) &
     _w_w=$!
+    ANTH_TMP=$_w_t
     wait "$_w_p" 2>/dev/null
     _w_rc=$?
     kill "$_w_w" 2>/dev/null
