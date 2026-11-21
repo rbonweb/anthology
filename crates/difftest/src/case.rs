@@ -198,12 +198,13 @@ pub fn set_repo_root(path: PathBuf) {
 }
 
 /// The repository root: `--root`, else the first folder up from the working folder that holds
-/// `port/difftest/oracle/_driver.py`, else the one this binary was built from.
+/// `port/difftest/divergences/` (which outlives the Python oracle at CO2), else the one this
+/// binary was built from.
 pub fn repo_root() -> &'static Path {
     ROOT.get_or_init(|| {
         if let Ok(mut dir) = std::env::current_dir() {
             loop {
-                if dir.join("port/difftest/oracle/_driver.py").is_file() {
+                if dir.join("port/difftest/divergences").is_dir() {
                     return dir;
                 }
                 if !dir.pop() {
@@ -288,10 +289,10 @@ mod tests {
     }
 
     #[test]
-    fn the_repo_root_holds_the_oracle_driver() {
+    fn the_repo_root_holds_the_divergence_files() {
         assert!(
             repo_root()
-                .join("port/difftest/oracle/_driver.py")
+                .join("port/difftest/divergences/core.lock.toml")
                 .is_file()
         );
     }
