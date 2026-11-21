@@ -1476,8 +1476,9 @@ mod main_with_stub_tests {
         let f = fixture();
         let warn = r#"printf '%s\n' '{"systemMessage":"python3 is missing"}'"#;
         let (code, out) = run_python_missing_in(&f, &format!("#!/bin/sh\n{warn}\nexit 1\n"));
-        assert!(out.starts_with("FAIL python-missing: "), "{out}");
-        assert!(out.contains("exit 1"), "{out}");
+        let first = out.lines().next().unwrap_or_default();
+        assert!(first.starts_with("FAIL python-missing: "), "{out}");
+        assert!(first.contains("exit 1"), "{out}");
         assert_ne!(code, 0);
     }
 }
@@ -1568,6 +1569,27 @@ mod guard_timeout_extra {
     fn a_run_that_never_called_bash_is_reported() {
         let no_bash = real_stream().replace("\"name\":\"Bash\"", "\"name\":\"Read\"");
         assert_eq!(problems_of(&no_bash), ["Bash was never called"]);
+    }
+
+    #[test]
+    fn the_two_phrases_must_come_from_the_same_text() {
+        let problems = guard_timeout_problems(
+            true,
+            "",
+            &[
+                "hook timed out".to_string(),
+                "Blocking because onFailure is \"block\"".to_string(),
+            ],
+        );
+        assert_eq!(
+            problems,
+            ["'timed out' and the block are not in the same hook text or tool result"]
+        );
+    }
+
+    #[test]
+    fn an_empty_stream_reports_three_problems() {
+        assert_eq!(problems_of("").len(), 3);
     }
 
     #[test]
@@ -1774,5 +1796,89 @@ mod framework_extra {
                 .is_file()
         );
         assert_eq!(smoke::names().len(), 13);
+    }
+}
+
+/// Review fixes of EV1a (m-1 to m-5): Rust-only tests of the framework, not in the ledger.
+mod review_fixes {
+    use super::*;
+
+    #[test]
+    fn help_stops_parsing_and_prints_the_options() {
+        let (code, out) = run_main(&["-h", "--total-budget-usd", "abc"], no_auth_env(), deps());
+        assert_eq!(code, 0);
+        assert!(out.contains("options:") && out.contains("--list"), "{out}");
+        assert!(
+            out.contains("\n  --claude CLAUDE       claude binary"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_empty_out_path_writes_nothing_and_exits_0() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stub = dir.path().join("claude");
+        write_exec(&stub, "#!/bin/sh\nexit 0\n");
+        let stub = stub.to_string_lossy().into_owned();
+        let (code, out) = run_main(
+            &["--claude", &stub, "--out=", "guard-timeout"],
+            no_auth_env(),
+            deps(),
+        );
+        assert_eq!(code, 0, "{out}");
+    }
+
+    #[test]
+    fn a_timeout_kills_the_grandchildren_too() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pidfile = dir.path().join("pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let env = EnvMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+        let p = run_process(
+            &to_strings(&["sh", "-c", &script]),
+            dir.path(),
+            &env,
+            1,
+            None,
+        );
+        assert_eq!(p.code, -1);
+        let pid = fs::read_to_string(&pidfile)
+            .expect("pid file")
+            .trim()
+            .to_string();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // A killed process may linger as a zombie when nothing reaps it (a container's PID 1).
+        let state = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let alive = !state.is_empty() && !state.starts_with('Z');
+        assert!(!alive, "the grandchild {pid} outlived the timeout");
+    }
+
+    #[test]
+    fn the_temp_dir_comes_from_the_given_env_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bare = Env::default().with("PATH", "/usr/bin");
+        assert_eq!(build_env(&bare, dir.path(), None)["TMPDIR"], "/tmp");
+        let tmp = bare.with("TMP", "/var/tmp");
+        assert_eq!(build_env(&tmp, dir.path(), None)["TMPDIR"], "/var/tmp");
+    }
+
+    #[test]
+    fn a_relative_claude_path_is_made_absolute_through_the_cwd_seam() {
+        let mut d = deps();
+        d.cwd = Box::new(|| PathBuf::from("/seam/dir"));
+        let (code, out) = run_main(
+            &["--claude", "./no-such-claude", "cli-syntax"],
+            no_auth_env(),
+            d,
+        );
+        assert_eq!(code, 1);
+        assert!(
+            out.contains("claude binary not found: /seam/dir/no-such-claude"),
+            "{out}"
+        );
     }
 }

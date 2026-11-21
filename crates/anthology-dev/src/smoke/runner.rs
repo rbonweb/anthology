@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::ops::Deref;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -32,10 +32,12 @@ pub fn build_env(env: &Env, tmp: &Path, extra: Option<&EnvMap>) -> EnvMap {
     let cfg = tmp.join("cfg");
     let _ = fs::create_dir_all(&home);
     let _ = fs::create_dir_all(&cfg);
-    let tmpdir = match env.get("TMPDIR") {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ => std::env::temp_dir().to_string_lossy().into_owned(),
-    };
+    // `tempfile.gettempdir()`: TMPDIR, TEMP, TMP, then /tmp; never the process environment.
+    let tmpdir = ["TMPDIR", "TEMP", "TMP"]
+        .iter()
+        .find_map(|k| env.get(k).filter(|t| !t.is_empty()))
+        .unwrap_or("/tmp")
+        .to_string();
     let mut out = EnvMap::new();
     let mut put = |k: &str, v: String| {
         out.insert(k.to_string(), v);
@@ -97,7 +99,9 @@ pub fn run_process(
         return Proc::new(-1, "", "could not run : IndexError");
     };
     let mut cmd = Command::new(program);
+    // Its own process group, so a timeout can end the grandchildren too (hooks, tool processes).
     cmd.args(&argv[1..])
+        .process_group(0)
         .current_dir(cwd)
         .env_clear()
         .envs(env)
@@ -154,6 +158,7 @@ pub fn run_process(
             };
         }
         if Instant::now() >= deadline {
+            kill_group(child.id());
             let _ = child.kill();
             let _ = child.wait();
             return Proc::new(-1, "", &format!("timed out after {timeout}s"));
@@ -168,6 +173,22 @@ pub fn run_process(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
+}
+
+/// SIGKILL to the process group `pgid` (the child is its leader, see `process_group(0)`), through
+/// the shell's builtin `kill`: the crate forbids `unsafe`, so no direct `killpg`.
+fn kill_group(pgid: u32) {
+    let _ = Command::new("sh")
+        .args([
+            "-c",
+            "kill -s KILL -- \"-$1\" 2>/dev/null",
+            "sh",
+            &pgid.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 // ---- the seams (GC-19 `dev::smoke`) -------------------------------------------------------
@@ -215,6 +236,7 @@ pub type GitFn = Box<dyn Fn(&Ctx, &Path, &Path, &[&str]) -> Result<String, Strin
 pub type MakeRepoFn = Box<dyn Fn(&Ctx, &Path) -> Result<PathBuf, String>>;
 pub type ApprovedRepoFn = Box<dyn Fn(&Ctx, &Path) -> Result<PathBuf, String>>;
 pub type RootFn = Box<dyn Fn() -> Result<PathBuf, String>>;
+pub type CwdFn = Box<dyn Fn() -> PathBuf>;
 pub type DefaultClaudeFn = Box<dyn Fn(&Env, Option<&Path>) -> String>;
 pub type ClaudeRunFn = Box<dyn Fn(&Ctx, &Path, &[String], &ClaudeOpts) -> Proc>;
 pub type PromptRunFn = Box<dyn Fn(&Ctx, &Path, &str, &[String], &PromptOpts) -> Res<Proc>>;
@@ -230,6 +252,8 @@ pub struct Deps {
     pub make_repo: MakeRepoFn,
     /// `smoke.ROOT`: the repository root.
     pub root: RootFn,
+    /// `os.getcwd()`, for `os.path.abspath` of `--claude`.
+    pub cwd: CwdFn,
     /// `smoke.default_claude()`, given the environment and the root when known.
     pub default_claude: DefaultClaudeFn,
     /// `smoke._approved_repo(ctx, tmp)`.
@@ -247,6 +271,7 @@ impl Default for Deps {
             git: Box::new(real_git),
             make_repo: Box::new(real_make_repo),
             root: Box::new(real_root),
+            cwd: Box::new(|| std::env::current_dir().unwrap_or_default()),
             default_claude: Box::new(real_default_claude),
             approved_repo: Box::new(real_approved_repo),
             prompt_run: Box::new(real_prompt_run),

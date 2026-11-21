@@ -135,6 +135,15 @@ const PROG: &str = "anthology-dev smoke";
 const USAGE: &str = "usage: anthology-dev smoke [-h] [--claude CLAUDE] [--budget-usd BUDGET_USD]\n\
                      \x20                         [--total-budget-usd TOTAL_BUDGET_USD] [--out OUT] [--list]\n\
                      \x20                         [NAME ...]\n";
+const HELP: &str = "\nAnthology smoke cases U1-U9\n\npositional arguments:\n  NAME\n\noptions:\n\
+\x20 -h, --help            show this help message and exit\n\
+\x20 --claude CLAUDE       claude binary (default $CLAUDE_BIN, the pinned CI one, else claude)\n\
+\x20 --budget-usd BUDGET_USD\n\
+\x20                       --max-budget-usd for every claude -p (default 1.00)\n\
+\x20 --total-budget-usd TOTAL_BUDGET_USD\n\
+\x20                       stop launching claude runs once this much has been spent (default 10)\n\
+\x20 --out OUT             write a JSON summary here\n\
+\x20 --list                print the smoke names and exit\n";
 const LONG_OPTIONS: [&str; 6] = [
     "help",
     "claude",
@@ -257,7 +266,11 @@ fn parse_args(args: &[OsString]) -> Result<Args, String> {
             }
         };
         match long {
-            "help" => out.help = true,
+            // argparse's help action exits at once: later arguments are never looked at.
+            "help" => {
+                out.help = true;
+                return Ok(out);
+            }
             "list" => out.list = true,
             "claude" => out.claude = Some(value()?),
             "out" => out.out = Some(value()?),
@@ -314,7 +327,7 @@ pub fn run_with(args: &[OsString], env: Env, deps: Deps) -> Output {
     };
     if args.help {
         return Output {
-            stdout: USAGE.as_bytes().to_vec(),
+            stdout: format!("{USAGE}{HELP}").into_bytes(),
             ..Output::default()
         };
     }
@@ -338,7 +351,7 @@ pub fn run_with(args: &[OsString], env: Env, deps: Deps) -> Output {
     };
     if claude.contains('/') {
         // Runs happen in other directories, so a path must be absolute.
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = (deps.cwd)();
         claude = abspath(&claude, &cwd);
     }
     let known = names();
@@ -373,13 +386,16 @@ pub fn run_with(args: &[OsString], env: Env, deps: Deps) -> Output {
         ctx.spent(),
         ctx.total
     ));
-    let failed = results.iter().any(|(_, (s, _))| *s == Status::Fail);
+    // Python's `results` dict keeps the last outcome of a repeated name.
+    let failed = results.iter().enumerate().any(|(i, (name, (s, _)))| {
+        *s == Status::Fail && !results[i + 1..].iter().any(|(n, _)| n == name)
+    });
     let mut output = Output {
         stdout: stdout.into_bytes(),
         code: i32::from(failed),
         ..Output::default()
     };
-    if let Some(path) = &args.out
+    if let Some(path) = args.out.as_ref().filter(|p| !p.is_empty())
         && let Err(e) = write_summary(path, &results)
     {
         output

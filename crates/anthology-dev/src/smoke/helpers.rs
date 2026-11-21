@@ -939,6 +939,15 @@ pub fn guard_timeout_problems(bash_called: bool, hooks: &str, results: &[String]
     if !all.to_lowercase().contains("timed out") {
         problems.push("'timed out' not seen in the hook events or tool results".to_string());
     }
+    // Both phrases come from the one hook-error text, so they must be in the same text.
+    let together = std::iter::once(hooks)
+        .chain(results.iter().map(String::as_str))
+        .any(|t| blocked(t) && t.to_lowercase().contains("timed out"));
+    if !together && blocked(&all) && all.to_lowercase().contains("timed out") {
+        problems.push(
+            "'timed out' and the block are not in the same hook text or tool result".to_string(),
+        );
+    }
     if results.iter().any(|t| t.contains("RAN-OK")) {
         problems.push("the command ran (RAN-OK is in a tool result)".to_string());
     }
