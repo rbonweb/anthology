@@ -50,3 +50,5 @@
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 1, "params": {"answer": "rewrite", "rc": 1}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 2, "params": {"answer": "not json", "rc": 0}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 3, "params": {"answer": "not json", "rc": 3}}
+{"py": "test_rtk_install.WrapperTest.test_hook_looks_for_rtk_in_the_command_only", "row": 0, "params": {"stdin": "{\"cwd\": \"/w\", \"tool_input\": {\"command\" :\n \"rtk x\"}}"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_looks_for_rtk_in_the_command_only", "row": 1, "params": {"stdin": "{\"cwd\": \"/x/rtk\"}"}}

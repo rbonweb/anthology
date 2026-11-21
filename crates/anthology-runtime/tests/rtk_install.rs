@@ -1583,6 +1583,46 @@ mod wrapper_test {
     }
 
     #[test]
+    fn test_hook_drops_the_rewrite_with_the_ask() {
+        // Nothing is printed, so the rewrite rtk carried on its ask is never applied.
+        let w = setup();
+        w.answer_fake(
+            &ASK.replace("node --version; bun --version", "rtk git status; rtk ls"),
+            0,
+        );
+        let res = w.run_bin("rtk-hook", &[], &hook_input("git status; ls"));
+        assert_eq!(
+            (res.code, res.stdout_text(), res.stderr_text()),
+            (0, String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn test_hook_looks_for_rtk_in_the_command_only() {
+        // A working folder, transcript or description that says rtk does not bring the prompt back.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let stdin = r#"{"session_id": "s", "transcript_path": "/x/rtk/t.jsonl", "cwd": "/x/rtk-proj", "tool_name": "Bash", "tool_input": {"command": "node --version", "description": "rtk check"}}"#;
+        let res = w.run_bin("rtk-hook", &[], stdin);
+        assert_eq!((res.code, res.stdout_text()), (0, String::new()));
+        // Spacing around the key is read; an input with no "command" key is matched whole.
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_looks_for_rtk_in_the_command_only",
+        );
+        assert_eq!(table.len(), 2);
+        for row in table {
+            let stdin = row.str("stdin");
+            let res = w.run_bin("rtk-hook", &[], stdin);
+            assert_eq!(
+                (res.code, res.stdout_text()),
+                (0, format!("{ASK}\n")),
+                "{stdin:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_hook_via_sh_in_exec_form() {
         let w = setup();
         w.b.state_write(&[("rtk_path", w.fake_str())]);
