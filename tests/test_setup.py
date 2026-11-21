@@ -28,8 +28,10 @@ import settings_patch  # noqa: E402
 import state  # noqa: E402
 
 PLUGIN = ROOT / "plugins" / "anthology"
-BYPASS = ("Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; "
-          "the guardrails and deny rules still apply to the wrapped command.")
+BYPASS = ("Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook "
+          "still applies the deny and ask rules in your settings files (user, project, local and managed) "
+          "to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, "
+          "server-managed settings or an MDM profile.")
 SETTINGS = {"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}
 
 
@@ -834,6 +836,39 @@ class RemoveTest(SetupCase):
         self.assertTrue(res["ok"], res)
         self.assertFalse((self.data_dir / "rtk").exists())
         self.assertTrue((self.data_dir / "other" / "keep.txt").exists())
+
+    def test_remove_deletes_the_rtk_history_folder(self):
+        # I4: the folder bin/rtk and bin/rtk-hook point RTK_DB_PATH, RTK_RECALL_DB and RTK_TEE_DIR at.
+        self.write_settings()
+        self.apply()
+        history = state.rtk_data_dir()
+        write(history / "history.db", "commands")
+        write(history / "tee" / "1_x.log", "out")
+        preview = anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True)
+        self.assertEqual(preview["rtk_history"], {"dir": str(history), "status": "delete"})
+        self.assertTrue((history / "history.db").exists())
+        res = self.remove()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["rtk_history"], {"status": "deleted"})
+        self.assertFalse(history.exists())
+
+    def test_remove_without_rtk_history_reports_nothing_to_delete(self):
+        self.write_settings()
+        self.apply()
+        preview = anthology_setup.remove(PLUGIN, cwd=self.tmp, preview=True)
+        self.assertEqual(preview["rtk_history"]["status"], "nothing to delete")
+        self.assertEqual(self.remove()["rtk_history"], {"status": "nothing to delete"})
+
+    def test_remove_does_not_follow_a_symlinked_rtk_history_folder(self):
+        self.write_settings()
+        self.apply()
+        elsewhere = self.config / "elsewhere-history"
+        write(elsewhere / "precious.txt", "keep")
+        state.rtk_data_dir().parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(elsewhere), str(state.rtk_data_dir()))
+        res = self.remove()
+        self.assertTrue((elsewhere / "precious.txt").exists())
+        self.assertTrue([w for w in res["warnings"] if "history" in w])
 
     def test_remove_refuses_a_data_dir_outside_the_config_folder(self):
         self.write_settings()
