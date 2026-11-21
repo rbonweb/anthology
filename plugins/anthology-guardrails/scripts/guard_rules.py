@@ -17,6 +17,8 @@ heredocs) into entries; the per-rule predicates then run over the entries.
 from __future__ import annotations
 
 import fnmatch
+import bisect
+import functools
 import posixpath
 import re
 import urllib.parse
@@ -97,6 +99,7 @@ class _Seg:
 # - in an unquoted body a backslash-newline joins two lines, also when matching the terminator;
 # - a body whose terminator never comes runs to the end of the input.
 _WORD_END = frozenset(" \t\n;&|<>()")
+_MAX_UNCLOSED = 8        # distinct heredocs searched for in vain, per scan, before giving up
 _CONTINUATION = re.compile(r"\\([\s\S])")
 
 
@@ -107,55 +110,81 @@ _OCTAL = frozenset("01234567")
 _HEX = frozenset("0123456789abcdefABCDEF")
 
 
-def _ansi_c(text, j):
-    """Decode a `$'...'` string whose body starts at text[j], as bash 5 does (`\\x6e`, `\\156`,
-    `\\u006e`, `\\cA`, ...; a NUL ends the string). Return (decoded, index past the closing
-    quote), or None when the quote never closes."""
-    n, out = len(text), []
+def _ansi_c_end(text, j):
+    """Index of the `'` that closes a `$'...'` whose body starts at text[j], or -1. As in bash,
+    the end is found first, by backslash pairs (`\\c'` ends the string), and decoded after."""
+    n = len(text)
     while j < n:
         c = text[j]
-        if c == "'":
-            decoded = "".join(out)
-            return decoded.split("\0", 1)[0], j + 1
+        if c == "\\":
+            j += 2
+        elif c == "'":
+            return j
+        else:
+            j += 1
+    return -1
+
+
+def _ansi_c_decode(body, bash3=False):
+    """The text of a `$'...'` body as bash 5 decodes it (`\\x6e`, `\\156`, `\\u006e`, `\\cA`, ...;
+    a NUL ends the string), or as bash 3.2 does when `bash3` (no `\\u`/`\\U`, and its `\\c`)."""
+    n, out, j = len(body), [], 0
+    while j < n:
+        c = body[j]
         if c != "\\" or j + 1 >= n:
             out.append(c)
             j += 1
             continue
-        e = text[j + 1]
+        e = body[j + 1]
         if e in _ANSI_C_SIMPLE:
             out.append(_ANSI_C_SIMPLE[e])
             j += 2
         elif e in _OCTAL:
             k = j + 1
-            while k < min(j + 4, n) and text[k] in _OCTAL:
+            while k < min(j + 4, n) and body[k] in _OCTAL:
                 k += 1
-            out.append(chr(int(text[j + 1:k], 8) & 0xFF))
+            out.append(chr(int(body[j + 1:k], 8) & 0xFF))
             j = k
-        elif e in _ANSI_C_HEX_WIDTH:
+        elif e in _ANSI_C_HEX_WIDTH and not (bash3 and e != "x"):
             k = j + 2
-            while k < min(j + 2 + _ANSI_C_HEX_WIDTH[e], n) and text[k] in _HEX:
+            while k < min(j + 2 + _ANSI_C_HEX_WIDTH[e], n) and body[k] in _HEX:
                 k += 1
             if k == j + 2:                                # `\x` without digits stays as is
-                out.append(text[j:k])
+                out.append(body[j:k])
             else:
-                value = int(text[j + 2:k], 16)
+                value = int(body[j + 2:k], 16)
                 out.append(chr(value) if value <= 0x10FFFF else "\ufffd")
             j = k
-        elif e == "c" and j + 2 < n:                      # `\cX`: control-X
-            x = text[j + 2]
-            x = x.upper() if "a" <= x <= "z" else x
-            out.append("\x7f" if x == "?" else chr(ord(x) & 0x1F))
+        elif e == "c":                                    # `\cX`: control-X
+            if j + 2 >= n:                                # a trailing `\c`
+                out.append("\\" if bash3 else "\\c")
+                j += 2
+                continue
+            x = body[j + 2]
             j += 3
+            if x == "\\" and not bash3 and body[j:j + 1] == "\\":
+                j += 1                                    # bash 5: `\c\\` is one control-\\
+            x = x.upper() if "a" <= x <= "z" else x
+            out.append("\x7f" if x == "?" and not bash3 else chr(ord(x) & 0x1F))
         else:
-            out.append(text[j:j + 2])
+            out.append(body[j:j + 2])
             j += 2
-    return None
+    return "".join(out).split("\0", 1)[0]
+
+
+def _ansi_c(text, j):
+    """Decode a `$'...'` string whose body starts at text[j] (bash 5). Return (decoded, index past
+    the closing quote), or None when the quote never closes."""
+    k = _ansi_c_end(text, j)
+    if k < 0:
+        return None
+    return _ansi_c_decode(text[j:k]), k + 1
 
 
 def _word_parens(text, j):
-    """(inner, index after `)`) for a `$(` inside a heredoc delimiter word, opened just before
-    text[j]. Only quotes and escapes are skipped: such a delimiter is never run, so a coarse
-    match is enough, and it does not recurse."""
+    """(inner, index after `)`) for a `$(` inside a heredoc delimiter word or a `${...}`, opened
+    just before text[j]. Only quotes and escapes are skipped: a coarse match is enough there,
+    and it does not recurse. Unclosed: (rest, -1)."""
     depth, n, start = 1, len(text), j
     while j < n:
         c = text[j]
@@ -173,15 +202,95 @@ def _word_parens(text, j):
             if depth == 0:
                 return text[start:j], j + 1
         j += 1
-    return text[start:], n
+    return text[start:], -1
+
+
+def _brace_end(text, j):
+    """Index of the `}` that closes a `${` opened just before text[j], or -1. Nested `${`,
+    quotes (also inside double quotes, as bash does), escapes and `$(...)` are skipped."""
+    depth, n = 1, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+        elif c == "'":
+            k = text.find("'", j + 1)
+            if k < 0:
+                return -1
+            j = k + 1
+        elif c == '"':
+            j += 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                return -1
+            j += 1
+        elif c == "$" and text[j + 1:j + 2] == "{":
+            depth += 1
+            j += 2
+        elif c == "$" and text[j + 1:j + 2] == "'":
+            j = _ansi_c_end(text, j + 2)
+            if j < 0:
+                return -1
+            j += 1
+        elif c == "$" and text[j + 1:j + 2] == "(":
+            j = _word_parens(text, j + 2)[1]
+            if j < 0:
+                return -1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+            j += 1
+        else:
+            j += 1
+    return -1
+
+
+def _backtick_end(text, j):
+    """Index of the backtick that closes one opened just before text[j] (escaped ones skipped),
+    or -1."""
+    n = len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+        elif c == "`":
+            return j
+        else:
+            j += 1
+    return -1
+
+
+_BACKTICK_ESCAPES = re.compile(r"\\([\\`$])")
+_BACKTICK_ESCAPES_DQ = re.compile(r"\\([\\`$\"])")
+
+
+def _unescape_backticks(inner, dq=False):
+    """The text bash runs for a backtick substitution: `\\\\`, `` \\` `` and `\\$` (and `\\"` inside
+    double quotes) lose their backslash, so nested backticks become real."""
+    if "\\" not in inner:
+        return inner
+    return (_BACKTICK_ESCAPES_DQ if dq else _BACKTICK_ESCAPES).sub(r"\1", inner)
+
+
+_UNCLOSED = object()                                      # a word whose quote never closes
 
 
 def _heredoc_word(text, j):
-    """The heredoc delimiter word starting at text[j]: (delimiter, quoted, substitutions, end),
-    or None when there is no word there or a quote in it never closes. `substitutions` are the
-    `$(...)` / backtick spans spelled in the word (bash does not run them)."""
+    """The heredoc delimiter word starting at text[j]: (delimiters, quoted, substitutions, end),
+    None when there is no word there, or _UNCLOSED when a quote or substitution in it never
+    closes (bash then reads the rest of the input as part of the word). `delimiters` is the
+    word as bash 5 reads it, then as bash 3.2 reads it when that differs (`$'\\u0041'`).
+    `substitutions` are the `$(...)` / backtick spans spelled in the word (bash does not run
+    them)."""
     n, start = len(text), j
-    out, subs, quoted = [], [], False
+    out, out3, subs, quoted = [], [], [], False
+
+    def put(piece):
+        out.append(piece)
+        out3.append(piece)
+
     while j < n and text[j] not in _WORD_END:
         c = text[j]
         nxt = text[j + 1:j + 2]
@@ -190,14 +299,14 @@ def _heredoc_word(text, j):
                 j += 2
                 continue
             quoted = True
-            out.append(nxt or c)
+            put(nxt or c)
             j += 2 if nxt else 1
         elif c == "'":
             k = text.find("'", j + 1)
             if k < 0:
-                return None
+                return _UNCLOSED
             quoted = True
-            out.append(text[j + 1:k])
+            put(text[j + 1:k])
             j = k + 1
         elif c == '"':
             quoted = True
@@ -206,51 +315,59 @@ def _heredoc_word(text, j):
                 d = text[j]
                 if d == "\\" and text[j + 1:j + 2] in ("\\", "$", '"', "`", "\n"):
                     if text[j + 1] != "\n":
-                        out.append(text[j + 1])
+                        put(text[j + 1])
                     j += 2
                 elif d == "$" and text[j + 1:j + 2] == "(":
                     inner, k = _word_parens(text, j + 2)
+                    if k < 0:
+                        return _UNCLOSED
                     subs.append(inner)
-                    out.append(text[j:k])
+                    put(text[j:k])
                     j = k
                 else:
-                    out.append(d)
+                    put(d)
                     j += 1
             if j >= n:
-                return None
+                return _UNCLOSED
             j += 1
         elif c == "$" and nxt == "'":
-            decoded = _ansi_c(text, j + 2)
-            if decoded is None:
-                return None
+            k = _ansi_c_end(text, j + 2)
+            if k < 0:
+                return _UNCLOSED
             quoted = True
-            out.append(decoded[0])
-            j = decoded[1]
+            out.append(_ansi_c_decode(text[j + 2:k]))
+            out3.append(_ansi_c_decode(text[j + 2:k], bash3=True))
+            j = k + 1
         elif c == "$" and nxt == '"':                     # `$"..."` quotes like `"..."`
             j += 1
         elif c == "$" and nxt == "(":
             inner, k = _word_parens(text, j + 2)
+            if k < 0:
+                return _UNCLOSED
             subs.append(inner)
-            out.append(text[j:k])
+            put(text[j:k])
             j = k
         elif c == "$" and nxt == "{":
-            k = text.find("}", j + 2)
-            k = n - 1 if k < 0 else k
-            out.append(text[j:k + 1])
+            k = _brace_end(text, j + 2)
+            if k < 0:
+                return _UNCLOSED
+            put(text[j:k + 1])
             j = k + 1
         elif c == "`":
-            k = text.find("`", j + 1)
+            k = _backtick_end(text, j + 1)
             if k < 0:
-                return None
+                return _UNCLOSED
             subs.append(text[j + 1:k])
-            out.append(text[j:k + 1])
+            put(text[j:k + 1])
             j = k + 1
         else:
-            out.append(c)
+            put(c)
             j += 1
     if j == start:
         return None
-    return "".join(out), quoted, subs, j
+    delimiter, delimiter3 = "".join(out), "".join(out3)
+    delimiters = (delimiter,) if delimiter3 == delimiter else (delimiter, delimiter3)
+    return delimiters, quoted, subs, j
 
 
 def _skip_continuations(text, k):
@@ -277,8 +394,8 @@ def _input_operator(text, j):
 
 
 def _heredoc_after(text, k):
-    """After a `<<` / `<<-` operator: (delimiter, quoted, substitutions, end) for its delimiter
-    word, blanks before it skipped, or None when no word follows."""
+    """After a `<<` / `<<-` operator: _heredoc_word for its delimiter word, blanks and
+    backslash-newlines before it skipped."""
     while True:
         if text[k:k + 1] in (" ", "\t"):
             k += 1
@@ -292,26 +409,65 @@ def _odd_trailing_backslashes(line):
     return (len(line) - len(line.rstrip("\\"))) % 2 == 1
 
 
-def _find_heredoc_end(text, i, delimiter, strip_tabs=False, join=False):
-    """For a heredoc body starting at text[i]: (start of the terminator line, index just past
-    it), or (-1, -1) when the terminator never appears. `join` (an unquoted delimiter) reads a
-    line ending in an odd run of backslashes together with the next one, as bash does."""
+@functools.lru_cache(maxsize=64)
+def _candidate_lines(delimiters, strip_tabs):
+    """Lines that start with one of the delimiters (after tabs for `<<-`)."""
+    alternatives = "|".join(re.escape(d) for d in delimiters)
+    return re.compile(("^\t*(?:%s)" if strip_tabs else "^(?:%s)") % alternatives, re.M)
+
+
+def _find_heredoc_end(text, i, delimiters, strip_tabs=False, join=False, comsub=False):
+    """For a heredoc body starting at text[i]: (end of the body, index just past the
+    terminator), or (-1, -1) when no terminator appears. A terminator is a line equal to one of
+    `delimiters` (bash 5's reading first; the earliest line matching any of them wins, so the
+    guard sees what either bash runs). `join` (an unquoted delimiter) reads a line ending in an
+    odd run of backslashes together with the next one, as bash does. With `comsub` (the body
+    sits inside `$(...)`), a line that starts with the delimiter and has a `(` or `)` after it
+    also ends the body, as in bash 5; the scan then resumes right after the delimiter."""
     n = len(text)
+    if not join or text.find("\\\n", i) < 0:            # no joined lines: jump to candidates
+        for match in _candidate_lines(delimiters, strip_tabs).finditer(text, i):
+            start = match.start()
+            stop = text.find("\n", start)
+            stop = n if stop < 0 else stop
+            line = text[start:stop]
+            head = line.lstrip("\t") if strip_tabs else line
+            if head in delimiters:
+                return start, min(stop + 1, n)
+            if comsub:
+                for delimiter in delimiters:
+                    rest = head[len(delimiter):]
+                    if head.startswith(delimiter) and ("(" in rest or ")" in rest):
+                        return start, start + (len(line) - len(head)) + len(delimiter)
+        return -1, -1
     while i < n:
-        start, parts = i, []
-        while True:
-            end = text.find("\n", i)
-            stop = n if end < 0 else end
-            line = text[i:stop]
-            if join and end >= 0 and _odd_trailing_backslashes(line):
-                parts.append(line[:-1])
+        end = text.find("\n", i)
+        stop = n if end < 0 else end
+        start, line = i, text[i:stop]
+        if join and end >= 0 and line.endswith("\\") and _odd_trailing_backslashes(line):
+            parts = [line[:-1]]
+            while True:                                   # a logical line over several lines
                 i = end + 1
-                continue
-            parts.append(line)
-            break
-        logical = "".join(parts)
-        if (logical.lstrip("\t") if strip_tabs else logical) == delimiter:
+                end = text.find("\n", i)
+                stop = n if end < 0 else end
+                part = text[i:stop]
+                if end >= 0 and part.endswith("\\") and _odd_trailing_backslashes(part):
+                    parts.append(part[:-1])
+                    continue
+                parts.append(part)
+                break
+            logical = "".join(parts)
+        else:
+            logical = line
+        head = logical.lstrip("\t") if strip_tabs else logical
+        if head in delimiters:
             return start, min(stop + 1, n)
+        if comsub and ("(" in line or ")" in line):
+            first = line.lstrip("\t") if strip_tabs else line
+            for delimiter in delimiters:
+                rest = first[len(delimiter):]
+                if first.startswith(delimiter) and ("(" in rest or ")" in rest):
+                    return start, start + (len(line) - len(first)) + len(delimiter)
         if end < 0:
             break
         i = end + 1
@@ -325,41 +481,69 @@ def _join_continuations(body):
     return _CONTINUATION.sub(lambda m: "" if m.group(1) == "\n" else m.group(0), body)
 
 
-def _scan_paren(text, i, arith=False):
-    """Return (inner, index after `)`) for the parenthesis opened just before text[i].
-    Quotes, escapes and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped over. Inside
-    `((...))` (and all of it when `arith`, for `$((...))`) `<<` is a shift, not a heredoc."""
+_SCAN_SPECIAL = frozenset("\\<\n'\"$#()")
+_SCAN_STOP = re.compile(r"[\\<\n'\"$#()]")
+_DQ_STOP = re.compile(r'["\\]')
+
+
+def _scan_paren(text, i):
+    """Return (inner, index after `)`) for the parenthesis opened just before text[i]."""
+    inner, end, _ = _scan_paren_ex(text, i)
+    return inner, end
+
+
+def _scan_paren_ex(text, i, arith=False):
+    """Scan the parenthesis opened just before text[i] as bash's parser matches it: quotes,
+    escapes, `${...}`, comments and heredoc bodies (`$(cat <<'EOF' ... EOF\\n)`) are skipped
+    over, and inside a `((...))` that closes with `))` `<<` is a shift, not a heredoc. Returns
+    (inner, index after `)`, False); unclosed: (rest, len(text), False).
+
+    With `arith` (text[i] is the second `(` of `$((` or `((`): (inner, end, True) when it closes
+    with `))`, as bash's arithmetic does; otherwise (None, -1, False), or (rest, len(text), False)
+    when it runs to the end, and the caller rescans it as parentheses."""
     depth, j, n = 1, i, len(text)
-    arith_at = 0 if arith else None                       # the depth an open `((` starts at
-    delimiters = []                                       # (delimiter, strip_tabs, join)
-    unterminated = set()                                  # delimiters already searched in vain
+    arith_at = 0 if arith else None                       # inside `$((`: `<<` is a shift
+    no_arith = False                                      # a `((` ran to the end: stop trying
+    delimiters = []                                       # (delimiters, strip_tabs, join)
+    unterminated = set()                                  # delimiters searched for in vain
     while j < n:
         c = text[j]
+        if c not in _SCAN_SPECIAL:                        # jump to the next character that
+            match = _SCAN_STOP.search(text, j)            # matters
+            if match is None:
+                break
+            j = match.start()
+            c = text[j]
         if c == "\\":
             j += 2
             continue
         if c == "<":
             op, k = _input_operator(text, j)
-            if op not in ("<<", "<<-") or arith_at is not None:   # `<<<`: a here-string
-                j = k
-                continue
+            if (op not in ("<<", "<<-") or arith_at is not None
+                    or len(unterminated) >= _MAX_UNCLOSED):
+                j = k                                     # `<<<`, a shift, or too many bodies
+                continue                                  # that never closed
             heredoc = _heredoc_after(text, k)
+            if heredoc is _UNCLOSED:                      # bash reads the rest into that word
+                return text[i:], n, False
             if heredoc is None:
                 j = k
                 continue
-            delimiter, quoted, _, j = heredoc
-            key = (delimiter, op == "<<-", not quoted)
+            delims, quoted, _, j = heredoc
+            key = (delims, op == "<<-", not quoted)
             if key not in unterminated:
                 delimiters.append(key)
             continue
         if c == "\n" and delimiters:
             pos = j + 1
             for key in delimiters:
-                after = _find_heredoc_end(text, pos, *key)[1]
-                if after >= 0:
-                    pos = after
-                else:
+                body_end, after = _find_heredoc_end(text, pos, *key, comsub=True)
+                if after < 0:
                     unterminated.add(key)
+                    continue
+                pos = after
+                if text[after - 1:after] != "\n" and after < n:
+                    break                                 # `EOF)`: the line goes on as code
             j = pos - 1                                   # the loop's `j += 1` lands on `pos`
             delimiters = []
         if c == "'":
@@ -368,73 +552,130 @@ def _scan_paren(text, i, arith=False):
             continue
         if c == '"':
             j += 1
-            while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1          # `\"` does not close the quote
-            j += 1
+            while True:                                   # `\"` does not close the quote
+                match = _DQ_STOP.search(text, j)
+                if match is None:
+                    j = n
+                    break
+                j = match.end()
+                if match.group() == '"':
+                    break
+                j += 1
+            continue
+        if c == "$" and text[j + 1:j + 2] == "{":         # `${x#<<E}` holds no heredoc
+            k = _brace_end(text, j + 2)
+            j = j + 1 if k < 0 else k + 1
+            continue
+        if c == "$" and text[j + 1:j + 2] == "'":         # `$'a\'b )'` is one string
+            k = _ansi_c_end(text, j + 2)
+            j = n if k < 0 else k + 1
+            continue
+        if (c == "#" and arith_at is None
+                and (j == i or text[j - 1] in " \t\n;&|()<>")):
+            k = text.find("\n", j)                        # a comment: no `<<`, quote or paren
+            j = n if k < 0 else k
             continue
         if c == "(":
-            if arith_at is None and text[j + 1:j + 2] == "(":
-                arith_at = depth
+            if arith_at is None and not no_arith and text[j + 1:j + 2] == "(":
+                _, end, closes = _scan_paren_ex(text, j + 1, True)
+                if closes:                                # `((...))`: skipped whole
+                    j = end
+                    continue
+                no_arith = end >= n
             depth += 1
         elif c == ")":
             depth -= 1
             if depth == 0:
-                return text[i:j], j + 1
-            if arith_at is not None and depth <= arith_at + 1:
+                return text[i:j], j + 1, arith
+            if arith and depth == 1:                      # `$((...)`: arithmetic only on `))`
+                if text[j + 1:j + 2] != ")":
+                    return None, -1, False
                 arith_at = None
         j += 1
-    return text[i:], n
+    return text[i:], n, False
 
 
 def _substitution(text, j):
-    """At a `$(` (text[j] is `$`): (the text to lex, index after the closing `)`). The text of
-    `$((...))` is lexed as a `((...))` command, so its `<<` is a shift there too."""
-    arith = text[j + 2:j + 3] == "("
-    inner, end = _scan_paren(text, j + 2, arith)
-    return ("(" + inner + ")" if arith else inner), end
+    """At a `$(` (text[j] is `$`): (the text to lex, index after the closing `)`). A `$((...))`
+    that closes with `))` is arithmetic and its text is lexed as a `((...))` command (its `<<`
+    is a shift); any other `$((` is a command substitution holding a subshell, as bash re-reads
+    it."""
+    if text[j + 2:j + 3] == "(":
+        inner, end, closes = _scan_paren_ex(text, j + 2, True)
+        if closes:
+            return "(" + inner + ")", end
+    return _scan_paren(text, j + 2)
 
 
 def _find_backtick(text, i):
-    j, n = i, len(text)
-    while j < n:
-        if text[j] == "\\":
-            j += 2
-            continue
-        if text[j] == "`":
-            return j
-        j += 1
-    raise _Unbalanced()
+    j = _backtick_end(text, i)
+    if j < 0:
+        raise _Unbalanced()
+    return j
 
 
 _ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\Z")
 
 
-def _body_substitutions(body):
-    """The `$(...)` and backtick spans inside an unquoted heredoc body (bash runs them)."""
+def _body_substitutions(body, dq=False):
+    """[(index, end index, text to lex, is a `$(...)`)] for the `$(...)` and backtick spans in
+    text bash expands like an unquoted heredoc body or a double-quoted string (quotes have no
+    effect, `\\$` is escaped). A backtick span is listed as written and, when it differs, as bash
+    runs it."""
     found, j, n = [], 0, len(body)
     while j < n:
         c = body[j]
         if c == "\\":
             j += 2
         elif c == "$" and body[j + 1:j + 2] == "(":
-            inner, j = _substitution(body, j)
-            found.append(inner)
+            inner, k = _substitution(body, j)
+            found.append((j, k, inner, not inner.startswith("((")))
+            j = k
         elif c == "`":
-            k = body.find("`", j + 1)
+            k = _backtick_end(body, j + 1)
             if k < 0:
                 break
-            found.append(body[j + 1:k])
+            raw = body[j + 1:k]
+            found.append((j, k + 1, raw, False))
+            unescaped = _unescape_backticks(raw, dq)
+            if unescaped != raw:
+                found.append((j, k + 1, unescaped, False))
             j = k + 1
         else:
             j += 1
     return found
 
 
+def _bracket_end(text, j):
+    """Index of the `]` closing a `$[` opened just before text[j], or -1."""
+    depth, n = 1, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
-    their segments spliced in ahead of the segment that contains them (execution order)."""
+    their segments spliced in ahead of the segment that contains them (execution order).
 
-    def __init__(self, text, depth, full=True):
+    After a heredoc that never closes, the guard both scans its body (what bash runs) and keeps
+    lexing the lines as commands (fail closed). To keep that from multiplying per nesting
+    level, lexers made by the command lexing there have `full` False (they do not scan an
+    unclosed body again), a substitution the body scan already lexed from the same index is not
+    lexed again, and one that lies inside a span the body scan lexed is lexed `shallow` (its own
+    commands only, no nested substitutions)."""
+
+    def __init__(self, text, depth, full=True, shallow=False, comsub=False):
         self.text = text
         self.depth = depth
         self.out = []
@@ -443,11 +684,17 @@ class _Lexer:
         self.cur = []
         self.has_word = False
         self.pending = None      # redirection operator waiting for its target word
-        self.heredocs = []       # (delimiter, group, quoted, strip_tabs) on the current line
+        self.heredocs = []       # (delimiters, group, quoted, strip_tabs) on the current line
         self.swallowed = False   # a heredoc never closed: bash reads the rest as its body
-        self.full = full         # False: an unclosed heredoc's body is not scanned (see below)
-        self.parens = 0          # `(` depth, and the depth an open `((` starts at, else None
-        self.arith = None
+        self.unclosed = 0        # heredocs whose terminator was searched for in vain
+        self.full = full         # False: an unclosed heredoc's body is not scanned
+        self.shallow = shallow   # True: substitutions inside are not lexed
+        self.comsub = comsub     # the text of a `$(...)` (see nested)
+        self.scanned = set()     # substitution indexes an extra scan has lexed already
+        self.covered = []        # (start, end) spans the unclosed-body scan has lexed
+        self.parens = 0          # `(` depth
+        self.arith = None        # the `(` depth an open `((...))` command starts at, or None
+        self.arith_unclosed = False  # a `((` ran to the end: later ones are not looked at
         self.quoted = False      # the word being built contains a quote or escape
         self.array = None        # elements of the `name=( ... )` being lexed, else None
         self.array_word = ""     # its `name=` / `name+=` prefix
@@ -497,7 +744,7 @@ class _Lexer:
         text, c = self.text, self.text[i]
         if c in "<>" and text[i + 1:i + 2] == "(":
             inner, j = _scan_paren(text, i + 2)
-            self.nested(inner)
+            self.nested(inner, i, comsub=True)
             return j
         self.end_word()
         if c == ")":
@@ -517,10 +764,38 @@ class _Lexer:
             self.out.append(seg)
         self.add(self.array_word + "(" + self.text[self.array_start:i] + ")")
 
-    def nested(self, inner):
-        if self.depth < _MAX_DEPTH:
-            self.out.extend(_segments(inner, self.depth + 1, self.full and not self.swallowed))
+    def nested(self, inner, pos=None, comsub=False):
+        """Lex a substitution's text (see the class docstring for the unclosed-heredoc case).
+        `comsub`: it is the text of a `$(...)` / `<(...)`, where bash 5 ends a heredoc body at a
+        line that starts with the delimiter and holds a parenthesis."""
         self.has_word = True
+        if self.shallow or self.depth >= _MAX_DEPTH or (pos is not None and pos in self.scanned):
+            return
+        shallow = False
+        if pos is not None and self.covered:
+            k = bisect.bisect_right(self.covered, (pos, float("inf"))) - 1
+            shallow = k >= 0 and self.covered[k][0] < pos < self.covered[k][1]
+        full = self.full and not self.swallowed
+        self.out.extend(_segments(inner, self.depth + 1, full, shallow, comsub))
+
+    def scan_expanded(self, start, end, dq=False, record=True):
+        """Text bash expands like a double-quoted string (arithmetic, `${...}`): its `$(...)` and
+        backticks run whatever the quotes around them, so they are lexed too (fail closed).
+        `record` marks them so the command lexing of the same text does not lex them twice."""
+        has_word = self.has_word
+        for pos, _, inner, comsub in _body_substitutions(self.text[start:end], dq):
+            self.nested(inner, comsub=comsub)
+            if record:
+                self.scanned.add(start + pos)
+        self.has_word = has_word
+
+    def backtick(self, i, j, dq=False):
+        """The backtick substitution text[i+1:j]: lexed as written and as bash runs it."""
+        raw = self.text[i + 1:j]
+        self.nested(raw, i)
+        unescaped = _unescape_backticks(raw, dq)
+        if unescaped != raw:
+            self.nested(unescaped, i)
 
     # -- the scan
     def run(self):
@@ -544,7 +819,7 @@ class _Lexer:
                 i = self.double_quoted(i)
             elif c == "`":
                 j = _find_backtick(text, i + 1)
-                self.nested(text[i + 1:j])
+                self.backtick(i, j)
                 i = j + 1
             elif c == "$":
                 i = self.dollar(i)
@@ -565,7 +840,7 @@ class _Lexer:
                 self.paren(c, i)
                 self.end_seg(new_group=True)
                 i += 1
-            elif c == "&" and text[i + 1:i + 2] != ">":
+            elif c == "&" and not text.startswith(">", _skip_continuations(text, i + 1)):
                 self.end_seg(new_group=True)
                 i += 1
             elif c == "|":
@@ -584,10 +859,18 @@ class _Lexer:
         return self.out
 
     def paren(self, c, i):
-        """Track `(` / `)` depth so that `<<` inside a `((...))` command reads as a shift."""
+        """Track `(` depth. A `((` with no word before it that closes with `))` is an arithmetic
+        command: its `<<` is a shift, and its `$(...)` run even inside single quotes. Any other
+        `((` is two subshells, as bash re-reads it."""
         if c == "(":
-            if self.arith is None and not self.has_word and self.text[i + 1:i + 2] == "(":
-                self.arith = self.parens
+            if (self.arith is None and not self.arith_unclosed and not self.has_word
+                    and self.text[i + 1:i + 2] == "("):
+                _, end, closes = _scan_paren_ex(self.text, i + 1, True)
+                if closes:
+                    self.arith = self.parens
+                    self.scan_expanded(i + 2, end - 2)
+                else:
+                    self.arith_unclosed = end >= len(self.text)
             self.parens += 1
         elif c == ")":
             self.parens -= 1
@@ -614,16 +897,26 @@ class _Lexer:
                     j += 1
             elif c == "`":
                 k = _find_backtick(text, j + 1)
-                self.nested(text[j + 1:k])
+                self.backtick(j, k, dq=True)
                 j = k + 1
             elif c == "$" and text[j + 1:j + 2] == "(":
-                inner, j = _substitution(text, j)
-                self.nested(inner)
+                inner, k = _substitution(text, j)
+                self.nested(inner, j, comsub=not inner.startswith("(("))
+                j = k
             elif c == "$" and text[j + 1:j + 2] == "{":
-                k = text.find("}", j + 2)
-                k = n - 1 if k < 0 else k
+                k = _brace_end(text, j + 2)
+                if k < 0:                                 # as before: the first `}`
+                    k = text.find("}", j + 2)
+                    k = n - 1 if k < 0 else k
+                self.scan_expanded(j + 2, k, dq=True, record=False)
                 self.cur.append(text[j:k + 1])
                 j = k + 1
+            elif c == "$" and text[j + 1:j + 2] == "[":
+                k = _bracket_end(text, j + 2)
+                if k >= 0:
+                    self.scan_expanded(j + 2, k, dq=True)
+                self.cur.append(c)
+                j += 1
             else:
                 self.cur.append(c)
                 j += 1
@@ -634,13 +927,20 @@ class _Lexer:
         nxt = text[i + 1:i + 2]
         if nxt == "(":
             inner, j = _substitution(text, i)
-            self.nested(inner)
+            self.nested(inner, i, comsub=not inner.startswith("(("))
             return j
         if nxt == "{":
-            k = text.find("}", i + 2)
-            k = len(text) - 1 if k < 0 else k
+            k = _brace_end(text, i + 2)
+            if k < 0:                                     # as before: the first `}`
+                k = text.find("}", i + 2)
+                k = len(text) - 1 if k < 0 else k
+            self.scan_expanded(i + 2, k, record=False)
             self.add(text[i:k + 1])
             return k + 1
+        if nxt == "[":                                    # `$[...]`: old arithmetic syntax
+            k = _bracket_end(text, i + 2)
+            if k >= 0:
+                self.scan_expanded(i + 2, k)
         if nxt == "'":
             self.quoted = True
             decoded = _ansi_c(text, i + 2)
@@ -679,40 +979,47 @@ class _Lexer:
         """After `<<` / `<<-`: register the heredoc its delimiter word opens. Whether the body is
         literal depends on that word alone, never on the word before the operator."""
         heredoc = _heredoc_after(self.text, j)
-        if heredoc is None:                               # no word: an unclosed quote fails
-            return j                                      # closed in the scan that follows
-        delimiter, quoted, subs, end = heredoc
+        if heredoc is None:                               # no word
+            return j
+        if heredoc is _UNCLOSED:                          # bash reads the rest into the word
+            raise _Unbalanced()
+        delims, quoted, subs, end = heredoc
         for inner in subs:                                # bash does not run these; lexing
             self.nested(inner)                            # them only blocks more
         self.has_word = False
-        self.heredocs.append((delimiter, self.group, quoted, op == "<<-"))
+        self.heredocs.append((delims, self.group, quoted, op == "<<-"))
         return end
 
     def take_heredocs(self, i):
         """At the start of the line after heredoc operators: capture each body as bash reads
-        it. A body that is never closed runs to the end of the input; the lines after it are
-        still lexed as commands too (fail closed), and later heredocs are not captured.
-        Substitutions met while lexing those lines get lexers that skip this unclosed-body scan
-        (`full` False, the behaviour before fix-wave H): the body scan already covers what bash
-        runs, and doing both at every nesting level would double the work per level."""
+        it. A body that is never closed runs to the end of the input: it is scanned (bash runs
+        an unquoted one's substitutions), and the lines after it are still lexed as commands
+        too, later heredocs included, as before fix-wave H (fail closed). After
+        _MAX_UNCLOSED bodies that never close, later heredocs are not looked for (linear)."""
         text = self.text
         heredocs, self.heredocs = self.heredocs, []
-        for delimiter, group, quoted, strip_tabs in heredocs:
-            if self.swallowed:
+        for delims, group, quoted, strip_tabs in heredocs:
+            if self.unclosed >= _MAX_UNCLOSED:
                 break
-            body_end, after = _find_heredoc_end(text, i, delimiter, strip_tabs, not quoted)
+            body_end, after = _find_heredoc_end(text, i, delims, strip_tabs, not quoted,
+                                                self.comsub)
             if after < 0:
+                self.unclosed += 1
+                if self.swallowed or not self.full:
+                    self.swallowed = True
+                    continue
                 self.swallowed = True
-                if not self.full:
-                    break
                 body_end = len(text)
             body = text[i:body_end]
             if not quoted:
                 body = _join_continuations(body)
             group.texts.append(body)
-            if not quoted and self.depth < _MAX_DEPTH:    # an unquoted body runs its `$(...)`
-                for inner in _body_substitutions(body):
-                    self.out.extend(_segments(inner, self.depth + 1, self.full))
+            if not quoted and self.depth < _MAX_DEPTH and not self.shallow:
+                for pos, end, inner, comsub in _body_substitutions(body):  # bash runs these
+                    self.out.extend(_segments(inner, self.depth + 1, self.full, comsub=comsub))
+                    if after < 0 and body_end - i == len(body):    # the rest is lexed again:
+                        self.scanned.add(i + pos)                  # see the class docstring
+                        self.covered.append((i + pos, i + end))
             if after >= 0:
                 i = after
         return i
@@ -721,26 +1028,32 @@ class _Lexer:
 _SHELL_C_FLAG = re.compile(r"-[A-Za-z]*c[A-Za-z]*\Z")
 
 
+_LENIENT_QUOTES = re.compile(r"\$?['\"]")
+
+
 def _lenient_segments(text):
-    """Fallback when quotes are unbalanced: whitespace split, quote characters dropped."""
+    """Fallback when quotes are unbalanced: whitespace split, with the quote characters read as
+    spaces and, when that differs, also dropped (`x=$'..' cmd`, `n'p'x` stay one word)."""
     out = []
     for piece in re.split(r"[;&|\n()`]+|\$\(", text):
-        tokens = [t for t in piece.replace("'", " ").replace('"', " ").split() if t]
-        if not tokens:
-            continue
-        seg = _Seg(_Group())
-        seg.tokens = tokens
-        out.append(seg)
-        for start, first in _script_starts(tokens):       # `bash -c <rest of the line>`
-            extra = _Seg(_Group())
-            extra.tokens = [first] + tokens[start + 1:]
-            out.append(extra)
+        spaced = piece.replace("'", " ").replace('"', " ").split()
+        joined = _LENIENT_QUOTES.sub("", piece).split()
+        for tokens in (spaced, joined) if joined != spaced else (spaced,):
+            if not tokens:
+                continue
+            seg = _Seg(_Group())
+            seg.tokens = tokens
+            out.append(seg)
+            for start, first in _script_starts(tokens):   # `bash -c <rest of the line>`
+                extra = _Seg(_Group())
+                extra.tokens = [first] + tokens[start + 1:]
+                out.append(extra)
     return out
 
 
-def _segments(text, depth=0, full=True):
+def _segments(text, depth=0, full=True, shallow=False, comsub=False):
     try:
-        return _Lexer(text, depth, full).run()
+        return _Lexer(text, depth, full, shallow, comsub).run()
     except _Unbalanced:
         return _lenient_segments(text)
 
