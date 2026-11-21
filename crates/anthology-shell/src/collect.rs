@@ -26,6 +26,15 @@
 //!   dropped and with its format filled (`printf::printf_fill`, C-4a); `printf -v<name>` attached and
 //!   `unset` (C-5a); a pipeline headed by a compound command or a function call (`( echo X ) | sh`,
 //!   `if ...; fi | sh`, `f | sh`) is fed the literal output of the commands before it in the text (I-2a).
+//! - Fail-closed families (controller ruling after the narrow verification; `fail_closed` and the group loop
+//!   of `collect_once`): a brace sequence `{x..y}` or a brace expression in a word holding whitespace (a
+//!   quoted item); a `[...]` subscript holding `$(`, a backtick or `$'` in any word; an assignment, export or
+//!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modelled prefix of `tar` / `git`, a git alias
+//!   given twice or through `GIT_CONFIG_*`, `git --config-env`; a shell reading stdin from a producer that
+//!   is not literal (`curl | sh`, `f | tr | sh`), from a compound command with a redirect or here-string, or
+//!   from a compound with no literal output; a here-string that is only a substitution (`sh <<< "$(f)"`);
+//!   `>(` with a shell; a `<(` with no literal output given to a shell; `coproc`; a shell running a file an
+//!   earlier command wrote. Each is too complex (the guard blocks).
 
 mod printf;
 
@@ -43,8 +52,8 @@ use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
 use crate::prefixes::hidden::runs_option_command;
 use crate::prefixes::{
-    MAX_FED, STDIN_ARG_RUNNERS, StdinRun, Stripped, UNPARSED_RUNNERS, is_interpreter,
-    parallel_lines, pm_runs_own_verb, strip_prefixes,
+    MAX_FED, STDIN_ARG_RUNNERS, StdinRun, Stripped, UNPARSED_RUNNERS, is_assignment,
+    is_interpreter, parallel_lines, pm_runs_own_verb, strip_prefixes,
 };
 use crate::shell_args::{
     Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
@@ -387,6 +396,138 @@ fn brace_reading(tokens: &[String], work: &mut Work) -> Result<Option<Vec<String
     Ok(found.then_some(reading))
 }
 
+/// C-3a: a program that a brace-built command word must not become unseen: it writes text a pipe may run,
+/// reads stdin as commands, or runs its arguments (a peeled wrapper counts too).
+fn brace_risky(prog: &str) -> bool {
+    SHELLS.contains(&prog)
+        || is_interpreter(prog)
+        || matches!(
+            prog,
+            "echo"
+                | "printf"
+                | "cat"
+                | "tee"
+                | "xargs"
+                | "parallel"
+                | "eval"
+                | "source"
+                | "."
+                | "exec"
+        )
+}
+
+/// Programs whose `NAME=VALUE` arguments set variables for later commands.
+const EXPORTERS: &[&str] = &["export", "declare", "typeset", "readonly", "local"];
+
+/// Variables whose value is a command line git, a pager or rsync runs (`prefixes`' `COMMAND_VARIABLES`).
+const COMMAND_ENV: &[&str] = &[
+    "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_PROXY_COMMAND",
+    "PAGER",
+    "EDITOR",
+    "VISUAL",
+    "RSYNC_RSH",
+];
+
+/// Fail closed (controller ruling): words whose bash expansion the analysis does not model. `braces`: the
+/// segment had an unquoted `{`.
+fn fail_closed(tokens: &[String], braces: bool) -> bool {
+    tokens.iter().any(|t| {
+        (braces
+            && t.contains('{')
+            && (brace_sequence(t) || (t.contains(char::is_whitespace) && brace_at(t).is_some())))
+            || subscript_runs(t)
+    })
+}
+
+/// A brace sequence `{x..y}` (not `${`): bash expands it to a list of words.
+fn brace_sequence(word: &str) -> bool {
+    let b = word.as_bytes();
+    let mut open = None;
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'{' => open = (j == 0 || b[j - 1] != b'$').then_some(j),
+            b',' => open = None,
+            b'}' => {
+                if let Some(at) = open.take()
+                    && word[at + 1..j].contains("..")
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A `[...]` subscript holding `$(`, a backtick or `$'`: bash evaluates it (arithmetic), running the
+/// substitution even where it was quoted.
+fn subscript_runs(word: &str) -> bool {
+    // one pass: a substitution start with a `[` before it and no `]` between
+    let b = word.as_bytes();
+    let mut open = false;
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'[' => open = true,
+            b']' => open = false,
+            b'`' if open => return true,
+            b'$' if open && matches!(b.get(j + 1), Some(b'(' | b'\'')) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A text that is only a command substitution (`$(f)`, `` `f` ``): what it gives is a command's output.
+fn only_substitution(text: &str) -> bool {
+    let t = pystr::strip_ws(text);
+    t.is_empty()
+        || (t.starts_with("$(") && t.ends_with(')'))
+        || (t.len() > 1 && t.starts_with('`') && t.ends_with('`'))
+}
+
+/// Fail closed: `TAR_OPTIONS` / `GIT_CONFIG_*` set (in `prefix`, the words before the program, or as an
+/// export's argument) anywhere but as the modelled prefix of `tar` / `git`, a git alias from `GIT_CONFIG_*`
+/// or given twice, and `git --config-env`.
+fn option_env_unmodelled(prefix: &[String], prog: &str, args: &[String]) -> bool {
+    let mut aliases: HashSet<String> = HashSet::new();
+    let mut twice = false;
+    for k in 0..args.len().saturating_sub(1) {
+        if prog == "git"
+            && args[k] == "-c"
+            && let Some((key, _)) = args[k + 1].split_once('=')
+            && pystr::lower(key).starts_with("alias.")
+        {
+            twice |= !aliases.insert(pystr::lower(key));
+        }
+    }
+    if twice || (prog == "git" && args.iter().any(|a| a.starts_with("--config-env"))) {
+        return true;
+    }
+    let exported = if EXPORTERS.contains(&prog) { args } else { &[] };
+    prefix.iter().chain(exported).any(|word| {
+        let word = word.as_str();
+        let Some((name, value)) = word.split_once('=').filter(|_| is_assignment(word)) else {
+            return false;
+        };
+        if name == "TAR_OPTIONS" {
+            return !matches!(prog, "tar" | "gtar" | "bsdtar");
+        }
+        if name.starts_with("GIT_CONFIG_") {
+            return prog != "git" || pystr::lower(value).starts_with("alias.");
+        }
+        false
+    })
+}
+
 /// `_first_arg`: the first argument that is not an option.
 fn first_arg(args: &[String]) -> Option<&str> {
     args.iter()
@@ -592,9 +733,45 @@ impl<'a> Ctx<'a> {
     ) -> bool {
         let entry = &self.entries[head];
         after_compound.contains(&head)
-            || (entry.raw.len() == 1
-                && matches!(entry.raw[0].as_str(), "}" | "fi" | "done" | "esac"))
+            || entry.raw.is_empty() // a redirect-only segment: `( ... ) 2>&1 | sh`
+            || (entry.raw.len() == 1 && matches!(entry.raw[0].as_str(), "}" | "fi" | "done" | "esac"))
             || defined.get(&entry.prog).is_some_and(|&at| at < head)
+    }
+
+    /// Fail closed: entry `e`, before a stdin shell in its pipeline, writes only literal text the analysis
+    /// reads: echo/printf, `cat` with no file, a closing word or redirect-only segment, a defined function.
+    fn literal_producer(&self, e: usize, defined: &HashMap<String, usize>) -> bool {
+        let entry = &self.entries[e];
+        match entry.prog.as_str() {
+            "echo" | "printf" | "" => true,
+            "cat" => entry.args.iter().all(|a| a.starts_with('-') && a.len() > 1),
+            name => {
+                (entry.raw.len() == 1
+                    && matches!(entry.raw[0].as_str(), "}" | "fi" | "done" | "esac"))
+                    || defined.get(name).is_some_and(|&at| at < e)
+            }
+        }
+    }
+
+    /// Fail closed: a shell or `source` of `consumers` runs a file an earlier command of the text wrote
+    /// (`printf X > a.sh; sh a.sh`).
+    fn runs_written_file(&self, entries: &[usize], consumers: &[usize]) -> bool {
+        if consumers.is_empty() {
+            return false;
+        }
+        let written: HashSet<&str> = entries
+            .iter()
+            .flat_map(|&e| self.entries[e].redirs.iter())
+            .filter(|r| r.op.starts_with('>') || r.op.starts_with("&>"))
+            .map(|r| r.target.as_str())
+            .collect();
+        !written.is_empty()
+            && consumers.iter().any(|&c| {
+                self.entries[c]
+                    .args
+                    .iter()
+                    .any(|a| written.contains(a.as_str()))
+            })
     }
 
     /// The names the commands `entries` may define as functions, each with its first entry: `f()` lexes as
@@ -753,7 +930,27 @@ impl<'a> Ctx<'a> {
             // before it print (a superset: the compound's own are among them)
             let head = entries[0];
             let unread = texts.is_empty();
-            if unread && self.compound_head(head, &defined, &after_compound) {
+            let compound = self.compound_head(head, &defined, &after_compound);
+            // fail closed: a compound with a redirect or a here-string, or a producer that is not literal
+            // text, before a shell or xargs/parallel
+            let readers = shell.is_some() || !feeders.is_empty();
+            if readers
+                && compound
+                && (!self.group_texts(group).is_empty() || !self.entries[head].redirs.is_empty())
+            {
+                self.halt();
+                return;
+            }
+            if let Some(shell) = shell
+                && entries
+                    .iter()
+                    .take_while(|&&e| e != shell)
+                    .any(|&e| !self.literal_producer(e, &defined))
+            {
+                self.halt();
+                return;
+            }
+            if unread && compound {
                 let upto = new_entries.partition_point(|&e| e < head);
                 for &e in &new_entries[fed_from.min(upto)..upto] {
                     let entry = &self.entries[e];
@@ -767,6 +964,16 @@ impl<'a> Ctx<'a> {
                     }
                 }
                 fed_from = fed_from.max(upto);
+                if readers && texts.is_empty() {
+                    // a compound that prints no literal text (`{ cat <<X ... } | sh`)
+                    self.halt();
+                    return;
+                }
+            }
+            if shell.is_some() && texts.iter().any(|t| only_substitution(t)) {
+                // `sh <<< "$(f)"`: the text is what a command prints (the lexer leaves `""` for it)
+                self.halt();
+                return;
             }
             // C-4: a shell and xargs/parallel also get the decoded texts; an interpreter's `code` does not
             let mut fed = texts.clone();
@@ -832,6 +1039,16 @@ impl<'a> Ctx<'a> {
                 SHELLS.contains(&prog) || prog == "source" || prog == "."
             })
             .collect();
+        // fail closed: `> >(sh)`, `coproc`, a shell running a file the text wrote
+        if (!consumers.is_empty() && text.contains(">("))
+            || new_entries
+                .iter()
+                .any(|&e| self.entries[e].raw.first().is_some_and(|w| w == "coproc"))
+            || self.runs_written_file(&new_entries, &consumers)
+        {
+            self.halt();
+            return;
+        }
         if text.contains("<(") && !consumers.is_empty() {
             let Some(inners) = self.process_substitutions(text) else {
                 return;
@@ -840,6 +1057,11 @@ impl<'a> Ctx<'a> {
                 let Some(bodies) = self.literal_output(&inner, depth) else {
                     return;
                 };
+                if bodies.is_empty() {
+                    // fail closed: `sh < <(f)`, `bash <(curl ...)`: what it prints is not literal
+                    self.halt();
+                    return;
+                }
                 for body in bodies {
                     if self.collect(&body, exempt, depth + 1) {
                         for &e in &consumers {
@@ -1173,6 +1395,10 @@ impl<'a> Ctx<'a> {
         if !self.spend(1 + 2 * size) {
             return None;
         }
+        if fail_closed(&tokens, self.braces) {
+            self.halt();
+            return None;
+        }
         let mut alternates = Vec::new();
         let mut runs = Vec::new();
         let result = strip_prefixes(
@@ -1191,6 +1417,23 @@ impl<'a> Ctx<'a> {
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
+        let prefix = &tokens[..tokens.len().saturating_sub(cmd.len())];
+        if option_env_unmodelled(prefix, &prog, &args) {
+            self.halt();
+            return None;
+        }
+        // an exported command variable runs later, as its prefix form does now
+        if EXPORTERS.contains(&prog.as_str()) {
+            for arg in &args {
+                if let Some((name, value)) = arg.split_once('=')
+                    && COMMAND_ENV.contains(&name)
+                    && !value.is_empty()
+                    && !scripts.iter().any(|s| s == value)
+                {
+                    scripts.push(value.to_string());
+                }
+            }
+        }
         let interpreter = is_interpreter(&prog);
         let code = if interpreter {
             if !self.spend(args.iter().map(|t| WORD + t.len()).sum::<usize>()) {
@@ -1232,7 +1475,14 @@ impl<'a> Ctx<'a> {
         for (k, (at, alternate)) in alternates.into_iter().enumerate() {
             let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
             let other = self.take(result)?;
-            if braced == Some(k) && other.cmd.first() != cmd.first() {
+            if braced == Some(k)
+                && other.cmd.first() != cmd.first()
+                && (other.cmd.len() < alternate.len()
+                    || other
+                        .cmd
+                        .first()
+                        .is_some_and(|w| brace_risky(&prog_name(w))))
+            {
                 self.halt();
                 return None;
             }

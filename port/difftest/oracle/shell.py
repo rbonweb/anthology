@@ -37,6 +37,10 @@ it to the reference too, so the difftest still checks everything else; each such
   pipeline (`_end_seg` below, part C).
 - SH-FW re-review I-2a: a pipeline headed by a compound command or a function call (`( echo X ) | sh`,
   `fi | sh`, `f | sh`) is fed the literal output of the commands before it (`_collect_once`).
+- The fail-closed families (controller ruling after the narrow verification): words, environment and
+  pipelines whose bash behaviour the analysis does not model are too complex (`_fail_closed`,
+  `_option_env_unmodelled`, `_add_command_checked`, and the checks in `_collect_once_body`), as in Rust's
+  collect.rs.
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -138,7 +142,8 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
     main = G._strip_prefixes(entry.raw)[0]
     for alternate in alternates:
         cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
-        if alternate is _BRACE_READING[0] and cmd[:1] != main[:1]:
+        if alternate is _BRACE_READING[0] and cmd[:1] != main[:1] and (
+                len(cmd) < len(alternate) or (cmd and _brace_risky(G._prog_name(cmd[0])))):
             raise G._TooComplex()                         # re-review C-3a
         scripts.extend(script for script in more if script not in scripts)
         if cmd != main:
@@ -470,6 +475,118 @@ def _dedupe(items):
 G._literal_output = _literal_output
 
 
+def _brace_risky(prog):
+    """C-3a: a program a brace-built command word must not become unseen (collect.rs `brace_risky`)."""
+    return (prog in G._SHELLS or bool(G._INTERPRETER.match(prog))
+            or prog in ("echo", "printf", "cat", "tee", "xargs", "parallel", "eval", "source", ".", "exec"))
+
+
+# Rust's `char::is_whitespace` (Unicode White_Space)
+_WHITE_SPACE = frozenset("\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+                         "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
+_EXPORTERS = ("export", "declare", "typeset", "readonly", "local")
+_COMMAND_ENV = ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+                "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND", "PAGER", "EDITOR",
+                "VISUAL", "RSYNC_RSH")
+
+
+def _brace_sequence(word):
+    open_ = None
+    for j, c in enumerate(word):
+        if c == "{":
+            open_ = j if j == 0 or word[j - 1] != "$" else None
+        elif c == ",":
+            open_ = None
+        elif c == "}":
+            if open_ is not None and ".." in word[open_ + 1:j]:
+                return True
+            open_ = None
+    return False
+
+
+def _subscript_runs(word):
+    open_ = False
+    for j, c in enumerate(word):
+        if c == "[":
+            open_ = True
+        elif c == "]":
+            open_ = False
+        elif open_ and (c == "`" or (c == "$" and word[j + 1:j + 2] in ("(", "'"))):
+            return True
+    return False
+
+
+def _fail_closed(tokens, braces):
+    return any(
+        (braces and "{" in t and (_brace_sequence(t)
+                                  or (any(c in _WHITE_SPACE for c in t) and _brace_at(t) is not None)))
+        or _subscript_runs(t)
+        for t in tokens)
+
+
+def _option_env_unmodelled(prefix, prog, args):
+    aliases, twice = set(), False
+    if prog == "git":
+        for k in range(len(args) - 1):
+            if args[k] == "-c" and "=" in args[k + 1]:
+                key = args[k + 1].split("=", 1)[0].lower()
+                if key.startswith("alias."):
+                    twice = twice or key in aliases
+                    aliases.add(key)
+    if twice or (prog == "git" and any(a.startswith("--config-env") for a in args)):
+        return True
+    exported = args if prog in _EXPORTERS else []
+    for word in list(prefix) + list(exported):
+        if "=" not in word or not G._ASSIGNMENT.match(word):
+            continue
+        name, value = word.split("=", 1)
+        if name == "TAR_OPTIONS":
+            if prog not in ("tar", "gtar", "bsdtar"):
+                return True
+        elif name.startswith("GIT_CONFIG_"):
+            if prog != "git" or value.lower().startswith("alias."):
+                return True
+    return False
+
+
+_ADD_COMMAND = G._add_command
+
+
+def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
+    """`_add_command` with Rust's fail-closed checks (collect.rs `add_one`): too complex words, unmodelled
+    option environment; an exported command variable runs its value."""
+    if _fail_closed(tokens, getattr(ctx, "braces", False)):
+        raise G._TooComplex()
+    entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
+    size = 1 + len(entry.args) if entry.prog_path or entry.args else 0
+    prefix = entry.raw[:len(entry.raw) - size]
+    if _option_env_unmodelled(prefix, entry.prog, entry.args):
+        raise G._TooComplex()
+    if entry.prog in _EXPORTERS:
+        for arg in entry.args:
+            name, eq, value = arg.partition("=")
+            if eq and name in _COMMAND_ENV and value:
+                G._collect(value, ctx, exempt, depth + 1)
+    return entry
+
+
+G._add_command = _add_command_checked
+
+
+def _literal_producer(e, at, defined):
+    if e.prog in ("echo", "printf", ""):
+        return True
+    if e.prog == "cat":
+        return all(a.startswith("-") and len(a) > 1 for a in e.args)
+    return (len(e.raw) == 1 and e.raw[0] in _CLOSERS) or defined.get(e.prog, at) < at
+
+
+def _only_substitution(text):
+    t = text.strip()
+    return not t or (t.startswith("$(") and t.endswith(")")) or (
+        len(t) > 1 and t.startswith("`") and t.endswith("`"))
+
+
 def _collect_once(text, ctx, exempt, depth):
     """`_collect_once`, with each echo/printf text also fed decoded to a shell and to xargs/parallel, not
     to an interpreter's code (C-4); brace readings scoped to the segment (re-review F-1); a pipeline headed
@@ -518,14 +635,28 @@ def _collect_once_body(text, ctx, exempt, depth):
                 decoded += _echo_decoded(e.prog, e.args)
         head = entries[0]
         at = position[id(head)]
-        if not texts and (id(head) in after_compound
-                          or (len(head.raw) == 1 and head.raw[0] in _CLOSERS)
-                          or defined.get(head.prog, at) < at):
+        compound = (id(head) in after_compound or not head.raw
+                    or (len(head.raw) == 1 and head.raw[0] in _CLOSERS)
+                    or defined.get(head.prog, at) < at)
+        readers = shell is not None or bool(feeders)
+        if readers and compound and (entries[0].group.texts or head.redirs):
+            raise G._TooComplex()                         # fail closed
+        if shell is not None:
+            for e in entries:
+                if e is shell:
+                    break
+                if not _literal_producer(e, position[id(e)], defined):
+                    raise G._TooComplex()                 # fail closed: `curl | sh`
+        if not texts and compound:
             for e in new_entries[min(fed_from, at):at]:
                 if e.prog in ("echo", "printf"):
                     texts.append(G._echo_text(e))
                     decoded += _echo_decoded(e.prog, e.args)
             fed_from = max(fed_from, at)
+            if readers and not texts:
+                raise G._TooComplex()                     # fail closed: no literal output
+        if shell is not None and any(_only_substitution(t) for t in texts):
+            raise G._TooComplex()                         # fail closed: `sh <<< "$(f)"`
         fed = list(texts)
         fed += [t for t in _dedupe(decoded) if t not in fed]
         for entry in interpreters:
@@ -536,9 +667,18 @@ def _collect_once_body(text, ctx, exempt, depth):
         for entry in feeders:
             ctx.braces = id(entry) in braced
             G._feed_stdin(entry, fed, ctx, depth)
+    consumers = [e for e in new_entries if e.prog in G._SHELLS or e.prog in ("source", ".")]
+    written = {target for e in new_entries for op, target in e.redirs
+               if op.startswith(">") or op.startswith("&>")}
+    if ((consumers and ">(" in text) or any(e.raw[:1] == ["coproc"] for e in new_entries)
+            or (written and any(a in written for c in consumers for a in c.args))):
+        raise G._TooComplex()                             # fail closed
     if "<(" in text and any(e.prog in G._SHELLS or e.prog in ("source", ".") for e in new_entries):
         for inner in G._process_substitutions(text):
-            for body in G._literal_output(inner, depth):
+            bodies = G._literal_output(inner, depth)
+            if not bodies:
+                raise G._TooComplex()                     # fail closed: `sh < <(f)`
+            for body in bodies:
                 G._collect(body, ctx, exempt, depth + 1)
     fd_shells = {id(e) for e in new_entries if G._reads_fd_as_shell(e)}
     for entry in new_entries if fd_shells else ():

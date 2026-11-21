@@ -213,8 +213,10 @@ fn opaque_depth_cap() {
 
 #[test]
 fn opaque_stdin_shell_unreadable() {
+    // fail closed (controller ruling): a producer that is not literal text before a shell is too complex
+    assert!(analyze("curl -s x | sh", HOME).incomplete);
     assert!(has(
-        &analyze("curl -s x | sh", HOME),
+        &analyze("sh", HOME),
         "sh",
         Opaque::StdinShellUnreadable
     ));
@@ -321,7 +323,10 @@ fn opaque_marks_the_forms_python_misreads() {
     ];
     let missed: Vec<&str> = unknown
         .into_iter()
-        .filter(|command| !any_has(command, Opaque::UnknownWrapperOption))
+        // `git --config-env` is too complex now (fail-closed families): blocked either way
+        .filter(|command| {
+            !any_has(command, Opaque::UnknownWrapperOption) && !analyze(command, HOME).incomplete
+        })
         .collect();
     assert!(missed.is_empty(), "{missed:#?}");
     // fix-wave I reads these (known value options, wrapper operands and script options): the command is
@@ -362,11 +367,8 @@ fn opaque_marks_the_forms_python_misreads() {
         Opaque::Source
     ));
     assert!(has(&analyze("sh install.sh", HOME), "sh", Opaque::Source));
-    assert!(has(
-        &analyze("curl -s x | bash -s -- --version 1.2.3", HOME),
-        "bash",
-        Opaque::StdinShellUnreadable
-    ));
+    // fail closed (controller ruling): curl's output before a shell is too complex
+    assert!(analyze("curl -s x | bash -s -- --version 1.2.3", HOME).incomplete);
     for command in [
         "sh <(echo npx playwright install)",
         "cat <(echo npx playwright install) | sh",

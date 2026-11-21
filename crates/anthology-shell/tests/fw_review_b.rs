@@ -209,6 +209,19 @@ fn assert_runs(commands: &[&str]) {
     assert!(missed.is_empty(), "missed installs:\n{}", missed.join("\n"));
 }
 
+/// Each command is blocked: an install entry or alternate, or too complex (fail-closed families).
+#[track_caller]
+fn assert_blocked(commands: &[&str]) {
+    let missed: Vec<String> = commands
+        .iter()
+        .filter_map(|command| {
+            let a = analyze(command, HOME);
+            (!a.incomplete && !installs(&a)).then(|| format!("{command:?}: {}", summary(&a)))
+        })
+        .collect();
+    assert!(missed.is_empty(), "allowed:\n{}", missed.join("\n"));
+}
+
 /// No command is a browser install (negative controls): no entry and no alternate reading is G1.
 #[track_caller]
 fn assert_clear(commands: &[&str]) {
@@ -294,7 +307,10 @@ fn decoded_echo_text_is_not_interpreter_code() {
 
 #[test]
 fn subscripts_in_single_quotes_run_their_substitutions() {
-    assert_runs(&[
+    // too complex now (fail-closed families: a subscript holding `$(` in any word), blocked either way
+    assert_blocked(&[
+        "printf 'a[$(npx playwright install)]'",
+        "[ -f 'a[$(npx playwright install)]' ]",
         "let 'a[$(npx playwright install)]=1'",
         "let 'a[`npx playwright install`]=1'",
         "[[ 'a[$(npx playwright install)]' -eq 0 ]]",
@@ -316,9 +332,7 @@ fn subscripts_in_single_quotes_run_their_substitutions() {
         "[[ $x == a[b] ]]",
         "read -r line",
         "printf -v out '%s' x",
-        "printf 'a[$(npx playwright install)]'",
         "test -v HOME",
-        "[ -f 'a[$(npx playwright install)]' ]",
     ]);
 }
 
@@ -343,11 +357,12 @@ fn brace_expansion_gives_alternate_readings() {
         "{xargs,npx} <<< 'playwright install'",
         "echo x; {echo,'npx playwright install'} | bash",
         "sh -c \"{echo,'npx playwright install'} | sh\"",
+        // fail-closed families: a brace sequence
+        "echo {a..z}",
     ]);
     assert_clear(&[
         "cp file{,.bak}",
         "mkdir -p src/{a,b,c}/{d,e,f}",
-        "echo {a..z}",
         "awk '{print $1, $2}' f",
         "find . -exec rm {} \\;",
         "echo ${x,,}",

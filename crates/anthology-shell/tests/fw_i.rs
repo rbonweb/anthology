@@ -214,6 +214,19 @@ fn assert_runs(commands: &[&str]) {
     assert!(missed.is_empty(), "missed installs:\n{}", missed.join("\n"));
 }
 
+/// Each command is blocked: an install entry or alternate, or too complex (fail-closed families).
+#[track_caller]
+fn assert_blocked(commands: &[&str]) {
+    let missed: Vec<String> = commands
+        .iter()
+        .filter_map(|command| {
+            let a = analyze(command, HOME);
+            (!a.incomplete && !installs(&a)).then(|| format!("{command:?}: {}", summary(&a)))
+        })
+        .collect();
+    assert!(missed.is_empty(), "allowed:\n{}", missed.join("\n"));
+}
+
 /// No command is a browser install (negative controls): no entry and no alternate reading is G1.
 #[track_caller]
 fn assert_clear(commands: &[&str]) {
@@ -739,6 +752,10 @@ fn script_options_and_subcommand_wrappers_run_commands() {
 
 #[test]
 fn git_settings_and_subcommands_run_commands() {
+    assert_blocked(&[
+        // an alias from GIT_CONFIG_* is too complex (fail-closed families)
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!npx playwright install' git x",
+    ]);
     assert_runs(&[
         "git -c alias.x='!npx playwright install' x",
         "git -c 'alias.x=!npx playwright install' x",
@@ -749,7 +766,6 @@ fn git_settings_and_subcommands_run_commands() {
         "GIT_PAGER='npx playwright install' git log",
         "GIT_CONFIG_PARAMETERS=\"'alias.x=!npx playwright install'\" git x",
         "GIT_CONFIG_PARAMETERS=\"'alias.x'='!npx playwright install'\" git x",
-        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!npx playwright install' git x",
         "git config alias.pw '!npx playwright install' && git pw",
         "GIT_EDITOR='npx playwright install' git commit --allow-empty",
         "git -c core.editor='npx playwright install' commit",

@@ -622,7 +622,7 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "printf -- 'npx\\x20playwright install' | sh",
         "printf 'npx %s install\\n' playwright | sh",
         "printf '%c%s' n 'px playwright install' | sh",
-        // C-5a (Rust-only)
+        // C-5a (the fail-closed families: the oracle applies them too)
         "printf -v'a[$(npx playwright install)]' x",
         "a=(1); unset 'a[$(npx playwright install)]'",
         // I-2a (the oracle applies it too), and `function f` bodies (Rust-only)

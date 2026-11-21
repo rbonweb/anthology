@@ -245,10 +245,11 @@ fn assert_marked(commands: &[&str], marked: bool) {
         .iter()
         .filter_map(|command| {
             let a = analyze(command, HOME);
-            let got = a
-                .entries
-                .iter()
-                .any(|e| e.opaque.contains(&Opaque::UnknownWrapperOption));
+            // too complex (fail-closed families: `git --config-env`) counts as marked
+            let got = a.incomplete
+                || a.entries
+                    .iter()
+                    .any(|e| e.opaque.contains(&Opaque::UnknownWrapperOption));
             (got != marked).then(|| format!("{command:?}: {:?}", a.entries))
         })
         .collect();

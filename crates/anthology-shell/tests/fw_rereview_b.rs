@@ -211,6 +211,19 @@ fn assert_runs(commands: &[&str]) {
     assert!(missed.is_empty(), "missed installs:\n{}", missed.join("\n"));
 }
 
+/// Each command is blocked: an install entry or alternate, or too complex (fail-closed families).
+#[track_caller]
+fn assert_blocked(commands: &[&str]) {
+    let missed: Vec<String> = commands
+        .iter()
+        .filter_map(|command| {
+            let a = analyze(command, HOME);
+            (!a.incomplete && !installs(&a)).then(|| format!("{command:?}: {}", summary(&a)))
+        })
+        .collect();
+    assert!(missed.is_empty(), "allowed:\n{}", missed.join("\n"));
+}
+
 /// No command is a browser install (negative controls): no entry and no alternate reading is G1.
 #[track_caller]
 fn assert_clear(commands: &[&str]) {
@@ -285,7 +298,7 @@ fn printf_text_is_read_without_its_dashes_and_with_its_format_filled() {
 
 #[test]
 fn attached_printf_v_and_unset_run_subscripts() {
-    assert_runs(&[
+    assert_blocked(&[
         "printf -v'a[$(npx playwright install)]' x",
         "a=(1); unset 'a[$(npx playwright install)]'",
         "unset -v 'a[$(npx playwright install)]'",
@@ -318,8 +331,9 @@ fn compound_commands_and_function_calls_piped_to_a_shell_run_their_output() {
         // `function f` bodies are commands too
         "function f { npx playwright install; }; f",
     ]);
+    // fail closed: a producer that is not literal text before a shell
+    assert_incomplete(&["echo hi; cat x | sh"]);
     assert_clear(&[
-        "echo hi; cat x | sh",
         "( cd web && npm ci ) | tee log",
         "{ echo a; echo b; } > out.txt",
         "if true; then echo ok; fi | grep ok",

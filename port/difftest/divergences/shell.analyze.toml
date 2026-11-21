@@ -113,26 +113,6 @@ reason = "Rust stricter: SH-FW review I-1, an fd cluster ending in x (-HIx) runs
 
 [[divergence]]
 class = "D-8"
-case = "fw:26"
-reason = "Rust stricter: SH-FW review C-5, let evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
-
-[[divergence]]
-class = "D-8"
-case = "fw:27"
-reason = "Rust stricter: SH-FW review C-5, [[ -eq evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
-
-[[divergence]]
-class = "D-8"
-case = "fw:28"
-reason = "Rust stricter: SH-FW review C-5, printf -v evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
-
-[[divergence]]
-class = "D-8"
-case = "fw:29"
-reason = "Rust stricter: SH-FW review C-5, test -v evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
-
-[[divergence]]
-class = "D-8"
 case = "fw:37"
 reason = "Rust stricter: SH-FW re-review F-2, every fed stdin line is read (the reference drops the 65th on); bash runs it, the reference allows it."
 
@@ -147,7 +127,8 @@ case = "fw:39"
 reason = "Rust stricter: SH-FW review I-3, more than 64 alternate readings are too complex (the reference drops the 65th); a wrapper there would run it, the reference allows it."
 
 # The one scoped re-review of the hardening (SH-FW re-review): the narrow, Rust-only fixes. The oracle
-# applies the grammar-wide ones itself (F-1, C-3a, C-4a, I-2a; see port/difftest/oracle/shell.py).
+# applies the grammar-wide ones itself (F-1, C-3a, C-4a, I-2a, and the fail-closed families, which also
+# cover the C-5 / C-5a subscripts; see port/difftest/oracle/shell.py).
 
 [[divergence]]
 class = "D-8"
@@ -158,16 +139,6 @@ reason = "Rust stricter: SH-FW re-review C-2a, a git alias without ! is read as 
 class = "D-8"
 case = "fw:41"
 reason = "Rust stricter: SH-FW re-review C-1a, GNU tar reads TAR_OPTIONS before its arguments, so --checkpoint-action there runs its exec= command (GNU tar 1.35); the reference allows it."
-
-[[divergence]]
-class = "D-8"
-case = "fw:47"
-reason = "Rust stricter: SH-FW re-review C-5a, printf -v<name> attached evaluates the subscript's $(...) inside single quotes (bash 5.2); the reference allows it."
-
-[[divergence]]
-class = "D-8"
-case = "fw:48"
-reason = "Rust stricter: SH-FW re-review C-5a, unset evaluates the subscript's $(...) inside single quotes (bash 5.2 and 3.2); the reference allows it."
 
 [[divergence]]
 class = "D-8"
