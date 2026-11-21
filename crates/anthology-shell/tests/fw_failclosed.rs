@@ -232,3 +232,36 @@ fn the_benign_list_stays_allowed() {
         .collect();
     assert!(wrong.is_empty(), "blocked:\n{}", wrong.join("\n"));
 }
+
+#[test]
+fn integer_sequences_are_read_after_the_program_word_only() {
+    // controller ruling: integer sequences expand after the program word; letter sequences, and any
+    // sequence before or as the program word, are too complex
+    for command in [
+        "mkdir d{1..3}",
+        "touch f{01..03}.txt",
+        "echo {0..20..5}",
+        "echo {3..1}",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(!a.incomplete && !installs(&a), "{command}: {}", summary(&a));
+        assert_eq!(a.alternates.len(), 1, "{command}: {}", summary(&a));
+    }
+    let a = analyze("touch f{01..03}.txt", HOME);
+    assert_eq!(a.alternates[0].args, ["f01.txt", "f02.txt", "f03.txt"]);
+    let a = analyze("echo {0..20..5} {-2..1}", HOME);
+    assert_eq!(
+        a.alternates[0].args,
+        ["0", "5", "10", "15", "20", "-2", "-1", "0", "1"]
+    );
+    for command in [
+        "{1..1}npx playwright install",
+        "n{1..1}px playwright install",
+        "sudo {1..2} npx playwright install",
+        "echo {a..c}",
+        "npx playwright {i..i}nstall",
+        "echo {1..99999}",
+    ] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+}

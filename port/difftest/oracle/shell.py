@@ -259,6 +259,15 @@ def _brace_at(word):
 def _expand_braces(word, level, out):
     """Bash's brace expansion of `word`, appended to `out`; too complex past `_MAX_BRACE_WORDS`."""
     found = _brace_at(word)
+    sequence = next(((o, c, w) for o, c in _brace_sequences(word)
+                     for w in [_int_sequence(word[o + 1:c])] if w is not None), None)
+    if sequence is not None and (found is None or sequence[0] < found[0]):
+        if level >= _MAX_BRACE_DEPTH:
+            raise G._TooComplex()
+        o, c, words = sequence
+        for number in words:
+            _expand_braces(word[:o] + number + word[c + 1:], level + 1, out)
+        return
     if found is None:
         if len(out) >= _MAX_BRACE_WORDS:
             raise G._TooComplex()
@@ -277,7 +286,7 @@ def _brace_reading(tokens):
     """C-3: `tokens` with every brace expression expanded, empty words dropped; None without one."""
     words, reading, found = [], [], False
     for token in tokens:
-        if "{" not in token or _brace_at(token) is None:
+        if "{" not in token or (_brace_at(token) is None and not _brace_sequences(token)):
             reading.append(token)
             continue
         found = True
@@ -490,8 +499,9 @@ _COMMAND_ENV = ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_PAGER", "GIT_EDITOR", "GIT_SE
                 "VISUAL", "RSYNC_RSH")
 
 
-def _brace_sequence(word):
-    open_ = None
+def _brace_sequences(word):
+    """collect.rs `brace_sequences`: each `{x..y}` (not `${`) as (open, close)."""
+    out, open_ = [], None
     for j, c in enumerate(word):
         if c == "{":
             open_ = j if j == 0 or word[j - 1] != "$" else None
@@ -499,9 +509,44 @@ def _brace_sequence(word):
             open_ = None
         elif c == "}":
             if open_ is not None and ".." in word[open_ + 1:j]:
-                return True
+                out.append((open_, j))
             open_ = None
-    return False
+    return out
+
+
+def _int_sequence(inner):
+    """collect.rs `int_sequence`: an integer sequence's words, or None."""
+    parts = inner.split("..")
+
+    def num(p):
+        d = p[1:] if p.startswith("-") else p
+        if not d or len(d) > 18 or not all(c in "0123456789" for c in d):
+            return None
+        return int(p)
+    if len(parts) not in (2, 3):
+        return None
+    start, end = num(parts[0]), num(parts[1])
+    step = num(parts[2]) if len(parts) == 3 else 1
+    if start is None or end is None or step is None:
+        return None
+    step = max(abs(step), 1)
+
+    def padded(p):
+        d = p[1:] if p.startswith("-") else p
+        return len(d) > 1 and d.startswith("0")
+    width = max(len(parts[0]), len(parts[1])) if padded(parts[0]) or padded(parts[1]) else 0
+    count = abs(start - end) // step + 1
+    if count > _MAX_BRACE_WORDS:
+        return None
+    out, n = [], start
+    for _ in range(count):
+        out.append("-" + str(-n).zfill(max(width - 1, 0)) if n < 0 else str(n).zfill(width))
+        n = n + step if start <= end else n - step
+    return out
+
+
+def _letter_sequence(word):
+    return any(_int_sequence(word[o + 1:c]) is None for o, c in _brace_sequences(word))
 
 
 def _brace_item_space(word):
@@ -523,7 +568,7 @@ def _subscript_runs(word):
 
 def _fail_closed(tokens, braces):
     return any(
-        (braces and "{" in t and (_brace_sequence(t) or _brace_item_space(t)))
+        (braces and "{" in t and (_letter_sequence(t) or _brace_item_space(t)))
         or _subscript_runs(t)
         for t in tokens)
 
@@ -569,6 +614,8 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     finally:
         G._STATE.left, G._STATE.paren_lines = left, paren_lines
     prefix = list(tokens)[:len(tokens) - len(cmd)]
+    if getattr(ctx, "braces", False) and any(_brace_sequences(t) for t in list(tokens)[:len(prefix) + 1]):
+        raise G._TooComplex()                             # a sequence before or as the program word
     if _option_env_unmodelled(prefix, G._prog_name(cmd[0]) if cmd else "", cmd[1:]):
         raise G._TooComplex()
     entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
