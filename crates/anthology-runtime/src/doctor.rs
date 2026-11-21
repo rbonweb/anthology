@@ -10,12 +10,15 @@
 //! Differences from the Python, all forced:
 //! - F-5: the first check is `anthology_binary` ([`bootstrap::anthology_binary_check`], GC-14)
 //!   instead of `python3`. It checks the binary of the guardrails plugin that really runs
-//!   ([`guardrails_loc::inspect`]); a guardrails plugin with any [`guardrails_loc::Problem`]
-//!   counts as not found ("nothing to check").
+//!   ([`guardrails_loc::inspect`]) whenever that finds a folder, a disabled one included; no
+//!   folder is "anthology-guardrails not found; nothing to check".
 //! - There is no script folder to fall back on, so the plugin root is the `plugin_root`
-//!   argument, else `$CLAUDE_PLUGIN_ROOT`. When neither is set, the checks that need it (`rtk`
-//!   without an explicit lock, `plugin_read_rule`, `path_wrappers`) say so with `ok = None`
-//!   ([`UNKNOWN_ROOT`]).
+//!   argument, else `$CLAUDE_PLUGIN_ROOT`. When neither is set, the checks that need it
+//!   (`anthology_binary`, `rtk` without an explicit lock, `plugin_read_rule`, `path_wrappers`)
+//!   say so with `ok = None` ([`UNKNOWN_ROOT`]); nothing is looked up relative to the working
+//!   folder.
+//! - Files a cloned repo controls are read bounded (2 MiB, regular files only) but parsed to
+//!   CPython 3.12's nesting limit, as Python reads them: doctor only reports.
 //! - Python's `check failed: <exception>` comes from an `Err` a check returns (an `OSError`
 //!   Python would raise) or from a panic inside a check (a seam in tests).
 //! - `shutil.which` reads only the `Env` (GC-18): without `PATH` it searches `CS_PATH`, where
@@ -47,7 +50,7 @@ use anthology_pycompat::json::{self, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
 
-use crate::compat::{self, pathlib_child, pathlib_parent, pathlib_str, realpath};
+use crate::compat::{self, Opened, pathlib_child, pathlib_parent, pathlib_str, realpath};
 use crate::{bootstrap, guardrails_loc, rtk_install};
 
 /// `SYSTEM_APPLICATIONS` (a [`DoctorLimits`] field in tests).
@@ -428,6 +431,18 @@ fn real(cwd: &Path) -> PathBuf {
     realpath(cwd).unwrap_or_else(|_| cwd.to_path_buf())
 }
 
+/// `compat.read_json(path, REPO_READ_LIMIT)` for a file a cloned repo controls: a regular file
+/// (a link to one is fine) of at most 2 MiB, else `None`. It is parsed to CPython 3.12's own
+/// nesting limit, as Python parses it (compat's 512-level cap is for the fail-closed guard
+/// lookup; doctor only reports). JSON `null` is `None`, as in Python.
+fn read_repo_json(path: &Path) -> Option<Value> {
+    match compat::open_read(path, Some(compat::REPO_READ_LIMIT)) {
+        Opened::Bytes(raw) => compat::loads_user(&compat::decode_text(&raw)),
+        Opened::Absent | Opened::Refused => None,
+    }
+    .filter(|v| !v.is_null())
+}
+
 fn state(env: &Env) -> Option<Value> {
     compat::read_json(&compat::config_dir(env).join("anthology").join("state.json"))
         .filter(|v| v.as_object().is_some())
@@ -461,7 +476,7 @@ fn pathlib_is_dir(p: &[u8]) -> Result<bool, PyExc> {
     match fs::metadata(OsStr::from_bytes(p)) {
         Ok(m) => Ok(m.is_dir()),
         Err(e) if ignorable(&e) => Ok(false),
-        Err(e) => Err(os_error(e, p)),
+        Err(e) => Err(os_error(e, &pathlib_str(p))),
     }
 }
 
@@ -568,9 +583,7 @@ fn project_approval(env: &Env, claude_json: &Map, here: &Path) -> Approval {
     }
     let repo_values: Vec<Option<Value>> = ["settings.json", "settings.local.json"]
         .iter()
-        .map(|name| {
-            compat::read_json_limited(&here.join(".claude").join(name), compat::REPO_READ_LIMIT)
-        })
+        .map(|name| read_repo_json(&here.join(".claude").join(name)))
         .collect();
     let repo: Vec<&Map> = repo_values.iter().filter_map(|v| obj(v.as_ref())).collect();
     let approving: Vec<&Map> = if trusted {
@@ -636,7 +649,7 @@ pub fn find_mcp_servers(env: &Env, cwd: &Path, limits: &DoctorLimits) -> Vec<Mcp
 
     let top = compat::repo_top(cwd);
     for folder in self_and_parents(&here) {
-        let mcp = compat::read_json_limited(&folder.join(".mcp.json"), compat::REPO_READ_LIMIT);
+        let mcp = read_repo_json(&folder.join(".mcp.json"));
         if let Some(mcp) = mcp {
             let names = servers_in(obj(Some(&mcp)).and_then(|m| m.get("mcpServers")));
             let approval = project_approval(env, data, &here);
@@ -714,7 +727,7 @@ fn add(found: &mut Vec<McpServer>, names: Vec<String>, scope: &'static str, head
 /// `.claude-plugin/plugin.json` and `plugin.json`, all read bounded.
 fn plugin_server_names(path: &Path) -> Vec<String> {
     let mut names = Vec::new();
-    let mcp = compat::read_json_limited(&path.join(".mcp.json"), compat::REPO_READ_LIMIT);
+    let mcp = read_repo_json(&path.join(".mcp.json"));
     if let Some(m) = obj(mcp.as_ref()) {
         match m.get("mcpServers") {
             Some(inner @ Value::Object(_)) => names.extend(servers_in(Some(inner))),
@@ -725,7 +738,7 @@ fn plugin_server_names(path: &Path) -> Vec<String> {
         path.join(".claude-plugin").join("plugin.json"),
         path.join("plugin.json"),
     ] {
-        let meta = compat::read_json_limited(&manifest, compat::REPO_READ_LIMIT);
+        let meta = read_repo_json(&manifest);
         if let Some(m) = obj(meta.as_ref()) {
             names.extend(servers_in(m.get("mcpServers")));
         }
@@ -1123,22 +1136,23 @@ fn check_subagent_model(env: &Env, cwd: &Path) -> CheckResult {
     }
 }
 
-/// F-5: the guardrails plugin's anthology binary (GC-14), for the guardrails that really runs.
+/// F-5: the guardrails plugin's anthology binary (GC-14), for the guardrails folder
+/// `guardrails_loc` finds (a disabled one too: a repo's settings file can mark it disabled).
+/// Without a plugin root nothing is looked up (the sibling lookup would be relative to the
+/// working folder, which a cloned repo controls).
 fn check_anthology_binary(
     env: &Env,
     root: Option<&Path>,
     cwd: &Path,
     deps: &DoctorDeps,
 ) -> CheckResult {
-    let loc = guardrails_loc::inspect(root.unwrap_or(Path::new("")), env, cwd);
-    let guard_root = if loc.problem.is_none() {
-        loc.root
-    } else {
-        None
+    let Some(root) = root else {
+        return ok(None, UNKNOWN_ROOT);
     };
+    let loc = guardrails_loc::inspect(root, env, cwd);
     let (system, machine) = (deps.uname)();
     Ok(bootstrap::anthology_binary_check_with(
-        guard_root.as_deref(),
+        loc.root.as_deref(),
         env,
         (&system, &machine),
     ))
@@ -1303,8 +1317,7 @@ pub fn installed_plugins(env: &Env) -> Map {
 
 /// `find_duplicates(installed_plugins(env))` (plan §3.6). `cwd` is unused: the installs that
 /// count are in the user's config.
-pub fn find_duplicates(env: &Env, cwd: &Path) -> Vec<Duplicate> {
-    let _ = cwd;
+pub fn find_duplicates(env: &Env, _cwd: &Path) -> Vec<Duplicate> {
     find_duplicates_in(installed_plugins_state(env).0.as_ref())
 }
 

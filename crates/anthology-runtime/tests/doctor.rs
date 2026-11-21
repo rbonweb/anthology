@@ -1868,3 +1868,165 @@ mod subagent_model_test {
         assert_eq!(doctor::find_mcp_servers(&env, &c.cwd, &c.deps().limits), []);
     }
 }
+
+/// Regression tests from the RT1b review (not ledger targets): the `anthology_binary` wiring
+/// (F-5), the unknown plugin root, and Python's reading of project `.mcp.json` files.
+mod review_test {
+    use super::*;
+    use anthology_core::lock;
+    use anthology_core::platform::Target;
+    use anthology_runtime::bootstrap;
+
+    const VERSION: &str = "0.1.0";
+    const BINARY: &[u8] = b"\x7fELF fake anthology binary";
+    const TARBALL: &[u8] = b"anthology tarball";
+
+    /// `plugins/anthology` and its guardrails sibling with a valid anthology.lock; with
+    /// `install`, a current `<ah>/bin/<version>/` too. Returns the anthology plugin root.
+    fn guardrails(c: &EnvCase, install: bool) -> PathBuf {
+        let root = c.tmp.join("plugins").join("anthology");
+        fs::create_dir_all(&root).expect("plugin");
+        let guard = c.tmp.join("plugins").join("anthology-guardrails");
+        write(&guard.join("hooks").join("guard.sh"), "#!/bin/sh\n");
+        let sha256 = Target::ALL
+            .into_iter()
+            .map(|t| (t, release::sha256_hex(TARBALL)))
+            .collect();
+        let lock = Lock {
+            version: VERSION.into(),
+            tag: format!("anthology-bin--v{VERSION}"),
+            repo: "example/anthology".into(),
+            sha256,
+        };
+        write(
+            &guard.join("anthology.lock"),
+            &lock::render_anthology(&lock),
+        );
+        if install {
+            let vdir = c.config.join("anthology").join("bin").join(VERSION);
+            write_bytes(&vdir.join("anthology"), BINARY);
+            fs::set_permissions(vdir.join("anthology"), fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+            write(
+                &vdir.join(".bin-sha256"),
+                &format!("{}\n", release::sha256_hex(BINARY)),
+            );
+            write(
+                &vdir.join(".sha256"),
+                &format!("{}\n", release::sha256_hex(TARBALL)),
+            );
+        }
+        root
+    }
+
+    fn binary(c: &EnvCase, root: &Path) -> Check {
+        c.check("anthology_binary", &[], root)
+    }
+
+    #[test]
+    fn anthology_binary_matches_the_lock_through_the_live_guardrails() {
+        let c = EnvCase::new();
+        let root = guardrails(&c, true);
+        let x = binary(&c, &root);
+        assert_eq!((x.ok, x.detail.as_str()), (Some(true), bootstrap::CHECK_OK));
+    }
+
+    #[test]
+    fn anthology_binary_not_installed_and_tampered() {
+        let c = EnvCase::new();
+        let root = guardrails(&c, false);
+        let x = binary(&c, &root);
+        assert_eq!(x.ok, Some(false));
+        let want = format!("the guardrails' anthology binary ({VERSION}) is not installed");
+        assert!(x.detail.starts_with(&want), "{x:?}");
+        let root = guardrails(&c, true);
+        let bin = c
+            .config
+            .join("anthology/bin")
+            .join(VERSION)
+            .join("anthology");
+        fs::write(&bin, b"\x7fELF swapped").expect("tamper");
+        let x = binary(&c, &root);
+        assert_eq!(x.ok, Some(false));
+        assert!(
+            x.detail.contains("does not match its install marker"),
+            "{x:?}"
+        );
+    }
+
+    #[test]
+    fn anthology_binary_still_checks_a_disabled_guardrails_and_names_a_missing_one() {
+        let c = EnvCase::new();
+        let root = guardrails(&c, true);
+        write(
+            &c.config.join("settings.json"),
+            r#"{"enabledPlugins": {"anthology-guardrails@anthology": false}}"#,
+        );
+        assert_eq!(binary(&c, &root).ok, Some(true));
+        let lone = c.tmp.join("lone").join("anthology");
+        fs::create_dir_all(&lone).expect("lone");
+        let x = binary(&c, &lone);
+        assert_eq!(
+            (x.ok, x.detail.as_str()),
+            (None, bootstrap::CHECK_NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn an_unknown_plugin_root_is_never_guessed() {
+        // a guardrails-like folder in the working folder must not be picked up
+        let c = EnvCase::new();
+        let fake = c.cwd.join("anthology-guardrails");
+        write(&fake.join("hooks").join("guard.sh"), "#!/bin/sh\n");
+        write(&fake.join("anthology.lock"), "{}");
+        let all = c.checks_with(&c.env, Path::new(""), &c.cwd, &c.deps());
+        for name in ["anthology_binary", "rtk", "path_wrappers"] {
+            let got = (all[name].ok, all[name].detail.as_str());
+            assert_eq!(got, (None, doctor::UNKNOWN_ROOT), "{name}");
+        }
+        c.write_state(r#"{"setup_done": "0.1.0"}"#);
+        let all = c.checks_with(&c.env, Path::new(""), &c.cwd, &c.deps());
+        assert_eq!(all["plugin_read_rule"].detail, doctor::UNKNOWN_ROOT);
+        // CLAUDE_PLUGIN_ROOT stands in for the argument
+        let env = c.env.clone().with_os("CLAUDE_PLUGIN_ROOT", plugin());
+        let all = c.checks_with(&env, Path::new(""), &c.cwd, &c.deps());
+        assert_ne!(all["path_wrappers"].detail, doctor::UNKNOWN_ROOT);
+    }
+
+    #[test]
+    fn a_null_project_mcp_json_counts_as_absent() {
+        let c = EnvCase::new();
+        write(&c.cwd.join(".mcp.json"), "null");
+        write(&c.tmp.join(".mcp.json"), r#"{"mcpServers": {"outer": {}}}"#);
+        let names: Vec<String> = c.find(&c.cwd).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["outer"]);
+    }
+
+    #[test]
+    fn repo_files_nest_as_deep_as_python_reads_them() {
+        let c = EnvCase::new();
+        let deep = format!("{}{}", "[".repeat(600), "]".repeat(600));
+        write(
+            &c.cwd.join(".mcp.json"),
+            &format!(r#"{{"mcpServers": {{"inner": {{}}}}, "x": {deep}}}"#),
+        );
+        write(&c.tmp.join(".mcp.json"), r#"{"mcpServers": {"outer": {}}}"#);
+        // the 600-deep file is read, so the walk stops there
+        assert_eq!(c.loaded(), loaded(&[("inner", false)]));
+        write(
+            &c.config.join("settings.json"),
+            r#"{"enableAllProjectMcpServers": true}"#,
+        );
+        assert_eq!(c.loaded(), loaded(&[("inner", true)]));
+        c.user_json(&format!(
+            r#"{{"projects": {{{}: {{"hasTrustDialogAccepted": true}}}}}}"#,
+            js(&c.cwd)
+        ));
+        write(
+            &c.cwd.join(".claude").join("settings.json"),
+            &format!(r#"{{"disabledMcpjsonServers": ["inner"], "x": {deep}}}"#),
+        );
+        // the deep repo settings still disable it
+        assert_eq!(c.loaded(), loaded(&[("inner", false)]));
+    }
+}

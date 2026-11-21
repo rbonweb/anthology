@@ -34,7 +34,11 @@
 //! timeout is unit-tested through the `run` seam), no `PATH` entry that is empty (it would look
 //! in each process's own working folder), no file whose mode leaves its owner without access
 //! (`os.access` is approximated by "some execute bit", RT1a), no deep JSON in a container
-//! `rtk_path` or `data_dir` (Python's `str()` raises `RecursionError` there: D-1).
+//! `rtk_path` or `data_dir` (Python's `str()` raises `RecursionError` there: D-1), and no repo
+//! settings file 513 to 9,997 levels deep that sets the subagent model (compat's read refuses
+//! that band on purpose, RT1a's ruling; doctor's own repo reads parse it, as Python does, and
+//! the generator does build such files with approval keys, and project `.mcp.json` files that
+//! deep, `null`, or with a second one higher up).
 
 use std::path::{Path, PathBuf};
 
@@ -1245,14 +1249,31 @@ fn rand_mcp(rng: &mut Rng, b: &mut B) {
     // the project .mcp.json, at one of three heights, and the git root
     if rng.chance(0.7) {
         let at = *rng.pick(&[PROJ, PROJ, SUB, "w", "w/proj/pkg"]);
-        let body = match rng.below(12) {
+        let body = match rng.below(14) {
             0 => r#"{"mcpServers": ["a"]}"#.to_string(),
             1 => "[1, 2".to_string(),
             2 => "[]".to_string(),
             3 => names_obj(&names),
+            4 => "null".to_string(),
             _ => format!(r#"{{"mcpServers": {}}}"#, names_obj(&names)),
         };
-        if rng.chance(0.01) {
+        // a second one higher up: the walk stops at the first readable one
+        if rng.chance(0.25) {
+            b.file(
+                ".mcp.json",
+                &format!(r#"{{"mcpServers": {}}}"#, names_obj(&rand_names(rng))),
+            );
+        }
+        if rng.chance(0.05) {
+            // nested deeper than compat's 512 guard-lookup cap, within CPython's limit
+            let deep = *rng.pick(&[513, 600, 9_997, 9_998]);
+            b.file_pad(
+                &format!("{at}/.mcp.json"),
+                &format!(r#"{{"mcpServers": {}, "x": @DEEP@}}"#, names_obj(&names)),
+                "deep",
+                deep - 1,
+            );
+        } else if rng.chance(0.01) {
             b.file_pad(
                 &format!("{at}/.mcp.json"),
                 &format!(r#"{{"mcpServers": {}, "pad": "@PAD@"}}"#, names_obj(&names)),
@@ -1285,6 +1306,15 @@ fn rand_mcp(rng: &mut Rng, b: &mut B) {
                         "pad",
                         2 * 1024 * 1024 + 10,
                     );
+                } else if rng.chance(0.04) {
+                    // approval keys only: compat's subagent-model read refuses this band on
+                    // purpose (RT1a's 512-level cap), so the model is never in it
+                    let deep = *rng.pick(&[600, 9_997, 9_998]);
+                    let text = format!(
+                        r#"{{"enableAllProjectMcpServers": true, "disabledMcpjsonServers": {}, "x": @DEEP@}}"#,
+                        names_list(rng, &names)
+                    );
+                    b.file_pad(&p, &text, "deep", deep - 1);
                 } else {
                     rand_settings_file(rng, b, &p, &body);
                 }

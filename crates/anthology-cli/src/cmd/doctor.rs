@@ -17,14 +17,16 @@ use anthology_runtime::doctor::{self, DoctorDeps};
 use super::Output;
 
 /// Runs `anthology doctor …`; `args` are the arguments after `doctor`.
-pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
-    let _ = stdin;
+pub fn run(args: &[OsString], _stdin: &mut dyn Read) -> Output {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
             return Output {
-                stderr: format!("anthology doctor: cannot read the working folder: {e}\n")
-                    .into_bytes(),
+                stderr: format!(
+                    "anthology doctor: cannot read the working folder: {}\n",
+                    anthology_pycompat::pyerr::PyExc::from(e).py_str()
+                )
+                .into_bytes(),
                 code: 1,
                 ..Output::default()
             };
