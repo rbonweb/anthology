@@ -20,10 +20,7 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
         [Some("hook"), ..] => return Output::usage("usage: anthology guard hook [--shim]"),
         [] => return Output::usage("guard needs one of: hook"),
         [first, ..] => {
-            return Output::usage(&format!(
-                "unknown command: guard {}",
-                first.unwrap_or("?")
-            ));
+            return Output::usage(&format!("unknown command: guard {}", first.unwrap_or("?")));
         }
     };
     let env = Env::from_process();

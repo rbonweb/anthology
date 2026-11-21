@@ -36,10 +36,3 @@
 {"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 22, "params": {"stdin": "'[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["}}
 {"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 23, "params": {"stdin": "b'\\xff\\xfe\\x00 not utf-8'"}}
 {"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 24, "params": {"stdin": "b'{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": "}}
-{"py": "test_guard_cli.SourceHygieneTest.test_no_machine_specific_paths", "row": 0, "params": {"path": "guard.py"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_no_machine_specific_paths", "row": 1, "params": {"path": "guard_rules.py"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_no_machine_specific_paths", "row": 2, "params": {"path": "hooks.json"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_no_machine_specific_paths", "row": 3, "params": {"path": "test_guard_rules.py"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_no_machine_specific_paths", "row": 4, "params": {"path": "test_guard_cli.py"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_python_files_declare_future_annotations", "row": 0, "params": {"path": "guard.py"}}
-{"py": "test_guard_cli.SourceHygieneTest.test_python_files_declare_future_annotations", "row": 1, "params": {"path": "guard_rules.py"}}

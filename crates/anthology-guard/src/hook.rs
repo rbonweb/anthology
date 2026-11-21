@@ -203,10 +203,19 @@ mod tests {
     #[test]
     fn allow_and_block_in_both_modes() {
         let allow = payload("Bash", r#"{"command": "git status"}"#);
-        assert_eq!(decide(&allow, HOME, false), HookResult { code: 0, stderr: String::new() });
+        assert_eq!(
+            decide(&allow, HOME, false),
+            HookResult {
+                code: 0,
+                stderr: String::new()
+            }
+        );
         assert_eq!(
             decide(&allow, HOME, true),
-            HookResult { code: 0, stderr: "anthology-guard:allow:v1\n".into() }
+            HookResult {
+                code: 0,
+                stderr: "anthology-guard:allow:v1\n".into()
+            }
         );
         let block = payload("Bash", r#"{"command": "npx playwright install"}"#);
         let plain = decide(&block, HOME, false);
@@ -221,7 +230,13 @@ mod tests {
 
     #[test]
     fn malformed_envelopes_allow() {
-        for raw in [&b"not json"[..], b"", b"[]", b"{\"tool_name\": 5}", b"\xff\xfe"] {
+        for raw in [
+            &b"not json"[..],
+            b"",
+            b"[]",
+            b"{\"tool_name\": 5}",
+            b"\xff\xfe",
+        ] {
             assert_eq!(decide(raw, HOME, false).code, 0);
             assert_eq!(decide(raw, HOME, true).stderr, "anthology-guard:allow:v1\n");
         }
@@ -232,16 +247,28 @@ mod tests {
         let raw = payload("Bash", r#"{"command": "cat $HOME/x"}"#);
         let low = Limits { backtrack_limit: 0 };
         let r = decide_with(&raw, HOME, true, &low);
-        assert_eq!(r, HookResult { code: 2, stderr: LIMIT_LINE.into() });
+        assert_eq!(
+            r,
+            HookResult {
+                code: 2,
+                stderr: LIMIT_LINE.into()
+            }
+        );
     }
 
     #[test]
     fn the_lines_are_gc_14() {
-        assert!(LIMIT_LINE.ends_with("; if this keeps happening, disable anthology-guardrails with /plugin\n"));
+        assert!(
+            LIMIT_LINE.ends_with(
+                "; if this keeps happening, disable anthology-guardrails with /plugin\n"
+            )
+        );
         assert_eq!(LIMIT_LINE.matches('\n').count(), 1);
         assert_eq!(PANIC_LINE.matches('\n').count(), 1);
         assert!(PANIC_LINE.contains("(internal): the guard failed on this input; it was blocked"));
         let too = block_line(Verdict::TooComplex).unwrap();
-        assert!(too.starts_with("Blocked by anthology-guardrails (G0): this command is too complex"));
+        assert!(
+            too.starts_with("Blocked by anthology-guardrails (G0): this command is too complex")
+        );
     }
 }
