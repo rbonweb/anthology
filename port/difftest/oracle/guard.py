@@ -8,9 +8,9 @@ Library surface: `run(case: dict) -> dict` (the case's `data`, or a dict holding
 Case data. The rules are guard_rules.py's; the shell analysis under them is the shell oracle's
 (`port/difftest/oracle/shell.py`: the vendored fix-wave H/I reference `guard_rules_fw.py` with the Rust-stricter
 rules applied, lane SH), because Rust's guard runs on `anthology_shell::analyze`. The alternate readings
-are recorded, not checked: Rust's guard does not check `Analysis.alternates` against G1 yet (GD follow-up,
-lead ruling Q3=A); when it does, this oracle checks them too. `guard.py`
-(`plugins/anthology-guardrails/scripts/`) runs on that module as well:
+are checked against G1 after every entry, as Rust's guard checks `Analysis.alternates` (lead ruling Q3=A;
+the reference checks each as it collects it). `guard.py` (`plugins/anthology-guardrails/scripts/`) runs on
+that module as well:
 - `{"op": "check", "tool": T, "input": I, "home": H}`: `guard_rules.check(T, I, H)`, rendered as the
   canonical JSON of `[rule, message]` or `null`. `check` turns any exception into `None`; this module
   calls `_check` itself, so an exception is seen: it answers `null` with `"divergence": "D-1"` (Python
@@ -81,7 +81,23 @@ def _stopped_rule(name, inp, home, command):
         for rule, test in (("G3", lambda e: G._g3(e, home)), ("G4", G._g4), ("G1", G._g1), ("G2", G._g2)):
             if test(entry):
                 return rule
+    if any(G._g1(alt) for alt in SHELL._ALTERNATES):
+        return "G1"
     return "G0"
+
+
+_CHECK_READING = G._check_reading
+
+
+def _check_reading(name, inp, home, command):
+    """`_check_reading`, then G1 on each alternate reading (crates/anthology-guard/src/check.rs)."""
+    rule = _CHECK_READING(name, inp, home, command)
+    if rule is None and any(G._g1(alt) for alt in SHELL._ALTERNATES):
+        return "G1"
+    return rule
+
+
+G._check_reading = _check_reading
 
 
 def _rule(tool, tool_input, home):

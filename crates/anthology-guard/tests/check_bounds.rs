@@ -215,3 +215,13 @@ proptest! {
         let _ = verdict(&command);
     }
 }
+
+#[test]
+fn an_alternate_reading_is_checked_against_g1() {
+    // the brace reading `npx playwright install` is an alternate (SH lead ruling Q3=A): G1 blocks it
+    assert_eq!(
+        verdict("npx playwright {install,}"),
+        Verdict::Block(Rule::G1)
+    );
+    assert_eq!(verdict("cp a.{js,ts} dir"), Verdict::Allow);
+}

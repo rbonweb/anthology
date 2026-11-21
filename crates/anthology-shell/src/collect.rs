@@ -350,7 +350,23 @@ fn expand_braces(
     work: &mut Work,
 ) -> Result<(), TooComplex> {
     work.charge_extra(WORD + 2 * word.len())?;
-    let Some((open, close, commas)) = brace_at(word) else {
+    let comma = brace_at(word);
+    let sequence = brace_sequences(word).into_iter().find_map(|(open, close)| {
+        int_sequence(&word[open + 1..close]).map(|words| (open, close, words))
+    });
+    if let Some((open, close, words)) = sequence
+        && comma.as_ref().is_none_or(|(at, _, _)| open < *at)
+    {
+        if level >= MAX_BRACE_DEPTH {
+            return Err(TooComplex);
+        }
+        let (pre, post) = (&word[..open], &word[close + 1..]);
+        for number in words {
+            expand_braces(&format!("{pre}{number}{post}"), level + 1, out, work)?;
+        }
+        return Ok(());
+    }
+    let Some((open, close, commas)) = comma else {
         if out.len() >= MAX_BRACE_WORDS {
             return Err(TooComplex);
         }
@@ -384,7 +400,7 @@ fn brace_reading(tokens: &[String], work: &mut Work) -> Result<Option<Vec<String
             continue;
         }
         work.charge_extra(token.len())?;
-        if brace_at(token).is_none() {
+        if brace_at(token).is_none() && brace_sequences(token).is_empty() {
             reading.push(token.clone());
             continue;
         }
@@ -440,7 +456,7 @@ const COMMAND_ENV: &[&str] = &[
 /// segment had an unquoted `{`.
 fn fail_closed(tokens: &[String], braces: bool) -> bool {
     tokens.iter().any(|t| {
-        (braces && t.contains('{') && (brace_sequence(t) || brace_item_space(t)))
+        (braces && t.contains('{') && (letter_sequence(t) || brace_item_space(t)))
             || subscript_runs(t)
     })
 }
@@ -451,9 +467,10 @@ fn brace_item_space(word: &str) -> bool {
     brace_at(word).is_some_and(|(open, close, _)| word[open..=close].contains(char::is_whitespace))
 }
 
-/// A brace sequence `{x..y}` (not `${`): bash expands it to a list of words.
-fn brace_sequence(word: &str) -> bool {
+/// The brace sequences `{x..y}` of `word` (not `${`), as (open, close), in order.
+fn brace_sequences(word: &str) -> Vec<(usize, usize)> {
     let b = word.as_bytes();
+    let mut out = Vec::new();
     let mut open = None;
     for (j, &c) in b.iter().enumerate() {
         match c {
@@ -463,13 +480,67 @@ fn brace_sequence(word: &str) -> bool {
                 if let Some(at) = open.take()
                     && word[at + 1..j].contains("..")
                 {
-                    return true;
+                    out.push((at, j));
                 }
             }
             _ => {}
         }
     }
-    false
+    out
+}
+
+/// A brace sequence other than an integer one (`{a..e}`, `{1..x}`): too complex (controller ruling).
+fn letter_sequence(word: &str) -> bool {
+    brace_sequences(word)
+        .into_iter()
+        .any(|(open, close)| int_sequence(&word[open + 1..close]).is_none())
+}
+
+/// An integer sequence's words (`1..5`, `01..10`, `0..20..5`, `5..1`), as bash 5 writes them: zero-padded
+/// to the wider endpoint when either has a leading zero; the step's sign is ignored. `None` when `inner` is
+/// not one, or would give more than `MAX_BRACE_WORDS` words.
+fn int_sequence(inner: &str) -> Option<Vec<String>> {
+    let parts: Vec<&str> = inner.split("..").collect();
+    let int = |p: &str| -> Option<i64> {
+        let digits = p.strip_prefix('-').unwrap_or(p);
+        if digits.is_empty() || digits.len() > 18 || !digits.bytes().all(|d| d.is_ascii_digit()) {
+            return None;
+        }
+        p.parse().ok()
+    };
+    let (start, end, step) = match parts.as_slice() {
+        [a, b] => (int(a)?, int(b)?, 1),
+        [a, b, s] => (int(a)?, int(b)?, int(s)?.unsigned_abs().max(1)),
+        _ => return None,
+    };
+    let padded = |p: &str| {
+        let d = p.strip_prefix('-').unwrap_or(p);
+        d.len() > 1 && d.starts_with('0')
+    };
+    let width = if padded(parts[0]) || padded(parts[1]) {
+        parts[0].len().max(parts[1].len())
+    } else {
+        0
+    };
+    let count = start.abs_diff(end) / step + 1;
+    if count > MAX_BRACE_WORDS as u64 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    let mut n = start;
+    for _ in 0..count {
+        out.push(if n < 0 {
+            format!("-{:0w$}", n.unsigned_abs(), w = width.saturating_sub(1))
+        } else {
+            format!("{n:0width$}")
+        });
+        n = if start <= end {
+            n.saturating_add(step as i64)
+        } else {
+            n.saturating_sub(step as i64)
+        };
+    }
+    Some(out)
 }
 
 /// A `[...]` subscript holding `$(`, a backtick or `$'`: bash evaluates it (arithmetic), running the
@@ -1422,6 +1493,15 @@ impl<'a> Ctx<'a> {
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
         let prefix = &tokens[..tokens.len().saturating_sub(cmd.len())];
+        // an integer sequence is allowed after the program word only: before it, or as it, it could form one
+        if self.braces
+            && tokens[..(prefix.len() + 1).min(tokens.len())]
+                .iter()
+                .any(|t| !brace_sequences(t).is_empty())
+        {
+            self.halt();
+            return None;
+        }
         if option_env_unmodelled(prefix, &prog, &args) {
             self.halt();
             return None;
