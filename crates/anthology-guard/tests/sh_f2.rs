@@ -260,6 +260,30 @@ fn sh_f4_positional_parameters_and_function_arguments_are_put_in_place() {
 }
 
 #[test]
+fn review_sh_f4_i1_an_unquoted_positional_in_a_function_body_is_split() {
+    for command in [
+        r#"f() { $1; }; f "npx playwright install""#,
+        r#"f() { npx $1; }; f "playwright install""#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Block(Rule::G1), "{command}");
+    }
+    // the whole word is still read too, so a quoted path with a space keeps its rule
+    assert_eq!(
+        verdict(
+            r#"f() { cat "$1"; }; f "~/Library/Application Support/Google/Chrome/Default/Cookies""#
+        ),
+        Verdict::Block(Rule::G3)
+    );
+    for command in [
+        r#"gh_pr() { gh pr create --title "$1" --body "$2"; }; gh_pr fix "npx playwright install was flaky""#,
+        r#"f() { echo "$1"; }; f "npx playwright install""#,
+        r#"f() { git commit -m "$1"; }; f "add npm i puppeteer to the docs""#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Allow, "{command}");
+    }
+}
+
+#[test]
 fn sh_f4_a_piped_function_that_wraps_xargs_is_too_complex() {
     // Ruling (review-sh-f3 M-2): stricter than the inline form, which is read (`find ... | xargs rm -f`)
     for command in [

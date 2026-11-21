@@ -970,6 +970,27 @@ fn positional_words(words: &[String], params: &[String]) -> Vec<String> {
     out
 }
 
+/// SH-F4 review I-1: the body words with every word that holds a positional parameter split on blanks, as
+/// bash splits an unquoted `$1` (`f() { $1; }; f "npx x"`). The lexed words no longer show the quotes, so
+/// this is a second reading next to `positional_words` (a quoted path with a space stays whole there).
+/// `None` when it reads the same.
+fn positional_split(words: &[String], params: &[String]) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for word in words {
+        if matches!(word.as_str(), "$@" | "$*" | "${@}" | "${*}") {
+            out.extend(params.iter().skip(1).cloned());
+            continue;
+        }
+        let value = positional_script(word, params);
+        if value == *word {
+            out.push(value);
+        } else {
+            out.extend(pystr::split_ws(&value).into_iter().map(str::to_owned));
+        }
+    }
+    (out != positional_words(words, params)).then_some(out)
+}
+
 /// SH-F2 review I-2: `sh -c S $0 $1 ...` read with its positional parameters put in place (`$1`, `${10}`, `$@`,
 /// `$*`, `${@}`), so `sh -c 'eval "$1"' _ "$l"` reads as `eval "$l"`. `params[0]` is `$0`. SH-F4: a quoted
 /// `"$@"` (or `"$*"`, `"${@}"`) loses its quotes, so its words stay words (`sh -c '"$@"' _ npx x`).
@@ -1356,16 +1377,18 @@ impl<'a> Ctx<'a> {
             let (group, exempt) = (entry.group, entry.exempt);
             let body = function_body(&self.entries, &new_entries[start..k]);
             for words in body {
-                let tokens = positional_words(&words, &params);
-                if !self.spend(tokens.iter().map(|t| WORD + t.len()).sum()) {
-                    return false;
-                }
-                (self.braces, self.quoted_braces) = (false, false);
-                if self
-                    .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
-                    .is_none()
-                {
-                    return false;
+                let split = positional_split(&words, &params).filter(|t| !t.is_empty());
+                for tokens in std::iter::once(positional_words(&words, &params)).chain(split) {
+                    if !self.spend(tokens.iter().map(|t| WORD + t.len()).sum()) {
+                        return false;
+                    }
+                    (self.braces, self.quoted_braces) = (false, false);
+                    if self
+                        .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                        .is_none()
+                    {
+                        return false;
+                    }
                 }
             }
         }

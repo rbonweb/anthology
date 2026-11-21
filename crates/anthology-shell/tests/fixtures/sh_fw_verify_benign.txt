@@ -3431,3 +3431,7 @@ docker run --rm img sh -c 'echo "$0 $1"' a b
 bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt
 #---
 f() { cd "$1" && git pull; }; f repo
+#---
+gh_pr() { gh pr create --title "$1" --body "$2"; }; gh_pr fix "npx playwright install was flaky"
+#---
+f() { echo "$1"; }; f "npx playwright install"

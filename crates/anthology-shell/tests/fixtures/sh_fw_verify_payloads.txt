@@ -856,3 +856,7 @@ f() { npx "$@"; }; f playwright install
 f() { eval "$1"; }; f "npx playwright install"
 #---
 function f { npx "$@"; }; f playwright install
+#---
+f() { $1; }; f "npx playwright install"
+#---
+f() { npx $1; }; f "playwright install"

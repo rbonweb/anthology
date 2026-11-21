@@ -985,6 +985,11 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS x"#,
         "f() { { echo a; }; echo \"$1\"; }; f b",
         "f() ( echo \"$1\" ); f b",
+        // SH-F4 review I-1: an unquoted positional in a body is split; a quoted one is read whole too
+        r#"f() { $1; }; f "npx playwright install""#,
+        r#"f() { npx $1; }; f "playwright install""#,
+        r#"f() { cat "$1"; }; f "a b.txt""#,
+        r#"f() { echo $2; }; f a"#,
     ];
     out.extend(F4.iter().map(|text| case(text.to_string(), "/home/tester")));
     out

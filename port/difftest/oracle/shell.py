@@ -869,8 +869,13 @@ def _collect_once_body(text, ctx, exempt, depth):
             continue
         params = [e.prog] + list(e.args)
         for words in _function_body(new_entries[at:k]):
-            ctx.braces = ctx.quoted_braces = False
-            G._add_command(_positional_words(words, params), [], e.group, ctx, e.exempt, depth + 1)
+            readings = [_positional_words(words, params)]
+            split = _positional_split(words, params)
+            if split:
+                readings.append(split)
+            for tokens in readings:
+                ctx.braces = ctx.quoted_braces = False
+                G._add_command(tokens, [], e.group, ctx, e.exempt, depth + 1)
     fed_from = 0
     by_group = {}
     for entry in new_entries:
@@ -1460,6 +1465,21 @@ def _positional_words(words, params):
         else:
             out.append(_positional_script(word, params))
     return out
+
+
+def _positional_split(words, params):
+    """collect.rs `positional_split` (SH-F4 review I-1): a word holding a positional split on blanks, or None."""
+    out = []
+    for word in words:
+        if word in ("$@", "$*", "${@}", "${*}"):
+            out += params[1:]
+            continue
+        value = _positional_script(word, params)
+        if value == word:
+            out.append(value)
+        else:
+            out += value.split()
+    return out if out != _positional_words(words, params) else None
 
 
 def _positional_script(script, params):
