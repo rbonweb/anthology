@@ -76,14 +76,15 @@ pub fn run_with(case: &MemCase, cwd: &Path, git: &dyn Git) -> (String, Vec<Strin
     sync::run(cwd, &case.env, &deps(git))
 }
 
-/// `memory_sync.approve(root)` with the real git (SWAP(MS1): `approve::approve`).
+/// `memory_sync.approve(root)` with the real git (`approve::approve`).
 pub fn approve(case: &MemCase, root: &Path) -> String {
-    sync::ms1_approve(root, &case.env, &anthology_core::git::RealGit).expect("approve")
+    anthology_memory::approve::approve(root, &case.env, &anthology_core::git::RealGit)
+        .expect("approve")
 }
 
 /// `memory_sync.approve(root)` in a fake repo.
 pub fn approve_fake(case: &MemCase, git: &FakeGit) -> String {
-    sync::ms1_approve(&git.root, &case.env, git).expect("approve")
+    anthology_memory::approve::approve(&git.root, &case.env, git).expect("approve")
 }
 
 /// `personal_only(anth)`: the context when personal memory has no notes.

@@ -1170,11 +1170,11 @@ mod re_clone_test {
         );
         let g = anthology_core::git::RealGit;
         assert_eq!(
-            sync::ms1_repo_key(&a, &c.env, &g),
-            sync::ms1_repo_key(&b, &c.env, &g)
+            anthology_memory::repo::repo_key(&a, &c.env, &g),
+            anthology_memory::repo::repo_key(&b, &c.env, &g)
         );
-        assert!(sync::ms1_is_approved(
-            &sync::ms1_repo_key(&b, &c.env, &g),
+        assert!(anthology_memory::approve::is_approved(
+            &anthology_memory::repo::repo_key(&b, &c.env, &g),
             &c.env
         ));
         let (ctx, _msgs) = run(&c, &b);
@@ -1421,13 +1421,13 @@ mod symlink_safety_test {
         write(&victim, "export X=1\n", None);
         symlink(&victim, root.join(".gitattributes")).unwrap();
         let g = anthology_core::git::RealGit;
-        let e = sync::ms1_approve(&root, &c.env, &g).unwrap_err();
+        let e = anthology_memory::approve::approve(&root, &c.env, &g).unwrap_err();
         assert_eq!(e.type_name(), "UnsafeTarget");
         assert_eq!(read(&victim), "export X=1\n");
         // recorded first: approving again finds the key and fails on the attributes only
         let approved = read(&c.anth.join("approved-repos.json"));
         assert!(approved.contains(&format!("path:{}", root.to_string_lossy())));
-        let e = sync::ms1_ensure_union_attrs(&root).unwrap_err();
+        let e = anthology_memory::approve::ensure_union_attrs(&root).unwrap_err();
         assert_eq!(e.type_name(), "UnsafeTarget");
         assert_eq!(read(&victim), "export X=1\n");
     }
@@ -1441,8 +1441,9 @@ mod symlink_safety_test {
         let env = c.env.clone();
         let r2 = root.clone();
         let out = run_with_timeout(30, move || {
-            let refused = sync::ms1_approve(&r2, &env, &anthology_core::git::RealGit)
-                .is_err_and(|e| e.type_name() == "UnsafeTarget");
+            let refused =
+                anthology_memory::approve::approve(&r2, &env, &anthology_core::git::RealGit)
+                    .is_err_and(|e| e.type_name() == "UnsafeTarget");
             let (_ctx, msgs) = sync::run(&r2, &env, &SyncDeps::default());
             (
                 refused,
@@ -1849,7 +1850,13 @@ mod user_notes_leave_the_repo_test {
         assert!(!ctx.contains("feedback-mine"));
         assert!(ctx.contains("Personal memory is unavailable"));
         assert!(!ctx.contains("Save notes about the user"));
-        // `note_sources` skipping it is MS1's (repo::note_sources): SWAP(MS1) adds those asserts.
+        // `anthology-mem search` skips it too
+        assert!(anthology_memory::repo::note_sources_opt(None, &t.c.anth).is_empty());
+        let scopes: Vec<String> = anthology_memory::repo::note_sources(&t.root, &t.c.anth)
+            .into_iter()
+            .map(|n| n.scope)
+            .collect();
+        assert!(!scopes.contains(&"personal".to_string()));
     }
 
     #[test]
@@ -1931,7 +1938,7 @@ mod user_notes_leave_the_repo_test {
         for index in [t.repo_mem.join("MEMORY.md"), t.agent.join("MEMORY.md")] {
             let text = read(&index);
             assert!(!text.contains("user-"));
-            assert!(text.starts_with(sync::MS1_GENERATED));
+            assert!(text.starts_with(anthology_memory::render::GENERATED));
         }
         assert!(ctx.contains("## Repo memory"));
         assert!(!ctx.contains("user-role"));
@@ -1941,31 +1948,36 @@ mod user_notes_leave_the_repo_test {
     fn test_an_index_left_with_no_notes_drops_the_moved_ones() {
         let t = set_up();
         fs::remove_file(t.agent.join("feedback-b.md")).unwrap();
-        sync::ms1_regenerate_index(&t.agent, sync::MS1_DEFAULT_BUDGET, &[]).unwrap();
+        anthology_memory::render::regenerate_index(
+            &t.agent,
+            anthology_memory::render::DEFAULT_BUDGET,
+            &[],
+        )
+        .unwrap();
         assert!(read(&t.agent.join("MEMORY.md")).contains("user-tz"));
         t.run();
         assert_eq!(
             read(&t.agent.join("MEMORY.md")),
-            format!("{}\n", sync::MS1_GENERATED)
+            format!("{}\n", anthology_memory::render::GENERATED)
         );
     }
 
     #[test]
     fn test_render_index_exclude_types_keyword() {
         let t = set_up();
-        let b = sync::MS1_DEFAULT_BUDGET;
+        let b = anthology_memory::render::DEFAULT_BUDGET;
         assert!(
-            sync::ms1_render_index(&t.repo_mem, b, "", &[])
+            anthology_memory::render::render_index(&t.repo_mem, b, "", &[])
                 .unwrap()
                 .unwrap()
                 .contains("[user-role]")
         );
-        let text = sync::ms1_render_index(&t.repo_mem, b, "", &["user"])
+        let text = anthology_memory::render::render_index(&t.repo_mem, b, "", &["user"])
             .unwrap()
             .unwrap();
         assert!(!text.contains("user-role"));
         assert!(text.contains("[project-a]"));
-        assert!(sync::ms1_regenerate_index(&t.repo_mem, b, &["user"]).unwrap());
+        assert!(anthology_memory::render::regenerate_index(&t.repo_mem, b, &["user"]).unwrap());
         assert!(!read(&t.repo_mem.join("MEMORY.md")).contains("user-role"));
     }
 
@@ -2008,9 +2020,14 @@ mod user_notes_leave_the_repo_test {
             &note("user-caps", "USER", "Caps"),
             None,
         );
-        let text = sync::ms1_render_index(&t.repo_mem, sync::MS1_DEFAULT_BUDGET, "", &["user"])
-            .unwrap()
-            .unwrap();
+        let text = anthology_memory::render::render_index(
+            &t.repo_mem,
+            anthology_memory::render::DEFAULT_BUDGET,
+            "",
+            &["user"],
+        )
+        .unwrap()
+        .unwrap();
         assert!(!text.contains("user-caps"));
         assert!(!text.contains("user-role"));
     }
@@ -2244,9 +2261,9 @@ mod save_note_test {
         )
     }
 
-    /// `memory_index.parse_note` (SWAP(MS1): `notes::parse_note`).
-    fn parse(p: &Path) -> sync::NoteInfoForTests {
-        sync::ms1_parse_note(p).expect("parse")
+    /// `memory_index.parse_note` (`notes::parse_note`).
+    fn parse(p: &Path) -> anthology_memory::notes::NoteInfo {
+        anthology_memory::notes::parse_note(p).expect("parse")
     }
 
     #[test]
@@ -2939,11 +2956,15 @@ mod save_note_test {
         assert_eq!(snapshot(&t.agent_dir("reviewer")), before);
     }
 
-    fn disk_says_no(_: &Path, _: sync::MS1Budget, _: &[&str]) -> Result<bool, PyExc> {
+    fn disk_says_no(
+        _: &Path,
+        _: anthology_memory::render::Budget,
+        _: &[&str],
+    ) -> Result<bool, PyExc> {
         Err(PyExc::Other("OSError", "disk says no".into()))
     }
 
-    fn a_link(_: &Path, _: sync::MS1Budget, _: &[&str]) -> Result<bool, PyExc> {
+    fn a_link(_: &Path, _: anthology_memory::render::Budget, _: &[&str]) -> Result<bool, PyExc> {
         Err(PyExc::Other("UnsafeTarget", "MEMORY.md is a link".into()))
     }
 
@@ -3020,7 +3041,7 @@ mod ms2_rust_only {
         assert_eq!(out, (personal_only(&c.anth), vec![]));
     }
 
-    fn boom(_: &Path, _: sync::MS1Budget, _: &[&str]) -> Result<bool, PyExc> {
+    fn boom(_: &Path, _: anthology_memory::render::Budget, _: &[&str]) -> Result<bool, PyExc> {
         Err(PyExc::Other("RuntimeError", "boom".into()))
     }
 

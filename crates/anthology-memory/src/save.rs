@@ -21,8 +21,10 @@ use anthology_pycompat::path::realpath;
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
 
+use crate::notes::REPO_EXCLUDE;
 use crate::privacy::{self, Finding, PrivacyDeps};
-use crate::sync::{Budget, DEFAULT_BUDGET, REPO_EXCLUDE, strerror};
+use crate::render::{Budget, DEFAULT_BUDGET};
+use crate::sync::strerror;
 
 /// `SAVE_TYPES`: `TYPE_ORDER` minus `user` (personal memory).
 pub const SAVE_TYPES: [&str; 3] = ["project", "feedback", "reference"];
@@ -77,7 +79,7 @@ impl Default for SaveDeps {
     fn default() -> SaveDeps {
         SaveDeps {
             privacy_findings: privacy::privacy_findings,
-            regenerate_index: crate::sync::regenerate_index,
+            regenerate_index: crate::render::regenerate_index,
         }
     }
 }

@@ -18,8 +18,6 @@
 //! message with an empty context, as Python's `except Exception`.
 #![forbid(unsafe_code)]
 
-mod ms1; // SWAP(MS1): replaced by `crate::{notes, repo, approve, render}` when port-ms1 merges.
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -37,20 +35,13 @@ use sha2::{Digest, Sha256};
 
 use crate::privacy::{self, Finding, PrivacyDeps};
 
-// SWAP(MS1): these come from `crate::notes`, `crate::repo`, `crate::approve` and `crate::render`.
-pub(crate) use ms1::{
-    Budget, CONTEXT_SECTION_BUDGET, DEFAULT_BUDGET, GENERATED, NoteInfo, REPO_EXCLUDE, USER_REASON,
-    is_approved, is_user_note, legacy_dirs, list_notes, note_info, regenerate_index, render_index,
-    repo_key, repo_root, unsafe_dir,
+use crate::approve::is_approved;
+use crate::notes::{NoteInfo, REPO_EXCLUDE, USER_REASON, is_user_note, note_info};
+use crate::render::{
+    Budget, CONTEXT_SECTION_BUDGET, DEFAULT_BUDGET, GENERATED, regenerate_index, render_index,
+    try_list_notes,
 };
-#[doc(hidden)]
-pub use ms1::{
-    Budget as MS1Budget, DEFAULT_BUDGET as MS1_DEFAULT_BUDGET, GENERATED as MS1_GENERATED,
-    NoteInfo as NoteInfoForTests, approve as ms1_approve,
-    ensure_union_attrs as ms1_ensure_union_attrs, is_approved as ms1_is_approved,
-    parse_note as ms1_parse_note, regenerate_index as ms1_regenerate_index,
-    render_index as ms1_render_index, repo_key as ms1_repo_key,
-}; // SWAP(MS1): for the tests only
+use crate::repo::{legacy_dirs, repo_key, repo_root, unsafe_dir};
 
 /// `HINT`: an unapproved repo that has memory notes.
 pub const HINT: &str = "this repo has memory notes; repo notes load only after /anthology:setup, \
@@ -989,7 +980,9 @@ fn sync_repo(
             moved += res.moved.len();
             side += res.conflicts.len();
             let index = d.join("MEMORY.md");
-            if !res.moved.is_empty() && list_notes(d).is_empty() && lstat_kind(&index) == Kind::File
+            if !res.moved.is_empty()
+                && try_list_notes(d)?.is_empty()
+                && lstat_kind(&index) == Kind::File
             {
                 let text = format!("{GENERATED}\n");
                 fsx::atomic_write(&index, text.as_bytes(), 0o644, ".tmp-", ".part")?;
