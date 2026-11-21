@@ -129,7 +129,7 @@ fn parent_of(path: &Path) -> &Path {
 
 /// `Path(p).mkdir(parents=True, exist_ok=True)`, step for step (CPython 3.12 `pathlib`), so
 /// the error names the folder that failed.
-pub(crate) fn mkdir_parents(p: &Path) -> Result<(), PyExc> {
+pub fn mkdir_parents(p: &Path) -> Result<(), PyExc> {
     let p = if p.as_os_str().is_empty() {
         Path::new(".")
     } else {
