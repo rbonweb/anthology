@@ -404,7 +404,7 @@ def _ap_unroot(parser):
     import pathlib
     for action in parser._actions:
         d = action.default
-        if isinstance(d, (str, pathlib.PurePath)) and str(d).startswith(_AP_REPO):
+        if isinstance(d, (str, pathlib.PurePath)) and (str(d) + "/").startswith(_AP_REPO + "/"):
             new = "<REPO>" + str(d)[len(_AP_REPO):]
             action.default = new if isinstance(d, str) else type(d)(new)
         if isinstance(action, argparse._SubParsersAction):
@@ -418,7 +418,7 @@ def _ap_out(v):
     if isinstance(v, pathlib.PurePath):
         v = str(v)
     if isinstance(v, str):
-        return v.replace(_AP_REPO, "<REPO>")
+        return v
     if v is None or isinstance(v, (bool, int)):
         return v
     if isinstance(v, float):
@@ -452,8 +452,8 @@ def _ap_parse(case):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 ns = parser.parse_args(case["argv"])
         except SystemExit as e:
-            return {"exit": e.code, "stdout": _ap_out(out.getvalue()),
-                    "stderr": _ap_out(err.getvalue())}
+            return {"exit": e.code, "stdout": out.getvalue(),
+                    "stderr": err.getvalue()}
     finally:
         del os.environ["COLUMNS"]
     items = {k: v for k, v in vars(ns).items() if not callable(v)}
