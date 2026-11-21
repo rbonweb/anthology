@@ -407,3 +407,29 @@ echo {"npx playwright install",x} | sh
 echo {npx,}' playwright install' | sh
 #---
 echo {'playwright install',} | xargs npx
+#---
+npm --prefix "{1..2}" {-1..-1} i puppeteer
+#---
+npm --prefix \{1..2} {-1..-1} i puppeteer
+#---
+npm --prefix "{1..2}" {-1..-1} add playwright
+#---
+npm --prefix '{1..2}' i {puppeteer,x}
+#---
+npm --prefix "{a,b}" {-x,} i puppeteer
+#---
+npm {-1..{1,}} i puppeteer
+#---
+npm {-1..-1} i puppeteer
+#---
+npm --prefix {1".."2} {-1..-1} i puppeteer
+#---
+npm --prefix {1".."2} i {puppeteer,x}
+#---
+npm --prefix {a","b} i {puppeteer,x}
+#---
+npm --prefix {1..2\} {-1..-1} i puppeteer
+#---
+npm --prefix {,} i {-1..-1} puppeteer
+#---
+echo "npm --prefix '{1..2}'" {-1..-1} i puppeteer | sh

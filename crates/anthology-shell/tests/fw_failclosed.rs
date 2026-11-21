@@ -249,12 +249,21 @@ fn integer_sequences_are_read_after_the_program_word_only() {
     }
     let a = analyze("touch f{01..03}.txt", HOME);
     assert_eq!(a.alternates[0].args, ["f01.txt", "f02.txt", "f03.txt"]);
-    let a = analyze("echo {0..20..5} {-2..1}", HOME);
-    assert_eq!(
-        a.alternates[0].args,
-        ["0", "5", "10", "15", "20", "-2", "-1", "0", "1"]
-    );
+    let a = analyze("echo {0..20..5}", HOME);
+    assert_eq!(a.alternates[0].args, ["0", "5", "10", "15", "20"]);
+    let a = analyze("echo {-2..1}", HOME);
+    assert_eq!(a.alternates[0].args, ["-2", "-1", "0", "1"]);
     for command in [
+        // SH-seq review C-1 (interim rule): a sequence must be the command's only brace expression;
+        // and no brace reading where a `{`, `}` or `,` was quoted (bash leaves those alone)
+        "echo {0..20..5} {-2..1}",
+        "cp a{1..3}.txt dst/{x,y}",
+        "npm --prefix \"{1..2}\" {-1..-1} i puppeteer",
+        "npm --prefix '{1..2}' i {puppeteer,x}",
+        "npm --prefix \"{a,b}\" {-x,} i puppeteer",
+        "npm --prefix {a\",\"b} i {puppeteer,x}",
+        // I-1: a comma brace inside a `..` brace
+        "npm {-1..{1,}} i puppeteer",
         "{1..1}npx playwright install",
         "n{1..1}px playwright install",
         "sudo {1..2} npx playwright install",

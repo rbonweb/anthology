@@ -55,6 +55,9 @@ pub struct Segment {
     /// Rust-only: the first command after a `|` that had no command before it in its pipeline, the head
     /// being a subshell (`( echo X ) | sh`, SH-FW re-review I-2a).
     pub(crate) after_compound: bool,
+    /// Rust-only: a word holds a `{`, `}` or `,` that was quoted, escaped or expanded, so its brace reading
+    /// is not bash's (SH-seq review C-1).
+    pub(crate) quoted_braces: bool,
 }
 
 /// A pipeline's literal stdin text (heredoc bodies, here-strings).
@@ -270,6 +273,10 @@ struct Lexer<'t, 'a> {
     piped: bool,
     /// An unquoted `{` was added to this segment's words (`Segment::braces`).
     braces: bool,
+    /// Unquoted `{`, `}` and `,` added to the word being built (`Segment::quoted_braces`).
+    marks: usize,
+    /// A word of this segment held more `{`, `}` and `,` than were added unquoted.
+    quoted_braces: bool,
     /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
     compound: bool,
     /// Elements of the `name=( ... )` being lexed.
@@ -317,6 +324,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
             quoted: false,
             piped: false,
             braces: false,
+            marks: 0,
+            quoted_braces: false,
             compound: false,
             array: None,
             array_word: String::new(),
@@ -350,6 +359,11 @@ impl<'t, 'a> Lexer<'t, 'a> {
         let word = std::mem::take(&mut self.cur);
         self.has_word = false;
         self.quoted = false;
+        let marks = word
+            .bytes()
+            .filter(|b| matches!(b, b'{' | b'}' | b','))
+            .count();
+        self.quoted_braces |= marks > std::mem::take(&mut self.marks);
         if let Some(array) = self.array.as_mut() {
             array.push(word);
             return;
@@ -380,6 +394,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         self.end_word();
         self.pending = None;
         let braces = std::mem::take(&mut self.braces);
+        let quoted_braces = std::mem::take(&mut self.quoted_braces);
         if !self.tokens.is_empty() || !self.redirs.is_empty() {
             let group = self.group();
             self.out.push(Segment {
@@ -389,6 +404,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 arith: false,
                 braces,
                 after_compound: std::mem::take(&mut self.compound),
+                quoted_braces,
             });
         }
         if new_group {
@@ -442,6 +458,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 arith: false,
                 braces: false,
                 after_compound: false,
+                quoted_braces: false,
             });
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
@@ -587,6 +604,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 _ => {
                     let ch = char_at(text, i).unwrap_or('\u{fffd}');
                     self.braces |= ch == '{';
+                    self.marks += usize::from(matches!(ch, '{' | '}' | ','));
                     let mut buf = [0u8; 4];
                     self.add(ch.encode_utf8(&mut buf));
                     i += ch.len_utf8();
@@ -731,7 +749,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 let k = self.brace_end(i)?;
                 self.scan_expanded(i + 2, k, false, false)?;
                 let after = after_char(text, k);
-                self.add(text.get(i..after).unwrap_or(""));
+                let part = text.get(i..after).unwrap_or("");
+                // `${...}` is not brace-expanded, and not quoted either
+                self.marks += part
+                    .bytes()
+                    .filter(|b| matches!(b, b'{' | b'}' | b','))
+                    .count();
+                self.add(part);
                 return Ok(after);
             }
             Some(b'[') => {

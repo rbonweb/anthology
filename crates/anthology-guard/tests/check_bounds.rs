@@ -224,4 +224,21 @@ fn an_alternate_reading_is_checked_against_g1() {
         Verdict::Block(Rule::G1)
     );
     assert_eq!(verdict("cp a.{js,ts} dir"), Verdict::Allow);
+    // SH-seq review M-2: only the sequence alternate shows the install (bash runs `npm -1 i puppeteer`)
+    for command in [
+        "npm {-1..-1} i puppeteer",
+        "npm --prefix ${HOME:+x} {-1..-1} i puppeteer",
+    ] {
+        assert_eq!(verdict(command), Verdict::Block(Rule::G1), "{command}");
+    }
+    // C-1, I-1: a reading that may not be bash's is too complex, never allowed
+    for command in [
+        "npm --prefix \"{1..2}\" {-1..-1} i puppeteer",
+        "npm --prefix '{1..2}' i {puppeteer,x}",
+        "npm --prefix \"{a,b}\" {-x,} i puppeteer",
+        "npm {-1..{1,}} i puppeteer",
+        "echo \"npm --prefix '{1..2}'\" {-1..-1} i puppeteer | sh",
+    ] {
+        assert_ne!(verdict(command), Verdict::Allow, "{command}");
+    }
 }
