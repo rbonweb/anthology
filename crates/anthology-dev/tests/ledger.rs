@@ -1,6 +1,7 @@
 //! `anthology-dev ledger check` fails on every design §13.3 case (a missing row, a missing or
 //! `#[ignore]`d Rust target, a lower row count, a `todo` row), on a Rust target cargo does not
-//! compile or run, on a stale id list and on a regex pattern missing from the inventory;
+//! compile or run, on a stale id list, on a regex pattern missing from the inventory and on an
+//! `unresolved` one with no resolution;
 //! `ledger ids --write` syncs the per-module files.
 
 use std::ffi::OsString;
@@ -1272,6 +1273,198 @@ fn a_changed_row_count_fails() {
     );
     let f = fresh.path().to_str().expect("utf-8");
     assert_fails(dir.path(), &["--fresh", f], "row count not committed");
+}
+
+/// An `unresolved` inventory row (committed, so the fresh copy has it too).
+const UNRESOLVED: &str =
+    "tests/test_memory_sync.py\tAlphaTest.test_one:re.search\tdynamic,unresolved\t«p»";
+
+fn with_unresolved_row(resolution: Option<&str>) -> tempfile::TempDir {
+    let dir = repo();
+    append(
+        dir.path(),
+        ledger::INVENTORY_FILE,
+        &format!("{UNRESOLVED}\n"),
+    );
+    if let Some(r) = resolution {
+        put(
+            dir.path(),
+            ledger::RESOLVED_FILE,
+            &format!("# file\twhere\tconstructs\tpattern\thow\trust_test\n{UNRESOLVED}\t{r}\n"),
+        );
+    }
+    dir
+}
+
+#[test]
+fn an_unresolved_regex_row_needs_a_resolution() {
+    let dir = with_unresolved_row(None);
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "an `unresolved` row has no row in port/regex-resolved.tsv",
+    );
+    let dir = with_unresolved_row(Some(
+        "fancy-regex\tcrates/alpha/tests/alpha.rs::tables::test_table",
+    ));
+    assert_passes(dir.path(), &[]);
+    assert_passes(dir.path(), &["--no-fresh"]);
+    // A row resolving a pattern the inventory does not have (or no longer has) is stale.
+    append(
+        dir.path(),
+        ledger::RESOLVED_FILE,
+        "scripts/gone.py\tf:x\tdynamic,unresolved\t«q»\tregex\tcrates/alpha/tests/alpha.rs::test_one\n",
+    );
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "port/regex-resolved.tsv:3: not a row of port/regex-inventory.tsv (a stale resolution)",
+    );
+}
+
+#[test]
+fn a_resolution_names_a_rust_test_cargo_lists() {
+    // A test that is not in the file.
+    let dir = with_unresolved_row(Some("fancy-regex\tcrates/alpha/tests/alpha.rs::test_regex"));
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "port/regex-resolved.tsv:2: Rust test crates/alpha/tests/alpha.rs::test_regex is missing",
+    );
+    // In the file, but not in the `cargo test -- --list` output.
+    append(
+        dir.path(),
+        "crates/alpha/tests/alpha.rs",
+        "\n#[test]\nfn test_regex() {}\n",
+    );
+    assert_fails(dir.path(), &["--report"], NOT_LISTED);
+    // An ignored one fails, and a listed one passes.
+    replace(
+        dir.path(),
+        LISTING,
+        "test_one: test\n",
+        "test_one: test\ntest_regex: test\n",
+    );
+    replace(
+        dir.path(),
+        IGNORED,
+        "\n0 tests",
+        "test_regex: test\n\n1 test",
+    );
+    assert_fails(dir.path(), &["--report"], "is ignored on linux");
+    replace(
+        dir.path(),
+        IGNORED,
+        "test_regex: test\n\n1 test",
+        "\n0 tests",
+    );
+    assert_passes(dir.path(), &["--report"]);
+    // No test, or no `how`, fails.
+    for (bad, needle) in [
+        (
+            "fancy-regex\t",
+            "a resolved row names the Rust test that runs the pattern",
+        ),
+        (
+            "\tcrates/alpha/tests/alpha.rs::test_regex",
+            "`how` says how Rust handles the pattern",
+        ),
+        (
+            "todo\tcrates/alpha/tests/alpha.rs::test_regex",
+            "`how` says how Rust handles the pattern",
+        ),
+    ] {
+        let dir = with_unresolved_row(Some(bad));
+        assert_fails(dir.path(), &["--report"], needle);
+    }
+}
+
+#[test]
+fn a_pending_regex_row_names_the_owner_and_blocks_only_that_task() {
+    let dir = with_unresolved_row(Some("todo:MS2\t"));
+    // CI's report passes and lists it; the final (full) check and MS2's own check fail.
+    let stdout = assert_passes(dir.path(), &["--report"]);
+    assert!(
+        stdout.contains("regex inventory rows pending a task (todo:<TASK>): 1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_memory_sync.py\tAlphaTest.test_one:re.search\ttodo:MS2"),
+        "{stdout}"
+    );
+    assert_fails(
+        dir.path(),
+        &[],
+        "port/regex-resolved.tsv:2: still pending (todo:MS2)",
+    );
+    assert_fails(
+        dir.path(),
+        &["--files", "tests/test_memory_sync.py", "--task", "MS2"],
+        "still pending (todo:MS2)",
+    );
+    assert_fails(
+        dir.path(),
+        &["--files", "tests/test_memory_sync.py"],
+        "pending on MS2; a --files check of a module with pending regex rows needs --task",
+    );
+    assert_passes(
+        dir.path(),
+        &["--files", "tests/test_memory_sync.py", "--task", "MS1"],
+    );
+    assert_passes(dir.path(), &["--files", "tests/test_rtk_lock.py"]);
+    // The task must own the module; the marker must be a task; a pending row names no test.
+    for (bad, needle) in [
+        (
+            "todo:MT1\t",
+            "pending on MT1, which does not own test_memory_sync (plan §5 owners: MS1, MS2)",
+        ),
+        (
+            "todo:ZZ9\t",
+            "pending on ZZ9, which does not own test_memory_sync",
+        ),
+        (
+            "todo:MS2\tcrates/alpha/tests/alpha.rs::test_one",
+            "a pending row names no rust_test",
+        ),
+    ] {
+        let dir = with_unresolved_row(Some(bad));
+        assert_fails(dir.path(), &["--report"], needle);
+    }
+    // Only a tests/ module has a plan §5 owner: a source row is resolved, never pending.
+    let dir = repo();
+    let source = "scripts/a.py\tf:x\tdynamic,unresolved\t«p»";
+    append(dir.path(), ledger::INVENTORY_FILE, &format!("{source}\n"));
+    put(
+        dir.path(),
+        ledger::RESOLVED_FILE,
+        &format!("{source}\ttodo:MS2\t\n"),
+    );
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "`todo:MS2` is only for a tests/<module>.py row",
+    );
+}
+
+#[test]
+fn malformed_and_repeated_resolutions_fail() {
+    let dir = with_unresolved_row(Some("fancy-regex"));
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "port/regex-resolved.tsv:2: not `file<TAB>where<TAB>constructs<TAB>pattern<TAB>how<TAB>rust_test`",
+    );
+    let dir = with_unresolved_row(Some("fancy-regex\tcrates/alpha/tests/alpha.rs::test_one"));
+    append(
+        dir.path(),
+        ledger::RESOLVED_FILE,
+        &format!("{UNRESOLVED}\tfancy-regex\tcrates/alpha/tests/alpha.rs::test_one\n"),
+    );
+    assert_fails(
+        dir.path(),
+        &["--report"],
+        "port/regex-resolved.tsv:3: repeated row",
+    );
 }
 
 #[test]

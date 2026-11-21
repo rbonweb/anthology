@@ -385,8 +385,8 @@ fn dirname(p: &[u8]) -> &[u8] {
 }
 
 /// `os.path.expanduser(path)` (CPython 3.12 `posixpath`) with `env`'s `HOME`: `~` and `~/…`
-/// use `HOME` (as given, even empty) or the passwd home; `~user` is left as it is (Rust has no
-/// passwd lookup by name; Python expands it when the user exists).
+/// use `HOME` (as given, even empty) or the passwd home; `~user` uses that user's passwd home
+/// and is left as it is when the user is unknown.
 fn expanduser(path: &str, env: &Env) -> Vec<u8> {
     let p = path.as_bytes();
     if !path.starts_with('~') {
@@ -397,15 +397,16 @@ fn expanduser(path: &str, env: &Env) -> Vec<u8> {
         .skip(1)
         .position(|&c| c == b'/')
         .map_or(p.len(), |j| j + 1);
-    if i != 1 {
+    let found = if i != 1 {
+        anthology_core::sys::user_home(&p[1..i])
+    } else {
+        match env.get_os("HOME") {
+            Some(h) => Some(h.to_os_string()),
+            None => anthology_core::sys::passwd_home(),
+        }
+    };
+    let Some(home) = found else {
         return p.to_vec();
-    }
-    let home: OsString = match env.get_os("HOME") {
-        Some(h) => h.to_os_string(),
-        None => match anthology_core::sys::passwd_home() {
-            Some(h) => h,
-            None => return p.to_vec(),
-        },
     };
     let home = home.as_bytes();
     let end = home.iter().rposition(|&c| c != b'/').map_or(0, |j| j + 1);
@@ -441,11 +442,25 @@ mod tests {
         let env = Env::default().with("HOME", "/h/");
         assert_eq!(expanduser("~/x", &env), b"/h/x");
         assert_eq!(expanduser("~", &env), b"/h");
-        assert_eq!(expanduser("~bob/x", &env), b"~bob/x");
+        assert_eq!(
+            expanduser("~no-such-user-ms1-f/x", &env),
+            b"~no-such-user-ms1-f/x"
+        );
         assert_eq!(expanduser("x~", &env), b"x~");
         let env = Env::default().with("HOME", "/");
         assert_eq!(expanduser("~", &env), b"/");
         assert_eq!(expanduser("~/x", &env), b"/x");
+    }
+
+    #[test]
+    fn expanduser_looks_a_named_user_up() {
+        let env = Env::default().with("HOME", "/h");
+        let root = anthology_core::sys::user_home(b"root").expect("root");
+        let root = root.as_bytes();
+        let end = root.iter().rposition(|&c| c != b'/').map_or(0, |j| j + 1);
+        let mut want = root[..end].to_vec();
+        want.extend_from_slice(b"/x.git");
+        assert_eq!(expanduser("~root/x.git", &env), want);
     }
 
     #[test]
