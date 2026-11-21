@@ -112,7 +112,7 @@ a new version section.
   `rtk`, a deny and an rtk failure still pass through. On other lines your ask rules get only
   Claude Code's own matching (not `git -C . push` or `bash -c '…'`); deny rules still apply
   in every form, so use a deny rule for anything that must never run. A `$'` that ends a
-  quoted regex (`grep -v '^a$'`) is not a mention; an escaped `$'\x72tk'` still is.
+  quoted regex (`grep -v '^a$'`) is not a mention, and neither is a `$'...'` string.
 - rtk's local history (command lines, recall store, tee spool) is kept in
   `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
   document what it stores and for how long.
