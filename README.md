@@ -90,9 +90,9 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 |---|---|---|---|---|
 | `researcher` | opus | no | Research, competitor and user-research synthesis | competitive-brief, synthesize-research, research-synthesis, ux-research, journey-mapping |
 | `architect` | opus | no | Architecture, system design, test strategy, plans | system-design, architecture, testing-strategy; preloaded: writing-plans |
-| `implementer` | sonnet | yes, in a worktree | Building from a clear plan | preloaded: test-driven-development, verification-before-completion |
-| `debugger` | sonnet | yes, in a worktree | Reproducible bugs | preloaded: systematic-debugging |
-| `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist; tech-debt and deploy-checklist only when they apply |
+| `implementer` | sonnet | yes, in a worktree | Building from a clear plan | karpathy-guidelines; preloaded: test-driven-development, verification-before-completion |
+| `debugger` | sonnet | yes, in a worktree | Reproducible bugs | karpathy-guidelines; preloaded: systematic-debugging |
+| `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist, karpathy-guidelines; tech-debt and deploy-checklist only when they apply |
 | `scout` | haiku | no | Finding code, running tests, summarizing output | none |
 | `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing |
 | `ui-designer` | sonnet | yes, in a worktree | Building UI | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation |
@@ -100,7 +100,7 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 | `product-planner` | opus | docs only | Specs, sprint plans, roadmaps, product brainstorming | write-spec, sprint-planning, roadmap-update, product-brainstorming, ux-strategy, design-ops |
 | `marketer` | sonnet | docs only | SEO, campaigns, content, email sequences | seo-audit, campaign-plan, content-creation, email-sequence |
 
-- **Knowledge belongs to agents.** Every skill we ship is read by at least one agent, and the main session never sees it. The only skills the main session has are `anthology-superpowers` and the three user commands. Each agent reads its own knowledge files before it starts anything else.
+- **Knowledge belongs to agents.** Every skill we ship is read by at least one agent, and the main session never sees it. The only skills the main session has are `anthology-superpowers`, the three user commands and `anthology:large-builds`, the rulebook for long multi-agent builds. Each agent reads its own knowledge files before it starts anything else.
 - **Builders and critics are different models.** For UI work, `ui-designer` (Sonnet) builds and `ui-reviewer` (Opus) checks.
 - **For websites and landing pages** `design-taste-frontend` leads; **for app screens** `ui-taste` leads; `frontend-design` is the baseline.
 - **No agent can call other agents,** so the main session stays the single orchestrator. In the Edits column, "no" means the Edit, Write and NotebookEdit tools are turned off for that agent. It can still run Bash, which is how it saves its own memory notes. "Docs only" for `product-planner` and `marketer` is an instruction in the agent, not a tool restriction.
@@ -127,6 +127,7 @@ These run only when you ask for them.
 - **Worktrees.** Writers use Claude Code's built-in isolation, never `git worktree add`. Writers commit before they finish, and the main session reviews and merges. Parallel writers get separate files.
 - **Docker.** Tests, builds and end-to-end suites run in containers that mount only the current worktree. Agents do no host-level installs (`brew`, `npm -g`, global `pip`, browser downloads). Project-level installs such as `npm install` are fine. If Docker is unavailable, the agent stops and tells you.
 - **Blocked agents.** A subagent cannot ask you a question. It stops and reports it, and the main session answers or asks you, then resumes it.
+- **Coding and long builds.** Code follows the Karpathy guidelines (think first, simplest fit, surgical diffs, verify); the implementer, debugger and reviewer read them at startup. For long or multi-agent builds, status reports and decisions made while you are away, the main session loads `anthology:large-builds`: plain feature-based status reports (done, running, blocked, an honest estimate), and each decision recorded as `Ruling: what — why — cost if wrong`, while still stopping for irreversible, security-sensitive or outward-facing actions.
 
 ### Guardrails
 
