@@ -1,8 +1,8 @@
 //! `check()`: the rule order of GC-6 (GD1), guard_rules.py `_check` and `check`.
 //!
-//! Order: G5 on the tool name; G6 (file tool, then command); G3 on the tool input's paths,
-//! search roots and code; then per entry G3, G4, G1, G2; then the same four on each alternate
-//! reading of a wrapped command (`Analysis.alternates`).
+//! Order: G5 on the tool name; G6 (file tool, then command, over the entries and the alternate
+//! readings); G3 on the tool input's paths, search roots and code; then per entry G3, G4, G1, G2;
+//! then the same four on each alternate reading of a wrapped command (`Analysis.alternates`).
 //!
 //! Python turns any exception into "allow". Rust has no such path: it blocks where it cannot
 //! finish (design §9.5, D-1/D-7):
@@ -166,7 +166,13 @@ fn run(
     let g6 = crate::rules::either(
         g6_file_tool(input, &paths, &regexes.secrets),
         || match command {
-            Some(c) => g6_command(c, &analysis.entries, &paths, &regexes.secrets),
+            // the alternate readings too (review-gd-final I-1): the shipped reading may write memory
+            Some(c) => g6_command(
+                c,
+                analysis.entries.iter().chain(&analysis.alternates),
+                &paths,
+                &regexes.secrets,
+            ),
             None => Ok(false),
         },
     );

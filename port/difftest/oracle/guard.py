@@ -8,9 +8,9 @@ Library surface: `run(case: dict) -> dict` (the case's `data`, or a dict holding
 Case data. The rules are guard_rules.py's; the shell analysis under them is the shell oracle's
 (`port/difftest/oracle/shell.py`: the vendored fix-wave H/I reference `guard_rules_fw.py` with the Rust-stricter
 rules applied, lane SH), because Rust's guard runs on `anthology_shell::analyze`. The alternate readings
-are checked against G3, G4, G1 and G2 after every entry of every reading, as Rust's guard checks
-`Analysis.alternates` (final review C-1, I-3); this holds on every path, a stopped analysis and the hook
-included. `guard.py` (`plugins/anthology-guardrails/scripts/`) runs on that module as well:
+are checked against G3, G4, G1 and G2 after every entry of every reading, and against G6 with the entries,
+as Rust's guard checks `Analysis.alternates` (final review C-1, I-3; review-gd-final I-1); this holds on
+every path, a stopped analysis and the hook included. `guard.py` (`plugins/anthology-guardrails/scripts/`) runs on that module as well:
 - `{"op": "check", "tool": T, "input": I, "home": H}`: `guard_rules.check(T, I, H)`, rendered as the
   canonical JSON of `[rule, message]` or `null`. `check` turns any exception into `None`; this module
   calls `_check` itself, so an exception is seen: it answers `null` with `"divergence": "D-1"` (Python
@@ -87,6 +87,19 @@ def _entries_rule(entries, home):
             if test(entry):
                 return rule
     return None
+
+
+_G6_COMMAND = G._g6_command
+
+
+def _g6_command(command, entries, home):
+    """`_g6_command` over the entries and the alternate readings collected so far: Rust's G6 reads
+    `Analysis.alternates` too (review-gd-final I-1). Every caller (`_check_reading`, `_stopped_rule`)
+    goes through this."""
+    return _G6_COMMAND(command, list(entries) + list(SHELL._ALTERNATES), home)
+
+
+G._g6_command = _g6_command
 
 
 _CHECK = G._check

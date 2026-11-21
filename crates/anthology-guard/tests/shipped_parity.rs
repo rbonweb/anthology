@@ -23,7 +23,7 @@ mod gd;
 
 use anthology_guard::{Rule, Verdict, check};
 
-use gd::{HOME, bash};
+use gd::{HOME, bash, gh_token};
 
 const RUNNERS: &[&str] = &[
     "npx",
@@ -377,4 +377,94 @@ fn rust_blocks_every_prefix_cross_case_the_shipped_python_blocks() {
         PENDING_SH.len(),
         "a PENDING_SH case now blocks: remove it from the list"
     );
+}
+
+// ------------------------------------------------------------------ runners x options x G6 writes
+
+/// `data/shipped_g6_cross.tsv` (review-gd-final I-1): `echo {T} | <runner> <option> <write>` for the
+/// runners above but `deno run -A npm:`, every option above, and three writes into memory (27 x 36 x 3 =
+/// 2,916 cases), frozen the same way under HOME `/home/tester`. `{T}` stands for [`gh_token`], put in
+/// at run time (and when the table was generated), so the repository holds no token shape.
+const G6_TABLE: &str = include_str!("data/shipped_g6_cross.tsv");
+
+/// `data/shipped_g6_pending_sh.txt`: the shipped G6 blocks Rust still allows until SH (#89,
+/// port-sh-final) keeps the shipped reading of an unknown option as an alternate (`yarn --silent tee P`
+/// read as `tee P`); G6 already reads alternates. Empty the file once #89 lands; it may only shrink.
+const G6_PENDING_SH: &str = include_str!("data/shipped_g6_pending_sh.txt");
+
+const G6_WRITES: &[&str] = &[
+    "tee ~/.claude/agent-memory/a.md",
+    "tee -a ~/.claude/agent-memory/a.md",
+    "dd of=/home/tester/.claude/agent-memory/a.md",
+];
+
+#[test]
+fn rust_blocks_every_g6_cross_case_the_shipped_python_blocks() {
+    let rows: Vec<(&str, &str)> = G6_TABLE
+        .lines()
+        .map(|l| l.split_once('\t').expect("a `rule\\tcommand` line"))
+        .collect();
+    let mut commands = Vec::new();
+    for r in RUNNERS.iter().filter(|r| !r.ends_with(" npm:")) {
+        for o in OPTIONS {
+            for w in G6_WRITES {
+                let run = [*r, *o, *w]
+                    .iter()
+                    .filter(|x| !x.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                commands.push(format!("echo {{T}} | {run}"));
+            }
+        }
+    }
+    assert_eq!(rows.len(), 2916);
+    assert_eq!(commands.len(), rows.len());
+    let token = gh_token();
+    let pending_sh: Vec<&str> = G6_PENDING_SH.lines().collect();
+    let mut allowed = Vec::new();
+    let mut pending = 0;
+    for ((rule, command), expected) in rows.iter().zip(&commands) {
+        assert_eq!(command, expected, "the table is not the product it claims");
+        if *rule == "-" || verdict(&command.replace("{T}", &token)) != Verdict::Allow {
+            continue;
+        }
+        if pending_sh.contains(command) {
+            pending += 1;
+        } else {
+            allowed.push(format!("{rule}\t{command}"));
+        }
+    }
+    assert_eq!(
+        rows.iter().filter(|(r, _)| *r != "-").count(),
+        1845,
+        "the frozen table's shipped blocks"
+    );
+    assert!(
+        allowed.is_empty(),
+        "Rust allows {} case(s) the shipped Python blocks:\n{}",
+        allowed.len(),
+        allowed.join("\n")
+    );
+    assert_eq!(
+        pending,
+        pending_sh.len(),
+        "a shipped_g6_pending_sh.txt case now blocks: remove it from the file"
+    );
+}
+
+#[test]
+#[ignore = "needs SH (#89, port-sh-final): the shipped reading of an unknown option as an \
+            alternate; G6 already reads alternates (review-gd-final I-1)"]
+fn a_secret_written_to_memory_behind_an_unknown_option_is_g6() {
+    // review-gd-final I-1: the shipped reading (an alternate) writes memory
+    let token = gh_token();
+    for command in [
+        "echo {T} | pnpm --silent tee ~/.claude/agent-memory/a.md",
+        "echo {T} | yarn --frozen-lockfile tee ~/.claude/agent-memory/a.md",
+        "echo {T} | pnpm -s dd of=/home/tester/.claude/agent-memory/a.md",
+    ] {
+        let command = command.replace("{T}", &token);
+        assert_eq!(verdict(&command), Verdict::Block(Rule::G6), "{command}");
+    }
 }
