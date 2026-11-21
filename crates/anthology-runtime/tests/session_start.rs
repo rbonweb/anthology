@@ -1312,7 +1312,10 @@ mod rtk_test {
             session_start::reconcile_rtk(&f.env(), f.plugin(), Some(&data), &f.deps()).unwrap();
         assert_eq!(
             warning.as_deref(),
-            Some("anthology: rtk setup failed: expected str, bytes or os.PathLike object, not int")
+            Some(
+                "anthology: rtk setup failed: argument should be a str or an os.PathLike object \
+                 where __fspath__ returns a str, not 'int'"
+            )
         );
         let falsy = Value::Str(String::new());
         assert_eq!(
@@ -2367,13 +2370,20 @@ mod f4_self_test {
         assert!(sys(&out).contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(10));
         let pid = fs::read_to_string(&pidfile).unwrap();
-        // the background sleep of the hung guard is gone with its group
-        let alive = std::process::Command::new("/bin/sh")
-            .args(["-c", &format!("kill -0 {} 2>/dev/null", pid.trim())])
-            .status()
-            .unwrap()
-            .success();
-        assert!(!alive);
+        // the background sleep of the hung guard is gone with its group (polled: a killed child
+        // may be reaped a moment later)
+        let alive = || {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("kill -0 {} 2>/dev/null", pid.trim())])
+                .status()
+                .unwrap()
+                .success()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!alive());
     }
 }
 
@@ -2441,9 +2451,17 @@ mod prune {
         set_mtime(&bin.join(&new_q), 5 * day);
         fs::create_dir_all(bin.join(".broken-junk")).unwrap();
         set_mtime(&bin.join(".broken-junk"), 5 * day);
-        // a link to an old folder is never followed or removed
-        fs::create_dir_all(f.tmp().join("elsewhere")).unwrap();
-        symlink(f.tmp().join("elsewhere"), bin.join("0.0.7")).unwrap();
+        // links to an old folder are never followed or removed, whatever their name says
+        let elsewhere = f.tmp().join("elsewhere");
+        write(&elsewhere.join(".sha256"), "x\n", None);
+        write(&elsewhere.join(".last-used"), "", None);
+        set_mtime(&elsewhere.join(".sha256"), 31 * day);
+        set_mtime(&elsewhere.join(".last-used"), 31 * day);
+        set_mtime(&elsewhere, 31 * day);
+        let old_link_q = format!(".broken-0.1.0-{}-1", n - 2 * day);
+        for link in ["0.0.7", ".tmp-link", old_link_q.as_str()] {
+            symlink(&elsewhere, bin.join(link)).unwrap();
+        }
         let removed = session_start::prune_bin(&env, f.plugin(), Some(&f.c.guard), now());
         assert_eq!(
             removed,
@@ -2456,11 +2474,13 @@ mod prune {
             ".tmp-new",
             ".broken-junk",
             "0.0.7",
+            ".tmp-link",
+            old_link_q.as_str(),
         ] {
             assert!(fs::symlink_metadata(bin.join(kept)).is_ok(), "{kept}");
         }
         assert!(bin.join(&new_q).exists());
-        assert!(f.tmp().join("elsewhere").is_dir());
+        assert!(elsewhere.join(".sha256").is_file() && elsewhere.join(".last-used").is_file());
     }
 
     #[test]
