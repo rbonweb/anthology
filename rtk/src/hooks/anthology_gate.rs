@@ -2115,9 +2115,10 @@ impl Scanner<'_> {
             // A path that cannot be resolved asks, at top level too (round 6); a
             // path a `Read()` ask rule names asks behind rtk (elsewhere the host
             // applies that rule to the original itself).
+            let unresolved = denied == ReadOutcome::Uncertain || asked == ReadOutcome::Uncertain;
             if may_ask
-                && ((denied == ReadOutcome::Uncertain && entry.cwd.is_none())
-                    || (via_rtk && asked != ReadOutcome::Clear))
+                && ((unresolved && entry.cwd.is_none())
+                    || (via_rtk && asked == ReadOutcome::Denied))
             {
                 self.ask = true;
             }
