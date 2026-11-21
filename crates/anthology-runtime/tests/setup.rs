@@ -2029,6 +2029,298 @@ mod remove_test {
     }
 }
 
+mod subagent_model_test {
+    //! `SubagentModelTest`: `CLAUDE_CODE_SUBAGENT_MODEL` is located in the preview, and removed
+    //! from the user settings.json only when `apply --remove-subagent-model` says so.
+    use super::*;
+
+    const KEY: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+    /// `self.with_model()`: the default settings with `env.CLAUDE_CODE_SUBAGENT_MODEL` set.
+    fn with_model(f: &Fx) -> String {
+        f.c.write_settings(
+            r#"{"model": "opus", "env": {"A": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"}}"#,
+        )
+    }
+
+    /// `json.loads(text)`.
+    fn parsed(text: &str) -> Value {
+        json::loads(text).expect("valid JSON")
+    }
+
+    /// Whether `text`'s `env` block (`json.loads`) has `KEY`.
+    fn has_key(text: &str) -> bool {
+        at(&parsed(text), &["env"])
+            .as_object()
+            .is_some_and(|m| m.contains_key(KEY))
+    }
+
+    /// `self.apply(cwd=cwd, remove_subagent_model=True, skip_approve=…)`: with the preview's
+    /// digest.
+    fn apply_removing(f: &Fx, cwd: &Path, skip_approve: bool) -> Value {
+        let digest = text_at(&f.preview(Some(cwd)), &["settings", "sha256"]).to_string();
+        setup::apply_with(
+            &f.c.plugin,
+            &digest,
+            Some(cwd),
+            skip_approve,
+            f.env(),
+            &[],
+            true,
+            &f.deps(),
+        )
+    }
+
+    #[test]
+    fn test_not_set() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let out = f.preview(None);
+        assert_eq!(
+            at(&out, &["subagent_model"]),
+            &parsed(r#"{"set_in": [], "removable": false, "diff": "", "elsewhere": []}"#)
+        );
+    }
+
+    #[test]
+    fn test_preview_offers_a_separate_redacted_removal_and_writes_nothing() {
+        let f = Fx::new();
+        with_model(&f);
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(None);
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let sm = at(&out, &["subagent_model"]);
+        assert_eq!(at(sm, &["set_in"]), &parsed(r#"["user settings.json"]"#));
+        assert_eq!(at(sm, &["removable"]), &Value::Bool(true));
+        assert_eq!(at(sm, &["elsewhere"]), &parsed("[]"));
+        let diff = text_at(sm, &["diff"]);
+        assert!(
+            diff.contains("-    \"CLAUDE_CODE_SUBAGENT_MODEL\": \"<redacted>\""),
+            "{diff}"
+        );
+        assert!(!text_at(&out, &["settings", "diff"]).contains(KEY));
+        assert!(!dumped(&out).contains("SECRETMODEL"));
+    }
+
+    #[test]
+    fn test_apply_removes_it_only_when_asked_and_remove_restores_it() {
+        let f = Fx::new();
+        let text = with_model(&f);
+        assert!(ok(&f.apply()));
+        assert!(has_key(&f.read_settings()));
+        let before = f.state();
+        let res = apply_removing(&f, f.tmp(), false);
+        assert!(ok(&res), "{}", dumped(&res));
+        assert_eq!(
+            at(&res, &["subagent_model"]),
+            &parsed(r#"{"removed": true}"#)
+        );
+        assert!(!dumped(&res).contains("SECRETMODEL"));
+        assert_eq!(
+            at(&parsed(&f.read_settings()), &["env"]),
+            &parsed(r#"{"A": "1"}"#)
+        );
+        let after = f.state();
+        assert_eq!(
+            after.get("settings_ops_version"),
+            before.get("settings_ops_version")
+        ); // the opt-in is not an op change
+        let ops: Vec<&str> = after
+            .get("settings_ops")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o.as_object()?.get("op")?.as_str())
+            .collect();
+        assert!(ops.contains(&"unset"), "{ops:?}");
+        assert!(ok(&f.apply())); // a later run keeps the record
+        let preview = f.remove(false, false, true);
+        assert!(
+            text_at(&preview, &["settings", "diff"])
+                .contains("+    \"CLAUDE_CODE_SUBAGENT_MODEL\": \"<redacted>\""),
+        );
+        assert!(!dumped(&preview).contains("SECRETMODEL"));
+        assert!(ok(&f.remove(false, false, false)));
+        assert_eq!(f.read_settings(), text);
+    }
+
+    #[test]
+    fn test_remove_keeps_a_value_set_again_since() {
+        let f = Fx::new();
+        with_model(&f);
+        apply_removing(&f, f.tmp(), false);
+        let mut data = parsed(&f.read_settings());
+        data.as_object_mut()
+            .unwrap()
+            .get_mut("env")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(KEY.into(), Value::Str("mine-now".into()));
+        write(
+            &f.c.settings,
+            &(json::dumps(&data, &json::INDENT2) + "\n"),
+            None,
+        );
+        assert!(ok(&f.remove(false, false, false)));
+        let data = parsed(&f.read_settings());
+        assert_eq!(text_at(&data, &["env", KEY]), "mine-now");
+        assert!(data.as_object().unwrap().get("permissions").is_none()); // setup's own entries came out
+    }
+
+    #[test]
+    fn test_apply_with_the_flag_is_digest_protected() {
+        let f = Fx::new();
+        with_model(&f);
+        let digest = f.digest();
+        let edited = format!("{}\n", f.read_settings());
+        write(&f.c.settings, &edited, None);
+        let res = setup::apply_with(
+            &f.c.plugin,
+            &digest,
+            Some(f.tmp()),
+            false,
+            f.env(),
+            &[],
+            true,
+            &f.deps(),
+        );
+        assert!(!ok(&res));
+        assert!(has_key(&f.read_settings()));
+    }
+
+    #[test]
+    fn test_elsewhere_is_never_touched_and_says_how() {
+        let mut f = Fx::new();
+        let text = f.c.write_settings(SETTINGS);
+        let proj = f.tmp().join("proj");
+        write(
+            &proj.join(".claude").join("settings.local.json"),
+            r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}"#,
+            None,
+        );
+        f.c.env = f.c.env.clone().with(KEY, "from-the-shell");
+        let out = f.preview(Some(&proj));
+        let sm = at(&out, &["subagent_model"]);
+        assert_eq!(
+            at(sm, &["set_in"]),
+            &parsed(r#"["the project's .claude/settings.local.json", "the process environment"]"#)
+        );
+        assert_eq!(at(sm, &["removable"]), &Value::Bool(false));
+        assert_eq!(text_at(sm, &["diff"]), "");
+        let elsewhere = at(sm, &["elsewhere"]).as_array().unwrap();
+        let wheres: Vec<&str> = elsewhere.iter().map(|e| text_at(e, &["where"])).collect();
+        assert_eq!(
+            wheres,
+            [
+                "the project's .claude/settings.local.json",
+                "the process environment"
+            ]
+        );
+        for e in elsewhere {
+            assert!(text_at(e, &["how"]).contains(KEY));
+        }
+        assert!(text_at(&elsewhere[1], &["how"]).contains("shell profile"));
+        let res = apply_removing(&f, &proj, true);
+        assert_eq!(
+            at(&res, &["subagent_model"]),
+            &parsed(r#"{"removed": false}"#)
+        );
+        assert_eq!(
+            parsed(&fs::read_to_string(proj.join(".claude").join("settings.local.json")).unwrap()),
+            parsed(r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}"#)
+        );
+        f.remove_in(&proj, false, false, false);
+        assert_eq!(f.read_settings(), text);
+    }
+
+    #[test]
+    fn test_a_key_set_twice_is_not_offered() {
+        let f = Fx::new();
+        let text =
+            r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "a", "CLAUDE_CODE_SUBAGENT_MODEL": "b"}}"#;
+        write(&f.c.settings, &format!("{text}\n"), None);
+        let out = f.preview(None);
+        let sm = at(&out, &["subagent_model"]);
+        assert_eq!(at(sm, &["set_in"]), &parsed(r#"["user settings.json"]"#));
+        assert_eq!(at(sm, &["removable"]), &Value::Bool(false));
+        let elsewhere = at(sm, &["elsewhere"]).as_array().unwrap();
+        assert_eq!(elsewhere.len(), 1);
+        assert_eq!(text_at(&elsewhere[0], &["where"]), "user settings.json");
+        assert!(text_at(&elsewhere[0], &["how"]).contains("every"));
+        let res = apply_removing(&f, f.tmp(), true);
+        assert_eq!(
+            at(&res, &["subagent_model"]),
+            &parsed(r#"{"removed": false}"#)
+        );
+        assert_eq!(
+            at(&parsed(&f.read_settings()), &["env"]),
+            &parsed(r#"{"CLAUDE_CODE_SUBAGENT_MODEL": "b"}"#)
+        );
+    }
+
+    #[test]
+    fn test_the_process_copy_of_the_user_setting_is_not_a_second_place() {
+        let mut f = Fx::new();
+        with_model(&f);
+        // Claude Code copies settings env into the commands it runs
+        f.c.env = f.c.env.clone().with(KEY, "SECRETMODEL");
+        let out = f.preview(None);
+        let sm = at(&out, &["subagent_model"]);
+        assert_eq!(at(sm, &["set_in"]), &parsed(r#"["user settings.json"]"#));
+        assert_eq!(at(sm, &["removable"]), &Value::Bool(true));
+    }
+
+    #[test]
+    fn test_unparseable_user_settings_offer_nothing() {
+        let f = Fx::new();
+        write(
+            &f.c.settings,
+            r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"},}"#,
+            None,
+        );
+        let out = f.preview(None);
+        assert!(
+            at(&out, &["settings"])
+                .as_object()
+                .unwrap()
+                .contains_key("error")
+        );
+        let sm = at(&out, &["subagent_model"]);
+        assert_eq!(at(sm, &["removable"]), &Value::Bool(false));
+        assert_eq!(at(sm, &["set_in"]), &parsed("[]")); // not valid JSON for Claude Code either
+    }
+
+    #[test]
+    fn test_cli_flag() {
+        let f = Fx::new();
+        with_model(&f);
+        let digest = f.digest();
+        let argv: Vec<String> = [
+            "apply",
+            "--plugin-root",
+            &p(&f.c.plugin),
+            "--expect-sha256",
+            &digest,
+            "--cwd",
+            &p(f.tmp()),
+            "--skip-approve",
+            "--remove-subagent-model",
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        let (code, out, _) = setup::main(&argv, f.env(), &f.deps());
+        assert_eq!(code, 0, "{out}");
+        let v = json::loads(&out).unwrap();
+        assert_eq!(at(&v, &["subagent_model", "removed"]), &Value::Bool(true));
+        assert_eq!(
+            at(&parsed(&f.read_settings()), &["env"]),
+            &parsed(r#"{"A": "1"}"#)
+        );
+    }
+}
+
 /// Not Python ports: the F-15 additions (D§8.8, GC-14).
 mod guard_binary {
     use super::*;

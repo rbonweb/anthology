@@ -5,7 +5,7 @@ use anthology_pycompat::json::{Map, Value};
 
 use crate::diff::diff_texts;
 use crate::ops::Op;
-use crate::render::{append, check_render_depth, dumps_unicode, nest, render, style};
+use crate::render::{append, check_render_depth, dumps_unicode, nest, remove_at, render, style};
 use crate::scanner::pyval::py_eq;
 use crate::scanner::{Doc, Kind, contains, descend, dotted, is_blank, load_raw, parse, strings};
 
@@ -50,7 +50,7 @@ fn obj(pairs: Vec<(&str, Value)>) -> Map {
 
 /// `_create(text, op, path, leaf, created_upto, existing)`: insert `leaf` at `path`, creating
 /// the missing containers.
-fn create(
+pub(crate) fn create(
     text: &str,
     path: &[String],
     leaf: Value,
@@ -186,6 +186,43 @@ fn apply_op(text: &str, op: &Op) -> Result<(String, Option<Map>), String> {
                 Value::Object(obj(vec![("present", Value::Bool(false))])),
             );
             Ok((out, Some(info)))
+        }
+        Op::Unset { .. } => {
+            if path.is_empty() || is_blank(text) {
+                return Ok((text.to_string(), None));
+            }
+            let root = parse(text)?;
+            // A parent on the path that is not an object: nothing to drop.
+            let Ok(chain) = descend(&root, &pv) else {
+                return Ok((text.to_string(), None));
+            };
+            if chain.len() - 1 != path.len() {
+                return Ok((text.to_string(), None));
+            }
+            let (node, parent) = (chain[chain.len() - 1], chain[chain.len() - 2]);
+            let key = path.last().expect("the path is not empty");
+            if root
+                .node(parent)
+                .members
+                .iter()
+                .filter(|m| &m.key == key)
+                .count()
+                > 1
+            {
+                // Set twice: dropping one copy would leave the other in force.
+                return Ok((text.to_string(), None));
+            }
+            let nd = root.node(node);
+            let previous = obj(vec![
+                ("present", Value::Bool(true)),
+                ("raw", Value::Str(text[nd.start..nd.end].to_string())),
+            ]);
+            let info = obj(vec![
+                ("created", Value::Array(Vec::new())),
+                ("previous", Value::Object(previous)),
+            ]);
+            let idx = root.member_index(parent, node);
+            Ok((remove_at(text, &root, parent, idx), Some(info)))
         }
     }
 }

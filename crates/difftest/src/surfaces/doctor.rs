@@ -158,6 +158,7 @@ fn run(case: &Value) -> Observed {
     let limits = DoctorLimits {
         system_applications: vec![root.join("SysApps")],
         managed_mcp_paths: vec![root.join("managed-mcp.json")],
+        managed_settings_paths: vec![root.join("managed-settings.json")],
     };
     let lock = field(case, "lock")
         .and_then(Value::as_str)
@@ -1623,8 +1624,19 @@ fn rand_plugin(rng: &mut Rng, b: &mut B) {
         }
     }
     if rng.chance(0.1) {
-        let v = *rng.pick(&["m", "", " "]);
+        let v = *rng.pick(&["m", "", " ", "x"]);
         b.env("CLAUDE_CODE_SUBAGENT_MODEL", v);
+    }
+    // managed settings, and the project file that is the user's own (run in the home folder)
+    if rng.chance(0.1) {
+        let v = *rng.pick(&[r#""m""#, r#""x""#, r#"" ""#, "1"]);
+        b.file(
+            "managed-settings.json",
+            &format!(r#"{{"env": {{"CLAUDE_CODE_SUBAGENT_MODEL": {v}}}}}"#),
+        );
+    }
+    if rng.chance(0.05) {
+        b.env("CLAUDE_CONFIG_DIR", &format!("@ROOT@/{PROJ}/.claude"));
     }
 }
 

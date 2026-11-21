@@ -47,7 +47,7 @@ NAG = "anthology: run /anthology:setup to finish installing (rtk, permissions, m
 NO_DATA = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory "
            "search index have no data folder (compatibility check)")
 SUBAGENT_MODEL_SET = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model "
-                      "and the roster's model tiers do not apply")
+                      "and the roster's model tiers do not apply; run /anthology:setup to see where it is set")
 MOVED = "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge"
 OPS_CHANGED = "anthology settings changed in this release — run /anthology:setup to review"
 GUARD_TIMEOUT = 10        # seconds for the guard self-test

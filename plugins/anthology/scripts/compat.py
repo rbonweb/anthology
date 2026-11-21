@@ -128,24 +128,65 @@ def agent_memory_hint(name):
             "run here, report it" % (name, name, name))
 
 
-def _env_has_model(data):
+# Where Claude Code reads managed settings (macOS, Linux); an administrator owns these files.
+MANAGED_SETTINGS_PATHS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+                          Path("/etc/claude-code/managed-settings.json"))
+USER_SETTINGS = "user settings.json"
+PROCESS_ENV = "the process environment"
+# One line per place `CLAUDE_CODE_SUBAGENT_MODEL` can be set: how to remove it there by hand.
+SUBAGENT_MODEL_HINTS = {
+    USER_SETTINGS: "delete every `CLAUDE_CODE_SUBAGENT_MODEL` line from the `env` block of your user "
+                   "settings.json",
+    PROCESS_ENV: "delete the line that sets `CLAUDE_CODE_SUBAGENT_MODEL` from your shell profile (for example "
+                 "~/.zshrc or ~/.bashrc), then open a new terminal and restart Claude Code",
+    "the project's .claude/settings.json": "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of the "
+                                           "project's .claude/settings.json (it is shared with the repo)",
+    "the project's .claude/settings.local.json": "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of "
+                                                 "the project's .claude/settings.local.json",
+    "managed settings": "managed settings belong to your administrator; ask them to remove "
+                        "`CLAUDE_CODE_SUBAGENT_MODEL` from managed-settings.json",
+}
+
+
+def _env_model(data):
+    """The non-blank `env.CLAUDE_CODE_SUBAGENT_MODEL` string of parsed settings, or None."""
     block = data.get("env") if isinstance(data, dict) else None
     value = block.get(SUBAGENT_MODEL) if isinstance(block, dict) else None
-    return isinstance(value, str) and bool(value.strip())
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def subagent_model_sources(env, cwd):
+    """Every place `CLAUDE_CODE_SUBAGENT_MODEL` is set (labels, never its value), in this order:
+    "user settings.json", "the project's .claude/settings.json", "the project's
+    .claude/settings.local.json", "managed settings", "the process environment". Claude Code
+    copies a settings file's `env` into the environment of the commands it runs, so the process
+    environment counts only when its value matches none of those files (a shell profile, say).
+    A project file that is the user settings.json itself (Claude Code run in the home folder)
+    is that file, not a second place."""
+    top = repo_top(cwd) or Path(str(cwd))
+    user = config_dir(env) / "settings.json"
+    candidates = [(USER_SETTINGS, user, None),
+                  # the project's two files come with the clone, so they are bounded
+                  ("the project's .claude/settings.json", top / ".claude" / "settings.json", REPO_READ_LIMIT),
+                  ("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json",
+                   REPO_READ_LIMIT)]
+    candidates += [("managed settings", path, None) for path in MANAGED_SETTINGS_PATHS]
+    found, values = [], set()
+    for label, path, limit in candidates:
+        if label != USER_SETTINGS and os.path.realpath(str(path)) == os.path.realpath(str(user)):
+            continue
+        value = _env_model(read_json(path, limit))
+        if value is not None:
+            values.add(value)
+            if label not in found:
+                found.append(label)
+    process = str(env.get(SUBAGENT_MODEL) or "")
+    if process.strip() and process not in values:
+        found.append(PROCESS_ENV)
+    return found
 
 
 def subagent_model_source(env, cwd):
-    """Where `CLAUDE_CODE_SUBAGENT_MODEL` is set (never its value), or None: "the process
-    environment", "user settings.json", "the project's .claude/settings.json" or
-    ".claude/settings.local.json"."""
-    if str(env.get(SUBAGENT_MODEL) or "").strip():
-        return "the process environment"
-    candidates = [("user settings.json", config_dir(env) / "settings.json")]
-    top = repo_top(cwd) or Path(str(cwd))
-    candidates.append(("the project's .claude/settings.json", top / ".claude" / "settings.json"))
-    candidates.append(("the project's .claude/settings.local.json", top / ".claude" / "settings.local.json"))
-    for label, path in candidates:
-        # user settings are the owner's; the project's two files come with the clone, so they are bounded
-        if _env_has_model(read_json(path, None if label == "user settings.json" else REPO_READ_LIMIT)):
-            return label
-    return None
+    """Where `CLAUDE_CODE_SUBAGENT_MODEL` is set, all places joined by ", " (never its value), or
+    None (`subagent_model_sources`)."""
+    return ", ".join(subagent_model_sources(env, cwd)) or None

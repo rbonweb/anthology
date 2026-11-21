@@ -147,6 +147,8 @@ pub struct DoctorLimits {
     pub system_applications: Vec<PathBuf>,
     /// `MANAGED_MCP_PATHS`.
     pub managed_mcp_paths: Vec<PathBuf>,
+    /// `compat.MANAGED_SETTINGS_PATHS`.
+    pub managed_settings_paths: Vec<PathBuf>,
 }
 
 impl Default for DoctorLimits {
@@ -154,6 +156,10 @@ impl Default for DoctorLimits {
         DoctorLimits {
             system_applications: vec![PathBuf::from(SYSTEM_APPLICATIONS)],
             managed_mcp_paths: MANAGED_MCP_PATHS.iter().map(PathBuf::from).collect(),
+            managed_settings_paths: compat::MANAGED_SETTINGS_PATHS
+                .iter()
+                .map(PathBuf::from)
+                .collect(),
         }
     }
 }
@@ -1155,18 +1161,20 @@ fn check_agent_memory(cwd: &Path) -> CheckResult {
     ok(None, "no agent memory folders yet")
 }
 
-fn check_subagent_model(env: &Env, cwd: &Path) -> CheckResult {
-    match compat::subagent_model_source(env, cwd) {
-        None => ok(Some(true), "CLAUDE_CODE_SUBAGENT_MODEL is not set"),
-        Some(source) => ok(
-            Some(false),
-            format!(
-                "CLAUDE_CODE_SUBAGENT_MODEL is set ({source}): it overrides every agent's model, \
-                 so the roster's opus/sonnet/haiku tiers do not apply. Anthology never changes \
-                 it; remove it yourself if you want the tiers."
-            ),
-        ),
+fn check_subagent_model(env: &Env, cwd: &Path, limits: &DoctorLimits) -> CheckResult {
+    let found = compat::subagent_model_sources_with(env, cwd, &limits.managed_settings_paths);
+    if found.is_empty() {
+        return ok(Some(true), "CLAUDE_CODE_SUBAGENT_MODEL is not set");
     }
+    let source = found.join(", ");
+    ok(
+        Some(false),
+        format!(
+            "CLAUDE_CODE_SUBAGENT_MODEL is set ({source}): it overrides every agent's model, so \
+             the roster's opus/sonnet/haiku tiers do not apply. Run /anthology:setup: it offers \
+             to remove it from user settings.json and says how to remove it anywhere else."
+        ),
+    )
 }
 
 /// F-5: the guardrails plugin's anthology binary (GC-14), for the guardrails folder
@@ -1231,7 +1239,9 @@ pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -
         ("plugin_data", &|| check_plugin_data(env)),
         ("path_wrappers", &|| check_path_wrappers(env, root, deps)),
         ("agent_memory_path", &|| check_agent_memory(cwd)),
-        ("subagent_model", &|| check_subagent_model(env, cwd)),
+        ("subagent_model", &|| {
+            check_subagent_model(env, cwd, &deps.limits)
+        }),
     ];
     runners
         .iter()
