@@ -51,8 +51,10 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 4. Show every change listed below, then ask for one confirmation: apply these changes and, if
    `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
    (recommend none). If `subagent_model.removable` is true, ask a separate yes/no question in the same
-   message: remove `CLAUDE_CODE_SUBAGENT_MODEL` from settings.json so the roster's model tiers apply
-   (recommend **yes**; `/anthology:setup remove` puts it back):
+   message: remove `CLAUDE_CODE_SUBAGENT_MODEL` from your user settings.json (recommend **yes**;
+   `/anthology:setup remove` puts it back). If `subagent_model.elsewhere` is empty, say this lets the
+   roster's model tiers apply; otherwise say it stays set in each `where`, so the tiers apply only once
+   it is removed there too:
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
    - **settings.json:** show `settings.diff` as a diff. Values outside
@@ -93,7 +95,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    was removed), any `warnings`, and `memory.approve_error` if present (the repo is
    still approved; say which file was refused). `memory.migrated` lists the legacy notes copied into the
    repo (`repo`) and into personal memory (`personal`). If `memory.blocked` is not empty, list each
-   `file` with its `reason`: those notes stayed in personal memory. Tell the user to restart the
+   `file` with its `reason`: those notes stayed in personal memory. If `CLAUDE_CODE_SUBAGENT_MODEL` was
+   removed, say that if session start still warns about it after the restart, it is also set somewhere
+   else (often the shell profile), and `/anthology:setup` shows where. Tell the user to restart the
    session so the new permissions and the rtk hook take effect.
 
 ## Remove (`/anthology:setup remove`)

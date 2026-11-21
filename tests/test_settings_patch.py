@@ -473,6 +473,16 @@ class SubagentModelOpTest(unittest.TestCase):
         back, _ = settings_patch.revert(again, stored2)
         self.assertEqual(back, text)
 
+    def test_a_key_set_twice_or_a_non_object_parent_plans_nothing(self):
+        op = settings_patch.subagent_model_op()
+        twice = '{"env": {"%s": "a", "A": "1", "%s": "b"}}' % (self.KEY, self.KEY)
+        self.assertEqual(settings_patch.plan(twice, [op]), [])
+        self.assertEqual(settings_patch.apply(twice, [op]), (twice, ""))
+        for text in ('{"env": "x"}', '{"env": [1]}'):
+            self.assertEqual(settings_patch.plan(text, [op]), [], text)
+        with self.assertRaises(ValueError):
+            settings_patch.plan("{nope", [op])
+
     def test_a_broken_record_is_skipped_on_revert(self):
         text = json.dumps({"env": {"A": "1"}}, indent=2) + "\n"
         path = ["env", self.KEY]

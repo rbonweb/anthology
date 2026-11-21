@@ -78,7 +78,7 @@ Models are the aliases `opus`, `sonnet` and `haiku`, so agents follow new models
 `CLAUDE_CODE_SUBAGENT_MODEL` makes every agent run on one model. It overrides the `model` of each roster agent, so the Opus, Sonnet and Haiku roles above do not apply while it is set.
 
 - **What setup offers.** `/anthology:setup` says where it is set, never its value. If it is in the `env` block of your user `settings.json` (the file setup edits), setup asks you separately whether to remove it, and recommends yes. The preview shows the removal as a diff with the value shown as `"<redacted>"`. Setup removes it only if you say yes.
-- **Anywhere else** (your shell profile, the project's `.claude/settings.json` or `.claude/settings.local.json`, managed settings), setup leaves it alone and says how to remove it there.
+- **Anywhere else** (your shell profile, the project's `.claude/settings.json` or `.claude/settings.local.json`, managed settings), setup leaves it alone and says how to remove it there. While it is still set in one of those places, the tiers do not apply. If it is set twice in your user `settings.json`, setup asks you to delete both lines by hand.
 - **By hand.** Delete the `CLAUDE_CODE_SUBAGENT_MODEL` line from the `env` block of the settings file, or the line that sets it in your shell profile (such as `~/.zshrc`), then restart Claude Code.
 - **Undo.** `/anthology:setup remove` puts back the value setup removed. If you have set it again since, your new value stays.
 
