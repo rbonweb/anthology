@@ -99,15 +99,6 @@ class = "D-8"
 case = "cap:9"
 reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). Under a relative HOME, cd ~/.config leaves a relative directory, so chromium/x is read from its start only; guard_rules.py allows, Rust also reads it under an absolute stand-in for the directory and blocks it (G3).'
 
-[[divergence]]
-class = "D-8"
-case = "shell:5"
-reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
-
-[[divergence]]
-class = "D-8"
-case = "shell:6"
-reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
 
 [[divergence]]
 class = "D-8"

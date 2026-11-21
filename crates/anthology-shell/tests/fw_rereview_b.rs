@@ -343,6 +343,41 @@ fn compound_commands_and_function_calls_piped_to_a_shell_run_their_output() {
     ]);
 }
 
+// ------------------------------------------------------------------ I-3. the shipped reading of package-manager options
+
+/// `pnpm --silent open -a Chromium https://x`: the value-taking reading reads `x` as the program, so the shipped
+/// reading (each unknown option a flag with no value: `open -a Chromium https://x`, which G2 blocks) must be an
+/// alternate. npm and bun have no bin reading: the shipped reading is the package manager itself, verbatim.
+#[test]
+fn shipped_readings_of_package_manager_options_are_alternates() {
+    for command in [
+        "pnpm --silent open -a Chromium https://x",
+        "yarn --silent open -a Chromium https://x",
+        "sudo pnpm --silent open -a Chromium https://x",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(
+            a.alternates
+                .iter()
+                .any(|e| e.prog == "open" && e.args == ["-a", "Chromium", "https://x"]),
+            "{command}: {}",
+            summary(&a)
+        );
+    }
+    let a = analyze("npm --silent open exec playwright install", HOME);
+    assert!(
+        a.alternates
+            .iter()
+            .any(|e| e.prog == "npm"
+                && e.args == ["--silent", "open", "exec", "playwright", "install"]),
+        "{}",
+        summary(&a)
+    );
+    // no misread: the shipped reading is the Rust one, so there is no extra alternate
+    let a = analyze("pnpm --silent install", HOME);
+    assert!(a.alternates.is_empty(), "{}", summary(&a));
+}
+
 // ------------------------------------------------------------------ cost
 
 #[test]

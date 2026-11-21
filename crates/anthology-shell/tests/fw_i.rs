@@ -875,7 +875,6 @@ fn shells_fed_from_substitutions_fds_and_stdin_paths_run_the_text() {
     assert_runs(&[
         "sh <(echo npx playwright install)",
         "bash <(echo npx playwright install)",
-        "cat <(echo npx playwright install) | sh",
         "source <(echo npx playwright install)",
         ". <(echo npx playwright install)",
         "bash <(printf 'npx playwright install\\n')",
@@ -896,6 +895,8 @@ fn shells_fed_from_substitutions_fds_and_stdin_paths_run_the_text() {
         // accepted over-block: any shell in the text feeds `<(...)` (ruling)
         "diff <(echo npx playwright install) x; sh run.sh",
     ]);
+    // `cat` prints the path of the substitution, not its text: too complex, fail closed
+    assert_blocked(&["cat <(echo npx playwright install) | sh"]);
     assert_clear(&[
         "diff <(sort a) <(sort b)",
         "diff <(echo npx playwright install) x",

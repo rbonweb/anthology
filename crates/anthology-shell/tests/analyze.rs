@@ -125,11 +125,8 @@ fn path_helpers_match_python() {
 
 #[test]
 fn opaque_dynamic_command_word() {
-    assert!(has(
-        &analyze("$(echo rm) -rf x", HOME),
-        "-rf",
-        Opaque::DynamicCommandWord
-    ));
+    // F-8(b): a substitution at program position is too complex (it was a dynamic word before)
+    assert!(analyze("$(echo rm) -rf x", HOME).incomplete);
     assert!(has(
         &analyze("$cmd x", HOME),
         "$cmd",
@@ -192,9 +189,16 @@ fn opaque_depth_cap() {
             .any(|e| e.opaque.contains(&Opaque::DepthCap))
     );
     assert!(!a.incomplete);
+    // a substitution at program position is too complex (F-8(b)); the depth cap is reached through arguments
+    let program = format!(
+        "{}ls{}",
+        "$(".repeat(MAX_DEPTH + 2),
+        ")".repeat(MAX_DEPTH + 2)
+    );
+    assert!(analyze(&program, HOME).incomplete);
     let nested = format!(
         "echo {}ls{}",
-        "$(".repeat(MAX_DEPTH + 2),
+        "$(echo ".repeat(MAX_DEPTH + 2),
         ")".repeat(MAX_DEPTH + 2)
     );
     let a = analyze(&nested, HOME);
@@ -369,9 +373,10 @@ fn opaque_marks_the_forms_python_misreads() {
     assert!(has(&analyze("sh install.sh", HOME), "sh", Opaque::Source));
     // fail closed (controller ruling): curl's output before a shell is too complex
     assert!(analyze("curl -s x | bash -s -- --version 1.2.3", HOME).incomplete);
+    // `cat` prints the path of the substitution, not its text: the pipeline into `sh` is too complex
+    assert!(analyze("cat <(echo npx playwright install) | sh", HOME).incomplete);
     for command in [
         "sh <(echo npx playwright install)",
-        "cat <(echo npx playwright install) | sh",
         "exec 3<<<'npx playwright install'; sh <&3",
     ] {
         assert!(

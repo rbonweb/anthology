@@ -131,8 +131,23 @@ const WORD_BEFORE_OPERATOR: &[&str] = &[
     "echo $(cat \"2\"<<EOF\n$(npx playwright install)\nEOF\n)",
     "cat x\"y\"<<EOF\n$(npx playwright install)\nEOF",
     "cat 2>&1<<EOF\n$(npx playwright install)\nEOF",
-    "cat \\<<EOF\n$(npx playwright install)\nEOF",
 ];
+
+// SH-FW final F-8(b): `\<<EOF` is not a heredoc, so the next line is a command that starts with a substitution:
+// bash runs its output as the program, which is too complex (it was complete with the install in view)
+const F8_PROGRAM_LINE: &[&str] = &[
+    "cat \\<<EOF\n$(npx playwright install)\nEOF",
+    "cat <<$(echo 'x')\nx\n$(echo x)\nnpx playwright install\n$(echo 'x')",
+    "cat <<`echo 'x'`\nx\n`echo x`\nnpx playwright install\n`echo 'x'`",
+    "x=$(cat <<''\n$(npx playwright install)\n\n)",
+];
+
+/// SH-FW final F-8: a substitution or a `${x:-...}` with text around it at program position is too complex, so
+/// the analysis is incomplete (the guard blocks it whatever it holds).
+#[track_caller]
+fn assert_too_complex(commands: &[&str]) {
+    assert_all("not too complex", commands, |a| a.incomplete);
+}
 
 // test diff HEREDOC_RUNS, report rule 1: a quoted target or here-string word before `<<` is not an fd
 const NOT_AN_FD_NUMBER: &[&str] = &[
@@ -283,7 +298,6 @@ const C8: &[&str] = &[
 const FOUND_WHILE_FIXING: &[&str] = &[
     "echo \"$(echo $'a\\'b # )')\"; npx playwright install",
     "echo $'\\c\\'' ; npx playwright install\n'",
-    "x=$(cat <<''\n$(npx playwright install)\n\n)",
     "echo $(( 1 + $(( '$(npx playwright install)' )) ))",
 ];
 
@@ -307,9 +321,7 @@ const R1_C1: &[&str] = &[
 
 // review-fw-h R1-C1 (test diff ROUND2_BASH32_RUNS): bash 3.2 runs these, bash 5.2 keeps them data
 const R1_C1_BASH32: &[&str] = &[
-    "cat <<$(echo 'x')\nx\n$(echo x)\nnpx playwright install\n$(echo 'x')",
     "cat <<${a:-'x'}\nx\n${a:-x}\nnpx playwright install\n${a:-'x'}",
-    "cat <<`echo 'x'`\nx\n`echo x`\nnpx playwright install\n`echo 'x'`",
     "cat <<$(echo \"x\")\nit's\n$(echo x)\nnpx playwright install\n'",
     "cat <<$(echo \\x)\nit's\n$(echo x)\nnpx playwright install\n'",
     "x=$(cat <<EOF\nEOF # )\n'$(npx playwright install)'\nEOF\n)",
@@ -412,6 +424,7 @@ fn heredoc_delimiter_and_body_follow_bash() {
     ] {
         assert_blocked(table);
     }
+    assert_too_complex(F8_PROGRAM_LINE);
     assert_clear(HEREDOC_DATA);
 }
 
@@ -448,9 +461,11 @@ fn ansi_c_strings_are_decoded_as_bash_5_does() {
 
 #[test]
 fn review_round_0_findings_are_closed() {
-    for table in [C1, C2, C3, C4, C5, C6, C7, C8, FOUND_WHILE_FIXING, I4, M2] {
+    for table in [C1, C2, C3, C4, C5, C7, C8, FOUND_WHILE_FIXING, I4, M2] {
         assert_blocked(table);
     }
+    // F-8(a): `${x:-'}'}EOF` at program position has text after its expansion
+    assert_too_complex(C6);
     assert_clear(ROUND1_DATA);
 }
 
@@ -458,7 +473,8 @@ fn review_round_0_findings_are_closed() {
 fn review_r1_c1_paren_lines_are_read_every_way() {
     assert_blocked(R1_C1);
     assert_blocked(R1_C1_BASH32);
-    assert_blocked(R1_M2);
+    // F-8(b): the backticked line is a command at program position in the reading that ends the body early
+    assert_too_complex(R1_M2);
 }
 
 #[test]
