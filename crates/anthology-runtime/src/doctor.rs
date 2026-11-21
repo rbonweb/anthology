@@ -1,7 +1,7 @@
 //! `anthology doctor` (RT1b): the environment checks `/anthology:setup` runs first. A port of
 //! `plugins/anthology/scripts/doctor.py`.
 //!
-//! [`check_env`] returns the twelve [`Check`]s in GC-11's order; `ok` is `Some(true)`,
+//! [`check_env`] returns the thirteen [`Check`]s in GC-11's order; `ok` is `Some(true)`,
 //! `Some(false)` or `None` ("cannot tell yet"). [`find_duplicates`] lists installs of the
 //! official `superpowers` and `design-skills` plugins, which Anthology already bundles. Nothing
 //! here prints a URL, a token or a path out of the user's MCP configuration: only server names,
@@ -77,7 +77,7 @@ pub const SHOWN_NAME_LIMIT: usize = 80;
 /// How many servers a detail lists before `and N more`.
 pub const SHOWN_SERVERS: usize = 5;
 /// The checks, in order (GC-11; F-5: `anthology_binary` replaces `python3`).
-pub const CHECKS: [&str; 12] = [
+pub const CHECKS: [&str; 13] = [
     "anthology_binary",
     "node",
     "docker",
@@ -90,6 +90,7 @@ pub const CHECKS: [&str; 12] = [
     "path_wrappers",
     "agent_memory_path",
     "subagent_model",
+    "rtk_savings",
 ];
 /// The detail of a check that needs the plugin folder when none is known (module docs).
 pub const UNKNOWN_ROOT: &str =
@@ -1044,6 +1045,103 @@ fn check_rtk(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
     )
 }
 
+/// `_thousands(n)`: `"{:,}".format(n)`.
+fn thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::from(if n < 0 { "-" } else { "" });
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `_per_cent(part, whole)`: one decimal, rounded half up in integers; `0.0%` for no `whole`.
+fn per_cent(part: i64, whole: i64) -> String {
+    let (part, whole) = (i128::from(part), i128::from(whole));
+    let tenths = if whole > 0 {
+        (part * 1000 + whole / 2).div_euclid(whole)
+    } else {
+        0
+    };
+    format!("{}.{}%", tenths.div_euclid(10), tenths.rem_euclid(10))
+}
+
+/// `quote(s)` (`urllib.parse`, `safe="/"`): every UTF-8 byte but `A-Za-z0-9_.-~/` as `%XX`.
+fn url_quote(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' | b'~' | b'/' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// rtk's history as `[seen, ran, tokens, saved]`; `Ok(None)` when there is no file, `Err` for
+/// anything Python's `except Exception` catches.
+fn rtk_history(env: &Env) -> Result<Option<[i64; 4]>, ()> {
+    let db = compat::config_dir(env)
+        .join("anthology")
+        .join("rtk")
+        .join("history.db");
+    let db = pathlib_str(db.as_os_str().as_bytes());
+    match fs::metadata(OsStr::from_bytes(&db)) {
+        Ok(m) if m.is_file() => {}
+        Err(e) if !ignorable(&e) => return Err(()),
+        _ => return Ok(None),
+    }
+    let db = std::str::from_utf8(&db).map_err(drop)?;
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let uri = format!("file:{}?mode=ro&immutable=1", url_quote(db));
+    let con = rusqlite::Connection::open_with_flags(uri, flags).map_err(drop)?;
+    let seen = con
+        .query_row("SELECT COUNT(*) FROM hook_decisions", [], |r| r.get(0))
+        .map_err(drop)?;
+    let (ran, tokens, saved) = con
+        .query_row(
+            "SELECT COUNT(*), CAST(TOTAL(input_tokens) AS INTEGER), \
+             CAST(TOTAL(saved_tokens) AS INTEGER) FROM commands",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(drop)?;
+    Ok(Some([seen, ran, tokens, saved]))
+}
+
+/// `_check_rtk_savings(env)`: what rtk did, from its own history (`bin/rtk` and `bin/rtk-hook`
+/// keep it at `<config>/anthology/rtk/history.db`): the commands the hook saw, the ones rtk ran,
+/// and the tokens it saved on their output. It only informs: never `Some(false)`, `None` until
+/// there is history. rtk keeps the file in WAL mode, which a read-only reader cannot open, so it
+/// is read as immutable: no lock, no write, and what rtk last checkpointed.
+fn check_rtk_savings(env: &Env) -> CheckResult {
+    const NO_HISTORY: &str = "rtk has no history yet";
+    let [seen, ran, tokens, saved] = match rtk_history(env) {
+        Ok(Some([0, 0, ..]) | None) => return ok(None, NO_HISTORY),
+        Ok(Some(counts)) => counts,
+        Err(()) => return ok(None, "rtk's history cannot be read"),
+    };
+    let (tokens, saved) = (tokens.max(0), saved.max(0));
+    ok(
+        Some(true),
+        format!(
+            "rtk ran {} of the {} commands the hook saw ({}) and saved {} of their {} output \
+             tokens ({}), from rtk's own history",
+            thousands(ran),
+            thousands(seen),
+            per_cent(ran, seen),
+            thousands(saved),
+            thousands(tokens),
+            per_cent(saved, tokens)
+        ),
+    )
+}
+
 fn check_platform(deps: &DoctorDeps) -> CheckResult {
     let (system, _) = (deps.uname)();
     if SUPPORTED_SYSTEMS.contains(&system.as_str()) {
@@ -1213,7 +1311,7 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// `check_env(env, lock, plugin_root, cwd)`: the twelve checks in GC-11's order. Never fails:
+/// `check_env(env, lock, plugin_root, cwd)`: the thirteen checks in GC-11's order. Never fails:
 /// a check that errs or panics is `ok = Some(false)` with `check failed: <error>` (cut to 120
 /// code points). An empty `cwd` is the process's working folder.
 pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -> Vec<Check> {
@@ -1225,7 +1323,7 @@ pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -
     let cwd = cwd.as_path();
     let root = resolve_root(env, plugin_root);
     let root = root.as_deref();
-    let runners: [(&'static str, &dyn Fn() -> CheckResult); 12] = [
+    let runners: [(&'static str, &dyn Fn() -> CheckResult); 13] = [
         ("anthology_binary", &|| {
             check_anthology_binary(env, root, cwd, deps)
         }),
@@ -1242,6 +1340,7 @@ pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -
         ("subagent_model", &|| {
             check_subagent_model(env, cwd, &deps.limits)
         }),
+        ("rtk_savings", &|| check_rtk_savings(env)),
     ];
     runners
         .iter()

@@ -363,6 +363,7 @@ mod preview_test {
             "path_wrappers",
             "agent_memory_path",
             "subagent_model",
+            "rtk_savings",
         ];
         let mut got = names.clone();
         got.sort_unstable();

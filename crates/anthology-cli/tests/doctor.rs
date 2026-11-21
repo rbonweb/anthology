@@ -71,6 +71,7 @@ mod cli_test {
             "path_wrappers",
             "agent_memory_path",
             "subagent_model",
+            "rtk_savings",
         ]
         .into_iter()
         .collect();

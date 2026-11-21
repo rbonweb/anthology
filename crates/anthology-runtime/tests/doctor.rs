@@ -342,7 +342,8 @@ mod check_env_test {
                 "plugin_data",
                 "path_wrappers",
                 "agent_memory_path",
-                "subagent_model"
+                "subagent_model",
+                "rtk_savings"
             ]
         );
         assert_eq!(names, doctor::CHECKS);
@@ -664,11 +665,139 @@ mod check_env_test {
             ..c.deps()
         };
         let checks = doctor::check_env(&c.env, &plugin(), &c.cwd, &deps);
-        assert_eq!(checks.len(), 12);
+        assert_eq!(checks.len(), 13);
         // F-5: checks[0] (anthology_binary) never calls which; the first that does is node.
         assert_eq!(checks[1].ok, Some(false));
         assert_eq!(checks[1].detail, "check failed: boom");
         assert_eq!(checks[2].detail, "check failed: boom");
+    }
+}
+
+/// `RtkSavingsTest`: what rtk did, from its own history next to state.json.
+mod rtk_savings_test {
+    use super::*;
+
+    /// `history(decisions, commands, wal)`: a history.db with the rtk columns the check reads.
+    fn history(
+        c: &EnvCase,
+        decisions: &[(&str, &str)],
+        commands: &[(&str, i64, i64)],
+        wal: bool,
+    ) -> PathBuf {
+        let db = c.config.join("anthology").join("rtk").join("history.db");
+        fs::create_dir_all(db.parent().expect("parent")).expect("mkdir");
+        let con = rusqlite::Connection::open(&db).expect("open");
+        if wal {
+            // as rtk keeps it
+            let mode: String = con
+                .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+                .expect("wal");
+            assert_eq!(mode, "wal");
+        }
+        con.execute_batch(
+            "CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, raw_cmd TEXT, decision TEXT);
+             CREATE TABLE commands (id INTEGER PRIMARY KEY, rtk_cmd TEXT, input_tokens INTEGER,
+                                    saved_tokens INTEGER);",
+        )
+        .expect("schema");
+        for (raw, decision) in decisions {
+            con.execute(
+                "INSERT INTO hook_decisions (raw_cmd, decision) VALUES (?1, ?2)",
+                (raw, decision),
+            )
+            .expect("insert");
+        }
+        for (cmd, input, saved) in commands {
+            con.execute(
+                "INSERT INTO commands (rtk_cmd, input_tokens, saved_tokens) VALUES (?1, ?2, ?3)",
+                (cmd, input, saved),
+            )
+            .expect("insert");
+        }
+        drop(con);
+        db
+    }
+
+    fn savings(c: &EnvCase) -> Check {
+        c.checks().remove("rtk_savings").expect("rtk_savings")
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .expect("ls")
+            .map(|e| e.expect("entry").file_name().into_string().expect("utf-8"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_no_history_yet_is_none() {
+        let c = EnvCase::new();
+        let none = Check {
+            name: "rtk_savings",
+            ok: None,
+            detail: "rtk has no history yet".into(),
+        };
+        assert_eq!(savings(&c), none);
+        history(&c, &[], &[], true);
+        assert_eq!(savings(&c).detail, "rtk has no history yet");
+    }
+
+    #[test]
+    fn test_commands_and_tokens_from_the_history() {
+        let c = EnvCase::new();
+        let mut decisions = vec![("git status", "defer"); 2999];
+        decisions.push(("cat a", "allow"));
+        let db = history(
+            &c,
+            &decisions,
+            &[("rtk read a", 1000, 35), ("rtk grep x", 233, 0)],
+            true,
+        );
+        let dir = db.parent().expect("parent");
+        let before = (listing(dir), fs::read(&db).expect("read"));
+        let got = savings(&c);
+        assert_eq!(got.ok, Some(true));
+        assert_eq!(
+            got.detail,
+            "rtk ran 2 of the 3,000 commands the hook saw (0.1%) and saved 35 of their 1,233 \
+             output tokens (2.8%), from rtk's own history"
+        );
+        // read only
+        assert_eq!((listing(dir), fs::read(&db).expect("read")), before);
+    }
+
+    #[test]
+    fn test_percentages_round_half_up_and_never_divide_by_zero() {
+        let c = EnvCase::new();
+        // 6.25%; a negative saving counts as 0
+        history(&c, &[("x", "defer"); 16], &[("rtk ls", 0, -5)], true);
+        assert_eq!(
+            savings(&c).detail,
+            "rtk ran 1 of the 16 commands the hook saw (6.3%) and saved 0 of their 0 output \
+             tokens (0.0%), from rtk's own history"
+        );
+    }
+
+    #[test]
+    fn test_unreadable_history_is_none() {
+        let c = EnvCase::new();
+        let db = history(&c, &[("x", "defer")], &[], false);
+        fs::write(&db, b"not a database".repeat(100)).expect("write");
+        let unreadable = Check {
+            name: "rtk_savings",
+            ok: None,
+            detail: "rtk's history cannot be read".into(),
+        };
+        assert_eq!(savings(&c), unreadable);
+        fs::remove_file(&db).expect("rm");
+        let con = rusqlite::Connection::open(&db).expect("open");
+        con.execute_batch("CREATE TABLE commands (input_tokens INTEGER, saved_tokens INTEGER)")
+            .expect("schema");
+        drop(con);
+        // no hook_decisions table
+        assert_eq!(savings(&c).detail, "rtk's history cannot be read");
     }
 }
 
