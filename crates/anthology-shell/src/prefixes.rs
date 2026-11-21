@@ -710,8 +710,9 @@ pub(crate) fn is_interpreter(prog: &str) -> bool {
     }) || EXACT.contains(&prog)
 }
 
-/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`). Rust-only: Python's
-/// `_strip_prefixes` has no such output, so none of these change an entry's parity fields.
+/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`). Rust-only, except
+/// `shell_launch`, which Python's `_strip_prefixes` reports too (its `launches` output): the other fields do not
+/// change an entry's parity fields.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Peeled {
     /// A `""` word (a `$(...)` placeholder) was dropped where the program word was expected.
@@ -723,6 +724,24 @@ pub(crate) struct Peeled {
     pub(crate) stdin_args: bool,
     /// A wrapper or runner was peeled and left no program and no script to analyze (`... | xargs npx`).
     pub(crate) emptied: bool,
+    /// A shell launcher was peeled with no program left (`sudo -s`, `su`, `script -q /dev/null`, `sg grp`): it
+    /// runs a shell that reads its commands from stdin (SH-seq I-2).
+    pub(crate) shell_launch: bool,
+}
+
+/// SH-seq I-2: a wrapper peeled with no program after it that starts a shell reading stdin. `sudo` needs `-s` or
+/// `-i` (`--shell`, `--login`); `su` and `script` need no `-c` (`scripts_empty`: no script was found). `words` is
+/// the wrapper's own words (its name first).
+fn launches_shell(name: &str, words: &[String], scripts_empty: bool) -> bool {
+    match name {
+        "sudo" => words.iter().skip(1).any(|t| {
+            t == "--shell"
+                || t == "--login"
+                || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains(['s', 'i']))
+        }),
+        "su" | "script" => scripts_empty,
+        _ => false,
+    }
 }
 
 /// One xargs or GNU parallel layer whose command takes words or lines from stdin: (kind, template, replace
@@ -2026,6 +2045,16 @@ pub(crate) fn strip_prefixes(
             }
             peeled.unknown_option |= unknown || (flags.is_empty() && has_option(&toks, i, &name));
             let rest = toks.get(i..).unwrap_or(&[]);
+            // `su [-] [user]` runs the user's shell too: at most one operand, the user, not a program
+            let su_rest = if name == "su" && rest.first().is_some_and(|w| w == "-") {
+                &rest[1..]
+            } else {
+                rest
+            };
+            let bare = rest.is_empty() || (name == "su" && su_rest.len() <= 1);
+            if bare && launches_shell(&name, &toks[..i.min(toks.len())], scripts.is_empty()) {
+                peeled.shell_launch = true;
+            }
             if name == "watch" && !joined {
                 // watch runs its words via sh -c
                 joined = true;
@@ -2063,8 +2092,12 @@ pub(crate) fn strip_prefixes(
             } else {
                 drop_front(&mut rest, 1);
             }
-            if rest.first().is_some_and(|w| w == "-c") {
+            let had_c = rest.first().is_some_and(|w| w == "-c");
+            if had_c {
                 rest.remove(0);
+            }
+            if rest.is_empty() && !had_c {
+                peeled.shell_launch = true; // `sg grp` alone: a shell reading stdin (SH-seq I-2)
             }
             if !joined {
                 joined = true;

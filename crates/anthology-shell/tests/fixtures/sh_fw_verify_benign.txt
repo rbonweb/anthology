@@ -3229,3 +3229,27 @@ cp a{1..3}.txt dst/
 seq 1 5 | xargs -n1 echo
 #---
 for n in {1..3}; do git log -n $n; done
+#---
+sudo -s
+#---
+bash
+#---
+sh -c "$(cat)"
+#---
+eval "$(ssh-agent -s)"
+#---
+echo hi | sudo -s
+#---
+echo hi | sh -c "$(date)"
+#---
+echo hi | sh -c 'cat'
+#---
+cat x | sudo tee f
+#---
+echo npx playwright install | sudo -s -- ls
+#---
+echo npx playwright install | sg docker -c 'cat'
+#---
+echo npx playwright install | script -c 'cat'
+#---
+echo npx playwright install | su root ls

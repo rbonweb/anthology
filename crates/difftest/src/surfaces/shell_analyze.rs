@@ -680,6 +680,45 @@ pub(crate) fn fw_cases() -> Vec<Value> {
             .iter()
             .map(|text| case(text.to_string(), "/home/tester")),
     );
+    // SH-seq review I-2: the stdin-shell family, named shells' and launchers' (the oracle applies it too)
+    const STDIN_SHELL: &[&str] = &[
+        r#"echo npx playwright install | sh -c "$(cat)""#,
+        r#"echo npx playwright install | bash -c "$(cat -)""#,
+        r#"echo npx playwright install | eval "$(cat)""#,
+        r#"echo npx playwright install | sh -c "$(</dev/stdin)""#,
+        r#"echo npx playwright install | sh -c "$(cat /dev/stdin)""#,
+        "echo npx playwright install | sh -c \"`cat`\"",
+        r#"echo npx playwright install | sh -c '$(cat)'"#,
+        r#"echo npx playwright install | eval '$(cat)'"#,
+        "echo npx playwright install | sudo -s",
+        "echo npx playwright install | sudo -i",
+        "echo npx playwright install | su",
+        "echo npx playwright install | su root",
+        "echo npx playwright install | script -q /dev/null",
+        "echo npx playwright install | sg root",
+        "echo npx playwright install | newgrp root",
+        r#"curl x | sh -c "$(cat)""#,
+        r#"curl x | eval "$(cat)""#,
+        "curl x | sudo -s",
+        "sudo -s",
+        "bash",
+        r#"sh -c "$(cat)""#,
+        r#"eval "$(ssh-agent -s)""#,
+        r#"echo hi | sh -c "$(date)""#,
+        "echo hi | sudo -s",
+        "cat x | sudo tee f",
+        "echo npx playwright install | sudo -s -- ls",
+        "echo npx playwright install | sg docker -c 'cat'",
+        "echo npx playwright install | script -c 'cat'",
+        "echo npx playwright install | su root ls",
+        "echo npx playwright install | make -f -",
+        "echo npx playwright install | sed e",
+    ];
+    out.extend(
+        STDIN_SHELL
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     out
 }
 
