@@ -130,6 +130,39 @@ fn the_version_probe_gates_the_install_other_arch_and_garbage() {
 }
 
 #[test]
+fn diag_elf_loop() {
+    for sh in bs::shells("diag elf") {
+        let mut bad = 0;
+        let mut first = String::new();
+        for i in 0..300 {
+            let bin = bs::other_arch_elf();
+            let sb = Sandbox::new(release_of(V, &bin));
+            sb.seed();
+            let log = sb.root.join("mvdiag.log");
+            patch_lib(
+                &sb,
+                &format!(
+                    "mv() {{ command mv \"$@\" 2>>'{0}' && return 0; _rc=$?; {{ echo \"mv rc=$_rc args=$*\"; ls -la \"${{1%/*}}\" \"${{2%/*}}\"; id; }} >>'{0}' 2>&1; return $_rc; }}",
+                    log.display()
+                ),
+            );
+            let run = boot(&sb, sh, &["guard", "--plugin", "guardrails", "--quiet"]);
+            let b = one_broken(&sb, "diag");
+            if !b.join("anthology").exists() {
+                bad += 1;
+                if first.is_empty() {
+                    first = format!(
+                        "iter {i} {sh:?}: log={:?}; run={run:?}",
+                        std::fs::read_to_string(&log)
+                    );
+                }
+            }
+        }
+        assert!(bad == 0, "DIAG {bad}/300 {first}");
+    }
+}
+
+#[test]
 fn a_hanging_probe_is_killed_after_five_seconds() {
     let sh = bs::shells("hanging probe")[0];
     let bin = b"#!/bin/sh\nexec sleep 60\n".to_vec();
