@@ -281,10 +281,16 @@ fn git_key_runs_command(key: &str) -> bool {
         || key.ends_with(".textconv")
         || key.ends_with(".command")
         || (key.starts_with("merge.") && key.ends_with(".driver"))
+        || (key.starts_with("remote.")
+            && (key.ends_with(".uploadpack") || key.ends_with(".receivepack")))
+        || ((key.starts_with("difftool.") || key.starts_with("mergetool."))
+            && key.ends_with(".cmd"))
+        || key.starts_with("url.ext::")
 }
 
-/// `git -c key=value` that makes git run a command: a `!` alias, or a command-valued key whose whole value is
-/// not in `HARMLESS_VALUES`.
+/// `git -c key=value` that makes git run a command: a `!` alias, or a command-valued key (or one whose command
+/// `git_command_value` reads, such as an `ext::` URL in `remote.*.url`) whose whole value is not in
+/// `HARMLESS_VALUES`.
 fn git_config_runs_command(config: &str) -> bool {
     let Some((key, value)) = config.split_once('=') else {
         return false;
@@ -292,11 +298,13 @@ fn git_config_runs_command(config: &str) -> bool {
     if key.to_ascii_lowercase().starts_with("alias.") {
         return value.trim_start().starts_with('!');
     }
-    git_key_runs_command(key) && !harmless_value(value)
+    (git_key_runs_command(key) && !harmless_value(value))
+        || super::git_command_value(key, value).is_some_and(|v| !harmless_value(&v))
 }
 
 /// The program runs a command given in its arguments that the analysis does not parse: `trap 'cmd' EXIT`,
-/// `fd -x cmd`, `git -c alias.x='!cmd'`, `git --config-env=core.pager=V`, `tar --to-command=cmd`, `tar -I cmd`
+/// `fd -x cmd`, `git -c alias.x='!cmd'`, `git --config-env=core.pager=V`, git's transport options and `ext::`
+/// URLs (`git clone -u cmd`), `tar --to-command=cmd`, `tar --checkpoint-action exec=cmd`, `tar -I cmd`
 /// (other than exactly a compressor's name), `rsync -e cmd` (other than exactly `ssh`), `rsync --rsync-path=cmd`
 /// (other than exactly `rsync`), and
 /// `export GIT_PAGER=cmd` (as `runs_assigned_command`).
@@ -338,6 +346,9 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                                 || key.to_ascii_lowercase().starts_with("alias.")
                         })
                     })
+                || super::git_transport_scripts(args)
+                    .iter()
+                    .any(|v| !harmless_value(v))
         }
         "tar" | "gtar" | "bsdtar" => {
             const COMPRESSORS: &[&str] = &[
@@ -356,9 +367,16 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                 true,
             )
             .is_empty()
-                || args
-                    .iter()
-                    .any(|a| a.starts_with("--checkpoint-action=exec"))
+                || args.iter().enumerate().any(|(k, a)| {
+                    // `--checkpoint-action exec=cmd`, `--checkpoint-act=exec=cmd`
+                    let (name, value) = a
+                        .split_once('=')
+                        .map_or((a.as_str(), None), |(n, v)| (n, Some(v)));
+                    super::is_checkpoint_action(name)
+                        && value
+                            .or(args.get(k + 1).map(String::as_str))
+                            .is_some_and(|v| v.starts_with("exec"))
+                })
                 || option_values(args, &["--use-compress-program"], &['I'], true)
                     .iter()
                     .any(|v| !COMPRESSORS.contains(v))
