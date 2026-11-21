@@ -24,6 +24,13 @@ pub fn path(env: &Env) -> PathBuf {
     paths::anthology_home(env).join("state.json")
 }
 
+/// rtk's history, recall store and tee spool: `<state.json's folder>/rtk`
+/// (`state.rtk_data_dir()`). `bin/rtk` and `bin/rtk-hook` point rtk there, and
+/// `anthology setup remove` deletes it.
+pub fn rtk_data_dir(env: &Env) -> PathBuf {
+    paths::anthology_home(env).join("rtk")
+}
+
 /// The state, or an empty object when it cannot be read (`state.read()`).
 pub fn read(env: &Env) -> Map {
     let Ok(bytes) = std::fs::read(path(env)) else {

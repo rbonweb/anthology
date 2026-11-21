@@ -38,7 +38,8 @@ The forced changes are applied to Python's answer, nothing else:
   "status"}` for `<ah>/bin`: `nothing to delete` when absent, `kept (anthology-guardrails still
   uses it)` when `installed_plugins.json` has an `anthology-guardrails@*` entry or exists but
   does not parse, else `delete` (preview) / `deleted` (the folder, or a symlink to it, is
-  removed after the rest of remove);
+  removed after the rest of remove; Rust deletes it before unapproving, which no case can
+  tell apart since no case writes an approval);
 - the argparse prog is `anthology setup` (`sys.argv[0]`); argparse's `(choose from 'a', 'b')`
   is written unquoted, as CPython 3.12.8 and later (and the Rust port) print it; a case where
   argparse exited is marked D-4.
@@ -47,6 +48,10 @@ The answer is `{"exit": <last step's exit>, "stdout": <report>, "stderr": ""}`: 
 `--- step N: exit E ---`, its stdout, `--- stderr ---`, its stderr; then per `show` path
 `=== P ===` and `<absent>`, `<link>`, `<dir MODE>` or the file's text. The root is written
 `@ROOT@` and each step's settings sha256 `@SHA@`.
+
+rtk's history folder is real on both sides: `state.rtk_data_dir()` is under the case's
+`CLAUDE_CONFIG_DIR` (or `HOME`), so the tree's `<config>/anthology/rtk` entries (a folder, a
+symlink, a file) are what remove previews, deletes or leaves in place.
 
 Python 3.9+ and the standard library only.
 """

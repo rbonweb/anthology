@@ -20,8 +20,9 @@
 //! none, registry entries for it or for anthology only, an unreadable registry); settings.json
 //! (missing, objects, the rule already there, invalid JSON, not an object, odd indents, a BOM,
 //! CRLF, not UTF-8, empty); state.json's `data_dir`; `CLAUDE_PLUGIN_DATA` (under the config's
-//! `plugins/data`, outside it, unset); the rtk folder (a folder, a symlink, none) and `<ah>/bin`
-//! (a folder, a symlink, none); the personal-memory folder; every fake rtk outcome and an edit
+//! `plugins/data`, outside it, unset); the rtk folder (a folder, a symlink, none), rtk's history
+//! folder `state.rtk_data_dir()` (a folder, a symlink, a file, none) and `<ah>/bin` (a folder, a
+//! symlink, none); the personal-memory folder; every fake rtk outcome and an edit
 //! during the download; doctor and memory answers, `UnsafeTarget`; the guard binary statuses;
 //! the platforms; and step sequences of preview, apply (the current sha or a stale one,
 //! `--skip-approve`, `--promote`), remove (`--preview`, `--unapprove`, `--unapprove-all`),
@@ -552,10 +553,11 @@ impl B {
             "anthology/bin",
             "anthology/personal-memory",
             "plugins/data/anthology/rtk",
+            "anthology/rtk",
         ]
         .iter()
         .map(|r| s(&self.at(r)))
-        .chain([s("data/rtk")])
+        .chain([s("data/rtk"), s("elsewhere/history/history.db")])
         .collect();
         obj(vec![
             ("tree", Value::Array(self.tree)),
@@ -717,6 +719,26 @@ fn seeds() -> Vec<Value> {
     add(B::new()
         .env("CLAUDE_PLUGIN_DATA", None)
         .step(remove_cmd(&[])));
+    // rtk's history folder (state.rtk_data_dir): a folder, a symlink, a file; none is above
+    let history = B::new().at("anthology/rtk");
+    add(B::new()
+        .put(file(&format!("{history}/history.db"), "commands"))
+        .put(file(&format!("{history}/tee/1_x.log"), "out"))
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&[])));
+    add(B::new()
+        .put(file("elsewhere/history/history.db", "keep"))
+        .put(link(&history, "@ROOT@/elsewhere/history"))
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&[])));
+    add(B::new()
+        .put(file(&history, "not a folder"))
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&[])));
+    let b = B::new().env("CLAUDE_CONFIG_DIR", None);
+    let db = b.at("anthology/rtk/history.db");
+    add(b.put(file(&db, "x")).step(remove_cmd(&[])));
     // platforms
     for cmd in [preview_cmd(), apply_cmd(&[]), remove_cmd(&["--preview"])] {
         let mut b = B::new();
@@ -857,12 +879,10 @@ fn seeds() -> Vec<Value> {
         add(b.step(apply_cmd(&[])));
     }
     // the config folder from HOME
-    add(B::new()
-        .env("CLAUDE_CONFIG_DIR", None)
-        .env(
-            "CLAUDE_PLUGIN_DATA",
-            Some("@ROOT@/home/.claude/plugins/data/anthology"),
-        )
+    let b = B::new().env("CLAUDE_CONFIG_DIR", None);
+    let data = format!("@ROOT@/{}", b.at("plugins/data/anthology"));
+    add(b
+        .env("CLAUDE_PLUGIN_DATA", Some(&data))
         .step(preview_cmd())
         .step(apply_cmd(&[]))
         .step(remove_cmd(&[])));
@@ -980,10 +1000,9 @@ fn gen_case(rng: &mut Rng) -> Value {
     let mut b = B::new();
     // the config and data folders
     if rng.chance(0.15) {
-        b = b.env("CLAUDE_CONFIG_DIR", None).env(
-            "CLAUDE_PLUGIN_DATA",
-            Some("@ROOT@/home/.claude/plugins/data/anthology"),
-        );
+        b = b.env("CLAUDE_CONFIG_DIR", None);
+        let data = format!("@ROOT@/{}", b.at("plugins/data/anthology"));
+        b = b.env("CLAUDE_PLUGIN_DATA", Some(&data));
     }
     match rng.below(8) {
         0 => b = b.env("CLAUDE_PLUGIN_DATA", None),
@@ -1067,6 +1086,22 @@ fn gen_case(rng: &mut Rng) -> Value {
                 .put(dir("elsewhere/bin"))
                 .put(link(&p, "@ROOT@/elsewhere/bin"));
         }
+        _ => {}
+    }
+    // rtk's history folder (state.rtk_data_dir)
+    let history = b.at("anthology/rtk");
+    match rng.below(6) {
+        0 => {
+            b = b
+                .put(file(&format!("{history}/history.db"), "commands"))
+                .put(file(&format!("{history}/tee/1_x.log"), "out"));
+        }
+        1 => {
+            b = b
+                .put(file("elsewhere/history/history.db", "keep"))
+                .put(link(&history, "@ROOT@/elsewhere/history"));
+        }
+        2 => b = b.put(file(&history, "")),
         _ => {}
     }
     if rng.chance(0.1) {
@@ -1175,6 +1210,11 @@ mod tests {
             ("deleted", "\"status\": \"deleted\""),
             ("rtk symlink", "the rtk folder is a symlink"),
             ("rtk outside", "not under the plugin data folder"),
+            (
+                "history deleted",
+                "\"rtk_history\": {\n    \"status\": \"deleted\"",
+            ),
+            ("history left", "is not a plain folder; left in place"),
             ("bin kept", "kept (anthology-guardrails still uses it)"),
             ("bin delete", "\"status\": \"delete\""),
             ("guard missing", "(hooks/guard.sh) was not found"),

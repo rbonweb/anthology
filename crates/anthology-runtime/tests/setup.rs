@@ -35,7 +35,10 @@ use anthology_testkit::rt_c::{SETTINGS, SetupCase, pretty};
 use anthology_testkit::sandbox::repo_root;
 
 const BYPASS: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any \
-                      command; the guardrails and deny rules still apply to the wrapped command.";
+                      command. rtk's hook still applies the deny and ask rules in your settings \
+                      files (user, project, local and managed) to the command it wraps, but not \
+                      rules given with `--settings` or `--disallowedTools`, server-managed \
+                      settings or an MDM profile.";
 
 // --- the fixture --------------------------------------------------------------------------
 
@@ -1324,6 +1327,72 @@ mod remove_test {
         assert!(ok(&res), "{res:?}");
         assert!(!f.c.data_dir.join("rtk").exists());
         assert!(f.c.data_dir.join("other/keep.txt").exists());
+    }
+
+    fn pairs(kv: &[(&str, &str)]) -> Value {
+        let mut m = Map::new();
+        for (k, v) in kv {
+            m.insert((*k).into(), Value::Str((*v).into()));
+        }
+        Value::Object(m)
+    }
+
+    #[test]
+    fn test_remove_deletes_the_rtk_history_folder() {
+        // I4: the folder bin/rtk and bin/rtk-hook point RTK_DB_PATH, RTK_RECALL_DB and
+        // RTK_TEE_DIR at.
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let history = state::rtk_data_dir(f.env());
+        write(&history.join("history.db"), "commands", None);
+        write(&history.join("tee").join("1_x.log"), "out", None);
+        let preview = f.remove(false, false, true);
+        assert_eq!(
+            at(&preview, &["rtk_history"]),
+            &pairs(&[("dir", &p(&history)), ("status", "delete")])
+        );
+        assert!(history.join("history.db").exists());
+        let res = f.remove(false, false, false);
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(at(&res, &["rtk_history"]), &pairs(&[("status", "deleted")]));
+        assert!(!history.exists());
+    }
+
+    #[test]
+    fn test_remove_without_rtk_history_reports_nothing_to_delete() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let preview = f.remove(false, false, true);
+        assert_eq!(
+            text_at(&preview, &["rtk_history", "status"]),
+            "nothing to delete"
+        );
+        assert_eq!(
+            at(&f.remove(false, false, false), &["rtk_history"]),
+            &pairs(&[("status", "nothing to delete")])
+        );
+    }
+
+    #[test]
+    fn test_remove_does_not_follow_a_symlinked_rtk_history_folder() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let elsewhere = f.c.mem.config.join("elsewhere-history");
+        write(&elsewhere.join("precious.txt"), "keep", None);
+        let history = state::rtk_data_dir(f.env());
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        symlink(&elsewhere, &history).unwrap();
+        let res = f.remove(false, false, false);
+        assert!(elsewhere.join("precious.txt").exists());
+        let warnings = at(&res, &["warnings"]).as_array().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("history"))
+        );
     }
 
     #[test]

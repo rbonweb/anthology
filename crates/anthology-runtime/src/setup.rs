@@ -7,9 +7,10 @@
 //! `--expect-sha256` three times (before anything, after the downloads, right before the
 //! write), records the ops in state.json before writing settings.json, ensures the
 //! guardrails-pinned binary (`bootstrap.sh session --plugin guardrails --quiet --budget 60`,
-//! D§8.8) and reports `guard_binary: {status}`. `remove` undoes the settings edits, deletes the
-//! downloaded rtk, `<ah>/bin` (only when `installed_plugins.json` has no
-//! `anthology-guardrails@*` entry, D§8.8) and state.json, and optionally drops approvals.
+//! D§8.8) and reports `guard_binary: {status}`. `remove` undoes the settings edits, deletes
+//! state.json, the downloaded rtk, rtk's history folder (`state::rtk_data_dir`), `<ah>/bin`
+//! (only when `installed_plugins.json` has no `anthology-guardrails@*` entry, D§8.8), and
+//! optionally drops approvals.
 //!
 //! Every result is a JSON object; [`main`] prints it with `indent=2` and exits 0, 1 (`ok` is
 //! false) or 2 (unsupported platform). An exception Python would let reach `main` is the
@@ -1133,6 +1134,34 @@ fn rtk_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
     (Some(real), "delete", None)
 }
 
+/// `shutil.rmtree(path, onerror=_ignore_vanished)`: a file that disappears mid-delete (a
+/// SQLite -wal/-shm) is fine. std's `remove_dir_all` already skips entries that vanish under
+/// it; this also accepts the folder itself being gone.
+fn rmtree_ignoring_vanished(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(os_err(e, path)),
+        _ => Ok(()),
+    }
+}
+
+/// `_rtk_history_target()`: `(path to delete or None, status, warning or None)` for rtk's
+/// history folder, [`state::rtk_data_dir`]. Deleted only when it is a real folder, not a
+/// symlink.
+fn rtk_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
+    let path = state::rtk_data_dir(env);
+    if !lexists(&path) {
+        return (None, "nothing to delete", None);
+    }
+    if is_symlink(&path) || !path.is_dir() {
+        let warn = format!(
+            "the rtk history folder {} is not a plain folder; left in place",
+            pstr(&path)
+        );
+        return (None, "left in place", Some(warn));
+    }
+    (Some(path), "delete", None)
+}
+
 /// Whether `installed_plugins.json` has an `anthology-guardrails@*` entry; a file that exists
 /// but cannot be read counts as one (keep the binary).
 fn guardrails_installed(env: &Env) -> bool {
@@ -1225,9 +1254,10 @@ fn try_remove(
         }
     }
     let (rtk_real, mut rtk_status, rtk_warn) = rtk_target(env);
+    let (history_real, mut history_status, history_warn) = rtk_history_target(env);
 
     let changed = new_text != text;
-    let warnings: Vec<String> = rtk_warn.into_iter().collect();
+    let warnings: Vec<String> = rtk_warn.into_iter().chain(history_warn).collect();
     let approved = mem::approved_keys(env);
     let this_repo = repo_info(&cwd, env, deps)
         .map(|(_, key)| key)
@@ -1248,6 +1278,13 @@ fn try_remove(
             (
                 "rtk",
                 obj(vec![("dir", opt_str(rtk_real)), ("status", s(rtk_status))]),
+            ),
+            (
+                "rtk_history",
+                obj(vec![
+                    ("dir", s(&pstr(&state::rtk_data_dir(env)))),
+                    ("status", s(history_status)),
+                ]),
             ),
             (
                 "state",
@@ -1292,9 +1329,20 @@ fn try_remove(
             (deps.settings_write)(&path, &new_text).map_err(raised)?;
         }
     }
+    // state.json goes first: without its rtk_path, bin/rtk-hook exits before running rtk, so
+    // no hook in another session recreates rtk's history while it is being deleted.
+    let state_path = state::path(env);
+    match fs::remove_file(&state_path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(os_err(e, &state_path)),
+        _ => {}
+    }
     if let Some(real) = rtk_real {
-        fs::remove_dir_all(&real).map_err(|e| os_err(e, Path::new(&real)))?;
+        rmtree_ignoring_vanished(Path::new(&real))?;
         rtk_status = "deleted";
+    }
+    if let Some(history) = history_real {
+        rmtree_ignoring_vanished(&history)?;
+        history_status = "deleted";
     }
     if let Some(bin) = bin {
         // A symlinked `<ah>/bin` loses only the link, never what it points to.
@@ -1318,15 +1366,11 @@ fn try_remove(
     {
         unapproved.push(key);
     }
-    let state_path = state::path(env);
-    match fs::remove_file(&state_path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(os_err(e, &state_path)),
-        _ => {}
-    }
     Ok(obj(vec![
         ("ok", Value::Bool(true)),
         ("settings", settings_value),
         ("rtk", obj(vec![("status", s(rtk_status))])),
+        ("rtk_history", obj(vec![("status", s(history_status))])),
         (
             "memory",
             obj(vec![
