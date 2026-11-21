@@ -1337,7 +1337,14 @@ fn try_remove(
                     ),
                     (
                         "unapprove",
-                        strs(&this_repo.into_iter().collect::<Vec<_>>()),
+                        // `[this_repo] if this_repo else []`: an empty key is falsy
+                        strs(
+                            &this_repo
+                                .iter()
+                                .filter(|k| !k.is_empty())
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        ),
                     ),
                     ("unapprove_all", strs(&approved)),
                 ]),
@@ -1392,7 +1399,7 @@ fn try_remove(
             }
         }
     } else if unapprove
-        && let Some(key) = this_repo
+        && let Some(key) = this_repo.filter(|k| !k.is_empty())
         && memory_approve::unapprove(&key, env).map_err(raised)?
     {
         unapproved.push(key);
