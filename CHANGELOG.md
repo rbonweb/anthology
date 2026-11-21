@@ -29,7 +29,9 @@ a new version section.
 - SessionStart hook: delivers the routing guide to the main session, runs the guardrails
   self-test, reconciles rtk with `rtk.lock`, keeps memory working in approved repos, and
   warns when setup has not run or the plugin has moved. A problem in any step becomes a
-  warning and never fails the session.
+  warning and never fails the session. A subagent that compacts (its hook input carries
+  `agent_id`) gets no routing guide, and the "set autoMemoryDirectory" notice stays quiet
+  after a compaction.
 - Routing guide (`templates/routing-guide.md`): model roles, which agent for which job,
   worktree, Docker and blocked-agent rules, and the lead's memory duties, including
   committing the `.claude/agent-memory/` notes that read-only and docs-only agents leave
