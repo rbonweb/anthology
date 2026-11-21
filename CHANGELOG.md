@@ -68,7 +68,9 @@ a new version section.
   permission, that BrowserOS tool names in your MCP configuration match what the plugin
   expects (`browseros_tools`, read from configuration files only), the plugin data folder,
   the `bin/` wrappers, where agent memory is written, and whether
-  `CLAUDE_CODE_SUBAGENT_MODEL` overrides the roster's model tiers.
+  `CLAUDE_CODE_SUBAGENT_MODEL` overrides the roster's model tiers. `rtk_savings` reports, from
+  rtk's own history, how many of the commands the hook saw went through rtk and how many
+  output tokens that saved, so you can judge whether rtk is worth keeping.
 - Session start prints one loud line when a compatibility assumption breaks (no
   `CLAUDE_PLUGIN_DATA`, missing `bin/` wrappers, agent memory written outside
   `anthology-<agent>/`, `CLAUDE_CODE_SUBAGENT_MODEL` set), and one note when a release
@@ -88,6 +90,8 @@ a new version section.
   The pinned binary (`rtk.lock`, sha256 per platform) is downloaded from this repo's
   releases and checked by setup, then reconciled at every session start. Claude Code only,
   no telemetry; without the binary the hook does nothing and commands run unchanged.
+  File reads (`cat`, `head`, `tail`) are not rewritten to `rtk read`: it saved about 3% on
+  them and changes the text Claude reads, so they run as typed.
 - BrowserOS Neo is the only browser agents use; the plugin launches no other browser.
 - The plugin's own Apache-2.0 `LICENSE`.
 - Notices marking the Apache-2.0 files Anthology modified (the connector stripping on the
