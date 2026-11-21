@@ -104,6 +104,11 @@ def _raises(stdin, home):
     """Whether guard.py's `decide` raises on this input (RecursionError on deep JSON, for one)."""
     try:
         data = json.loads(stdin.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return False  # a malformed envelope is guard.py's defined allow, not a failure (GC-6)
+    except Exception:
+        return True  # RecursionError on deep JSON: Rust parses it and checks (F-10)
+    try:
         if isinstance(data, dict) and isinstance(data.get("tool_name"), str):
             G._check(data["tool_name"], data.get("tool_input"),
                      home or os.path.expanduser("~"))
