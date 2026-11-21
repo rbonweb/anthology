@@ -44,8 +44,14 @@ Subagent (general-purpose):
     **While you work:** If you encounter something unexpected or unclear, **ask questions**.
     It's always OK to pause and clarify. Don't guess or make assumptions.
 
-    While iterating, run the focused test for what you're changing; run the
-    full suite once before committing, not after every edit.
+    While iterating, run only the tests (and linter) for what you're changing,
+    never the full suite repeatedly; the full suite runs once at the final go
+    (usually CI on the PR).
+
+    If you slow down or skip a machine or service because it is busy, re-check
+    after 5-10 minutes and go back to full speed; a momentary limit is never a
+    standing rule. After using containers, remove your own containers, built
+    images and their volumes; never touch other projects' or stop Docker.
 
     ## You Do Not Dispatch Subagents
 
