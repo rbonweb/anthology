@@ -23,8 +23,12 @@ Marks (GC-16):
   port names it as its CLI shows it, `anthology memory`. The oracle runs `main` with the
   parser renamed (`_port_prog`), so argparse itself lays the text out for that name, and
   marks the cases where that output was shown.
-- D-2 is the surface's normalization hook, not the oracle's (the text after `not a readable
-  memory archive: `).
+- D-7: the port refuses a GNU sparse map number outside a 64-bit integer (`sparse value out of
+  range`, crates/anthology-memory/src/portable/load.rs) where Python keeps the big int. The
+  oracle runs tarfile's 3.12 sparse parsers with that same bound at the same point
+  (`_port_sparse_bound`), and marks the cases where it refused.
+- D-2 is the surface's normalization hook, not the oracle's (zlib's reason after `Error -3
+  while decompressing data: `).
 
 Python 3.9+ and the standard library only.
 """
@@ -39,8 +43,10 @@ import hashlib
 import io
 import json
 import os
+import inspect
 import shutil
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -178,6 +184,65 @@ def _port_prog():
         argparse.ArgumentParser.__init__ = real
 
 
+class _SparseBound(Exception):
+    """The port's refusal of a sparse number outside i64 (D-7)."""
+
+
+@contextlib.contextmanager
+def _port_sparse_bound():
+    """tarfile's 3.12 `_proc_gnusparse_00/01/10`, each number checked against the port's i64
+    bound as it is parsed, as the port does. Yields a list that gets an item per refusal. Only
+    on 3.12's parsers (3.9's 0.0 parser reads the header block instead): elsewhere a no-op."""
+    info = tarfile.TarInfo
+    fired = []
+    if "raw_headers" not in inspect.signature(info._proc_gnusparse_00).parameters:
+        yield fired
+        return
+
+    def bounded(n):
+        if not -(1 << 63) <= n < (1 << 63):
+            fired.append(n)
+            raise _SparseBound("sparse value out of range")
+        return n
+
+    def gnusparse_00(self, next, raw_headers):
+        offsets, numbytes = [], []
+        for _, keyword, value in raw_headers:
+            if keyword in (b"GNU.sparse.offset", b"GNU.sparse.numbytes"):
+                try:
+                    n = int(value.decode())
+                except ValueError:
+                    raise tarfile.InvalidHeaderError("invalid header")
+                (offsets if keyword == b"GNU.sparse.offset" else numbytes).append(bounded(n))
+        next.sparse = list(zip(offsets, numbytes))
+
+    def gnusparse_01(self, next, pax_headers):
+        sparse = [bounded(int(x)) for x in pax_headers["GNU.sparse.map"].split(",")]
+        next.sparse = list(zip(sparse[::2], sparse[1::2]))
+
+    def gnusparse_10(self, next, pax_headers, tarfile):
+        sparse = []
+        buf = tarfile.fileobj.read(tarfile_block)
+        fields, buf = buf.split(b"\n", 1)
+        fields = int(fields)
+        while len(sparse) < fields * 2:
+            if b"\n" not in buf:
+                buf += tarfile.fileobj.read(tarfile_block)
+            number, buf = buf.split(b"\n", 1)
+            sparse.append(bounded(int(number)))
+        next.offset_data = tarfile.fileobj.tell()
+        next.sparse = list(zip(sparse[::2], sparse[1::2]))
+
+    tarfile_block = tarfile.BLOCKSIZE
+    real = info._proc_gnusparse_00, info._proc_gnusparse_01, info._proc_gnusparse_10
+    info._proc_gnusparse_00, info._proc_gnusparse_01, info._proc_gnusparse_10 = (
+        gnusparse_00, gnusparse_01, gnusparse_10)
+    try:
+        yield fired
+    finally:
+        info._proc_gnusparse_00, info._proc_gnusparse_01, info._proc_gnusparse_10 = real
+
+
 def _mark(mark, new):
     """One divergence mark per case: two different ones would hide one of them."""
     if mark not in (None, new):
@@ -198,6 +263,14 @@ def _call(fn, mp):
 
 
 def run(case):
+    with _port_sparse_bound() as fired:
+        result = _run(case)
+    if fired:
+        result["divergence"] = _mark(result.get("divergence"), "D-7")
+    return result
+
+
+def _run(case):
     mp = _module()
     tmp = os.path.realpath(tempfile.mkdtemp(prefix="mx1-oracle-"))
     old_cwd, old_env = os.getcwd(), dict(os.environ)

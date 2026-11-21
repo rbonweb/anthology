@@ -42,7 +42,7 @@ use std::rc::Rc;
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Int, Value};
 use anthology_pycompat::pyerr::PyExc;
-use anthology_pycompat::str::{py_int, repr_surrogateescape};
+use anthology_pycompat::str::{INT_MAX_STR_DIGITS, py_int, repr_surrogateescape};
 use flate2::{Crc, Decompress, FlushDecompress, Status};
 use sha2::{Digest, Sha256};
 
@@ -88,8 +88,10 @@ pub const MAX_DEPTH: usize = 329;
 /// GNU sparse `(offset, numbytes)` pairs allowed in one archive (module docs).
 pub const MAX_SPARSE: usize = 4096;
 /// `tarfile.data_filter` resolves each name under a fresh `tempfile.mkdtemp()`; on the oracle
-/// that is `/tmp/tmpXXXXXXXX`, and `os.lstat` of a path of `PATH_MAX` bytes or more fails.
-const FILTER_DEST_LEN: usize = "/tmp/tmpXXXXXXXX/".len();
+/// that is `/tmp/tmpXXXXXXXX` (8 random characters; the port, which creates no folder, names
+/// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails.
+const FILTER_DEST: &str = "/tmp/tmpXXXXXXXX";
+const FILTER_DEST_LEN: usize = FILTER_DEST.len() + 1;
 const PATH_MAX: usize = 4096;
 #[cfg(target_os = "macos")]
 const ENAMETOOLONG: i32 = 63;
@@ -407,16 +409,18 @@ impl Shadow {
         let mut filled = 0;
         while filled < n {
             let (i, o) = (self.dec.total_in(), self.dec.total_out());
-            let Ok(status) = self.dec.decompress(
+            let res = self.dec.decompress(
                 &blob[self.at..],
                 &mut theirs[filled..],
                 FlushDecompress::None,
-            ) else {
-                break;
-            };
+            );
+            // A failing call has still written what it decoded before the failure.
             self.at += (self.dec.total_in() - i) as usize;
             let made = (self.dec.total_out() - o) as usize;
             filled += made;
+            let Ok(status) = res else {
+                break;
+            };
             if made == 0 && (status == Status::StreamEnd || self.dec.total_in() == i) {
                 break;
             }
@@ -1087,11 +1091,50 @@ fn saturate(i: Int) -> i128 {
     }
 }
 
-/// `ValueError: invalid literal for int() with base 10: ...`.
-fn bad_int(raw: &[u8]) -> Exc {
+/// The `ValueError` of a failed `int(value)`, base 10: of the str a PAX record's `raw` decodes
+/// to (surrogateescape), or of the bytes `raw` when `bytes`. CPython reads the value as a C
+/// string (up to a NUL): a well-formed number of more than 4300 digits is the digit-limit
+/// error; anything else is `invalid literal`, whose `%.200R` keeps 200 characters of the repr
+/// (of the first 200 bytes, for bytes).
+fn bad_int(raw: &[u8], bytes: bool) -> Exc {
+    let text: String = if bytes {
+        raw.iter()
+            .map(|&b| if b.is_ascii() { char::from(b) } else { '?' })
+            .collect()
+    } else {
+        String::from_utf8_lossy(raw).into_owned()
+    };
+    let c = text.split('\0').next().unwrap_or_default();
+    let is_digit = |ch: char| {
+        ch.is_ascii_digit() || !ch.is_ascii() && py_int(ch.encode_utf8(&mut [0; 4])).is_some()
+    };
+    let digits = c.chars().filter(|&ch| is_digit(ch)).count();
+    // Whether the text is a number does not depend on how many digits it has: each run of
+    // digits with single underscores becomes one `1`.
+    let mut short = String::new();
+    for ch in c.chars() {
+        if !is_digit(ch) {
+            short.push(ch);
+        } else if short.ends_with("1_") {
+            short.pop();
+        } else if !short.ends_with('1') {
+            short.push('1');
+        }
+    }
+    if digits > INT_MAX_STR_DIGITS && py_int(&short).is_some() {
+        return fatal(format!(
+            "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
+             value has {digits} digits; use sys.set_int_max_str_digits() to increase the limit"
+        ));
+    }
+    let shown = if bytes {
+        bytes_repr(&raw[..raw.len().min(200)])
+    } else {
+        repr_surrogateescape(raw)
+    };
     fatal(format!(
         "invalid literal for int() with base 10: {}",
-        repr_surrogateescape(raw)
+        shown.chars().take(200).collect::<String>()
     ))
 }
 
@@ -1125,7 +1168,7 @@ fn apply_pax_info(info: &mut Info, pax: &Pax) -> Result<(), Exc> {
         match *key {
             b"GNU.sparse.name" => info.name = v.raw.clone(),
             b"GNU.sparse.size" | b"GNU.sparse.realsize" => {
-                info.size = v.int.ok_or_else(|| bad_int(&v.raw))?;
+                info.size = v.int.ok_or_else(|| bad_int(&v.raw, false))?;
             }
             b"path" => info.name = rstrip_slash(&v.raw),
             b"size" => info.size = v.int.unwrap_or(0),
@@ -1325,7 +1368,7 @@ impl<'a> Tar<'a> {
                 if numbers.len() > 2 * self.sparse_left + 1 {
                     return Err(too_many_sparse());
                 }
-                numbers.push(sparse_int(x, || bad_int(x))?);
+                numbers.push(sparse_int(x, || bad_int(x, false))?);
             }
             next.sparse = Some(self.pairs(&numbers)?);
         } else if pax.get(b"GNU.sparse.size").is_some() {
@@ -1368,7 +1411,7 @@ impl<'a> Tar<'a> {
         let mut buf = self.f.read(Some(BLOCK))?;
         let nl = buf.iter().position(|&b| b == b'\n').ok_or_else(unpack)?;
         let fields_raw: Vec<u8> = buf.drain(..=nl).take(nl).collect();
-        let fields = ascii_int(&fields_raw).ok_or_else(|| bad_int(&fields_raw))?;
+        let fields = ascii_int(&fields_raw).ok_or_else(|| bad_int(&fields_raw, true))?;
         let mut numbers = Vec::new();
         while (numbers.len() as i128) < fields.saturating_mul(2) {
             if numbers.len() > 2 * self.sparse_left + 1 {
@@ -1380,7 +1423,7 @@ impl<'a> Tar<'a> {
             let nl = buf.iter().position(|&b| b == b'\n').ok_or_else(unpack)?;
             let raw: Vec<u8> = buf.drain(..=nl).take(nl).collect();
             match ascii_int(&raw) {
-                None => return Err(bad_int(&raw)),
+                None => return Err(bad_int(&raw, true)),
                 Some(n) if i64::try_from(n).is_ok() => numbers.push(n),
                 Some(_) => return Err(out_of_range()),
             }
@@ -1579,23 +1622,25 @@ fn read_members(blob: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Rejected> {
             )));
         }
         let kind = check_name_b(&m.name)?;
-        let r = repr_surrogateescape(&m.name);
+        // The repr only for a rejection: a GNU longname can be tens of MiB.
+        let r = || repr_surrogateescape(&m.name);
         if !names.insert(m.name.clone()) {
-            return Err(Rejected(format!("duplicate member: {r}")));
+            return Err(Rejected(format!("duplicate member: {}", r())));
         }
         if !matches!(m.typ, b'0' | b'\0' | DIRTYPE) {
             return Err(Rejected(format!(
-                "member {r} is not a plain file or folder"
+                "member {} is not a plain file or folder",
+                r()
             )));
         }
         if (kind == Kind::Dir) != (m.typ == DIRTYPE) {
-            return Err(Rejected(format!("member {r} has the wrong type")));
+            return Err(Rejected(format!("member {} has the wrong type", r())));
         }
         if m.typ == DIRTYPE && m.size != 0 {
-            return Err(Rejected(format!("folder member {r} has data")));
+            return Err(Rejected(format!("folder member {} has data", r())));
         }
         if m.size < 0 || (kind == Kind::Manifest && m.size > i128::from(MAX_MANIFEST)) {
-            return Err(Rejected(format!("member {r} has a bad size")));
+            return Err(Rejected(format!("member {} has a bad size", r())));
         }
         total = total.saturating_add(m.size);
         if total > i128::from(MAX_TOTAL) {
@@ -1607,13 +1652,19 @@ fn read_members(blob: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Rejected> {
         members.push(m);
     }
     // tarfile.data_filter (3.12): for a member that passed the checks above, the one refusal
-    // left is `os.path.realpath` under its temporary folder failing with ENAMETOOLONG.
+    // left is `os.path.realpath` under its temporary folder failing with ENAMETOOLONG. It
+    // `lstat`s the path part by part, and the first part of PATH_MAX bytes or more is named.
     for m in &members {
         if FILTER_DEST_LEN + m.name.len() >= PATH_MAX {
+            let path = [FILTER_DEST.as_bytes(), b"/", &m.name].concat();
+            let end = (PATH_MAX..path.len())
+                .find(|&i| path[i] == b'/')
+                .unwrap_or(path.len());
             return Err(Rejected(format!(
-                "member {} rejected by the tar filter: [Errno {ENAMETOOLONG}] {}",
+                "member {} rejected by the tar filter: [Errno {ENAMETOOLONG}] {}: {}",
                 repr_surrogateescape(&m.name),
-                errno_tables::strerror(ENAMETOOLONG)
+                errno_tables::strerror(ENAMETOOLONG),
+                repr_surrogateescape(&path[..end])
             )));
         }
     }
@@ -2097,8 +2148,16 @@ mod tests {
         );
         // A valid stream of the same shape reads.
         let mut ok = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
-        ok.extend(fixed_deflate(1));
+        ok.extend(fixed_deflate(1, false));
         assert_eq!(Gz::new(&ok).read_n(4, true).unwrap().0, b"aaaa");
+        // The bad match is still found when miniz_oxide fails later in the same call (it has
+        // written the copied bytes by then): zlib stops at the match.
+        let mut g = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        g.extend(fixed_deflate(2, true));
+        assert_eq!(
+            Gz::new(&g).read_n(1, true).unwrap_err().to_string(),
+            format!("{ZLIB}invalid distance too far back")
+        );
     }
 
     #[test]
@@ -2127,11 +2186,12 @@ mod tests {
 
     /// Deflate bits for: fixed block, literal `a`, length 3 distance 2, end of block.
     fn far_back_deflate() -> Vec<u8> {
-        fixed_deflate(2)
+        fixed_deflate(2, false)
     }
 
-    /// Fixed block: literal `a`, then a match of length 3 at `distance` (1 or 2), end of block.
-    fn fixed_deflate(distance: u32) -> Vec<u8> {
+    /// Fixed block: literal `a`, then a match of length 3 at `distance` (1 or 2), end of block;
+    /// then, if `bad_block`, a block of the invalid type 3.
+    fn fixed_deflate(distance: u32, bad_block: bool) -> Vec<u8> {
         let mut bits: Vec<u8> = Vec::new();
         let mut put = |v: u32, n: u32, reversed: bool| {
             for i in 0..n {
@@ -2143,12 +2203,16 @@ mod tests {
                 bits.push(bit as u8);
             }
         };
-        put(1, 1, false); // BFINAL
+        put(u32::from(!bad_block), 1, false); // BFINAL
         put(1, 2, false); // BTYPE fixed
         put(0x30 + u32::from(b'a'), 8, true); // literal 'a' (codes 0x30..0xbf)
         put(1, 7, true); // length code 257 = length 3 (7-bit codes start at 256 = 0)
         put(distance - 1, 5, true); // distance code 0 = distance 1, code 1 = distance 2
         put(0, 7, true); // end of block (256)
+        if bad_block {
+            put(1, 1, false);
+            put(3, 2, false);
+        }
         bits.chunks(8)
             .map(|c| c.iter().enumerate().fold(0u8, |b, (i, &x)| b | (x << i)))
             .collect()
@@ -2695,6 +2759,83 @@ mod tests {
         );
     }
 
+    /// The `int()` errors of the GNU sparse numbers, as CPython 3.12 words them (checked on
+    /// the oracle image).
+    #[test]
+    fn sparse_number_errors_are_pythons_int_errors() {
+        let sp = |records: &[(&[u8], &[u8])], data: &[u8]| {
+            load(
+                &[
+                    manifest(),
+                    pax(b'x', records),
+                    member(b"personal/sp.md", data),
+                ]
+                .concat(),
+            )
+        };
+        let v10: [(&[u8], &[u8]); 3] = [
+            (b"GNU.sparse.major", b"1"),
+            (b"GNU.sparse.minor", b"0"),
+            (b"GNU.sparse.realsize", b"3"),
+        ];
+        let not_int = |shown: &str| {
+            rejected(&format!(
+                "not a readable memory archive: invalid literal for int() with base 10: {shown}"
+            ))
+        };
+        // M-1: the 1.0 map is bytes, so its repr is b'...'.
+        assert_eq!(
+            sp(&v10, &[pad(b"1\n0\n3\n"), b"abc".to_vec()].concat()),
+            names(&["manifest.json", "personal/sp.md"])
+        );
+        assert_eq!(
+            sp(&v10, &[pad(b"x\n"), b"abc".to_vec()].concat()),
+            not_int("b'x'")
+        );
+        assert_eq!(
+            sp(&v10, &[pad(b"1\n0\nx\n"), b"abc".to_vec()].concat()),
+            not_int("b'x'")
+        );
+        // `%.200R`: 200 characters of the repr (of the first 200 bytes, for bytes).
+        let line = [b"1\n".to_vec(), vec![b'z'; 300], b"\n".to_vec()].concat();
+        let shown = format!("b'{}", "z".repeat(198));
+        assert_eq!(
+            sp(&v10, &[pad(&line), b"abc".to_vec()].concat()),
+            not_int(&shown)
+        );
+        let long = [vec![b'1'; 5000], b"x".to_vec()].concat();
+        let shown = format!("'{}", "1".repeat(199));
+        assert_eq!(
+            sp(&[(b"GNU.sparse.realsize", &long)], b"abc"),
+            not_int(&shown)
+        );
+        // M-2: a well-formed number of more than 4300 digits (up to a NUL) is the digit limit.
+        let limit = |n: usize| {
+            rejected(&format!(
+                "not a readable memory archive: Exceeds the limit (4300 digits) for integer \
+                 string conversion: value has {n} digits; use sys.set_int_max_str_digits() to \
+                 increase the limit"
+            ))
+        };
+        let big = vec![b'1'; 5000];
+        assert_eq!(sp(&[(b"GNU.sparse.size", &big)], b"abc"), limit(5000));
+        assert_eq!(sp(&[(b"GNU.sparse.realsize", &big)], b"abc"), limit(5000));
+        let map = [b"0,".to_vec(), big.clone()].concat();
+        assert_eq!(sp(&[(b"GNU.sparse.map", &map)], b"abc"), limit(5000));
+        let map = [b"0, ".to_vec(), vec![b'2'; 4400], b"\0x".to_vec()].concat();
+        assert_eq!(sp(&[(b"GNU.sparse.map", &map)], b"abc"), limit(4400));
+        let underscores = [b"1_".repeat(4400), b"1".to_vec()].concat();
+        assert_eq!(
+            sp(&[(b"GNU.sparse.size", &underscores)], b"abc"),
+            limit(4401)
+        );
+        // PAX `size` falls back to 0 instead.
+        assert_eq!(
+            sp(&[(b"size", &big)], b"abc"),
+            names(&["manifest.json", "personal/sp.md"])
+        );
+    }
+
     // --- limits -----------------------------------------------------------------------------
 
     #[test]
@@ -2732,11 +2873,30 @@ mod tests {
             member(b"x", b"n"),
         ]
         .concat();
-        let err = load(&tar).unwrap_err();
-        assert!(err.starts_with("member 'personal/aaa"), "{err}");
-        assert!(
-            err.contains(".md' rejected by the tar filter: [Errno "),
-            "{err}"
+        let too_long = format!("[Errno {ENAMETOOLONG}] File name too long");
+        let name = String::from_utf8(bad.clone()).unwrap();
+        assert_eq!(
+            load(&tar),
+            Err(format!(
+                "member '{name}' rejected by the tar filter: {too_long}: \
+                 '/tmp/tmpXXXXXXXX/{name}'"
+            ))
+        );
+        // The first part of the path that is too long is named (os.lstat part by part).
+        let agent = "a".repeat(4080);
+        let name = format!("repo/agent-memory/{agent}/n.md");
+        let tar = [
+            manifest(),
+            pax(b'x', &[(b"path", name.as_bytes())]),
+            member(b"x", b"n"),
+        ]
+        .concat();
+        assert_eq!(
+            load(&tar),
+            Err(format!(
+                "member '{name}' rejected by the tar filter: {too_long}: \
+                 '/tmp/tmpXXXXXXXX/repo/agent-memory/{agent}'"
+            ))
         );
     }
 

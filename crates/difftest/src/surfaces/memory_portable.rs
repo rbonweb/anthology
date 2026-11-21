@@ -29,20 +29,23 @@
 //! (under `in/`) is its sha256, of any other `*.tar.gz` (an export) the gzip header's 10 bytes
 //! and the length and sha256 of the DECOMPRESSED tar stream (D-5: the deflate bytes are not
 //! compared, the tar bytes are, exactly), and of anything else its text (JSON string) or hex.
-//! `<ROOT>` and today's date (`<TODAY>`, also inside the tar bytes) are normalized.
+//! `<ROOT>` and today's date (`<TODAY>`, also inside the tar bytes) are normalized, and so is
+//! the tar filter's random temporary folder in a `File name too long` text ([`too_long`]).
 //!
 //! The Linux oracle image has no git and `plain/` is never in a repository: every repo or
 //! agent note takes the "not an approved repo" path (skipped, or a forged repo plan refused),
 //! and Rust runs with a `Git` that is missing too.
 //!
 //! Divergences: the oracle marks D-1 where Python raises an exception the port does not name
-//! (a hand-forged plan of the wrong shape) and D-4 where argparse output was shown (the
-//! parser is named `anthology memory`, as the port's CLI); the D-2 hook hides the library text
-//! after `not a readable memory archive: `; the D-5 hook replaces an exported archive's own
-//! sha256 (the tree's `raw:<hex>`, and wherever a plan prints it) by `<export N>`.
+//! (a hand-forged plan of the wrong shape), D-4 where argparse output was shown (the parser is
+//! named `anthology memory`, as the port's CLI) and D-7 where the port's bound on GNU sparse
+//! numbers refused the archive; the D-2 hook hides zlib's own reason after `Error -3 while
+//! decompressing data: ` ([`LIBTEXT_PREFIXES`]); the D-5 hook replaces an exported archive's
+//! own sha256 (the tree's `raw:<hex>`, and wherever a plan prints it) by `<export N>`.
 //!
-//! Case ids carry their category, `seed:<n>-<label>` and `gen:<n>-<category>`
-//! (`flow`, `cli`, `archive`, `corrupt`, `forged`), so divergence entries are case-scoped.
+//! Case ids carry their category, `seed:<n>-<label>` and `gen:<n>-<category>` (`flow`, `cli`,
+//! `archive`, `corrupt`, `forged`, and `tarhdr`: the uncompressed tar mutated header by header,
+//! then gzipped), so divergence entries are case-scoped.
 
 use std::ffi::OsString;
 use std::fs;
@@ -73,8 +76,49 @@ pub fn surface() -> Option<Box<dyn crate::case::Surface>> {
     Some(Box::new(Portable))
 }
 
-/// What the D-2 hook keeps of a line (GC-16 D-2).
-const LIBTEXT_PREFIX: &str = "not a readable memory archive: ";
+/// What the D-2 hook keeps of a line (GC-16 D-2): zlib's own reason after `Error -3 while
+/// decompressing data: `, raised by a read of the data (bare) or of a header (`tarfile` wraps
+/// it as `zlib error: `). gzip's own texts and every tarfile text are compared.
+const LIBTEXT_PREFIXES: [&str; 2] = [
+    "not a readable memory archive: Error -3 while decompressing data: ",
+    "not a readable memory archive: zlib error: Error -3 while decompressing data: ",
+];
+
+/// The D-2 hook.
+fn d2() -> Normalizer {
+    LIBTEXT_PREFIXES
+        .iter()
+        .fold(Normalizer::new(), |n, p| n.d2_prefix(p))
+}
+
+/// `tarfile.data_filter`'s ENAMETOOLONG text names a path under a random `/tmp/tmpXXXXXXXX`
+/// (8 characters), which the port prints with the X's; and the errno is the host's (Linux 36,
+/// macOS 63), while the Rust side may run on macOS against the Linux oracle. Both sides.
+fn too_long(o: &mut Observed) {
+    const AT: &str = "File name too long: '/tmp/tmp";
+    let text = String::from_utf8_lossy(&o.stdout).replace(
+        "[Errno 63] File name too long",
+        "[Errno 36] File name too long",
+    );
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find(AT) {
+        out.push_str(&rest[..i + AT.len()]);
+        rest = &rest[i + AT.len()..];
+        let random = rest.as_bytes().get(..9).is_some_and(|b| {
+            b[8] == b'/'
+                && b[..8]
+                    .iter()
+                    .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+        });
+        if random {
+            out.push_str("XXXXXXXX");
+            rest = &rest[8..];
+        }
+    }
+    out.push_str(rest);
+    o.stdout = out.into_bytes();
+}
 
 struct Portable;
 
@@ -105,16 +149,16 @@ impl Surface for Portable {
         if d5_export_shas(&mut o) {
             oracle.mark("D-5");
         }
-        Normalizer::new()
-            .d2_prefix(LIBTEXT_PREFIX)
-            .apply_python(&mut o, oracle);
+        too_long(&mut o);
+        d2().apply_python(&mut o, oracle);
         o
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
         let mut o = run_rust(&c.data);
         d5_export_shas(&mut o);
-        Normalizer::new().d2_prefix(LIBTEXT_PREFIX).apply(&mut o);
+        too_long(&mut o);
+        d2().apply(&mut o);
         o
     }
 }
@@ -1348,6 +1392,407 @@ fn gen_corrupt(rng: &mut Rng) -> Value {
     archive_case(rng, hex(&b))
 }
 
+// ---- tarhdr: the uncompressed tar mutated, then gzipped --------------------------------------
+
+/// A header's checksum field set (octal, as tarfile writes it).
+fn set_chksum(h: &mut [u8]) {
+    h[148..156].copy_from_slice(b"        ");
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+}
+
+/// A ustar header block (its checksum is set later, [`th_mutate`]).
+fn th_header(name: &[u8], typ: u8, size: u64) -> Vec<u8> {
+    let mut h = vec![0u8; 512];
+    let n = name.len().min(100);
+    h[..n].copy_from_slice(&name[..n]);
+    for (at, len, v) in [
+        (100, 8, 0o644),
+        (108, 8, 0),
+        (116, 8, 0),
+        (124, 12, size),
+        (136, 12, 0),
+        (329, 8, 0),
+        (337, 8, 0),
+    ] {
+        h[at..at + len].copy_from_slice(format!("{v:0w$o}\0", w = len - 1).as_bytes());
+    }
+    h[156] = typ;
+    h[257..265].copy_from_slice(b"ustar\x0000");
+    h
+}
+
+fn th_pad(mut v: Vec<u8>) -> Vec<u8> {
+    v.resize(v.len().div_ceil(512) * 512, 0);
+    v
+}
+
+/// One PAX record, `"%d %s=%s\n"`; sometimes with a wrong length or no newline.
+fn th_record(rng: &mut Rng, k: &[u8], v: &[u8]) -> Vec<u8> {
+    let body = [b" ", k, b"=", v, b"\n"].concat();
+    let mut n = body.len() + 1;
+    while n.to_string().len() + body.len() != n {
+        n += 1;
+    }
+    let mut rec = [n.to_string().into_bytes(), body].concat();
+    if rng.chance(0.05) {
+        match rng.below(3) {
+            0 => rec[0] = b'9',
+            1 => *rec.last_mut().expect("record") = b' ',
+            _ => rec.insert(0, b'0'),
+        }
+    }
+    rec
+}
+
+/// A number field's text: mostly `good`; else negative, garbage, or more than 4300 digits.
+fn th_number(rng: &mut Rng, good: u64) -> Vec<u8> {
+    if rng.chance(0.7) {
+        return good.to_string().into_bytes();
+    }
+    match rng.below(11) {
+        0 => b"x".to_vec(),
+        1 => b"-1".to_vec(),
+        2 => "1".repeat(4301 + rng.index(800)).into_bytes(),
+        3 => format!("{}x", "7".repeat(rng.index(400))).into_bytes(),
+        4 => Vec::new(),
+        5 => format!(" {good} ").into_bytes(),
+        6 => b"99999999999999999999999".to_vec(),
+        7 => vec![0xff, b'1'],
+        8 => format!("1_{good}").into_bytes(),
+        9 => [b"5".repeat(4400), b"\0".to_vec()].concat(),
+        _ => format!("{good}\u{3000}").into_bytes(),
+    }
+}
+
+/// A member name: a note, a folder, an unsafe one, or one long enough for a GNU longname or
+/// the tar filter's ENAMETOOLONG.
+fn th_name(rng: &mut Rng) -> Vec<u8> {
+    match rng.below(12) {
+        0 => format!(
+            "personal/{}.md",
+            "n".repeat(*rng.pick(&[95, 150, 300, 4066, 4067, 4100]))
+        )
+        .into_bytes(),
+        1 => format!("repo/agent-memory/{}/x.md", "a".repeat(4080)).into_bytes(),
+        2 => rng.pick(DIR_NAMES).as_bytes().to_vec(),
+        3 => b"personal/\xff.md".to_vec(),
+        _ => rng.pick(MEMBER_NAMES).as_bytes().to_vec(),
+    }
+}
+
+/// PAX records for a member of `size` data bytes.
+fn th_pax_records(rng: &mut Rng, size: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    for _ in 0..=rng.below(3) {
+        let rec = match rng.below(12) {
+            0 | 1 => {
+                let name = th_name(rng);
+                th_record(rng, b"path", &name)
+            }
+            2 | 3 => th_num_record(rng, b"size", size),
+            4 => th_num_record(rng, b"GNU.sparse.size", size),
+            5 => th_num_record(rng, b"GNU.sparse.realsize", size),
+            6 => {
+                let map = [th_number(rng, 0), b",".to_vec(), th_number(rng, size)].concat();
+                th_record(rng, b"GNU.sparse.map", &map)
+            }
+            7 => {
+                let name = th_name(rng);
+                th_record(rng, b"GNU.sparse.name", &name)
+            }
+            8 => {
+                const CHARSETS: [&[u8]; 3] = [b"BINARY", b"ISO-IR 10646 2000 UTF-8", b"x"];
+                let v = rng.pick(&CHARSETS);
+                th_record(rng, b"hdrcharset", v)
+            }
+            9 => {
+                const KEYS: [&[u8]; 2] = [b"GNU.sparse.offset", b"GNU.sparse.numbytes"];
+                let k = rng.pick(&KEYS);
+                th_num_record(rng, k, size)
+            }
+            10 => {
+                let c = vec![b'c'; rng.index(700)];
+                th_record(rng, b"comment", &c)
+            }
+            _ => th_record(rng, b"mtime", b"1.5"),
+        };
+        out.extend(rec);
+    }
+    out
+}
+
+/// An extended header (`x`, `g`, `L` or `K`) carrying `data`.
+fn th_ext(headers: &mut Vec<usize>, out: &mut Vec<u8>, typ: u8, data: Vec<u8>) {
+    let name: &[u8] = if matches!(typ, b'L' | b'K') {
+        b"././@LongLink"
+    } else {
+        b"PaxHeader/x"
+    };
+    headers.push(out.len());
+    out.extend(th_header(name, typ, data.len() as u64));
+    out.extend(th_pad(data));
+}
+
+/// A PAX record of a number ([`th_number`] around `good`).
+fn th_num_record(rng: &mut Rng, k: &[u8], good: u64) -> Vec<u8> {
+    let v = th_number(rng, good);
+    th_record(rng, k, &v)
+}
+
+/// One member: its extended headers (random PAX records, GNU longnames, a sparse format, a
+/// deep chain), its header and its data. Each header's place goes into `headers`.
+fn th_member(rng: &mut Rng, headers: &mut Vec<usize>, out: &mut Vec<u8>, name: &[u8], data: &[u8]) {
+    let size = data.len() as u64;
+    let mut name = name.to_vec();
+    let mut data = data.to_vec();
+    let mut typ = if data.is_empty() && DIR_NAMES.iter().any(|d| d.as_bytes() == name) {
+        b'5'
+    } else {
+        b'0'
+    };
+    // A name too long for the header goes in a GNU longname or a PAX path, mostly.
+    if name.len() > 100 && rng.chance(0.6) {
+        if rng.chance(0.5) {
+            th_ext(headers, out, b'L', [name.clone(), vec![0]].concat());
+        } else {
+            let rec = th_record(rng, b"path", &name);
+            th_ext(headers, out, b'x', rec);
+        }
+    }
+    match rng.below(20) {
+        0 | 1 => {
+            let recs = th_pax_records(rng, size);
+            th_ext(headers, out, b'x', recs);
+        }
+        2 => {
+            let recs = th_pax_records(rng, size);
+            th_ext(headers, out, b'g', recs);
+        }
+        3 | 4 => {
+            let long = if rng.chance(0.5) {
+                th_name(rng)
+            } else {
+                name.clone()
+            };
+            let mut d = long.clone();
+            if rng.chance(0.8) {
+                d.push(0);
+            }
+            let typ = *rng.pick(b"LLLK");
+            th_ext(headers, out, typ, d);
+            if rng.chance(0.7) {
+                name = long;
+            }
+        }
+        5 => {
+            // PAX 0.0: GNU.sparse.size and offset/numbytes pairs.
+            let mut recs = th_num_record(rng, b"GNU.sparse.size", size + 2);
+            recs.extend(th_num_record(rng, b"GNU.sparse.offset", 1));
+            recs.extend(th_num_record(rng, b"GNU.sparse.numbytes", size));
+            th_ext(headers, out, b'x', recs);
+        }
+        6 => {
+            // PAX 0.1: GNU.sparse.map.
+            let map = format!("0,{},{},1", size / 2, size / 2 + 3);
+            let mut recs = th_record(rng, b"GNU.sparse.map", map.as_bytes());
+            recs.extend(th_num_record(rng, b"GNU.sparse.realsize", size + 4));
+            th_ext(headers, out, b'x', recs);
+        }
+        7 => {
+            // PAX 1.0: the map heads the data, one number per line.
+            let mut recs = th_record(rng, b"GNU.sparse.major", b"1");
+            recs.extend(th_record(rng, b"GNU.sparse.minor", b"0"));
+            recs.extend(th_record(rng, b"GNU.sparse.name", &name));
+            recs.extend(th_num_record(rng, b"GNU.sparse.realsize", size + 2));
+            th_ext(headers, out, b'x', recs);
+            let mut map = Vec::new();
+            for good in [2, 0, size / 2, size / 2 + 2] {
+                map.extend(th_number(rng, good));
+                map.push(b'\n');
+            }
+            map.extend(format!("{}\n", size - size / 2).into_bytes());
+            let map = if rng.chance(0.8) { th_pad(map) } else { map };
+            data = [map, data].concat();
+            name = b"GNUSparseFile.0/x".to_vec();
+        }
+        8 => typ = b'S',
+        9 => {
+            // A deep chain of longname or PAX headers. Python's recursion limit falls near 329
+            // headers, and the oracle's own stack moves it, so the band around it is left out.
+            let depth = *rng.pick(&[2usize, 3, 20, 120, 280, 400, 1500]);
+            let pax = rng.chance(0.5);
+            let link: &[u8] = if name.len() < 200 {
+                &name
+            } else {
+                b"personal/a.md"
+            };
+            let link = [link, b"\0"].concat();
+            for _ in 0..depth {
+                if pax {
+                    let rec = th_record(rng, b"comment", b"c");
+                    th_ext(headers, out, b'x', rec);
+                } else {
+                    th_ext(headers, out, b'L', link.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+    if rng.chance(0.08) {
+        typ = *rng.pick(b"0\x005SxgLK127XA");
+    }
+    headers.push(out.len());
+    let mut h = th_header(&name, typ, data.len() as u64);
+    if typ == b'S' {
+        // Old GNU sparse: four (offset, numbytes) slots, isextended, realsize; an extension
+        // block (no checksum) follows when isextended is set.
+        h[386..398].copy_from_slice(b"00000000000\0");
+        h[398..410].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
+        h[483..495].copy_from_slice(format!("{:011o}\0", data.len() + 1).as_bytes());
+        if rng.chance(0.4) {
+            h[482] = 1;
+            let mut ext = vec![0u8; 512];
+            ext[..12].copy_from_slice(&th_field(rng, 12));
+            ext[504] = u8::from(rng.chance(0.2));
+            h.extend(ext);
+        }
+    }
+    out.extend(h);
+    out.extend(th_pad(data));
+}
+
+/// A number field's bytes: octal, base-256 (positive or negative), or garbage.
+fn th_field(rng: &mut Rng, len: usize) -> Vec<u8> {
+    let mut f = vec![0u8; len];
+    match rng.below(5) {
+        0 => {
+            f[0] = 0x80;
+            f[len - 1] = rng.below(256) as u8;
+        }
+        1 => f.iter_mut().for_each(|b| *b = 0xff),
+        2 => f[..3].copy_from_slice(b"9x "),
+        _ => {
+            f[..len - 1].copy_from_slice(format!("{:0w$o}", rng.below(64), w = len - 1).as_bytes())
+        }
+    }
+    f
+}
+
+/// Sets the checksums of the header blocks at `headers`, then mutates up to three of them
+/// (a long chain stays mostly intact): base-256 sizes and checksums, type bytes, number
+/// fields, random bytes. A mutated header's checksum is recomputed about 70% of the time;
+/// otherwise it keeps the one it had before, or gets a broken one.
+fn th_mutate(rng: &mut Rng, tar: &mut [u8], headers: &[usize]) {
+    for &at in headers {
+        set_chksum(&mut tar[at..at + 512]);
+    }
+    for _ in 0..rng.below(4) {
+        let at = *rng.pick(headers);
+        let h = &mut tar[at..at + 512];
+        let recompute = rng.chance(0.7);
+        let mut b256_sum = false;
+        match rng.below(7) {
+            0 => {
+                // base-256 size, the same value or a huge or negative one
+                let size = nti_octal(&h[124..136]);
+                let v: i128 = match rng.below(3) {
+                    0 => i128::from(size),
+                    1 => 1 << 80,
+                    _ => -5,
+                };
+                let bytes = v.to_be_bytes();
+                h[124] = if v < 0 { 0xff } else { 0x80 };
+                h[125..136].copy_from_slice(&bytes[16 - 11..]);
+            }
+            1 => b256_sum = true,
+            2 => h[156] = *rng.pick(b"0\x005SxgLK127XA"),
+            3 => {
+                let at = *rng.pick(&[100usize, 108, 116, 136, 329, 337]);
+                let len = if at == 136 { 12 } else { 8 };
+                h[at..at + len].copy_from_slice(&th_field(rng, len));
+            }
+            4 => {
+                let i = rng.index(512);
+                h[i] = rng.below(256) as u8;
+            }
+            5 => h[124..136].copy_from_slice(&th_field(rng, 12)),
+            _ => h[345..355].copy_from_slice(b"personal\0\0"),
+        }
+        if recompute || b256_sum {
+            set_chksum(h);
+        }
+        if b256_sum {
+            let sum = u64::from(
+                u32::from_str_radix(std::str::from_utf8(&h[148..154]).expect("octal"), 8)
+                    .expect("octal"),
+            );
+            h[148] = 0x80;
+            h[149..156].copy_from_slice(&sum.to_be_bytes()[1..]);
+        } else if !recompute && rng.chance(0.2) {
+            h[148..156].copy_from_slice(&th_field(rng, 8));
+        }
+    }
+}
+
+/// An octal size field's value (0 if it is not one).
+fn nti_octal(f: &[u8]) -> u64 {
+    let t: String = f
+        .iter()
+        .take_while(|&&b| b != 0)
+        .map(|&b| char::from(b))
+        .collect();
+    u64::from_str_radix(t.trim(), 8).unwrap_or(0)
+}
+
+/// The tar stream built and mutated header by header, sometimes truncated, then gzipped.
+fn gen_tarhdr(rng: &mut Rng) -> Value {
+    let mut tar = Vec::new();
+    let mut headers = Vec::new();
+    if rng.chance(0.9) {
+        th_member(rng, &mut headers, &mut tar, b"manifest.json", mx::MANIFEST);
+    }
+    for _ in 0..=rng.below(3) {
+        let name = th_name(rng);
+        let data = if DIR_NAMES.iter().any(|d| d.as_bytes() == name) || rng.chance(0.1) {
+            Vec::new()
+        } else {
+            gen_text(rng).into_bytes()
+        };
+        th_member(rng, &mut headers, &mut tar, &name, &data);
+    }
+    th_mutate(rng, &mut tar, &headers);
+    match rng.below(10) {
+        0 => {}
+        1 => tar.extend([0u8; 512]),
+        2 => tar.extend((0..rng.below(600)).map(|_| rng.below(256) as u8)),
+        _ => tar.extend([0u8; 1024]),
+    }
+    if rng.chance(0.1) {
+        tar.truncate(rng.index(tar.len()));
+    }
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &tar).expect("gzip");
+    let mut bytes = Map::new();
+    bytes.insert("in/x.tar.gz".into(), s(&hex(&gz.finish().expect("gzip"))));
+    let mut fs_ = Vec::new();
+    gen_notes(rng, "b", &mut fs_, &mut bytes);
+    // A plan, and sometimes the CLI's import; no `apply` of a failed plan (`null`, D-1), so
+    // a case can carry the oracle's D-7 mark.
+    let mut steps = vec![plan_step("b", "in/x.tar.gz", rng.pick(DAYS))];
+    if rng.chance(0.5) {
+        let mut args = vec!["import", "<ROOT>/in/x.tar.gz"];
+        if rng.chance(0.7) {
+            args.push("--yes");
+        }
+        if rng.chance(0.3) {
+            args.push("--json");
+        }
+        steps.push(cli("b", &args));
+    }
+    case(files(&fs_), Value::Object(bytes), steps)
+}
+
 /// A good archive's plan applied with forged edits.
 fn gen_forged(rng: &mut Rng) -> Value {
     let a = archive_hex(|p| {
@@ -1437,11 +1882,12 @@ fn gen_cli(rng: &mut Rng) -> Value {
 }
 
 fn generate(rng: &mut Rng) -> (&'static str, Value) {
-    match rng.below(10) {
+    match rng.below(12) {
         0 | 1 => ("flow", gen_flow(rng)),
         2 | 3 => ("cli", gen_cli(rng)),
         4..=6 => gen_archive(rng),
         7 | 8 => ("corrupt", gen_corrupt(rng)),
-        _ => ("forged", gen_forged(rng)),
+        9 => ("forged", gen_forged(rng)),
+        _ => ("tarhdr", gen_tarhdr(rng)),
     }
 }

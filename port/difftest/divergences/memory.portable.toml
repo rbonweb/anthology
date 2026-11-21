@@ -1,5 +1,5 @@
 # Allowed divergences of the memory.portable surface (GC-16). The oracle
-# (port/difftest/oracle/memory_portable.py) marks D-1 and D-4 where it adjusted Python's
+# (port/difftest/oracle/memory_portable.py) marks D-1, D-4 and D-7 where it adjusted Python's
 # result; the surface's D-2 and D-5 hooks mark every case whose output they rewrote. The
 # entries carry no `case` on purpose: such an entry covers those marks only and can never
 # waive a diff between the two sides (an entry with a `case` would also waive any other diff
@@ -20,4 +20,8 @@ reason = "`forged` cases (seed:*-forged-*, gen:*-forged): apply_import of a hand
 
 [[divergence]]
 class = "D-2"
-reason = "`corrupt` cases (seed:*-corrupt-*, gen:*-corrupt: truncated, byte-flipped, not-gzip and empty archives): the rejection 'not a readable memory archive: <text>' carries str() of the zlib, gzip or tarfile exception, which the port's decoder words its own way. The hook hides only the text after that prefix; the prefix, the rejection and the untouched tree are compared."
+reason = "`corrupt` and `tarhdr` cases (gen:*-corrupt, gen:*-tarhdr: byte-flipped or truncated deflate data): zlib's own reason in 'not a readable memory archive: Error -3 while decompressing data: <reason>' (a read of member data) and 'not a readable memory archive: zlib error: Error -3 while decompressing data: <reason>' (tarfile reading a header), which the port's deflate decoder words its own way. The hook hides only <reason>: those prefixes, where and whether the read fails, every gzip text (Not a gzipped file, CRC check failed, Compressed file ended before ...) and every tarfile text are compared."
+
+[[divergence]]
+class = "D-7"
+reason = "`tarhdr` cases (gen:*-tarhdr): a GNU sparse map number (PAX 0.0 offset or numbytes, 0.1 GNU.sparse.map, 1.0 map line) outside a 64-bit integer, which Python keeps as a big int, is refused by the port ('not a readable memory archive: sparse value out of range') as it parses it. The oracle runs tarfile's 3.12 sparse parsers with that bound at the same point and marks the cases where it refused; all the output is then compared."
