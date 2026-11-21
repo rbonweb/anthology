@@ -1450,6 +1450,138 @@ mod wrapper_test {
         );
     }
 
+    const ASK: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"node --version; bun --version"},"permissionDecision":"ask"}}"#;
+    const REWRITE: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk git status --short"}}}"#;
+    const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"RTK: a deny rule matches"}}"#;
+
+    /// The answer a row names.
+    fn answer(name: &str) -> &'static str {
+        match name {
+            "ask" => ASK,
+            "rewrite" => REWRITE,
+            "deny" => DENY,
+            "not json" => "not json",
+            other => panic!("unknown answer {other:?}"),
+        }
+    }
+
+    impl W {
+        /// A fake rtk that saves its stdin, prints one hook answer and exits with `rc`.
+        fn answer_fake(&self, answer: &str, rc: i64) {
+            let fake = self.b.tmp.join("answer-rtk");
+            let seen = self.b.tmp.join("stdin-seen");
+            fs::write(
+                &fake,
+                format!(
+                    "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' '{answer}'\nexit {rc}\n",
+                    seen.display()
+                ),
+            )
+            .expect("answer-rtk");
+            set_mode(&fake, 0o755);
+            self.b
+                .state_write(&[("rtk_path", fake.to_str().expect("utf-8 tmp"))]);
+        }
+    }
+
+    /// `json.dumps` of a Bash PreToolUse input running `command`.
+    fn hook_input(command: &str) -> String {
+        let mut input = json::Map::new();
+        input.insert("command".into(), Value::Str(command.into()));
+        let mut m = json::Map::new();
+        m.insert("tool_name".into(), Value::Str("Bash".into()));
+        m.insert("cwd".into(), Value::Str("/w".into()));
+        m.insert("tool_input".into(), Value::Object(input));
+        json::dumps(&Value::Object(m), &json::PY_DEFAULT)
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_so_the_command_runs_as_typed() {
+        // A hook ask prompts in every mode (bypass, auto), so it is dropped: no output, exit 0.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let stdin = hook_input("node --version; bun --version");
+        let res = w.run_bin("rtk-hook", &[], &stdin);
+        assert_eq!(
+            (res.code, res.stdout_text(), res.stderr_text()),
+            (0, String::new(), String::new())
+        );
+        let seen = fs::read_to_string(w.b.tmp.join("stdin-seen")).expect("stdin-seen");
+        assert_eq!(seen, stdin, "rtk still read the call");
+    }
+
+    #[test]
+    fn test_hook_keeps_an_ask_on_a_line_that_mentions_rtk() {
+        // `Bash(rtk *)` would allow these as typed, so the ask stands.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk",
+        );
+        assert_eq!(table.len(), 9);
+        for row in table {
+            let command = row.str("command");
+            let res = w.run_bin("rtk-hook", &[], &hook_input(command));
+            assert_eq!(
+                (res.code, res.stdout_text()),
+                (0, format!("{ASK}\n")),
+                "{command:?}"
+            );
+        }
+        let escaped = hook_input("rtk x").replace("rtk", "\\u0072tk");
+        let res = w.run_bin("rtk-hook", &[], &escaped);
+        assert_eq!(
+            (res.code, res.stdout_text()),
+            (0, format!("{ASK}\n")),
+            "a JSON escape counts"
+        );
+    }
+
+    #[test]
+    fn test_hook_passes_rewrites_and_denies_through() {
+        let w = setup();
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_passes_rewrites_and_denies_through",
+        );
+        assert_eq!(table.len(), 2);
+        for row in table {
+            let answer = answer(row.str("answer"));
+            w.answer_fake(answer, 0);
+            let res = w.run_bin("rtk-hook", &[], &hook_input("git status --short"));
+            assert_eq!((res.code, res.stdout_text()), (0, format!("{answer}\n")));
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_rtk_exit_status_and_output_on_failure() {
+        let w = setup();
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure",
+        );
+        assert_eq!(table.len(), 4);
+        for row in table {
+            let answer = answer(row.str("answer"));
+            let rc: i64 = row.get("rc");
+            w.answer_fake(answer, rc);
+            let res = w.run_bin("rtk-hook", &[], &hook_input("node --version"));
+            assert_eq!(
+                (i64::from(res.code), res.stdout_text()),
+                (rc, format!("{answer}\n"))
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_silent_rtk_stays_silent() {
+        let w = setup();
+        w.answer_fake("", 0);
+        let res = w.run_bin("rtk-hook", &[], &hook_input("ls; pwd"));
+        assert_eq!((res.code, res.stdout_text()), (0, String::new()));
+    }
+
     #[test]
     fn test_hook_via_sh_in_exec_form() {
         let w = setup();
