@@ -1111,6 +1111,38 @@ fn seeds() -> Vec<(String, Value)> {
             ),
         ));
     }
+    // macOS only: names at the tar filter's cut-off there (a path of 1024 bytes under
+    // `/private/tmp/tmpXXXXXXXX`), which the generator's Linux lengths never reach. A note of
+    // 986 `n`s fits and one of 987 does not; an agent folder of 975 `a`s fits with its note, one
+    // of 980 is refused by its full path, one of 981 by the folder. Linux runs no extra case.
+    #[cfg(target_os = "macos")]
+    for (label, name) in [985, 986, 987]
+        .map(|k| (format!("n{k}"), format!("personal/{}.md", "n".repeat(k))))
+        .into_iter()
+        .chain([975, 980, 981].map(|k| {
+            let agent = "a".repeat(k);
+            (format!("a{k}"), format!("repo/agent-memory/{agent}/x.md"))
+        }))
+    {
+        let a = archive_hex(|p| {
+            mx::make_archive(
+                p,
+                &[(name.as_str(), Spec::File(b"x\n".to_vec()))],
+                true,
+                false,
+            )
+        });
+        let mut bytes = Map::new();
+        bytes.insert("in/x.tar.gz".into(), s(&a));
+        out.push((
+            format!("macos-cutoff-{label}"),
+            case(
+                obj(vec![]),
+                Value::Object(bytes),
+                vec![plan_step("b", "in/x.tar.gz", "2026-04-06")],
+            ),
+        ));
+    }
     out
 }
 

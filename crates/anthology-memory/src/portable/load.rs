@@ -91,6 +91,14 @@ pub const MAX_SPARSE: usize = 4096;
 /// that is `/tmp/tmpXXXXXXXX` (8 random characters; the port, which creates no folder, names
 /// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails. On macOS the
 /// filter realpaths `/tmp` to `/private/tmp`, and `PATH_MAX` is 1024.
+///
+/// Known leniency: this models Python with no `TMPDIR` (as the difftest oracle runs). On a
+/// real Mac `TMPDIR` is `/var/folders/…/T/`, about 68 bytes once realpathed against the 25
+/// modelled here, so Python refuses names of roughly 950 to 990 bytes that the port lets
+/// through at load. A note under such a name has a part over 255 bytes, which apply refuses
+/// before any write (`NAME_MAX`), so only the stage and text of the refusal differ; a bare
+/// agent folder member of that length has nothing to write. Linux has the same gap whenever
+/// `TMPDIR` is set.
 #[cfg(target_os = "macos")]
 const FILTER_DEST: &str = "/private/tmp/tmpXXXXXXXX";
 #[cfg(not(target_os = "macos"))]
@@ -2865,6 +2873,27 @@ mod tests {
             load(&tar),
             Err(format!("the archive has more than {MAX_MEMBERS} members"))
         );
+    }
+
+    /// The host's values, as literals: the test below derives its names from them.
+    #[test]
+    fn the_tar_filter_folder_and_path_limit_are_the_hosts() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            (PATH_MAX, FILTER_DEST, ENAMETOOLONG),
+            (1024, "/private/tmp/tmpXXXXXXXX", 63)
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            (PATH_MAX, FILTER_DEST, ENAMETOOLONG),
+            (4096, "/tmp/tmpXXXXXXXX", 36)
+        );
+        // The longest note name that passes: `personal/` + 986 (macOS) or 4066 (Linux) + `.md`.
+        let longest = PATH_MAX - FILTER_DEST_LEN - 1;
+        #[cfg(target_os = "macos")]
+        assert_eq!(longest, 9 + 986 + 3);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(longest, 9 + 4066 + 3);
     }
 
     #[test]
