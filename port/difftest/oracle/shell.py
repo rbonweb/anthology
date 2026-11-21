@@ -25,6 +25,10 @@ Where such a rule reaches across the grammar, so that no case list could name th
 it to the reference too, so the difftest still checks everything else; each such rule is listed in
 `port/difftest/divergences/shell.*.toml` and pinned by Rust tests:
 - FW-H review R1-M1: the lenient split also reads each closed `$'...'` decoded (`_lenient_segments` below).
+- FW-I review R1-I1: a package manager's `--` ends the alternate span unless its verb is `exec`/`dlx`/`x`
+  (`_alternate_span` below).
+The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
+`dotenvx`/`infisical run` (R1-M3).
 
 Both ops run under `check`'s work budget (`_WORK_PER_CHAR` per character plus `_WORK_BASE`); over it the
 reference raises `_TooComplex` and `check` blocks. The expected result is then Rust's incomplete one (`incomplete`
@@ -178,6 +182,30 @@ def _lenient_segments(text):
 
 
 G._lenient_segments = _lenient_segments
+
+
+def _alternate_span(tokens, main_at):
+    """`_alternate_span` with Rust's package-manager rule (FW-I review R1-I1, D-8)."""
+    for k, word in enumerate(tokens):
+        if G._ASSIGNMENT.match(word) or word == "!" or word in G._KEYWORDS or word == "":
+            continue
+        name = G._prog_name(word)
+        rest = tokens[k + 1:]
+        if name in G._ALTERNATE_TRIGGERS:
+            after = tokens[main_at + 1:]
+            if name in G._JS_PACKAGE_MANAGERS and "--" in after:
+                verb = k + G._pm_verb_index(tokens[k:])
+                if not (verb < len(tokens) and tokens[verb] in G._RUNNER_SUBCOMMANDS):
+                    return k + 1, main_at + 1 + after.index("--")
+            return k + 1, len(tokens)
+        if (name in G._QUIET_PROGRAMS or name in G._ELSEWHERE or name in G._SHELLS
+                or name in G._DASHDASH_ARGUMENTS or G._INTERPRETER.match(name) or "--" not in rest):
+            return None
+        return k + 2 + rest.index("--"), len(tokens)
+    return None
+
+
+G._alternate_span = _alternate_span
 
 
 def _entry(e, groups):

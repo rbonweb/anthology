@@ -4,8 +4,47 @@
 
 [[divergence]]
 class = "D-1"
-reason = "The reference raised (RecursionError on hostile nesting) and guard.py would allow the call. Rust analyzes it, or stops at its work budget and reports incomplete (a block)."
+reason = "The reference raised (RecursionError on hostile nesting) and guard.py would allow the call. Rust analyzes it, or stops at its work budget and reports incomplete (a block); the oracle expects the incomplete result."
 
 [[divergence]]
 class = "D-7"
-reason = "Over the reference's work budget (24 per character plus 200 000): it raises _TooComplex and check blocks. Rust's budget is larger (limits::work_limit, 64 per byte plus 1 000 000), so it may still finish; where it runs out it reports incomplete, which the guard blocks too."
+reason = "Over the reference's work budget (24 per character plus 200 000): it raises _TooComplex and check blocks. Rust spends the same budget where _charge does (limits::work_limit), so it stops too and reports incomplete, which the guard blocks; the oracle expects exactly that result."
+
+# Rust stricter than the reference where a reviewer showed bash runs the payload (owner direction,
+# controller rulings Q1=A and Q2=A). The oracle applies the grammar-wide ones itself (FW-H R1-M1, FW-I
+# R1-I1; see port/difftest/oracle/shell.py); these are the narrow ones, one entry per case.
+
+[[divergence]]
+class = "D-8"
+case = "fw:1"
+reason = "Rust stricter: FW-I R1-M2, every fd -x group (the reference takes only the first; fd 10.2 runs each)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:2"
+reason = "Rust stricter: FW-I R1-M2, every fd --exec group (the reference takes only the first; fd 10.2 runs each)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:3"
+reason = "Rust stricter: FW-I R1-M3, doppler run --command runs its shell line (the reference reads doppler as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:4"
+reason = "Rust stricter: FW-I R1-M3, doppler run -- runs its command (the reference reads doppler as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:5"
+reason = "Rust stricter: FW-I R1-M3, op run -- runs its command (the reference reads op as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:6"
+reason = "Rust stricter: FW-I R1-M3, dotenvx run -- runs its command (the reference reads dotenvx as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:7"
+reason = "Rust stricter: FW-I R1-M3, infisical run --command runs its shell line (the reference reads infisical as a plain program)."

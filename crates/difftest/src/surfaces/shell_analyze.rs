@@ -41,11 +41,17 @@ impl Surface for ShellAnalyze {
     }
 
     fn seeds(&self) -> Vec<Case> {
-        let mut out: Vec<Case> = load_seeds(OPS)
+        let mut out: Vec<Case> = fw_cases()
             .into_iter()
             .enumerate()
-            .map(|(k, data)| Case::new(format!("seed:{}", k + 1), data))
+            .map(|(k, data)| Case::new(format!("fw:{}", k + 1), data))
             .collect();
+        out.extend(
+            load_seeds(OPS)
+                .into_iter()
+                .enumerate()
+                .map(|(k, data)| Case::new(format!("seed:{}", k + 1), data)),
+        );
         out.extend(
             fixed_cases()
                 .into_iter()
@@ -290,6 +296,65 @@ const PREFIXES: &[&str] = &[
     "find / -ok",
     "cd",
     "pushd",
+    // fix-wave I
+    "su -c",
+    "su root -c",
+    "runuser -u x --",
+    "script -qc",
+    "flock /tmp/l",
+    "flock /tmp/l -c",
+    "chroot /",
+    "nsenter -t 1",
+    "unshare -r",
+    "setsid -f",
+    "stdbuf -o L",
+    "busybox",
+    "parallel",
+    "parallel -j2 -I@@",
+    "sg grp",
+    "sg - grp -c",
+    "watch -n1",
+    "entr -s",
+    "gdb -q --args",
+    "nix develop -c",
+    "nix-shell --run",
+    "mise exec --",
+    "mise x",
+    "direnv exec .",
+    "devbox run",
+    "pixi run",
+    "perf stat",
+    "concurrently -n a",
+    "hyperfine -w 3",
+    "nodemon --exec",
+    "xargs -0",
+    "xargs --replace",
+    "xargs -i",
+    "xargs -L1 -I%",
+    "dotenv -e .env",
+    "env-cmd -f x",
+    "systemd-run --user",
+    "ltrace -o x",
+    "cpulimit -l 5",
+    "chpst -u x",
+    "corepack",
+    "cross-env A=1",
+    "GIT_PAGER=x",
+    "GIT_SSH_COMMAND='ssh -i k'",
+    "GIT_CONFIG_PARAMETERS=\"'core.pager'='x'\"",
+    "npm --loglevel x exec",
+    "npm exec --omit dev --",
+    "pnpm dlx --foo x --",
+    "pnpm run e2e --",
+    "yarn --frozen-lockfile",
+    "bun x --",
+    "uvx --with x",
+    "pipx run --spec x",
+    "python3 -Im",
+    "python3 -W ignore -m",
+    "env -u X -S",
+    "env -S'sudo -u x'",
+    "sudo --",
 ];
 
 /// Programs and their arguments.
@@ -363,6 +428,36 @@ const PROGRAMS: &[&str] = &[
     "@scope/pkg@3",
     "@playwright/test",
     "playwright@latest install",
+    // fix-wave I
+    "git -c core.pager='less -R' log",
+    "git -c alias.x='!ls' x",
+    "git config core.pager 'x y'",
+    "git bisect run make test",
+    "git submodule foreach 'git pull'",
+    "git rebase -x 'make' main",
+    "git difftool --extcmd=x",
+    "tar --to-command='cat' -xf a",
+    "tar --use-comp=zstd -cf a x",
+    "tar -I 'zstd -19' -cf a x",
+    "rsync -e 'ssh -p 2' a b:c",
+    "rsync -avze ssh a b:c",
+    "trap 'ls' EXIT",
+    "trap -- 'x' INT",
+    "trap '' INT",
+    "parallel echo ::: a b ::: c",
+    "parallel '{1} {2}' ::: a ::: b",
+    "sh /dev/stdin",
+    "source /dev/stdin",
+    "sh <&3",
+    "bash /dev/fd/3 3<<<'ls'",
+    "exec 3<<<'ls'",
+    "sh <(echo ls)",
+    "fd . -x ls",
+    "fd -e js --exec-batch wc",
+    "nodemon -x 'npm test'",
+    "concurrently 'a b' 'c'",
+    "$'\\x6epx' x",
+    "x=$(( 2 * 3 ))",
 ];
 
 const SHAPES: &[&str] = &[
@@ -396,6 +491,20 @@ const SHAPES: &[&str] = &[
     "npx -c '{q}'",
     "eval '{q}'",
     "{c} 2>&1 >/dev/null",
+    // fix-wave I
+    "echo '{q}' | xargs sh -c",
+    "printf '{q}\\n' | xargs -I{} sh -c '{}'",
+    "echo '{q}' | xargs",
+    "echo '{q}' | parallel",
+    "sh <(echo '{q}')",
+    "cat <(echo '{q}') | sh",
+    "exec 3<<<'{q}'; sh <&3",
+    "watch -n1 {c}",
+    "sg grp '{q}'",
+    "su -c '{q}' root",
+    "env -S'{q}'",
+    "git -c core.pager='{q}' log",
+    "trap '{q}' EXIT",
 ];
 
 /// A command composed from the vocabulary above.
@@ -421,6 +530,34 @@ fn compose(rng: &mut GenRng) -> String {
 
 fn compose_flat(rng: &mut GenRng) -> String {
     format!("{} {}", rng.pick(PREFIXES), rng.pick(PROGRAMS))
+}
+
+/// Fix-wave H and I reviewer payloads (`fw:<n>`, in this order: `shell.analyze.toml` names the first seven).
+/// 1-7 are Rust stricter than the reference (D-8); the rest the oracle reads as Rust does.
+pub(crate) fn fw_cases() -> Vec<Value> {
+    const FW: &[&str] = &[
+        // FW-I review R1-M2: every fd -x group
+        "fdfind hostname /etc -x echo hi \\; -x npx playwright install",
+        "fd . -x echo a \\; --exec npx playwright install",
+        // FW-I review R1-M3: secret loaders run their command
+        "doppler run --command 'npx playwright install'",
+        "doppler run -- npx playwright install",
+        "op run --env-file .env -- npx playwright install",
+        "dotenvx run -f .env -- npx playwright install",
+        "infisical run --command='npx playwright install'",
+        // FW-I review R1-I1 and its negative control
+        "npm exec --omit dev -- playwright install",
+        "pnpm dlx --some-flag v -- playwright install",
+        "pnpm run e2e -- playwright test",
+        // FW-H review R1-M1
+        "$'\\x6epx' playwright install\n'",
+        "npx $'pl\\x61ywright' install\necho '",
+        // the negative control the owner named
+        "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+    ];
+    FW.iter()
+        .map(|text| case(text.to_string(), "/home/tester"))
+        .collect()
 }
 
 /// Hand-written commands where a port could plausibly differ, and the `lower()` sweep.
