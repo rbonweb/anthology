@@ -35,6 +35,8 @@ mod errno {
     pub const ESHUTDOWN: i32 = 58;
     pub const ETIMEDOUT: i32 = 60;
     pub const ECONNREFUSED: i32 = 61;
+    /// `ENOTCAPABLE`: CPython 3.11.1+ maps it to `PermissionError` where the platform has it.
+    pub const ENOTCAPABLE: Option<i32> = Some(107);
 }
 #[cfg(not(target_os = "macos"))]
 mod errno {
@@ -46,6 +48,8 @@ mod errno {
     pub const ECONNREFUSED: i32 = 111;
     pub const EALREADY: i32 = 114;
     pub const EINPROGRESS: i32 = 115;
+    /// Linux has no `ENOTCAPABLE`.
+    pub const ENOTCAPABLE: Option<i32> = None;
 }
 // The same on Linux and macOS.
 const EPERM: i32 = 1;
@@ -138,6 +142,7 @@ fn os_error_class(e: i32) -> &'static str {
         errno::ECONNRESET => "ConnectionResetError",
         errno::ECONNREFUSED => "ConnectionRefusedError",
         errno::ETIMEDOUT => "TimeoutError",
+        e if Some(e) == errno::ENOTCAPABLE => "PermissionError",
         _ => "OSError",
     }
 }
@@ -149,6 +154,16 @@ fn repr_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enotcapable_is_a_permission_error_on_macos_only() {
+        let name = os_error_class(107);
+        if cfg!(target_os = "macos") {
+            assert_eq!(name, "PermissionError");
+        } else {
+            assert_eq!(name, "OSError");
+        }
+    }
 
     #[test]
     fn os_errors_take_cpythons_subclass_names_and_forms() {

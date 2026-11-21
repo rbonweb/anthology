@@ -27,17 +27,22 @@
 //! is an `Err`, never a silent difference: `\N{…}`, conditionals `(?(1)…)`, a lone surrogate, a
 //! back-reference under IGNORECASE, a case-insensitive class range past U+FFFF, and a capture
 //! group inside a repeat whose body can match empty (sre keeps the groups of a last, empty
-//! iteration; Rust's engines do not) unless the count is fixed. `\b` keeps Rust's Unicode
-//! meaning (D-3); `\B` is Rust's, except that it never matches in an empty string, as in
-//! CPython; under ASCII both are look-arounds over `[0-9A-Za-z_]`.
+//! iteration; Rust's engines do not) unless the count is fixed. `\b` and `\B` are sre's: look-
+//! arounds over [`W`] (or `[0-9A-Za-z_]` under ASCII), since Rust's own `\b` uses a different,
+//! newer Unicode word set; `\B` never matches in an empty string, as in CPython. So a pattern
+//! with `\b` needs fancy-regex. One thing Python refuses is accepted: a look-behind whose width
+//! is not fixed (fancy-regex runs it); no Python source can hold one.
 //!
 //! [`compile`] picks `regex` when the translation needs no look-around, back-reference or
 //! atomic group, and `fancy-regex` (with its default backtrack limit) otherwise. Spans are byte
-//! offsets into the haystack. [`Regex::find_iter`] walks matches as Python's `finditer` does
-//! (an empty match right after a non-empty one is reported, e.g. `x*` on `abxd` gives
-//! `(0,0) (1,1) (2,3) (3,3) (4,4)`), with one limit: after an empty match, Python may still
-//! return a lower-priority non-empty match at the same position (`a??` on `a`); this moves on
-//! one character instead.
+//! offsets into the haystack. [`Regex::find_iter`] walks matches as Python's `finditer` does:
+//! an empty match right after a non-empty one is reported (`x*` on `abxd` gives
+//! `(0,0) (1,1) (2,3) (3,3) (4,4)`), and after an empty match the next search at the same
+//! position takes the first non-empty way of matching there, as sre's `must_advance` retry does
+//! (`a??` on `a` gives `(0,0) (0,1) (1,1)`).
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::tables;
 
@@ -171,8 +176,15 @@ impl Regex {
     ) -> impl Iterator<Item = Result<(usize, usize), LimitError>> + 'a {
         let mut walk = Walk::default();
         std::iter::from_fn(move || {
-            walk.next(s, |pos| self.find_at(s, pos).map(|m| m.map(|m| (m, m))))
-                .map(|r| r.map(|(span, _)| span))
+            walk.next(
+                s,
+                |pos| self.find_at(s, pos).map(|m| m.map(|m| (m, m))),
+                |pos| {
+                    self.nonempty_at(s, pos)
+                        .map(|g| g.and_then(|g| g[0]).map(|m| (m, m)))
+                },
+            )
+            .map(|r| r.map(|(span, _)| span))
         })
     }
 
@@ -183,12 +195,56 @@ impl Regex {
     ) -> impl Iterator<Item = Result<Groups, LimitError>> + 'a {
         let mut walk = Walk::default();
         std::iter::from_fn(move || {
-            walk.next(s, |pos| {
-                self.captures_at(s, pos)
-                    .map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
-            })
+            walk.next(
+                s,
+                |pos| {
+                    self.captures_at(s, pos)
+                        .map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
+                },
+                |pos| {
+                    self.nonempty_at(s, pos)
+                        .map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
+                },
+            )
             .map(|r| r.map(|(_, g)| g))
         })
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Regex::Plain(r) => r.as_str(),
+            Regex::Fancy(r) => r.as_str(),
+        }
+    }
+
+    /// sre's `must_advance` retry: the first match, in the pattern's own priority order, that
+    /// starts at `pos` and is not empty. `\G(?:P)(?!\G|(?!))` anchors at `pos` and backtracks
+    /// past every empty way of matching, as sre does (compiled once per pattern). The inner
+    /// `\G` sits in an alternation because fancy-regex 0.20 treats a `\G` that leads a
+    /// look-ahead as leading the pattern and gives up the whole search when it fails.
+    fn nonempty_at(&self, s: &str, pos: usize) -> Result<Option<Groups>, LimitError> {
+        static CACHE: OnceLock<Mutex<HashMap<String, fancy_regex::Regex>>> = OnceLock::new();
+        let key = self.as_str();
+        let re = {
+            let mut cache = CACHE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match cache.get(key) {
+                Some(r) => r.clone(),
+                None => {
+                    let r = fancy_regex::Regex::new(&format!("\\G(?:{key})(?!\\G|(?!))"))
+                        .map_err(|e| LimitError(format!("the must-advance form: {e}")))?;
+                    cache.insert(key.to_string(), r.clone());
+                    r
+                }
+            }
+        };
+        let groups = re
+            .captures_from_pos(s, pos)
+            .map_err(limit)?
+            .map(|c| -> Groups { c.iter().map(|g| g.map(|m| (m.start(), m.end()))).collect() });
+        Ok(groups.filter(|g| g[0].is_some_and(|(a, b)| a == pos && b > a)))
     }
 }
 
@@ -199,8 +255,9 @@ fn limit(e: fancy_regex::Error) -> LimitError {
 /// One search result: the whole match's span and what the caller wants of it.
 type Hit<T> = Result<((usize, usize), T), LimitError>;
 
-/// Python's `finditer` walk (`_sre` scanner): after an empty match the next one must not be
-/// empty at the same position.
+/// Python's `finditer` walk (`_sre` scanner): after an empty match, the next match must not be
+/// empty at the same position: sre backtracks into a lower-priority non-empty match there
+/// (`a??` on `a` gives `(0,0) (0,1) (1,1)`), else searches on from the next character.
 #[derive(Default)]
 struct Walk {
     pos: usize,
@@ -213,6 +270,7 @@ impl Walk {
         &mut self,
         s: &str,
         mut search: impl FnMut(usize) -> Result<Option<((usize, usize), T)>, LimitError>,
+        mut nonempty: impl FnMut(usize) -> Result<Option<((usize, usize), T)>, LimitError>,
     ) -> Option<Hit<T>> {
         if self.done || self.pos > s.len() {
             return None;
@@ -225,20 +283,29 @@ impl Walk {
             }
         };
         if self.must_advance && matches!(found, Some(((a, b), _)) if a == self.pos && b == a) {
-            let next = match s[self.pos..].chars().next() {
-                Some(c) => self.pos + c.len_utf8(),
-                None => {
-                    self.done = true;
-                    return None;
-                }
-            };
-            found = match search(next) {
+            found = match nonempty(self.pos) {
                 Ok(f) => f,
                 Err(e) => {
                     self.done = true;
                     return Some(Err(e));
                 }
             };
+            if found.is_none() {
+                let next = match s[self.pos..].chars().next() {
+                    Some(c) => self.pos + c.len_utf8(),
+                    None => {
+                        self.done = true;
+                        return None;
+                    }
+                };
+                found = match search(next) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        self.done = true;
+                        return Some(Err(e));
+                    }
+                };
+            }
         }
         match found {
             None => {
@@ -277,6 +344,8 @@ struct Parser<'a> {
     scopes: Vec<Scope>,
     /// Group numbers opened so far, and whether each is closed (index = number - 1).
     groups: Vec<bool>,
+    /// Named groups and their numbers.
+    names: Vec<(String, usize)>,
     /// The open groups.
     open: Vec<Open>,
     /// Whether the last thing written can take a repeat ("nothing to repeat" otherwise).
@@ -333,6 +402,7 @@ pub fn translate_with(py: &str, flags: Flags) -> Result<Translated, String> {
             ascii: flags.ascii,
         }],
         groups: Vec::new(),
+        names: Vec::new(),
         open: Vec::new(),
         can_repeat: false,
         atom_start: 0,
@@ -678,12 +748,22 @@ impl Parser<'_> {
             'P' => {
                 if self.eat('<') {
                     let name = self.name('>')?;
+                    if self.names.iter().any(|(n, _)| *n == name) {
+                        return self.err("redefinition of group name");
+                    }
                     self.groups.push(false);
                     let n = self.groups.len();
+                    self.names.push((name.clone(), n));
                     self.open_group(&format!("(?P<{name}>"), Kind::Capture, Some(n), scope);
                     Ok(())
                 } else if self.eat('=') {
                     let name = self.name(')')?;
+                    let Some(&(_, n)) = self.names.iter().find(|(x, _)| *x == name) else {
+                        return self.err("unknown group name");
+                    };
+                    if !self.groups[n - 1] {
+                        return self.err("cannot refer to an open group");
+                    }
                     if self.scope().ignorecase {
                         return self.err("a back-reference under IGNORECASE is not supported");
                     }
@@ -769,13 +849,40 @@ impl Parser<'_> {
         let mut off = String::new();
         let mut neg = false;
         let mut new = scope;
+        // `re._parser._parse_flags`' checks: one of `a`/`u`, a flag after `-`, and no flag
+        // both turned on and off.
+        let mut kind: Option<char> = None;
+        let mut added: Vec<char> = Vec::new();
+        let mut removed: Vec<char> = Vec::new();
         loop {
             let Some(c) = self.peek() else {
                 return self.err("missing -, : or )");
             };
             self.i += 1;
+            if c.is_ascii_alphabetic() {
+                if neg {
+                    removed.push(c);
+                } else {
+                    if matches!(c, 'a' | 'u') {
+                        if kind.is_some_and(|k| k != c) {
+                            return self
+                                .err("bad inline flags: flags 'a', 'u' and 'L' are incompatible");
+                        }
+                        kind = Some(c);
+                    }
+                    added.push(c);
+                }
+            }
+            if c == ':' && added.iter().any(|f| removed.contains(f)) {
+                return self.err("bad inline flags: flag turned on and off");
+            }
             match c {
-                '-' if !neg => neg = true,
+                '-' if !neg => {
+                    neg = true;
+                    if !self.peek().is_some_and(|d| d.is_ascii_alphabetic()) {
+                        return self.err("missing flag");
+                    }
+                }
                 'L' => return self.err("bad inline flags: cannot use 'L' flag with a str pattern"),
                 'a' | 'u' if neg => {
                     return self.err("bad inline flags: cannot turn off flags 'a', 'u' and 'L'");
@@ -865,22 +972,21 @@ impl Parser<'_> {
             'A' => self.assertion("\\A", false),
             'Z' => self.assertion("\\z", false),
             'b' | 'B' => {
-                if ascii {
-                    self.fancy = true;
-                    let w = format!("[{ASCII_WORD}]");
-                    let t = if c == 'b' {
-                        format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
-                    } else {
-                        format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w})(?:(?<=[\\s\\S])|(?=[\\s\\S])))")
-                    };
-                    self.assertion(&t, true);
-                } else if c == 'b' {
-                    self.assertion("\\b", false);
+                // sre's word boundary over its own `\w` (`isalnum() or "_"`, or ASCII), written
+                // as look-arounds: Rust's `\b` uses a different (and newer) Unicode word set.
+                // `\B` never matches in an empty string, as in CPython.
+                self.fancy = true;
+                let w = if ascii {
+                    format!("[{ASCII_WORD}]")
                 } else {
-                    // CPython's `\B` never matches in an empty string; Rust's does.
-                    self.fancy = true;
-                    self.assertion("(?:\\B(?:(?<=[\\s\\S])|(?=[\\s\\S])))", true);
-                }
+                    W.to_string()
+                };
+                let t = if c == 'b' {
+                    format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
+                } else {
+                    format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w})(?:(?<=[\\s\\S])|(?=[\\s\\S])))")
+                };
+                self.assertion(&t, true);
             }
             '0'..='9' => self.digit_escape(c)?,
             _ => {

@@ -68,7 +68,7 @@ pub fn is_case_ignorable(c: char) -> bool {
 
 /// Cased, for a character that is not case-ignorable (the only ones Final_Sigma asks about;
 /// a case-ignorable character answers `false`).
-pub fn is_cased(c: char) -> bool {
+pub(crate) fn is_cased(c: char) -> bool {
     in_runs(tables::CASED, c)
 }
 

@@ -8,15 +8,15 @@
 //!   (privacy, guard, settings, smoke, upstream-watch), lookarounds and back-references, edge
 //!   syntax (`{` literals, `{,n}`, octal and `\x` escapes, `$` before a final newline, verbose
 //!   mode, scoped flags), and random patterns from a small grammar on random text. A pattern
-//!   Python refuses must be refused (both sides answer `error`).
+//!   Python refuses must be refused (both sides answer `error`), but for a look-behind whose
+//!   width is not fixed (see `pycompat::re`).
 //!
 //! Spans are compared in code points; Rust's byte offsets are converted.
 //!
-//! Generated patterns avoid two things on purpose, both documented in `pycompat::re`:
-//! - text next to `\b`/`\B` holds only characters whose word-ness Python and Rust agree on
-//!   (D-3 is the allowed divergence; the `d3:*` seeds show it);
-//! - lazy repeats that may match empty (`*?`, `??`, `{0,n}?`) and empty alternatives, where
-//!   Python may report a second, non-empty match at the position of an empty one.
+//! Generated text mixes characters whose word-ness Rust's own `\b` would get wrong (marks,
+//! `No` digits, `Pc`, `So` letters such as `Ⓐ`, ZWJ, a Unicode 15.1 letter), and patterns
+//! include lazy repeats that can match empty and empty alternatives (sre's must-advance retry).
+//! What `pycompat::re` refuses on purpose ("not supported") is left out.
 
 use anthology_pycompat::json::Value;
 use anthology_pycompat::re::{self as pyre, Flags};
@@ -168,7 +168,7 @@ const FIND_SEEDS: &[(&str, &str, &[&str])] = &[
     (
         r"/(?:Users|home)/([A-Za-z0-9._-]+)",
         "",
-        &["/Users/x/a and /home/y.z/b"],
+        &["/Users/someone/a and /home/tester/b"],
     ),
     // guard_rules.py, settings_patch.py, memory_index.py, smoke.py, upstream_watch.py
     (
@@ -254,6 +254,17 @@ const FIND_SEEDS: &[(&str, &str, &[&str])] = &[
     (r"[z-a]", "", &["a"]),
     (r"\q", "", &["q"]),
     (r"(a)\2", "", &["a"]),
+    (r"(a\1)", "", &["aa"]),
+    (r"(?P<a>x(?P=a))", "", &["xx"]),
+    (r"(?P<a>x)(?P=b)", "", &["xx"]),
+    (r"(?P<a>x)(?P<a>y)", "", &["xy"]),
+    (r"(?P<a>x)(?P=a)", "", &["xx"]),
+    (r"(?i-i:a)", "", &["a"]),
+    (r"(?au)a", "", &["a"]),
+    (r"(?aa)a", "", &["a"]),
+    (r"(?-:a)", "", &["a"]),
+    (r"(?i-:a)", "", &["a"]),
+    (r"(?s-i:.)", "", &["\n"]),
 ];
 
 impl Surface for PycompatRe {
@@ -294,11 +305,44 @@ impl Surface for PycompatRe {
                 ));
             }
         }
-        // D-3: `\b` next to a mark (Python: not a word character; Rust: one).
-        for (i, text) in ["a\u{301}b", "x\u{300} y", "²a", "a‿b"].iter().enumerate() {
+        // `\b` and `\B` next to what Rust's Unicode word set gets wrong for sre: marks, `No`,
+        // `Pc`, `So` letters, ZWJ/ZWNJ, a letter unassigned in Unicode 15.0; and the
+        // must-advance retry after an empty match.
+        let boundary = [
+            "a\u{301}b",
+            "x\u{300} y",
+            "²a",
+            "a‿b",
+            "Ⓐ",
+            "a\u{200d}b",
+            "a\u{200c}b",
+            "\u{2ebf0}a",
+            "Ⓐghp_x",
+            "",
+        ];
+        for (i, text) in boundary.iter().enumerate() {
+            for (j, pattern) in [r"\b", r"\B", r"\bghp_"].iter().enumerate() {
+                out.push(Case::new(
+                    format!("boundary:{}:{}", i + 1, j + 1),
+                    finditer(pattern, "", text),
+                ));
+            }
+        }
+        for (i, (pattern, text)) in [
+            ("a??", "a"),
+            ("|a", "ab"),
+            (r"\s*?", " x"),
+            ("(a)??", "aa"),
+            ("x*?|x", "xx"),
+            ("(?:|a)+?b", "ab"),
+            ("(?=a)|a", "aa"),
+        ]
+        .iter()
+        .enumerate()
+        {
             out.push(Case::new(
-                format!("d3:{}", i + 1),
-                finditer(r"\b", "", text),
+                format!("advance:{}", i + 1),
+                finditer(pattern, "", text),
             ));
         }
         out
@@ -400,18 +444,67 @@ fn run_classes(case: &Value, flags: Flags) -> Observed {
 // ---------------------------------------------------------------------------------------------
 // Random patterns.
 
-/// Characters both sides agree are (or are not) word characters, for text near `\b`.
-const SAFE_TEXT: &[char] = &[
-    'a', 'b', 'c', 'x', 'A', 'B', 'Z', '0', '1', '9', '_', ' ', ' ', '\n', '-', '.', ',', '!', 'é',
-    'ß', 'Σ', 'σ', 'ж', '中', '٣', '\t', '"', '\'', '(', ')',
-];
-
-/// Text characters for everything else.
+/// Text characters.
 const TEXT: &[char] = &[
-    'a', 'b', 'c', 'x', 'A', 'B', 'Z', '0', '1', '9', '_', ' ', ' ', '\n', '\n', '-', '.', ',',
-    'é', 'ß', 'Σ', 'σ', 'ς', 'İ', 'ı', 'i', 'I', 's', 'S', 'ſ', 'k', 'K', '\u{212a}', 'ж', '中',
-    '٣', '²', '\u{301}', '\u{a0}', '\u{3000}', '\x1c', '\t', '{', '}', '[', ']', '\\', '$', '^',
-    '😀', '𐐀', '𐐨',
+    'a',
+    'b',
+    'c',
+    'x',
+    'A',
+    'B',
+    'Z',
+    '0',
+    '1',
+    '9',
+    '_',
+    ' ',
+    ' ',
+    '\n',
+    '\n',
+    '-',
+    '.',
+    ',',
+    'é',
+    'ß',
+    'Σ',
+    'σ',
+    'ς',
+    'İ',
+    'ı',
+    'i',
+    'I',
+    's',
+    'S',
+    'ſ',
+    'k',
+    'K',
+    '\u{212a}',
+    'ж',
+    '中',
+    '٣',
+    '²',
+    '\u{301}',
+    '\u{a0}',
+    '\u{3000}',
+    '\x1c',
+    '\t',
+    '{',
+    '}',
+    '[',
+    ']',
+    '\\',
+    '$',
+    '^',
+    '😀',
+    '𐐀',
+    '𐐨',
+    'Ⓐ',
+    '\u{200d}',
+    '\u{200c}',
+    '\u{2ebf0}',
+    '\u{2160}',
+    '‿',
+    '\u{345}',
 ];
 
 const LITERALS: &[&str] = &[
@@ -500,6 +593,7 @@ const CLASSES: &[&str] = &[
 
 const QUANTS: &[&str] = &[
     "", "", "", "", "*", "+", "?", "{2}", "{1,3}", "{,2}", "{2,}", "+?", "{1,2}?", "{", "{,}",
+    "*?", "??", "{,2}?",
 ];
 
 fn atom(rng: &mut Rng, depth: usize, groups: &mut usize, closed: &mut Vec<usize>) -> String {
@@ -552,7 +646,11 @@ fn seq(rng: &mut Rng, depth: usize, groups: &mut usize, closed: &mut Vec<usize>)
         if b > 0 {
             out.push('|');
         }
-        let n = 1 + rng.index(4);
+        let n = if branches > 1 && rng.chance(0.15) {
+            0
+        } else {
+            1 + rng.index(4)
+        };
         for _ in 0..n {
             let a = atom(rng, depth, groups, closed);
             out.push_str(&a);
@@ -561,9 +659,7 @@ fn seq(rng: &mut Rng, depth: usize, groups: &mut usize, closed: &mut Vec<usize>)
                 out.push_str(rng.pick(QUANTS));
             }
         }
-        if branches > 1 {
-            // Every alternative consumes, so none is an empty match preferred over a
-            // non-empty one (module docs).
+        if branches > 1 && rng.chance(0.5) {
             out.push_str(rng.pick(LITERALS));
         }
     }
@@ -594,14 +690,6 @@ fn gen_case(rng: &mut Rng) -> Value {
             break (pattern, flags);
         }
     };
-    let boundary = pattern.contains(r"\b") || pattern.contains(r"\B");
-    let pool = if boundary { SAFE_TEXT } else { TEXT };
-    let mut text = pool_string(rng, pool, 16);
-    if boundary {
-        text = text
-            .chars()
-            .map(|c| if SAFE_TEXT.contains(&c) { c } else { 'x' })
-            .collect();
-    }
+    let text = pool_string(rng, TEXT, 16);
     finditer(&pattern, &flags, &text)
 }

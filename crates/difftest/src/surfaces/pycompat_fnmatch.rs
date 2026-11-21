@@ -36,10 +36,10 @@ fn case(name: &str, pat: &str) -> Value {
 }
 
 const SEEDS: &[(&str, &str)] = &[
-    ("/home/u/.ssh/id_rsa", "/home/u/.ssh/*"),
-    ("/home/u/.ssh", "/home/u/.ss?"),
-    ("/home/u/.ssh-beta", "/home/u/.ssh*"),
-    ("/home/u/.aws/credentials", "/home/u/.[a-z]ws/*"),
+    ("/home/user/.ssh/id_rsa", "/home/user/.ssh/*"),
+    ("/home/user/.ssh", "/home/user/.ss?"),
+    ("/home/user/.ssh-beta", "/home/user/.ssh*"),
+    ("/home/user/.aws/credentials", "/home/user/.[a-z]ws/*"),
     ("google-chrome-stable", "google-chrome*"),
     ("chromium-browser", "chromium*"),
     ("playwright", "playwright*"),

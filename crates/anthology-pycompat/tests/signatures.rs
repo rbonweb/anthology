@@ -9,6 +9,9 @@ use anthology_pycompat::{
     argparse, difflib, fnmatch, ipaddress, path, pyerr, quote, re, shlex, str as pystr,
 };
 
+type UnifiedDiff = fn(&[&str], &[&str], &str, &str, usize) -> Vec<String>;
+type Parse = fn(&argparse::Spec, &[OsString]) -> Result<argparse::Parsed, argparse::UsageError>;
+
 #[test]
 fn plan_3_2_signatures() {
     let _: fn(&str) -> String = pystr::lower;
@@ -30,9 +33,17 @@ fn plan_3_2_signatures() {
     let _: Result<bool, LimitError> = r.is_match("a");
     let spans: Vec<Result<(usize, usize), LimitError>> = r.find_iter("aa").collect();
     assert_eq!(spans.len(), 2);
-    assert!(matches!(r, re::Regex::Plain(_) | re::Regex::Fancy(_)));
+    // Exhaustive, with typed payloads: a new variant or a re-typed one fails to compile.
+    match &r {
+        re::Regex::Plain(x) => {
+            let _: &regex::Regex = x;
+        }
+        re::Regex::Fancy(x) => {
+            let _: &fancy_regex::Regex = x;
+        }
+    }
 
-    let _: fn(&[&str], &[&str], &str, &str, usize) -> Vec<String> = difflib::unified_diff;
+    let _: UnifiedDiff = difflib::unified_diff;
     let _: fn(&str, &str) -> bool = fnmatch::fnmatchcase;
     let _: fn(&str, &str) -> String = quote::quote;
     let _: fn(&str) -> String = quote::unquote;
@@ -51,15 +62,31 @@ fn plan_3_2_signatures() {
     let _: &'static str = e.type_name();
     let _: String = e.py_str();
     let _: pyerr::PyExc = std::io::Error::from_raw_os_error(2).into();
-    let _ = [
+    for e in [
+        e,
         pyerr::PyExc::ValueError(String::new()),
         pyerr::PyExc::KeyError(String::new()),
         pyerr::PyExc::JSONDecodeError(String::new()),
         pyerr::PyExc::UnicodeDecodeError(String::new()),
         pyerr::PyExc::TimeoutExpired(String::new()),
         pyerr::PyExc::Other("X", String::new()),
-    ];
+    ] {
+        match &e {
+            pyerr::PyExc::OSError { errno, filename } => {
+                let _: (&i32, &Option<String>) = (errno, filename);
+            }
+            pyerr::PyExc::ValueError(m)
+            | pyerr::PyExc::KeyError(m)
+            | pyerr::PyExc::JSONDecodeError(m)
+            | pyerr::PyExc::UnicodeDecodeError(m)
+            | pyerr::PyExc::TimeoutExpired(m) => {
+                let _: &String = m;
+            }
+            pyerr::PyExc::Other(name, m) => {
+                let _: (&&'static str, &String) = (name, m);
+            }
+        }
+    }
 
-    let _: fn(&argparse::Spec, &[OsString]) -> Result<argparse::Parsed, argparse::UsageError> =
-        argparse::parse;
+    let _: Parse = argparse::parse;
 }

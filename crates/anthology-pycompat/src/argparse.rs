@@ -1134,10 +1134,13 @@ impl<'a> Parser<'a> {
     fn option_tuples(&self, s: &[u8]) -> Vec<OptTuple> {
         let mut out = Vec::new();
         let (prefix, sep, explicit) = partition(s);
+        // A prefix that is not UTF-8 holds a lone surrogate for Python, which no option string
+        // starts with (bytes alone could match half a character).
+        let abbrev = std::str::from_utf8(&prefix).is_ok();
         if s[1] == b'-' {
             if self.spec.allow_abbrev {
                 for &(o, a) in &self.opts {
-                    if o.starts_with(&prefix) {
+                    if abbrev && o.starts_with(&prefix) {
                         out.push(OptTuple {
                             action: Some(a),
                             option_string: o.to_vec(),
@@ -1158,7 +1161,7 @@ impl<'a> Parser<'a> {
                         sep: Some(""),
                         explicit: Some(short_explicit.to_vec()),
                     });
-                } else if self.spec.allow_abbrev && o.starts_with(&prefix) {
+                } else if self.spec.allow_abbrev && abbrev && o.starts_with(&prefix) {
                     out.push(OptTuple {
                         action: Some(a),
                         option_string: o.to_vec(),
@@ -1746,9 +1749,9 @@ fn split_chunks(text: &str) -> Vec<Vec<char>> {
     let mut out = Vec::new();
     let mut last = 0;
     for m in wordsep().find_iter(text) {
-        let Ok((s, e)) = m else {
-            break;
-        };
+        // Each chunk is a short match (a word or a run of spaces), far from the backtrack
+        // limit; help text is the program's own, so hitting it is a bug, not an input.
+        let (s, e) = m.expect("textwrap's chunk pattern stays within the backtrack limit");
         if s > last {
             out.push(text[last..s].chars().collect());
         }

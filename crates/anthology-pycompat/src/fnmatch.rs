@@ -29,7 +29,9 @@ pub fn compile(pat: &str) -> Option<Pattern> {
         .map(Pattern)
 }
 
-/// `fnmatch.fnmatchcase(name, pat)`: case-sensitive, `*` and `?` match `/` too.
+/// `fnmatch.fnmatchcase(name, pat)`: case-sensitive, `*` and `?` match `/` too. It compiles
+/// `pat` on every call (Python caches it): to match many names against one pattern, use
+/// [`compile`] once and [`Pattern::matches`].
 pub fn fnmatchcase(name: &str, pat: &str) -> bool {
     compile(pat).is_some_and(|p| p.matches(name))
 }

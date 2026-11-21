@@ -81,11 +81,14 @@ fn split(p: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// `os.path.realpath(p)` (`strict=False`): symbolic links resolved part by part from the left;
 /// a part that does not exist (or cannot be examined) is kept as it is; a symlink loop leaves
 /// the rest of the path unresolved, as 3.12 does. A relative `p` is resolved against the
-/// current directory (`os.getcwd()`). A link whose target cannot be read is kept as a plain
-/// part (Python would raise there).
+/// current directory (`os.getcwd()`). Where Python raises, this does not (D-1): a link whose
+/// target cannot be read is kept as a plain part; a chain of more than [`MAX_LINK_DEPTH`] nested
+/// links (Python: `RecursionError` near 1,000) is left unresolved from there, as a loop is; and
+/// when the current directory cannot be read (Python: `FileNotFoundError`), a relative `p`
+/// stays relative.
 pub fn realpath(p: &Path) -> PathBuf {
     let mut seen = std::collections::HashMap::new();
-    let (path, _) = join_realpath(Vec::new(), p.as_os_str().as_bytes(), &mut seen);
+    let (path, _) = join_realpath(Vec::new(), p.as_os_str().as_bytes(), &mut seen, 0);
     PathBuf::from(std::ffi::OsString::from_vec(abspath(&path)))
 }
 
@@ -100,11 +103,17 @@ fn abspath(p: &[u8]) -> Vec<u8> {
     normpath_bytes(&join_bytes(&cwd, p))
 }
 
-/// `posixpath._joinrealpath(path, rest, strict=False, seen)`.
+/// How deep [`realpath`] follows links inside links (each level is one recursion, as in
+/// Python, which stops near its recursion limit of 1,000).
+pub const MAX_LINK_DEPTH: usize = 1000;
+
+/// `posixpath._joinrealpath(path, rest, strict=False, seen)`; `depth` counts the links being
+/// resolved around this call.
 fn join_realpath(
     mut path: Vec<u8>,
     rest: &[u8],
     seen: &mut std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+    depth: usize,
 ) -> (Vec<u8>, bool) {
     let mut rest = rest;
     if rest.first() == Some(&b'/') {
@@ -149,12 +158,15 @@ fn join_realpath(
                 None => return (join_bytes(&newpath, rest), false),
             }
         }
+        if depth >= MAX_LINK_DEPTH {
+            return (join_bytes(&newpath, rest), false);
+        }
         let Ok(target) = std::fs::read_link(OsStr::from_bytes(&newpath)) else {
             path = newpath;
             continue;
         };
         seen.insert(newpath.clone(), None);
-        let (resolved, ok) = join_realpath(path, target.as_os_str().as_bytes(), seen);
+        let (resolved, ok) = join_realpath(path, target.as_os_str().as_bytes(), seen, depth + 1);
         if !ok {
             return (join_bytes(&resolved, rest), false);
         }
@@ -184,6 +196,28 @@ mod tests {
         ] {
             assert_eq!(normpath(p), want, "{p:?}");
         }
+    }
+
+    #[test]
+    fn a_long_link_chain_stops_at_the_depth_cap() {
+        let dir = std::env::temp_dir().join(format!("pycompat-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = MAX_LINK_DEPTH + 50;
+        for i in 0..n {
+            std::os::unix::fs::symlink(format!("l{}", i + 1), dir.join(format!("l{i}"))).unwrap();
+        }
+        std::fs::write(dir.join(format!("l{n}")), b"").unwrap();
+        let root = std::fs::canonicalize(&dir).unwrap();
+        // Short chains resolve; the long one stops (unresolved) instead of overflowing.
+        assert_eq!(
+            realpath(&dir.join(format!("l{}", n - 10))),
+            root.join(format!("l{n}"))
+        );
+        let long = realpath(&dir.join("l0"));
+        assert!(long.starts_with(&root), "{long:?}");
+        assert_ne!(long, root.join(format!("l{n}")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
