@@ -93,13 +93,18 @@ fn d2() -> Normalizer {
 
 /// `tarfile.data_filter`'s ENAMETOOLONG text names a path under a random `/tmp/tmpXXXXXXXX`
 /// (8 characters), which the port prints with the X's; and the errno is the host's (Linux 36,
-/// macOS 63), while the Rust side may run on macOS against the Linux oracle. Both sides.
+/// macOS 63), while the Rust side may run on macOS against the Linux oracle. On macOS the
+/// oracle's folder is `/private/tmp/tmp…`: the oracle runs with no `TMPDIR`, so `tempfile`
+/// picks `/tmp`, and `data_filter` realpaths it through macOS's `/tmp -> private/tmp` link.
+/// Both sides.
 fn too_long(o: &mut Observed) {
     const AT: &str = "File name too long: '/tmp/tmp";
-    let text = String::from_utf8_lossy(&o.stdout).replace(
-        "[Errno 63] File name too long",
-        "[Errno 36] File name too long",
-    );
+    let text = String::from_utf8_lossy(&o.stdout)
+        .replace(
+            "[Errno 63] File name too long",
+            "[Errno 36] File name too long",
+        )
+        .replace("File name too long: '/private/tmp/tmp", AT);
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();
     while let Some(i) = rest.find(AT) {

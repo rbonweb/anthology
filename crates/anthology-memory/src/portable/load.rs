@@ -89,9 +89,16 @@ pub const MAX_DEPTH: usize = 329;
 pub const MAX_SPARSE: usize = 4096;
 /// `tarfile.data_filter` resolves each name under a fresh `tempfile.mkdtemp()`; on the oracle
 /// that is `/tmp/tmpXXXXXXXX` (8 random characters; the port, which creates no folder, names
-/// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails.
+/// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails. On macOS the
+/// filter realpaths `/tmp` to `/private/tmp`, and `PATH_MAX` is 1024.
+#[cfg(target_os = "macos")]
+const FILTER_DEST: &str = "/private/tmp/tmpXXXXXXXX";
+#[cfg(not(target_os = "macos"))]
 const FILTER_DEST: &str = "/tmp/tmpXXXXXXXX";
 const FILTER_DEST_LEN: usize = FILTER_DEST.len() + 1;
+#[cfg(target_os = "macos")]
+const PATH_MAX: usize = 1024;
+#[cfg(not(target_os = "macos"))]
 const PATH_MAX: usize = 4096;
 #[cfg(target_os = "macos")]
 const ENAMETOOLONG: i32 = 63;
@@ -2879,11 +2886,11 @@ mod tests {
             load(&tar),
             Err(format!(
                 "member '{name}' rejected by the tar filter: {too_long}: \
-                 '/tmp/tmpXXXXXXXX/{name}'"
+                 '{FILTER_DEST}/{name}'"
             ))
         );
         // The first part of the path that is too long is named (os.lstat part by part).
-        let agent = "a".repeat(4080);
+        let agent = "a".repeat(PATH_MAX - 16);
         let name = format!("repo/agent-memory/{agent}/n.md");
         let tar = [
             manifest(),
@@ -2895,7 +2902,7 @@ mod tests {
             load(&tar),
             Err(format!(
                 "member '{name}' rejected by the tar filter: {too_long}: \
-                 '/tmp/tmpXXXXXXXX/repo/agent-memory/{agent}'"
+                 '{FILTER_DEST}/repo/agent-memory/{agent}'"
             ))
         );
     }
