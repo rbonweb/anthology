@@ -831,8 +831,12 @@ pub fn server() -> Arc<Server> {
                 routes: Mutex::new(HashMap::new()),
                 hits: Mutex::new(HashMap::new()),
             });
-            let listener = TcpListener::bind("127.0.0.1:443")
-                .expect("bind 127.0.0.1:443 (ANTHOLOGY_SHIMS_NET needs it)");
+            // macOS lets a non-root user bind port 443 only on the wildcard address, so its CI job
+            // sets ANTHOLOGY_SHIMS_BIND=0.0.0.0:443; github.com still resolves to 127.0.0.1.
+            let addr = std::env::var("ANTHOLOGY_SHIMS_BIND")
+                .unwrap_or_else(|_| "127.0.0.1:443".to_string());
+            let listener = TcpListener::bind(&addr)
+                .unwrap_or_else(|e| panic!("bind {addr} (ANTHOLOGY_SHIMS_NET needs it): {e}"));
             let config = Arc::new(tls_config());
             let srv = s.clone();
             std::thread::spawn(move || {
