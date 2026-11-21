@@ -1,6 +1,7 @@
 //! Command prefixes and wrappers (SH2): guard_rules.py `_strip_prefixes`, `_skip_flags`, `_runner_program`,
 //! `_python_runner_start`, `_strip_version` and their tables.
 
+use crate::hidden::{env_attached_split, runs_assigned_command, wrapper_bools, wrapper_known};
 use crate::rtk_forms::rtk_command;
 use crate::shell_args::{SHELLS, prog_name, shell_parse};
 
@@ -265,6 +266,8 @@ const RUNNER_BOOL_FLAGS: &[&str] = &[
     "--exact",
     "--silent",
     "-s",
+    "-m",
+    "--module",
 ];
 /// npm/pnpm/yarn/bun options before the verb known to take no value (as `RUNNER_BOOL_FLAGS`).
 const PM_BOOL_FLAGS: &[&str] = &[
@@ -290,6 +293,17 @@ const PM_BOOL_FLAGS: &[&str] = &[
     "--ignore-scripts",
     "--include-workspace-root",
     "--bun",
+    "--workspaces",
+    "-ws",
+    "--parallel",
+    "--stream",
+    "--sequential",
+    "--no-bail",
+    "--aggregate-output",
+    "--watch",
+    "--hot",
+    "--smol",
+    "--no-install",
 ];
 /// Programs that run a command or script the analysis does not parse (`builtin eval ...`, `su -c ...`,
 /// `flock f cmd`, `busybox sh -c ...`, `ssh host cmd`): their entry is marked `UnknownWrapperOption` when they
@@ -460,13 +474,14 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
         if is_assignment(word) || word == "!" || has(KEYWORDS, word) || word.is_empty() {
             // `""` is a `$(...)` placeholder
             peeled.placeholder |= word.is_empty();
+            peeled.unknown_option |= runs_assigned_command(word);
             toks.remove(0);
             continue;
         }
         ran = true;
         if let Some(&(_, value_flags)) = WRAPPERS.iter().find(|(w, _)| *w == name) {
             let mut unknown = false;
-            let mut i = skip_flags(&toks, 1, value_flags, &[], &mut unknown);
+            let mut i = skip_flags(&toks, 1, value_flags, wrapper_bools(&name), &mut unknown);
             if name == "env" {
                 let split = toks.iter().position(|t| t == "-S" || t == "--split-string");
                 if let Some(split) = split
@@ -478,8 +493,13 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
                     toks.clear();
                     break;
                 }
+                // `env -S'...'` / `--split-string=...`: Python reads the next word as the program
+                peeled.unknown_option |= toks[1..i.min(toks.len())]
+                    .iter()
+                    .any(|t| env_attached_split(t));
             }
-            peeled.unknown_option |= unknown || (value_flags.is_empty() && has_option(&toks, i));
+            peeled.unknown_option |=
+                unknown || (value_flags.is_empty() && has_option(&toks, i, &name));
             peeled.stdin_args |= has(STDIN_ARG_RUNNERS, &name);
             if has(TIMEOUTS, &name) && i < toks.len() {
                 i += 1; // the duration
@@ -567,9 +587,17 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
 }
 
 /// Whether a flag-less wrapper (`nohup`, `stdbuf`, ...) skipped an option word before index `i`.
-fn has_option(toks: &[String], i: usize) -> bool {
-    toks.iter()
-        .take(i.min(toks.len()))
-        .skip(1)
-        .any(|t| t.starts_with('-') && t.chars().count() > 1 && t != "--")
+/// Rust-only: options known to take no value (`hidden::wrapper_known`) do not count.
+fn has_option(toks: &[String], i: usize, name: &str) -> bool {
+    toks.iter().take(i.min(toks.len())).skip(1).any(|t| {
+        t.starts_with('-') && t.chars().count() > 1 && t != "--" && !wrapper_known(name, t)
+    })
+}
+
+/// Rust-only: `prog` is a JS package manager running one of its own verbs (`bun install`, `bun test`), not
+/// running code as an interpreter.
+pub(crate) fn pm_runs_own_verb(prog: &str, args: &[String]) -> bool {
+    let mut unused = false;
+    let i = skip_flags(args, 0, PM_VALUE_FLAGS, PM_BOOL_FLAGS, &mut unused);
+    has(JS_PACKAGE_MANAGERS, prog) && args.get(i).is_some_and(|verb| has(PM_VERBS, verb))
 }

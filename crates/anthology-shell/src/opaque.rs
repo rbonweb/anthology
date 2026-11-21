@@ -14,13 +14,18 @@
 //! - `DepthCap`: something nested under this entry (or in the text it came from) was not analyzed because
 //!   `MAX_DEPTH` (or the `find -exec` nesting cap) was reached.
 //! - `StdinShellUnreadable`: a shell reads its script from stdin and no literal text (heredoc, here-string,
-//!   `echo`/`printf` in the pipeline) is known for it (`curl x | sh`).
+//!   `echo`/`printf` in the pipeline) is known for it (`curl x | sh`); not for `--version`/`--help`.
 //! - `InterpreterCode`: the program is an interpreter (`python3`, `node`, ...): its code is scanned as text
-//!   only (`Entry.code`), never as commands.
-//! - `UnknownWrapperOption`: the analysis may have misread which word is the program. An option of a wrapper,
+//!   only (`Entry.code`), never as commands. Not for a package manager running its own verb (`bun install`,
+//!   `bun test`), though `code` keeps Python's value.
+//! - `UnknownWrapperOption`: the analysis may have misread or missed a command. An option of a wrapper,
 //!   package runner, package manager or `rtk` was not one known to take a value or not, so it may have taken
-//!   the next word; or `env -S` was found past env's own options; or the program runs a command the analysis
-//!   does not parse (`prefixes::UNPARSED_RUNNERS`: `su -c`, `flock f cmd`, `busybox sh`, `ssh host cmd`, ...).
+//!   the next word; or env's script was found past env's own options or attached (`-S'...'`,
+//!   `--split-string=...`); or the program runs a command the analysis does not parse
+//!   (`prefixes::UNPARSED_RUNNERS`: `su -c`, `flock f cmd`, `busybox sh`, `ssh host cmd`, ...; or
+//!   `hidden::runs_option_command`: `trap 'cmd' EXIT`, `fd -x`, `git -c alias.x='!cmd'`/`core.pager`,
+//!   `tar --to-command`/`-I`, `rsync -e`); or an assignment names a command a program runs later
+//!   (`GIT_PAGER='cmd' git log`, `BASH_ENV=f`).
 //! - `Unbalanced`: the text the entry came from had an unbalanced quote or substitution (lenient split).
 //! - `RegexLimit`: a regex backtrack limit was hit while lexing the text the entry came from
 //!   (`Analysis.incomplete` is then set too). A work-budget stop sets only `Analysis.incomplete`.

@@ -242,7 +242,7 @@ fn opaque_interpreter_code() {
 #[test]
 fn opaque_unknown_wrapper_option() {
     assert!(has(
-        &analyze("sudo -E npx x", HOME),
+        &analyze("sudo --frob npx x", HOME),
         "x",
         Opaque::UnknownWrapperOption
     ));
@@ -297,6 +297,24 @@ fn opaque_marks_the_forms_python_misreads() {
         "nsenter -t 1 npx playwright install",
         "unshare -r npx playwright install",
         "ssh host npx playwright install",
+        // review round 2
+        "env --split-string='npx playwright install' ls",
+        "env -S'npx playwright install' ls",
+        "trap 'npx playwright install' EXIT",
+        "trap -- 'npx playwright install' EXIT",
+        "fd . -x npx playwright install",
+        "fd -e js --exec-batch npx playwright install",
+        "git -c alias.x='!npx playwright install' x",
+        "git -c core.pager='npx playwright install' log",
+        "git -c core.sshCommand='npx playwright install' fetch",
+        "tar --to-command='npx playwright install' -xf a.tar",
+        "tar -I 'npx playwright install' -xf a.tar",
+        "tar --checkpoint=1 --checkpoint-action=exec='npx playwright install' -cf a.tar x",
+        "rsync -e 'npx playwright install' a b:c",
+        "rsync --rsync-path='npx playwright install' a b:c",
+        "GIT_PAGER='npx playwright install' git log",
+        "BASH_ENV=./x.sh bash -c ls",
+        "stdbuf -o L npx playwright install",
     ];
     for command in unknown {
         assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
@@ -355,6 +373,37 @@ fn common_forms_stay_clear() {
         "sh -c 'ls'",
         "cd /tmp && git -C repo status",
         "A=1 B=2",
+        // review round 2
+        "sudo -E npm test",
+        "sudo -n ls",
+        "env -i PATH=/bin ls",
+        "time -p make",
+        "timeout --foreground 5 make",
+        "stdbuf -oL make",
+        "nohup make",
+        "arch -arm64 make",
+        "npm --workspaces run build",
+        "npm -ws test",
+        "pnpm --parallel -r dev",
+        "pnpm --stream -r build",
+        "bun --watch run dev",
+        "bun install",
+        "bun test",
+        "bun add zod",
+        "uv run -m pytest",
+        "bash --version",
+        "trap - EXIT",
+        "trap '' INT",
+        "fd -e rs main",
+        "git -c user.name=x commit -m y",
+        "git commit -c HEAD",
+        "tar -I zstd -xf a.tar.zst",
+        "tar -I 'zstd -19 -T0' -cf a.tar.zst x",
+        "tar -xzf a.tgz -C out",
+        "rsync -avz -e 'ssh -p 22' a b:c",
+        "rsync -a --rsync-path=rsync a b:c",
+        "PAGER= git log",
+        "GIT_DIR=.git git status",
     ] {
         assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
     }
