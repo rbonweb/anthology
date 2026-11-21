@@ -54,6 +54,7 @@ fn cargo_deps_expected() -> BTreeMap<String, Vec<String>> {
         (
             "dependencies",
             &[
+                "anthology-shell",
                 "anyhow",
                 "base16ct",
                 "chrono",
