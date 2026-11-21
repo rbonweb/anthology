@@ -9,11 +9,12 @@
 //! name. Generated: wrapper/runner/shell/docker/find/cd compositions, mutated seeds, the segments grammar,
 //! and odd homes.
 
-use anthology_pycompat::json::Value;
+use anthology_pycompat::json::{self, Value};
 use anthology_shell::{Analysis, Entry, analyze};
 
 use super::shell_segments::{
-    Gen, GenRng, Ordinals, field_str, int, load_seeds, mutate, obj, observed, s, strs, sweep_chars,
+    Gen, GenRng, Ordinals, field, field_str, int, load_seeds, mutate, obj, observed, s, strs,
+    sweep_chars,
 };
 use crate::case::{Case, Rng, Surface};
 use crate::observe::Observed;
@@ -76,6 +77,65 @@ impl Surface for ShellAnalyze {
     fn run_rust(&self, c: &Case) -> Observed {
         observed(run_rust(&c.data))
     }
+
+    fn rust_stricter(&self, c: &Case, python: &Observed, rust: &Observed) -> Option<bool> {
+        Some(analysis_stricter(&python.stdout, &rust.stdout) || guard_blocks(&c.data))
+    }
+}
+
+/// Whether Rust's guard blocks the case's command: a D-8 reading that replaces the oracle's (a
+/// wrapper peeled, `function f { cmd; }` read as `cmd`) is stricter only if it makes the guard block.
+fn guard_blocks(data: &Value) -> bool {
+    let input = obj(vec![("command", s(field_str(data, "command")))]);
+    anthology_guard::check(&s("Bash"), &input, field_str(data, "home"))
+        != anthology_guard::Verdict::Allow
+}
+
+/// A D-8 diff on this surface (final review M-3) is stricter when Rust stopped (`incomplete`: the
+/// guard blocks), when Rust has every entry and every alternate the oracle has (group numbers aside:
+/// they shift when Rust finds more), so the guard sees at least what Python's sees, or when Rust's
+/// guard blocks the command ([`guard_blocks`]).
+fn analysis_stricter(python: &[u8], rust: &[u8]) -> bool {
+    let read = |b: &[u8]| {
+        std::str::from_utf8(b)
+            .ok()
+            .and_then(|t| json::loads(t).ok())
+    };
+    let (Some(py), Some(rs)) = (read(python), read(rust)) else {
+        return false;
+    };
+    let incomplete = |v: &Value| matches!(field(v, "incomplete"), Some(Value::Bool(true)));
+    if incomplete(&rs) {
+        return true;
+    }
+    if incomplete(&py) {
+        return false;
+    }
+    let list = |v: &Value, key: &str| -> Vec<Value> {
+        let Some(Value::Array(items)) = field(v, key) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                if let Value::Object(m) = &mut e {
+                    m.remove("group");
+                }
+                e
+            })
+            .collect()
+    };
+    let rust_entries = list(&rs, "entries");
+    let rust_all: Vec<Value> = rust_entries
+        .iter()
+        .cloned()
+        .chain(list(&rs, "alternates"))
+        .collect();
+    list(&py, "entries")
+        .iter()
+        .all(|e| rust_entries.contains(e))
+        && list(&py, "alternates").iter().all(|e| rust_all.contains(e))
 }
 
 fn render_entry(e: &Entry, ordinals: &mut Ordinals) -> Value {
