@@ -18,7 +18,7 @@ ANTH_R_HOME='HOME or CLAUDE_CONFIG_DIR is not an absolute path'
 ANTH_NL='
 '
 ANTH_P='; if this keeps happening, disable anthology-guardrails with /plugin'
-ANTH_READONLY='Read Grep Glob LS NotebookRead WebFetch WebSearch TodoWrite TaskCreate TaskUpdate TaskGet TaskList TaskOutput TaskStop Task Agent Skill ToolSearch AskUserQuestion EnterPlanMode ExitPlanMode BashOutput KillShell'
+ANTH_READONLY='Read Grep Glob LS NotebookRead WebFetch WebSearch TodoWrite TaskCreate TaskUpdate TaskGet TaskList TaskOutput TaskStop Task Agent Skill ToolSearch AskUserQuestion EnterPlanMode ExitPlanMode BashOutput KillShell ListAgents CronList SubagentHandback'
 # The node downloader (design §8.4 step 6.5): https on every hop, at most 5 redirects, at most
 # 64 MiB, its own 60 s total timeout. A fixed constant: a test compares it byte for byte.
 ANTH_NODE_GET='const h=require("https"),f=require("fs"),[,u,o]=process.argv,M=67108864;let n=0;const q=c=>process.exit(c);setTimeout(()=>q(1),60000);function g(x){let p;try{p=new URL(x)}catch(e){return q(1)}if(p.protocol!=="https:")return q(1);h.get(p,{headers:{"user-agent":"anthology-bootstrap"}},r=>{const s=r.statusCode,l=r.headers.location;if(s>=300&&s<400&&l){r.resume();if(++n>5)return q(1);let t;try{t=new URL(l,p).href}catch(e){return q(1)}return g(t)}if(s!==200||Number(r.headers["content-length"]||0)>M){r.resume();return q(1)}let z=0;const w=f.createWriteStream(o);r.on("data",c=>{z+=c.length;if(z>M)q(1)});r.on("error",()=>q(1));r.on("aborted",()=>q(1));w.on("error",()=>q(1));w.on("close",()=>q(r.complete?0:1));r.pipe(w)}).on("error",()=>q(1))}g(u)'

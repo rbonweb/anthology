@@ -247,6 +247,36 @@ fn missing_binary_allows_read_only_tools_without_installing() {
 }
 
 #[test]
+fn missing_binary_allows_the_agent_and_cron_read_tools_and_still_blocks_writes() {
+    each_shell("missing, new read-only tools", |sh| {
+        let mut sb = sandbox();
+        sb.seed();
+        // No fetch: a call that is not allowed must block, not install.
+        sb.set_env("ANTHOLOGY_GUARD_NO_FETCH", "1");
+        for tool in ["ListAgents", "CronList", "SubagentHandback"] {
+            let payload = format!(
+                r#"{{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"{tool}","tool_input":{{}}}}"#
+            );
+            assert_allowed(
+                &guard(&sb, sh, payload.as_bytes()),
+                &format!("{sh:?} {tool}"),
+            );
+        }
+        for tool in ["Bash", "Write", "Edit", "CronCreate"] {
+            let payload = format!(
+                r#"{{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"{tool}","tool_input":{{}}}}"#
+            );
+            assert_block(
+                &guard(&sb, sh, payload.as_bytes()),
+                &not_installed("not attempted"),
+                &format!("{sh:?} {tool}"),
+            );
+        }
+        assert!(!sb.vdir().exists() && !sb.bindir().join(".attempt").exists());
+    });
+}
+
+#[test]
 fn no_fetch_blocks_with_not_attempted() {
     each_shell("NO_FETCH", |sh| {
         let mut sb = sandbox();
