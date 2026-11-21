@@ -28,6 +28,17 @@ pub fn is_decimal(c: char) -> bool {
     class(c) == Some(Class::Nd)
 }
 
+/// `unicodedata.decimal(c)`: the digit value of an `Nd` code point. Unicode allocates every
+/// `Nd` run as whole blocks of ten starting at a zero, so the value is the offset modulo 10.
+pub fn decimal_value(c: char) -> Option<u8> {
+    let n = u32::from(c);
+    let i = RANGES.partition_point(|&(_, last, _)| last < n);
+    match RANGES.get(i) {
+        Some(&(first, _, Class::Nd)) if first <= n => Some(((n - first) % 10) as u8),
+        _ => None,
+    }
+}
+
 /// `str.strip()` with no argument.
 pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)
@@ -82,6 +93,10 @@ mod tests {
         assert_eq!(class('a'), None);
         assert_eq!(class('\u{10ffff}'), Some(Class::C));
         assert!(is_printable(' ') && !is_printable('\u{a0}') && is_printable('é'));
+        assert_eq!(decimal_value('7'), Some(7));
+        assert_eq!(decimal_value('\u{669}'), Some(9));
+        assert_eq!(decimal_value('\u{1d7ff}'), Some(9));
+        assert_eq!(decimal_value('a'), None);
     }
 
     #[test]
