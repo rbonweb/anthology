@@ -63,6 +63,17 @@
 //!    removed, whitespace collapsed, case folded where Claude Code folds it
 //!    (macOS, Windows), on word boundaries. `rtk ls 'git push'` asks; `rtk ls
 //!    gitpush` does not.
+//! 8. **The shared parser** (RG1, ADR-023). After the rule scan, the line is read
+//!    by `anthology_shell::analyze`, the guard's own lexer and expansion (bounded
+//!    by one work budget), and each entry it finds (what runs, past wrappers,
+//!    rtk forms, shells' scripts, heredocs and here-strings fed to a shell,
+//!    `eval`, substitutions, `find -exec`) meets the rules: a deny rule or a
+//!    `Read()`-denied path denies, an ask rule asks, and an analysis cut short
+//!    (`incomplete`) asks. In a line that may run rtk an entry the analysis
+//!    could not see into (`opaque`) asks too. This pass only adds a deny or an
+//!    ask ([`Scanner::scan_shared`]), so the gate is never less strict than the
+//!    rule scan alone; and [`plain`] passes a line only when the shared parser
+//!    reads it as the same single command.
 //!
 //! With no deny, ask or `Read` rule anywhere the gate is inert and the hook's
 //! output is what it was before.
@@ -242,7 +253,7 @@ use crate::core::user_dirs;
 use crate::core::utils::strip_leading_bom;
 use crate::discover::lexer::{self, TokenKind, resolve_word_text};
 use crate::discover::registry;
-use anthology_shell::{Entry as ShellEntry, analyze};
+use anthology_shell::{Analysis, Entry as ShellEntry, analyze};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -1949,20 +1960,32 @@ impl Scanner<'_> {
     /// flattens everything that runs (rtk runner and passthrough forms, wrappers,
     /// shells' scripts, substitutions, heredocs and here-strings fed to a shell,
     /// `eval`, `find -exec`, docker shells) into entries, and each entry meets the
-    /// rules here. This pass only adds to what the rule scan above found:
+    /// rules here. This pass only adds a deny or an ask to what the rule scan
+    /// found, never a pass or a defer, so the gate's answer can only get stricter:
     ///
     /// - a deny rule that matches an entry denies; an ask rule asks;
     /// - an analysis cut short (`incomplete`: a regex or work limit) asks;
+    /// - a `Read()`-denied path an entry names, or reads through `<`, denies; a
+    ///   path that cannot be resolved asks;
     /// - in a line that may run rtk, an entry the analysis could not see into
-    ///   (`opaque`), a word a rule's head can still extend, a path a `Read()` rule
-    ///   names or that cannot be resolved asks; elsewhere the line is left to the
-    ///   host unrewritten (a defer), as the rule scan does at top level;
-    /// - a `Read()`-denied path an entry names, or reads through `<`, denies.
+    ///   (`opaque`), a word a rule's head can still extend, a path a `Read()` ask
+    ///   rule names, or a relative path after a `cd` the analysis followed asks.
+    ///   Elsewhere these add nothing: a rewrite into an rtk line is judged again.
     fn scan_shared(&mut self, cmd: &str, initial: Option<&Path>) -> Result<(), Denied> {
         if !self.spend(SEGMENT_COST + cmd.len() / 16) {
             return Ok(());
         }
-        let analysis = analyze(cmd, &shell_home());
+        self.scan_analysis(cmd, &analyze(cmd, &shell_home()), initial)
+    }
+
+    /// [`Scanner::scan_shared`] for an analysis already made (a test passes one
+    /// made with lower limits).
+    fn scan_analysis(
+        &mut self,
+        cmd: &str,
+        analysis: &Analysis,
+        initial: Option<&Path>,
+    ) -> Result<(), Denied> {
         if analysis.incomplete {
             self.ask = true;
         }
@@ -1991,13 +2014,13 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    /// What the gate cannot settle for an entry: ask in a line that may run rtk,
-    /// else leave the line to the host unrewritten.
+    /// What the gate cannot settle for an entry: ask in a line that may run rtk.
+    /// Elsewhere nothing is added: the rule scan has its own say, and a rewrite
+    /// into an rtk line is judged again as one. (A defer here would be looser:
+    /// the hook stops at a defer, before that second judgement can ask.)
     fn unsettled(&mut self, rtk_line: bool) {
         if rtk_line {
             self.ask = true;
-        } else {
-            self.defer = true;
         }
     }
 
@@ -5425,10 +5448,9 @@ mod tests {
             ] {
                 assert_eq!(gate_in(dir, cmd, r), Gate::Pass, "{cmd}");
             }
-            // RG1: anthology_shell::analyze reads what runs; stricter than before (Defer).
-            for cmd in ["cd sub && cat ok.txt"] {
-                assert_eq!(gate_in(dir, cmd, r), Gate::Defer, "{cmd}");
-            }
+            // A `cd` the shared parser followed adds nothing outside rtk; the rule
+            // scan follows it itself.
+            assert_eq!(gate_in(dir, "cd sub && cat ok.txt", r), Gate::Pass);
         });
     }
 
@@ -5469,11 +5491,165 @@ mod tests {
         in_sandbox(|dir, r| {
             // After `(cd sub)` the real cwd is back at the top, so secret.txt there is denied.
             assert_eq!(gate_in(dir, "(cd sub) ; cat secret.txt", r), Gate::Deny);
-            // Inside the cd'd directory a bare name is not the denied file. RG1: the
-            // shared parser's view of the directory is not the gate's, so the line is
-            // left to the host unrewritten (the rewrite was never plain anyway).
-            assert_eq!(gate_in(dir, "cd sub && cat other.txt", r), Gate::Defer);
+            // Inside the cd'd directory a bare name is not the denied file.
+            assert_eq!(gate_in(dir, "cd sub && cat other.txt", r), Gate::Pass);
         });
+    }
+
+    // --- RG1: the shared parser (anthology_shell::analyze) ---
+
+    /// What the guard's parser sees run is denied, at top level too: heredocs and
+    /// here-strings fed to a shell, `echo | sh`, `eval`, substitutions, launchers
+    /// and exec payloads. The rule scan alone asked about some of these, or let the
+    /// host judge the original.
+    #[test]
+    fn what_the_shared_parser_sees_run_is_denied() {
+        let r = bash_rules();
+        for cmd in [
+            "bash <<EOF\ngit push\nEOF",
+            "bash <<'EOF'\ngit push\nEOF",
+            "sh <<< 'git push'",
+            "echo 'git push' | sh",
+            "printf 'git push\\n' | bash -s",
+            "eval 'git push'",
+            "echo $(git push)",
+            "echo \"$(curl x)\"",
+            "timeout 5 git push",
+            "nice -n 5 git push",
+            "find . -maxdepth 0 -exec git push \\;",
+            "rtk run -c 'bash <<EOF\ngit push\nEOF'",
+            "rtk bypass bash <<< 'git push'",
+            "rtk bypass watch git push",
+            "rtk git $'push'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        // Ask rules too.
+        for cmd in ["bash <<EOF\nkubectl apply -f x\nEOF", "eval 'aws s3 ls'"] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        // Text that only looks like a command is not one.
+        for cmd in [
+            "echo 'git push'",
+            "git commit -m 'git push later'",
+            "grep -rn 'git push' docs",
+        ] {
+            assert_ne!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_read_the_shared_parser_sees_is_denied() {
+        in_sandbox(|dir, r| {
+            for cmd in [
+                "bash <<EOF\ncat secret.txt\nEOF",
+                "sh <<< 'head -1 secret.txt'",
+                "echo 'cat < secret.txt' | sh",
+                "eval 'cat secret.txt'",
+                "timeout 5 cat secret.txt",
+                "rtk run -c 'bash <<EOF\ncat config/.env\nEOF'",
+            ] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
+            for cmd in ["bash <<EOF\ncat ok.txt\nEOF", "eval 'cat ok.txt'"] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Pass, "{cmd}");
+            }
+        });
+    }
+
+    /// An analysis cut short by a limit asks, whatever the line.
+    #[test]
+    fn an_incomplete_analysis_asks() {
+        let r = bash_rules();
+        let scan = |analysis: &Analysis| {
+            let mut scanner = Scanner::new(&r, None, "x");
+            let denied = scanner.scan_analysis("x", analysis, None).is_err();
+            (denied, scanner.ask)
+        };
+        let cut = Analysis {
+            incomplete: true,
+            ..Analysis::default()
+        };
+        assert_eq!(scan(&cut), (false, true));
+        assert_eq!(scan(&Analysis::default()), (false, false));
+        // A real one: the heredoc regex over its backtrack limit.
+        let limits = anthology_shell::Limits { backtrack_limit: 0 };
+        let text = "echo $(cat <<\"EOF'\nx\n)";
+        assert!(!analyze(text, "/h").incomplete);
+        let analysis = anthology_shell::analyze_with(text, "/h", &limits);
+        assert!(analysis.incomplete);
+        assert_eq!(scan(&analysis), (false, true));
+    }
+
+    /// Opaque behind rtk asks; outside rtk the host judges the original.
+    #[test]
+    fn an_opaque_entry_asks_only_in_a_line_that_may_run_rtk() {
+        let r = bash_rules();
+        for cmd in [
+            "rtk bypass ssh h ls -la",
+            "rtk bypass xargs git status",
+            "rtk uv run python script.py",
+            "rtk run -c 'FOO=$BAR true'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
+        for cmd in ["ssh h ls -la", "python3 script.py", "xargs git status"] {
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn the_plain_shape_needs_the_shared_parser_to_agree() {
+        let agrees = |line: &str, words_of: &str| {
+            shared_parser_agrees(line, &plain_words(words_of).expect("plain"))
+        };
+        for line in [
+            "rtk ls",
+            "rtk git log --oneline -n 5",
+            "rtk git commit -m 'feat!: x $y'",
+            "rtk read \"a b\"",
+            "rtk git log HEAD~5..HEAD",
+            "rtk ls ~/x",
+        ] {
+            assert!(agrees(line, line), "{line}");
+        }
+        // Different words, a different count, or a second command: no.
+        assert!(!agrees("rtk ls a", "rtk ls b"));
+        assert!(!agrees("rtk ls a", "rtk ls a b"));
+        assert!(!agrees("rtk ls a; rtk ls b", "rtk ls a"));
+        assert!(!agrees("rtk ls a > x", "rtk ls a"));
+    }
+
+    #[test]
+    fn a_literal_word_keeps_its_meaning_when_quoted_back() {
+        for word in [
+            "$(id)",
+            "a b",
+            "it's",
+            "x*y",
+            "`id`",
+            "a\\b",
+            "plain-word_1.txt",
+        ] {
+            let quoted = quote_literal(word);
+            assert_eq!(resolve_word_text(&quoted), word, "{quoted}");
+            assert!(!is_expanding(&quoted), "{quoted}");
+        }
+        assert_eq!(quote_literal("~/x"), "~/x");
+        assert_eq!(quote_literal("HEAD~1"), "HEAD~1");
+    }
+
+    #[test]
+    fn the_shared_parser_is_inert_without_rules() {
+        let none = rules(&[], &[], &[]);
+        for cmd in [
+            "bash <<EOF\ngit push\nEOF",
+            "eval 'git push'",
+            "rtk bypass ssh h ls",
+            "rtk ls '$(id)'",
+        ] {
+            assert_eq!(gate(cmd, &none), Gate::Pass, "{cmd}");
+        }
     }
 
     // --- settings loading ---

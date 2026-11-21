@@ -707,3 +707,30 @@ Setup adds the owner's blanket `Bash(rtk *)` allow (ADR-017, PLAN §12), and Cla
 **Consequences**
 
 Users with deny, ask or Read rules get them enforced behind rtk, at the cost of an occasional prompt where a wrapped command cannot be read, and an unreadable settings file now prompts for every command. A later upstream sync must keep the three `// anthology fork:` call sites wired to the gate. Cost if wrong: a rule source Claude Code adds later is invisible to the hook until the gate reads it.
+
+## ADR-023: rtk's gate also reads every line with the shared shell parser (`anthology-shell`)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane RG1 (design §7.2, plan RG1)
+- **Status:** Accepted; ships with the next rtk release, which the release owner cuts
+
+**Context**
+
+The guard and rtk's Anthology gate (ADR-022) each had their own shell reading. Disagreement between two parsers was the main source of guard bypass findings (design G-2), and the gate's recursion (rtk forms, `sh -c`, `find -exec`, `xargs`, `env`, launchers, depth 4) was a third partial model. `anthology-shell` (lane SH) ports the guard's lexer and expansion (`analyze`): heredocs and here-strings fed to a shell, `echo … | sh`, `eval`, substitutions, wrappers, package runners, rtk runner and passthrough forms, docker shells, `cd` tracking, nested to depth 12, under one byte-weighted work budget that marks the result `incomplete`, and `opaque` reasons for what it cannot see into. The acceptance is that verdicts only get stricter: over the gate's tests plus the guard corpus, deny > ask > defer/allow, new ≥ old.
+
+**Decision**
+
+- `rtk/Cargo.toml` gains one dependency under `# anthology fork: shared shell parser`: `anthology-shell = { path = "../crates/anthology-shell" }`. rtk keeps its own `[workspace]` and `Cargo.lock`; the lock gains the path package, `fancy-regex` 0.20.2 and `bit-set`/`bit-vec` 0.8, the versions the root lock pins. `rtk-test.sh`, `rtk-net-test.sh` and `rtk-trim.sh` mount the repository root, since the path dependency lives outside `rtk/`.
+- With any deny, ask or `Read()` rule, `anthology_gate::evaluate` runs `anthology_shell::analyze` on the line (and on rtk's own rewrite of it) after the existing rule scan, and each entry (program and arguments, as the guard reads them) meets the rules. This pass can only add a deny or an ask:
+  - a Bash deny rule matching an entry denies, an ask rule asks (`bash <<EOF` / `git push`, `eval 'git push'`, `rtk bypass caffeinate git push`, `rtk git $'push'` are now denied);
+  - a `Read()`-denied path an entry names or reads through `<` denies, and a path it cannot resolve asks;
+  - `incomplete` (a regex backtrack limit or the work budget) asks;
+  - in a line that may run rtk, an `opaque` entry, an expansion a rule's head can still extend, a `Read()` ask path, or a relative path after a `cd` the analysis followed asks.
+- The plain shape (ADR-022, rounds 7-9) also requires the shared parser to read the line as the same one command: one entry, nothing opaque, no redirect, the same words. Two lexers that disagree on a line that would pass is a reason to ask.
+- **The rule scan stays.** Replacing its recursion outright loses denies the ≥ acceptance forbids: shells the guard does not model as shells (`mksh`, `tcsh`, `csh`, `ash -c`), a deny reached through a quoted script after a launcher, and word-suffix readings of launchers the guard does not peel. Running both and keeping the stricter answer is the only shape that meets the acceptance by construction; disagreement between the two readers can only ask or deny. Cost if wrong: two readers stay in the gate until a later change deletes the rule scan's recursion, once a corpus shows the shared parser covers it.
+- `rtk/tests/anthology_shell_rtk_forms_test.rs` pins rtk's clap subcommand list and each subcommand's form (passthrough, runner, fixed tool) against `anthology_shell::RTK_PASSTHROUGH` and `RTK_RUNNERS`, so an upstream subcommand that runs a command cannot arrive unclassified. It is not a `fork_*` test.
+- With no deny, ask or `Read()` rule, the hook output is byte-identical to `1.2.1-anthology.4` (the gate is inert, and `analyze` is not called).
+
+**Consequences**
+
+More lines are denied where they used to be asked about, and some lines behind `rtk` that the plain shape never passed now ask for a second reason; no line that used to be asked about or denied passes. Measured on 3,814 commands (the gate's tests, the F1 review kits, the guard's corpus and the shell seeds) under five rule sets: no verdict got looser, and with no rules every output is byte-identical. An upstream sync now carries one more `# anthology fork:` line in `rtk/Cargo.toml`; `rtk_trim`'s lock guard allows path packages under `../crates/` and their dependency closure (DV4). Cost if wrong: an `anthology-shell` bug that over-reads a command adds a prompt or a deny; one that under-reads is still covered by the rule scan.
