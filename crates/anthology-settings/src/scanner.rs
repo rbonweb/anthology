@@ -114,7 +114,7 @@ impl Doc {
 }
 
 /// `_is_blank(text)`: `text.strip("\ufeff" + _WS) == ""`.
-pub(crate) fn is_blank(text: &str) -> bool {
+pub fn is_blank(text: &str) -> bool {
     text.trim_matches(|c| c == '\u{feff}' || WS.contains(&c))
         .is_empty()
 }
