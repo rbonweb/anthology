@@ -6,21 +6,20 @@
 //! module is the single home of that calculation (MT1's test_roster port and DV3's upstream
 //! watch call it). Exit codes (GC-5): 0; 1 over or unset; 2 unknown agent (or usage).
 
-pub mod pyargs;
-
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anthology_core::Env;
+use anthology_pycompat::argparse::{self, Arg, Nargs};
 use anthology_pycompat::pyerr::PyExc;
 use regex::Regex;
 
 use crate::Output;
 use crate::json_edit::{Uncaught, universal_newlines, utf8_decode_error};
-use crate::memory_diff::pystr;
-use pyargs::{Nargs, Opt, Pos, Spec};
+use crate::memory_diff::pystr::splitlines;
+use anthology_pycompat::str as pystr;
 
 pub const ANTHOLOGY: &str = "plugins/anthology";
 pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
@@ -68,7 +67,7 @@ pub fn sections(body: &str) -> (Vec<String>, Vec<(String, String)>) {
         if let Some(prev) = last.take() {
             texts.push(body[prev..whole.start()].to_string());
         }
-        names.push(pystr::strip(&caps[1]).to_string());
+        names.push(pystr::strip_ws(&caps[1]).to_string());
         last = Some(whole.end());
     }
     if let Some(prev) = last {
@@ -187,7 +186,7 @@ pub fn split_agent_text(shown: &str, text: &str) -> Result<(Vec<String>, String)
     };
     let mut skills = Vec::new();
     let mut in_list = false;
-    for line in pystr::splitlines(head, false) {
+    for line in splitlines(head, false) {
         if is_skills_key(line) {
             in_list = true;
         } else if in_list {
@@ -335,23 +334,19 @@ pub fn default_root() -> PathBuf {
     std::fs::canonicalize(&built).unwrap_or(built)
 }
 
-const PROG: &str = "startup_budget.py";
-const USAGE: &str = "usage: startup_budget.py [-h] [--root ROOT] [agents ...]";
-const HELP: &str = "\nPrint each agent's startup size against its budget.\n\npositional arguments:\n  agents       agent names (default: all)\n\noptions:\n  -h, --help   show this help message and exit\n  --root ROOT  repository root (default: this checkout)\n";
-const SPEC: Spec<'static> = Spec {
-    prog: PROG,
-    usage: USAGE,
-    help: HELP,
-    opts: &[Opt {
-        long: "--root",
-        takes_value: true,
-        float: false,
-    }],
-    pos: &[Pos {
-        name: "agents",
-        nargs: Nargs::Star,
-    }],
-};
+/// `main`'s `ArgumentParser` (`prog` is the script's name, as `sys.argv[0]` gives it).
+/// `COLUMNS` sets the help width, as `shutil.get_terminal_size` reads it.
+fn spec(env: &Env) -> argparse::Spec {
+    argparse::Spec::new("startup_budget.py")
+        .description("Print each agent's startup size against its budget.")
+        .width(argparse::help_width(env.get("COLUMNS"), None))
+        .arg(
+            Arg::positional("agents")
+                .nargs(Nargs::ZeroOrMore)
+                .help("agent names (default: all)"),
+        )
+        .arg(Arg::option(&["--root"]).help("repository root (default: this checkout)"))
+}
 
 /// Runs `anthology-dev startup-budget …`; `args` are the arguments after `startup-budget`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
@@ -361,23 +356,33 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
 
 /// `startup_budget.main(args)` in `cwd`, with the real `BUDGET`.
 pub fn run_in(args: &[OsString], stdin: &mut dyn Read, env: &Env, cwd: &Path) -> Output {
-    let _ = (stdin, env);
-    main_with(args, cwd, &BUDGET)
+    let _ = stdin;
+    main_with(args, env, cwd, &BUDGET)
 }
 
 /// `main(argv)` with `budget` in place of `BUDGET` (the `mock.patch.dict` seam).
-pub fn main_with(args: &[OsString], cwd: &Path, budget: &[(&str, u64)]) -> Output {
-    let parsed = match pyargs::parse_or_exit(&SPEC, args) {
+pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, budget: &[(&str, u64)]) -> Output {
+    let parsed = match argparse::parse(&spec(env), args) {
         Ok(p) => p,
-        Err(out) => return out,
+        Err(e) => {
+            return Output {
+                stdout: e.stdout.into_bytes(),
+                stderr: e.stderr.into_bytes(),
+                code: e.code,
+            };
+        }
     };
-    let root = match parsed.value("--root") {
+    let root = match parsed.os_str("root") {
         Some(r) => Root::new(Path::new(r), cwd),
         None => Root::new(&default_root(), cwd),
     };
-    let agents: Vec<String> = parsed.pos[0]
+    let agents: Vec<String> = parsed
+        .list("agents")
         .iter()
-        .map(|a| a.to_string_lossy().into_owned())
+        .map(|a| {
+            a.as_os_str()
+                .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
+        })
         .collect();
     let known = agent_names(&root);
     let unknown: Vec<&str> = agents

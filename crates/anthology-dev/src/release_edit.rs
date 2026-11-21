@@ -9,8 +9,6 @@
 //! The library functions mirror the Python ones, so `tests/release_edit.rs` drives them as
 //! `tests/test_release.py` does.
 
-pub mod argp;
-
 use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -20,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anthology_core::Env;
 use anthology_core::clock;
+use anthology_pycompat::argparse::{self, Arg, Subcommands, Value as ArgValue};
 use anthology_pycompat::json::{self, Value};
 use anthology_pycompat::pyerr::PyExc;
 
@@ -28,10 +27,9 @@ use crate::json_edit::{
     EditError, Token, Uncaught, member_value, py_repr, replace_string_value, str_repr, tokens,
     utf8_decode_error,
 };
-use crate::memory_diff::pystr;
+use crate::memory_diff::pystr::splitlines;
 use crate::semver::{self, RangeError};
-
-use argp::{OptSpec, Parser, PosSpec, Stop};
+use anthology_pycompat::str as pystr;
 
 /// `ReleaseError`: a precondition failed or a file could not be edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,7 +273,7 @@ fn check_dependents_in(
 pub const UNRELEASED: &str = "### [Unreleased]";
 
 fn split_lines(text: &str) -> Vec<String> {
-    pystr::splitlines(text, true)
+    splitlines(text, true)
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -290,7 +288,7 @@ fn plugin_span(lines: &[String], plugin: &str) -> Result<(usize, usize), Release
             if let Some(s) = start {
                 return Ok((s, i));
             }
-            if pystr::strip(line) == wanted {
+            if pystr::strip_ws(line) == wanted {
                 start = Some(i);
             }
         }
@@ -307,7 +305,7 @@ fn plugin_span(lines: &[String], plugin: &str) -> Result<(usize, usize), Release
 fn unreleased_span(lines: &[String], plugin: &str) -> Result<(usize, usize, usize), ReleaseError> {
     let (p_start, p_end) = plugin_span(lines, plugin)?;
     for i in p_start + 1..p_end {
-        if pystr::strip(&lines[i]) == UNRELEASED {
+        if pystr::strip_ws(&lines[i]) == UNRELEASED {
             let end = (i + 1..p_end)
                 .find(|&j| lines[j].starts_with("### "))
                 .unwrap_or(p_end);
@@ -321,7 +319,7 @@ fn unreleased_span(lines: &[String], plugin: &str) -> Result<(usize, usize, usiz
 
 /// The body lines without surrounding blank lines.
 fn content(body: &[String]) -> &[String] {
-    let blank = |l: &String| pystr::strip(l).is_empty();
+    let blank = |l: &String| pystr::strip_ws(l).is_empty();
     let mut lo = 0;
     let mut hi = body.len();
     while lo < hi && blank(&body[lo]) {
@@ -336,7 +334,7 @@ fn content(body: &[String]) -> &[String] {
 fn has_entries(body: &[String]) -> bool {
     // Subheadings alone (`#### Added` with nothing under it) are an empty skeleton.
     body.iter()
-        .any(|l| !pystr::strip(l).is_empty() && !l.starts_with('#'))
+        .any(|l| !pystr::strip_ws(l).is_empty() && !l.starts_with('#'))
 }
 
 /// `changelog_check`: the plugin's `### [Unreleased]` has content.
@@ -547,69 +545,47 @@ fn no_entry(target: &str) -> Failure {
 
 // ---- command line --------------------------------------------------------------------
 
-const SUBCOMMANDS: [&str; 7] = [
-    "plugin-version",
-    "check-version",
-    "check-dependents",
-    "changelog-check",
-    "changelog-move",
-    "set-version",
-    "set-source-version",
-];
-
-const PROG: &str = "release_edit.py";
-
-const fn pos(name: &'static str) -> PosSpec {
-    PosSpec { name, choices: &[] }
-}
-
-const DATE_OPT: [OptSpec; 1] = [OptSpec {
-    long: "--date",
-    dest: "date",
-}];
-
-/// The positionals, options and usage tail of subcommand `name`.
-fn sub_spec(name: &str) -> (Vec<PosSpec>, &'static [OptSpec], &'static str) {
-    match name {
-        "plugin-version" => (vec![pos("path")], &[], "path"),
-        "check-version" => (
-            vec![
-                pos("current"),
-                pos("new"),
-                PosSpec {
-                    name: "tag_exists",
-                    choices: &["0", "1"],
-                },
-            ],
-            &[],
-            "current new {0,1}",
-        ),
-        "check-dependents" => (
-            vec![pos("root"), pos("plugin"), pos("version")],
-            &[],
-            "root plugin version",
-        ),
-        "changelog-check" => (vec![pos("path"), pos("plugin")], &[], "path plugin"),
-        "changelog-move" => (
-            vec![pos("path"), pos("plugin"), pos("version")],
-            &DATE_OPT,
-            "[--date DATE] path plugin version",
-        ),
-        "set-version" => (vec![pos("path"), pos("version")], &[], "path version"),
-        _ => (
-            vec![pos("path"), pos("target"), pos("version")],
-            &[],
-            "path target version",
-        ),
-    }
-}
-
-fn main_usage() -> String {
-    format!(
-        "usage: {PROG} [-h]\n{pad}{{{}}}\n{pad}...",
-        SUBCOMMANDS.join(","),
-        pad = " ".repeat("usage: ".len() + PROG.len() + 1)
-    )
+/// `main`'s `ArgumentParser` and its subparsers (`prog` is the script's name, as `sys.argv[0]`
+/// gives it). `COLUMNS` sets the help width, as `shutil.get_terminal_size` reads it.
+fn spec(env: &Env) -> argparse::Spec {
+    let sub = |names: &[&str]| {
+        names.iter().fold(argparse::Spec::command(), |spec, name| {
+            spec.arg(Arg::positional(name))
+        })
+    };
+    let subcommands = Subcommands::new()
+        .dest("cmd")
+        .required()
+        .parser("plugin-version", None, sub(&["path"]))
+        .parser(
+            "check-version",
+            None,
+            sub(&["current", "new"]).arg(Arg::positional("tag_exists").choices(&["0", "1"])),
+        )
+        .parser(
+            "check-dependents",
+            None,
+            sub(&["root", "plugin", "version"]),
+        )
+        .parser("changelog-check", None, sub(&["path", "plugin"]))
+        .parser(
+            "changelog-move",
+            None,
+            sub(&["path", "plugin", "version"])
+                .arg(Arg::option(&["--date"]).default(ArgValue::str(""))),
+        )
+        .parser("set-version", None, sub(&["path", "version"]))
+        .parser(
+            "set-source-version",
+            None,
+            sub(&["path", "target", "version"]),
+        );
+    argparse::Spec::new("release_edit.py")
+        .description(
+            "Text and JSON helpers for scripts/release.sh (the shell orchestrates git and claude).",
+        )
+        .width(argparse::help_width(env.get("COLUMNS"), None))
+        .subcommands(subcommands)
 }
 
 /// Runs `anthology-dev release-edit …`; `args` are the arguments after `release-edit`.
@@ -620,45 +596,18 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
 
 /// `release_edit.main(args)`, with relative paths resolved against `cwd`.
 pub fn run_in(args: &[OsString], stdin: &mut dyn Read, env: &Env, cwd: &Path) -> Output {
-    let _ = (stdin, env);
-    let usage = main_usage();
-    let main = Parser {
-        prog: PROG,
-        usage: &usage,
-        opts: &[],
-        pos: &[],
-    };
-    // The main parser: options before the command are strays; the first positional is the command.
-    let (cmd_at, mut extras) = match argp::find_command(&main, args) {
-        Ok(found) => found,
-        Err(Stop::Help) => return argp::help(&main),
-        Err(Stop::Error(m)) => return argp::usage_error(&main, &m),
-    };
-    let cmd = args[cmd_at].to_string_lossy().into_owned();
-    if !SUBCOMMANDS.contains(&cmd.as_str()) {
-        return argp::usage_error(&main, &argp::invalid_choice("cmd", &cmd, &SUBCOMMANDS));
-    }
-    let (positionals, opts, tail) = sub_spec(&cmd);
-    let sub_prog = format!("{PROG} {cmd}");
-    let sub_usage = format!("usage: {sub_prog} [-h] {tail}");
-    let sub = Parser {
-        prog: &sub_prog,
-        usage: &sub_usage,
-        opts,
-        pos: &positionals,
-    };
-    let parsed = match argp::parse_known(&sub, &args[cmd_at + 1..]) {
+    let _ = stdin;
+    let parsed = match argparse::parse(&spec(env), args) {
         Ok(p) => p,
-        Err(Stop::Help) => return argp::help(&sub),
-        Err(Stop::Error(m)) => return argp::usage_error(&sub, &m),
+        Err(e) => {
+            return Output {
+                stdout: e.stdout.into_bytes(),
+                stderr: e.stderr.into_bytes(),
+                code: e.code,
+            };
+        }
     };
-    extras.extend(parsed.extras.iter().cloned());
-    if !extras.is_empty() {
-        return argp::usage_error(
-            &main,
-            &format!("unrecognized arguments: {}", extras.join(" ")),
-        );
-    }
+    let cmd = parsed.str("cmd").unwrap_or_default().to_string();
     let mut out = Output::default();
     match execute(&cmd, &parsed, cwd, &mut out) {
         Ok(code) => {
@@ -709,24 +658,29 @@ fn write_text(cwd: &Path, path: &OsStr, text: &str) -> Result<(), Failure> {
     fs::write(open_path(cwd, path)?, text).map_err(|e| Failure::Os(os_error_str(e, &shown)))
 }
 
-fn execute(cmd: &str, a: &argp::Parsed, cwd: &Path, out: &mut Output) -> Result<i32, Failure> {
-    let arg = |i: usize| a.pos[i].as_os_str();
-    let sarg = |i: usize| a.pos[i].to_string_lossy().into_owned();
+fn execute(cmd: &str, a: &argparse::Parsed, cwd: &Path, out: &mut Output) -> Result<i32, Failure> {
+    let arg = |name: &str| a.os_str(name).unwrap_or_default();
+    let sarg = |name: &str| arg(name).to_string_lossy().into_owned();
     fn say(out: &mut Output, s: &str) {
         out.stdout.extend_from_slice(s.as_bytes());
         out.stdout.push(b'\n');
     }
     match cmd {
         "plugin-version" => {
-            let version = plugin_version(&read_text(cwd, arg(0))?)?;
+            let version = plugin_version(&read_text(cwd, arg("path"))?)?;
             say(out, &version);
         }
         "check-version" => {
-            let verdict = check_version(&sarg(0), &sarg(1), sarg(2) == "1")?;
+            let verdict = check_version(&sarg("current"), &sarg("new"), sarg("tag_exists") == "1")?;
             say(out, verdict);
         }
         "check-dependents" => {
-            let problems = check_dependents_in(cwd, Path::new(arg(0)), &sarg(1), &sarg(2))?;
+            let problems = check_dependents_in(
+                cwd,
+                Path::new(arg("root")),
+                &sarg("plugin"),
+                &sarg("version"),
+            )?;
             if !problems.is_empty() {
                 for msg in problems {
                     out.stderr
@@ -735,9 +689,9 @@ fn execute(cmd: &str, a: &argp::Parsed, cwd: &Path, out: &mut Output) -> Result<
                 return Ok(1);
             }
         }
-        "changelog-check" => changelog_check(&read_text(cwd, arg(0))?, &sarg(1))?,
+        "changelog-check" => changelog_check(&read_text(cwd, arg("path"))?, &sarg("plugin"))?,
         "changelog-move" => {
-            let given = a.opt("date").map(|d| d.to_string_lossy().into_owned());
+            let given = a.os_str("date").map(|d| d.to_string_lossy().into_owned());
             let date = match given.filter(|d| !d.is_empty()) {
                 Some(d) => d,
                 None => clock::today_local().iso(),
@@ -747,16 +701,25 @@ fn execute(cmd: &str, a: &argp::Parsed, cwd: &Path, out: &mut Output) -> Result<
                     ReleaseError(format!("date {} is not YYYY-MM-DD", str_repr(&date))).into(),
                 );
             }
-            let moved = changelog_move(&read_text(cwd, arg(0))?, &sarg(1), &sarg(2), &date)?;
-            write_text(cwd, arg(0), &moved)?;
+            let moved = changelog_move(
+                &read_text(cwd, arg("path"))?,
+                &sarg("plugin"),
+                &sarg("version"),
+                &date,
+            )?;
+            write_text(cwd, arg("path"), &moved)?;
         }
         "set-version" => {
-            let edited = set_plugin_version(&read_text(cwd, arg(0))?, &sarg(1))?;
-            write_text(cwd, arg(0), &edited)?;
+            let edited = set_plugin_version(&read_text(cwd, arg("path"))?, &sarg("version"))?;
+            write_text(cwd, arg("path"), &edited)?;
         }
         _ => {
-            let edited = set_source_plugin_version(&read_text(cwd, arg(0))?, &sarg(1), &sarg(2))?;
-            write_text(cwd, arg(0), &edited)?;
+            let edited = set_source_plugin_version(
+                &read_text(cwd, arg("path"))?,
+                &sarg("target"),
+                &sarg("version"),
+            )?;
+            write_text(cwd, arg("path"), &edited)?;
         }
     }
     Ok(0)
