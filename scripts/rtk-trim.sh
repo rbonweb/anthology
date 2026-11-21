@@ -9,7 +9,10 @@
 # 2. Cargo.lock is pruned by `cargo metadata --offline` in the pinned image (the FROM line of
 #    ci/images/rust.Dockerfile; the repository root is mounted, for ../crates/anthology-shell), online only when the registry volume lacks a crate. With an
 #    existing lockfile cargo only drops unused packages; a guard fails (and restores the old
-#    lockfile) if any package is added or any locked version changes.
+#    lockfile) if any package is added or any locked version changes, except the packages of
+#    a ../crates/ path dependency of rtk/Cargo.toml and their closure. The guard is the Rust
+#    one (`anthology-dev rtk-trim --lock-guard`, run through scripts/dev.sh); any failure of
+#    it, including one to start or build it, restores the lockfile and exits 1.
 #
 # Running it again prints "no changes". sync-rtk.sh runs it after every upstream merge.
 set -eu
@@ -27,9 +30,12 @@ if [ "$ops" != "no changes" ]; then
 fi
 
 lock="$root/rtk/Cargo.lock"
-before=$(mktemp "${TMPDIR:-/tmp}/rtk-trim-lock.XXXXXX")
+# The copy sits under target/ (ignored), so the guard's container sees it under /w.
+mkdir -p "$root/target"
+before=$(mktemp "$root/target/rtk-trim-lock.XXXXXX")
 trap 'rm -f "$before"' EXIT
 cp "$lock" "$before"
+chmod 644 "$before"
 
 # The container runs as root so it can fill a cold registry volume. On Linux the bind
 # mount keeps that owner, so the lockfile is handed back to the caller afterwards.
@@ -54,7 +60,7 @@ if ! metadata --offline; then
     metadata
 fi
 
-if ! python3 "$root/scripts/rtk_trim.py" --lock-guard "$before" "$lock"; then
+if ! "$root/scripts/dev.sh" rtk-trim --lock-guard "${before#"$root"/}" rtk/Cargo.lock --root rtk; then
     cp "$before" "$lock"
     echo "rtk-trim: rtk/Cargo.lock restored to its state before the lockfile step" >&2
     exit 1
