@@ -36,7 +36,7 @@ Subagents can't ask the user. A blocked agent stops and reports its question. Yo
 - Built-in isolation only; never `git worktree add`.
 - `worktree.baseRef: "head"`: writers branch from your current HEAD.
 - Writers commit before finishing. Parallel writers get disjoint files.
-- Writers commit their worktree's agent memory first, as `chore(memory): ...`.
+- Writers save memory notes before their final commit and include them in it.
 - You review and merge.
 
 ## 5. Docker
