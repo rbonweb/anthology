@@ -1,0 +1,5 @@
+# Allowed divergences of the guard.hook surface (GC-16).
+
+[[divergence]]
+class = "D-1"
+reason = 'guard.py allowed because Python raised (json.loads RecursionError on deep nesting, or _check raising); the oracle marks it. Rust parses iteratively and checks (F-10): it may block or match.'
