@@ -627,7 +627,8 @@ fn disown_pair(tokens: &[ParsedToken]) -> bool {
 
 /// Quote-aware: bash runs backtick/`$(...)` unquoted and inside double quotes,
 /// but treats single-quoted text literally; `<(`/`>(` is unquoted-only.
-fn contains_substitution(cmd: &str) -> bool {
+// anthology fork: `pub(crate)` so `hooks::anthology_gate` can tell an opaque inner command.
+pub(crate) fn contains_substitution(cmd: &str) -> bool {
     let bytes = cmd.as_bytes();
     let mut in_single = false;
     let mut in_double = false;
@@ -932,7 +933,8 @@ pub fn strip_quotes(s: &str) -> String {
 /// Turns a coalesced word's raw text (quotes/escapes still literal, as
 /// `tokenize()` preserves them) into argv-ready text: quote chars that
 /// open/close a span are stripped, backslash escapes resolved.
-pub(super) fn resolve_word_text(raw: &str) -> String {
+// anthology fork: `pub(crate)` so `hooks::anthology_gate` can unquote a word it slices out.
+pub(crate) fn resolve_word_text(raw: &str) -> String {
     let mut result = String::new();
     let mut chars = raw.chars().peekable();
     let mut quote: Option<char> = None;
