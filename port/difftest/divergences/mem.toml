@@ -1,0 +1,7 @@
+# Allowed divergences of the mem surface (GC-16). The oracle (port/difftest/oracle/mem.py) marks
+# each case where Python raised; Rust must equal the adjusted result. The SQLite file itself is
+# never compared byte for byte (D-5): the surface compares its rows and schema text instead.
+
+[[divergence]]
+class = "D-1"
+reason = "Python raises out of memory_index.main (a traceback, exit 1) for a state.json data_dir that is not a string (pathlib TypeError) and for a stale --days beyond timedelta's range (OverflowError). Rust prints the same exception line, anthology-mem: <Type>: <message>, and exits 1; the oracle writes Python's traceback that way."
