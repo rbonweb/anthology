@@ -473,6 +473,19 @@ class SubagentModelOpTest(unittest.TestCase):
         back, _ = settings_patch.revert(again, stored2)
         self.assertEqual(back, text)
 
+    def test_a_broken_record_is_skipped_on_revert(self):
+        text = json.dumps({"env": {"A": "1"}}, indent=2) + "\n"
+        path = ["env", self.KEY]
+        for rec in ({"op": "unset", "path": path},
+                    {"op": "unset", "path": path, "previous": "x"},
+                    {"op": "unset", "path": path, "previous": {"present": True, "raw": 3}},
+                    {"op": "unset", "path": path, "previous": {"present": True, "raw": "not json"}},
+                    {"op": "unset", "path": path, "previous": {"present": False, "raw": '"m"'}},
+                    {"op": "unset", "path": ["env", 1], "previous": {"present": True, "raw": '"m"'}},
+                    {"op": "unset", "path": [], "previous": {"present": True, "raw": '"m"'}}):
+            self.assertEqual(settings_patch.revert(text, [rec]), (text, ""), rec)
+        self.assertEqual(settings_patch.plan(text, [{"op": "unset", "path": []}]), [])
+
     def test_not_part_of_the_setup_ops_or_their_version(self):
         self.assertNotIn("unset", [o["op"] for o in ops()])
         self.assertEqual(settings_patch.subagent_model_op(),
