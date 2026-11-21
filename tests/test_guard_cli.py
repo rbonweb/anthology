@@ -153,6 +153,8 @@ class HooksJsonTest(unittest.TestCase):
                 "type": "command",
                 "command": "python3",
                 "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/guard.py"],
+                "timeout": 60,
+                "onFailure": "block",
             }],
         }]}})
 
