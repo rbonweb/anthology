@@ -4,10 +4,11 @@
 //! the decoded value (`scanner::pyval`): where Python succeeds on an odd shape, so does this;
 //! where Python raises, this returns an error (lead rulings R2, R4).
 
-use anthology_pycompat::json::Value;
+use anthology_pycompat::json::{self, Value};
 
 use crate::diff::diff_texts;
-use crate::render::remove_at;
+use crate::plan::create;
+use crate::render::{append, check_render_depth, remove_at};
 use crate::scanner::pyval::{
     get, getitem, py_eq, py_len, py_list, py_reversed, truthy, type_error, type_name,
 };
@@ -35,6 +36,9 @@ fn revert_op(text: &str, op: &Value) -> Result<String, String> {
     let doc = parse(text)?;
     let chain = descend(&doc, &path)?;
     let found = chain.len() - 1 == path.len();
+    if py_eq(getitem(op, "op")?, &Value::Str("unset".into())) {
+        return revert_unset(text, op, &doc, &chain, &path, found);
+    }
     let value = getitem(op, "value")?;
     let mut text = text.to_string();
     if py_eq(getitem(op, "op")?, &Value::Str("add".into())) {
@@ -114,6 +118,41 @@ fn revert_op(text: &str, op: &Value) -> Result<String, String> {
         }
     }
     Ok(text)
+}
+
+/// `_revert_op`'s `unset` branch: put the dropped key back, unless it is present again (the
+/// user's value stays) or the record is not one setup wrote.
+fn revert_unset(
+    text: &str,
+    op: &Value,
+    doc: &crate::scanner::Doc,
+    chain: &[usize],
+    path: &[Value],
+    found: bool,
+) -> Result<String, String> {
+    // `prev = op.get("previous")`; `raw = prev.get("raw") if isinstance(prev, dict) else None`.
+    let prev = get(op, "previous")?.filter(|p| matches!(p, Value::Object(_)));
+    let raw = match prev.map(|p| get(p, "raw")).transpose()?.flatten() {
+        Some(Value::Str(r)) => r,
+        _ => return Ok(text.to_string()),
+    };
+    let present = get(prev.expect("raw implies a previous"), "present")?.is_some_and(truthy);
+    let keys: Option<Vec<String>> = path
+        .iter()
+        .map(|k| k.as_str().map(str::to_string))
+        .collect();
+    let (true, false, Some(keys)) = (present, found, keys) else {
+        return Ok(text.to_string());
+    };
+    let Ok(value) = json::loads(raw) else {
+        return Ok(text.to_string());
+    };
+    check_render_depth(&value)?;
+    if chain.len() == keys.len() {
+        let parent = *chain.last().expect("the chain starts at the root");
+        return Ok(append(text, doc, chain, parent, keys.last().map(String::as_str), &value));
+    }
+    Ok(create(text, &keys, value, keys.len() as isize - 1, Some(doc))?.0)
 }
 
 /// `revert(settings, ops)`: `(new_text, diff)` with the stored `ops` removed, last first.
