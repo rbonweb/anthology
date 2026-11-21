@@ -192,11 +192,26 @@ fn apply_op(text: &str, op: &Op) -> Result<(String, Option<Map>), String> {
                 return Ok((text.to_string(), None));
             }
             let root = parse(text)?;
-            let chain = descend(&root, &pv)?;
+            // A parent on the path that is not an object: nothing to drop.
+            let Ok(chain) = descend(&root, &pv) else {
+                return Ok((text.to_string(), None));
+            };
             if chain.len() - 1 != path.len() {
                 return Ok((text.to_string(), None));
             }
             let (node, parent) = (chain[chain.len() - 1], chain[chain.len() - 2]);
+            let key = path.last().expect("the path is not empty");
+            if root
+                .node(parent)
+                .members
+                .iter()
+                .filter(|m| &m.key == key)
+                .count()
+                > 1
+            {
+                // Set twice: dropping one copy would leave the other in force.
+                return Ok((text.to_string(), None));
+            }
             let nd = root.node(node);
             let previous = obj(vec![
                 ("present", Value::Bool(true)),

@@ -1024,6 +1024,32 @@ fn test_reverted_together_with_the_setup_ops() {
 }
 
 #[test]
+fn test_a_key_set_twice_or_a_non_object_parent_plans_nothing() {
+    let op = subagent_model_op();
+    let twice = format!(r#"{{"env": {{"{SUBAGENT_KEY}": "a", "A": "1", "{SUBAGENT_KEY}": "b"}}}}"#);
+    assert!(
+        plan(&twice, std::slice::from_ref(&op))
+            .unwrap()
+            .stored
+            .is_empty()
+    );
+    assert_eq!(
+        apply(&twice, std::slice::from_ref(&op)).unwrap(),
+        (twice.clone(), String::new())
+    );
+    for text in [r#"{"env": "x"}"#, r#"{"env": [1]}"#] {
+        assert!(
+            plan(text, std::slice::from_ref(&op))
+                .unwrap()
+                .stored
+                .is_empty(),
+            "{text}"
+        );
+    }
+    assert!(plan("{nope", std::slice::from_ref(&op)).is_err());
+}
+
+#[test]
 fn test_a_broken_record_is_skipped_on_revert() {
     let text = indent2(r#"{"env": {"A": "1"}}"#);
     let path = format!(r#"["env", "{SUBAGENT_KEY}"]"#);
