@@ -27,6 +27,8 @@ it to the reference too, so the difftest still checks everything else; each such
 - FW-H review R1-M1: the lenient split also reads each closed `$'...'` decoded (`_lenient_segments` below).
 - FW-I review R1-I1: a package manager's `--` ends the alternate span unless its verb is `exec`/`dlx`/`x`
   (`_alternate_span` below).
+- SH-FW review I-2: a newline (heredoc bodies, comments, blank lines) right after a `|`/`|&` keeps the
+  pipeline (`_end_seg` below, part C).
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -206,6 +208,25 @@ def _alternate_span(tokens, main_at):
 
 
 G._alternate_span = _alternate_span
+
+
+# --- part C
+
+_END_SEG = G._Lexer.end_seg
+
+
+def _end_seg(self, new_group):
+    """`_Lexer.end_seg` with Rust's pipeline rule (SH-FW review I-2): a break before any command follows a
+    `|`/`|&` keeps the group, so `echo X |\nsh` stays one pipeline."""
+    empty = not (self.has_word or self.seg.tokens or self.seg.redirs)
+    if new_group and getattr(self, "piped", False) and empty:
+        new_group = False
+    else:
+        self.piped = not new_group
+    _END_SEG(self, new_group)
+
+
+G._Lexer.end_seg = _end_seg
 
 
 def _entry(e, groups):
