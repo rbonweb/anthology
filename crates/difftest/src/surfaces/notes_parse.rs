@@ -879,7 +879,9 @@ fn gen_remote(rng: &mut Rng) -> Value {
         }
         _ => rng.string(20),
     };
-    let url = format!("{}{url}{}", rng.pick(&ws), rng.pick(&ws));
+    // No NUL: git cannot store one in a remote URL, and CPython 3.12's realpath raises
+    // `ValueError` on it (D-1, unreachable from `repo_key`).
+    let url = format!("{}{url}{}", rng.pick(&ws), rng.pick(&ws)).replace('\0', "");
     let base = rng
         .pick(&["/nonexistent-ms1/base", "/nonexistent-ms1/b/../c/", "/"])
         .to_string();
