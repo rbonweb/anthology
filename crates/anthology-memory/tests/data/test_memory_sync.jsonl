@@ -1,0 +1,116 @@
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 0, "params": {"component": "claude", "replace": false}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 1, "params": {"component": "claude", "replace": true}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 2, "params": {"component": "memory", "replace": false}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 3, "params": {"component": "memory", "replace": true}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 4, "params": {"component": "agent", "replace": false}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_or_non_directory_component_is_refused", "row": 5, "params": {"component": "agent", "replace": true}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_target_is_refused_with_and_without_replace", "row": 0, "params": {"replace": false}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_target_is_refused_with_and_without_replace", "row": 1, "params": {"replace": true}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_target_is_refused_with_and_without_replace", "row": 2, "params": {"dangling": false}}
+{"py": "test_memory_sync.SaveNoteTest.test_a_symlinked_target_is_refused_with_and_without_replace", "row": 3, "params": {"dangling": true}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 0, "params": {"value": ""}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 1, "params": {"value": "  \u000a\u000a \u0009 "}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 2, "params": {"value": "nul\u0000"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 3, "params": {"value": "bell\u0007"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 4, "params": {"value": "esc\u001b[0m"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 5, "params": {"value": "del\u007f"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 6, "params": {"value": "xxxxxxxxxxxx"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_body", "row": 7, "params": {"value": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 0, "params": {"field": "name", "value": ""}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 1, "params": {"field": "name", "value": "   "}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 2, "params": {"field": "name", "value": "two\u000alines"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 3, "params": {"field": "name", "value": "cr\u000dhere"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 4, "params": {"field": "name", "value": "tab\u0009here"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 5, "params": {"field": "name", "value": "nul\u0000"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 6, "params": {"field": "name", "value": "esc\u001b[0m"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 7, "params": {"field": "name", "value": "del\u007f"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 8, "params": {"field": "name", "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 9, "params": {"field": "description", "value": ""}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 10, "params": {"field": "description", "value": "   "}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 11, "params": {"field": "description", "value": "two\u000alines"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 12, "params": {"field": "description", "value": "cr\u000dhere"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 13, "params": {"field": "description", "value": "tab\u0009here"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 14, "params": {"field": "description", "value": "nul\u0000"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 15, "params": {"field": "description", "value": "esc\u001b[0m"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 16, "params": {"field": "description", "value": "del\u007f"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_name_and_description", "row": 17, "params": {"field": "description", "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 0, "params": {"slug": "../x"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 1, "params": {"slug": "a/b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 2, "params": {"slug": "A"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 3, "params": {"slug": "-a"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 4, "params": {"slug": "a-"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 5, "params": {"slug": "a--b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 6, "params": {"slug": "a b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 7, "params": {"slug": "."}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 8, "params": {"slug": ".."}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 9, "params": {"slug": "a.b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 10, "params": {"slug": "a_b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 11, "params": {"slug": ""}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 12, "params": {"slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 13, "params": {"slug": "x\u000a"}}
+{"py": "test_memory_sync.SaveNoteTest.test_bad_slugs", "row": 14, "params": {"slug": "\u00e9"}}
+{"py": "test_memory_sync.SaveNoteTest.test_body_allows_format_characters_but_not_controls", "row": 0, "params": {"value": "'a\\x85b'"}}
+{"py": "test_memory_sync.SaveNoteTest.test_body_allows_format_characters_but_not_controls", "row": 1, "params": {"value": "'a\\x9fb'"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 0, "params": {"label": "aws", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 1, "params": {"label": "aws", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 2, "params": {"label": "aws", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 3, "params": {"label": "github \u0074oken", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 4, "params": {"label": "github \u0074oken", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 5, "params": {"label": "github \u0074oken", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 6, "params": {"label": "github pat", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 7, "params": {"label": "github pat", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 8, "params": {"label": "github pat", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 9, "params": {"label": "openai style", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 10, "params": {"label": "openai style", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 11, "params": {"label": "openai style", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 12, "params": {"label": "slack", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 13, "params": {"label": "slack", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 14, "params": {"label": "slack", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 15, "params": {"label": "private key", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 16, "params": {"label": "private key", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 17, "params": {"label": "private key", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 18, "params": {"label": "\u0070assword", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 19, "params": {"label": "\u0070assword", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 20, "params": {"label": "\u0070assword", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 21, "params": {"label": "api key", "field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 22, "params": {"label": "api key", "field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_each_secret_pattern_is_refused_everywhere", "row": 23, "params": {"label": "api key", "field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 0, "params": {"field": "name"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 1, "params": {"field": "description"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 2, "params": {"field": "body"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 3, "params": {"var": "DB_\u0050ASSWORD"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 4, "params": {"var": "x_\u0073ecret"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 5, "params": {"var": "SSH_KEY"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 6, "params": {"var": "THE_\u0050ASSWD"}}
+{"py": "test_memory_sync.SaveNoteTest.test_env_secret_values_are_refused_without_echoing_them", "row": 7, "params": {"var": "AWS_CREDENTIALS"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 0, "params": {"field": "name", "char": "0x202e"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 1, "params": {"field": "name", "char": "0x200b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 2, "params": {"field": "name", "char": "0x200d"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 3, "params": {"field": "name", "char": "0xfeff"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 4, "params": {"field": "name", "char": "0x2066"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 5, "params": {"field": "name", "char": "0x2028"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 6, "params": {"field": "name", "char": "0x2029"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 7, "params": {"field": "name", "char": "0x85"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 8, "params": {"field": "name", "char": "0x9f"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 9, "params": {"field": "description", "char": "0x202e"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 10, "params": {"field": "description", "char": "0x200b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 11, "params": {"field": "description", "char": "0x200d"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 12, "params": {"field": "description", "char": "0xfeff"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 13, "params": {"field": "description", "char": "0x2066"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 14, "params": {"field": "description", "char": "0x2028"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 15, "params": {"field": "description", "char": "0x2029"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 16, "params": {"field": "description", "char": "0x85"}}
+{"py": "test_memory_sync.SaveNoteTest.test_name_and_description_refuse_format_and_separator_characters", "row": 17, "params": {"field": "description", "char": "0x9f"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 0, "params": {"value": "It's a test"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 1, "params": {"value": "a: b"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 2, "params": {"value": "# not a comment"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 3, "params": {"value": "say \"hi\""}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 4, "params": {"value": "a\\nb literal"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 5, "params": {"value": "back\\slash\\"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 6, "params": {"value": "[x] and [[y]]"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 7, "params": {"value": "- leading dash"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 8, "params": {"value": "'quoted'"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 9, "params": {"value": "''"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 10, "params": {"value": "key: 'v' # c"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 11, "params": {"value": "---"}}
+{"py": "test_memory_sync.SaveNoteTest.test_tricky_values_round_trip_through_the_real_indexer", "row": 12, "params": {"value": "\u00fcn\u00efcode \u2713"}}
