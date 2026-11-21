@@ -346,6 +346,10 @@ impl Surface for PycompatRe {
             ("x*?|x", "xx"),
             ("(?:|a)+?b", "ab"),
             ("(?=a)|a", "aa"),
+            // Blank groups repeated (fancy-regex refuses to repeat them).
+            ("(?x: )*-|(?!a)x", " -x"),
+            ("(?:){3}|(?<=a)b", "ab"),
+            ("(?:(?:)|)+?b", "ab"),
         ]
         .iter()
         .enumerate()

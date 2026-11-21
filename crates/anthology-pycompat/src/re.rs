@@ -11,7 +11,8 @@
 //!   pass through (fancy-regex); a possessive repeat `X*+` becomes the atomic `(?>X*)`;
 //! - a repeated look-around (Python allows it, fancy-regex does not) is written as sre runs it:
 //!   once when the minimum is at least 1, optional (`(?:A|)`, lazy `(?:|A)`) when it is 0, and
-//!   never (keeping its groups) when the maximum is 0;
+//!   never (keeping its groups) when the maximum is 0; a repeated group with nothing in it
+//!   (`(?:)*`, `(?x: ){2}`, which fancy-regex refuses) is written once, without the repeat;
 //! - every literal is written as `\x{…}`, so no Python literal (`{`, `[` in a class, `&&`, `~~`,
 //!   `--`, `\<`) can turn into Rust syntax; a `{` that is not a valid repeat is a literal, as in
 //!   Python; `{,n}` is `{0,n}`;
@@ -38,7 +39,9 @@
 //! counts that limit over a whole search, so a long text with no match can exhaust it: a fancy
 //! pattern whose only fancy parts are `\b`, `\B` and `$` is therefore scanned by `regex` with
 //! those removed (a superset) and each candidate start confirmed by fancy-regex anchored there,
-//! with its own budget. Other fancy patterns keep the whole-search limit (D-7). Spans are byte
+//! with its own budget (where rejected candidates keep costing long superset scans, every start
+//! up to the superset's earliest match end is tried instead: the cost of sre's own per-start
+//! search, not a rescan per candidate). Other fancy patterns keep the whole-search limit (D-7). Spans are byte
 //! offsets into the haystack. [`Regex::find_iter`] walks matches as Python's `finditer` does:
 //! an empty match right after a non-empty one is reported (`x*` on `abxd` gives
 //! `(0,0) (1,1) (2,3) (3,3) (4,4)`), and after an empty match the next search at the same
@@ -307,7 +310,10 @@ fn build_aux(text: &str, fancy: bool) -> Result<Aux, LimitError> {
 }
 
 /// The [`Aux`] of `re`, from a process-wide cache (keyed by the pattern's length and a hash of
-/// its ends, then compared in full).
+/// its ends, then compared in full). [`Regex`] is the §3.2 enum of the two engines and has no
+/// room for it, so each direct `is_match`/`find_at`/`captures_at` on a fancy pattern pays this
+/// lookup (a compare of the pattern text: microseconds for the longest privacy patterns);
+/// `find_iter` and `captures_iter` pay it once.
 fn aux(re: &Regex) -> Result<Arc<Aux>, LimitError> {
     type Cache = HashMap<(usize, u64), Vec<Arc<Aux>>>;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -356,17 +362,12 @@ fn find_fancy(
             .map(|m| m.map(|m| (m.start(), m.end())))
             .map_err(limit);
     };
-    let mut at = pos;
-    while at <= s.len() {
-        let Some(m) = pre.find_at(s, at) else {
-            return Ok(None);
-        };
-        if let Some(m) = anchored.find_from_pos(s, m.start()).map_err(limit)? {
-            return Ok(Some((m.start(), m.end())));
-        }
-        at = next_start(s, m.start());
-    }
-    Ok(None)
+    prefiltered(pre, s, pos, |i| {
+        anchored
+            .find_from_pos(s, i)
+            .map(|m| m.map(|m| (m.start(), m.end())))
+            .map_err(limit)
+    })
 }
 
 fn captures_fancy(
@@ -381,15 +382,61 @@ fn captures_fancy(
             .map(|c| c.as_ref().map(groups_of))
             .map_err(limit);
     };
+    prefiltered(pre, s, pos, |i| {
+        anchored
+            .captures_from_pos(s, i)
+            .map(|c| c.as_ref().map(groups_of))
+            .map_err(limit)
+    })
+}
+
+/// How much text the prefilter may spend on candidates the confirm rejects, beyond four times
+/// the distance the search has covered, before [`prefiltered`] stops asking it for whole
+/// matches.
+const PREFILTER_SLACK: usize = 4096;
+
+/// The first match from `pos`, trying candidate starts in order with `confirm` (the anchored
+/// pattern; a full match can only start where the superset `pre` matches). `pre.find_at` scans
+/// to the end of the superset's leftmost match, so when a dropped `\b` keeps rejecting long
+/// superset matches (`\bsk-[\w-]{16,}` on `ask-ask-…`), asking it again from each next start
+/// would be quadratic. Past [`PREFILTER_SLACK`] of such rejected text, the search goes window
+/// by window instead: `pre.shortest_match_at` ends at the earliest end `e` of a superset
+/// match, so the leftmost one starts at or before `e`, and `confirm` tries every start up to
+/// `e`, as sre tries every start. Either way each confirm has its own backtrack budget.
+fn prefiltered<T>(
+    pre: &regex::Regex,
+    s: &str,
+    pos: usize,
+    confirm: impl Fn(usize) -> Result<Option<T>, LimitError>,
+) -> Result<Option<T>, LimitError> {
     let mut at = pos;
+    let mut wasted = 0usize;
     while at <= s.len() {
-        let Some(m) = pre.find_at(s, at) else {
+        if wasted <= PREFILTER_SLACK + 4 * (at - pos) {
+            let Some(m) = pre.find_at(s, at) else {
+                return Ok(None);
+            };
+            if let Some(found) = confirm(m.start())? {
+                return Ok(Some(found));
+            }
+            wasted += m.end() - m.start();
+            at = next_start(s, m.start());
+            continue;
+        }
+        let Some(e) = pre.shortest_match_at(s, at) else {
             return Ok(None);
         };
-        if let Some(c) = anchored.captures_from_pos(s, m.start()).map_err(limit)? {
-            return Ok(Some(groups_of(&c)));
+        let mut i = at;
+        loop {
+            if let Some(found) = confirm(i)? {
+                return Ok(Some(found));
+            }
+            if i >= e {
+                break;
+            }
+            i = next_start(s, i);
         }
-        at = next_start(s, m.start());
+        at = next_start(s, e);
     }
     Ok(None)
 }
@@ -544,6 +591,10 @@ struct Parser<'a> {
     /// Whether the last atom can match empty, and whether it holds a capture group.
     atom_nullable: bool,
     atom_captures: bool,
+    /// Whether the last atom is a group with nothing in it (`(?:)`, `(?x: )`, `(?:(?:)|)`):
+    /// fancy-regex refuses to repeat one, and repeating it changes nothing, so the repeat is
+    /// dropped.
+    atom_blank: bool,
     /// Only global flags written so far.
     at_start: bool,
 }
@@ -572,6 +623,8 @@ struct Open {
     nullable_before: bool,
     nullable_last: bool,
     captures: bool,
+    /// Whether every item so far is a blank group (see `Parser::atom_blank`).
+    blank: bool,
 }
 
 /// [`translate`] with Python's compile flags, saying whether fancy-regex is needed.
@@ -596,6 +649,7 @@ pub fn translate_with(py: &str, flags: Flags) -> Result<Translated, String> {
         atom_look: false,
         atom_nullable: false,
         atom_captures: false,
+        atom_blank: false,
         at_start: true,
     };
     let mut prefix = String::new();
@@ -649,6 +703,7 @@ impl Parser<'_> {
         self.atom_look = false;
         self.atom_nullable = false;
         self.atom_captures = false;
+        self.atom_blank = false;
         self.item(false, false, false);
         self.out.push_str(text);
     }
@@ -670,6 +725,7 @@ impl Parser<'_> {
             top.nullable_before &= top.nullable_last;
             top.nullable_last = nullable;
             top.captures |= captures;
+            top.blank &= self.atom_blank;
         }
     }
 
@@ -685,6 +741,7 @@ impl Parser<'_> {
             nullable_before: true,
             nullable_last: true,
             captures: false,
+            blank: true,
         });
         self.scopes.push(scope);
         self.at_start = false;
@@ -710,6 +767,7 @@ impl Parser<'_> {
     fn assertion(&mut self, text: &str, look: bool) {
         self.at_start = false;
         self.can_repeat = false;
+        self.atom_blank = false;
         self.item(look, true, false);
         self.out.push_str(text);
     }
@@ -765,6 +823,7 @@ impl Parser<'_> {
                         || g.nullable_alt
                         || (g.nullable_before && g.nullable_last);
                     self.atom_captures = g.captures || g.kind == Kind::Capture;
+                    self.atom_blank = g.blank && g.kind != Kind::Look;
                     let (look, nullable, captures) =
                         (self.atom_look, self.atom_nullable, self.atom_captures);
                     self.item(look, nullable, captures);
@@ -824,7 +883,9 @@ impl Parser<'_> {
             return self
                 .err("a capture group inside a repeat that can match empty is not supported");
         }
-        if possessive {
+        if self.atom_blank {
+            // Nothing to repeat: the group stays as written, once.
+        } else if possessive {
             // `X*+` is the atomic `(?>X*)`.
             self.fancy = true;
             let a = self.out.split_off(self.atom_start);
@@ -1638,6 +1699,71 @@ mod tests {
         let n = re.find_iter(&prose[..1_000_000]).count();
         assert_eq!(n, 285_716);
         assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_repeated_blank_group_matches_as_python() {
+        // fancy-regex refuses `(?:)*` ("Target of repeat operator is invalid"); Python 3.12:
+        type Case<'a> = (&'a str, &'a str, &'a [(usize, usize)]);
+        let cases: [Case<'_>; 8] = [
+            ("(?:)*a", "ba", &[(1, 2)]),
+            ("(?:(?:)|)+?b", "ab", &[(1, 2)]),
+            ("(?x: ){2}c", "c", &[(0, 1)]),
+            ("(?:){3}", "ab", &[(0, 0), (1, 1), (2, 2)]),
+            ("(){2}x", "ax", &[(1, 2)]),
+            ("(?:)*+a", "a", &[(0, 1)]),
+            ("(?i:)*A", "a", &[]),
+            ("a(?:)?", "aa", &[(0, 1), (1, 2)]),
+        ];
+        for (p, text, want) in cases {
+            for fancy in [false, true] {
+                // A look-ahead that always holds here forces the fancy engine.
+                let p = if fancy {
+                    format!("{p}(?!\\x01)")
+                } else {
+                    p.to_string()
+                };
+                let re = compile(&p, false).unwrap_or_else(|e| panic!("{p}: {e}"));
+                let spans: Vec<_> = re.find_iter(text).map(Result::unwrap).collect();
+                assert_eq!(spans, want, "{p}");
+            }
+        }
+        let re = compile("(){2}x", false).unwrap();
+        let groups: Vec<_> = re.captures_iter("ax").map(Result::unwrap).collect();
+        assert_eq!(groups, [vec![Some((1, 2)), Some((1, 1))]]);
+    }
+
+    #[test]
+    fn rejected_long_superset_matches_stay_linear() {
+        // Review R3-1: the superset (`\b` dropped) matches to the end of the text from every
+        // start and the confirm rejects each one; asking `find_at` again from each next start
+        // would be quadratic (minutes on a megabyte). Expectations from Python 3.12.
+        let asks = "ask-".repeat(250_000);
+        let abs = "ab".repeat(80_000);
+        let hit = format!("{asks} sk-{}", "x".repeat(20));
+        let ab_hit = format!("{abs} bc");
+        let ab_end = format!("{abs}c");
+        type Case<'a> = (&'a str, &'a str, &'a [(usize, usize)]);
+        let cases: [Case<'_>; 5] = [
+            (r"\bsk-[A-Za-z0-9_-]{16,}", &asks, &[]),
+            (r"\bsk-[A-Za-z0-9_-]{16,}", &hit, &[(1_000_001, 1_000_024)]),
+            (r"\bb.*c", &ab_end, &[]),
+            (r"\bb.*c", &ab_hit, &[(160_001, 160_003)]),
+            (r"(\bb)(.*)c", &ab_hit, &[(160_001, 160_003)]),
+        ];
+        let start = std::time::Instant::now();
+        for (p, text, want) in cases {
+            let re = compile(p, false).unwrap();
+            let spans: Vec<_> = re.find_iter(text).map(Result::unwrap).collect();
+            assert_eq!(spans, want, "{p}");
+            let groups: Vec<_> = re.captures_iter(text).map(Result::unwrap).collect();
+            assert_eq!(groups.len(), want.len(), "{p}");
+            if p.starts_with('(') {
+                assert_eq!(groups[0][2], Some((160_002, 160_002)));
+            }
+        }
+        // Seconds in a debug build; the quadratic loop took minutes.
+        assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
     }
 
     #[test]
