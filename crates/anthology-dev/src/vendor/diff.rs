@@ -37,7 +37,7 @@ pub fn unified(rel: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Result<Stri
         format!("b/{rel}")
     };
     let mut out = String::new();
-    for line in py::unified_diff(&a, &b, &fromfile, &tofile, 3) {
+    for line in py::unified_diff_lineterm(&a, &b, &fromfile, &tofile, 3, "\n") {
         out.push_str(&line);
         if !line.ends_with('\n') {
             out.push_str("\n\\ No newline at end of file\n");

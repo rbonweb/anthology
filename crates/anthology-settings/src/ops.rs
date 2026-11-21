@@ -6,6 +6,7 @@ use std::path::Path;
 use anthology_core::Env;
 use anthology_guard::data::{PREFIX_VARIANTS, PROFILE_ROOTS};
 use anthology_pycompat::json::{Map, Value};
+use anthology_pycompat::path::realpath;
 
 use crate::scanner::py;
 use crate::validate::validate_plugin_root;
@@ -170,7 +171,7 @@ impl Default for SettingsDeps {
 
 /// `plugin_read_rule(plugin_root)`: `Read(//<parent of the real plugin root>/**)`.
 pub fn plugin_read_rule(plugin_root: &Path) -> String {
-    let real = py::realpath_os(plugin_root.as_os_str());
+    let real = realpath(plugin_root);
     let parent = py::dirname(&real.to_string_lossy());
     format!("Read(//{}/**)", parent.trim_start_matches('/'))
 }

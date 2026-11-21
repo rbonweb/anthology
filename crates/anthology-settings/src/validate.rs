@@ -6,6 +6,8 @@ use std::path::Path;
 use anthology_core::Env;
 use anthology_core::paths::home_raw;
 use anthology_pycompat::json::{self, Value};
+use anthology_pycompat::path::realpath;
+use anthology_pycompat::str::repr;
 
 use crate::ops::plugin_read_rule;
 use crate::render::value_depth;
@@ -60,10 +62,10 @@ pub fn validate_plugin_root(plugin_root: &Path, env: &Env) -> Result<(), String>
     if raw.is_empty() || !raw.starts_with('/') {
         return Err(format!(
             "the plugin root must be an absolute path (got {})",
-            py::repr_str(&raw)
+            repr(&raw)
         ));
     }
-    let real = py::realpath(&raw);
+    let real = realpath(Path::new(&*raw)).to_string_lossy().into_owned();
     if !Path::new(&real).is_dir() {
         return Err(format!("the plugin root {real} is not a folder"));
     }
@@ -73,9 +75,7 @@ pub fn validate_plugin_root(plugin_root: &Path, env: &Env) -> Result<(), String>
         ));
     }
     let parent = py::dirname(&real);
-    let home = py::realpath_os(home_raw(env).as_os_str())
-        .to_string_lossy()
-        .into_owned();
+    let home = realpath(&home_raw(env)).to_string_lossy().into_owned();
     if parent == "/"
         || home == parent
         || home.starts_with(&format!("{}/", parent.trim_end_matches('/')))

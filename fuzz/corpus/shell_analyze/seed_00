@@ -1,0 +1,1 @@
+/home/testersudo -u bob env A=1 timeout 5 nohup npx -y playwright install
