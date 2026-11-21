@@ -5,8 +5,8 @@
 //! 2026-11-21: fix-wave I's findings are Rust requirements).
 //!
 //! Beyond the Python reference (case-scoped D-8 in the difftest, each from a reviewer's payload):
-//! - a package manager's `--` ends the alternate span only when the main parse's program is the package
-//!   manager itself (FW-I review R1-I1: `npm exec --omit dev -- playwright install`);
+//! - a package manager's `--` ends the alternate span only when its verb is not `exec`/`dlx`/`x` (FW-I
+//!   review R1-I1: `npm exec --omit dev -- playwright install`);
 //! - `doppler`/`op`/`dotenvx`/`infisical run` give their `--command` as a script and run the words after `--`
 //!   (FW-I review R1-M3).
 
@@ -1228,7 +1228,7 @@ pub(crate) fn parallel_lines(
     if groups.is_empty() || groups.iter().any(Vec::is_empty) {
         return Ok(out);
     }
-    work.charge(2 * line.len())?;
+    work.charge_extra(2 * line.len())?;
     let braces = line.bytes().filter(|&b| b == b'{').count();
     let replaced = if replace.is_empty() {
         line.chars().count() + 1
@@ -1251,7 +1251,7 @@ pub(crate) fn parallel_lines(
             .collect::<Vec<_>>()
             .join(" ");
         let size = (braces.max(replaced) + 1).saturating_mul(joined.len());
-        work.charge(WORD + line.len() + size)?;
+        work.charge_extra(WORD + line.len() + size)?;
         if let Some(put) = put_positions(line, &combo) {
             out.push(put);
         } else if line.is_empty() {
@@ -1318,10 +1318,10 @@ pub(crate) fn pm_runs_own_verb(prog: &str, args: &[String]) -> bool {
 }
 
 /// `_alternate_span(tokens, main_at)`: the words that may start an alternate reading. Rust: a package
-/// manager's `--` ends the span only when the main parse's program is a package manager itself (a script or
-/// test verb), never after `exec`/`dlx`/`x` or a bin run (FW-I review R1-I1:
-/// `npm exec --omit dev -- playwright install`).
-fn alternate_span(tokens: &[String], main_at: usize, main: &str) -> Option<(usize, usize)> {
+/// manager's `--` ends the span only when its verb is not `exec`/`dlx`/`x`, whose `--` ends npm's own
+/// options before the program (FW-I review R1-I1: `npm exec --omit dev -- playwright install`); after a
+/// script or test verb the words are the script's arguments (`pnpm run e2e -- playwright test`).
+fn alternate_span(tokens: &[String], main_at: usize) -> Option<(usize, usize)> {
     for (k, word) in tokens.iter().enumerate() {
         if is_assignment(word) || word == "!" || has(KEYWORDS, word) || word.is_empty() {
             continue;
@@ -1331,10 +1331,13 @@ fn alternate_span(tokens: &[String], main_at: usize, main: &str) -> Option<(usiz
         if is_trigger(&name) {
             let after = tokens.get(main_at + 1..).unwrap_or(&[]);
             if has(JS_PACKAGE_MANAGERS, &name)
-                && has(JS_PACKAGE_MANAGERS, main)
                 && let Some(dd) = after.iter().position(|t| t == "--")
             {
-                return Some((k + 1, main_at + 1 + dd));
+                let mut unused = false;
+                let verb = k + pm_verb_index(&tokens[k..], &mut unused);
+                if !tokens.get(verb).is_some_and(|v| has(RUNNER_SUBCOMMANDS, v)) {
+                    return Some((k + 1, main_at + 1 + dd));
+                }
             }
             return Some((k + 1, tokens.len()));
         }
@@ -2004,11 +2007,11 @@ pub(crate) fn strip_prefixes(
     if let Some(alternates) = alternates {
         let main = toks.first().map(|w| prog_name(w)).unwrap_or_default();
         let main_at = tokens.len().saturating_sub(toks.len());
-        if let Some((start, end)) = alternate_span(tokens, main_at, &main)
+        if let Some((start, end)) = alternate_span(tokens, main_at)
             && !has(QUIET_PROGRAMS, &main)
         {
             let found = alternates_of(tokens, start, end);
-            work.charge(
+            work.charge_extra(
                 found
                     .iter()
                     .flat_map(|(_, alt)| alt)

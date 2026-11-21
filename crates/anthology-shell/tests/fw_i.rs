@@ -386,12 +386,10 @@ fn a_package_managers_double_dash_ends_the_span_only_after_its_own_verb() {
 }
 
 #[test]
-#[ignore = "finding: Rust reads the words after a pnpm/yarn/bun script's `--` as a command (R1-I1 cut)"]
 fn pnpm_yarn_and_bun_script_arguments_after_double_dash_are_not_a_command() {
     // review-fw-i.md round 1, I3 negative controls: `pnpm run e2e -- playwright test` is allowed (the
-    // reference allows every row). The main parse reads `pnpm run e2e` as running the bin `e2e`, so the R1-I1
-    // rule ("cut only when the main program is the PM") never cuts, and `playwright test` becomes a G1
-    // alternate. npm is not affected: its main program stays `npm`.
+    // reference allows every row). The main parse reads `pnpm run e2e` as running the bin `e2e`; the R1-I1
+    // rule cuts the alternates at `--` for every verb but `exec`/`dlx`/`x`, so `playwright test` is not one.
     assert_clear(&[
         "pnpm run e2e -- playwright test",
         "pnpm run e2e -- playwright install",

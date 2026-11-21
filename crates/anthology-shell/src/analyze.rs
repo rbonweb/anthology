@@ -10,7 +10,7 @@
 
 use crate::collect::{Ctx, with_path_regexes};
 use crate::lexer::{Group, GroupId, Reading, Redirect, Work};
-use crate::limits::{Limits, work_limit};
+use crate::limits::{Limits, extra_limit, work_limit};
 use crate::opaque::Opaque;
 
 /// A flattened command ready for the per-rule predicates (`_Entry`, field for field, plus `opaque`).
@@ -52,18 +52,9 @@ pub struct Analysis {
 
 /// `analyze()` with explicit limits (a test lowers `backtrack_limit`).
 pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
-    analyze_budget(command, home, limits, work_limit(command.len()))
-}
-
-/// `analyze_with` and a given work budget (tests).
-pub(crate) fn analyze_budget(
-    command: &str,
-    home: &str,
-    limits: &Limits,
-    budget: usize,
-) -> Analysis {
     with_path_regexes(limits, |re| {
-        let mut ctx = Ctx::new(home, re, Work::new(budget, Reading::Bash5));
+        let work = Work::new(work_limit(command), extra_limit(command), Reading::Bash5);
+        let mut ctx = Ctx::new(home, re, work);
         ctx.collect(command, false, 0);
         for reading in [Reading::Exact, Reading::Wide] {
             if ctx.halted() || !ctx.work.paren_lines {

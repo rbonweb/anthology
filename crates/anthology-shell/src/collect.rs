@@ -4,10 +4,10 @@
 //! path helpers `_expand` and `_normalize` (which the tracked `cd` directory needs; the guard reuses them, so
 //! there is one implementation, G-2).
 //!
-//! One work budget (`Work`, `limits::work_limit`) covers the whole analysis, every reading pass included: the
-//! lexer charges what it visits, and this module the words it stores, the texts it analyzes and the lines it
-//! builds. Over budget, the analysis stops and is `incomplete` (Python raises `_TooComplex`; the guard
-//! blocks, "too complex to check safely").
+//! One work budget covers the whole analysis, every reading pass included (`Work`): Python's
+//! (`limits::work_limit`), spent where `_charge` spends it, and Rust's own (`limits::extra_limit`), spent on the
+//! words this module stores, the texts it analyzes and the lines it builds. Over either, the analysis stops
+//! and is `incomplete` (Python raises `_TooComplex`; the guard blocks, "too complex to check safely").
 //!
 //! Beyond Python (each sets `incomplete` or is case-scoped in the difftest):
 //! - `find -exec find -exec ...` nesting is walked with an explicit stack (Python recurses and raises
@@ -278,6 +278,8 @@ pub(crate) struct Ctx<'a> {
     seen: HashMap<SeenKey, (usize, Option<String>)>,
     /// `_Entry.stdin_runs`, by entry index.
     stdin_runs: HashMap<usize, Vec<StdinRun>>,
+    /// The segment `add_one` is about to add came from a `$((...))` (`Segment::arith`).
+    arith: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -294,6 +296,7 @@ impl<'a> Ctx<'a> {
             halted: false,
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
+            arith: false,
         }
     }
 
@@ -315,8 +318,9 @@ impl<'a> Ctx<'a> {
         self.incomplete = true;
     }
 
+    /// Spend `n` of the Rust-only budget.
     fn spend(&mut self, n: usize) -> bool {
-        if self.halted || self.work.charge(n).is_err() {
+        if self.halted || self.work.charge_extra(n).is_err() {
             self.halt();
             return false;
         }
@@ -403,6 +407,7 @@ impl<'a> Ctx<'a> {
         let mut new_entries = Vec::new();
         for seg in lexed.segments {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
+            self.arith = seg.arith;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
                 Some(entry) => new_entries.push(entry),
                 None => return,
@@ -461,7 +466,9 @@ impl<'a> Ctx<'a> {
             }
             for &e in &interpreters {
                 // each is scanned per entry (G3)
-                if !self.spend(texts.iter().map(|t| WORD + t.len()).sum()) {
+                let size: usize = texts.iter().map(String::len).sum();
+                if self.work.charge(size).is_err() || !self.spend(WORD * texts.len() + size) {
+                    self.halt();
                     return;
                 }
                 self.entries[e].code.extend(texts.iter().cloned());
@@ -706,7 +713,7 @@ impl<'a> Ctx<'a> {
         }
         if DOCKER.contains(&prog) {
             let args = entry.args.clone();
-            let Some(shells) = embedded_shells_in(&args, &mut self.work.budget) else {
+            let Some(shells) = embedded_shells_in(&args, &mut self.work.extra) else {
                 self.halt();
                 return None;
             };
@@ -805,6 +812,7 @@ impl<'a> Ctx<'a> {
         depth: usize,
         from_text: &[Opaque],
     ) -> Option<usize> {
+        let arith = std::mem::take(&mut self.arith);
         let size: usize = tokens.iter().map(|t| WORD + t.len()).sum();
         if !self.spend(1 + 2 * size) {
             return None;
@@ -866,7 +874,7 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             differs |= at < main_at;
-            if !self.spend(1 + 2 * size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>()) {
+            if !self.spend(1 + size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>()) {
                 return None;
             }
             let other_prog = other.cmd.first().map(|w| prog_name(w)).unwrap_or_default();
@@ -904,9 +912,14 @@ impl<'a> Ctx<'a> {
             || peeled.stdin_args
             || peeled.emptied
             || STDIN_ARG_RUNNERS.contains(&prog.as_str())
-            || cmd
-                .first()
-                .is_some_and(|w| is_dynamic(w) && !TEST_BRACKETS.contains(&w.as_str()))
+            || cmd.first().is_some_and(|w| {
+                // in arithmetic, `*` is multiplication: only an expansion makes the word dynamic
+                if arith {
+                    w.contains(['$', '`'])
+                } else {
+                    is_dynamic(w) && !TEST_BRACKETS.contains(&w.as_str())
+                }
+            })
         {
             mark(&mut opaque, Opaque::DynamicCommandWord);
         }
@@ -968,7 +981,7 @@ impl<'a> Ctx<'a> {
         }
         if DOCKER.contains(&prog.as_str()) {
             // `docker run img sh -euc "..."`
-            let Some(starts) = script_starts_in(&args, &mut self.work.budget) else {
+            let Some(starts) = script_starts_in(&args, &mut self.work.extra) else {
                 self.halt();
                 return None;
             };

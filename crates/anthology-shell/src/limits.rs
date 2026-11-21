@@ -14,18 +14,36 @@ pub struct Limits {
     pub backtrack_limit: usize,
 }
 
-/// The work budget of one analysis (or one `segments` call): `WORK_PER_BYTE` units per byte of the command
-/// plus `WORK_BASE`. Every scan charges the bytes it visits and every stored word `WORD` plus its bytes, so the
-/// budget bounds time and memory whatever path an input takes. Python's own contract is 24 per character plus
-/// 200 000 (`_WORK_PER_CHAR`, `_WORK_BASE`); Rust allows more, so where Python stops ("too complex") Rust may
-/// still finish (an oracle-marked D-7), never the reverse for realistic commands.
-pub const WORK_PER_BYTE: usize = 64;
-/// See `WORK_PER_BYTE`.
-pub const WORK_BASE: usize = 1_000_000;
+/// The work budget of one analysis (or one `segments` call), fix-wave H's port contract: `WORK_PER_CHAR` units
+/// per character of the command plus `WORK_BASE` (guard_rules.py `_WORK_PER_CHAR`, `_WORK_BASE`). It is spent
+/// where Python's `_charge` spends it, in bytes (never fewer than Python's characters), so whatever Python
+/// finds too complex, Rust does too (D-7: Rust may block more, never less).
+pub const WORK_PER_CHAR: usize = 24;
+/// See `WORK_PER_CHAR`.
+pub const WORK_BASE: usize = 200_000;
 
-/// The work budget for a command of `len` bytes.
-pub fn work_limit(len: usize) -> usize {
-    len.saturating_mul(WORK_PER_BYTE).saturating_add(WORK_BASE)
+/// The budget of the work Rust does beyond Python's charges (words stored in entries, alternates, GNU parallel
+/// lines, the shell option rescans): `EXTRA_PER_BYTE` per byte plus `EXTRA_BASE`. It bounds time and memory on
+/// those paths; running out is "too complex" too.
+pub const EXTRA_PER_BYTE: usize = 128;
+/// See `EXTRA_PER_BYTE`.
+pub const EXTRA_BASE: usize = 4_000_000;
+
+/// The work budget for `command` (Python's figures, by character).
+pub fn work_limit(command: &str) -> usize {
+    command
+        .chars()
+        .count()
+        .saturating_mul(WORK_PER_CHAR)
+        .saturating_add(WORK_BASE)
+}
+
+/// The Rust-only budget for `command`.
+pub fn extra_limit(command: &str) -> usize {
+    command
+        .len()
+        .saturating_mul(EXTRA_PER_BYTE)
+        .saturating_add(EXTRA_BASE)
 }
 
 /// fancy-regex's own default (`RegexBuilder::backtrack_limit`), kept as GC-16 asks.

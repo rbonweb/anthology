@@ -20,17 +20,23 @@ fix-waves to Rust, so the plugin's own guard_rules.py is no longer the shell ora
   reading `_add_alternates` looks at whose command differs from its entry's, as an entry (Rust keeps them all
   for G1, lead ruling Q3=A; the reference checks G1 as it goes, which this oracle replaces by recording).
 
+Rust is stricter than the reference where a reviewer's bash-verified payload needs it (owner direction, D-8).
+Where such a rule reaches across the grammar, so that no case list could name the cases, this oracle applies
+it to the reference too, so the difftest still checks everything else; each such rule is listed in
+`port/difftest/divergences/shell.*.toml` and pinned by Rust tests:
+- FW-H review R1-M1: the lenient split also reads each closed `$'...'` decoded (`_lenient_segments` below).
+
 Both ops run under `check`'s work budget (`_WORK_PER_CHAR` per character plus `_WORK_BASE`); over it the
-reference raises `_TooComplex` and the result is `{"exit": 1, "stderr": "_TooComplex", "divergence": "D-7"}`
-(Rust's budget is larger, and it reports `incomplete` where it runs out: the guard blocks either way).
+reference raises `_TooComplex` and `check` blocks. The expected result is then Rust's incomplete one (`incomplete`
+true, nothing else), marked D-7: Rust spends the same budget where `_charge` does, so it must stop too.
 
 Groups are identified by object identity in Python; a result numbers them by first appearance (segments in
 order, entries in order) and lists each group's texts in that order.
 
 Result: `{"exit": 0, "stdout": <canonical JSON of the result>, "stderr": ""}`, canonical meaning
 `json.dumps(obj, sort_keys=True, separators=(",", ":"))` (Rust: `pycompat::json::dumps(.., &COMPACT_SORTED)`).
-When Python raises (RecursionError on hostile nesting), `{"exit": 1, "stdout": "", "stderr": "<type>",
-"divergence": "D-1"}`: guard.py turns any exception into "allow", so Rust may block or match (GC-16 D-1).
+When Python raises (RecursionError on hostile nesting), the expected result is the incomplete one, marked
+D-1: guard.py turns any exception into "allow", and Rust blocks instead (GC-16 D-1).
 
 `--batch`: JSON lines `{"id": ID, "data": DATA}` on stdin, JSON lines `{"id": ID, "out": run(DATA)}` on stdout
 (canonical form), in input order.
@@ -126,6 +132,54 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
 G._add_alternates = _add_alternates
 
 
+def _decode_ansi_c(piece):
+    """`piece` with each closed `$'...'` decoded (bash 5) and the other quotes dropped, or None."""
+    out, last, start, found = [], 0, 0, False
+    while True:
+        at = piece.find("$'", start)
+        if at < 0:
+            break
+        got = G._ansi_c(piece, at + 2)
+        if got is None:
+            break
+        decoded, end = got
+        out += [G._LENIENT_QUOTES.sub("", piece[last:at]), decoded]
+        last = start = end
+        found = True
+    if not found:
+        return None
+    out.append(G._LENIENT_QUOTES.sub("", piece[last:]))
+    return "".join(out)
+
+
+def _lenient_segments(text):
+    """`_lenient_segments` with Rust's third reading (FW-H review R1-M1, D-8)."""
+    out = []
+    G._charge(2 * len(text))
+    for piece in G.re.split(r"[;&|\n()`]+|\$\(", text):
+        spaced = piece.replace("'", " ").replace('"', " ").split()
+        joined = G._LENIENT_QUOTES.sub("", piece).split()
+        readings = [spaced, joined] if joined != spaced else [spaced]
+        decoded = _decode_ansi_c(piece)
+        if decoded is not None and decoded.split() not in readings:
+            readings.append(decoded.split())
+        for tokens in readings:
+            if not tokens:
+                continue
+            seg = G._Seg(G._Group())
+            seg.tokens = tokens
+            out.append(seg)
+            for start, first in G._script_starts(tokens):   # `bash -c <rest of the line>`
+                G._charge(len(tokens) - start)
+                extra = G._Seg(G._Group())
+                extra.tokens = [first] + tokens[start + 1:]
+                out.append(extra)
+    return out
+
+
+G._lenient_segments = _lenient_segments
+
+
 def _entry(e, groups):
     return {
         "raw": list(e.raw), "redirs": [list(r) for r in e.redirs], "prog_path": e.prog_path,
@@ -169,11 +223,20 @@ def run(case):
     try:
         result = function(*args)
     except G._TooComplex:  # over the work budget: `check` blocks ("too complex")
-        return {"exit": 1, "stdout": "", "stderr": "_TooComplex", "divergence": "D-7"}
-    except Exception as exc:  # RecursionError and anything else guard.py would turn into "allow"
-        return {"exit": 1, "stdout": "", "stderr": type(exc).__name__, "divergence": "D-1"}
+        return dict(_incomplete(data["op"]), divergence="D-7")
+    except Exception:  # RecursionError and anything else guard.py would turn into "allow"
+        return dict(_incomplete(data["op"]), divergence="D-1")
     finally:
         G._STATE.reset(None)
+    return {"exit": 0, "stdout": canonical(result), "stderr": ""}
+
+
+def _incomplete(op):
+    """Rust's result for a command it stopped on (the guard blocks it)."""
+    if op == "segments":
+        result = {"lenient": False, "incomplete": True, "segments": [], "groups": []}
+    else:
+        result = {"incomplete": True, "entries": [], "alternates": [], "groups": []}
     return {"exit": 0, "stdout": canonical(result), "stderr": ""}
 
 

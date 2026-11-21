@@ -91,8 +91,17 @@ fn render_entry(e: &Entry, ordinals: &mut Ordinals) -> Value {
     ])
 }
 
-/// The oracle's `_analyze` rendering.
+/// The oracle's `_analyze` rendering. An incomplete analysis renders as nothing but `incomplete` (what it found
+/// before it stopped is not a result: the guard blocks), as the oracle renders the reference's `_TooComplex`.
 pub(crate) fn render_analysis(analysis: &Analysis) -> Value {
+    if analysis.incomplete {
+        return obj(vec![
+            ("incomplete", Value::Bool(true)),
+            ("entries", Value::Array(Vec::new())),
+            ("alternates", Value::Array(Vec::new())),
+            ("groups", Value::Array(Vec::new())),
+        ]);
+    }
     let mut ordinals = Ordinals::default();
     let entries = analysis
         .entries

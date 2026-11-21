@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::heredoc::{find_heredoc_end, join_continuations};
 use crate::lenient::lenient_segments;
-use crate::limits::{Limits, MAX_DEPTH, work_limit};
+use crate::limits::{Limits, MAX_DEPTH, extra_limit, work_limit};
 use crate::shell_args::Budget;
 use scan::{
     MAX_UNCLOSED, body_substitutions, bracket_pairs, scan_paren, scan_paren_ex, substitution,
@@ -47,6 +47,9 @@ pub struct Segment {
     pub tokens: Vec<String>,
     pub redirs: Vec<Redirect>,
     pub group: GroupId,
+    /// Rust-only: lexed from the text of a `$((...))` (an arithmetic expression read as commands, as Python
+    /// does), so a `*` program word there is multiplication, not a glob (`opaque`).
+    pub(crate) arith: bool,
 }
 
 /// A pipeline's literal stdin text (heredoc bodies, here-strings).
@@ -105,27 +108,40 @@ pub(crate) enum Reading {
     Wide,
 }
 
-/// The work budget and the reading of the pass in progress (`_STATE`).
+/// The work budgets and the reading of the pass in progress (`_STATE`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Work {
+    /// Python's budget, spent where `_charge` spends it (`charge`).
     pub(crate) budget: Budget,
+    /// The budget of Rust's own work (`charge_extra`, and the shell option rescans).
+    pub(crate) extra: Budget,
     pub(crate) reading: Reading,
     /// A delimiter line with a parenthesis after it was seen inside `$(...)`: the other readings matter.
     pub(crate) paren_lines: bool,
 }
 
 impl Work {
-    pub(crate) fn new(budget: usize, reading: Reading) -> Work {
+    pub(crate) fn new(budget: usize, extra: usize, reading: Reading) -> Work {
         Work {
             budget: Budget(budget),
+            extra: Budget(extra),
             reading,
             paren_lines: false,
         }
     }
 
-    /// `_charge`: spend `units` of the budget.
+    /// `_charge`: spend `units` of Python's budget.
     pub(crate) fn charge(&mut self, units: usize) -> Result<(), TooComplex> {
         if self.budget.spend(units) {
+            Ok(())
+        } else {
+            Err(TooComplex)
+        }
+    }
+
+    /// Spend `units` of the Rust-only budget.
+    pub(crate) fn charge_extra(&mut self, units: usize) -> Result<(), TooComplex> {
+        if self.extra.spend(units) {
             Ok(())
         } else {
             Err(TooComplex)
@@ -338,6 +354,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 tokens: std::mem::take(&mut self.tokens),
                 redirs: std::mem::take(&mut self.redirs),
                 group,
+                arith: false,
             });
         }
         if new_group {
@@ -387,6 +404,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 tokens,
                 redirs: Vec::new(),
                 group,
+                arith: false,
             });
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
@@ -662,7 +680,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
             Some(b'(') => {
                 let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
                 let comsub = !inner.starts_with("((");
+                let first = self.out.len();
                 self.nested(&inner, Some(i), comsub)?;
+                if !comsub {
+                    for seg in &mut self.out[first..] {
+                        seg.arith = true;
+                    }
+                }
                 return Ok(j);
             }
             Some(b'{') => {
@@ -918,7 +942,7 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
 /// `segments()` with explicit limits (kept for the published API; the lexer no longer uses a regex).
 pub fn segments_with(text: &str, depth: usize, limits: &Limits) -> Lexed {
     let _ = limits;
-    let mut work = Work::new(work_limit(text.len()), Reading::Bash5);
+    let mut work = Work::new(work_limit(text), extra_limit(text), Reading::Bash5);
     lex_in(text, depth, &mut work).lexed
 }
 
