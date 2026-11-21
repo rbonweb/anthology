@@ -129,11 +129,34 @@ mod release_edit_cli {
                 "{a:?}: {}",
                 r.err
             );
-            assert!(
-                r.err.starts_with("usage: anthology-dev release-edit"),
-                "{}",
-                r.err
+            assert!(r.err.starts_with("usage: release_edit.py"), "{}", r.err);
+        }
+    }
+
+    #[test]
+    fn check_dependents_resolves_a_relative_root_against_cwd() {
+        // release.sh runs `check-dependents . <plugin> <version>` from the repository root.
+        let tmp = tempfile::tempdir().unwrap();
+        for base in ["", "sub"] {
+            let dir = tmp.path().join(base).join("plugins/app/.claude-plugin");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("plugin.json"),
+                r#"{"dependencies": [{"name": "lib", "version": "~0.1"}]}"#,
+            )
+            .unwrap();
+            let root = if base.is_empty() { "." } else { base };
+            let r = release(tmp.path(), &["check-dependents", root, "lib", "0.2.0"]);
+            assert_eq!(r.code, 1, "{root}");
+            assert_eq!(
+                r.err,
+                "release: plugins/app/.claude-plugin/plugin.json depends on lib ~0.1, which \
+                 does not accept 0.2.0; widen that range first (it is an app change and needs \
+                 its own version bump)\n",
+                "{root}"
             );
+            let r = release(tmp.path(), &["check-dependents", root, "lib", "0.1.4"]);
+            assert_eq!((r.code, r.err.as_str()), (0, ""), "{root}");
         }
     }
 
@@ -179,11 +202,11 @@ mod release_edit_cli {
                 "--date",
                 "x"
             ]),
-            "anthology-dev release-edit: error: unrecognized arguments: --date x"
+            "release_edit.py: error: unrecognized arguments: --date x"
         );
         assert_eq!(
             tail(&["--"]),
-            "anthology-dev release-edit: error: the following arguments are required: cmd"
+            "release_edit.py: error: the following arguments are required: cmd"
         );
         let choices = "plugin-version, check-version, check-dependents, changelog-check, \
                        changelog-move, set-version, set-source-version";
@@ -196,14 +219,14 @@ mod release_edit_cli {
             assert_eq!(
                 tail(a),
                 format!(
-                    "anthology-dev release-edit: error: argument cmd: invalid choice: '{bad}' \
+                    "release_edit.py: error: argument cmd: invalid choice: '{bad}' \
                      (choose from {choices})"
                 )
             );
         }
         assert_eq!(
             tail(&["-x", "--", "check-version", "1", "2", "1"]),
-            "anthology-dev release-edit: error: unrecognized arguments: -x"
+            "release_edit.py: error: unrecognized arguments: -x"
         );
     }
 
@@ -214,7 +237,7 @@ mod release_edit_cli {
         assert_eq!(r.code, 2);
         assert!(
             r.err.ends_with(
-                "anthology-dev release-edit changelog-move: error: ambiguous option: --=x \
+                "release_edit.py changelog-move: error: ambiguous option: --=x \
                  could match --help, --date\n"
             ),
             "{}",
@@ -224,7 +247,7 @@ mod release_edit_cli {
         assert_eq!(r.code, 2);
         assert!(
             r.err.ends_with(
-                "anthology-dev version-bump: error: ambiguous option: --=x could match \
+                "check_version_bump.py: error: ambiguous option: --=x could match \
                  --help, --repo\n"
             ),
             "{}",
@@ -275,7 +298,7 @@ mod release_edit_cli {
             assert_eq!(r.code, 2, "{a:?}");
             let arg = a.iter().rev().find(|s| s.starts_with("-=")).unwrap();
             let want = format!(
-                "anthology-dev release-edit{prog}: error: ambiguous option: {arg} could match {could}\n"
+                "release_edit.py{prog}: error: ambiguous option: {arg} could match {could}\n"
             );
             assert!(r.err.ends_with(&want), "{a:?}: {}", r.err);
         }
@@ -532,7 +555,7 @@ mod version_bump_cli {
         assert_eq!(r.code, 2);
         assert!(
             r.err.ends_with(
-                "anthology-dev version-bump: error: the following arguments are required: head\n"
+                "check_version_bump.py: error: the following arguments are required: head\n"
             ),
             "{}",
             r.err

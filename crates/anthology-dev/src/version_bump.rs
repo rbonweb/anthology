@@ -303,8 +303,8 @@ fn gate(base: &str, head: &str, git: &Git<'_>, out: &mut String) -> Result<i32, 
 
 // ---- command line --------------------------------------------------------------------
 
-const PROG: &str = "anthology-dev version-bump";
-const USAGE: &str = "usage: anthology-dev version-bump [-h] [--repo REPO] base head";
+const PROG: &str = "check_version_bump.py";
+const USAGE: &str = "usage: check_version_bump.py [-h] [--repo REPO] base head";
 const OPTS: [OptSpec; 1] = [OptSpec {
     long: "--repo",
     dest: "repo",

@@ -557,7 +557,7 @@ const SUBCOMMANDS: [&str; 7] = [
     "set-source-version",
 ];
 
-const PROG: &str = "anthology-dev release-edit";
+const PROG: &str = "release_edit.py";
 
 const fn pos(name: &'static str) -> PosSpec {
     PosSpec { name, choices: &[] }
@@ -606,8 +606,9 @@ fn sub_spec(name: &str) -> (Vec<PosSpec>, &'static [OptSpec], &'static str) {
 
 fn main_usage() -> String {
     format!(
-        "usage: {PROG} [-h]\n                    {{{}}}\n                    ...",
-        SUBCOMMANDS.join(",")
+        "usage: {PROG} [-h]\n{pad}{{{}}}\n{pad}...",
+        SUBCOMMANDS.join(","),
+        pad = " ".repeat("usage: ".len() + PROG.len() + 1)
     )
 }
 

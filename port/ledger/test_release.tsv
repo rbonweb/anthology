@@ -20,23 +20,23 @@ test_release.RangeTests.test_dependents_caret_partial_range	ported	crates/anthol
 test_release.RangeTests.test_dependents_rejecting_names_the_dependent	ported	crates/anthology-dev/tests/release_edit.rs::range_tests::test_dependents_rejecting_names_the_dependent
 test_release.RangeTests.test_dependents_unsupported_range_fails_closed	ported	crates/anthology-dev/tests/release_edit.rs::range_tests::test_dependents_unsupported_range_fails_closed
 test_release.RangeTests.test_unsupported_forms_raise	ported	crates/anthology-dev/tests/release_edit.rs::range_tests::test_unsupported_forms_raise
-test_release.ReleaseScriptTests.test_dependent_range_rejecting_the_version_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_dirty_tree_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_dry_run_failure_after_the_worktree_exists_cleans_up	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_dry_run_leaves_the_checkout_untouched	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_dry_run_needs_no_identity_and_skips_hooks	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_dry_run_with_push_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_empty_unreleased_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_equal_version_with_existing_tag_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_equal_version_without_tag_is_the_first_release	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_invalid_semver_and_unknown_plugin_are_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_lower_version_is_refused	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_normal_release	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_push_from_detached_head_is_refused_with_nothing_changed	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_push_publishes_branch_and_tag	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_rejected_branch_push_gives_a_recovery_hint_and_no_tag	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_script_is_executable_in_the_real_repo	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
-test_release.ReleaseScriptTests.test_superpowers_release_also_updates_sources_json	todo:DV2		drives RL1's staging release.sh; ported when RL1 merges (plan DV2)
+test_release.ReleaseScriptTests.test_dependent_range_rejecting_the_version_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dependent_range_rejecting_the_version_is_refused
+test_release.ReleaseScriptTests.test_dirty_tree_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dirty_tree_is_refused
+test_release.ReleaseScriptTests.test_dry_run_failure_after_the_worktree_exists_cleans_up	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dry_run_failure_after_the_worktree_exists_cleans_up
+test_release.ReleaseScriptTests.test_dry_run_leaves_the_checkout_untouched	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dry_run_leaves_the_checkout_untouched
+test_release.ReleaseScriptTests.test_dry_run_needs_no_identity_and_skips_hooks	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dry_run_needs_no_identity_and_skips_hooks
+test_release.ReleaseScriptTests.test_dry_run_with_push_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_dry_run_with_push_is_refused
+test_release.ReleaseScriptTests.test_empty_unreleased_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_empty_unreleased_is_refused
+test_release.ReleaseScriptTests.test_equal_version_with_existing_tag_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_equal_version_with_existing_tag_is_refused
+test_release.ReleaseScriptTests.test_equal_version_without_tag_is_the_first_release	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_equal_version_without_tag_is_the_first_release
+test_release.ReleaseScriptTests.test_invalid_semver_and_unknown_plugin_are_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_invalid_semver_and_unknown_plugin_are_refused
+test_release.ReleaseScriptTests.test_lower_version_is_refused	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_lower_version_is_refused
+test_release.ReleaseScriptTests.test_normal_release	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_normal_release
+test_release.ReleaseScriptTests.test_push_from_detached_head_is_refused_with_nothing_changed	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_push_from_detached_head_is_refused_with_nothing_changed
+test_release.ReleaseScriptTests.test_push_publishes_branch_and_tag	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_push_publishes_branch_and_tag
+test_release.ReleaseScriptTests.test_rejected_branch_push_gives_a_recovery_hint_and_no_tag	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_rejected_branch_push_gives_a_recovery_hint_and_no_tag
+test_release.ReleaseScriptTests.test_script_is_executable_in_the_real_repo	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_script_is_executable_in_the_real_repo
+test_release.ReleaseScriptTests.test_superpowers_release_also_updates_sources_json	ported	crates/anthology-dev/tests/release_edit.rs::release_script_tests::test_superpowers_release_also_updates_sources_json
 test_release.VersionEditTests.test_ignores_nested_version_keys_and_preserves_layout	ported	crates/anthology-dev/tests/release_edit.rs::version_edit_tests::test_ignores_nested_version_keys_and_preserves_layout
 test_release.VersionEditTests.test_missing_or_non_string_version	ported	crates/anthology-dev/tests/release_edit.rs::version_edit_tests::test_missing_or_non_string_version
 test_release.VersionEditTests.test_plugin_version_reads_top_level	ported	crates/anthology-dev/tests/release_edit.rs::version_edit_tests::test_plugin_version_reads_top_level
