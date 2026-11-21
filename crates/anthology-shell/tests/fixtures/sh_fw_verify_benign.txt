@@ -3261,3 +3261,15 @@ comm -12 <(ls a) <(ls b)
 tee >(gzip > f.gz) < x
 #---
 while read l; do :; done < <(ls)
+#---
+echo "${HOME}" {a,b}
+#---
+cp "${SRC}"/{a,b}.txt dst/
+#---
+git log --format="%h,%s" {main,dev}
+#---
+git commit -m "fix a, b" -- src/{a,b}.rs
+#---
+rg 'foo, bar' src/{a,b}
+#---
+ls ${HOME}/{a,b}

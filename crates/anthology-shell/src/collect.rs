@@ -290,6 +290,30 @@ const SUBSCRIPT_V_PROGRAMS: &[&str] = &["printf", "test", "["];
 const MAX_BRACE_WORDS: usize = 4096;
 const MAX_BRACE_DEPTH: usize = 64;
 
+/// SH-seq re-review R-1: the index after the `}` closing the `${` at `j` (`word[j]` is `$`), or the word's
+/// end. Bash does not brace-expand inside `${...}`, so the brace scanners skip it whole.
+fn param_end(b: &[u8], j: usize) -> usize {
+    let mut depth = 0usize;
+    for (k, &c) in b.iter().enumerate().skip(j + 1) {
+        match c {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return k + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    b.len()
+}
+
+/// `word[j]` starts a `${`.
+fn param_at(b: &[u8], j: usize) -> bool {
+    b[j] == b'$' && b.get(j + 1) == Some(&b'{')
+}
+
 /// The first brace expression of `word`, as (open, close, commas): a `{` (not `${`) with its matching `}` and
 /// a comma at its own level between them. One whose text holds a quote character is not one: past quote
 /// removal, that was quoted text (a JSON body).
@@ -303,7 +327,15 @@ fn brace_at(word: &str) -> Option<(usize, usize, Vec<usize>)> {
     let b = word.as_bytes();
     let mut stack: Vec<Open> = Vec::new();
     let mut first: Option<(usize, usize, Vec<usize>)> = None;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push(Open {
                 at: j,
@@ -481,7 +513,15 @@ fn brace_expressions(word: &str) -> usize {
     let b = word.as_bytes();
     let mut stack: Vec<(usize, bool)> = Vec::new(); // (open, a comma at its level)
     let mut count = 0;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push((j, false)),
             b',' => {
@@ -508,7 +548,15 @@ fn brace_expressions(word: &str) -> usize {
 fn sequence_nested_comma(word: &str) -> bool {
     let b = word.as_bytes();
     let mut stack: Vec<(usize, bool, bool)> = Vec::new(); // (open, comma at its level, a comma deeper)
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push((j, false, false)),
             b',' => {
@@ -543,7 +591,15 @@ fn brace_sequences(word: &str) -> Vec<(usize, usize)> {
     let b = word.as_bytes();
     let mut out = Vec::new();
     let mut open = None;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => open = (j == 0 || b[j - 1] != b'$').then_some(j),
             b',' => open = None,

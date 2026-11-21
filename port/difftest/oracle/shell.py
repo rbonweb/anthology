@@ -279,11 +279,33 @@ _MAX_BRACE_WORDS = 4096
 _MAX_BRACE_DEPTH = 64
 
 
+def _param_end(word, j):
+    """collect.rs `param_end` (SH-seq re-review R-1): the index after the `}` closing the `${` at `j`."""
+    depth = 0
+    for k in range(j + 1, len(word)):
+        if word[k] == "{":
+            depth += 1
+        elif word[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return len(word)
+
+
+def _param_at(word, j):
+    return word[j] == "$" and word[j + 1:j + 2] == "{"
+
+
 def _brace_at(word):
     """The first brace expression of `word`, as (open, close, commas), or None: a `{` (not `${`) with its
     matching `}` and a comma at its own level; one whose text holds a quote character is skipped."""
-    stack, first = [], None
+    stack, first, skip = [], None, 0
     for j, c in enumerate(word):
+        if j < skip:
+            continue
+        if _param_at(word, j):
+            skip = _param_end(word, j)
+            continue
         if c == "{":
             stack.append([j, j > 0 and word[j - 1] == "$", False, []])
         elif c == "," and stack:
@@ -544,8 +566,13 @@ _COMMAND_ENV = ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_PAGER", "GIT_EDITOR", "GIT_SE
 
 def _brace_sequences(word):
     """collect.rs `brace_sequences`: each `{x..y}` (not `${`) as (open, close)."""
-    out, open_ = [], None
+    out, open_, skip = [], None, 0
     for j, c in enumerate(word):
+        if j < skip:
+            continue
+        if _param_at(word, j):
+            skip = _param_end(word, j)
+            continue
         if c == "{":
             open_ = j if j == 0 or word[j - 1] != "$" else None
         elif c == ",":
@@ -611,8 +638,13 @@ def _subscript_runs(word):
 
 def _brace_expressions(word):
     """collect.rs `brace_expressions`: braces (not `${`) holding a comma at their level, or a `..`."""
-    stack, count = [], 0
+    stack, count, skip = [], 0, 0
     for j, c in enumerate(word):
+        if j < skip:
+            continue
+        if _param_at(word, j):
+            skip = _param_end(word, j)
+            continue
         if c == "{":
             stack.append([j, False])
         elif c == "," and stack:
@@ -626,8 +658,13 @@ def _brace_expressions(word):
 
 def _sequence_nested_comma(word):
     """collect.rs `sequence_nested_comma` (SH-seq review I-1): a `..` brace holding a comma brace."""
-    stack = []
+    stack, skip = [], 0
     for j, c in enumerate(word):
+        if j < skip:
+            continue
+        if _param_at(word, j):
+            skip = _param_end(word, j)
+            continue
         if c == "{":
             stack.append([j, False, False])
         elif c == "," and stack:
@@ -887,12 +924,25 @@ def _add(self, chars):
         if chars == "{":
             self.braces = True
         self.marks = getattr(self, "marks", 0) + 1
-    elif chars.startswith("${") and caller.f_code is _DOLLAR:
-        self.marks = getattr(self, "marks", 0) + _marks(chars)
     _ADD(self, chars)
 
 
 G._Lexer.add = _add
+
+_BRACE_END = G._Lexer.brace_end
+_DQ = G._Lexer.double_quoted.__code__
+
+
+def _brace_end(self, i):
+    """`_Lexer.brace_end`, counting a `${...}`'s `{`, `}` and `,` as unquoted, quoted or not: bash never
+    brace-expands it (lexer.rs `dollar`, `double_quoted`)."""
+    k = _BRACE_END(self, i)
+    if sys._getframe(1).f_code in (_DOLLAR, _DQ):
+        self.marks = getattr(self, "marks", 0) + _marks(self.text[i:k + 1])
+    return k
+
+
+G._Lexer.brace_end = _brace_end
 
 _END_WORD = G._Lexer.end_word
 
@@ -901,7 +951,8 @@ def _end_word(self):
     """`_Lexer.end_word`, noting a word with more `{`, `}` or `,` than were added unquoted (lexer.rs
     `quoted_braces`)."""
     if self.has_word:
-        if _marks("".join(self.cur)) > getattr(self, "marks", 0):
+        word = "".join(self.cur)
+        if _marks(word) > getattr(self, "marks", 0) and "{" in word:
             self.quoted_braces = True
         self.marks = 0
     _END_WORD(self)

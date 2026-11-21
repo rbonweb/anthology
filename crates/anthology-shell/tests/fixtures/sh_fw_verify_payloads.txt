@@ -552,3 +552,13 @@ npx --yes <(true) playwright install
 npx --yes >(cat) playwright install
 #---
 (npm --userconfig <(echo) i puppeteer)
+#---
+npm --prefix ${x:-{a,b}} {-x,} i puppeteer
+#---
+x=1; npm --prefix ${x:+{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\{a,b\}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer
+#---
+npm --prefix "${x:-{a,b}}" {-x,} i puppeteer

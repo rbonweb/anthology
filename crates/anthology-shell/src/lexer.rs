@@ -370,7 +370,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
             .bytes()
             .filter(|b| matches!(b, b'{' | b'}' | b','))
             .count();
-        self.quoted_braces |= marks > std::mem::take(&mut self.marks);
+        // a word with no `{` holds no brace expression (re-review: `-m "a, b"` is fine)
+        self.quoted_braces |= marks > std::mem::take(&mut self.marks) && word.contains('{');
         if let Some(array) = self.array.as_mut() {
             array.push(word);
             return;
@@ -712,7 +713,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     let k = self.brace_end(j)?;
                     self.scan_expanded(j + 2, k, true, false)?;
                     let after = after_char(text, k);
-                    self.cur.push_str(text.get(j..after).unwrap_or(""));
+                    let part = text.get(j..after).unwrap_or("");
+                    // as unquoted: `${...}` is never brace-expanded (re-review over-block fix)
+                    self.marks += part
+                        .bytes()
+                        .filter(|b| matches!(b, b'{' | b'}' | b','))
+                        .count();
+                    self.cur.push_str(part);
                     j = after;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'[') => {
