@@ -7,7 +7,10 @@
 //! `--expect-sha256` three times (before anything, after the downloads, right before the
 //! write), records the ops in state.json before writing settings.json, ensures the
 //! guardrails-pinned binary (`bootstrap.sh session --plugin guardrails --quiet --budget 60`,
-//! D§8.8) and reports `guard_binary: {status}`. `remove` undoes the settings edits, deletes
+//! D§8.8) and reports `guard_binary: {status}`. The preview's `subagent_model` says where
+//! `CLAUDE_CODE_SUBAGENT_MODEL` is set; when that is the user settings.json it shows the
+//! separate, opt-in removal, which `apply --remove-subagent-model` makes (recorded, so `remove`
+//! puts the old value back). `remove` undoes the settings edits, deletes
 //! state.json, the downloaded rtk, rtk's history folder (`state::rtk_data_dir`), `<ah>/bin`
 //! (only when `installed_plugins.json` has no `anthology-guardrails@*` entry, D§8.8), and
 //! optionally drops approvals.
@@ -323,6 +326,14 @@ fn classify(msg: String) -> Refusal {
     }
 }
 
+/// An anthology-settings error outside setup's `except`: `main`'s `"<Class>: <msg>"`.
+fn raise_text(msg: String) -> String {
+    match classify(msg) {
+        Refusal::Raised(m) => m,
+        Refusal::Caught(m) => format!("ValueError: {m}"),
+    }
+}
+
 // --- plugin, data folder, rtk ---------------------------------------------------------------
 
 fn unsupported(deps: &SetupDeps<'_>) -> bool {
@@ -451,11 +462,12 @@ fn read_settings(path: &Path) -> Result<String, String> {
         .map_err(raised)
 }
 
-/// `_settings_plan(root, env)`. Python's `setup_ops` raised FileNotFoundError when no
+/// `_settings_plan(root, env, remove_model)`. `remove_model` adds the opt-in removal of
+/// `env.CLAUDE_CODE_SUBAGENT_MODEL`, which stays out of the op version. Python's `setup_ops` raised FileNotFoundError when no
 /// guardrails folder was located (it loaded the profile roots from it); the roots are compiled
 /// in now (F-7), so the located folder is checked here, after the plugin-root validation, as
 /// before (session start skips its ops note in that case too).
-fn settings_plan(root: &Path, env: &Env) -> Result<Plan, Refusal> {
+fn settings_plan(root: &Path, env: &Env, remove_model: bool) -> Result<Plan, Refusal> {
     let path = settings::settings_path(env);
     let text = read_settings(&path).map_err(Refusal::Raised)?;
     let ops = settings::setup_ops(root, env).map_err(classify)?;
@@ -463,7 +475,12 @@ fn settings_plan(root: &Path, env: &Env) -> Result<Plan, Refusal> {
         return Err(Refusal::Caught(GUARD_NOT_FOUND.into()));
     }
     let previous = settings::stored_ops(state::read(env).get("settings_ops")).map_err(classify)?;
-    let (new_text, diff, stored) = settings::reconcile(&text, &ops, &previous).map_err(classify)?;
+    let mut desired = ops.clone();
+    if remove_model {
+        desired.push(settings::subagent_model_op());
+    }
+    let (new_text, diff, stored) =
+        settings::reconcile(&text, &desired, &previous).map_err(classify)?;
     Ok(Plan {
         path,
         text,
@@ -472,6 +489,38 @@ fn settings_plan(root: &Path, env: &Env) -> Result<Plan, Refusal> {
         stored,
         ops_version: settings::ops_version(&ops, &SettingsLimits::default()),
     })
+}
+
+/// `_subagent_model(env, cwd, new_text)`: where `CLAUDE_CODE_SUBAGENT_MODEL` is set (never its
+/// value). `removable` when setup can drop it from the user settings.json it edits (`new_text`
+/// is that file after setup's other changes, or `None` when it cannot be edited); `diff` shows
+/// that removal, redacted; `elsewhere` gives one line on removing it by hand for every other
+/// place.
+fn subagent_model(env: &Env, cwd: &Path, new_text: Option<&str>) -> Result<Value, String> {
+    let found = compat::subagent_model_sources(env, cwd);
+    let (mut removable, mut diff, mut elsewhere) = (false, String::new(), Vec::new());
+    for label in &found {
+        if *label == compat::USER_SETTINGS
+            && let Some(text) = new_text
+        {
+            let (removed, d) =
+                settings::apply(text, &[settings::subagent_model_op()]).map_err(raise_text)?;
+            if removed != text {
+                (removable, diff) = (true, d);
+                continue;
+            }
+        }
+        elsewhere.push(obj(vec![
+            ("where", s(label)),
+            ("how", s(compat::subagent_model_hint(label))),
+        ]));
+    }
+    Ok(obj(vec![
+        ("set_in", Value::Array(found.iter().map(|l| s(l)).collect())),
+        ("removable", Value::Bool(removable)),
+        ("diff", Value::Str(diff)),
+        ("elsewhere", Value::Array(elsewhere)),
+    ]))
 }
 
 // --- memory ---------------------------------------------------------------------------------
@@ -785,10 +834,12 @@ fn try_preview(
     st.insert("path".into(), s(&pstr(&path)));
     st.insert("sha256".into(), s(&sha256(&text)));
     st.insert("bypass_note".into(), s(settings::BYPASS_NOTE));
-    match settings_plan(plugin_root, env) {
+    let mut new_text = None;
+    match settings_plan(plugin_root, env, false) {
         Ok(plan) => {
             st.insert("changed".into(), Value::Bool(plan.new_text != text));
             st.insert("diff".into(), Value::Str(plan.diff));
+            new_text = Some(plan.new_text);
         }
         Err(Refusal::Caught(m)) => {
             st.insert("changed".into(), Value::Bool(false));
@@ -812,6 +863,7 @@ fn try_preview(
     let legacy = info
         .map(|(root, _)| legacy_notes(&root, env, deps))
         .unwrap_or_default();
+    let model = subagent_model(env, &cwd, new_text.as_deref())?;
     let personal = personal_dir(env);
     let (installed, installed_state) = (deps.doctor.installed_plugins_state)(env);
     let guard = guardrails_root(plugin_root, env);
@@ -831,6 +883,7 @@ fn try_preview(
         ("installed_plugins", s(installed_state)),
         ("rtk", rtk_preview(plugin_root, data_dir.as_deref(), deps)),
         ("settings", Value::Object(st)),
+        ("subagent_model", model),
         (
             "memory",
             obj(vec![
@@ -859,6 +912,31 @@ pub fn apply(
     promote: &[String],
     deps: &SetupDeps,
 ) -> Value {
+    apply_with(
+        plugin_root,
+        expect_sha256,
+        cwd,
+        skip_approve,
+        env,
+        promote,
+        false,
+        deps,
+    )
+}
+
+/// [`apply`] with `remove_subagent_model` (only when the user said yes): also drop
+/// `env.CLAUDE_CODE_SUBAGENT_MODEL` from settings.json, recorded so `remove` restores it.
+#[allow(clippy::too_many_arguments)] // Python's keyword arguments
+pub fn apply_with(
+    plugin_root: &Path,
+    expect_sha256: &str,
+    cwd: Option<&Path>,
+    skip_approve: bool,
+    env: &Env,
+    promote: &[String],
+    remove_subagent_model: bool,
+    deps: &SetupDeps,
+) -> Value {
     result_or_error(try_apply(
         plugin_root,
         expect_sha256,
@@ -866,10 +944,12 @@ pub fn apply(
         skip_approve,
         env,
         promote,
+        remove_subagent_model,
         deps,
     ))
 }
 
+#[allow(clippy::too_many_arguments)] // Python's keyword arguments
 fn try_apply(
     root: &Path,
     expect: &str,
@@ -877,6 +957,7 @@ fn try_apply(
     skip_approve: bool,
     env: &Env,
     promote: &[String],
+    remove_model: bool,
     deps: &SetupDeps<'_>,
 ) -> Result<Value, String> {
     if unsupported(deps) {
@@ -896,7 +977,7 @@ fn try_apply(
     if sha256(&read_settings(&path)?) != expect {
         return Ok(refused(CHANGED_SINCE_PREVIEW));
     }
-    match settings_plan(root, env) {
+    match settings_plan(root, env, remove_model) {
         Ok(_) => {}
         Err(Refusal::Caught(m)) => return Ok(refused(&m)),
         Err(Refusal::Raised(m)) => return Err(m),
@@ -926,11 +1007,15 @@ fn try_apply(
     if sha256(&read_settings(&path)?) != expect {
         return Ok(stale(&warnings));
     }
-    let plan = match settings_plan(root, env) {
+    let plan = match settings_plan(root, env, remove_model) {
         Ok(p) => p,
         Err(Refusal::Caught(m)) => return Ok(refused(&m)),
         Err(Refusal::Raised(m)) => return Err(m),
     };
+    let model_removed = remove_model
+        && !settings::plan(&plan.text, &[settings::subagent_model_op()])
+            .map_err(raise_text)?
+            .is_empty();
     let before = state::read(env);
     let was_created = before.get("settings_created").is_some_and(truthy);
     let created = was_created || !lexists(&plan.path);
@@ -1020,6 +1105,10 @@ fn try_apply(
             ]),
         ),
         ("rtk", obj(vec![("status", s(&rtk_status))])),
+        (
+            "subagent_model",
+            obj(vec![("removed", Value::Bool(model_removed))]),
+        ),
         ("memory", memory),
         ("warnings", strs(&warnings)),
         ("guard_binary", guard_value),
@@ -1347,6 +1436,11 @@ fn parser() -> Spec {
                 .default(argparse::Value::List(Vec::new()))
                 .metavar("FILE")
                 .help("move this legacy note into the repo's memory (repeatable)"),
+        )
+        .arg(
+            Arg::option(&["--remove-subagent-model"])
+                .store_true()
+                .help("also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json"),
         );
     let remove = common(Spec::command())
         .arg(Arg::option(&["--unapprove"]).store_true())
@@ -1405,13 +1499,14 @@ pub fn main(argv: &[String], env: &Env, deps: &SetupDeps) -> (i32, String, Strin
                 .iter()
                 .filter_map(|v| v.as_os_str().map(|o| o.to_string_lossy().into_owned()))
                 .collect();
-            apply(
+            apply_with(
                 &root,
                 &expect,
                 cwd.as_deref(),
                 parsed.flag("skip_approve"),
                 env,
                 &promote,
+                parsed.flag("remove_subagent_model"),
                 deps,
             )
         }

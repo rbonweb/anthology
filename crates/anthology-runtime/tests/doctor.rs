@@ -163,6 +163,7 @@ impl EnvCase {
             limits: DoctorLimits {
                 system_applications: vec![self.apps.clone()],
                 managed_mcp_paths: vec![self.managed.clone()],
+                managed_settings_paths: vec![self.tmp.join("managed-settings.json")],
             },
             ..DoctorDeps::default()
         }

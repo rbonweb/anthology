@@ -633,42 +633,143 @@ pub fn agent_memory_hint(name: &str) -> String {
     )
 }
 
-fn env_has_model(data: Option<&Value>) -> bool {
+/// Where Claude Code reads managed settings (macOS, Linux); an administrator owns these files.
+pub const MANAGED_SETTINGS_PATHS: [&str; 2] = [
+    "/Library/Application Support/ClaudeCode/managed-settings.json",
+    "/etc/claude-code/managed-settings.json",
+];
+/// The label of the user settings.json (the file setup edits).
+pub const USER_SETTINGS: &str = "user settings.json";
+/// The label of the process environment.
+pub const PROCESS_ENV: &str = "the process environment";
+const PROJECT_SETTINGS: &str = "the project's .claude/settings.json";
+const PROJECT_LOCAL: &str = "the project's .claude/settings.local.json";
+const MANAGED: &str = "managed settings";
+
+/// `SUBAGENT_MODEL_HINTS`: one line per place `CLAUDE_CODE_SUBAGENT_MODEL` can be set, on how to
+/// remove it there by hand.
+pub const SUBAGENT_MODEL_HINTS: [(&str, &str); 5] = [
+    (
+        USER_SETTINGS,
+        "delete every `CLAUDE_CODE_SUBAGENT_MODEL` line from the `env` block of your user \
+         settings.json",
+    ),
+    (
+        PROCESS_ENV,
+        "delete the line that sets `CLAUDE_CODE_SUBAGENT_MODEL` from your shell profile (for \
+         example ~/.zshrc or ~/.bashrc), then open a new terminal and restart Claude Code",
+    ),
+    (
+        PROJECT_SETTINGS,
+        "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of the project's \
+         .claude/settings.json (it is shared with the repo)",
+    ),
+    (
+        PROJECT_LOCAL,
+        "delete `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block of the project's \
+         .claude/settings.local.json",
+    ),
+    (
+        MANAGED,
+        "managed settings belong to your administrator; ask them to remove \
+         `CLAUDE_CODE_SUBAGENT_MODEL` from managed-settings.json",
+    ),
+];
+
+/// The [`SUBAGENT_MODEL_HINTS`] line for `label`.
+pub fn subagent_model_hint(label: &str) -> &'static str {
+    SUBAGENT_MODEL_HINTS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map_or("", |(_, h)| h)
+}
+
+/// `_env_model(data)`: the non-blank `env.CLAUDE_CODE_SUBAGENT_MODEL` string, or `None`.
+fn env_model(data: Option<&Value>) -> Option<&str> {
     data.and_then(Value::as_object)
         .and_then(|o| o.get("env"))
         .and_then(Value::as_object)
         .and_then(|e| e.get(SUBAGENT_MODEL))
         .and_then(Value::as_str)
-        .is_some_and(|v| !py_strip(v).is_empty())
+        .filter(|v| !py_strip(v).is_empty())
 }
 
-/// Where `CLAUDE_CODE_SUBAGENT_MODEL` is set (never its value), or `None`: "the process
-/// environment", "user settings.json", "the project's .claude/settings.json" or "the project's
-/// .claude/settings.local.json".
-pub fn subagent_model_source(env: &Env, cwd: &Path) -> Option<&'static str> {
-    if let Some(v) = env.get_os(SUBAGENT_MODEL)
-        && !py_strip(&v.to_string_lossy()).is_empty()
-    {
-        return Some("the process environment");
-    }
-    if env_has_model(read_json(&config_dir(env).join("settings.json")).as_ref()) {
-        return Some("user settings.json");
-    }
+/// `os.path.realpath(p)` as bytes; a path that cannot be resolved compares as itself.
+fn real_or_self(p: &Path) -> Vec<u8> {
+    realpath(p)
+        .unwrap_or_else(|_| p.to_path_buf())
+        .into_os_string()
+        .into_vec()
+}
+
+/// Every place `CLAUDE_CODE_SUBAGENT_MODEL` is set (labels, never its value), in this order:
+/// user settings.json, the project's .claude/settings.json and .claude/settings.local.json,
+/// managed settings, the process environment. Claude Code copies a settings file's `env` into
+/// the environment of the commands it runs, so the process environment counts only when its
+/// value matches none of those files (a shell profile, say). A project file that is the user
+/// settings.json itself (Claude Code run in the home folder) is that file, not a second place.
+pub fn subagent_model_sources(env: &Env, cwd: &Path) -> Vec<&'static str> {
+    let managed: Vec<PathBuf> = MANAGED_SETTINGS_PATHS.iter().map(PathBuf::from).collect();
+    subagent_model_sources_with(env, cwd, &managed)
+}
+
+/// [`subagent_model_sources`] with the managed-settings paths given (the
+/// `compat.MANAGED_SETTINGS_PATHS` patch seam, GC-19).
+pub fn subagent_model_sources_with(
+    env: &Env,
+    cwd: &Path,
+    managed: &[PathBuf],
+) -> Vec<&'static str> {
     let top = repo_top(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let user = config_dir(env).join("settings.json");
     // the project's two files come with the clone, so they are bounded
-    for (label, name) in [
-        ("the project's .claude/settings.json", "settings.json"),
+    let mut candidates: Vec<(&'static str, PathBuf, Option<u64>)> = vec![
+        (USER_SETTINGS, user.clone(), None),
         (
-            "the project's .claude/settings.local.json",
-            "settings.local.json",
+            PROJECT_SETTINGS,
+            top.join(".claude").join("settings.json"),
+            Some(REPO_READ_LIMIT),
         ),
-    ] {
-        let data = read_json_limited(&top.join(".claude").join(name), REPO_READ_LIMIT);
-        if env_has_model(data.as_ref()) {
-            return Some(label);
+        (
+            PROJECT_LOCAL,
+            top.join(".claude").join("settings.local.json"),
+            Some(REPO_READ_LIMIT),
+        ),
+    ];
+    candidates.extend(managed.iter().map(|p| (MANAGED, p.clone(), None)));
+    let user_real = real_or_self(&user);
+    let mut found: Vec<&'static str> = Vec::new();
+    let mut values: Vec<String> = Vec::new();
+    for (label, path, limit) in candidates {
+        if label != USER_SETTINGS && real_or_self(&path) == user_real {
+            continue;
+        }
+        let data = match limit {
+            None => read_json(&path),
+            Some(n) => read_json_limited(&path, n),
+        };
+        if let Some(v) = env_model(data.as_ref()) {
+            values.push(v.to_string());
+            if !found.contains(&label) {
+                found.push(label);
+            }
         }
     }
-    None
+    if let Some(v) = env.get_os(SUBAGENT_MODEL) {
+        let lossy = v.to_string_lossy();
+        let copied = v.to_str().is_some_and(|t| values.iter().any(|x| x == t));
+        if !py_strip(&lossy).is_empty() && !copied {
+            found.push(PROCESS_ENV);
+        }
+    }
+    found
+}
+
+/// Where `CLAUDE_CODE_SUBAGENT_MODEL` is set, every place joined by ", " (never its value), or
+/// `None` ([`subagent_model_sources`]).
+pub fn subagent_model_source(env: &Env, cwd: &Path) -> Option<String> {
+    let found = subagent_model_sources(env, cwd);
+    (!found.is_empty()).then(|| found.join(", "))
 }
 
 #[cfg(test)]
