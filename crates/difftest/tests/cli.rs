@@ -70,7 +70,7 @@ fn list_prints_every_surface() {
     let (code, out) = difftest(&["--list"]);
     assert_eq!(code, 0);
     let names: Vec<&str> = out.lines().collect();
-    assert_eq!(names.len(), 36);
+    assert_eq!(names.len(), 37);
     assert_eq!(names[0], "pycompat.json");
     assert!(names.contains(&"core.lock") && names.contains(&"dev.smoke"));
 }
