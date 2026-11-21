@@ -40,6 +40,7 @@ cargo run --locked --quiet -p anthology-dev -- \
 if [ "${CI:-}" = true ]; then
     grep -qE '^127\.0\.0\.1[[:space:]]+github\.com$' /etc/hosts ||
         printf '127.0.0.1 github.com\n' | sudo tee -a /etc/hosts >/dev/null
-    ANTHOLOGY_SHIMS_NET=1 ANTHOLOGY_SHIMS_REQUIRE=dash,bash,macsh,nonroot,curl,node \
+    # A non-root bind to port 443 works on macOS only on the wildcard address.
+    ANTHOLOGY_SHIMS_BIND=0.0.0.0:443 ANTHOLOGY_SHIMS_NET=1 ANTHOLOGY_SHIMS_REQUIRE=dash,bash,macsh,nonroot,curl,node \
         cargo test --locked -p repo-tests --test shims
 fi
