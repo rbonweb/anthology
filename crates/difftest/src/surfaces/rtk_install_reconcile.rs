@@ -21,8 +21,8 @@
 //! temporary folder written as `<tmp>`.
 //!
 //! D-2: the rest of the line after `cannot read the rtk tarball: ` (Python's `tarfile`/`gzip`
-//! versus the `tar`/`flate2` crates), and the OS error text in `[Errno N] <text>` up to the
-//! next `:` or `)` (P1's errno tables are pending; the number and file names still compare).
+//! versus the `tar`/`flate2` crates). The OS text of `[Errno N] <text>` is compared as is
+//! (`pycompat`'s errno tables).
 
 use std::fs;
 use std::io::Write;
@@ -65,35 +65,6 @@ fn normalizer() -> Normalizer {
     Normalizer::new().d2_prefix(D2_TARBALL)
 }
 
-/// The OS error text only: `[Errno N] <text>` → `[Errno N] <LIBTEXT>`, where `<text>` runs to
-/// the next `:` or `)` (the errno number, the file names and the rest are still compared).
-fn errno_text(b: &[u8]) -> Vec<u8> {
-    const OPEN: &[u8] = b"[Errno ";
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i..].starts_with(OPEN) {
-            let digits = b[i + OPEN.len()..]
-                .iter()
-                .take_while(|c| c.is_ascii_digit())
-                .count();
-            let close = i + OPEN.len() + digits;
-            if digits > 0 && b[close..].starts_with(b"] ") {
-                out.extend_from_slice(&b[i..close + 2]);
-                out.extend_from_slice(crate::normalize::LIBTEXT.as_bytes());
-                i = close + 2;
-                while i < b.len() && !matches!(b[i], b':' | b')' | b'\n') {
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    out
-}
-
 /// `mkdtemp`'s random `.tmp-XXXXXXXX` names differ between any two runs: `.tmp-<RANDOM>`.
 /// Not a divergence; a left-over staging folder still shows as an entry.
 fn temp_names(b: &[u8]) -> Vec<u8> {
@@ -117,14 +88,12 @@ fn temp_names(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Both D-2 rules on one side (after the temp-name rule); true when the D-2 rules changed it.
+/// The D-2 rule on one side (after the temp-name rule); true when it changed it.
 fn apply_d2(o: &mut Observed) -> bool {
     o.stdout = temp_names(&o.stdout);
     o.stderr = temp_names(&o.stderr);
     let before = o.clone();
     normalizer().apply(o);
-    o.stdout = errno_text(&o.stdout);
-    o.stderr = errno_text(&o.stderr);
     *o != before
 }
 

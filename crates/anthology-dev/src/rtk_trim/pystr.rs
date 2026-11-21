@@ -1,15 +1,11 @@
-//! The pieces of Python's `str` that scripts/rtk_trim.py relies on, written once: `strip`,
-//! `lstrip`, `rstrip`, `splitlines` and `repr`.
+//! The pieces of Python's `str` that scripts/rtk_trim.py relies on: `strip` and `repr` come from
+//! `anthology_pycompat::str`; `lstrip`, `rstrip` and `splitlines` are local (pycompat has none).
 //!
 //! Whitespace is `anthology_pycompat::str::is_space` (the `\s` of a `str` pattern); `\w` is
 //! `anthology_pycompat::str::is_word`.
 
 use anthology_pycompat::str::is_space;
-
-/// `str.strip()` without arguments.
-pub fn strip(s: &str) -> &str {
-    s.trim_matches(is_space)
-}
+pub use anthology_pycompat::str::{repr, strip_ws as strip};
 
 /// `str.lstrip()` without arguments.
 pub fn lstrip(s: &str) -> &str {
@@ -69,48 +65,4 @@ pub fn first_line(text: &str) -> &str {
     }
     // Not blank, so at least one line exists.
     splitlines(text).first().copied().unwrap_or(text)
-}
-
-/// Python's `str.isprintable` for one character, as far as std tells: controls and every
-/// whitespace but the plain space are not printable. (Format, unassigned and private-use
-/// characters are not told apart: documented best effort, the anchors the trim reports are ASCII.)
-fn is_printable(c: char) -> bool {
-    c == ' ' || !(c.is_control() || c.is_whitespace())
-}
-
-/// `repr(str)`.
-pub fn repr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if is_printable(c) => out.push(c),
-            c => {
-                let n = u32::from(c);
-                let escaped = if n < 0x100 {
-                    format!("\\x{n:02x}")
-                } else if n < 0x1_0000 {
-                    format!("\\u{n:04x}")
-                } else {
-                    format!("\\U{n:08x}")
-                };
-                out.push_str(&escaped);
-            }
-        }
-    }
-    out.push(quote);
-    out
 }
