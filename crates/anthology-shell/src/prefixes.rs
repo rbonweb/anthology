@@ -135,6 +135,7 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("unbuffer", &[]),
     ("builtin", &[]),
     ("busybox", &[]),
+    ("toybox", &[]),
     ("chroot", &["--userspec", "--groups"]),
     (
         "nsenter",
@@ -710,8 +711,9 @@ pub(crate) fn is_interpreter(prog: &str) -> bool {
     }) || EXACT.contains(&prog)
 }
 
-/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`). Rust-only: Python's
-/// `_strip_prefixes` has no such output, so none of these change an entry's parity fields.
+/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`). Rust-only, except
+/// `shell_launch`, which Python's `_strip_prefixes` reports too (its `launches` output): the other fields do not
+/// change an entry's parity fields.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Peeled {
     /// A `""` word (a `$(...)` placeholder) was dropped where the program word was expected.
@@ -723,6 +725,52 @@ pub(crate) struct Peeled {
     pub(crate) stdin_args: bool,
     /// A wrapper or runner was peeled and left no program and no script to analyze (`... | xargs npx`).
     pub(crate) emptied: bool,
+    /// A shell launcher was peeled with no program left (`sudo -s`, `su`, `script -q /dev/null`, `sg grp`): it
+    /// runs a shell that reads its commands from stdin (SH-seq I-2).
+    pub(crate) shell_launch: bool,
+}
+
+/// SH-seq I-2: a wrapper peeled with no program after it that starts a shell reading stdin. `sudo` needs `-s` or
+/// `-i` (`--shell`, `--login`); `su` and `script` need no `-c` (`scripts_empty`: no script was found). `words` is
+/// the wrapper's own words (its name first).
+fn launches_shell(name: &str, words: &[String], scripts_empty: bool) -> bool {
+    match name {
+        "sudo" => words.iter().skip(1).any(|t| {
+            t == "--shell"
+                || t == "--login"
+                || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains(['s', 'i']))
+        }),
+        // SH-F3: `doas -s` runs the shell; `chroot DIR`, `unshare` and `nsenter -t PID` with no command run one
+        "doas" => words
+            .iter()
+            .skip(1)
+            .any(|t| t.starts_with('-') && !t.starts_with("--") && t[1..].contains('s')),
+        "chroot" | "unshare" | "nsenter" => true,
+        "su" | "script" | "runuser" => scripts_empty,
+        _ => false,
+    }
+}
+
+/// SH-F3: the operands of `su` / `runuser` words: options and the values of `SU_VALUE_FLAGS` do not count,
+/// and neither does the `-` that starts a login shell.
+fn su_operands(words: &[String]) -> usize {
+    let mut count = 0;
+    let mut k = 0;
+    while k < words.len() {
+        let word = words[k].as_str();
+        if word == "--" {
+            return count + words.len() - k - 1;
+        }
+        if word.starts_with('-') && word.len() > 1 {
+            if SU_VALUE_FLAGS.contains(&word) {
+                k += 1;
+            }
+        } else if word != "-" {
+            count += 1;
+        }
+        k += 1;
+    }
+    count
 }
 
 /// One xargs or GNU parallel layer whose command takes words or lines from stdin: (kind, template, replace
@@ -734,8 +782,9 @@ pub(crate) struct StdinRun {
     pub(crate) replace: Option<String>,
 }
 
-/// An alternate reading: the index in the command of its first word, and its words.
-pub(crate) type Alternate = (usize, Vec<String>);
+/// An alternate reading: the index in the command of its first word, its words, and whether they are the
+/// reading as it stands (`verbatim`: not peeled again, the shipped reading of a package manager, I-3).
+pub(crate) type Alternate = (usize, Vec<String>, bool);
 
 /// `_strip_prefixes`' result.
 #[derive(Clone, Debug, Default)]
@@ -1416,10 +1465,152 @@ fn alternates_of(
                     return Err(TooComplex);
                 }
             }
-            out.push((k, alt));
+            out.push((k, alt, false));
         }
     }
     Ok(out)
+}
+
+/// Where the value of a `${name:-`, `${name-`, `${name:+`, `${name+`, `${name:=` or `${name=` operator starts, for
+/// the `${` at `name_at - 2`. `None`: no such operator there.
+fn default_value_start(word: &str, name_at: usize) -> Option<usize> {
+    let rest = word.get(name_at..)?;
+    let mut name_len = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    if name_len == 0 {
+        // a special parameter (`${@:-x}`, `${-:-x}`)
+        name_len = rest
+            .chars()
+            .next()
+            .filter(|c| "@*?$!-".contains(*c))
+            .map_or(0, char::len_utf8);
+    }
+    if name_len == 0 {
+        return None;
+    }
+    let after = name_at + name_len;
+    let tail = word.get(after..)?;
+    if tail.starts_with(":-") || tail.starts_with(":+") || tail.starts_with(":=") {
+        Some(after + 2)
+    } else if tail.starts_with(['-', '+', '=']) {
+        Some(after + 1)
+    } else {
+        None
+    }
+}
+
+/// The literal text of a default or alternate value `W` (F-8(a)): quotes are removed, and `$`, a backtick, a
+/// backslash, braces or an unclosed quote make it not literal, as do characters that word splitting or globbing
+/// would change. Empty is literal (`${x:-}` is removed by bash).
+fn literal_default(value: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    d => out.push(d),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '$' | '`' | '\\' => return None,
+                    d => out.push(d),
+                }
+            },
+            '$' | '`' | '\\' | '{' | '}' => return None,
+            _ => out.push(c),
+        }
+    }
+    out.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._+@/-".contains(c))
+        .then_some(out)
+}
+
+/// F-8(a): the literal default or alternate `W` of a program word that is one parameter expansion `${x:-W}`
+/// (`${x-W}`, `${x:+W}`, `${x+W}`, `${x:=W}`, `${x=W}`). `Ok(None)`: the word holds no such expansion. Too
+/// complex when `W` is not literal (`literal_default`), or when the word has text around the expansion or a
+/// nested `${` (`pre${x:-npx}`, `${x:-${y}}`).
+pub(crate) fn default_program(word: &str) -> Result<Option<String>, TooComplex> {
+    let applies = word
+        .match_indices("${")
+        .any(|(at, _)| default_value_start(word, at + 2).is_some());
+    if !applies {
+        return Ok(None);
+    }
+    let start = word
+        .starts_with("${")
+        .then(|| default_value_start(word, 2))
+        .flatten();
+    match start {
+        Some(start) if word.ends_with('}') && start < word.len() => {
+            let value = &word[start..word.len() - 1];
+            literal_default(value).map(Some).ok_or(TooComplex)
+        }
+        _ => Err(TooComplex),
+    }
+}
+
+/// Rust (SH-FW final review I-3): the shipped reading of a package manager's options, where each option the
+/// tables do not know is a flag with no value (`_skip_flags` of the shipped guard), for a package manager word
+/// at `tokens[at]` (`rel` is `tokens[at..]`) whose subcommand `pm_verb_index` reads elsewhere. A yarn or pnpm
+/// with a non-verb word there runs that word as a bin (`pnpm --silent open -a Chromium https://x` is
+/// `open -a Chromium https://x`): an alternate from that word. Otherwise the shipped reading is the package
+/// manager itself (npm, bun, or no subcommand), its words kept as they are.
+fn shipped_pm_alternate(rel: &[String], at: usize) -> Option<Alternate> {
+    let name = prog_name(rel.first()?);
+    if !has(JS_PACKAGE_MANAGERS, &name) {
+        return None;
+    }
+    let mut unused = false;
+    let shipped = skip_flags(
+        rel,
+        1,
+        PM_VALUE_FLAGS,
+        &|t| known_bool(t, PM_BOOL_FLAGS),
+        &mut unused,
+    );
+    let mut unknown = false;
+    if shipped == pm_verb_index(rel, &mut unknown) {
+        return None;
+    }
+    let verb = rel.get(shipped).map_or("", String::as_str);
+    if (name == "yarn" || name == "pnpm") && !verb.is_empty() && !has(PM_VERBS, verb) {
+        // `runner_program` breaks at a `--` it has skipped, so the bin is the word after it
+        let start = shipped + usize::from(verb == "--");
+        let first = rel.get(start)?;
+        let mut alt = Vec::with_capacity(rel.len() - start);
+        alt.push(strip_version(first));
+        alt.extend_from_slice(&rel[start + 1..]);
+        return Some((at + start, alt, false));
+    }
+    Some((at, rel.to_vec(), true))
+}
+
+/// The shipped readings (`shipped_pm_alternate`) of every package manager word from `start - 1` (the program
+/// the span follows) to `end`: the package manager of the command, or one it runs. Too complex past
+/// `MAX_ALTERNATES` alternates in `out`, before the next is built.
+fn shipped_pm_alternates(
+    tokens: &[String],
+    start: usize,
+    end: usize,
+    out: &mut Vec<Alternate>,
+    work: &mut Work,
+) -> Result<(), TooComplex> {
+    for j in start.saturating_sub(1)..end.min(tokens.len()) {
+        if !has(JS_PACKAGE_MANAGERS, &prog_name(&tokens[j])) {
+            continue;
+        }
+        if out.len() >= MAX_ALTERNATES {
+            return Err(TooComplex);
+        }
+        work.charge_extra(tokens[j..].iter().map(|w| WORD + w.len()).sum())?;
+        out.extend(shipped_pm_alternate(&tokens[j..], j));
+    }
+    Ok(())
 }
 
 /// `key` is `<section>.<subsection>.<name>` with a non-empty subsection (`key` lowercased, `name` too).
@@ -2009,7 +2200,9 @@ pub(crate) fn strip_prefixes(
             drop(tail);
             let words = split_words(&value);
             toks.splice(at..at, words);
-        } else if name == "busybox" && (toks.len() < 2 || toks[1].starts_with('-')) {
+        } else if (name == "busybox" || name == "toybox")
+            && (toks.len() < 2 || toks[1].starts_with('-'))
+        {
             break; // `busybox --list`: no applet
         } else if let Some(flags) = table(WRAPPERS, &name) {
             if let Some(options) = table(WRAPPER_SCRIPT_OPTIONS, &name)
@@ -2026,6 +2219,12 @@ pub(crate) fn strip_prefixes(
             }
             peeled.unknown_option |= unknown || (flags.is_empty() && has_option(&toks, i, &name));
             let rest = toks.get(i..).unwrap_or(&[]);
+            // `su [-] [user] [options]` runs the user's shell too: at most one operand, the user, not a program
+            let bare =
+                rest.is_empty() || ((name == "su" || name == "runuser") && su_operands(rest) <= 1);
+            if bare && launches_shell(&name, &toks[..i.min(toks.len())], scripts.is_empty()) {
+                peeled.shell_launch = true;
+            }
             if name == "watch" && !joined {
                 // watch runs its words via sh -c
                 joined = true;
@@ -2063,8 +2262,12 @@ pub(crate) fn strip_prefixes(
             } else {
                 drop_front(&mut rest, 1);
             }
-            if rest.first().is_some_and(|w| w == "-c") {
+            let had_c = rest.first().is_some_and(|w| w == "-c");
+            if had_c {
                 rest.remove(0);
+            }
+            if rest.is_empty() && !had_c {
+                peeled.shell_launch = true; // `sg grp` alone: a shell reading stdin (SH-seq I-2)
             }
             if !joined {
                 joined = true;
@@ -2254,19 +2457,33 @@ pub(crate) fn strip_prefixes(
     if let Some(alternates) = alternates {
         let main = toks.first().map(|w| prog_name(w)).unwrap_or_default();
         let main_at = tokens.len().saturating_sub(toks.len());
+        let mut found = Vec::new();
         if let Some((start, end)) = alternate_span(tokens, main_at)
             && !has(QUIET_PROGRAMS, &main)
         {
-            let found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
-            work.charge_extra(
-                found
-                    .iter()
-                    .flat_map(|(_, alt)| alt)
-                    .map(|w| WORD + w.len())
-                    .sum(),
-            )?;
-            alternates.extend(found);
+            found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
+            shipped_pm_alternates(tokens, start, end, &mut found, work)?;
         }
+        // F-8(a): a program word `${x:-W}` (`${x-W}`, `${x:+W}`, `${x+W}`, `${x:=W}`, `${x=W}`) also reads as
+        // the same command with the literal W as its program word
+        if let Some(word) = toks.first()
+            && let Some(literal) = default_program(word)?
+        {
+            if tokens.get(main_at) != toks.first() {
+                return Err(TooComplex);
+            }
+            let mut alt = tokens.to_vec();
+            alt[main_at] = literal;
+            found.push((main_at, alt, false));
+        }
+        work.charge_extra(
+            found
+                .iter()
+                .flat_map(|(_, alt, _)| alt)
+                .map(|w| WORD + w.len())
+                .sum(),
+        )?;
+        alternates.extend(found);
     }
     Ok(Stripped {
         cmd: toks,

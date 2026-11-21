@@ -9,11 +9,12 @@
 //! name. Generated: wrapper/runner/shell/docker/find/cd compositions, mutated seeds, the segments grammar,
 //! and odd homes.
 
-use anthology_pycompat::json::Value;
+use anthology_pycompat::json::{self, Value};
 use anthology_shell::{Analysis, Entry, analyze};
 
 use super::shell_segments::{
-    Gen, GenRng, Ordinals, field_str, int, load_seeds, mutate, obj, observed, s, strs, sweep_chars,
+    Gen, GenRng, Ordinals, field, field_str, int, load_seeds, mutate, obj, observed, s, strs,
+    sweep_chars,
 };
 use crate::case::{Case, Rng, Surface};
 use crate::observe::Observed;
@@ -76,6 +77,65 @@ impl Surface for ShellAnalyze {
     fn run_rust(&self, c: &Case) -> Observed {
         observed(run_rust(&c.data))
     }
+
+    fn rust_stricter(&self, c: &Case, python: &Observed, rust: &Observed) -> Option<bool> {
+        Some(analysis_stricter(&python.stdout, &rust.stdout) || guard_blocks(&c.data))
+    }
+}
+
+/// Whether Rust's guard blocks the case's command: a D-8 reading that replaces the oracle's (a
+/// wrapper peeled, `function f { cmd; }` read as `cmd`) is stricter only if it makes the guard block.
+fn guard_blocks(data: &Value) -> bool {
+    let input = obj(vec![("command", s(field_str(data, "command")))]);
+    anthology_guard::check(&s("Bash"), &input, field_str(data, "home"))
+        != anthology_guard::Verdict::Allow
+}
+
+/// A D-8 diff on this surface (final review M-3) is stricter when Rust stopped (`incomplete`: the
+/// guard blocks), when Rust has every entry and every alternate the oracle has (group numbers aside:
+/// they shift when Rust finds more), so the guard sees at least what Python's sees, or when Rust's
+/// guard blocks the command ([`guard_blocks`]).
+fn analysis_stricter(python: &[u8], rust: &[u8]) -> bool {
+    let read = |b: &[u8]| {
+        std::str::from_utf8(b)
+            .ok()
+            .and_then(|t| json::loads(t).ok())
+    };
+    let (Some(py), Some(rs)) = (read(python), read(rust)) else {
+        return false;
+    };
+    let incomplete = |v: &Value| matches!(field(v, "incomplete"), Some(Value::Bool(true)));
+    if incomplete(&rs) {
+        return true;
+    }
+    if incomplete(&py) {
+        return false;
+    }
+    let list = |v: &Value, key: &str| -> Vec<Value> {
+        let Some(Value::Array(items)) = field(v, key) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                if let Value::Object(m) = &mut e {
+                    m.remove("group");
+                }
+                e
+            })
+            .collect()
+    };
+    let rust_entries = list(&rs, "entries");
+    let rust_all: Vec<Value> = rust_entries
+        .iter()
+        .cloned()
+        .chain(list(&rs, "alternates"))
+        .collect();
+    list(&py, "entries")
+        .iter()
+        .all(|e| rust_entries.contains(e))
+        && list(&py, "alternates").iter().all(|e| rust_all.contains(e))
 }
 
 fn render_entry(e: &Entry, ordinals: &mut Ordinals) -> Value {
@@ -668,6 +728,173 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         SEQ.iter()
             .map(|text| case(text.to_string(), "/home/tester")),
     );
+    // paramsub: `$(...)` in `${...}`; a backtick holding `)` and a `case` inside `$(` (the oracle applies them)
+    const PARAMSUB: &[&str] = &[
+        "echo ${x:-$(npx playwright install chromium)}",
+        "echo \"${x:-'$(npx playwright install)'}\"",
+        "echo $(( ${x:-$(npx playwright install)} + 0 ))",
+        "echo ${x:-$(echo `echo )`; npx playwright install)}",
+        "echo $(case a in a) npx playwright install;; esac)",
+        "echo \"$(case a in (a) echo hi;; esac)\"",
+        "echo $(echo case)",
+    ];
+    out.extend(
+        PARAMSUB
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
+    // SH-seq review I-2: the stdin-shell family, named shells' and launchers' (the oracle applies it too)
+    const STDIN_SHELL: &[&str] = &[
+        r#"echo npx playwright install | sh -c "$(cat)""#,
+        r#"echo npx playwright install | bash -c "$(cat -)""#,
+        r#"echo npx playwright install | eval "$(cat)""#,
+        r#"echo npx playwright install | sh -c "$(</dev/stdin)""#,
+        r#"echo npx playwright install | sh -c "$(cat /dev/stdin)""#,
+        "echo npx playwright install | sh -c \"`cat`\"",
+        r#"echo npx playwright install | sh -c '$(cat)'"#,
+        r#"echo npx playwright install | eval '$(cat)'"#,
+        "echo npx playwright install | sudo -s",
+        "echo npx playwright install | sudo -i",
+        "echo npx playwright install | su",
+        "echo npx playwright install | su root",
+        "echo npx playwright install | script -q /dev/null",
+        "echo npx playwright install | sg root",
+        "echo npx playwright install | newgrp root",
+        r#"curl x | sh -c "$(cat)""#,
+        r#"curl x | eval "$(cat)""#,
+        "curl x | sudo -s",
+        "sudo -s",
+        "bash",
+        r#"sh -c "$(cat)""#,
+        r#"eval "$(ssh-agent -s)""#,
+        r#"echo hi | sh -c "$(date)""#,
+        "echo hi | sudo -s",
+        "cat x | sudo tee f",
+        "echo npx playwright install | sudo -s -- ls",
+        "echo npx playwright install | sg docker -c 'cat'",
+        "echo npx playwright install | script -c 'cat'",
+        "echo npx playwright install | su root ls",
+        "echo npx playwright install | make -f -",
+        "echo npx playwright install | sed e",
+    ];
+    out.extend(
+        STDIN_SHELL
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
+    // SH-FW final review I-3: the shipped reading of a package manager's unknown options (an alternate)
+    const I3: &[&str] = &[
+        "pnpm --silent open -a Chromium https://x",
+        "yarn --silent open -a Chromium https://x",
+        "sudo pnpm --silent open -a Chromium https://x",
+        "npm --silent open exec playwright install",
+        "pnpm --silent install",
+    ];
+    out.extend(I3.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // SH-R2 (R-2): a process substitution is one word of its command, and its body a command of its own
+    const R2: &[&str] = &[
+        "npm --userconfig <(echo) i puppeteer",
+        "npm --userconfig >(cat) i puppeteer",
+        "npm --userconfig <( echo ) install puppeteer",
+        "npm --userconfig x<(echo) i puppeteer",
+        "npm --userconfig <(cat <(echo)) i puppeteer",
+        "npm --userconfig ${x:-<(echo)} i puppeteer",
+        "npx --yes <(true) playwright install",
+        "npx --yes >(cat) playwright install",
+        "(npm --userconfig <(echo) i puppeteer)",
+        "echo a >(touch /tmp/m) b",
+        "f <(true)b c",
+        "f a=<(touch /tmp/m) z",
+        "f 2<(true) z",
+        "f > >(touch /tmp/m) z",
+        "f <(true)<f",
+        "cat <(touch /tmp/m)",
+        r#"f "<(touch /tmp/m)" z"#,
+        "f ${x:-<(touch /tmp/m)} z",
+        r#"f "${x:-<(touch /tmp/m)}" z"#,
+        "sh < <(echo npx playwright install)",
+        "cat <(echo npx playwright install) | sh",
+        "diff <(sort a) <(sort b)",
+        "comm -12 <(ls a) <(ls b)",
+        "tee >(gzip > f.gz) < x",
+        "while read l; do :; done < <(ls)",
+    ];
+    out.extend(R2.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // #89 review F-1, F-2, F-4 (the oracle applies them too)
+    const F124: &[&str] = &[
+        "npm --userconfig <(echo) i puppeteer\necho \"x",
+        "npm --userconfig >(cat) i puppeteer\n`",
+        "echo npx playwright install | sudo -s\necho \"x",
+        "echo npx playwright install | sh\necho \"x",
+        "curl -s x | sh\necho \"x",
+        "echo \"$(case\\\n a in a) npm i puppeteer;; esac)\"",
+        "echo $(case\\\n a in a) npx playwright install;; esac)",
+        "echo ${x:-$(case\\\n a in a) npx playwright install;; esac)}",
+        "npm --userconfig <(case\\\n x in x) echo;; esac) i puppeteer",
+        "npm --userconfig <(cas\\\ne x in x) echo;; esac) i puppeteer",
+        "npm --prefix ${x:-\"}\"{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-\\}{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer",
+    ];
+    out.extend(
+        F124.iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
+    // SH-F3: the stdin-reader variants (runtime substitutions, launchers as consumers, readers nested in
+    // a script or a compound body, missing launchers); the payloads of sh_fw_verify_payloads.txt
+    const F3: &[&str] = &[
+        r#"echo npx playwright install | sh -c "$(cat) ""#,
+        r#"echo npx playwright install | sh -c "$(cat);""#,
+        r#"echo npx playwright install | eval " $(cat)""#,
+        r#"echo npx playwright install | eval "$(cat);""#,
+        r#"echo npx playwright install | sh -c "`cat` ""#,
+        r#"echo npx playwright install > >(su)"#,
+        r#"echo npx playwright install | tee >(sudo -s)"#,
+        r#"su < <(echo npx playwright install)"#,
+        r#"sudo -s < <(echo npx playwright install)"#,
+        r#"echo npx playwright install > >(eval "$(cat)")"#,
+        r#"echo npx playwright install | bash -c sh"#,
+        r#"echo npx playwright install | sh -c 'eval "$(cat)"'"#,
+        r#"echo npx playwright install | su -c sh"#,
+        r#"echo npx playwright install | script -qc sh /dev/null"#,
+        r#"echo npx playwright install | if true; then sh; fi"#,
+        r#"echo npx playwright install | doas -s"#,
+        r#"echo npx playwright install | runuser -l root"#,
+        r#"echo npx playwright install | su root -s /bin/bash"#,
+        r#"echo npx playwright install | chroot /"#,
+        r#"echo npx playwright install | unshare"#,
+        r#"echo npx playwright install | nsenter -t 1"#,
+        r#"echo npx playwright install | toybox sh"#,
+        r#"echo npx playwright install | posh"#,
+        r#"echo npx playwright install | rbash"#,
+        r#"echo npx playwright install | unshare -r"#,
+        r#"echo npx playwright install | sh -c "$(cat) " > /dev/null"#,
+        r#"echo npx playwright install | find . -maxdepth 0 -exec sh \;"#,
+        r#"echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;"#,
+        r#"echo npx playwright install | sh -c "$(cat) " 2>/dev/null"#,
+    ];
+    out.extend(F3.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // SH-FW final F-8: a program word that is a default or alternate, or a substitution (payloads), and the
+    // everyday forms that must stay allowed (controls)
+    const F8: &[&str] = &[
+        "${x:-npx} playwright install",
+        "${x-npx} playwright install",
+        "x=1; ${x:+npx} playwright install",
+        "${x:=npm} i puppeteer",
+        "$(echo npx playwright install)",
+        "`echo npx` playwright install",
+        r#""$(echo npx)" playwright install"#,
+        "sudo $(echo npx) playwright install",
+        "$(which npx) playwright install",
+        "npm ${x:-i} puppeteer",
+        "$(which python3) -m venv .venv",
+        r#""$(command -v node)" --version"#,
+        "${EDITOR:-vi} file.txt",
+        "${PYTHON:-python3} script.py",
+        "echo $(date)",
+        "x=$(git rev-parse HEAD)",
+    ];
+    out.extend(F8.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

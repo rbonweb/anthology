@@ -350,6 +350,13 @@
           "default": [],
           "help": "move this legacy note into the repo's memory (repeatable)",
           "metavar": "FILE"
+         },
+         {
+          "flags": [
+           "--remove-subagent-model"
+          ],
+          "action": "store_true",
+          "help": "also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json"
          }
         ]
        }

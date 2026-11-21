@@ -2089,6 +2089,106 @@ mod special_memory_md_test {
 }
 
 /// One sample per G6 pattern, assembled so no secret-looking literal is committed.
+/// `_label_samples`: `(label, secret text, value parts)` for every `SECRET_PATTERNS` label.
+fn label_samples() -> Vec<(&'static str, String, Vec<String>)> {
+    let s = |parts: &[&str]| parts.concat();
+    let row = |label, text: String, vals: &[&str]| {
+        (label, text, vals.iter().map(|v| v.to_string()).collect())
+    };
+    vec![
+        row(
+            "aws-access-key",
+            s(&["AKIA", "IOSFODNN7EXAMPLE"]),
+            &["IOSFODNN7EXAMPLE"],
+        ),
+        row(
+            "github-token",
+            s(&["ghp", "_", &"a1b2".repeat(10)]),
+            &["a1b2a1b2"],
+        ),
+        row(
+            "github-token",
+            s(&["github", "_pat_", "abcdefghij0123456789abc"]),
+            &["abcdefghij0123456789abc"],
+        ),
+        row(
+            "api-key",
+            s(&["sk", "-", "a1b2c3d4e5f6g7h8i9j0"]),
+            &["a1b2c3d4e5f6g7h8i9j0"],
+        ),
+        row(
+            "slack-token",
+            s(&["xox", "b-", "1234567890-abcdef"]),
+            &["1234567890-abcdef"],
+        ),
+        row(
+            "private-key",
+            s(&["-----BEGIN OPENSSH ", "PRIVATE KEY-----"]),
+            &[],
+        ),
+        row(
+            "credential-assignment",
+            s(&["pass", "word: hunter2-long-value"]),
+            &["hunter2-long-value"],
+        ),
+        row(
+            "jwt",
+            s(&["eyJ", "hbGciOiJI", ".abcdefgh12.", "zyxwvuts98"]),
+            &["abcdefgh12", "zyxwvuts98"],
+        ),
+        row(
+            "cloud-secret-key",
+            s(&["aws_secret_access_key = ", "wJalrXUtnFEMI-K7MDENG"]),
+            &["wJalrXUtnFEMI-K7MDENG"],
+        ),
+        row(
+            "url-credentials",
+            s(&["postgres://app:", "hunter2-long-value", "@db.example.com/x"]),
+            &["hunter2-long-value"],
+        ),
+        row(
+            "anthropic-key",
+            s(&["sk", "-ant-", "abcdefgh1234"]),
+            &["abcdefgh1234"],
+        ),
+        row(
+            "google-api-key",
+            s(&["AIza", &"Ab1".repeat(11), "Ab"]),
+            &["Ab1Ab1Ab1"],
+        ),
+        row(
+            "stripe-live-key",
+            s(&["sk", "_live_", "abcdefgh1234"]),
+            &["abcdefgh1234"],
+        ),
+        row(
+            "bearer-token",
+            s(&["Bearer ", "abcdefghijklmnopqrstu"]),
+            &["abcdefghijklmnopqrstu"],
+        ),
+        row(
+            "basic-auth",
+            s(&["Authorization: Basic ", "dXNlcjpwYXNzd29yZA=="]),
+            &["dXNlcjpwYXNzd29yZA=="],
+        ),
+        row(
+            "gitlab-token",
+            s(&["glpat", "-", "abcdefghij0123456789"]),
+            &["abcdefghij0123456789"],
+        ),
+        row(
+            "huggingface-token",
+            s(&["hf", "_", &"a1B2".repeat(8)]),
+            &["a1B2a1B2"],
+        ),
+        row(
+            "npm-token",
+            s(&["npm", "_", &"a1B2c3D4".repeat(5)]),
+            &["a1B2c3D4a1B2"],
+        ),
+    ]
+}
+
 fn secret_samples() -> Vec<(&'static str, String)> {
     vec![
         ("aws", ["AKIA", "IOSFODNN7EXAMPLE"].concat()),
@@ -2739,6 +2839,92 @@ mod save_note_test {
             assert!(!msg.contains(secret.as_str()));
         }
         assert!(!t.root.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_secret_refusal_names_the_kind_and_line_never_the_value() {
+        let t = set_up();
+        let secret = ["hunter", "2-long-value"].concat();
+        let url = format!("postgres://app:{secret}@db.example.com/x");
+        let msg = t.refused(
+            None,
+            args().body(&format!("first\nsecond\nconnect to {url}\nlast")),
+        );
+        assert!(
+            msg.contains("Found: url-credentials on line 3 of the note body"),
+            "{msg}"
+        );
+        // the instruction comes before the list
+        assert!(
+            msg.find("remove or replace that value") < msg.find("Found:"),
+            "{msg}"
+        );
+        assert!(!msg.contains(&secret));
+        assert!(!msg.contains('\n'));
+        // several lines of one kind, and two kinds
+        let aws = ["AKIA", "IOSFODNN7EXAMPLE"].concat();
+        let msg = t.refused(None, args().body(&format!("{aws}\nok\n{aws}\n{url}")));
+        assert!(
+            msg.contains("aws-access-key on lines 1, 3 of the note body"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("url-credentials on line 4 of the note body"),
+            "{msg}"
+        );
+        assert!(!msg.contains(&aws));
+        assert!(!msg.contains(&secret));
+        // a single-line field is named, not numbered
+        let msg = t.refused(None, args().name(&format!("see {aws}")));
+        assert!(msg.contains("Found: aws-access-key in the name"), "{msg}");
+        assert!(!msg.contains(&aws));
+    }
+
+    #[test]
+    fn test_secret_refusal_never_contains_the_value_of_any_kind() {
+        let t = set_up();
+        let samples = label_samples();
+        let labels: std::collections::BTreeSet<&str> = anthology_memory::privacy::SECRET_PATTERNS
+            .iter()
+            .map(|(l, _, _)| *l)
+            .collect();
+        let sampled: std::collections::BTreeSet<&str> =
+            samples.iter().map(|(l, _, _)| *l).collect();
+        assert_eq!(labels, sampled);
+        for (label, secret, parts) in &samples {
+            for field in ["name", "description", "body"] {
+                let msg = t.refused(None, args().field(field, &format!("see {secret} here")));
+                assert!(msg.contains(label), "{label} {field}: {msg}");
+                assert!(!msg.contains('\n'));
+                assert!(!msg.contains(secret.as_str()), "{label} {field}: {msg}");
+                for part in parts {
+                    assert!(!msg.contains(part), "{label} {field}: {msg}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_secret_refusal_lists_at_most_five_findings() {
+        let t = set_up();
+        let aws = ["AKIA", "IOSFODNN7EXAMPLE"].concat();
+        let msg = t.refused(None, args().body(&[aws.as_str(); 8].join("\n")));
+        assert!(
+            msg.contains("aws-access-key on lines 1, 2, 3, 4, 5 of the note body and 3 more"),
+            "{msg}"
+        );
+        assert!(
+            msg.find("remove or replace that value") < msg.find("Found:"),
+            "{msg}"
+        );
+        assert!(!msg.contains(&aws));
+        // exactly five: nothing is hidden
+        let msg = t.refused(None, args().body(&[aws.as_str(); 5].join("\n")));
+        assert!(
+            msg.contains("lines 1, 2, 3, 4, 5 of the note body"),
+            "{msg}"
+        );
+        assert!(!msg.contains("more"), "{msg}");
     }
 
     #[test]

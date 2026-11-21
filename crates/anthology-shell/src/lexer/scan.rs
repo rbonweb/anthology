@@ -18,7 +18,7 @@ pub(crate) const MAX_UNCLOSED: usize = 8;
 fn scan_special(b: u8) -> bool {
     matches!(
         b,
-        b'\\' | b'<' | b'\n' | b'\'' | b'"' | b'$' | b'#' | b'(' | b')'
+        b'\\' | b'<' | b'\n' | b'\'' | b'"' | b'$' | b'#' | b'(' | b')' | b'`' | b'c'
     )
 }
 
@@ -41,6 +41,28 @@ pub(crate) fn scan_paren<'t>(
     let s = scan_paren_ex(text, i, false, memo, work)?;
     // a non-arithmetic scan always has an inner text and an end
     Ok((s.inner.unwrap_or(""), s.end.unwrap_or(text.len())))
+}
+
+/// `bytes[j..]` reads `case` and a blank once line continuations (`\\` newline) are removed (#89 review F-2:
+/// `ca\\<newline>se` is `case` to bash).
+fn case_word(bytes: &[u8], j: usize) -> bool {
+    let mut k = j;
+    let mut read = 0;
+    while k < bytes.len() {
+        if bytes[k] == b'\\' && bytes.get(k + 1) == Some(&b'\n') {
+            k += 2;
+            continue;
+        }
+        if read == 4 {
+            return matches!(bytes[k], b' ' | b'\t' | b'\n');
+        }
+        if bytes[k] != b"case"[read] {
+            return false;
+        }
+        read += 1;
+        k += 1;
+    }
+    false
 }
 
 /// `_scan_paren_ex`: scan the parenthesis opened just before `i` as bash's parser matches it. With `arith`
@@ -183,6 +205,32 @@ fn walk<'t>(
                 // `$'a\'b )'` is one string
                 j = ansi_c_end(text, j + 2, work)?.map_or(n, |k| k + 1);
                 continue;
+            }
+            b'`' => {
+                // `$(echo `echo )`; x)`: a `)` in a backtick span does not close
+                j = backtick_end(text, j + 1, work)?.map_or(n, |k| k + 1);
+                continue;
+            }
+            b'c' if !arith_at
+                && case_word(bytes, j)
+                && (j == i
+                    || matches!(
+                        bytes[j - 1],
+                        b' ' | b'\t'
+                            | b'\n'
+                            | b';'
+                            | b'&'
+                            | b'|'
+                            | b'('
+                            | b')'
+                            | b'{'
+                            | b'}'
+                            | b'!'
+                    )) =>
+            {
+                // `$(case a in a) x;; esac)`: bash matches a pattern's `)` with its `case`, which this
+                // scan does not model; never guess where the substitution ends
+                return Err(TooComplex);
             }
             b'#' if !arith_at
                 && (j == i

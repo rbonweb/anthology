@@ -1166,6 +1166,15 @@ fn seeds() -> Vec<Value> {
     add(B::new()
         .step(args(&["preview", "--plugin-root", ROOT_ARG, "--json"]))
         .step(args(&["remove", "--plugin-root", ROOT_ARG])));
+    // CLAUDE_CODE_SUBAGENT_MODEL: offered, removed on yes, restored by remove
+    for text in MODEL_SETTINGS {
+        add(B::new()
+            .settings(text)
+            .step(preview_cmd())
+            .step(apply_cmd(&["--remove-subagent-model"]))
+            .step(remove_cmd(&["--preview"]))
+            .step(remove_cmd(&[])));
+    }
     out
 }
 
@@ -1201,6 +1210,18 @@ const SETTINGS: [&str; 19] = [
     "{\"a\": 1, \"a\": 2}",
 ];
 
+/// settings.json texts setting `CLAUDE_CODE_SUBAGENT_MODEL`: alone, beside other keys, first of
+/// two, twice, blank, and a non-object `env`.
+const MODEL_SETTINGS: [&str; 7] = [
+    "{\"env\": {\"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\"}}\n",
+    "{\n  \"model\": \"x\",\n  \"env\": {\n    \"A\": \"1\",\n    \"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\"\n  }\n}\n",
+    "{\"env\":{\"CLAUDE_CODE_SUBAGENT_MODEL\":\"m\",\"B\":\"2\"},\"permissions\":{\"allow\":[]}}",
+    "{\"env\": {\"CLAUDE_CODE_SUBAGENT_MODEL\": \"a\", \"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\"}}",
+    "{\"env\": {\"CLAUDE_CODE_SUBAGENT_MODEL\": \"  \"}}",
+    "{\"env\": \"CLAUDE_CODE_SUBAGENT_MODEL\"}",
+    "{\r\n\t\"env\": {\r\n\t\t\"CLAUDE_CODE_SUBAGENT_MODEL\": \"\\u00e9\"\r\n\t}\r\n}\r\n",
+];
+
 fn gen_cmd(rng: &mut Rng) -> Vec<String> {
     match rng.below(20) {
         0..=4 => {
@@ -1222,6 +1243,9 @@ fn gen_cmd(rng: &mut Rng) -> Vec<String> {
                 for _ in 0..1 + rng.index(3) {
                     extra.extend(["--promote", *rng.pick(&promote_names())]);
                 }
+            }
+            if rng.chance(0.3) {
+                extra.push("--remove-subagent-model");
             }
             let mut a = apply_cmd(&extra);
             if rng.chance(0.12) {
@@ -1337,6 +1361,19 @@ fn gen_case(rng: &mut Rng) -> Value {
             ))
         }
         _ => b = b.settings(rng.pick(&SETTINGS)),
+    }
+    // CLAUDE_CODE_SUBAGENT_MODEL in settings.json, the project's local file or the process
+    // environment ("m" there is the copy Claude Code makes of a settings file's value)
+    let model_set = rng.chance(0.3);
+    if model_set {
+        b = b.settings(rng.pick(&MODEL_SETTINGS));
+    }
+    let model_where = rng.below(10);
+    if model_where == 1 {
+        b = b.env(
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            Some(rng.pick(&["m", "x", "  "])),
+        );
     }
     // the rtk folder and <ah>/bin
     match rng.below(6) {
@@ -1481,6 +1518,17 @@ fn gen_case(rng: &mut Rng) -> Value {
             rng.pick(&["not json", "[]", "{}"]),
         ));
     }
+    // the project's local file, unless the tree made `w/.claude` something else
+    let claude_taken = b
+        .tree
+        .iter()
+        .any(|e| matches!(opt_string(e, "p").as_deref(), Some("w" | "w/.claude")));
+    if model_where == 0 && !claude_taken {
+        b = b.put(file(
+            "w/.claude/settings.local.json",
+            "{\"env\": {\"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\"}}",
+        ));
+    }
     b.guard_binary = match rng.below(6) {
         0 => "installed".into(),
         1 => format!("failed: {}", odd_text(rng, 30)),
@@ -1495,11 +1543,23 @@ fn gen_case(rng: &mut Rng) -> Value {
     // the steps
     for _ in 0..1 + rng.index(3) {
         if rng.chance(0.07) {
-            let t = *rng.pick(&["{", "{}", "{\"permissions\": []}", ""]);
+            let t = *rng.pick(&[
+                "{",
+                "{}",
+                "{\"permissions\": []}",
+                "",
+                "{\"env\": {\"CLAUDE_CODE_SUBAGENT_MODEL\": \"mine\"}}",
+            ]);
             b = b.write(&settings_path, t);
         }
         let c = gen_cmd(rng);
         b = b.step(c);
+    }
+    // the opt-in removal, then what remove would put back
+    if model_set && rng.chance(0.4) {
+        b = b
+            .step(apply_cmd(&["--remove-subagent-model"]))
+            .step(remove_cmd(&["--preview"]));
     }
     // a promotion of one listed legacy note, then what it left
     if !listed.is_empty() && rng.chance(0.3) {
@@ -1563,6 +1623,13 @@ mod tests {
             ("revert", "Fix the file and run remove again"),
             ("raised", "Error: "),
             ("bad json", "Expecting"),
+            ("model offered", "\"removable\": true"),
+            ("model elsewhere", "\"how\": \""),
+            ("model removed", "\"removed\": true"),
+            (
+                "model restored",
+                r#"+    \"CLAUDE_CODE_SUBAGENT_MODEL\": \"<redacted>\""#,
+            ),
         ];
         let mut seen = vec![0usize; wanted.len()];
         let mut rng = Rng::new(20261121);

@@ -119,9 +119,21 @@ fn a_quoted_fd_word_is_a_word_and_the_heredoc_stays_unquoted() {
 }
 
 #[test]
-fn process_substitution_runs_as_a_segment() {
+fn process_substitution_is_one_word_of_its_command() {
+    // the body is a command of its own; the command keeps every word, the substitution as one word
     let lexed = segments("diff <(ls a) b", 0);
-    assert_eq!(toks(&lexed), [vec!["diff"], vec!["ls", "a"], vec!["b"]]);
+    assert_eq!(
+        toks(&lexed),
+        [vec!["ls", "a"], vec!["diff", "/dev/fd/63", "b"]]
+    );
+    let lexed = segments("npm --userconfig <(echo) i puppeteer", 0);
+    assert_eq!(
+        toks(&lexed),
+        [
+            vec!["echo"],
+            vec!["npm", "--userconfig", "/dev/fd/63", "i", "puppeteer"]
+        ]
+    );
 }
 
 #[test]

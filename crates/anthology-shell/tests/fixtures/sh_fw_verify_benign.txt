@@ -3229,3 +3229,81 @@ cp a{1..3}.txt dst/
 seq 1 5 | xargs -n1 echo
 #---
 for n in {1..3}; do git log -n $n; done
+#---
+sudo -s
+#---
+bash
+#---
+sh -c "$(cat)"
+#---
+eval "$(ssh-agent -s)"
+#---
+echo hi | sudo -s
+#---
+echo hi | sh -c "$(date)"
+#---
+echo hi | sh -c 'cat'
+#---
+cat x | sudo tee f
+#---
+echo npx playwright install | sudo -s -- ls
+#---
+echo npx playwright install | sg docker -c 'cat'
+#---
+echo npx playwright install | script -c 'cat'
+#---
+echo npx playwright install | su root ls
+#---
+diff <(sort a) <(sort b)
+#---
+comm -12 <(ls a) <(ls b)
+#---
+tee >(gzip > f.gz) < x
+#---
+while read l; do :; done < <(ls)
+#---
+echo "${HOME}" {a,b}
+#---
+cp "${SRC}"/{a,b}.txt dst/
+#---
+git log --format="%h,%s" {main,dev}
+#---
+git commit -m "fix a, b" -- src/{a,b}.rs
+#---
+rg 'foo, bar' src/{a,b}
+#---
+ls ${HOME}/{a,b}
+#---
+$(which python3) -m venv .venv
+#---
+"$(command -v node)" --version
+#---
+${EDITOR:-vi} file.txt
+#---
+${PYTHON:-python3} script.py
+#---
+echo $(date)
+#---
+x=$(git rev-parse HEAD)
+#---
+eval "$(ssh-agent -s)"
+#---
+eval "$(direnv hook bash)"
+#---
+eval $(minikube docker-env)
+#---
+sudo -i -u postgres psql
+#---
+su - postgres -c 'psql -l'
+#---
+script -q /dev/null ls
+#---
+sg docker -c 'docker ps'
+#---
+cat x | sudo tee f
+#---
+exec > >(tee log) 2>&1
+#---
+diff <(sort a) <(sort b)
+#---
+mapfile -t a < <(git ls-files)

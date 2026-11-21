@@ -10,7 +10,8 @@ tree is built under a fresh temporary folder at its real path (the root) by the 
 
 Fixed for every case (the GC-19 seams, as the Python tests patch them):
 - `doctor.SYSTEM_APPLICATIONS` is `<root>/SysApps`; `doctor.MANAGED_MCP_PATHS` is
-  `(<root>/managed-mcp.json,)`;
+  `(<root>/managed-mcp.json,)`; `compat.MANAGED_SETTINGS_PATHS` is
+  `(<root>/managed-settings.json,)`;
 - `shutil.which` and `subprocess.run` are the real ones, on the case's `PATH` (fake `node`,
   `docker` scripts and the like are in the tree);
 - F-9: `compat.wrapper_problems` also checks `bin/anthology` first, as Rust does;
@@ -143,6 +144,7 @@ def run(case):
         _layout.materialize(root, case.get("tree") or [])
         with mock.patch.object(doctor, "SYSTEM_APPLICATIONS", Path(root) / "SysApps"), \
                 mock.patch.object(doctor, "MANAGED_MCP_PATHS", (Path(root) / "managed-mcp.json",)), \
+                mock.patch.object(compat, "MANAGED_SETTINGS_PATHS", (Path(root) / "managed-settings.json",)), \
                 mock.patch.object(compat, "wrapper_problems", _wrappers), \
                 mock.patch.object(settings_patch, "plugin_rule_status", _rule_status):
             try:

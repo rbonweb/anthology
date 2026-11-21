@@ -7,12 +7,13 @@
 //!
 //! Seeds: every `case` row of `crates/anthology-guard/tests/data/test_guard_rules.jsonl` (`rows:*`), the
 //! shell seeds and hand-written commands of `shell.analyze` as Bash commands (`shell:*`), hand-written tool
-//! inputs (`tool:*`), and the FW-I payloads where Rust's G1 is stricter than Python (`fw:*`, D-8, owner
-//! direction), and the inputs past Python's caps that Rust reads or blocks (`cap:*`, D-8, owner direction,
-//! LR-G). Generated (`gen:*`): `shell.analyze`'s command generator, secret-into-memory commands, and
-//! tool inputs built from path, code and secret vocabularies, all under a mix of homes and tool names. A
-//! generated case whose verdict changes when the D-8 readings are left out is dropped, so D-8 stays
-//! case-scoped (GC-16).
+//! inputs (`tool:*`), the commands where Rust is stricter than Python (`fw:<name>`, D-8, owner
+//! direction: FW-I's G1 readings and the depth-cap block), and the inputs past Python's caps that Rust
+//! reads or blocks (`cap:*`, D-8, owner direction, LR-G). Generated (`gen:*`): `shell.analyze`'s command
+//! generator, secret-into-memory commands, and tool inputs built from path, code and secret vocabularies,
+//! all under a mix of homes and tool names. A generated case whose verdict `check_without_d8` changes (the
+//! FW-I readings of G1's tables, LR-G's cap blocks) is dropped, so those stay case-scoped (GC-16); a
+//! generated case that differs by an analyzer reading is not dropped and shows as unexplained.
 
 use anthology_guard::{TOO_COMPLEX, TOO_COMPLEX_ID, Verdict, check, check_without_d8};
 use anthology_pycompat::json::{self, Map, Value};
@@ -63,8 +64,8 @@ impl Surface for GuardCheck {
         for (k, data) in tool_cases().into_iter().enumerate() {
             out.push(Case::new(format!("tool:{}", k + 1), data));
         }
-        for (k, command) in FW_STRICTER.iter().enumerate() {
-            out.push(Case::new(format!("fw:{}", k + 1), bash_case(command, HOME)));
+        for (name, command) in fw_stricter() {
+            out.push(Case::new(format!("fw:{name}"), bash_case(&command, HOME)));
         }
         for (k, data) in cap_stricter().into_iter().enumerate() {
             out.push(Case::new(format!("cap:{}", k + 1), data));
@@ -86,6 +87,11 @@ impl Surface for GuardCheck {
 
     fn run_rust(&self, c: &Case) -> Observed {
         observed(run_rust(&c.data))
+    }
+
+    /// Python allows (`null`) and Rust blocks (final review M-3).
+    fn rust_stricter(&self, _c: &Case, python: &Observed, rust: &Observed) -> Option<bool> {
+        Some(python.stdout == b"null" && rust.exit == 0 && rust.stdout != b"null")
     }
 }
 
@@ -153,18 +159,44 @@ fn row_cases() -> Vec<Case> {
     out
 }
 
-/// FW-I payloads where Rust's G1 reads a package manager's or an OS installer's options as FW-I
-/// does (bash-verified installs Python allows). Declared case by case as D-8 in
-/// `port/difftest/divergences/guard.check.toml`.
-pub(crate) const FW_STRICTER: &[&str] = &[
-    "npm --loglevel silent i puppeteer",
-    "npm --loglevel silent init playwright",
-    "npm --foo-bar silent i puppeteer",
-    "npm --foo-bar silent init playwright",
-    "sudo apt-get -o Dpkg::Options::=--force-confnew install chromium",
-    "apt-get --option x=y install chromium",
-    "dnf --setopt x=y install chromium",
-];
+/// Commands where Rust blocks and Python allows, by name (`fw:<name>`; named, not numbered, so a new
+/// one cannot re-point an entry). Declared case by case as D-8 in
+/// `port/difftest/divergences/guard.check.toml`:
+/// - FW-I payloads where Rust's G1 reads a package manager's or an OS installer's options as FW-I does
+///   (bash-verified installs);
+/// - text nested past anthology-shell's depth cap (final review I-1: G0).
+fn fw_stricter() -> Vec<(&'static str, String)> {
+    let nested = (0..13).fold("npx playwright install".to_string(), |c, _| {
+        format!("echo $({c})")
+    });
+    vec![
+        ("npm-loglevel-i", "npm --loglevel silent i puppeteer".into()),
+        (
+            "npm-loglevel-init",
+            "npm --loglevel silent init playwright".into(),
+        ),
+        ("npm-foo-bar-i", "npm --foo-bar silent i puppeteer".into()),
+        (
+            "npm-foo-bar-init",
+            "npm --foo-bar silent init playwright".into(),
+        ),
+        (
+            "apt-get-o",
+            "sudo apt-get -o Dpkg::Options::=--force-confnew install chromium".into(),
+        ),
+        (
+            "apt-get-option",
+            "apt-get --option x=y install chromium".into(),
+        ),
+        ("dnf-setopt", "dnf --setopt x=y install chromium".into()),
+        ("depth-cap-substitutions", nested),
+        (
+            "depth-cap-evals",
+            format!("{}npx playwright install", "eval ".repeat(13)),
+        ),
+        ("depth-cap-benign", format!("{}echo hi", "eval ".repeat(13))),
+    ]
+}
 
 /// Inputs past one of Python's caps, where guard.py stops reading and allows (LR-G, owner direction:
 /// past a cap the guard blocks). Rust reads them (G3) or blocks them as too complex (G0).

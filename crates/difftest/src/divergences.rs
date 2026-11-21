@@ -20,6 +20,9 @@
 //! - a difference between the two sides passes only if an entry **with** a `case` matches it.
 //!   An entry without `case` covers oracle marks only, so a surface-wide `D-6` declaration
 //!   cannot hide an unrelated diff; write `case = "*"` to waive diffs surface-wide on purpose;
+//! - a `D-8` entry ("Rust stricter") waives a diff only where the surface says Rust is the
+//!   stricter side (`Surface::rust_stricter`); any other diff on a case a D-8 entry names is
+//!   unexplained, whatever other entry matches it;
 //! - an entry that matched nothing in the run is reported as `unused` (a warning).
 //!
 //! A `D-8` entry must have a `case`: it explains named cases only, never a surface.
@@ -189,14 +192,22 @@ impl Divergences {
         Some(&self.entries[i])
     }
 
-    /// The first entry with a `case` matching `case_id`; counted as used.
-    pub fn explain_diff(&mut self, case_id: &str) -> Option<&Entry> {
-        let i = self
-            .entries
-            .iter()
-            .position(|e| e.case.as_deref().is_some_and(|p| glob(p, case_id)))?;
+    /// The first entry with a `case` matching `case_id`; counted as used. A `D-8` entry is
+    /// skipped unless `stricter` (Rust is the stricter side of the diff).
+    pub fn explain_diff(&mut self, case_id: &str, stricter: bool) -> Option<&Entry> {
+        let i = self.entries.iter().position(|e| {
+            (stricter || e.class != Class::D8)
+                && e.case.as_deref().is_some_and(|p| glob(p, case_id))
+        })?;
         self.used[i] += 1;
         Some(&self.entries[i])
+    }
+
+    /// The first `D-8` entry naming `case_id` (not counted as used).
+    pub fn d8_entry(&self, case_id: &str) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|e| e.class == Class::D8 && e.case.as_deref().is_some_and(|p| glob(p, case_id)))
     }
 
     /// Entries no case used.
@@ -442,10 +453,10 @@ reason = "deep \"text\" \u00e9"
         assert!(d.explain_mark(Class::D2, "gen:5").is_none());
         // The D-1 entry needs its case; the D-6 one has none, so it explains no diff.
         assert!(d.explain_mark(Class::D1, "golden:2").is_none());
-        assert!(d.explain_diff("gen:5").is_none());
+        assert!(d.explain_diff("gen:5", true).is_none());
         assert_eq!(d.unused().len(), 1);
         assert_eq!(
-            d.explain_diff("golden:12").map(|e| e.class),
+            d.explain_diff("golden:12", false).map(|e| e.class),
             Some(Class::D1)
         );
         assert!(d.unused().is_empty());
@@ -495,7 +506,14 @@ reason = "deep \"text\" \u00e9"
             "x",
         )
         .expect("valid");
-        assert_eq!(d.explain_diff("fw:1").map(|e| e.class), Some(Class::D8));
-        assert!(d.explain_diff("fw:2").is_none());
+        assert_eq!(
+            d.explain_diff("fw:1", true).map(|e| e.class),
+            Some(Class::D8)
+        );
+        assert!(d.explain_diff("fw:2", true).is_none());
+        // a diff where Rust is not stricter: the D-8 entry does not waive it
+        assert!(d.explain_diff("fw:1", false).is_none());
+        assert_eq!(d.d8_entry("fw:1").map(|e| e.line), Some(1));
+        assert!(d.d8_entry("fw:2").is_none());
     }
 }

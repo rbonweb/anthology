@@ -56,13 +56,21 @@ pub fn cut(s: &str, max: usize) -> String {
     format!("{head}…({} more)", n - max)
 }
 
-/// A difftest surface (plan §3.7, exactly).
+/// A difftest surface (plan §3.7, plus the defaulted `rust_stricter`).
 pub trait Surface {
     fn name(&self) -> &'static str;
     fn seeds(&self) -> Vec<Case>;
     fn generate(&self, rng: &mut Rng, n: usize) -> Vec<Case>;
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed;
     fn run_rust(&self, c: &Case) -> Observed;
+
+    /// For a case whose two sides differ: whether Rust is the stricter side (it blocks, or reports
+    /// more to block on, where Python allows). A `D-8` entry waives such a diff only (final review
+    /// M-3); `Some(false)` makes any other diff on a D-8 case unexplained. `None` (the default):
+    /// the surface has no direction to check, and its D-8 entries waive as declared.
+    fn rust_stricter(&self, _c: &Case, _python: &Observed, _rust: &Observed) -> Option<bool> {
+        None
+    }
 }
 
 /// A deterministic generator (SplitMix64). The same seed gives the same sequence everywhere.

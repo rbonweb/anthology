@@ -1,8 +1,8 @@
 //! `check()`: the rule order of GC-6 (GD1), guard_rules.py `_check` and `check`.
 //!
-//! Order: G5 on the tool name; G6 (file tool, then command); G3 on the tool input's paths,
-//! search roots and code; then per entry G3, G4, G1, G2; then G1 on each alternate reading of a
-//! wrapped command (`Analysis.alternates`).
+//! Order: G5 on the tool name; G6 (file tool, then command, over the entries and the alternate
+//! readings); G3 on the tool input's paths, search roots and code; then per entry G3, G4, G1, G2;
+//! then the same four on each alternate reading of a wrapped command (`Analysis.alternates`).
 //!
 //! Python turns any exception into "allow". Rust has no such path: it blocks where it cannot
 //! finish (design §9.5, D-1/D-7):
@@ -95,10 +95,13 @@ pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Li
     }
 }
 
-/// [`check`] with the owner-directed D-8 readings left out (FW-I's G1 readings, and LR-G's
-/// readings past Python's caps): Python's verdict where the two differ only by a D-8 reading.
-/// Not for production: the difftest's generator drops a generated case whose verdict this
-/// changes, so D-8 stays case-scoped (GC-16).
+/// [`check`] with the owner-directed D-8 parts left out: the FW-I readings of G1's own tables
+/// (`g1_with(.., false)`) and LR-G's blocks past Python's caps (the depth cap, `cd` tracking, brace
+/// expansion; final review I-1). Only those: the analyzer's FW readings (`fd -x`, `tar`, git aliases,
+/// the unknown-option reading of a package manager and its alternates) stay on, so a generated case
+/// that differs from Python by one of them still shows as unexplained (loud, not silent). Not for
+/// production: the difftest's generator drops a generated case whose verdict this changes, so those
+/// parts of D-8 stay case-scoped (GC-16).
 pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
     run(
         tool_name,
@@ -163,7 +166,13 @@ fn run(
     let g6 = crate::rules::either(
         g6_file_tool(input, &paths, &regexes.secrets),
         || match command {
-            Some(c) => g6_command(c, &analysis.entries, &paths, &regexes.secrets),
+            // the alternate readings too (review-gd-final I-1): the shipped reading may write memory
+            Some(c) => g6_command(
+                c,
+                analysis.entries.iter().chain(&analysis.alternates),
+                &paths,
+                &regexes.secrets,
+            ),
             None => Ok(false),
         },
     );
@@ -173,7 +182,10 @@ fn run(
     if let Some(v) = out.hit(Rule::G3, g3_input(name, input, &paths)) {
         return v;
     }
-    for entry in &analysis.entries {
+    // Every entry, then each other reading of a wrapped command (`Analysis.alternates`), against
+    // G3, G4, G1 and G2 (final review C-1, I-3): an alternate is a reading the shipped Python may
+    // take, so a rule it hits blocks.
+    for entry in analysis.entries.iter().chain(&analysis.alternates) {
         if let Some(v) = out.hit(Rule::G3, g3(entry, &paths)) {
             return v;
         }
@@ -187,18 +199,13 @@ fn run(
             return Verdict::Block(Rule::G2);
         }
     }
-    // Each other reading of a wrapped command (`Analysis.alternates`) is checked against G1 only, as
-    // guard_rules.py `_add_alternates` checks it (SH lead ruling Q3=A).
-    if analysis.alternates.iter().any(|alt| g1_with(alt, fw)) {
-        return Verdict::Block(Rule::G1);
-    }
     let regex_limit = analysis
         .entries
         .iter()
         .any(|e| e.opaque.contains(&Opaque::RegexLimit));
     let mut capped = paths.capped.get();
     if fw && !capped {
-        for entry in &analysis.entries {
+        for entry in analysis.entries.iter().chain(&analysis.alternates) {
             match past_a_cap(entry, home, limits) {
                 Ok(true) => capped = true,
                 Ok(false) => {}

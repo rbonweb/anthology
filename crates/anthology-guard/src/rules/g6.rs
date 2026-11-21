@@ -201,10 +201,10 @@ fn entry_writes_memory(entry: &Entry, paths: &Paths<'_>) -> Result<bool, Limit> 
 }
 
 /// `_g6_command(command, entries, home)`: some entry writes into memory, and the command text
-/// holds a secret.
-pub(crate) fn g6_command(
+/// holds a secret. `check` passes the entries and then the alternate readings.
+pub(crate) fn g6_command<'e>(
     command: &str,
-    entries: &[Entry],
+    entries: impl IntoIterator<Item = &'e Entry>,
     paths: &Paths<'_>,
     secrets: &[Option<Secret>],
 ) -> Result<bool, Limit> {

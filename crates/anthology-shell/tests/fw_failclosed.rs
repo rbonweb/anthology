@@ -107,7 +107,12 @@ fn g1(e: &Entry) -> bool {
         return sub.is_some_and(|s| s == "browsers" || s == "install");
     }
     if ["npm", "pnpm", "yarn", "bun"].contains(&prog) {
-        let words = positional(&e.args, &[]);
+        // value flags as the guard's `FW_PM_VALUE_FLAGS` (the ones these fixtures use): `--userconfig <(echo)`
+        // takes the substitution as its value
+        let words = positional(
+            &e.args,
+            &["--userconfig", "--registry", "--cache", "--prefix", "--cwd"],
+        );
         return words
             .first()
             .is_some_and(|v| ["i", "install", "add"].contains(v))
@@ -273,4 +278,24 @@ fn integer_sequences_are_read_after_the_program_word_only() {
     ] {
         assert!(analyze(command, HOME).incomplete, "{command}");
     }
+}
+
+// ------------------------------------------------------------------ M-1: memory is charged to the budget
+
+#[test]
+fn a_million_statements_exhaust_the_budget_and_fail_closed() {
+    // Each kept entry and lexed segment is charged (`ENTRY_COST`, `SEGMENT_COST`): ~1M of each is over budget.
+    assert!(analyze(&"a;".repeat(1_000_000), HOME).incomplete);
+    assert!(analyze(&"a\n".repeat(2_000_000), HOME).incomplete);
+}
+
+#[test]
+fn ordinary_long_command_lists_stay_complete() {
+    let found = analyze(&"echo k;".repeat(2000), HOME);
+    assert!(!found.incomplete);
+    assert_eq!(found.entries.len(), 2000);
+    // a 64 KB commit message in a quoted heredoc
+    let body = "line of commit text with some words in it\n".repeat(1500);
+    let commit = format!("git commit -m \"$(cat <<'EOF'\n{body}EOF\n)\"");
+    assert!(!analyze(&commit, HOME).incomplete);
 }

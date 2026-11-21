@@ -619,6 +619,30 @@ fn gen_long_object(rng: &mut Rng) -> G {
     )
 }
 
+/// An `env` object with `CLAUDE_CODE_SUBAGENT_MODEL` as its first, middle or last key, or as
+/// its only key. The other keys and values stay short.
+fn subagent_env(rng: &mut Rng) -> G {
+    const OTHERS: [&str; 3] = ["API_TOKEN", "PLAIN", "A"];
+    let key = st::SUBAGENT_MODEL_PATH[1];
+    let n = rng.index(OTHERS.len() + 1);
+    let mut keys: Vec<String> = OTHERS[..n].iter().map(|k| k.to_string()).collect();
+    let at = if n == 0 { 0 } else { rng.index(n + 1) };
+    keys.insert(at, key.to_string());
+    G::Obj(
+        keys.into_iter()
+            .map(|k| {
+                let value = if k == key {
+                    rng.pick(&["\"sonnet\"", "\"SECRETMODEL\"", "\"\"", "null", "3", "{}"])
+                        .to_string()
+                } else {
+                    gen_scalar(rng)
+                };
+                (k, G::Raw(value))
+            })
+            .collect(),
+    )
+}
+
 /// A settings-shaped document.
 fn gen_doc(rng: &mut Rng) -> G {
     let mut members = Vec::new();
@@ -683,6 +707,10 @@ fn gen_doc(rng: &mut Rng) -> G {
             _ => (gen_key(rng), gen_g(rng, 3)),
         };
         members.push(entry);
+    }
+    // An `env` holding CLAUDE_CODE_SUBAGENT_MODEL, so plans and reverts of the opt-in op hit it.
+    if rng.chance(0.2) {
+        members.push(("env".to_string(), subagent_env(rng)));
     }
     // A repeated key now and then: the scanner takes the last one, like json.
     if !members.is_empty() && rng.chance(0.08) {
@@ -897,6 +925,10 @@ fn setup_like(rng: &mut Rng) -> Vec<Value> {
         ),
         op_set(&["worktree", "baseRef"], s("head"), None),
     ];
+    if rng.chance(0.25) {
+        // The opt-in removal setup offers (never in `setup_ops`).
+        ops.push(st::subagent_model_op().to_value());
+    }
     if rng.chance(0.15) {
         rng.shuffle(&mut ops);
     }
@@ -939,12 +971,21 @@ fn gen_value(rng: &mut Rng) -> Value {
     }
 }
 
+/// `{"op": "unset", "path": [...]}`: no `value` and no `tag`, as Python's dict has none (the
+/// typed `Op` keeps neither).
+fn op_unset(path: &[&str]) -> Value {
+    obj(vec![("op", s("unset")), ("path", path_strs(path))])
+}
+
 fn gen_random_ops(rng: &mut Rng) -> Vec<Value> {
     let n = 1 + rng.index(5);
     (0..n)
         .map(|_| {
             let len = rng.index(4);
             let path: Vec<&str> = (0..len).map(|_| *rng.pick(PATH_WORDS)).collect();
+            if rng.chance(0.2) {
+                return op_unset(&path);
+            }
             let tag = match rng.below(6) {
                 0 => Some("plugin-read"),
                 1 => Some("mem-save"),
@@ -1059,14 +1100,23 @@ fn mutate_record(rng: &mut Rng, rec: &Value) -> Value {
                 obj(vec![("present", Value::Bool(true))]),
                 obj(vec![("present", Value::Bool(true)), ("raw", int(3))]),
                 obj(vec![("present", s("yes")), ("raw", s("not json"))]),
+                obj(vec![("present", Value::Bool(true)), ("raw", s("\"m\""))]),
+                obj(vec![("present", Value::Bool(true)), ("raw", s("not json"))]),
                 int(0),
             ])
             .clone(),
         ),
         5 => m.insert(
             "op".into(),
-            rng.pick(&[s("set"), s("add"), s("bogus"), int(1), arr(vec![])])
-                .clone(),
+            rng.pick(&[
+                s("set"),
+                s("add"),
+                s("bogus"),
+                s("unset"),
+                int(1),
+                arr(vec![]),
+            ])
+            .clone(),
         ),
         6 => m.insert("value".into(), gen_value(rng)),
         7 => m.insert(
@@ -1782,9 +1832,13 @@ mod tests {
         let mut rng = Rng::for_surface(20261121, NAME);
         let mut tally: BTreeMap<(String, i32), usize> = BTreeMap::new();
         let mut changed = 0;
+        let (mut unsets, mut subagent_keys) = (0, 0);
         for c in Settings.generate(&mut rng, 3000) {
             let o = run(&c.data);
             let op = text_of(&c.data, "op");
+            let dumped = json::dumps(&c.data, &PY_DEFAULT);
+            unsets += usize::from(dumped.contains("\"op\": \"unset\""));
+            subagent_keys += usize::from(dumped.contains(st::SUBAGENT_MODEL_PATH[1]));
             if op == "apply" && o.exit == 0 {
                 let out = json::loads(std::str::from_utf8(&o.stdout).unwrap()).unwrap();
                 if text_of(&out, "text") != text_of(&c.data, "text") {
@@ -1793,7 +1847,14 @@ mod tests {
             }
             *tally.entry((op, o.exit)).or_default() += 1;
         }
-        eprintln!("{tally:#?}\nchanged applies: {changed}");
+        eprintln!(
+            "{tally:#?}\nchanged applies: {changed}\nunset ops: {unsets}, subagent keys: {subagent_keys}"
+        );
+        assert!(unsets > 100, "only {unsets} cases carry an unset op");
+        assert!(
+            subagent_keys > 100,
+            "only {subagent_keys} cases name the subagent key"
+        );
         for op in [
             "plan",
             "apply",
