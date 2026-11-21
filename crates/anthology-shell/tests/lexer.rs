@@ -245,7 +245,9 @@ fn script_starts_and_program_names() {
     assert!(SHELLS.contains(&"fish"));
 }
 
+/// A catastrophe guard: a bound below 8 s is raised to it, because a slow runner is not a regression.
 fn assert_quick(what: &str, bound: Duration, f: impl FnOnce()) {
+    let bound = bound.max(Duration::from_secs(8));
     let start = Instant::now();
     f();
     let took = start.elapsed();

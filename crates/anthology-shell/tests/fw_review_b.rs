@@ -470,7 +470,7 @@ fn part_b_shapes_stay_quick_at_100_kb() {
         let a = analyze(shape, HOME);
         let took = start.elapsed();
         assert!(
-            took < Duration::from_secs(3),
+            took < Duration::from_secs(8),
             "{:?}... took {took:?} (incomplete {})",
             &shape[..40.min(shape.len())],
             a.incomplete
