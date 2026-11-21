@@ -4,7 +4,8 @@
 #   scripts/rtk-net-test.sh
 #
 # 1. builds rtk/ with `cargo build --release --locked` in the pinned image (the FROM line of
-#    ci/images/rust.Dockerfile); the target dir is the anthology-rtk-release volume;
+#    ci/images/rust.Dockerfile), with the repository root mounted (rtk depends on
+#    ../crates/anthology-shell); the target dir is the anthology-rtk-release volume;
 # 2. builds a throwaway test image FROM that same image plus git (test-only, unpinned Debian
 #    package, never shipped; the Dockerfile comes on stdin, so ci/images/ is unchanged);
 # 3. runs the binary there with `docker run --network none` on a fixture repo and asserts
@@ -25,11 +26,11 @@ net_image=anthology-rtk-net
 
 echo "rtk-net-test: building the release binary"
 docker run --rm \
-    -v "$root/rtk":/w \
+    -v "$root":/w \
     -v anthology-cargo:/usr/local/cargo/registry \
     -v anthology-rtk-release:/target \
     -e CARGO_TARGET_DIR=/target \
-    -w /w "$image" cargo build --release --locked
+    -w /w/rtk "$image" cargo build --release --locked
 
 echo "rtk-net-test: building the test image ($net_image)"
 docker build -q -t "$net_image" - >/dev/null <<EOF

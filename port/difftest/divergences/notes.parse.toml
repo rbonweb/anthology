@@ -1,0 +1,6 @@
+# Allowed divergences of the notes.parse surface (GC-16).
+
+[[divergence]]
+class = "D-1"
+case = "seed:deep"
+reason = "Python's _parse_block recurses once per nesting level, so a frontmatter nested about a thousand levels deep raises RecursionError, which parse_text catches: the note falls back to its stem with type other. Rust parses any depth with an explicit stack, so it keeps the fields (here type: user, so Rust still treats the note as a user note: stricter, never more permissive). Generated cases nest at most a dozen levels."
