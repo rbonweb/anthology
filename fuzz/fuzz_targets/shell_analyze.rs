@@ -15,7 +15,13 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     } else {
         1_000_000
     };
-    let analysis = analyze_with(command, home, &Limits { backtrack_limit: limit });
+    let analysis = analyze_with(
+        command,
+        home,
+        &Limits {
+            backtrack_limit: limit,
+        },
+    );
     for entry in &analysis.entries {
         assert!(analysis.groups.iter().any(|g| g.id == entry.group));
     }

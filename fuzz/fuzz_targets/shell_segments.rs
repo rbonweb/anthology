@@ -13,7 +13,13 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         ),
         None => (0, 1_000_000, String::from_utf8_lossy(data)),
     };
-    let lexed = segments_with(&text, depth, &Limits { backtrack_limit: limit });
+    let lexed = segments_with(
+        &text,
+        depth,
+        &Limits {
+            backtrack_limit: limit,
+        },
+    );
     for seg in &lexed.segments {
         assert!(lexed.groups.iter().any(|g| g.id == seg.group));
         script_starts(&seg.tokens);
