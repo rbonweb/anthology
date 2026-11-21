@@ -26,5 +26,6 @@ fn test_cli_is_runnable_and_lists_commands() {
 #[test]
 fn test_cache_dir_is_git_ignored() {
     let ignore = fs::read_to_string(repo_root().join(".gitignore")).unwrap();
+    assert_eq!(anthology_dev::vendor::CACHE_DIRNAME, ".vendor-cache");
     assert!(ignore.lines().any(|l| l == ".vendor-cache/"));
 }

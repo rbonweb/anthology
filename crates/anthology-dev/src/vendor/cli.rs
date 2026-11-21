@@ -183,46 +183,118 @@ fn negative_number(s: &str) -> bool {
     }
 }
 
-/// Whether argparse reads `arg` as an option string (`_parse_optional` not returning None).
-fn looks_like_option(arg: &str, known: &[&str]) -> bool {
-    if !arg.starts_with('-') || arg == "-" {
-        return false;
-    }
-    if known.contains(&arg) || arg == "--" {
-        return true;
-    }
-    if let Some((name, _)) = arg.split_once('=')
-        && known.contains(&name)
-    {
-        return true;
-    }
-    if arg.starts_with("--")
-        && known
-            .iter()
-            .any(|k| k.starts_with(arg.split('=').next().unwrap_or(arg)))
-    {
-        return true;
-    }
-    !(negative_number(arg) || arg.contains(' '))
+/// What argparse's `_parse_optional` makes of an argument (`None`: a positional).
+enum Opt<'a> {
+    /// A known option, with an explicit value (`--x=v`, or the rest of a `-hx` cluster) and
+    /// whether that value came after `=`.
+    Known(&'a str, Option<String>, bool),
+    /// More than one option starts with this prefix.
+    Ambiguous(String),
+    /// Option-like but unknown (an extra).
+    Unknown,
 }
 
-/// The option `arg` names among `known` (exact, `--x=v`, or a unique `--` prefix), with an
-/// explicit `=value`.
-fn match_option<'a>(arg: &str, known: &[&'a str]) -> Option<(&'a str, Option<String>)> {
-    let (name, value) = match arg.split_once('=') {
-        Some((n, v)) if arg.starts_with("--") => (n, Some(v.to_string())),
-        _ => (arg, None),
-    };
-    if let Some(k) = known.iter().find(|k| **k == name) {
-        return Some((k, value));
+/// argparse 3.12's `_parse_optional` with `_get_option_tuples`, for `known` in registration
+/// order (`-h`, `--help`, then the parser's options).
+fn parse_optional<'a>(arg: &str, known: &[&'a str]) -> Option<Opt<'a>> {
+    if !arg.starts_with('-') || arg.len() < 2 {
+        return None;
     }
-    if name.starts_with("--") && name.len() > 2 {
-        let hits: Vec<&&str> = known.iter().filter(|k| k.starts_with(name)).collect();
-        if hits.len() == 1 {
-            return Some((hits[0], value));
+    if let Some(k) = known.iter().find(|k| **k == arg) {
+        return Some(Opt::Known(k, None, false));
+    }
+    if let Some((name, value)) = arg.split_once('=')
+        && let Some(k) = known.iter().find(|k| **k == name)
+    {
+        return Some(Opt::Known(k, Some(value.to_string()), true));
+    }
+    let mut tuples: Vec<(&'a str, Option<String>, bool)> = Vec::new();
+    if arg.starts_with("--") {
+        let (prefix, explicit) = match arg.split_once('=') {
+            Some((p, v)) => (p, Some(v.to_string())),
+            None => (arg, None),
+        };
+        for k in known {
+            if k.starts_with(prefix) {
+                tuples.push((k, explicit.clone(), explicit.is_some()));
+            }
+        }
+    } else {
+        let cut = arg.char_indices().nth(2).map_or(arg.len(), |(i, _)| i);
+        let (short, rest) = arg.split_at(cut);
+        for k in known {
+            if *k == short {
+                tuples.push((k, Some(rest.to_string()), false));
+            } else if k.starts_with(arg) {
+                tuples.push((k, None, false));
+            }
         }
     }
-    None
+    match tuples.len() {
+        0 => {}
+        1 => {
+            let (k, v, sep) = tuples.remove(0);
+            return Some(Opt::Known(k, v, sep));
+        }
+        _ => {
+            let names: Vec<&str> = tuples.iter().map(|t| t.0).collect();
+            return Some(Opt::Ambiguous(format!(
+                "ambiguous option: {arg} could match {}",
+                names.join(", ")
+            )));
+        }
+    }
+    if negative_number(arg) || arg.contains(' ') {
+        return None;
+    }
+    Some(Opt::Unknown)
+}
+
+/// One option at `args[*i]`: `Ok(Some((option, value)))` for a value option, `Ok(None)` for an
+/// unknown one (an extra), or how parsing ends (help, or an argparse error). Advances `*i` past
+/// a value taken from the next argument.
+fn take_option(
+    opt: Opt<'_>,
+    args: &[OsString],
+    i: &mut usize,
+    known: &[&str],
+    usage: &'static str,
+    prog: &str,
+    help: &'static str,
+) -> std::result::Result<Option<(String, OsString)>, Exit> {
+    match opt {
+        Opt::Unknown => Ok(None),
+        Opt::Ambiguous(msg) => Err(error(usage, prog, msg)),
+        Opt::Known("-h" | "--help", explicit, sep) => match explicit {
+            // `-hx`: a cluster of single-dash flags, `-h` first (3.12 prints the help).
+            Some(rest) if !sep && !rest.is_empty() && !rest.starts_with('-') => {
+                Err(Exit::Help(help))
+            }
+            Some(rest) => Err(error(
+                usage,
+                prog,
+                format!(
+                    "argument -h/--help: ignored explicit argument {}",
+                    py::repr_str(&rest)
+                ),
+            )),
+            None => Err(Exit::Help(help)),
+        },
+        Opt::Known(name, Some(value), _) => Ok(Some((name.to_string(), OsString::from(value)))),
+        Opt::Known(name, None, _) => match args.get(*i + 1) {
+            Some(next)
+                if next != "--" && parse_optional(&next.to_string_lossy(), known).is_none() =>
+            {
+                *i += 1;
+                Ok(Some((name.to_string(), next.clone())))
+            }
+            _ => Err(error(
+                usage,
+                prog,
+                format!("argument {name}: expected one argument"),
+            )),
+        },
+    }
 }
 
 /// A parsed subcommand: option values and positionals by dest.
@@ -261,70 +333,73 @@ fn parse_sub(
     known.extend(spec.options.iter().map(|o| o.0));
     let mut parsed = Parsed::default();
     let mut next_positional = 0;
-    let mut chunk: Vec<OsString> = Vec::new();
+    // Positional strings since the last option; `true` marks the `--` that ends the options.
+    let mut chunk: Vec<(OsString, bool)> = Vec::new();
     let mut only_positionals = false;
     let mut i = 0;
-    let flush = |chunk: &mut Vec<OsString>,
+    // argparse's consume_positionals over one chunk: `-*A-*` for one value (`-*A?-*` for an
+    // optional one), `[-A]*` for `*`. A `--` inside what a positional takes is dropped
+    // (`arg_strings.remove('--')`: the first `--` string there); the rest are extras.
+    let flush = |chunk: &mut Vec<(OsString, bool)>,
                  parsed: &mut Parsed,
                  extras: &mut Vec<OsString>,
                  next_positional: &mut usize| {
-        let mut rest = std::mem::take(chunk).into_iter().peekable();
-        while *next_positional < spec.positionals.len() && rest.peek().is_some() {
+        let items = std::mem::take(chunk);
+        let mut at = 0;
+        while *next_positional < spec.positionals.len() && at < items.len() {
             let (dest, nargs) = spec.positionals[*next_positional];
-            let taken: Vec<OsString> = match nargs {
-                Nargs::One | Nargs::Optional => rest.next().into_iter().collect(),
-                Nargs::Star => rest.by_ref().collect(),
-            };
+            // `-*A-*` needs a value; `-*A?-*` and `[-A]*` also take a lone `--`.
+            if nargs == Nargs::One && !items[at..].iter().any(|(_, marker)| !marker) {
+                break;
+            }
+            let start = at;
+            match nargs {
+                Nargs::One | Nargs::Optional => {
+                    while items.get(at).is_some_and(|(_, m)| *m) {
+                        at += 1;
+                    }
+                    if at < items.len() {
+                        at += 1;
+                    }
+                    while items.get(at).is_some_and(|(_, m)| *m) {
+                        at += 1;
+                    }
+                }
+                Nargs::Star => at = items.len(),
+            }
+            let mut taken: Vec<OsString> =
+                items[start..at].iter().map(|(s, _)| s.clone()).collect();
+            if let Some(k) = taken.iter().position(|s| s == "--") {
+                taken.remove(k);
+            }
             parsed.positionals.push((dest, taken));
             *next_positional += 1;
         }
-        extras.extend(rest);
+        extras.extend(items[at..].iter().map(|(s, _)| s.clone()));
     };
     while i < args.len() {
         let raw = &args[i];
         let arg = raw.to_string_lossy();
         if only_positionals {
-            chunk.push(raw.clone());
+            chunk.push((raw.clone(), false));
         } else if arg == "--" {
-            if next_positional < spec.positionals.len() {
-                only_positionals = true;
-            } else {
-                flush(&mut chunk, &mut parsed, extras, &mut next_positional);
-                extras.push(raw.clone());
-            }
-        } else if looks_like_option(&arg, &known) {
+            only_positionals = true;
+            chunk.push((raw.clone(), true));
+        } else if let Some(opt) = parse_optional(&arg, &known) {
             flush(&mut chunk, &mut parsed, extras, &mut next_positional);
-            match match_option(&arg, &known) {
-                Some(("-h" | "--help", _)) => return Err(Exit::Help(spec.help)),
-                Some((opt, value)) => {
-                    let (_, dest, _) = spec
+            match take_option(opt, args, &mut i, &known, spec.usage, &prog, spec.help)? {
+                Some((name, value)) => {
+                    let dest = spec
                         .options
                         .iter()
-                        .find(|o| o.0 == opt)
-                        .copied()
-                        .unwrap_or(("", "", false));
-                    let value = match value {
-                        Some(v) => OsString::from(v),
-                        None => match args.get(i + 1) {
-                            Some(next) if !looks_like_option(&next.to_string_lossy(), &known) => {
-                                i += 1;
-                                next.clone()
-                            }
-                            _ => {
-                                return Err(error(
-                                    spec.usage,
-                                    &prog,
-                                    format!("argument {opt}: expected one argument"),
-                                ));
-                            }
-                        },
-                    };
+                        .find(|o| o.0 == name)
+                        .map_or("", |o| o.1);
                     parsed.values.push((dest, value));
                 }
                 None => extras.push(raw.clone()),
             }
         } else {
-            chunk.push(raw.clone());
+            chunk.push((raw.clone(), false));
         }
         i += 1;
     }
@@ -375,32 +450,10 @@ fn parse(args: &[OsString]) -> std::result::Result<Args, Exit> {
             i += 1;
             continue;
         }
-        if !only_positionals && looks_like_option(&arg, &known) {
-            match match_option(&arg, &known) {
-                Some(("-h" | "--help", _)) => return Err(Exit::Help(TOP_HELP)),
-                Some((opt, value)) => {
-                    let value = match value {
-                        Some(v) => OsString::from(v),
-                        None => match args.get(i + 1) {
-                            Some(next) if !looks_like_option(&next.to_string_lossy(), &known) => {
-                                i += 1;
-                                next.clone()
-                            }
-                            _ => {
-                                return Err(error(
-                                    TOP_USAGE,
-                                    "vendor.py",
-                                    format!("argument {opt}: expected one argument"),
-                                ));
-                            }
-                        },
-                    };
-                    if opt == "--root" {
-                        root = Some(value);
-                    } else {
-                        cache = Some(value);
-                    }
-                }
+        if !only_positionals && let Some(opt) = parse_optional(&arg, &known) {
+            match take_option(opt, args, &mut i, &known, TOP_USAGE, "vendor.py", TOP_HELP)? {
+                Some((name, value)) if name == "--root" => root = Some(value),
+                Some((_, value)) => cache = Some(value),
                 None => extras.push(raw.clone()),
             }
             i += 1;
@@ -445,10 +498,40 @@ fn parse(args: &[OsString]) -> std::result::Result<Args, Exit> {
 
 /// `Path(arg)`: an empty argument is `.`.
 fn path_arg(arg: &OsStr) -> PathBuf {
-    if arg.is_empty() {
-        PathBuf::from(".")
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    // `str(PurePosixPath(arg))`: no empty or `.` parts, no trailing `/`, and one leading `/`
+    // (two are kept as POSIX allows); nothing left is `.`.
+    let bytes = arg.as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+    if bytes.starts_with(b"//") && !bytes.starts_with(b"///") {
+        out.extend_from_slice(b"//");
+    } else if bytes.starts_with(b"/") {
+        out.push(b'/');
+    }
+    let rooted = !out.is_empty();
+    let mut first = true;
+    for part in bytes.split(|&b| b == b'/') {
+        if part.is_empty() || part == b"." {
+            continue;
+        }
+        if !first {
+            out.push(b'/');
+        }
+        out.extend_from_slice(part);
+        first = false;
+    }
+    if out.is_empty() && !rooted {
+        out.push(b'.');
+    }
+    PathBuf::from(OsString::from_vec(out))
+}
+
+/// A `path_arg` to join onto: `Path(".") / x` is `x`, so `.` is the empty path.
+fn join_base(path: PathBuf) -> PathBuf {
+    if path.as_os_str() == "." {
+        PathBuf::new()
     } else {
-        PathBuf::from(arg)
+        path
     }
 }
 
@@ -508,7 +591,7 @@ pub fn main(args: &[OsString]) -> Output {
     let cache = parsed
         .cache
         .as_deref()
-        .map_or_else(|| root.join(CACHE_DIRNAME), path_arg);
+        .map_or_else(|| root.join(CACHE_DIRNAME), |c| join_base(path_arg(c)));
     let fetch = dispatch_fetcher(&root, Box::new(git_fetcher(cache)));
     let mut out = Output::default();
     if let Err(e) = run_command(&root, &parsed, &*fetch, &mut out) {
@@ -542,8 +625,12 @@ fn run_command(root: &Path, args: &Args, fetch: &Fetch, out: &mut Output) -> Res
             }
         }
         "build" => {
-            let requested = first("name").into_iter().collect();
-            let dest = sub.value("out").map(|o| path_arg(o));
+            // `[args.name] if args.name else []`: an empty name is every source.
+            let requested = first("name")
+                .filter(|n| !n.is_empty())
+                .into_iter()
+                .collect();
+            let dest = sub.value("out").map(|o| join_base(path_arg(o)));
             for n in names(root, requested)? {
                 let stats = build(root, &n, dest.as_deref(), Some(fetch), false)?;
                 say(&mut out.stdout, format!("built {n} ({})", stats.detail()));
@@ -649,7 +736,7 @@ mod tests {
                     g.map(|(_, v)| v.iter().map(|s| Value::Str(lossy(s))).collect())
                         .unwrap_or_default(),
                 ),
-                (_, Some((_, v))) => Value::Str(lossy(&v[0])),
+                (_, Some((_, v))) => v.first().map_or(Value::Null, |x| Value::Str(lossy(x))),
                 (_, None) => Value::Null,
             };
             ns.push((dest.to_string(), v));
