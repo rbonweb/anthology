@@ -80,8 +80,8 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 |---|---|---|---|---|
 | `researcher` | opus | no | Research, competitor and user-research synthesis | competitive-brief, synthesize-research, research-synthesis, ux-research, journey-mapping |
 | `architect` | opus | no | Architecture, system design, test strategy, plans | system-design, architecture, testing-strategy; preloaded: writing-plans |
-| `implementer` | sonnet | yes, in a worktree | Building from a clear plan | preloaded: test-driven-development, verification-before-completion |
-| `debugger` | sonnet | yes, in a worktree | Reproducible bugs | preloaded: systematic-debugging |
+| `implementer` | sonnet | yes, in a worktree | Building from a clear plan | karpathy-guidelines; preloaded: test-driven-development, verification-before-completion |
+| `debugger` | sonnet | yes, in a worktree | Reproducible bugs | karpathy-guidelines; preloaded: systematic-debugging |
 | `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist, tech-debt, deploy-checklist |
 | `scout` | haiku | no | Finding code, running tests, summarizing output | none |
 | `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing |

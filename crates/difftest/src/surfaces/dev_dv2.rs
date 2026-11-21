@@ -115,7 +115,7 @@ fn normalizer() -> Normalizer {
 
 /// The D-2 rule: `[Errno N] <text>` → `[Errno N] <LIBTEXT>`, where `<text>` runs to the next
 /// `:`, `)` or newline. True when it changed `o`.
-fn normalize(o: &mut Observed) -> bool {
+pub(crate) fn normalize(o: &mut Observed) -> bool {
     let before = (o.stdout.clone(), o.stderr.clone());
     o.stdout = errno_text(&o.stdout);
     o.stderr = errno_text(&o.stderr);
@@ -151,16 +151,16 @@ fn errno_text(b: &[u8]) -> Vec<u8> {
 
 // ---- the Rust side ---------------------------------------------------------------------------
 
-fn field<'a>(case: &'a Value, k: &str) -> &'a Value {
+pub(crate) fn field<'a>(case: &'a Value, k: &str) -> &'a Value {
     static NULL: Value = Value::Null;
     case.as_object().and_then(|m| m.get(k)).unwrap_or(&NULL)
 }
 
-fn text<'a>(case: &'a Value, k: &str) -> &'a str {
+pub(crate) fn text<'a>(case: &'a Value, k: &str) -> &'a str {
     field(case, k).as_str().unwrap_or("")
 }
 
-fn strings(v: &Value) -> Vec<String> {
+pub(crate) fn strings(v: &Value) -> Vec<String> {
     v.as_array()
         .map(|a| {
             a.iter()
@@ -360,7 +360,7 @@ fn run_cli(tool: Tool, case: &Value) -> Observed {
     }
 }
 
-fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+pub(crate) fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(hay.len());
     let mut i = 0;
     while i < hay.len() {
@@ -377,7 +377,7 @@ fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
 
 // ---- cases -----------------------------------------------------------------------------------
 
-fn s(t: &str) -> Value {
+pub(crate) fn s(t: &str) -> Value {
     Value::Str(t.to_string())
 }
 
@@ -385,7 +385,7 @@ fn arr(items: &[&str]) -> Value {
     Value::Array(items.iter().map(|t| s(t)).collect())
 }
 
-fn obj(pairs: Vec<(&str, Value)>) -> Value {
+pub(crate) fn obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut m = Map::new();
     for (k, v) in pairs {
         m.insert(k.to_string(), v);
