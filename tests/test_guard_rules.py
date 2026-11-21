@@ -1453,6 +1453,135 @@ class RuleTableTest(unittest.TestCase):
         self.assert_table("G1", [bash(c) for c in self.ANSI_C_RUNS])
         self.assert_table(None, [bash(c) for c in self.ANSI_C_DATA])
 
+    # Fix-wave H round 1 (review C1-C8, I4). Checked like the cases above, on bash 5.2. bash 3.2
+    # keeps four of them as data (C3's `it's` case, the first C4 case, C6, the `<<''` one).
+    ROUND1_RUNS = [
+        # C1: a `$'...'` ends at the first `'` not taken by a backslash pair; `\c` never eats it
+        "$'\\c'; npx playwright install\n'",
+        "$'\\c\\\\'; npx playwright install\n'",
+        "echo $'a\\c'; npx playwright install\n'",
+        "echo $'\\c'\nnpx playwright install\n'",
+        "x=$'\\c\\\\' npx playwright install\n'",
+        # C2: a `$((` that does not close with `))` is `$( (...) )`, and its heredoc is real
+        "echo $((cat <<EOF\n'$(npx playwright install)'\nEOF\n) )",
+        "x=$((cat <<EOF\n'$(npx playwright install)'\nEOF\n) )",
+        "echo \"$((cat <<EOF\n'$(npx playwright install)'\nEOF\n) )\"",
+        # C3: inside `$(...)` a line starting with the delimiter and holding a paren ends the body
+        "x=$(cat <<EOF\nEOF)\nnpx playwright install\nEOF\n)",
+        "echo \"$(cat <<EOF\nit's\nEOF)\"; npx playwright install; echo \"\nEOF\n)\"",
+        "x=$(cat <<'EOF'\nEOF)\nnpx playwright install\nEOF\n)",
+        "x=$(cat <<-EOF\n\tEOF)\nnpx playwright install\nEOF\n)",
+        "x=$(cat <<EOF\nEOF) ; npx playwright install\nEOF\n)",
+        "x=$(cat <<EOF\nEOFx)\nnpx playwright install\nEOF\n)",
+        # C4: arithmetic expands like a double-quoted string: `'...'` does not hide `$(...)`
+        # (bash 3.2 keeps the first one as data)
+        "(( '$(npx playwright install)' ))",
+        "echo $(( '$(npx playwright install)' ))",
+        "echo \"$(( '$(npx playwright install)' ))\"",
+        "echo $[ '$(npx playwright install)' ]",
+        # C5: `${...}` and comments inside `$(...)` hold no heredoc
+        "echo \"$(echo ${y#<<E}\n)\"; npx playwright install; echo \"\nE}\n)\"",
+        "echo \"$(echo x # <<E\n)\"; npx playwright install; echo \"\nE\n)\"",
+        # C6: a `${...}` delimiter ends at its own `}`, quotes inside it skipped
+        "cat <<${x:-'}'}EOF\nit's\n${x:-'}'}EOF\nnpx playwright install\n'",
+        # C7: inside backticks `` \` `` is a nested backtick
+        "cat <<EOF\n`echo \\`npx playwright install\\``\nEOF",
+        "echo `echo \\`npx playwright install\\``",
+        "echo \"`echo \\`npx playwright install\\``\"",
+        # C8: substitutions inside `${...}` run
+        "echo ${x:-$(npx playwright install)}",
+        "echo \"${x:-'$(npx playwright install)'}\"",
+        "cat <<EOF\n${x:-$(npx playwright install)}\nEOF",
+        # found while fixing: `$'...'` and empty delimiters inside `$(...)`, nested arithmetic
+        "echo \"$(echo $'a\\'b # )')\"; npx playwright install",
+        "echo $'\\c\\'' ; npx playwright install\n'",
+        "x=$(cat <<''\n$(npx playwright install)\n\n)",
+        "echo $(( 1 + $(( '$(npx playwright install)' )) ))",
+    ]
+    ROUND1_DATA = [
+        "echo ${x:-'}' ; npx playwright install ; '}",
+        "cat <<'EOF'\n${x:-$(npx playwright install)}\nEOF",
+        "echo \"$(cat <<'EOF'\nEOF is (here)\nEOF\n)\"",
+    ]
+    # I4: where bash 3.2 reads a `$'...'` delimiter differently, the earlier terminator of the
+    # two counts (bash 3.2 runs these; bash 5.2 keeps them as data).
+    ROUND1_BASH32_RUNS = [
+        "cat <<$'\\u0041'\nit's\n\\u0041\nnpx playwright install\n'",
+        "cat <<$'\\u0041'\nx\n\\u0041\nx=$(cat <<B\n'$(npx playwright install)'\n)",
+        "cat <<$'\\c?'\nit's\n\x1f\nnpx playwright install\n'",
+    ]
+    # The heredoc forms an agent writes every day stay allowed.
+    EVERYDAY_HEREDOCS = [
+        "git commit -m \"$(cat <<'EOF'\nfeat: parse heredocs (round 1)\n\nIt's done: see `docs/x.md`,"
+        " $HOME and $(date).\nnpx playwright install is not run here.\n\nCo-Authored-By: Claude"
+        " <noreply@anthropic.com>\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nfix: EOF handling\n\nEOFs and EOF lines are fine.\nEOF\n)\"",
+        "gh pr create --draft --title \"fix: x\" --body \"$(cat <<'EOF'\n## Summary\n- a (b)\n"
+        "- c's d\n\n```\nnpx playwright install\n```\n\nGenerated with [Claude Code]"
+        "(https://claude.com/claude-code)\nEOF\n)\"",
+        "cat > notes.md <<'EOF'\n# Notes\n\nRun `npx playwright install` only in Docker.\nEOF",
+        "cat <<EOF > out.txt\nHello $USER, today is $(date +%F) (UTC).\nEOF",
+        "python3 - <<'EOF'\nimport sys\nprint(\"it's\", sys.argv)\nEOF",
+        "if true; then\n\tcat <<-EOF\n\t\tindented $(pwd)\n\tEOF\nfi",
+        "bash <<'EOF'\nset -euo pipefail\nls -la\nEOF",
+        "git commit -F - <<'EOF'\nfix: EOF handling (parser)\n\n((x)) and $((1<<2)) are fine.\nEOF",
+        "x=$((1 << 2)); y=$(( (x + 1) * 2 )); echo \"$x $y\"",
+        "for ((i = 0; i < 3; i++)); do echo \"$i\"; done",
+        "echo \"${HOME:-/tmp}\" \"${PATH//:/ }\" ${#PATH}",
+        "echo `date` \"`pwd`\"",
+    ]
+
+    def test_round1_review_cases(self):
+        self.assert_table("G1", [bash(c) for c in self.ROUND1_RUNS])
+        self.assert_table("G1", [bash(c) for c in self.ROUND1_BASH32_RUNS])
+        self.assert_table(None, [bash(c) for c in self.ROUND1_DATA])
+
+    def test_everyday_heredocs_stay_allowed(self):
+        self.assert_table(None, [bash(c) for c in self.EVERYDAY_HEREDOCS])
+
+    def test_base_guard_blocks_stay_blocked(self):
+        """Every probe the pre-fix-wave-H guard blocked and bash 5.2 really runs is still
+        blocked. The fixture was generated from the review harness and this file's heredoc
+        cases (each also wrapped in `$(...)`, `"$(...)"`, `( )` and `{ }`), keeping those the
+        base guard (build at 4184fa41) blocked and that ran a fake `npx` under `bash -c`."""
+        import json
+        path = ROOT / "tests" / "fixtures" / "guard" / "base_blocked_bash_runs.json"
+        corpus = json.loads(path.read_text(encoding="utf-8"))
+        self.assertGreater(len(corpus), 500)
+        for command in corpus:
+            with self.subTest(command=command[:80]):
+                self.assertIsNotNone(guard_rules.check("Bash", {"command": command}, HOME))
+
+    def test_heredoc_paths_scale_linearly(self):
+        """100 KB of the inputs the round-1 review found quadratic run in under a second, and
+        the ones that cost more per byte scale linearly: 4x the input (12.5 KB to 50 KB) costs
+        under 6x (best of two, so a busy host does not trip it)."""
+        import time
+
+        def rep(unit, size):
+            return (unit * (size // len(unit) + 1))[:size]
+
+        def cost(command, tries=2):
+            best = None
+            for _ in range(tries):
+                start = time.perf_counter()
+                guard_rules.check("Bash", {"command": command}, HOME)
+                elapsed = time.perf_counter() - start
+                best = elapsed if best is None else min(best, elapsed)
+            return best
+
+        for unit in ('<<"$(', '$(<<"', '$(cat <<"x', "$(x <<'", "$(<<$'"):
+            with self.subTest(unit=unit):
+                self.assertLess(cost(rep(unit, 100_000), tries=1), 1.0)
+        for name, unit in (("dq heredoc", '"$(cat <<X\n'), ("quoted body", "$(cat <<EOF\n'"),
+                           ("arithmetic", "((x=$(cat <<EOF\n"), ("$((", "$(("), ("distinct", "".join(f"cat <<A{i}\n" for i in range(9000)))):
+            with self.subTest(case=name):
+                if name == "distinct":
+                    small, large = cost("$(" + unit[:12_500]), cost("$(" + unit[:50_000])
+                else:
+                    small, large = cost(rep(unit, 12_500)), cost(rep(unit, 50_000))
+                self.assertLess(large, 6 * max(small, 0.005))
+
     def test_commented_array_stays_cheap(self):
         import time
         command = "arr=(\n" + "  x # it's (\n" * 10000 + ")\nnpx playwright install"
