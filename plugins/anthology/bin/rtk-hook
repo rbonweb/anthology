@@ -35,9 +35,9 @@ export RTK_SUPPRESS_HOOK_WARNING
 # its whole string value. A `\u` escape anywhere (a key spelled with one too) counts as a
 # mention, and an input with no such key is matched whole: both only keep more asks.
 # Ruling: a `$'...'` ANSI-C spelling (`$'\x72tk'`) is not a mention: `Bash(rtk *)` matches the
-# literal command text and Claude Code does not decode `$'...'` for an allow match, so a disguised
-# spelling can never be auto-allowed, and a `$'` in heredoc data is never run. Cost if wrong: a
-# disguised-rtk line gets the user's own checks, not rtk's ask.
+# literal command text and Claude Code never auto-allows a `$'...'` spelling, so keeping the ask
+# only caused false prompts (a `$'` in a heredoc body is not decoded by the shell). Cost if wrong:
+# a disguised-rtk line gets the user's own checks, not rtk's ask.
 input=$(cat)
 out=$(printf '%s' "$input" | "$rtk_path" hook claude)
 rc=$?
