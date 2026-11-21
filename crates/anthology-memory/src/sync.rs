@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use anthology_core::clock::{self, Date};
 use anthology_core::git::{Git, RealGit};
-use anthology_core::{Env, fsx, paths};
+use anthology_core::{Env, fsx};
 use anthology_pycompat::json::{self, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
@@ -1049,7 +1049,7 @@ fn sync_repo(
 }
 
 fn run_inner(cwd: &Path, env: &Env, deps: &SyncDeps<'_>) -> Result<(String, Vec<String>), PyExc> {
-    let config = paths::config_dir(env);
+    let config = crate::repo::config_dir(env);
     let home = config.join("anthology");
     let root = (deps.repo_root)(cwd, env, deps.git);
     if auto_memory_off(root.as_deref(), &config, env) {

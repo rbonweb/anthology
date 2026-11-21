@@ -1,0 +1,6 @@
+# Allowed divergences of the hook.session-start surface (GC-16). The oracle
+# (port/difftest/oracle/session_start.py) marks each case it adjusted; no entry waives a diff.
+
+[[divergence]]
+class = "D-1"
+reason = "Python's memory_sync._load_settings let json.loads raise RecursionError on a settings file nested deeper than CPython's C stack (an unterminated [[[[...), which aborted the whole memory step (no memory text, one 'anthology memory: maximum recursion depth' message). Rust's parser has no depth limit (ST1's ruling), finds the document invalid and treats it as unusable, as Python does for any other invalid JSON. The oracle makes that call return None and marks the case; the rest is compared byte for byte."

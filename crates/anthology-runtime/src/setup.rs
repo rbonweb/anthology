@@ -493,7 +493,7 @@ fn unsafe_dir(path: &Path) -> bool {
 
 /// `_personal_dir(env)`.
 fn personal_dir(env: &Env) -> PathBuf {
-    paths::anthology_home(env).join("personal-memory")
+    memory_repo::anthology_home(env).join("personal-memory")
 }
 
 /// `_repo_info(cwd, env)`: the repo's root and key.
@@ -590,7 +590,7 @@ fn legacy_notes(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Vec<Value> {
     let home = env.get("HOME");
     let sd = sync_deps(env, deps);
     let mut out = Vec::new();
-    for old in memory_repo::legacy_dirs(root, &paths::config_dir(env), env, &RealGit) {
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
         for (name, data) in sync::legacy_entries(&old) {
             let info = notes::note_info(&name, &data);
             let (findings, mut reason) = sync::promotion_check(&info, &data, home, None, &sd);
@@ -656,10 +656,10 @@ fn migrate_legacy(
     deps: &SetupDeps<'_>,
 ) -> Result<(Value, Value), String> {
     let m = repo_mem(root);
-    let ledger = paths::anthology_home(env).join("migrated.json");
+    let ledger = memory_repo::anthology_home(env).join("migrated.json");
     let sd = sync_deps(env, deps);
     let (mut repo, mut pers, mut skipped, mut blocked) = (vec![], vec![], vec![], vec![]);
-    for old in memory_repo::legacy_dirs(root, &paths::config_dir(env), env, &RealGit) {
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
         let res = sync::try_migrate(
             &old,
             m.as_deref(),

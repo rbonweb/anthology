@@ -10,18 +10,17 @@ Case (every string may hold `@ROOT@`, the case's temporary root at its real path
   `anthology_testkit::rt_a::materialize`). A `guard` entry of kind `file` also gets the real
   `scripts/guard_rules.py` here (Python's `setup_ops` loads its PROFILE_ROOTS from it; Rust's
   are compiled in, F-7);
-- `env`: the process environment (`PATH=/usr/bin:/bin` is added);
+- `env`: the process environment (`PATH=@ROOT@/gitbin:/usr/bin:/bin` is added: the tree holds
+  the difftest's fake `git` there, `crates/difftest/src/surfaces/fake_git.rs`, because this image
+  has no git; Rust runs the same script);
 - `uname`: `linux` (Linux/x86_64), `darwin` (Darwin/arm64), `riscv` (Linux/riscv64) or
   `windows` (Windows/AMD64): `platform.system()` and `platform.machine()`;
 - `doctor`: `{"checks": V, "installed": V, "state": S, "duplicates": V}`: what
   `doctor.check_env`, `doctor.installed_plugins_state` and `doctor.find_duplicates` return
   (RT1b's surface tests the real doctor; the Rust default is a SWAP(RT1b) stand-in);
-- `memory`: `{"repo": null|S, "key": S, "approve": {"key": S}|{"unsafe": S}}`: what
-  `memory_sync.repo_root`, `repo_key` and `approve` give (`unsafe` raises `UnsafeTarget`).
-  Everything else of `memory_sync` is real on both sides: `legacy_dirs` (a note under
-  `<config>/projects/@ENC@-w/memory/` is a legacy note of the repo at `@ROOT@/w`), `migrate`, the
-  privacy scan (its host name is `alice-laptop`), `regenerate_index`, and the approvals file
-  (`approve` is the fake, so a case seeds `<config>/anthology/approved-repos.json` itself);
+- memory: all of `memory_sync` is real on both sides (`repo_root`, `repo_key` and `approve` run
+  the fake git; a note under `<config>/projects/@ENC@-w/memory/` is a legacy note of the repo at
+  `@ROOT@/w`); only the privacy scan's host name is patched (`alice-laptop`);
 - `rtk`: `null` (no `rtk_install` module) or `{"lock_exc", "exc", "warning", "installed",
   "touch"}`: a fake module whose `load_lock` raises `RuntimeError(lock_exc)` when set, whose
   `target` is the real `rtk_install.target`, and whose `reconcile` raises `RuntimeError(exc)` or
@@ -43,7 +42,7 @@ The forced changes are applied to Python's answer, nothing else:
   uses it)` when `installed_plugins.json` has an `anthology-guardrails@*` entry, has no `plugins` object or
   does not parse, else `delete` (preview) / `deleted` (the folder, or a symlink to it, is
   removed after the rest of remove; Rust deletes it before unapproving, which no case can
-  tell apart since no case writes an approval);
+  tell apart: neither step fails once the other has run);
 - the argparse prog is `anthology setup` (`sys.argv[0]`); argparse's `(choose from 'a', 'b')`
   is written unquoted, as CPython 3.12.8 and later (and the Rust port) print it; a case where
   argparse exited is marked D-4.
@@ -184,7 +183,7 @@ def run(case):
             return s.replace("@ROOT@", root)
 
         env = {k: x(v) for k, v in (case.get("env") or {}).items()}
-        env["PATH"] = "/usr/bin:/bin"
+        env["PATH"] = root + "/gitbin:/usr/bin:/bin"
         enc = re.sub(r"[^A-Za-z0-9]", "-", root)
         tree = [dict(e, p=e["p"].replace("@ENC@", enc)) for e in (case.get("tree") or [])]
         _loc.materialize(root, tree)
@@ -194,17 +193,7 @@ def run(case):
                     fh.write(RULES)
 
         doc = case.get("doctor") or {}
-        mem = case.get("memory") or {}
         guard_status = case.get("guard_binary") or "present"
-
-        def repo_root(cwd, env=None):
-            return Path(x(mem["repo"])) if mem.get("repo") is not None else None
-
-        def approve(r, env=None):
-            a = mem.get("approve") or {}
-            if "unsafe" in a:
-                raise memory_sync.UnsafeTarget(a["unsafe"])
-            return a.get("key", "")
 
         def settings_error(exc):  # F-6
             return _ORIG_SETTINGS_ERROR(exc).replace("(scripts/guard.py)", "(hooks/guard.sh)")
@@ -256,9 +245,6 @@ def run(case):
                               lambda *a, **kw: (doc.get("installed"), doc.get("state", "missing"))),
             mock.patch.object(anthology_setup.doctor, "find_duplicates",
                               lambda *a, **kw: doc.get("duplicates", [])),
-            mock.patch.object(memory_sync, "repo_root", repo_root),
-            mock.patch.object(memory_sync, "repo_key", lambda r, env=None: mem.get("key", "")),
-            mock.patch.object(memory_sync, "approve", approve),
             mock.patch.object(memory_sync.memory_privacy.socket, "gethostname",
                               return_value="alice-laptop"),
             mock.patch.object(anthology_setup, "_settings_error", settings_error),

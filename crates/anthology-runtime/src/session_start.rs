@@ -931,7 +931,11 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         label::COMPOSE,
         |_| {
             fault(deps, "_compose")?;
-            Ok(compose(&guide_text, &memory, &paths::anthology_home(env)))
+            Ok(compose(
+                &guide_text,
+                &memory,
+                &anthology_memory::repo::anthology_home(env),
+            ))
         },
         guide_text.clone(),
     );
