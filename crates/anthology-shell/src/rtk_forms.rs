@@ -1,7 +1,7 @@
 //! rtk runner and passthrough forms (SH2): guard_rules.py `_rtk_command`, `_RTK_PASSTHROUGH`, `_RTK_RUNNERS`.
 
 use crate::lexer::pystr;
-use crate::prefixes::skip_flags;
+use crate::prefixes::{drop_front, skip_flags};
 
 /// rtk subcommands that run their arguments as a command (`proxy` aliases `bypass`).
 pub const RTK_PASSTHROUGH: &[&str] = &["bypass", "proxy"];
@@ -9,23 +9,45 @@ pub const RTK_PASSTHROUGH: &[&str] = &["bypass", "proxy"];
 /// rtk subcommands that run a command or a script (rtk/src/lib.rs `Commands`).
 pub const RTK_RUNNERS: &[&str] = &["run", "err", "test", "summary"];
 
-fn tail(toks: &[String], i: usize) -> Vec<String> {
-    toks.get(i..).map(<[String]>::to_vec).unwrap_or_default()
+/// rtk's global options (rtk/src/lib.rs `Cli`): `-v`/`-vv`/... and `--verbose` before the subcommand, and
+/// `--skip-env` anywhere. Rust-only (`Opaque::UnknownWrapperOption`).
+fn known_global(token: &str, before_sub: bool) -> bool {
+    token == "--skip-env"
+        || (before_sub
+            && (token == "--verbose"
+                || (token.len() > 1
+                    && token.starts_with('-')
+                    && token[1..].bytes().all(|b| b == b'v'))))
+}
+
+/// Whether an option in `toks[from..to]` is not one rtk is known to take without a value.
+fn unknown_option(toks: &[String], from: usize, to: usize, before_sub: bool) -> bool {
+    toks.get(from..to.min(toks.len())).is_some_and(|words| {
+        words
+            .iter()
+            .any(|t| t != "--" && !known_global(t, before_sub))
+    })
 }
 
 /// `_rtk_command`: `rtk ...` → the command it runs. `bypass`/`proxy`/`run`/`err`/`test`/`summary` run a
 /// command; any other subcommand wraps a fixed tool and the words after the global flags stand.
 /// `rtk run -c|--command <script> [--shell X]` and `rtk err|test|summary --shell X <script>` become
 /// `X -c <script>` (X defaults to `sh`); a lone argument holding whitespace is also run as a script.
-pub(crate) fn rtk_command(toks: &[String]) -> Vec<String> {
-    let mut unknown = false;
-    let mut i = skip_flags(toks, 1, &[], &mut unknown);
+/// Rust-only: `unknown` is set for an option rtk is not known to take without a value.
+pub(crate) fn rtk_command(mut toks: Vec<String>, unknown: &mut bool) -> Vec<String> {
+    let mut unused = false;
+    let mut i = skip_flags(&toks, 1, &[], &[], &mut unused);
+    *unknown |= unknown_option(&toks, 1, i, true);
     let sub = toks.get(i).map_or("", String::as_str);
     if RTK_PASSTHROUGH.contains(&sub) {
-        return tail(toks, skip_flags(toks, i + 1, &[], &mut unknown));
+        let end = skip_flags(&toks, i + 1, &[], &[], &mut unused);
+        *unknown |= unknown_option(&toks, i + 1, end, false);
+        drop_front(&mut toks, end);
+        return toks;
     }
     if !RTK_RUNNERS.contains(&sub) {
-        return tail(toks, i);
+        drop_front(&mut toks, i);
+        return toks;
     }
     let run = sub == "run";
     let (mut shell, mut script): (Option<String>, Option<String>) = (None, None);
@@ -33,20 +55,20 @@ pub(crate) fn rtk_command(toks: &[String]) -> Vec<String> {
     i += 1;
     while i < n {
         let token = toks[i].as_str();
-        let value = toks.get(i + 1).cloned();
+        let value = || toks.get(i + 1).cloned();
         let second = token.chars().nth(1);
         if token == "--" {
             i += 1;
             break;
         }
         if token == "--shell" {
-            shell = value;
+            shell = value();
             i += 2;
         } else if let Some(v) = token.strip_prefix("--shell=") {
             shell = Some(v.to_string());
             i += 1;
         } else if run && token == "--command" {
-            script = value;
+            script = value();
             i += 2;
         } else if let Some(v) = token.strip_prefix("--command=").filter(|_| run) {
             script = Some(v.to_string());
@@ -59,19 +81,21 @@ pub(crate) fn rtk_command(toks: &[String]) -> Vec<String> {
             // `-c X`, `-vc X`, `-cX`
             let attached = token.find('c').map_or("", |at| &token[at + 1..]);
             if attached.is_empty() {
-                script = value;
+                script = value();
                 i += 2;
             } else {
                 script = Some(attached.to_string());
                 i += 1;
             }
         } else if token.starts_with('-') && token.chars().count() > 1 {
+            *unknown |= !known_global(token, false);
             i += 1; // `--skip-env`, `-v`, ...
         } else {
             break;
         }
     }
-    let rest = tail(toks, i);
+    drop_front(&mut toks, i);
+    let rest = toks;
     let shell = shell.filter(|s| !s.is_empty());
     if run && let Some(script) = script {
         return vec![

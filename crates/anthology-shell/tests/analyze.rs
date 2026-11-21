@@ -258,6 +258,119 @@ fn opaque_unknown_wrapper_option() {
     ));
 }
 
+/// Some entry of `command` has `reason`.
+fn any_has(command: &str, reason: Opaque) -> bool {
+    analyze(command, HOME)
+        .entries
+        .iter()
+        .any(|e| e.opaque.contains(&reason))
+}
+
+/// No entry of `command` is opaque.
+fn clear(command: &str) -> bool {
+    analyze(command, HOME)
+        .entries
+        .iter()
+        .all(|e| e.opaque.is_empty())
+}
+
+#[test]
+fn opaque_marks_the_forms_python_misreads() {
+    // Each runs `npx playwright install` while Python's analysis misses it (FW-I fixes Python); Rust keeps
+    // the parity fields and marks the entry so rtk's gate asks.
+    let unknown = [
+        "env A=1 npx playwright install -S x",
+        "sudo env npx playwright install -S ls",
+        "env -S\"npx playwright install\"",
+        "npx --registry https://r.example playwright install",
+        "npm --loglevel silent exec playwright install",
+        "uv --color always run playwright install",
+        "rtk --frob x npx playwright install",
+        "rtk proxy --frob x npx playwright install",
+        "rtk err --frob x npx playwright install",
+        "builtin eval 'npx playwright install'",
+        "su -c 'npx playwright install' user",
+        "script -qc 'npx playwright install' /dev/null",
+        "flock /tmp/l npx playwright install",
+        "busybox sh -c 'npx playwright install'",
+        "chroot / npx playwright install",
+        "nsenter -t 1 npx playwright install",
+        "unshare -r npx playwright install",
+        "ssh host npx playwright install",
+    ];
+    for command in unknown {
+        assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
+    }
+    for command in [
+        "echo playwright install | xargs npx",
+        "echo 'npx playwright install' | xargs -I{} sh -c '{}'",
+        "parallel ::: 'npx playwright install'",
+        "npx",
+    ] {
+        assert!(any_has(command, Opaque::DynamicCommandWord), "{command}");
+    }
+    assert!(has(
+        &analyze("bash ./install.sh", HOME),
+        "bash",
+        Opaque::Source
+    ));
+    assert!(has(&analyze("sh install.sh", HOME), "sh", Opaque::Source));
+    for command in [
+        "sh <(echo npx playwright install)",
+        "cat <(echo npx playwright install) | sh",
+        "exec 3<<<'npx playwright install'; sh <&3",
+    ] {
+        assert!(
+            analyze(command, HOME)
+                .entries
+                .iter()
+                .any(|e| e.prog == "sh" && !e.opaque.is_empty()),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn common_forms_stay_clear() {
+    // rtk asks on any reason: the everyday forms must not get one
+    for command in [
+        "npx -y playwright install",
+        "npx --yes create-next-app@latest app",
+        "npm -s run build",
+        "npm --silent exec tsc",
+        "pnpm -r --filter web build",
+        "yarn workspace web build",
+        "uv run --frozen pytest",
+        "uvx --from ruff ruff check",
+        "rtk -v git status",
+        "rtk -vv --skip-env npm test",
+        "rtk proxy --skip-env ls",
+        "rtk run -c 'ls -la'",
+        "rtk err --shell bash cargo test",
+        "sudo --user=root ls",
+        "env -S 'ls -la'",
+        "env -u X -S 'ls -la'",
+        "[ -f x ] && ls",
+        "[[ -n $x ]] || ls",
+        "sh -c 'ls'",
+        "cd /tmp && git -C repo status",
+        "A=1 B=2",
+    ] {
+        assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
+    }
+}
+
+#[test]
+fn a_budget_stop_is_incomplete_but_not_a_regex_limit() {
+    let a = analyze(&format!("find . {}", "-exec find . ".repeat(5000)), HOME);
+    assert!(a.incomplete);
+    assert!(
+        a.entries
+            .iter()
+            .all(|e| !e.opaque.contains(&Opaque::RegexLimit))
+    );
+}
+
 #[test]
 fn opaque_unbalanced() {
     let a = analyze("echo it's; npx playwright install", HOME);
@@ -314,6 +427,24 @@ fn quadratic_option_rescans_stop_at_the_budget() {
 }
 
 #[test]
+fn peeling_64_prefixes_does_not_copy_the_words_each_time() {
+    let command = format!("{}ls{}", "sudo ".repeat(64), " a".repeat(200_000));
+    let start = Instant::now();
+    let a = analyze(&command, HOME);
+    let peeled = start.elapsed();
+    let command = format!("ls{}", " a".repeat(200_000));
+    let start = Instant::now();
+    analyze(&command, HOME);
+    let plain = start.elapsed();
+    assert_eq!(a.entries[0].prog, "ls");
+    // Copying every word on each of the 64 peels made this about 12 times the plain cost.
+    assert!(
+        peeled < plain * 6 + Duration::from_millis(100),
+        "{peeled:?} vs {plain:?}"
+    );
+}
+
+#[test]
 fn worst_case_analysis_fits_a_one_mebibyte_stack() {
     let mut texts = vec![
         format!("{}ls ;", "find . -exec ".repeat(5000)),
@@ -351,6 +482,35 @@ fn simple_command() -> impl Strategy<Value = String> {
     ]);
     let arg = prop::sample::select(vec!["a", "b", "-x", "install", "x.txt", "push", "--flag"]);
     (prog, prop::collection::vec(arg, 0..4)).prop_map(|(p, args)| {
+        let mut words = vec![p];
+        words.extend(args);
+        words.join(" ")
+    })
+}
+
+/// A simple command whose arguments collide with wrapper, runner and shell options.
+fn hostile_command() -> impl Strategy<Value = String> {
+    let prog = prop::sample::select(vec!["ls", "git", "playwright", "make", "cat"]);
+    let arg = prop::sample::select(vec![
+        "a",
+        "-S",
+        "-c",
+        "-u",
+        "-n",
+        "-m",
+        "-C",
+        "--",
+        "-s",
+        "-k",
+        "-a",
+        "-I",
+        "x.txt",
+        "--split-string",
+        "-v",
+        "-V",
+        "-x",
+    ]);
+    (prog, prop::collection::vec(arg, 0..5)).prop_map(|(p, args)| {
         let mut words = vec![p];
         words.extend(args);
         words.join(" ")
@@ -441,6 +601,39 @@ proptest! {
                 prop_assert!(
                     got.entries.iter().any(|g| g.prog == e.prog && g.args == e.args),
                     "{wrapped:?} hides {} {:?}", e.prog, e.args
+                );
+            }
+        }
+    }
+
+    /// With arguments that collide with wrapper and shell options (`-S`, `-c`, `-u`, `--`, ...), Python's
+    /// analysis can lose a wrapped command (`env A=1 ls -S x` reads `x` as env's script; FW-I fixes it), so
+    /// the claim is weaker: a wrapped command is still an entry, or some entry is marked opaque, so rtk's
+    /// gate asks.
+    #[test]
+    fn wrapping_never_hides_silently(
+        command in hostile_command(),
+        outer in 0..WRAPPERS.len(),
+        inner in 0..WRAPPERS.len(),
+    ) {
+        let base = analyze(&command, HOME);
+        let once = WRAPPERS[inner].replace("{}", &command);
+        let twice = if (simple_only(WRAPPERS[outer]) && !simple_only(WRAPPERS[inner]))
+            || ["'", "`", "EOF"]
+                .iter()
+                .any(|d| WRAPPERS[outer].contains(d) && once.contains(d))
+        {
+            once.clone()
+        } else {
+            WRAPPERS[outer].replace("{}", &once)
+        };
+        for wrapped in [once, twice] {
+            let got = analyze(&wrapped, HOME);
+            let flagged = got.incomplete || got.entries.iter().any(|g| !g.opaque.is_empty());
+            for e in &base.entries {
+                prop_assert!(
+                    flagged || got.entries.iter().any(|g| g.prog == e.prog && g.args == e.args),
+                    "{wrapped:?} hides {} {:?} silently", e.prog, e.args
                 );
             }
         }

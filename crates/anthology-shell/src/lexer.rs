@@ -61,6 +61,9 @@ pub(crate) struct LexInfo {
     pub(crate) depth_capped: bool,
     /// A nested lexer fell back to the lenient split.
     pub(crate) nested_lenient: bool,
+    /// The heredoc regex hit its backtrack limit (`incomplete` is set too; `incomplete` alone may also be the
+    /// work budget).
+    pub(crate) regex_limited: bool,
 }
 
 /// `_Unbalanced`: an unterminated quote or substitution.
@@ -110,6 +113,7 @@ impl Shared<'_> {
     ) -> Option<(&'t str, usize)> {
         let Some(re) = self.re else {
             self.incomplete = true;
+            self.info.regex_limited = true;
             return None;
         };
         let rest = text.get(j..)?;
@@ -122,6 +126,7 @@ impl Shared<'_> {
             Ok(None) => None,
             Err(_) => {
                 self.incomplete = true;
+                self.info.regex_limited = true;
                 None
             }
         }

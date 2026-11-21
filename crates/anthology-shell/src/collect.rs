@@ -16,8 +16,8 @@ use std::sync::LazyLock;
 use crate::analyze::Entry;
 use crate::lexer::{Group, GroupId, Redirect, lex_in, pystr};
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
-use crate::opaque::{Opaque, is_dynamic, mark};
-use crate::prefixes::strip_prefixes;
+use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
+use crate::prefixes::{STDIN_ARG_RUNNERS, UNPARSED_RUNNERS, strip_prefixes};
 use crate::shell_args::{
     Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
 };
@@ -29,9 +29,10 @@ const FIND_EXEC: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
 /// `find -exec find -exec ...` levels walked before giving up (Python raises `RecursionError` well below).
 pub(crate) const FIND_EXEC_CAP: usize = 1000;
 
-/// Work units one `analyze` may spend, each 1 plus the bytes involved: a word stored in an entry (twice:
-/// `raw` and `args`), a text re-lexed, a text added to an interpreter's code, a word read or script copied
-/// by an option rescan. It bounds memory and time; past it the analysis stops and is `incomplete` (D-7).
+/// Work units one `analyze` may spend: a word stored in an entry costs `WORD` plus its bytes, twice (`raw` and
+/// `args`) and once more in an interpreter's `code`; a text lexed costs 1 plus its bytes (and the lexer charges
+/// the words it copies); an option rescan charges the words it reads and the scripts it copies. It bounds
+/// memory and time; past it the analysis stops and is `incomplete` (D-7).
 pub(crate) const ANALYZE_BUDGET: usize = 64_000_000;
 
 /// A regex backtrack limit was hit (GC-16): the caller blocks.
@@ -307,7 +308,9 @@ impl<'a> Ctx<'a> {
             from_text.push(Opaque::DepthCap);
         }
         if lexed.incomplete {
-            self.incomplete = true;
+            self.incomplete = true; // the regex limit or the work budget
+        }
+        if info.regex_limited {
             from_text.push(Opaque::RegexLimit);
         }
         let mut ids: HashMap<GroupId, GroupId> = HashMap::new();
@@ -495,6 +498,9 @@ impl<'a> Ctx<'a> {
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
         let interpreter = is_interpreter(&prog);
         let code = if interpreter {
+            if !self.spend(args.iter().map(|t| WORD + t.len()).sum::<usize>()) {
+                return None;
+            }
             args.clone()
         } else {
             Vec::new()
@@ -516,10 +522,18 @@ impl<'a> Ctx<'a> {
         for &reason in from_text {
             mark(&mut opaque, reason);
         }
-        if peeled.placeholder || cmd.first().is_some_and(|w| is_dynamic(w)) {
+        if peeled.placeholder
+            || peeled.stdin_args
+            || peeled.emptied
+            || STDIN_ARG_RUNNERS.contains(&prog.as_str())
+            || cmd
+                .first()
+                .is_some_and(|w| is_dynamic(w) && !TEST_BRACKETS.contains(&w.as_str()))
+        {
             mark(&mut opaque, Opaque::DynamicCommandWord);
         }
-        if peeled.unknown_option {
+        if peeled.unknown_option || (UNPARSED_RUNNERS.contains(&prog.as_str()) && !args.is_empty())
+        {
             mark(&mut opaque, Opaque::UnknownWrapperOption);
         }
         if interpreter {
@@ -540,9 +554,13 @@ impl<'a> Ctx<'a> {
         if SHELLS.contains(&prog.as_str()) {
             let parsed = shell_parse(&prog, &args, 0);
             if parsed.mode == ShellMode::File
-                && args.get(parsed.start).is_some_and(|f| is_dynamic(f))
+                && let Some(file) = args.get(parsed.start)
             {
-                mark(&mut opaque, Opaque::ShellScriptFromExpansion);
+                // `bash ./install.sh` runs a file the analysis cannot read, as `source` does
+                mark(&mut opaque, Opaque::Source);
+                if is_dynamic(file) {
+                    mark(&mut opaque, Opaque::ShellScriptFromExpansion);
+                }
             }
         }
         let entry_exempt = exempt || DOCKER.contains(&prog.as_str());

@@ -185,13 +185,19 @@ fn has(set: &[&str], word: &str) -> bool {
     set.contains(&word)
 }
 
-/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`).
+/// What `strip_prefixes` peeled that the analysis could not see through (for `Opaque`). Rust-only: Python's
+/// `_strip_prefixes` has no such output, so none of these change an entry's parity fields.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Peeled {
     /// A `""` word (a `$(...)` placeholder) was dropped where the program word was expected.
     pub(crate) placeholder: bool,
-    /// A wrapper's option was not one of the flags known to take a value: it may have taken one.
+    /// A wrapper's, runner's, package manager's or rtk's option was not one the analysis knows: it may have
+    /// taken the next word as its value. Also `env -S` found past env's own options.
     pub(crate) unknown_option: bool,
+    /// The program's arguments come from stdin at run time (`xargs`).
+    pub(crate) stdin_args: bool,
+    /// A wrapper or runner was peeled and left no program and no script to analyze (`... | xargs npx`).
+    pub(crate) emptied: bool,
 }
 
 /// `_ASSIGNMENT.match(word)`: `[A-Za-z_][A-Za-z0-9_]*=` at the start.
@@ -226,13 +232,111 @@ fn strip_version(word: &str) -> String {
     }
 }
 
+/// Options of the package runners (and of the Python runners' `run`) known to take no value: past one of
+/// these the next word is surely the program. Rust-only (`Opaque::UnknownWrapperOption`); parity never reads it.
+const RUNNER_BOOL_FLAGS: &[&str] = &[
+    "-y",
+    "--yes",
+    "--no",
+    "--no-install",
+    "--ignore-existing",
+    "-q",
+    "--quiet",
+    "-v",
+    "--verbose",
+    "--prefer-offline",
+    "--prefer-online",
+    "--offline",
+    "--bun",
+    "-b",
+    "--isolated",
+    "--no-cache",
+    "--refresh",
+    "--native-tls",
+    "--no-sync",
+    "--frozen",
+    "--locked",
+    "--no-project",
+    "--active",
+    "--all-packages",
+    "--all-extras",
+    "--no-dev",
+    "--dev",
+    "--exact",
+    "--silent",
+    "-s",
+];
+/// npm/pnpm/yarn/bun options before the verb known to take no value (as `RUNNER_BOOL_FLAGS`).
+const PM_BOOL_FLAGS: &[&str] = &[
+    "-s",
+    "--silent",
+    "-q",
+    "--quiet",
+    "-g",
+    "--global",
+    "-r",
+    "--recursive",
+    "-y",
+    "--yes",
+    "-D",
+    "--dev",
+    "-d",
+    "--verbose",
+    "--offline",
+    "--prefer-offline",
+    "--frozen-lockfile",
+    "--workspace-root",
+    "--if-present",
+    "--ignore-scripts",
+    "--include-workspace-root",
+    "--bun",
+];
+/// Programs that run a command or script the analysis does not parse (`builtin eval ...`, `su -c ...`,
+/// `flock f cmd`, `busybox sh -c ...`, `ssh host cmd`): their entry is marked `UnknownWrapperOption` when they
+/// have arguments. Rust-only; parity never reads it.
+pub(crate) const UNPARSED_RUNNERS: &[&str] = &[
+    "builtin",
+    "su",
+    "runuser",
+    "script",
+    "flock",
+    "busybox",
+    "chroot",
+    "nsenter",
+    "unshare",
+    "parallel",
+    "setpriv",
+    "sg",
+    "systemd-run",
+    "firejail",
+    "bwrap",
+    "pkexec",
+    "sandbox-exec",
+    "taskset",
+    "chrt",
+    "numactl",
+    "prlimit",
+    "strace",
+    "ltrace",
+    "ssh",
+];
+/// Programs whose command takes its arguments from stdin (`Opaque::DynamicCommandWord`).
+pub(crate) const STDIN_ARG_RUNNERS: &[&str] = &["xargs", "parallel"];
+
+/// `token` is an option known not to take the next word: listed in `bools`, or a `--name=value`.
+fn known_bool(token: &str, bools: &[&str]) -> bool {
+    bools.contains(&token) || (token.starts_with("--") && token.contains('='))
+}
+
 /// `_skip_flags(tokens, i, value_flags)`: the index past the options from `tokens[i]` (it may pass the end,
 /// as Python's does). `token[-1].isalpha()` is implied by `"-" + token[-1] in value_flags`: every value flag
-/// is `-` and an ASCII letter (lead ruling R1). `unknown` is set for an option not in `value_flags`.
+/// is `-` and an ASCII letter (lead ruling R1). Rust-only: `unknown` is set for an option that is neither in
+/// `value_flags` nor `known_bool(_, bools)` (never when `value_flags` is empty).
 pub(crate) fn skip_flags(
     tokens: &[String],
     mut i: usize,
     value_flags: &[&str],
+    bools: &[&str],
     unknown: &mut bool,
 ) -> usize {
     let n = tokens.len();
@@ -253,7 +357,7 @@ pub(crate) fn skip_flags(
                         flag.push(c);
                         has(value_flags, &flag)
                     }));
-            if !takes_value && !value_flags.is_empty() {
+            if !takes_value && !value_flags.is_empty() && !known_bool(token, bools) {
                 *unknown = true;
             }
             i += if takes_value { 2 } else { 1 };
@@ -264,23 +368,30 @@ pub(crate) fn skip_flags(
     i
 }
 
-fn tail(tokens: &[String], i: usize) -> Vec<String> {
-    tokens.get(i..).map(<[String]>::to_vec).unwrap_or_default()
+/// Drop `toks[..i]` in place (`i` may pass the end, as Python's slices may). Moves pointers, never copies words.
+pub(crate) fn drop_front(toks: &mut Vec<String>, i: usize) {
+    toks.drain(..i.min(toks.len()));
 }
 
-/// `_runner_program`: `tokens[i..]` follow a package runner; skip its options and return the rest, starting at
-/// the package program (version stripped). `-c <script>` / `--call` is recursed instead.
-fn runner_program(tokens: &[String], mut i: usize, scripts: &mut Vec<String>) -> Vec<String> {
-    let n = tokens.len();
+/// `_runner_program`: `toks[i..]` follow a package runner; skip its options and return the rest, starting at
+/// the package program (version stripped). `-c <script>` / `--call` is recursed instead. Rust-only: `unknown`
+/// is set for an option not known to take a value or not.
+fn runner_program(
+    mut toks: Vec<String>,
+    mut i: usize,
+    scripts: &mut Vec<String>,
+    unknown: &mut bool,
+) -> Vec<String> {
+    let n = toks.len();
     while i < n {
-        let token = tokens[i].as_str();
+        let token = toks[i].as_str();
         if token == "--" {
             i += 1;
             break;
         }
         if token == "-c" || token == "--call" {
             if i + 1 < n {
-                scripts.push(tokens[i + 1].clone());
+                scripts.push(toks[i + 1].clone());
             }
             return Vec::new();
         }
@@ -291,107 +402,134 @@ fn runner_program(tokens: &[String], mut i: usize, scripts: &mut Vec<String>) ->
         if has(RUNNER_VALUE_FLAGS, token) {
             i += 2;
         } else if token.starts_with('-') && token.chars().count() > 1 {
+            *unknown |= !known_bool(token, RUNNER_BOOL_FLAGS);
             i += 1;
         } else {
             break;
         }
     }
-    let mut rest = tail(tokens, i);
-    if let Some(first) = rest.first_mut() {
+    drop_front(&mut toks, i);
+    if let Some(first) = toks.first_mut() {
         *first = strip_version(first);
     }
-    rest
+    toks
 }
 
 /// `_python_runner_start`: the index of the first word after `uv run` / `uv tool run` / `poetry run` ..., if any.
-fn python_runner_start(subcommands: &[&[&str]], tokens: &[String]) -> Option<usize> {
-    let mut unknown = false;
-    let start = skip_flags(tokens, 1, PYTHON_GLOBAL_VALUE_FLAGS, &mut unknown);
-    subcommands.iter().find_map(|words| {
+/// Rust-only: `unknown` is set when an option not known to take a value or not came before the subcommand
+/// (whether or not it then matched, if a `run` follows).
+fn python_runner_start(
+    subcommands: &[&[&str]],
+    tokens: &[String],
+    unknown: &mut bool,
+) -> Option<usize> {
+    let mut seen = false;
+    let start = skip_flags(
+        tokens,
+        1,
+        PYTHON_GLOBAL_VALUE_FLAGS,
+        RUNNER_BOOL_FLAGS,
+        &mut seen,
+    );
+    let found = subcommands.iter().find_map(|words| {
         let got = tokens.get(start..start + words.len())?;
         got.iter()
             .zip(words.iter())
             .all(|(a, b)| a == b)
             .then_some(start + words.len())
-    })
+    });
+    // an unknown option may have hidden `run` (`uv --color always run x` is read as plain `uv`)
+    *unknown |= seen && (found.is_some() || tokens.iter().any(|t| t == "run"));
+    found
 }
 
 /// `_strip_prefixes`: peel assignments, keywords, wrappers and package runners off a command. Returns the
-/// command starting at its program, the embedded scripts to analyze, and what was peeled blind.
+/// command starting at its program, the embedded scripts to analyze, and what was peeled blind. Words are
+/// dropped in place, never re-copied per peel.
 pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Peeled) {
     let mut toks: Vec<String> = tokens.to_vec();
     let mut scripts = Vec::new();
     let mut peeled = Peeled::default();
+    let mut ran = false; // a wrapper or runner (not an assignment or keyword) was looked at
     for _ in 0..64 {
         if toks.is_empty() {
             break;
         }
-        let word = toks[0].clone();
-        let name = prog_name(&word);
-        if is_assignment(&word) || word == "!" || has(KEYWORDS, &word) || word.is_empty() {
+        let name = prog_name(&toks[0]);
+        let word = toks[0].as_str();
+        if is_assignment(word) || word == "!" || has(KEYWORDS, word) || word.is_empty() {
             // `""` is a `$(...)` placeholder
             peeled.placeholder |= word.is_empty();
             toks.remove(0);
-        } else if let Some(&(_, value_flags)) = WRAPPERS.iter().find(|(w, _)| *w == name) {
+            continue;
+        }
+        ran = true;
+        if let Some(&(_, value_flags)) = WRAPPERS.iter().find(|(w, _)| *w == name) {
+            let mut unknown = false;
+            let mut i = skip_flags(&toks, 1, value_flags, &[], &mut unknown);
             if name == "env" {
                 let split = toks.iter().position(|t| t == "-S" || t == "--split-string");
                 if let Some(split) = split
                     && split + 1 < toks.len()
                 {
+                    // Python searches every word, not only env's options: flag a `-S` past them
+                    peeled.unknown_option |= split >= i;
                     scripts.push(toks[split + 1].clone());
                     toks.clear();
                     break;
                 }
             }
-            let mut unknown = false;
-            let mut i = skip_flags(&toks, 1, value_flags, &mut unknown);
             peeled.unknown_option |= unknown || (value_flags.is_empty() && has_option(&toks, i));
+            peeled.stdin_args |= has(STDIN_ARG_RUNNERS, &name);
             if has(TIMEOUTS, &name) && i < toks.len() {
                 i += 1; // the duration
             }
             if name == "watch" && i < toks.len() && toks[i].contains(' ') {
                 scripts.push(toks[i].clone()); // watch runs its argument via sh -c
             }
-            toks = tail(&toks, i);
+            drop_front(&mut toks, i);
         } else if name == "command" {
             if toks.len() > 1 && (toks[1] == "-v" || toks[1] == "-V") {
-                let mut out = vec!["which".to_string()];
-                out.extend(tail(&toks, 2));
-                return (out, scripts, peeled); // lookup, not execution
+                toks[0] = "which".to_string();
+                toks.remove(1);
+                return (toks, scripts, peeled); // lookup, not execution
             }
             let mut unknown = false;
-            let i = skip_flags(&toks, 1, &[], &mut unknown);
-            toks = tail(&toks, i);
+            let i = skip_flags(&toks, 1, &[], &[], &mut unknown);
+            drop_front(&mut toks, i);
         } else if name == "rtk" {
-            toks = rtk_command(&toks);
+            toks = rtk_command(toks, &mut peeled.unknown_option);
         } else if has(RUNNERS, &name) {
-            toks = runner_program(&toks, 1, &mut scripts);
+            toks = runner_program(toks, 1, &mut scripts, &mut peeled.unknown_option);
         } else if let Some(start) = PYTHON_RUNNERS
             .iter()
             .find(|(runner, _)| *runner == name)
-            .and_then(|(_, subs)| python_runner_start(subs, &toks))
+            .and_then(|(_, subs)| python_runner_start(subs, &toks, &mut peeled.unknown_option))
         {
-            toks = runner_program(&toks, start, &mut scripts);
+            toks = runner_program(toks, start, &mut scripts, &mut peeled.unknown_option);
         } else if has(JS_PACKAGE_MANAGERS, &name) && toks.len() > 1 {
             let mut unknown = false;
-            let i = skip_flags(&toks, 1, PM_VALUE_FLAGS, &mut unknown);
+            let i = skip_flags(&toks, 1, PM_VALUE_FLAGS, PM_BOOL_FLAGS, &mut unknown);
+            // an unknown option may have hidden the verb, whichever branch follows
+            peeled.unknown_option |= unknown;
             let verb = toks.get(i).map_or("", String::as_str).to_string();
             if has(RUNNER_SUBCOMMANDS, &verb) || (verb == "run" && name != "npm") {
-                toks = runner_program(&toks, i + 1, &mut scripts); // `yarn run playwright ...`
+                // `yarn run playwright ...`
+                toks = runner_program(toks, i + 1, &mut scripts, &mut peeled.unknown_option);
             } else if verb == "workspace" && name == "yarn" && toks.len() > i + 2 {
-                let mut out = vec!["yarn".to_string()];
-                out.extend(tail(&toks, i + 2)); // `yarn workspace <w> <rest>`
-                toks = out;
+                toks.drain(1..i + 2); // `yarn workspace <w> <rest>`
+                toks[0] = "yarn".to_string();
             } else if (name == "yarn" || name == "pnpm")
                 && !verb.is_empty()
                 && !has(PM_VERBS, &verb)
             {
-                toks = runner_program(&toks, i, &mut scripts); // `yarn playwright test` runs the bin
+                // `yarn playwright test` runs the bin
+                toks = runner_program(toks, i, &mut scripts, &mut peeled.unknown_option);
             } else {
                 break;
             }
         } else if toks.len() > 2 && name == "pipx" && toks[1] == "run" {
-            toks = runner_program(&toks, 2, &mut scripts);
+            toks = runner_program(toks, 2, &mut scripts, &mut peeled.unknown_option);
         } else if is_python(&name) {
             let module = toks
                 .iter()
@@ -404,25 +542,25 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
                 .find(|(_, t)| !t.starts_with('-'))
                 .map_or(toks.len(), |(k, _)| k);
             match module {
-                Some(module) if module <= first_positional => toks = tail(&toks, module + 1),
+                Some(module) if module <= first_positional => drop_front(&mut toks, module + 1),
                 _ => break, // `python -m pip ...` runs `pip`; anything else stays python
             }
         } else {
             break;
         }
     }
+    peeled.emptied = ran && scripts.is_empty() && toks.first().is_none_or(String::is_empty);
     if let Some(first) = toks.first() {
         let name = prog_name(first);
         if has(SHELLS, &name) {
-            let rest = tail(&toks, 1);
             scripts.extend(
-                shell_parse(&name, &rest, 0)
+                shell_parse(&name, &toks[1..], 0)
                     .scripts
                     .into_iter()
                     .map(|(_, s)| s),
             );
         } else if name == "eval" {
-            scripts.push(tail(&toks, 1).join(" "));
+            scripts.push(toks[1..].join(" "));
         }
     }
     (toks, scripts, peeled)
