@@ -1519,7 +1519,7 @@ mod wrapper_test {
             "test_rtk_install",
             "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk",
         );
-        assert_eq!(table.len(), 23);
+        assert_eq!(table.len(), 28);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));
@@ -1569,7 +1569,7 @@ mod wrapper_test {
             "test_rtk_install",
             "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word",
         );
-        assert_eq!(table.len(), 3);
+        assert_eq!(table.len(), 4);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));
