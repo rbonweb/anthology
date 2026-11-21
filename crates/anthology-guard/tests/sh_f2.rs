@@ -113,3 +113,107 @@ fn everyday_loops_xargs_and_defaults_stay_allowed() {
         assert_eq!(verdict(command), Verdict::Allow, "{command}");
     }
 }
+
+// ------------------------------------------------------------------ the #103 review (review-sh-f2.md)
+
+#[test]
+fn review_i1_xargs_fed_through_a_compound_a_function_cat_or_exec() {
+    for command in [
+        "{ xargs npx; } < <(echo playwright install)",
+        "( xargs npx ) < <(echo playwright install)",
+        "while true; do xargs npx; break; done < <(echo playwright install)",
+        "f() { xargs npx; }; f < <(echo playwright install)",
+        "cat <(echo playwright install) | xargs npx",
+        "cat < <(echo playwright install) | xargs npx",
+        "exec < <(echo playwright install); xargs npx",
+        "parallel npx :::: <(echo playwright install)",
+    ] {
+        assert_eq!(verdict(command), Verdict::Block(Rule::G1), "{command}");
+    }
+    for command in [
+        r#"{ xargs npx; } <<< "playwright install""#,
+        r#"( xargs npx ) <<< "playwright install""#,
+        r#"bash -c 'xargs npx' <<< "playwright install""#,
+        r#"exec <<< "playwright install"; xargs npx"#,
+        r#"f() { xargs npx; }; f <<< "playwright install""#,
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command}");
+    }
+}
+
+#[test]
+fn review_i2_reading_through_positionals_copies_namerefs_order_and_functions() {
+    for command in [
+        r#"echo npx playwright install | while read l; do sh -c 'eval "$1"' _ "$l"; done"#,
+        r#"echo npx playwright install | while read l; do sh -c '$1' _ "$l"; done"#,
+        r#"echo npx playwright install | while read l; do bash -c '"$@"' _ $l; done"#,
+        r#"echo npx playwright install | { read l; x=$l; eval "$x"; }"#,
+        r#"echo npx playwright install | { read l; n=l; eval "${!n}"; }"#,
+        r#"echo npx playwright install | { read l; declare -n r=l; eval "$r"; }"#,
+        r#"echo npx playwright install | while :; do eval "$l"; read l || break; done"#,
+        r#"f() { eval "$l"; }; echo npx playwright install | { read l; f; }"#,
+        r#"f() { read l; eval "$l"; }; f <<< "npx playwright install""#,
+        r#"f() { read l; eval "$l"; }; echo npx playwright install | f"#,
+        r#"echo npx playwright install | while read l; do sh <(echo "$l"); done"#,
+        r#"echo npx playwright install | while read l; do . <(echo "$l"); done"#,
+        "f() { sh; }; echo npx playwright install | f",
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command}");
+    }
+}
+
+#[test]
+fn review_i3_subscripted_and_ansi_c_defaults() {
+    for command in [
+        "npm ${a[0]:-i} puppeteer",
+        "npm ${a[@]:-i} puppeteer",
+        "${a[0]:-npx} playwright install",
+        "npm ${x:-$'i'} puppeteer",
+        r"npm ${x:-$'\x69'} puppeteer",
+        r#"npm ${x:-$"i"} puppeteer"#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Block(Rule::G1), "{command}");
+    }
+}
+
+#[test]
+fn review_m2_a_broken_later_line_keeps_the_here_string_closures() {
+    for command in [
+        "( sh ) <<< \"npx playwright install\"\necho \"a",
+        "{ sh; } <<< \"npx playwright install\"\necho \"a",
+        "while read l; do sh -c \"$l\"; done <<< \"npx playwright install\"\necho \"a",
+        "while read l; do sh -c \"$l\"; done <<EOF\nnpx playwright install\nEOF\necho \"a",
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command:?}");
+    }
+    // a heredoc of a plain command, then a broken line, is read as before
+    assert_eq!(
+        verdict("git commit -m \"$(cat <<'EOF'\nfix: it's done\nEOF\n)\"\necho \"a"),
+        Verdict::Allow
+    );
+}
+
+#[test]
+fn review_m3_the_ruled_over_blocks_and_the_depth_cap() {
+    // Ruling (gap 2): a read variable inside a `-c` script, or run as the program, is too complex
+    for command in [
+        r#"git ls-files | while read f; do bash -c "wc -l $f"; done"#,
+        r#"git ls-files | while read f; do "$f" --check; done"#,
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command}");
+    }
+    // ... but a positional parameter the script only reads as an argument is not
+    for command in [
+        r#"git ls-files | while read -r f; do sh -c 'wc -l "$1"' _ "$f"; done"#,
+        r#"find . -name '*.md' | while read f; do bash -c 'echo "$0"' "$f"; done"#,
+        r#"git ls-files | while read f; do x=$f; echo "$x"; done"#,
+        r#"build() { make "$@"; }; echo y | build"#,
+        "parallel -j4 convert {} {.}.png :::: files.txt",
+    ] {
+        assert_eq!(verdict(command), Verdict::Allow, "{command}");
+    }
+    // Ruling (gap 3): 8 nested default values are read, 9 are too complex
+    let nested = |n: usize| format!("npm {}i{} puppeteer", "${a:-".repeat(n), "}".repeat(n));
+    assert_eq!(verdict(&nested(8)), Verdict::Block(Rule::G1));
+    assert_eq!(verdict(&nested(9)), Verdict::TooComplex);
+}

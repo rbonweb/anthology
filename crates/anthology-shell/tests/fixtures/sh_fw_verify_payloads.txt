@@ -754,3 +754,81 @@ npx playwright ${x:-install}
 npm ${x:-i}${y:-} puppeteer
 #---
 npm i${x:-} puppeteer
+#---
+{ xargs npx; } < <(echo playwright install)
+#---
+( xargs npx ) < <(echo playwright install)
+#---
+while true; do xargs npx; break; done < <(echo playwright install)
+#---
+f() { xargs npx; }; f < <(echo playwright install)
+#---
+cat <(echo playwright install) | xargs npx
+#---
+cat < <(echo playwright install) | xargs npx
+#---
+exec < <(echo playwright install); xargs npx
+#---
+{ xargs npx; } <<< "playwright install"
+#---
+( xargs npx ) <<< "playwright install"
+#---
+bash -c 'xargs npx' <<< "playwright install"
+#---
+exec <<< "playwright install"; xargs npx
+#---
+f() { xargs npx; }; f <<< "playwright install"
+#---
+parallel npx :::: <(echo playwright install)
+#---
+echo npx playwright install | while read l; do sh -c 'eval "$1"' _ "$l"; done
+#---
+echo npx playwright install | while read l; do sh -c '$1' _ "$l"; done
+#---
+echo npx playwright install | while read l; do bash -c '"$@"' _ $l; done
+#---
+echo npx playwright install | { read l; x=$l; eval "$x"; }
+#---
+echo npx playwright install | { read l; n=l; eval "${!n}"; }
+#---
+echo npx playwright install | { read l; declare -n r=l; eval "$r"; }
+#---
+echo npx playwright install | while :; do eval "$l"; read l || break; done
+#---
+f() { eval "$l"; }; echo npx playwright install | { read l; f; }
+#---
+f() { read l; eval "$l"; }; f <<< "npx playwright install"
+#---
+f() { read l; eval "$l"; }; echo npx playwright install | f
+#---
+echo npx playwright install | while read l; do sh <(echo "$l"); done
+#---
+echo npx playwright install | while read l; do . <(echo "$l"); done
+#---
+f() { sh; }; echo npx playwright install | f
+#---
+npm ${a[0]:-i} puppeteer
+#---
+npm ${a[@]:-i} puppeteer
+#---
+${a[0]:-npx} playwright install
+#---
+npm ${x:-$'i'} puppeteer
+#---
+npm ${x:-$'\x69'} puppeteer
+#---
+npm ${x:-$"i"} puppeteer
+#---
+( sh ) <<< "npx playwright install"
+echo "a
+#---
+{ sh; } <<< "npx playwright install"
+echo "a
+#---
+while read l; do sh -c "$l"; done <<< "npx playwright install"
+echo "a
+#---
+while read l; do sh -c "$l"; done <<EOF
+npx playwright install
+EOF
+echo "a

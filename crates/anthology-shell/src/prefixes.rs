@@ -23,6 +23,7 @@ pub(crate) mod hidden;
 
 use hidden::{runs_assigned_command, wrapper_known};
 
+use crate::lexer::words::ansi_c;
 use crate::lexer::{TooComplex, Work, pystr};
 use crate::rtk_forms::rtk_command;
 use crate::shell_args::WORD;
@@ -1489,7 +1490,11 @@ fn default_value_start(word: &str, name_at: usize) -> Option<usize> {
     if name_len == 0 {
         return None;
     }
-    let after = name_at + name_len;
+    let mut after = name_at + name_len;
+    // SH-F2 review I-3: a subscript (`${a[0]:-W}`, `${a[@]:-W}`), up to its first `]`
+    if word[after..].starts_with('[') && !"@*?$!-".contains(&word[name_at..after]) {
+        after += word[after..].find(']')? + 1;
+    }
     let tail = word.get(after..)?;
     if tail.starts_with(":-") || tail.starts_with(":+") || tail.starts_with(":=") {
         Some(after + 2)
@@ -1563,34 +1568,55 @@ fn has_default(word: &str) -> bool {
         .any(|(at, _)| default_value_start(word, at + 2).is_some())
 }
 
-/// SH-F2: `text` with its quotes removed, and each `\x` read as `x`.
-fn unquote(text: &str) -> String {
+/// SH-F2: `text` with its quotes removed, each `\\x` read as `x`, a `$'...'` decoded and a `$"..."` read as
+/// `"..."` (review I-3). An unclosed `$'` keeps the rest as written.
+fn unquote(text: &str, work: &mut Work) -> Result<String, TooComplex> {
+    let b = text.as_bytes();
+    let n = b.len();
     let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => out.extend(chars.next()),
-            '\'' => {
-                for d in chars.by_ref() {
-                    if d == '\'' {
-                        break;
-                    }
-                    out.push(d);
+    let mut k = 0;
+    // the character at `k` (a char boundary), pushed; the index after it
+    let take = |out: &mut String, k: usize| match text[k..].chars().next() {
+        Some(c) => {
+            out.push(c);
+            k + c.len_utf8()
+        }
+        None => k,
+    };
+    while k < n {
+        match b[k] {
+            b'\\' => k = take(&mut out, k + 1).max(k + 1),
+            b'$' if b.get(k + 1) == Some(&b'\'') => match ansi_c(text, k + 2, work)? {
+                Some((decoded, end)) => {
+                    out.push_str(&decoded);
+                    k = end;
                 }
-            }
-            '"' => {
-                while let Some(d) = chars.next() {
-                    match d {
-                        '"' => break,
-                        '\\' => out.extend(chars.next()),
-                        _ => out.push(d),
-                    }
+                None => {
+                    out.push_str(&text[k + 2..]);
+                    k = n;
                 }
+            },
+            b'$' if b.get(k + 1) == Some(&b'"') => k += 1,
+            b'\'' => {
+                let end = text[k + 1..].find('\'').map_or(n, |e| k + 1 + e);
+                out.push_str(&text[k + 1..end]);
+                k = end + 1;
             }
-            _ => out.push(c),
+            b'"' => {
+                k += 1;
+                while k < n && b[k] != b'"' {
+                    k = if b[k] == b'\\' {
+                        take(&mut out, k + 1).max(k + 1)
+                    } else {
+                        take(&mut out, k)
+                    };
+                }
+                k += 1;
+            }
+            _ => k = take(&mut out, k),
         }
     }
-    out
+    Ok(out)
 }
 
 /// SH-F2: `word` with each closed `${x:-W}` (and the other default and alternate forms) replaced by `W`, its
@@ -1615,7 +1641,7 @@ fn expand_defaults(word: &str, depth: usize, work: &mut Work) -> Result<String, 
         if let Some(start) = default_value_start(word, j + 2) {
             out.push_str(&word[last..j]);
             let value = expand_defaults(&word[start..close], depth + 1, work)?;
-            out.push_str(&unquote(&value));
+            out.push_str(&unquote(&value, work)?);
             last = close + 1;
         }
         j = close + 1;
@@ -2392,7 +2418,9 @@ pub(crate) fn strip_prefixes(
                 extra.extend(lines.split_off(lines.len().min(MAX_FED)));
                 scripts.extend(lines);
             }
-            if cut == rest.len()
+            // SH-F2 review: `::::` reads its inputs from a file (`parallel npx :::: <(echo X)`), so the layer
+            // is fed as a stdin one is
+            if (cut == rest.len() || rest[cut..].iter().any(|t| t == "::::" || t == "::::+"))
                 && let Some(runs) = stdin_runs.as_deref_mut()
                 && !fed
             {

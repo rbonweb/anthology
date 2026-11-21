@@ -234,7 +234,7 @@ pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usi
 
 /// The word a process substitution stands for in its command (bash passes `/dev/fd/N`; the number is not
 /// modelled, and no rule reads it).
-pub(crate) const PROCSUB_PATH: &str = "/dev/fd/63";
+const PROCSUB_PATH: &str = "/dev/fd/63";
 
 /// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
 type Pending = (Vec<String>, GroupId, bool, bool);
