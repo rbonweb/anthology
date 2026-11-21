@@ -80,6 +80,10 @@ a new version section.
   `permissions.deny` and `worktree.baseRef` replaced by `"<redacted>"`. Those three paths
   are shown as they are, including your own rules, so a token written inside one of your
   rules would be visible in the conversation.
+- Setup handles `CLAUDE_CODE_SUBAGENT_MODEL`, which overrides every agent's model: when it
+  is set in your user `settings.json`, setup offers to remove it as a separate question and
+  `/anthology:setup remove` puts it back; anywhere else it says where it is set and how to
+  remove it there.
 - rtk: condenses the output of common dev commands through a `PreToolUse` hook on Bash.
   The pinned binary (`rtk.lock`, sha256 per platform) is downloaded from this repo's
   releases and checked by setup, then reconciled at every session start. Claude Code only,

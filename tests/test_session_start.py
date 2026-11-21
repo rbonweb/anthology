@@ -356,7 +356,7 @@ class OpsVersionTest(SessionCase):
 DATA_LINE = ("anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory "
              "search index have no data folder (compatibility check)")
 MODEL_LINE = ("anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the "
-              "roster's model tiers do not apply")
+              "roster's model tiers do not apply; run /anthology:setup to remove it")
 
 
 class CompatibilityLinesTest(SessionCase):
