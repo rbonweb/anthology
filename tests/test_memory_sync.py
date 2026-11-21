@@ -1438,6 +1438,34 @@ def _secret_samples():
     }
 
 
+def _label_samples():
+    """`(label, secret text, value parts)` for every `SECRET_PATTERNS` label: a refusal must name
+    the label, and must contain neither the text nor any value part. Built by concatenation (see
+    `_secret_samples`)."""
+    return [
+        ("aws-access-key", "AKIA" + "IOSFODNN7EXAMPLE", ["IOSFODNN7EXAMPLE"]),
+        ("github-token", "ghp" + "_" + "a1b2" * 10, ["a1b2a1b2"]),
+        ("github-token", "github" + "_pat_" + "abcdefghij0123456789abc", ["abcdefghij0123456789abc"]),
+        ("api-key", "sk" + "-" + "a1b2c3d4e5f6g7h8i9j0", ["a1b2c3d4e5f6g7h8i9j0"]),
+        ("slack-token", "xox" + "b-" + "1234567890-abcdef", ["1234567890-abcdef"]),
+        ("private-key", "-----BEGIN OPENSSH " + "PRIVATE KEY-----", []),
+        ("credential-assignment", "pass" + "word: hunter2-long-value", ["hunter2-long-value"]),
+        ("jwt", "eyJ" + "hbGciOiJI" + ".abcdefgh12." + "zyxwvuts98", ["abcdefgh12", "zyxwvuts98"]),
+        ("cloud-secret-key", "aws_secret_access_key = " + "wJalrXUtnFEMI-K7MDENG",
+         ["wJalrXUtnFEMI-K7MDENG"]),
+        ("url-credentials", "postgres://app:" + "hunter2-long-value" + "@db.example.com/x",
+         ["hunter2-long-value"]),
+        ("anthropic-key", "sk" + "-ant-" + "abcdefgh1234", ["abcdefgh1234"]),
+        ("google-api-key", "AIza" + "Ab1" * 11 + "Ab", ["Ab1Ab1Ab1"]),
+        ("stripe-live-key", "sk" + "_live_" + "abcdefgh1234", ["abcdefgh1234"]),
+        ("bearer-token", "Bearer " + "abcdefghijklmnopqrstu", ["abcdefghijklmnopqrstu"]),
+        ("basic-auth", "Authorization: Basic " + "dXNlcjpwYXNzd29yZA==", ["dXNlcjpwYXNzd29yZA=="]),
+        ("gitlab-token", "glpat" + "-" + "abcdefghij0123456789", ["abcdefghij0123456789"]),
+        ("huggingface-token", "hf" + "_" + "a1B2" * 8, ["a1B2a1B2"]),
+        ("npm-token", "npm" + "_" + "a1B2c3D4" * 5, ["a1B2c3D4a1B2"]),
+    ]
+
+
 TODAY = "2026-05-06"
 
 
@@ -1715,21 +1743,46 @@ class SaveNoteTest(MemCase):
         secret = "hunter" + "2-long-value"
         url = "postgres://app:" + secret + "@db.example.com/x"
         msg = self.assertRefused(body="first\nsecond\nconnect to " + url + "\nlast")
-        self.assertIn("(url-credentials on line 3)", msg)
-        self.assertIn("remove or replace that value", msg)
+        self.assertIn("Found: url-credentials on line 3 of the note body", msg)
+        # the instruction comes before the list
+        self.assertLess(msg.index("remove or replace that value"), msg.index("Found:"))
         self.assertNotIn(secret, msg)
         self.assertNotIn("\n", msg)
         # several lines of one kind, and two kinds
         aws = "AKIA" + "IOSFODNN7EXAMPLE"
         msg = self.assertRefused(body=aws + "\nok\n" + aws + "\n" + url)
-        self.assertIn("aws-access-key on lines 1, 3", msg)
-        self.assertIn("url-credentials on line 4", msg)
+        self.assertIn("aws-access-key on lines 1, 3 of the note body", msg)
+        self.assertIn("url-credentials on line 4 of the note body", msg)
         self.assertNotIn(aws, msg)
         self.assertNotIn(secret, msg)
         # a single-line field is named, not numbered
         msg = self.assertRefused(name="see " + aws)
-        self.assertIn("(aws-access-key in the name)", msg)
+        self.assertIn("Found: aws-access-key in the name", msg)
         self.assertNotIn(aws, msg)
+
+    def test_secret_refusal_never_contains_the_value_of_any_kind(self):
+        samples = _label_samples()
+        self.assertEqual({label for label, _rx in memory_privacy.SECRET_PATTERNS},
+                         {label for label, _text, _parts in samples})
+        for label, secret, parts in samples:
+            for field in ("name", "description", "body"):
+                with self.subTest(label=label, field=field):
+                    msg = self.assertRefused(**{field: "see " + secret + " here"})
+                    self.assertIn(label, msg)
+                    self.assertNotIn("\n", msg)
+                    for value in [secret] + parts:
+                        self.assertNotIn(value, msg)
+
+    def test_secret_refusal_lists_at_most_five_findings(self):
+        aws = "AKIA" + "IOSFODNN7EXAMPLE"
+        msg = self.assertRefused(body="\n".join([aws] * 8))
+        self.assertIn("aws-access-key on lines 1, 2, 3, 4, 5 of the note body and 3 more", msg)
+        self.assertLess(msg.index("remove or replace that value"), msg.index("Found:"))
+        self.assertNotIn(aws, msg)
+        # exactly five: nothing is hidden
+        msg = self.assertRefused(body="\n".join([aws] * 5))
+        self.assertIn("lines 1, 2, 3, 4, 5 of the note body", msg)
+        self.assertNotIn("more", msg)
 
     def test_env_secret_values_are_refused_without_echoing_them(self):
         value = "vA1ue" + "-of-the-thing"
