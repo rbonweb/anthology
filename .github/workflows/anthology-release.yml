@@ -10,8 +10,9 @@ name: anthology-release
 #   - pull_request touching this file, the toolchain pin or deny.toml: a dry run (deny, then
 #     build and test the whole matrix; no attestation, no release).
 #
-# After a release, `anthology-dev lock write --tag <tag> --checksums checksums.txt` pins it in
-# both plugins' anthology.lock, in a reviewed commit. Users verify a tarball with
+# After a release, `anthology-dev lock write --tag <tag> --checksums checksums.txt
+# --release-json <file>` pins it in both plugins' anthology.lock, in a reviewed commit (make
+# the file with `gh release view <tag> --json assets > <file>`). Users verify a tarball with
 # `gh attestation verify <file> --repo rbonweb/anthology`.
 on:
   push:
