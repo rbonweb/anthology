@@ -1,9 +1,11 @@
 //! Command prefixes and wrappers (SH2): guard_rules.py `_strip_prefixes`, `_skip_flags`, `_runner_program`,
 //! `_python_runner_start`, `_strip_version` and their tables.
 
-use crate::hidden::{env_attached_split, runs_assigned_command, wrapper_bools, wrapper_known};
+pub(crate) mod hidden;
+
 use crate::rtk_forms::rtk_command;
 use crate::shell_args::{SHELLS, prog_name, shell_parse};
+use hidden::{env_attached_split, runs_assigned_command, wrapper_known};
 
 /// Shell grammar words peeled off a command (`_KEYWORDS`).
 const KEYWORDS: &[&str] = &[
@@ -345,12 +347,12 @@ fn known_bool(token: &str, bools: &[&str]) -> bool {
 /// `_skip_flags(tokens, i, value_flags)`: the index past the options from `tokens[i]` (it may pass the end,
 /// as Python's does). `token[-1].isalpha()` is implied by `"-" + token[-1] in value_flags`: every value flag
 /// is `-` and an ASCII letter (lead ruling R1). Rust-only: `unknown` is set for an option that is neither in
-/// `value_flags` nor `known_bool(_, bools)` (never when `value_flags` is empty).
+/// `value_flags` nor `known` (never when `value_flags` is empty).
 pub(crate) fn skip_flags(
     tokens: &[String],
     mut i: usize,
     value_flags: &[&str],
-    bools: &[&str],
+    known: &dyn Fn(&str) -> bool,
     unknown: &mut bool,
 ) -> usize {
     let n = tokens.len();
@@ -371,7 +373,7 @@ pub(crate) fn skip_flags(
                         flag.push(c);
                         has(value_flags, &flag)
                     }));
-            if !takes_value && !value_flags.is_empty() && !known_bool(token, bools) {
+            if !takes_value && !value_flags.is_empty() && !known(token) {
                 *unknown = true;
             }
             i += if takes_value { 2 } else { 1 };
@@ -442,7 +444,7 @@ fn python_runner_start(
         tokens,
         1,
         PYTHON_GLOBAL_VALUE_FLAGS,
-        RUNNER_BOOL_FLAGS,
+        &|t| known_bool(t, RUNNER_BOOL_FLAGS),
         &mut seen,
     );
     let found = subcommands.iter().find_map(|words| {
@@ -481,7 +483,13 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
         ran = true;
         if let Some(&(_, value_flags)) = WRAPPERS.iter().find(|(w, _)| *w == name) {
             let mut unknown = false;
-            let mut i = skip_flags(&toks, 1, value_flags, wrapper_bools(&name), &mut unknown);
+            let mut i = skip_flags(
+                &toks,
+                1,
+                value_flags,
+                &|t| wrapper_known(&name, t),
+                &mut unknown,
+            );
             if name == "env" {
                 let split = toks.iter().position(|t| t == "-S" || t == "--split-string");
                 if let Some(split) = split
@@ -515,7 +523,7 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
                 return (toks, scripts, peeled); // lookup, not execution
             }
             let mut unknown = false;
-            let i = skip_flags(&toks, 1, &[], &[], &mut unknown);
+            let i = skip_flags(&toks, 1, &[], &|_| false, &mut unknown);
             drop_front(&mut toks, i);
         } else if name == "rtk" {
             toks = rtk_command(toks, &mut peeled.unknown_option);
@@ -529,7 +537,13 @@ pub(crate) fn strip_prefixes(tokens: &[String]) -> (Vec<String>, Vec<String>, Pe
             toks = runner_program(toks, start, &mut scripts, &mut peeled.unknown_option);
         } else if has(JS_PACKAGE_MANAGERS, &name) && toks.len() > 1 {
             let mut unknown = false;
-            let i = skip_flags(&toks, 1, PM_VALUE_FLAGS, PM_BOOL_FLAGS, &mut unknown);
+            let i = skip_flags(
+                &toks,
+                1,
+                PM_VALUE_FLAGS,
+                &|t| known_bool(t, PM_BOOL_FLAGS),
+                &mut unknown,
+            );
             // an unknown option may have hidden the verb, whichever branch follows
             peeled.unknown_option |= unknown;
             let verb = toks.get(i).map_or("", String::as_str).to_string();
@@ -598,6 +612,12 @@ fn has_option(toks: &[String], i: usize, name: &str) -> bool {
 /// running code as an interpreter.
 pub(crate) fn pm_runs_own_verb(prog: &str, args: &[String]) -> bool {
     let mut unused = false;
-    let i = skip_flags(args, 0, PM_VALUE_FLAGS, PM_BOOL_FLAGS, &mut unused);
+    let i = skip_flags(
+        args,
+        0,
+        PM_VALUE_FLAGS,
+        &|t| known_bool(t, PM_BOOL_FLAGS),
+        &mut unused,
+    );
     has(JS_PACKAGE_MANAGERS, prog) && args.get(i).is_some_and(|verb| has(PM_VERBS, verb))
 }

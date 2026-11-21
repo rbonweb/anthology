@@ -11,7 +11,6 @@
 pub mod analyze;
 pub mod collect;
 pub mod heredoc;
-mod hidden;
 pub mod lenient;
 pub mod lexer;
 pub mod limits;

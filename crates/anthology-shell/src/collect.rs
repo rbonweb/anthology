@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::analyze::Entry;
-use crate::hidden::runs_option_command;
 use crate::lexer::{Group, GroupId, Redirect, lex_in, pystr};
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
+use crate::prefixes::hidden::runs_option_command;
 use crate::prefixes::{STDIN_ARG_RUNNERS, UNPARSED_RUNNERS, pm_runs_own_verb, strip_prefixes};
 use crate::shell_args::{
     Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
@@ -384,11 +384,11 @@ impl<'a> Ctx<'a> {
                 self.entries[e].code.extend(texts.iter().cloned());
             }
             if let Some(shell) = shell {
-                // `bash --version` reads no script
+                // `bash --version` reads no script (`bash -s -- --version 1.2` does)
                 let info_only = self.entries[shell]
                     .args
-                    .iter()
-                    .any(|a| a == "--version" || a == "--help");
+                    .first()
+                    .is_some_and(|a| a == "--version" || a == "--help");
                 if texts.is_empty() && !info_only {
                     mark(
                         &mut self.entries[shell].opaque,

@@ -315,6 +315,14 @@ fn opaque_marks_the_forms_python_misreads() {
         "GIT_PAGER='npx playwright install' git log",
         "BASH_ENV=./x.sh bash -c ls",
         "stdbuf -o L npx playwright install",
+        // review round 3
+        "rsync -avze 'npx playwright install' a b:c",
+        "rsync -e'npx playwright install' a b:c",
+        "fd -Hx npx playwright install",
+        "tar -cI 'npx playwright install' -f a.tar x",
+        "GIT_CONFIG_PARAMETERS=\"'core.pager'='npx playwright install'\" git log",
+        "git --config-env=core.pager=X log",
+        "export GIT_PAGER='npx playwright install'",
     ];
     for command in unknown {
         assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
@@ -333,6 +341,11 @@ fn opaque_marks_the_forms_python_misreads() {
         Opaque::Source
     ));
     assert!(has(&analyze("sh install.sh", HOME), "sh", Opaque::Source));
+    assert!(has(
+        &analyze("curl -s x | bash -s -- --version 1.2.3", HOME),
+        "bash",
+        Opaque::StdinShellUnreadable
+    ));
     for command in [
         "sh <(echo npx playwright install)",
         "cat <(echo npx playwright install) | sh",
@@ -404,6 +417,28 @@ fn common_forms_stay_clear() {
         "rsync -a --rsync-path=rsync a b:c",
         "PAGER= git log",
         "GIT_DIR=.git git status",
+        // review round 3
+        "GIT_PAGER=cat git log",
+        "PAGER=cat git log",
+        "GIT_EDITOR=true git commit",
+        "GIT_SEQUENCE_EDITOR=: git rebase -i HEAD~3",
+        "EDITOR=vim git commit",
+        "GIT_SSH_COMMAND='ssh -i key' git fetch",
+        "ENV=production npm run build",
+        "git -c core.pager=cat log",
+        "git -c pager.log=false log",
+        "git -c credential.helper= fetch",
+        "git -c credential.useHttpPath=true fetch",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git -c core.fsmonitor=false status",
+        "git -c filter.lfs.smudge='git-lfs smudge -- %f' -c filter.lfs.required=true clone x",
+        "nice -10 make",
+        "nice -n10 make",
+        "rsync -avze ssh a b:c",
+        "export PATH=/x:$PATH",
+        "tar -xvzf a.tgz",
+        "tar -cJf a.tar.xz x",
+        "tar -Izstd -xf a.tar.zst",
     ] {
         assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
     }

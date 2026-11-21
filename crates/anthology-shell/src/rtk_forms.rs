@@ -36,11 +36,11 @@ fn unknown_option(toks: &[String], from: usize, to: usize, before_sub: bool) -> 
 /// Rust-only: `unknown` is set for an option rtk is not known to take without a value.
 pub(crate) fn rtk_command(mut toks: Vec<String>, unknown: &mut bool) -> Vec<String> {
     let mut unused = false;
-    let mut i = skip_flags(&toks, 1, &[], &[], &mut unused);
+    let mut i = skip_flags(&toks, 1, &[], &|_| false, &mut unused);
     *unknown |= unknown_option(&toks, 1, i, true);
     let sub = toks.get(i).map_or("", String::as_str);
     if RTK_PASSTHROUGH.contains(&sub) {
-        let end = skip_flags(&toks, i + 1, &[], &[], &mut unused);
+        let end = skip_flags(&toks, i + 1, &[], &|_| false, &mut unused);
         *unknown |= unknown_option(&toks, i + 1, end, false);
         drop_front(&mut toks, end);
         return toks;
