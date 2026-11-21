@@ -720,7 +720,7 @@ The rules (also plan GC-16):
 ### 13.2 Differential testing (the main oracle)
 
 - **Oracle.** Baseline Python in the pinned 3.12 image. Rust is static musl `anthology` and `difftest` binaries **in the same container**.
-- **macOS (m-9).** The CLI-level surfaces also run on the macOS runner against python.org 3.12 installed by a SHA-pinned `actions/setup-python`. This job **gates**, so `/private/var` realpaths, APFS case-insensitivity, BSD tools and macOS errno text are covered.
+- **macOS (m-9).** The CLI-level surfaces also run on the macOS runner. The oracle there is pinned to CPython 3.12.16, the same patch release as the Linux image: a sha256-pinned python-build-standalone build, because `actions/setup-python` stops at 3.12.10 on macOS and tarfile changed in the 3.12 security releases (PR #93). On macOS the `memory.portable` path limit is 1024 bytes, and the oracle's temp dir is `/private/tmp` (`/tmp` resolved through macOS's link). This job **gates**, so `/private/var` realpaths, APFS case-insensitivity, BSD tools and macOS errno text are covered.
 - **Surfaces.**
   - Library level: a long-lived Python driver (`port/difftest/oracle/<surface>.py`, JSONL) against Rust in-process. Used for `shell.segments`, `shell.analyze`, `guard.check`, `privacy.findings`, `settings.*`, `notes.parse`, `pycompat.*`, `core.state` and `rtk_install.reconcile` (injected fetcher).
   - CLI level: `guard.hook`, `hook.session-start`, `setup`, `doctor`, `mem`, `memory.portable`, `memory.sync` (scenario fixtures), and every `anthology-dev` tool.
@@ -838,7 +838,7 @@ It runs on the four platforms in §8.4. The `tool_name` key scan is fuzzed with 
 | `fuzz` (`.github/workflows/fuzz.yml`, weekly + dispatch) | F1 creates; target lanes add their targets' corpora | **real** (runs the targets that exist) | cargo-fuzz, 10 min per target, pinned nightly |
 | `shellcheck` | BS1 | placeholder → real | `shellcheck -s sh` on the shims |
 | `shims-distros` | BS1 | placeholder → real | `repo-tests` shim suite on alpine, debian-slim and ubuntu (packages installed at job start) |
-| `difftest-linux`, `difftest-macos` | F4 | placeholder → real | static musl binaries in the python 3.12 image; CLI surfaces on macOS against setup-python 3.12 (gating) |
+| `difftest-linux`, `difftest-macos` | F4 | placeholder → real | static musl binaries in the python 3.12 image; CLI surfaces on macOS against a pinned CPython 3.12.16, as on Linux (gating, m-9) |
 | `ledger` | F4a | placeholder → real | `anthology-dev ledger check --report`, blocking for the merging lane's files, plus the regex-inventory check |
 | `anthology-release` dry run | RL1 | real when added | on PRs touching the workflow or the toolchain |
 
