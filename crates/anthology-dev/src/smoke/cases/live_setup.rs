@@ -54,7 +54,7 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
             data.to_string_lossy().into_owned(),
         ),
     ]);
-    let env = build_env(&ctx.env, &tmp, Some(&extra));
+    let env = without_auth(build_env(&ctx.env, &tmp, Some(&extra)));
     let wrapper = anthology.join("bin").join("anthology");
     let setup = |args: &[&str], timeout: u64| {
         let mut argv = vec![wrapper.to_string_lossy().into_owned(), "setup".to_string()];
@@ -101,10 +101,8 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         ));
     }
     let guard = path_str(&applied, &["guard_binary", "status"]).unwrap_or("");
-    if !matches!(
-        guard,
-        "present" | "installed" | "skipped: guardrails not found"
-    ) {
+    // The staged guardrails sit beside anthology, so setup must find them.
+    if !matches!(guard, "present" | "installed") {
         problems.push(format!("guard_binary.status is {}", py_repr_str(guard)));
     }
     if !config.join("settings.json").is_file() {

@@ -247,13 +247,18 @@ fn each_config_dir_of_a_run_is_seeded_once() {
         run_tmp.join("home/.claude").to_string_lossy().into_owned(),
     )]);
     // No binary, or staged plugins never used: nothing is seeded.
-    ctx.seed_run(&run_tmp, &env).expect("no-op");
+    let none: Vec<String> = Vec::new();
+    ctx.seed_run(&run_tmp, &env, &none).expect("no-op");
     let ctx = ctx.with_anthology(Some("/x/anthology".to_string()), true);
-    ctx.seed_run(&run_tmp, &env).expect("no-op");
+    ctx.seed_run(&run_tmp, &env, &none).expect("no-op");
     assert!(calls.borrow().is_empty());
-    ctx.plugin_flags().expect("flags");
-    ctx.seed_run(&run_tmp, &env).expect("seeds");
-    ctx.seed_run(&run_tmp, &env).expect("seeds once");
+    let flags = ctx.plugin_flags().expect("flags");
+    // A run that does not load the staged plugins (a probe plugin) is still left alone.
+    let probe = vec!["--plugin-dir".to_string(), "/elsewhere/probe".to_string()];
+    ctx.seed_run(&run_tmp, &env, &probe).expect("no-op");
+    assert!(calls.borrow().is_empty());
+    ctx.seed_run(&run_tmp, &env, &flags).expect("seeds");
+    ctx.seed_run(&run_tmp, &env, &flags).expect("seeds once");
     assert_eq!(
         *calls.borrow(),
         [run_tmp.join("cfg"), run_tmp.join("home/.claude")]
@@ -411,5 +416,78 @@ fn approve_records_the_key_and_the_union_lines() {
     assert_eq!(
         fs::read_to_string(repo.join(".gitattributes")).expect("attrs"),
         attrs
+    );
+}
+
+#[test]
+fn a_seed_failure_fails_the_smoke_without_charging_a_run() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let plugins = tmp.path().join("plugins");
+    let launched = Rc::new(RefCell::new(0));
+    let count = Rc::clone(&launched);
+    let deps = Deps {
+        stage: Box::new(move |_| {
+            Ok(Staged {
+                plugins: plugins.clone(),
+                keep: None,
+            })
+        }),
+        seed: Box::new(|_, _, _| Err("RuntimeError: anthology-dev seed failed: boom".to_string())),
+        claude_run: Box::new(move |_, _, _, _| {
+            *count.borrow_mut() += 1;
+            Proc::new(0, "", "")
+        }),
+        ..Deps::default()
+    };
+    let ctx = Ctx::new("claude", "1.00", 10.0, quiet_env(), deps)
+        .with_anthology(Some("/x/anthology".to_string()), true);
+    let flags = ctx.plugin_flags().expect("flags");
+    let run_tmp = tmp.path().join("run");
+    let err = ctx
+        .prompt_run(&run_tmp, "hi", &flags, &PromptOpts::default())
+        .expect_err("the seed failed");
+    assert_eq!(
+        err,
+        Abort::Error("RuntimeError: anthology-dev seed failed: boom".to_string())
+    );
+    assert_eq!(*launched.borrow(), 0);
+    assert_eq!(ctx.spent(), 0.0);
+}
+
+#[test]
+fn binary_missing_fails_when_a_shim_lets_a_call_through() {
+    // The real staged copy, with guard.sh replaced by one that allows everything.
+    let mut deps = real_deps();
+    let real = Deps::default().stage;
+    deps.stage = Box::new(move |ctx| {
+        let staged = real(ctx)?;
+        fs::write(
+            staged.plugins.join("anthology-guardrails/hooks/guard.sh"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(staged)
+    });
+    let ctx = Ctx::new("claude", "1.00", 10.0, quiet_env(), deps);
+    let (status, reason) = cases::binary_missing::run(&ctx).expect("an outcome");
+    assert_eq!(status, Status::Fail);
+    assert!(
+        reason.starts_with("guard.sh on Bash: exit 0 (want 2)"),
+        "{reason}"
+    );
+    assert!(!reason.contains("guard.sh on Read"), "{reason}");
+}
+
+#[test]
+fn prepare_evals_takes_no_smoke_names() {
+    let res = run_with(
+        &args(&["--prepare-evals", "/nonexistent/ws", "live-seed"]),
+        quiet_env(),
+        real_deps(),
+    );
+    assert_eq!(res.code, 2);
+    assert!(
+        String::from_utf8_lossy(&res.stderr).contains("--prepare-evals takes no smoke names"),
+        "{res:?}"
     );
 }

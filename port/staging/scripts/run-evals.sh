@@ -127,8 +127,8 @@ fi
 # holds those tools in agent-fields: the scout's own tool list is then what its max-0 checks
 # really test. `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a
 # host-browser launch attempt must be recorded (and denied) rather than hidden.
-# (The rtk-rewrite and agent-memory-path checks are smokes, `anthology-dev smoke`: rtk and
-# `anthology-mem` are not available inside `claude plugin eval`.)
+# (The rtk-rewrite and agent-memory-path checks are smokes, `anthology-dev smoke`: they need
+# rtk installed and a scratch repo, which `claude plugin eval` cannot set up.)
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)
@@ -167,6 +167,7 @@ echo "run-evals: using $CLAUDE"
 BIN=${ANTHOLOGY_BIN:-}
 DEV=${ANTHOLOGY_DEV:-}
 if [ -z "$BIN" ] || [ -z "$DEV" ]; then
+  TRIPLE=
   command -v cargo >/dev/null 2>&1 ||
     die "cargo is needed to build the anthology binaries; or set ANTHOLOGY_BIN and ANTHOLOGY_DEV"
   TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
@@ -177,16 +178,26 @@ if [ -z "$BIN" ] || [ -z "$DEV" ]; then
         aarch64 | arm64) TRIPLE=aarch64-unknown-linux-musl ;;
         *) die "no anthology build for $(uname -m)" ;;
       esac
-      echo "run-evals: building anthology and anthology-dev ($TRIPLE)"
-      cargo build --release --locked -p anthology-cli -p anthology-dev --target "$TRIPLE" >&2
+      # The bundled SQLite is C code: it builds with musl's gcc wrapper (Debian: musl-tools).
+      command -v musl-gcc >/dev/null 2>&1 ||
+        die "musl-gcc is needed for the static Linux build (install musl-tools); or set ANTHOLOGY_BIN and ANTHOLOGY_DEV"
+      CC_VAR=CC_$(printf '%s' "$TRIPLE" | tr '-' '_')
+      set -- --target "$TRIPLE"
       BUILT=$TARGET_DIR/$TRIPLE/release
       ;;
     *)
-      echo "run-evals: building anthology and anthology-dev"
-      cargo build --release --locked -p anthology-cli -p anthology-dev >&2
+      CC_VAR=
+      set --
       BUILT=$TARGET_DIR/release
       ;;
   esac
+  echo "run-evals: building anthology and anthology-dev${TRIPLE:+ ($TRIPLE)}"
+  # Build scripts of third-party crates run here: they never see the API credentials.
+  (
+    unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
+    if [ -n "$CC_VAR" ]; then export "$CC_VAR=musl-gcc"; fi
+    cargo build --release --locked -p anthology-cli -p anthology-dev "$@" >&2
+  ) || die "the build of anthology and anthology-dev failed"
   BIN=${BIN:-$BUILT/anthology}
   DEV=${DEV:-$BUILT/anthology-dev}
 fi
@@ -202,6 +213,9 @@ echo "run-evals: results in ${OUT#"$ROOT"/}"
 # The seeded eval workspace (marketplace, evals/, staged plugins), removed on exit.
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/anthology-evals.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
+# dash runs no EXIT trap on a signal: exit through it.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 WS=$("$DEV" smoke --anthology-bin "$BIN" --prepare-evals "$SCRATCH/ws") ||
   die "could not prepare the eval workspace"
 

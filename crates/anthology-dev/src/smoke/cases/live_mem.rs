@@ -20,7 +20,7 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         "CLAUDE_PLUGIN_DATA".to_string(),
         data.to_string_lossy().into_owned(),
     )]);
-    let env = build_env(&ctx.env, &tmp, Some(&extra));
+    let env = without_auth(build_env(&ctx.env, &tmp, Some(&extra)));
     let wrapper = anthology
         .join("bin")
         .join("anthology-mem")

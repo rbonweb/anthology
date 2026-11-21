@@ -501,6 +501,9 @@ pub fn run_to(args: &[OsString], env: Env, deps: Deps, progress: &mut dyn Write)
     let ctx = Ctx::new(&claude, &args.budget_usd, args.total_budget_usd, env, deps)
         .with_anthology(anthology, anthology_explicit);
     if let Some(dir) = args.prepare_evals.as_deref() {
+        if !args.names.is_empty() || args.out.is_some() {
+            return usage_error("--prepare-evals takes no smoke names and no --out");
+        }
         return match evals_ws::prepare(&ctx, Path::new(&abspath(dir, &(ctx.deps.cwd)()))) {
             Ok(path) => Output {
                 stdout: format!("{}\n", path.display()).into_bytes(),
@@ -579,7 +582,15 @@ fn write_summary(path: &str, results: &[(&str, Outcome)]) -> Result<(), String> 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|e| format!("OSError: {}: {e}", parent.display()))?;
     }
-    fs::write(path, text).map_err(|e| format!("OSError: {}: {e}", path.display()))?;
+    // Written beside, then renamed: a run killed mid-write leaves the previous summary whole.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, text).map_err(|e| format!("OSError: {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("OSError: {}: {e}", path.display())
+    })?;
     Ok(())
 }
 

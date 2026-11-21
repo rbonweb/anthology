@@ -40,7 +40,11 @@ then `npx playwright install --dry-run chromium`. Report each command's output v
     if !tool_uses(&events).iter().any(|t| t == "Bash") {
         problems.push("Bash was never called".to_string());
     }
-    if !results.iter().any(|r| r.contains(OK) && !blocked(r)) {
+    let allowed = |r: &String| {
+        r.trim() == OK
+            || (r.contains(OK) && !blocked(r) && !r.contains("Blocked by anthology-guardrails"))
+    };
+    if !results.iter().any(allowed) {
         problems.push(format!("`echo {OK}` was not allowed through"));
     }
     if !all.contains(GUARD_G1) {

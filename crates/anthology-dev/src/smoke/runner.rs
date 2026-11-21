@@ -485,7 +485,7 @@ fn real_approved_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
             "https://example.invalid/smoke/repo.git",
         ],
     )?;
-    let env = env_of(&build_env(&ctx.env, tmp, None));
+    let env = env_of(&without_auth(build_env(&ctx.env, tmp, None)));
     super::approve::approve(&repo, &env, &anthology_core::git::RealGit).map_err(|e| {
         format!(
             "RuntimeError: approve failed: {}",
@@ -493,6 +493,14 @@ fn real_approved_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
         )
     })?;
     Ok(repo)
+}
+
+/// `map` without the model credentials: for the subprocesses that call no model.
+pub fn without_auth(mut map: EnvMap) -> EnvMap {
+    for k in AUTH_VARS {
+        map.remove(k);
+    }
+    map
 }
 
 /// An `Env` holding exactly `map`.
@@ -505,7 +513,7 @@ fn real_claude_run(ctx: &Ctx, tmp: &Path, args: &[String], opts: &ClaudeOpts) ->
     let mut argv = vec![ctx.claude.clone()];
     argv.extend(args.iter().cloned());
     let env = build_env(&ctx.env, tmp, opts.extra_env.as_ref());
-    if let Err(e) = ctx.seed_run(tmp, &env) {
+    if let Err(e) = ctx.seed_run(tmp, &env, args) {
         return Proc::new(-1, "", &e);
     }
     let cwd = opts.cwd.as_deref().unwrap_or(tmp);
@@ -547,6 +555,12 @@ fn real_prompt_run(
         extra_env: opts.extra_env.clone(),
         timeout: CLAUDE_TIMEOUT,
     };
+    // Seeded here first, so a seed failure fails the smoke without being charged as a run.
+    ctx.seed_run(
+        tmp,
+        &build_env(&ctx.env, tmp, opts.extra_env.as_ref()),
+        &args,
+    )?;
     let mut p = ctx.claude_run(tmp, &args, &claude_opts);
     let (cost, text) = result_cost_and_text(&p.out);
     let charge = match cost {
@@ -636,12 +650,18 @@ impl Ctx {
         Ok(())
     }
 
-    /// Before a `claude` run that loads the staged plugins: the binary goes into every config
-    /// dir its hooks may use. That is `CLAUDE_CONFIG_DIR` and `$HOME/.claude`, the hooks' own
-    /// fallback when the subprocess scrub strips `CLAUDE_CONFIG_DIR`. A run that never touched
-    /// the staged plugins (a throwaway probe plugin) is left alone.
-    pub fn seed_run(&self, tmp: &Path, env: &EnvMap) -> Result<(), String> {
-        if !self.staged.get().is_some_and(Result::is_ok) || self.anthology.is_none() {
+    /// Before a `claude` run whose `args` load the staged plugins: the binary goes into every
+    /// config dir its hooks may use. That is `CLAUDE_CONFIG_DIR` and `$HOME/.claude`, the hooks'
+    /// own fallback when the subprocess scrub strips `CLAUDE_CONFIG_DIR`. Any other run (a
+    /// throwaway probe plugin, `claude plugin validate`) is left alone.
+    pub fn seed_run(&self, tmp: &Path, env: &EnvMap, args: &[String]) -> Result<(), String> {
+        let Some(Ok(staged)) = self.staged.get() else {
+            return Ok(());
+        };
+        let loads_staged = args
+            .iter()
+            .any(|a| Path::new(a).starts_with(&staged.plugins));
+        if !loads_staged || self.anthology.is_none() {
             return Ok(());
         }
         let mut dirs = vec![tmp.join("cfg"), tmp.join("home").join(".claude")];

@@ -114,12 +114,16 @@ pub fn prepare(ctx: &Ctx, dir: &Path) -> Result<PathBuf, String> {
     let staged = ctx.staged_plugins()?;
     mkdirs(dir)?;
     copy_tree(&root.join(".claude-plugin"), &dir.join(".claude-plugin"))?;
-    copy_tree(&root.join("evals"), &dir.join("evals"))?;
-    for leftover in ["results", "smoke"] {
-        let p = dir.join("evals").join(leftover);
-        if p.exists() {
-            fs::remove_dir_all(&p).map_err(|e| os(&p, e))?;
+    // evals/ without results/ (earlier runs' output) and smoke/ (smoke.py).
+    let evals = root.join("evals");
+    mkdirs(&dir.join("evals"))?;
+    for entry in fs::read_dir(&evals).map_err(|e| os(&evals, e))? {
+        let entry = entry.map_err(|e| os(&evals, e))?;
+        let name = entry.file_name();
+        if name == "results" || name == "smoke" {
+            continue;
         }
+        copy_tree(&entry.path(), &dir.join("evals").join(&name))?;
     }
     let plugins = dir.join("plugins");
     copy_tree(&staged, &plugins)?;
