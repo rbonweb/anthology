@@ -7,7 +7,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -517,8 +517,28 @@ impl Serve {
         let neo = neo();
         let mut args = vec![neo.to_str().expect("utf-8 path"), "serve"];
         args.extend_from_slice(extra);
-        let node = Node::spawn(&args, dir, false);
-        let lines = vec![node.next_line(), node.next_line()];
+        // The bridge takes one of the ports 5300-5309, which other runs on this machine (another
+        // worktree, the Python suite, a real bridge) may hold: when it says there is no free
+        // port, wait and start it again.
+        let mut attempt = 0;
+        let (node, first) = loop {
+            let node = Node::spawn(&args, dir, false);
+            match node.lines.recv_timeout(PATIENCE) {
+                Ok(line) => break (node, line),
+                Err(RecvTimeoutError::Disconnected) if attempt < 40 => {
+                    thread::sleep(Duration::from_millis(250));
+                    assert!(
+                        node.stderr().contains("no free port"),
+                        "the bridge exited without output; stderr: {}",
+                        node.stderr()
+                    );
+                    attempt += 1;
+                    thread::sleep(Duration::from_millis(500));
+                }
+                Err(e) => panic!("no output line from node ({e}); stderr: {}", node.stderr()),
+            }
+        };
+        let lines = vec![first, node.next_line()];
         let file = dir.join(".taste-skill").join("neo.json");
         assert!(file.is_file(), "no info file: {lines:?}");
         let info = parse(&std::fs::read_to_string(&file).expect("info file"));
