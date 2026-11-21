@@ -9,6 +9,7 @@
 //! the refusal names the kind, never the text. Every message is verbatim from `memory_sync.py`.
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -143,18 +144,94 @@ fn check_body(value: &str) -> Result<String, SaveError> {
     Ok(format!("{v}\n"))
 }
 
+/// `_SECRET_FIELDS`: the order of the texts `save` scans.
+const SECRET_FIELDS: [&str; 4] = ["slug", "name", "description", "body"];
+
+/// One secret finding: `(field index, label, line)`.
+type SecretFinding = (usize, &'static str, usize);
+
+/// `_secret_findings`: `(field index, label, line)` for every `SECRET_PATTERNS` match in the
+/// fields joined by newlines, sorted and unique; the line is 1-based within the field. Never the
+/// matched text. A pattern the engine could not finish is in the second list (fail closed;
+/// Python's `re` has no such case).
+fn secret_findings(texts: &[&str]) -> (Vec<SecretFinding>, Vec<&'static str>) {
+    let joined = texts.join("\n");
+    let mut starts = Vec::with_capacity(texts.len());
+    let mut pos = 0;
+    for text in texts {
+        starts.push(pos);
+        pos += text.len() + 1;
+    }
+    let mut found = BTreeSet::new();
+    let mut unfinished = BTreeSet::new();
+    for (label, at) in privacy::secret_match_starts(&joined) {
+        let Some(at) = at else {
+            unfinished.insert(label);
+            continue;
+        };
+        let idx = starts.partition_point(|s| *s <= at) - 1;
+        let line = joined.as_bytes()[starts[idx]..at]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
+            + 1;
+        found.insert((idx, label, line));
+    }
+    (
+        found.into_iter().collect(),
+        unfinished.into_iter().collect(),
+    )
+}
+
+/// `_MAX_SECRET_FINDINGS`.
+const MAX_SECRET_FINDINGS: usize = 5;
+
+/// `_describe_secrets`: `url-credentials on line 3 of the note body, password in the name`: kinds
+/// and places, never the text. At most `MAX_SECRET_FINDINGS` findings are listed, then
+/// `and N more`.
+fn describe_secrets(found: &[SecretFinding], unfinished: &[&str]) -> String {
+    let mut groups: Vec<((usize, &str), Vec<usize>)> = Vec::new();
+    for &(idx, label, line) in found.iter().take(MAX_SECRET_FINDINGS) {
+        match groups.last_mut() {
+            Some((key, lines)) if *key == (idx, label) => lines.push(line),
+            _ => groups.push(((idx, label), vec![line])),
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for ((idx, label), lines) in groups {
+        let field = SECRET_FIELDS[idx];
+        parts.push(if field != "body" {
+            format!("{label} in the {field}")
+        } else {
+            let nums: Vec<String> = lines.iter().map(usize::to_string).collect();
+            let noun = if lines.len() == 1 { "line" } else { "lines" };
+            format!("{label} on {noun} {} of the note body", nums.join(", "))
+        });
+    }
+    let mut text = parts.join(", ");
+    if found.len() > MAX_SECRET_FINDINGS {
+        text.push_str(&format!(" and {} more", found.len() - MAX_SECRET_FINDINGS));
+    }
+    for label in unfinished {
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str(&format!("{label} (the scan could not finish)"));
+    }
+    text
+}
+
 /// `_refuse_secrets`.
 fn refuse_secrets(texts: &[&str], env: &Env) -> Result<(), SaveError> {
     let joined = texts.join("\n");
-    let patterns: Vec<(&str, bool)> = privacy::SECRET_PATTERNS
-        .iter()
-        .map(|(_, p, ic)| (*p, *ic))
-        .collect();
-    if privacy::search_any(&patterns, &joined) {
-        return err(
-            "refusing to save: the note looks like it contains a secret (memory is committed to \
-             the repo)",
-        );
+    let (found, unfinished) = secret_findings(texts);
+    if !found.is_empty() || !unfinished.is_empty() {
+        return err(format!(
+            "refusing to save: the note looks like it contains a secret; memory is committed to \
+             the repo, so remove or replace that value (e.g. refer to the env var name) and save \
+             again. Found: {}",
+            describe_secrets(&found, &unfinished)
+        ));
     }
     let mut vars: Vec<(String, &str)> = env
         .iter()
