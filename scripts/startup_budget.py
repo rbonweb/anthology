@@ -39,8 +39,8 @@ SAFE_AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 BUDGET = {
     "researcher": 89267,  # measured 77623
     "architect": 23612,  # measured 20532
-    "implementer": 25908,  # measured 22528 (karpathy-guidelines added)
-    "debugger": 21686,  # measured 18857 (karpathy-guidelines added)
+    "implementer": 26561,  # measured 23096 (karpathy-guidelines added)
+    "debugger": 22167,  # measured 19275 (karpathy-guidelines added)
     "reviewer": 16672,  # measured 14497 (karpathy-guidelines added)
     "scout": 5944,  # measured 5168
     "docs-writer": 31376,  # measured 27283
