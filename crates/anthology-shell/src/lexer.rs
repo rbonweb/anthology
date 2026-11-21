@@ -229,6 +229,10 @@ pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usi
     backtick_end(text, i, work)?.ok_or(LexError::Unbalanced)
 }
 
+/// The word a process substitution stands for in its command (bash passes `/dev/fd/N`; the number is not
+/// modelled, and no rule reads it).
+const PROCSUB_PATH: &str = "/dev/fd/63";
+
 /// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
 type Pending = (Vec<String>, GroupId, bool, bool);
 
@@ -435,14 +439,21 @@ impl<'t, 'a> Lexer<'t, 'a> {
         i + 1
     }
 
+    /// `<(cmd)` or `>(cmd)` at `i`: bash runs `cmd` and passes its path as one word. The body is lexed as a
+    /// nested command, and the word continues the one being built (`x<(a)y` is one word, `2<(a)` keeps the 2).
+    fn procsub(&mut self, i: usize) -> Result<usize, LexError> {
+        let (inner, j) = scan_paren(self.text, i + 2, &mut self.memo, &mut self.sh.work)?;
+        self.nested(inner, Some(i), true)?;
+        self.add(PROCSUB_PATH);
+        Ok(j)
+    }
+
     /// A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run.
     fn array_char(&mut self, i: usize) -> Result<usize, LexError> {
         let text = self.text;
         let c = text.as_bytes()[i];
         if (c == b'<' || c == b'>') && byte_at(text, i + 1) == Some(b'(') {
-            let (inner, j) = scan_paren(text, i + 2, &mut self.memo, &mut self.sh.work)?;
-            self.nested(inner, Some(i), true)?;
-            return Ok(j);
+            return self.procsub(i);
         }
         self.end_word();
         if c == b')' {
@@ -612,6 +623,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     self.end_seg(double);
                     i += if double || next == Some(b'&') { 2 } else { 1 };
                 }
+                b'<' | b'>' if byte_at(text, i + 1) == Some(b'(') => i = self.procsub(i)?,
                 b'<' | b'>' | b'&' => i = self.redirect(i)?,
                 _ => {
                     let ch = char_at(text, i).unwrap_or('\u{fffd}');
@@ -762,6 +774,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
             }
             Some(b'{') => {
                 let k = self.brace_end(i)?;
+                // bash runs a `<(...)` in an unquoted `${...}`; that is not modelled here, so it is too complex
+                if text
+                    .get(i + 2..k)
+                    .is_some_and(|body| body.contains("<(") || body.contains(">("))
+                {
+                    return Err(LexError::TooComplex);
+                }
                 self.scan_expanded(i + 2, k, false, false)?;
                 let after = after_char(text, k);
                 let part = text.get(i..after).unwrap_or("");
@@ -839,7 +858,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             return self.heredoc(op, j);
         }
         if byte_at(text, j) != Some(b'(') {
-            // `<(cmd)` is a substitution, not a file
+            // a `(` after `>>`, `&>` and the like is a syntax error in bash; `<(`/`>(` never reach here (`procsub`)
             self.pending = Some(op);
         }
         Ok(j)

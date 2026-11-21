@@ -842,6 +842,10 @@ def _bracket_pairs(text):
         j += 1
 
 
+# The word a process substitution stands for in its command (bash passes `/dev/fd/N`).
+_PROCSUB_PATH = "/dev/fd/63"
+
+
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
     their segments spliced in ahead of the segment that contains them (execution order).
@@ -920,13 +924,20 @@ class _Lexer:
         self.array, self.array_start = [], i + 1
         return i + 1
 
+    def procsub(self, i):
+        """`<(cmd)` or `>(cmd)` at text[i]: bash runs cmd and passes its path as one word. The body
+        is lexed as a nested command, and the word continues the one being built (`x<(a)y` is one
+        word, `2<(a)` keeps the 2). The path is `_PROCSUB_PATH`; no rule reads its number."""
+        inner, j = _scan_paren(self.text, i + 2, self.memo)
+        self.nested(inner, i, comsub=True)
+        self.add(_PROCSUB_PATH)
+        return j
+
     def array_char(self, i):
         """A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run."""
         text, c = self.text, self.text[i]
         if c in "<>" and text[i + 1:i + 2] == "(":
-            inner, j = _scan_paren(text, i + 2, self.memo)
-            self.nested(inner, i, comsub=True)
-            return j
+            return self.procsub(i)
         self.end_word()
         if c == ")":
             self.close_array(i)
@@ -1034,6 +1045,8 @@ class _Lexer:
                 double = text[i + 1:i + 2] == "|"
                 self.end_seg(new_group=double)
                 i += 2 if double or text[i + 1:i + 2] == "&" else 1
+            elif c in "<>" and text[i + 1:i + 2] == "(":
+                i = self.procsub(i)
             elif c in "<>&":
                 i = self.redirect(i)
             else:
@@ -1130,6 +1143,9 @@ class _Lexer:
             return j
         if nxt == "{":
             k = self.brace_end(i)
+            if "<(" in text[i + 2:k] or ">(" in text[i + 2:k]:
+                # bash runs a `<(...)` in an unquoted `${...}`; that is not modelled, so too complex
+                raise _TooComplex()
             self.scan_expanded(i + 2, k, record=False)
             self.add(text[i:k + 1])
             return k + 1
@@ -1167,7 +1183,7 @@ class _Lexer:
                 op, j = op + text[j], _skip_continuations(text, j + 1)
         if op in ("<<", "<<-"):
             return j if self.arith is not None else self.heredoc(op, j)  # `((`: a shift
-        if text[j:j + 1] != "(":                          # `<(cmd)` is a substitution, not a file
+        if text[j:j + 1] != "(":                          # a `(` after `>>`, `&>` is a syntax error
             self.pending = op
         return j
 

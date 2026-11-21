@@ -731,6 +731,35 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "pnpm --silent install",
     ];
     out.extend(I3.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // SH-R2 (R-2): a process substitution is one word of its command, and its body a command of its own
+    const R2: &[&str] = &[
+        "npm --userconfig <(echo) i puppeteer",
+        "npm --userconfig >(cat) i puppeteer",
+        "npm --userconfig <( echo ) install puppeteer",
+        "npm --userconfig x<(echo) i puppeteer",
+        "npm --userconfig <(cat <(echo)) i puppeteer",
+        "npm --userconfig ${x:-<(echo)} i puppeteer",
+        "npx --yes <(true) playwright install",
+        "npx --yes >(cat) playwright install",
+        "(npm --userconfig <(echo) i puppeteer)",
+        "echo a >(touch /tmp/m) b",
+        "f <(true)b c",
+        "f a=<(touch /tmp/m) z",
+        "f 2<(true) z",
+        "f > >(touch /tmp/m) z",
+        "f <(true)<f",
+        "cat <(touch /tmp/m)",
+        r#"f "<(touch /tmp/m)" z"#,
+        "f ${x:-<(touch /tmp/m)} z",
+        r#"f "${x:-<(touch /tmp/m)}" z"#,
+        "sh < <(echo npx playwright install)",
+        "cat <(echo npx playwright install) | sh",
+        "diff <(sort a) <(sort b)",
+        "comm -12 <(ls a) <(ls b)",
+        "tee >(gzip > f.gz) < x",
+        "while read l; do :; done < <(ls)",
+    ];
+    out.extend(R2.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

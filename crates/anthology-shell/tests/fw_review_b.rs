@@ -284,8 +284,9 @@ fn echo_and_printf_escapes_are_decoded_for_shells_and_xargs() {
         "echo -e 'playwright\\x20install' | xargs npx",
         "printf 'npx\\x20playwright install\\n' | xargs -I{} sh -c '{}'",
         "sh <(printf 'npx\\x20playwright install')",
-        "cat <(echo -e 'npx\\x20playwright install') | sh",
     ]);
+    // `cat` prints the path of the substitution, not its text: too complex, fail closed
+    assert_blocked(&["cat <(echo -e 'npx\\x20playwright install') | sh"]);
     assert_clear(&[
         "echo -e 'a\\tb' | sh",
         "printf '%s\\n' hello | xargs echo",
