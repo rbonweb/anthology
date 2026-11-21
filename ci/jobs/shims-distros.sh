@@ -30,6 +30,8 @@ mkdir -p "$root/$out"
 # shellcheck disable=SC2016 # expanded by the container shell
 build='
 set -eu
+# An empty CARGO_BUILD_JOBS (the variable unset on the host) is an error to cargo.
+[ -n "${CARGO_BUILD_JOBS:-}" ] || unset CARGO_BUILD_JOBS
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
@@ -121,7 +123,7 @@ trap 'rm -rf "$scratch"' EXIT
 mkdir "$scratch/claude-code"
 cp "$root/ci/claude-code/package.json" "$root/ci/claude-code/package-lock.json" \
     "$scratch/claude-code/"
-npm ci --prefix "$scratch/claude-code" >/dev/null
+(cd "$scratch/claude-code" && npm ci >/dev/null)
 claude=$scratch/claude-code/node_modules/.bin/claude
 "$claude" --version
 for plugin in anthology anthology-guardrails; do
