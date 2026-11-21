@@ -16,7 +16,8 @@
 //! Generated text mixes characters whose word-ness Rust's own `\b` would get wrong (marks,
 //! `No` digits, `Pc`, `So` letters such as `Ⓐ`, ZWJ, a Unicode 15.1 letter), and patterns
 //! include lazy repeats that can match empty and empty alternatives (sre's must-advance retry).
-//! What `pycompat::re` refuses on purpose ("not supported") is left out.
+//! What `pycompat::re` refuses on purpose ("not supported") is left out, and so is a search
+//! that hits fancy-regex's backtrack limit (D-7; the `d7:*` seed shows one).
 
 use anthology_pycompat::json::Value;
 use anthology_pycompat::re::{self as pyre, Flags};
@@ -328,6 +329,15 @@ impl Surface for PycompatRe {
                 ));
             }
         }
+        // D-7: a pattern whose search hits fancy-regex's backtrack limit (Python answers).
+        out.push(Case::new(
+            "d7:1",
+            finditer(
+                r"(?s)(?:(?a:(?<=[a-z]){,2}?.|.)+\bé{,}(?![^\s,]*?İ{1,3}Σ{){2})*i{1,2}?1",
+                "",
+                "𮯰c𐐀$aI\u{200c}醥ks \u{1c}ςiba",
+            ),
+        ));
         for (i, (pattern, text)) in [
             ("a??", "a"),
             ("|a", "ab"),
@@ -667,7 +677,7 @@ fn seq(rng: &mut Rng, depth: usize, groups: &mut usize, closed: &mut Vec<usize>)
 }
 
 fn gen_case(rng: &mut Rng) -> Value {
-    let (pattern, flags) = loop {
+    let (pattern, flags, text) = loop {
         let mut groups = 0;
         let mut closed = Vec::new();
         let mut pattern = seq(rng, 0, &mut groups, &mut closed);
@@ -686,10 +696,14 @@ fn gen_case(rng: &mut Rng) -> Value {
         // pattern Python refuses too stays in.
         let refused = pyre::translate_with(&pattern, flags_of(&flags))
             .is_err_and(|e| e.contains("not supported"));
-        if !refused {
-            break (pattern, flags);
+        let text = pool_string(rng, TEXT, 16);
+        // A search that hits fancy-regex's backtrack limit is D-7 (Rust fails closed; the
+        // `d7:*` seed shows one): left out of the generated cases.
+        let limited = pyre::compile_with(&pattern, flags_of(&flags))
+            .is_ok_and(|re| re.find_iter(&text).any(|m| m.is_err()));
+        if !refused && !limited {
+            break (pattern, flags, text);
         }
     };
-    let text = pool_string(rng, TEXT, 16);
     finditer(&pattern, &flags, &text)
 }

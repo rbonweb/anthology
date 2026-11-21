@@ -34,7 +34,11 @@
 //! is not fixed (fancy-regex runs it); no Python source can hold one.
 //!
 //! [`compile`] picks `regex` when the translation needs no look-around, back-reference or
-//! atomic group, and `fancy-regex` (with its default backtrack limit) otherwise. Spans are byte
+//! atomic group, and `fancy-regex` (with its default backtrack limit) otherwise. fancy-regex
+//! counts that limit over a whole search, so a long text with no match can exhaust it: a fancy
+//! pattern whose only fancy parts are `\b`, `\B` and `$` is therefore scanned by `regex` with
+//! those removed (a superset) and each candidate start confirmed by fancy-regex anchored there,
+//! with its own budget. Other fancy patterns keep the whole-search limit (D-7). Spans are byte
 //! offsets into the haystack. [`Regex::find_iter`] walks matches as Python's `finditer` does:
 //! an empty match right after a non-empty one is reported (`x*` on `abxd` gives
 //! `(0,0) (1,1) (2,3) (3,3) (4,4)`), and after an empty match the next search at the same
@@ -42,7 +46,7 @@
 //! (`a??` on `a` gives `(0,0) (0,1) (1,1)`).
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::tables;
 
@@ -109,9 +113,12 @@ pub fn compile(py: &str, ignorecase: bool) -> Result<Regex, String> {
 pub fn compile_with(py: &str, flags: Flags) -> Result<Regex, String> {
     let t = translate_with(py, flags)?;
     if t.fancy {
-        fancy_regex::Regex::new(&t.pattern)
+        let re = fancy_regex::Regex::new(&t.pattern)
             .map(Regex::Fancy)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Builds the prefilter now, so a failure is a compile error, not a match error.
+        aux(&re).map_err(|e| e.0)?;
+        Ok(re)
     } else {
         regex::Regex::new(&t.pattern)
             .map(Regex::Plain)
@@ -132,7 +139,10 @@ impl Regex {
     pub fn is_match(&self, s: &str) -> Result<bool, LimitError> {
         match self {
             Regex::Plain(r) => Ok(r.is_match(s)),
-            Regex::Fancy(r) => r.is_match(s).map_err(limit),
+            Regex::Fancy(r) => match &aux(self)?.prefilter {
+                Some(_) => Ok(self.find_at(s, 0)?.is_some()),
+                None => r.is_match(s).map_err(limit),
+            },
         }
     }
 
@@ -141,10 +151,7 @@ impl Regex {
     pub fn find_at(&self, s: &str, pos: usize) -> Result<Option<(usize, usize)>, LimitError> {
         match self {
             Regex::Plain(r) => Ok(r.find_at(s, pos).map(|m| (m.start(), m.end()))),
-            Regex::Fancy(r) => r
-                .find_from_pos(s, pos)
-                .map(|m| m.map(|m| (m.start(), m.end())))
-                .map_err(limit),
+            Regex::Fancy(r) => find_fancy(r, &*aux(self)?, s, pos),
         }
     }
 
@@ -154,10 +161,7 @@ impl Regex {
             Regex::Plain(r) => Ok(r
                 .captures_at(s, pos)
                 .map(|c| c.iter().map(|g| g.map(|m| (m.start(), m.end()))).collect())),
-            Regex::Fancy(r) => r
-                .captures_from_pos(s, pos)
-                .map(|c| c.map(|c| c.iter().map(|g| g.map(|m| (m.start(), m.end()))).collect()))
-                .map_err(limit),
+            Regex::Fancy(r) => captures_fancy(r, &*aux(self)?, s, pos),
         }
     }
 
@@ -175,14 +179,26 @@ impl Regex {
         s: &'a str,
     ) -> impl Iterator<Item = Result<(usize, usize), LimitError>> + 'a {
         let mut walk = Walk::default();
+        let aux = aux(self);
         std::iter::from_fn(move || {
+            let aux = match &aux {
+                Ok(a) => a,
+                Err(e) if !walk.done => {
+                    walk.done = true;
+                    return Some(Err(e.clone()));
+                }
+                Err(_) => return None,
+            };
             walk.next(
                 s,
-                |pos| self.find_at(s, pos).map(|m| m.map(|m| (m, m))),
                 |pos| {
-                    self.nonempty_at(s, pos)
-                        .map(|g| g.and_then(|g| g[0]).map(|m| (m, m)))
+                    let m = match self {
+                        Regex::Plain(r) => Ok(r.find_at(s, pos).map(|m| (m.start(), m.end()))),
+                        Regex::Fancy(r) => find_fancy(r, aux, s, pos),
+                    };
+                    m.map(|m| m.map(|m| (m, m)))
                 },
+                |pos| nonempty_at(aux, s, pos).map(|g| g.and_then(|g| g[0]).map(|m| (m, m))),
             )
             .map(|r| r.map(|(span, _)| span))
         })
@@ -194,17 +210,30 @@ impl Regex {
         s: &'a str,
     ) -> impl Iterator<Item = Result<Groups, LimitError>> + 'a {
         let mut walk = Walk::default();
+        let aux = aux(self);
         std::iter::from_fn(move || {
+            let aux = match &aux {
+                Ok(a) => a,
+                Err(e) if !walk.done => {
+                    walk.done = true;
+                    return Some(Err(e.clone()));
+                }
+                Err(_) => return None,
+            };
             walk.next(
                 s,
                 |pos| {
-                    self.captures_at(s, pos)
-                        .map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
+                    let c = match self {
+                        Regex::Plain(r) => Ok(r.captures_at(s, pos).map(|c| {
+                            c.iter()
+                                .map(|g| g.map(|m| (m.start(), m.end())))
+                                .collect::<Groups>()
+                        })),
+                        Regex::Fancy(r) => captures_fancy(r, aux, s, pos),
+                    };
+                    c.map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
                 },
-                |pos| {
-                    self.nonempty_at(s, pos)
-                        .map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g)))
-                },
+                |pos| nonempty_at(aux, s, pos).map(|c| c.map(|g| (g[0].unwrap_or((pos, pos)), g))),
             )
             .map(|r| r.map(|(_, g)| g))
         })
@@ -216,36 +245,175 @@ impl Regex {
             Regex::Fancy(r) => r.as_str(),
         }
     }
+}
 
-    /// sre's `must_advance` retry: the first match, in the pattern's own priority order, that
-    /// starts at `pos` and is not empty. `\G(?:P)(?!\G|(?!))` anchors at `pos` and backtracks
-    /// past every empty way of matching, as sre does (compiled once per pattern). The inner
-    /// `\G` sits in an alternation because fancy-regex 0.20 treats a `\G` that leads a
-    /// look-ahead as leading the pattern and gives up the whole search when it fails.
-    fn nonempty_at(&self, s: &str, pos: usize) -> Result<Option<Groups>, LimitError> {
-        static CACHE: OnceLock<Mutex<HashMap<String, fancy_regex::Regex>>> = OnceLock::new();
-        let key = self.as_str();
-        let re = {
-            let mut cache = CACHE
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            match cache.get(key) {
-                Some(r) => r.clone(),
-                None => {
-                    let r = fancy_regex::Regex::new(&format!("\\G(?:{key})(?!\\G|(?!))"))
-                        .map_err(|e| LimitError(format!("the must-advance form: {e}")))?;
-                    cache.insert(key.to_string(), r.clone());
-                    r
-                }
+/// What a compiled pattern needs besides its engine, built once per pattern text.
+struct Aux {
+    /// The pattern text (the cache key).
+    text: Box<str>,
+    /// `\G(?:P)(?!\G|(?!))`, sre's `must_advance` retry (see [`nonempty_at`]); built when first
+    /// needed.
+    nonempty: OnceLock<Result<fancy_regex::Regex, LimitError>>,
+    /// For a fancy pattern whose only fancy parts are `\b`, `\B` and `$`: the pattern without
+    /// them (it matches a superset, on the `regex` engine), and the anchored `\G(?:P)` that
+    /// confirms a candidate start. fancy-regex counts its backtrack limit over a whole search, so
+    /// a long text with no match would hit it; this way each candidate start has its own
+    /// budget, and the linear engine does the scanning.
+    prefilter: Option<(regex::Regex, fancy_regex::Regex)>,
+}
+
+/// The whole match and groups of a fancy-regex `Captures`.
+fn groups_of(c: &fancy_regex::Captures<'_, str>) -> Groups {
+    c.iter().map(|g| g.map(|m| (m.start(), m.end()))).collect()
+}
+
+/// The pieces the translation writes for `\b`, `\B` and a non-MULTILINE `$`.
+fn dropped_for_prefilter() -> &'static [String] {
+    static PIECES: OnceLock<Vec<String>> = OnceLock::new();
+    PIECES.get_or_init(|| {
+        let mut out = Vec::new();
+        for ascii in [false, true] {
+            for c in ['b', 'B'] {
+                out.push(boundary(c, ascii));
             }
-        };
-        let groups = re
-            .captures_from_pos(s, pos)
-            .map_err(limit)?
-            .map(|c| -> Groups { c.iter().map(|g| g.map(|m| (m.start(), m.end()))).collect() });
-        Ok(groups.filter(|g| g[0].is_some_and(|(a, b)| a == pos && b > a)))
+        }
+        out.push(DOLLAR.to_string());
+        out
+    })
+}
+
+fn build_aux(text: &str, fancy: bool) -> Result<Aux, LimitError> {
+    let mut prefilter = None;
+    if fancy {
+        let mut superset = text.to_string();
+        for piece in dropped_for_prefilter() {
+            superset = superset.replace(piece.as_str(), "");
+        }
+        // The `regex` engine refuses whatever fancy part is left (a look-around, a
+        // back-reference, an atomic group): then there is no prefilter.
+        if superset != text
+            && let Ok(pre) = regex::Regex::new(&superset)
+        {
+            let anchored = fancy_regex::Regex::new(&format!("\\G(?:{text})"))
+                .map_err(|e| LimitError(format!("the anchored form: {e}")))?;
+            prefilter = Some((pre, anchored));
+        }
     }
+    Ok(Aux {
+        text: text.into(),
+        nonempty: OnceLock::new(),
+        prefilter,
+    })
+}
+
+/// The [`Aux`] of `re`, from a process-wide cache (keyed by the pattern's length and a hash of
+/// its ends, then compared in full).
+fn aux(re: &Regex) -> Result<Arc<Aux>, LimitError> {
+    type Cache = HashMap<(usize, u64), Vec<Arc<Aux>>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let text = re.as_str();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let b = text.as_bytes();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b[..b.len().min(256)].hash(&mut h);
+        b[b.len().saturating_sub(256)..].hash(&mut h);
+        (b.len(), h.finish())
+    };
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(a) = cache
+            .get(&key)
+            .and_then(|v| v.iter().find(|a| *a.text == *text))
+        {
+            return Ok(a.clone());
+        }
+    }
+    let built = Arc::new(build_aux(text, re.is_fancy())?);
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() > 4096 {
+        cache.clear();
+    }
+    cache.entry(key).or_default().push(built.clone());
+    Ok(built)
+}
+
+/// A candidate start after `c` (one character on).
+fn next_start(s: &str, c: usize) -> usize {
+    c + s[c..].chars().next().map_or(1, char::len_utf8)
+}
+
+fn find_fancy(
+    r: &fancy_regex::Regex,
+    aux: &Aux,
+    s: &str,
+    pos: usize,
+) -> Result<Option<(usize, usize)>, LimitError> {
+    let Some((pre, anchored)) = &aux.prefilter else {
+        return r
+            .find_from_pos(s, pos)
+            .map(|m| m.map(|m| (m.start(), m.end())))
+            .map_err(limit);
+    };
+    let mut at = pos;
+    while at <= s.len() {
+        let Some(m) = pre.find_at(s, at) else {
+            return Ok(None);
+        };
+        if let Some(m) = anchored.find_from_pos(s, m.start()).map_err(limit)? {
+            return Ok(Some((m.start(), m.end())));
+        }
+        at = next_start(s, m.start());
+    }
+    Ok(None)
+}
+
+fn captures_fancy(
+    r: &fancy_regex::Regex,
+    aux: &Aux,
+    s: &str,
+    pos: usize,
+) -> Result<Option<Groups>, LimitError> {
+    let Some((pre, anchored)) = &aux.prefilter else {
+        return r
+            .captures_from_pos(s, pos)
+            .map(|c| c.as_ref().map(groups_of))
+            .map_err(limit);
+    };
+    let mut at = pos;
+    while at <= s.len() {
+        let Some(m) = pre.find_at(s, at) else {
+            return Ok(None);
+        };
+        if let Some(c) = anchored.captures_from_pos(s, m.start()).map_err(limit)? {
+            return Ok(Some(groups_of(&c)));
+        }
+        at = next_start(s, m.start());
+    }
+    Ok(None)
+}
+
+/// sre's `must_advance` retry: the first match, in the pattern's own priority order, that
+/// starts at `pos` and is not empty. `\G(?:P)(?!\G|(?!))` anchors at `pos` and backtracks past
+/// every empty way of matching, as sre does. The inner `\G` sits in an alternation because
+/// fancy-regex 0.20 treats a `\G` that leads a look-ahead as leading the pattern and gives up
+/// the whole search when it fails.
+fn nonempty_at(aux: &Aux, s: &str, pos: usize) -> Result<Option<Groups>, LimitError> {
+    let re = aux
+        .nonempty
+        .get_or_init(|| {
+            fancy_regex::Regex::new(&format!("\\G(?:{})(?!\\G|(?!))", aux.text))
+                .map_err(|e| LimitError(format!("the must-advance form: {e}")))
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let groups = re
+        .captures_from_pos(s, pos)
+        .map_err(limit)?
+        .as_ref()
+        .map(groups_of);
+    Ok(groups.filter(|g| g[0].is_some_and(|(a, b)| a == pos && b > a)))
 }
 
 fn limit(e: fancy_regex::Error) -> LimitError {
@@ -325,6 +493,25 @@ impl Walk {
 // Translation: a port of the parts of CPython 3.12's `re._parser` that decide meaning.
 
 const ASCII_WORD: &str = "0-9A-Za-z_";
+
+/// Python's `$` outside MULTILINE: at the end, or before a final newline.
+const DOLLAR: &str = "(?=\\x{a}?\\z)";
+
+/// sre's `\b` (`c == 'b'`) or `\B` over its own `\w` (`isalnum() or "_"`, or ASCII), as
+/// look-arounds: Rust's `\b` uses a different (and newer) Unicode word set. `\B` never matches
+/// in an empty string, as in CPython.
+fn boundary(c: char, ascii: bool) -> String {
+    let w = if ascii {
+        format!("[{ASCII_WORD}]")
+    } else {
+        W.to_string()
+    };
+    if c == 'b' {
+        format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
+    } else {
+        format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w})(?:(?<=[\\s\\S])|(?=[\\s\\S])))")
+    }
+}
 const ASCII_SPACE: &str = "\\x{9}-\\x{d}\\x{20}";
 const ASCII_DIGIT: &str = "0-9";
 
@@ -600,7 +787,7 @@ impl Parser<'_> {
                         self.assertion("$", false);
                     } else {
                         self.fancy = true;
-                        self.assertion("(?=\\x{a}?\\z)", true);
+                        self.assertion(DOLLAR, true);
                     }
                 }
                 '\\' => self.escape()?,
@@ -972,21 +1159,8 @@ impl Parser<'_> {
             'A' => self.assertion("\\A", false),
             'Z' => self.assertion("\\z", false),
             'b' | 'B' => {
-                // sre's word boundary over its own `\w` (`isalnum() or "_"`, or ASCII), written
-                // as look-arounds: Rust's `\b` uses a different (and newer) Unicode word set.
-                // `\B` never matches in an empty string, as in CPython.
                 self.fancy = true;
-                let w = if ascii {
-                    format!("[{ASCII_WORD}]")
-                } else {
-                    W.to_string()
-                };
-                let t = if c == 'b' {
-                    format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
-                } else {
-                    format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w})(?:(?<=[\\s\\S])|(?=[\\s\\S])))")
-                };
-                self.assertion(&t, true);
+                self.assertion(&boundary(c, ascii), true);
             }
             '0'..='9' => self.digit_escape(c)?,
             _ => {
@@ -1437,6 +1611,34 @@ mod fold {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boundary_patterns_scan_megabytes_without_hitting_the_limit() {
+        // fancy-regex counts its backtrack limit over a whole search; the prefilter gives each
+        // candidate start its own budget (review R2-1). A token at the very end must be found.
+        let prose = "lorem ipsum dolor sit amet, consectetur adipiscing elit ".repeat(20_000);
+        let text = format!("{prose}ghp_{}", "A".repeat(36));
+        for p in [
+            r"\bgh[pousr]_[A-Za-z0-9]+",
+            r"\bxox[baprs]-",
+            r"(?i)\bsk-[a-z0-9]{20,}\b",
+            r"^\w+$",
+        ] {
+            let re = compile(p, false).unwrap();
+            let spans: Result<Vec<_>, _> = re.find_iter(&text).collect();
+            let spans = spans.unwrap_or_else(|e| panic!("{p}: {e}"));
+            if p.starts_with(r"\bgh") {
+                assert_eq!(spans, [(prose.len(), text.len())]);
+            }
+            assert!(re.is_match(&text).is_ok());
+        }
+        // Many empty matches: `\b` over a megabyte, each retry a single anchored attempt.
+        let re = compile(r"\b", false).unwrap();
+        let start = std::time::Instant::now();
+        let n = re.find_iter(&prose[..1_000_000]).count();
+        assert_eq!(n, 285_716);
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    }
 
     #[test]
     fn walk_reports_an_empty_match_after_a_non_empty_one() {
