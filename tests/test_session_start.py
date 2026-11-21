@@ -1029,11 +1029,23 @@ class HooksJsonTest(unittest.TestCase):
 
 
 class SkillsFolderTest(unittest.TestCase):
-    def test_skills_folder_is_exactly_setup_export_import(self):
+    def test_skills_folder_is_the_three_commands_and_large_builds(self):
         names = {p.name for p in (PLUGIN / "skills").iterdir()}
-        self.assertEqual(names, {"setup", "export", "import"})
+        self.assertEqual(names, {"setup", "export", "import", "large-builds"})
 
-    def test_every_skill_is_manual_only(self):
+    def test_large_builds_is_model_invoked_and_names_real_skills(self):
+        text = (PLUGIN / "skills" / "large-builds" / "SKILL.md").read_text(encoding="utf-8")
+        head = text.split("\n---")[0]
+        self.assertRegex(head, r"(?m)^name: large-builds$")
+        self.assertRegex(head, r"(?m)^description: \S")
+        self.assertNotIn("disable-model-invocation", head)
+        refs = set(re.findall(r"anthology-superpowers:([a-z-]+)", text))
+        self.assertTrue(refs)
+        for ref in refs:
+            self.assertTrue((ROOT / "plugins" / "anthology-superpowers" / "skills" / ref / "SKILL.md")
+                            .is_file(), ref)
+
+    def test_every_command_skill_is_manual_only(self):
         for name in ("setup", "export", "import"):
             head = (PLUGIN / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split("\n---")[0]
             self.assertRegex(head, r"(?m)^name: %s$" % name)

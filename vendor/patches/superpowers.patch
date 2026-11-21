@@ -162,18 +162,21 @@
  **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
 --- a/skills/dispatching-parallel-agents/SKILL.md
 +++ b/skills/dispatching-parallel-agents/SKILL.md
-@@ -84,6 +84,11 @@
- - Run full test suite
+@@ -81,8 +81,13 @@
+ When agents return:
+ - Read each summary
+ - Verify fixes don't conflict
+-- Run full test suite
++- Run full test suite once, at the end (agents ran only targeted tests)
  - Integrate all changes
- 
++
 +In a long multi-agent build, follow
 +anthology-superpowers:subagent-driven-development's `references/large-builds.md`
 +instead: disjoint slices in separate worktrees, and one integration run per
 +merged batch.
-+
+ 
  ## Agent Prompt Structure
  
- Good agent prompts are:
 --- a/skills/subagent-driven-development/SKILL.md
 +++ b/skills/subagent-driven-development/SKILL.md
 @@ -135,7 +135,9 @@
@@ -196,6 +199,25 @@
 +  working tree (conflicts).
  
  Template: [implementer-prompt.md](implementer-prompt.md)
+ 
+--- a/skills/subagent-driven-development/implementer-prompt.md
++++ b/skills/subagent-driven-development/implementer-prompt.md
+@@ -44,8 +44,14 @@
+     **While you work:** If you encounter something unexpected or unclear, **ask questions**.
+     It's always OK to pause and clarify. Don't guess or make assumptions.
+ 
+-    While iterating, run the focused test for what you're changing; run the
+-    full suite once before committing, not after every edit.
++    While iterating, run only the tests (and linter) for what you're changing,
++    never the full suite repeatedly; the full suite runs once at the final go
++    (usually CI on the PR).
++
++    If you slow down or skip a machine or service because it is busy, re-check
++    after 5-10 minutes and go back to full speed; a momentary limit is never a
++    standing rule. After using containers, remove your own containers, built
++    images and their volumes; never touch other projects' or stop Docker.
+ 
+     ## You Do Not Dispatch Subagents
  
 --- a/skills/subagent-driven-development/references/fix-loop.md
 +++ b/skills/subagent-driven-development/references/fix-loop.md

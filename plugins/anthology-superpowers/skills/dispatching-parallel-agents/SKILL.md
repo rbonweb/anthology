@@ -81,7 +81,7 @@ Multiple dispatch calls in one response = parallel execution. One per response =
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- Run full test suite
+- Run full test suite once, at the end (agents ran only targeted tests)
 - Integrate all changes
 
 In a long multi-agent build, follow
