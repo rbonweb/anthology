@@ -323,6 +323,13 @@ fn opaque_marks_the_forms_python_misreads() {
         "GIT_CONFIG_PARAMETERS=\"'core.pager'='npx playwright install'\" git log",
         "git --config-env=core.pager=X log",
         "export GIT_PAGER='npx playwright install'",
+        // review round 4
+        "GIT_PAGER='cat && npx playwright install' git log",
+        "EDITOR='true || npx playwright install' git commit",
+        "git -c core.pager='cat && npx playwright install' log",
+        "GIT_SSH_COMMAND='ssh -o ProxyCommand=\"npx playwright install\"' git fetch",
+        "GIT_SSH_COMMAND='ssh -F ./cfg' git fetch",
+        "rsync -e 'ssh -o ProxyCommand=npx' a b:c",
     ];
     for command in unknown {
         assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
@@ -439,6 +446,12 @@ fn common_forms_stay_clear() {
         "tar -xvzf a.tgz",
         "tar -cJf a.tar.xz x",
         "tar -Izstd -xf a.tar.zst",
+        // review round 4
+        "git -c credential.helper=store push",
+        "git -c credential.helper='cache --timeout=3600' push",
+        "git -c credential.helper=osxkeychain push",
+        "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git fetch",
+        "rsync -e 'ssh -p 2222' a b:c",
     ] {
         assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
     }

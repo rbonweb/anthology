@@ -192,13 +192,31 @@ fn value_program(value: &str) -> String {
     prog_name(value.split_whitespace().next().unwrap_or(""))
 }
 
-/// A command value that runs nothing beyond a harmless program (`extra` are also harmless here).
+/// Git, editors and pagers run a value holding any of these through `sh -c`, so its first word says nothing.
+const SHELL_METACHARS: &[char] = &[
+    ';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\\', '\'', '"',
+];
+
+/// ssh options that run a local command (`-o ProxyCommand=...`), or a config file that may set them (`-F f`).
+fn ssh_runs_command(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    ["proxycommand", "localcommand", "knownhostscommand"]
+        .iter()
+        .any(|option| lower.contains(option))
+        || value.split_whitespace().any(|w| w.starts_with("-F"))
+}
+
+/// A command value that runs nothing beyond a harmless program (`extra` are also harmless here): no shell
+/// metacharacter, and for ssh no option that runs a local command.
 fn harmless_command(value: &str, extra: &[&str]) -> bool {
     let program = value_program(value);
-    value.trim().is_empty()
-        || is_boolean(value.trim())
-        || HARMLESS_PROGRAMS.contains(&program.as_str())
-        || extra.contains(&program.as_str())
+    if value.trim().is_empty() || is_boolean(value.trim()) {
+        return true;
+    }
+    if value.contains(SHELL_METACHARS) || (program == "ssh" && ssh_runs_command(value)) {
+        return false;
+    }
+    HARMLESS_PROGRAMS.contains(&program.as_str()) || extra.contains(&program.as_str())
 }
 
 /// Assignments whose value the shell or a program later runs as a command (`GIT_PAGER='...' git log`,
@@ -325,7 +343,20 @@ fn git_config_runs_command(config: &str) -> bool {
     if lower == "core.hookspath" {
         return !matches!(value.trim(), "" | "/dev/null");
     }
-    git_key_runs_command(key) && !harmless_command(value, &["git-lfs", "git"])
+    /// `credential.helper=store` runs git's own `git-credential-store`.
+    const CREDENTIAL_HELPERS: &[&str] = &[
+        "git-lfs",
+        "git",
+        "store",
+        "cache",
+        "osxkeychain",
+        "manager",
+        "manager-core",
+        "libsecret",
+        "wincred",
+        "gnome-keyring",
+    ];
+    git_key_runs_command(key) && !harmless_command(value, CREDENTIAL_HELPERS)
 }
 
 /// The program runs a command given in its arguments that the analysis does not parse: `trap 'cmd' EXIT`,
@@ -399,7 +430,7 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
         "rsync" => {
             option_values(args, &["--rsh"], &['e'], true)
                 .iter()
-                .any(|v| value_program(v) != "ssh")
+                .any(|v| value_program(v) != "ssh" || !harmless_command(v, &["ssh"]))
                 || option_values(args, &["--rsync-path"], &[], false)
                     .iter()
                     .any(|v| value_program(v) != "rsync")
