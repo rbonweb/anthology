@@ -368,7 +368,14 @@ pub fn run_frozen(
             None if drifted => Verdict::Unexplained(
                 "a waived diff: Rust's result changed since the freeze, which pinned it".into(),
             ),
-            None => judge(&case.id, equal, &notes, div),
+            None => {
+                let stricter = if equal {
+                    None
+                } else {
+                    surface.rust_stricter(&case, &python, &rust)
+                };
+                judge(&case.id, equal, stricter, &notes, div)
+            }
         };
         if let Verdict::Unexplained(reason) = &mut verdict
             && panicked.is_none()

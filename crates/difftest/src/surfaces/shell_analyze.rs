@@ -724,7 +724,10 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "echo {0..20..5} {-2..1}",
         "ls ${HOME}/{a,b}",
     ];
-    out.extend(SEQ.iter().map(|text| case(text.to_string(), "/home/tester")));
+    out.extend(
+        SEQ.iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     out
 }
 
