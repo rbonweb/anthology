@@ -8,7 +8,7 @@
 //!
 //! Each payload must be blocked: an install entry or alternate, or too complex. The controls stay complete and
 //! install nothing. `npm ${x:-i} puppeteer` (a default in an argument, not the program word) is not covered by
-//! F-8 and is left as it was.
+//! F-8; SH-F2 reads it (`fixtures/sh_fw_verify_payloads.txt`).
 
 use anthology_shell::{Analysis, Entry, analyze};
 

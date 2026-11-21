@@ -35,6 +35,11 @@
 //!   from a compound with no literal output; a here-string that is only a substitution (`sh <<< "$(f)"`);
 //!   `>(` with a shell; a `<(` with no literal output given to a shell; `coproc`; a shell running a file an
 //!   earlier command wrote. Each is too complex (the guard blocks).
+//! - SH-F2: an xargs/parallel layer fed a `<(...)` (a `<` redirect or `-a`) gets its literal output, as from a
+//!   pipe; a `-c` script, eval words or a program word that use a variable `read`/`mapfile` set (or a `for` or
+//!   assignment over a substitution) read stdin as commands, and a text that feeds such a setter, or feeds a
+//!   compound closer or an orphan pipeline a here-string or heredoc, while it adds a stdin reader, is too
+//!   complex (`echo X | while read l; do sh -c "$l"; done`, `{ sh; } <<< X`).
 
 mod printf;
 
@@ -45,8 +50,8 @@ use crate::analyze::Entry;
 use crate::lexer::scan::{body_substitutions, scan_paren};
 use crate::lexer::words::{Memo, ansi_c_decode};
 use crate::lexer::{
-    Group, GroupId, Holder, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
-    skip_escape,
+    Group, GroupId, Holder, LexOut, PROCSUB_PATH, Reading, Redirect, TooComplex, Work, find_from,
+    lex_in, pystr, skip_escape,
 };
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
@@ -295,6 +300,11 @@ const MAX_BRACE_DEPTH: usize = 64;
 /// SH-seq re-review R-1: the index after the `}` closing the `${` at `j` (`word[j]` is `$`), or the word's
 /// end. Bash does not brace-expand inside `${...}`, so the brace scanners skip it whole.
 fn param_end(b: &[u8], j: usize) -> usize {
+    param_close(b, j).map_or(b.len(), |k| k + 1)
+}
+
+/// The index of the `}` closing the `${` at `j` (`b[j]` is `$`), or `None` when it is not closed.
+pub(crate) fn param_close(b: &[u8], j: usize) -> Option<usize> {
     // quotes and escapes inside `${...}` hide their braces (#89 review F-4), as in the lexer's `brace_scan`
     let mut depth = 0usize;
     let mut k = j + 1;
@@ -311,14 +321,14 @@ fn param_end(b: &[u8], j: usize) -> usize {
             b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return k + 1;
+                    return Some(k);
                 }
             }
             _ => {}
         }
         k += 1;
     }
-    b.len()
+    None
 }
 
 /// `word[j]` starts a `${`.
@@ -802,6 +812,70 @@ fn reads_stdin_substitution(text: &str) -> bool {
             .all(|w| *w == "-" || (w.starts_with('-') && w.len() > 1) || is_stdin_path(w))
 }
 
+/// A shell variable name, `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_name(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// SH-F2: the variables a command sets from what it reads, lowercased: every name among the words of `read`
+/// (and `REPLY`) or of `mapfile`/`readarray` (and `MAPFILE`); with a substitution in its segment (`held`), the
+/// name of a `for`/`select` and of each assignment (`for l in $(cat)`, `l=$(cat)`). Option values that look
+/// like names count too.
+fn setter_names(prog: &str, args: &[String], tokens: &[String], held: bool) -> Vec<String> {
+    let lower = |w: &str| w.to_ascii_lowercase();
+    let mut names: Vec<String> = match prog {
+        "read" => std::iter::once("reply".to_string())
+            .chain(args.iter().filter(|a| is_name(a)).map(|a| lower(a)))
+            .collect(),
+        "mapfile" | "readarray" => std::iter::once("mapfile".to_string())
+            .chain(args.iter().filter(|a| is_name(a)).map(|a| lower(a)))
+            .collect(),
+        "for" | "select" if held => args
+            .first()
+            .filter(|a| is_name(a))
+            .map(|a| lower(a))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    if held {
+        for word in tokens.iter().filter(|w| is_assignment(w)) {
+            if let Some((name, _)) = word.split_once('=') {
+                names.push(lower(name));
+            }
+        }
+    }
+    names
+}
+
+/// SH-F2: `text` expands one of `names` (`$l`, `${l}`, `${l:-x}`, `${#l}`, `${!l}`), compared lowercased.
+fn uses_name(text: &str, names: &HashSet<String>) -> bool {
+    let b = text.as_bytes();
+    (0..b.len()).filter(|&i| b[i] == b'$').any(|i| {
+        let mut j = i + 1;
+        if b.get(j) == Some(&b'{') {
+            j += 1;
+        }
+        if matches!(b.get(j), Some(b'!' | b'#')) {
+            j += 1;
+        }
+        if !b
+            .get(j)
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+        {
+            return false;
+        }
+        let end = (j..b.len())
+            .find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_'))
+            .unwrap_or(b.len());
+        names.contains(&text[j..end].to_ascii_lowercase())
+    })
+}
+
 /// `_FD_PATH`: a numbered file descriptor.
 fn is_fd_path(path: &str) -> bool {
     ["/dev/fd/", "/proc/self/fd/"].iter().any(|prefix| {
@@ -905,6 +979,10 @@ pub(crate) struct Ctx<'a> {
     script_readers: HashSet<usize>,
     /// SH-F3: the texts (keys of `seen`) whose analysis added a stdin reader.
     reads_seen: HashSet<SeenKey>,
+    /// SH-F2: the variables a command of this pass set from what it read (`setter_names`), lowercased.
+    read_names: HashSet<String>,
+    /// SH-F2: the entries that set one.
+    setters: HashSet<usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -931,6 +1009,8 @@ impl<'a> Ctx<'a> {
             readers: 0,
             script_readers: HashSet::new(),
             reads_seen: HashSet::new(),
+            read_names: HashSet::new(),
+            setters: HashSet::new(),
         }
     }
 
@@ -945,6 +1025,7 @@ impl<'a> Ctx<'a> {
         self.cwd = None;
         self.seen.clear();
         self.reads_seen.clear();
+        self.read_names.clear();
         self.work.reading = reading;
     }
 
@@ -1000,6 +1081,13 @@ impl<'a> Ctx<'a> {
                 String::new()
             }
         }
+    }
+
+    /// SH-F2: `group` was given a here-string or a heredoc.
+    fn has_texts(&self, group: GroupId) -> bool {
+        self.groups
+            .get(group.0 as usize)
+            .is_some_and(|g| !g.texts.is_empty())
     }
 
     fn group_texts(&self, group: GroupId) -> Vec<String> {
@@ -1203,7 +1291,23 @@ impl<'a> Ctx<'a> {
                 .first()
                 .is_some_and(|w| COMPOUND_WORDS.contains(&w.as_str()))
         });
-        if fed_script || (fed_compound && self.readers > readers_at_start) {
+        // SH-F2: so does a variable read from a pipe or a here-string (`echo X | { read l; eval "$l"; }`), and
+        // a compound fed a here-string or a heredoc (`while read l; do sh -c "$l"; done <<< X`, `{ sh; } <<< X`)
+        let piped_set: HashSet<usize> = piped.iter().copied().collect();
+        let fed_setter = new_entries.iter().any(|&e| {
+            self.setters.contains(&e)
+                && (piped_set.contains(&e) || self.has_texts(self.entries[e].group))
+        });
+        let fed_closer = info.orphan_texts
+            || new_entries.iter().any(|&e| {
+                let raw = &self.entries[e].raw;
+                (raw.is_empty()
+                    || (raw.len() == 1 && matches!(raw[0].as_str(), "}" | "fi" | "done" | "esac")))
+                    && self.has_texts(self.entries[e].group)
+            });
+        if fed_script
+            || ((fed_compound || fed_setter || fed_closer) && self.readers > readers_at_start)
+        {
             self.halt();
             return;
         }
@@ -1395,6 +1499,46 @@ impl<'a> Ctx<'a> {
                         for &e in &consumers {
                             mark(&mut self.entries[e].opaque, Opaque::DepthCap);
                         }
+                    }
+                }
+            }
+        }
+        // SH-F2: an xargs or parallel layer whose input is a process substitution (`xargs npx < <(echo X)`,
+        // `xargs -a <(echo X) npx`) is fed the literal output of every `<(...)` in the text, as a pipe feeds it
+        if text.contains("<(") {
+            let fed_from_procsub: Vec<usize> = new_entries
+                .iter()
+                .copied()
+                .filter(|&e| {
+                    let entry = &self.entries[e];
+                    self.stdin_runs.get(&e).is_some_and(|runs| !runs.is_empty())
+                        && (entry
+                            .redirs
+                            .iter()
+                            .any(|r| r.op.starts_with('<') && r.target.contains(PROCSUB_PATH))
+                            || entry.raw.iter().any(|w| w.contains(PROCSUB_PATH)))
+                })
+                .collect();
+            if !fed_from_procsub.is_empty() {
+                let Some(inners) = self.process_substitutions(text) else {
+                    return;
+                };
+                let mut fed = Vec::new();
+                for inner in inners {
+                    let Some(bodies) = self.literal_output(&inner, depth) else {
+                        return;
+                    };
+                    fed.extend(bodies);
+                }
+                let lines = fed_lines(&fed);
+                if !self.spend(lines.iter().map(|l| WORD + l.len()).sum()) {
+                    return;
+                }
+                for e in fed_from_procsub {
+                    self.braces = braced.contains(&e);
+                    self.feed_stdin(e, &lines, depth);
+                    if self.halted {
+                        return;
                     }
                 }
             }
@@ -1607,6 +1751,21 @@ impl<'a> Ctx<'a> {
         if self.launchers.contains(&e) || prog == "newgrp" {
             return Some(true);
         }
+        // SH-F2: a program word, a `-c` script or eval words that use a variable read from stdin
+        // (`while read l; do sh -c "$l"; done`, `for l in $(cat); do eval "$l"; done`, `$l`)
+        if !self.read_names.is_empty() {
+            let uses = |text: &str| uses_name(text, &self.read_names);
+            if uses(&entry.prog_path)
+                || (prog == "eval" && uses(&entry.args.join(" ")))
+                || (SHELLS.contains(&prog) && {
+                    let parsed = shell_parse(prog, &entry.args, 0);
+                    parsed.mode == ShellMode::Command
+                        && parsed.scripts.iter().any(|(_, script)| uses(script))
+                })
+            {
+                return Some(true);
+            }
+        }
         if SHELLS.contains(&prog) {
             let parsed = shell_parse(prog, &entry.args, 0);
             return Some(match parsed.mode {
@@ -1799,6 +1958,13 @@ impl<'a> Ctx<'a> {
             self.halt();
             return None;
         }
+        // SH-F2: the variables this command sets from what it reads, before it is itself read as a stdin reader
+        let names = setter_names(&prog, &args, &tokens, subst);
+        if !self.spend(names.iter().map(|n| WORD + n.len()).sum()) {
+            return None;
+        }
+        let setter = !names.is_empty();
+        self.read_names.extend(names);
         // an exported command variable runs later, as its prefix form does now
         if EXPORTERS.contains(&prog.as_str()) {
             for arg in &args {
@@ -1991,6 +2157,9 @@ impl<'a> Ctx<'a> {
         }
         if subst {
             self.held_entries.insert(e);
+        }
+        if setter {
+            self.setters.insert(e);
         }
         if self.reads_stdin_as_shell(e) == Some(true) {
             self.readers += 1;

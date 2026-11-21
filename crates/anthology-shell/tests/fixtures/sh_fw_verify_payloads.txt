@@ -674,3 +674,83 @@ echo npx playwright install | find . -maxdepth 0 -exec sh \;
 echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;
 #---
 echo npx playwright install | sh -c "$(cat) " 2>/dev/null
+#---
+xargs npx < <(echo playwright install)
+#---
+xargs -a <(echo playwright install) npx
+#---
+xargs --arg-file <(echo playwright install) npx
+#---
+xargs --arg-file=<(echo playwright install) npx
+#---
+xargs -a<(echo playwright install) npx
+#---
+xargs npm < <(printf 'i\npuppeteer\n')
+#---
+parallel npx < <(echo playwright install)
+#---
+echo npx playwright install | while read l; do sh -c "$l"; done
+#---
+echo npx playwright install | while read -r l; do eval "$l"; done
+#---
+echo npx playwright install | while IFS= read -r l; do bash -c "$l"; done
+#---
+echo npx playwright install | while read l; do $l; done
+#---
+echo npx playwright install | while read a b; do $a $b; done
+#---
+printf 'npx playwright install\n' | while read -r cmd; do eval "${cmd}"; done
+#---
+while read l; do sh -c "$l"; done < <(echo npx playwright install)
+#---
+while read l; do sh -c "$l"; done <<< "npx playwright install"
+#---
+while read l; do sh -c "$l"; done <<EOF
+npx playwright install
+EOF
+#---
+echo npx playwright install | for l in $(cat); do eval "$l"; done
+#---
+echo npx playwright install | for l in "$(cat)"; do eval "$l"; done
+#---
+echo "npx playwright install" | { read l; eval "$l"; }
+#---
+echo "npx playwright install" | (read l; eval "$l")
+#---
+echo "npx playwright install" | { l=$(cat); sh -c "$l"; }
+#---
+echo npx playwright install | { mapfile -t a; eval "${a[0]}"; }
+#---
+(read l; eval "$l") <<< "npx playwright install"
+#---
+( sh ) <<< "npx playwright install"
+#---
+{ sh; } <<< "npx playwright install"
+#---
+while true; do sh; break; done <<< "npx playwright install"
+#---
+npm ${x:-i} puppeteer
+#---
+npm ${x-i} puppeteer
+#---
+x=1; npm ${x:+i} puppeteer
+#---
+x=1; npm ${x+i} puppeteer
+#---
+npm ${x:=i} puppeteer
+#---
+npm ${x=i} puppeteer
+#---
+npm "${x:-i}" puppeteer
+#---
+npm ${x:-"i"} puppeteer
+#---
+npm i ${x:-puppeteer}
+#---
+npm ${x:-i puppeteer}
+#---
+npx playwright ${x:-install}
+#---
+npm ${x:-i}${y:-} puppeteer
+#---
+npm i${x:-} puppeteer

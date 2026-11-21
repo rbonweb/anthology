@@ -1554,6 +1554,98 @@ pub(crate) fn default_program(word: &str) -> Result<Option<String>, TooComplex> 
     }
 }
 
+/// SH-F2: how deep `${x:-${y:-W}}` values nest before the reading is too complex.
+const MAX_DEFAULT_DEPTH: usize = 8;
+
+/// SH-F2: `word` holds a `${x:-W}` (`${x-W}`, `${x:+W}`, `${x+W}`, `${x:=W}`, `${x=W}`).
+fn has_default(word: &str) -> bool {
+    word.match_indices("${")
+        .any(|(at, _)| default_value_start(word, at + 2).is_some())
+}
+
+/// SH-F2: `text` with its quotes removed, and each `\x` read as `x`.
+fn unquote(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            '\'' => {
+                for d in chars.by_ref() {
+                    if d == '\'' {
+                        break;
+                    }
+                    out.push(d);
+                }
+            }
+            '"' => {
+                while let Some(d) = chars.next() {
+                    match d {
+                        '"' => break,
+                        '\\' => out.extend(chars.next()),
+                        _ => out.push(d),
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// SH-F2: `word` with each closed `${x:-W}` (and the other default and alternate forms) replaced by `W`, its
+/// own defaults read the same way and its quotes removed. Another `${...}` stays as written. Too complex past
+/// `MAX_DEFAULT_DEPTH` nested values.
+fn expand_defaults(word: &str, depth: usize, work: &mut Work) -> Result<String, TooComplex> {
+    if depth > MAX_DEFAULT_DEPTH {
+        return Err(TooComplex);
+    }
+    work.charge_extra(word.len() + 1)?;
+    let b = word.as_bytes();
+    let mut out = String::new();
+    let (mut last, mut j) = (0, 0);
+    while j + 1 < b.len() {
+        if b[j] != b'$' || b[j + 1] != b'{' {
+            j += 1;
+            continue;
+        }
+        let Some(close) = crate::collect::param_close(b, j) else {
+            break;
+        };
+        if let Some(start) = default_value_start(word, j + 2) {
+            out.push_str(&word[last..j]);
+            let value = expand_defaults(&word[start..close], depth + 1, work)?;
+            out.push_str(&unquote(&value));
+            last = close + 1;
+        }
+        j = close + 1;
+    }
+    out.push_str(&word[last..]);
+    Ok(out)
+}
+
+/// SH-F2: the command read with every default or alternate value in its words (`npm ${x:-i} puppeteer` read
+/// as `npm i puppeteer`), the program word too (F-8(a) reads only that). Each value is split into words, as
+/// bash splits an unquoted one; an empty one drops its word. `Ok(None)`: no word holds such a value.
+pub(crate) fn default_reading(
+    tokens: &[String],
+    work: &mut Work,
+) -> Result<Option<Vec<String>>, TooComplex> {
+    if !tokens.iter().any(|w| has_default(w)) {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(tokens.len());
+    for word in tokens {
+        if has_default(word) {
+            let text = expand_defaults(word, 0, work)?;
+            out.extend(pystr::split_ws(&text).into_iter().map(str::to_string));
+        } else {
+            out.push(word.clone());
+        }
+    }
+    Ok(Some(out))
+}
+
 /// Rust (SH-FW final review I-3): the shipped reading of a package manager's options, where each option the
 /// tables do not know is a flag with no value (`_skip_flags` of the shipped guard), for a package manager word
 /// at `tokens[at]` (`rel` is `tokens[at..]`) whose subcommand `pm_verb_index` reads elsewhere. A yarn or pnpm
@@ -2474,6 +2566,12 @@ pub(crate) fn strip_prefixes(
             }
             let mut alt = tokens.to_vec();
             alt[main_at] = literal;
+            found.push((main_at, alt, false));
+        }
+        // SH-F2: a default or alternate value in any word (`npm ${x:-i} puppeteer`) reads as its text
+        if let Some(alt) = default_reading(tokens, work)?
+            && !found.iter().any(|(_, other, _)| *other == alt)
+        {
             found.push((main_at, alt, false));
         }
         work.charge_extra(
