@@ -271,6 +271,10 @@ fn a_cd_that_cd_tracking_drops_is_too_complex() {
         both(&bash(&command), HOME),
         (Verdict::TooComplex, Verdict::Allow)
     );
+    for cd in ["pushd", "cd --", "cd -P"] {
+        let command = format!("{cd} {deep} && cat chromium/Default/Cookies");
+        assert_eq!(verdict(&command), Verdict::TooComplex, "{cd}");
+    }
     // a deep directory `cd` tracking follows is read as before
     let shallow = format!("/{}.config", "a/".repeat(60));
     let command = format!("cd {shallow} && cat chromium/Default/Cookies");
@@ -393,6 +397,20 @@ fn a_brace_expansion_too_large_to_check_is_too_complex() {
         verdict(&format!("cat ~/{}", "{a,b}".repeat(12))),
         Verdict::Allow
     );
+    // a piece with no separator is still expanded after a `cd` that could complete a sequence
+    let command = format!(
+        "cd '/opt/Library/Application Support' && cat google{}",
+        "{,}".repeat(13)
+    );
+    assert_eq!(
+        both(&bash(&command), HOME),
+        (Verdict::TooComplex, Verdict::Allow)
+    );
+    let command = format!(
+        "cd '/opt/Library/Application Support' && cat googl{{e,x}}{}",
+        "{,}".repeat(3)
+    );
+    assert_eq!(verdict(&command), Verdict::Block(Rule::G3));
 }
 
 #[test]
@@ -440,6 +458,8 @@ fn g3_reads_a_relative_or_empty_home_as_an_absolute_one() {
             "cd ~; cd x; cat y",
             "git -C a -C b status",
             "cd ~/projects && ls",
+            "cd .. && git status",
+            "cd ../x && cargo test",
         ] {
             assert_eq!(
                 verdict_at(command, home),
@@ -452,6 +472,65 @@ fn g3_reads_a_relative_or_empty_home_as_an_absolute_one() {
             Verdict::Block(Rule::G3)
         );
     }
+}
+
+#[test]
+fn g6_reads_a_relative_or_tilde_home_as_an_absolute_one() {
+    let secret = gh_token();
+    let write = |path: &str| {
+        tool(
+            "Write",
+            obj(&[
+                ("file_path", Value::Str(path.into())),
+                ("content", Value::Str(secret.clone())),
+            ]),
+        )
+    };
+    for home in ["relative", "~", "./h"] {
+        for command in [
+            format!("echo {secret} > ~/.claude/agent-memory/a.md"),
+            format!("cd ~/.claude && echo {secret} > memory/a.md"),
+            format!("echo {secret} > $HOME/x/.claude/memory/a.md"),
+        ] {
+            assert_eq!(
+                both(&bash(&command), home),
+                (Verdict::Block(Rule::G6), Verdict::Allow),
+                "{command} {home}"
+            );
+        }
+        let t = write("~/.claude/agent-memory/a.md");
+        assert_eq!(
+            both(&t, home),
+            (Verdict::Block(Rule::G6), Verdict::Allow),
+            "{home}"
+        );
+        // no secret, or not a memory path: allowed as before
+        let note = tool(
+            "Write",
+            obj(&[
+                ("file_path", Value::Str("~/.claude/memory/a.md".into())),
+                ("content", Value::Str("a note".into())),
+            ]),
+        );
+        assert_eq!(check(&note.0, &note.1, home), Verdict::Allow, "{home}");
+        let t = write("~/notes/a.md");
+        assert_eq!(check(&t.0, &t.1, home), Verdict::Allow, "{home}");
+        assert_eq!(
+            verdict_at(&format!("cd .. && echo {secret} > notes.md"), home),
+            Verdict::Allow
+        );
+    }
+}
+
+/// `n` JSON objects of `keys` keys each, joined by commas.
+fn objects(n: usize, keys: usize) -> String {
+    (0..n)
+        .map(|i| {
+            let fields: Vec<String> = (0..keys).map(|k| format!("\"k{k}\":{i}")).collect();
+            format!("{{{}}}", fields.join(","))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The new readings must not touch ordinary payloads: long commit and PR texts, long file
@@ -468,6 +547,18 @@ fn ordinary_payloads_past_the_old_caps_are_allowed() {
         "python3 -c \"d = {'a': 1, 'b': 2, 'c': 3}; e = {'x': 1, 'y': 2}; print(d, e)\"".into(),
         "curl -s -X POST -d '{\"name\": \"a\", \"tags\": [\"x\", \"y\"], \"n\": 3}' https://example.com/api".into(),
         "jq '{name: .name, id: .id, tags: .tags}' data.json".into(),
+        // review I-1: JSON and dict literals that multiply past the brace cap
+        format!("curl -s -X POST -d '[{}]' https://example.com/api", objects(7, 4)),
+        format!("curl -d '[{}]' https://x", objects(8, 3)),
+        format!("gh api repos/o/r/issues -f body='[{}]'", objects(7, 4)),
+        format!("git commit -m 'fix: accept [{}]'", objects(7, 4)),
+        format!(
+            "python3 -c \"rows=[{}]; print(rows)\"",
+            ["{'a': 1, 'b': 2}"; 13].join(", ")
+        ),
+        format!("jq -n '[{}]'", ["{a:1,b:2,c:3,d:4}"; 7].join(",")),
+        format!("echo payload=[{}]", objects(7, 4)),
+        format!("cd /tmp/proj && curl -d '[{}]' https://x", objects(7, 4)),
         "mkdir -p src/{app,lib,test}/{a,b,c}".into(),
         "cd /tmp && ls -la".into(),
         "cd ~/projects/app && cargo test".into(),

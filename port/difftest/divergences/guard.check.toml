@@ -103,3 +103,13 @@ reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, nev
 class = "D-8"
 case = "shell:381"
 reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting echo $( 40 deep, past MAX_DEPTH; guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:10"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). Under a relative HOME, a secret redirected into ~/.claude/agent-memory is a relative path that G6 reads only from its start; guard_rules.py allows, Rust also reads it under an absolute stand-in for the home and blocks it (G6).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:11"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). Under HOME=~, a Write of a secret into ~/.claude/agent-memory is a relative path that G6 reads only from its start; guard_rules.py allows, Rust also reads it under an absolute stand-in for the home and blocks it (G6).'

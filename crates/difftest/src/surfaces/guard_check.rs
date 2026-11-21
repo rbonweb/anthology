@@ -215,6 +215,20 @@ pub(crate) fn cap_stricter() -> Vec<Value> {
         read("~/.config/chromium/x", "relative/home"),
         // 9. a `cd` into the home under a relative home: G3
         bash_case("cd ~/.config && cat chromium/x", "relative"),
+        // 10. a secret redirected into home memory under a relative home: G6
+        bash_case(
+            &format!("echo {} > ~/.claude/agent-memory/a.md", secrets()[0]),
+            "relative",
+        ),
+        // 11. a secret written into home memory under a `~` home: G6
+        check_case(
+            s("Write"),
+            obj(vec![
+                ("file_path", s("~/.claude/agent-memory/a.md")),
+                ("content", s(&secrets()[0])),
+            ]),
+            "~",
+        ),
     ]
 }
 

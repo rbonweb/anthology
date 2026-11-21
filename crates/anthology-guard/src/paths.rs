@@ -169,16 +169,20 @@ impl<'a> Paths<'a> {
         (!self.strict).then_some(MAX_WALK_DEPTH)
     }
 
-    /// Strict, under a relative or empty home ([`Paths::standin`]): `_is_profile_path` read
-    /// against the stand-in home, for a candidate that uses the home or resolves against a
-    /// relative `cd` directory (read under [`STANDIN_CWD`]). Python reads such a path as
-    /// relative, from its start only, so `~/.config/chromium` under `HOME=relative/home` was not
-    /// a profile. A path that climbs out of the stand-ins (`~/../..`) leads somewhere unknown:
-    /// a [`Limit`].
-    fn standin_profile_path(
+    /// Strict, under a relative or empty home ([`Paths::standin`]): `_is_profile_path` (G3) or
+    /// `_is_memory_path` (G6) read against the stand-in home, for a candidate that uses the home
+    /// or resolves against a relative `cd` directory (read under [`STANDIN_CWD`]). Python reads
+    /// such a path as relative, from its start only, so `~/.config/chromium` under
+    /// `HOME=relative/home` was not a profile, nor `~/.claude/memory/a.md` a memory path. A home
+    /// path that climbs out of the stand-in home (`~/../..`) leads somewhere unknown: a
+    /// [`Limit`]. A relative path that only climbs out of the `cd` directory (`cd ..`) keeps
+    /// Python's reading, as it does under an absolute home.
+    fn standin_hit(
         &self,
         candidate: &str,
         cwd: Option<&str>,
+        sequences: &[(Vec<String>, bool)],
+        profile: bool,
         anywhere: bool,
     ) -> Result<bool, Limit> {
         let Some((home, comps)) = &self.standin else {
@@ -201,10 +205,15 @@ impl<'a> Paths<'a> {
         };
         let path = normalize_with(candidate, home, Some(&base), &limits).map_err(|_| Limit)?;
         if !path.contains('\0') {
-            return Err(Limit);
+            return if uses_home { Err(Limit) } else { Ok(false) };
         }
-        let comps = comps.as_ref().map_err(|_| Limit)?;
-        Ok(self.contains_sequence(&path, &self.profile, comps, anywhere))
+        // `_is_memory_path` passes no home components (as Python does)
+        let comps: &[String] = if profile {
+            comps.as_ref().map_err(|_| Limit)?
+        } else {
+            &[]
+        };
+        Ok(self.contains_sequence(&path, sequences, comps, anywhere))
     }
 
     /// `_normalize(path, home, cwd)`.
@@ -314,7 +323,10 @@ impl<'a> Paths<'a> {
         cwd: Option<&str>,
         sequences: &[(Vec<String>, bool)],
     ) -> bool {
-        if candidate.contains(['*', '?', '[', '$', '~']) {
+        if candidate.contains(['*', '?', '[', '$', '~'])
+            || self.home.contains(['*', '?', '['])
+            || cwd.is_some_and(|c| c.contains(['*', '?', '[']))
+        {
             return true;
         }
         let lowered = pystr::lower(candidate);
@@ -329,6 +341,38 @@ impl<'a> Paths<'a> {
                 || lowered
                     .match_indices(last)
                     .any(|(at, _)| at == 0 || matches!(lowered.as_bytes()[at - 1], b'/' | b'\\'))
+        })
+    }
+
+    /// Strict: whether every brace expansion of `piece` is one path component that cannot
+    /// complete a protected sequence, so the full expansion can be skipped. Expanding only
+    /// deletes text, so a piece with no `/` or backslash expands to text with none; without a
+    /// `~` or a `$` no home is spliced in. That text normalizes to one component, and every
+    /// profile and memory sequence has at least two: the rest of a window would have to come
+    /// from the `cd` directory, so no component of it may match a sequence's component. This is
+    /// what keeps JSON and dict literals in commands (`curl -d '[{"a":1,"b":2}, …]'`) from
+    /// multiplying out to the brace cap.
+    fn one_component(&self, piece: &str, cwd: Option<&str>) -> bool {
+        if piece.contains(['/', '\\', '~', '$']) {
+            return false;
+        }
+        let Some(cwd) = cwd.filter(|c| !c.is_empty()) else {
+            return true;
+        };
+        let lowered = pystr::lower(cwd);
+        !lowered.split('/').any(|comp| {
+            comp.contains(['*', '?', '['])
+                || self
+                    .profile
+                    .iter()
+                    .chain(&self.memory)
+                    .any(|(sequence, prefix)| {
+                        let last = sequence.len() - 1;
+                        sequence
+                            .iter()
+                            .enumerate()
+                            .any(|(k, p)| self.component_matches(comp, p, *prefix && k == last))
+                    })
         })
     }
 
@@ -362,7 +406,9 @@ impl<'a> Paths<'a> {
             Ok(!path.is_empty()
                 && self.contains_sequence(&path, &self.profile, home_comps, anywhere))
         });
-        either(hit, || self.standin_profile_path(candidate, cwd, anywhere))
+        either(hit, || {
+            self.standin_hit(candidate, cwd, &self.profile, true, anywhere)
+        })
     }
 
     /// `_is_memory_path(candidate, home, cwd)`.
@@ -370,9 +416,12 @@ impl<'a> Paths<'a> {
         if self.skip_long(candidate, cwd, &self.memory) {
             return Ok(false);
         }
-        any_of(bases(cwd), |base| {
+        let hit = any_of(bases(cwd), |base| {
             let path = self.normalize(candidate, base)?;
             Ok(!path.is_empty() && self.contains_sequence(&path, &self.memory, &[], false))
+        });
+        either(hit, || {
+            self.standin_hit(candidate, cwd, &self.memory, false, false)
         })
     }
 
@@ -393,9 +442,11 @@ impl<'a> Paths<'a> {
                     vec![piece]
                 } else if self.strict {
                     let mut all = expand_braces(&piece);
-                    match expand_braces_fully(&piece) {
-                        Some(full) => all.extend(full),
-                        None => self.capped.set(true),
+                    if !self.one_component(&piece, cwd) {
+                        match expand_braces_fully(&piece) {
+                            Some(full) => all.extend(full),
+                            None => self.capped.set(true),
+                        }
                     }
                     all
                 } else {
