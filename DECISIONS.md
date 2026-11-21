@@ -736,6 +736,13 @@ The guard and rtk's Anthology gate (ADR-022) each had their own shell reading. D
 
 More lines are denied where they used to be asked about, and some lines behind `rtk` that the plain shape never passed now ask for a second reason; no line that used to be asked about or denied passes. Measured on 3,814 commands (the gate's tests, the F1 review kits, the guard's corpus and the shell seeds) under five rule sets: no verdict got looser, and with no rules every output is byte-identical. An upstream sync now carries one more `# anthology fork:` line in `rtk/Cargo.toml`; `rtk_trim`'s lock guard allows path packages under `../crates/` and their dependency closure (DV4). Cost if wrong: an `anthology-shell` bug that over-reads a command adds a prompt or a deny; one that under-reads is still covered by the rule scan.
 
+**Addendum (RG2, 2026-11-21): the gate's work bound on huge lines**
+
+- A 1 MB `rtk ls a a a ...` took about 41 s with any rule: the plain shape and the `Read()` checks made several `canonicalize` calls per path word, and the work budget did not charge them. A `PreToolUse` hook that outlives its timeout is no decision (Claude Code continues through the normal permission flow unless `onFailure` is `block`), so `Bash(rtk *)` would allow the line.
+- Disk lookups now have their own budget (`PROBE_COST` per path, working directory and matcher). When it runs out, symlinks are no longer resolved for the rest of the command, every path is still matched as written, the text is still read in full within the scan's own budget, and the command asks at the end. **Unverified paths ask:** past the lookup budget, a `Read()` deny that only a symlink lookup would find is an ask, not a deny; a path denied as written (lexical `..` included) still denies, and so does a Bash deny rule later in the line.
+- A line whose bytes alone would spend the scan's budget (`LINE_BYTE_COST`, 125 KB) never passes: the budgeted scan still runs and its deny stands, otherwise the hook asks on the line as written, with no plain-shape check and no rewrite. With no rules the gate stays inert.
+- Consequences: a 1 MB line answers in well under a second (release build, 0.05-0.42 s measured); lines with about a thousand or more literal paths, and any line over 125 KB, now prompt when any rule exists. RG1's old/new corpus is byte-identical.
+
 ## ADR-024: safety hooks fail closed on a timeout or crash (`onFailure: "block"`; supersedes part of ADR-010)
 
 - **Date:** 2026-11-21

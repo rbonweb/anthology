@@ -15,8 +15,6 @@
 //! Where Python raised an exception the CLI does not catch (a traceback, exit 1), the Rust CLI
 //! prints `anthology-mem: <Type>: <message>` and exits 1 (D-1).
 
-mod ms_swap;
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -35,8 +33,7 @@ use anthology_pycompat::str::{char_slice, lower, split_ws, strip_ws};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-// SWAP(MS1|MS2): `pub use crate::{approve, notes, repo, save};` once MS1 and MS2 have merged.
-pub use ms_swap::{approve, notes, repo, save};
+pub use crate::{approve, notes, repo, save};
 
 use notes::NoteInfo;
 use save::{SaveError, Saved};

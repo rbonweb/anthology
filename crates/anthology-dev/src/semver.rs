@@ -12,7 +12,7 @@ use anthology_pycompat::json::Value;
 use regex::Regex;
 
 use crate::json_edit::{py_repr, str_repr};
-use crate::memory_diff::pystr;
+use anthology_pycompat::str as pystr;
 
 const NUM: &str = "(0|[1-9][0-9]*)";
 const PRE_ID: &str = "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -218,7 +218,7 @@ pub fn range_accepts(rng: &Value, version: &str) -> Result<bool, RangeError> {
     let Some(s) = rng.as_str() else {
         return Err(unsupported());
     };
-    let stripped = pystr::strip(s);
+    let stripped = pystr::strip_ws(s);
     if stripped.is_empty() || s != stripped {
         return Err(unsupported());
     }

@@ -5,7 +5,7 @@
 //! ```text
 //! # a comment
 //! [[divergence]]
-//! class = "D-6"                 # one of D-1 .. D-7 (GC-16); anything else is an error
+//! class = "D-6"                 # one of D-1 .. D-8 (GC-16); anything else is an error
 //! case = "golden:12"            # optional: a case id, or a glob (`*`, `?`)
 //! reason = "why this is allowed" # required, not empty
 //! ```
@@ -21,6 +21,8 @@
 //!   An entry without `case` covers oracle marks only, so a surface-wide `D-6` declaration
 //!   cannot hide an unrelated diff; write `case = "*"` to waive diffs surface-wide on purpose;
 //! - an entry that matched nothing in the run is reported as `unused` (a warning).
+//!
+//! A `D-8` entry must have a `case`: it explains named cases only, never a surface.
 #![allow(
     dead_code,
     reason = "published for the surface lanes; not every item has a caller yet"
@@ -46,10 +48,12 @@ pub enum Class {
     D6,
     /// Resource limits (backtrack limit, guard watchdog).
     D7,
+    /// Rust stricter: owner direction (FW-H/FW-I). Case-scoped only.
+    D8,
 }
 
 impl Class {
-    pub const ALL: [Class; 7] = [
+    pub const ALL: [Class; 8] = [
         Class::D1,
         Class::D2,
         Class::D3,
@@ -57,9 +61,10 @@ impl Class {
         Class::D5,
         Class::D6,
         Class::D7,
+        Class::D8,
     ];
 
-    /// `"D-1"` .. `"D-7"` exactly.
+    /// `"D-1"` .. `"D-8"` exactly.
     pub fn parse(s: &str) -> Option<Class> {
         Class::ALL.into_iter().find(|c| c.as_str() == s)
     }
@@ -73,6 +78,7 @@ impl Class {
             Class::D5 => "D-5",
             Class::D6 => "D-6",
             Class::D7 => "D-7",
+            Class::D8 => "D-8",
         }
     }
 }
@@ -208,7 +214,7 @@ fn finish(at: usize, keys: Vec<KeyLine>, label: &str) -> Result<Entry, String> {
     let get = |k: &str| keys.iter().find(|(key, _, _)| key == k);
     let class = match get("class") {
         Some((_, v, n)) => Class::parse(v)
-            .ok_or_else(|| format!("{label}:{n}: class {v:?} is not a GC-16 class (D-1 .. D-7)"))?,
+            .ok_or_else(|| format!("{label}:{n}: class {v:?} is not a GC-16 class (D-1 .. D-8)"))?,
         None => return Err(format!("{label}:{at}: the entry has no class")),
     };
     let reason = match get("reason") {
@@ -223,6 +229,11 @@ fn finish(at: usize, keys: Vec<KeyLine>, label: &str) -> Result<Entry, String> {
             ));
         }
         Some((_, v, _)) => Some(v.clone()),
+        None if class == Class::D8 => {
+            return Err(format!(
+                "{label}:{at}: a D-8 entry needs a case (it is never surface-wide)"
+            ));
+        }
         None => None,
     };
     Ok(Entry {
@@ -378,8 +389,8 @@ reason = "deep \"text\" \u00e9"
         for (text, want) in [
             ("class = \"D-6\"", "x:1: a key outside"),
             (
-                "[[divergence]]\nclass = \"D-8\"\nreason = \"r\"",
-                "x:2: class \"D-8\" is not a GC-16",
+                "[[divergence]]\nclass = \"D-9\"\nreason = \"r\"",
+                "x:2: class \"D-9\" is not a GC-16",
             ),
             (
                 "[[divergence]]\nclass = \"d-6\"\nreason = \"r\"",
@@ -469,5 +480,22 @@ reason = "deep \"text\" \u00e9"
         }
         assert_eq!(Class::parse("D-4"), Some(Class::D4));
         assert_eq!(Class::D7.to_string(), "D-7");
+        assert_eq!(Class::parse("D-8"), Some(Class::D8));
+        assert_eq!(Class::D8.to_string(), "D-8");
+        assert_eq!(Class::parse("D-9"), None);
+    }
+
+    #[test]
+    fn d8_is_case_scoped_only() {
+        let e = Divergences::parse("[[divergence]]\nclass = \"D-8\"\nreason = \"r\"", "x")
+            .expect_err("D-8 without a case");
+        assert!(e.contains("needs a case"), "{e}");
+        let mut d = Divergences::parse(
+            "[[divergence]]\nclass = \"D-8\"\ncase = \"fw:1\"\nreason = \"r\"",
+            "x",
+        )
+        .expect("valid");
+        assert_eq!(d.explain_diff("fw:1").map(|e| e.class), Some(Class::D8));
+        assert!(d.explain_diff("fw:2").is_none());
     }
 }

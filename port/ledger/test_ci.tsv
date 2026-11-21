@@ -1,25 +1,25 @@
 # python_id	status	rust_test	note
-test_ci.CiJobTests.test_every_plugin_has_a_validate_target	todo
-test_ci.CiJobTests.test_gitleaks_job	todo
-test_ci.CiJobTests.test_marketplace_manifest_has_a_description	todo
-test_ci.CiJobTests.test_new_jobs_have_a_timeout	todo
-test_ci.CiJobTests.test_plugin_validate_matrix_is_the_marketplace_and_exactly_the_plugins	todo
-test_ci.CiJobTests.test_version_bump_job	todo
-test_ci.DependabotTests.test_claude_code_updates_wait_three_days	todo
-test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_cli_syntax_installs_the_pinned_cli_and_runs_the_smoke	todo
-test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_jobs_exist_with_a_timeout	todo
-test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_memory_diff_is_pull_request_only_and_passes_the_shas_by_env	todo
-test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_startup_budget_runs_both_budget_tests_in_the_pinned_image	todo
-test_ci.PinnedClaudeCodeTests.test_exact_version_at_least_minimum	todo
-test_ci.PinnedClaudeCodeTests.test_lockfile_matches_the_pin	todo
-test_ci.PinnedClaudeCodeTests.test_package_is_private	todo
-test_ci.UpstreamWatchWorkflowTests.test_evals_are_dispatched_on_the_default_branch	todo
-test_ci.UpstreamWatchWorkflowTests.test_evals_trigger_follows_the_watch_output	todo
-test_ci.UpstreamWatchWorkflowTests.test_jobs_have_a_timeout	todo
-test_ci.UpstreamWatchWorkflowTests.test_least_privilege_permissions	todo
-test_ci.UpstreamWatchWorkflowTests.test_weekly_schedule_and_manual_run	todo
-test_ci.WorkflowRuleTests.test_checkouts_do_not_persist_credentials	todo
-test_ci.WorkflowRuleTests.test_every_uses_is_pinned_by_full_sha	todo
-test_ci.WorkflowRuleTests.test_no_expression_inside_run_scripts	todo
-test_ci.WorkflowRuleTests.test_there_are_workflows	todo
-test_ci.WorkflowRuleTests.test_top_level_permissions	todo
+test_ci.CiJobTests.test_every_plugin_has_a_validate_target	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_every_plugin_has_a_validate_target	
+test_ci.CiJobTests.test_gitleaks_job	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_gitleaks_job	
+test_ci.CiJobTests.test_marketplace_manifest_has_a_description	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_marketplace_manifest_has_a_description	
+test_ci.CiJobTests.test_new_jobs_have_a_timeout	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_new_jobs_have_a_timeout	
+test_ci.CiJobTests.test_plugin_validate_matrix_is_the_marketplace_and_exactly_the_plugins	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_plugin_validate_matrix_is_the_marketplace_and_exactly_the_plugins	
+test_ci.CiJobTests.test_version_bump_job	ported	crates/repo-tests/tests/ci.rs::ci_job_tests::test_version_bump_job	omitted: the `check_version_bump.py` step lookup (step now found by its BASE env) -> CO2 replacement: cutover_ci.rs asserts the version-bump job runs `anthology-dev version-bump "$BASE" "$HEAD_SHA"`
+test_ci.DependabotTests.test_claude_code_updates_wait_three_days	ported	crates/repo-tests/tests/ci.rs::dependabot_tests::test_claude_code_updates_wait_three_days	
+test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_cli_syntax_installs_the_pinned_cli_and_runs_the_smoke	ported	crates/repo-tests/tests/ci.rs::memory_diff_startup_budget_cli_syntax_job_tests::test_cli_syntax_installs_the_pinned_cli_and_runs_the_smoke	omitted: `evals/smoke/smoke.py` -> CO2 replacement: cutover_ci.rs asserts the cli-syntax job runs `anthology-dev smoke cli-syntax`
+test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_jobs_exist_with_a_timeout	ported	crates/repo-tests/tests/ci.rs::memory_diff_startup_budget_cli_syntax_job_tests::test_jobs_exist_with_a_timeout	
+test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_memory_diff_is_pull_request_only_and_passes_the_shas_by_env	ported	crates/repo-tests/tests/ci.rs::memory_diff_startup_budget_cli_syntax_job_tests::test_memory_diff_is_pull_request_only_and_passes_the_shas_by_env	omitted: the `memory_diff.py` step lookup (step now found by its BASE env) -> CO2 replacement: cutover_ci.rs asserts the memory-diff job runs `anthology-dev memory-diff "$BASE" "$HEAD_SHA"`
+test_ci.MemoryDiffStartupBudgetCliSyntaxJobTests.test_startup_budget_runs_both_budget_tests_in_the_pinned_image	ported	crates/repo-tests/tests/ci.rs::memory_diff_startup_budget_cli_syntax_job_tests::test_startup_budget_runs_both_budget_tests_in_the_pinned_image	omitted: ci/images/python.Dockerfile, `--require-hashes -r tests/requirements.txt`, test_roster, test_session_start, `set -e` (Python run) -> CO2 replacement: cutover_ci.rs asserts the startup-budget job runs `anthology-dev startup-budget` and `cargo test -p repo-tests startup_budget`
+test_ci.PinnedClaudeCodeTests.test_exact_version_at_least_minimum	ported	crates/repo-tests/tests/ci.rs::pinned_claude_code_tests::test_exact_version_at_least_minimum	
+test_ci.PinnedClaudeCodeTests.test_lockfile_matches_the_pin	ported	crates/repo-tests/tests/ci.rs::pinned_claude_code_tests::test_lockfile_matches_the_pin	
+test_ci.PinnedClaudeCodeTests.test_package_is_private	ported	crates/repo-tests/tests/ci.rs::pinned_claude_code_tests::test_package_is_private	
+test_ci.UpstreamWatchWorkflowTests.test_evals_are_dispatched_on_the_default_branch	ported	crates/repo-tests/tests/ci.rs::upstream_watch_workflow_tests::test_evals_are_dispatched_on_the_default_branch	
+test_ci.UpstreamWatchWorkflowTests.test_evals_trigger_follows_the_watch_output	ported	crates/repo-tests/tests/ci.rs::upstream_watch_workflow_tests::test_evals_trigger_follows_the_watch_output	
+test_ci.UpstreamWatchWorkflowTests.test_jobs_have_a_timeout	ported	crates/repo-tests/tests/ci.rs::upstream_watch_workflow_tests::test_jobs_have_a_timeout	
+test_ci.UpstreamWatchWorkflowTests.test_least_privilege_permissions	ported	crates/repo-tests/tests/ci.rs::upstream_watch_workflow_tests::test_least_privilege_permissions	
+test_ci.UpstreamWatchWorkflowTests.test_weekly_schedule_and_manual_run	ported	crates/repo-tests/tests/ci.rs::upstream_watch_workflow_tests::test_weekly_schedule_and_manual_run	
+test_ci.WorkflowRuleTests.test_checkouts_do_not_persist_credentials	ported	crates/repo-tests/tests/ci.rs::workflow_rule_tests::test_checkouts_do_not_persist_credentials	
+test_ci.WorkflowRuleTests.test_every_uses_is_pinned_by_full_sha	ported	crates/repo-tests/tests/ci.rs::workflow_rule_tests::test_every_uses_is_pinned_by_full_sha	
+test_ci.WorkflowRuleTests.test_no_expression_inside_run_scripts	ported	crates/repo-tests/tests/ci.rs::workflow_rule_tests::test_no_expression_inside_run_scripts	
+test_ci.WorkflowRuleTests.test_there_are_workflows	ported	crates/repo-tests/tests/ci.rs::workflow_rule_tests::test_there_are_workflows	
+test_ci.WorkflowRuleTests.test_top_level_permissions	ported	crates/repo-tests/tests/ci.rs::workflow_rule_tests::test_top_level_permissions	

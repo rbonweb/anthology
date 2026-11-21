@@ -19,9 +19,10 @@ use anthology_pycompat::pyerr::PyExc;
 
 use crate::Output;
 use crate::json_edit::{Uncaught, py_repr, universal_newlines, utf8_decode_error};
-use crate::memory_diff::pystr;
-use crate::release_edit::argp::{self, OptSpec, Parser, PosSpec};
+use crate::memory_diff::pystr::splitlines;
 use crate::semver;
+use anthology_pycompat::argparse::{self, Arg};
+use anthology_pycompat::str as pystr;
 
 /// The gate marker of the Python script. `GATE_PATH_RS` is its Rust successor (ruling R7): a
 /// base has the gate if either file exists at the merge base.
@@ -177,7 +178,7 @@ impl Git<'_> {
             return Err(Stop::Gate(format!(
                 "git {} failed: {}",
                 args.join(" "),
-                pystr::strip(&r.stderr)
+                pystr::strip_ws(&r.stderr)
             )));
         }
         Ok(r.stdout)
@@ -197,7 +198,7 @@ impl Git<'_> {
                 crate::json_edit::str_repr(reference)
             )));
         }
-        Ok(pystr::strip(&r.stdout).to_string())
+        Ok(pystr::strip_ws(&r.stdout).to_string())
     }
 
     /// `_plugin_version_at`: `(manifest exists at rev, its version or Null if unreadable)`.
@@ -220,7 +221,7 @@ impl Git<'_> {
     /// glob, so a plugin name can never be read as a pattern).
     fn released_plugins(&self, plugins: &[String]) -> Result<BTreeSet<String>, Stop> {
         let listing = self.ok(&["for-each-ref", "--format=%(refname:strip=2)", "refs/tags"])?;
-        let tags = pystr::splitlines(&listing, false);
+        let tags = splitlines(&listing, false);
         Ok(plugins
             .iter()
             .filter(|p| {
@@ -241,12 +242,12 @@ fn gate(base: &str, head: &str, git: &Git<'_>, out: &mut String) -> Result<i32, 
     let base_c = git.resolve(base)?;
     let head_c = git.resolve(head)?;
     let mb = git.run(&["merge-base", &base_c, &head_c])?;
-    if mb.code != 0 || pystr::strip(&mb.stdout).is_empty() {
+    if mb.code != 0 || pystr::strip_ws(&mb.stdout).is_empty() {
         return Err(Stop::Gate(format!(
             "no merge base between {base} and {head}"
         )));
     }
-    let mb_c = pystr::strip(&mb.stdout).to_string();
+    let mb_c = pystr::strip_ws(&mb.stdout).to_string();
     let has_gate = [GATE_PATH, GATE_PATH_RS]
         .iter()
         .try_fold(false, |found, path| {
@@ -303,22 +304,16 @@ fn gate(base: &str, head: &str, git: &Git<'_>, out: &mut String) -> Result<i32, 
 
 // ---- command line --------------------------------------------------------------------
 
-const PROG: &str = "check_version_bump.py";
-const USAGE: &str = "usage: check_version_bump.py [-h] [--repo REPO] base head";
-const OPTS: [OptSpec; 1] = [OptSpec {
-    long: "--repo",
-    dest: "repo",
-}];
-const POS: [PosSpec; 2] = [
-    PosSpec {
-        name: "base",
-        choices: &[],
-    },
-    PosSpec {
-        name: "head",
-        choices: &[],
-    },
-];
+/// `main`'s `ArgumentParser` (`prog` is the script's name, as `sys.argv[0]` gives it).
+/// `COLUMNS` sets the help width, as `shutil.get_terminal_size` reads it.
+fn spec(env: &Env) -> argparse::Spec {
+    argparse::Spec::new("check_version_bump.py")
+        .description("Version-bump gate: a plugin whose files changed must carry a higher version.")
+        .width(argparse::help_width(env.get("COLUMNS"), None))
+        .arg(Arg::positional("base").help("base commit (all zeros = new branch, no-op)"))
+        .arg(Arg::positional("head").help("head commit"))
+        .arg(Arg::option(&["--repo"]).help("repository root (default: current directory)"))
+}
 
 /// Runs `anthology-dev version-bump …`; `args` are the arguments after `version-bump`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
@@ -329,22 +324,29 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
 /// `check_version_bump.main(args)`: git runs in `cwd` with exactly `env`.
 pub fn run_in(args: &[OsString], stdin: &mut dyn Read, env: &Env, cwd: &Path) -> Output {
     let _ = stdin;
-    let parser = Parser {
-        prog: PROG,
-        usage: USAGE,
-        opts: &OPTS,
-        pos: &POS,
-    };
-    let parsed = match argp::parse_args(&parser, args) {
+    let parsed = match argparse::parse(&spec(env), args) {
         Ok(p) => p,
-        Err(out) => return out,
+        Err(e) => {
+            return Output {
+                stdout: e.stdout.into_bytes(),
+                stderr: e.stderr.into_bytes(),
+                code: e.code,
+            };
+        }
     };
-    let base = parsed.pos[0].to_string_lossy().into_owned();
-    let head = parsed.pos[1].to_string_lossy().into_owned();
+    let base = parsed
+        .os_str("base")
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let head = parsed
+        .os_str("head")
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let repo = parsed
-        .opt("repo")
-        .cloned()
-        .unwrap_or_else(|| OsString::from("."));
+        .os_str("repo")
+        .map_or_else(|| OsString::from("."), OsStr::to_os_string);
     let git = Git {
         env,
         cwd,

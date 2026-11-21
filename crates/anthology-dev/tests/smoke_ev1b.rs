@@ -13,7 +13,8 @@ use std::rc::Rc;
 use anthology_core::Env;
 use anthology_core::git::RealGit;
 use anthology_dev::smoke::runner::*;
-use anthology_dev::smoke::{approve, cases, evals_ws, run_to, run_with};
+use anthology_dev::smoke::{cases, evals_ws, run_to, run_with};
+use anthology_memory::approve;
 use anthology_pycompat::json;
 use anthology_testkit::ev::{FakeGuard, fake_guard_binary};
 

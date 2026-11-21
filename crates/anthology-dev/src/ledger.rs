@@ -5,6 +5,11 @@
 //! - `port/python-test-ids.txt`: every run id of `python -m unittest discover -s tests`, sorted.
 //! - `port/python-test-rows.tsv`: `python_id<TAB>rows`, the `subTest` table rows of each id.
 //! - `port/regex-inventory.tsv`: every lookaround or backreference pattern (plan GC-16).
+//! - `port/regex-resolved.tsv`: how Rust handles inventory rows, one per row: the inventory row's
+//!   four fields, then `how` and `rust_test` (a test that runs the pattern, checked like a
+//!   `ported` target). Every `unresolved` inventory row (a pattern not known statically) needs
+//!   one; `todo:<TASK>` with no `rust_test` leaves it pending on the owner of its `tests/` module,
+//!   and fails where a `todo:<TASK>` ledger row would.
 //! - `port/ledger/<python_module>.tsv`: one file per Python module, so parallel lanes never edit
 //!   the same file. A row is `python_id<TAB>status[<TAB>rust_test[<TAB>note]]`; `#` lines are
 //!   comments.
@@ -52,6 +57,7 @@ use crate::Output;
 pub const IDS_FILE: &str = "port/python-test-ids.txt";
 pub const ROWS_FILE: &str = "port/python-test-rows.tsv";
 pub const INVENTORY_FILE: &str = "port/regex-inventory.tsv";
+pub const RESOLVED_FILE: &str = "port/regex-resolved.tsv";
 pub const LEDGER_DIR: &str = "port/ledger";
 /// The (python_id, platform) pairs whose ported Rust test may run on one platform only
 /// (`platform:<os>` in the row's note). Controller-owned: lanes never edit it.
@@ -645,6 +651,8 @@ pub struct Findings {
     pub computed: Vec<String>,
     /// `--report` list: every `merged:` row, with its note.
     pub merged: Vec<String>,
+    /// `--report` list: regex inventory rows pending a task (`todo:<TASK>` in RESOLVED_FILE).
+    pub pending_regex: Vec<String>,
 }
 
 fn compare_sets(
@@ -756,12 +764,13 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
             problems.push(format!("{ROWS_FILE}: {id} is not in {IDS_FILE}"));
         }
     }
-    match fs::read_to_string(root.join(INVENTORY_FILE)) {
-        Ok(t) => {
-            parse_inventory(&t, INVENTORY_FILE, problems);
+    let inventory = match fs::read_to_string(root.join(INVENTORY_FILE)) {
+        Ok(t) => parse_inventory(&t, INVENTORY_FILE, problems),
+        Err(e) => {
+            problems.push(format!("cannot read {INVENTORY_FILE}: {e}"));
+            BTreeSet::new()
         }
-        Err(e) => problems.push(format!("cannot read {INVENTORY_FILE}: {e}")),
-    }
+    };
     let platform = args.platform.clone().unwrap_or_default();
     let listing = match (&args.fresh, &args.listings) {
         (Some(fresh), _) => {
@@ -1049,7 +1058,119 @@ pub fn findings(args: &CheckArgs) -> Result<Findings, String> {
         counts.insert("ids", ids_of_module.len());
         out.summary.push((module.to_string(), counts));
     }
+    check_resolved(
+        root,
+        &inventory,
+        args,
+        listing.as_ref(),
+        &mut scanned,
+        problems,
+        &mut out.pending_regex,
+    );
     Ok(out)
+}
+
+/// RESOLVED_FILE against the inventory: each row is an inventory row with a `how` and a Rust test
+/// (or `todo:<TASK>`), and every `unresolved` inventory row has one.
+fn check_resolved(
+    root: &Path,
+    inventory: &BTreeSet<String>,
+    args: &CheckArgs,
+    listing: Option<&targets::Listings>,
+    scanned: &mut targets::ScanCache,
+    problems: &mut Vec<String>,
+    pending: &mut Vec<String>,
+) {
+    let text = match fs::read_to_string(root.join(RESOLVED_FILE)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            problems.push(format!("cannot read {RESOLVED_FILE}: {e}"));
+            String::new()
+        }
+    };
+    let full = args.files.is_empty() && !args.report;
+    let mut resolved = BTreeSet::new();
+    for (n, line) in data_lines(&text) {
+        let at = format!("{RESOLVED_FILE}:{n}");
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [file, place, _, _, how, rust_test] = fields[..] else {
+            problems.push(format!(
+                "{at}: not `file<TAB>where<TAB>constructs<TAB>pattern<TAB>how<TAB>rust_test`: \
+                 {line:?}"
+            ));
+            continue;
+        };
+        let key = fields[..4].join("\t");
+        if !inventory.contains(&key) {
+            problems.push(format!(
+                "{at}: not a row of {INVENTORY_FILE} (a stale resolution): {key}"
+            ));
+            continue;
+        }
+        if !resolved.insert(key) {
+            problems.push(format!("{at}: repeated row"));
+            continue;
+        }
+        let Some(task) = how.strip_prefix("todo:") else {
+            if how.trim().is_empty() || how == "todo" {
+                problems.push(format!(
+                    "{at}: `how` says how Rust handles the pattern (or `todo:<TASK>`)"
+                ));
+            } else if rust_test.is_empty() {
+                problems.push(format!(
+                    "{at}: a resolved row names the Rust test that runs the pattern"
+                ));
+            } else {
+                let method = rust_test.rsplit("::").next().unwrap_or("");
+                if let Some(p) = targets::check(root, rust_test, method, listing, None, scanned) {
+                    problems.push(format!("{at}: {p}"));
+                }
+            }
+            continue;
+        };
+        pending.push(format!("{file}\t{place}\ttodo:{task}"));
+        let Some(module) = file
+            .strip_prefix("tests/")
+            .and_then(|f| f.strip_suffix(".py"))
+            .filter(|m| !m.contains('/'))
+        else {
+            problems.push(format!(
+                "{at}: `todo:{task}` is only for a tests/<module>.py row, whose plan §5 owner it \
+                 names; port and test this pattern"
+            ));
+            continue;
+        };
+        if !owners_of(module).contains(&task) {
+            problems.push(format!(
+                "{at}: pending on {task}, which does not own {module} (plan §5 owners: {})",
+                owners_of(module).join(", ")
+            ));
+        }
+        if !rust_test.is_empty() {
+            problems.push(format!(
+                "{at}: a pending row names no rust_test (resolve it instead)"
+            ));
+        }
+        let in_files = args.files.iter().any(|f| f == module);
+        if full || (in_files && args.task.as_deref() == Some(task)) {
+            problems.push(format!("{at}: still pending (todo:{task})"));
+        } else if in_files && args.task.is_none() {
+            problems.push(format!(
+                "{at}: pending on {task}; a --files check of a module with pending regex rows \
+                 needs --task <the task being checked>"
+            ));
+        }
+    }
+    for row in inventory {
+        let constructs = row.split('\t').nth(2).unwrap_or("");
+        if constructs.split(',').any(|c| c == "unresolved") && !resolved.contains(row) {
+            problems.push(format!(
+                "{INVENTORY_FILE}: an `unresolved` row has no row in {RESOLVED_FILE} (port and \
+                 test the pattern, or `todo:<TASK>`): {row}"
+            ));
+        }
+    }
 }
 
 /// The four listing files of `dir` (one platform's `cargo test -- --list [--ignored]`, plain and
@@ -1180,6 +1301,10 @@ pub fn check(args: &CheckArgs) -> Output {
             ("rows deferred to a task (todo:<TASK>)", &found.deferred),
             ("row counts waived (rows:computed)", &found.computed),
             ("rows merged into another test (merged:)", &found.merged),
+            (
+                "regex inventory rows pending a task (todo:<TASK>)",
+                &found.pending_regex,
+            ),
         ] {
             if !lines.is_empty() {
                 let _ = writeln!(stdout, "\n{title}: {}", lines.len());
