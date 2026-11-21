@@ -1,0 +1,6 @@
+# Allowed divergences of the pycompat.re surface (GC-16).
+
+[[divergence]]
+class = "D-7"
+case = "d7:*"
+reason = "fancy-regex's backtrack limit: a search with heavy nested backtracking fails closed with LimitError where Python's sre answers. Generated cases that hit the limit are left out; the d7 seed shows one."
