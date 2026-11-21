@@ -658,22 +658,34 @@ pub fn unlatin1(s: &str) -> Vec<u8> {
 }
 
 /// A Python regex in fancy-regex syntax (P1: `pycompat::re::translate`). `unicode` is a str
-/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern, compiled in
-/// fancy-regex's ASCII bytes mode, whose classes are already Python's. `$` (no MULTILINE) also
-/// matches before a final `\n`, `\Z` is `\z`, `{,n}` is `{0,n}`, escaped punctuation and `\0`
-/// octal escapes become `\x{…}` literals, `\b` in a class is a backspace, and `&&`/`~~` in a
-/// class stay literal.
+/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern (the UTF-8 of the str),
+/// compiled in fancy-regex's ASCII bytes mode, whose classes are already Python's.
 ///
-/// What this stand-in cannot translate faithfully is refused rather than reinterpreted: an
-/// escape Python rejects (`bad escape \X at position N`, as Python words it), `\N{…}`,
-/// backreferences and other octal escapes, `--` in a class, inline flags (`(?m)` would change
-/// `$`), `(?P=…)`, `(?<name>…)`, conditionals and comments. `\b`/`\B` keep fancy-regex's word
-/// definition, which differs from Python's `\w` only around non-ASCII marks and numbers. Regex
-/// error texts are fancy-regex's, not Python's.
+/// Translated: `$` (no MULTILINE) also matches before a final `\n`; `\Z` is `\z`; `\B` does not
+/// match an empty subject; `{,n}` is `{0,n}`; a `{` or `}` that is not a repeat is a literal;
+/// escaped punctuation and `\0` octal escapes become `\x{…}` literals; `\b` in a class is a
+/// backspace; `&&`/`~~` in a class stay literal; in a bytes pattern every non-ASCII character is
+/// its UTF-8 bytes, so a quantifier repeats the last byte as Python's does.
+///
+/// Refused rather than reinterpreted (Python's text where it raises, else "not supported"):
+/// - an escape Python rejects (`bad escape \X at position N`), `\N{…}`, backreferences and
+///   other octal escapes, `--` in a class;
+/// - a quantifier with nothing to repeat, a quantifier after a quantifier (a lazy `?` or
+///   possessive `+` suffix is allowed), `min repeat greater than max repeat`;
+/// - in a look-behind, any quantifier but `{n}`, and alternation (Python needs a fixed width);
+/// - inline flags (`(?m)` would change `$`), `(?P=…)`, `(?<name>…)`, conditionals, comments.
+///
+/// `\b`/`\B` keep fancy-regex's word definition, which differs from Python's `\w` only around
+/// non-ASCII marks and numbers. Regex error texts are fancy-regex's, not Python's.
 pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
     let chars: Vec<char> = py.chars().collect();
     let mut out = String::with_capacity(py.len() + 8);
     let mut in_class = false;
+    // Open groups: whether each is a look-behind.
+    let mut groups: Vec<bool> = Vec::new();
+    // Whether a quantifier may follow (an atom precedes), one just did, or a lazy/possessive
+    // suffix just did.
+    let (mut can_repeat, mut after_quant, mut after_suffix) = (false, false, false);
     let mut i = 0;
     let hex = |from: usize, n: usize| -> Option<u32> {
         let digits: String = chars.get(from..from + n)?.iter().collect();
@@ -683,10 +695,24 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
             None
         }
     };
-    let literal = |out: &mut String, code: u32| out.push_str(&format!("\\x{{{code:x}}}"));
+    // A literal character: a `\x{…}` escape; in a bytes pattern, one per UTF-8 byte.
+    let literal = |out: &mut String, code: u32| {
+        let c = char::from_u32(code).unwrap_or('\u{fffd}');
+        if unicode || code < 0x80 {
+            out.push_str(&format!("\\x{{{code:x}}}"));
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("\\x{{{b:x}}}"));
+            }
+        }
+    };
     while i < chars.len() {
         let c = chars[i];
         let at = i;
+        // What this item is, for the quantifier rules: an atom, an anchor (or a group opening,
+        // or `|`), or a quantifier.
+        let mut atom = true;
         match c {
             '\\' => {
                 let Some(&e) = chars.get(i + 1) else {
@@ -704,8 +730,21 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                         return Err(format!("\\{e} inside a class is not supported"));
                     }
                     ('b', true, _) => out.push_str(r"\x08"),
-                    ('Z', false, _) => out.push_str(r"\z"),
-                    ('A' | 'B' | 'b', false, _) | ('d' | 'D', ..) | ('w' | 'W' | 's' | 'S', ..) => {
+                    ('Z', false, _) => {
+                        out.push_str(r"\z");
+                        atom = false;
+                    }
+                    // 3.12's `\B` does not match an empty subject.
+                    ('B', false, _) => {
+                        out.push_str(r"(?!\A\z)\B");
+                        atom = false;
+                    }
+                    ('A' | 'b', false, _) => {
+                        out.push('\\');
+                        out.push(e);
+                        atom = false;
+                    }
+                    ('d' | 'D', ..) | ('w' | 'W' | 's' | 'S', ..) => {
                         out.push('\\');
                         out.push(e);
                     }
@@ -719,7 +758,8 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                         let Some(code) = hex(i + 1, 2) else {
                             return Err(format!("incomplete escape \\x at position {at}"));
                         };
-                        literal(&mut out, code);
+                        // `\xNN` is one code point (str) or one byte (bytes).
+                        out.push_str(&format!("\\x{{{code:x}}}"));
                         i += 2;
                     }
                     ('u' | 'U', _, true) => {
@@ -740,7 +780,7 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                             i += 1;
                             n += 1;
                         }
-                        literal(&mut out, code);
+                        out.push_str(&format!("\\x{{{code:x}}}"));
                     }
                     ('1'..='9', ..) => {
                         return Err(format!(
@@ -757,7 +797,29 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                     (e, ..) => literal(&mut out, u32::from(e)),
                 }
             }
-            '[' if !in_class => {
+            _ if in_class => match c {
+                ']' => {
+                    in_class = false;
+                    out.push(c);
+                }
+                '[' => out.push_str(r"\["),
+                // Set operators in fancy-regex, literals (with a FutureWarning) in Python.
+                '&' | '~' if chars.get(i + 1) == Some(&c) => {
+                    out.push(c);
+                    out.push('\\');
+                    out.push(c);
+                    i += 1;
+                }
+                // Whether `--` makes a range depends on what precedes it.
+                '-' if chars.get(i + 1) == Some(&'-') => {
+                    return Err(format!(
+                        "`--` in a class (at position {at}) is not supported"
+                    ));
+                }
+                c if !unicode && !c.is_ascii() => literal(&mut out, u32::from(c)),
+                c => out.push(c),
+            },
+            '[' => {
                 in_class = true;
                 out.push(c);
                 // A `]` right after `[` or `[^` is a literal.
@@ -770,41 +832,144 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                     i += 1;
                 }
             }
-            ']' if in_class => {
-                in_class = false;
-                out.push(c);
-            }
-            '[' if in_class => out.push_str(r"\["),
-            // Set operators in fancy-regex, literals (with a FutureWarning) in Python.
-            '&' | '~' if in_class && chars.get(i + 1) == Some(&c) => {
-                out.push(c);
-                out.push('\\');
-                out.push(c);
-                i += 1;
-            }
-            // Whether `--` makes a range depends on what precedes it.
-            '-' if in_class && chars.get(i + 1) == Some(&'-') => {
-                return Err(format!(
-                    "`--` in a class (at position {at}) is not supported"
-                ));
-            }
-            '$' if !in_class => out.push_str(r"(?=\n?\z)"),
-            '{' if !in_class && chars.get(i + 1) == Some(&',') => out.push_str("{0"),
-            '(' if !in_class && chars.get(i + 1) == Some(&'?') => {
-                let supported = match chars.get(i + 2) {
-                    Some(':' | '=' | '!' | '>') => true,
-                    Some('<') => matches!(chars.get(i + 3), Some('=' | '!')),
-                    Some('P') => chars.get(i + 3) == Some(&'<'),
-                    _ => false,
-                };
-                if !supported {
+            '*' | '+' | '?' | '{' => {
+                // `{` is a repeat only as `{m}`, `{m,}`, `{,n}`, `{m,n}` or `{,}`.
+                let mut repeat = String::new();
+                let mut exact = false;
+                if c == '{' {
+                    let mut j = i + 1;
+                    let digits = |j: &mut usize| {
+                        let start = *j;
+                        while chars.get(*j).is_some_and(char::is_ascii_digit) {
+                            *j += 1;
+                        }
+                        chars[start..*j].iter().collect::<String>()
+                    };
+                    let lo = digits(&mut j);
+                    let hi = if chars.get(j) == Some(&',') {
+                        j += 1;
+                        Some(digits(&mut j))
+                    } else {
+                        None
+                    };
+                    if chars.get(j) != Some(&'}') || (lo.is_empty() && hi.is_none()) {
+                        // Not a repeat: a literal `{`.
+                        out.push_str(r"\{");
+                        can_repeat = true;
+                        after_quant = false;
+                        after_suffix = false;
+                        i += 1;
+                        continue;
+                    }
+                    let min = if lo.is_empty() {
+                        "0".to_string()
+                    } else {
+                        lo.clone()
+                    };
+                    if let (Some(hi), Ok(a)) = (&hi, min.parse::<u64>())
+                        && !hi.is_empty()
+                        && hi.parse::<u64>().is_ok_and(|b| b < a)
+                    {
+                        return Err(format!(
+                            "min repeat greater than max repeat at position {}",
+                            at + 1
+                        ));
+                    }
+                    exact = hi.is_none() || hi.as_deref() == Some(lo.as_str());
+                    repeat = match &hi {
+                        None => format!("{{{min}}}"),
+                        Some(hi) => format!("{{{min},{hi}}}"),
+                    };
+                    i = j;
+                }
+                let token = if c == '{' { repeat } else { c.to_string() };
+                if after_quant && matches!(c, '?' | '+') {
+                    // A lazy or possessive suffix.
+                    if groups.contains(&true) {
+                        return Err(format!(
+                            "a quantifier in a look-behind (at position {at}) is not supported"
+                        ));
+                    }
+                    out.push_str(&token);
+                    after_quant = false;
+                    after_suffix = true;
+                    i += 1;
+                    continue;
+                }
+                if after_quant || after_suffix {
+                    return Err(format!("multiple repeat at position {at}"));
+                }
+                if !can_repeat {
+                    return Err(format!("nothing to repeat at position {at}"));
+                }
+                if groups.contains(&true) && !exact {
                     return Err(format!(
-                        "this group syntax (at position {at}) is not supported"
+                        "a variable-width look-behind (at position {at}) is not supported"
+                    ));
+                }
+                out.push_str(&token);
+                can_repeat = false;
+                after_quant = true;
+                i += 1;
+                continue;
+            }
+            '}' => out.push_str(r"\}"),
+            '$' => {
+                out.push_str(r"(?=\n?\z)");
+                atom = false;
+            }
+            '^' => {
+                out.push(c);
+                atom = false;
+            }
+            '|' => {
+                if groups.contains(&true) {
+                    return Err(format!(
+                        "alternation in a look-behind (at position {at}) is not supported"
                     ));
                 }
                 out.push(c);
+                atom = false;
             }
-            _ => out.push(c),
+            '(' => {
+                let behind = chars.get(i + 1) == Some(&'?')
+                    && chars.get(i + 2) == Some(&'<')
+                    && matches!(chars.get(i + 3), Some('=' | '!'));
+                // The group's prefix (`(`, `(?:`, `(?=`, `(?<!`, `(?P<name>`, …), copied whole.
+                let end = if chars.get(i + 1) == Some(&'?') {
+                    match chars.get(i + 2) {
+                        Some(':' | '=' | '!' | '>') => Some(i + 2),
+                        Some('<') if matches!(chars.get(i + 3), Some('=' | '!')) => Some(i + 3),
+                        Some('P') if chars.get(i + 3) == Some(&'<') => chars[i + 4..]
+                            .iter()
+                            .position(|&ch| ch == '>')
+                            .map(|p| i + 4 + p),
+                        _ => None,
+                    }
+                } else {
+                    Some(i)
+                };
+                let Some(end) = end else {
+                    return Err(format!(
+                        "this group syntax (at position {at}) is not supported"
+                    ));
+                };
+                out.extend(&chars[i..=end]);
+                i = end;
+                groups.push(behind);
+                atom = false;
+            }
+            ')' => {
+                groups.pop();
+                out.push(c);
+            }
+            c if !unicode && !c.is_ascii() => literal(&mut out, u32::from(c)),
+            c => out.push(c),
+        }
+        if !in_class {
+            can_repeat = atom;
+            after_quant = false;
+            after_suffix = false;
         }
         i += 1;
     }
@@ -1159,6 +1324,47 @@ mod tests {
         ("bytes", "a$", "A\n", "0,1"),
         ("bytes", "\\x41", "a", "0,1"),
         ("bytes", "\\bab", "xab ab", "4,6"),
+        ("str", "(?=a)*a", "a", "0,1"),
+        ("str", "(?<=a)?b", "ab", "1,2"),
+        ("str", "^*a", "a", "error"),
+        ("str", "a**", "aa", "error"),
+        ("str", "a*?b", "aab", "0,3"),
+        ("str", "a*+b", "aab", "0,3"),
+        ("str", "a{2}{3}", "aaaaaa", "error"),
+        ("str", "a{,}b", "aab", "0,3"),
+        ("str", "{1,2}", "{1,2}", "error"),
+        ("str", "x{}", "x{}", "0,3"),
+        ("str", "x{a}", "x{a}", "0,4"),
+        ("str", "a}", "a}", "0,2"),
+        ("str", "(?<=a?)b", "ab", "error"),
+        ("str", "(?<=a|bc)d", "bcd", "error"),
+        ("str", "(?<=ab|cd)e", "cde", "2,3"),
+        ("str", "(?<=\\d*)x", "1x", "error"),
+        ("str", "(?<=a{2})b", "aab", "2,3"),
+        ("str", "|*", "a", "error"),
+        ("str", "(*)", "a", "error"),
+        ("str", "a|*b", "b", "error"),
+        ("str", "\\Z?", "a", "error"),
+        ("str", "\\b?a", "a", "error"),
+        ("str", "a+{1,2}", "aa", "error"),
+        ("str", "a?+b", "ab", "0,2"),
+        ("str", "a{1,2}?b", "aab", "0,3"),
+        ("str", "a{1,2}+b", "aab", "0,3"),
+        ("str", "a{2,1}", "aa", "error"),
+        ("str", "\\B", "", "none"),
+        ("str", "\\B", "ab", "1,1"),
+        ("str", "a{1", "a{1", "0,3"),
+        ("str", "a{1,", "a{1,", "0,4"),
+        ("str", "(a)*", "aa", "0,2"),
+        ("str", "(?:)*a", "a", "0,1"),
+        ("str", "a(?#x)*", "aa", "0,2"),
+        ("bytes", "\\\u{e9}", "\u{e9}", "0,2"),
+        ("bytes", "\u{e9}*", "\u{e9}\u{a9}", "0,2"),
+        ("bytes", "[\u{e9}]", "\u{a9}", "1,2"),
+        ("bytes", "\\B", "", "none"),
+        ("bytes", "\u{e9}", "\u{c9}", "none"),
+        ("bytes", "\\xe9", "\u{e9}", "none"),
+        ("str", "\u{e9}*", "\u{e9}\u{e9}", "0,2"),
     ];
 
     /// Patterns Python accepts that the stand-in refuses instead of reinterpreting.
@@ -1171,10 +1377,17 @@ mod tests {
         "(?i)A",
         "(?#c)a",
         "(?P<n>a)(?P=n)",
+        "a(?#x)*",
+        "(?<=ab|cd)e",
+        // fancy-regex refuses a quantified look-around or empty group.
+        "(?=a)*a",
+        "(?<=a)?b",
+        "(?:)*a",
     ];
 
     #[test]
     fn translate_matches_python_or_refuses() {
+        let mut failures = Vec::new();
         for (mode, pattern, subject, want) in RE_CASES {
             let compiled = if *mode == "str" {
                 compile_str(pattern)
@@ -1183,17 +1396,20 @@ mod tests {
             };
             let re = match compiled {
                 Err(e) => {
-                    assert!(
-                        *want == "error" || REFUSED.contains(pattern),
-                        "{pattern:?} refused ({e}) but Python gives {want}"
-                    );
+                    if *want != "error" && !REFUSED.contains(pattern) {
+                        failures.push(format!("{pattern:?} refused ({e}) but Python gives {want}"));
+                    }
                     continue;
                 }
                 Ok(re) => re,
             };
-            assert!(!REFUSED.contains(pattern), "{pattern:?} should be refused");
-            let found = re.find(subject).unwrap();
-            let got = match found {
+            if REFUSED.contains(pattern) || *want == "error" {
+                failures.push(format!(
+                    "{mode} {pattern:?} compiles but Python gives {want}"
+                ));
+                continue;
+            }
+            let got = match re.find(subject).unwrap() {
                 None => "none".to_string(),
                 // Python's str spans count code points; bytes spans count bytes.
                 Some(m) if *mode == "str" => format!(
@@ -1203,8 +1419,13 @@ mod tests {
                 ),
                 Some(m) => format!("{},{}", m.start(), m.end()),
             };
-            assert_eq!(&got, want, "{mode} {pattern:?} on {subject:?}");
+            if got != *want {
+                failures.push(format!(
+                    "{mode} {pattern:?} on {subject:?}: {got}, Python {want}"
+                ));
+            }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
