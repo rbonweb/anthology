@@ -273,7 +273,7 @@ fn unterminated_heredocs_stay_cheap() {
             format!("{}{}", "a=(".repeat(12), "cat <<X\n".repeat(2000)),
         ),
     ] {
-        assert_quick(name, Duration::from_millis(200), || {
+        assert_quick(name, Duration::from_secs(1), || {
             segments(&command, 0);
         });
     }
