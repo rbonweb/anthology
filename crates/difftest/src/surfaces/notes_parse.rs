@@ -541,6 +541,9 @@ fn seed_urls() -> Vec<&'static str> {
         "~",
         "~/x.git",
         "~bob/x",
+        "~root",
+        "~root/x.git",
+        "~no-such-user-ms1-f/x.git",
         "plain",
         "  https://h/a//b///c.git//  ",
         "https://[::1]:80/a",
@@ -873,7 +876,9 @@ fn gen_remote(rng: &mut Rng) -> Value {
             format!("{user}{host}:{path}")
         }
         3 => {
-            let head = rng.pick(&["/", "./", "../", "~", "~/", "~bob/", "", "x/"]);
+            let head = rng.pick(&[
+                "/", "./", "../", "~", "~/", "~bob/", "~root/", "~root", "", "x/",
+            ]);
             let tail = rng.pick(&["x", "x.git", "a/../b.git", "srv//x/", ".git", ""]);
             format!("{head}{tail}")
         }

@@ -44,7 +44,6 @@
 //! - Progress lines go to the progress writer as each smoke finishes (`run` writes them to
 //!   stdout; [`run_with`] collects them into the [`Output`] for the tests).
 
-pub mod approve;
 pub mod cases;
 pub mod compat;
 pub mod evals_ws;
