@@ -14,10 +14,12 @@
 //!   (release-edit); `parse_ns` {hex}, `escape` {s}, `render` {entries} (memory-diff);
 //!   `sections` {body}, `split` {text} (startup-budget).
 //!
-//! Normalization, both sides: `<TODAY>` for today's date (changelog-move without `--date`);
-//! D-4 argparse usage text at exit 2; D-2 the OS text in `[Errno N] <text>` (P1's errno tables
-//! are pending, ruling R3), so the errno number and file names are still compared. The oracle
-//! marks D-1 where Python raised (a traceback; Rust prints `anthology-dev <tool>: <Type>: ...`).
+//! Normalization, both sides: `<TODAY>` for today's date (changelog-move without `--date`); D-2
+//! the OS text in `[Errno N] <text>` (P1's errno tables are pending, ruling R3), so the errno
+//! number and file names are still compared. argparse usage and help text is compared verbatim
+//! (no D-4). The oracle marks D-1 where Python raised (a traceback; Rust prints
+//! `anthology-dev <tool>: <Type>: ...`), and D-2 where it wrote eval-baseline's bare strerror
+//! `errno N`, the Rust port's placeholder text.
 //!
 //! The Linux oracle image has no git, so the git paths of version-bump and memory-diff compare
 //! their git-missing outcome there; macOS runs them for real.
@@ -108,7 +110,7 @@ impl Surface for Dv2 {
 }
 
 fn normalizer() -> Normalizer {
-    Normalizer::new().today_local().d4_usage()
+    Normalizer::new().today_local()
 }
 
 /// The D-2 rule: `[Errno N] <text>` → `[Errno N] <LIBTEXT>`, where `<text>` runs to the next
@@ -116,28 +118,8 @@ fn normalizer() -> Normalizer {
 fn normalize(o: &mut Observed) -> bool {
     let before = (o.stdout.clone(), o.stderr.clone());
     o.stdout = errno_text(&o.stdout);
-    o.stderr = strerror_text(&errno_text(&o.stderr));
+    o.stderr = errno_text(&o.stderr);
     (o.stdout.clone(), o.stderr.clone()) != before
-}
-
-/// eval-baseline's `cannot read the <what> <path>: <strerror>`: the bare OS text after the last
-/// `: ` → `<LIBTEXT>` (the same P1-pending errno text, without `[Errno N]`).
-fn strerror_text(b: &[u8]) -> Vec<u8> {
-    const LINE: &[u8] = b"eval_baseline: cannot read the ";
-    let mut out = Vec::with_capacity(b.len());
-    for (n, line) in b.split(|&c| c == b'\n').enumerate() {
-        if n > 0 {
-            out.push(b'\n');
-        }
-        match line.windows(2).rposition(|w| w == b": ") {
-            Some(at) if line.starts_with(LINE) => {
-                out.extend_from_slice(&line[..at + 2]);
-                out.extend_from_slice(LIBTEXT.as_bytes());
-            }
-            _ => out.extend_from_slice(line),
-        }
-    }
-    out
 }
 
 fn errno_text(b: &[u8]) -> Vec<u8> {
@@ -1145,6 +1127,9 @@ fn result_json(rng: &mut Rng, scores: &[(&str, &str)], extra: &[(&str, &str)]) -
         .map(|(n, sc)| {
             if rng.chance(0.05) {
                 format!("{{\"name\": {}}}", json::dumps(&s(n), &PY_DEFAULT))
+            } else if rng.chance(0.04) {
+                let name = rng.pick(&["1", "null", "[\"a\"]", "true", "1.5", "{}"]);
+                format!("{{\"name\": {name}, \"aggregates\": {{\"score\": {sc}}}}}")
             } else {
                 format!(
                     "{{\"name\": {}, \"aggregates\": {{\"score\": {sc}, \"passRate\": 1.0}}}}",
@@ -1457,7 +1442,8 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
             0..=5 => {
                 let pool = [
                     "reader", "skilled", "bare", "nope", "--root", ".", "-1", "--", "a b", "gamma",
-                    "évil",
+                    "évil", "-h-", "-hX", "--he=x", "-h=x", "--=x", "-1\n", "--root=.", "--ro",
+                    "-r=x", "-h-x",
                 ];
                 let mut args: Vec<&str> = vec!["--root", "."];
                 for _ in 0..rng.index(4) {
@@ -1538,7 +1524,16 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
             if rng.chance(0.2) {
                 extra.push((
                     "claudeVersion",
-                    rng.pick(&["\"2.2.0\"", "null", "2.1", "[1]", "\"2.1.311\""]),
+                    rng.pick(&[
+                        "\"2.2.0\"",
+                        "null",
+                        "2.1",
+                        "[1]",
+                        "\"2.1.311\"",
+                        "[NaN]",
+                        "NaN",
+                        "{\"a\": NaN}",
+                    ]),
                 ));
             }
             if rng.chance(0.1) {
@@ -1568,34 +1563,69 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
                 .collect();
             let mut base = baseline_json(
                 &base_pairs,
-                rng.pick(&["\"2.1.311\"", "\"2.2.0\"", "null", "2.1"]),
+                rng.pick(&[
+                    "\"2.1.311\"",
+                    "\"2.2.0\"",
+                    "null",
+                    "2.1",
+                    "[NaN]",
+                    "NaN",
+                    "{\"a\": NaN}",
+                ]),
             );
             if rng.chance(0.05) {
                 base = rng
                     .pick(&["{}", "[]", "{\"cases\": []}", "nope"])
                     .to_string();
             }
-            let mut fs = vec![("result.json", result)];
+            let mut fs = vec![("result.json", result), ("dir/x", String::new())];
             if rng.chance(0.85) {
                 fs.push(("baseline.json", base));
             }
             let sub = *rng.pick(&["compare", "compare", "compare", "record", "candidate"]);
-            let mut args = vec![sub, "result.json", "baseline.json"];
+            let result_path = if rng.chance(0.05) {
+                "dir"
+            } else {
+                "result.json"
+            };
+            let base_path = if rng.chance(0.05) {
+                "dir"
+            } else {
+                "baseline.json"
+            };
+            let mut args = vec![sub, result_path, base_path];
+            // argparse corners: before the command, between and after the positionals.
+            const ODD: &[&str] = &["--", "-h-", "-hX", "-h=x", "--help=x", "-1", "--x", "-h-x"];
+            if rng.chance(0.05) {
+                args.insert(0, *rng.pick(ODD));
+            }
+            if rng.chance(0.05) {
+                let at = 1 + rng.index(args.len());
+                args.insert(at, *rng.pick(ODD));
+            }
             if sub == "compare" {
                 for _ in 0..rng.index(3) {
-                    args.push(*rng.pick(&[
-                        "--tolerance",
-                        "0.1",
-                        "--tol=0.5",
-                        "--tolerance=-1",
-                        "--tolerance= 1_0 ",
-                        "--tolerance=nan",
-                        "--allow-missing",
-                        "--summary",
-                        "s.md",
-                        "--summary=",
-                        "--x",
-                    ]));
+                    let at = if rng.chance(0.2) { 2 } else { args.len() };
+                    args.insert(
+                        at.min(args.len()),
+                        *rng.pick(&[
+                            "--tolerance",
+                            "0.1",
+                            "--tol=0.5",
+                            "--tolerance=-1",
+                            "--tolerance= 1_0 ",
+                            "--tolerance=nan",
+                            "--allow-missing",
+                            "--summary",
+                            "s.md",
+                            "--summary=",
+                            "--x",
+                            "--tolerance=\u{2000}1\u{2000}",
+                            "--tolerance=1\x1c",
+                            "--tolerance=-1\n",
+                            "--",
+                        ]),
+                    );
                 }
             }
             cli(
@@ -1638,10 +1668,6 @@ mod tests {
         assert_eq!(
             errno_text(b"x [Errno 2] No such file or directory: 'a'\n"),
             b"x [Errno 2] <LIBTEXT>: 'a'\n"
-        );
-        assert_eq!(
-            strerror_text(b"eval_baseline: cannot read the result a: b.json: No such file\nx: y\n"),
-            b"eval_baseline: cannot read the result a: b.json: <LIBTEXT>\nx: y\n"
         );
     }
 }

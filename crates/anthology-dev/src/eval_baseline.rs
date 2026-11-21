@@ -108,9 +108,15 @@ pub fn truthy(v: &Value) -> bool {
     }
 }
 
-/// Python's `a == b` for two separately parsed JSON values: `1 == 1.0 == True`, NaN is unequal
-/// to everything, dicts ignore order.
+/// Python's `a == b` for two separately parsed JSON values: `1 == 1.0 == True`, a top-level NaN
+/// is unequal to everything (a NaN inside a list or dict is not), dicts ignore order.
 pub fn py_eq(a: &Value, b: &Value) -> bool {
+    eq_in(a, b, false)
+}
+
+/// `nested`: inside a list or dict, where Python compares by identity first, and every NaN
+/// `json.loads` returns is its one `NaN` constant, so `[NaN] == [NaN]`.
+fn eq_in(a: &Value, b: &Value, nested: bool) -> bool {
     fn num(v: &Value) -> Option<NumKey<'_>> {
         match v {
             Value::Bool(b) => Some(NumKey::Int(i64::from(*b))),
@@ -124,11 +130,14 @@ pub fn py_eq(a: &Value, b: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| py_eq(p, q))
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| eq_in(p, q, true))
         }
         (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| py_eq(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| eq_in(v, w, true)))
         }
+        (Value::Float(x), Value::Float(y)) if nested && x.is_nan() && y.is_nan() => true,
         _ => match (num(a), num(b)) {
             (Some(x), Some(y)) => x.eq(&y),
             _ => false,
@@ -243,12 +252,10 @@ fn os_uncaught(e: std::io::Error, path: &OsStr) -> Failure {
 
 /// `read_result`.
 pub fn read_result(cwd: &Path, path: &OsStr) -> Res<Map> {
-    match read_json(cwd, path, "result")? {
-        Value::Object(_) => {}
-        _ => return invalid("the result is not a JSON object"),
+    match read_json(cwd, path, "result")?.into_object() {
+        Some(m) => Ok(m),
+        None => invalid("the result is not a JSON object"),
     }
-    let mut v = read_json(cwd, path, "result")?;
-    Ok(v.take().into_object().expect("an object"))
 }
 
 static NULL: Value = Value::Null;
@@ -422,7 +429,13 @@ fn cmd_compare(
 ) -> Res<(i32, String)> {
     let r = read_result(cwd, result)?;
     let now = check_complete(&r)?;
-    if let Err(e) = open_read(cwd, baseline)
+    // `open(args.baseline)` only (a pipe is not drained): ENOENT is "missing".
+    let opened = if baseline.is_empty() {
+        Err(std::io::Error::from_raw_os_error(2))
+    } else {
+        std::fs::File::open(cwd.join(baseline)).map(drop)
+    };
+    if let Err(e) = opened
         && e.raw_os_error() == Some(2)
     {
         return Ok((3, format!("{}\n", no_baseline(&baseline.to_string_lossy()))));
@@ -706,6 +719,8 @@ mod tests {
         assert!(py_eq(&l("1"), &l("1.0")) && py_eq(&l("true"), &l("1")));
         assert!(py_eq(&l(r#"{"a": [1, 2]}"#), &l(r#"{"a": [1.0, 2]}"#)));
         assert!(!py_eq(&l("NaN"), &l("NaN")) && !py_eq(&l("\"1\""), &l("1")));
+        assert!(py_eq(&l("[NaN]"), &l("[NaN]")) && py_eq(&l(r#"{"a": NaN}"#), &l(r#"{"a": NaN}"#)));
+        assert!(!py_eq(&l("[NaN]"), &l("[1]")) && !py_eq(&l("NaN"), &l("1")));
         assert!(py_eq(
             &l("12345678901234567890"),
             &l("12345678901234567890")

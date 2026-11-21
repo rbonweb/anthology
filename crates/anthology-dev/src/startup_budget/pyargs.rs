@@ -81,17 +81,19 @@ pub enum Stop {
 
 const HELP: &str = "--help";
 
-/// An option match: which option (`None`: unknown), and its explicit `=value`; or an
-/// ambiguous prefix, which argparse records when it classifies the argument and raises only
-/// when parsing reaches it.
+/// An option match: which option (`None`: unknown), its explicit value, and whether that value
+/// came after an `=` (`sep`); or an ambiguous prefix, which argparse records when it classifies
+/// the argument and raises only when parsing reaches it.
 #[derive(Clone, Debug)]
 enum Matched {
-    Opt(Option<&'static str>, Option<OsString>),
+    Opt(Option<&'static str>, Option<OsString>, bool),
     Ambiguous(String),
 }
 
-/// argparse's `_negative_number_matcher`: `^-\d+$|^-\d*\.\d+$` (Unicode `\d`).
+/// argparse's `_negative_number_matcher`: `^-\d+$|^-\d*\.\d+$` (Unicode `\d`; `$` also matches
+/// before a final newline).
 fn is_negative_number(s: &str) -> bool {
+    let s = s.strip_suffix('\n').unwrap_or(s);
     let Some(rest) = s.strip_prefix('-') else {
         return false;
     };
@@ -106,6 +108,20 @@ fn all_longs<'a>(spec: &'a Spec<'_>) -> impl Iterator<Item = &'static str> + 'a 
     std::iter::once(HELP).chain(spec.opts.iter().map(|o| o.long))
 }
 
+/// Every option string, in argparse's `_option_string_actions` order: `-h`, `--help`, the rest.
+fn all_strings<'a>(spec: &'a Spec<'_>) -> impl Iterator<Item = &'static str> + 'a {
+    std::iter::once("-h").chain(all_longs(spec))
+}
+
+fn os(b: &[u8]) -> OsString {
+    OsString::from(std::ffi::OsStr::from_bytes(b))
+}
+
+/// The action an option string names (`-h` is `--help`).
+fn action(o: &'static str) -> &'static str {
+    if o == "-h" { HELP } else { o }
+}
+
 /// argparse's `_parse_optional`: `None` for a positional (`A`), else the option it names.
 fn parse_optional(spec: &Spec<'_>, arg: &OsString) -> Option<Matched> {
     let bytes = arg.as_bytes();
@@ -113,76 +129,52 @@ fn parse_optional(spec: &Spec<'_>, arg: &OsString) -> Option<Matched> {
         return None;
     }
     let text = arg.to_string_lossy();
-    let exact = |s: &str| -> Option<&'static str> {
-        if s == "-h" {
-            return Some(HELP);
-        }
-        all_longs(spec).find(|l| *l == s)
-    };
+    let exact = |s: &str| all_strings(spec).find(|o| *o == s).map(action);
     if let Some(o) = exact(&text) {
-        return Some(Matched::Opt(Some(o), None));
+        return Some(Matched::Opt(Some(o), None, false));
     }
     if bytes.len() == 1 {
         return None;
     }
-    if let Some(eq) = bytes.iter().position(|&b| b == b'=') {
+    let eq = bytes.iter().position(|&b| b == b'=');
+    if let Some(eq) = eq {
         let name = String::from_utf8_lossy(&bytes[..eq]);
         if let Some(o) = exact(&name) {
-            let value = OsString::from(std::ffi::OsStr::from_bytes(&bytes[eq + 1..]));
-            return Some(Matched::Opt(Some(o), Some(value)));
+            return Some(Matched::Opt(Some(o), Some(os(&bytes[eq + 1..])), true));
         }
     }
-    // _get_option_tuples.
-    let mut found: Vec<(&'static str, Option<OsString>)> = Vec::new();
-    if bytes.starts_with(b"--") {
-        let (prefix, explicit) = match bytes.iter().position(|&b| b == b'=') {
-            Some(eq) => (
-                String::from_utf8_lossy(&bytes[..eq]).into_owned(),
-                Some(OsString::from(std::ffi::OsStr::from_bytes(
-                    &bytes[eq + 1..],
-                ))),
-            ),
-            None => (text.to_string(), None),
-        };
-        for l in all_longs(spec) {
-            if l.starts_with(&prefix) {
-                found.push((l, explicit.clone()));
+    // _get_option_tuples: the part before `=` is a prefix of option strings; for a single dash,
+    // the first two characters may also be a short option with the rest as its value (`-hX`).
+    let (prefix, explicit) = match eq {
+        Some(eq) => (
+            String::from_utf8_lossy(&bytes[..eq]).into_owned(),
+            Some(os(&bytes[eq + 1..])),
+        ),
+        None => (text.to_string(), None),
+    };
+    let long_form = bytes.starts_with(b"--");
+    let first_two: String = text.chars().take(2).collect();
+    let mut found: Vec<(&'static str, &'static str, Option<OsString>, bool)> = Vec::new();
+    for o in all_strings(spec) {
+        if long_form {
+            if o.starts_with("--") && o.starts_with(&prefix) {
+                found.push((o, action(o), explicit.clone(), explicit.is_some()));
             }
-        }
-    } else if bytes.len() >= 2 && bytes[1] != b'-' {
-        // A single-dash prefix (3.12.16): with `=`, every option starting with the part before
-        // it (`-=x`: all of them); else `-h` with the rest as its explicit value (`-hX`).
-        if let Some(eq) = bytes.iter().position(|&b| b == b'=') {
-            let prefix = String::from_utf8_lossy(&bytes[..eq]).into_owned();
-            let explicit = OsString::from(std::ffi::OsStr::from_bytes(&bytes[eq + 1..]));
-            for l in std::iter::once("-h").chain(all_longs(spec)) {
-                if l.starts_with(&prefix) {
-                    found.push((if l == "-h" { HELP } else { l }, Some(explicit.clone())));
-                }
-            }
-            if found.len() > 1 {
-                let names: Vec<&str> = std::iter::once("-h")
-                    .chain(all_longs(spec))
-                    .filter(|l| l.starts_with(&prefix))
-                    .collect();
-                return Some(Matched::Ambiguous(format!(
-                    "ambiguous option: {text} could match {}",
-                    names.join(", ")
-                )));
-            }
-        } else if bytes[1] == b'h' {
-            // `-hX`: CPython 3.12.16 runs the help before it looks at `X`.
-            found.push((HELP, None));
+        } else if o == first_two {
+            let rest: String = text.chars().skip(2).collect();
+            found.push((o, action(o), Some(OsString::from(rest)), false));
+        } else if o.starts_with(&prefix) {
+            found.push((o, action(o), explicit.clone(), explicit.is_some()));
         }
     }
     match found.len() {
         0 => {}
         1 => {
-            let (o, v) = found.pop().expect("one");
-            return Some(Matched::Opt(Some(o), v));
+            let (_, a, v, sep) = found.pop().expect("one");
+            return Some(Matched::Opt(Some(a), v, sep));
         }
         _ => {
-            let names: Vec<&str> = found.iter().map(|(l, _)| *l).collect();
+            let names: Vec<&str> = found.iter().map(|f| f.0).collect();
             return Some(Matched::Ambiguous(format!(
                 "ambiguous option: {text} could match {}",
                 names.join(", ")
@@ -195,7 +187,13 @@ fn parse_optional(spec: &Spec<'_>, arg: &OsString) -> Option<Matched> {
     if text.contains(' ') {
         return None;
     }
-    Some(Matched::Opt(None, None))
+    Some(Matched::Opt(None, None, false))
+}
+
+/// A help action with an explicit value: argparse refuses it after an `=` or when the value
+/// starts with `-` (`-h-`), and otherwise runs the help (`-hX`).
+fn help_refuses(explicit: &OsString, sep: bool) -> bool {
+    sep || explicit.as_bytes().first() == Some(&b'-')
 }
 
 /// The option's name in messages (`argument -h/--help: …`).
@@ -252,7 +250,8 @@ pub fn parse_known(spec: &Spec<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
                 let mut at = start;
                 for len in lens {
                     let mut values: Vec<OsString> = args[at..at + len].to_vec();
-                    if let Some(i) = values.iter().position(|v| v.as_bytes() == b"--") {
+                    // Only the real `--` (classified `-`) is dropped, once.
+                    if let Some(i) = kinds[at..at + len].iter().position(|&k| k == b'-') {
                         values.remove(i);
                     }
                     parsed.pos.push(values);
@@ -286,8 +285,8 @@ pub fn parse_known(spec: &Spec<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
             start = next_opt;
         }
         // consume_optional.
-        let (option, explicit) = match matched[start].clone().expect("an option") {
-            Matched::Opt(o, e) => (o, e),
+        let (option, explicit, sep) = match matched[start].clone().expect("an option") {
+            Matched::Opt(o, e, sep) => (o, e, sep),
             Matched::Ambiguous(m) => return Err(Stop::Error(m)),
         };
         let Some(long) = option else {
@@ -295,7 +294,7 @@ pub fn parse_known(spec: &Spec<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
             start += 1;
             continue;
         };
-        if long == HELP && explicit.is_none() {
+        if long == HELP && !explicit.as_ref().is_some_and(|e| help_refuses(e, sep)) {
             return Err(Stop::Help);
         }
         let opt = spec.opts.iter().find(|o| o.long == long);
@@ -409,19 +408,23 @@ fn match_positionals(pos: &[Pos], pattern: &[u8]) -> Option<Vec<usize>> {
 /// Python's `float(s)` for a str: surrounding whitespace, a sign, `inf`/`infinity`/`nan` in any
 /// case, decimal digits of any script (`Nd`), and `_` only between two digits.
 pub fn py_float(s: &str) -> Option<f64> {
-    let t = pystr::strip(s);
-    let mut ascii = String::with_capacity(t.len());
-    for c in t.chars() {
+    // `_PyUnicode_TransformDecimalAndSpaceToASCII`: ASCII is kept, other spaces become ' ',
+    // other decimals their digit; then only ASCII whitespace (not \x1c-\x1f) is stripped.
+    let mut wide = String::with_capacity(s.len());
+    for c in s.chars() {
         if c.is_ascii() {
-            ascii.push(c);
+            wide.push(c);
+        } else if pystr::is_space(c) {
+            wide.push(' ');
         } else {
-            ascii.push(char::from(b'0' + pystr::decimal_value(c)?));
+            wide.push(char::from(b'0' + pystr::decimal_value(c)?));
         }
     }
+    let ascii = wide.trim_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
     let (sign, body) = match ascii.as_bytes().first() {
         Some(b'-') => (-1.0, &ascii[1..]),
         Some(b'+') => (1.0, &ascii[1..]),
-        _ => (1.0, &ascii[..]),
+        _ => (1.0, ascii),
     };
     let lower = body.to_ascii_lowercase();
     if lower == "inf" || lower == "infinity" {
@@ -482,14 +485,15 @@ pub fn classify(spec: &Spec<'_>, arg: &OsString) -> Class {
     match parse_optional(spec, arg) {
         None => Class::Positional,
         Some(Matched::Ambiguous(m)) => Class::Error(m),
-        Some(Matched::Opt(None, _)) => Class::Unknown,
-        Some(Matched::Opt(Some(HELP), None)) => Class::Help,
-        Some(Matched::Opt(Some(long), Some(v))) => Class::Error(format!(
+        Some(Matched::Opt(None, _, _)) => Class::Unknown,
+        Some(Matched::Opt(Some(HELP), None, _)) => Class::Help,
+        Some(Matched::Opt(Some(HELP), Some(v), sep)) if !help_refuses(&v, sep) => Class::Help,
+        Some(Matched::Opt(Some(long), Some(v), _)) => Class::Error(format!(
             "argument {}: ignored explicit argument {}",
             shown(long),
             str_repr(&v.to_string_lossy())
         )),
-        Some(Matched::Opt(Some(long), None)) => {
+        Some(Matched::Opt(Some(long), None, _)) => {
             Class::Error(format!("argument {}: expected one argument", shown(long)))
         }
     }
@@ -650,5 +654,42 @@ mod tests {
             run(&["--root", "--=x"]),
             Err("argument --root: expected one argument".into())
         );
+        // `-h` with an attached value: help, unless the value follows `=` or starts with `-`.
+        for help in [&["-hX"][..], &["-hX=y"], &["-he=x"], &["-h", "-h-"]] {
+            assert_eq!(run(help), Err("help".into()), "{help:?}");
+        }
+        for (arg, value) in [
+            ("-h-", "-"),
+            ("-h-x", "-x"),
+            ("-h=x", "x"),
+            ("--help=x", "x"),
+            ("--he=x", "x"),
+        ] {
+            assert_eq!(
+                run(&[arg]),
+                Err(format!(
+                    "argument -h/--help: ignored explicit argument '{value}'"
+                )),
+                "{arg:?}"
+            );
+        }
+        assert_eq!(run(&["-1\n"]), ok(&["-1\n"], None));
+        assert_eq!(run(&["a", "--", "--"]), ok(&["a", "--"], None));
+        assert_eq!(run(&["--", "a", "--"]), ok(&["a", "--"], None));
+        assert_eq!(run(&["-r=x"]), Err("unrecognized arguments: -r=x".into()));
+        assert_eq!(
+            run(&["--ro", "--", "a"]),
+            Err("argument --root: expected one argument".into())
+        );
+    }
+
+    #[test]
+    fn python_float_whitespace() {
+        assert_eq!(py_float("\u{2000}1.5\u{2000}"), Some(1.5));
+        assert_eq!(py_float("\u{a0}1"), Some(1.0));
+        assert_eq!(py_float("1.5\x0b"), Some(1.5));
+        for bad in [" 1.5\x1c", "\x1c1", "1\u{2000}5", "\x1f"] {
+            assert_eq!(py_float(bad), None, "{bad:?}");
+        }
     }
 }

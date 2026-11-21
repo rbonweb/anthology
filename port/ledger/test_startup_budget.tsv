@@ -1,6 +1,6 @@
 # python_id	status	rust_test	note
 test_startup_budget.RealRepoTest.test_budget_covers_the_roster_and_the_repo_is_within_it	ported	crates/anthology-dev/tests/startup_budget.rs::real_repo_test::test_budget_covers_the_roster_and_the_repo_is_within_it
-test_startup_budget.RealRepoTest.test_skills_match_the_yaml_frontmatter	ported	crates/anthology-dev/tests/startup_budget.rs::real_repo_test::test_skills_match_the_yaml_frontmatter	rows:computed one row per agent file of the real repo (the roster)
+test_startup_budget.RealRepoTest.test_skills_match_the_yaml_frontmatter	ported	crates/anthology-dev/tests/startup_budget.rs::real_repo_test::test_skills_match_the_yaml_frontmatter	rows:computed one row per roster agent (EXPECTED_ROSTER)
 test_startup_budget.StartupBudgetTest.test_agent_names_skip_names_that_are_not_plain_identifiers	ported	crates/anthology-dev/tests/startup_budget.rs::startup_budget_test::test_agent_names_skip_names_that_are_not_plain_identifiers
 test_startup_budget.StartupBudgetTest.test_agents_reading_a_target	ported	crates/anthology-dev/tests/startup_budget.rs::startup_budget_test::test_agents_reading_a_target
 test_startup_budget.StartupBudgetTest.test_cli_passes_and_selects_agents	ported	crates/anthology-dev/tests/startup_budget.rs::startup_budget_test::test_cli_passes_and_selects_agents

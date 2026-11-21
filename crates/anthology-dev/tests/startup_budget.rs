@@ -184,6 +184,30 @@ fn repo() -> PathBuf {
 /// test): the top-level `skills` key in block (`- item`) or flow (`[a, b]`) form, and the body
 /// after the closing `---` line. It is written differently from `split_agent` on purpose.
 fn frontmatter_skills_and_body(text: &str) -> (Vec<String>, String) {
+    // A YAML plain or quoted scalar: a ` #` comment dropped, then one level of quotes (`''` is a
+    // quote inside single quotes; double-quoted escapes are refused rather than guessed).
+    fn scalar(raw: &str) -> String {
+        let mut v = raw.trim();
+        let Some(q) = v.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+            if let Some(at) = v.find(" #") {
+                v = v[..at].trim_end();
+            }
+            return v.to_string();
+        };
+        let close = v[1..].rfind(q).map(|i| i + 1).expect("a closing quote");
+        let rest = v[close + 1..].trim();
+        assert!(
+            rest.is_empty() || rest.starts_with('#'),
+            "after the quotes: {raw:?}"
+        );
+        let inner = &v[1..close];
+        if q == '"' {
+            assert!(!inner.contains('\\'), "a double-quoted escape: {raw:?}");
+            inner.to_string()
+        } else {
+            inner.replace("''", "'")
+        }
+    }
     let mut lines = text.split_inclusive('\n');
     assert_eq!(lines.next(), Some("---\n"), "frontmatter opens");
     let mut skills = Vec::new();
@@ -198,17 +222,13 @@ fn frontmatter_skills_and_body(text: &str) -> (Vec<String>, String) {
         if let Some(value) = l.strip_prefix("skills:") {
             let value = value.trim();
             if let Some(flow) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
-                skills.extend(
-                    flow.split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                );
+                skills.extend(flow.split(',').map(scalar).filter(|s| !s.is_empty()));
                 in_skills = false;
             } else {
                 in_skills = value.is_empty();
             }
         } else if in_skills && l.trim_start().starts_with("- ") {
-            skills.push(l.trim_start()[2..].trim().to_string());
+            skills.push(scalar(&l.trim_start()[2..]));
         } else if !l.starts_with(' ') {
             in_skills = false;
         }

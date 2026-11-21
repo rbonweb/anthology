@@ -7,8 +7,4 @@ reason = "Python raised an exception the script does not catch (a traceback, exi
 
 [[divergence]]
 class = "D-2"
-reason = "The OS error text in '[Errno N] <text>' up to the next ':', ')' or newline is hidden until P1 commits the errno tables (ruling R3); the errno number, the file names and the rest of the line are still compared."
-
-[[divergence]]
-class = "D-4"
-reason = "argparse usage text at exit 2: the usage block before the '<prog>: error: ' line is hidden; that line and the rest of stderr are compared."
+reason = "The OS error text in '[Errno N] <text>' up to the next ':', ')' or newline is hidden until P1 commits the errno tables (ruling R3); the errno number, the file names and the rest of the line are still compared. The bare OS text of 'cannot read the <what> <path>: <strerror>' is written 'errno N' by the oracle (the number from os.strerror), the Rust port's text until then."

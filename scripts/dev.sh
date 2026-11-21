@@ -18,9 +18,12 @@ runner=${ANTHOLOGY_RUST_TEST:-$root/scripts/rust-test.sh}
 mkdir -p "$root/target"
 out=$(mktemp "$root/target/dev-stdout.XXXXXX")
 trap 'rm -f "$out"' EXIT
-# The container user may differ from the file's owner (rust-test.sh maps a root-owned checkout
-# to uid 1000).
-chmod 666 "$out"
+# The container runs as the checkout's owner, or uid 1000 for a root-owned checkout
+# (rust-test.sh); only then may it differ from this file's owner, which must let it write.
+owner=$(stat -c %u "$root" 2>/dev/null || stat -f %u "$root")
+if [ "$owner" = 0 ] || [ "$owner" != "$(id -u)" ]; then
+    chmod 622 "$out"
+fi
 rel=${out#"$root"/}
 
 status=0

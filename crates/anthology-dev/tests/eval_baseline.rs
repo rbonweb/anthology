@@ -553,6 +553,40 @@ mod lead_extras {
             err.ends_with("eval_baseline.py: error: unrecognized arguments: --x c\n"),
             "{err}"
         );
+        // From CPython 3.12.16: `-h-` is refused, `-hX` is help, a second `--` is a value.
+        let (code, _, err) = c.run_cli(&["compare", "-h-"]);
+        assert_eq!(code, 2);
+        assert!(
+            err.ends_with(
+                "eval_baseline.py compare: error: argument -h/--help: ignored explicit argument '-'\n"
+            ),
+            "{err}"
+        );
+        let (code, out, _) = c.run_cli(&["compare", "-hX"]);
+        assert_eq!(code, 0);
+        assert!(
+            out.starts_with("usage: eval_baseline.py compare [-h]"),
+            "{out}"
+        );
+        let (code, _, err) = c.run_cli(&["record", "--", "--"]);
+        assert_eq!(code, 2);
+        assert!(
+            err.ends_with(
+                "eval_baseline.py record: error: the following arguments are required: baseline\n"
+            ),
+            "{err}"
+        );
+        for argv in [
+            &["record", "a", "--", "--"][..],
+            &["--", "record", "a", "b"],
+        ] {
+            let (code, _, err) = c.run_cli(argv);
+            assert_eq!(code, 2);
+            assert!(
+                err.starts_with("eval_baseline: cannot read the result a: "),
+                "{err}"
+            );
+        }
         let (code, _, err) = c.run_cli(&["compare", "r", "b", "--allow-missing=1"]);
         assert_eq!(code, 2);
         assert!(

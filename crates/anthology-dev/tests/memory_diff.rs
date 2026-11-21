@@ -341,9 +341,14 @@ mod lead_extras {
         let bin = r._tmp.path().join("slow-bin");
         fs::create_dir(&bin).expect("mkdir");
         let fake = bin.join("git");
-        fs::write(&fake, "#!/bin/sh\nexec sleep 30\n").expect("write");
+        fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$1\" != --version ] || exit 0\nexec sleep 30\n",
+        )
+        .expect("write");
         let mode = <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755);
         fs::set_permissions(&fake, mode).expect("chmod");
+        anthology_testkit::rl::settle_exec(&fake, &[]);
         let path = format!(
             "{}:{}",
             bin.display(),

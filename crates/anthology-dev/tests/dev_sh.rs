@@ -7,6 +7,24 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
+
+/// dev.sh writes its stdout file under the repository's `target/`; one run at a time, so a
+/// test can check that the file is gone afterwards.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn stdout_files() -> Vec<String> {
+    let Ok(dir) = fs::read_dir(repo().join("target")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = dir
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("dev-stdout."))
+        .collect();
+    names.sort();
+    names
+}
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -18,10 +36,24 @@ fn repo() -> PathBuf {
 fn script(path: &Path, text: &str) {
     fs::write(path, text).expect("write");
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    anthology_testkit::rl::settle_exec(path, &[]);
 }
 
-/// Runs `scripts/dev.sh args…`; the tool runs in `tool_cwd` (the repository by default).
+/// Runs `scripts/dev.sh args…`; the tool runs in `tool_cwd` (the repository by default). The
+/// stdout file is removed afterwards.
 fn dev_sh(args: &[&str], tool_cwd: Option<&Path>) -> Output {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let before = stdout_files();
+    let out = dev_sh_once(args, tool_cwd);
+    let after = stdout_files();
+    assert!(
+        after.iter().all(|n| before.contains(n)),
+        "left behind: {after:?} (before: {before:?})"
+    );
+    out
+}
+
+fn dev_sh_once(args: &[&str], tool_cwd: Option<&Path>) -> Output {
     let tmp = tempfile::tempdir().expect("tempdir");
     let bin = tmp.path().join("bin");
     fs::create_dir(&bin).expect("mkdir");
@@ -80,6 +112,15 @@ fn stdout_is_only_the_tools_output_and_the_exit_status_passes_through() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("release: 0.9.0 is lower"));
+
+    // Arguments reach the tool intact, spaces included.
+    let out = dev_sh(&["eval-baseline", "record", "a b.json", "c d.json"], None);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot read the result a b.json: "),
+        "{out:?}"
+    );
 }
 
 /// The sync-rtk.sh contract: `old_pin=$(scripts/dev.sh vendor set-rtk-upstream …)` is exactly
