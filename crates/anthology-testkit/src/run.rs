@@ -436,7 +436,8 @@ mod tests {
         let out = run_bin(&["--version"], b"", &env(), Path::new("/"));
         assert_eq!(out.code, 0, "{}", out.stderr_text());
         assert!(
-            out.stdout_text().starts_with("anthology 0.1.0 ("),
+            out.stdout_text()
+                .starts_with(&format!("anthology {} (", env!("CARGO_PKG_VERSION"))),
             "{}",
             out.stdout_text()
         );
