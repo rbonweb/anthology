@@ -90,6 +90,26 @@ a new version section.
   knowledge-work folders, and the `caveman` and `ui-taste` patches) come with the owner's
   credits pass, before 1.0.0.
 
+#### Security
+
+- rtk `1.2.1-anthology.3`: the rtk hook applies your deny, ask and `Read()` deny rules (user,
+  project, local and managed settings) to the command an `rtk …` form wraps, printing an
+  explicit deny or ask, so `Bash(rtk *)` no longer runs a command one of those rules covers.
+- rtk `1.2.1-anthology.4`: once you have any deny, ask or `Read()` rule, a line that runs
+  `rtk` passes without a prompt only in the plain shape: one `rtk ls`, `tree`, `read`, `wc`,
+  `diff`, `grep`, `rg`, `find`, everyday `rtk git` or `rtk cargo build/test/check/clippy/fmt`
+  command with listed options and literal paths, and no pipe, `&&`, `;`, redirect,
+  substitution, variable, glob, `@file` word or `cd` in front (and nothing after cargo's
+  `--`, no `:` in a git word but a commit message, no `git add -f`). Everything else asks, and rtk rewrites
+  only into that shape. A rule's command text anywhere in such a line asks, however
+  quoted. A dashed git builtin (`git-push`), words after a redirect (`git >/dev/null push`)
+  and a redirect before the command (`< secret.txt cat`) now meet your deny rules. Rules
+  restrict commands, not what an allowed program loads from files. Without rules nothing
+  changes.
+- rtk's local history (command lines, recall store, tee spool) is kept in
+  `~/.claude/anthology/rtk/` and deleted by `/anthology:setup remove`; README and SECURITY
+  document what it stores and for how long.
+
 ## anthology-guardrails
 
 ### [Unreleased]

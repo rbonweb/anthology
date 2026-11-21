@@ -60,7 +60,7 @@ fn each_downloader_installs_from_the_server() {
 }
 
 #[test]
-fn a_fast_download_returns_in_under_five_seconds() {
+fn a_fast_download_is_not_held_until_the_budget() {
     for d in downloaders("fast download") {
         let (sb, path) = served(d, normal);
         let run = boot_path(
@@ -70,8 +70,11 @@ fn a_fast_download_returns_in_under_five_seconds() {
             path,
         );
         assert_status(&run, "status=installed", &format!("{d:?}"));
+        // m-R4: the watchdog must not hold stdout until its 20 s budget runs out. The bound is
+        // half the budget, not the design's 5 s proxy: on a loaded CI container process start,
+        // TLS and the install alone took 5.06 s, while a held stdout costs >= 20 s.
         assert!(
-            run.elapsed < Duration::from_secs(5),
+            run.elapsed < Duration::from_secs(10),
             "{d:?}: {:?} (m-R4)",
             run.elapsed
         );

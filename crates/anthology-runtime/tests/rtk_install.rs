@@ -1350,6 +1350,93 @@ mod wrapper_test {
         }
     }
 
+    impl W {
+        fn env_fake(&self) -> PathBuf {
+            let fake = self.b.tmp.join("env-rtk");
+            fs::write(
+                &fake,
+                "#!/bin/sh\necho \"db:$RTK_DB_PATH\"\necho \"recall:$RTK_RECALL_DB\"\n\
+                 echo \"tee:$RTK_TEE_DIR\"\n",
+            )
+            .expect("env-rtk");
+            set_mode(&fake, 0o755);
+            fake
+        }
+    }
+
+    #[test]
+    fn test_both_wrappers_keep_rtk_history_next_to_state_json() {
+        // I4: rtk's tracking db (command lines), recall store and tee spool live under
+        // state.rtk_data_dir(), which remove deletes, never in rtk's default data folder.
+        let w = setup();
+        let fake = w.env_fake();
+        w.b.state_write(&[("rtk_path", fake.to_str().expect("utf-8 tmp"))]);
+        let base = state::path(&w.b.env)
+            .parent()
+            .expect("state dir")
+            .join("rtk");
+        assert_eq!(base, w.b.cfg.join("anthology").join("rtk"));
+        let want = [
+            format!("db:{}", base.join("history.db").display()),
+            format!("recall:{}", base.join("recall.db").display()),
+            format!("tee:{}", base.join("tee").display()),
+        ];
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json",
+        );
+        assert_eq!(table.len(), 2);
+        for row in table {
+            let name = row.str("name");
+            let res = w.run_bin(name, &["x"], "{}");
+            assert_eq!(res.code, 0, "{name}: {}", res.stderr_text());
+            assert_eq!(lines(&res), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn test_wrappers_history_follows_home_when_config_dir_is_unset() {
+        let w = setup();
+        let fake = w.env_fake();
+        let home = w.b.tmp.join("home");
+        fs::create_dir_all(home.join(".claude").join("anthology")).expect("mkdir");
+        let mut m = json::Map::new();
+        m.insert(
+            "rtk_path".into(),
+            Value::Str(fake.to_str().expect("utf-8 tmp").into()),
+        );
+        let text = json::dumps(&Value::Object(m), &json::STATE) + "\n";
+        fs::write(
+            home.join(".claude").join("anthology").join("state.json"),
+            text,
+        )
+        .expect("state");
+        let env = Env::default()
+            .with("PATH", &path_var())
+            .with_os("HOME", &home);
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset",
+        );
+        assert_eq!(table.len(), 2);
+        for row in table {
+            let name = row.str("name");
+            let res = run_program(&wrapper(name), &[], b"{}", &env, &w.b.tmp);
+            assert_eq!(
+                lines(&res)[0],
+                format!(
+                    "db:{}",
+                    home.join(".claude")
+                        .join("anthology")
+                        .join("rtk")
+                        .join("history.db")
+                        .display()
+                ),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn test_hook_runs_rtk_hook_claude_with_stdin_passed_through() {
         let w = setup();

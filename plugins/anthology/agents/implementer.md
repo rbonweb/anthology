@@ -13,6 +13,7 @@ skills:
 ## Startup
 Before any other work, Read every file below, in order:
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/caveman/SKILL.md`
+- `${CLAUDE_PLUGIN_ROOT}/knowledge/karpathy-guidelines/SKILL.md`
 Paths inside a knowledge file are relative to that file's folder. A reference `design-skills:<x>` means `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/<x>/SKILL.md`.
 Caveman governs chat and reports only; files, commits and docs you write stay in normal prose.
 
