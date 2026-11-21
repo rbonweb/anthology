@@ -54,7 +54,10 @@ if [ "$rc" -eq 0 ] &&
       cmd=$(printf '%s' "$input" | tr -d '\n\r' |
         LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
       [ -n "$cmd" ] || cmd=$input
-      printf '%s' "$cmd" | LC_ALL=C sed 's/\\\\\\n//g' | LC_ALL=C tr -d "\\\\\"'\$" |
+      # Both readings are tested: with every `\`+newline joined, and with none joined (a `\\` at
+      # the end of a line is a literal backslash, not a continuation). Either one keeps the ask.
+      { printf '%s' "$cmd" | LC_ALL=C sed 's/\\\\\\n//g'; printf '\n%s\n' "$cmd"; } |
+        LC_ALL=C tr -d "\\\\\"'\$" |
         LC_ALL=C grep -Eqi '(^|[^a-z_]|[nrtbf])rtk' || exit 0 ;;
   esac
 fi

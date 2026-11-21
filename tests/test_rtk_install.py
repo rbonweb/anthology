@@ -806,7 +806,8 @@ class WrapperTest(Base):
                         "r\\\ntk x", "rtk x", "x; rtk git push", "r$'tk' x",
                         '"r"tk x', "rtk --version", "RTK x", "\\rtk x", "x\nrtk y", "x\trtk y", ";rtk x",
                         "|rtk x", "/opt/bin/rtk x", "${a}rtk x", "$1rtk x", "(rtk y)",
-                        "`rtk y`", "$(rtk y)"):
+                        "`rtk y`", "$(rtk y)", "echo a\\\\\nrtk x", "ls # a\\\nrtk x", "node -v\rrtk x",
+                        "x\brtk y", "x\frtk y"):
             with self.subTest(command=command):
                 res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
                 self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
@@ -833,7 +834,7 @@ class WrapperTest(Base):
         # `rtk` glued after a letter or underscore cannot invoke rtk, so the ask is dropped.
         self.answer_fake(self.ASK)
         for command in ("grep -n 'insertKey\\|KEY_RE' a.ts; node -v", "grep ALERTKIT x",
-                        "echo shortkey; node --version"):
+                        "echo shortkey; node --version", "node -v; _rtk x"):
             with self.subTest(command=command):
                 res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
                 self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
