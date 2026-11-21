@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anthology_core::Env;
+use anthology_pycompat::argparse::{self, Arg, Subcommands, Type, Value as ArgValue};
 use anthology_pycompat::json::{self, INDENT2_SORTED, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use regex::Regex;
 
 use crate::Output;
 use crate::json_edit::{Uncaught, py_repr, str_repr, utf8_decode_error};
-use crate::memory_diff::pystr;
-use crate::startup_budget::pyargs::{self, Nargs, Opt, Pos, Spec, Stop};
+use anthology_pycompat::str as pystr;
 
 static CASE_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z").expect("CASE_NAME_RE"));
@@ -516,82 +516,55 @@ fn cmd_compare(
     Ok((i32::from(regressions > 0), String::new()))
 }
 
-const PROG: &str = "eval_baseline.py";
-const MAIN_USAGE: &str = "usage: eval_baseline.py [-h] {record,candidate,compare} ...";
-const COMMANDS: [&str; 3] = ["record", "candidate", "compare"];
-const MAIN_HELP: &str = "\nBaseline gate for the behaviour evals: record scores, then fail on a\nregression.\n\npositional arguments:\n  {record,candidate,compare}\n    record              write the baseline from a full run\n    candidate           write a candidate baseline, partial runs allowed\n    compare             compare a run with the baseline\n\noptions:\n  -h, --help            show this help message and exit\n";
-
-const TWO_POS: [Pos; 2] = [
-    Pos {
-        name: "result",
-        nargs: Nargs::One,
-    },
-    Pos {
-        name: "baseline",
-        nargs: Nargs::One,
-    },
-];
-const CANDIDATE_POS: [Pos; 2] = [
-    Pos {
-        name: "result",
-        nargs: Nargs::One,
-    },
-    Pos {
-        name: "out",
-        nargs: Nargs::One,
-    },
-];
-const COMPARE_OPTS: [Opt; 3] = [
-    Opt {
-        long: "--tolerance",
-        takes_value: true,
-        float: true,
-    },
-    Opt {
-        long: "--allow-missing",
-        takes_value: false,
-        float: false,
-    },
-    Opt {
-        long: "--summary",
-        takes_value: true,
-        float: false,
-    },
-];
-
-fn sub_spec(cmd: &str) -> Spec<'static> {
-    match cmd {
-        "record" => Spec {
-            prog: "eval_baseline.py record",
-            usage: "usage: eval_baseline.py record [-h] result baseline",
-            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help  show this help message and exit\n",
-            opts: &[],
-            pos: &TWO_POS,
-        },
-        "candidate" => Spec {
-            prog: "eval_baseline.py candidate",
-            usage: "usage: eval_baseline.py candidate [-h] result out",
-            help: "\npositional arguments:\n  result\n  out\n\noptions:\n  -h, --help  show this help message and exit\n",
-            opts: &[],
-            pos: &CANDIDATE_POS,
-        },
-        _ => Spec {
-            prog: "eval_baseline.py compare",
-            usage: "usage: eval_baseline.py compare [-h] [--tolerance TOLERANCE] [--allow-missing]\n                                [--summary PATH]\n                                result baseline",
-            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help            show this help message and exit\n  --tolerance TOLERANCE\n  --allow-missing       a baseline case absent from the result is not a\n                        regression\n  --summary PATH        append a Markdown table to PATH\n",
-            opts: &COMPARE_OPTS,
-            pos: &TWO_POS,
-        },
-    }
+/// `main`'s `ArgumentParser` and its subparsers (`prog` is the script's name, as `sys.argv[0]`
+/// gives it). `COLUMNS` sets the help width, as `shutil.get_terminal_size` reads it.
+fn spec(env: &Env) -> argparse::Spec {
+    let subcommands = Subcommands::new()
+        .dest("command")
+        .required()
+        .parser(
+            "record",
+            Some("write the baseline from a full run"),
+            argparse::Spec::command()
+                .arg(Arg::positional("result"))
+                .arg(Arg::positional("out").metavar("baseline")),
+        )
+        .parser(
+            "candidate",
+            Some("write a candidate baseline, partial runs allowed"),
+            argparse::Spec::command()
+                .arg(Arg::positional("result"))
+                .arg(Arg::positional("out")),
+        )
+        .parser(
+            "compare",
+            Some("compare a run with the baseline"),
+            argparse::Spec::command()
+                .arg(Arg::positional("result"))
+                .arg(Arg::positional("baseline"))
+                .arg(
+                    Arg::option(&["--tolerance"])
+                        .ty(Type::Float)
+                        .default(ArgValue::Float(0.0)),
+                )
+                .arg(
+                    Arg::option(&["--allow-missing"])
+                        .store_true()
+                        .help("a baseline case absent from the result is not a regression"),
+                )
+                .arg(
+                    Arg::option(&["--summary"])
+                        .metavar("PATH")
+                        .help("append a Markdown table to PATH"),
+                ),
+        );
+    argparse::Spec::new("eval_baseline.py")
+        .description(
+            "Baseline gate for the behaviour evals: record scores, then fail on a regression.",
+        )
+        .width(argparse::help_width(env.get("COLUMNS"), None))
+        .subcommands(subcommands)
 }
-
-const MAIN_SPEC: Spec<'static> = Spec {
-    prog: PROG,
-    usage: MAIN_USAGE,
-    help: MAIN_HELP,
-    opts: &[],
-    pos: &[],
-};
 
 /// Runs `anthology-dev eval-baseline …`; `args` are the arguments after `eval-baseline`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
@@ -601,67 +574,34 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
 
 /// `eval_baseline.main(args)`, with relative paths resolved against `cwd`.
 pub fn run_in(args: &[OsString], stdin: &mut dyn Read, env: &Env, cwd: &Path) -> Output {
-    let _ = (stdin, env);
-    // The main parser: `-h` and the `command` subparsers (nargs PARSER: the first argument that
-    // is not an option, after at most one `--`, takes everything after it).
-    let mut extras: Vec<OsString> = Vec::new();
-    let mut cmd_at = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--" {
-            if i + 1 < args.len() {
-                cmd_at = Some(i + 1);
-            }
-            break;
-        }
-        match pyargs::classify(&MAIN_SPEC, &args[i]) {
-            pyargs::Class::Positional => {
-                cmd_at = Some(i);
-                break;
-            }
-            pyargs::Class::Help => return pyargs::help(&MAIN_SPEC),
-            pyargs::Class::Error(m) => return pyargs::error(&MAIN_SPEC, &m),
-            pyargs::Class::Unknown => extras.push(args[i].clone()),
-        }
-        i += 1;
-    }
-    let Some(cmd_at) = cmd_at else {
-        return pyargs::error(&MAIN_SPEC, "the following arguments are required: command");
-    };
-    let cmd = args[cmd_at].to_string_lossy().into_owned();
-    if !COMMANDS.contains(&cmd.as_str()) {
-        return pyargs::error(
-            &MAIN_SPEC,
-            &format!(
-                "argument command: invalid choice: {} (choose from {})",
-                str_repr(&cmd),
-                COMMANDS.join(", ")
-            ),
-        );
-    }
-    let spec = sub_spec(&cmd);
-    let parsed = match pyargs::parse_known(&spec, &args[cmd_at + 1..]) {
+    let _ = stdin;
+    let parsed = match argparse::parse(&spec(env), args) {
         Ok(p) => p,
-        Err(Stop::Help) => return pyargs::help(&spec),
-        Err(Stop::Error(m)) => return pyargs::error(&spec, &m),
+        Err(e) => {
+            return Output {
+                stdout: e.stdout.into_bytes(),
+                stderr: e.stderr.into_bytes(),
+                code: e.code,
+            };
+        }
     };
-    extras.extend(parsed.extras.iter().cloned());
-    if !extras.is_empty() {
-        return pyargs::error(&MAIN_SPEC, &pyargs::unrecognized(&extras));
-    }
-    let (a, b) = (parsed.pos[0][0].as_os_str(), parsed.pos[1][0].as_os_str());
+    let cmd = parsed.str("command").unwrap_or_default().to_string();
+    let result = parsed.os_str("result").unwrap_or_default();
+    // `record` and `candidate` write to `out`; `compare` reads `baseline`.
+    let other = parsed
+        .os_str("out")
+        .or_else(|| parsed.os_str("baseline"))
+        .unwrap_or_default();
+    let (a, b) = (result, other);
     let mut stdout = String::new();
     let outcome = match cmd.as_str() {
         "record" => cmd_record(cwd, a, b),
         "candidate" => cmd_candidate(cwd, a, b),
         _ => {
-            let tolerance = parsed.value("--tolerance").map_or(0.0, |t| {
-                pyargs::py_float(&t.to_string_lossy()).expect("checked")
-            });
             let opts = CompareOpts {
-                tolerance,
-                allow_missing: parsed.flag("--allow-missing"),
-                summary: parsed.value("--summary").map(OsString::as_os_str),
+                tolerance: parsed.f64("tolerance").unwrap_or(0.0),
+                allow_missing: parsed.flag("allow_missing"),
+                summary: parsed.os_str("summary"),
             };
             cmd_compare(cwd, a, b, &opts, &mut stdout)
         }

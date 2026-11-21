@@ -14,12 +14,10 @@
 //!   (release-edit); `parse_ns` {hex}, `escape` {s}, `render` {entries} (memory-diff);
 //!   `sections` {body}, `split` {text} (startup-budget).
 //!
-//! Normalization, both sides: `<TODAY>` for today's date (changelog-move without `--date`); D-2
-//! the OS text in `[Errno N] <text>` (P1's errno tables are pending, ruling R3), so the errno
-//! number and file names are still compared. argparse usage and help text is compared verbatim
-//! (no D-4). The oracle marks D-1 where Python raised (a traceback; Rust prints
-//! `anthology-dev <tool>: <Type>: ...`), and D-2 where it wrote eval-baseline's bare strerror
-//! `errno N`, the Rust port's placeholder text.
+//! Normalization, both sides: `<TODAY>` for today's date (changelog-move without `--date`).
+//! argparse usage and help text is compared verbatim (no D-4), and so is the OS text of
+//! `[Errno N] <text>` (`pycompat`'s errno tables). The oracle marks D-1 where Python raised (a
+//! traceback; Rust prints `anthology-dev <tool>: <Type>: ...`).
 //!
 //! The Linux oracle image has no git, so the git paths of version-bump and memory-diff compare
 //! their git-missing outcome there; macOS runs them for real.
@@ -34,7 +32,7 @@ use anthology_dev::{
 use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
 
 use crate::case::{Case, Rng, Surface};
-use crate::normalize::{LIBTEXT, Normalizer};
+use crate::normalize::Normalizer;
 use crate::observe::{Observed, from_oracle};
 use crate::oracle::Oracle;
 
@@ -94,16 +92,12 @@ impl Surface for Dv2 {
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
         let mut o = from_oracle(&oracle.call("dev_tools", &c.data));
-        if normalize(&mut o) {
-            oracle.mark("D-2");
-        }
         normalizer().apply_python(&mut o, oracle);
         o
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
         let mut o = run_rust(self.0, &c.data);
-        normalize(&mut o);
         normalizer().apply(&mut o);
         o
     }
@@ -111,42 +105,6 @@ impl Surface for Dv2 {
 
 fn normalizer() -> Normalizer {
     Normalizer::new().today_local()
-}
-
-/// The D-2 rule: `[Errno N] <text>` → `[Errno N] <LIBTEXT>`, where `<text>` runs to the next
-/// `:`, `)` or newline. True when it changed `o`.
-pub(crate) fn normalize(o: &mut Observed) -> bool {
-    let before = (o.stdout.clone(), o.stderr.clone());
-    o.stdout = errno_text(&o.stdout);
-    o.stderr = errno_text(&o.stderr);
-    (o.stdout.clone(), o.stderr.clone()) != before
-}
-
-fn errno_text(b: &[u8]) -> Vec<u8> {
-    const OPEN: &[u8] = b"[Errno ";
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i..].starts_with(OPEN) {
-            let digits = b[i + OPEN.len()..]
-                .iter()
-                .take_while(|c| c.is_ascii_digit())
-                .count();
-            let close = i + OPEN.len() + digits;
-            if digits > 0 && b[close..].starts_with(b"] ") {
-                out.extend_from_slice(&b[i..close + 2]);
-                out.extend_from_slice(LIBTEXT.as_bytes());
-                i = close + 2;
-                while i < b.len() && !matches!(b[i], b':' | b')' | b'\n') {
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    out
 }
 
 // ---- the Rust side ---------------------------------------------------------------------------
@@ -1669,13 +1627,5 @@ mod tests {
                 let _ = surface.run_rust(&c);
             }
         }
-    }
-
-    #[test]
-    fn errno_text_is_masked() {
-        assert_eq!(
-            errno_text(b"x [Errno 2] No such file or directory: 'a'\n"),
-            b"x [Errno 2] <LIBTEXT>: 'a'\n"
-        );
     }
 }

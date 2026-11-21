@@ -4,7 +4,6 @@
 //! Exit codes (GC-5): 0 listed, 1 git error, 2 usage.
 
 pub mod pystr;
-pub mod unicode;
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -19,7 +18,7 @@ use anthology_pycompat::pyerr::PyExc;
 
 use crate::Output;
 use crate::json_edit::Uncaught;
-use unicode::Class;
+use anthology_pycompat::str::{strip_ws, unicode_category};
 
 pub const ROOTS: [&str; 2] = [".claude/memory", ".claude/agent-memory"];
 pub const MAX_NAME: usize = 200;
@@ -63,8 +62,9 @@ pub fn parse_name_status(raw: &[u8]) -> Vec<Entry> {
 pub fn escape_name(name: &str) -> String {
     let mut out = String::new();
     for ch in name.chars().take(MAX_NAME) {
-        match pystr::class(ch) {
-            Some(Class::C | Class::Zl | Class::Zp) => out.push('?'),
+        let category = unicode_category(ch);
+        match category {
+            c if c.starts_with('C') || c == "Zl" || c == "Zp" => out.push('?'),
             _ if ch == '`' => out.push('\''),
             _ if ch == '|' => out.push_str("\\|"),
             _ => out.push(ch),
@@ -176,7 +176,7 @@ pub fn changed_memory_files(
         .unwrap_or_else(|| -status.signal().unwrap_or(0));
     if code != 0 {
         let text = String::from_utf8_lossy(&stderr);
-        let detail = pystr::splitlines(pystr::strip(&text), false);
+        let detail = pystr::splitlines(strip_ws(&text), false);
         return Err(match detail.first() {
             Some(first) => escape_name(first),
             None => format!("git exited {code}"),

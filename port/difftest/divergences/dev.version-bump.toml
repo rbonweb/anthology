@@ -4,7 +4,3 @@
 [[divergence]]
 class = "D-1"
 reason = "Python raised an exception the script does not catch (a traceback, exit 1). The oracle writes it as the Rust side does, 'anthology-dev <tool>: <Type>: <message>' (ruling R10), and the result is still compared byte for byte."
-
-[[divergence]]
-class = "D-2"
-reason = "The OS error text in '[Errno N] <text>' up to the next ':', ')' or newline is hidden until P1 commits the errno tables (ruling R3); the errno number, the file names and the rest of the line are still compared."

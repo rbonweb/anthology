@@ -20,8 +20,8 @@
 //!   `without_budget` {text}, `render` {change, extra}, `classify` {entry}.
 //!
 //! The expected result is Python's with F-17 applied where the Python builds its commands (the
-//! oracle docs). Normalization, both sides: DV2's D-2 rule for `[Errno N] <text>` (P1's errno
-//! tables are pending). The oracle marks D-1 where Python raised past `main` (a missing
+//! oracle docs). The OS text of `[Errno N] <text>` is compared as is (`pycompat`'s errno
+//! tables). The oracle marks D-1 where Python raised past `main` (a missing
 //! `number`, an unwritable `--json` or `GITHUB_OUTPUT`): Rust prints the same line.
 
 use std::cell::RefCell;
@@ -34,7 +34,7 @@ use anthology_dev::upstream_watch::{self as uw, Change, Deps, Error, GitHub, Net
 use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
 use anthology_pycompat::str::strip_ws;
 
-use super::dev_dv2::{field, normalize, obj, replace, s, strings, text};
+use super::dev_dv2::{field, obj, replace, s, strings, text};
 use crate::case::{Case, Rng, Surface};
 use crate::observe::{Observed, from_oracle};
 use crate::oracle::Oracle;
@@ -73,17 +73,11 @@ impl Surface for UpstreamWatch {
     }
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
-        let mut o = from_oracle(&oracle.call("dev_upstream_watch", &c.data));
-        if normalize(&mut o) {
-            oracle.mark("D-2");
-        }
-        o
+        from_oracle(&oracle.call("dev_upstream_watch", &c.data))
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
-        let mut o = run_rust(&c.data);
-        normalize(&mut o);
-        o
+        run_rust(&c.data)
     }
 }
 

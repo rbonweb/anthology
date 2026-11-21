@@ -8,6 +8,7 @@ mod support;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use anthology_core::Env;
 use anthology_core::roster::ROSTER;
 use anthology_dev::startup_budget::{
     self as sb, BUDGET, Root, agent_names, agents_reading, split_agent, startup_bytes,
@@ -46,7 +47,7 @@ fn body_bytes(f: &Fixture, name: &str) -> u64 {
 fn main(f: &Fixture, extra: &[&str], budget: &[(&str, u64)]) -> (i32, String) {
     let mut args = vec![OsString::from("--root"), f.path.clone().into_os_string()];
     args.extend(extra.iter().map(OsString::from));
-    let out = sb::main_with(&args, Path::new("/"), budget);
+    let out = sb::main_with(&args, &Env::from_process(), Path::new("/"), budget);
     assert!(
         out.stderr.is_empty(),
         "{:?}",
@@ -262,7 +263,7 @@ mod real_repo_test {
         let root = Root::new(&repo(), Path::new("/"));
         assert_eq!(agent_names(&root), strings(&roster));
         let args = [OsString::from("--root"), repo().into_os_string()];
-        let out = sb::main_with(&args, Path::new("/"), &BUDGET);
+        let out = sb::main_with(&args, &Env::from_process(), Path::new("/"), &BUDGET);
         assert_eq!(out.code, 0, "{}", String::from_utf8_lossy(&out.stdout));
     }
 }
@@ -311,6 +312,7 @@ mod lead_extras {
                 f.path.clone().into_os_string(),
                 "nofm".into(),
             ],
+            &Env::from_process(),
             Path::new("/"),
             &BUDGET,
         );
@@ -332,9 +334,77 @@ mod lead_extras {
         assert!(err.msg.starts_with("[Errno 2] "), "{}", err.msg);
     }
 
+    /// Usage errors captured from CPython 3.12.16 (the cases of the deleted argparse stand-in):
+    /// `(arguments, message)`; the stderr is the usage line, then `prog: error: <message>`.
+    #[test]
+    fn argparse_usage_errors_match_cpython() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["a", "--root", "x", "b"], "unrecognized arguments: b"),
+            (&["--rootx"], "unrecognized arguments: --rootx"),
+            (&["-x"], "unrecognized arguments: -x"),
+            (&["a", "-x"], "unrecognized arguments: -x"),
+            (&["-r=x"], "unrecognized arguments: -r=x"),
+            (
+                &["--root", "--", "a"],
+                "argument --root: expected one argument",
+            ),
+            (&["--root", "--x"], "argument --root: expected one argument"),
+            (
+                &["--ro", "--", "a"],
+                "argument --root: expected one argument",
+            ),
+            (
+                &["--=x"],
+                "ambiguous option: --=x could match --help, --root",
+            ),
+            (
+                &["-=x"],
+                "ambiguous option: -=x could match -h, --help, --root",
+            ),
+            (
+                &["-h-"],
+                "argument -h/--help: ignored explicit argument '-'",
+            ),
+            (
+                &["-hh="],
+                "argument -h/--help: ignored explicit argument ''",
+            ),
+            (
+                &["--help=x"],
+                "argument -h/--help: ignored explicit argument 'x'",
+            ),
+        ];
+        for (args, message) in cases {
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            let out = sb::main_with(&args, &Env::from_process(), Path::new("/"), &BUDGET);
+            let err = String::from_utf8(out.stderr).expect("utf-8");
+            assert_eq!(out.code, 2, "{args:?}");
+            assert!(
+                err.starts_with("usage: startup_budget.py [-h] [--root ROOT] [agents ...]\n")
+                    && err.ends_with(&format!("startup_budget.py: error: {message}\n")),
+                "{args:?}: {err}"
+            );
+        }
+        // `-h` (and a stuck-on value) prints the help and exits 0.
+        for help in [&["-h", "x"][..], &["--he"], &["-hX"], &["-hh"]] {
+            let args: Vec<OsString> = help.iter().map(OsString::from).collect();
+            let out = sb::main_with(&args, &Env::from_process(), Path::new("/"), &BUDGET);
+            assert_eq!(out.code, 0, "{help:?}");
+            assert!(
+                out.stdout.starts_with(b"usage: startup_budget.py"),
+                "{help:?}"
+            );
+        }
+    }
+
     #[test]
     fn usage_errors_exit_2_with_argparse_text() {
-        let out = sb::main_with(&[OsString::from("--root")], Path::new("/"), &BUDGET);
+        let out = sb::main_with(
+            &[OsString::from("--root")],
+            &Env::from_process(),
+            Path::new("/"),
+            &BUDGET,
+        );
         assert_eq!(out.code, 2);
         assert!(
             String::from_utf8_lossy(&out.stderr)

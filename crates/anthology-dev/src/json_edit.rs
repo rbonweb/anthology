@@ -5,7 +5,7 @@
 
 use anthology_pycompat::json::{self, Int, PY_DEFAULT, Value};
 
-use crate::memory_diff::pystr;
+use anthology_pycompat::str as pystr;
 
 /// Python's `repr(v)` (`str(v)` too, for everything but a top-level string). Iterative, so
 /// there is no depth limit: CPython 3.12 prints it too up to a nesting of about 10,000, and
