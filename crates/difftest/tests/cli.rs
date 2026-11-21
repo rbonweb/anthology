@@ -75,16 +75,39 @@ fn list_prints_every_surface() {
     assert!(names.contains(&"core.lock") && names.contains(&"dev.smoke"));
 }
 
+/// A surface that is not ported yet (its `surface()` still returns `None`), while one is left.
+fn unported() -> Option<String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(Path::new(MANIFEST).join("src/surfaces"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    files.into_iter().find_map(|f| {
+        let text = std::fs::read_to_string(f).ok()?;
+        if !text.contains("-> Option<Box<dyn crate::case::Surface>> {\n    None\n}") {
+            return None;
+        }
+        text.lines()
+            .find_map(|l| {
+                l.strip_prefix("pub const NAME: &str = \"")?
+                    .strip_suffix("\";")
+            })
+            .map(str::to_string)
+    })
+}
+
 #[test]
 fn usage_errors_exit_2() {
+    if let Some(name) = unported() {
+        let (code, out) = difftest(&["--surface", &name]);
+        assert_eq!(code, 2, "{name}: {out}");
+        assert!(out.contains(&format!("{name} is not ported yet")), "{out}");
+    }
     for (args, want) in [
         (&[][..], "exactly one of"),
         (&["--all", "--list"][..], "exactly one of"),
         (&["--surface", "nope"][..], "unknown surface \"nope\""),
-        (
-            &["--surface", "pycompat.str"][..],
-            "pycompat.str is not ported yet",
-        ),
         (&["--all", "--gen", "x"][..], "--gen"),
         (&["--all", "--bogus"][..], "--bogus"),
         (

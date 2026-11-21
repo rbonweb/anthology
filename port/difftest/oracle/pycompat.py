@@ -273,6 +273,201 @@ _B_OPS = {
 }
 
 
+# --- argparse -------------------------------------------------------------------------------
+#
+# A spec is JSON: `{"prog", "description"?, "epilog"?, "allow_abbrev"?, "args": [item]}`; an item
+# is an argument, `{"mutex": {"required", "args": [argument]}}` or `{"sub": {"dest"?,
+# "required"?, "help"?, "metavar"?, "parsers": [{"name", "help"?, "spec"}]}}` (a parser's spec
+# without "prog" gets the default one). An argument is `{"name"}` (a positional) or
+# `{"flags": [...], "dest"?}`, with any of "action" (store, store_true, store_false,
+# store_const, append), "nargs", "const", "default", "type" (int, float, path), "choices",
+# "required", "help", "help_suppress", "metavar" (a str, or a list for a tuple). A value is
+# JSON, a float written `{"float": repr}`.
+
+_AP_REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "..", "..", ".."))
+
+# The command lines the port carries: (script, entry); `main` is called with `[]` and stopped
+# at its `parse_args`, `_parser` returns the parser.
+_AP_CLIS = {
+    "memory_portable": ("plugins/anthology/scripts/memory_portable.py", "main"),
+    "rtk_install": ("plugins/anthology/scripts/rtk_install.py", "main"),
+    "memory_index": ("plugins/anthology/scripts/memory_index.py", "_parser"),
+    "anthology_setup": ("plugins/anthology/scripts/anthology_setup.py", "main"),
+    "doctor": ("plugins/anthology/scripts/doctor.py", "main"),
+    "release_edit": ("scripts/release_edit.py", "main"),
+    "rtk_trim": ("scripts/rtk_trim.py", "main"),
+    "vendor": ("scripts/vendor.py", "main"),
+    "upstream_watch": ("scripts/upstream_watch.py", "main"),
+    "eval_baseline": ("scripts/eval_baseline.py", "main"),
+    "check_version_bump": ("scripts/check_version_bump.py", "main"),
+    "startup_budget": ("scripts/startup_budget.py", "main"),
+}
+_AP_CAPTURED = {}
+
+
+def _ap_in(v):
+    if isinstance(v, dict):
+        return float(v["float"])
+    if isinstance(v, list):
+        return [_ap_in(x) for x in v]
+    return v
+
+
+def _ap_add(container, a):
+    import argparse
+    import pathlib
+    kw = {k: a[k] for k in ("action", "nargs", "required", "choices", "help", "dest") if k in a}
+    if "const" in a:
+        kw["const"] = _ap_in(a["const"])
+    if "default" in a:
+        kw["default"] = _ap_in(a["default"])
+    if "type" in a:
+        kw["type"] = {"int": int, "float": float, "path": pathlib.Path}[a["type"]]
+    if a.get("help_suppress"):
+        kw["help"] = argparse.SUPPRESS
+    if "metavar" in a:
+        m = a["metavar"]
+        kw["metavar"] = tuple(m) if isinstance(m, list) else m
+    if "name" in a:
+        container.add_argument(a["name"], **kw)
+    else:
+        container.add_argument(*a["flags"], **kw)
+
+
+def _ap_fill(p, spec):
+    for item in spec["args"]:
+        if "mutex" in item:
+            g = p.add_mutually_exclusive_group(required=item["mutex"].get("required", False))
+            for a in item["mutex"]["args"]:
+                _ap_add(g, a)
+        elif "sub" in item:
+            s = item["sub"]
+            kw = {k: s[k] for k in ("dest", "required", "help", "metavar") if k in s}
+            sub = p.add_subparsers(**kw)
+            for e in s["parsers"]:
+                pkw = _ap_parser_kwargs(e["spec"])
+                if "help" in e:
+                    pkw["help"] = e["help"]
+                _ap_fill(sub.add_parser(e["name"], **pkw), e["spec"])
+        else:
+            _ap_add(p, item)
+    return p
+
+
+def _ap_parser_kwargs(spec):
+    kw = {k: spec[k] for k in ("prog", "description", "epilog") if spec.get(k) is not None}
+    if spec.get("allow_abbrev") is False:
+        kw["allow_abbrev"] = False
+    return kw
+
+
+def _ap_capture(name):
+    """The real parser of `_AP_CLIS[name]`, made with the current COLUMNS."""
+    import argparse
+    import importlib.util
+    rel, entry = _AP_CLIS[name]
+    path = os.path.join(_AP_REPO, rel)
+    folder = os.path.dirname(path)
+
+    class Got(Exception):
+        pass
+
+    def stop(self, args=None, namespace=None):
+        raise Got(self)
+
+    saved = sys.argv[0], argparse.ArgumentParser.parse_args
+    sys.path.insert(0, folder)
+    sys.argv[0] = os.path.basename(path)
+    try:
+        spec = importlib.util.spec_from_file_location("difftest_cli_" + name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        if entry == "_parser":
+            return _ap_unroot(mod._parser())
+        argparse.ArgumentParser.parse_args = stop
+        try:
+            mod.main([])
+        except Got as got:
+            return _ap_unroot(got.args[0])
+        raise RuntimeError("%s: main([]) did not call parse_args" % name)
+    finally:
+        sys.argv[0], argparse.ArgumentParser.parse_args = saved
+        sys.path.remove(folder)
+
+
+def _ap_unroot(parser):
+    """`parser` with the repository root in its defaults written `<REPO>` (the help wraps a
+    default as text, so it is replaced before formatting, not after)."""
+    import argparse
+    import pathlib
+    for action in parser._actions:
+        d = action.default
+        if isinstance(d, (str, pathlib.PurePath)) and str(d).startswith(_AP_REPO):
+            new = "<REPO>" + str(d)[len(_AP_REPO):]
+            action.default = new if isinstance(d, str) else type(d)(new)
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _ap_unroot(sub)
+    return parser
+
+
+def _ap_out(v):
+    import pathlib
+    if isinstance(v, pathlib.PurePath):
+        v = str(v)
+    if isinstance(v, str):
+        return v.replace(_AP_REPO, "<REPO>")
+    if v is None or isinstance(v, (bool, int)):
+        return v
+    if isinstance(v, float):
+        return {"float": repr(v)}
+    if isinstance(v, (list, tuple)):
+        return [_ap_out(x) for x in v]
+    raise TypeError("argparse oracle: a namespace value of type %s" % type(v).__name__)
+
+
+def _ap_parse(case):
+    """`{"cli" | "spec", "argv", "columns"}`: `parse_args(argv)` of the real parser of a command
+    line (`_AP_CLIS`) or of a parser built from a spec, with `COLUMNS=columns`. The answer is
+    the exit status and what it printed, the repository root written `<REPO>`; for a parse
+    that returns, stdout is `{"ns": vars(namespace), "order": [its keys]}` (callables, e.g. a
+    `set_defaults(func=...)`, left out)."""
+    import argparse
+    import contextlib
+    import io
+    os.environ["COLUMNS"] = str(case["columns"])
+    try:
+        if "cli" in case:
+            key = (case["cli"], case["columns"])
+            if key not in _AP_CAPTURED:
+                _AP_CAPTURED[key] = _ap_capture(case["cli"])
+            parser = _AP_CAPTURED[key]
+        else:
+            spec = case["spec"]
+            parser = _ap_fill(argparse.ArgumentParser(**_ap_parser_kwargs(spec)), spec)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                ns = parser.parse_args(case["argv"])
+        except SystemExit as e:
+            return {"exit": e.code, "stdout": _ap_out(out.getvalue()),
+                    "stderr": _ap_out(err.getvalue())}
+    finally:
+        del os.environ["COLUMNS"]
+    items = {k: v for k, v in vars(ns).items() if not callable(v)}
+    result = {"ns": {k: _ap_out(v) for k, v in items.items()}, "order": list(items)}
+    return {"exit": 0, "stdout": json.dumps(result, sort_keys=True) + out.getvalue(),
+            "stderr": err.getvalue()}
+
+
+# Ops that answer with the whole `{"exit", "stdout", "stderr"}`.
+_FULL_OPS = {
+    "argparse.parse": _ap_parse,
+}
+
+
 _OPS = {}
 _OPS.update(_STR_OPS)
 _OPS.update(_RE_OPS)
@@ -281,6 +476,9 @@ _OPS.update(_B_OPS)
 
 
 def run(case):
+    full = _FULL_OPS.get(case.get("op"))
+    if full is not None:
+        return full(case)
     op = _OPS.get(case.get("op"))
     if op is None:
         raise ValueError("pycompat oracle: unknown op %r" % (case.get("op"),))

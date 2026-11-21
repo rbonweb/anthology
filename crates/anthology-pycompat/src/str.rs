@@ -183,27 +183,40 @@ fn byte_at(s: &str, n: usize) -> usize {
 /// `repr(s)`: CPython's quote choice and escapes (`\\`, `\t`, `\n`, `\r`, `\xhh`, `\uhhhh`,
 /// `\Uhhhhhhhh` for what `isprintable` rejects).
 pub fn repr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
+    repr_points(&s.chars().map(u32::from).collect::<Vec<_>>())
+}
+
+/// `repr(os.fsdecode(b))` on a POSIX system: `b` decoded as UTF-8 with `surrogateescape`, so
+/// each byte that is not part of valid UTF-8 is a lone surrogate U+DC80..U+DCFF, which `repr`
+/// writes `\udcXX`.
+pub fn repr_surrogateescape(b: &[u8]) -> String {
+    let mut points = Vec::with_capacity(b.len());
+    for chunk in b.utf8_chunks() {
+        points.extend(chunk.valid().chars().map(u32::from));
+        points.extend(chunk.invalid().iter().map(|&x| 0xDC00 + u32::from(x)));
+    }
+    repr_points(&points)
+}
+
+/// `repr` over code points, lone surrogates included.
+fn repr_points(points: &[u32]) -> String {
+    let has = |c: char| points.contains(&u32::from(c));
+    let quote = if has('\'') && !has('"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(points.len() + 2);
     out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            c if c == quote => {
+    for &n in points {
+        match char::from_u32(n) {
+            Some('\\') => out.push_str("\\\\"),
+            Some('\t') => out.push_str("\\t"),
+            Some('\n') => out.push_str("\\n"),
+            Some('\r') => out.push_str("\\r"),
+            Some(c) if c == quote => {
                 out.push('\\');
                 out.push(c);
             }
-            ' '..='~' => out.push(c),
-            c if !c.is_ascii() && is_printable(c) => out.push(c),
-            c => {
-                let n = u32::from(c);
+            Some(c @ ' '..='~') => out.push(c),
+            Some(c) if !c.is_ascii() && is_printable(c) => out.push(c),
+            _ => {
                 if n < 0x100 {
                     out.push_str(&format!("\\x{n:02x}"));
                 } else if n < 0x1_0000 {

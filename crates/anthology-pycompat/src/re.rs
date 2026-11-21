@@ -8,16 +8,28 @@
 //! - `\Z` becomes `\z`; Python's `$` outside MULTILINE ("at the end, or before a final
 //!   newline") becomes the look-ahead `(?=\n?\z)`, which needs fancy-regex;
 //! - `(?P=name)` becomes `\k<name>`; numbered back-references, look-arounds and atomic groups
-//!   pass through (fancy-regex);
+//!   pass through (fancy-regex); a possessive repeat `X*+` becomes the atomic `(?>X*)`;
+//! - a repeated look-around (Python allows it, fancy-regex does not) is written as sre runs it:
+//!   once when the minimum is at least 1, optional (`(?:A|)`, lazy `(?:|A)`) when it is 0, and
+//!   never (keeping its groups) when the maximum is 0;
 //! - every literal is written as `\x{…}`, so no Python literal (`{`, `[` in a class, `&&`, `~~`,
 //!   `--`, `\<`) can turn into Rust syntax; a `{` that is not a valid repeat is a literal, as in
 //!   Python; `{,n}` is `{0,n}`;
-//! - inline flags `i m s` pass through, `x` (verbose) and `a` (ASCII) are applied here, `u` is a
-//!   no-op, and `L` is refused (a str pattern), as Python refuses it.
+//! - IGNORECASE (the flag or an inline `i`, scoped as Python scopes it) is applied here, not by
+//!   the engines: each cased literal and class is written out as the explicit set of what
+//!   CPython's sre matches for it (`_sre.unicode_tolower`, `_sre.unicode_iscased`,
+//!   `re._casefix`'s extra cases, from the generated tables), because Rust's simple case
+//!   folding differs from it;
+//! - inline `m s` pass through, `x` (verbose) and `a` (ASCII) are applied here, `u` is a no-op,
+//!   and `L` is refused (a str pattern), as Python refuses it.
 //!
-//! Anything Python reads differently from both engines, or that this does not support exactly
-//! (`\N{…}`, conditionals `(?(1)…)`, possessive repeats, a lone surrogate), is an `Err`, never a
-//! silent difference. `\b` and `\B` keep Rust's Unicode meaning (D-3).
+//! Anything Python reads differently from both engines, or that this does not support exactly,
+//! is an `Err`, never a silent difference: `\N{…}`, conditionals `(?(1)…)`, a lone surrogate, a
+//! back-reference under IGNORECASE, a case-insensitive class range past U+FFFF, and a capture
+//! group inside a repeat whose body can match empty (sre keeps the groups of a last, empty
+//! iteration; Rust's engines do not) unless the count is fixed. `\b` keeps Rust's Unicode
+//! meaning (D-3); `\B` is Rust's, except that it never matches in an empty string, as in
+//! CPython; under ASCII both are look-arounds over `[0-9A-Za-z_]`.
 //!
 //! [`compile`] picks `regex` when the translation needs no look-around, back-reference or
 //! atomic group, and `fancy-regex` (with its default backtrack limit) otherwise. Spans are byte
@@ -538,8 +550,8 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// Writes a repeat (`text` is its Rust form) and its `?` (lazy) suffix; `+` (possessive)
-    /// is refused.
+    /// Writes a repeat (`text` is its Rust form) and its `?` (lazy) or `+` (possessive: the
+    /// atomic group of the repeat) suffix.
     ///
     /// fancy-regex refuses to repeat a look-around, which Python allows. A zero-width item
     /// repeated is, in CPython's sre (`MAX_UNTIL` stops when an iteration does not advance):
