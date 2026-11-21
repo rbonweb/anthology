@@ -829,6 +829,26 @@ class WrapperTest(Base):
         res = self.run_bin("rtk-hook", stdin=self.hook_input("ls; pwd"))
         self.assertEqual((res.returncode, res.stdout), (0, ""))
 
+    def test_hook_drops_the_rewrite_with_the_ask(self):
+        # Nothing is printed, so the rewrite rtk carried on its ask is never applied.
+        self.answer_fake(self.ASK.replace("node --version; bun --version", "rtk git status; rtk ls"))
+        res = self.run_bin("rtk-hook", stdin=self.hook_input("git status; ls"))
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+
+    def test_hook_looks_for_rtk_in_the_command_only(self):
+        # A working folder, transcript or description that says rtk does not bring the prompt back.
+        self.answer_fake(self.ASK)
+        stdin = json.dumps({"session_id": "s", "transcript_path": "/x/rtk/t.jsonl", "cwd": "/x/rtk-proj",
+                            "tool_name": "Bash", "tool_input": {"command": "node --version",
+                                                                "description": "rtk check"}})
+        res = self.run_bin("rtk-hook", stdin=stdin)
+        self.assertEqual((res.returncode, res.stdout), (0, ""))
+        # Spacing around the key is read; an input with no "command" key is matched whole.
+        for stdin in ('{"cwd": "/w", "tool_input": {"command" :\n "rtk x"}}', '{"cwd": "/x/rtk"}'):
+            with self.subTest(stdin=stdin):
+                res = self.run_bin("rtk-hook", stdin=stdin)
+                self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
+
     def test_hook_via_sh_in_exec_form(self):
         state.write(rtk_path=str(self.fake))
         res = subprocess.run(["sh", str(PLUGIN / "bin" / "rtk-hook")], input="{}", stdout=subprocess.PIPE,
