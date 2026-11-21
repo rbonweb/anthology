@@ -9,24 +9,32 @@
 //! `tests/test_doctor.py`. Generated cases draw every piece from a vocabulary aimed at the
 //! fail-closed rules:
 //! - registry entries: near-miss keys, scopes, `projectPath` inside, outside and through links,
-//!   every JSON type of `lastUpdated`, duplicates;
+//!   every JSON type of `lastUpdated`, literal repeated JSON keys (last value, first position);
 //! - marketplace sources: every type and location form;
-//! - `marketplace.json` sources: escaping, absolute, empty, non-str, NUL, unlisted, invalid
-//!   and oversized;
+//! - `marketplace.json` sources: escaping, absolute, empty, non-str, NUL, unlisted, invalid,
+//!   oversized, and symlink chains (short ones resolve; 1,100 links fail in both: Python's
+//!   recursion, Rust's `REALPATH_MAX_DEPTH`);
 //! - settings: every `enabledPlugins` value type in all three files; every encoding; invalid
 //!   UTF-8 and UTF-16 bytes and odd lengths; empty and Python-whitespace files (`\x1c`,
 //!   U+3000); unparseable texts; non-regular files (folder, FIFO, `/dev/null`, `/dev/zero`,
-//!   dangling link); sizes at the 2 MiB limit, one byte over and well under (about 1% of
-//!   cases); deep nesting;
+//!   dangling link, a link to itself); repeated keys; sizes at the 2 MiB limit, one byte over
+//!   and well under (about 1% of cases); deep nesting in every file;
 //! - the wrappers, agent-memory, subagent-model, `repo_top`, bounded and unbounded
 //!   `read_json`, and `decode_text`.
 //!
 //! The generator never builds a layout the two sides cannot agree on by design:
-//! - JSON nesting is at most 4 levels, or 20,000 to 30,000 in a repo-controlled file (where
-//!   both refuse: Python by `RecursionError`, Rust by `REPO_JSON_DEPTH`). The band between
-//!   differs on purpose (Rust refuses from 513 levels).
-//! - The user's own files are never deep. Python ignores a deep one, while Rust reads it (D-1).
-//! - No lone-surrogate escapes (D-6).
+//! - JSON nesting is at most 4 levels, or 20,000 to 30,000 (where both refuse: Python by
+//!   `RecursionError`, Rust by `REPO_JSON_DEPTH` or `PY_JSON_DEPTH`). The seeds pin the user
+//!   files' exact edge (9,997 nested containers read, 9,998 not, as in CPython 3.12). In a
+//!   repo-controlled file, 513 to 9,997 levels differ on purpose (Rust refuses from 513: the
+//!   repo settings read as disabled, a project file is skipped; the safe direction).
+//! - Symlink chains are at most 8 links or exactly 1,100. From 41 to about 990 Rust refuses
+//!   (`ELOOP`, as the kernel does past 40) where Python still resolves: the safe direction.
+//! - No lone-surrogate escapes (D-6). This hides one known fail-open direction of D-6: a path
+//!   string (`installPath`, `installLocation`, a manifest `source`) holding a lone-surrogate
+//!   escape is unencodable in Python (no such path, so `live_missing`), while Rust looks up the
+//!   U+FFFD path. Only the marketplace's author can write it, and that author controls the
+//!   guard anyway.
 //! - The non-ASCII characters inside a container `lastUpdated` are ones whose
 //!   `str.isprintable` Rust knows without P1's tables.
 //! - No unbounded read of a FIFO or a device (Python blocks or never ends there too).
@@ -197,7 +205,11 @@ fn run(case: &Value) -> Observed {
                 Some(limit) => compat::read_json_limited(Path::new(&path), limit as u64),
                 None => compat::read_json(Path::new(&path)),
             };
-            obj(vec![("value", value.unwrap_or(Value::Null))])
+            if field(case, "found_only").and_then(Value::as_bool) == Some(true) {
+                obj(vec![("found", Value::Bool(value.is_some()))])
+            } else {
+                obj(vec![("value", value.unwrap_or(Value::Null))])
+            }
         }
         "decode" => {
             let raw = unhex(field(case, "hex").and_then(Value::as_str).expect("hex"));
@@ -844,6 +856,141 @@ fn seeds() -> Vec<Value> {
     }
     // test_doctor compat rows
     out.extend(compat_seeds());
+    out.extend(review_seeds());
+    out
+}
+
+/// `market/plugins/s0 -> s1 -> … -> s<n-1> -> real-chain` (which has the guard).
+fn chain(b: &mut B, n: usize) {
+    b.guard("market/plugins/real-chain", "file");
+    for i in 0..n {
+        let to = if i + 1 == n {
+            "real-chain".to_string()
+        } else {
+            format!("s{}", i + 1)
+        };
+        b.link(&format!("market/plugins/s{i}"), &to);
+    }
+}
+
+/// Review round 1 (C1, C2, I1): chains, the user files' exact depth edge, loops, repeats.
+fn review_seeds() -> Vec<Value> {
+    let plugin = "@ROOT@/repo/plugins/anthology";
+    let lone = "@ROOT@/lone/anthology";
+    let mut out = Vec::new();
+    for n in [5, 1100] {
+        let mut b = B::new();
+        chain(&mut b, n);
+        b.guard(CACHE, "file")
+            .manifest(r#""./plugins/s0""#)
+            .directory_known()
+            .installed();
+        out.push(b.inspect(plugin));
+        let mut b = B::new();
+        chain(&mut b, n);
+        b.manifest(r#""./plugins/s0""#)
+            .directory_known()
+            .installed_entry("@ROOT@/nowhere");
+        out.push(b.inspect(plugin));
+    }
+    let nest = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+    for depth in [9_996, 9_997] {
+        // installed_plugins.json: the top object + `depth` = 9,997 (read) or 9,998 (invalid)
+        let mut b = B::new();
+        b.guard(CACHE, "file").file(
+            INSTALLED,
+            &format!(
+                r#"{{"version": 2, "plugins": {{"anthology-guardrails@anthology": [{{"scope": "user", "installPath": "@ROOT@/{CACHE}"}}]}}, "pad": {}}}"#,
+                nest(depth)
+            ),
+        );
+        out.push(b.inspect(lone));
+        // known_marketplaces.json
+        let mut b = B::new();
+        b.dir("plugins-dir/anthology")
+            .guard("plugins-dir/anthology-guardrails", "file")
+            .guard(CACHE, "file")
+            .installed()
+            .file(
+                KNOWN,
+                &format!(
+                    r#"{{"anthology": {{"source": {{"source": "directory"}}, "installLocation": "@ROOT@/market"}}, "pad": {}}}"#,
+                    nest(depth)
+                ),
+            );
+        out.push(b.inspect("@ROOT@/plugins-dir/anthology"));
+        // the user's settings.json
+        let mut b = B::new();
+        b.diverging().file(
+            USER_SETTINGS,
+            &format!(
+                r#"{{"enabledPlugins": {{"anthology-guardrails@anthology": false}}, "pad": {}}}"#,
+                nest(depth)
+            ),
+        );
+        out.push(b.inspect(plugin));
+        // compat.read_json: unbounded at both depths; bounded only past Python's limit (below
+        // it, 513 and more is the deliberate band where Rust skips: module docs)
+        let mut b = B::new();
+        b.file("f.json", &format!(r#"{{"a": {}}}"#, nest(depth)));
+        let limits = if depth == 9_997 {
+            vec![Value::Null, int(LIMIT)]
+        } else {
+            vec![Value::Null]
+        };
+        for limit in limits {
+            out.push(b.case(
+                "read_json",
+                vec![
+                    ("path", s("@ROOT@/f.json")),
+                    ("limit", limit),
+                    ("found_only", Value::Bool(true)),
+                ],
+            ));
+        }
+    }
+    for place in [
+        USER_SETTINGS,
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+    ] {
+        let mut b = B::new();
+        b.diverging().link(place, &format!("@ROOT@/{place}"));
+        out.push(b.inspect(plugin));
+    }
+    let k = r#""anthology-guardrails@anthology""#;
+    for text in [
+        format!(r#"{{"enabledPlugins": {{{k}: false, {k}: true}}}}"#),
+        format!(r#"{{"enabledPlugins": {{{k}: true, {k}: false}}}}"#),
+        format!(r#"{{"enabledPlugins": {{{k}: false}}, "enabledPlugins": {{}}}}"#),
+        format!(r#"{{"enabledPlugins": {{}}, "enabledPlugins": {{{k}: []}}}}"#),
+    ] {
+        for place in [
+            USER_SETTINGS,
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+        ] {
+            out.push(
+                B::new()
+                    .file(place, &text)
+                    .case("disabled", vec![("cwd", s("@ROOT@"))]),
+            );
+        }
+    }
+    out.push(
+        B::new()
+            .guard(CACHE, "file")
+            .guard(LIVE, "file")
+            .manifest(r#""./plugins/anthology-guardrails""#)
+            .directory_known()
+            .file(
+                INSTALLED,
+                &format!(
+                    r#"{{"plugins": {{"anthology-guardrails@anthology": [{{"installPath": "@ROOT@/nowhere"}}]}}, "plugins": {{"anthology-guardrails@other": [{{"installPath": "@ROOT@/{CACHE}"}}]}}}}"#
+                ),
+            )
+            .inspect(plugin),
+    );
     out
 }
 
@@ -1178,6 +1325,37 @@ fn rand_encoded(rng: &mut Rng, text: &str) -> Vec<u8> {
     }
 }
 
+/// `v` as JSON text, an object's members perhaps repeated: a member of the top object or of one
+/// object below it is written again with another value (Python keeps the last value at the
+/// first position, as `json::Map` does).
+fn with_repeats(rng: &mut Rng, v: &Value) -> String {
+    fn members(rng: &mut Rng, o: &Map, nested: bool) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for (k, item) in o.iter() {
+            let body = match item.as_object() {
+                Some(inner) if nested => members(rng, inner, false),
+                _ => text(item),
+            };
+            parts.push(format!("{}: {body}", text(&s(k))));
+        }
+        let keys: Vec<&str> = o.iter().map(|(k, _)| k).collect();
+        if !keys.is_empty() && rng.chance(0.6) {
+            let k = *rng.pick(&keys);
+            let again = format!("{}: {}", text(&s(k)), text(&rand_enabled_value(rng)));
+            if rng.chance(0.5) {
+                parts.push(again);
+            } else {
+                parts.insert(0, again);
+            }
+        }
+        format!("{{{}}}", parts.join(", "))
+    }
+    match v.as_object() {
+        Some(o) => members(rng, o, true),
+        None => text(v),
+    }
+}
+
 /// One settings file at `path` (or nothing), as a repo-controlled file when `repo`.
 fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) {
     let k = rng.f64();
@@ -1191,7 +1369,11 @@ fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) 
     } else {
         rand_settings_obj(rng)
     };
-    let body = text(&obj);
+    let body = if rng.chance(0.2) {
+        with_repeats(rng, &obj)
+    } else {
+        text(&obj)
+    };
     if k < 0.80 {
         let raw = rand_encoded(rng, &body);
         b.file_hex(path, &raw);
@@ -1235,13 +1417,16 @@ fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) 
         return;
     }
     if k < 0.95 {
-        match rng.below(if model && !repo { 2 } else { 5 }) {
+        match rng.below(if model && !repo { 3 } else { 6 }) {
             0 => {
                 b.dir(path);
             }
             1 => {
                 b.file("elsewhere-real.json", &body)
                     .link(path, "@ROOT@/elsewhere-real.json");
+            }
+            5 => {
+                b.link(path, &format!("@ROOT@/{path}")); // a link to itself: ELOOP
             }
             2 => {
                 b.link(path, "/dev/null");
@@ -1265,7 +1450,7 @@ fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) 
         b.file(path, &body).chmod(path, 0);
         return;
     }
-    if k < 0.99 || !repo {
+    if k < 0.99 {
         // sizes around the limit (rare: 2 MiB per side)
         let flagged = format!(
             r#"{{"enabledPlugins": {{"anthology-guardrails@anthology": {}}}, "env": {{"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}, "pad": "@PAD@"}}"#,
@@ -1276,7 +1461,7 @@ fn rand_settings(rng: &mut Rng, b: &mut B, path: &str, repo: bool, model: bool) 
         b.file_pad(path, &flagged, "pad", n);
         return;
     }
-    // deep nesting, only in a repo-controlled file (module docs)
+    // deep nesting, past every limit (module docs)
     let t = if rng.chance(0.5) {
         r#"{"enabledPlugins": {"anthology-guardrails@anthology": true}, "zz": @DEEP@}"#
     } else {
@@ -1406,7 +1591,13 @@ fn rand_installed(rng: &mut Rng, b: &mut B) {
     let mut top = Map::new();
     top.insert("version".into(), int(2));
     top.insert("plugins".into(), Value::Object(plugins));
-    b.json(INSTALLED, &Value::Object(top));
+    let top = Value::Object(top);
+    if rng.chance(0.1) {
+        let raw = with_repeats(rng, &top);
+        b.file(INSTALLED, &raw);
+    } else {
+        b.json(INSTALLED, &top);
+    }
 }
 
 fn rand_known(rng: &mut Rng, b: &mut B) {
@@ -1479,6 +1670,7 @@ const SOURCES: &[&str] = &[
     "./plugins/link-out",
     "./plugins/link-in",
     "./plugins/anthology-guardrails\u{0}x",
+    "./plugins/s0",
 ];
 
 fn rand_manifest(rng: &mut Rng, b: &mut B) {
@@ -1587,6 +1779,10 @@ fn rand_inspect_layout(rng: &mut Rng, b: &mut B) {
             "market/plugins/link-out",
             "@ROOT@/outside/anthology-guardrails",
         );
+    }
+    if rng.chance(0.06) {
+        let n = *rng.pick(&[1, 2, 8, 1100]);
+        chain(b, n);
     }
     if rng.chance(0.2) {
         b.link(

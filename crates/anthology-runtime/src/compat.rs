@@ -29,10 +29,23 @@ pub const SUBAGENT_MODEL: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
 /// Files a cloned repo controls are read up to Claude Code's own settings limit (m15).
 pub const REPO_READ_LIMIT: u64 = 2 * 1024 * 1024;
 /// A repo-controlled JSON text nested deeper than this is treated as Python's `RecursionError`
-/// (so as "does not parse"). CPython raises at about 994 levels (3.9) or 9,998 (3.12), less on
-/// a deeper stack, so 512 refuses whenever any Python would; legitimate settings never nest
-/// this deep. The user's own files have no cap: parsing them is the D-1 direction.
-pub const REPO_JSON_DEPTH: usize = 512;
+/// (so as "does not parse"). CPython raises at about 994 levels (3.9, less on a deeper stack)
+/// or 9,998 (3.12), so 512 refuses whenever any Python would; legitimate settings never nest
+/// this deep. For a closed read (the repo settings) that means disabled. For the other bounded
+/// reads it means "skipped", so a 513-to-9,997-deep project file reports less than 3.12 would
+/// (`subagent_model_source`), never more.
+pub(crate) const REPO_JSON_DEPTH: usize = 512;
+/// The user's own JSON files nested deeper than this are Python's `RecursionError`, exactly:
+/// CPython 3.12's `json.loads` fails at 9,998 nested containers whatever the stack depth
+/// (measured), and `_load`/`read_json` turn that into "invalid"/`None`. Parity matters here: a
+/// deep `installed_plugins.json` read past Python's limit could turn "not found" into a found
+/// guard.
+pub(crate) const PY_JSON_DEPTH: usize = 9_997;
+/// `realpath` follows at most this many nested symlinks, then fails with `ELOOP` (every caller
+/// then refuses). The kernel itself gives up after 40 (Linux; 32 on macOS), so Claude Code could
+/// not load such a path; Python's recursion fails at about 990, so Rust refuses whenever
+/// Python does, and the stack stays bounded.
+pub(crate) const REALPATH_MAX_DEPTH: usize = 40;
 
 /// `O_NONBLOCK` (a FIFO must not block the open; runtime has no libc dependency).
 #[cfg(target_os = "linux")]
@@ -172,8 +185,18 @@ pub(crate) fn json_depth(text: &str) -> usize {
 /// `json.loads(text)` for a file a cloned repo controls: `None` when it does not parse, or when
 /// it nests past [`REPO_JSON_DEPTH`] (Python's `RecursionError`).
 pub(crate) fn loads_bounded(text: &str) -> Option<Value> {
+    loads_capped(text, REPO_JSON_DEPTH)
+}
+
+/// `json.loads(text)` for one of the user's own files: `None` when it does not parse, or when it
+/// nests past [`PY_JSON_DEPTH`] (CPython 3.12's `RecursionError`, exactly).
+pub(crate) fn loads_user(text: &str) -> Option<Value> {
+    loads_capped(text, PY_JSON_DEPTH)
+}
+
+fn loads_capped(text: &str, max_depth: usize) -> Option<Value> {
     let v = json::loads(text).ok()?;
-    (json_depth(text) <= REPO_JSON_DEPTH).then_some(v)
+    (json_depth(text) <= max_depth).then_some(v)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -239,13 +262,14 @@ fn read_regular_file(file: &File, limit: Option<u64>) -> Option<Vec<u8>> {
 
 /// The parsed JSON file, or `None` when it is missing or malformed (`compat.read_json(path)`):
 /// `Path.read_bytes()` (following symlinks, any file type, as Python does), decoded as Claude
-/// Code does ([`decode_text`]). The user's own files: any size, any depth.
+/// Code does ([`decode_text`]). The user's own files: any size; nesting past Python's limit is
+/// malformed, as in Python ([`PY_JSON_DEPTH`]).
 pub fn read_json(path: &Path) -> Option<Value> {
     if path.as_os_str().as_bytes().contains(&0) {
         return None;
     }
     let raw = std::fs::read(path).ok()?;
-    json::loads(&decode_text(&raw)).ok()
+    loads_user(&decode_text(&raw))
 }
 
 /// `compat.read_json(path, limit)`, for files a cloned repo controls ([`REPO_READ_LIMIT`]): the
@@ -354,16 +378,22 @@ pub(crate) fn realpath(path: &Path) -> io::Result<PathBuf> {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     }
     let mut seen = std::collections::HashMap::new();
-    let (joined, _) = join_realpath(Vec::new(), p.to_vec(), &mut seen)?;
+    let (joined, _) = join_realpath(Vec::new(), p.to_vec(), &mut seen, 0)?;
     Ok(PathBuf::from(OsString::from_vec(py_abspath(&joined)?)))
 }
 
-/// `posixpath._joinrealpath(path, rest, strict=False, seen)`.
+/// `posixpath._joinrealpath(path, rest, strict=False, seen)`. `depth` counts the nested link
+/// resolutions: past [`REALPATH_MAX_DEPTH`] this fails with `ELOOP` where Python's recursion
+/// would eventually raise (a long chain is refused, and the stack stays bounded).
 fn join_realpath(
     mut path: Vec<u8>,
     rest: Vec<u8>,
     seen: &mut std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+    depth: usize,
 ) -> io::Result<(Vec<u8>, bool)> {
+    if depth > REALPATH_MAX_DEPTH {
+        return Err(io::Error::from_raw_os_error(ELOOP));
+    }
     let mut rest: &[u8] = &rest;
     if rest.first() == Some(&b'/') {
         rest = &rest[1..];
@@ -411,7 +441,8 @@ fn join_realpath(
         }
         seen.insert(newpath.clone(), None);
         let target = std::fs::read_link(OsStr::from_bytes(&newpath))?;
-        let (resolved, ok) = join_realpath(path, target.into_os_string().into_vec(), seen)?;
+        let (resolved, ok) =
+            join_realpath(path, target.into_os_string().into_vec(), seen, depth + 1)?;
         path = resolved;
         if !ok {
             return Ok((py_join(&path, rest), false));

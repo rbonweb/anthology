@@ -388,3 +388,19 @@ fn test_the_owners_settings_are_never_written() {
     assert!(c.source().is_some());
     assert_eq!(fs::read(&path).unwrap(), before);
 }
+
+// --- Beyond the Python tests (RT1a review). Not ledger targets.
+
+#[test]
+fn a_deep_user_file_is_malformed_past_pythons_limit() {
+    let c = Case::new();
+    let deep = |n: usize| format!(r#"{{"a": {}{}}}"#, "[".repeat(n), "]".repeat(n));
+    let path = write(&c.tmp.join("deep.json"), deep(9_996));
+    assert!(compat::read_json(&path).is_some());
+    write(&path, deep(9_997));
+    assert_eq!(compat::read_json(&path), None);
+    // a repo-controlled read stops far earlier (REPO_JSON_DEPTH)
+    write(&path, deep(600));
+    assert_eq!(read_json_limited(&path, REPO_READ_LIMIT), None);
+    assert!(compat::read_json(&path).is_some());
+}

@@ -38,17 +38,18 @@ use anthology_core::Env;
 use anthology_pycompat::json::{self, Int, Value};
 
 use crate::compat::{
-    self, Opened, decode_text, is_file, loads_bounded, pathlib_child, pathlib_parent, pathlib_str,
-    py_strip, realpath,
+    self, Opened, decode_text, is_file, loads_bounded, loads_user, pathlib_child, pathlib_parent,
+    pathlib_str, py_strip, realpath,
 };
 
 /// Claude Code's own limit for a settings file (m15).
 pub const REPO_READ_LIMIT: u64 = compat::REPO_READ_LIMIT;
 /// The exact key prefix of the guardrails plugin (`enabledPlugins`, `installed_plugins.json`).
-pub const GUARDRAILS_PREFIX: &str = "anthology-guardrails@";
+pub(crate) const GUARDRAILS_PREFIX: &str = "anthology-guardrails@";
 /// The key prefix of the anthology plugin itself.
-pub const ANTHOLOGY_PREFIX: &str = "anthology@";
-/// The guard the hook runs, relative to the plugin folder (F-6).
+pub(crate) const ANTHOLOGY_PREFIX: &str = "anthology@";
+/// The guard the hook runs, relative to the plugin folder (F-6). Public: session start's
+/// self-test (RT3) runs `<root>/` + this.
 pub const GUARD_REL: &str = "hooks/guard.sh";
 
 /// Why the live guardrails folder is not usable.
@@ -116,7 +117,7 @@ fn load(path: &Path, limit: Option<u64>, closed: bool) -> (Option<Value>, State)
     let parsed = if limit.is_some() {
         loads_bounded(&text)
     } else {
-        json::loads(&text).ok()
+        loads_user(&text)
     };
     match parsed {
         Some(v) => (Some(v), State::Ok),
@@ -155,7 +156,9 @@ fn under(path: &Path, parent: &Path, strict: bool) -> bool {
 
 /// `Disabled` when any settings file disables the guardrails or fails closed (module docs).
 pub fn disabled(env: &Env, cwd: &Path) -> bool {
-    let cwd = effective_cwd(cwd);
+    let Some(cwd) = effective_cwd(cwd) else {
+        return true; // fail closed: the repo settings cannot be found
+    };
     let repo = cwd.join(".claude");
     let files = [
         (compat::config_dir(env).join("settings.json"), None),
@@ -316,18 +319,26 @@ fn live_has_guard(env: &Env, name: &str) -> bool {
     .is_some_and(|live| has_guard(&live))
 }
 
-/// `cwd or os.getcwd()`.
-fn effective_cwd(cwd: &Path) -> PathBuf {
+/// `cwd or os.getcwd()`; `None` when the working folder is needed and cannot be read (Python
+/// raises there; the callers fail closed).
+fn effective_cwd(cwd: &Path) -> Option<PathBuf> {
     if cwd.as_os_str().is_empty() {
-        std::env::current_dir().unwrap_or_default()
+        std::env::current_dir().ok()
     } else {
-        cwd.to_path_buf()
+        Some(cwd.to_path_buf())
     }
 }
 
-/// The folder the guardrails hook really runs and its problem (module docs).
+/// The folder the guardrails hook really runs and its problem (module docs). An empty `cwd`
+/// means the process's working folder; when that cannot be read, the answer is `Disabled` with
+/// no folder (fail closed: the repo settings cannot be checked).
 pub fn inspect(plugin_root: &Path, env: &Env, cwd: &Path) -> GuardLoc {
-    let cwd = effective_cwd(cwd);
+    let Some(cwd) = effective_cwd(cwd) else {
+        return GuardLoc {
+            root: None,
+            problem: Some(Problem::Disabled),
+        };
+    };
     let data = read_json(
         &compat::config_dir(env)
             .join("plugins")

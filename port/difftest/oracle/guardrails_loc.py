@@ -17,7 +17,8 @@ Ops and their result (a JSON object, every root prefix written as `@ROOT@`):
 - `agent_memory` (`cwd`): `{"bad": [...], "good": [...]}`;
 - `subagent_model` (`cwd`): `{"source": str|null}`;
 - `repo_top` (`cwd`): `{"top": str|null}`;
-- `read_json` (`path`, `limit`: int|null): `{"value": ...}` (`compat.read_json`);
+- `read_json` (`path`, `limit`: int|null): `{"value": ...}` (`compat.read_json`), or
+  `{"found": bool}` with `"found_only": true` (for values too deep to print);
 - `decode` (`hex`): `{"text": str}` (`compat.decode_text`).
 
 The answer is `{"exit": 0, "stdout": json.dumps(result, sort_keys=True), "stderr": ""}`; an
@@ -128,8 +129,11 @@ def materialize(root, spec):
 def _unlock(root):
     for dirpath, dirnames, _ in os.walk(root):
         for d in dirnames:
+            path = os.path.join(dirpath, d)
+            if os.path.islink(path):
+                continue  # chmod follows links: never touch a folder outside the root
             try:
-                os.chmod(os.path.join(dirpath, d), 0o755)
+                os.chmod(path, 0o755)
             except OSError:
                 pass
 
@@ -165,7 +169,10 @@ def _op(case, root):
     if op == "repo_top":
         return {"top": _norm(compat.repo_top(arg("cwd")), root)}
     if op == "read_json":
-        return {"value": compat.read_json(arg("path"), case.get("limit"))}
+        value = compat.read_json(arg("path"), case.get("limit"))
+        if case.get("found_only"):  # a value too deep for json.dumps to print
+            return {"found": value is not None}
+        return {"value": value}
     if op == "decode":
         return {"text": compat.decode_text(bytes.fromhex(case["hex"]))}
     raise KeyError("unknown op %r" % op)

@@ -1083,3 +1083,170 @@ fn test_the_live_marketplace_json_is_repo_controlled_and_capped() {
     );
     assert_eq!(c.inspect(), loc(None, Some(Problem::LiveMissing)));
 }
+
+// --- Beyond the Python tests (RT1a review): bounds the port must keep. Not ledger targets.
+
+/// `market/plugins/s0 -> s1 -> … -> s<n-1> -> real-chain`, with the guard in `real-chain`, as
+/// the directory marketplace's source `./plugins/s0`.
+fn chained(c: &Case, n: usize) {
+    let plugins = c.market.join("plugins");
+    c.copy_guardrails(&plugins.join("real-chain"));
+    for i in 0..n {
+        let to = if i + 1 == n {
+            "real-chain".to_string()
+        } else {
+            format!("s{}", i + 1)
+        };
+        symlink(to, plugins.join(format!("s{i}"))).unwrap();
+    }
+    c.copy_guardrails(&c.cache);
+    c.manifest_json(r#""./plugins/s0""#);
+    c.directory_known();
+    c.installed();
+}
+
+#[test]
+fn a_short_symlink_chain_in_a_directory_source_resolves() {
+    let c = Case::new();
+    chained(&c, 5);
+    assert_eq!(
+        c.inspect(),
+        loc(Some(&c.market.join("plugins/real-chain")), None)
+    );
+}
+
+#[test]
+fn a_long_symlink_chain_in_a_directory_source_is_live_missing() {
+    // Python's realpath recursion fails (about 990 links; caught: live_missing). Rust refuses
+    // past REALPATH_MAX_DEPTH, and its stack stays bounded.
+    let c = Case::new();
+    chained(&c, 1100);
+    assert_eq!(c.inspect(), loc(None, Some(Problem::LiveMissing)));
+}
+
+#[test]
+fn a_very_long_symlink_chain_does_not_overflow_the_stack() {
+    let c = Case::new();
+    chained(&c, 20_000);
+    let (env, tmp) = (c.env(), c.tmp.clone());
+    // a small stack: the bound, not the stack size, ends the walk
+    let got = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || guardrails_loc::inspect(&plugin(), &env, &tmp))
+        .unwrap()
+        .join()
+        .expect("inspect overflowed its stack");
+    assert_eq!(got, loc(None, Some(Problem::LiveMissing)));
+}
+
+fn nested(n: usize) -> String {
+    format!("{}{}", "[".repeat(n), "]".repeat(n))
+}
+
+#[test]
+fn a_deep_installed_plugins_file_is_invalid_past_pythons_limit() {
+    // CPython 3.12's json.loads fails at 9,998 nested containers; _load reads that as invalid
+    for (depth, want) in [(9_996, true), (9_997, false)] {
+        let c = Case::new();
+        c.copy_guardrails(&c.cache);
+        let text = c.installed_text(None, "", 0);
+        let text = format!(r#"{}, "pad": {}}}"#, &text[..text.len() - 1], nested(depth));
+        write(&c.config.join("plugins/installed_plugins.json"), text);
+        let found = c.inspect_from(&c.tmp.join("lone/anthology"));
+        let expect = if want {
+            loc(Some(&c.cache), None)
+        } else {
+            loc(None, Some(Problem::NotFound))
+        };
+        assert_eq!(found, expect, "pad depth {depth} (+1 for the top object)");
+    }
+}
+
+#[test]
+fn a_deep_known_marketplaces_file_is_invalid_past_pythons_limit() {
+    // past the limit it is unreadable: the sibling fallback, not the directory marketplace
+    let c = Case::new();
+    let (root, sibling) = c.sibling_case();
+    c.directory_known();
+    let text = format!(
+        r#"{{"anthology": {{"source": {{"source": "directory", "path": "{0}"}}, "installLocation": "{0}"}}, "pad": {1}}}"#,
+        c.market.display(),
+        nested(9_997)
+    );
+    write(&c.config.join("plugins/known_marketplaces.json"), text);
+    assert_eq!(c.inspect_from(&root), loc(Some(&sibling), None));
+}
+
+#[test]
+fn a_deep_user_settings_file_is_ignored_past_pythons_limit() {
+    let c = Case::new();
+    c.diverging();
+    let flag = |depth: usize| {
+        format!(
+            r#"{{"enabledPlugins": {{"anthology-guardrails@anthology": false}}, "pad": {}}}"#,
+            nested(depth)
+        )
+    };
+    write(&c.config.join("settings.json"), flag(9_996));
+    assert_eq!(c.inspect(), loc(Some(&c.live), Some(Problem::Disabled)));
+    write(&c.config.join("settings.json"), flag(9_997));
+    assert_eq!(c.inspect(), loc(Some(&c.live), None)); // malformed, as in Python: ignored
+}
+
+#[test]
+fn a_settings_file_that_is_a_symlink_loop_counts_as_disabled() {
+    for place in [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        "user",
+    ] {
+        let c = Case::new();
+        c.diverging();
+        let path = if place == "user" {
+            c.config.join("settings.json")
+        } else {
+            c.tmp.join(place)
+        };
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        symlink(&path, &path).unwrap();
+        assert_eq!(
+            c.inspect(),
+            loc(Some(&c.live), Some(Problem::Disabled)),
+            "{place}"
+        );
+    }
+}
+
+#[test]
+fn a_repeated_key_takes_its_last_value_like_python() {
+    let c = Case::new();
+    c.diverging();
+    let k = r#""anthology-guardrails@anthology""#;
+    for (text, disabled) in [
+        (
+            format!(r#"{{"enabledPlugins": {{{k}: false, {k}: true}}}}"#),
+            false,
+        ),
+        (
+            format!(r#"{{"enabledPlugins": {{{k}: true, {k}: false}}}}"#),
+            true,
+        ),
+        (
+            format!(r#"{{"enabledPlugins": {{{k}: false}}, "enabledPlugins": {{}}}}"#),
+            false,
+        ),
+        (
+            format!(r#"{{"enabledPlugins": {{}}, "enabledPlugins": {{{k}: []}}}}"#),
+            true,
+        ),
+    ] {
+        for name in ["settings.json", "settings.local.json"] {
+            write(&c.project_settings(name), &text);
+            assert_eq!(c.disabled(), disabled, "{name} {text}");
+            fs::remove_file(c.project_settings(name)).unwrap();
+        }
+        write(&c.config.join("settings.json"), &text);
+        assert_eq!(c.disabled(), disabled, "user {text}");
+        fs::remove_file(c.config.join("settings.json")).unwrap();
+    }
+}
