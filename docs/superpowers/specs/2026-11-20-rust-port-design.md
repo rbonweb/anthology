@@ -618,7 +618,7 @@ The new workflow is `.github/workflows/anthology-release.yml`, cloned from `rtk-
   - `cargo build --release --locked -p anthology-cli --target $T`; `readelf` must show no `INTERP` or `NEEDED` on Linux; `anthology --version` must match.
   - Package: `COPYFILE_DISABLE=1 tar -czf dist/anthology-$T.tar.gz -C stage anthology LICENSE`. There is no NOTICE, per the PLAN's credits constraint.
 - **`publish` job.** Exactly 4 tarballs, then `checksums.txt` (`sha256sum … | LC_ALL=C sort -k2`), then `actions/attest-build-provenance`, then `gh release create --verify-tag`. It fails if the release already exists.
-- **Pin.** `anthology-dev lock write --tag <tag> --checksums checksums.txt` rewrites both `anthology.lock` files. The plugins then ship through `release.sh`, which runs `lock check-fresh` (§8.5).
+- **Pin.** `anthology-dev lock write --tag <tag> --checksums checksums.txt --release-json <file>` rewrites both `anthology.lock` files; make the file with `gh release view <tag> --json assets > <file>`. The plugins then ship through `release.sh`, which runs `lock check-fresh` (§8.5).
 - **"Signed"** means build-provenance attestation plus the sha256 pin in a reviewed commit, as for rtk. Users verify with `gh attestation verify <file> --repo rbonweb/anthology`. There is no Apple codesigning (architect's call; cost if wrong: add codesign and notarize later, with the lock format unchanged).
 
 ---

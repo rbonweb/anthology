@@ -6,9 +6,16 @@
 //! the same tree under their own temporary root: RT1a's layout entries, plus `sguard` entries (a
 //! guardrails folder whose guard is written as Python's `scripts/guard.py` and Rust's
 //! `hooks/guard.sh`, with the same exit code and stderr), and files whose text holds `@RULE@` or
-//! `@OPSV@`, built last. Each side reads the same seams from the case: `memory_sync.run` (the
-//! memory surface is MS2's), the rtk module (a fake with the same interface; the real one is
-//! `rtk_install.reconcile`'s surface), `_elapsed`, `os.getcwd` and `platform.system`.
+//! `@OPSV@`, built last. Each side reads the same seams from the case: the rtk module (a fake
+//! with the same interface; the real one is `rtk_install.reconcile`'s surface), `_elapsed`,
+//! `os.getcwd` and `platform.system`.
+//!
+//! The memory step is real on both sides: `memory_sync.run` and the `SessionDeps::default()`
+//! `memory_run` (`anthology_memory::sync::run` with `SyncDeps::from_env`), over the case's notes.
+//! Both run the same [`fake_git`] as `git` (the oracle image has none): the repo at `@ROOT@/w` is
+//! a work tree, its key `path:@ROOT@/w`. `@ENC@` in a tree path is the root's realpath with
+//! every character that is not an ASCII letter or digit written `-` (the old path-keyed memory
+//! folders), and is written `@ENC@` again in the answer.
 //!
 //! Compared: the hook's stdout JSON and the `state.json` text it leaves, with the root written
 //! as `@ROOT@`. The new step (ensuring the live guard's binary) never runs here:
@@ -24,10 +31,14 @@
 //! string allow, unparseable, a BOM, deep unterminated nesting, a subagent model); state.json
 //! (missing, not JSON, `setup_done`, every `settings_ops_version` form, `data_dir` of every JSON
 //! type, `agent_memory_warned`); `CLAUDE_PLUGIN_DATA` and the subagent variable; a repo with
-//! agent-memory folders; stdin forms (with and without `cwd`, not JSON, an array); memory text
-//! around the 9,000 budget with non-ASCII and astral characters, messages around the 2,000 cap
-//! with Python whitespace at the cut, and a raising memory sync; the fake rtk's warning, lock and
-//! reconcile errors; elapsed times on both sides of the rtk cutoff; Windows.
+//! agent-memory folders; stdin forms (with and without `cwd`, not JSON, an array); memory: personal
+//! notes (none, a few, past the section budget, odd descriptions with non-ASCII and astral
+//! characters), personal memory that is a file or a symlink, the repo approved or not, repo and
+//! agent notes (`type: user` ones swept out, a conflicting personal copy), legacy notes, a
+//! `migrated.json` ledger, `.claude` or `.claude/memory` unsafe, `settings.local.json` (missing,
+//! set, invalid, tracked), the exclude file, auto memory turned off; the fake rtk's warning
+//! (long enough to reach the 2,000 message cap), lock and reconcile errors; elapsed times on
+//! both sides of the rtk cutoff; Windows.
 //!
 //! The generator avoids what the two sides cannot agree on by design: a guard that sleeps
 //! (timeouts are unit-tested), stderr that is not UTF-8, deep but valid JSON (ST1's D-1), and
@@ -49,6 +60,7 @@ use anthology_runtime::session_start::{self, RtkWiring, SessionDeps};
 use anthology_settings as settings;
 use anthology_testkit::rt_a;
 
+use super::fake_git;
 use crate::case::{Case, Rng, Surface};
 use crate::observe::{Observed, from_oracle};
 use crate::oracle::Oracle;
@@ -164,11 +176,19 @@ fn has_late(entry: &Value) -> bool {
 }
 
 /// Builds the case's tree (module docs).
-fn build(root: &Path, case: &Value, env: &Env, cwd: &Path) {
+fn build(root: &Path, case: &Value, env: &Env, cwd: &Path, enc: &str) {
     let tree = field(case, "tree")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut e| {
+            let p = str_of(&e, "p").map(str::to_string);
+            if let (Some(m), Some(p)) = (e.as_object_mut(), p) {
+                m.insert("p".into(), Value::Str(p.replace("@ENC@", enc)));
+            }
+            e
+        });
     let (mut early, mut late, mut guards) = (Vec::new(), Vec::new(), Vec::new());
     for e in tree {
         if str_of(&e, "t") == Some("sguard") {
@@ -274,6 +294,11 @@ fn run(case: &Value) -> Observed {
         .tempdir_in("/tmp")
         .expect("tempdir");
     let root = fs::canonicalize(tmp.path()).expect("realpath");
+    let root_text = root.to_string_lossy().into_owned();
+    let enc: String = root_text
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
     let x = |s: &str| rt_a::expand(s, &root, None);
     let mut env = Env::default();
     if let Some(vars) = field(case, "env").and_then(Value::as_object) {
@@ -281,22 +306,9 @@ fn run(case: &Value) -> Observed {
             env = env.with(k, &x(v.as_str().expect("env value")));
         }
     }
-    env = env.with("PATH", "/usr/bin:/bin");
+    env = env.with("PATH", &fake_git::path(&root_text, "/usr/bin:/bin"));
     let cwd_v = PathBuf::from(x(str_of(case, "cwd").unwrap_or("@ROOT@")));
-    build(&root, case, &env, &cwd_v);
-
-    let memory = field(case, "memory").cloned().unwrap_or(Value::Null);
-    let memory_run = |_: &Path, _: &Env| -> Result<(String, Vec<String>), PyExc> {
-        if let Some(e) = str_of(&memory, "error") {
-            return Err(PyExc::Other("OSError", e.to_string()));
-        }
-        let text = x(str_of(&memory, "text").unwrap_or(""));
-        let messages = field(&memory, "messages")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(x).collect())
-            .unwrap_or_default();
-        Ok((text, messages))
-    };
+    build(&root, case, &env, &cwd_v, &enc);
     let rtk = field(case, "rtk")
         .filter(|v| !matches!(v, Value::Null))
         .map(|v| CaseRtk {
@@ -320,7 +332,6 @@ fn run(case: &Value) -> Observed {
         cwd: &cwd,
         elapsed: Some(&elapsed),
         rtk: rtk.as_ref().map(|r| r as &dyn RtkWiring),
-        memory_run: &memory_run,
         ensure_guard_binary: &never_ensure,
         ..SessionDeps::default()
     };
@@ -328,7 +339,9 @@ fn run(case: &Value) -> Observed {
     let state_text = fs::read(anthology_core::state::path(&env))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_else(|_| "<none>".into());
-    let stdout = format!("{out}\n{state_text}").replace(&*root.to_string_lossy(), "@ROOT@");
+    let stdout = format!("{out}\n{state_text}")
+        .replace(&root_text, "@ROOT@")
+        .replace(&enc, "@ENC@");
     rt_a::unlock(&root);
     Observed::text(0, &stdout, "")
 }
@@ -360,6 +373,10 @@ fn dir(p: &str) -> Value {
     obj(vec![("t", s("dir")), ("p", s(p))])
 }
 
+fn link(p: &str, to: &str) -> Value {
+    obj(vec![("t", s("link")), ("p", s(p)), ("to", s(to))])
+}
+
 fn chmod(p: &str, mode: i64) -> Value {
     obj(vec![
         ("t", s("chmod")),
@@ -389,7 +406,6 @@ struct B {
     env: Map,
     stdin: String,
     cwd: String,
-    memory: Value,
     rtk: Value,
     elapsed: f64,
     windows: bool,
@@ -408,6 +424,7 @@ impl B {
             dir("w/.git"),
             sguard(GUARD, "g1", ""),
         ];
+        tree.extend(fake_git::entries());
         for w in WRAPPERS {
             let p = format!("{PLUGIN}/bin/{w}");
             tree.push(file(&p, "#!/bin/sh\nexit 0\n"));
@@ -424,10 +441,6 @@ impl B {
             stdin: r#"{"hook_event_name": "SessionStart", "source": "startup", "cwd": "@ROOT@/w"}"#
                 .into(),
             cwd: "@ROOT@/w".into(),
-            memory: obj(vec![
-                ("text", s("")),
-                ("messages", Value::Array(Vec::new())),
-            ]),
             rtk: obj(vec![
                 ("warning", Value::Null),
                 ("lock_exc", Value::Null),
@@ -500,15 +513,39 @@ impl B {
         self
     }
 
-    fn memory(mut self, text: &str, messages: &[&str]) -> B {
-        self.memory = obj(vec![
-            ("text", s(text)),
-            (
-                "messages",
-                Value::Array(messages.iter().map(|m| s(m)).collect()),
-            ),
-        ]);
+    /// A note `<dir>/<name>.md` (`dir` relative to the root; `@CFG@` is the config folder).
+    fn note(self, dir: &str, name: &str, kind: &str, desc: &str) -> B {
+        let d = dir.replace("@CFG@", &self.config());
+        self.entry(file(
+            &format!("{d}/{name}.md"),
+            &note_text(name, kind, desc, "Body.\n"),
+        ))
+    }
+
+    /// Drops the tree entries at or under `rel`.
+    fn without(mut self, rel: &str) -> B {
+        let under = format!("{rel}/");
+        self.tree
+            .retain(|e| !str_of(e, "p").is_some_and(|p| p == rel || p.starts_with(&under)));
         self
+    }
+
+    /// `count` personal notes.
+    fn personal(mut self, count: usize, width: usize) -> B {
+        for i in 0..count {
+            let desc = format!("note {i:04} {}", "w".repeat(width));
+            self = self.note(PERSONAL, &format!("project-n{i:04}"), "project", &desc);
+        }
+        self
+    }
+
+    /// `approved-repos.json` approving the repo at `@ROOT@/w`.
+    fn approved(self) -> B {
+        let p = format!("{}/anthology/approved-repos.json", self.config());
+        self.entry(file(
+            &p,
+            r#"{"version": 1, "repos": {"path:@ROOT@/w": {"approved": "2026-01-01"}}}"#,
+        ))
     }
 
     fn rtk(mut self, warning: Option<&str>, lock_exc: Option<&str>, exc: Option<&str>) -> B {
@@ -527,7 +564,6 @@ impl B {
             ("env", Value::Object(self.env)),
             ("stdin", s(&self.stdin)),
             ("cwd", s(&self.cwd)),
-            ("memory", self.memory),
             ("rtk", self.rtk),
             ("elapsed", Value::Float(self.elapsed)),
             ("windows", Value::Bool(self.windows)),
@@ -535,70 +571,59 @@ impl B {
     }
 }
 
-fn lines(n: usize, width: usize, tag: &str) -> String {
-    (0..n)
-        .map(|i| format!("- {tag} {i:04} {}\n", "w".repeat(width)))
-        .collect()
-}
-
 const SETUP_REASON: &str = "the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin";
 
 fn seeds() -> Vec<Value> {
-    let mut out = Vec::new();
     // OutputTest
-    out.push(B::new().setup_done().build());
-    out.push(B::new().build()); // the NAG
-    out.push(
+    let mut out = vec![
+        B::new().setup_done().build(),
+        B::new().build(), // the NAG
         B::new()
             .state(r#"{"setup_done": "0.1.0"}"#)
             .settings(r#"{"permissions": {"allow": ["Read(//old/place/plugins/**)"]}}"#)
             .build(),
-    );
-    out.push(B::new().state(r#"{"setup_done": "0.1.0"}"#).build());
-    out.push(
+        B::new().state(r#"{"setup_done": "0.1.0"}"#).build(),
         B::new()
             .state(r#"{"setup_done": "0.1.0"}"#)
             .settings("{nope")
             .build(),
-    );
-    out.push(
         B::new()
             .setup_done()
             .settings("\u{feff}{\"permissions\": {\"allow\": [\"@RULE@\"]}}")
             .build(),
-    );
-    out.push(
         B::new()
             .state(r#"{"setup_done": "0.1.0"}"#)
             .settings(r#"{"permissions": {"allow": "x@RULE@y"}}"#)
             .build(),
-    );
-    out.push(
-        B::new()
-            .setup_done()
-            .memory(
-                &format!("## Personal memory (x)\n\n{}", lines(400, 30, "note")),
-                &[],
-            )
-            .build(),
-    );
+    ];
     let mut big = B::new().setup_done();
     big.tree.push(file(
         &format!("{PLUGIN}/templates/routing-guide.md"),
         &format!("# Anthology routing guide\n{}", "x".repeat(9500)),
     ));
-    out.push(big.memory("m\n", &[]).build());
+    out.push(big.personal(1, 0).build());
+    out.push(B::new().setup_done().personal(400, 30).build());
+    let pm = format!("{}/anthology/personal-memory", B::new().config());
+    out.push(B::new().setup_done().entry(file(&pm, "x")).build());
     out.push(
         B::new()
             .setup_done()
-            .memory("", &["memory said hi"])
+            .entry(dir("elsewhere"))
+            .entry(link(&pm, "@ROOT@/elsewhere"))
             .build(),
     );
-    let msgs: Vec<String> = (0..100)
-        .map(|i| format!("m{i:03} {}", "y".repeat(80)))
-        .collect();
-    let msgs: Vec<&str> = msgs.iter().map(String::as_str).collect();
-    out.push(B::new().setup_done().memory("", &msgs).build());
+    // memory: the approved repo's steps, each message, and the cap
+    for b in memory_seeds() {
+        out.push(b.build());
+    }
+    out.push(
+        memory_seeds()
+            .into_iter()
+            .next()
+            .expect("a memory seed")
+            .rtk(Some(&format!("w {}", "y ".repeat(1100))), None, None)
+            .build(),
+    );
     let mut missing = B::new().setup_done();
     missing
         .tree
@@ -675,7 +700,6 @@ fn seeds() -> Vec<Value> {
         b"\xff\xfe\x00bad",
     ));
     out.push(bad_guide.build());
-    out.push(B::new().setup_done().build_memory_error("disk"));
     // PlatformTest
     let mut win = B::new().setup_done();
     win.windows = true;
@@ -818,7 +842,7 @@ fn seeds() -> Vec<Value> {
             B::new()
                 .env("CLAUDE_CONFIG_DIR", Some(c))
                 .setup_done()
-                .memory(&lines(400, 30, "x"), &[])
+                .personal(60, 30)
                 .build(),
         );
     }
@@ -827,11 +851,75 @@ fn seeds() -> Vec<Value> {
     out
 }
 
-impl B {
-    fn build_memory_error(mut self, e: &str) -> Value {
-        self.memory = obj(vec![("error", s(e))]);
-        self.build()
-    }
+/// The personal-memory folder (relative to the root, `@CFG@` the config folder).
+const PERSONAL: &str = "@CFG@/anthology/personal-memory";
+/// The repo's memory, one agent's memory, and the repo's old path-keyed memory.
+const REPO_MEM: &str = "w/.claude/memory";
+const AGENT_MEM: &str = "w/.claude/agent-memory/reviewer";
+const LEGACY_MEM: &str = "@CFG@/projects/@ENC@-w/memory";
+/// The fake git's tracked-paths file of the repo (see [`fake_git`]).
+const TRACKED: &str = "w/.git/tracked";
+const EXCLUDE: &str = "w/.git/info/exclude";
+
+/// A note as Claude Code writes it.
+fn note_text(name: &str, kind: &str, desc: &str, body: &str) -> String {
+    format!("---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: {kind}\n---\n\n{body}")
+}
+
+/// One case per memory outcome (MemoryPrivacyTest and the repo flow).
+fn memory_seeds() -> Vec<B> {
+    let repo = || {
+        B::new()
+            .setup_done()
+            .approved()
+            .note(REPO_MEM, "project-a", "project", "First")
+            .note(REPO_MEM, "user-role", "user", "Role")
+            .note(AGENT_MEM, "user-pref", "user", "Pref")
+            .note(
+                LEGACY_MEM,
+                "reference-build-host",
+                "reference",
+                "The build host",
+            )
+            .note(LEGACY_MEM, "user-old", "user", "Old")
+            .note(PERSONAL, "user-role", "user", "A different role")
+    };
+    vec![
+        repo(),
+        repo().entry(file(TRACKED, ".claude/settings.local.json\n")),
+        repo().entry(file("w/.claude/settings.local.json", "{nope")),
+        repo().entry(file(
+            "w/.claude/settings.local.json",
+            r#"{"autoMemoryDirectory": "@ROOT@/w/.claude/memory"}"#,
+        )),
+        repo().entry(file(EXCLUDE, "/.claude/settings.local.json\n")),
+        repo().entry(file(
+            "w/.claude/settings.local.json",
+            r#"{"autoMemoryEnabled": false}"#,
+        )),
+        repo().env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", Some("1")),
+        repo().entry(file(
+            "cfg/anthology/migrated.json",
+            r#"{"version": 1, "done": []}"#,
+        )),
+        B::new()
+            .setup_done()
+            .approved()
+            .entry(dir("elsewhere"))
+            .entry(link("w/.claude", "@ROOT@/elsewhere")),
+        B::new()
+            .setup_done()
+            .approved()
+            .entry(file("w/.claude/memory", "x")),
+        B::new()
+            .setup_done()
+            .note(REPO_MEM, "project-a", "project", "First"),
+        B::new()
+            .setup_done()
+            .approved()
+            .note(REPO_MEM, "user-only", "user", "Only")
+            .entry(file("w/.claude/memory/MEMORY.md", "- stale\n")),
+    ]
 }
 
 // --- the generator ------------------------------------------------------------------------
@@ -876,40 +964,99 @@ fn gen_guide(rng: &mut Rng) -> Option<Value> {
     })
 }
 
-fn gen_memory(rng: &mut Rng) -> Value {
-    if rng.chance(0.04) {
-        let n = rng.index(200);
-        return obj(vec![("error", s(&odd_text(rng, n)))]);
+/// The case's memory: notes in personal, repo, agent and legacy memory, an approval, the
+/// repo's settings and exclude files, and the switches that turn auto memory off.
+fn gen_memory(rng: &mut Rng, mut b: B) -> B {
+    const KINDS: &[&str] = &["project", "user", "reference", "feedback", "odd"];
+    let desc = |rng: &mut Rng| {
+        if rng.chance(0.5) {
+            let n = rng.index(60);
+            odd_text(rng, n)
+        } else {
+            format!("A note {}", rng.index(1000))
+        }
+    };
+    if rng.chance(0.4) {
+        b = b.approved();
     }
-    let mut text = String::new();
-    match rng.below(4) {
-        0 => {}
-        1 => {
-            let n = rng.index(300);
-            text = odd_text(rng, n);
+    let personal = format!("{}/anthology/personal-memory", b.config());
+    let arm = rng.below(8);
+    match arm {
+        0 | 1 => {}
+        2 => b = b.personal(rng.index(120), rng.index(40)),
+        3 => b = b.entry(file(&personal, "x")),
+        4 => {
+            b = b
+                .entry(dir("elsewhere"))
+                .entry(link(&personal, "@ROOT@/elsewhere"))
+        }
+        5 => {
+            let n = rng.index(60);
+            let text = format!("- hand-made {}\n", odd_text(rng, n));
+            b = b.entry(file(&format!("{personal}/MEMORY.md"), &text));
         }
         _ => {
-            let n = rng.index(400);
-            let w = rng.index(40);
-            for i in 0..n {
-                text.push_str(&format!("- l{i} {}\n", odd_text(rng, w)));
-            }
-            if rng.chance(0.3) {
-                text.push_str(&"\n".repeat(rng.index(4)));
+            for i in 0..1 + rng.index(5) {
+                let d = desc(rng);
+                b = b.note(PERSONAL, &format!("p{i}"), rng.pick(KINDS), &d);
             }
         }
     }
-    let n = if rng.chance(0.5) { 0 } else { rng.index(40) };
-    let messages: Vec<Value> = (0..n)
-        .map(|_| {
-            let w = rng.index(120);
-            s(&odd_text(rng, w))
-        })
-        .collect();
-    obj(vec![
-        ("text", s(&text)),
-        ("messages", Value::Array(messages)),
-    ])
+    for (dir_, chance) in [(REPO_MEM, 0.4), (AGENT_MEM, 0.15), (LEGACY_MEM, 0.2)] {
+        if rng.chance(chance) {
+            for _ in 0..1 + rng.index(4) {
+                let name = format!("{}-{}", rng.pick(&["user", "project", "ref"]), rng.index(3));
+                let d = desc(rng);
+                b = b.note(dir_, &name, rng.pick(KINDS), &d);
+            }
+        }
+    }
+    if arm != 3 && arm != 4 && rng.chance(0.1) {
+        // a personal copy of a repo user note that differs: kept side by side
+        b = b.note(REPO_MEM, "user-0", "user", "In the repo").note(
+            PERSONAL,
+            "user-0",
+            "user",
+            "Already personal",
+        );
+    }
+    if rng.chance(0.05) {
+        let p = format!("{}/anthology/migrated.json", b.config());
+        b = b.entry(file(
+            &p,
+            rng.pick(&["{\"version\": 1, \"done\": []}", "nope"]),
+        ));
+    }
+    match rng.below(14) {
+        0 => b = b.entry(file(TRACKED, ".claude/settings.local.json\n")),
+        1 => b = b.entry(file("w/.claude/settings.local.json", "{nope")),
+        2 => {
+            b = b.entry(file(
+                "w/.claude/settings.local.json",
+                r#"{"autoMemoryDirectory": "@ROOT@/w/.claude/memory", "x": 1}"#,
+            ))
+        }
+        3 => {
+            let v = *rng.pick(&["false", "true", "0", "null"]);
+            let p = *rng.pick(&["w/.claude/settings.local.json", "w/.claude/settings.json"]);
+            b = b.entry(file(p, &format!("{{\"autoMemoryEnabled\": {v}}}")));
+        }
+        4 => b = b.entry(file(EXCLUDE, "/.claude/settings.local.json\n")),
+        5 => b = b.entry(file(EXCLUDE, "other\n")),
+        6 if rng.chance(0.4) => {
+            b = b
+                .without("w/.claude")
+                .entry(dir("elsewhere-claude"))
+                .entry(link("w/.claude", "@ROOT@/elsewhere-claude"))
+        }
+        7 if rng.chance(0.4) => b = b.without(REPO_MEM).entry(file(REPO_MEM, "x")),
+        8 => {
+            let v = *rng.pick(&["1", "0", "false", " ", "yes"]);
+            b = b.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", Some(v));
+        }
+        _ => {}
+    }
+    b
 }
 
 const GUARDS: &[&str] = &[
@@ -1141,11 +1288,14 @@ fn gen_case(rng: &mut Rng) -> Value {
         }
         _ => {}
     }
-    b.memory = gen_memory(rng);
+    b = gen_memory(rng, b);
     b.rtk = match rng.below(8) {
         0 => Value::Null,
         1 => obj(vec![
-            ("warning", s(&odd_text(rng, 60))),
+            ("warning", {
+                let n = if rng.chance(0.15) { 2100 } else { 60 };
+                s(&odd_text(rng, n))
+            }),
             ("lock_exc", Value::Null),
             ("exc", Value::Null),
         ]),
@@ -1199,6 +1349,14 @@ mod tests {
             ("subagent", "CLAUDE_CODE_SUBAGENT_MODEL is set"),
             ("guide", "routing guide is missing"),
             ("memory", "anthology memory: "),
+            ("hint", "repo notes load only after /anthology:setup"),
+            ("repo cover", "## Repo memory"),
+            ("swept", "user note(s) out of the repo"),
+            ("legacy", "from the old per-path memory folder"),
+            ("side by side", "kept side by side"),
+            ("tracked", "is tracked by git"),
+            ("personal unsafe", "personal memory was not loaded"),
+            ("personal notes", "](p0.md)"),
             ("closed", "failing closed"),
             ("not block", "did NOT block"),
             ("disabled", "is disabled in your settings"),

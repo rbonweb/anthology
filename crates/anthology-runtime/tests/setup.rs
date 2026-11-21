@@ -10,9 +10,10 @@
 //! Python's `apply` raised where the Rust `apply` returns `main`'s
 //! `{"ok": false, "error": "<Class>: <msg>"}` result.
 //!
-//! Ledger exceptions (port/ledger/test_setup.tsv): the cases that need the real doctor (RT1b)
-//! or the real memory sync and approval (MS2) are `todo:RT4` until those merge; the cheap ones
-//! are written here, ignored as `SWAP(MS2)`.
+//! The memory functions are the real `anthology_memory` ones. Python's `fake_repo` (no git)
+//! patched `memory_sync`'s git calls; these tests use a real `git init` repo instead and skip
+//! without git (`needs_git`). The privacy scan's `socket.gethostname` patch is
+//! `MemoryDeps::hostname`.
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -22,6 +23,8 @@ use std::path::{Path, PathBuf};
 
 use anthology_core::lock::Lock;
 use anthology_core::{Env, state};
+use anthology_memory::approve as memory_approve;
+use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_runtime::bootstrap::GuardBinaryStatus;
@@ -29,7 +32,7 @@ use anthology_runtime::rtk_install::Reconciled;
 use anthology_runtime::session_start::RtkWiring;
 use anthology_runtime::setup::{self, GUARD_NOT_FOUND, MemoryDeps, RTK_TIMEOUT, SetupDeps};
 use anthology_settings as settings;
-use anthology_testkit::mem::{self, MemCase, Note, write};
+use anthology_testkit::mem::{self, FAKE_REPO_KEY, MemCase, Note, note_text, write};
 use anthology_testkit::rows::{Row, rows};
 use anthology_testkit::rt_c::{SETTINGS, SetupCase, pretty};
 use anthology_testkit::sandbox::repo_root;
@@ -264,6 +267,56 @@ impl Fx {
         )
     }
 
+    /// `self.apply(cwd=cwd, skip_approve=…, promote=…)`: with the preview's digest.
+    fn apply_in(
+        &self,
+        cwd: &Path,
+        skip_approve: bool,
+        promote: &[&str],
+        deps: &SetupDeps<'_>,
+    ) -> Value {
+        let preview = setup::preview(&self.c.plugin, Some(cwd), self.env(), deps);
+        let digest = text_at(&preview, &["settings", "sha256"]).to_string();
+        let promote: Vec<String> = promote.iter().map(|s| s.to_string()).collect();
+        setup::apply(
+            &self.c.plugin,
+            &digest,
+            Some(cwd),
+            skip_approve,
+            self.env(),
+            &promote,
+            deps,
+        )
+    }
+
+    /// `self.remove(cwd=cwd, …)`.
+    fn remove_in(&self, cwd: &Path, unapprove: bool, unapprove_all: bool, preview: bool) -> Value {
+        setup::remove(
+            &self.c.plugin,
+            Some(cwd),
+            unapprove,
+            unapprove_all,
+            self.env(),
+            preview,
+            &self.deps(),
+        )
+    }
+
+    /// `memory_sync.is_approved(key)`.
+    fn approved(&self, key: &str) -> bool {
+        memory_approve::is_approved(key, self.env())
+    }
+
+    /// `memory_sync._save_approved({"version": 1, "repos": {key: {}, …}})`.
+    fn save_approved(&self, keys: &[&str]) {
+        let repos: Vec<String> = keys.iter().map(|k| format!("{k:?}: {{}}")).collect();
+        write(
+            &memory_approve::approved_path(self.env()),
+            &format!("{{\"version\": 1, \"repos\": {{{}}}}}", repos.join(", ")),
+            None,
+        );
+    }
+
     fn env_without_data(&self) -> Env {
         self.env().clone().without("CLAUDE_PLUGIN_DATA")
     }
@@ -475,7 +528,6 @@ mod preview_test {
     }
 
     #[test]
-    #[ignore = "SWAP(MS2): repo_root and repo_key are the real memory functions"]
     fn test_repo_step_names_the_key() {
         if !mem::needs_git() {
             return;
@@ -967,6 +1019,60 @@ mod apply_remove_test {
         assert_eq!(mem::snapshot(f.tmp()), before);
     }
 
+    const REMOTE: &str = "https://example.invalid/acme/app.git";
+
+    #[test]
+    fn test_apply_approves_the_repo_and_remove_keeps_it_unless_asked() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert_eq!(text_at(&res, &["memory", "approved_key"]), FAKE_REPO_KEY);
+        assert!(f.approved(FAKE_REPO_KEY));
+        let attrs = fs::read_to_string(repo.join(".gitattributes")).unwrap();
+        assert!(attrs.contains(".claude/memory/MEMORY.md merge=union"));
+        f.remove_in(&repo, false, false, false);
+        assert!(f.approved(FAKE_REPO_KEY));
+        f.apply_in(&repo, false, &[], &f.deps());
+        f.remove_in(&repo, true, false, false);
+        assert!(!f.approved(FAKE_REPO_KEY));
+    }
+
+    #[test]
+    fn test_skip_approve() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        let res = f.apply_in(&repo, true, &[], &f.deps());
+        assert_eq!(at(&res, &["memory", "approved_key"]), &Value::Null);
+        assert!(!f.approved(FAKE_REPO_KEY));
+    }
+
+    #[test]
+    fn test_unsafe_target_is_reported_not_raised_and_setup_carries_on() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        fs::write(repo.join("elsewhere"), "x").unwrap();
+        symlink(repo.join("elsewhere"), repo.join(".gitattributes")).unwrap();
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(text_at(&res, &["memory", "approve_error"]).contains(".gitattributes"));
+        assert!(f.approved(FAKE_REPO_KEY)); // approval is already recorded
+        assert_eq!(text_at(&Value::Object(f.state()), &["setup_done"]), "0.1.0");
+        assert!(f.anth().join("personal-memory").is_dir());
+        assert_eq!(fs::read_to_string(repo.join("elsewhere")).unwrap(), "x");
+    }
+
     #[test]
     fn test_unsafe_target_with_a_stubbed_approve() {
         let f = Fx::new();
@@ -985,6 +1091,7 @@ mod apply_remove_test {
                 repo_root: &repo_root,
                 repo_key: &repo_key,
                 approve: &approve,
+                ..MemoryDeps::default()
             },
             ..f.deps()
         };
@@ -992,6 +1099,380 @@ mod apply_remove_test {
         assert!(ok(&res));
         assert!(text_at(&res, &["memory", "approve_error"]).contains("refusing"));
         assert_eq!(text_at(&res, &["memory", "approved_key"]), "k");
+    }
+}
+
+mod legacy_promotion_test {
+    //! B3: moving a legacy note into repo memory is an explicit per-note choice, behind the
+    //! privacy scan.
+    use super::*;
+
+    fn alice_laptop() -> Option<String> {
+        Some("alice-laptop".into())
+    }
+
+    struct L {
+        f: Fx,
+        text: String,
+        root: PathBuf,
+        old: PathBuf,
+        repo_mem: PathBuf,
+        personal: PathBuf,
+    }
+
+    impl L {
+        /// `setUp`; `None` without git.
+        fn new() -> Option<L> {
+            if !mem::needs_git() {
+                return None;
+            }
+            let f = Fx::new();
+            let text = f.c.write_settings(SETTINGS);
+            let root =
+                f.c.mem
+                    .make_repo("repo", Some("https://example.invalid/acme/app.git"));
+            let encoded: String = p(&root)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let old = f.c.mem.config.join("projects").join(encoded).join("memory");
+            let note = |n: Note| note_text(&n);
+            write(
+                &old.join("clean.md"),
+                &note(
+                    Note::new("clean")
+                        .desc("A clean note")
+                        .body("Use Docker.\n"),
+                ),
+                None,
+            );
+            write(
+                &old.join("dirty.md"),
+                &note(
+                    Note::new("dirty")
+                        .type_("reference")
+                        .desc("Where things live")
+                        .body(&("Checkout in /".to_string() + "Users/alice/src\n")),
+                ),
+                None,
+            );
+            write(
+                &old.join("mail.md"),
+                &note(
+                    Note::new("mail")
+                        .type_("reference")
+                        .desc("Contact")
+                        .body(&("Ask alice".to_string() + "@" + "mail.acme.zz\n")),
+                ),
+                None,
+            );
+            write(
+                &old.join("user-me.md"),
+                &note(Note::new("user-me").type_("user").desc("About me")),
+                None,
+            );
+            write(&old.join("MEMORY.md"), "- index\n", None);
+            Some(L {
+                repo_mem: root.join(".claude/memory"),
+                personal: f.anth().join("personal-memory"),
+                f,
+                text,
+                root,
+                old,
+            })
+        }
+
+        fn deps(&self) -> SetupDeps<'_> {
+            SetupDeps {
+                memory: MemoryDeps {
+                    hostname: Some(alice_laptop),
+                    ..MemoryDeps::default()
+                },
+                ..self.f.deps()
+            }
+        }
+
+        fn apply(&self, promote: &[&str]) -> Value {
+            self.f.apply_in(&self.root, false, promote, &self.deps())
+        }
+
+        /// `notes()`: the preview's legacy notes by file name.
+        fn notes(&self) -> Vec<(String, Value)> {
+            let out = setup::preview(
+                &self.f.c.plugin,
+                Some(&self.root),
+                self.f.env(),
+                &self.deps(),
+            );
+            at(&out, &["memory", "legacy_notes"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| (text_at(n, &["file"]).to_string(), n.clone()))
+                .collect()
+        }
+    }
+
+    fn note<'a>(notes: &'a [(String, Value)], file: &str) -> &'a Value {
+        &notes.iter().find(|(f, _)| f == file).unwrap().1
+    }
+
+    fn files(dir: &Path, only_md: bool) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !only_md || n.ends_with(".md"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn findings(kind: &str, line: i64) -> Value {
+        json::loads(&format!("[{{\"kind\": {kind:?}, \"line\": {line}}}]")).unwrap()
+    }
+
+    fn strs_at(res: &Value, path: &[&str]) -> Vec<String> {
+        at(res, path)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn blocked_files(res: &Value) -> Vec<String> {
+        at(res, &["memory", "blocked"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| text_at(b, &["file"]).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_preview_lists_legacy_notes_defaults_personal_and_writes_nothing() {
+        let Some(l) = L::new() else { return };
+        write(&l.repo_mem.join("mail.md"), "the repo's own note\n", None);
+        let before = mem::snapshot(l.f.tmp());
+        let notes = l.notes();
+        assert_eq!(mem::snapshot(l.f.tmp()), before);
+        let mut names: Vec<&str> = notes.iter().map(|(f, _)| f.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["clean.md", "dirty.md", "mail.md", "user-me.md"]);
+        let clean = note(&notes, "clean.md");
+        assert_eq!(text_at(clean, &["name"]), "clean");
+        assert_eq!(text_at(clean, &["description"]), "A clean note");
+        assert_eq!(text_at(clean, &["type"]), "project");
+        assert_eq!(text_at(clean, &["default"]), "personal");
+        assert_eq!(at(clean, &["findings"]), &Value::Array(Vec::new()));
+        assert_eq!(at(clean, &["movable"]), &Value::Bool(true));
+        assert_eq!(text_at(clean, &["status"]), "new");
+        let diff = text_at(clean, &["diff"]);
+        assert!(diff.starts_with("--- /dev/null\n+++ b/.claude/memory/clean.md\n"));
+        assert!(diff.contains("+Use Docker."));
+        let dirty = note(&notes, "dirty.md");
+        assert_eq!(at(dirty, &["findings"]), &findings("home-path", 8));
+        assert_eq!(at(dirty, &["movable"]), &Value::Bool(false));
+        assert!(text_at(dirty, &["reason"]).contains("home path (line 8)"));
+        let mail = note(&notes, "mail.md");
+        let kinds: Vec<&str> = at(mail, &["findings"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| text_at(f, &["kind"]))
+            .collect();
+        assert_eq!(kinds, ["email"]);
+        assert_eq!(text_at(mail, &["status"]), "conflict");
+        let would = text_at(mail, &["would_create"]);
+        let date = would
+            .strip_prefix("mail.migrated-")
+            .and_then(|r| r.strip_suffix(".md"))
+            .expect("mail.migrated-<date>.md");
+        let parts: Vec<&str> = date.split('-').collect();
+        assert_eq!(parts.iter().map(|d| d.len()).collect::<Vec<_>>(), [4, 2, 2]);
+        assert!(parts.iter().all(|d| d.bytes().all(|b| b.is_ascii_digit())));
+        assert!(text_at(mail, &["diff"]).contains("-the repo's own note"));
+        assert!(text_at(mail, &["diff"]).contains(&format!("+++ b/.claude/memory/{would}")));
+        let user = note(&notes, "user-me.md");
+        assert_eq!(at(user, &["movable"]), &Value::Bool(false));
+        assert!(text_at(user, &["reason"]).contains("type: user"));
+        for (_, n) in &notes {
+            for f in at(n, &["findings"]).as_array().unwrap() {
+                let mut keys: Vec<&str> = f.as_object().unwrap().iter().map(|(k, _)| k).collect();
+                keys.sort_unstable();
+                assert_eq!(keys, ["kind", "line"]);
+            }
+        }
+        let all: Vec<&Value> = notes.iter().map(|(_, n)| at(n, &["findings"])).collect();
+        assert!(
+            !all.iter()
+                .any(|f| dumped(f).contains(&("alice".to_string() + "@")))
+        );
+    }
+
+    #[test]
+    fn test_preview_marks_identical_notes_and_lists_ledgered_ones() {
+        let Some(l) = L::new() else { return };
+        let deps = SyncDeps::from_env(l.f.env());
+        sync::migrate(
+            &l.old,
+            None,
+            &l.personal,
+            Some(&l.f.anth().join("migrated.json")),
+            None,
+            &[],
+            None,
+            &deps,
+        );
+        write(
+            &l.repo_mem.join("clean.md"),
+            &fs::read_to_string(l.old.join("clean.md")).unwrap(),
+            None,
+        );
+        let notes = l.notes();
+        assert_eq!(notes.len(), 4); // the ledger never hides a note from the choice
+        let clean = note(&notes, "clean.md");
+        assert_eq!(text_at(clean, &["status"]), "identical");
+        assert_eq!(text_at(clean, &["diff"]), "");
+    }
+
+    #[test]
+    fn test_explicit_selection_moves_only_the_clean_ones() {
+        let Some(l) = L::new() else { return };
+        let res = l.apply(&["clean.md", "dirty.md"]);
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(files(&l.repo_mem, false), ["MEMORY.md", "clean.md"]);
+        assert_eq!(
+            fs::read(l.repo_mem.join("clean.md")).unwrap(),
+            fs::read(l.old.join("clean.md")).unwrap()
+        );
+        assert!(
+            fs::read_to_string(l.repo_mem.join("MEMORY.md"))
+                .unwrap()
+                .contains("[clean](clean.md)")
+        );
+        assert_eq!(
+            files(&l.personal, true),
+            ["dirty.md", "mail.md", "user-me.md"]
+        );
+        let blocked = at(&res, &["memory", "blocked"]).as_array().unwrap();
+        assert_eq!(blocked_files(&res), ["dirty.md"]);
+        assert_eq!(at(&blocked[0], &["findings"]), &findings("home-path", 8));
+        assert!(text_at(&blocked[0], &["reason"]).contains("home path"));
+        assert!(!dumped(at(&res, &["memory", "blocked"])).contains("alice"));
+        assert_eq!(strs_at(&res, &["memory", "migrated", "repo"]), ["clean.md"]);
+        let mut personal = strs_at(&res, &["memory", "migrated", "personal"]);
+        personal.sort();
+        assert_eq!(personal, ["dirty.md", "mail.md", "user-me.md"]);
+        let ledger =
+            json::loads(&fs::read_to_string(l.f.anth().join("migrated.json")).unwrap()).unwrap();
+        assert_eq!(at(&ledger, &["done"]).as_array().unwrap().len(), 4);
+        // the next session start copies nothing more
+        let mut sd = SyncDeps::from_env(l.f.env());
+        sd.privacy.hostname = alice_laptop;
+        let (_, msgs) = sync::run(&l.root, l.f.env(), &sd);
+        assert!(!msgs.iter().any(|m| m.contains("note(s)")), "{msgs:?}");
+        assert_eq!(files(&l.repo_mem, true), ["MEMORY.md", "clean.md"]);
+        let mut personal = files(&l.personal, true);
+        personal.retain(|n| n != "MEMORY.md");
+        assert_eq!(personal, ["dirty.md", "mail.md", "user-me.md"]);
+    }
+
+    #[test]
+    fn test_without_promote_everything_stays_personal() {
+        let Some(l) = L::new() else { return };
+        let res = l.apply(&[]);
+        assert!(ok(&res), "{res:?}");
+        assert!(!l.repo_mem.exists());
+        assert_eq!(at(&res, &["memory", "blocked"]), &Value::Array(Vec::new()));
+        let mut personal = strs_at(&res, &["memory", "migrated", "personal"]);
+        personal.sort();
+        assert_eq!(personal, ["clean.md", "dirty.md", "mail.md", "user-me.md"]);
+    }
+
+    #[test]
+    fn test_a_promoted_user_note_is_blocked() {
+        let Some(l) = L::new() else { return };
+        let res = l.apply(&["user-me.md"]);
+        assert_eq!(blocked_files(&res), ["user-me.md"]);
+        assert!(!l.repo_mem.exists());
+        assert!(l.personal.join("user-me.md").is_file());
+    }
+
+    #[test]
+    fn test_refusals_write_nothing() {
+        let Some(l) = L::new() else { return };
+        let before = mem::snapshot(l.f.tmp());
+        let digest = sha(&l.text);
+        let deps = l.deps();
+        let strings =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|s| s.to_string()).collect() };
+        for (names, skip, needle) in [
+            (&["nope.md"][..], false, "nope.md"),
+            (&["../clean.md"][..], false, "../clean.md"),
+            (&["clean.md"][..], true, "--skip-approve"),
+        ] {
+            let res = setup::apply(
+                &l.f.c.plugin,
+                &digest,
+                Some(&l.root),
+                skip,
+                l.f.env(),
+                &strings(names),
+                &deps,
+            );
+            assert!(!ok(&res));
+            assert!(text_at(&res, &["error"]).contains(needle));
+            assert!(text_at(&res, &["error"]).contains("Nothing was written"));
+        }
+        let no_repo = |_: &Path, _: &Env| None;
+        let no_repo_deps = SetupDeps {
+            memory: MemoryDeps {
+                repo_root: &no_repo,
+                ..MemoryDeps::default()
+            },
+            ..l.f.deps()
+        };
+        let res = setup::apply(
+            &l.f.c.plugin,
+            &digest,
+            Some(&l.root),
+            false,
+            l.f.env(),
+            &strings(&["clean.md"]),
+            &no_repo_deps,
+        );
+        assert!(!ok(&res));
+        assert!(text_at(&res, &["error"]).contains("git repo"));
+        assert_eq!(mem::snapshot(l.f.tmp()), before);
+        assert_eq!(l.f.rtk_calls(), 0);
+        assert!(!l.f.approved(FAKE_REPO_KEY));
+    }
+
+    #[test]
+    fn test_cli_promote_flag_is_repeatable() {
+        let Some(l) = L::new() else { return };
+        let argv: Vec<String> = [
+            "apply",
+            "--plugin-root",
+            &p(&l.f.c.plugin),
+            "--expect-sha256",
+            &sha(&l.text),
+            "--cwd",
+            &p(&l.root),
+            "--promote",
+            "clean.md",
+            "--promote",
+            "mail.md",
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        let (code, out, _) = setup::main(&argv, l.f.env(), &l.deps());
+        let v = json::loads(&out).unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(strs_at(&v, &["memory", "migrated", "repo"]), ["clean.md"]);
+        assert_eq!(blocked_files(&v), ["mail.md"]);
     }
 }
 
@@ -1212,6 +1693,32 @@ mod fix_round1_test {
     }
 
     #[test]
+    fn test_remove_preview_lists_the_approvals_each_flag_would_drop() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo =
+            f.c.mem
+                .make_repo("repo", Some("https://example.invalid/acme/app.git"));
+        f.save_approved(&["a/b"]);
+        f.apply_in(&repo, false, &[], &f.deps());
+        let out = f.remove_in(&repo, false, false, true);
+        let list = |k: &str| -> Vec<String> {
+            at(&out, &["memory", k])
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(list("unapprove"), [FAKE_REPO_KEY]);
+        assert_eq!(list("unapprove_all"), ["a/b", FAKE_REPO_KEY]);
+        assert!(f.approved("a/b"));
+    }
+
+    #[test]
     fn test_remove_preview_error_for_unparseable_settings() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
@@ -1330,6 +1837,39 @@ mod remove_test {
         assert!(personal.join("user-me.md").exists());
         assert!(personal.is_dir());
         assert!(!f.state_exists());
+    }
+
+    #[test]
+    fn test_remove_keeps_repo_notes_and_gitattributes() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo =
+            f.c.mem
+                .make_repo("repo", Some("https://example.invalid/acme/app.git"));
+        let a = repo.join(".claude/memory/project-a.md");
+        let b = repo.join(".claude/agent-memory/anthology-scout/project-b.md");
+        write(&a, &note_text(&Note::new("project-a").desc("A")), None);
+        write(&b, &note_text(&Note::new("project-b").desc("B")), None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        f.remove_in(&repo, true, true, false);
+        assert!(a.exists());
+        assert!(b.exists());
+        assert!(repo.join(".gitattributes").exists());
+        assert!(!f.approved(FAKE_REPO_KEY));
+    }
+
+    #[test]
+    fn test_unapprove_all_drops_every_approval() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.save_approved(&["a/b", "c/d"]);
+        f.apply();
+        f.remove(false, true, false);
+        assert!(!f.approved("a/b"));
+        assert!(!f.approved("c/d"));
     }
 
     #[test]
@@ -1722,6 +2262,7 @@ mod cli_test {
                 repo_root: &repo_root,
                 repo_key: &repo_key,
                 approve: &approve,
+                ..MemoryDeps::default()
             },
             ..f.deps()
         };

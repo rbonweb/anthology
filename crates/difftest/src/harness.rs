@@ -25,6 +25,7 @@ use anthology_pycompat::json::{Int, Map, Value};
 
 use crate::case::{Case, Rng, Surface};
 use crate::divergences::{Class, Divergences};
+use crate::golden::{self, Frozen};
 use crate::observe::Observed;
 use crate::oracle::{Notes, Oracle};
 
@@ -35,6 +36,8 @@ pub struct Options {
     pub seed: u64,
     /// Inject a diff into this surface's first case.
     pub inject: bool,
+    /// Keep every case with Python's side of it in [`Report::frozen`] (`difftest freeze`).
+    pub record: bool,
 }
 
 /// A case that did not pass.
@@ -70,6 +73,11 @@ pub struct Report {
     pub unused: Vec<String>,
     /// The case the injected diff went into.
     pub injected: Option<String>,
+    /// With [`Options::record`]: every case and Python's side of it, in run order.
+    pub frozen: Vec<Frozen>,
+    /// From [`run_frozen`]: the index (into the golden) and Rust's stored result of each case
+    /// that failed only because its result differs, which `golden bless` may record.
+    pub blessable: Vec<(usize, Value)>,
 }
 
 /// The judgement of one case.
@@ -206,7 +214,6 @@ pub fn run_surface(
     }
     let starts_before = oracle.starts();
     for (i, case) in cases.iter().enumerate() {
-        report.cases += 1;
         oracle.take_notes();
         let python = catch_unwind(AssertUnwindSafe(|| surface.run_python(case, &mut *oracle)));
         let notes = oracle.take_notes();
@@ -217,45 +224,25 @@ pub fn run_surface(
             Ok(o) => (o, None),
             Err(p) => (Observed::default(), Some(panic_text(&*p))),
         };
-        let rust = catch_unwind(AssertUnwindSafe(|| surface.run_rust(case)));
-        let (mut rust, panicked) = match rust {
-            Ok(o) => (o, None),
-            Err(p) => (Observed::default(), Some(panic_text(&*p))),
-        };
-        if opts.inject && i == 0 {
-            match rust.stdout.first_mut() {
-                Some(b) => *b ^= 1,
-                None => rust.stdout.push(b'!'),
-            }
-            report.injected = Some(case.id.clone());
+        let (rust, panicked) = rust_side(surface, case, opts.inject && i == 0, &mut report);
+        if opts.record {
+            // A result that differs from Python's is only frozen clean when an entry waives
+            // it; Rust's own result is pinned too, so the waived case cannot drift.
+            report.frozen.push(Frozen {
+                id: case.id.clone(),
+                data: case.data.clone(),
+                case_sha256: None,
+                expect: golden::form(&python),
+                marks: notes.marks.clone(),
+                rust: (python != rust).then(|| golden::form(&rust)),
+            });
         }
         let verdict = match (py_panic, panicked) {
             (Some(msg), _) => Verdict::Unexplained(format!("the python side panicked: {msg}")),
             (None, Some(msg)) => Verdict::Unexplained(format!("rust panicked: {msg}")),
             (None, None) => judge(&case.id, python == rust, &notes, div),
         };
-        match verdict {
-            Verdict::Same => report.same += 1,
-            Verdict::Explained { marks, waiver } => {
-                for c in marks {
-                    *report.explained.entry(c).or_default() += 1;
-                }
-                if let Some((label, gen_by_glob)) = waiver {
-                    if gen_by_glob && !report.glob_gen_waivers.contains(&label) {
-                        report.glob_gen_waivers.push(label.clone());
-                    }
-                    *report.waived.entry(label).or_default() += 1;
-                }
-            }
-            Verdict::Unexplained(reason) => report.failures.push(Failure {
-                id: case.id.clone(),
-                case: case.compact(400),
-                reason,
-                python: python.render(300),
-                rust: rust.render(300),
-                diff: python.diff(&rust),
-            }),
-        }
+        tally(&mut report, case, verdict, &python, &rust);
     }
     let started = oracle.starts() - starts_before;
     report.restarts = if starts_before == 0 {
@@ -263,6 +250,111 @@ pub fn run_surface(
     } else {
         started
     };
+    report.unused = div
+        .unused()
+        .iter()
+        .map(|e| entry_label(&div.label, e))
+        .collect();
+    report
+}
+
+/// Rust's side of one case, a panic caught; `inject` flips its first byte (module docs).
+fn rust_side(
+    surface: &dyn Surface,
+    case: &Case,
+    inject: bool,
+    report: &mut Report,
+) -> (Observed, Option<String>) {
+    let rust = catch_unwind(AssertUnwindSafe(|| surface.run_rust(case)));
+    let (mut rust, panicked) = match rust {
+        Ok(o) => (o, None),
+        Err(p) => (Observed::default(), Some(panic_text(&*p))),
+    };
+    if inject {
+        match rust.stdout.first_mut() {
+            Some(b) => *b ^= 1,
+            None => rust.stdout.push(b'!'),
+        }
+        report.injected = Some(case.id.clone());
+    }
+    (rust, panicked)
+}
+
+/// Counts one case's verdict into `report`.
+fn tally(report: &mut Report, case: &Case, verdict: Verdict, python: &Observed, rust: &Observed) {
+    report.cases += 1;
+    match verdict {
+        Verdict::Same => report.same += 1,
+        Verdict::Explained { marks, waiver } => {
+            for c in marks {
+                *report.explained.entry(c).or_default() += 1;
+            }
+            if let Some((label, gen_by_glob)) = waiver {
+                if gen_by_glob && !report.glob_gen_waivers.contains(&label) {
+                    report.glob_gen_waivers.push(label.clone());
+                }
+                *report.waived.entry(label).or_default() += 1;
+            }
+        }
+        Verdict::Unexplained(reason) => report.failures.push(Failure {
+            id: case.id.clone(),
+            case: case.compact(400),
+            reason,
+            python: python.render(300),
+            rust: rust.render(300),
+            diff: python.diff(rust),
+        }),
+    }
+}
+
+/// Runs `surface` against its frozen golden (`difftest golden check`; [`crate::golden`]): the
+/// recorded cases, Python results and marks, no oracle. A recorded mark needs its divergence
+/// entry and a differing result needs a `case` entry, exactly as in a live run.
+pub fn run_frozen(
+    surface: &dyn Surface,
+    cases: &[Frozen],
+    div: &mut Divergences,
+    inject: bool,
+) -> Report {
+    let mut report = Report {
+        name: surface.name().to_string(),
+        ..Report::default()
+    };
+    for (i, f) in cases.iter().enumerate() {
+        if f.id.starts_with("gen:") {
+            report.generated += 1;
+        } else {
+            report.seeds += 1;
+        }
+        let case = Case::new(f.id.clone(), f.data.clone());
+        let python = golden::expected(&f.expect);
+        let (rust, panicked) = rust_side(surface, &case, inject && i == 0, &mut report);
+        let stored = golden::form(&rust);
+        let equal = stored == f.expect;
+        let notes = Notes {
+            marks: f.marks.clone(),
+            errors: Vec::new(),
+        };
+        // A case waived at the freeze pins Rust's result of then.
+        let drifted = f.rust.as_ref().is_some_and(|r| *r != stored);
+        let mut verdict = match panicked {
+            Some(ref msg) => Verdict::Unexplained(format!("rust panicked: {msg}")),
+            None if drifted => Verdict::Unexplained(
+                "a waived diff: Rust's result changed since the freeze, which pinned it".into(),
+            ),
+            None => judge(&case.id, equal, &notes, div),
+        };
+        if let Verdict::Unexplained(reason) = &mut verdict
+            && panicked.is_none()
+            && (!equal || drifted)
+        {
+            if golden::has_digest(&f.expect) {
+                reason.push_str("; the golden keeps a digest of a big output");
+            }
+            report.blessable.push((i, stored));
+        }
+        tally(&mut report, &case, verdict, &python, &rust);
+    }
     report.unused = div
         .unused()
         .iter()
@@ -402,6 +494,7 @@ mod tests {
         count: 20,
         seed: 1,
         inject: false,
+        record: false,
     };
 
     const ENTRIES: &str = "[[divergence]]\nclass = \"D-6\"\nreason = \"F-19\"\n\
