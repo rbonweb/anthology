@@ -11,9 +11,9 @@
 //!
 //! Each side reads the same seams from the case: doctor's `check_env`,
 //! `installed_plugins_state` and `find_duplicates` (RT1b's surface tests the real doctor);
-//! `memory_sync.repo_root`, `repo_key` and `approve`; the rtk module (a fake with the same
-//! interface; the real one is `rtk_install.reconcile`'s surface); `platform.system()` and
-//! `machine()`; and, Rust only, `ensure_guard_binary` (BS1's surface tests the bootstrap).
+//! the rtk module (a fake with the same interface; the real one is `rtk_install.reconcile`'s
+//! surface); `platform.system()` and `machine()`; the privacy scan's host name; and, Rust
+//! only, `ensure_guard_binary` (BS1's surface tests the bootstrap).
 //!
 //! The generator draws: config folder forms (set, unset); the plugin root (valid, relative,
 //! missing, not anthology, a glob character, every `version` type); the guardrails (a sibling,
@@ -23,15 +23,22 @@
 //! `plugins/data`, outside it, unset); the rtk folder (a folder, a symlink, none), rtk's history
 //! folder `state.rtk_data_dir()` (a folder, a symlink, a file, none) and `<ah>/bin` (a folder, a
 //! symlink, none); the personal-memory folder; every fake rtk outcome and an edit
-//! during the download; doctor and memory answers, `UnsafeTarget`; the guard binary statuses;
+//! during the download; doctor answers; the guard binary statuses;
 //! the platforms; and step sequences of preview, apply (the current sha or a stale one,
 //! `--skip-approve`, `--promote`), remove (`--preview`, `--unapprove`, `--unapprove-all`),
 //! usage errors and edits.
 //!
-//! SWAP(MS2): Rust's memory functions behind setup that MS2 publishes (legacy notes, migrate,
-//! the approvals store, unapprove) are stand-ins, so the oracle lists no legacy folder, and no
-//! case writes an approval or promotes a listed note. Widen the generator (legacy notes,
-//! promotion, approvals, unapproving a real key) once MS2 merges.
+//! The memory functions behind setup are real on both sides (`anthology_memory`, and
+//! `memory_sync` in the oracle), `repo_root`, `repo_key` and `approve` included: both run the
+//! same [`fake_git`] as `git` (the oracle image has none), and only the host name is fixed
+//! (`alice-laptop`). The repo at `@ROOT@/w` has a `.git` folder and remotes (an https remote,
+//! none, several, scp, `file://` and relative-path forms, odd text), or is not a repo. The
+//! cases write legacy notes (clean, home path, email, private host name and IP, a
+//! `type: user` note, no frontmatter, not UTF-8) under `<config>/projects/@ENC@-w/memory/`,
+//! notes already in the repo's memory (identical, conflicting, a symlinked folder), a
+//! `migrated.json` ledger, `approved-repos.json` and an unsafe `.gitattributes` (a symlink, a
+//! folder), then preview, `--promote` (listed and
+//! unlisted notes), apply, and remove with `--unapprove` or `--unapprove-all`.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -49,6 +56,7 @@ use anthology_settings as settings;
 use anthology_testkit::rt_a;
 use sha2::{Digest, Sha256};
 
+use super::fake_git;
 use crate::case::{Case, Rng, Surface};
 use crate::observe::{Observed, from_oracle};
 use crate::oracle::Oracle;
@@ -151,6 +159,11 @@ impl RtkWiring for CaseRtk {
     }
 }
 
+/// `socket.gethostname()`, as the oracle patches it.
+fn alice_laptop() -> Option<String> {
+    Some("alice-laptop".into())
+}
+
 fn linux() -> (String, String) {
     ("Linux".into(), "x86_64".into())
 }
@@ -210,11 +223,25 @@ fn run(case: &Value) -> Observed {
             env = env.with(k, &x(v.as_str().expect("env value")));
         }
     }
-    env = env.with("PATH", "/usr/bin:/bin");
-    let tree = field(case, "tree")
+    env = env.with("PATH", &fake_git::path(&root_text, "/usr/bin:/bin"));
+    // The old path-keyed memory folders are named after the root (`@ENC@`).
+    let enc: String = root_text
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let tree: Vec<Value> = field(case, "tree")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut e| {
+            let p = str_of(&e, "p").map(str::to_string);
+            if let (Some(m), Some(p)) = (e.as_object_mut(), p) {
+                m.insert("p".into(), Value::Str(p.replace("@ENC@", &enc)));
+            }
+            e
+        })
+        .collect();
     rt_a::materialize(&root, &tree);
 
     let none = Value::Null;
@@ -231,16 +258,6 @@ fn run(case: &Value) -> Observed {
         (installed.cloned(), state)
     };
     let duplicates = |_: Option<&Value>| field(doc, "duplicates").cloned().unwrap_or_else(empty);
-    let mem = field(case, "memory").unwrap_or(&none);
-    let repo_root = |_: &Path, _: &Env| str_of(mem, "repo").map(|r| PathBuf::from(x(r)));
-    let repo_key = |_: &Path, _: &Env| str_of(mem, "key").unwrap_or("").to_string();
-    let approve = |_: &Path, _: &Env| -> Result<String, PyExc> {
-        let a = field(mem, "approve").unwrap_or(&none);
-        match str_of(a, "unsafe") {
-            Some(m) => Err(PyExc::Other("UnsafeTarget", m.to_string())),
-            None => Ok(str_of(a, "key").unwrap_or("").to_string()),
-        }
-    };
     let status = str_of(case, "guard_binary")
         .unwrap_or("present")
         .to_string();
@@ -275,9 +292,8 @@ fn run(case: &Value) -> Observed {
             _ => linux,
         },
         memory: MemoryDeps {
-            repo_root: &repo_root,
-            repo_key: &repo_key,
-            approve: &approve,
+            hostname: Some(alice_laptop),
+            ..MemoryDeps::default()
         },
         doctor: SetupDoctor {
             checks: &checks,
@@ -324,7 +340,11 @@ fn run(case: &Value) -> Observed {
         }
     }
     rt_a::unlock(&root);
-    Observed::text(code, &report.replace(&root_text, "@ROOT@"), "")
+    Observed::text(
+        code,
+        &report.replace(&root_text, "@ROOT@").replace(&enc, "@ENC@"),
+        "",
+    )
 }
 
 // --- cases --------------------------------------------------------------------------------
@@ -364,11 +384,124 @@ fn guard(p: &str) -> Value {
     obj(vec![("t", s("guard")), ("p", s(p))])
 }
 
+/// A note as Claude Code writes it (the oracle and Rust read the same text).
+fn note_text(name: &str, kind: &str, desc: &str, body: &str) -> String {
+    format!("---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: {kind}\n---\n\n{body}")
+}
+
+/// The legacy-note pool: file name and text (`None` is not UTF-8). The home path, the email
+/// and the address are written in pieces so no file of the repo holds one whole.
+fn pool() -> Vec<(&'static str, Option<String>)> {
+    vec![
+        (
+            "clean.md",
+            Some(note_text(
+                "clean",
+                "project",
+                "A clean note",
+                "Use Docker.\n",
+            )),
+        ),
+        (
+            "dirty.md",
+            Some(note_text(
+                "dirty",
+                "reference",
+                "Where things live",
+                concat!("Checkout in /", "Users/alice/src\n"),
+            )),
+        ),
+        (
+            "mail.md",
+            Some(note_text(
+                "mail",
+                "reference",
+                "Contact",
+                concat!("Ask alice", "@", "mail.acme.zz\n"),
+            )),
+        ),
+        (
+            "user-me.md",
+            Some(note_text("user-me", "user", "About me", "Body.\n")),
+        ),
+        (
+            "host.md",
+            Some(note_text(
+                "host",
+                "project",
+                "Host",
+                "Runs on alice-laptop\n",
+            )),
+        ),
+        (
+            "ip.md",
+            Some(note_text(
+                "ip",
+                "reference",
+                "Hosts",
+                concat!("server 10.1", ".2.3\n"),
+            )),
+        ),
+        ("plain.md", Some("just text, no frontmatter\n".into())),
+        ("bad.md", None),
+        ("MEMORY.md", Some("- index\n".into())),
+    ]
+}
+
+/// Names `--promote` may be given: the pool's, and some that are not notes.
+fn promote_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = pool().iter().map(|(n, _)| *n).collect();
+    v.extend(["a.md", "../clean.md", "sub/clean.md", ""]);
+    v
+}
+
+fn note_entry(p: &str, i: usize) -> Value {
+    match &pool()[i].1 {
+        Some(text) => file(p, text),
+        None => file_hex(p, "2d2d2d0aff0a"),
+    }
+}
+
+/// The sha256 `migrate` records for pool note `i`.
+fn pool_sha(i: usize) -> String {
+    let bytes = match &pool()[i].1 {
+        Some(text) => text.clone().into_bytes(),
+        None => vec![0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0x0a],
+    };
+    Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 const PLUGIN: &str = "p/anthology";
 const GUARD: &str = "p/anthology-guardrails";
 const ROOT_ARG: &str = "@ROOT@/p/anthology";
 const CWD: &str = "@ROOT@/w";
+/// `repo_key` of the repo at `@ROOT@/w` with its default origin.
 const KEY: &str = "github.com/example/w";
+/// The fake git's remotes file of that repo.
+const REMOTES: &str = "w/.git/remotes";
+/// Remotes files whose key `normalize_remote` derives in each of its ways.
+const REMOTE_FORMS: [&str; 9] = [
+    "upstream https://github.com/Other/W.git\norigin git@github.com:Example/W.git\n",
+    "zeta ssh://user:pw@host.example:22/a/b.git/\nalpha https://h.example:8443//x//y/\n",
+    "origin file://@ROOT@/elsewhere/repo.git\n",
+    "origin ../up.git\n",
+    "origin ./sub/../w2\n",
+    "origin ~/repos/x.git\n",
+    "origin host.example:team/proj\n",
+    "origin\n",
+    "origin HTTP://User@Example.COM:80/A/B/\n",
+];
+
+/// A remote URL: a scheme or scp form around odd text.
+fn odd_url(rng: &mut Rng) -> String {
+    let head = *rng.pick(&["https://", "ssh://git@", "file://", "", "git@", "/", "../"]);
+    let mid = odd_text(rng, 12);
+    let tail = *rng.pick(&[".git", "/", ":22/x", "", "//a//b.git/"]);
+    format!("{head}{mid}{tail}").replace(['\n', '\r'], "")
+}
 const MANIFEST: &str = r#"{"name": "anthology", "version": "0.1.0"}"#;
 /// `plugin_read_rule` of the plugin root (the root starts with `/`).
 const RULE: &str = "Read(/@ROOT@/p/**)";
@@ -409,7 +542,6 @@ struct B {
     env: Map,
     uname: &'static str,
     doctor: Value,
-    memory: Value,
     rtk: Value,
     guard_binary: String,
     steps: Vec<Vec<String>>,
@@ -417,7 +549,8 @@ struct B {
 
 impl B {
     /// A healthy layout: the plugin, a sibling guardrails, the config in `@ROOT@/cfg`, the data
-    /// folder under its `plugins/data`, a repo at `@ROOT@/w`, an rtk that installs.
+    /// folder under its `plugins/data`, a repo at `@ROOT@/w` whose origin gives [`KEY`], an rtk
+    /// that installs, and the [`fake_git`].
     fn new() -> B {
         let mut env = Map::new();
         env.insert("HOME".into(), s("@ROOT@/home"));
@@ -427,12 +560,16 @@ impl B {
             s("@ROOT@/cfg/plugins/data/anthology"),
         );
         B {
-            tree: vec![
+            tree: [
                 file(&format!("{PLUGIN}/.claude-plugin/plugin.json"), MANIFEST),
                 guard(GUARD),
                 dir("home"),
-                dir("w"),
-            ],
+                dir("w/.git"),
+                file(REMOTES, "origin https://github.com/example/w.git\n"),
+            ]
+            .into_iter()
+            .chain(fake_git::entries())
+            .collect(),
             env,
             uname: "linux",
             doctor: obj(vec![
@@ -447,11 +584,6 @@ impl B {
                 ("installed", Value::Null),
                 ("state", s("missing")),
                 ("duplicates", Value::Array(Vec::new())),
-            ]),
-            memory: obj(vec![
-                ("repo", s(CWD)),
-                ("key", s(KEY)),
-                ("approve", obj(vec![("key", s(KEY))])),
             ]),
             rtk: obj(vec![
                 ("lock_exc", Value::Null),
@@ -500,6 +632,47 @@ impl B {
         self.put(file(&p, text))
     }
 
+    /// Pool note `i` as a legacy note of the repo at `@ROOT@/w`.
+    fn legacy(self, i: usize) -> B {
+        let p = format!("{}/projects/@ENC@-w/memory/{}", self.config(), pool()[i].0);
+        self.put(note_entry(&p, i))
+    }
+
+    /// Pool note `i` (or `text` in its place) already in the repo's memory.
+    fn repo_note(self, i: usize, text: Option<&str>) -> B {
+        let p = format!("w/.claude/memory/{}", pool()[i].0);
+        match text {
+            Some(t) => self.put(file(&p, t)),
+            None => self.put(note_entry(&p, i)),
+        }
+    }
+
+    /// `<ah>/migrated.json` naming the pool notes `done`.
+    fn ledger(self, done: &[usize]) -> B {
+        let shas: Vec<String> = done
+            .iter()
+            .map(|i| format!("\"{}\"", pool_sha(*i)))
+            .collect();
+        let p = self.at("anthology/migrated.json");
+        self.put(file(
+            &p,
+            &format!("{{\"version\": 1, \"done\": [{}]}}", shas.join(", ")),
+        ))
+    }
+
+    /// `<ah>/approved-repos.json` approving `keys`.
+    fn approvals(self, keys: &[&str]) -> B {
+        let repos: Vec<String> = keys
+            .iter()
+            .map(|k| format!("{k:?}: {{\"approved\": \"2026-01-01\"}}"))
+            .collect();
+        let p = self.at("anthology/approved-repos.json");
+        self.put(file(
+            &p,
+            &format!("{{\"version\": 1, \"repos\": {{{}}}}}", repos.join(", ")),
+        ))
+    }
+
     fn no_guard(mut self) -> B {
         self.tree.retain(|e| str_of(e, "t") != Some("guard"));
         self
@@ -527,9 +700,23 @@ impl B {
         self
     }
 
-    fn mem(mut self, k: &str, v: Value) -> B {
-        self.memory = B::set(self.memory, k, v);
-        self
+    /// `@ROOT@/w` is not a git repo.
+    fn not_repo(mut self) -> B {
+        self.tree
+            .retain(|e| !str_of(e, "p").is_some_and(|p| p.starts_with("w/.git")));
+        self.put(dir("w"))
+    }
+
+    /// The repo's remotes (`<name> <url>` lines); `None` has none, so its key is its path.
+    fn remotes(self, text: Option<&str>) -> B {
+        match text {
+            Some(t) => self.put(file(REMOTES, t)),
+            None => {
+                let mut b = self;
+                b.tree.retain(|e| str_of(e, "p") != Some(REMOTES));
+                b
+            }
+        }
     }
 
     fn doc(mut self, k: &str, v: Value) -> B {
@@ -558,13 +745,28 @@ impl B {
         .iter()
         .map(|r| s(&self.at(r)))
         .chain([s("data/rtk"), s("elsewhere/history/history.db")])
+        .chain(
+            [
+                "anthology/migrated.json",
+                "anthology/approved-repos.json",
+                "anthology/personal-memory/MEMORY.md",
+            ]
+            .iter()
+            .map(|r| s(&self.at(r))),
+        )
+        .chain(pool().iter().flat_map(|(n, _)| {
+            [
+                s(&format!("w/.claude/memory/{n}")),
+                s(&self.at(&format!("anthology/personal-memory/{n}"))),
+            ]
+        }))
+        .chain([s("w/.claude/memory"), s("w/.claude"), s("w/.gitattributes")])
         .collect();
         obj(vec![
             ("tree", Value::Array(self.tree)),
             ("env", Value::Object(self.env)),
             ("uname", s(self.uname)),
             ("doctor", self.doctor),
-            ("memory", self.memory),
             ("rtk", self.rtk),
             ("guard_binary", s(&self.guard_binary)),
             (
@@ -824,24 +1026,35 @@ fn seeds() -> Vec<Value> {
             .step(apply_cmd(&[])));
     }
     // memory
+    add(B::new().not_repo().step(preview_cmd()).step(apply_cmd(&[])));
     add(B::new()
-        .mem("repo", Value::Null)
-        .step(preview_cmd())
+        .put(dir("elsewhere"))
+        .put(link("w/.gitattributes", "@ROOT@/elsewhere"))
         .step(apply_cmd(&[])));
     add(B::new()
-        .mem(
-            "approve",
-            obj(vec![("unsafe", s("@ROOT@/w/.gitattributes is a symlink"))]),
-        )
-        .step(apply_cmd(&[])));
+        .put(dir("w/.gitattributes"))
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&["--unapprove"])));
     add(B::new()
-        .mem("approve", obj(vec![("key", s("path:@ROOT@/w"))]))
+        .remotes(None)
+        .step(apply_cmd(&[]))
+        .step(preview_cmd()));
+    add(B::new()
+        .put(file(
+            "w/.gitattributes",
+            "*.md text\n.claude/memory/MEMORY.md   merge=union",
+        ))
+        .step(apply_cmd(&[]))
         .step(apply_cmd(&[])));
+    for remotes in REMOTE_FORMS {
+        add(B::new()
+            .remotes(Some(remotes))
+            .step(apply_cmd(&[]))
+            .step(remove_cmd(&["--unapprove", "--preview"])));
+    }
     add(B::new().step(apply_cmd(&["--skip-approve"])));
     add(B::new().step(apply_cmd(&["--skip-approve", "--promote", "a.md"])));
-    add(B::new()
-        .mem("repo", Value::Null)
-        .step(apply_cmd(&["--promote", "a.md"])));
+    add(B::new().not_repo().step(apply_cmd(&["--promote", "a.md"])));
     add(B::new().step(apply_cmd(&[
         "--promote",
         "b.md",
@@ -852,6 +1065,70 @@ fn seeds() -> Vec<Value> {
     ])));
     let pm = B::new().at("anthology/personal-memory/x.md");
     add(B::new().put(file(&pm, "x")).step(apply_cmd(&[])));
+    // legacy notes, promotion, approvals (real memory functions)
+    let all = || (0..pool().len()).fold(B::new(), |b, i| b.legacy(i));
+    let every: Vec<&str> = pool().iter().flat_map(|(n, _)| ["--promote", *n]).collect();
+    add(all().step(preview_cmd()));
+    add(all().step(apply_cmd(&[])));
+    add(all()
+        .step(apply_cmd(&["--promote", "clean.md"]))
+        .step(apply_cmd(&[])));
+    add(all().step(apply_cmd(&every)).step(preview_cmd()));
+    add(all().step(apply_cmd(&["--promote", "MEMORY.md"])));
+    add(all()
+        .repo_note(2, Some("the repo's own note\n"))
+        .repo_note(0, None)
+        .step(preview_cmd())
+        .step(apply_cmd(&[
+            "--promote",
+            "clean.md",
+            "--promote",
+            "mail.md",
+        ])));
+    add(all()
+        .ledger(&[0, 1])
+        .step(preview_cmd())
+        .step(apply_cmd(&[])));
+    add(all()
+        .put(dir("elsewhere"))
+        .put(link("w/.claude/memory", "@ROOT@/elsewhere"))
+        .step(preview_cmd())
+        .step(apply_cmd(&["--promote", "clean.md"])));
+    add(all()
+        .put(file("w/.claude", "x"))
+        .step(preview_cmd())
+        .step(apply_cmd(&["--promote", "clean.md"])));
+    add(all()
+        .put(file("w/.claude/memory", "x"))
+        .step(preview_cmd())
+        .step(apply_cmd(&["--promote", "clean.md"])));
+    add(all().step(apply_cmd(&["--promote", "clean.md", "--skip-approve"])));
+    add(all()
+        .not_repo()
+        .step(preview_cmd())
+        .step(apply_cmd(&["--promote", "clean.md"])));
+    add(all()
+        .step(apply_cmd(&["--promote", "clean.md"]))
+        .step(remove_cmd(&["--unapprove"])));
+    add(B::new()
+        .approvals(&[KEY, "a/b"])
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&["--unapprove", "--preview"]))
+        .step(remove_cmd(&["--unapprove-all", "--preview"]))
+        .step(remove_cmd(&["--unapprove"]))
+        .step(remove_cmd(&["--unapprove-all"])));
+    add(B::new()
+        .approvals(&["c/d", "a/b"])
+        .step(remove_cmd(&["--unapprove-all"]))
+        .step(preview_cmd()));
+    add(B::new()
+        .approvals(&[KEY])
+        .step(preview_cmd())
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&["--unapprove"])));
+    add(B::new()
+        .put(file("cfg/anthology/approved-repos.json", "not json"))
+        .step(remove_cmd(&["--unapprove-all"])));
     // doctor
     add(B::new()
         .doc("state", s("ok"))
@@ -941,9 +1218,10 @@ fn gen_cmd(rng: &mut Rng) -> Vec<String> {
             if rng.chance(0.15) {
                 extra.push("--skip-approve");
             }
-            // SWAP(MS2): no listed legacy note exists yet, so a --promote is always refused.
-            if rng.chance(0.08) {
-                extra.extend(["--promote", *rng.pick(&["a.md", "MEMORY.md", ""])]);
+            if rng.chance(0.25) {
+                for _ in 0..1 + rng.index(3) {
+                    extra.extend(["--promote", *rng.pick(&promote_names())]);
+                }
             }
             let mut a = apply_cmd(&extra);
             if rng.chance(0.12) {
@@ -1146,19 +1424,62 @@ fn gen_case(rng: &mut Rng) -> Value {
                 ])]),
             );
     }
-    match rng.below(10) {
-        0 => b = b.mem("repo", Value::Null),
+    match rng.below(14) {
+        0 => b = b.not_repo(),
         1 => {
-            let t = odd_text(rng, 40);
-            b = b.mem("approve", obj(vec![("unsafe", s(&t))]));
-        }
-        2 => {
-            let k = odd_text(rng, 30);
             b = b
-                .mem("key", s(&k))
-                .mem("approve", obj(vec![("key", s(&k))]));
+                .put(dir("elsewhere"))
+                .put(link("w/.gitattributes", "@ROOT@/elsewhere"))
+        }
+        2 => b = b.put(dir("w/.gitattributes")),
+        3 => b = b.remotes(None),
+        4 => {
+            let u = odd_url(rng);
+            b = b.remotes(Some(&format!("origin {u}\n")));
+        }
+        5 => b = b.remotes(Some(rng.pick(&REMOTE_FORMS))),
+        6 => {
+            let t = *rng.pick(&["", "x\n", ".claude/memory/MEMORY.md merge=union\n"]);
+            b = b.put(file("w/.gitattributes", t));
         }
         _ => {}
+    }
+    // legacy notes, what the repo's memory already holds, the ledger, approvals
+    let mut listed = Vec::new();
+    if rng.chance(0.4) {
+        let n = pool().len();
+        for i in 0..n {
+            if rng.chance(0.55) {
+                b = b.legacy(i);
+                listed.push(pool()[i].0);
+            }
+        }
+        match rng.below(10) {
+            0 => b = b.repo_note(rng.index(n), None),
+            1 => b = b.repo_note(rng.index(n), Some("the repo's own note\n")),
+            2 => {
+                b = b
+                    .put(dir("elsewhere"))
+                    .put(link("w/.claude/memory", "@ROOT@/elsewhere"))
+            }
+            3 => b = b.put(file(rng.pick(&["w/.claude", "w/.claude/memory"]), "x")),
+            4 => b = b.ledger(&[rng.index(n), rng.index(n)]),
+            _ => {}
+        }
+    }
+    if rng.chance(0.2) {
+        let keys = *rng.pick(&[
+            &[KEY][..],
+            &[KEY, "a/b"][..],
+            &["a/b"][..],
+            &["c/d", "a/b"][..],
+        ]);
+        b = b.approvals(keys);
+    } else if rng.chance(0.03) {
+        b = b.put(file(
+            "cfg/anthology/approved-repos.json",
+            rng.pick(&["not json", "[]", "{}"]),
+        ));
     }
     b.guard_binary = match rng.below(6) {
         0 => "installed".into(),
@@ -1179,6 +1500,12 @@ fn gen_case(rng: &mut Rng) -> Value {
         }
         let c = gen_cmd(rng);
         b = b.step(c);
+    }
+    // a promotion of one listed legacy note, then what it left
+    if !listed.is_empty() && rng.chance(0.3) {
+        b = b
+            .step(apply_cmd(&["--promote", rng.pick(&listed)]))
+            .step(preview_cmd());
     }
     b.build()
 }
@@ -1223,6 +1550,14 @@ mod tests {
             ("usage", "usage: anthology setup"),
             ("unsafe", "repo memory is approved, but: "),
             ("promote", "--promote"),
+            ("legacy listed", "\"movable\": true"),
+            ("legacy blocked", "\"kind\": \"home-path\""),
+            ("legacy conflict", "\"status\": \"conflict\""),
+            ("legacy identical", "\"status\": \"identical\""),
+            ("promoted", "\"repo\": [\n"),
+            ("user note blocked", "type: user"),
+            ("unapproved", "\"unapproved\": [\n"),
+            ("approvals listed", "\"unapprove_all\": [\n"),
             ("not a repo", "not a git repo"),
             ("bad plugin root", "the plugin root"),
             ("revert", "Fix the file and run remove again"),

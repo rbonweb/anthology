@@ -16,8 +16,9 @@
 //! false) or 2 (unsupported platform). An exception Python would let reach `main` is the
 //! result `{"ok": false, "error": "<Class>: <msg>"}` (GC-5).
 //!
-//! Seams (GC-19): [`SetupDeps`]. The memory functions that MS2 publishes
-//! are stand-ins marked `SWAP(MS2)` until it merges; doctor is RT1b's.
+//! Seams (GC-19): [`SetupDeps`]. The memory functions are `anthology_memory`'s; the three
+//! Python's tests patch (`repo_root`, `repo_key`, `approve`) and the host name are in
+//! [`MemoryDeps`].
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
@@ -28,7 +29,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use anthology_core::{Env, paths, platform, state};
+use anthology_core::git::RealGit;
+use anthology_core::{Env, clock, fsx, paths, platform, state};
+use anthology_memory::sync::{self, Placement, SyncDeps};
+use anthology_memory::{approve as memory_approve, notes, privacy, render, repo as memory_repo};
 use anthology_pycompat::argparse::{self, Arg, Spec, Subcommands};
 use anthology_pycompat::difflib;
 use anthology_pycompat::json::{self, Map, Value};
@@ -67,7 +71,8 @@ pub const NOTES_KEPT: &str = "kept (memory notes are never deleted)";
 /// remove keeps `<ah>/bin` while the guardrails plugin is installed (GC-14).
 pub const BIN_KEPT: &str = "kept (anthology-guardrails still uses it)";
 
-/// The memory functions Python's tests patch (`memory_sync.repo_root`, `repo_key`, `approve`).
+/// The memory functions Python's tests patch (`memory_sync.repo_root`, `repo_key`, `approve`,
+/// and the privacy scan's `socket.gethostname`). `Default` is production.
 pub struct MemoryDeps<'a> {
     /// `memory_sync.repo_root(cwd, env)`: the repo's top folder, or `None` outside a repo.
     pub repo_root: &'a dyn Fn(&Path, &Env) -> Option<PathBuf>,
@@ -76,6 +81,8 @@ pub struct MemoryDeps<'a> {
     /// `memory_sync.approve(root, env)`: the key. `PyExc::Other("UnsafeTarget", _)` is
     /// Python's `UnsafeTarget`, raised after the approval is recorded.
     pub approve: &'a dyn Fn(&Path, &Env) -> Result<String, PyExc>,
+    /// `socket.gethostname()` for the privacy scan; `None` is the machine's host name.
+    pub hostname: Option<fn() -> Option<String>>,
 }
 
 /// doctor's functions setup reports (RT1b). Values are the JSON setup prints.
@@ -106,19 +113,16 @@ pub struct SetupDeps<'a> {
     pub ensure_guard_binary: &'a dyn Fn(&Path, u64, &Env) -> GuardBinaryStatus,
 }
 
-// SWAP(MS2): `|cwd, env| anthology_memory::repo::repo_root(cwd, env, &RealGit)`.
-fn repo_root_default(_cwd: &Path, _env: &Env) -> Option<PathBuf> {
-    None
+fn repo_root_default(cwd: &Path, env: &Env) -> Option<PathBuf> {
+    memory_repo::repo_root(cwd, env, &RealGit)
 }
 
-// SWAP(MS2): `|root, env| anthology_memory::repo::repo_key(root, env, &RealGit)`.
-fn repo_key_default(_root: &Path, _env: &Env) -> String {
-    String::new()
+fn repo_key_default(root: &Path, env: &Env) -> String {
+    memory_repo::repo_key(root, env, &RealGit)
 }
 
-// SWAP(MS2): `|root, env| anthology_memory::approve::approve(root, env, &RealGit)`.
 fn approve_default(root: &Path, env: &Env) -> Result<String, PyExc> {
-    Ok(repo_key_default(root, env))
+    memory_approve::approve(root, env, &RealGit)
 }
 
 /// `doctor.check_env(env, lock=_lock_path(root), plugin_root=root, cwd=cwd)`.
@@ -158,6 +162,7 @@ impl Default for MemoryDeps<'static> {
             repo_root: &repo_root_default,
             repo_key: &repo_key_default,
             approve: &approve_default,
+            hostname: None,
         }
     }
 }
@@ -471,126 +476,24 @@ fn settings_plan(root: &Path, env: &Env) -> Result<Plan, Refusal> {
 
 // --- memory ---------------------------------------------------------------------------------
 
-/// The memory functions setup calls but Python's tests never patch, in MS2's shapes.
-/// SWAP(MS2): replaced by `anthology_memory::{sync, repo, approve, render, notes}`. Until then
-/// no legacy folder is listed and no approval exists, so the functions after `legacy_dirs`
-/// never run in production.
-mod mem {
-    use super::*;
-
-    pub struct NoteInfo {
-        pub name: String,
-        pub description: String,
-        pub kind: Option<String>,
+/// Production sync deps: privacy falls back to the hook's `HOME`, and the host name is the
+/// patched one when a test gave it (`socket.gethostname`).
+fn sync_deps(env: &Env, deps: &SetupDeps<'_>) -> SyncDeps<'static> {
+    let mut sd = SyncDeps::from_env(env);
+    if let Some(hostname) = deps.memory.hostname {
+        sd.privacy.hostname = hostname;
     }
+    sd
+}
 
-    pub struct Finding {
-        pub kind: String,
-        pub line: usize,
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    #[allow(dead_code, reason = "SWAP(MS2): built by MS2's placement_status")]
-    pub enum Placement {
-        New,
-        Identical,
-        Conflict,
-    }
-
-    #[derive(Default)]
-    pub struct MigrateResult {
-        pub copied: Vec<String>,
-        pub side_by_side: Vec<String>,
-        pub blocked: Vec<(String, String)>,
-        pub promoted: Vec<String>,
-        pub skipped: Vec<String>,
-        pub blocked_findings: Vec<Vec<Finding>>,
-    }
-
-    /// `_unsafe_dir(path)`: a symlink or not a folder (an absent path is fine).
-    pub fn unsafe_dir(path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink() || !path.is_dir())
-    }
-
-    // SWAP(MS2): `repo::legacy_dirs(root, config, env, &RealGit)`.
-    pub fn legacy_dirs(_root: &Path, _config: &Path, _env: &Env) -> Vec<PathBuf> {
-        Vec::new()
-    }
-
-    // SWAP(MS2): `sync::legacy_entries`.
-    pub fn legacy_entries(_old: &Path) -> Vec<(String, Vec<u8>)> {
-        Vec::new()
-    }
-
-    // SWAP(MS2): `notes::note_info`.
-    pub fn note_info(name: &str, _data: &[u8]) -> NoteInfo {
-        NoteInfo {
-            name: name.trim_end_matches(".md").into(),
-            description: String::new(),
-            kind: None,
-        }
-    }
-
-    // SWAP(MS2): `sync::promotion_check(info, data, home, None, &SyncDeps::from_env(env))`.
-    pub fn promotion_check(
-        _info: &NoteInfo,
-        _data: &[u8],
-        _home: Option<&str>,
-    ) -> (Vec<Finding>, Option<String>) {
-        (Vec::new(), None)
-    }
-
-    // SWAP(MS2): `sync::placement_status`.
-    pub fn placement_status(_dir: &Path, _name: &str, _data: &[u8]) -> Placement {
-        Placement::New
-    }
-
-    // SWAP(MS2): `sync::side_by_side_name(dir, name, &clock::today_local())`.
-    pub fn side_by_side_name(_dir: &Path, name: &str) -> String {
-        name.into()
-    }
-
-    // SWAP(MS2): `fsx::read_regular(path, None)` (`_read_regular`; UnsafeTarget → `b""`).
-    pub fn read_regular(path: &Path) -> Option<Vec<u8>> {
-        fs::read(path).ok()
-    }
-
-    // SWAP(MS2): `sync::try_migrate(old, repo_mem, personal, Some(ledger), None, promote, home, &SyncDeps::from_env(env))`.
-    pub fn try_migrate(
-        _old: &Path,
-        _repo_mem: Option<&Path>,
-        _personal: &Path,
-        _ledger: &Path,
-        _promote: &[String],
-        _home: Option<&str>,
-    ) -> Result<MigrateResult, PyExc> {
-        Ok(MigrateResult::default())
-    }
-
-    // SWAP(MS2): `render::regenerate_index(mem, DEFAULT_BUDGET, REPO_EXCLUDE)`.
-    pub fn regenerate_repo_index(_mem: &Path) -> Result<bool, PyExc> {
-        Ok(false)
-    }
-
-    // SWAP(MS2): the keys of `approve::load_approved(env)`, sorted.
-    pub fn approved_keys(_env: &Env) -> Vec<String> {
-        Vec::new()
-    }
-
-    // SWAP(MS2): `approve::is_approved(key, env)`.
-    pub fn is_approved(_key: &str, _env: &Env) -> bool {
-        false
-    }
-
-    // SWAP(MS2): `approve::unapprove(key, env)`.
-    pub fn unapprove(_key: &str, _env: &Env) -> Result<bool, PyExc> {
-        Ok(false)
-    }
+/// `_unsafe_dir(path)`: a symlink or not a folder (an absent path is fine).
+fn unsafe_dir(path: &Path) -> bool {
+    memory_repo::unsafe_dir(path).is_some()
 }
 
 /// `_personal_dir(env)`.
 fn personal_dir(env: &Env) -> PathBuf {
-    paths::anthology_home(env).join("personal-memory")
+    memory_repo::anthology_home(env).join("personal-memory")
 }
 
 /// `_repo_info(cwd, env)`: the repo's root and key.
@@ -605,7 +508,7 @@ fn repo_info(cwd: &Path, env: &Env, deps: &SetupDeps<'_>) -> Option<(PathBuf, St
 fn repo_mem(root: &Path) -> Option<PathBuf> {
     let claude = root.join(".claude");
     let m = claude.join("memory");
-    (!mem::unsafe_dir(&claude) && !mem::unsafe_dir(&m)).then_some(m)
+    (!unsafe_dir(&claude) && !unsafe_dir(&m)).then_some(m)
 }
 
 /// `str.splitlines(True)`.
@@ -663,7 +566,7 @@ fn note_diff(a: &[String], b: &[String], from: &str, to: &str) -> String {
     difflib::unified_diff_lineterm(&a, &b, from, to, 3, "\n").concat()
 }
 
-fn findings_value(findings: &[mem::Finding]) -> Value {
+fn findings_value(findings: &[privacy::Finding]) -> Value {
     Value::Array(
         findings
             .iter()
@@ -682,14 +585,15 @@ fn findings_value(findings: &[mem::Finding]) -> Value {
 
 /// `legacy_notes(root, env)`: the repo's old path-keyed notes and what moving each into
 /// `<root>/.claude/memory/` would do. Writes nothing.
-fn legacy_notes(root: &Path, env: &Env) -> Vec<Value> {
+fn legacy_notes(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Vec<Value> {
     let m = repo_mem(root);
     let home = env.get("HOME");
+    let sd = sync_deps(env, deps);
     let mut out = Vec::new();
-    for old in mem::legacy_dirs(root, &paths::config_dir(env), env) {
-        for (name, data) in mem::legacy_entries(&old) {
-            let info = mem::note_info(&name, &data);
-            let (findings, mut reason) = mem::promotion_check(&info, &data, home);
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
+        for (name, data) in sync::legacy_entries(&old) {
+            let info = notes::note_info(&name, &data);
+            let (findings, mut reason) = sync::promotion_check(&info, &data, home, None, &sd);
             if reason.is_none() && m.is_none() {
                 reason = Some("repo memory is a symlink or not a folder".into());
             }
@@ -706,25 +610,26 @@ fn legacy_notes(root: &Path, env: &Env) -> Vec<Value> {
                 note.insert("reason".into(), Value::Str(r));
             }
             let status = match &m {
-                Some(dir) => mem::placement_status(dir, &name, &data),
-                None => mem::Placement::New,
+                Some(dir) => sync::placement_status(dir, &name, &data),
+                None => Placement::New,
             };
             let label = match status {
-                mem::Placement::New => "new",
-                mem::Placement::Identical => "identical",
-                mem::Placement::Conflict => "conflict",
+                Placement::New => "new",
+                Placement::Identical => "identical",
+                Placement::Conflict => "conflict",
             };
             note.insert("status".into(), s(label));
             let diff = match (status, &m) {
-                (mem::Placement::New, _) => note_diff(
+                (Placement::New, _) => note_diff(
                     &[],
                     &diff_lines(&data),
                     "/dev/null",
                     &format!("b/.claude/memory/{name}"),
                 ),
-                (mem::Placement::Conflict, Some(dir)) => {
-                    let would = mem::side_by_side_name(dir, &name);
-                    let existing = mem::read_regular(&dir.join(&name)).unwrap_or_default();
+                (Placement::Conflict, Some(dir)) => {
+                    let would = sync::side_by_side_name(dir, &name, &clock::today_local());
+                    // `UnsafeTarget` reads as nothing there.
+                    let existing = fsx::read_regular(&dir.join(&name), None).unwrap_or_default();
                     note.insert("would_create".into(), s(&would));
                     note_diff(
                         &diff_lines(&existing),
@@ -748,18 +653,22 @@ fn migrate_legacy(
     env: &Env,
     personal: &Path,
     promote: &[String],
+    deps: &SetupDeps<'_>,
 ) -> Result<(Value, Value), String> {
     let m = repo_mem(root);
-    let ledger = paths::anthology_home(env).join("migrated.json");
+    let ledger = memory_repo::anthology_home(env).join("migrated.json");
+    let sd = sync_deps(env, deps);
     let (mut repo, mut pers, mut skipped, mut blocked) = (vec![], vec![], vec![], vec![]);
-    for old in mem::legacy_dirs(root, &paths::config_dir(env), env) {
-        let res = mem::try_migrate(
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
+        let res = sync::try_migrate(
             &old,
             m.as_deref(),
             personal,
-            &ledger,
+            Some(&ledger),
+            None,
             promote,
             env.get("HOME"),
+            &sd,
         )
         .map_err(raised)?;
         let promoted = &res.promoted;
@@ -789,7 +698,8 @@ fn migrate_legacy(
     if !repo.is_empty()
         && let Some(dir) = &m
     {
-        mem::regenerate_repo_index(dir).map_err(raised)?;
+        render::regenerate_index(dir, render::DEFAULT_BUDGET, notes::REPO_EXCLUDE)
+            .map_err(raised)?;
     }
     let migrated = obj(vec![
         ("repo", strs(&repo)),
@@ -823,7 +733,7 @@ fn promote_error(
             "--promote needs a git repo (this folder is not one). Nothing was written.".into(),
         );
     };
-    let listed: BTreeSet<String> = legacy_notes(&root, env)
+    let listed: BTreeSet<String> = legacy_notes(&root, env, deps)
         .iter()
         .filter_map(|n| n.as_object()?.get("file")?.as_str().map(String::from))
         .collect();
@@ -893,11 +803,14 @@ fn try_preview(
         Some((root, key)) => obj(vec![
             ("root", s(&pstr(root))),
             ("key", s(key)),
-            ("approved", Value::Bool(mem::is_approved(key, env))),
+            (
+                "approved",
+                Value::Bool(memory_approve::is_approved(key, env)),
+            ),
         ]),
     };
     let legacy = info
-        .map(|(root, _)| legacy_notes(&root, env))
+        .map(|(root, _)| legacy_notes(&root, env, deps))
         .unwrap_or_default();
     let personal = personal_dir(env);
     let (installed, installed_state) = (deps.doctor.installed_plugins_state)(env);
@@ -1077,7 +990,7 @@ fn try_apply(
             }
             Err(e) => return Err(raised(e)),
         }
-        (migrated, blocked) = migrate_legacy(&repo_root, env, &personal, promote)?;
+        (migrated, blocked) = migrate_legacy(&repo_root, env, &personal, promote, deps)?;
     }
     let memory = obj(vec![
         ("approved_key", approved_key),
@@ -1280,7 +1193,14 @@ fn try_remove(
 
     let changed = new_text != text;
     let warnings: Vec<String> = rtk_warn.into_iter().chain(history_warn).collect();
-    let approved = mem::approved_keys(env);
+    let approved: Vec<String> = {
+        let mut keys: Vec<String> = match memory_approve::load_approved(env).get("repos") {
+            Some(Value::Object(repos)) => repos.iter().map(|(k, _)| k.to_string()).collect(),
+            _ => Vec::new(),
+        };
+        keys.sort();
+        keys
+    };
     let this_repo = repo_info(&cwd, env, deps)
         .map(|(_, key)| key)
         .filter(|key| approved.contains(key));
@@ -1378,13 +1298,13 @@ fn try_remove(
     let mut unapproved = Vec::new();
     if unapprove_all {
         for key in &approved {
-            if mem::unapprove(key, env).map_err(raised)? {
+            if memory_approve::unapprove(key, env).map_err(raised)? {
                 unapproved.push(key.clone());
             }
         }
     } else if unapprove
         && let Some(key) = this_repo
-        && mem::unapprove(&key, env).map_err(raised)?
+        && memory_approve::unapprove(&key, env).map_err(raised)?
     {
         unapproved.push(key);
     }

@@ -4,17 +4,20 @@ F4's driver loads this module by file path; it runs as `python3 -I`. Library sur
 `run(case: dict) -> dict`.
 
 Case (every string may hold `@ROOT@`, the case's temporary root at its real path):
-- `tree`: layout entries, built by `guardrails_loc.materialize` (the RT1a twin of
+- `tree`: layout entries (`@ENC@` in a path is the root's realpath with every character that is
+  not an ASCII letter or digit written `-`, as the old path-keyed memory folders are named; the
+  answer writes it `@ENC@` again), built by `guardrails_loc.materialize` (the RT1a twin of
   `anthology_testkit::rt_a::materialize`), plus `{"t": "sguard", "p": P, "b": B, "reason": R}`:
   a guardrails plugin folder whose guard behaves as `B` (see `GUARDS`), written as BOTH
   `scripts/guard.py` (+ the real `scripts/guard_rules.py`) and `hooks/guard.sh` (F-6), so
   both sides run the same guard. File texts may hold `@RULE@` (settings_patch.plugin_read_rule of
   the plugin root) and `@OPSV@` (setup's ops_version, or `1-ffffffffffffffff` when setup_ops
   refuses the root); entries holding them are built after the others;
-- `env`: the hook's environment (`PATH` is added here, so `python3` runs the guard);
+- `env`: the hook's environment (`PATH` is added here: `@ROOT@/gitbin`, where the tree holds the
+  difftest's fake `git` (`crates/difftest/src/surfaces/fake_git.rs`; this image has no git, and
+  Rust runs the same script), then python3's folder, so `python3` runs the guard);
 - `stdin`, `cwd` (what `os.getcwd()` gives), `elapsed` (`_elapsed`), `windows` (bool);
-- `memory`: `{"text": S, "messages": [S]}` or `{"error": S}` (`memory_sync.run` returns that, or
-  raises `OSError(S)`);
+- memory: `memory_sync.run` is real, over the tree's notes and approvals (no patch);
 - `rtk`: `null` (no `rtk_install` module) or `{"warning", "lock_exc", "exc"}` (a fake rtk_install:
   `load_lock` raises `RuntimeError(lock_exc)` when set, `reconcile` raises `RuntimeError(exc)` or
   returns the warning).
@@ -24,10 +27,15 @@ The forced changes are applied to Python's answer, nothing else:
   `Blocked by anthology-guardrails (G1)`; exit 2 with `Blocked by anthology-guardrails (setup): `
   reports `anthology: the guardrails are failing closed: <reason>` (first line, cut to 300 with …);
 - F-6: the live-missing line names `hooks/guard.sh`;
-- F-9: `bin/anthology` is a wrapper too, checked first.
+- F-9: `bin/anthology` is a wrapper too, checked first;
+- D-1: `memory_sync._load_settings` raising `RecursionError` (json.loads on a settings file nested
+  deeper than CPython's C stack, e.g. an unterminated `[[[[...`) aborts Python's whole memory
+  step; Rust's parser has no such limit, finds the document invalid and reads it as unusable,
+  as Python does for any other invalid JSON. The oracle makes the call return None (unusable)
+  and marks the case D-1.
 
 The answer is `{"exit": 0, "stdout": <hook JSON> + "\\n" + <state.json text or "<none>">, "stderr": ""}`
-with the root written as `@ROOT@`.
+with the root written as `@ROOT@` and its encoded form `@ENC@`.
 
 Python 3.9+ and the standard library only.
 """
@@ -35,6 +43,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +88,7 @@ GUARDS = {
 }
 
 _ORIG_SELFTEST = session_start._guard_selftest
+_ORIG_LOAD_SETTINGS = session_start.memory_sync._load_settings
 _ORIG_WRAPPERS = compat.wrapper_problems
 
 
@@ -167,8 +177,11 @@ def run(case):
             return s.replace("@ROOT@", root)
 
         env = {k: x(v) for k, v in (case.get("env") or {}).items()}
-        env["PATH"] = os.path.dirname(sys.executable) + ":/usr/bin:/bin"
+        env["PATH"] = root + "/gitbin:" + os.path.dirname(sys.executable) + ":/usr/bin:/bin"
         cwd = x(case.get("cwd") or "@ROOT@")
+        enc = re.sub(r"[^A-Za-z0-9]", "-", root)
+        case = dict(case, tree=[dict(e, p=e["p"].replace("@ENC@", enc))
+                                for e in (case.get("tree") or [])])
         build(root, case, env, cwd)
         captured = {}
 
@@ -203,12 +216,14 @@ def run(case):
             first = [] if (p.is_file() and os.access(str(p), os.X_OK)) else ["anthology"]
             return first + _ORIG_WRAPPERS(plugin_root)
 
-        mem = case.get("memory") or {"text": "", "messages": []}
+        deep = []
 
-        def memory_run(cwd, env_):
-            if "error" in mem:
-                raise OSError(mem["error"])
-            return x(mem.get("text") or ""), [x(m) for m in mem.get("messages") or []]
+        def load_settings(path):  # D-1
+            try:
+                return _ORIG_LOAD_SETTINGS(path)
+            except RecursionError:
+                deep.append(path)
+                return None
 
         rtk = case.get("rtk")
         modules = {"rtk_install": FakeRtk(rtk) if rtk is not None else None}
@@ -219,7 +234,7 @@ def run(case):
                 mock.patch.object(session_start, "subprocess", fake_subprocess), \
                 mock.patch.object(session_start, "_guard_selftest", selftest), \
                 mock.patch.object(compat, "wrapper_problems", wrappers), \
-                mock.patch.object(session_start.memory_sync, "run", memory_run), \
+                mock.patch.object(session_start.memory_sync, "_load_settings", load_settings), \
                 mock.patch.object(session_start, "_elapsed", lambda start: elapsed), \
                 mock.patch("platform.system", return_value=system), \
                 mock.patch.object(os, "getcwd", return_value=cwd):
@@ -230,8 +245,11 @@ def run(case):
             state_text = state_path.read_bytes().decode("utf-8", "replace")
         except OSError:
             state_text = "<none>"
-        stdout = (out + "\n" + state_text).replace(root, "@ROOT@")
-        return {"exit": 0, "stdout": stdout, "stderr": ""}
+        stdout = (out + "\n" + state_text).replace(root, "@ROOT@").replace(enc, "@ENC@")
+        answer = {"exit": 0, "stdout": stdout, "stderr": ""}
+        if deep:
+            answer["divergence"] = "D-1"
+        return answer
     finally:
         _loc._unlock(root)
         shutil.rmtree(tmp, ignore_errors=True)

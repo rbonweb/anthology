@@ -47,6 +47,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
 use anthology_core::{Env, paths, platform, state};
 use anthology_guard::data;
+use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
@@ -278,10 +279,11 @@ fn no_fault(_: &str) -> Option<PyExc> {
     None
 }
 
-/// `memory_sync.run` until MS2 lands: no memory text and no messages.
-// SWAP(MS2): `anthology_memory::sync::run(cwd, env, &SyncDeps::default())`.
-fn memory_run_default(_cwd: &Path, _env: &Env) -> Result<(String, Vec<String>), PyExc> {
-    Ok((String::new(), Vec::new()))
+/// `memory_sync.run(cwd, env)`: the hook's env reaches the privacy scan's `HOME` fallback, as
+/// Python's `os.environ["HOME"]` does for the hook's own environment. Never fails: an error
+/// becomes a message inside [`sync::run`].
+fn memory_run_default(cwd: &Path, env: &Env) -> Result<(String, Vec<String>), PyExc> {
+    Ok(sync::run(cwd, env, &SyncDeps::from_env(env)))
 }
 
 fn path_exists(p: &Path) -> bool {
@@ -929,7 +931,11 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         label::COMPOSE,
         |_| {
             fault(deps, "_compose")?;
-            Ok(compose(&guide_text, &memory, &paths::anthology_home(env)))
+            Ok(compose(
+                &guide_text,
+                &memory,
+                &anthology_memory::repo::anthology_home(env),
+            ))
         },
         guide_text.clone(),
     );
