@@ -568,11 +568,12 @@ In raw JSON the sequence `"tool_name"` followed by optional whitespace and `:` c
 
 ### 9.4 Read-only allowlist (when the binary is missing or cannot run here)
 
-`Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, `TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `Task`, `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `BashOutput`, `KillShell`.
+`Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, `TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `Task`, `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `BashOutput`, `KillShell`, `ListAgents`, `CronList`, `SubagentHandback`.
 
 - It is an **allowlist** (architect's call): anything else is blocked, including future tools, `mcp__*`, `ListMcpResourcesTool` and `ReadMcpResourceTool`.
 - `Skill` lets `/anthology:setup` load. `Task` and `Agent` are allowed because subagent calls are guarded too. `TaskStop` and `KillShell` stop work, which lowers risk (m-1).
 - Legacy names (`LS`, `NotebookRead`, `BashOutput`) are harmless and kept.
+- `ListAgents` and `CronList` only read state. `SubagentHandback` only returns a subagent's final report to its parent: no file write, no process, no network. Blocking it would leave a subagent unable to finish.
 - **Validation (m2-7).** Runner 4 of the replay (§13.7) writes a **local-only** list of the real calls fail-closed would block, by `tool_name`, to `~/.claude/anthology/replay/runner4-<date>.tsv`, on Claude Code 2.1.311 and 2.1.329. CO1 reviews that list. Only bucket counts reach the committed report.
 
 Cost if wrong: a harmless new tool is blocked until the binary installs.

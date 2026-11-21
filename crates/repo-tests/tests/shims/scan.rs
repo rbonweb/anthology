@@ -33,6 +33,9 @@ const READONLY: &[&str] = &[
     "ExitPlanMode",
     "BashOutput",
     "KillShell",
+    "ListAgents",
+    "CronList",
+    "SubagentHandback",
 ];
 
 /// The reference: lines joined (CR, LF and NUL become spaces), every `"tool_name"` followed by
