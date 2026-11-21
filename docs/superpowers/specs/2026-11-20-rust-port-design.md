@@ -852,7 +852,7 @@ Placeholders exist only for jobs a named lane fills, and each lane edits only `c
   - Dependabot `pip` (F-16).
 - **Rewritten to `anthology-dev`:**
   - `vendor-check`, `version-bump`, `memory-diff`, `cli-syntax` (`smoke … cli-syntax`), `upstream-watch.yml`, `evals.yml`;
-  - **`startup-budget`** = `anthology-dev startup-budget` plus `cargo test -p repo-tests startup_budget` (the `test_roster` ports) plus `cargo test -p anthology-runtime budget` (the `test_session_start -k budget` ports) (m-18).
+  - **`startup-budget`** = `anthology-dev startup-budget` plus `cargo test -p repo-tests --test roster startup_budget` (the `test_roster` ports; without `--test roster` the filter also picks a timeout pin in `ci.rs`) plus `cargo test -p anthology-runtime budget` (the `test_session_start -k budget` ports) (m-18).
 - **`vendor check`** still needs git and network, as today, and runs no Python: vendored `.py` files are compared as bytes.
 - **Evals and smoke** use `anthology-dev seed` on a scratch copy of `plugins/`. The probe U10 decides which config dir `claude plugin eval` gives hooks.
 

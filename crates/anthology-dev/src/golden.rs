@@ -5,7 +5,7 @@
 //!                                  [--root DIR] [--show N] [--report PATH]
 //! ```
 //!
-//! `difftest freeze` writes `crates/<owner>/tests/golden/<surface>.jsonl` from the Python oracle
+//! `difftest freeze` writes `crates/<owner>/tests/golden/<surface>.jsonl.gz` from the Python oracle
 //! while it exists. `check` judges Rust against those answers with no Python (the same
 //! divergence files); `bless` records Rust's result for every case that fails only by a
 //! differing result, so each deliberate change is a visible diff, then checks again.

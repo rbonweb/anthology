@@ -128,7 +128,10 @@ claude=$scratch/claude-code/node_modules/.bin/claude
 "$claude" --version
 for plugin in anthology anthology-guardrails; do
     cp -R "$root/plugins/$plugin" "$scratch/$plugin"
-    cp -R "$root/port/staging/plugins/$plugin/." "$scratch/$plugin/"
+    # The overlay exists until CO2 moves port/staging/ into place.
+    if [ -d "$root/port/staging/plugins/$plugin" ]; then
+        cp -R "$root/port/staging/plugins/$plugin/." "$scratch/$plugin/"
+    fi
     if DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
         "$claude" plugin validate --strict "$scratch/$plugin"; then
         echo "shims-distros: $plugin validates"

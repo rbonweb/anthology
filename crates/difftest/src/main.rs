@@ -21,7 +21,7 @@
 //!   as JSON.
 //! - `--root DIR` is the repository (default: found from the working folder).
 //! - `freeze` is that run, and writes each surface that ran clean (0 unexplained, 0 oracle
-//!   errors) to its golden ([`golden::path`]: `crates/<owner>/tests/golden/<surface>.jsonl`
+//!   errors) to its golden ([`golden::path`]: `crates/<owner>/tests/golden/<surface>.jsonl.gz`
 //!   under the repository, or under `--golden DIR`). A surface that did not run clean is not
 //!   written, and the exit is 1. A case whose result differed but was waived by an entry also
 //!   keeps Rust's result, which `golden check` then pins. `--gen` must be at least

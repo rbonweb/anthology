@@ -63,12 +63,27 @@ impl Surface for Settings {
     }
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
-        from_oracle(&oracle.call("settings", &c.data))
+        passwd_home_as_tilde(&c.data, from_oracle(&oracle.call("settings", &c.data)))
     }
 
     fn run_rust(&self, c: &Case) -> Observed {
-        run(&c.data)
+        passwd_home_as_tilde(&c.data, run(&c.data))
     }
+}
+
+/// `settings_path` with no HOME falls back to this uid's password-database home, which the
+/// oracle image's uid has none of (Python then keeps `~`). That home reads as `~` on both sides,
+/// so the live run, the freeze and the golden replay (as a uid with an entry) compare the same.
+fn passwd_home_as_tilde(case: &Value, mut o: Observed) -> Observed {
+    let home = anthology_core::paths::home(&Env::default());
+    let home = home.to_string_lossy();
+    if text_of(case, "op") == "settings_path" && home != "~" && home != "/" {
+        let from = format!("{{\"path\": \"{home}/");
+        if let Some(rest) = o.stdout.strip_prefix(from.as_bytes()) {
+            o.stdout = [b"{\"path\": \"~/".as_slice(), rest].concat();
+        }
+    }
+    o
 }
 
 // ---------------------------------------------------------------------------------------------

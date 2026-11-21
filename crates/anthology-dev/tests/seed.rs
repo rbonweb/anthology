@@ -20,8 +20,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthology-dev");
 const LINUX: &str = "x86_64-unknown-linux-musl";
 const BLOCK_PREFIX: &str = "Blocked by anthology-guardrails (";
 
-/// BS1's staging guard shim, relative to the repository root.
-const STAGING_GUARD: &str = "port/staging/plugins/anthology-guardrails/hooks/guard.sh";
+/// BS1's guard shim ([`anthology_testkit::staged`]: in staging before CO2, `plugins/` after).
+const GUARD_SHIM: &str = "plugins/anthology-guardrails/hooks/guard.sh";
 
 /// GC-17's hot path, as a stand-in until BS1's `guard.sh` exists: the version from the lock,
 /// "installed" by builtins only, `err=$("$bin" guard hook --shim 2>&1 >/dev/null)`, allow only on
@@ -413,7 +413,7 @@ fn seed_needs_a_plugin_folder_and_its_options() {
 fn install_shim(s: &Scratch) -> PathBuf {
     let hooks = s.plugins().join("anthology-guardrails/hooks");
     std::fs::create_dir_all(&hooks).unwrap();
-    let staging = repo_root().join(STAGING_GUARD);
+    let staging = anthology_testkit::staged(GUARD_SHIM);
     if staging.is_file() {
         for entry in std::fs::read_dir(staging.parent().unwrap()).unwrap() {
             let entry = entry.unwrap();

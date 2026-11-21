@@ -12,7 +12,8 @@ use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_anthology-dev");
 const CARGO: &str = env!("CARGO");
-const STAGING: &str = "port/staging/scripts/release.sh";
+/// Moved to scripts/release.sh by CO2 ([`anthology_testkit::staged`] finds it either way).
+const RELEASE_SH: &str = "scripts/release.sh";
 
 const FAKE_DEV: &str = r#"#!/bin/sh
 printf '%s|%s\n' "$(pwd -P)" "$*" >> "$DEV_LOG"
@@ -64,10 +65,6 @@ fn have(program: &str) -> bool {
 
 fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn lock_text() -> String {
@@ -146,7 +143,7 @@ impl Repo {
         }
         let script = r.root.join("scripts/release.sh");
         std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::copy(repo_root().join(STAGING), &script).unwrap();
+        std::fs::copy(anthology_testkit::staged(RELEASE_SH), &script).unwrap();
         for (name, body) in [("fake-dev", FAKE_DEV), ("fake-claude", FAKE_CLAUDE)] {
             let p = r.base.join(name);
             std::fs::write(&p, body).unwrap();
@@ -289,7 +286,7 @@ fn repo() -> Option<Repo> {
 
 #[test]
 fn the_staging_script_is_executable_and_runs_no_python() {
-    let path = repo_root().join(STAGING);
+    let path = anthology_testkit::staged(RELEASE_SH);
     let script = std::fs::read_to_string(&path).unwrap();
     assert!(script.starts_with("#!/usr/bin/env bash\n"));
     assert!(

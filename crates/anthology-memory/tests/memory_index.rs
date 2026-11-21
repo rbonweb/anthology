@@ -710,7 +710,7 @@ mod fallback_test {
 // ---- the CLI ---------------------------------------------------------------------------------
 
 fn staged_wrapper() -> PathBuf {
-    repo_root().join("port/staging/plugins/anthology/bin/anthology-mem")
+    anthology_testkit::staged("plugins/anthology/bin/anthology-mem")
 }
 
 fn run_mem(env: &Env, cwd: &Path, args: &[&str]) -> Output {
@@ -914,7 +914,7 @@ mod cli_test {
         let plugin = c.case.tmp.join("plugin");
         anthology_testkit::sandbox::copy_tree(&repo_root().join("plugins/anthology"), &plugin);
         anthology_testkit::sandbox::copy_tree(
-            &repo_root().join("port/staging/plugins/anthology"),
+            &anthology_testkit::staged("plugins/anthology"),
             &plugin,
         );
         let lock = Lock {

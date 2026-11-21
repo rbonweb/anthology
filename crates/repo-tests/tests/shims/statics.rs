@@ -3,13 +3,17 @@
 use anthology_pycompat::json::{self, Value};
 use repo_tests::repo;
 
-const STAGING: &str = "port/staging/plugins";
+/// A plugin file CO2 moves into place: staging before the cutover, `plugins/` after.
+fn plugin_file(rel: &str) -> std::path::PathBuf {
+    anthology_testkit::staged(&format!("plugins/{rel}"))
+}
 
 /// lib.sh's NODE_GET, byte for byte (design §8.4 step 6.5).
 const NODE_GET: &str = r#"const h=require("https"),f=require("fs"),[,u,o]=process.argv,M=67108864;let n=0;const q=c=>process.exit(c);setTimeout(()=>q(1),60000);function g(x){let p;try{p=new URL(x)}catch(e){return q(1)}if(p.protocol!=="https:")return q(1);h.get(p,{headers:{"user-agent":"anthology-bootstrap"}},r=>{const s=r.statusCode,l=r.headers.location;if(s>=300&&s<400&&l){r.resume();if(++n>5)return q(1);let t;try{t=new URL(l,p).href}catch(e){return q(1)}return g(t)}if(s!==200||Number(r.headers["content-length"]||0)>M){r.resume();return q(1)}let z=0;const w=f.createWriteStream(o);r.on("data",c=>{z+=c.length;if(z>M)q(1)});r.on("error",()=>q(1));r.on("aborted",()=>q(1));w.on("error",()=>q(1));w.on("close",()=>q(r.complete?0:1));r.pipe(w)}).on("error",()=>q(1))}g(u)"#;
 
 fn staged(rel: &str) -> String {
-    repo::read(&format!("{STAGING}/{rel}"))
+    let p = plugin_file(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
 /// The executable lines: no blank lines, no comment lines.
@@ -41,8 +45,8 @@ fn exit_words(line: &str) -> Vec<String> {
 #[test]
 fn lib_and_bootstrap_are_byte_identical_in_both_plugins() {
     for f in ["hooks/lib.sh", "hooks/bootstrap.sh"] {
-        let a = std::fs::read(repo::path(&format!("{STAGING}/anthology/{f}"))).unwrap();
-        let g = std::fs::read(repo::path(&format!("{STAGING}/anthology-guardrails/{f}"))).unwrap();
+        let a = std::fs::read(plugin_file(&format!("anthology/{f}"))).unwrap();
+        let g = std::fs::read(plugin_file(&format!("anthology-guardrails/{f}"))).unwrap();
         assert!(a == g, "{f} differs between the plugins");
     }
 }
@@ -266,9 +270,7 @@ fn every_shim_is_posix_sh_with_a_shebang() {
         ] {
             assert!(!code.contains(bash_only), "{rel}: {bash_only}");
         }
-        let mode = std::fs::metadata(repo::path(&format!("{STAGING}/{rel}")))
-            .unwrap()
-            .permissions();
+        let mode = std::fs::metadata(plugin_file(rel)).unwrap().permissions();
         use std::os::unix::fs::PermissionsExt;
         assert!(mode.mode() & 0o111 != 0, "{rel} is executable");
     }
