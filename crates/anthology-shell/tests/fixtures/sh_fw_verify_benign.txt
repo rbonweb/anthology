@@ -3371,3 +3371,43 @@ git log -n ${N:-10} --oneline
 kubectl -n ${NS:-default} get pods
 #---
 npm install ${PKG:-lodash}
+#---
+docker ps -q | while read id; do docker inspect "$id"; done
+#---
+while read -r k v; do export "$k=$v"; done < .env
+#---
+cmd=$(which python3); $cmd --version
+#---
+rm -rf ${TMPDIR:-/tmp}/x
+#---
+git push ${REMOTE:-origin} ${BRANCH:-main}
+#---
+xargs rm < <(echo tmp.txt)
+#---
+diff <(xargs -n1 < a) <(xargs -n1 < b)
+#---
+( cd sub && make ) <<< ""
+#---
+git ls-files | while read -r f; do sh -c 'wc -l "$1"' _ "$f"; done
+#---
+find . -name '*.md' | while read f; do bash -c 'echo "$0"' "$f"; done
+#---
+git ls-files | while read f; do x=$f; echo "$x"; done
+#---
+build() { make "$@"; }; echo y | build
+#---
+git commit -m "$(cat <<'EOF'
+fix: don't crash when it's empty
+EOF
+)"
+#---
+while read -r line; do echo "$line"; done <<EOF
+a
+b
+EOF
+#---
+ls | parallel gzip
+#---
+parallel -j4 convert {} {.}.png :::: files.txt
+#---
+mapfile -t arr < <(ls); for f in "${arr[@]}"; do wc -l "$f"; done

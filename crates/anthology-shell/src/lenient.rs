@@ -85,13 +85,28 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// SH-F2 review M-2: a `<<` right after a compound's closing word (`done`, `fi`, `esac`, `}`, `)`).
+fn compound_heredoc(text: &str) -> bool {
+    text.match_indices("<<").any(|(at, _)| {
+        let before = text[..at].trim_end_matches([' ', '\t']);
+        before.ends_with(['}', ')']) || ["done", "fi", "esac"].iter().any(|w| before.ends_with(w))
+    })
+}
+
 /// `_lenient_segments(text)`: every segment gets a group of its own.
 pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segment>, TooComplex> {
     let mut out = Vec::new();
     sh.work.charge(2 * text.len())?;
     // #89 review F-1: the split cuts a process substitution and drops a pipe, though bash runs every complete
-    // line before the broken one; a broken command with either is too complex
-    if text.contains("<(") || text.contains(">(") || text.contains('|') {
+    // line before the broken one; a broken command with either is too complex. SH-F2 review M-2: so is one
+    // with a here-string, or a heredoc given to a compound (the split loses whom it feeds: `( sh ) <<< X`,
+    // `done <<EOF`, then a broken line); a heredoc of a plain command stays (`git commit -m "$(cat <<'EOF'`)
+    if text.contains("<(")
+        || text.contains(">(")
+        || text.contains('|')
+        || text.contains("<<<")
+        || compound_heredoc(text)
+    {
         return Err(TooComplex);
     }
     for piece in pieces(text) {
