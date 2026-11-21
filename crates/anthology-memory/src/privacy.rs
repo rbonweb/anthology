@@ -334,6 +334,18 @@ impl Rx {
         Ok(())
     }
 
+    /// `[m.start() for m in rx.finditer(text)]`, as byte offsets.
+    fn starts(&self, text: &str) -> Result<Vec<usize>, Unfinished> {
+        match self {
+            Rx::Plain(rx) => Ok(rx.find_iter(text).map(|m| m.start()).collect()),
+            Rx::Fancy(_, Some(pre)) if !pre.is_match(text) => Ok(Vec::new()),
+            Rx::Fancy(rx, _) => rx
+                .find_iter(text)
+                .map(|m| m.map(|m| m.start()).map_err(|_| Unfinished))
+                .collect(),
+        }
+    }
+
     /// The `regex` of a pattern with no look-around (`_HOME_PATH`, whose walk needs offsets).
     fn plain(&self) -> &regex::Regex {
         match self {
@@ -987,6 +999,22 @@ pub fn search_any(patterns: &[(&str, bool)], text: &str) -> bool {
         let which = Dynamic::Python(py.to_string(), ic);
         search_built(&dynamic_for(&which, limit), text).unwrap_or(true)
     })
+}
+
+/// `(label, byte offset)` of every [`SECRET_PATTERNS`] match in `text` (`rx.finditer`), in
+/// pattern order, with the default budget for `text`'s length; the offset is `None` for a
+/// pattern the engine could not finish (fail closed: that is a finding too, never a pass).
+/// Offsets only, never the matched text.
+pub fn secret_match_starts(text: &str) -> Vec<(&'static str, Option<usize>)> {
+    let limit = PrivacyLimits::default().for_len(text.len());
+    let mut out = Vec::new();
+    for (label, rx) in &patterns_for(limit).secrets {
+        match rx.starts(text) {
+            Ok(starts) => out.extend(starts.into_iter().map(|at| (*label, Some(at)))),
+            Err(Unfinished) => out.push((*label, None)),
+        }
+    }
+    out
 }
 
 /// Every pattern and table of the scan other than [`SECRET_PATTERNS`], printed as the

@@ -732,6 +732,60 @@ fn seeds() -> Vec<Case> {
             )
             .case("seed:save-hidden-char"),
     );
+    // The secret refusal names the kind and the line, never the text.
+    let url = [
+        "connect to postgres://app:",
+        "hunter2-long-value@db.example.com/x",
+    ]
+    .concat();
+    let aws = ["AKIA", "IOSFODNN7EXAMPLE"].concat();
+    for (case, name, desc, body) in [
+        (
+            "seed:save-secret-url-line",
+            "N".to_string(),
+            "D".to_string(),
+            format!("first\nsecond\n{url}\nlast"),
+        ),
+        (
+            "seed:save-secret-lines-and-kinds",
+            "N".to_string(),
+            "D".to_string(),
+            format!("{aws}\nok\n{aws}\n{url}"),
+        ),
+        (
+            "seed:save-secret-name",
+            format!("see {aws}"),
+            "D".to_string(),
+            "B".to_string(),
+        ),
+        (
+            "seed:save-secret-more-than-five",
+            "N".to_string(),
+            "D".to_string(),
+            [aws.as_str(); 8].join("\n"),
+        ),
+        (
+            "seed:save-secret-across-fields",
+            "the token =".to_string(),
+            "D".to_string(),
+            "abcdefgh12345".to_string(),
+        ),
+        (
+            "seed:save-secret-description-and-body",
+            "N".to_string(),
+            format!("key {aws}"),
+            ["\n\nx\npassword", ": hunter2-long-value\n"].concat(),
+        ),
+    ] {
+        out.push(
+            B::new("save")
+                .set(
+                    "save",
+                    save_args("scout", "project", "x", &name, &desc, &body, false),
+                )
+                .case(case),
+        );
+    }
     out
 }
 
@@ -924,10 +978,23 @@ fn gen_case(rng: &mut Rng) -> Value {
             } else {
                 "Desc".to_string()
             };
-            let body = match rng.below(5) {
+            let body = match rng.below(6) {
                 0 => rng.string(60),
                 1 => host_body(),
                 2 => "\n\n  lead\r\nx\ry   \n".to_string(),
+                3 => {
+                    let secret = rng
+                        .pick(&[
+                            ["AKIA", "IOSFODNN7EXAMPLE"].concat(),
+                            ["postgres://app:", "hunter2-long-value@db.example.com/x"].concat(),
+                            ["password", ": hunter2-long-value"].concat(),
+                        ])
+                        .clone();
+                    let mut lines = vec!["line".to_string(); rng.index(4)];
+                    lines.push(secret);
+                    lines.push("end".to_string());
+                    lines.join("\n")
+                }
                 _ => "Body.".to_string(),
             };
             if rng.chance(0.3) {
