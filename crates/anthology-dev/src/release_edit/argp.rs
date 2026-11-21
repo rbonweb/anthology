@@ -145,13 +145,26 @@ fn classify(p: &Parser<'_>, s: &str) -> Kind {
             names.join(", ")
         ));
     } else if let Some(rest) = s.strip_prefix("-h") {
-        // A single-dash cluster (`-hx`): Python 3.12 runs `-h` and leaves the rest as strays
-        // (the help exits first); an `=` or a `-` right after `-h` is an error.
-        return match rest.strip_prefix('=') {
-            Some(explicit) => Kind::Help(Some(explicit.to_string())),
-            None if rest.starts_with('-') => Kind::Help(Some(rest.to_string())),
-            None => Kind::Help(None),
+        // A single-dash cluster (`-hx`), as Python 3.12's consume_optional loops over it: a
+        // value after `=` (even an empty one) or starting with `-` is an error; a further `h`
+        // is another `-h` (`-hh-` is an error, `-hh` the help); anything else runs the help
+        // and leaves the rest as strays (the help exits first).
+        let (mut value, mut sep) = match rest.strip_prefix('=') {
+            Some(v) => (v, true),
+            None => (rest, false),
         };
+        loop {
+            if sep || value.starts_with('-') {
+                return Kind::Help(Some(value.to_string()));
+            }
+            match value.strip_prefix('h') {
+                Some("") | None => return Kind::Help(None),
+                Some(more) => match more.strip_prefix('=') {
+                    Some(v) => (value, sep) = (v, true),
+                    None => value = more,
+                },
+            }
+        }
     }
     if is_negative_number(s) || s.contains(' ') {
         return Kind::Positional;
@@ -451,6 +464,24 @@ mod tests {
         );
         // Python 3.12: `-hx` runs the help first.
         assert_eq!(parse(&["-hx"]).unwrap_err(), Stop::Help);
+        // Each further `h` is another `-h` (captured from CPython 3.12.16).
+        for help in ["-hh", "-hhx", "-hhh"] {
+            assert_eq!(parse(&[help]).unwrap_err(), Stop::Help, "{help}");
+        }
+        for (arg, value) in [
+            ("-h-", "'-'"),
+            ("-hh-", "'-'"),
+            ("-hh=x", "'x'"),
+            ("-hh-x", "'-x'"),
+            ("-hh=", "''"),
+            ("-h=", "''"),
+        ] {
+            assert_eq!(
+                err(&[arg]),
+                format!("argument -h/--help: ignored explicit argument {value}"),
+                "{arg}"
+            );
+        }
         assert_eq!(
             err(&["a", "--repo", "-x"]),
             "argument --repo: expected one argument"

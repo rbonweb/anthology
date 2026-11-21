@@ -1244,7 +1244,7 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
             _ => {
                 let pool = [
                     "0000", "0", "HEAD", "--repo", ".", "--re", "--repo=.", "-h", "--", "x", "-1",
-                    "--=x", "abc",
+                    "--=x", "abc", "-h-", "-hh-", "-hh=x", "-hX", "-h=", "--help=x",
                 ];
                 let args: Vec<&str> = (0..rng.index(5)).map(|_| *rng.pick(&pool)).collect();
                 cli(tool, &args, no_env(), no_env(), &[])
@@ -1385,6 +1385,12 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
                     "-=x",
                     "plugin-version",
                     "-1",
+                    "-h-",
+                    "-hh-",
+                    "-hh=x",
+                    "-hX",
+                    "-hh",
+                    "-h=",
                 ];
                 let args: Vec<&str> = (0..rng.index(6)).map(|_| *rng.pick(&pool)).collect();
                 cli(tool, &args, no_env(), no_env(), &[])
@@ -1443,7 +1449,7 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
                 let pool = [
                     "reader", "skilled", "bare", "nope", "--root", ".", "-1", "--", "a b", "gamma",
                     "évil", "-h-", "-hX", "--he=x", "-h=x", "--=x", "-1\n", "--root=.", "--ro",
-                    "-r=x", "-h-x",
+                    "-r=x", "-h-x", "-hh-", "-hh=x", "-hh", "-hh=",
                 ];
                 let mut args: Vec<&str> = vec!["--root", "."];
                 for _ in 0..rng.index(4) {
@@ -1595,7 +1601,9 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
             };
             let mut args = vec![sub, result_path, base_path];
             // argparse corners: before the command, between and after the positionals.
-            const ODD: &[&str] = &["--", "-h-", "-hX", "-h=x", "--help=x", "-1", "--x", "-h-x"];
+            const ODD: &[&str] = &[
+                "--", "-h-", "-hX", "-h=x", "--help=x", "-1", "--x", "-h-x", "-hh-", "-hh=x", "-hh",
+            ];
             if rng.chance(0.05) {
                 args.insert(0, *rng.pick(ODD));
             }

@@ -562,6 +562,14 @@ mod lead_extras {
             ),
             "{err}"
         );
+        for argv in [&["-hh-"][..], &["compare", "-hh=x"]] {
+            let (code, _, err) = c.run_cli(argv);
+            assert_eq!(code, 2, "{argv:?}");
+            assert!(
+                err.contains("argument -h/--help: ignored explicit argument"),
+                "{err}"
+            );
+        }
         let (code, out, _) = c.run_cli(&["compare", "-hX"]);
         assert_eq!(code, 0);
         assert!(

@@ -190,10 +190,26 @@ fn parse_optional(spec: &Spec<'_>, arg: &OsString) -> Option<Matched> {
     Some(Matched::Opt(None, None, false))
 }
 
-/// A help action with an explicit value: argparse refuses it after an `=` or when the value
-/// starts with `-` (`-h-`), and otherwise runs the help (`-hX`).
-fn help_refuses(explicit: &OsString, sep: bool) -> bool {
-    sep || explicit.as_bytes().first() == Some(&b'-')
+/// A help action with an explicit value, as `consume_optional` loops over it: the value it
+/// refuses (`ignored explicit argument`), or `None` when the help runs. It refuses a value after
+/// an `=` (even an empty one) or one starting with `-` (`-h-`); a further `h` is another `-h`
+/// (`-hh-` is refused, `-hh` is help); any other value runs the help (`-hX`).
+fn help_refusal(explicit: &OsString, sep: bool) -> Option<OsString> {
+    let (mut value, mut sep) = (explicit.as_bytes(), sep);
+    loop {
+        if sep || value.first() == Some(&b'-') {
+            return Some(os(value));
+        }
+        // Not another `h`: the help runs (the rest goes to the extras).
+        let rest = value.strip_prefix(b"h")?;
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.strip_prefix(b"=") {
+            Some(after) => (value, sep) = (after, true),
+            None => (value, sep) = (rest, false),
+        }
+    }
 }
 
 /// The option's name in messages (`argument -h/--help: …`).
@@ -294,9 +310,14 @@ pub fn parse_known(spec: &Spec<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
             start += 1;
             continue;
         };
-        if long == HELP && !explicit.as_ref().is_some_and(|e| help_refuses(e, sep)) {
-            return Err(Stop::Help);
-        }
+        let explicit = match explicit {
+            Some(e) if long == HELP => match help_refusal(&e, sep) {
+                None => return Err(Stop::Help),
+                refused => refused,
+            },
+            None if long == HELP => return Err(Stop::Help),
+            other => other,
+        };
         let opt = spec.opts.iter().find(|o| o.long == long);
         let takes_value = opt.is_some_and(|o| o.takes_value);
         let float = opt.is_some_and(|o| o.float);
@@ -487,7 +508,14 @@ pub fn classify(spec: &Spec<'_>, arg: &OsString) -> Class {
         Some(Matched::Ambiguous(m)) => Class::Error(m),
         Some(Matched::Opt(None, _, _)) => Class::Unknown,
         Some(Matched::Opt(Some(HELP), None, _)) => Class::Help,
-        Some(Matched::Opt(Some(HELP), Some(v), sep)) if !help_refuses(&v, sep) => Class::Help,
+        Some(Matched::Opt(Some(HELP), Some(v), sep)) => match help_refusal(&v, sep) {
+            None => Class::Help,
+            Some(v) => Class::Error(format!(
+                "argument {}: ignored explicit argument {}",
+                shown(HELP),
+                str_repr(&v.to_string_lossy())
+            )),
+        },
         Some(Matched::Opt(Some(long), Some(v), _)) => Class::Error(format!(
             "argument {}: ignored explicit argument {}",
             shown(long),
@@ -655,7 +683,15 @@ mod tests {
             Err("argument --root: expected one argument".into())
         );
         // `-h` with an attached value: help, unless the value follows `=` or starts with `-`.
-        for help in [&["-hX"][..], &["-hX=y"], &["-he=x"], &["-h", "-h-"]] {
+        for help in [
+            &["-hX"][..],
+            &["-hX=y"],
+            &["-he=x"],
+            &["-h", "-h-"],
+            &["-hh"],
+            &["-hhX"],
+            &["-hhh"],
+        ] {
             assert_eq!(run(help), Err("help".into()), "{help:?}");
         }
         for (arg, value) in [
@@ -664,6 +700,12 @@ mod tests {
             ("-h=x", "x"),
             ("--help=x", "x"),
             ("--he=x", "x"),
+            ("-hh-", "-"),
+            ("-hh=x", "x"),
+            ("-hh-x", "-x"),
+            ("-hh=", ""),
+            ("-h=", ""),
+            ("-hhh=y", "y"),
         ] {
             assert_eq!(
                 run(&[arg]),
