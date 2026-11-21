@@ -14,7 +14,6 @@ const LENMODS: &[u8] = b"hjlLtz";
 
 /// The raw text `printf format args...` writes. Every output byte and every pass over the format is charged to
 /// the Rust-only budget.
-#[allow(dead_code)]
 pub(super) fn printf_fill(
     format: &str,
     args: &[String],

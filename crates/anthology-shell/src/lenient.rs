@@ -118,6 +118,8 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segmen
                 redirs: Vec::new(),
                 group: sh.new_group(),
                 arith: false,
+                braces: true,
+                after_compound: false,
             });
             let starts = script_starts_in(&tokens, &mut sh.work.extra).ok_or(TooComplex)?;
             for (start, first) in starts {
@@ -133,6 +135,8 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segmen
                     redirs: Vec::new(),
                     group: sh.new_group(),
                     arith: false,
+                    braces: true,
+                    after_compound: false,
                 });
             }
         }

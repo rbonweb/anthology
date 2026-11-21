@@ -28,10 +28,15 @@ it to the reference too, so the difftest still checks everything else; each such
 - FW-I review R1-I1: a package manager's `--` ends the alternate span unless its verb is `exec`/`dlx`/`x`
   (`_alternate_span` below).
 - SH-FW review C-3: a command's brace expressions give one more alternate reading with them expanded, at
-  most 64 words (`_add_alternates_braces` below); C-4: echo/printf text fed to a shell or to xargs/parallel
-  is also fed decoded, not to an interpreter's code (`_collect_once`, `_literal_output` below).
+  most 4096 words and 64 levels, only for a segment with an unquoted `{` (re-review F-1: `_add`, `_end_seg`
+  and `_Seg` below), and too complex when it changes the program word (re-review C-3a,
+  `_add_alternates_braces`); C-4: echo/printf text fed to a shell or to xargs/parallel is also fed decoded,
+  not to an interpreter's code (`_collect_once`, `_literal_output` below), and (re-review C-4a) printf's
+  words without a leading `--` and its format filled (`_echo_decoded`, `_printf_fill`).
 - SH-FW review I-2: a newline (heredoc bodies, comments, blank lines) right after a `|`/`|&` keeps the
   pipeline (`_end_seg` below, part C).
+- SH-FW re-review I-2a: a pipeline headed by a compound command or a function call (`( echo X ) | sh`,
+  `fi | sh`, `f | sh`) is fed the literal output of the commands before it (`_collect_once`).
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -123,6 +128,7 @@ def _script_starts(words):
 
 
 _ALTERNATES = []
+_BRACE_READING = [None]                                   # the brace reading `_add_alternates` is given
 
 
 def _add_alternates(alternates, scripts, entry, ctx, exempt):
@@ -132,6 +138,8 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
     main = G._strip_prefixes(entry.raw)[0]
     for alternate in alternates:
         cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
+        if alternate is _BRACE_READING[0] and cmd[:1] != main[:1]:
+            raise G._TooComplex()                         # re-review C-3a
         scripts.extend(script for script in more if script not in scripts)
         if cmd != main:
             other = G._Entry(entry.raw, [], cmd, entry.cwd, exempt, entry.group)
@@ -178,11 +186,13 @@ def _lenient_segments(text):
                 continue
             seg = G._Seg(G._Group())
             seg.tokens = tokens
+            seg.braces = True                             # re-review F-1: quoting is unknown here
             out.append(seg)
             for start, first in G._script_starts(tokens):   # `bash -c <rest of the line>`
                 G._charge(len(tokens) - start)
                 extra = G._Seg(G._Group())
                 extra.tokens = [first] + tokens[start + 1:]
+                extra.braces = True
                 out.append(extra)
     return out
 
@@ -217,7 +227,8 @@ G._alternate_span = _alternate_span
 # --- part B
 # SH-FW review, part B (D-8, Rust stricter; crates/anthology-shell/src/collect.rs).
 
-_MAX_BRACE_WORDS = 64
+_MAX_BRACE_WORDS = 4096
+_MAX_BRACE_DEPTH = 64
 
 
 def _brace_at(word):
@@ -248,7 +259,7 @@ def _expand_braces(word, level, out):
             raise G._TooComplex()
         out.append(word)
         return
-    if level >= _MAX_BRACE_WORDS:
+    if level >= _MAX_BRACE_DEPTH:
         raise G._TooComplex()
     open_, close, commas = found
     start = open_ + 1
@@ -275,11 +286,16 @@ _add_alternates_before_b = G._add_alternates
 
 
 def _add_alternates_braces(alternates, scripts, entry, ctx, exempt):
-    """C-3: the command with its brace expressions expanded is one more alternate reading."""
-    reading = _brace_reading(entry.raw)
+    """C-3: the command with its brace expressions expanded is one more alternate reading, for a segment
+    with an unquoted `{` (re-review F-1); one that changes the program word is too complex (C-3a)."""
+    reading = _brace_reading(entry.raw) if getattr(ctx, "braces", False) else None
     if reading is not None:
         alternates = alternates + [reading]
-    _add_alternates_before_b(alternates, scripts, entry, ctx, exempt)
+    _BRACE_READING[0] = reading
+    try:
+        _add_alternates_before_b(alternates, scripts, entry, ctx, exempt)
+    finally:
+        _BRACE_READING[0] = None
 
 
 G._add_alternates = _add_alternates_braces
@@ -301,12 +317,135 @@ def _echo_decoded(prog, args):
         rest = words[1:] if words[:1] == ["--"] else words
         if len(rest) > 1:
             sources.append(" ".join(rest[1:]))
+        if len(rest) < len(words):                        # re-review C-4a
+            sources.append(" ".join(rest))
+        if rest:
+            sources.append(_printf_fill(rest[0], rest[1:]))
     out = []
     for source in sources:
         for decoded in (G._ansi_c_decode(source), G._ansi_c_decode(_echo_octal(source))):
             if decoded not in out:
                 out.append(decoded)
     return out
+
+
+_PRINTF_FLAGS = "#'-+ 0"
+_PRINTF_LENMODS = "hjlLtz"
+_PRINTF_NUMERIC = "diuoxXeEfFgGaA"
+
+
+def _printf_int(arg):
+    """A `*` width or precision argument: bash reads an integer; anything else (or none) is 0."""
+    arg = (arg or "").lstrip()
+    negative = arg[:1] == "-"
+    if arg[:1] in "-+" and arg:
+        arg = arg[1:]
+    m = G.re.match(r"[0-9]*", arg)
+    value = int(m.group(0)) if m.group(0) else 0
+    return -value if negative else value
+
+
+def _printf_fill(fmt, args):
+    """crates/anthology-shell/src/collect/printf.rs `printf_fill`: the raw text `printf fmt args...` writes
+    (re-review C-4a; a superset reading, escapes left as written)."""
+    out, state = [], {"next": 0}
+
+    def take():
+        k = state["next"]
+        if k < len(args):
+            state["next"] = k + 1
+            return args[k]
+        return None
+
+    def pad(text, width, left):
+        fill = width - min(len(text), width)
+        if fill > 1_000_000:
+            raise G._TooComplex()                         # Rust: over its budget
+        out.append(text + " " * fill if left else " " * fill + text)
+
+    def once():
+        i, n = 0, len(fmt)
+        while i < n:
+            c = fmt[i]
+            if c == "\\":
+                out.append(fmt[i:i + 2])
+                i += 2
+                continue
+            if c != "%":
+                j = i
+                while j < n and fmt[j] not in "\\%":
+                    j += 1
+                out.append(fmt[i:j])
+                i = j
+                continue
+            start, j = i, i + 1
+            if fmt[j:j + 1] == "%":
+                out.append("%")
+                i = j + 1
+                continue
+            left = False
+            while j < n and fmt[j] in _PRINTF_FLAGS:
+                left = left or fmt[j] == "-"
+                j += 1
+            if fmt[j:j + 1] == "*":
+                j += 1
+                w = _printf_int(take())
+                left = left or w < 0
+                width = abs(w)
+            else:
+                m = G.re.match(r"[0-9]*", fmt[j:])
+                width = int(m.group(0)) if m.group(0) else 0
+                j += len(m.group(0))
+            precision = None
+            if fmt[j:j + 1] == ".":
+                j += 1
+                if fmt[j:j + 1] == "*":
+                    j += 1
+                    v = _printf_int(take())
+                    precision = v if v >= 0 else None
+                else:
+                    m = G.re.match(r"[0-9]*", fmt[j:])
+                    precision = int(m.group(0)) if m.group(0) else 0
+                    j += len(m.group(0))
+            while j < n and fmt[j] in _PRINTF_LENMODS:
+                j += 1
+            if j >= n:
+                out.append(fmt[start:])
+                i = n
+                continue
+            conv, after = fmt[j], j + 1
+            if conv in "sq":
+                text = take() or ""
+                text = text if precision is None else text[:precision]
+            elif conv == "b":
+                text = take() or ""
+            elif conv == "c":
+                text = (take() or "")[:1]
+            elif conv in _PRINTF_NUMERIC:
+                got = take()
+                text = "0" if got is None else got
+            elif conv == "(":
+                close = fmt.find(")", after)
+                if close >= 0 and fmt[close + 1:close + 2] == "T":
+                    take()
+                    pad(fmt[after:close], width, left)
+                    i = close + 2
+                else:
+                    out.append(fmt[start:after])
+                    i = after
+                continue
+            else:
+                out.append(fmt[start:after])
+                i = after
+                continue
+            pad(text, width, left)
+            i = after
+
+    while True:
+        begin = state["next"]
+        once()
+        if state["next"] == begin or state["next"] >= len(args):
+            return "".join(out)
 
 
 def _literal_output(text, depth):
@@ -333,10 +472,36 @@ G._literal_output = _literal_output
 
 def _collect_once(text, ctx, exempt, depth):
     """`_collect_once`, with each echo/printf text also fed decoded to a shell and to xargs/parallel, not
-    to an interpreter's code (C-4)."""
-    new_entries = []
+    to an interpreter's code (C-4); brace readings scoped to the segment (re-review F-1); a pipeline headed
+    by a compound command or a function call fed what the commands before it print (re-review I-2a)."""
+    outer = getattr(ctx, "braces", False)
+    try:
+        _collect_once_body(text, ctx, exempt, depth)
+    finally:
+        ctx.braces = outer
+
+
+_CLOSERS = ("}", "fi", "done", "esac")
+
+
+def _collect_once_body(text, ctx, exempt, depth):
+    new_entries, braced, after_compound = [], set(), set()
     for seg in G._segments(text):
-        new_entries.append(G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth))
+        ctx.braces = seg.braces
+        entry = G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth)
+        new_entries.append(entry)
+        if seg.braces:
+            braced.add(id(entry))
+        if seg.after_compound:
+            after_compound.add(id(entry))
+    position = {id(e): k for k, e in enumerate(new_entries)}
+    defined = {}                                          # I-2a: `f()` lexes as `f`, `function f` as is
+    for k, e in enumerate(new_entries):
+        if len(e.raw) == 1:
+            defined.setdefault(e.raw[0], k)
+        elif len(e.raw) >= 2 and e.raw[0] == "function":
+            defined.setdefault(e.raw[1], k)
+    fed_from = 0
     by_group = {}
     for entry in new_entries:
         by_group.setdefault(id(entry.group), []).append(entry)
@@ -351,6 +516,16 @@ def _collect_once(text, ctx, exempt, depth):
             if e.prog in ("echo", "printf"):
                 texts.append(G._echo_text(e))
                 decoded += _echo_decoded(e.prog, e.args)
+        head = entries[0]
+        at = position[id(head)]
+        if not texts and (id(head) in after_compound
+                          or (len(head.raw) == 1 and head.raw[0] in _CLOSERS)
+                          or defined.get(head.prog, at) < at):
+            for e in new_entries[min(fed_from, at):at]:
+                if e.prog in ("echo", "printf"):
+                    texts.append(G._echo_text(e))
+                    decoded += _echo_decoded(e.prog, e.args)
+            fed_from = max(fed_from, at)
         fed = list(texts)
         fed += [t for t in _dedupe(decoded) if t not in fed]
         for entry in interpreters:
@@ -359,6 +534,7 @@ def _collect_once(text, ctx, exempt, depth):
         for body in fed if shell is not None else ():
             G._collect(body, ctx, shell.exempt, depth + 1)
         for entry in feeders:
+            ctx.braces = id(entry) in braced
             G._feed_stdin(entry, fed, ctx, depth)
     if "<(" in text and any(e.prog in G._SHELLS or e.prog in ("source", ".") for e in new_entries):
         for inner in G._process_substitutions(text):
@@ -382,16 +558,57 @@ _END_SEG = G._Lexer.end_seg
 
 def _end_seg(self, new_group):
     """`_Lexer.end_seg` with Rust's pipeline rule (SH-FW review I-2): a break before any command follows a
-    `|`/`|&` keeps the group, so `echo X |\nsh` stays one pipeline."""
+    `|`/`|&` keeps the group, so `echo X |\nsh` stays one pipeline. Re-review: the segment records whether
+    an unquoted `{` was among its words (F-1) and whether it follows a `|` with no command before it in its
+    pipeline, after a `)` (I-2a)."""
     empty = not (self.has_word or self.seg.tokens or self.seg.redirs)
-    if new_group and getattr(self, "piped", False) and empty:
+    piped = getattr(self, "piped", False)
+    if new_group and piped and empty:
         new_group = False
     else:
+        if not new_group and empty and not piped:
+            self.compound = True
         self.piped = not new_group
+    braces, self.braces = getattr(self, "braces", False), False
+    count = len(self.out)
     _END_SEG(self, new_group)
+    if len(self.out) > count:
+        seg = self.out[-1]
+        seg.braces = braces
+        seg.after_compound, self.compound = getattr(self, "compound", False), False
+    if new_group:
+        self.compound = False
 
 
 G._Lexer.end_seg = _end_seg
+
+_ADD = G._Lexer.add
+_RUN = G._Lexer.run.__code__
+
+
+def _add(self, chars):
+    """`_Lexer.add`, noting an unquoted `{` (`run`'s default branch; re-review F-1)."""
+    if chars == "{":
+        caller = sys._getframe(1)
+        if caller.f_code is _RUN and caller.f_locals.get("c") == "{":
+            self.braces = True
+    _ADD(self, chars)
+
+
+G._Lexer.add = _add
+
+
+class _Seg(G._Seg):
+    """`_Seg` with Rust's segment flags (re-review F-1, I-2a)."""
+    __slots__ = ("braces", "after_compound")
+
+    def __init__(self, group):
+        super().__init__(group)
+        self.braces = False
+        self.after_compound = False
+
+
+G._Seg = _Seg
 
 
 def _entry(e, groups):

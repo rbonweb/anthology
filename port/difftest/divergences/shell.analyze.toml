@@ -94,7 +94,7 @@ reason = "Rust stricter: SH-FW review C-2, an ext:: URL runs its command; bash r
 [[divergence]]
 class = "D-8"
 case = "fw:22"
-reason = "Rust stricter: SH-FW review M-3, gosu <user> runs the command after it; bash runs it, the reference allows it."
+reason = "Rust stricter: SH-FW review M-3, gosu <user> runs the command after it; a wrapper there would run it, the reference allows it."
 
 [[divergence]]
 class = "D-8"
@@ -134,14 +134,52 @@ reason = "Rust stricter: SH-FW review C-5, test -v evaluates the subscript's $(.
 [[divergence]]
 class = "D-8"
 case = "fw:37"
-reason = "Rust stricter: SH-FW review I-3, more than 64 fed stdin lines are too complex (the reference drops the 65th); bash runs it, the reference allows it."
+reason = "Rust stricter: SH-FW re-review F-2, every fed stdin line is read (the reference drops the 65th on); bash runs it, the reference allows it."
 
 [[divergence]]
 class = "D-8"
 case = "fw:38"
-reason = "Rust stricter: SH-FW review I-3, more than 64 GNU parallel inputs are too complex (the reference drops the 65th); bash runs it, the reference allows it."
+reason = "Rust stricter: SH-FW re-review F-2, every GNU parallel input is read (the reference drops the 65th on); GNU parallel runs it, the reference allows it."
 
 [[divergence]]
 class = "D-8"
 case = "fw:39"
-reason = "Rust stricter: SH-FW review I-3, more than 64 alternate readings are too complex (the reference drops the 65th); bash runs it, the reference allows it."
+reason = "Rust stricter: SH-FW review I-3, more than 64 alternate readings are too complex (the reference drops the 65th); a wrapper there would run it, the reference allows it."
+
+# The one scoped re-review of the hardening (SH-FW re-review): the narrow, Rust-only fixes. The oracle
+# applies the grammar-wide ones itself (F-1, C-3a, C-4a, I-2a; see port/difftest/oracle/shell.py).
+
+[[divergence]]
+class = "D-8"
+case = "fw:40"
+reason = "Rust stricter: SH-FW re-review C-2a, a git alias without ! is read as its expansion (git -c alias.cl=clone cl -u X runs X); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:41"
+reason = "Rust stricter: SH-FW re-review C-1a, GNU tar reads TAR_OPTIONS before its arguments, so --checkpoint-action there runs its exec= command (GNU tar 1.35); the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:47"
+reason = "Rust stricter: SH-FW re-review C-5a, printf -v<name> attached evaluates the subscript's $(...) inside single quotes (bash 5.2); the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:48"
+reason = "Rust stricter: SH-FW re-review C-5a, unset evaluates the subscript's $(...) inside single quotes (bash 5.2 and 3.2); the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:52"
+reason = "Rust stricter: SH-FW re-review I-2a, function f { cmd; } has cmd as a command (the reference reads the whole line as the program function); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:57"
+reason = "Rust stricter: SH-FW re-review F-2 control, all 70 GNU parallel inputs are read (the reference reads 64), no install either way."
+
+[[divergence]]
+class = "D-8"
+case = "fw:58"
+reason = "Rust stricter: SH-FW re-review F-2 control, all 70 fed lines are read (the reference reads 64), no install either way."

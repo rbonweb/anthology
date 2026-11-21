@@ -589,7 +589,7 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         .iter()
         .map(|text| case(text.to_string(), "/home/tester"))
         .collect();
-    // I-3: a cap that drops input is too complex
+    // I-3: caps that drop input (the re-review lifted the fed and parallel ones, F-2)
     out.push(case(
         format!(
             "printf '{}npx playwright install\\n' | xargs -I{{}} sh -c '{{}}'",
@@ -609,6 +609,47 @@ pub(crate) fn fw_cases() -> Vec<Value> {
             "timeout 5 mytool{} npx playwright install",
             " sh".repeat(70)
         ),
+        "/home/tester",
+    ));
+    // SH-FW re-review: fw:40 on, in this order (`shell.analyze.toml` names the Rust-only ones)
+    const REREVIEW: &[&str] = &[
+        // C-2a, C-1a (Rust-only)
+        "git -c alias.cl=clone cl -u 'npx playwright install' . ../c",
+        "TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=npx\\ playwright\\ install' tar -cf b.tar a",
+        // C-3a, C-4a (the oracle applies them too)
+        "{echo,'npx playwright install'} | sh",
+        "{xargs,npx} <<< 'playwright install'",
+        "printf -- 'npx\\x20playwright install' | sh",
+        "printf 'npx %s install\\n' playwright | sh",
+        "printf '%c%s' n 'px playwright install' | sh",
+        // C-5a (Rust-only)
+        "printf -v'a[$(npx playwright install)]' x",
+        "a=(1); unset 'a[$(npx playwright install)]'",
+        // I-2a (the oracle applies it too), and `function f` bodies (Rust-only)
+        "( echo npx playwright install ) | sh",
+        "if true; then echo npx playwright install; fi | sh",
+        "f() { echo npx playwright install; }; f | sh",
+        "function f { npx playwright install; }; f",
+        // F-1 controls: quoted braces are not brace expressions, 70-word lists are fine
+        "awk '/a/{print $1,$2,$3,$4} /b/{print $1,$2,$3,$4} /c/{print $1,$2,$3,$4,$5}' log.txt",
+        "mkdir -p app/{models,views,controllers,helpers,mailers,jobs,channels}/{admin,api,web,shared,internal,public,legacy,v2,v3,v4}",
+        "rm -f build/{a,b,c,d,e,f,g,h}.{js,map,d.ts,css,html,json,txt,md,yml}",
+        "echo '{a,b}' \"{c,d}\" \\{e,f}",
+    ];
+    out.extend(
+        REREVIEW
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
+    // F-2 controls: more than 64 inputs or lines are read, not too complex (Rust-only past the 64th)
+    let hosts: String = (0..70).map(|k| format!(" host{k}")).collect();
+    out.push(case(
+        format!("parallel ssh {{}} uptime :::{hosts}"),
+        "/home/tester",
+    ));
+    let lines: String = (0..70).map(|k| format!("echo {k}\n")).collect();
+    out.push(case(
+        format!("xargs -n1 echo <<'EOF'\n{lines}EOF"),
         "/home/tester",
     ));
     out

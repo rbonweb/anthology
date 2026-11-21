@@ -327,13 +327,22 @@ fn subscripts_in_single_quotes_run_their_substitutions() {
 #[test]
 fn brace_expansion_gives_alternate_readings() {
     assert_runs(&[
+        "npx playwright {install,}",
+        "npx playwright {install,x}",
+        "echo {a,b}; npx playwright install",
+    ]);
+    // re-review C-3a: a reading whose program word differs is too complex (`{echo,X} | sh` is X's input)
+    assert_incomplete(&[
         "{npx,playwright,install}",
         "{npx,} playwright install",
-        "npx playwright {install,}",
         "npx {playwright,} {install,}",
         "sudo {npx,playwright,install}",
         "{sh,-c,'npx playwright install'}",
         "{{npx,},playwright} install",
+        "{echo,'npx playwright install'} | sh",
+        "{xargs,npx} <<< 'playwright install'",
+        "echo x; {echo,'npx playwright install'} | bash",
+        "sh -c \"{echo,'npx playwright install'} | sh\"",
     ]);
     assert_clear(&[
         "cp file{,.bak}",
@@ -349,16 +358,44 @@ fn brace_expansion_gives_alternate_readings() {
 #[test]
 fn brace_expansion_over_its_bound_is_too_complex() {
     let long = format!("echo {}", "{a,b}".repeat(5000));
-    assert_incomplete(&["echo {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}", &long]);
-    // 64 words in one command are fine
-    let a = analyze("echo {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}", HOME);
+    // 2^13 words, over MAX_BRACE_WORDS
+    assert_incomplete(&[
+        "echo {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}",
+        &long,
+    ]);
+    // re-review F-1: 2^7 words in one command are fine
+    let a = analyze("echo {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}", HOME);
     assert!(!a.incomplete, "{}", summary(&a));
+}
+
+// ------------------------------------------------------------------ re-review F-1. quoted braces
+
+#[test]
+fn only_unquoted_braces_are_expanded() {
+    assert_clear(&[
+        "awk '/a/{print $1,$2,$3,$4} /b/{print $1,$2,$3,$4} /c/{print $1,$2,$3,$4,$5}' log.txt",
+        "node -e 'const {a, b} = require(\"./x\"); const {c, d, e} = require(\"./y\"); const {f, g} = \
+         require(\"./z\"); const {h, i, j} = require(\"./w\"); const {k, l} = require(\"./v\"); console.log(a)'",
+        "mkdir -p app/{models,views,controllers,helpers,mailers,jobs,channels}/{admin,api,web,shared,internal,public,legacy,v2,v3,v4}",
+        "rm -f build/{a,b,c,d,e,f,g,h}.{js,map,d.ts,css,html,json,txt,md,yml}",
+        "echo '{npx,playwright,install}'",
+        "echo \"{npx,playwright,install}\"",
+        "echo \\{npx,playwright,install}",
+    ]);
+    // a quoted brace expression is not one: no alternate reading
+    for command in ["echo '{a,b}'", "echo \"{a,b}\"", "echo \\{a,b}"] {
+        let a = analyze(command, HOME);
+        assert!(a.alternates.is_empty(), "{command}: {}", summary(&a));
+    }
+    let a = analyze("echo {a,b}", HOME);
+    assert_eq!(a.alternates.len(), 1, "{}", summary(&a));
 }
 
 // ------------------------------------------------------------------ I-3. fed lines over the cap
 
 #[test]
-fn stdin_lines_over_the_cap_are_too_complex() {
+fn stdin_lines_over_the_cap_are_read() {
+    // SH-FW re-review F-2: every line is read (past MAX_FED on the Rust-only budget)
     let printf = format!(
         "printf '{}npx playwright install\\n' | xargs -I{{}} sh -c '{{}}'",
         "true\\n".repeat(64)
@@ -367,7 +404,24 @@ fn stdin_lines_over_the_cap_are_too_complex() {
         "xargs -I{{}} sh -c '{{}}' <<'EOF'\n{}npx playwright install\nEOF",
         "true\n".repeat(64)
     );
-    assert_incomplete(&[&printf, &heredoc]);
+    let plain = format!(
+        "xargs npx <<'EOF'\n{}playwright install\nEOF",
+        "--yes\n".repeat(70)
+    );
+    let parallel = format!(
+        "parallel <<'EOF'\n{}npx playwright install\nEOF",
+        "true\n".repeat(70)
+    );
+    assert_runs(&[&printf, &heredoc, &plain, &parallel]);
+    let hosts: String = (0..70).map(|k| format!(" host{k}")).collect();
+    let lines: String = (0..70).map(|k| format!("echo {k}\n")).collect();
+    let tabs: String = (0..40).map(|k| format!("a\\tb{k}\\n")).collect();
+    assert_clear(&[
+        &format!("parallel ssh {{}} uptime :::{hosts}"),
+        &format!("xargs -n1 echo <<'EOF'\n{lines}EOF"),
+        &format!("python3 - <<'EOF' | xargs -n1 echo\n{lines}EOF"),
+        &format!("echo -e '{tabs}' | xargs -n2 echo"),
+    ]);
     // under the cap, the install is still seen
     let short = format!(
         "printf '{}npx playwright install\\n' | xargs -I{{}} sh -c '{{}}'",

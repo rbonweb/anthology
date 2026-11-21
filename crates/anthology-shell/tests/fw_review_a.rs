@@ -433,12 +433,10 @@ fn a_cap_that_drops_input_is_too_complex() {
     let pkgs: String = (0..300).map(|k| format!(" p{k}")).collect();
     let nine = " a".repeat(9);
     let eight = " b".repeat(8);
+    // SH-FW re-review F-2: GNU parallel's inputs and combinations past MAX_FED are read, not too complex
+    assert_runs(&[&format!("parallel :::{inputs} 'npx playwright install'")]);
+    assert_clear(&[&format!("parallel echo {{1}} {{2}} :::{nine} :::{eight}")]);
     assert_incomplete(&[
-        // more than MAX_FED inputs of one source
-        &format!("parallel :::{inputs} 'npx playwright install'"),
-        &format!("parallel sh -c {{}} :::{inputs} 'npx playwright install'"),
-        // more than MAX_FED combinations
-        &format!("parallel echo {{1}} {{2}} :::{nine} :::{eight}"),
         // more than MAX_ALTERNATES alternates
         &format!(
             "timeout 5 mytool{} npx playwright install",

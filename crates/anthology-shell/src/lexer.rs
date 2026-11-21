@@ -50,6 +50,11 @@ pub struct Segment {
     /// Rust-only: lexed from the text of a `$((...))` (an arithmetic expression read as commands, as Python
     /// does), so a `*` program word there is multiplication, not a glob (`opaque`).
     pub(crate) arith: bool,
+    /// Rust-only: an unquoted `{` was among its words, so bash brace-expands them (SH-FW re-review F-1).
+    pub(crate) braces: bool,
+    /// Rust-only: the first command after a `|` that had no command before it in its pipeline, the head
+    /// being a subshell (`( echo X ) | sh`, SH-FW re-review I-2a).
+    pub(crate) after_compound: bool,
 }
 
 /// A pipeline's literal stdin text (heredoc bodies, here-strings).
@@ -118,6 +123,9 @@ pub(crate) struct Work {
     pub(crate) reading: Reading,
     /// A delimiter line with a parenthesis after it was seen inside `$(...)`: the other readings matter.
     pub(crate) paren_lines: bool,
+    /// Rust-only: the work in progress is beyond what the reference does (input it drops), so `charge`
+    /// spends the Rust-only budget (SH-FW re-review F-2).
+    pub(crate) redirect: bool,
 }
 
 impl Work {
@@ -127,11 +135,15 @@ impl Work {
             extra: Budget(extra),
             reading,
             paren_lines: false,
+            redirect: false,
         }
     }
 
     /// `_charge`: spend `units` of Python's budget.
     pub(crate) fn charge(&mut self, units: usize) -> Result<(), TooComplex> {
+        if self.redirect {
+            return self.charge_extra(units);
+        }
         if self.budget.spend(units) {
             Ok(())
         } else {
@@ -256,6 +268,10 @@ struct Lexer<'t, 'a> {
     /// A `|`/`|&` with no command after it yet: a segment break there keeps the pipeline (Rust stricter,
     /// SH-FW review I-2; the oracle applies it to the reference too).
     piped: bool,
+    /// An unquoted `{` was added to this segment's words (`Segment::braces`).
+    braces: bool,
+    /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
+    compound: bool,
     /// Elements of the `name=( ... )` being lexed.
     array: Option<Vec<String>>,
     array_word: String,
@@ -300,6 +316,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
             arith_unclosed: false,
             quoted: false,
             piped: false,
+            braces: false,
+            compound: false,
             array: None,
             array_word: String::new(),
             array_start: 0,
@@ -356,10 +374,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
         if new_group && self.piped && empty {
             new_group = false;
         } else {
+            self.compound |= !new_group && empty && !self.piped;
             self.piped = !new_group;
         }
         self.end_word();
         self.pending = None;
+        let braces = std::mem::take(&mut self.braces);
         if !self.tokens.is_empty() || !self.redirs.is_empty() {
             let group = self.group();
             self.out.push(Segment {
@@ -367,10 +387,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 redirs: std::mem::take(&mut self.redirs),
                 group,
                 arith: false,
+                braces,
+                after_compound: std::mem::take(&mut self.compound),
             });
         }
         if new_group {
             self.group = None;
+            self.compound = false;
         }
     }
 
@@ -417,6 +440,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 redirs: Vec::new(),
                 group,
                 arith: false,
+                braces: false,
+                after_compound: false,
             });
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
@@ -561,6 +586,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 b'<' | b'>' | b'&' => i = self.redirect(i)?,
                 _ => {
                     let ch = char_at(text, i).unwrap_or('\u{fffd}');
+                    self.braces |= ch == '{';
                     let mut buf = [0u8; 4];
                     self.add(ch.encode_utf8(&mut buf));
                     i += ch.len_utf8();

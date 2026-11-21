@@ -20,6 +20,12 @@
 //!   them expanded (C-3); echo/printf text fed to a shell or to xargs/parallel is also fed decoded (C-4); a
 //!   `[`-holding argument of `let`, `declare`, `read`, `printf -v`, `test -v`, `[[` ... runs its
 //!   substitutions (C-5).
+//! - SH-FW re-review: brace readings only for a segment with an unquoted `{` (`Segment::braces`, F-1), and a
+//!   brace reading that changes the program word is too complex (C-3a); every fed line is read, past the
+//!   reference's `MAX_FED` on the Rust-only budget (`Work::redirect`, F-2); printf's text with a leading `--`
+//!   dropped and with its format filled (`printf::printf_fill`, C-4a); `printf -v<name>` attached and
+//!   `unset` (C-5a); a pipeline headed by a compound command or a function call (`( echo X ) | sh`,
+//!   `if ...; fi | sh`, `f | sh`) is fed the literal output of the commands before it in the text (I-2a).
 
 mod printf;
 
@@ -228,7 +234,8 @@ fn echo_octal(text: &str) -> String {
 
 /// SH-FW review C-4 (Rust stricter, D-8): what an `echo`/`printf` writes with its escapes decoded, as bash 5's
 /// `$'...'` reads them and with `\0nnn` read as echo -e and printf's `%b` read it; for printf also its
-/// arguments after the format alone (`printf '%b' X`, `printf '%s' X`). Each reading once, in that order.
+/// arguments after the format alone (`printf '%b' X`, `printf '%s' X`), and (re-review C-4a) its words
+/// without a leading `--` and its format filled from its arguments. Each reading once, in that order.
 fn echo_decoded(prog: &str, args: &[String], work: &mut Work) -> Result<Vec<String>, TooComplex> {
     let words = echo_words(args);
     let mut sources = vec![words.join(" ")];
@@ -239,6 +246,13 @@ fn echo_decoded(prog: &str, args: &[String], work: &mut Work) -> Result<Vec<Stri
         };
         if rest.len() > 1 {
             sources.push(rest[1..].join(" "));
+        }
+        // SH-FW re-review C-4a: the words without the `--`, and the text the format writes filled
+        if rest.len() < words.len() {
+            sources.push(rest.join(" "));
+        }
+        if let Some((format, values)) = rest.split_first() {
+            sources.push(printf::printf_fill(format, values, work)?);
         }
     }
     let mut out: Vec<String> = Vec::new();
@@ -258,12 +272,14 @@ fn echo_decoded(prog: &str, args: &[String], work: &mut Work) -> Result<Vec<Stri
 /// SH-FW review C-5 (Rust stricter, D-8): programs that evaluate an arithmetic subscript in their arguments
 /// (`let 'a[$(cmd)]=1'`), and those that do once a `-v` is among them (`printf -v`, `test -v`).
 const SUBSCRIPT_PROGRAMS: &[&str] = &[
-    "let", "declare", "typeset", "local", "readonly", "export", "read", "[[",
+    "let", "declare", "typeset", "local", "readonly", "export", "read", "[[", "unset",
 ];
 const SUBSCRIPT_V_PROGRAMS: &[&str] = &["printf", "test", "["];
 
-/// Words that the brace expressions of one command may give (`{a,b}{c,d}` gives 4).
-const MAX_BRACE_WORDS: usize = 64;
+/// Words that the brace expressions of one command may give (`{a,b}{c,d}` gives 4), and the brace levels
+/// one word may nest; past either it is too complex.
+const MAX_BRACE_WORDS: usize = 4096;
+const MAX_BRACE_DEPTH: usize = 64;
 
 /// The first brace expression of `word`, as (open, close, commas): a `{` (not `${`) with its matching `}` and
 /// a comma at its own level between them. One whose text holds a quote character is not one: past quote
@@ -317,8 +333,7 @@ fn brace_at(word: &str) -> Option<(usize, usize, Vec<usize>)> {
 }
 
 /// Bash's brace expansion of `word`, appended to `out` in bash's order, on the Rust-only budget. Too complex
-/// past `MAX_BRACE_WORDS` words in `out`, or `MAX_BRACE_WORDS` levels deep (each level has two alternatives
-/// at least, so at least as many words would follow).
+/// past `MAX_BRACE_WORDS` words in `out`, or `MAX_BRACE_DEPTH` levels deep.
 fn expand_braces(
     word: &str,
     level: usize,
@@ -333,7 +348,7 @@ fn expand_braces(
         out.push(word.to_string());
         return Ok(());
     };
-    if level >= MAX_BRACE_WORDS {
+    if level >= MAX_BRACE_DEPTH {
         return Err(TooComplex);
     }
     let (pre, post) = (&word[..open], &word[close + 1..]);
@@ -347,8 +362,9 @@ fn expand_braces(
 }
 
 /// SH-FW review C-3 (Rust stricter, D-8): `tokens` with every brace expression expanded and the empty words
-/// that gives dropped, or `None` when no token has one. Tokens are past quote removal, so a quoted `{a,b}` is
-/// expanded too: the reading is an alternate, checked against G1 only.
+/// that gives dropped, or `None` when no token has one. Only for a segment with an unquoted `{` (re-review
+/// F-1); its tokens are past quote removal, so a quoted `{a,b}` beside it is expanded too (the reading is an
+/// alternate, checked against G1 only).
 fn brace_reading(tokens: &[String], work: &mut Work) -> Result<Option<Vec<String>>, TooComplex> {
     let mut words = Vec::new();
     let mut reading = Vec::new();
@@ -466,6 +482,9 @@ pub(crate) struct Ctx<'a> {
     stdin_runs: HashMap<usize, Vec<StdinRun>>,
     /// The segment `add_one` is about to add came from a `$((...))` (`Segment::arith`).
     arith: bool,
+    /// The commands `add_one` adds come from a segment with an unquoted `{` (`Segment::braces`); scoped to
+    /// one `collect` call.
+    braces: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -483,6 +502,7 @@ impl<'a> Ctx<'a> {
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
             arith: false,
+            braces: false,
         }
     }
 
@@ -535,6 +555,14 @@ impl<'a> Ctx<'a> {
         self.take(result)
     }
 
+    /// `f` on the Rust-only budget: work past input the reference drops (re-review F-2).
+    fn redirected<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.work.redirect, true);
+        let result = f(self);
+        self.work.redirect = outer;
+        result
+    }
+
     fn normalize(&mut self, path: &str, cwd: Option<&str>) -> String {
         match normalize_in(path, self.home, cwd, self.re) {
             Ok(path) => path,
@@ -550,6 +578,45 @@ impl<'a> Ctx<'a> {
             .get(group.0 as usize)
             .map(|g| g.texts.clone())
             .unwrap_or_default()
+    }
+
+    /// SH-FW re-review I-2a: the pipeline whose first command is `head` is fed by a compound command or a
+    /// function call: `head` came right after a `)` (`( echo X ) | sh`), is a closing word alone (`fi | sh`,
+    /// `{ ...; } | sh`), or calls a name an earlier command of the text defined (`defined`, see
+    /// `defined_names`).
+    fn compound_head(
+        &self,
+        head: usize,
+        defined: &HashMap<String, usize>,
+        after_compound: &HashSet<usize>,
+    ) -> bool {
+        let entry = &self.entries[head];
+        after_compound.contains(&head)
+            || (entry.raw.len() == 1
+                && matches!(entry.raw[0].as_str(), "}" | "fi" | "done" | "esac"))
+            || defined.get(&entry.prog).is_some_and(|&at| at < head)
+    }
+
+    /// The names the commands `entries` may define as functions, each with its first entry: `f()` lexes as
+    /// the command `f`, `function f {` as `function f ...`. `None` once the analysis has stopped.
+    fn defined_names(&mut self, entries: &[usize]) -> Option<HashMap<String, usize>> {
+        let mut defined = HashMap::new();
+        for &e in entries {
+            let raw = &self.entries[e].raw;
+            let name = match raw.as_slice() {
+                [name] => name,
+                [function, name, ..] if function == "function" => name,
+                _ => continue,
+            };
+            if !defined.contains_key(name) {
+                let name = name.clone();
+                if !self.spend(WORD + name.len()) {
+                    return None;
+                }
+                defined.insert(name, e);
+            }
+        }
+        Some(defined)
     }
 
     /// `_collect(text, ctx, exempt, depth)`, memoized on (text, exempt, cwd) as Python's is. Returns true when
@@ -573,7 +640,9 @@ impl<'a> Ctx<'a> {
             return false;
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
+        let braces = self.braces;
         self.collect_once(text, exempt, depth);
+        self.braces = braces;
         self.seen.insert(key, (depth, self.cwd.clone()));
         false
     }
@@ -602,11 +671,22 @@ impl<'a> Ctx<'a> {
             });
         }
         let mut new_entries = Vec::new();
+        let mut braced: HashSet<usize> = HashSet::new();
+        let mut after_compound: HashSet<usize> = HashSet::new();
         for seg in lexed.segments {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
+            self.braces = seg.braces;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
-                Some(entry) => new_entries.push(entry),
+                Some(entry) => {
+                    new_entries.push(entry);
+                    if seg.braces {
+                        braced.insert(entry);
+                    }
+                    if seg.after_compound {
+                        after_compound.insert(entry);
+                    }
+                }
                 None => return,
             }
         }
@@ -625,6 +705,11 @@ impl<'a> Ctx<'a> {
                 })
                 .push(e);
         }
+        let Some(defined) = self.defined_names(&new_entries) else {
+            return;
+        };
+        // I-2a: `new_entries[..fed_from]` printed into an earlier compound-headed pipeline already
+        let mut fed_from = 0;
         for group in order {
             let entries = members.remove(&group).unwrap_or_default();
             let mut shell = None;
@@ -664,10 +749,30 @@ impl<'a> Ctx<'a> {
                     decoded.extend(found);
                 }
             }
+            // I-2a: a pipeline headed by a compound command or a function call is fed what the commands
+            // before it print (a superset: the compound's own are among them)
+            let head = entries[0];
+            let unread = texts.is_empty();
+            if unread && self.compound_head(head, &defined, &after_compound) {
+                let upto = new_entries.partition_point(|&e| e < head);
+                for &e in &new_entries[fed_from.min(upto)..upto] {
+                    let entry = &self.entries[e];
+                    if entry.prog == "echo" || entry.prog == "printf" {
+                        texts.push(echo_text(&entry.args));
+                        let result = echo_decoded(&entry.prog, &entry.args, &mut self.work);
+                        let Some(found) = self.take(result) else {
+                            return;
+                        };
+                        decoded.extend(found);
+                    }
+                }
+                fed_from = fed_from.max(upto);
+            }
             // C-4: a shell and xargs/parallel also get the decoded texts; an interpreter's `code` does not
             let mut fed = texts.clone();
+            let mut known: HashSet<String> = texts.iter().cloned().collect();
             for text in decoded {
-                if !fed.contains(&text) {
+                if known.insert(text.clone()) {
                     fed.push(text);
                 }
             }
@@ -689,7 +794,7 @@ impl<'a> Ctx<'a> {
                     .args
                     .first()
                     .is_some_and(|a| a == "--version" || a == "--help");
-                if texts.is_empty() && !info_only {
+                if unread && !info_only {
                     mark(
                         &mut self.entries[shell].opaque,
                         Opaque::StdinShellUnreadable,
@@ -703,12 +808,12 @@ impl<'a> Ctx<'a> {
                 }
             }
             if !feeders.is_empty() {
-                // I-3: lines past the cap would be dropped unread
-                let Some(lines) = fed_lines(&fed) else {
-                    self.halt();
+                let lines = fed_lines(&fed);
+                if !self.spend(lines.iter().map(|l| WORD + l.len()).sum()) {
                     return;
-                };
+                }
                 for &e in &feeders {
+                    self.braces = braced.contains(&e);
                     self.feed_stdin(e, &lines, depth);
                 }
             }
@@ -787,8 +892,14 @@ impl<'a> Ctx<'a> {
                 let Some(found) = self.take(result) else {
                     return;
                 };
-                for line in found {
-                    if self.collect(&line, exempt, depth + 1) {
+                for (k, line) in found.iter().enumerate() {
+                    // F-2: the reference reads the first `MAX_FED`
+                    let capped = if k < MAX_FED {
+                        self.collect(line, exempt, depth + 1)
+                    } else {
+                        self.redirected(|ctx| ctx.collect(line, exempt, depth + 1))
+                    };
+                    if capped {
                         mark(&mut self.entries[e].opaque, Opaque::DepthCap);
                     }
                 }
@@ -803,7 +914,7 @@ impl<'a> Ctx<'a> {
                 };
                 let base: usize = run.template.iter().map(|t| WORD + 2 * t.len()).sum();
                 let found: usize = run.template.iter().map(count).sum();
-                for line in lines {
+                for (k, line) in lines.iter().enumerate() {
                     if !self.spend(base + found.saturating_mul(line.len())) {
                         return;
                     }
@@ -812,26 +923,44 @@ impl<'a> Ctx<'a> {
                         .iter()
                         .map(|t| t.replace(replace.as_str(), line))
                         .collect();
-                    if self
-                        .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
-                        .is_none()
-                    {
+                    let added = if k < MAX_FED {
+                        self.add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                    } else {
+                        self.redirected(|ctx| {
+                            ctx.add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                        })
+                    };
+                    if added.is_none() {
                         return;
                     }
                 }
             } else if !run.template.is_empty() {
-                let mut tokens = run.template.clone();
-                tokens.extend(
-                    lines
-                        .iter()
-                        .flat_map(|line| pystr::split_ws(line))
-                        .map(str::to_string),
-                );
+                // the reference's command (the first `MAX_FED` lines), then, past them, one with every line
+                let words = |lines: &[String]| {
+                    let mut tokens = run.template.clone();
+                    tokens.extend(
+                        lines
+                            .iter()
+                            .flat_map(|line| pystr::split_ws(line))
+                            .map(str::to_string),
+                    );
+                    tokens
+                };
+                let tokens = words(&lines[..lines.len().min(MAX_FED)]);
                 if self
                     .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
                     .is_none()
                 {
                     return;
+                }
+                if lines.len() > MAX_FED {
+                    let tokens = words(lines);
+                    let added = self.redirected(|ctx| {
+                        ctx.add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                    });
+                    if added.is_none() {
+                        return;
+                    }
                 }
             }
         }
@@ -887,6 +1016,7 @@ impl<'a> Ctx<'a> {
         let mut by_id: HashMap<GroupId, Vec<String>> =
             lexed.groups.into_iter().map(|g| (g.id, g.texts)).collect();
         let mut texts = Vec::new();
+        let mut known: HashSet<String> = HashSet::new();
         for seg in &lexed.segments {
             let result = strip_prefixes(&seg.tokens, None, None, true, &mut self.work);
             let stripped = self.take(result)?;
@@ -901,15 +1031,17 @@ impl<'a> Ctx<'a> {
                 {
                     return None;
                 }
+                known.insert(out.clone());
                 texts.push(out);
                 // C-4: a shell runs what it prints, escapes decoded
                 for text in decoded {
-                    if !texts.contains(&text) {
+                    if known.insert(text.clone()) {
                         texts.push(text);
                     }
                 }
             }
             if let Some(group) = by_id.remove(&seg.group) {
+                known.extend(group.iter().cloned());
                 texts.extend(group);
             }
         }
@@ -1053,6 +1185,7 @@ impl<'a> Ctx<'a> {
         let Stripped {
             cmd,
             mut scripts,
+            extra,
             peeled,
         } = self.take(result)?;
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
@@ -1085,15 +1218,24 @@ impl<'a> Ctx<'a> {
         // One that starts among the peeled words (before the program the main parse found) means the tables
         // may have misread an option's value: the entry is marked (lead ruling R16).
         let main_at = tokens.len().saturating_sub(cmd.len());
-        // C-3: the command with its brace expressions expanded is one more (it marks nothing)
-        let result = brace_reading(&tokens, &mut self.work);
-        if let Some(reading) = self.take(result)? {
-            alternates.push((main_at, reading));
+        // C-3: the command with its brace expressions expanded is one more (it marks nothing); one that
+        // changes the program word is too complex (C-3a: `{echo,X} | sh` would be another command's input)
+        let mut braced = None;
+        if self.braces {
+            let result = brace_reading(&tokens, &mut self.work);
+            if let Some(reading) = self.take(result)? {
+                braced = Some(alternates.len());
+                alternates.push((main_at, reading));
+            }
         }
         let mut differs = false;
-        for (at, alternate) in alternates {
+        for (k, (at, alternate)) in alternates.into_iter().enumerate() {
             let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
             let other = self.take(result)?;
+            if braced == Some(k) && other.cmd.first() != cmd.first() {
+                self.halt();
+                return None;
+            }
             for script in other.scripts {
                 if !scripts.contains(&script) {
                     scripts.push(script);
@@ -1208,9 +1350,16 @@ impl<'a> Ctx<'a> {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
             }
         }
+        for script in &extra {
+            // F-2: GNU parallel lines past the reference's
+            if self.redirected(|ctx| ctx.collect(script, exempt, depth + 1)) {
+                mark(&mut self.entries[e].opaque, Opaque::DepthCap);
+            }
+        }
         // C-5: bash evaluates a subscript as arithmetic, running its substitutions even inside single quotes
         if SUBSCRIPT_PROGRAMS.contains(&prog.as_str())
-            || (SUBSCRIPT_V_PROGRAMS.contains(&prog.as_str()) && args.iter().any(|a| a == "-v"))
+            || (SUBSCRIPT_V_PROGRAMS.contains(&prog.as_str())
+                && args.iter().any(|a| a.starts_with("-v")))
         {
             for arg in args.iter().filter(|a| a.contains('[')) {
                 let scripts = self.on_extra(|work| {
@@ -1256,20 +1405,17 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped. More than `MAX_FED` is too complex
-/// (`None`; SH-FW review I-3: the reference drops the rest unread).
-fn fed_lines(texts: &[String]) -> Option<Vec<String>> {
+/// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped, all of them (the reference reads the
+/// first `MAX_FED`; SH-FW re-review F-2).
+fn fed_lines(texts: &[String]) -> Vec<String> {
     let mut lines = Vec::new();
     for text in texts {
         for line in pystr::splitlines(text) {
             let line = pystr::strip_ws(line);
             if !line.is_empty() {
-                if lines.len() >= MAX_FED {
-                    return None;
-                }
                 lines.push(line.to_string());
             }
         }
     }
-    Some(lines)
+    lines
 }

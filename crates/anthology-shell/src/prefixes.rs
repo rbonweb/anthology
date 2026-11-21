@@ -12,9 +12,10 @@
 //! - SH-FW review, part A: tar's `--checkpoint-action` in any getopt spelling (C-1); git's transport options
 //!   (`clone -u`, `--upload-pack`, `--receive-pack`, `--exec`), its `remote.*.uploadpack`/`receivepack` and
 //!   `difftool`/`mergetool.*.cmd` keys, and `ext::` URLs (C-2); a cap that would drop input (more than
-//!   `MAX_ALTERNATES` alternates, an alternate cut short before the main program, more than `MAX_FED` GNU
-//!   parallel inputs or combinations) is too complex (I-3); the wrappers `gosu`, `su-exec`, `chronic`,
-//!   `torsocks`, `nodenv exec` and `micromamba run` (M-3);
+//!   `MAX_ALTERNATES` alternates, an alternate cut short before the main program) is too complex (I-3); the
+//!   wrappers `gosu`, `su-exec`, `chronic`, `torsocks`, `nodenv exec` and `micromamba run` (M-3);
+//! - SH-FW re-review F-2: every GNU parallel input and combination is read, past the reference's `MAX_FED`
+//!   on the Rust-only budget (`Stripped::extra`);
 //! - SH-FW re-review, part A: a `-c alias.<X>=<Y>` without `!` reads `git X ...` as `git Y ...` too (C-2a);
 //!   tar reads the words of a `TAR_OPTIONS=` assignment before its arguments (C-1a).
 
@@ -741,6 +742,9 @@ pub(crate) type Alternate = (usize, Vec<String>);
 pub(crate) struct Stripped {
     pub(crate) cmd: Vec<String>,
     pub(crate) scripts: Vec<String>,
+    /// Rust-only: GNU parallel lines past the `MAX_FED` the reference reads (SH-FW re-review F-2), to be
+    /// analyzed on the Rust-only budget.
+    pub(crate) extra: Vec<String>,
     pub(crate) peeled: Peeled,
 }
 
@@ -1197,9 +1201,9 @@ fn parallel_replace(options: &[String]) -> String {
     replace
 }
 
-/// `_parallel_inputs`: one list per `:::`-style separator. Rust: a source of more than `MAX_FED` words is too
-/// complex (Python drops the rest; SH-FW review I-3).
-fn parallel_inputs(words: &[String]) -> Result<Vec<Vec<String>>, TooComplex> {
+/// `_parallel_inputs`: one list per `:::`-style separator. Rust: every word (Python keeps `MAX_FED` per
+/// source; SH-FW re-review F-2).
+fn parallel_inputs(words: &[String]) -> Vec<Vec<String>> {
     let mut groups: Vec<Vec<String>> = Vec::new();
     for word in words {
         if has(PARALLEL_INPUTS, word) {
@@ -1209,10 +1213,7 @@ fn parallel_inputs(words: &[String]) -> Result<Vec<Vec<String>>, TooComplex> {
         }
     }
     groups.retain(|g| !g.is_empty());
-    if groups.iter().any(|g| g.len() > MAX_FED) {
-        return Err(TooComplex);
-    }
-    Ok(groups)
+    groups
 }
 
 /// `_PARALLEL_POSITION.sub(...)`: each `{N}` replaced by the N-th input of `combo` when it has one.
@@ -1241,9 +1242,10 @@ fn put_positions(line: &str, combo: &[&String]) -> Option<String> {
     found.then_some(out)
 }
 
-/// `_parallel_lines`: the command lines GNU parallel runs, at most `MAX_FED`. Rust: each line's size is
-/// charged before it is built (a line of many `{}` and a long input would otherwise be quadratic), and more
-/// than `MAX_FED` combinations are too complex (Python drops the rest; SH-FW review I-3).
+/// `_parallel_lines`: the command lines GNU parallel runs. Rust: each line's size is charged before it is
+/// built (a line of many `{}` and a long input would otherwise be quadratic), and every combination is made,
+/// on the Rust-only budget (Python makes the first `MAX_FED`, which are this list's first ones; SH-FW
+/// re-review F-2).
 pub(crate) fn parallel_lines(
     line: &str,
     replace: &str,
@@ -1263,9 +1265,6 @@ pub(crate) fn parallel_lines(
     };
     let mut index = vec![0usize; groups.len()];
     loop {
-        if out.len() >= MAX_FED {
-            return Err(TooComplex);
-        }
         let combo: Vec<&String> = index
             .iter()
             .enumerate()
@@ -1972,6 +1971,7 @@ pub(crate) fn strip_prefixes(
 ) -> Result<Stripped, TooComplex> {
     let mut toks: Vec<String> = tokens.to_vec();
     let mut scripts: Vec<String> = Vec::new();
+    let mut extra: Vec<String> = Vec::new();
     let mut assigned: Vec<String> = Vec::new();
     let mut peeled = Peeled::default();
     // each command-running construct is taken once per command (FW-I review C1)
@@ -1993,6 +1993,11 @@ pub(crate) fn strip_prefixes(
                 assigned.push(toks[0].clone());
             }
             toks.remove(0);
+            continue;
+        }
+        if word == "function" && toks.len() >= 2 {
+            // Rust-only (SH-FW re-review I-2a): `function f { cmd; }` defines `f`, its body is the command
+            toks.drain(..2);
             continue;
         }
         ran = true;
@@ -2086,12 +2091,11 @@ pub(crate) fn strip_prefixes(
                 if needs_shell(&template) {
                     scripts.push(line.clone());
                 }
-                scripts.extend(parallel_lines(
-                    &line,
-                    &replace,
-                    &parallel_inputs(&rest[cut..])?,
-                    work,
-                )?);
+                let mut lines =
+                    parallel_lines(&line, &replace, &parallel_inputs(&rest[cut..]), work)?;
+                // the reference reads the first `MAX_FED`: those are its lines
+                extra.extend(lines.split_off(lines.len().min(MAX_FED)));
+                scripts.extend(lines);
             }
             if cut == rest.len()
                 && let Some(runs) = stdin_runs.as_deref_mut()
@@ -2161,6 +2165,7 @@ pub(crate) fn strip_prefixes(
                 return Ok(Stripped {
                     cmd: toks,
                     scripts,
+                    extra,
                     peeled,
                 });
             }
@@ -2266,6 +2271,7 @@ pub(crate) fn strip_prefixes(
     Ok(Stripped {
         cmd: toks,
         scripts,
+        extra,
         peeled,
     })
 }
