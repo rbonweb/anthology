@@ -1189,6 +1189,10 @@ class RuleTableTest(unittest.TestCase):
             "G5": "use the BrowserOS Neo MCP tools",
             "G6": "memory is committed to the repo; never store secrets there",
         })
+        self.assertEqual(guard_rules.TOO_COMPLEX, (
+            "this command is too complex to check safely; simplify it or split it into smaller "
+            "commands (to run it as written, the user can turn the guard off with "
+            "`/plugin disable anthology-guardrails@anthology`)"))
 
     def test_check_returns_rule_and_its_message(self):
         for rule, case in (("G1", bash("npx playwright install")),
@@ -1581,6 +1585,98 @@ class RuleTableTest(unittest.TestCase):
                 else:
                     small, large = cost(rep(unit, 12_500)), cost(rep(unit, 50_000))
                 self.assertLess(large, 6 * max(small, 0.005))
+
+    # Fix-wave H round 2 (review R1-C1): inside `$(...)` bash 5 ends a heredoc body only at a
+    # line that starts with the delimiter and holds a `)`; a `(` alone does not (bash 5.2 runs
+    # all of these; the pre-fix-wave-H guard blocked them, see the base-blocked fixture).
+    ROUND2_RUNS = [
+        "x=$(cat <<EOF\nEOF (\n'$(npx playwright install)'\nEOF\n)",
+        "x=$(cat <<EOF\nEOF(\n'$(npx playwright install)'\nEOF\n)",
+        "x=$(cat <<EOF\nEOF'('\n'$(npx playwright install)'\nEOF\n)",
+        "x=$(cat <<-EOF\n\tEOF (\n'$(npx playwright install)'\nEOF\n)",
+        "echo \"$(cat <<EOF\nEOF'('\n'$(npx playwright install)'\nEOF\n)\"",
+        "echo \"$(cat <<EOF\nEOF (\n'$(npx playwright install)'\nEOF\n)\"",
+        "x=$(cat <<EOF\nEOF (\nEOF\n)\nnpx playwright install",
+    ]
+
+    # bash 3.2 (macOS /bin/bash) runs these and bash 5.2 keeps them as data: 3.2 removes the
+    # quotes inside a delimiter's `$(...)`, `${...}` or backticks, and reads a heredoc inside
+    # `$(...)` on to its exact terminator.
+    ROUND2_BASH32_RUNS = [
+        "cat <<$(echo 'x')\nx\n$(echo x)\nnpx playwright install\n$(echo 'x')",
+        "cat <<${a:-'x'}\nx\n${a:-x}\nnpx playwright install\n${a:-'x'}",
+        "cat <<`echo 'x'`\nx\n`echo x`\nnpx playwright install\n`echo 'x'`",
+        "cat <<$(echo \"x\")\nit's\n$(echo x)\nnpx playwright install\n'",
+        "cat <<$(echo \\x)\nit's\n$(echo x)\nnpx playwright install\n'",
+        "x=$(cat <<EOF\nEOF # )\n'$(npx playwright install)'\nEOF\n)",
+        "x=$(cat <<EOF\nEOF (x)\n'$(npx playwright install)'\nEOF\n)",
+        "x=$(cat <<'EOF'\nEOF # )\nit's\nEOF\nnpx playwright install\n')",
+    ]
+
+    def test_round2_heredoc_paren_lines_read_every_way(self):
+        self.assert_table("G1", [bash(c) for c in self.ROUND2_RUNS])
+        self.assert_table("G1", [bash(c) for c in self.ROUND2_BASH32_RUNS])
+
+    @staticmethod
+    def work(command):
+        """The work units one check of `command` spends, with no budget in the way."""
+        with mock.patch.object(guard_rules, "_WORK_PER_CHAR", 0), \
+                mock.patch.object(guard_rules, "_WORK_BASE", 10 ** 15):
+            guard_rules.check("Bash", {"command": command}, HOME)
+        return guard_rules._STATE.spent
+
+    @staticmethod
+    def rep(unit, size):
+        return (unit * (size // len(unit) + 1))[:size]
+
+    # The inputs the round-1 review found quadratic (R1-I1), and their kin.
+    REVIEW_R1_I1 = {
+        "$( + ${": ("$(", "${"), "$[": ("", "$["), '"$[': ('"', "$["), "$( + $[": ("$(", "$["),
+        "${$(": ("", "${$("), '$( + ${"': ("$(", '${"'), '${"}': ("", '${"}'),
+        "$( ${ )": ("", "$( ${ ) "), "(( ${ )x": ("", "(( ${ )x "),
+    }
+
+    def test_review_inputs_scale_linearly(self):
+        """Work is counted, not timed, so this is exact: 4x the input costs at most 4.5x."""
+        for name, (head, unit) in self.REVIEW_R1_I1.items():
+            with self.subTest(case=name):
+                small = self.work(head + self.rep(unit, 12_500))
+                large = self.work(head + self.rep(unit, 50_000))
+                self.assertLess(large, 4.5 * small)
+        nested = self.work("$[" * 25_000 + "]" * 25_000)
+        self.assertLess(nested, 4 * 75_000)
+
+    def test_work_budget_blocks_what_it_cannot_check(self):
+        """A command whose analysis would go over the budget is blocked as G0 within a second
+        at 100 KB, whatever path it takes; the message names the way to turn the guard off."""
+        import time
+        for unit in ("$(cat <<EOF\n'", "((x=$(cat <<EOF\n", '"$(cat <<X\n', "${$("):
+            with self.subTest(unit=unit):
+                command = self.rep(unit, 100_000)
+                start = time.perf_counter()
+                result = guard_rules.check("Bash", {"command": command}, HOME)
+                self.assertLess(time.perf_counter() - start, 1.0)
+                self.assertEqual(result, ("G0", guard_rules.TOO_COMPLEX))
+        self.assertEqual(rule_of(bash("bash -c " * 12_000 + "'")), "G0")   # lenient fallback
+        # the budget is per check: the next ordinary command is checked as usual
+        self.assertEqual(rule_of(bash("npx playwright install")), "G1")
+        self.assertIsNone(rule_of(bash("ls")))
+
+    def test_work_budget_leaves_ordinary_commands_alone(self):
+        """A 100 KB commit message, also one with lines that start with `EOF (` (three readings),
+        and a 100 KB script stay far under the budget."""
+        limit = guard_rules._WORK_PER_CHAR * 100_000 + guard_rules._WORK_BASE
+        text = self.rep("Some text (with parens), it's $HOME, `code` and $(date).\n", 100_000)
+        for name, command in (
+                ("commit -m", "git commit -m \"$(cat <<'EOF'\nfeat: x\n\n" + text + "EOF\n)\""),
+                ("commit -F", "git commit -F - <<'EOF'\nfeat: x\n\n" + text + "EOF"),
+                ("EOF ( lines", "git commit -m \"$(cat <<'EOF'\nfeat: x\n\n"
+                 + self.rep("EOF (see below\n" + text[:500], 100_000) + "\nEOF\n)\""),
+                ("script", self.rep("if [ -f x ]; then\n  cat <<EOF > f\n  $(pwd) ${HOME:-x}\nEOF\n"
+                                    "fi\nfor ((i=0;i<3;i++)); do echo \"$i\"; done\n", 100_000))):
+            with self.subTest(case=name):
+                self.assertLess(self.work(command), limit / 1.5)
+                self.assertNotEqual(rule_of(bash(command)), "G0")
 
     def test_commented_array_stays_cheap(self):
         import time

@@ -54,6 +54,14 @@ class GuardCliTest(unittest.TestCase):
                     f"Blocked by anthology-guardrails ({rule}): {guard_rules.MESSAGES[rule]}\n")
                 self.assertEqual(proc.stdout, b"")
 
+    def test_too_complex_command_exits_2_naming_the_way_out(self):
+        command = ("$(cat <<EOF\n'" * 8000)[:100_000]           # over the work budget
+        proc = run_guard(hook_input("Bash", {"command": command}))
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stderr.decode("utf-8"),
+                         f"Blocked by anthology-guardrails (G0): {guard_rules.TOO_COMPLEX}\n")
+        self.assertIn("/plugin disable anthology-guardrails@anthology", guard_rules.TOO_COMPLEX)
+
     def test_g1_message_wording(self):
         proc = run_guard(hook_input("Bash", {"command": "npx playwright install"}))
         self.assertEqual(proc.returncode, 2)
