@@ -165,6 +165,8 @@ fn strs(m: &Map, key: &str) -> Vec<String> {
 
 fn count(m: &Map, key: &str) -> Vec<(String, i64)> {
     let c = object(m.get(key).expect("counts"));
+    // Python compares the whole dict: no key beyond these three.
+    assert_eq!(c.len(), 3, "{c:?}");
     ["personal", "repo", "agent"]
         .iter()
         .map(|k| {
@@ -808,6 +810,33 @@ mod import_test {
         let r = c.run_cli(&env_b, &["import", p(&path), "--yes", "--sha256", &sha]);
         assert_eq!(r.code, 0, "{}", r.stderr_text());
         assert!(anth_b.join("personal-memory/user-me.md").exists());
+    }
+
+    /// Lead extra (MX1 review I-1): a `--sha256` that is not UTF-8 never matches, as in
+    /// Python, where the surrogateescaped value differs from every hex digest.
+    #[test]
+    fn a_sha256_that_is_not_utf8_is_refused_and_nothing_is_written() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let c = Case::new();
+        let (path, _) = c.archive();
+        let (env_b, anth_b) = c.second_machine("b");
+        let before = tree(c.tmp());
+        let args = [
+            OsString::from("import"),
+            path.clone().into_os_string(),
+            OsString::from("--yes"),
+            OsString::from("--sha256"),
+            OsString::from_vec(vec![0xff]),
+        ];
+        let out = portable::main(&args, &c.cwd, &env_b, &RealGit);
+        assert_eq!(out.code, 2, "{}{}", out.stdout, out.stderr);
+        assert_eq!(
+            out.stderr,
+            "memory_portable: rejected: the archive is not the one that was shown (sha256 differs)\n"
+        );
+        assert_eq!(tree(c.tmp()), before);
+        assert!(!anth_b.join("personal-memory").exists());
     }
 
     #[test]

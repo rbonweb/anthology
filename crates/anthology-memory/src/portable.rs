@@ -764,11 +764,18 @@ pub fn apply_import_env(plan: &Value, env: &Env, git: &dyn Git) -> Result<Map, E
     };
     let penv = env.clone().with_os("CLAUDE_CONFIG_DIR", shown(parent));
     let date = iso_value(p.get("date"));
-    let planned_blocked: BTreeSet<&str> = py_iter(p.get("blocked"))?
-        .into_iter()
-        .flatten()
-        .filter_map(|b| b.as_object()?.get("file")?.as_str())
-        .collect();
+    // `{b.get("file") for b in ... if isinstance(b, dict)}`: a list or dict `file` is
+    // unhashable, a TypeError before anything is written (D-1: "malformed plan").
+    let mut planned_blocked: BTreeSet<&str> = BTreeSet::new();
+    for b in py_iter(p.get("blocked"))?.into_iter().flatten() {
+        match b.as_object().and_then(|o| o.get("file")) {
+            Some(Value::Array(_) | Value::Object(_)) => return Err(rejected("malformed plan")),
+            Some(Value::Str(f)) => {
+                planned_blocked.insert(f);
+            }
+            _ => {}
+        }
+    }
     let pdeps = PrivacyDeps::from_env(env);
     let mut work: Vec<Work> = Vec::new();
     let mut blocked: Vec<Value> = Vec::new();
@@ -1098,8 +1105,12 @@ fn run(p: &argparse::Parsed, cwd: &Path, env: &Env, git: &dyn Git) -> Result<Str
     }
     let file = Path::new(p.os_str("file").unwrap_or_default());
     let plan = plan_import(file, cwd, None, env, git)?;
-    if let Some(want) = p.str("sha256").filter(|w| !w.is_empty())
-        && anthology_pycompat::str::lower(want) != text(&plan, "sha256")
+    // A value that is not UTF-8 never equals the hex digest (Python compares the
+    // surrogateescaped str), so it is refused too.
+    if let Some(want) = p.os_str("sha256").filter(|w| !w.is_empty())
+        && want
+            .to_str()
+            .is_none_or(|w| anthology_pycompat::str::lower(w) != text(&plan, "sha256"))
     {
         return Err(rejected(
             "the archive is not the one that was shown (sha256 differs)",
