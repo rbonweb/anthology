@@ -209,8 +209,11 @@ pub(crate) fn cap_stricter() -> Vec<Value> {
             "cat ~/{a,b}/{a,b}/{a,b}/{a,b}/../../../../{.config,x}/chromium/x",
             HOME,
         ),
-        // 7. a brace expansion too large to check: G0
-        bash_case(&format!("cat ~/{}", "{a,b}".repeat(13)), HOME),
+        // 7. a brace expansion too large to check: G0 (quoted, so it is the guard's path reading)
+        bash_case(
+            &format!("cat \"/home/tester/{}\"", "{a,b}".repeat(13)),
+            HOME,
+        ),
         // 8. a home path under a relative home: G3
         read("~/.config/chromium/x", "relative/home"),
         // 9. a `cd` into the home under a relative home: G3

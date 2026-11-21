@@ -96,11 +96,6 @@ reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, nev
 
 [[divergence]]
 class = "D-8"
-case = "shell:7"
-reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $(cat <<EOF past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
-
-[[divergence]]
-class = "D-8"
 case = "shell:381"
 reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting echo $( 40 deep, past MAX_DEPTH; guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
 

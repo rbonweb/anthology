@@ -385,21 +385,31 @@ fn braces_python_drops_are_expanded() {
 
 #[test]
 fn a_brace_expansion_too_large_to_check_is_too_complex() {
-    let command = format!("cat ~/{}", "{a,b}".repeat(13));
+    // Quoted, so anthology-shell's own bash brace reading (unquoted `{` only) leaves the word
+    // alone and the guard's path reading is what is tested.
+    let command = format!("cat \"/home/tester/{}\"", "{a,b}".repeat(13));
     assert_eq!(
         both(&bash(&command), HOME),
         (Verdict::TooComplex, Verdict::Allow)
     );
+    let read = tool(
+        "Read",
+        obj(&[("file_path", Value::Str(format!("~/{}", "{a,b}".repeat(13))))]),
+    );
+    assert_eq!(both(&read, HOME), (Verdict::TooComplex, Verdict::Allow));
     // a rule that blocks on what was read still wins
-    let command = format!("npx playwright install; cat ~/{}", "{a,b}".repeat(13));
+    let command = format!(
+        "npx playwright install; cat \"/home/tester/{}\"",
+        "{a,b}".repeat(13)
+    );
     assert_eq!(verdict(&command), Verdict::Block(Rule::G1));
     assert_eq!(
-        verdict(&format!("cat ~/{}", "{a,b}".repeat(12))),
+        verdict(&format!("cat \"/home/tester/{}\"", "{a,b}".repeat(12))),
         Verdict::Allow
     );
     // a piece with no separator is still expanded after a `cd` that could complete a sequence
     let command = format!(
-        "cd '/opt/Library/Application Support' && cat google{}",
+        "cd '/opt/Library/Application Support' && cat 'google{}'",
         "{,}".repeat(13)
     );
     assert_eq!(
@@ -407,7 +417,7 @@ fn a_brace_expansion_too_large_to_check_is_too_complex() {
         (Verdict::TooComplex, Verdict::Allow)
     );
     let command = format!(
-        "cd '/opt/Library/Application Support' && cat googl{{e,x}}{}",
+        "cd '/opt/Library/Application Support' && cat 'googl{{e,x}}{}'",
         "{,}".repeat(3)
     );
     assert_eq!(verdict(&command), Verdict::Block(Rule::G3));
