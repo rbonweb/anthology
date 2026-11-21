@@ -482,6 +482,18 @@ The one-time platform probes become permanent eval or smoke cases. This is how a
 - `CONTRIBUTING.md`, including the maintainer runbook: syncs, releases, evals and the startup budget.
 - `DECISIONS.md`, where Part 3 of this plan moves at the docs task, so decisions outlive PLAN.md.
 
+
+### 15. After the first release (v0.1.0)
+
+Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this order.
+
+1. **rtk gate: `cd <dir> && …` and `… | head -n N` / `| tail -n N`.** Today the gate in the rtk fork (`rtk/src/hooks/anthology_gate.rs`) rejects these forms, so rtk never rewrites them. Across a mix of 32 everyday commands, accepting them adds 6 rewrites. This needs a fork change, a new rtk release (`1.2.1-anthology.5`) and an `rtk.lock` bump. It is security code, so it gets one security review covering:
+   - non-literal `cd` targets: `cd $X`, `cd ~user`, `cd -`, CDPATH, and symlinks into a denied directory;
+   - relative reads resolved against the new directory before the Read deny check (`cd secret && cat k.txt` must still be denied);
+   - `head -n $N` and `head -n "$(…)"`, and a second pipe after `| head -n N`;
+   - `;`, `||`, `&` and newline in place of `&&`;
+   - rtk's rewrite of the rest of the command, re-checked against the deny rules from the new directory.
+
 ---
 
 ## Part 2 — Build
