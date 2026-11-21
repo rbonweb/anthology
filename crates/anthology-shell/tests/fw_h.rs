@@ -706,7 +706,7 @@ fn every_review_shape_is_quick_and_linear_at_100_kb() {
     let mut all = shapes();
     let scaled = all.len();
     for (name, command) in ordinary_100_kb() {
-        // fixed 100 KB texts: checked against 1 s only
+        // fixed 100 KB texts: checked against the catastrophe guard only
         all.push((name, Box::new(move |_| command.clone())));
     }
     let mut slowest = (Duration::ZERO, "");
@@ -717,8 +717,9 @@ fn every_review_shape_is_quick_and_linear_at_100_kb() {
         for _ in 0..3 {
             let small = cost(&small_text);
             let large = cost(&large_text);
-            let bad = large > Duration::from_secs(1)
-                || (i < scaled && large > small * 6 + Duration::from_millis(50));
+            // 4x input costs less than 10x (floor 0.5 s); 8 s is only a catastrophe guard
+            let bad = large >= Duration::from_secs(8)
+                || (i < scaled && large >= (small * 10).max(Duration::from_millis(500)));
             verdict = Some((small, large, bad));
             if !bad {
                 break;

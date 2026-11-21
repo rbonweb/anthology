@@ -5,7 +5,7 @@
 #[path = "support/gd.rs"]
 mod gd;
 
-use anthology_guard::{Rule, Verdict, check, check_with};
+use anthology_guard::{Rule, Verdict, check, check_with, check_without_d8};
 use anthology_pycompat::json::Value;
 use anthology_shell::Limits;
 use proptest::prelude::*;
@@ -214,4 +214,416 @@ proptest! {
     fn check_never_panics(command in ".{0,200}") {
         let _ = verdict(&command);
     }
+}
+
+// ------------------------------------------- LR-G: past Python's caps the guard blocks (D-8)
+
+fn tool(name: &str, input: Value) -> (Value, Value) {
+    (Value::Str(name.into()), input)
+}
+
+/// `check` and `check_without_d8` (Python's reading) on one input.
+fn both(tool: &(Value, Value), home: &str) -> (Verdict, Verdict) {
+    (
+        check(&tool.0, &tool.1, home),
+        check_without_d8(&tool.0, &tool.1, home),
+    )
+}
+
+fn verdict_at(command: &str, home: &str) -> Verdict {
+    let (tool, input) = bash(command);
+    check(&tool, &input, home)
+}
+
+/// `command` fed to `levels` nested shells, each reading the next from a here-document (no
+/// quoting, so the text grows linearly).
+fn nested_bash(command: &str, levels: usize) -> String {
+    let mut c = command.to_string();
+    for k in 0..levels {
+        c = format!("bash <<'E{k}'\n{c}\nE{k}");
+    }
+    c
+}
+
+#[test]
+fn a_command_nested_past_the_depth_cap_is_too_complex() {
+    let deep = nested_bash("npx playwright install chromium", 13);
+    assert_eq!(
+        both(&bash(&deep), HOME),
+        (Verdict::TooComplex, Verdict::Allow)
+    );
+    // at the cap the rule still sees it
+    let at = nested_bash("npx playwright install chromium", 12);
+    assert_eq!(verdict(&at), Verdict::Block(Rule::G1));
+    // the lexer's own cap: `$(...)` nested past it
+    let subs = format!("{}ls{}", "echo $(".repeat(40), ")".repeat(40));
+    assert_eq!(verdict(&subs), Verdict::TooComplex);
+    // a harmless command nested past the cap is not read, so it is not allowed either
+    assert_eq!(verdict(&nested_bash("ls", 13)), Verdict::TooComplex);
+    assert_eq!(verdict(&nested_bash("ls", 12)), Verdict::Allow);
+}
+
+#[test]
+fn a_cd_that_cd_tracking_drops_is_too_complex() {
+    let deep = format!("/{}.config", "a/".repeat(64));
+    let command = format!("cd {deep} && cat chromium/Default/Cookies");
+    assert_eq!(
+        both(&bash(&command), HOME),
+        (Verdict::TooComplex, Verdict::Allow)
+    );
+    for cd in ["pushd", "cd --", "cd -P"] {
+        let command = format!("{cd} {deep} && cat chromium/Default/Cookies");
+        assert_eq!(verdict(&command), Verdict::TooComplex, "{cd}");
+    }
+    // a deep directory `cd` tracking follows is read as before
+    let shallow = format!("/{}.config", "a/".repeat(60));
+    let command = format!("cd {shallow} && cat chromium/Default/Cookies");
+    assert_eq!(verdict(&command), Verdict::Block(Rule::G3));
+    assert_eq!(verdict("cd - && ls"), Verdict::Allow);
+    assert_eq!(verdict("cd && ls"), Verdict::Allow);
+}
+
+#[test]
+fn a_profile_path_under_deep_tool_input_nesting_blocks() {
+    let mut deep = Value::Str("~/.config/chromium/Default/Cookies".into());
+    for _ in 0..13 {
+        deep = obj(&[("path", deep)]);
+    }
+    let t = tool("mcp__x__y", deep);
+    assert_eq!(both(&t, HOME), (Verdict::Block(Rule::G3), Verdict::Allow));
+    let mut code = Value::Str("open('~/.config/chromium/x')".into());
+    for _ in 0..13 {
+        code = Value::Array(vec![code]);
+    }
+    let t = tool("mcp__browseros-neo__run", obj(&[("code", code)]));
+    assert_eq!(both(&t, HOME), (Verdict::Block(Rule::G3), Verdict::Allow));
+}
+
+#[test]
+fn a_long_profile_path_blocks() {
+    let padded = format!("~/{}.config/chromium/Default/Cookies", "a/../".repeat(900));
+    assert!(padded.chars().count() > 4096);
+    let read = tool("Read", obj(&[("file_path", Value::Str(padded.clone()))]));
+    assert_eq!(
+        both(&read, HOME),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
+    assert_eq!(
+        both(&bash(&format!("cat {padded}")), HOME),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
+    // long words without `~`, `$` or a glob take the one-scan path; it must still find these
+    let pad = "a/".repeat(3000);
+    for (command, home) in [
+        (format!("cat /{pad}.config/chromium/x"), HOME),
+        (
+            format!("cat /{}.config\\\\chromium", "a\\\\".repeat(3000)),
+            HOME,
+        ),
+        (format!("cat /{pad}.config/google-chrome-beta"), HOME),
+        (
+            format!("cat /{pad}.claude/memory/../../.config/chromium"),
+            HOME,
+        ),
+        (format!("cd /opt/.config && cat chromium/{pad}x"), HOME),
+        (
+            format!("cd /opt/.config/chromium && cat {}x", "b/../".repeat(1000)),
+            HOME,
+        ),
+        (format!("cat /{pad}.config/chromium/x"), "relative"),
+        (
+            format!("cat '/{pad}Library/Application Support/Google/x'"),
+            HOME,
+        ),
+    ] {
+        assert_eq!(
+            verdict_at(&command, home),
+            Verdict::Block(Rule::G3),
+            "{command:.60}"
+        );
+    }
+    // a long secret write into a long memory path (G6 reads memory paths the same way)
+    let write = obj(&[
+        (
+            "file_path",
+            Value::Str(format!("/{pad}repo/.claude/memory/a.md")),
+        ),
+        ("content", Value::Str(gh_token())),
+    ]);
+    assert_eq!(
+        check(&Value::Str("Write".into()), &write, HOME),
+        Verdict::Block(Rule::G6)
+    );
+    // the protected text inside a component is not a component
+    assert_eq!(
+        verdict(&format!("cat /{pad}x.config%2fchromium/y")),
+        Verdict::Allow
+    );
+}
+
+#[test]
+fn braces_python_drops_are_expanded() {
+    // the 33rd alternative, past Python's 32
+    let alts: Vec<String> = (0..32).map(|i| format!("a{i}")).collect();
+    let wide = format!("cat ~/{{{},.config/chromium}}/x", alts.join(","));
+    assert_eq!(
+        both(&bash(&wide), HOME),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
+    // a fifth group, past Python's four rounds
+    let five = "cat ~/{a,b}/{a,b}/{a,b}/{a,b}/../../../../{.config,x}/chromium/x";
+    assert_eq!(
+        both(&bash(five), HOME),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
+    // what Python blocks still blocks (the union)
+    assert_eq!(
+        verdict("cat ~/{.config,x}/chromium/x"),
+        Verdict::Block(Rule::G3)
+    );
+}
+
+#[test]
+fn a_brace_expansion_too_large_to_check_is_too_complex() {
+    // Quoted, so anthology-shell's own bash brace reading (unquoted `{` only) leaves the word
+    // alone and the guard's path reading is what is tested.
+    let command = format!("cat \"/home/tester/{}\"", "{a,b}".repeat(13));
+    assert_eq!(
+        both(&bash(&command), HOME),
+        (Verdict::TooComplex, Verdict::Allow)
+    );
+    let read = tool(
+        "Read",
+        obj(&[("file_path", Value::Str(format!("~/{}", "{a,b}".repeat(13))))]),
+    );
+    assert_eq!(both(&read, HOME), (Verdict::TooComplex, Verdict::Allow));
+    // a rule that blocks on what was read still wins
+    let command = format!(
+        "npx playwright install; cat \"/home/tester/{}\"",
+        "{a,b}".repeat(13)
+    );
+    assert_eq!(verdict(&command), Verdict::Block(Rule::G1));
+    assert_eq!(
+        verdict(&format!("cat \"/home/tester/{}\"", "{a,b}".repeat(12))),
+        Verdict::Allow
+    );
+    // a piece with no separator is still expanded after a `cd` that could complete a sequence
+    let command = format!(
+        "cd '/opt/Library/Application Support' && cat 'google{}'",
+        "{,}".repeat(13)
+    );
+    assert_eq!(
+        both(&bash(&command), HOME),
+        (Verdict::TooComplex, Verdict::Allow)
+    );
+    let command = format!(
+        "cd '/opt/Library/Application Support' && cat 'googl{{e,x}}{}'",
+        "{,}".repeat(3)
+    );
+    assert_eq!(verdict(&command), Verdict::Block(Rule::G3));
+}
+
+#[test]
+fn g3_reads_a_relative_or_empty_home_as_an_absolute_one() {
+    let read = |path: &str| tool("Read", obj(&[("file_path", Value::Str(path.into()))]));
+    let profile = read("~/.config/chromium/x");
+    for home in ["relative/home", "~", "./h"] {
+        assert_eq!(
+            both(&profile, home),
+            (Verdict::Block(Rule::G3), Verdict::Allow),
+            "{home}"
+        );
+    }
+    // `~/*/*` names the profile only right under the home
+    let glob = read("~/*/*");
+    assert_eq!(both(&glob, ""), (Verdict::Block(Rule::G3), Verdict::Allow));
+    assert_eq!(check(&glob.0, &glob.1, HOME), Verdict::Block(Rule::G3));
+    // what Python blocks under such a home still blocks as G3 (an empty home makes `~/` `/`)
+    assert_eq!(check(&profile.0, &profile.1, ""), Verdict::Block(Rule::G3));
+    assert_eq!(
+        check(&profile.0, &profile.1, "$HOME"),
+        Verdict::Block(Rule::G3)
+    );
+    // a `cd` into the home, then a relative path
+    let cd = bash("cd ~/.config && cat chromium/x");
+    assert_eq!(
+        both(&cd, "relative"),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
+    // climbing out of the home leads somewhere unknown
+    let out = read("~/../../x");
+    assert_eq!(
+        both(&out, "relative"),
+        (Verdict::Incomplete, Verdict::Allow)
+    );
+    // ordinary paths under such a home are read as before
+    for home in ["relative", "", "~"] {
+        for path in ["/tmp/x", "~/notes.txt", "~", "src/main.rs"] {
+            let t = read(path);
+            assert_eq!(check(&t.0, &t.1, home), Verdict::Allow, "{path} {home}");
+        }
+        for command in [
+            "cat notes.txt",
+            "cd ~ && ls .config",
+            "cd ~; cd x; cat y",
+            "git -C a -C b status",
+            "cd ~/projects && ls",
+            "cd .. && git status",
+            "cd ../x && cargo test",
+        ] {
+            assert_eq!(
+                verdict_at(command, home),
+                Verdict::Allow,
+                "{command} {home}"
+            );
+        }
+        assert_eq!(
+            verdict_at("cat /opt/.config/chromium/x", home),
+            Verdict::Block(Rule::G3)
+        );
+    }
+}
+
+#[test]
+fn g6_reads_a_relative_or_tilde_home_as_an_absolute_one() {
+    let secret = gh_token();
+    let write = |path: &str| {
+        tool(
+            "Write",
+            obj(&[
+                ("file_path", Value::Str(path.into())),
+                ("content", Value::Str(secret.clone())),
+            ]),
+        )
+    };
+    for home in ["relative", "~", "./h"] {
+        for command in [
+            format!("echo {secret} > ~/.claude/agent-memory/a.md"),
+            format!("cd ~/.claude && echo {secret} > memory/a.md"),
+            format!("echo {secret} > $HOME/x/.claude/memory/a.md"),
+        ] {
+            assert_eq!(
+                both(&bash(&command), home),
+                (Verdict::Block(Rule::G6), Verdict::Allow),
+                "{command} {home}"
+            );
+        }
+        let t = write("~/.claude/agent-memory/a.md");
+        assert_eq!(
+            both(&t, home),
+            (Verdict::Block(Rule::G6), Verdict::Allow),
+            "{home}"
+        );
+        // no secret, or not a memory path: allowed as before
+        let note = tool(
+            "Write",
+            obj(&[
+                ("file_path", Value::Str("~/.claude/memory/a.md".into())),
+                ("content", Value::Str("a note".into())),
+            ]),
+        );
+        assert_eq!(check(&note.0, &note.1, home), Verdict::Allow, "{home}");
+        let t = write("~/notes/a.md");
+        assert_eq!(check(&t.0, &t.1, home), Verdict::Allow, "{home}");
+        assert_eq!(
+            verdict_at(&format!("cd .. && echo {secret} > notes.md"), home),
+            Verdict::Allow
+        );
+    }
+}
+
+/// `n` JSON objects of `keys` keys each, joined by commas.
+fn objects(n: usize, keys: usize) -> String {
+    (0..n)
+        .map(|i| {
+            let fields: Vec<String> = (0..keys).map(|k| format!("\"k{k}\":{i}")).collect();
+            format!("{{{}}}", fields.join(","))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The new readings must not touch ordinary payloads: long commit and PR texts, long file
+/// contents, scripts with a few dicts, JSON request bodies, ordinary file tools.
+#[test]
+fn ordinary_payloads_past_the_old_caps_are_allowed() {
+    let body =
+        "This change keeps the cache warm; see docs/config/notes.md for the details.\n".repeat(200);
+    assert!(body.len() > 10_000);
+    let commands: Vec<String> = vec![
+        format!("git commit -m \"{body}\""),
+        format!("gh pr create --title x --body \"$(cat <<'EOF'\n{body}\nEOF\n)\""),
+        format!("cat > notes.md <<'EOF'\n{body}\nEOF"),
+        "python3 -c \"d = {'a': 1, 'b': 2, 'c': 3}; e = {'x': 1, 'y': 2}; print(d, e)\"".into(),
+        "curl -s -X POST -d '{\"name\": \"a\", \"tags\": [\"x\", \"y\"], \"n\": 3}' https://example.com/api".into(),
+        "jq '{name: .name, id: .id, tags: .tags}' data.json".into(),
+        // review I-1: JSON and dict literals that multiply past the brace cap
+        format!("curl -s -X POST -d '[{}]' https://example.com/api", objects(7, 4)),
+        format!("curl -d '[{}]' https://x", objects(8, 3)),
+        format!("gh api repos/o/r/issues -f body='[{}]'", objects(7, 4)),
+        format!("git commit -m 'fix: accept [{}]'", objects(7, 4)),
+        format!(
+            "python3 -c \"rows=[{}]; print(rows)\"",
+            ["{'a': 1, 'b': 2}"; 13].join(", ")
+        ),
+        format!("jq -n '[{}]'", ["{a:1,b:2,c:3,d:4}"; 7].join(",")),
+        format!("echo payload=[{}]", objects(7, 4)),
+        format!("cd /tmp/proj && curl -d '[{}]' https://x", objects(7, 4)),
+        "mkdir -p src/{app,lib,test}/{a,b,c}".into(),
+        "cd /tmp && ls -la".into(),
+        "cd ~/projects/app && cargo test".into(),
+    ];
+    for command in &commands {
+        assert_eq!(verdict(command), Verdict::Allow, "{command:.80}");
+    }
+    let mut nested = Value::Str("x".into());
+    for _ in 0..40 {
+        nested = obj(&[("child", nested)]);
+    }
+    let inputs = [
+        (
+            "Read",
+            obj(&[(
+                "file_path",
+                Value::Str("/home/tester/project/src/main.rs".into()),
+            )]),
+        ),
+        (
+            "Write",
+            obj(&[
+                (
+                    "file_path",
+                    Value::Str("/home/tester/project/README.md".into()),
+                ),
+                ("content", Value::Str(body.clone())),
+            ]),
+        ),
+        (
+            "Edit",
+            obj(&[
+                ("file_path", Value::Str("src/lib.rs".into())),
+                ("old_string", Value::Str(body.clone())),
+                ("new_string", Value::Str(body.clone())),
+            ]),
+        ),
+        (
+            "Glob",
+            obj(&[("pattern", Value::Str("src/**/*.{rs,toml}".into()))]),
+        ),
+        ("mcp__x__y", obj(&[("tree", nested)])),
+    ];
+    for (name, input) in inputs {
+        let t = tool(name, input);
+        assert_eq!(check(&t.0, &t.1, HOME), Verdict::Allow, "{name}");
+    }
+    // a word of any length is read, in linear time, without a backtrack limit
+    let long_word = format!("echo {}", "word/".repeat(400_000));
+    let start = std::time::Instant::now();
+    assert_eq!(verdict(&long_word), Verdict::Allow);
+    assert!(start.elapsed() < gd::bound(2000), "{:?}", start.elapsed());
+    let with_path = format!("{long_word}/../{}.config/chromium", "../".repeat(400_000));
+    assert_eq!(
+        both(&bash(&with_path), HOME),
+        (Verdict::Block(Rule::G3), Verdict::Allow)
+    );
 }
