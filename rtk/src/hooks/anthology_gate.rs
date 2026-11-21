@@ -237,9 +237,9 @@
 //!   the plain shape looks up on the disk (RG2); past it the paths of the command
 //!   being read are matched as written only, so a plainly named denied path
 //!   still denies. A line whose bytes alone would spend it ([`unread`], 125 KB) is
-//!   not read at all: it asks as written, with no rewrite, so the hook answers in
-//!   well under a second (a timed-out hook is no decision, and `Bash(rtk *)` would
-//!   allow the line).
+//!   read once, within the budget, for a deny; otherwise it asks as written, with
+//!   no plain shape and no rewrite, so the hook answers in well under a second (a
+//!   timed-out hook is no decision, and `Bash(rtk *)` would allow the line).
 //! - Globs are never expanded against the disk: `rtk git add src/*.rs` asks (no
 //!   plain shape), and `cat *.txt` asks when a `Read()` rule exists.
 //! - `env` (with its options), `xargs` (with its options) and `find -exec` payloads
@@ -279,8 +279,8 @@ const PROBE_COST: usize = 128;
 /// What one byte of the line costs before any rule is met: the rule scan, the
 /// shared parser and the plain shape each read the whole line, and again rtk's
 /// rewrite of it (RG2: up to two microseconds a byte in all, release build). A
-/// line whose bytes alone spend [`WORK_BUDGET`] (125 KB) is not read: with any
-/// rule it asks, as written, as a hook input over the 1 MiB cap does.
+/// line whose bytes alone spend [`WORK_BUDGET`] (125 KB) is only scanned for a
+/// deny: with any rule it asks, as written, as a hook input over the 1 MiB cap does.
 const LINE_BYTE_COST: usize = 8;
 
 /// Whether `cmd` is too long for the gate to read within its budget ([`LINE_BYTE_COST`]).
@@ -940,9 +940,6 @@ pub(crate) fn evaluate(
     if !rules.active() {
         return Gate::Pass;
     }
-    if unread(cmd) {
-        return Gate::Ask;
-    }
     let initial = cwd
         .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
@@ -962,9 +959,10 @@ pub(crate) fn evaluate(
     {
         return Gate::Deny;
     }
-    if scanner.exhausted {
+    if scanner.exhausted || unread(cmd) {
         // Part of the command was never read, and a rule exists: ask. A command
-        // that long costs the user one prompt.
+        // that long costs the user one prompt. A line too long for the budget is
+        // still scanned (within it) for a deny, but never passes (RG2).
         scanner.ask = true;
     }
     if scanner.ask {
@@ -7251,9 +7249,17 @@ mod tests {
                 );
                 assert!(took < megabyte_bound(), "{}: {took:?}", &cmd[..16]);
             }
-            // The upstream verdict still denies what it reads, however long.
-            let pushed = format!("git push {}", "a ".repeat(500_000));
-            assert_eq!(hook(&pushed), HookDecision::Deny);
+            // The upstream verdict and the gate's scan (within its budget) still
+            // deny what they read, however long the line.
+            for pushed in [
+                format!("git push {}", "a ".repeat(500_000)),
+                format!("cat {}; rtk git push", "key".repeat(100_000)),
+            ] {
+                let started = std::time::Instant::now();
+                assert_eq!(hook(&pushed), HookDecision::Deny, "{}", &pushed[..12]);
+                let took = started.elapsed();
+                assert!(took < megabyte_bound(), "{}: {took:?}", &pushed[..12]);
+            }
         });
     }
 

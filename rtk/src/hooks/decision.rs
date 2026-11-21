@@ -352,8 +352,9 @@ pub(crate) fn decide_for_claude_hook_at(
     use super::anthology_gate::{Gate, evaluate, mentions_rtk, plain, unread};
     let rules = &permissions.gate;
     let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
-    // A line too long to read within the gate's work budget asks as written,
-    // before the plain shape or a rewrite reads it again (RG2).
+    // A line too long to read within the gate's work budget asks as written
+    // (unless the gate's scan denied it), before the plain shape or a rewrite
+    // reads it again (RG2).
     if gate == Gate::Ask && unread(cmd) {
         return HookDecision::AskRewrite(cmd.to_string(), AskOwner::Hook);
     }
