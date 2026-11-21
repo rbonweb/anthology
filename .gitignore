@@ -5,4 +5,4 @@ __pycache__/
 .claude/worktrees/
 .vendor-cache/
 evals/results/
-/target/
+/target
