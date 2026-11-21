@@ -3,9 +3,12 @@
 //!
 //! Cases (the oracle's docstring has the exact forms): `validate` (sources.json entries),
 //! `strip` (the connector stripper on Markdown), `rename_skill`, `rename_plugin`, `checksums`
-//! (CHECKSUMS.sha256 parsing), `compare` and `diff` (two trees), and `cli` (the argument parser
-//! and the commands on a repo with no sources). Both sides print the same result; a
-//! VendorError is exit 1 with `VendorError: <message>`.
+//! (CHECKSUMS.sha256 parsing), `compare` and `diff` (two trees), `cli` (the argument parser
+//! and the commands on a repo with no sources), `pipeline` (build, fetch_licenses, a drift,
+//! check and diff on a url source, whose committed snapshot is the upstream, so nothing touches
+//! the network; with and without a port map) and `download` (download_snapshot over an
+//! in-memory web). Both sides print the same result; a VendorError is exit 1 with
+//! `VendorError: <message>`.
 //!
 //! The generator stays inside what vendor.py handles without raising (plan GC-16 D-1: where
 //! Python raises a TypeError on a wrongly typed field, Rust reports; those inputs are not
@@ -100,7 +103,11 @@ fn write_tree(base: &Path, spec: &Value) {
         if let Some(target) = e.as_object().and_then(|o| o.get("link")) {
             std::os::unix::fs::symlink(target.as_str().expect("link"), &path).expect("symlink");
         } else {
-            fs::write(&path, text(e, "text")).expect("write");
+            let data = match e.as_object().and_then(|o| o.get("hex")) {
+                Some(h) => unhex(h.as_str().expect("hex")),
+                None => text(e, "text").as_bytes().to_vec(),
+            };
+            fs::write(&path, data).expect("write");
             let exec = e
                 .as_object()
                 .and_then(|o| o.get("exec"))
@@ -209,8 +216,111 @@ fn op(case: &Value, tmp: &Path) -> vendor::Result<Observed> {
                 files: None,
             }
         }
+        op @ ("pipeline" | "download") => {
+            let root = tmp.join("root");
+            write_tree(&root, get(case, "root"));
+            fs::create_dir_all(root.join("vendor")).expect("mkdir");
+            let mut top = Map::new();
+            top.insert(
+                "sources".into(),
+                Value::Array(vec![get(case, "entry").clone()]),
+            );
+            let sources = json::dumps(&Value::Object(top), &json::INDENT2) + "\n";
+            fs::write(root.join("vendor/sources.json"), sources).expect("write");
+            let entry = get(case, "entry").as_object().expect("entry");
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let mut out = String::new();
+            if op == "download" {
+                let pages = get(case, "pages").as_object().expect("pages");
+                let calls = std::cell::RefCell::new(Vec::<String>::new());
+                let fetch = |url: &str| -> vendor::Result<Vec<u8>> {
+                    calls.borrow_mut().push(url.to_string());
+                    pages
+                        .get(url)
+                        .and_then(Value::as_str)
+                        .map(unhex)
+                        .ok_or_else(|| vendor::VendorError(format!("HTTP 404: {url}")))
+                };
+                step(&mut out, "download", || {
+                    let dest = vendor::download_snapshot(&root, entry, Some(&fetch))?;
+                    Ok(format!("{}\n", rel(&dest, &root)))
+                });
+                out.push_str("calls:\n");
+                out.push_str(&lines(&calls.borrow()));
+                return Ok(with_files(ok(out), &root));
+            }
+            step(&mut out, "build", || {
+                let stats = vendor::build(&root, &name, None, None, false)?;
+                Ok(format!("built ({})\n", stats.detail()))
+            });
+            step(&mut out, "licenses", || {
+                let paths = vendor::fetch_licenses(&root, None, None)?;
+                Ok(lines(
+                    &paths.iter().map(|p| rel(p, &root)).collect::<Vec<_>>(),
+                ))
+            });
+            drift(&root, get(case, "drift"));
+            step(&mut out, "check", || {
+                Ok(lines(&vendor::check(&root, None)?))
+            });
+            step(&mut out, "diff", || vendor::diff_entry(&root, &name, None));
+            with_files(ok(out), &root)
+        }
         other => panic!("dev.vendor: unknown op {other:?}"),
     })
+}
+
+/// `<title>:` then the step's output, or `VendorError: <message>`.
+fn step(out: &mut String, title: &str, f: impl FnOnce() -> vendor::Result<String>) {
+    out.push_str(title);
+    out.push_str(":\n");
+    match f() {
+        Ok(text) => out.push_str(&text),
+        Err(e) => out.push_str(&format!("VendorError: {}\n", e.0)),
+    }
+}
+
+/// `path.relative_to(root).as_posix()`.
+fn rel(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The oracle's `_drift`: write (parents 0755), delete (if present, not a folder), chmod (if
+/// a regular file).
+fn drift(root: &Path, edits: &Value) {
+    for e in edits.as_array().expect("drift") {
+        let rel = text(e, "rel");
+        let path = root.join(rel);
+        let exec = e
+            .as_object()
+            .and_then(|o| o.get("exec"))
+            .is_some_and(|v| matches!(v, Value::Bool(true)));
+        match text(e, "edit") {
+            "write" => {
+                let mut m = Map::new();
+                m.insert(rel.to_string(), e.clone());
+                write_tree(root, &Value::Object(m));
+            }
+            "delete" => {
+                if fs::symlink_metadata(&path).is_ok() && !path.is_dir() {
+                    fs::remove_file(&path).expect("unlink");
+                }
+            }
+            _ => {
+                if fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                    let mode = if exec { 0o755 } else { 0o644 };
+                    fs::set_permissions(&path, fs::Permissions::from_mode(mode)).expect("chmod");
+                }
+            }
+        }
+    }
 }
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -309,8 +419,21 @@ fn gen_markdown(rng: &mut Rng) -> String {
     text
 }
 
-const NAMES: &[&str] = &["old", "x", "a-b", "skill", "ol", "old-x", "é"];
-const NEW_NAMES: &[&str] = &["new", "y", "c-d", "anthology-old", "n2"];
+const NAMES: &[&str] = &[
+    "old", "x", "a-b", "skill", "ol", "old-x", "é", "a.b", "c++", "[x]",
+];
+/// `new` is a `re.sub` replacement template: `\\`, `\n` and `\g<0>` expand (never an
+/// invalid one such as `\1` or a trailing backslash, which raise re.error).
+const NEW_NAMES: &[&str] = &[
+    "new",
+    "y",
+    "c-d",
+    "anthology-old",
+    "n2",
+    "a\\\\b",
+    "a\\nb",
+    "x\\g<0>",
+];
 
 fn gen_skill(rng: &mut Rng, old: &str) -> String {
     let name_line = match rng.below(7) {
@@ -402,6 +525,14 @@ fn gen_plugin_tree(rng: &mut Rng, old: &str) -> Value {
     }
     if rng.chance(0.2) {
         entries.push(("link.md".into(), link("README.md")));
+    }
+    if rng.chance(0.2) {
+        let data = if rng.chance(0.5) {
+            [old.as_bytes(), b":x \xff\n"].concat()
+        } else {
+            rng.pick(BINARIES).to_vec()
+        };
+        entries.push(("bin/x.dat".into(), data_file(&data, false)));
     }
     let pairs: Vec<(&str, Value)> = entries
         .iter()
@@ -505,6 +636,8 @@ fn gen_tree(rng: &mut Rng) -> Vec<(String, Value)> {
         if rng.chance(0.5) {
             let v = if rng.chance(0.08) {
                 link(rng.pick(&["a.md", "LICENSE", "nowhere", "b"]))
+            } else if rng.chance(0.08) {
+                data_file(rng.pick(BINARIES), rng.chance(0.1))
             } else {
                 file(&gen_text(rng), rel.ends_with(".sh") || rng.chance(0.1))
             };
@@ -524,7 +657,11 @@ fn mutate_tree(rng: &mut Rng, want: &[(String, Value)]) -> Vec<(String, Value)> 
             }
             1 if !have.is_empty() => {
                 let i = rng.index(have.len());
-                have[i].1 = file(&gen_text(rng), rng.chance(0.3));
+                have[i].1 = if rng.chance(0.15) {
+                    data_file(rng.pick(BINARIES), rng.chance(0.3))
+                } else {
+                    file(&gen_text(rng), rng.chance(0.3))
+                };
             }
             2 if !have.is_empty() => {
                 let i = rng.index(have.len());
@@ -533,8 +670,11 @@ fn mutate_tree(rng: &mut Rng, want: &[(String, Value)]) -> Vec<(String, Value)> 
                     .as_object()
                     .and_then(|o| o.get("exec"))
                     .is_some_and(|v| matches!(v, Value::Bool(true)));
-                if let Some(t) = have[i].1.as_object().and_then(|o| o.get("text")).cloned() {
-                    have[i].1 = obj(&[("text", t), ("exec", Value::Bool(exec))]);
+                if let Some(mut m) = have[i].1.as_object().cloned()
+                    && !m.contains_key("link")
+                {
+                    m.insert("exec".into(), Value::Bool(exec));
+                    have[i].1 = Value::Object(m);
                 }
             }
             3 => {
@@ -672,16 +812,20 @@ fn gen_field_value(rng: &mut Rng, key: &str) -> Value {
         ],
         _ => &["x", "", "1.0.0"],
     };
-    match rng.below(10) {
-        0 if !matches!(
-            key,
-            "name" | "license" | "repo" | "url" | "commit" | "checksum"
-        ) =>
-        {
-            Value::Int(Int::Small(rng.range(-1, 3)))
-        }
+    let falsy_only = key == "repo";
+    let hashable = matches!(key, "name" | "license");
+    match rng.below(16) {
+        0 if !falsy_only => Value::Int(Int::Small(rng.range(-1, 3))),
         1 => Value::Null,
-        2 if !matches!(key, "repo" | "url" | "commit" | "checksum") => Value::Bool(rng.chance(0.5)),
+        2 if !falsy_only => Value::Bool(true),
+        3 if !falsy_only => Value::Float(*rng.pick(&[1.5, -2.0, 1e16, 0.1])),
+        4 if !falsy_only && !hashable => Value::Array(vec![s("a")]),
+        5 if !hashable => Value::Array(Vec::new()),
+        6 if !falsy_only && !hashable => obj(&[("a", Value::Int(Int::Small(1)))]),
+        7 if !hashable => Value::Object(Map::new()),
+        8 => Value::Bool(false),
+        9 => Value::Int(Int::Small(0)),
+        10 => Value::Float(0.0),
         _ => s(rng.pick(strs)),
     }
 }
@@ -787,8 +931,402 @@ fn gen_entry(rng: &mut Rng, i: usize) -> Value {
     Value::Object(e)
 }
 
+// ---------------------------------------------------------------- url-source pipeline cases
+
+/// A file spec holding `data`: `text` when it is UTF-8, else `hex`.
+fn data_file(data: &[u8], exec: bool) -> Value {
+    match std::str::from_utf8(data) {
+        Ok(t) => file(t, exec),
+        Err(_) => obj(&[("hex", s(&hex(data))), ("exec", Value::Bool(exec))]),
+    }
+}
+
+const BINARIES: &[&[u8]] = &[b"\xff\xfe\x00a", b"\x00\x01\x02", b"caf\xe9\n", b"ok\n\xc3"];
+
+const SKILL_TEXTS: &[&str] = &[
+    "---\nname: s\ndescription: d\n---\nRun /s now.\n\n## Connectors\n\nIf ~~CRM is connected:\n- a\n\n## Next\nplain\n",
+    "---\nname: s\ndescription: d\n---\nUse /s and /s-x.\n",
+    "---\nname: s\n---\nSee CONNECTORS.md for setup.\n",
+    "---\nname: other\n---\n/s\n",
+    "no front matter\n",
+];
+
+const LICENSE_TEXTS: &[&str] = &[
+    "MIT License\n\nCopyright (c) acme\n",
+    "MIT License\n\nCopyright (c) acme\n",
+    "MIT License\n\nCopyright (c) acme\n",
+    "MIT License\n\nCopyright (c) acme\n",
+    "Apache License\nVersion 2.0\n",
+    "Apache License\nVersion 2.0\n",
+    "Apache License\nVersion 2.0\n",
+    "Apache License\nVersion 2.0\n",
+    "",
+    "  \n",
+];
+
+/// A snapshot file: `(rel, bytes, exec)`.
+type SnapFile = (String, Vec<u8>, bool);
+
+/// The url source's upstream folder, plus at times a symlink.
+fn gen_snapshot(rng: &mut Rng) -> (Vec<SnapFile>, Option<String>) {
+    let mut files: Vec<SnapFile> = Vec::new();
+    let mut add = |rng: &mut Rng, p: f64, rel: &str, choices: &[&str]| {
+        if rng.chance(p) {
+            let exec = rng.chance(0.15);
+            files.push((rel.to_string(), rng.pick(choices).as_bytes().to_vec(), exec));
+        }
+    };
+    add(rng, 0.95, "SKILL.md", SKILL_TEXTS);
+    add(rng, 0.95, "LICENSE", LICENSE_TEXTS);
+    add(rng, 0.5, "docs/LICENSE.txt", LICENSE_TEXTS);
+    let notice = rng_notice(rng);
+    add(rng, 0.15, notice, &["NOTICE\nacme\n", ""]);
+    add(
+        rng,
+        0.3,
+        "scripts/run.mjs",
+        &["import fs from 'fs';\n", "#!/usr/bin/env node\n"],
+    );
+    add(rng, 0.2, "scripts/tool.sh", &["#!/bin/sh\necho hi\n"]);
+    add(
+        rng,
+        0.3,
+        "assets/app.js",
+        &[
+            "const x = require('fs');\n",
+            "document.title = 'x';\n",
+            "launch puppeteer\n",
+            "--user-data-dir=/tmp\n",
+        ],
+    );
+    add(rng, 0.15, "assets/run", &["#!/bin/sh\n", "plain\n"]);
+    add(rng, 0.15, "a b/é.md", &["ü ~~chat~~\n", "ü\n"]);
+    add(rng, 0.1, "CONNECTORS.md", &["# Connectors\n"]);
+    add(
+        rng,
+        0.15,
+        ".claude-plugin/plugin.json",
+        &[
+            "{\"name\": \"s\", \"version\": \"1.0.0\"}\n",
+            "{\"name\": \"x\"}\n",
+        ],
+    );
+    if rng.chance(0.2) {
+        files.push(("bin.dat".into(), rng.pick(BINARIES).to_vec(), false));
+    }
+    let link = rng.chance(0.03).then(|| "link.md".to_string());
+    (files, link)
+}
+
+fn rng_notice(rng: &mut Rng) -> &'static str {
+    rng.pick(&["NOTICE", "Notice.md", "notice.txt"])
+}
+
+/// `CHECKSUMS.sha256` for `files`, at times with a wrong, missing or extra line.
+fn gen_sums(rng: &mut Rng, files: &[SnapFile]) -> Vec<u8> {
+    let mut lines: Vec<(String, String)> = files
+        .iter()
+        .map(|(rel, data, _)| (rel.clone(), vendor::fetch::sha256_hex(data)))
+        .collect();
+    match rng.below(30) {
+        0 if !lines.is_empty() => {
+            let i = rng.index(lines.len());
+            lines[i].1 = "0".repeat(64);
+        }
+        1 if !lines.is_empty() => {
+            let i = rng.index(lines.len());
+            lines.remove(i);
+        }
+        2 => lines.push(("extra.md".into(), "1".repeat(64))),
+        _ => {}
+    }
+    lines.sort();
+    lines
+        .iter()
+        .map(|(rel, d)| format!("{d}  {rel}\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+const BASE_URL: &str = "https://example.test/.well-known/skills/s/";
+
+fn gen_url_entry(rng: &mut Rng, sums: &[u8]) -> Map {
+    let mut e = Map::new();
+    e.insert("name".into(), s("s"));
+    e.insert("url".into(), s(BASE_URL));
+    e.insert("path".into(), s(""));
+    e.insert("ref".into(), s("v1"));
+    let checksum = if rng.chance(0.96) {
+        vendor::fetch::sha256_hex(sums)
+    } else {
+        "b".repeat(64)
+    };
+    e.insert("checksum".into(), s(&checksum));
+    e.insert("license".into(), s("MIT"));
+    let lf = match rng.below(30) {
+        0..=3 => s("docs/LICENSE.txt"),
+        4 => s("missing.txt"),
+        5 => s("link.md"),
+        6 => Value::Null,
+        _ => s("LICENSE"),
+    };
+    e.insert("license_file".into(), lf);
+    e.insert("target".into(), s("plugins/anthology/knowledge/s"));
+    let rename_skill = obj(&[
+        ("name", s("rename-skill")),
+        ("old", s("s")),
+        ("new", s("t")),
+    ]);
+    let transform = match rng.below(12) {
+        0 => vec![s("strip-connectors")],
+        1 => vec![rename_skill],
+        2 => vec![s("strip-connectors"), rename_skill],
+        3 => {
+            e.insert("plugin_version".into(), s("1.2.3"));
+            vec![obj(&[
+                ("name", s("rename-plugin")),
+                ("old", s("s")),
+                ("new", s("t")),
+            ])]
+        }
+        4 if rng.chance(0.3) => vec![obj(&[("patch", s("vendor/patches/s.patch"))])],
+        _ => Vec::new(),
+    };
+    e.insert("transform".into(), Value::Array(transform));
+    if rng.chance(0.05) {
+        let k = *rng.pick(&[
+            "name",
+            "url",
+            "path",
+            "checksum",
+            "license_file",
+            "transform",
+        ]);
+        if rng.chance(0.5) {
+            e.remove(k);
+        } else {
+            let v = gen_field_value(rng, k);
+            e.insert(k.into(), v);
+        }
+    }
+    e
+}
+
+const SCRIPT_RELS: &[&str] = &[
+    "scripts/run.mjs",
+    "scripts/tool.sh",
+    "assets/app.js",
+    "assets/run",
+    "scripts/gone.py",
+];
+
+/// A port map in the shape of `vendor/patches/design-taste-frontend.portmap.json`.
+fn gen_portmap(rng: &mut Rng) -> String {
+    let real = r#"{"extensions": [".mjs", ".cjs", ".sh", ".py", ".ts"], "shebang": true, "js_node_regex": "\\brequire\\s*\\(|\\bfrom\\s*['\"](?:node:|(?:fs|path|os)['\"/])|\\bprocess\\.(?:argv|exit|env|cwd)\\b"}"#;
+    let mut scripts = Vec::new();
+    for rel in SCRIPT_RELS {
+        if rng.chance(0.5) {
+            let spec = match rng.below(6) {
+                0 => r#"{"action": "drop"}"#,
+                1 => r#"{"action": "port"}"#,
+                2 => r#"{"action": "bogus"}"#,
+                3 => r#""keep""#,
+                _ => r#"{"action": "keep"}"#,
+            };
+            scripts.push(format!("\"{rel}\": {spec}"));
+        }
+    }
+    let scripts = format!("{{{}}}", scripts.join(", "));
+    let added = if rng.chance(0.2) {
+        r#"{"scripts/new.mjs": {}}"#
+    } else {
+        "{}"
+    };
+    let chrome = r#""remote-debugging|user-data-dir|CHROME_PATH|playwright|puppeteer""#;
+    match rng.below(10) {
+        0 => format!(r#"{{"script_rule": {real}, "scripts": {scripts}}}"#),
+        1 => format!(r#"{{"script_rule": {real}, "scripts": [], "chrome_regex": {chrome}}}"#),
+        2 => format!(r#"{{"scripts": {scripts}, "chrome_regex": {chrome}}}"#),
+        _ => format!(
+            r#"{{"script_rule": {real}, "scripts": {scripts}, "added": {added}, "chrome_regex": {chrome}}}"#
+        ),
+    }
+}
+
+const DRIFT_TEXTS: &[&str] = &["changed\n", "", "MIT License\n\nCopyright (c) acme\n"];
+
+/// Edits after the build, on the built folder, the snapshot or the fetched license.
+fn gen_drift(rng: &mut Rng, files: &[SnapFile]) -> Vec<Value> {
+    let mut rels: Vec<&str> = files.iter().map(|(r, _, _)| r.as_str()).collect();
+    rels.extend(["new.md", "scripts/new.mjs"]);
+    let mut edits = Vec::new();
+    for _ in 0..rng.index(4) {
+        let rel = match rng.below(5) {
+            0 => "vendor/licenses/s.txt".to_string(),
+            1 => format!("vendor/snapshots/s/{}", rng.pick(&rels)),
+            _ => format!("plugins/anthology/knowledge/s/{}", rng.pick(&rels)),
+        };
+        let exec = Value::Bool(rng.chance(0.5));
+        let e = match rng.below(3) {
+            0 => {
+                let data = if rng.chance(0.15) {
+                    rng.pick(BINARIES)
+                } else {
+                    rng.pick(DRIFT_TEXTS).as_bytes()
+                };
+                let mut m = data_file(data, false)
+                    .as_object()
+                    .cloned()
+                    .expect("a file spec");
+                m.insert("edit".into(), s("write"));
+                m.insert("rel".into(), s(&rel));
+                m.insert("exec".into(), exec);
+                Value::Object(m)
+            }
+            1 => obj(&[("edit", s("delete")), ("rel", s(&rel))]),
+            _ => obj(&[("edit", s("chmod")), ("rel", s(&rel)), ("exec", exec)]),
+        };
+        edits.push(e);
+    }
+    edits
+}
+
+/// The snapshot's files (and link) as TREE entries under `prefix`.
+fn snapshot_tree(
+    prefix: &str,
+    files: &[SnapFile],
+    link_rel: Option<&String>,
+    sums: &[u8],
+) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = files
+        .iter()
+        .map(|(rel, data, exec)| (format!("{prefix}{rel}"), data_file(data, *exec)))
+        .collect();
+    out.push((format!("{prefix}CHECKSUMS.sha256"), data_file(sums, false)));
+    if let Some(l) = link_rel {
+        out.push((format!("{prefix}{l}"), link("SKILL.md")));
+    }
+    out
+}
+
+fn gen_pipeline(rng: &mut Rng) -> Value {
+    let (files, link_rel) = gen_snapshot(rng);
+    let sums = gen_sums(rng, &files);
+    let mut entry = gen_url_entry(rng, &sums);
+    let mut root = snapshot_tree("vendor/snapshots/s/", &files, link_rel.as_ref(), &sums);
+    if rng.chance(0.25) {
+        entry.insert("portmap".into(), s("vendor/patches/s.portmap.json"));
+        if rng.chance(0.9) {
+            root.push((
+                "vendor/patches/s.portmap.json".into(),
+                file(&gen_portmap(rng), false),
+            ));
+        }
+    }
+    if rng.chance(0.15) {
+        // A stale build that `build` replaces.
+        root.push((
+            "plugins/anthology/knowledge/s/stale.md".into(),
+            file("old\n", false),
+        ));
+    }
+    let drift = gen_drift(rng, &files);
+    obj(&[
+        ("op", s("pipeline")),
+        ("entry", Value::Object(entry)),
+        ("root", tree_value(&root)),
+        ("drift", Value::Array(drift)),
+    ])
+}
+
+/// `urllib.parse.quote(rel, safe="/")`.
+fn quote(rel: &str) -> String {
+    rel.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"_.-~/".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+fn gen_download(rng: &mut Rng) -> Value {
+    let (files, _) = gen_snapshot(rng);
+    let sums = gen_sums(rng, &files);
+    let entry = gen_url_entry(rng, &sums);
+    let mut pages = Map::new();
+    if rng.chance(0.95) {
+        pages.insert(format!("{BASE_URL}CHECKSUMS.sha256"), s(&hex(&sums)));
+    }
+    let mut listed: Vec<String> = files.iter().map(|(r, _, _)| r.clone()).collect();
+    listed.push("CHECKSUMS.sha256".into());
+    match rng.below(30) {
+        0 if !listed.is_empty() => {
+            let i = rng.index(listed.len());
+            listed.remove(i);
+        }
+        1 => listed.push("more.md".into()),
+        _ => {}
+    }
+    let files_json = Value::Array(listed.iter().map(|r| s(r)).collect());
+    let index = match rng.below(40) {
+        0 => "nope".to_string(),
+        1 => r#"{"skills": [{"name": "x", "files": []}]}"#.to_string(),
+        2 => r#"{"skills": [{"name": "s", "files": "SKILL.md"}]}"#.to_string(),
+        3 => r#"{"other": []}"#.to_string(),
+        4 => "\u{ff}".to_string(),
+        _ => {
+            let skill = obj(&[("name", s("s")), ("files", files_json)]);
+            let other = obj(&[("name", s("o")), ("files", Value::Array(Vec::new()))]);
+            json::dumps(
+                &obj(&[("skills", Value::Array(vec![other, skill]))]),
+                &json::PY_DEFAULT,
+            )
+        }
+    };
+    if rng.chance(0.95) {
+        let raw = if index == "\u{ff}" {
+            "ff".to_string()
+        } else {
+            hex(index.as_bytes())
+        };
+        pages.insert(
+            "https://example.test/.well-known/skills/index.json".into(),
+            s(&raw),
+        );
+    }
+    for (rel, data, _) in &files {
+        match rng.below(60) {
+            0 => {}
+            1 => {
+                pages.insert(format!("{BASE_URL}{}", quote(rel)), s("00"));
+            }
+            _ => {
+                pages.insert(format!("{BASE_URL}{}", quote(rel)), s(&hex(data)));
+            }
+        }
+    }
+    let mut root = Vec::new();
+    if rng.chance(0.3) {
+        root.push((
+            "vendor/snapshots/s/old.md".to_string(),
+            file("old\n", false),
+        ));
+    }
+    obj(&[
+        ("op", s("download")),
+        ("entry", Value::Object(entry)),
+        ("root", tree_value(&root)),
+        ("pages", Value::Object(pages)),
+    ])
+}
+
 fn gen_case(rng: &mut Rng) -> Value {
-    match rng.below(8) {
+    match rng.below(11) {
+        8 | 9 => gen_pipeline(rng),
+        10 => gen_download(rng),
         0 => {
             let n = rng.index(4);
             let sources = (0..n)
@@ -844,6 +1382,8 @@ fn gen_case(rng: &mut Rng) -> Value {
 fn seeds() -> Vec<Case> {
     let mut cases = Vec::new();
     let mut add = |id: &str, v: Value| cases.push(Case::new(format!("seed:{id}"), v));
+    add("pipeline", gen_pipeline(&mut Rng::new(3)));
+    add("download", gen_download(&mut Rng::new(3)));
     add(
         "validate-ok",
         obj(&[

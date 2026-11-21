@@ -17,8 +17,18 @@ dev_vendor.rs` builds the same ones):
 - `{"op": "cli", "argv": [...]}`: `main(["--root", R] + argv)` where R holds
   `vendor/sources.json` = `{"sources": []}`; exit code, stdout, stderr.
 
-TREE is `{rel: {"text": T, "exec": bool} | {"link": TARGET}}`, written with mode 0755/0644
-into a fresh temporary folder (parents 0755).
+- `{"op": "pipeline", "entry": E, "root": TREE, "drift": [EDIT, ...]}`: a repo whose
+  sources.json holds E (a url source, so its snapshot under `vendor/snapshots/` is the upstream
+  and nothing touches the network): `build`, `fetch_licenses`, the EDITs (`{"edit": "write",
+  "rel", "text"|"hex", "exec"}`, `{"edit": "delete", "rel"}`, `{"edit": "chmod", "rel",
+  "exec"}`), `check`, `diff_entry`; each step's output or VendorError under a `<step>:` line,
+  and `files` the repo afterwards.
+- `{"op": "download", "entry": E, "root": TREE, "pages": {url: hex}}`: `download_snapshot`
+  with an in-memory getter (a missing page is `HTTP 404: <url>`); the result, the URLs asked
+  for in order, and the repo afterwards.
+
+TREE is `{rel: {"text": T | "hex": H, "exec": bool} | {"link": TARGET}}`, written with mode
+0755/0644 into a fresh temporary folder (parents 0755).
 
 Result: `{"exit": 0, "stdout": ..., "stderr": "", "files"?: tree}`, or exit 1 with stderr
 `VendorError: <message>`. Any other exception is reported as `<Type>: <message>` (exit 1), which
@@ -31,6 +41,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import sys
 import tempfile
@@ -65,8 +76,34 @@ def _write_tree(base, tree):
         if "link" in spec:
             os.symlink(spec["link"], path)
         else:
-            path.write_bytes(spec["text"].encode("utf-8"))
+            path.write_bytes(_data(spec))
             os.chmod(path, 0o755 if spec.get("exec") else 0o644)
+
+
+def _data(spec):
+    return bytes.fromhex(spec["hex"]) if "hex" in spec else spec["text"].encode("utf-8")
+
+
+def _drift(root, edits):
+    """Edits after the build: write (parents 0755), delete (if present), chmod (if a file)."""
+    for e in edits:
+        path = root / e["rel"]
+        if e["edit"] == "write":
+            _write_tree(root, {e["rel"]: e})
+        elif e["edit"] == "delete":
+            if os.path.lexists(path) and not path.is_dir():
+                path.unlink()
+        elif path.is_file() and not path.is_symlink():
+            os.chmod(path, 0o755 if e.get("exec") else 0o644)
+
+
+def _step(out, title, fn):
+    v = _vendor()
+    out.append(f"{title}:\n")
+    try:
+        out.append(fn())
+    except v.VendorError as exc:
+        out.append(f"VendorError: {exc}\n")
 
 
 def _files(base):
@@ -153,6 +190,35 @@ def _op(case, tmp):
             else:
                 os.environ["COLUMNS"] = saved[1]
         return {"exit": code, "stdout": out.getvalue(), "stderr": err.getvalue()}
+    if op in ("pipeline", "download"):
+        root = tmp / "root"
+        _write_tree(root, case["root"])
+        (root / "vendor").mkdir(exist_ok=True)
+        (root / "vendor" / "sources.json").write_text(
+            json.dumps({"sources": [case["entry"]]}, indent=2) + "\n", encoding="utf-8")
+        name = case["entry"].get("name")
+        out = []
+        if op == "download":
+            calls = []
+
+            def get(url):
+                calls.append(url)
+                if url not in case["pages"]:
+                    raise v.VendorError(f"HTTP 404: {url}")
+                return bytes.fromhex(case["pages"][url])
+
+            _step(out, "download", lambda: str(
+                v.download_snapshot(root, case["entry"], get=get).relative_to(root)) + "\n")
+            out.append("calls:\n" + _lines(calls))
+            return _ok("".join(out), _files(root))
+        _step(out, "build", lambda: "built ({})\n".format(", ".join(
+            f"{t}: {st}" for t, st in v.build(root, name)["transforms"]) or "no transforms"))
+        _step(out, "licenses", lambda: _lines(
+            p.relative_to(root).as_posix() for p in v.fetch_licenses(root)))
+        _drift(root, case["drift"])
+        _step(out, "check", lambda: _lines(v.check(root)))
+        _step(out, "diff", lambda: v.diff_entry(root, name))
+        return _ok("".join(out), _files(root))
     raise ValueError(f"unknown op {op!r}")
 
 
