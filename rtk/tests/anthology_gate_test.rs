@@ -1544,3 +1544,43 @@ fn the_round_eight_glob_operators_are_stopped() {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
 }
+
+// --- RG1: the shared parser (anthology_shell::analyze) ---
+
+/// The shared parser only adds denies and asks. Its first draft deferred some
+/// lines outside rtk, which stopped the hook before rtk's own rewrite was judged
+/// and lost these asks; the old/new corpus run found it.
+#[test]
+fn the_shared_parser_never_loosens_a_verdict() {
+    let sb = Sandbox::rtk_allowed_with_rules();
+    for cmd in [
+        "pnpm exec sh -c 'x=push; git $x'",
+        "npx -c 'x=push; git $x'",
+        "pnpm exec git pu*h",
+        "pnpm exec cat asked.txt",
+    ] {
+        assert!(
+            matches!(sb.hook(cmd), Said::Ask(_)),
+            "{cmd}: {:?}",
+            sb.hook(cmd)
+        );
+    }
+    // What it sees run is denied, in and out of rtk.
+    for cmd in [
+        "bash <<EOF\ngit push\nEOF",
+        "eval 'git push'",
+        "rtk bypass caffeinate git push",
+        "bash <<EOF\ncat secret.txt\nEOF",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    // And the plain shape still passes.
+    for cmd in [
+        "rtk git status",
+        "rtk ls",
+        "rtk read ok.txt",
+        "rtk git log -n 5",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}

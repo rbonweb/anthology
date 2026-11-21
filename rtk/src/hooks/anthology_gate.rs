@@ -69,11 +69,11 @@
 //!    rtk forms, shells' scripts, heredocs and here-strings fed to a shell,
 //!    `eval`, substitutions, `find -exec`) meets the rules: a deny rule or a
 //!    `Read()`-denied path denies, an ask rule asks, and an analysis cut short
-//!    (`incomplete`) asks. In a line that may run rtk an entry the analysis
-//!    could not see into (`opaque`) asks too. This pass only adds a deny or an
-//!    ask ([`Scanner::scan_shared`]), so the gate is never less strict than the
-//!    rule scan alone; and [`plain`] passes a line only when the shared parser
-//!    reads it as the same single command.
+//!    (`incomplete`) asks. This pass only adds a deny or an ask
+//!    ([`Scanner::scan_shared`]), so the gate is never less strict than the rule
+//!    scan alone. [`plain`] passes a line only when the shared parser reads it as
+//!    the same single command with nothing opaque in it, so an entry the analysis
+//!    could not see into (`opaque`) behind rtk always asks.
 //!
 //! With no deny, ask or `Read` rule anywhere the gate is inert and the hook's
 //! output is what it was before.
@@ -1965,12 +1965,16 @@ impl Scanner<'_> {
     ///
     /// - a deny rule that matches an entry denies; an ask rule asks;
     /// - an analysis cut short (`incomplete`: a regex or work limit) asks;
-    /// - a `Read()`-denied path an entry names, or reads through `<`, denies; a
-    ///   path that cannot be resolved asks;
-    /// - in a line that may run rtk, an entry the analysis could not see into
-    ///   (`opaque`), a word a rule's head can still extend, a path a `Read()` ask
-    ///   rule names, or a relative path after a `cd` the analysis followed asks.
-    ///   Elsewhere these add nothing: a rewrite into an rtk line is judged again.
+    /// - a `Read()`-denied path that a command rtk rewrites into a read names or
+    ///   reads through `<`, or that any program in a line that may run rtk names,
+    ///   denies; an unresolvable path asks for the former and for what rtk runs
+    ///   itself (`rtk bypass base64 x*`), and so does a `Read()` ask path behind
+    ///   rtk.
+    ///
+    /// An entry the analysis could not see into (`opaque`) asks through the plain
+    /// shape: [`plain`] passes no line that holds one, so a line that may run rtk
+    /// asks, and rtk never rewrites into one. A relative path after a `cd` the
+    /// analysis followed is left to the rule scan, which follows the `cd` itself.
     fn scan_shared(&mut self, cmd: &str, initial: Option<&Path>) -> Result<(), Denied> {
         if !self.spend(SEGMENT_COST + cmd.len() / 16) {
             return Ok(());
@@ -1997,16 +2001,13 @@ impl Scanner<'_> {
             if !self.spend(SEGMENT_COST + size / 8) {
                 return Ok(());
             }
-            if rtk_line && !entry.opaque.is_empty() {
-                self.ask = true;
-            }
             if entry.prog.is_empty() {
                 continue;
             }
             let words: Vec<String> = std::iter::once(entry_command_word(entry))
                 .chain(entry.args.iter().cloned())
                 .collect();
-            self.shared_rules(entry, &words, rtk_line)?;
+            self.shared_rules(entry, &words)?;
             if self.reading() {
                 self.shared_reads(entry, &words, rtk_line, literal, initial)?;
             }
@@ -2014,23 +2015,8 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    /// What the gate cannot settle for an entry: ask in a line that may run rtk.
-    /// Elsewhere nothing is added: the rule scan has its own say, and a rewrite
-    /// into an rtk line is judged again as one. (A defer here would be looser:
-    /// the hook stops at a defer, before that second judgement can ask.)
-    fn unsettled(&mut self, rtk_line: bool) {
-        if rtk_line {
-            self.ask = true;
-        }
-    }
-
     /// The Bash rules against one entry.
-    fn shared_rules(
-        &mut self,
-        entry: &ShellEntry,
-        words: &[String],
-        rtk_line: bool,
-    ) -> Result<(), Denied> {
+    fn shared_rules(&mut self, entry: &ShellEntry, words: &[String]) -> Result<(), Denied> {
         if !self.bash_rules {
             return Ok(());
         }
@@ -2056,16 +2042,6 @@ impl Scanner<'_> {
                 self.ask = true;
             }
         }
-        // A word that expands at run time after literal words a rule can still
-        // extend (`git $x`), or options between a rule's words (`git -C . push`).
-        let extends = match words.iter().position(|word| is_expanding(word)) {
-            Some(0) => self.rules.extendable(&[]),
-            Some(at) => self.rules.extendable(&words[..at]),
-            None => false,
-        };
-        if extends || self.rules.subsequence_hit(words) {
-            self.unsettled(rtk_line);
-        }
         Ok(())
     }
 
@@ -2084,68 +2060,93 @@ impl Scanner<'_> {
             prog => prog,
         };
         let generic = !READ_COMMANDS.contains(&name);
-        // Outside a line that may run rtk only the commands rtk rewrites into reads
-        // are read (as the rule scan does); a `cd` or `-C` the analysis followed
-        // leaves a relative path unresolved.
+        // As in the rule scan: the commands rtk rewrites into reads, and, in a line
+        // that may run rtk, any program (sed, awk, base64, cp...): a denied path
+        // there denies, but only what rtk runs itself asks about an unclear one.
+        if generic && !rtk_line {
+            return Ok(());
+        }
+        let may_ask = !generic || via_rtk;
+        // A `cd` or `-C` the analysis followed leaves a relative path unresolved.
         let cwds = if entry.cwd.is_some() {
             Cwds { states: vec![None] }
         } else {
             Cwds::new(initial.map(Path::to_path_buf))
         };
         let mut outcomes: Vec<(ReadOutcome, ReadOutcome)> = Vec::new();
-        for redirect in &entry.redirs {
-            if matches!(redirect.op.as_str(), "<" | "<>") && redirect.target != "/dev/null" {
-                if redirect.target.contains(['\'', '"', '\\']) {
-                    outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
-                    continue;
-                }
-                let check = |m: &Option<ReadMatcher>| match m {
-                    Some(m) => ReadOutcome::from(m.check_word(&redirect.target, &cwds, false)),
-                    None => ReadOutcome::Clear,
-                };
-                outcomes.push((check(&self.reads), check(&self.read_asks)));
-            }
+        let targets: Vec<String> = entry
+            .redirs
+            .iter()
+            .filter(|r| matches!(r.op.as_str(), "<" | "<>") && r.target != "/dev/null")
+            .map(|r| r.target.clone())
+            .collect();
+        let (targets, unclear) = literal_words(&targets, literal);
+        if unclear {
+            outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
         }
-        if !generic || rtk_line {
-            let args = &words[1..];
-            if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
-                return Ok(());
-            }
-            // The analysis took the quotes off. In a line of literal words (see
-            // [`plain_words`]) each word is quoted back, so `'$(id)'` stays a name;
-            // otherwise a quote or backslash left in a word is one the gate would
-            // read differently, and a `$` or glob in it may expand.
-            let quoted: Vec<String>;
-            let args: Vec<&str> = if literal {
-                quoted = args.iter().map(|arg| quote_literal(arg)).collect();
-                quoted.iter().map(String::as_str).collect()
-            } else {
-                if args.iter().any(|arg| arg.contains(['\'', '"', '\\'])) {
-                    outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
-                }
-                args.iter().map(String::as_str).collect()
-            };
+        for target in &targets {
+            let word = resolve_word_text(target);
             let check = |m: &Option<ReadMatcher>| match m {
-                Some(m) => m.check_command(name, &args, &cwds, generic),
+                Some(m) => {
+                    ReadOutcome::from(m.check_word_as(&word, &cwds, false, !is_expanding(target)))
+                }
                 None => ReadOutcome::Clear,
             };
             outcomes.push((check(&self.reads), check(&self.read_asks)));
         }
+        let args = &words[1..];
+        if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
+            return Ok(());
+        }
+        let (args, unclear) = literal_words(args, literal);
+        if unclear {
+            outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let check = |m: &Option<ReadMatcher>| match m {
+            Some(m) => m.check_command(name, &args, &cwds, generic),
+            None => ReadOutcome::Clear,
+        };
+        outcomes.push((check(&self.reads), check(&self.read_asks)));
         for (denied, asked) in outcomes {
             if denied == ReadOutcome::Denied {
                 return Err(Denied);
             }
-            if denied == ReadOutcome::Uncertain && entry.cwd.is_none() {
-                // A path that cannot be resolved asks, at top level too (round 6).
+            // A path that cannot be resolved asks, at top level too (round 6); a
+            // path a `Read()` ask rule names asks behind rtk (elsewhere the host
+            // applies that rule to the original itself).
+            if may_ask
+                && ((denied == ReadOutcome::Uncertain && entry.cwd.is_none())
+                    || (via_rtk && asked != ReadOutcome::Clear))
+            {
                 self.ask = true;
-            } else if denied == ReadOutcome::Uncertain || asked != ReadOutcome::Clear {
-                // Only the directory is unknown (the rule scan follows a `cd`
-                // itself), or a `Read()` ask rule names the path.
-                self.unsettled(rtk_line);
             }
         }
         Ok(())
     }
+}
+
+/// The analysis took the quotes off its words: put them back so the gate's word
+/// reader takes each as the shell did. In a line of literal words (see
+/// [`plain_words`]) every word is quoted back, so `'$(id)'` stays a name.
+/// Elsewhere a word holding `$`, a backquote or a glob character may have been an
+/// expansion and stays as it is (it reads as one); if it also holds a quote or a
+/// backslash it cannot be put back faithfully, which the `bool` reports.
+fn literal_words(words: &[String], literal: bool) -> (Vec<String>, bool) {
+    let mut unclear = false;
+    let out = words
+        .iter()
+        .map(|word| {
+            let expands = word.contains(['$', '`', '*', '?', '[', '{']);
+            if literal || !expands {
+                quote_literal(word)
+            } else {
+                unclear |= word.contains(['\'', '"', '\\']);
+                word.clone()
+            }
+        })
+        .collect();
+    (out, unclear)
 }
 
 /// `NAME=value`: an assignment prefix, not a command word.
@@ -5583,19 +5584,30 @@ mod tests {
 
     /// Opaque behind rtk asks; outside rtk the host judges the original.
     #[test]
-    fn an_opaque_entry_asks_only_in_a_line_that_may_run_rtk() {
+    fn an_opaque_entry_behind_rtk_asks_through_the_plain_shape() {
         let r = bash_rules();
+        let cwd = Some("/work/project");
         for cmd in [
             "rtk bypass ssh h ls -la",
             "rtk bypass xargs git status",
             "rtk uv run python script.py",
             "rtk run -c 'FOO=$BAR true'",
         ] {
-            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+            assert!(
+                analyze(cmd, "/h")
+                    .entries
+                    .iter()
+                    .any(|e| !e.opaque.is_empty()),
+                "{cmd}"
+            );
+            assert_eq!(plain(cmd, &r, cwd), Gate::Ask, "{cmd}");
         }
-        for cmd in ["ssh h ls -la", "python3 script.py", "xargs git status"] {
-            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
-        }
+        // Literal words the plain lexer accepts, a listed sub, but an entry the
+        // shared parser marks opaque (git runs a program its config names).
+        let cmd = "rtk git -c core.pager=evil log";
+        let words = plain_words(cmd).expect("plain words");
+        assert!(!shared_parser_agrees(cmd, &words));
+        assert_eq!(plain(cmd, &r, cwd), Gate::Ask);
     }
 
     #[test]
@@ -6150,9 +6162,11 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
         }
-        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
+        // and the plain shape (which the hook applies to every rtk line) asks.
         for cmd in ["rtk run -c 'FOO=$BAR true'"] {
-            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
         }
     }
 
@@ -7128,12 +7142,14 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
         }
-        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
+        // and the plain shape (which the hook applies to every rtk line) asks.
         for cmd in [
             "rtk bypass ssh h ls -la",
             "rtk bypass watch -n1 'git status'",
         ] {
-            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
         }
     }
 
@@ -7160,12 +7176,14 @@ mod tests {
             assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
         }
         assert_eq!(gate("rtk bypass parallel git push ::: a", &r), Gate::Deny);
-        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
+        // and the plain shape (which the hook applies to every rtk line) asks.
         for cmd in [
             "rtk bypass xargs git status",
             "rtk bypass parallel echo ::: a b",
         ] {
-            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
         }
     }
 
@@ -7225,9 +7243,11 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
-        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
+        // and the plain shape (which the hook applies to every rtk line) asks.
         for cmd in ["rtk uv run python script.py"] {
-            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
         }
     }
 
