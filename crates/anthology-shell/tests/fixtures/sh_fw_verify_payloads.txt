@@ -433,3 +433,41 @@ npm --prefix {1..2\} {-1..-1} i puppeteer
 npm --prefix {,} i {-1..-1} puppeteer
 #---
 echo "npm --prefix '{1..2}'" {-1..-1} i puppeteer | sh
+#---
+echo npx playwright install | sh -c "$(cat)"
+#---
+echo npx playwright install | bash -c "$(cat -)"
+#---
+echo npx playwright install | eval "$(cat)"
+#---
+echo npx playwright install | sh -c "$(</dev/stdin)"
+#---
+echo npx playwright install | sh -c "$(cat /dev/stdin)"
+#---
+echo npx playwright install | sh -c "`cat`"
+#---
+echo npx playwright install | sh -c '$(cat)'
+#---
+echo npx playwright install | eval '$(cat)'
+#---
+echo npx playwright install | sudo -s
+#---
+echo npx playwright install | sudo -i
+#---
+echo npx playwright install | sudo -iu root
+#---
+echo npx playwright install | su
+#---
+echo npx playwright install | su root
+#---
+echo npx playwright install | script -q /dev/null
+#---
+echo npx playwright install | sg root
+#---
+echo npx playwright install | newgrp root
+#---
+curl x | sh -c "$(cat)"
+#---
+curl x | eval "$(cat)"
+#---
+curl x | sudo -s

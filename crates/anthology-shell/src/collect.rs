@@ -712,6 +712,28 @@ fn is_stdin_path(path: &str) -> bool {
     matches!(path, "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
 }
 
+/// SH-seq I-2: a text that is only a substitution of a stdin reader: `$(cat)`, `` `cat -` ``, `$(</dev/stdin)`,
+/// `$(cat /dev/stdin)` (`cat` with no file operand, or a stdin redirect alone).
+fn reads_stdin_substitution(text: &str) -> bool {
+    let t = pystr::strip_ws(text);
+    let inner = match t.strip_prefix("$(").and_then(|r| r.strip_suffix(')')) {
+        Some(body) => body,
+        None => match t.strip_prefix('`').and_then(|r| r.strip_suffix('`')) {
+            Some(body) => body,
+            None => return false,
+        },
+    };
+    let inner = pystr::strip_ws(inner);
+    if let Some(path) = inner.strip_prefix('<') {
+        return is_stdin_path(pystr::strip_ws(path));
+    }
+    let words = pystr::split_ws(inner);
+    words.first() == Some(&"cat")
+        && words[1..]
+            .iter()
+            .all(|w| *w == "-" || (w.starts_with('-') && w.len() > 1) || is_stdin_path(w))
+}
+
 /// `_FD_PATH`: a numbered file descriptor.
 fn is_fd_path(path: &str) -> bool {
     ["/dev/fd/", "/proc/self/fd/"].iter().any(|prefix| {
@@ -793,6 +815,8 @@ pub(crate) struct Ctx<'a> {
     seen: HashMap<SeenKey, (usize, Option<String>)>,
     /// `_Entry.stdin_runs`, by entry index.
     stdin_runs: HashMap<usize, Vec<StdinRun>>,
+    /// Entries that are a shell launcher peeled with no program (`sudo -s`): a shell reading stdin (SH-seq I-2).
+    launchers: HashSet<usize>,
     /// The segment `add_one` is about to add came from a `$((...))` (`Segment::arith`).
     arith: bool,
     /// The commands `add_one` adds come from a segment with an unquoted `{` (`Segment::braces`); scoped to
@@ -816,6 +840,7 @@ impl<'a> Ctx<'a> {
             halted: false,
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
+            launchers: HashSet::new(),
             arith: false,
             braces: false,
             quoted_braces: false,
@@ -1451,6 +1476,10 @@ impl<'a> Ctx<'a> {
     fn reads_stdin_as_shell(&mut self, e: usize) -> Option<bool> {
         let entry = &self.entries[e];
         let prog = entry.prog.as_str();
+        // SH-seq I-2: a shell launcher with no program (`sudo -s`, `su`, `script`, `sg grp`), and `newgrp`
+        if self.launchers.contains(&e) || prog == "newgrp" {
+            return Some(true);
+        }
         if SHELLS.contains(&prog) {
             let parsed = shell_parse(prog, &entry.args, 0);
             return Some(match parsed.mode {
@@ -1459,8 +1488,20 @@ impl<'a> Ctx<'a> {
                     .args
                     .get(parsed.start)
                     .is_some_and(|f| is_stdin_path(f)),
-                _ => false,
+                // SH-seq I-2: `sh -c "$(cat)"`. The lexer leaves `""` for a double-quoted substitution, so an
+                // empty script counts as one; a single-quoted `'$(cat)'` is read as written.
+                ShellMode::Command => parsed
+                    .scripts
+                    .iter()
+                    .any(|(_, script)| script.is_empty() || reads_stdin_substitution(script)),
             });
+        }
+        if prog == "eval" {
+            // SH-seq I-2: `eval "$(cat)"`, `eval '$(</dev/stdin)'`: the words are the script
+            return Some(
+                entry.args.iter().any(String::is_empty)
+                    || reads_stdin_substitution(&entry.args.join(" ")),
+            );
         }
         if prog == "source" || prog == "." {
             return Some(first_arg(&entry.args).is_some_and(is_stdin_path));
@@ -1779,6 +1820,9 @@ impl<'a> Ctx<'a> {
         let e = self.entries.len() - 1;
         if !runs.is_empty() {
             self.stdin_runs.insert(e, runs);
+        }
+        if peeled.shell_launch {
+            self.launchers.insert(e);
         }
         for script in &scripts {
             if self.collect(script, exempt, depth + 1) {

@@ -2113,13 +2113,14 @@ def _trap_script(args):
     return args[i] if len(args) - i >= 2 and args[i] != "-" else None
 
 
-def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True):
+def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True, launches=None):
     """Peel assignments, keywords, wrappers and package runners off a command.
 
     Returns (command tokens starting at the program, embedded scripts to analyze). When given,
     `alternates` receives other token lists that may be the real command (`_alternates`), and
     `stdin_runs` receives (kind, template, replace string) for each xargs or parallel layer,
-    whose command takes words or lines from stdin."""
+    whose command takes words or lines from stdin. `launches` receives True when a shell
+    launcher was peeled with no program left (`sudo -s`, SH-seq I-2)."""
     toks = list(tokens)
     scripts = []
     assigned = []
@@ -2154,6 +2155,11 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
             i = _skip_flags(toks, 1, flags)
             if name in _WRAPPER_OPERANDS and i < len(toks):
                 i = _skip_flags(toks, i + _WRAPPER_OPERANDS[name], flags)
+            # `su [-] [user]` runs the user's shell too: at most one operand, the user, not a program
+            su_rest = toks[i + 1:] if name == "su" and toks[i:i + 1] == ["-"] else toks[i:]
+            bare = i >= len(toks) or (name == "su" and len(su_rest) <= 1)
+            if launches is not None and bare and _launches_shell(name, toks[:i], not scripts):
+                launches.append(True)                     # `sudo -s`: no program, a shell reads stdin
             if name == "watch" and not joined:            # watch runs its words via sh -c
                 joined = True
                 if _needs_shell(toks[i:]):
@@ -2168,7 +2174,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
         elif name == "sg":                                # `sg [-] group [-c] command`: sh -c
             rest = toks[1:]
             rest = rest[2:] if rest[:1] == ["-"] else rest[1:]
-            rest = rest[1:] if rest[:1] == ["-c"] else rest
+            had_c = rest[:1] == ["-c"]
+            rest = rest[1:] if had_c else rest
+            if not rest and not had_c and launches is not None:
+                launches.append(True)                     # `sg grp` alone: a shell reading stdin
             if not joined:
                 joined = True
                 if _needs_shell(rest):
@@ -2273,9 +2282,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
 class _Entry:
     """A flattened command ready for the per-rule predicates."""
     __slots__ = ("raw", "redirs", "prog", "prog_path", "args", "cwd", "exempt", "group", "code",
-                 "stdin_runs")
+                 "stdin_runs", "shell_launch")
 
     def __init__(self, raw, redirs, cmd, cwd, exempt, group):
+        self.shell_launch = False                         # a shell launcher with no program (SH-seq I-2)
         self.raw = raw                                    # every word, wrappers included
         self.redirs = redirs
         self.prog_path = cmd[0].lower() if cmd else ""
@@ -2315,13 +2325,49 @@ def _shell_script_file(entry):
     return entry.args[start] if mode == "file" else None
 
 
+def _launches_shell(name, words, scripts_empty):
+    """SH-seq I-2: a wrapper peeled with no program that starts a shell reading stdin: `sudo -s`/`-i`
+    (`--shell`, `--login`), or `su`/`script` with no script found."""
+    if name == "sudo":
+        return any(w in ("--shell", "--login") or (
+            w[:1] == "-" and w[1:2] != "-" and ("s" in w[1:] or "i" in w[1:])) for w in words[1:])
+    return name in ("su", "script") and scripts_empty
+
+
+def _reads_stdin_substitution(text):
+    """SH-seq I-2: a text that is only a substitution of a stdin reader: `$(cat)`, `` `cat -` ``,
+    `$(</dev/stdin)`, `$(cat /dev/stdin)`."""
+    t = text.strip()
+    if t.startswith("$(") and t.endswith(")"):
+        inner = t[2:-1]
+    elif len(t) > 1 and t.startswith("`") and t.endswith("`"):
+        inner = t[1:-1]
+    else:
+        return False
+    inner = inner.strip()
+    if inner.startswith("<"):
+        return bool(_STDIN_PATH.match(inner[1:].strip()))
+    words = inner.split()
+    return bool(words) and words[0] == "cat" and all(
+        w == "-" or (w.startswith("-") and len(w) > 1) or bool(_STDIN_PATH.match(w))
+        for w in words[1:])
+
+
 def _reads_stdin_as_shell(entry):
-    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`)
-    or a docker command that runs one."""
+    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`),
+    a shell or eval whose script is a stdin reader's substitution, a shell launcher with no program
+    (`sudo -s`, `newgrp`), or a docker command that runs one."""
+    if entry.shell_launch or entry.prog == "newgrp":
+        return True
     if entry.prog in _SHELLS:
-        if _shell_parse(entry.prog, entry.args)[0] == "stdin":
+        mode, _start, scripts = _shell_parse(entry.prog, entry.args)
+        if mode == "stdin":
             return True
+        if mode == "c":
+            return any(s == "" or _reads_stdin_substitution(s) for _i, s in scripts)
         return bool(_STDIN_PATH.match(_shell_script_file(entry) or ""))
+    if entry.prog == "eval":
+        return any(a == "" for a in entry.args) or _reads_stdin_substitution(" ".join(entry.args))
     if entry.prog in ("source", "."):
         return bool(_STDIN_PATH.match(_first_arg(entry.args) or ""))
     if entry.prog in _DOCKER:
@@ -2344,11 +2390,12 @@ def _reads_fd_as_shell(entry):
 
 
 def _add_command(tokens, redirs, group, ctx, exempt, depth):
-    alternates, stdin_runs = [], []
-    cmd, scripts = _strip_prefixes(tokens, alternates, stdin_runs)
+    alternates, stdin_runs, launches = [], [], []
+    cmd, scripts = _strip_prefixes(tokens, alternates, stdin_runs, launches=launches)
     entry = _Entry(tokens, redirs, cmd, ctx.cwd, exempt, group)
     entry.exempt = exempt or entry.prog in _DOCKER
     entry.stdin_runs = stdin_runs
+    entry.shell_launch = bool(launches)
     if entry.prog in _CHDIR_PROGRAMS:                     # `tar -C dir x`, `git -C dir ...`
         for k, arg in enumerate(entry.args[:-1]):
             if arg in ("-C", "--directory"):
