@@ -1,10 +1,9 @@
 //! `pycompat::pyerr`: Python exception types and their `str()` text (plan §3.2, GC-16).
 //!
-//! F3 declares this module so `anthology-core` can return [`PyExc`] (plan §3.3) before P1
-//! lands; P1 owns it from then on. **Provisional:** the errno text that [`PyExc::py_str`] puts
-//! in `[Errno N] <text>` comes from one private function that returns a `strerror`-free
-//! placeholder (`errno N`) until P1 commits the per-OS tables in `errno_tables` (GC-16, I-10).
-//! The surrounding forms are already CPython's. Until then, compare errno numbers, not texts.
+//! F3 declared this module so `anthology-core` could return [`PyExc`] (plan §3.3); P1 owns it.
+//! The errno text in `[Errno N] <text>` comes from the committed per-OS tables in
+//! [`crate::errno_tables`] (glibc Linux, macOS; GC-16, I-10), never libc `strerror` or
+//! `io::Error`'s `Display`, and a filename is printed with Python's `repr`.
 
 /// A Python exception: its class and what `str(exc)` needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,13 +75,13 @@ impl PyExc {
         }
     }
 
-    /// Python's `str(exc)`: `[Errno N] <text>` or `[Errno N] <text>: '<filename>'` for an
-    /// `OSError`, `repr(key)` for a `KeyError`, and the message for the rest. The errno text is
-    /// provisional (module docs).
+    /// Python's `str(exc)`: `[Errno N] <text>` or `[Errno N] <text>: <repr(filename)>` for an
+    /// `OSError` (the text is `os.strerror(N)` on this OS), `repr(key)` for a `KeyError`, and
+    /// the message for the rest.
     pub fn py_str(&self) -> String {
         match self {
             PyExc::OSError { errno: e, filename } => {
-                let text = errno_text(*e);
+                let text = crate::errno_tables::strerror(*e);
                 match filename {
                     Some(f) => format!("[Errno {e}] {text}: {}", repr_str(f)),
                     None => format!("[Errno {e}] {text}"),
@@ -143,47 +142,21 @@ fn os_error_class(e: i32) -> &'static str {
     }
 }
 
-/// The text after `[Errno N] `.
-// P1 replaces with errno_tables: the committed per-OS strerror tables (GC-16, I-10). Never libc
-// `strerror` or `io::Error`'s `Display`.
-fn errno_text(e: i32) -> String {
-    format!("errno {e}")
-}
-
-/// `repr(s)` for the ASCII range, which is what filenames and keys hold in practice. P1's
-/// `pycompat::str` owns the full `isprintable` tables; until then a non-ASCII character is
-/// printed as is.
 fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
+    crate::str::repr(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errno_107_is_a_plain_os_error() {
+        // CPython maps ENOTCAPABLE to PermissionError only where its build defines it (WASI);
+        // the macOS builds of 3.12 (3.12.10 on the CI runner) and 3.9 leave macOS's 107 an
+        // OSError, so the port does too.
+        assert_eq!(os_error_class(107), "OSError");
+    }
 
     #[test]
     fn os_errors_take_cpythons_subclass_names_and_forms() {
@@ -192,13 +165,24 @@ mod tests {
             filename: Some("/tmp/it's".into()),
         };
         assert_eq!(e.type_name(), "FileNotFoundError");
-        assert_eq!(e.py_str(), "[Errno 2] errno 2: \"/tmp/it's\"");
+        assert_eq!(
+            e.py_str(),
+            "[Errno 2] No such file or directory: \"/tmp/it's\""
+        );
         let e = PyExc::OSError {
             errno: EEXIST,
             filename: None,
         };
         assert_eq!(e.type_name(), "FileExistsError");
-        assert_eq!(e.py_str(), "[Errno 17] errno 17");
+        assert_eq!(e.py_str(), "[Errno 17] File exists");
+        let e = PyExc::OSError {
+            errno: EACCES,
+            filename: Some("caf\u{e9}\u{200b}\n".into()),
+        };
+        assert_eq!(
+            e.py_str(),
+            "[Errno 13] Permission denied: 'caf\u{e9}\\u200b\\n'"
+        );
         assert_eq!(
             PyExc::OSError {
                 errno: 9999,
