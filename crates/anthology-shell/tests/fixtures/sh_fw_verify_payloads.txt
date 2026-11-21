@@ -832,3 +832,27 @@ while read l; do sh -c "$l"; done <<EOF
 npx playwright install
 EOF
 echo "a
+#---
+f() { eval "$1"; }; echo npx playwright install | while read l; do f "$l"; done
+#---
+f() { "$@"; }; echo npx playwright install | while read l; do f $l; done
+#---
+f() { sh -c "$1"; }; echo npx playwright install | while read l; do f "$l"; done
+#---
+echo npx playwright install | xargs -I{} sh -c 'eval "$1"' _ {}
+#---
+echo npx playwright install | xargs sh -c '"$@"' _
+#---
+sh -c '"$@"' _ npx playwright install
+#---
+sh -c 'eval "$1"' _ "npx playwright install"
+#---
+bash -c '$1 $2 $3' _ npx playwright install
+#---
+sh -c 'npx "$1" install' _ playwright
+#---
+f() { npx "$@"; }; f playwright install
+#---
+f() { eval "$1"; }; f "npx playwright install"
+#---
+function f { npx "$@"; }; f playwright install

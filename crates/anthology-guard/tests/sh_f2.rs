@@ -217,3 +217,59 @@ fn review_m3_the_ruled_over_blocks_and_the_depth_cap() {
     assert_eq!(verdict(&nested(8)), Verdict::Block(Rule::G1));
     assert_eq!(verdict(&nested(9)), Verdict::TooComplex);
 }
+
+// ------------------------------------------------------------------ SH-F4 (review-sh-f3.md)
+
+#[test]
+fn sh_f4_positional_parameters_and_function_arguments_are_put_in_place() {
+    // a positional parameter or a function argument given as literal text is read in place (I-1)
+    for command in [
+        r#"sh -c '"$@"' _ npx playwright install"#,
+        r#"sh -c 'eval "$1"' _ "npx playwright install""#,
+        "bash -c '$1 $2 $3' _ npx playwright install",
+        r#"sh -c 'npx "$1" install' _ playwright"#,
+        r#"echo npx playwright install | xargs -I{} sh -c 'eval "$1"' _ {}"#,
+        r#"echo npx playwright install | xargs sh -c '"$@"' _"#,
+        r#"f() { npx "$@"; }; f playwright install"#,
+        r#"f() { eval "$1"; }; f "npx playwright install""#,
+        r#"function f { npx "$@"; }; f playwright install"#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Block(Rule::G1), "{command}");
+    }
+    // ... and a read variable passed to a function reaches its body (I-1)
+    for command in [
+        r#"f() { eval "$1"; }; echo npx playwright install | while read l; do f "$l"; done"#,
+        r#"f() { "$@"; }; echo npx playwright install | while read l; do f $l; done"#,
+        r#"f() { sh -c "$1"; }; echo npx playwright install | while read l; do f "$l"; done"#,
+        "f() {\n  local cmd=$1\n  eval \"$cmd\"\n}; echo npx playwright install | while read l; do f \"$l\"; done",
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command:?}");
+    }
+    // everyday positional and function forms stay allowed
+    for command in [
+        r#"sh -c 'echo "$1"' _ hello"#,
+        r#"find . -name '*.md' -exec sh -c 'wc -l "$1"' _ {} \;"#,
+        r#"bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt"#,
+        r#"greet() { echo "hello $1"; }; greet world"#,
+        r#"run() { "$@"; }; run make test"#,
+        r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000"#,
+        r#"f() { cd "$1" && git pull; }; f repo"#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Allow, "{command}");
+    }
+}
+
+#[test]
+fn sh_f4_a_piped_function_that_wraps_xargs_is_too_complex() {
+    // Ruling (review-sh-f3 M-2): stricter than the inline form, which is read (`find ... | xargs rm -f`)
+    for command in [
+        "rmall() { xargs rm -f; }; find . -name '*.tmp' | rmall",
+        "f() { xargs -n1 echo; }; ls | f",
+    ] {
+        assert_eq!(verdict(command), Verdict::TooComplex, "{command}");
+    }
+    assert_eq!(
+        verdict("find . -name '*.tmp' | xargs rm -f"),
+        Verdict::Allow
+    );
+}
