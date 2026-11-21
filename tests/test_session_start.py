@@ -1098,6 +1098,8 @@ class GuideTest(unittest.TestCase):
         self.assertIn("Docker unavailable: stop and tell the user", self.text)
         self.assertIn("rtk bypass <cmd>", self.text)
         self.assertIn("anthology-mem search", self.text)
+        self.assertRegex(self.text, r"(?s)Before each merge or pull.{0,40}commit any uncommitted "
+                                  r"`\.claude/agent-memory/` changes, whichever agent wrote them")
         self.assertIn("[[note-name]]", self.text)
         self.assertRegex(self.text, r"Never save secrets")
 
