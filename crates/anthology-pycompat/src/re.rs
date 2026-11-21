@@ -883,7 +883,12 @@ impl Parser<'_> {
             return self
                 .err("a capture group inside a repeat that can match empty is not supported");
         }
-        if self.atom_blank {
+        if self.atom_blank && max == Some(0) && self.atom_captures {
+            // Never matched, so its groups stay unset: `(?:(?!)A|)`.
+            self.fancy = true;
+            let a = self.out.split_off(self.atom_start);
+            self.out.push_str(&format!("(?:(?!){a}|)"));
+        } else if self.atom_blank {
             // Nothing to repeat: the group stays as written, once.
         } else if possessive {
             // `X*+` is the atomic `(?>X*)`.
@@ -1731,6 +1736,12 @@ mod tests {
         let re = compile("(){2}x", false).unwrap();
         let groups: Vec<_> = re.captures_iter("ax").map(Result::unwrap).collect();
         assert_eq!(groups, [vec![Some((1, 2)), Some((1, 1))]]);
+        // A count of 0 never runs the group, so it stays unset (review round 4).
+        for p in ["(){0}x", "(?:()){0}x"] {
+            let re = compile(p, false).unwrap();
+            let groups: Vec<_> = re.captures_iter("x").map(Result::unwrap).collect();
+            assert_eq!(groups, [vec![Some((0, 1)), None]], "{p}");
+        }
     }
 
     #[test]
