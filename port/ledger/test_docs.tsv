@@ -1,6 +1,6 @@
 # python_id	status	rust_test	note
 test_docs.ContributingDocTest.test_links_the_evals	ported	crates/repo-tests/tests/docs.rs::contributing_doc_test::test_links_the_evals	
-test_docs.ContributingDocTest.test_links_the_maintainer_tools	ported	crates/repo-tests/tests/docs.rs::contributing_doc_test::test_links_the_maintainer_tools	omitted: `scripts/vendor.py` link -> CO2 replacement: cutover_docs.rs asserts CONTRIBUTING.md links `scripts/dev.sh`; rows:computed the literal tool list, looped with every failure collected
+test_docs.ContributingDocTest.test_links_the_maintainer_tools	ported	crates/repo-tests/tests/docs.rs::contributing_doc_test::test_links_the_maintainer_tools	omitted: `scripts/vendor.py` link -> CO2 replacement: crates/repo-tests/tests/cutover_docs.rs::contributing_links_the_dev_tool_runner asserts CONTRIBUTING.md links `scripts/dev.sh`; rows:computed the literal tool list, looped with every failure collected
 test_docs.DecisionsDocTest.test_entries_are_adr_style	ported	crates/repo-tests/tests/docs.rs::decisions_doc_test::test_entries_are_adr_style	rows:computed the literal required fields, looped with every failure collected
 test_docs.LicenseTest.test_license_is_apache_2	ported	crates/repo-tests/tests/docs.rs::license_test::test_license_is_apache_2	
 test_docs.LicenseTest.test_license_is_unmodified	ported	crates/repo-tests/tests/docs.rs::license_test::test_license_is_unmodified	
