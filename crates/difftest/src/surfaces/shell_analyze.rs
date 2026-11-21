@@ -554,10 +554,64 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "npx $'pl\\x61ywright' install\necho '",
         // the negative control the owner named
         "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"",
+        // SH-FW review (one Opus review of the hardening): C-1 tar --checkpoint-action
+        "tar -cf b.tar --checkpoint=1 --checkpoint-action exec='npx playwright install' a",
+        "tar -cf b.tar --checkpoint=1 --checkpoint-act=exec='npx playwright install' a",
+        // C-2 git options, keys and ext:: URLs that run a command
+        "git clone -u 'npx playwright install' . ../c",
+        "git push --receive-pack='npx playwright install' . HEAD:refs/heads/z",
+        "git archive --remote=. --exec='npx playwright install' HEAD",
+        "git -c remote.o.url=. -c remote.o.uploadpack='npx playwright install' fetch o",
+        "git -c difftool.z.cmd='npx playwright install' difftool --cached -y --tool=z",
+        "git -c protocol.ext.allow=always ls-remote 'ext::npx playwright install'",
+        // M-3 wrappers
+        "gosu root npx playwright install",
+        "micromamba run -n x npx playwright install",
+        // I-1 fd clusters
+        "fdfind -Hx npx playwright install",
+        "fd -HIx npx playwright install",
+        // C-5 subscripts
+        "let 'a[$(npx playwright install)]=1'",
+        "[[ 'a[$(npx playwright install)]' -eq 0 ]]",
+        "printf -v 'a[$(npx playwright install)]' x",
+        "test -v 'a[$(npx playwright install)]'",
+        // C-3 brace expansion, C-4 decoded echo/printf text, I-2 a newline after a pipe
+        "{npx,playwright,install}",
+        "echo -e 'npx\\x20playwright install' | sh",
+        "printf 'npx\\x20playwright install' | sh",
+        "echo npx playwright install |\nsh",
+        // M-4 everyday controls
+        "eval \"$(fnm env)\"",
+        "bash <(curl -fsSL https://example.com/install.sh)",
+        "npx prettier --check src playwright test",
     ];
-    FW.iter()
+    let mut out: Vec<Value> = FW
+        .iter()
         .map(|text| case(text.to_string(), "/home/tester"))
-        .collect()
+        .collect();
+    // I-3: a cap that drops input is too complex
+    out.push(case(
+        format!(
+            "printf '{}npx playwright install\\n' | xargs -I{{}} sh -c '{{}}'",
+            "true\\n".repeat(64)
+        ),
+        "/home/tester",
+    ));
+    out.push(case(
+        format!(
+            "parallel ::: {}'npx playwright install'",
+            "true ".repeat(64)
+        ),
+        "/home/tester",
+    ));
+    out.push(case(
+        format!(
+            "timeout 5 mytool{} npx playwright install",
+            " sh".repeat(70)
+        ),
+        "/home/tester",
+    ));
+    out
 }
 
 /// Hand-written commands where a port could plausibly differ, and the `lower()` sweep.

@@ -48,3 +48,100 @@ reason = "Rust stricter: FW-I R1-M3, dotenvx run -- runs its command (the refere
 class = "D-8"
 case = "fw:7"
 reason = "Rust stricter: FW-I R1-M3, infisical run --command runs its shell line (the reference reads infisical as a plain program)."
+
+# The one Opus review of the hardening (SH-FW review): inherited bypasses, fixed in Rust only.
+
+[[divergence]]
+class = "D-8"
+case = "fw:14"
+reason = "Rust stricter: SH-FW review C-1, tar --checkpoint-action as a separate word runs its exec= command (GNU tar 1.35); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:15"
+reason = "Rust stricter: SH-FW review C-1, tar --checkpoint-act= (a getopt abbreviation) runs its exec= command (GNU tar 1.35); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:16"
+reason = "Rust stricter: SH-FW review C-2, git clone -u runs its upload-pack command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:17"
+reason = "Rust stricter: SH-FW review C-2, git push --receive-pack runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:18"
+reason = "Rust stricter: SH-FW review C-2, git archive --exec runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:19"
+reason = "Rust stricter: SH-FW review C-2, the config key remote.*.uploadpack runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:20"
+reason = "Rust stricter: SH-FW review C-2, the config key difftool.*.cmd runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:21"
+reason = "Rust stricter: SH-FW review C-2, an ext:: URL runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:22"
+reason = "Rust stricter: SH-FW review M-3, gosu <user> runs the command after it; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:23"
+reason = "Rust stricter: SH-FW review M-3, micromamba run -n <env> runs the command after it; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:24"
+reason = "Rust stricter: SH-FW review I-1, an fd cluster ending in x (-Hx) runs its command (fdfind 10.2); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:25"
+reason = "Rust stricter: SH-FW review I-1, an fd cluster ending in x (-HIx) runs its command (fdfind 10.2); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:26"
+reason = "Rust stricter: SH-FW review C-5, let evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:27"
+reason = "Rust stricter: SH-FW review C-5, [[ -eq evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:28"
+reason = "Rust stricter: SH-FW review C-5, printf -v evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:29"
+reason = "Rust stricter: SH-FW review C-5, test -v evaluates the subscript's $(...) inside single quotes; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:37"
+reason = "Rust stricter: SH-FW review I-3, more than 64 fed stdin lines are too complex (the reference drops the 65th); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:38"
+reason = "Rust stricter: SH-FW review I-3, more than 64 GNU parallel inputs are too complex (the reference drops the 65th); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:39"
+reason = "Rust stricter: SH-FW review I-3, more than 64 alternate readings are too complex (the reference drops the 65th); bash runs it, the reference allows it."
