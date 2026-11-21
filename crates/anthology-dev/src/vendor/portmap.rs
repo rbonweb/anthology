@@ -1,7 +1,7 @@
 //! Port maps (vendor.py `load_portmap`, `portmap_scripts`, `portmap_problems`): the script rule
 //! applied to the pristine and the shipped tree, and the Chrome-launch pattern.
 //!
-//! `js_node_regex` is a str pattern: it goes through the Python → fancy-regex translation
+//! `js_node_regex` is a str pattern: it goes through `pycompat::re`
 //! (plan GC-16; today it has no lookaround, which `tests/vendor/portmap_test.rs` records).
 //! `chrome_regex` is compiled as bytes with IGNORECASE, as vendor.py does: fancy-regex's ASCII
 //! bytes mode (ASCII classes and case folding, any byte matched).
@@ -12,6 +12,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anthology_pycompat::json::{self, Value};
+use anthology_pycompat::re;
 
 use super::compare::{exists, is_file, os_err, os_walk, rel_posix, sort_names};
 use super::manifest::type_name;
@@ -36,7 +37,7 @@ fn subscript(data: &Value, k: &str) -> std::result::Result<Value, String> {
 /// cache lookup fails first), anything else is not a pattern.
 fn compile_value(pattern: &Value) -> std::result::Result<(), String> {
     match pattern {
-        Value::Str(text) => py::compile_str(text).map(|_| ()),
+        Value::Str(text) => re::compile(text, false).map(|_| ()),
         Value::Array(_) | Value::Object(_) => {
             Err(format!("unhashable type: '{}'", type_name(pattern)))
         }
@@ -97,7 +98,7 @@ pub fn portmap_scripts(tree: &Path, rule: &json::Map) -> Result<BTreeSet<String>
         .get("js_node_regex")
         .and_then(Value::as_str)
         .ok_or_else(|| bad_map("js_node_regex"))?;
-    let node_js = py::compile_str(pattern).map_err(|e| bad_map(&e))?;
+    let node_js = re::compile(pattern, false).map_err(|e| bad_map(&e))?;
     let shebang = py::truthy(rule.get("shebang"));
     let mut found = BTreeSet::new();
     os_walk(tree, |w| {

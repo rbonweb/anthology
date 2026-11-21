@@ -35,7 +35,7 @@ INIT_MODULES = ["agents_md.rs", "claude.rs", "mod.rs"]
 
 CARGO_DEPS = {
     "dependencies": [
-        "anyhow", "base16ct", "chrono", "clap", "codepage", "colored", "crossterm", "dirs",
+        "anthology-shell", "anyhow", "base16ct", "chrono", "clap", "codepage", "colored", "crossterm", "dirs",
         "encoding_rs", "flate2", "ignore", "oem_cp", "quick-xml", "ratatui", "regex", "rtk-text",
         "rusqlite", "serde", "serde_json", "sha2", "tempfile", "toml", "toml_edit", "ureq",
         "walkdir", "which",

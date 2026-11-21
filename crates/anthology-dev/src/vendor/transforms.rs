@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use anthology_pycompat::json::{self, Value};
+use anthology_pycompat::re as pyre;
 use fancy_regex::{BytesMode, RegexBuilder};
 use regex::Regex;
 
@@ -163,10 +164,10 @@ pub fn rename_plugin(
 
 /// The patterns of `strip_connectors`, compiled once.
 struct Patterns {
-    connector_heading: Regex,
+    connector_heading: pyre::Regex,
     md_heading: Regex,
     md_fence: Regex,
-    fallback: Regex,
+    fallback: pyre::Regex,
     list_marker: Regex,
     if_placeholder_connected: Regex,
     if_tools_connected: fancy_regex::Regex,
@@ -182,15 +183,19 @@ fn patterns() -> &'static Patterns {
         Patterns {
             // Connector setup sections: "Connectors", "If Connectors Available", "Tool
             // Integration", "Connect <Product> (optional)", "... Connected Tools".
-            connector_heading: re(py::py_casefold_pattern(&format!(
-                r"(?i)\A(?:if connectors available|connectors?|tool integrations?|connect {W}+(?: \(optional\))?|.*\bconnected tools)\n?\z"
-            ))),
+            connector_heading: pyre::compile(
+                r"\A(?:if connectors available|connectors?|tool integrations?|connect \w+(?: \(optional\))?|.*\bconnected tools)\n?\Z",
+                true,
+            )
+            .unwrap_or_else(|e| unreachable!("CONNECTOR_HEADING: {e}")),
             md_heading: re(r"\A(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?\n?\z".to_string()),
             md_fence: re(format!(r"\A{S}*(`{{3,}}|~{{3,}})(.*)\n?\z")),
             // What stays when the connector setup around it goes.
-            fallback: re(py::py_casefold_pattern(&format!(
-                r"(?i)\A{S}*(?:[-*+]{S}+)?(?:\*\*)?(?:if{S}+(?:no|none|neither)\b.*\bconnected\b|if\b.*\bnot{S}+connected\b|without\b.*\btools?\b)"
-            ))),
+            fallback: pyre::compile(
+                r"\A\s*(?:[-*+]\s+)?(?:\*\*)?(?:if\s+(?:no|none|neither)\b.*\bconnected\b|if\b.*\bnot\s+connected\b|without\b.*\btools?\b)",
+                true,
+            )
+            .unwrap_or_else(|e| unreachable!("FALLBACK: {e}")),
             list_marker: re(format!(r"\A{S}*(?:[-*+]|{D}+[.)]){S}")),
             if_placeholder_connected: re(format!(r"\A{S}*(?:\*\*)?If\b.*~~.*\bconnected\b")),
             if_tools_connected: fancy_regex::Regex::new(&format!(
@@ -223,12 +228,22 @@ fn is_blank(s: &str) -> bool {
     py::strip(s).is_empty()
 }
 
-fn is_connector_heading(text: &str) -> bool {
+/// `re.search` on a pycompat pattern; a backtrack-limit error fails the transform.
+fn hit(name: &str, re: &pyre::Regex, text: &str) -> Result<bool> {
+    re.is_match(text)
+        .map_err(|e| VendorError(format!("{name}: regex limit ({e})")))
+}
+
+fn is_connector_heading(text: &str) -> Result<bool> {
     let p = patterns();
-    if p.fallback.is_match(text) {
-        return false;
+    if hit("strip-connectors FALLBACK", &p.fallback, text)? {
+        return Ok(false);
     }
-    p.connector_heading.is_match(py::strip(text)) || text.contains("~~")
+    Ok(hit(
+        "strip-connectors CONNECTOR_HEADING",
+        &p.connector_heading,
+        py::strip(text),
+    )? || text.contains("~~"))
 }
 
 /// `_fence_end`: the index of the line closing the fence opened at `start` (the last line if
@@ -294,8 +309,9 @@ fn fallbacks_in<'a>(
     start: usize,
     end: usize,
     level: usize,
-) -> Vec<Vec<&'a str>> {
+) -> Result<Vec<Vec<&'a str>>> {
     let p = patterns();
+    let fallback = |text: &str| hit("strip-connectors FALLBACK", &p.fallback, text);
     let mut chunks = Vec::new();
     let mut j = start + 1;
     while j < end {
@@ -306,10 +322,10 @@ fn fallbacks_in<'a>(
         }
         let h = heading(line);
         let stop = match h {
-            Some((hashes, text)) if hashes > level && p.fallback.is_match(text) => {
+            Some((hashes, text)) if hashes > level && fallback(text)? => {
                 section_end(lines, j, hashes).min(end)
             }
-            None if p.fallback.is_match(line) => if_block_end(lines, j).min(end),
+            None if fallback(line)? => if_block_end(lines, j).min(end),
             _ => {
                 j += 1;
                 continue;
@@ -322,7 +338,7 @@ fn fallbacks_in<'a>(
         chunks.push(chunk);
         j = stop;
     }
-    chunks
+    Ok(chunks)
 }
 
 /// `_strip_markdown(text)`: the text with its connector markup removed (see
@@ -401,10 +417,10 @@ pub fn strip_markdown(text: &str) -> Result<String> {
             continue;
         }
         if let Some((level, text)) = heading(probe)
-            && is_connector_heading(text)
+            && is_connector_heading(text)?
         {
             let end = section_end(&lines, i, level);
-            let kept = fallbacks_in(&lines, i, end, level);
+            let kept = fallbacks_in(&lines, i, end, level)?;
             if !kept.is_empty() {
                 // The section goes, its fallbacks stay under the section's own heading.
                 out.push(line);
