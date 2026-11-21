@@ -38,6 +38,10 @@ export RTK_SUPPRESS_HOOK_WARNING
 # literal command text and Claude Code never auto-allows a `$'...'` spelling, so keeping the ask
 # only caused false prompts (a `$'` in a heredoc body is not decoded by the shell). Cost if wrong:
 # a disguised-rtk line gets the user's own checks, not rtk's ask.
+# Ruling: rtk counts only when no letter or underscore comes right before it (`insertKey` is not a
+# mention). n, r, t, b and f still count as a boundary: they are what a JSON `\n`, `\r`, `\t`, `\b`
+# or `\f` leaves once the backslashes are gone. Only a `\`+newline (`\\\n` in the JSON) is joined.
+# Cost if wrong: a real rtk call with a letter glued in front gets the user's own checks, not the ask.
 input=$(cat)
 out=$(printf '%s' "$input" | "$rtk_path" hook claude)
 rc=$?
@@ -50,8 +54,8 @@ if [ "$rc" -eq 0 ] &&
       cmd=$(printf '%s' "$input" | tr -d '\n\r' |
         LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
       [ -n "$cmd" ] || cmd=$input
-      printf '%s' "$cmd" | LC_ALL=C sed 's/\\n//g' | LC_ALL=C tr -d "\\\\\"'\$" |
-        LC_ALL=C grep -qi rtk || exit 0 ;;
+      printf '%s' "$cmd" | LC_ALL=C sed 's/\\\\\\n//g' | LC_ALL=C tr -d "\\\\\"'\$" |
+        LC_ALL=C grep -Eqi '(^|[^a-z_]|[nrtbf])rtk' || exit 0 ;;
   esac
 fi
 [ -z "$out" ] || printf '%s\n' "$out"
