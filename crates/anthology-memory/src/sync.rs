@@ -10,7 +10,9 @@
 //!
 //! Every user-visible string is verbatim from `memory_sync.py`. Rust differs from Python only
 //! where Python would block forever: a FIFO (or a link to one) where a JSON ledger or a
-//! hand-made `MEMORY.md` is read is "unreadable" here, never opened for a blocking read.
+//! hand-made `MEMORY.md` is read is "unreadable" here, never opened for a blocking read; and
+//! (D-8, Rust stricter) a hand-made `MEMORY.md` that is a symlink is never followed into the
+//! session context.
 //!
 //! [`run`] never panics outward: an error, or a panic, becomes one `anthology memory: …`
 //! message with an empty context, as Python's `except Exception`.
@@ -882,7 +884,14 @@ fn context_index(directory: &Path, exclude: &[&str]) -> Result<String, PyExc> {
             text
         });
     }
-    let Ok(raw) = read_follow(&directory.join("MEMORY.md")) else {
+    // Rust stricter (D-8, controller ruling): a hand-made index is read only when it is a
+    // regular file, never through a symlink (which could pull any file into the session
+    // context). Anything else is unreadable, as Python's `except OSError`.
+    let index = directory.join("MEMORY.md");
+    if lstat_kind(&index) != Kind::File {
+        return Ok(String::new());
+    }
+    let Ok(raw) = fsx::read_regular(&index, None) else {
         return Ok(String::new());
     };
     let raw = String::from_utf8_lossy(&raw);

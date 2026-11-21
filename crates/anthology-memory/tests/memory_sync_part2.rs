@@ -3063,3 +3063,29 @@ mod ms2_rust_only {
         assert_eq!(msgs, ["anthology memory: repo memory step failed: kaboom"]);
     }
 }
+
+/// D-8 (Rust stricter, controller ruling): a symlinked hand-made MEMORY.md is never read into
+/// the session context (Python's `read_text` follows it).
+mod ms2_d8 {
+    use super::*;
+
+    #[test]
+    fn a_symlinked_hand_made_index_is_not_read_into_the_context() {
+        let c = MemCase::new();
+        let personal = c.anth.join("personal-memory");
+        fs::create_dir_all(&personal).unwrap();
+        let outside = write(
+            &c.tmp.join("outside.txt"),
+            "private text outside memory\n",
+            None,
+        );
+        symlink(&outside, personal.join("MEMORY.md")).unwrap();
+        let (ctx, msgs) = run(&c, &c.tmp);
+        assert_eq!((ctx, msgs), (personal_only(&c.anth), vec![]));
+        // a regular hand-made index is still shown
+        fs::remove_file(personal.join("MEMORY.md")).unwrap();
+        write(&personal.join("MEMORY.md"), "hand-made\n", None);
+        let (ctx, _) = run(&c, &c.tmp);
+        assert!(ctx.ends_with("\n\nhand-made\n"), "{ctx}");
+    }
+}
