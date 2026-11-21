@@ -6,10 +6,14 @@
 //! the parts `_load_archive` drives, not the `tar` crate (which is strict where `tarfile` is
 //! lenient, and the reverse):
 //!
-//! - [`Gz`] is `GzipFile` in read mode: concatenated members; zero padding after a member;
-//!   a member's CRC and length, and whatever follows it, checked only when a read goes past
-//!   its end (so trailing garbage or a bad CRC after the last byte `tarfile` needs is never
-//!   seen, as in Python); `seek` reads forward, or rewinds and reads again.
+//! - [`Gz`] is `GzipFile` in read mode, its `BufferedReader` and `_GzipReader` read for
+//!   read: concatenated members; zero padding after a member; a member's CRC and length, and
+//!   whatever follows it, checked only when a read goes past its end (so trailing garbage or a
+//!   bad CRC after the last byte `tarfile` needs is never seen, as in Python); `seek` reads
+//!   forward, or rewinds and reads again. Corrupt deflate data fails the read whose zlib
+//!   `decompress(data, max_length)` call meets it, which depends on how much each call is
+//!   asked for, so the call sizes are Python's; and zlib's "invalid distance too far back",
+//!   which miniz_oxide does not check, is found by a second decoder.
 //! - [`CappedReader`] is `_CappedReader`: no read may end past [`STREAM_LIMIT`]. A read that
 //!   would is first measured without keeping the bytes, so a bomb is refused unbuffered.
 //! - [`Tar`] is `TarFile.next`, `TarInfo._frombuf`, the `_proc_*` methods and `ExFileObject`
@@ -28,7 +32,7 @@
     reason = "positions are u64 and sizes i128, converted after range checks"
 )]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::fs::OpenOptionsExt;
@@ -91,6 +95,7 @@ const PATH_MAX: usize = 4096;
 const ENAMETOOLONG: i32 = 63;
 #[cfg(not(target_os = "macos"))]
 const ENAMETOOLONG: i32 = 36;
+const EISDIR: i32 = 21;
 #[cfg(target_os = "macos")]
 const O_NONBLOCK: i32 = 0x0004;
 #[cfg(not(target_os = "macos"))]
@@ -177,6 +182,44 @@ fn check_name_b(name: &[u8]) -> Result<Kind, Rejected> {
 // The capped stream
 // ---------------------------------------------------------------------------------------------
 
+/// What a [`CappedReader`] reads: Python's `read(n)` (at most `n` bytes, fewer only at the
+/// end; kept, or only counted), `seek(pos)` and `tell()`. Any `Read + Seek` is one.
+pub trait Stream {
+    /// `read(n)`: the bytes if `keep`, and how many there were.
+    fn read_n(&mut self, n: u64, keep: bool) -> io::Result<(Vec<u8>, u64)>;
+    /// `seek(pos)`: the position reached.
+    fn seek_to(&mut self, pos: u64) -> io::Result<u64>;
+    /// `tell()`.
+    fn tell(&mut self) -> io::Result<u64>;
+}
+
+impl<R: Read + Seek> Stream for R {
+    fn read_n(&mut self, n: u64, keep: bool) -> io::Result<(Vec<u8>, u64)> {
+        let (mut out, mut count) = (Vec::new(), 0u64);
+        let mut chunk = [0u8; 8192];
+        while count < n {
+            let want = (n - count).min(chunk.len() as u64) as usize;
+            let got = self.read(&mut chunk[..want])?;
+            if got == 0 {
+                break;
+            }
+            if keep {
+                out.extend_from_slice(&chunk[..got]);
+            }
+            count += got as u64;
+        }
+        Ok((out, count))
+    }
+
+    fn seek_to(&mut self, pos: u64) -> io::Result<u64> {
+        self.seek(SeekFrom::Start(pos))
+    }
+
+    fn tell(&mut self) -> io::Result<u64> {
+        self.stream_position()
+    }
+}
+
 /// `_CappedReader(gz, limit)`: a view of a stream that refuses to go past `limit` bytes. A
 /// read error of the stream is `not a readable memory archive: <error>`.
 pub struct CappedReader<R> {
@@ -184,7 +227,7 @@ pub struct CappedReader<R> {
     limit: u64,
 }
 
-impl<R: Read + Seek> CappedReader<R> {
+impl<R: Stream> CappedReader<R> {
     pub fn new(inner: R, limit: u64) -> CappedReader<R> {
         CappedReader { inner, limit }
     }
@@ -196,7 +239,7 @@ impl<R: Read + Seek> CappedReader<R> {
 
     /// `read(n)`; `None` reads everything. As in Python, at most one byte past the limit is
     /// asked for, and reaching past the limit is the size-limit rejection; unlike Python, such
-    /// a read is first measured without keeping the bytes.
+    /// a read is first made without keeping the bytes.
     pub fn read(&mut self, n: Option<u64>) -> Result<Vec<u8>, Rejected> {
         let tell = self.tell()?;
         let Some(room) = self.limit.checked_sub(tell) else {
@@ -206,38 +249,20 @@ impl<R: Read + Seek> CappedReader<R> {
         let n = match n {
             Some(n) if n < reach => n,
             _ => {
-                self.probe(tell, reach)?;
+                // If all `reach` bytes are there, Python's read ends past the limit.
+                let (_, got) = self.inner.read_n(reach, false).map_err(not_readable)?;
+                if got == reach {
+                    return Err(cap());
+                }
+                self.inner.seek_to(tell).map_err(not_readable)?;
                 reach
             }
         };
-        let mut out = Vec::new();
-        let mut chunk = [0u8; 8192];
-        while (out.len() as u64) < n {
-            let want = (n - out.len() as u64).min(chunk.len() as u64) as usize;
-            let got = self.inner.read(&mut chunk[..want]).map_err(not_readable)?;
-            if got == 0 {
-                break;
-            }
-            out.extend_from_slice(&chunk[..got]);
-        }
+        let (data, _) = self.inner.read_n(n, true).map_err(not_readable)?;
         if self.tell()? > self.limit {
             return Err(cap());
         }
-        Ok(out)
-    }
-
-    /// Whether `len` more bytes exist from `start`: if they do, the read would end past the
-    /// limit, which is the rejection; if not, back to `start` for the real read.
-    fn probe(&mut self, start: u64, len: u64) -> Result<(), Rejected> {
-        let got =
-            io::copy(&mut (&mut self.inner).take(len), &mut io::sink()).map_err(not_readable)?;
-        if got == len {
-            return Err(cap());
-        }
-        self.inner
-            .seek(SeekFrom::Start(start))
-            .map_err(not_readable)?;
-        Ok(())
+        Ok(data)
     }
 
     /// `seek(pos)`. Past the limit is the rejection; a negative position is 0, as
@@ -246,13 +271,12 @@ impl<R: Read + Seek> CappedReader<R> {
         if pos > i128::from(self.limit) {
             return Err(cap());
         }
-        let pos = pos.max(0) as u64;
-        self.inner.seek(SeekFrom::Start(pos)).map_err(not_readable)
+        self.inner.seek_to(pos.max(0) as u64).map_err(not_readable)
     }
 
     /// `tell()`.
     pub fn tell(&mut self) -> Result<u64, Rejected> {
-        self.inner.stream_position().map_err(not_readable)
+        self.inner.tell().map_err(not_readable)
     }
 }
 
@@ -260,38 +284,80 @@ impl<R: Read + Seek> CappedReader<R> {
 // gzip
 // ---------------------------------------------------------------------------------------------
 
-/// `gzip.GzipFile(fileobj=io.BytesIO(blob), mode="rb")`, decoding on demand (module docs).
-struct Gz<'a> {
-    blob: &'a [u8],
-    /// Where the next compressed byte is read.
-    at: usize,
-    /// The decompressed position.
-    pos: u64,
-    state: GzState,
-    dec: Decompress,
-    crc: Crc,
-    /// The far-back check of the member's first [`WINDOW`] bytes (`Gz::far_back`).
-    shadow: Option<Shadow>,
-    /// Where the member to check starts, until the shadow is primed for it.
-    shadow_from: Option<usize>,
-}
-
+/// `io.DEFAULT_BUFFER_SIZE`: `GzipFile`'s `BufferedReader` and `DecompressReader.seek`.
+const BUFFER: usize = 8192;
+/// `gzip.READ_BUFFER_SIZE`: the compressed bytes `_GzipReader` hands zlib at a time.
+const READ_BUFFER_SIZE: usize = 128 * 1024;
 /// The deflate window.
 const WINDOW: usize = 32768;
+/// How `zlib.error` starts.
+const ZLIB: &str = "Error -3 while decompressing data: ";
+const GZ_EOF: &str = "Compressed file ended before the end-of-stream marker was reached";
+
+fn gz_error(text: String) -> io::Error {
+    io::Error::other(text)
+}
+
+/// `gzip.GzipFile(fileobj=io.BytesIO(blob), mode="rb")`: its `BufferedReader` over a
+/// `_GzipReader`, call for call, because when zlib meets corrupt data is decided by how much
+/// each `decompress(data, max_length)` call is asked for (module docs). The deflate decoder is
+/// miniz_oxide, run ahead into a small buffer so a failure's output position is exact; a
+/// call fails as zlib's would: when the failure lies within what the call may produce (or right
+/// at its end, for a failure that writes nothing), and within the input zlib has been given.
+struct Gz<'a> {
+    blob: &'a [u8],
+    /// `_PaddedFile`'s position: the next compressed byte for a header, a trailer or a new
+    /// `READ_BUFFER_SIZE` chunk for zlib.
+    cursor: usize,
+    /// `_GzipReader._pos`: the decompressed bytes it has returned.
+    raw_pos: u64,
+    state: GzState,
+    dec: Decompress,
+    /// Where the decoder's next compressed byte is (it is given bytes up to `cursor` only).
+    dec_in: usize,
+    /// Decoded bytes not returned yet (at most one decoder call's worth).
+    ahead: VecDeque<u8>,
+    /// The decoder reached the end of the member's deflate data.
+    ended: bool,
+    /// Where decoding fails: the raw position, whether the failure is a match that writes
+    /// (zlib meets it only with room to write), and zlib's text.
+    failure: Option<(u64, bool, String)>,
+    crc: Crc,
+    shadow: Shadow,
+    /// The decoder's output buffer, kept between calls.
+    scratch: Vec<u8>,
+    /// `BufferedReader`'s buffer (the bytes just before `raw_pos`) and read position.
+    buf: Vec<u8>,
+    bpos: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GzState {
+    /// `_new_member`: a member header is next (or the end).
+    Header,
+    Body,
+    /// `decompressor.eof`: the trailer is checked by the next read.
+    Trailer,
+    Done,
+}
 
 /// A second decoder of the member whose window starts as [`WINDOW`] bytes of `0xff`, not
 /// zeros: zlib refuses a match that reaches back before the member's first byte ("invalid
-/// distance too far back"), miniz_oxide copies from its zeroed window instead. Within the
-/// first [`WINDOW`] bytes (the only place such a match can be), the two decoders differ exactly
-/// where one is.
+/// distance too far back"), miniz_oxide copies from its window instead. Within the first
+/// [`WINDOW`] bytes, the only place such a match can be, the two decoders differ exactly where
+/// one is.
 struct Shadow {
     dec: Decompress,
     /// Where it reads the member's compressed bytes (it consumes them at its own pace).
     at: usize,
-    /// Member bytes it has produced.
+    /// Member bytes it has compared.
     made: usize,
-    /// Whether it is checking the current member.
+    /// Whether it is checking the current member, and where that member's data starts while
+    /// it is not primed yet.
     active: bool,
+    start: Option<usize>,
+    /// Its output buffer, kept between calls.
+    theirs: Vec<u8>,
 }
 
 /// A non-final stored block of [`WINDOW`] `0xff` bytes.
@@ -305,62 +371,149 @@ static PRIMER: [u8; 5 + WINDOW] = {
     b
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GzState {
-    /// A member header is next (or the end).
-    Header,
-    Body,
-    /// The member's deflate data ended; its trailer is checked by the next read.
-    Trailer,
-    /// A match reached back before the member's start: the next read fails.
-    FarBack,
-    Done,
+impl Shadow {
+    fn new() -> Shadow {
+        Shadow {
+            dec: Decompress::new(false),
+            at: 0,
+            made: 0,
+            active: false,
+            start: None,
+            theirs: Vec::new(),
+        }
+    }
+
+    /// Checks a new member, whose deflate data starts at `at`.
+    fn start(&mut self, at: usize) {
+        self.active = false;
+        self.start = Some(at);
+    }
+
+    /// How many of `out`, the member's next decoded bytes, are not copied from before its
+    /// start (all of them past the first [`WINDOW`]).
+    fn good(&mut self, blob: &[u8], out: &[u8]) -> usize {
+        if out.is_empty() {
+            return 0;
+        }
+        if let Some(at) = self.start.take() {
+            self.active = self.prime(at);
+        }
+        if !self.active {
+            return out.len();
+        }
+        let n = out.len().min(WINDOW - self.made);
+        let mut theirs = std::mem::take(&mut self.theirs);
+        theirs.resize(n, 0);
+        let mut filled = 0;
+        while filled < n {
+            let (i, o) = (self.dec.total_in(), self.dec.total_out());
+            let Ok(status) = self.dec.decompress(
+                &blob[self.at..],
+                &mut theirs[filled..],
+                FlushDecompress::None,
+            ) else {
+                break;
+            };
+            self.at += (self.dec.total_in() - i) as usize;
+            let made = (self.dec.total_out() - o) as usize;
+            filled += made;
+            if made == 0 && (status == Status::StreamEnd || self.dec.total_in() == i) {
+                break;
+            }
+        }
+        self.made += filled;
+        let good = out[..filled]
+            .iter()
+            .zip(&theirs[..filled])
+            .take_while(|(a, b)| a == b)
+            .count();
+        self.theirs = theirs;
+        if good < filled {
+            self.active = false;
+            return good;
+        }
+        if filled < n || self.made >= WINDOW {
+            self.active = false;
+        }
+        out.len()
+    }
+
+    /// The decoder after the primer, ready for the member's data at `at`.
+    fn prime(&mut self, at: usize) -> bool {
+        self.dec.reset(false);
+        let mut sink = [0u8; 8192];
+        while self.dec.total_out() < WINDOW as u64 {
+            let (i, o) = (self.dec.total_in(), self.dec.total_out());
+            let ok = self
+                .dec
+                .decompress(&PRIMER[i as usize..], &mut sink, FlushDecompress::None)
+                .is_ok();
+            if !ok || (self.dec.total_in(), self.dec.total_out()) == (i, o) {
+                return false;
+            }
+        }
+        self.at = at;
+        self.made = 0;
+        true
+    }
 }
 
-/// How `zlib.error` starts.
-const ZLIB: &str = "Error -3 while decompressing data: ";
-const GZ_EOF: &str = "Compressed file ended before the end-of-stream marker was reached";
+/// Where a `_GzipReader.read` call puts its bytes.
+enum Dest<'b> {
+    Keep(&'b mut Vec<u8>),
+    Discard,
+}
 
-fn gz_error(text: String) -> io::Error {
-    io::Error::other(text)
+impl Dest<'_> {
+    fn put(&mut self, b: &[u8]) {
+        if let Dest::Keep(v) = self {
+            v.extend_from_slice(b);
+        }
+    }
 }
 
 impl<'a> Gz<'a> {
     fn new(blob: &'a [u8]) -> Gz<'a> {
         Gz {
             blob,
-            at: 0,
-            pos: 0,
+            cursor: 0,
+            raw_pos: 0,
             state: GzState::Header,
             dec: Decompress::new(false),
+            dec_in: 0,
+            ahead: VecDeque::new(),
+            ended: false,
+            failure: None,
             crc: Crc::new(),
-            shadow: None,
-            shadow_from: None,
+            shadow: Shadow::new(),
+            scratch: Vec::new(),
+            buf: Vec::new(),
+            bpos: 0,
         }
     }
 
     /// `_read_exact(fp, n)`.
     fn exact(&mut self, n: usize) -> io::Result<&'a [u8]> {
-        if self.blob.len() - self.at < n {
-            self.at = self.blob.len();
+        if self.blob.len() - self.cursor < n {
+            self.cursor = self.blob.len();
             return Err(gz_error(GZ_EOF.to_string()));
         }
-        let out = &self.blob[self.at..self.at + n];
-        self.at += n;
+        let out = &self.blob[self.cursor..self.cursor + n];
+        self.cursor += n;
         Ok(out)
     }
 
     /// Up to and past the next NUL (or to the end).
     fn skip_string(&mut self) {
-        match self.blob[self.at..].iter().position(|&b| b == 0) {
-            Some(i) => self.at += i + 1,
-            None => self.at = self.blob.len(),
+        match self.blob[self.cursor..].iter().position(|&b| b == 0) {
+            Some(i) => self.cursor += i + 1,
+            None => self.cursor = self.blob.len(),
         }
     }
 
     /// `_read_gzip_header(fp)`: false at the end of the input.
     fn header(&mut self) -> io::Result<bool> {
-        let rest = &self.blob[self.at..];
+        let rest = &self.blob[self.cursor..];
         if rest.is_empty() {
             return Ok(false);
         }
@@ -371,7 +524,7 @@ impl<'a> Gz<'a> {
                 bytes_repr(magic)
             )));
         }
-        self.at += 2;
+        self.cursor += 2;
         let head = self.exact(8)?;
         let (method, flag) = (head[0], head[1]);
         if method != 8 {
@@ -408,23 +561,63 @@ impl<'a> Gz<'a> {
         if isize != self.crc.amount() {
             return Err(gz_error("Incorrect length of data produced".to_string()));
         }
-        while self.blob.get(self.at) == Some(&0) {
-            self.at += 1;
+        while self.blob.get(self.cursor) == Some(&0) {
+            self.cursor += 1;
         }
         Ok(())
     }
 
-    fn rewind(&mut self) {
-        self.at = 0;
-        self.pos = 0;
-        self.state = GzState::Header;
+    /// The decoder's next step on the input it has been given: false when it can do nothing
+    /// more without more input (or ever).
+    fn decode_more(&mut self) -> bool {
+        if self.ended || self.failure.is_some() {
+            return false;
+        }
+        // Wide enough for all the decoder holds, so a failure's position is exact.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.resize(2 * WINDOW, 0);
+        let (in0, out0) = (self.dec.total_in(), self.dec.total_out());
+        let res = self.dec.decompress(
+            &self.blob[self.dec_in..self.cursor],
+            &mut scratch,
+            FlushDecompress::None,
+        );
+        let used = (self.dec.total_in() - in0) as usize;
+        let made = (self.dec.total_out() - out0) as usize;
+        self.dec_in += used;
+        let good = self.shadow.good(self.blob, &scratch[..made]);
+        self.ahead.extend(&scratch[..good]);
+        self.scratch = scratch;
+        let at = self.raw_pos + self.ahead.len() as u64;
+        if good < made {
+            self.failure = Some((at, true, format!("{ZLIB}invalid distance too far back")));
+        } else {
+            match res {
+                Err(e) => self.failure = Some((at, false, format!("{ZLIB}{e}"))),
+                Ok(Status::StreamEnd) => self.ended = true,
+                Ok(_) => {}
+            }
+        }
+        used > 0 || good > 0 || self.ended || self.failure.is_some()
     }
-}
 
-impl Read for Gz<'_> {
-    /// `_GzipReader.read(len(out))`: at least one byte, or none at the end, or the error.
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if out.is_empty() {
+    /// The failure, if a `decompress` call that may produce bytes up to `end` meets it.
+    fn failed(&self, end: u64) -> io::Result<()> {
+        if !self.ahead.is_empty() {
+            return Ok(());
+        }
+        match &self.failure {
+            Some((at, writes, text)) if *at < end || (*at == end && !writes) => {
+                Err(gz_error(text.clone()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// `_GzipReader.read(size)`: one `decompress` call's bytes (at least one), none at the end
+    /// of the stream, or the error.
+    fn raw_read(&mut self, size: usize, dest: &mut Dest<'_>) -> io::Result<usize> {
+        if size == 0 {
             return Ok(0);
         }
         loop {
@@ -433,6 +626,7 @@ impl Read for Gz<'_> {
                 GzState::Trailer => {
                     self.trailer()?;
                     self.state = GzState::Header;
+                    continue;
                 }
                 GzState::Header => {
                     if !self.header()? {
@@ -441,142 +635,138 @@ impl Read for Gz<'_> {
                     }
                     self.dec.reset(false);
                     self.crc.reset();
-                    self.start_shadow();
+                    self.dec_in = self.cursor;
+                    self.ahead.clear();
+                    self.ended = false;
+                    self.failure = None;
+                    self.shadow.start(self.cursor);
                     self.state = GzState::Body;
                 }
-                GzState::Body => {
-                    let (in0, out0) = (self.dec.total_in(), self.dec.total_out());
-                    let status = self
-                        .dec
-                        .decompress(&self.blob[self.at..], out, FlushDecompress::None)
-                        .map_err(|e| gz_error(format!("{ZLIB}{e}")))?;
-                    let used = (self.dec.total_in() - in0) as usize;
-                    let mut made = (self.dec.total_out() - out0) as usize;
-                    self.at += used;
-                    if status == Status::StreamEnd {
-                        self.state = GzState::Trailer;
-                    }
-                    let good = self.far_back(&out[..made]);
-                    if good < made {
-                        self.state = GzState::FarBack;
-                        made = good;
-                    }
-                    self.crc.update(&out[..made]);
-                    self.pos += made as u64;
-                    if made > 0 {
-                        return Ok(made);
-                    }
-                    if self.state == GzState::Body && used == 0 {
-                        return Err(gz_error(GZ_EOF.to_string()));
-                    }
+                GzState::Body => {}
+            }
+            // `needs_input`: nothing to return from the input zlib has; then the next chunk.
+            let mut chunk = None;
+            if self.ahead.is_empty() && !self.decode_more() && !self.ended {
+                let next = (self.cursor + READ_BUFFER_SIZE).min(self.blob.len());
+                chunk = Some(next - self.cursor);
+                self.cursor = next;
+            }
+            let end = self.raw_pos + size as u64;
+            let mut made = 0;
+            while self.raw_pos < end {
+                if self.ahead.is_empty() && !self.decode_more() {
+                    break;
                 }
-                GzState::FarBack => {
-                    return Err(gz_error(format!("{ZLIB}invalid distance too far back")));
+                self.failed(end)?;
+                let n = self.ahead.len().min((end - self.raw_pos) as usize);
+                let (a, b) = self.ahead.as_slices();
+                let (a, b) = (&a[..n.min(a.len())], &b[..n - n.min(a.len())]);
+                for part in [a, b] {
+                    self.crc.update(part);
+                    dest.put(part);
                 }
+                self.ahead.drain(..n);
+                self.raw_pos += n as u64;
+                made += n;
+            }
+            // zlib goes on past a full output to what writes nothing (the end of the data, or a
+            // bad code right there).
+            if self.ahead.is_empty() {
+                self.decode_more();
+            }
+            self.failed(end)?;
+            if self.ended && self.ahead.is_empty() {
+                // `unused_data` goes back to the file.
+                self.cursor = self.dec_in;
+                self.state = GzState::Trailer;
+            }
+            if made > 0 {
+                return Ok(made);
+            }
+            if chunk == Some(0) {
+                return Err(gz_error(GZ_EOF.to_string()));
             }
         }
+    }
+
+    /// `_GzipReader._rewind()`.
+    fn rewind(&mut self) {
+        self.cursor = 0;
+        self.raw_pos = 0;
+        self.state = GzState::Header;
+    }
+
+    /// `BufferedReader.read(n)`: the bytes, fewer only at the end of the stream.
+    fn buffered_read(&mut self, n: usize, dest: &mut Dest<'_>) -> io::Result<u64> {
+        let avail = self.buf.len() - self.bpos;
+        if n <= avail {
+            dest.put(&self.buf[self.bpos..self.bpos + n]);
+            self.bpos += n;
+            return Ok(n as u64);
+        }
+        dest.put(&self.buf[self.bpos..]);
+        let mut remaining = n - avail;
+        self.buf.clear();
+        self.bpos = 0;
+        while remaining >= BUFFER {
+            let got = self.raw_read(remaining - remaining % BUFFER, dest)?;
+            if got == 0 {
+                return Ok((n - remaining) as u64);
+            }
+            remaining -= got;
+        }
+        while remaining > 0 && self.buf.len() < BUFFER {
+            let mut fill = Vec::new();
+            let got = self.raw_read(BUFFER - self.buf.len(), &mut Dest::Keep(&mut fill))?;
+            if got == 0 {
+                break;
+            }
+            self.buf.extend_from_slice(&fill);
+            let take = got.min(remaining);
+            dest.put(&self.buf[self.bpos..self.bpos + take]);
+            self.bpos += take;
+            remaining -= take;
+        }
+        Ok((n - remaining) as u64)
     }
 }
 
-impl Gz<'_> {
-    /// Starts the [`Shadow`] check of a new member (primed when the member first produces
-    /// output, so empty members cost nothing).
-    fn start_shadow(&mut self) {
-        self.shadow_from = Some(self.at);
-        if let Some(sh) = self.shadow.as_mut() {
-            sh.active = false;
-        }
-    }
-
-    /// The shadow decoder at the member's start, its window filled by a stored block of
-    /// `0xff`s that the member's deflate data then continues; `None` if priming failed.
-    fn primed_shadow(&mut self) -> Option<&mut Shadow> {
-        if let Some(at) = self.shadow_from.take() {
-            let sh = self.shadow.get_or_insert_with(|| Shadow {
-                dec: Decompress::new(false),
-                at: 0,
-                made: 0,
-                active: false,
-            });
-            sh.dec.reset(false);
-            let mut sink = [0u8; 8192];
-            while sh.dec.total_out() < WINDOW as u64 {
-                let (i, o) = (sh.dec.total_in(), sh.dec.total_out());
-                let ok = sh
-                    .dec
-                    .decompress(&PRIMER[i as usize..], &mut sink, FlushDecompress::None)
-                    .is_ok();
-                if !ok || (sh.dec.total_in(), sh.dec.total_out()) == (i, o) {
-                    return None;
-                }
-            }
-            sh.at = at;
-            sh.made = 0;
-            sh.active = true;
-        }
-        self.shadow.as_mut().filter(|sh| sh.active)
-    }
-
-    /// How many of `out`, the member's next bytes, are not copied from before its start.
-    fn far_back(&mut self, out: &[u8]) -> usize {
-        let blob = self.blob;
-        let Some(sh) = self.primed_shadow() else {
-            return out.len();
+impl Stream for Gz<'_> {
+    fn read_n(&mut self, n: u64, keep: bool) -> io::Result<(Vec<u8>, u64)> {
+        let mut out = Vec::new();
+        let mut dest = if keep {
+            Dest::Keep(&mut out)
+        } else {
+            Dest::Discard
         };
-        let n = out.len().min(WINDOW - sh.made);
-        let mut theirs = vec![0u8; n];
-        let mut filled = 0;
-        while filled < n {
-            let (i, o) = (sh.dec.total_in(), sh.dec.total_out());
-            let Ok(status) =
-                sh.dec
-                    .decompress(&blob[sh.at..], &mut theirs[filled..], FlushDecompress::None)
-            else {
-                break;
-            };
-            sh.at += (sh.dec.total_in() - i) as usize;
-            let made = (sh.dec.total_out() - o) as usize;
-            filled += made;
-            if made == 0 && (status == Status::StreamEnd || sh.dec.total_in() == i) {
-                break;
-            }
-        }
-        sh.made += filled;
-        let good = out[..filled]
-            .iter()
-            .zip(&theirs[..filled])
-            .take_while(|(a, b)| a == b)
-            .count();
-        if good < filled {
-            return good;
-        }
-        if filled < n || sh.made >= WINDOW {
-            sh.active = false;
-        }
-        out.len()
+        let got = self.buffered_read(n as usize, &mut dest)?;
+        Ok((out, got))
     }
-}
 
-impl Seek for Gz<'_> {
-    /// `GzipFile.seek(pos)` (`DecompressReader.seek`): forward by reading, back by rewinding;
-    /// the end of the stream stops it short. Only `Start` and `Current(0)` are used.
-    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
-        let target = match to {
-            SeekFrom::Start(p) => p,
-            SeekFrom::Current(0) => return Ok(self.pos),
-            _ => return Err(io::Error::other("unsupported seek")),
-        };
-        if target < self.pos {
+    /// `BufferedReader.seek(pos)`: within the buffer, or `DecompressReader.seek` (forward by
+    /// `read(min(8192, left))` calls, back by rewinding first).
+    fn seek_to(&mut self, pos: u64) -> io::Result<u64> {
+        let start = self.raw_pos - self.buf.len() as u64;
+        if self.bpos < self.buf.len() && start <= pos && pos <= self.raw_pos {
+            self.bpos = (pos - start) as usize;
+            return Ok(pos);
+        }
+        if pos < self.raw_pos {
             self.rewind();
         }
-        let mut scratch = [0u8; 8192];
-        while self.pos < target {
-            let want = (target - self.pos).min(scratch.len() as u64) as usize;
-            if self.read(&mut scratch[..want])? == 0 {
+        while self.raw_pos < pos {
+            let want = (pos - self.raw_pos).min(BUFFER as u64) as usize;
+            if self.raw_read(want, &mut Dest::Discard)? == 0 {
                 break;
             }
         }
-        Ok(self.pos)
+        self.buf.clear();
+        self.bpos = 0;
+        Ok(self.raw_pos)
+    }
+
+    fn tell(&mut self) -> io::Result<u64> {
+        Ok(self.raw_pos - (self.buf.len() - self.bpos) as u64)
     }
 }
 
@@ -1220,13 +1410,91 @@ impl<'a> Tar<'a> {
         Ok(())
     }
 
-    /// `tar.extractfile(m).read(m.size + 1)` of a regular member: `_FileInFile` over its map.
+    /// `tar.extractfile(m).read(m.size + 1)` of a regular member: `ExFileObject` (a
+    /// `BufferedReader`) over `_FileInFile`, read for read, since each read is a seek and a
+    /// read of the gzip stream.
     fn extract(&mut self, m: &Info) -> Result<Vec<u8>, Rejected> {
+        let mut file = FileInFile::new(m);
+        let mut out = Vec::new();
+        let mut remaining = file.size as u64 + 1;
+        while remaining >= BUFFER as u64 {
+            let got = self.file_read(&mut file, remaining - remaining % BUFFER as u64, &mut out)?;
+            if got == 0 {
+                return Ok(out);
+            }
+            remaining -= got;
+        }
+        let mut buffered = 0;
+        while remaining > 0 && buffered < BUFFER {
+            let got = self.file_read(&mut file, (BUFFER - buffered) as u64, &mut out)?;
+            if got == 0 {
+                break;
+            }
+            buffered += got as usize;
+            remaining -= got;
+        }
+        Ok(out)
+    }
+
+    /// `_FileInFile.read(n)`, appended to `out`: how many bytes.
+    fn file_read(
+        &mut self,
+        f: &mut FileInFile,
+        n: u64,
+        out: &mut Vec<u8>,
+    ) -> Result<u64, Rejected> {
+        let mut size = i128::from(n).min(f.size - f.position);
+        let mut got = 0;
+        while size > 0 {
+            // The entry holding `position`, searched from the last one round the map as
+            // Python does (entries can overlap). Every position is held by one.
+            let mut found = false;
+            for _ in 0..f.map.len() {
+                let (_, start, stop, _) = f.map[f.index];
+                if start <= f.position && f.position < stop {
+                    found = true;
+                    break;
+                }
+                f.index = (f.index + 1) % f.map.len();
+            }
+            if !found {
+                return Err(not_readable("unexpected end of data"));
+            }
+            let (data, start, stop, offset) = f.map[f.index];
+            let length = size.min(stop - f.position);
+            if data {
+                self.f.seek(offset + (f.position - start))?;
+                let b = self.f.read(Some(length as u64))?;
+                if b.len() as i128 != length {
+                    return Err(not_readable("unexpected end of data"));
+                }
+                out.extend_from_slice(&b);
+            } else {
+                out.resize(out.len() + length as usize, 0);
+            }
+            size -= length;
+            f.position += length;
+            got += length as u64;
+        }
+        Ok(got)
+    }
+}
+
+/// `_FileInFile`: a member's data, as runs of the stream and runs of zeros.
+struct FileInFile {
+    size: i128,
+    /// `(data, start, stop, where the data is in the stream)`.
+    map: Vec<(bool, i128, i128, i128)>,
+    index: usize,
+    position: i128,
+}
+
+impl FileInFile {
+    fn new(m: &Info) -> FileInFile {
         let size = m.size;
         let whole = [(0, size)];
         let blocks = m.sparse.as_deref().unwrap_or(&whole);
-        // (data, start, stop, where the data is in the stream)
-        let mut map: Vec<(bool, i128, i128, i128)> = Vec::new();
+        let mut map = Vec::new();
         let (mut lastpos, mut realpos) = (0i128, i128::from(m.offset_data));
         for &(offset, n) in blocks {
             if offset > lastpos {
@@ -1239,38 +1507,12 @@ impl<'a> Tar<'a> {
         if lastpos < size {
             map.push((false, lastpos, size, 0));
         }
-        let mut out = Vec::new();
-        let (mut index, mut position) = (0, 0i128);
-        while position < size {
-            // The entry holding `position`, searched from the last one round the map as
-            // Python does (entries can overlap). Every position is held by one.
-            let mut found = false;
-            for _ in 0..map.len() {
-                let (_, start, stop, _) = map[index];
-                if start <= position && position < stop {
-                    found = true;
-                    break;
-                }
-                index = (index + 1) % map.len();
-            }
-            if !found {
-                return Err(not_readable("unexpected end of data"));
-            }
-            let (data, start, stop, offset) = map[index];
-            let length = (size - position).min(stop - position);
-            if data {
-                self.f.seek(offset + (position - start))?;
-                let b = self.f.read(Some(length as u64))?;
-                if b.len() as i128 != length {
-                    return Err(not_readable("unexpected end of data"));
-                }
-                out.extend_from_slice(&b);
-            } else {
-                out.resize(out.len() + length as usize, 0);
-            }
-            position += length;
+        FileInFile {
+            size,
+            map,
+            index: 0,
+            position: 0,
         }
-        Ok(out)
     }
 }
 
@@ -1300,6 +1542,13 @@ fn read_archive_bytes(archive: &Path) -> Result<Vec<u8>, Rejected> {
         .open(archive)
         .map_err(cannot)?;
     let meta = f.metadata().map_err(cannot)?;
+    // `os.fdopen` (FileIO) refuses a folder itself.
+    if meta.is_dir() {
+        return Err(Rejected(format!(
+            "cannot read the archive: {}",
+            errno_tables::strerror(EISDIR)
+        )));
+    }
     if !meta.file_type().is_file() {
         return Err(Rejected("the archive is not a regular file".to_string()));
     }
@@ -1840,18 +2089,49 @@ mod tests {
         let deflate = far_back_deflate();
         let mut g = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
         g.extend(&deflate);
+        // As in Python, the read that has zlib decode the bad match fails, even for one byte.
         let mut r = Gz::new(&g);
-        let mut out = [0u8; 16];
-        let first = r.read(&mut out).unwrap();
-        assert_eq!(&out[..first], b"a");
         assert_eq!(
-            r.read(&mut out).unwrap_err().to_string(),
+            r.read_n(1, true).unwrap_err().to_string(),
             format!("{ZLIB}invalid distance too far back")
         );
+        // A valid stream of the same shape reads.
+        let mut ok = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        ok.extend(fixed_deflate(1));
+        assert_eq!(Gz::new(&ok).read_n(4, true).unwrap().0, b"aaaa");
+    }
+
+    #[test]
+    fn corrupt_data_fails_the_read_whose_zlib_call_meets_it() {
+        // A stored block of 20000 bytes, then a block of the invalid type 3. GzipFile reads
+        // 16384 bytes in one call (output full: zlib stops before the bad block); its next
+        // call may produce up to 24576, so it meets the bad block (checked on the 3.12 image).
+        let mut blob = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0];
+        blob.extend(20000u16.to_le_bytes());
+        blob.extend((!20000u16).to_le_bytes());
+        blob.extend([b'a'; 20000]);
+        blob.push(0x07);
+        let mut g = Gz::new(&blob);
+        assert_eq!(g.read_n(16384, true).unwrap().1, 16384);
+        let err = g.read_n(1, true).unwrap_err().to_string();
+        assert!(err.starts_with(ZLIB), "{err}");
+        assert!(Gz::new(&blob).read_n(16385, false).is_err());
+        assert!(Gz::new(&blob).read_n(20000, false).is_err());
+        // A seek reads in calls of at most 8192 up to the target: only the call that ends
+        // right before the bad block meets it (zlib goes on to a header with a full output).
+        for pos in [16384, 16385, 19999] {
+            assert_eq!(Gz::new(&blob).seek_to(pos).unwrap(), pos);
+        }
+        assert!(Gz::new(&blob).seek_to(20000).is_err());
     }
 
     /// Deflate bits for: fixed block, literal `a`, length 3 distance 2, end of block.
     fn far_back_deflate() -> Vec<u8> {
+        fixed_deflate(2)
+    }
+
+    /// Fixed block: literal `a`, then a match of length 3 at `distance` (1 or 2), end of block.
+    fn fixed_deflate(distance: u32) -> Vec<u8> {
         let mut bits: Vec<u8> = Vec::new();
         let mut put = |v: u32, n: u32, reversed: bool| {
             for i in 0..n {
@@ -1867,7 +2147,7 @@ mod tests {
         put(1, 2, false); // BTYPE fixed
         put(0x30 + u32::from(b'a'), 8, true); // literal 'a' (codes 0x30..0xbf)
         put(1, 7, true); // length code 257 = length 3 (7-bit codes start at 256 = 0)
-        put(1, 5, true); // distance code 1 = distance 2
+        put(distance - 1, 5, true); // distance code 0 = distance 1, code 1 = distance 2
         put(0, 7, true); // end of block (256)
         bits.chunks(8)
             .map(|c| c.iter().enumerate().fold(0u8, |b, (i, &x)| b | (x << i)))
@@ -2512,8 +2792,19 @@ mod tests {
         );
         assert_eq!(
             load_archive(dir.path()).unwrap_err().0,
-            "the archive is not a regular file"
+            "cannot read the archive: Is a directory"
         );
+        #[cfg(unix)]
+        {
+            let fifo = dir.path().join("fifo");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                assert_eq!(
+                    load_archive(&fifo).unwrap_err().0,
+                    "the archive is not a regular file"
+                );
+            }
+        }
         let huge = dir.path().join("huge.tar.gz");
         std::fs::File::create(&huge)
             .unwrap()
