@@ -1090,15 +1090,21 @@ fn a_script_behind_a_launcher_is_read_in_full() {
     // (they were asked about before).
     for cmd in [
         "rtk bypass caffeinate sh -c 'cat secret.txt'",
-        "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
         "rtk bypass caffeinate sh -c 'head secret.txt'",
         "rtk bypass caffeinate sh -c 'cat < secret.txt'",
         "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
-        "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
         "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
     ] {
         assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
     }
+    // A program that is no read, in a script rtk runs, is still asked about.
+    asked(
+        &sb,
+        &[
+            "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
+            "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
+        ],
+    );
 }
 
 /// N-3 and N-4: rtk drops a `--`, and git can be told to run something else.

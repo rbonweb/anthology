@@ -1878,15 +1878,35 @@ fn shell_home() -> String {
         .unwrap_or_default()
 }
 
-/// Whether the entry was reached through an `rtk` word (`rtk read x`, `nice rtk
-/// git push`): its `raw` words hold one before the program the analysis found.
+fn is_rtk_word(word: &str) -> bool {
+    matches!(
+        basename(word).to_ascii_lowercase().as_str(),
+        "rtk" | "rtk.exe"
+    )
+}
+
+/// The words of `raw` before the entry's program, when the program stands just
+/// before its arguments (wrappers peeled off the front); else all of `raw` but
+/// the arguments (an rtk runner's script: `rtk run -c 'x'`).
+fn entry_prefix(entry: &ShellEntry) -> &[String] {
+    let end = entry.raw.len().saturating_sub(entry.args.len() + 1);
+    &entry.raw[..end]
+}
+
+/// Whether the entry was reached through an `rtk` word (`rtk bypass base64 x`,
+/// `nice rtk git push`): one stands before the program the analysis found.
 fn entry_via_rtk(entry: &ShellEntry) -> bool {
-    entry.raw.iter().any(|word| {
-        matches!(
-            basename(word).to_ascii_lowercase().as_str(),
-            "rtk" | "rtk.exe"
-        )
-    })
+    entry_prefix(entry).iter().any(|word| is_rtk_word(word))
+}
+
+/// Whether the entry's program is an rtk subcommand itself (`rtk read x`, `rtk
+/// -v grep x`), not a program a runner or wrapper started (`rtk bypass log show`).
+fn entry_is_rtk_sub(entry: &ShellEntry) -> bool {
+    entry_prefix(entry)
+        .iter()
+        .rev()
+        .find(|word| !word.starts_with('-'))
+        .is_some_and(|word| is_rtk_word(word))
 }
 
 /// The entry's command word as a rule sees it ([`norm_command`]). The analysis
@@ -1938,7 +1958,7 @@ fn entry_readings(entry: &ShellEntry, words: &[String]) -> Vec<String> {
     {
         push_unique(&mut out, join_command(&format!("git {sub}"), &tail(1)));
     }
-    if entry_via_rtk(entry) {
+    if entry_is_rtk_sub(entry) {
         if RTK_READS.contains(&prog) {
             push_unique(&mut out, join_command("cat", &tail(1)));
         } else if matches!(prog, "grep" | "rg") {
@@ -1965,10 +1985,9 @@ impl Scanner<'_> {
     ///
     /// - a deny rule that matches an entry denies; an ask rule asks;
     /// - an analysis cut short (`incomplete`: a regex or work limit) asks;
-    /// - a `Read()`-denied path that a command rtk rewrites into a read names or
-    ///   reads through `<`, or that any program in a line that may run rtk names,
-    ///   denies; an unresolvable path asks for the former and for what rtk runs
-    ///   itself (`rtk bypass base64 x*`), and so does a `Read()` ask path behind
+    /// - a `Read()`-denied path that a command rtk rewrites into a read, or any
+    ///   program rtk runs (`rtk bypass base64 x`), names or reads through `<`
+    ///   denies; an unresolvable one asks, and so does a `Read()` ask path behind
     ///   rtk.
     ///
     /// An entry the analysis could not see into (`opaque`) asks through the plain
@@ -1993,9 +2012,9 @@ impl Scanner<'_> {
         if analysis.incomplete {
             self.ask = true;
         }
-        let rtk_line = mentions_rtk(cmd);
-        // One simple command with nothing the shell expands outside single quotes.
-        let literal = plain_words(cmd).is_some();
+        // One simple command with nothing the shell expands outside single quotes,
+        // and nothing nested in it (a script's words are not the line's).
+        let literal = analysis.entries.len() == 1 && plain_words(cmd).is_some();
         for entry in &analysis.entries {
             let size: usize = entry.raw.iter().map(|word| 1 + word.len()).sum();
             if !self.spend(SEGMENT_COST + size / 8) {
@@ -2009,7 +2028,7 @@ impl Scanner<'_> {
                 .collect();
             self.shared_rules(entry, &words)?;
             if self.reading() {
-                self.shared_reads(entry, &words, rtk_line, literal, initial)?;
+                self.shared_reads(entry, &words, literal, initial)?;
             }
         }
         Ok(())
@@ -2050,23 +2069,20 @@ impl Scanner<'_> {
         &mut self,
         entry: &ShellEntry,
         words: &[String],
-        rtk_line: bool,
         literal: bool,
         initial: Option<&Path>,
     ) -> Result<(), Denied> {
         let via_rtk = entry_via_rtk(entry);
         let name = match words[0].as_str() {
-            prog if via_rtk && RTK_READS.contains(&prog) => "cat",
+            prog if entry_is_rtk_sub(entry) && RTK_READS.contains(&prog) => "cat",
             prog => prog,
         };
         let generic = !READ_COMMANDS.contains(&name);
-        // As in the rule scan: the commands rtk rewrites into reads, and, in a line
-        // that may run rtk, any program (sed, awk, base64, cp...): a denied path
-        // there denies, but only what rtk runs itself asks about an unclear one.
-        if generic && !rtk_line {
+        // As in the rule scan: the commands rtk rewrites into reads, and any
+        // program rtk runs (sed, awk, base64, cp...).
+        if generic && !via_rtk {
             return Ok(());
         }
-        let may_ask = !generic || via_rtk;
         // A `cd` or `-C` the analysis followed leaves a relative path unresolved.
         let cwds = if entry.cwd.is_some() {
             Cwds { states: vec![None] }
@@ -2116,10 +2132,7 @@ impl Scanner<'_> {
             // path a `Read()` ask rule names asks behind rtk (elsewhere the host
             // applies that rule to the original itself).
             let unresolved = denied == ReadOutcome::Uncertain || asked == ReadOutcome::Uncertain;
-            if may_ask
-                && ((unresolved && entry.cwd.is_none())
-                    || (via_rtk && asked == ReadOutcome::Denied))
-            {
+            if (unresolved && entry.cwd.is_none()) || (via_rtk && asked == ReadOutcome::Denied) {
                 self.ask = true;
             }
         }
@@ -4028,7 +4041,9 @@ fn find_args(args: &[PlainWord], checks: &mut Vec<Check>) -> bool {
 /// removed (any case), or a `$'...'` that may spell it. Such a line passes only in
 /// the plain shape ([`plain`]); a defer would leave it to the `Bash(rtk *)` allow.
 pub(crate) fn mentions_rtk(text: &str) -> bool {
+    // A backslash-newline is removed before the words are split (`r\<newline>tk`).
     let unquoted: String = text
+        .replace("\\\n", "")
         .chars()
         .filter(|c| !matches!(c, '\'' | '"' | '\\'))
         .collect();
@@ -5665,6 +5680,60 @@ mod tests {
         }
     }
 
+    /// RG1 review I1: a program that is no read and that rtk does not run is not
+    /// read against the `Read()` rules, even in a line holding `rtk`.
+    #[test]
+    fn a_program_rtk_does_not_run_is_no_read() {
+        in_sandbox(|dir, r| {
+            for cmd in [
+                "rtk ls && cp ok.txt secret.txt",
+                "cp rtk/x secret.txt",
+                "echo secret.txt # rtk later",
+                "rtk ls && rm secret.txt",
+                "rtk ls; touch config/.env",
+            ] {
+                assert_ne!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
+            // What rtk runs is still read.
+            assert_eq!(gate_in(dir, "rtk bypass cp secret.txt x", r), Gate::Deny);
+        });
+    }
+
+    /// RG1 review I2: a backslash-newline joins `r` and `tk` into `rtk`.
+    #[test]
+    fn a_line_continuation_inside_rtk_still_mentions_it() {
+        assert!(mentions_rtk("r\\\ntk bypass ssh h ls"));
+        assert!(mentions_rtk("rt\\\nk ls"));
+        assert!(!mentions_rtk("r\ntk"));
+        let r = bash_rules();
+        assert_eq!(gate("r\\\ntk bypass curl x", &r), Gate::Deny);
+        assert_eq!(
+            plain("r\\\ntk bypass ssh h ls", &r, Some("/work/project")),
+            Gate::Ask
+        );
+    }
+
+    /// RG1 review m1: a nested script's words are not the line's literal words.
+    #[test]
+    fn a_nested_script_is_not_read_as_literal_words() {
+        in_sandbox(|dir, r| {
+            assert_eq!(gate_in(dir, "eval 'cat secre*'", r), Gate::Ask);
+            assert_eq!(gate_in(dir, "eval 'cat ok.txt'", r), Gate::Pass);
+        });
+    }
+
+    /// RG1 review m2: only an rtk subcommand itself is read as `cat`.
+    #[test]
+    fn only_an_rtk_read_subcommand_is_read_as_cat() {
+        let r = rules(&["cat:*"], &[], &[]);
+        for cmd in ["rtk bypass log show", "read rtk", "log show rtk"] {
+            assert_ne!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        for cmd in ["rtk read x", "rtk log x", "rtk -v read x"] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+    }
+
     // --- settings loading ---
 
     fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
@@ -7271,14 +7340,20 @@ mod tests {
             // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
             for cmd in [
                 "rtk bypass caffeinate sh -c 'cat secret.txt'",
-                "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
                 "rtk bypass caffeinate sh -c 'head secret.txt'",
                 "rtk bypass caffeinate sh -c 'cat < secret.txt'",
                 "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
-                "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
                 "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
             ] {
                 assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
+            // A program that is no read, in a script rtk runs, stays a question:
+            // only what rtk runs itself is read as a possible read (RG1-I1).
+            for cmd in [
+                "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
+                "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
+            ] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
             }
         });
         let r = push_only();

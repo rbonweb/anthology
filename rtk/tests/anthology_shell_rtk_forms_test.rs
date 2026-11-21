@@ -233,6 +233,12 @@ fn the_shared_parser_finds_what_each_form_runs() {
             Fixed => assert_eq!(found, programs(&format!("{name} git push")), "{line}"),
         }
     }
+    // A word that is no subcommand falls through to the program it names, which
+    // is also how a hidden or future subcommand is read.
+    assert_eq!(
+        programs("rtk echo hi"),
+        vec![("echo".to_string(), vec!["hi".to_string()])]
+    );
     // Scripts: `run -c`, and `--shell` for the other runners.
     for line in [
         "rtk run -c 'git push'",
