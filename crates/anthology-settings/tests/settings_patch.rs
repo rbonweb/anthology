@@ -864,20 +864,40 @@ fn test_rule_the_user_deleted_is_added_again_without_duplicating_the_record() {
 
 #[test]
 fn test_unparseable_or_non_object_text_is_refused() {
+    // Python raises ValueError (the class its callers catch); these are its texts.
+    let expected = [
+        "settings.json is not valid JSON: Expecting property name enclosed in double quotes: line 1 column 9 (char 8)",
+        "settings.json is not valid JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+        "settings.json is not a JSON object",
+        "settings.json is not a JSON object",
+        "settings.json is not a JSON object",
+        "settings.json is not valid JSON: Extra data: line 1 column 10 (char 9)",
+        "settings.json is not valid JSON: Expecting value: line 1 column 1 (char 0)",
+    ];
     let stored: Vec<Value> = ops().iter().map(Op::to_value).collect();
-    for row in rows("InvalidInputTest.test_unparseable_or_non_object_text_is_refused") {
+    let rows = rows("InvalidInputTest.test_unparseable_or_non_object_text_is_refused");
+    assert_eq!(rows.len(), expected.len());
+    for (row, want) in rows.iter().zip(expected) {
         let text = row.as_str().unwrap();
-        assert!(apply(text, &ops()).is_err(), "{text}");
-        assert!(revert(text, &stored).is_err(), "{text}");
-        assert!(plan(text, &ops()).is_err(), "{text}");
+        assert_eq!(apply(text, &ops()).unwrap_err(), want, "{text}");
+        assert_eq!(revert(text, &stored).unwrap_err(), want, "{text}");
+        assert_eq!(plan(text, &ops()).unwrap_err(), want, "{text}");
     }
 }
 
 #[test]
 fn test_wrong_container_types_are_refused() {
-    for data in rows("InvalidInputTest.test_wrong_container_types_are_refused") {
-        let text = dumps_sep(&data, ", ", ": ");
-        assert!(apply(&text, &ops()).is_err(), "{text}");
+    let expected = [
+        "permissions is not an object",
+        "permissions.allow is not a list",
+        "worktree is not an object",
+        "permissions.deny is not a list",
+    ];
+    let rows = rows("InvalidInputTest.test_wrong_container_types_are_refused");
+    assert_eq!(rows.len(), expected.len());
+    for (data, want) in rows.iter().zip(expected) {
+        let text = dumps_sep(data, ", ", ": ");
+        assert_eq!(apply(&text, &ops()).unwrap_err(), want, "{text}");
     }
 }
 
@@ -1323,5 +1343,61 @@ proptest! {
             let (new, _) = apply(&text, &planned.ops).unwrap();
             prop_assert_eq!(revert(&new, &planned.stored).unwrap(), text);
         }
+    }
+}
+
+// --- Beyond the Python tests ---------------------------------------------------------------
+
+/// A manifest Python's json cannot load (RecursionError, which setup does not catch) is
+/// refused, never accepted; a merely deep one still loads.
+#[test]
+fn a_manifest_too_deep_for_python_is_refused() {
+    let g = guard();
+    let root = make_plugin_root(&g.tmp.join("plugins"), "anthology");
+    let nested = |n: usize| {
+        format!(
+            r#"{{"name": "anthology", "x": {}{}}}"#,
+            "[".repeat(n),
+            "]".repeat(n)
+        )
+    };
+    let manifest = root.join(".claude-plugin/plugin.json");
+    fs::write(&manifest, nested(12_000)).unwrap();
+    let err = setup_ops_with(&root, &g.env, Some(&PROFILE_ROOTS)).unwrap_err();
+    assert!(err.starts_with("RecursionError: "), "{err}");
+    fs::write(&manifest, nested(900)).unwrap();
+    assert!(setup_ops_with(&root, &g.env, Some(&PROFILE_ROOTS)).is_ok());
+}
+
+/// `list(state.get("settings_ops") or [])`.
+#[test]
+fn stored_ops_take_pythons_list_of_the_state_value() {
+    assert_eq!(stored_ops(None).unwrap(), Vec::<Value>::new());
+    for falsy in ["null", "false", "0", "\"\"", "[]", "{}"] {
+        assert_eq!(
+            stored_ops(Some(&v(falsy))).unwrap(),
+            Vec::<Value>::new(),
+            "{falsy}"
+        );
+    }
+    assert_eq!(
+        stored_ops(Some(&v(r#"[{"op": "add"}, 1]"#))).unwrap(),
+        vec![v(r#"{"op": "add"}"#), v("1")]
+    );
+    assert_eq!(
+        stored_ops(Some(&v(r#""ab""#))).unwrap(),
+        vec![v(r#""a""#), v(r#""b""#)]
+    );
+    assert_eq!(
+        stored_ops(Some(&v(r#"{"k": 1}"#))).unwrap(),
+        vec![v(r#""k""#)]
+    );
+    for bad in ["1", "true", "2.5"] {
+        assert!(
+            stored_ops(Some(&v(bad)))
+                .unwrap_err()
+                .starts_with("TypeError: "),
+            "{bad}"
+        );
     }
 }

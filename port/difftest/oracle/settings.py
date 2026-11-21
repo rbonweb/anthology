@@ -34,7 +34,8 @@ its class name, marked `D-1` (Python failed where it never meant to; Rust must f
 same class, its text is free). A `RecursionError` (a document deeper than CPython's C stack
 allows) is marked `D-1` with the result Rust gives without that limit, which the case states
 in `case["deep"]`: `"valid"` (Rust parses it and the scanner then refuses it as nesting too
-deeply; `plugin_rule_status` answers `missing`) or `"invalid:<message>"`.
+deeply; `plugin_rule_status` answers `missing`), `"valid-ok"` (a settings.json that also holds
+the plugin-read rule: `plugin_rule_status` answers `ok`) or `"invalid:<message>"`.
 
 Python 3.9+ and the standard library only.
 """
@@ -146,8 +147,9 @@ def _ok(payload, roots):
 def _error(exc, case, roots):
     if isinstance(exc, RecursionError):
         deep = case.get("deep", "")
-        if case["op"] == "plugin_rule_status" and deep == "valid":
-            return dict(_ok({"status": "missing"}, roots), divergence="D-1", python=repr(exc))
+        if case["op"] == "plugin_rule_status" and deep in ("valid", "valid-ok"):
+            status = "ok" if deep == "valid-ok" else "missing"
+            return dict(_ok({"status": status}, roots), divergence="D-1", python=repr(exc))
         if deep == "valid":
             msg = "settings.json nests too deeply"
         elif deep.startswith("invalid:"):
@@ -194,7 +196,7 @@ def _call(case, root):
     if op == "read_text":
         return {"text": SP.read_text(Path(c["path"]))}
     if op == "plugin_rule_status":
-        if case.get("deep") == "valid":
+        if case.get("deep") in ("valid", "valid-ok"):
             # plugin_rule_status swallows a RecursionError as "unreadable"; see it here.
             t = SP.read_text(SP.settings_path(c["env"]))
             json.loads(t[1:] if t.startswith("\ufeff") else t)

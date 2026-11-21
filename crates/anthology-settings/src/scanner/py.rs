@@ -374,6 +374,9 @@ fn abspath(p: &[u8]) -> Vec<u8> {
     if p.first() == Some(&b'/') {
         return normpath_bytes(p);
     }
+    // `os.getcwd()`: process state, not the environment (GC-18 is about variables). Only a
+    // relative plugin root gets here, through `plugin_read_rule`; `validate_plugin_root`
+    // refuses one before any rule is built.
     let cwd = std::env::current_dir()
         .map(|c| c.into_os_string().into_vec())
         .unwrap_or_else(|_| b"/".to_vec());

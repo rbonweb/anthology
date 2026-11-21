@@ -137,3 +137,14 @@ pub fn revert_with_diff(text: &str, stored: &[Value]) -> Result<(String, String)
 pub fn revert(text: &str, stored: &[Value]) -> Result<String, String> {
     Ok(revert_with_diff(text, stored)?.0)
 }
+
+/// The stored ops as Python's callers hand them over: `list(state.get("settings_ops") or [])`
+/// (setup's `reconcile` and `remove`'s `revert` both take `list()` of whatever state.json
+/// holds). Missing or falsy is empty; a list gives its items, a str its characters and a dict
+/// its keys; any other value is Python's `TypeError`.
+pub fn stored_ops(settings_ops: Option<&Value>) -> Result<Vec<Value>, String> {
+    match settings_ops {
+        Some(v) if truthy(v) => py_list(v),
+        _ => Ok(Vec::new()),
+    }
+}

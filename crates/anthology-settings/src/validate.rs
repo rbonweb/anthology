@@ -8,29 +8,49 @@ use anthology_core::paths::home_raw;
 use anthology_pycompat::json::{self, Value};
 
 use crate::ops::plugin_read_rule;
+use crate::render::value_depth;
 use crate::scanner::{is_blank, py, strip_bom};
 use crate::write::{read_text, settings_path};
 
 /// `_RULE_META`: characters permission rules read as a pattern.
 const RULE_META: &[char] = &['*', '?', '[', ']', '{', '}', '(', ')', '\\'];
 
+/// A manifest nested deeper than this is refused as Python's `json.load` would crash on it
+/// (`RecursionError`, which `validate_plugin_root` does not catch, so setup stops). CPython
+/// 3.12.16 gives up near 10,000 levels; this bound is far below, so Rust refuses every manifest
+/// Python crashes on, and also the absurd ones between (lead ruling; no plugin.json nests).
+pub(crate) const MAX_MANIFEST_DEPTH: usize = 1000;
+
 /// `json.load(open(<real>/.claude-plugin/plugin.json, encoding="utf-8")).get("name")`, with
-/// `OSError`, `ValueError` and `AttributeError` read as `None`.
-fn manifest_name(real: &str) -> Option<String> {
-    let path = format!("{real}/.claude-plugin/plugin.json");
+/// `OSError`, `ValueError` and `AttributeError` read as `None`. A manifest too deep to load is
+/// an error, as Python's `RecursionError` is.
+fn manifest_name(real: &str) -> Result<Option<String>, String> {
     let path = if real == "/" {
         "/.claude-plugin/plugin.json".to_string()
     } else {
-        path
+        format!("{real}/.claude-plugin/plugin.json")
     };
-    let bytes = std::fs::read(path).ok()?;
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(None);
+    };
     // Text mode, utf-8 (not utf-8-sig): a BOM reaches json.loads and is refused.
-    let text = String::from_utf8(bytes).ok()?;
-    let data = json::loads(&text).ok()?;
-    data.as_object()?
-        .get("name")
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Ok(None);
+    };
+    let Ok(data) = json::loads(&text) else {
+        return Ok(None);
+    };
+    if value_depth(&data) >= MAX_MANIFEST_DEPTH {
+        return Err(
+            "RecursionError: maximum recursion depth exceeded while decoding a JSON object from a unicode string"
+                .into(),
+        );
+    }
+    Ok(data
+        .as_object()
+        .and_then(|m| m.get("name"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(str::to_string))
 }
 
 /// `validate_plugin_root(plugin_root, env)` (F21): refuse a plugin root the plugin-read allow
@@ -47,7 +67,7 @@ pub fn validate_plugin_root(plugin_root: &Path, env: &Env) -> Result<(), String>
     if !Path::new(&real).is_dir() {
         return Err(format!("the plugin root {real} is not a folder"));
     }
-    if manifest_name(&real).as_deref() != Some("anthology") {
+    if manifest_name(&real)?.as_deref() != Some("anthology") {
         return Err(format!(
             "{real} is not the anthology plugin (no .claude-plugin/plugin.json named anthology)"
         ));

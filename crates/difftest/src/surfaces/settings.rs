@@ -699,8 +699,8 @@ fn gen_layout(rng: &mut Rng) -> Layout {
     Layout {
         unit,
         nl: rng.pick(&["\n", "\n", "\n", "\r\n", "\r"]),
-        colon: rng.pick(&[": ", ": ", ":", " : ", " :"]),
-        comma: rng.pick(&[", ", ",", ",", " ,", " , "]),
+        colon: rng.pick(&[": ", ": ", ":", " : ", " :", "\n:\n", " :\n  ", ":\r\n"]),
+        comma: rng.pick(&[", ", ",", ",", " ,", " , ", "\n,", ",\n ", " ,\n"]),
         mixed: if rng.chance(0.3) { 0.3 } else { 0.0 },
         empty_inner: rng.pick(&["", "", "", " ", "\n"]),
     }
@@ -947,7 +947,7 @@ fn gen_random_ops(rng: &mut Rng) -> Vec<Value> {
 }
 
 fn gen_ops(rng: &mut Rng) -> Vec<Value> {
-    match rng.below(10) {
+    let mut ops = match rng.below(10) {
         0..=5 => setup_like(rng),
         6..=8 => gen_random_ops(rng),
         _ => {
@@ -955,7 +955,15 @@ fn gen_ops(rng: &mut Rng) -> Vec<Value> {
             a.extend(gen_random_ops(rng));
             a
         }
+    };
+    // The same op twice in one list.
+    if !ops.is_empty() && rng.chance(0.1) {
+        let k = rng.index(ops.len());
+        let dup = ops[k].clone();
+        let at = rng.index(ops.len() + 1);
+        ops.insert(at, dup);
     }
+    ops
 }
 
 /// Stored records from a real plan of `ops` over `text` (none when the plan fails).
@@ -1162,6 +1170,26 @@ fn gen_home_env(rng: &mut Rng) -> Value {
     }
 }
 
+/// Picks for a manifest that names anthology and nests past CPython's json limit (about
+/// 10,000 levels: Python crashes with RecursionError, Rust refuses), or 900 deep (both load).
+const DEEP_MANIFEST: &str = "<deep manifest>";
+const SHALLOW_DEEP_MANIFEST: &str = "<shallow deep manifest>";
+
+fn manifest_body(pick: &str) -> String {
+    let nested = |n: usize| {
+        format!(
+            "{{\"name\": \"anthology\", \"x\": {}{}}}",
+            "[".repeat(n),
+            "]".repeat(n)
+        )
+    };
+    match pick {
+        DEEP_MANIFEST => nested(12_000),
+        SHALLOW_DEEP_MANIFEST => nested(900),
+        other => other.to_string(),
+    }
+}
+
 fn gen_setup_ops_case(rng: &mut Rng) -> Value {
     let mut fs_spec = vec![dir("home")];
     let good = r#"{"name": "anthology"}"#;
@@ -1191,6 +1219,8 @@ fn gen_setup_ops_case(rng: &mut Rng) -> Value {
             let body = rng.pick(&[
                 r#"{"name": "something-else"}"#,
                 "\u{feff}{\"name\": \"anthology\"}",
+                DEEP_MANIFEST,
+                SHALLOW_DEEP_MANIFEST,
                 "{nope",
                 r#"["anthology"]"#,
                 r#"{"name": 1}"#,
@@ -1198,7 +1228,7 @@ fn gen_setup_ops_case(rng: &mut Rng) -> Value {
                 r#"{"name": "x", "name": "anthology"}"#,
                 "null",
             ]);
-            fs_spec.push(manifest("plugins", body));
+            fs_spec.push(manifest("plugins", &manifest_body(body)));
             "<ROOT>/plugins/anthology".into()
         }
         5 => {
@@ -1292,10 +1322,21 @@ fn gen_status_case(rng: &mut Rng) -> Value {
             "{{\"permissions\": {{\"allow\": \"xx{rule}yy\"}}}}"
         )),
         4 => Some("{nope".into()),
-        5 => {
+        5 if rng.chance(0.5) => {
             let (t, hint) = deep_text(rng);
             deep = Some(hint);
             Some(t)
+        }
+        5 => {
+            // The rule, beside a value deeper than CPython's json can load (Python reads the
+            // file as unreadable; Rust finds the rule, D-1) or within it (both find it).
+            let n = *rng.pick(&[900usize, 12_000]);
+            deep = Some("valid-ok".to_string());
+            Some(format!(
+                "{{\"permissions\": {{\"allow\": [\"{rule}\"]}}, \"x\": {}{}}}",
+                "[".repeat(n),
+                "]".repeat(n)
+            ))
         }
         6 => Some(
             rng.pick(&[
@@ -1316,7 +1357,8 @@ fn gen_status_case(rng: &mut Rng) -> Value {
     if let Some(t) = content {
         fs_spec.push(file_text("c/settings.json", &t));
     }
-    let root = if rng.chance(0.2) {
+    // A "valid-ok" deep file holds this root's rule, so its root stays the plugin's.
+    let root = if deep.as_deref() != Some("valid-ok") && rng.chance(0.2) {
         "<ROOT>/elsewhere/anthology"
     } else {
         "<ROOT>/plugins/anthology"
@@ -1351,10 +1393,11 @@ fn gen_read_case(rng: &mut Rng) -> Value {
         hex(&b)
     };
     let doc = gen_text(rng);
-    let h = match rng.below(9) {
+    let h = match rng.below(10) {
         0 => utf16(&doc, false, true),
         1 => utf16(&doc, true, true),
         2 => utf16(&doc, false, false),
+        8 => utf16(&doc, true, false),
         3 => hex(&doc
             .chars()
             .map(|c| (c as u32 & 0xff) as u8)

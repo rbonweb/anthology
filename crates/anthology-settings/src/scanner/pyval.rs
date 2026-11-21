@@ -2,7 +2,7 @@
 //! `reconcile`) and the `==` / `in` tests of `settings_patch.py`.
 //!
 //! - [`py_eq`] is Python's `==` between two values `json.loads` returned: `1 == 1.0 == True`,
-//!   `0 == False`, ints and floats compared exactly, NaN unequal to itself, dicts compared
+//!   `0 == False`, ints and floats compared exactly, NaN equal to NaN (see below), dicts compared
 //!   without order. It is iterative, so any depth works.
 //! - Errors Python raises that are not `ValueError` are returned as `"<PyType>: <message>"`
 //!   (ruling R2: the text is informational; that it is an error is what counts).
@@ -187,7 +187,12 @@ fn num_eq(a: &Num<'_>, b: &Num<'_>) -> bool {
             (Int::Small(x), Int::Small(y)) => x == y,
             _ => int_text(x) == int_text(y),
         },
-        (Num::Float(x), Num::Float(y)) => x == y,
+        // Every NaN `json.loads` returns is one object (`json.decoder.NaN`), and the
+        // comparisons here are identity-first (`PyObject_RichCompareBool`: container items,
+        // `in`, set lookups), so NaN meets NaN as equal. The one plain top-level `==`
+        // (`json.loads(raw) == value`) never sees NaN on the document side: the scanner refuses
+        // the token.
+        (Num::Float(x), Num::Float(y)) => x == y || (x.is_nan() && y.is_nan()),
         (Num::Int(i), Num::Float(f)) | (Num::Float(f), Num::Int(i)) => {
             f.is_finite() && f.fract() == 0.0 && float_int_text(*f) == int_text(i)
         }
@@ -249,7 +254,8 @@ mod tests {
         assert!(eq("true", "1"));
         assert!(eq("false", "0.0"));
         assert!(eq("-0.0", "0"));
-        assert!(!eq("NaN", "NaN"));
+        assert!(eq("NaN", "NaN"));
+        assert!(!eq("NaN", "1"));
         assert!(!eq("1", "\"1\""));
         assert!(!eq("null", "false"));
         assert!(eq("9007199254740992", "9007199254740992.0"));
@@ -272,7 +278,7 @@ mod tests {
         ));
         assert!(!eq(r#"{"a": 1}"#, r#"{"a": 1, "b": 2}"#));
         assert!(!eq("[1, 2]", "[2, 1]"));
-        assert!(!eq("[NaN]", "[NaN]"));
+        assert!(eq("[NaN]", "[NaN]"));
         let deep = format!("{}1{}", "[".repeat(200_000), "]".repeat(200_000));
         assert!(eq(&deep, &deep));
     }
