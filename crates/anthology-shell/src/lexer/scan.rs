@@ -290,15 +290,16 @@ fn walk<'t>(
     Ok((s, n))
 }
 
-/// `_substitution`: at a `$(` (`text[j]` is `$`), (the text to lex, index after the closing `)`). A `$((...))`
-/// that closes with `))` is arithmetic, lexed as a `((...))` command; any other `$((` is a command substitution
-/// holding a subshell.
+/// `_substitution`: at a `$(` (`text[j]` is `$`), (the text to lex, index after the closing `)`, whether it
+/// is arithmetic). A `$((...))` that closes with `))` is arithmetic, lexed as a `((...))` command; any other
+/// `$((` is a command substitution holding a subshell. Its text can start with `((` too (`$(((1)); X)`), so
+/// only the flag tells the two apart (DT-4 review C-1).
 pub(crate) fn substitution<'t>(
     text: &'t str,
     j: usize,
     memo: &mut Memo,
     work: &mut Work,
-) -> Result<(Cow<'t, str>, usize), TooComplex> {
+) -> Result<(Cow<'t, str>, usize, bool), TooComplex> {
     if byte_at(text, j + 2) == Some(b'(') {
         let s = scan_paren_ex(text, j + 2, true, memo, work)?;
         if s.closes {
@@ -306,11 +307,12 @@ pub(crate) fn substitution<'t>(
             return Ok((
                 Cow::Owned(format!("({inner})")),
                 s.end.unwrap_or(text.len()),
+                true,
             ));
         }
     }
     let (inner, end) = scan_paren(text, j + 2, memo, work)?;
-    Ok((Cow::Borrowed(inner), end))
+    Ok((Cow::Borrowed(inner), end, false))
 }
 
 /// One span `_body_substitutions` found: (index, end index, text to lex, is a `$(...)`).
@@ -334,9 +336,8 @@ pub(crate) fn body_substitutions<'t>(
         match bytes[j] {
             b'\\' => j = skip_escape(body, j),
             b'$' if byte_at(body, j + 1) == Some(b'(') => {
-                let (inner, k) = substitution(body, j, &mut memo, work)?;
-                let comsub = !inner.starts_with("((");
-                found.push((j, k, inner, comsub));
+                let (inner, k, arith) = substitution(body, j, &mut memo, work)?;
+                found.push((j, k, inner, !arith));
                 j = k;
             }
             b'`' => {
