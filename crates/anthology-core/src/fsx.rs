@@ -23,6 +23,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use anthology_pycompat::errno_tables;
 use anthology_pycompat::pyerr::PyExc;
 
 /// Test-only fault injection (GC-19): `fail_next(op, errno)` makes the next `op` on this
@@ -106,12 +107,11 @@ fn os_err(e: io::Error, p: &Path) -> PyExc {
     }
 }
 
-/// `exc.strerror`: the errno text alone (the provisional `pyerr` text until P1's tables).
+/// `exc.strerror`: `os.strerror(errno)` on this OS.
 fn strerror(e: io::Error) -> String {
-    let s = PyExc::from(e).py_str();
-    match s.split_once("] ") {
-        Some((_, text)) if s.starts_with("[Errno ") => text.to_string(),
-        _ => s,
+    match PyExc::from(e) {
+        PyExc::OSError { errno, .. } => errno_tables::strerror(errno),
+        other => other.py_str(),
     }
 }
 

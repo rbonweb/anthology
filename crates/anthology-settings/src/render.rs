@@ -2,8 +2,8 @@
 //! `_line_indent`, `_container_multiline`, `_sep`, `_append`, `_remove_at` and `_nest`.
 
 use anthology_pycompat::json::{self, Map, PY_DEFAULT_UNICODE, Value};
+use anthology_pycompat::str::is_space;
 
-use crate::scanner::py::is_space;
 use crate::scanner::{Doc, Kind};
 
 /// Values nested deeper than this are refused before rendering (Python's `_render` recursion
