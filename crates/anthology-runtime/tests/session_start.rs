@@ -669,6 +669,44 @@ mod ops_version_test {
     }
 
     #[test]
+    fn test_setup_apply_records_the_version_session_start_expects() {
+        use anthology_runtime::setup::{self, SetupDeps};
+        fn present(_: &Path, _: u64, _: &Env) -> GuardBinaryStatus {
+            GuardBinaryStatus::Present
+        }
+        let f = Fx::new();
+        write(&f.config().join("settings.json"), "{}\n", None);
+        let deps = SetupDeps {
+            rtk: Some(&f.rtk),
+            ensure_guard_binary: &present,
+            ..SetupDeps::default()
+        };
+        let env = f.env();
+        let out = setup::preview(f.plugin(), Some(f.tmp()), &env, &deps);
+        let digest = out
+            .as_object()
+            .and_then(|o| o.get("settings"))
+            .and_then(Value::as_object)
+            .and_then(|s| s.get("sha256"))
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
+        let res = setup::apply(f.plugin(), &digest, Some(f.tmp()), true, &env, &[], &deps);
+        assert_eq!(
+            res.as_object().and_then(|o| o.get("ok")),
+            Some(&Value::Bool(true)),
+            "{res:?}"
+        );
+        assert_eq!(
+            f.state()
+                .get("settings_ops_version")
+                .and_then(Value::as_str),
+            Some(f.current_ops_version().as_str())
+        );
+        assert!(!lines(&f.go()).contains(&OPS_CHANGED.to_string()));
+    }
+
+    #[test]
     fn test_setup_from_before_the_version_was_recorded_gets_the_note() {
         let f = Fx::new();
         f.mark_setup(None);
