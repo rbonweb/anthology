@@ -8,9 +8,9 @@ Library surface: `run(case: dict) -> dict` (the case's `data`, or a dict holding
 Case data. The rules are guard_rules.py's; the shell analysis under them is the shell oracle's
 (`port/difftest/oracle/shell.py`: the vendored fix-wave H/I reference `guard_rules_fw.py` with the Rust-stricter
 rules applied, lane SH), because Rust's guard runs on `anthology_shell::analyze`. The alternate readings
-are checked against G1 after every entry, as Rust's guard checks `Analysis.alternates` (lead ruling Q3=A;
-the reference checks each as it collects it). `guard.py` (`plugins/anthology-guardrails/scripts/`) runs on
-that module as well:
+are checked against G3, G4, G1 and G2 after every entry of every reading, as Rust's guard checks
+`Analysis.alternates` (final review C-1, I-3); this holds on every path, a stopped analysis and the hook
+included. `guard.py` (`plugins/anthology-guardrails/scripts/`) runs on that module as well:
 - `{"op": "check", "tool": T, "input": I, "home": H}`: `guard_rules.check(T, I, H)`, rendered as the
   canonical JSON of `[rule, message]` or `null`. `check` turns any exception into `None`; this module
   calls `_check` itself, so an exception is seen: it answers `null` with `"divergence": "D-1"` (Python
@@ -77,27 +77,31 @@ def _stopped_rule(name, inp, home, command):
     if G._words_hit(paths, G._is_profile_path, home, None) or G._code_hits_profile(
             G._code_strings(inp), home, None):
         return "G3"
+    return _entries_rule(entries + list(SHELL._ALTERNATES), home) or "G0"
+
+
+def _entries_rule(entries, home):
+    """The first of G3, G4, G1, G2 that an entry hits, entry by entry (Rust's per-entry loop), or None."""
     for entry in entries:
         for rule, test in (("G3", lambda e: G._g3(e, home)), ("G4", G._g4), ("G1", G._g1), ("G2", G._g2)):
             if test(entry):
                 return rule
-    if any(G._g1(alt) for alt in SHELL._ALTERNATES):
-        return "G1"
-    return "G0"
+    return None
 
 
-_CHECK_READING = G._check_reading
+_CHECK = G._check
 
 
-def _check_reading(name, inp, home, command):
-    """`_check_reading`, then G1 on each alternate reading (crates/anthology-guard/src/check.rs)."""
-    rule = _CHECK_READING(name, inp, home, command)
-    if rule is None and any(G._g1(alt) for alt in SHELL._ALTERNATES):
-        return "G1"
+def _check_alternates(tool_name, tool_input, home):
+    """`_check` over every reading, then G3, G4, G1, G2 on each alternate reading: Rust checks
+    `Analysis.alternates` after the entries of all its passes (crates/anthology-guard/src/check.rs)."""
+    rule = _CHECK(tool_name, tool_input, home)
+    if rule is None:
+        rule = _entries_rule(list(SHELL._ALTERNATES), home if isinstance(home, str) else "")
     return rule
 
 
-G._check_reading = _check_reading
+G._check = _check_alternates
 
 
 def _rule(tool, tool_input, home):

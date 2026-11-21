@@ -6,7 +6,9 @@
 //!
 //! - an oracle error or a panic on either side is always unexplained;
 //! - every divergence mark needs an entry of its class matching the case;
-//! - a difference needs an entry with a `case` matching it. Such a waiver is reported apart
+//! - a difference needs an entry with a `case` matching it; a `D-8` entry waives it only where
+//!   the surface says Rust is the stricter side (`Surface::rust_stricter`, final review M-3), and
+//!   any other diff on a case a D-8 entry names is unexplained. Such a waiver is reported apart
 //!   from the marks it might share a class with (`waived N diff(s) by <file>:<line>`), and a
 //!   glob entry that waives a generated case (`gen:<n>` ids depend on `--seed` and `--gen`)
 //!   gets a warning.
@@ -96,8 +98,15 @@ pub fn entry_label(label: &str, e: &crate::divergences::Entry) -> String {
     )
 }
 
-/// Judges one case (module docs).
-pub fn judge(id: &str, equal: bool, notes: &Notes, div: &mut Divergences) -> Verdict {
+/// Judges one case (module docs). `stricter` is the surface's `rust_stricter` for a diff (`None`:
+/// it has no direction to check); it is not read when `equal`.
+pub fn judge(
+    id: &str,
+    equal: bool,
+    stricter: Option<bool>,
+    notes: &Notes,
+    div: &mut Divergences,
+) -> Verdict {
     if let Some(e) = notes.errors.first() {
         return Verdict::Unexplained(e.clone());
     }
@@ -121,7 +130,16 @@ pub fn judge(id: &str, equal: bool, notes: &Notes, div: &mut Divergences) -> Ver
     let mut waiver = None;
     if !equal {
         let label = div.label.clone();
-        match div.explain_diff(id) {
+        if stricter == Some(false)
+            && let Some(e) = div.d8_entry(id)
+        {
+            return Verdict::Unexplained(format!(
+                "{} waives only a stricter Rust (it blocks where Python allows), and this diff \
+                 is not one",
+                entry_label(&label, e)
+            ));
+        }
+        match div.explain_diff(id, stricter != Some(false)) {
             Some(e) => {
                 let glob = e.case.as_deref().is_some_and(|c| c.contains(['*', '?']));
                 let gen_by_glob = glob && id.starts_with("gen:");
@@ -232,7 +250,15 @@ pub fn run_surface(
         let verdict = match (py_panic, panicked) {
             (Some(msg), _) => Verdict::Unexplained(format!("the python side panicked: {msg}")),
             (None, Some(msg)) => Verdict::Unexplained(format!("rust panicked: {msg}")),
-            (None, None) => judge(&case.id, python == rust, &notes, div),
+            (None, None) => {
+                let equal = python == rust;
+                let stricter = if equal {
+                    None
+                } else {
+                    surface.rust_stricter(case, &python, &rust)
+                };
+                judge(&case.id, equal, stricter, &notes, div)
+            }
         };
         match verdict {
             Verdict::Same => report.same += 1,
@@ -437,6 +463,54 @@ mod tests {
     }
 
     #[test]
+    fn a_d8_entry_waives_only_a_stricter_rust() {
+        /// Fake, with `rust_stricter` answering `.0`.
+        struct Directed(Option<bool>);
+        impl Surface for Directed {
+            fn name(&self) -> &'static str {
+                "directed"
+            }
+            fn seeds(&self) -> Vec<Case> {
+                Fake.seeds()
+            }
+            fn generate(&self, _: &mut Rng, _: usize) -> Vec<Case> {
+                Vec::new()
+            }
+            fn run_python(&self, c: &Case, o: &mut Oracle) -> Observed {
+                Fake.run_python(c, o)
+            }
+            fn run_rust(&self, c: &Case) -> Observed {
+                Fake.run_rust(c)
+            }
+            fn rust_stricter(&self, _: &Case, _: &Observed, _: &Observed) -> Option<bool> {
+                self.0
+            }
+        }
+        // a D-8 entry for the diff, a later catch-all D-2 one, and the D-6 mark's entry
+        let toml = "[[divergence]]\nclass = \"D-8\"\ncase = \"s:diff\"\nreason = \"stricter\"\n\
+            [[divergence]]\nclass = \"D-2\"\ncase = \"*\"\nreason = \"any\"\n\
+            [[divergence]]\nclass = \"D-6\"\nreason = \"F-19\"\n";
+        let opts = Options { count: 0, ..OPTS };
+        for (stricter, waived) in [(Some(true), true), (None, true), (Some(false), false)] {
+            let mut div = Divergences::parse(toml, "d.toml").expect("valid");
+            let r = run_surface(&Directed(stricter), &mut oracle(), &mut div, &opts);
+            if waived {
+                assert!(r.failures.is_empty(), "{stricter:?}: {:?}", r.failures);
+                assert_eq!(r.waived.get("d.toml:1 (D-8, case s:diff)"), Some(&1));
+            } else {
+                // not waived by the D-8 entry, and not by the catch-all either
+                assert_eq!(r.failures.len(), 1, "{stricter:?}");
+                assert_eq!(r.failures[0].id, "s:diff");
+                assert!(
+                    r.failures[0].reason.contains("waives only a stricter Rust"),
+                    "{}",
+                    r.failures[0].reason
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_wrong_class_fails_and_unused_entries_are_listed() {
         let toml = "[[divergence]]\nclass = \"D-1\"\nreason = \"wrong class\"\n\
             [[divergence]]\nclass = \"D-2\"\ncase = \"s:diff\"\nreason = \"text\"\n";
@@ -506,7 +580,7 @@ mod tests {
             errors: vec!["oracle error: x".into()],
         };
         assert_eq!(
-            judge("p", true, &notes, &mut div),
+            judge("p", true, None, &notes, &mut div),
             Verdict::Unexplained("oracle error: x".into())
         );
         let notes = Notes {
@@ -514,7 +588,7 @@ mod tests {
             errors: vec![],
         };
         assert!(matches!(
-            judge("p", true, &notes, &mut div),
+            judge("p", true, None, &notes, &mut div),
             Verdict::Unexplained(_)
         ));
     }

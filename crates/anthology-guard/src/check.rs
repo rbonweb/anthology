@@ -1,15 +1,16 @@
 //! `check()`: the rule order of GC-6 (GD1), guard_rules.py `_check` and `check`.
 //!
 //! Order: G5 on the tool name; G6 (file tool, then command); G3 on the tool input's paths,
-//! search roots and code; then per entry G3, G4, G1, G2; then G1 on each alternate reading of a
-//! wrapped command (`Analysis.alternates`).
+//! search roots and code; then per entry G3, G4, G1, G2; then the same four on each alternate
+//! reading of a wrapped command (`Analysis.alternates`).
 //!
 //! Python turns any exception into "allow". Rust has no such path: it blocks where it cannot
 //! finish (design §9.5, D-1/D-7):
 //! - a backtrack limit (anthology-shell's lexer or path patterns, or this crate's
 //!   `_ESCAPED_SPACE` and G6 patterns) gives [`Verdict::Incomplete`] (GC-14 limit block);
-//! - an analysis anthology-shell stopped at its work budget gives [`Verdict::TooComplex`]
-//!   (owner direction, FW-H: "this command is too complex to check safely", naming `/plugin`).
+//! - an analysis anthology-shell stopped at its work budget, or one with text nested past its depth
+//!   cap (`Opaque::DepthCap`), gives [`Verdict::TooComplex`] (owner direction, FW-H: "this command
+//!   is too complex to check safely", naming `/plugin`).
 //!
 //! A rule that blocks on what was analyzed is reported first, in GC-6 order; only when no rule
 //! blocks does an unfinished check become `Incomplete` or `TooComplex`. Either way nothing
@@ -86,9 +87,12 @@ pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Li
     }
 }
 
-/// [`check`] with the owner-directed FW-I readings of G1 left out: Python's verdict where the two
-/// differ only by a D-8 reading. Not for production: the difftest's generator drops a generated
-/// case whose verdict this changes, so D-8 stays case-scoped (GC-16).
+/// [`check`] with two owner-directed Rust-stricter parts left out: the FW-I readings of G1's own
+/// tables (`g1_with(.., false)`) and the depth-cap block (final review I-1). Only those two: the
+/// analyzer's FW readings (`fd -x`, `tar`, git aliases, the unknown-option reading of a package
+/// manager and its alternates) stay on, so a generated case that differs from Python by one of them
+/// still shows as unexplained (loud, not silent). Not for production: the difftest's generator drops
+/// a generated case whose verdict this changes, so those two parts of D-8 stay case-scoped (GC-16).
 pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
     run(
         tool_name,
@@ -163,7 +167,10 @@ fn run(
     if let Some(v) = out.hit(Rule::G3, g3_input(name, input, &paths)) {
         return v;
     }
-    for entry in &analysis.entries {
+    // Every entry, then each other reading of a wrapped command (`Analysis.alternates`), against
+    // G3, G4, G1 and G2 (final review C-1, I-3): an alternate is a reading the shipped Python may
+    // take, so a rule it hits blocks.
+    for entry in analysis.entries.iter().chain(&analysis.alternates) {
         if let Some(v) = out.hit(Rule::G3, g3(entry, &paths)) {
             return v;
         }
@@ -177,18 +184,19 @@ fn run(
             return Verdict::Block(Rule::G2);
         }
     }
-    // Each other reading of a wrapped command (`Analysis.alternates`) is checked against G1 only, as
-    // guard_rules.py `_add_alternates` checks it (SH lead ruling Q3=A).
-    if analysis.alternates.iter().any(|alt| g1_with(alt, fw)) {
-        return Verdict::Block(Rule::G1);
-    }
     let regex_limit = analysis
         .entries
         .iter()
         .any(|e| e.opaque.contains(&Opaque::RegexLimit));
+    // Text nested past anthology-shell's depth cap was never analyzed (final review I-1).
+    let depth_cap = analysis
+        .entries
+        .iter()
+        .chain(&analysis.alternates)
+        .any(|e| e.opaque.contains(&Opaque::DepthCap));
     if out.limited || (analysis.incomplete && regex_limit) {
         Verdict::Incomplete
-    } else if analysis.incomplete {
+    } else if analysis.incomplete || (fw && depth_cap) {
         Verdict::TooComplex
     } else {
         Verdict::Allow

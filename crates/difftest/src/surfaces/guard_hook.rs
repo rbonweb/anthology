@@ -86,6 +86,11 @@ impl Surface for GuardHook {
     fn run_rust(&self, c: &Case) -> Observed {
         run_rust(&c.data)
     }
+
+    /// guard.py allows (exit 0) and Rust blocks (exit 2) (final review M-3).
+    fn rust_stricter(&self, _c: &Case, python: &Observed, rust: &Observed) -> Option<bool> {
+        Some(python.exit == 0 && rust.exit == 2)
+    }
 }
 
 fn run_rust(data: &Value) -> Observed {

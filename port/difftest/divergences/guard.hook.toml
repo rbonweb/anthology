@@ -3,3 +3,18 @@
 [[divergence]]
 class = "D-1"
 reason = 'guard.py allowed because Python raised (json.loads RecursionError on deep nesting, or _check raising); the oracle marks it. Rust parses iteratively and checks (F-10): it may block or match.'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:5"
+reason = 'Rust stricter: final review I-1. guard.check shell:5 as a hook payload, hundreds of nested `$(`: past the depth cap (12) it was never analyzed, so Rust blocks it as too complex (G0, exit 2); guard.py allows it (exit 0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:6"
+reason = 'Rust stricter: final review I-1. guard.check shell:6 as a hook payload, 50 nested `$(` around an empty `$()`: past the depth cap (12) it was never analyzed, so Rust blocks it as too complex (G0, exit 2); guard.py allows it (exit 0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:381"
+reason = 'Rust stricter: final review I-1. guard.check shell:381 as a hook payload, 40 nested `echo $(` around `ls`: past the depth cap (12) it was never analyzed, so Rust blocks it as too complex (G0, exit 2); guard.py allows it (exit 0).'

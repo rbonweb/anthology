@@ -1,0 +1,4032 @@
+G1	npx playwright install
+G1	npx playwright install chromium
+G1	npx puppeteer browsers install chrome
+G1	npx @playwright/test install
+G1	npx --silent playwright install
+G1	npx --silent playwright install chromium
+G1	npx --silent puppeteer browsers install chrome
+G1	npx --silent @playwright/test install
+G1	npx --frozen-lockfile playwright install
+G1	npx --frozen-lockfile playwright install chromium
+G1	npx --frozen-lockfile puppeteer browsers install chrome
+G1	npx --frozen-lockfile @playwright/test install
+G1	npx --verbose playwright install
+G1	npx --verbose playwright install chromium
+G1	npx --verbose puppeteer browsers install chrome
+G1	npx --verbose @playwright/test install
+G1	npx -s playwright install
+G1	npx -s playwright install chromium
+G1	npx -s puppeteer browsers install chrome
+G1	npx -s @playwright/test install
+G1	npx -q playwright install
+G1	npx -q playwright install chromium
+G1	npx -q puppeteer browsers install chrome
+G1	npx -q @playwright/test install
+G1	npx --yes playwright install
+G1	npx --yes playwright install chromium
+G1	npx --yes puppeteer browsers install chrome
+G1	npx --yes @playwright/test install
+G1	npx -y playwright install
+G1	npx -y playwright install chromium
+G1	npx -y puppeteer browsers install chrome
+G1	npx -y @playwright/test install
+G1	npx --prefer-offline playwright install
+G1	npx --prefer-offline playwright install chromium
+G1	npx --prefer-offline puppeteer browsers install chrome
+G1	npx --prefer-offline @playwright/test install
+G1	npx --no-install playwright install
+G1	npx --no-install playwright install chromium
+G1	npx --no-install puppeteer browsers install chrome
+G1	npx --no-install @playwright/test install
+G1	npx --ignore-scripts playwright install
+G1	npx --ignore-scripts playwright install chromium
+G1	npx --ignore-scripts puppeteer browsers install chrome
+G1	npx --ignore-scripts @playwright/test install
+G1	npx --foo playwright install
+G1	npx --foo playwright install chromium
+G1	npx --foo puppeteer browsers install chrome
+G1	npx --foo @playwright/test install
+-	npx --foo x playwright install
+-	npx --foo x playwright install chromium
+-	npx --foo x puppeteer browsers install chrome
+-	npx --foo x @playwright/test install
+G1	npx -x playwright install
+G1	npx -x playwright install chromium
+G1	npx -x puppeteer browsers install chrome
+G1	npx -x @playwright/test install
+G1	npx --registry=https://r playwright install
+G1	npx --registry=https://r playwright install chromium
+G1	npx --registry=https://r puppeteer browsers install chrome
+G1	npx --registry=https://r @playwright/test install
+-	npx --registry https://r playwright install
+-	npx --registry https://r playwright install chromium
+-	npx --registry https://r puppeteer browsers install chrome
+-	npx --registry https://r @playwright/test install
+-	npx --cwd web playwright install
+-	npx --cwd web playwright install chromium
+-	npx --cwd web puppeteer browsers install chrome
+-	npx --cwd web @playwright/test install
+-	npx -C web playwright install
+-	npx -C web playwright install chromium
+-	npx -C web puppeteer browsers install chrome
+-	npx -C web @playwright/test install
+-	npx --filter web playwright install
+-	npx --filter web playwright install chromium
+-	npx --filter web puppeteer browsers install chrome
+-	npx --filter web @playwright/test install
+-	npx -w playwright install
+-	npx -w playwright install chromium
+-	npx -w puppeteer browsers install chrome
+-	npx -w @playwright/test install
+G1	npx --offline playwright install
+G1	npx --offline playwright install chromium
+G1	npx --offline puppeteer browsers install chrome
+G1	npx --offline @playwright/test install
+G1	npx --json playwright install
+G1	npx --json playwright install chromium
+G1	npx --json puppeteer browsers install chrome
+G1	npx --json @playwright/test install
+G1	npx --color=always playwright install
+G1	npx --color=always playwright install chromium
+G1	npx --color=always puppeteer browsers install chrome
+G1	npx --color=always @playwright/test install
+G1	npx --no-color playwright install
+G1	npx --no-color playwright install chromium
+G1	npx --no-color puppeteer browsers install chrome
+G1	npx --no-color @playwright/test install
+-	npx --loglevel silent playwright install
+-	npx --loglevel silent playwright install chromium
+-	npx --loglevel silent puppeteer browsers install chrome
+-	npx --loglevel silent @playwright/test install
+G1	npx --quiet playwright install
+G1	npx --quiet playwright install chromium
+G1	npx --quiet puppeteer browsers install chrome
+G1	npx --quiet @playwright/test install
+G1	npx --package playwright playwright install
+G1	npx --package playwright playwright install chromium
+G1	npx --package playwright puppeteer browsers install chrome
+G1	npx --package playwright @playwright/test install
+G1	npx -p playwright playwright install
+G1	npx -p playwright playwright install chromium
+G1	npx -p playwright puppeteer browsers install chrome
+G1	npx -p playwright @playwright/test install
+G1	npx -n 5 playwright install
+G1	npx -n 5 playwright install chromium
+G1	npx -n 5 puppeteer browsers install chrome
+G1	npx -n 5 @playwright/test install
+-	npx -u root playwright install
+-	npx -u root playwright install chromium
+-	npx -u root puppeteer browsers install chrome
+-	npx -u root @playwright/test install
+G1	npx -E playwright install
+G1	npx -E playwright install chromium
+G1	npx -E puppeteer browsers install chrome
+G1	npx -E @playwright/test install
+G1	npx -i playwright install
+G1	npx -i playwright install chromium
+G1	npx -i puppeteer browsers install chrome
+G1	npx -i @playwright/test install
+-	npx -k 5 playwright install
+-	npx -k 5 playwright install chromium
+-	npx -k 5 puppeteer browsers install chrome
+-	npx -k 5 @playwright/test install
+G1	npx --preserve-status playwright install
+G1	npx --preserve-status playwright install chromium
+G1	npx --preserve-status puppeteer browsers install chrome
+G1	npx --preserve-status @playwright/test install
+G1	npx -- playwright install
+G1	npx -- playwright install chromium
+G1	npx -- puppeteer browsers install chrome
+G1	npx -- @playwright/test install
+G1	npx -v playwright install
+G1	npx -v playwright install chromium
+G1	npx -v puppeteer browsers install chrome
+G1	npx -v @playwright/test install
+G1	yarn playwright install
+G1	yarn playwright install chromium
+G1	yarn puppeteer browsers install chrome
+G1	yarn @playwright/test install
+G1	yarn --silent playwright install
+G1	yarn --silent playwright install chromium
+G1	yarn --silent puppeteer browsers install chrome
+G1	yarn --silent @playwright/test install
+G1	yarn --frozen-lockfile playwright install
+G1	yarn --frozen-lockfile playwright install chromium
+G1	yarn --frozen-lockfile puppeteer browsers install chrome
+G1	yarn --frozen-lockfile @playwright/test install
+G1	yarn --verbose playwright install
+G1	yarn --verbose playwright install chromium
+G1	yarn --verbose puppeteer browsers install chrome
+G1	yarn --verbose @playwright/test install
+G1	yarn -s playwright install
+G1	yarn -s playwright install chromium
+G1	yarn -s puppeteer browsers install chrome
+G1	yarn -s @playwright/test install
+G1	yarn -q playwright install
+G1	yarn -q playwright install chromium
+G1	yarn -q puppeteer browsers install chrome
+G1	yarn -q @playwright/test install
+G1	yarn --yes playwright install
+G1	yarn --yes playwright install chromium
+G1	yarn --yes puppeteer browsers install chrome
+G1	yarn --yes @playwright/test install
+G1	yarn -y playwright install
+G1	yarn -y playwright install chromium
+G1	yarn -y puppeteer browsers install chrome
+G1	yarn -y @playwright/test install
+G1	yarn --prefer-offline playwright install
+G1	yarn --prefer-offline playwright install chromium
+G1	yarn --prefer-offline puppeteer browsers install chrome
+G1	yarn --prefer-offline @playwright/test install
+G1	yarn --no-install playwright install
+G1	yarn --no-install playwright install chromium
+G1	yarn --no-install puppeteer browsers install chrome
+G1	yarn --no-install @playwright/test install
+G1	yarn --ignore-scripts playwright install
+G1	yarn --ignore-scripts playwright install chromium
+G1	yarn --ignore-scripts puppeteer browsers install chrome
+G1	yarn --ignore-scripts @playwright/test install
+G1	yarn --foo playwright install
+G1	yarn --foo playwright install chromium
+G1	yarn --foo puppeteer browsers install chrome
+G1	yarn --foo @playwright/test install
+G1	yarn --foo x playwright install
+G1	yarn --foo x playwright install chromium
+G1	yarn --foo x puppeteer browsers install chrome
+G1	yarn --foo x @playwright/test install
+G1	yarn -x playwright install
+G1	yarn -x playwright install chromium
+G1	yarn -x puppeteer browsers install chrome
+G1	yarn -x @playwright/test install
+G1	yarn --registry=https://r playwright install
+G1	yarn --registry=https://r playwright install chromium
+G1	yarn --registry=https://r puppeteer browsers install chrome
+G1	yarn --registry=https://r @playwright/test install
+G1	yarn --registry https://r playwright install
+G1	yarn --registry https://r playwright install chromium
+G1	yarn --registry https://r puppeteer browsers install chrome
+G1	yarn --registry https://r @playwright/test install
+G1	yarn --cwd web playwright install
+G1	yarn --cwd web playwright install chromium
+G1	yarn --cwd web puppeteer browsers install chrome
+G1	yarn --cwd web @playwright/test install
+G1	yarn -C web playwright install
+G1	yarn -C web playwright install chromium
+G1	yarn -C web puppeteer browsers install chrome
+G1	yarn -C web @playwright/test install
+G1	yarn --filter web playwright install
+G1	yarn --filter web playwright install chromium
+G1	yarn --filter web puppeteer browsers install chrome
+G1	yarn --filter web @playwright/test install
+-	yarn -w playwright install
+-	yarn -w playwright install chromium
+-	yarn -w puppeteer browsers install chrome
+-	yarn -w @playwright/test install
+G1	yarn --offline playwright install
+G1	yarn --offline playwright install chromium
+G1	yarn --offline puppeteer browsers install chrome
+G1	yarn --offline @playwright/test install
+G1	yarn --json playwright install
+G1	yarn --json playwright install chromium
+G1	yarn --json puppeteer browsers install chrome
+G1	yarn --json @playwright/test install
+G1	yarn --color=always playwright install
+G1	yarn --color=always playwright install chromium
+G1	yarn --color=always puppeteer browsers install chrome
+G1	yarn --color=always @playwright/test install
+G1	yarn --no-color playwright install
+G1	yarn --no-color playwright install chromium
+G1	yarn --no-color puppeteer browsers install chrome
+G1	yarn --no-color @playwright/test install
+-	yarn --loglevel silent playwright install
+-	yarn --loglevel silent playwright install chromium
+-	yarn --loglevel silent puppeteer browsers install chrome
+-	yarn --loglevel silent @playwright/test install
+G1	yarn --quiet playwright install
+G1	yarn --quiet playwright install chromium
+G1	yarn --quiet puppeteer browsers install chrome
+G1	yarn --quiet @playwright/test install
+-	yarn --package playwright playwright install
+-	yarn --package playwright playwright install chromium
+-	yarn --package playwright puppeteer browsers install chrome
+-	yarn --package playwright @playwright/test install
+-	yarn -p playwright playwright install
+-	yarn -p playwright playwright install chromium
+-	yarn -p playwright puppeteer browsers install chrome
+-	yarn -p playwright @playwright/test install
+-	yarn -n 5 playwright install
+-	yarn -n 5 playwright install chromium
+-	yarn -n 5 puppeteer browsers install chrome
+-	yarn -n 5 @playwright/test install
+-	yarn -u root playwright install
+-	yarn -u root playwright install chromium
+-	yarn -u root puppeteer browsers install chrome
+-	yarn -u root @playwright/test install
+G1	yarn -E playwright install
+G1	yarn -E playwright install chromium
+G1	yarn -E puppeteer browsers install chrome
+G1	yarn -E @playwright/test install
+G1	yarn -i playwright install
+G1	yarn -i playwright install chromium
+G1	yarn -i puppeteer browsers install chrome
+G1	yarn -i @playwright/test install
+-	yarn -k 5 playwright install
+-	yarn -k 5 playwright install chromium
+-	yarn -k 5 puppeteer browsers install chrome
+-	yarn -k 5 @playwright/test install
+G1	yarn --preserve-status playwright install
+G1	yarn --preserve-status playwright install chromium
+G1	yarn --preserve-status puppeteer browsers install chrome
+G1	yarn --preserve-status @playwright/test install
+G1	yarn -- playwright install
+G1	yarn -- playwright install chromium
+G1	yarn -- puppeteer browsers install chrome
+G1	yarn -- @playwright/test install
+G1	yarn -v playwright install
+G1	yarn -v playwright install chromium
+G1	yarn -v puppeteer browsers install chrome
+G1	yarn -v @playwright/test install
+G1	pnpm playwright install
+G1	pnpm playwright install chromium
+G1	pnpm puppeteer browsers install chrome
+G1	pnpm @playwright/test install
+G1	pnpm --silent playwright install
+G1	pnpm --silent playwright install chromium
+G1	pnpm --silent puppeteer browsers install chrome
+G1	pnpm --silent @playwright/test install
+G1	pnpm --frozen-lockfile playwright install
+G1	pnpm --frozen-lockfile playwright install chromium
+G1	pnpm --frozen-lockfile puppeteer browsers install chrome
+G1	pnpm --frozen-lockfile @playwright/test install
+G1	pnpm --verbose playwright install
+G1	pnpm --verbose playwright install chromium
+G1	pnpm --verbose puppeteer browsers install chrome
+G1	pnpm --verbose @playwright/test install
+G1	pnpm -s playwright install
+G1	pnpm -s playwright install chromium
+G1	pnpm -s puppeteer browsers install chrome
+G1	pnpm -s @playwright/test install
+G1	pnpm -q playwright install
+G1	pnpm -q playwright install chromium
+G1	pnpm -q puppeteer browsers install chrome
+G1	pnpm -q @playwright/test install
+G1	pnpm --yes playwright install
+G1	pnpm --yes playwright install chromium
+G1	pnpm --yes puppeteer browsers install chrome
+G1	pnpm --yes @playwright/test install
+G1	pnpm -y playwright install
+G1	pnpm -y playwright install chromium
+G1	pnpm -y puppeteer browsers install chrome
+G1	pnpm -y @playwright/test install
+G1	pnpm --prefer-offline playwright install
+G1	pnpm --prefer-offline playwright install chromium
+G1	pnpm --prefer-offline puppeteer browsers install chrome
+G1	pnpm --prefer-offline @playwright/test install
+G1	pnpm --no-install playwright install
+G1	pnpm --no-install playwright install chromium
+G1	pnpm --no-install puppeteer browsers install chrome
+G1	pnpm --no-install @playwright/test install
+G1	pnpm --ignore-scripts playwright install
+G1	pnpm --ignore-scripts playwright install chromium
+G1	pnpm --ignore-scripts puppeteer browsers install chrome
+G1	pnpm --ignore-scripts @playwright/test install
+G1	pnpm --foo playwright install
+G1	pnpm --foo playwright install chromium
+G1	pnpm --foo puppeteer browsers install chrome
+G1	pnpm --foo @playwright/test install
+G1	pnpm --foo x playwright install
+G1	pnpm --foo x playwright install chromium
+G1	pnpm --foo x puppeteer browsers install chrome
+G1	pnpm --foo x @playwright/test install
+G1	pnpm -x playwright install
+G1	pnpm -x playwright install chromium
+G1	pnpm -x puppeteer browsers install chrome
+G1	pnpm -x @playwright/test install
+G1	pnpm --registry=https://r playwright install
+G1	pnpm --registry=https://r playwright install chromium
+G1	pnpm --registry=https://r puppeteer browsers install chrome
+G1	pnpm --registry=https://r @playwright/test install
+G1	pnpm --registry https://r playwright install
+G1	pnpm --registry https://r playwright install chromium
+G1	pnpm --registry https://r puppeteer browsers install chrome
+G1	pnpm --registry https://r @playwright/test install
+G1	pnpm --cwd web playwright install
+G1	pnpm --cwd web playwright install chromium
+G1	pnpm --cwd web puppeteer browsers install chrome
+G1	pnpm --cwd web @playwright/test install
+G1	pnpm -C web playwright install
+G1	pnpm -C web playwright install chromium
+G1	pnpm -C web puppeteer browsers install chrome
+G1	pnpm -C web @playwright/test install
+G1	pnpm --filter web playwright install
+G1	pnpm --filter web playwright install chromium
+G1	pnpm --filter web puppeteer browsers install chrome
+G1	pnpm --filter web @playwright/test install
+-	pnpm -w playwright install
+-	pnpm -w playwright install chromium
+-	pnpm -w puppeteer browsers install chrome
+-	pnpm -w @playwright/test install
+G1	pnpm --offline playwright install
+G1	pnpm --offline playwright install chromium
+G1	pnpm --offline puppeteer browsers install chrome
+G1	pnpm --offline @playwright/test install
+G1	pnpm --json playwright install
+G1	pnpm --json playwright install chromium
+G1	pnpm --json puppeteer browsers install chrome
+G1	pnpm --json @playwright/test install
+G1	pnpm --color=always playwright install
+G1	pnpm --color=always playwright install chromium
+G1	pnpm --color=always puppeteer browsers install chrome
+G1	pnpm --color=always @playwright/test install
+G1	pnpm --no-color playwright install
+G1	pnpm --no-color playwright install chromium
+G1	pnpm --no-color puppeteer browsers install chrome
+G1	pnpm --no-color @playwright/test install
+-	pnpm --loglevel silent playwright install
+-	pnpm --loglevel silent playwright install chromium
+-	pnpm --loglevel silent puppeteer browsers install chrome
+-	pnpm --loglevel silent @playwright/test install
+G1	pnpm --quiet playwright install
+G1	pnpm --quiet playwright install chromium
+G1	pnpm --quiet puppeteer browsers install chrome
+G1	pnpm --quiet @playwright/test install
+-	pnpm --package playwright playwright install
+-	pnpm --package playwright playwright install chromium
+-	pnpm --package playwright puppeteer browsers install chrome
+-	pnpm --package playwright @playwright/test install
+-	pnpm -p playwright playwright install
+-	pnpm -p playwright playwright install chromium
+-	pnpm -p playwright puppeteer browsers install chrome
+-	pnpm -p playwright @playwright/test install
+-	pnpm -n 5 playwright install
+-	pnpm -n 5 playwright install chromium
+-	pnpm -n 5 puppeteer browsers install chrome
+-	pnpm -n 5 @playwright/test install
+-	pnpm -u root playwright install
+-	pnpm -u root playwright install chromium
+-	pnpm -u root puppeteer browsers install chrome
+-	pnpm -u root @playwright/test install
+G1	pnpm -E playwright install
+G1	pnpm -E playwright install chromium
+G1	pnpm -E puppeteer browsers install chrome
+G1	pnpm -E @playwright/test install
+G1	pnpm -i playwright install
+G1	pnpm -i playwright install chromium
+G1	pnpm -i puppeteer browsers install chrome
+G1	pnpm -i @playwright/test install
+-	pnpm -k 5 playwright install
+-	pnpm -k 5 playwright install chromium
+-	pnpm -k 5 puppeteer browsers install chrome
+-	pnpm -k 5 @playwright/test install
+G1	pnpm --preserve-status playwright install
+G1	pnpm --preserve-status playwright install chromium
+G1	pnpm --preserve-status puppeteer browsers install chrome
+G1	pnpm --preserve-status @playwright/test install
+G1	pnpm -- playwright install
+G1	pnpm -- playwright install chromium
+G1	pnpm -- puppeteer browsers install chrome
+G1	pnpm -- @playwright/test install
+G1	pnpm -v playwright install
+G1	pnpm -v playwright install chromium
+G1	pnpm -v puppeteer browsers install chrome
+G1	pnpm -v @playwright/test install
+G1	bunx playwright install
+G1	bunx playwright install chromium
+G1	bunx puppeteer browsers install chrome
+G1	bunx @playwright/test install
+G1	bunx --silent playwright install
+G1	bunx --silent playwright install chromium
+G1	bunx --silent puppeteer browsers install chrome
+G1	bunx --silent @playwright/test install
+G1	bunx --frozen-lockfile playwright install
+G1	bunx --frozen-lockfile playwright install chromium
+G1	bunx --frozen-lockfile puppeteer browsers install chrome
+G1	bunx --frozen-lockfile @playwright/test install
+G1	bunx --verbose playwright install
+G1	bunx --verbose playwright install chromium
+G1	bunx --verbose puppeteer browsers install chrome
+G1	bunx --verbose @playwright/test install
+G1	bunx -s playwright install
+G1	bunx -s playwright install chromium
+G1	bunx -s puppeteer browsers install chrome
+G1	bunx -s @playwright/test install
+G1	bunx -q playwright install
+G1	bunx -q playwright install chromium
+G1	bunx -q puppeteer browsers install chrome
+G1	bunx -q @playwright/test install
+G1	bunx --yes playwright install
+G1	bunx --yes playwright install chromium
+G1	bunx --yes puppeteer browsers install chrome
+G1	bunx --yes @playwright/test install
+G1	bunx -y playwright install
+G1	bunx -y playwright install chromium
+G1	bunx -y puppeteer browsers install chrome
+G1	bunx -y @playwright/test install
+G1	bunx --prefer-offline playwright install
+G1	bunx --prefer-offline playwright install chromium
+G1	bunx --prefer-offline puppeteer browsers install chrome
+G1	bunx --prefer-offline @playwright/test install
+G1	bunx --no-install playwright install
+G1	bunx --no-install playwright install chromium
+G1	bunx --no-install puppeteer browsers install chrome
+G1	bunx --no-install @playwright/test install
+G1	bunx --ignore-scripts playwright install
+G1	bunx --ignore-scripts playwright install chromium
+G1	bunx --ignore-scripts puppeteer browsers install chrome
+G1	bunx --ignore-scripts @playwright/test install
+G1	bunx --foo playwright install
+G1	bunx --foo playwright install chromium
+G1	bunx --foo puppeteer browsers install chrome
+G1	bunx --foo @playwright/test install
+-	bunx --foo x playwright install
+-	bunx --foo x playwright install chromium
+-	bunx --foo x puppeteer browsers install chrome
+-	bunx --foo x @playwright/test install
+G1	bunx -x playwright install
+G1	bunx -x playwright install chromium
+G1	bunx -x puppeteer browsers install chrome
+G1	bunx -x @playwright/test install
+G1	bunx --registry=https://r playwright install
+G1	bunx --registry=https://r playwright install chromium
+G1	bunx --registry=https://r puppeteer browsers install chrome
+G1	bunx --registry=https://r @playwright/test install
+-	bunx --registry https://r playwright install
+-	bunx --registry https://r playwright install chromium
+-	bunx --registry https://r puppeteer browsers install chrome
+-	bunx --registry https://r @playwright/test install
+-	bunx --cwd web playwright install
+-	bunx --cwd web playwright install chromium
+-	bunx --cwd web puppeteer browsers install chrome
+-	bunx --cwd web @playwright/test install
+-	bunx -C web playwright install
+-	bunx -C web playwright install chromium
+-	bunx -C web puppeteer browsers install chrome
+-	bunx -C web @playwright/test install
+-	bunx --filter web playwright install
+-	bunx --filter web playwright install chromium
+-	bunx --filter web puppeteer browsers install chrome
+-	bunx --filter web @playwright/test install
+-	bunx -w playwright install
+-	bunx -w playwright install chromium
+-	bunx -w puppeteer browsers install chrome
+-	bunx -w @playwright/test install
+G1	bunx --offline playwright install
+G1	bunx --offline playwright install chromium
+G1	bunx --offline puppeteer browsers install chrome
+G1	bunx --offline @playwright/test install
+G1	bunx --json playwright install
+G1	bunx --json playwright install chromium
+G1	bunx --json puppeteer browsers install chrome
+G1	bunx --json @playwright/test install
+G1	bunx --color=always playwright install
+G1	bunx --color=always playwright install chromium
+G1	bunx --color=always puppeteer browsers install chrome
+G1	bunx --color=always @playwright/test install
+G1	bunx --no-color playwright install
+G1	bunx --no-color playwright install chromium
+G1	bunx --no-color puppeteer browsers install chrome
+G1	bunx --no-color @playwright/test install
+-	bunx --loglevel silent playwright install
+-	bunx --loglevel silent playwright install chromium
+-	bunx --loglevel silent puppeteer browsers install chrome
+-	bunx --loglevel silent @playwright/test install
+G1	bunx --quiet playwright install
+G1	bunx --quiet playwright install chromium
+G1	bunx --quiet puppeteer browsers install chrome
+G1	bunx --quiet @playwright/test install
+G1	bunx --package playwright playwright install
+G1	bunx --package playwright playwright install chromium
+G1	bunx --package playwright puppeteer browsers install chrome
+G1	bunx --package playwright @playwright/test install
+G1	bunx -p playwright playwright install
+G1	bunx -p playwright playwright install chromium
+G1	bunx -p playwright puppeteer browsers install chrome
+G1	bunx -p playwright @playwright/test install
+G1	bunx -n 5 playwright install
+G1	bunx -n 5 playwright install chromium
+G1	bunx -n 5 puppeteer browsers install chrome
+G1	bunx -n 5 @playwright/test install
+-	bunx -u root playwright install
+-	bunx -u root playwright install chromium
+-	bunx -u root puppeteer browsers install chrome
+-	bunx -u root @playwright/test install
+G1	bunx -E playwright install
+G1	bunx -E playwright install chromium
+G1	bunx -E puppeteer browsers install chrome
+G1	bunx -E @playwright/test install
+G1	bunx -i playwright install
+G1	bunx -i playwright install chromium
+G1	bunx -i puppeteer browsers install chrome
+G1	bunx -i @playwright/test install
+-	bunx -k 5 playwright install
+-	bunx -k 5 playwright install chromium
+-	bunx -k 5 puppeteer browsers install chrome
+-	bunx -k 5 @playwright/test install
+G1	bunx --preserve-status playwright install
+G1	bunx --preserve-status playwright install chromium
+G1	bunx --preserve-status puppeteer browsers install chrome
+G1	bunx --preserve-status @playwright/test install
+G1	bunx -- playwright install
+G1	bunx -- playwright install chromium
+G1	bunx -- puppeteer browsers install chrome
+G1	bunx -- @playwright/test install
+G1	bunx -v playwright install
+G1	bunx -v playwright install chromium
+G1	bunx -v puppeteer browsers install chrome
+G1	bunx -v @playwright/test install
+G1	bun x playwright install
+G1	bun x playwright install chromium
+G1	bun x puppeteer browsers install chrome
+G1	bun x @playwright/test install
+G1	bun x --silent playwright install
+G1	bun x --silent playwright install chromium
+G1	bun x --silent puppeteer browsers install chrome
+G1	bun x --silent @playwright/test install
+G1	bun x --frozen-lockfile playwright install
+G1	bun x --frozen-lockfile playwright install chromium
+G1	bun x --frozen-lockfile puppeteer browsers install chrome
+G1	bun x --frozen-lockfile @playwright/test install
+G1	bun x --verbose playwright install
+G1	bun x --verbose playwright install chromium
+G1	bun x --verbose puppeteer browsers install chrome
+G1	bun x --verbose @playwright/test install
+G1	bun x -s playwright install
+G1	bun x -s playwright install chromium
+G1	bun x -s puppeteer browsers install chrome
+G1	bun x -s @playwright/test install
+G1	bun x -q playwright install
+G1	bun x -q playwright install chromium
+G1	bun x -q puppeteer browsers install chrome
+G1	bun x -q @playwright/test install
+G1	bun x --yes playwright install
+G1	bun x --yes playwright install chromium
+G1	bun x --yes puppeteer browsers install chrome
+G1	bun x --yes @playwright/test install
+G1	bun x -y playwright install
+G1	bun x -y playwright install chromium
+G1	bun x -y puppeteer browsers install chrome
+G1	bun x -y @playwright/test install
+G1	bun x --prefer-offline playwright install
+G1	bun x --prefer-offline playwright install chromium
+G1	bun x --prefer-offline puppeteer browsers install chrome
+G1	bun x --prefer-offline @playwright/test install
+G1	bun x --no-install playwright install
+G1	bun x --no-install playwright install chromium
+G1	bun x --no-install puppeteer browsers install chrome
+G1	bun x --no-install @playwright/test install
+G1	bun x --ignore-scripts playwright install
+G1	bun x --ignore-scripts playwright install chromium
+G1	bun x --ignore-scripts puppeteer browsers install chrome
+G1	bun x --ignore-scripts @playwright/test install
+G1	bun x --foo playwright install
+G1	bun x --foo playwright install chromium
+G1	bun x --foo puppeteer browsers install chrome
+G1	bun x --foo @playwright/test install
+-	bun x --foo x playwright install
+-	bun x --foo x playwright install chromium
+-	bun x --foo x puppeteer browsers install chrome
+-	bun x --foo x @playwright/test install
+G1	bun x -x playwright install
+G1	bun x -x playwright install chromium
+G1	bun x -x puppeteer browsers install chrome
+G1	bun x -x @playwright/test install
+G1	bun x --registry=https://r playwright install
+G1	bun x --registry=https://r playwright install chromium
+G1	bun x --registry=https://r puppeteer browsers install chrome
+G1	bun x --registry=https://r @playwright/test install
+-	bun x --registry https://r playwright install
+-	bun x --registry https://r playwright install chromium
+-	bun x --registry https://r puppeteer browsers install chrome
+-	bun x --registry https://r @playwright/test install
+-	bun x --cwd web playwright install
+-	bun x --cwd web playwright install chromium
+-	bun x --cwd web puppeteer browsers install chrome
+-	bun x --cwd web @playwright/test install
+-	bun x -C web playwright install
+-	bun x -C web playwright install chromium
+-	bun x -C web puppeteer browsers install chrome
+-	bun x -C web @playwright/test install
+-	bun x --filter web playwright install
+-	bun x --filter web playwright install chromium
+-	bun x --filter web puppeteer browsers install chrome
+-	bun x --filter web @playwright/test install
+-	bun x -w playwright install
+-	bun x -w playwright install chromium
+-	bun x -w puppeteer browsers install chrome
+-	bun x -w @playwright/test install
+G1	bun x --offline playwright install
+G1	bun x --offline playwright install chromium
+G1	bun x --offline puppeteer browsers install chrome
+G1	bun x --offline @playwright/test install
+G1	bun x --json playwright install
+G1	bun x --json playwright install chromium
+G1	bun x --json puppeteer browsers install chrome
+G1	bun x --json @playwright/test install
+G1	bun x --color=always playwright install
+G1	bun x --color=always playwright install chromium
+G1	bun x --color=always puppeteer browsers install chrome
+G1	bun x --color=always @playwright/test install
+G1	bun x --no-color playwright install
+G1	bun x --no-color playwright install chromium
+G1	bun x --no-color puppeteer browsers install chrome
+G1	bun x --no-color @playwright/test install
+-	bun x --loglevel silent playwright install
+-	bun x --loglevel silent playwright install chromium
+-	bun x --loglevel silent puppeteer browsers install chrome
+-	bun x --loglevel silent @playwright/test install
+G1	bun x --quiet playwright install
+G1	bun x --quiet playwright install chromium
+G1	bun x --quiet puppeteer browsers install chrome
+G1	bun x --quiet @playwright/test install
+G1	bun x --package playwright playwright install
+G1	bun x --package playwright playwright install chromium
+G1	bun x --package playwright puppeteer browsers install chrome
+G1	bun x --package playwright @playwright/test install
+G1	bun x -p playwright playwright install
+G1	bun x -p playwright playwright install chromium
+G1	bun x -p playwright puppeteer browsers install chrome
+G1	bun x -p playwright @playwright/test install
+G1	bun x -n 5 playwright install
+G1	bun x -n 5 playwright install chromium
+G1	bun x -n 5 puppeteer browsers install chrome
+G1	bun x -n 5 @playwright/test install
+-	bun x -u root playwright install
+-	bun x -u root playwright install chromium
+-	bun x -u root puppeteer browsers install chrome
+-	bun x -u root @playwright/test install
+G1	bun x -E playwright install
+G1	bun x -E playwright install chromium
+G1	bun x -E puppeteer browsers install chrome
+G1	bun x -E @playwright/test install
+G1	bun x -i playwright install
+G1	bun x -i playwright install chromium
+G1	bun x -i puppeteer browsers install chrome
+G1	bun x -i @playwright/test install
+-	bun x -k 5 playwright install
+-	bun x -k 5 playwright install chromium
+-	bun x -k 5 puppeteer browsers install chrome
+-	bun x -k 5 @playwright/test install
+G1	bun x --preserve-status playwright install
+G1	bun x --preserve-status playwright install chromium
+G1	bun x --preserve-status puppeteer browsers install chrome
+G1	bun x --preserve-status @playwright/test install
+G1	bun x -- playwright install
+G1	bun x -- playwright install chromium
+G1	bun x -- puppeteer browsers install chrome
+G1	bun x -- @playwright/test install
+G1	bun x -v playwright install
+G1	bun x -v playwright install chromium
+G1	bun x -v puppeteer browsers install chrome
+G1	bun x -v @playwright/test install
+G1	pnpm dlx playwright install
+G1	pnpm dlx playwright install chromium
+G1	pnpm dlx puppeteer browsers install chrome
+G1	pnpm dlx @playwright/test install
+G1	pnpm dlx --silent playwright install
+G1	pnpm dlx --silent playwright install chromium
+G1	pnpm dlx --silent puppeteer browsers install chrome
+G1	pnpm dlx --silent @playwright/test install
+G1	pnpm dlx --frozen-lockfile playwright install
+G1	pnpm dlx --frozen-lockfile playwright install chromium
+G1	pnpm dlx --frozen-lockfile puppeteer browsers install chrome
+G1	pnpm dlx --frozen-lockfile @playwright/test install
+G1	pnpm dlx --verbose playwright install
+G1	pnpm dlx --verbose playwright install chromium
+G1	pnpm dlx --verbose puppeteer browsers install chrome
+G1	pnpm dlx --verbose @playwright/test install
+G1	pnpm dlx -s playwright install
+G1	pnpm dlx -s playwright install chromium
+G1	pnpm dlx -s puppeteer browsers install chrome
+G1	pnpm dlx -s @playwright/test install
+G1	pnpm dlx -q playwright install
+G1	pnpm dlx -q playwright install chromium
+G1	pnpm dlx -q puppeteer browsers install chrome
+G1	pnpm dlx -q @playwright/test install
+G1	pnpm dlx --yes playwright install
+G1	pnpm dlx --yes playwright install chromium
+G1	pnpm dlx --yes puppeteer browsers install chrome
+G1	pnpm dlx --yes @playwright/test install
+G1	pnpm dlx -y playwright install
+G1	pnpm dlx -y playwright install chromium
+G1	pnpm dlx -y puppeteer browsers install chrome
+G1	pnpm dlx -y @playwright/test install
+G1	pnpm dlx --prefer-offline playwright install
+G1	pnpm dlx --prefer-offline playwright install chromium
+G1	pnpm dlx --prefer-offline puppeteer browsers install chrome
+G1	pnpm dlx --prefer-offline @playwright/test install
+G1	pnpm dlx --no-install playwright install
+G1	pnpm dlx --no-install playwright install chromium
+G1	pnpm dlx --no-install puppeteer browsers install chrome
+G1	pnpm dlx --no-install @playwright/test install
+G1	pnpm dlx --ignore-scripts playwright install
+G1	pnpm dlx --ignore-scripts playwright install chromium
+G1	pnpm dlx --ignore-scripts puppeteer browsers install chrome
+G1	pnpm dlx --ignore-scripts @playwright/test install
+G1	pnpm dlx --foo playwright install
+G1	pnpm dlx --foo playwright install chromium
+G1	pnpm dlx --foo puppeteer browsers install chrome
+G1	pnpm dlx --foo @playwright/test install
+-	pnpm dlx --foo x playwright install
+-	pnpm dlx --foo x playwright install chromium
+-	pnpm dlx --foo x puppeteer browsers install chrome
+-	pnpm dlx --foo x @playwright/test install
+G1	pnpm dlx -x playwright install
+G1	pnpm dlx -x playwright install chromium
+G1	pnpm dlx -x puppeteer browsers install chrome
+G1	pnpm dlx -x @playwright/test install
+G1	pnpm dlx --registry=https://r playwright install
+G1	pnpm dlx --registry=https://r playwright install chromium
+G1	pnpm dlx --registry=https://r puppeteer browsers install chrome
+G1	pnpm dlx --registry=https://r @playwright/test install
+-	pnpm dlx --registry https://r playwright install
+-	pnpm dlx --registry https://r playwright install chromium
+-	pnpm dlx --registry https://r puppeteer browsers install chrome
+-	pnpm dlx --registry https://r @playwright/test install
+-	pnpm dlx --cwd web playwright install
+-	pnpm dlx --cwd web playwright install chromium
+-	pnpm dlx --cwd web puppeteer browsers install chrome
+-	pnpm dlx --cwd web @playwright/test install
+-	pnpm dlx -C web playwright install
+-	pnpm dlx -C web playwright install chromium
+-	pnpm dlx -C web puppeteer browsers install chrome
+-	pnpm dlx -C web @playwright/test install
+-	pnpm dlx --filter web playwright install
+-	pnpm dlx --filter web playwright install chromium
+-	pnpm dlx --filter web puppeteer browsers install chrome
+-	pnpm dlx --filter web @playwright/test install
+-	pnpm dlx -w playwright install
+-	pnpm dlx -w playwright install chromium
+-	pnpm dlx -w puppeteer browsers install chrome
+-	pnpm dlx -w @playwright/test install
+G1	pnpm dlx --offline playwright install
+G1	pnpm dlx --offline playwright install chromium
+G1	pnpm dlx --offline puppeteer browsers install chrome
+G1	pnpm dlx --offline @playwright/test install
+G1	pnpm dlx --json playwright install
+G1	pnpm dlx --json playwright install chromium
+G1	pnpm dlx --json puppeteer browsers install chrome
+G1	pnpm dlx --json @playwright/test install
+G1	pnpm dlx --color=always playwright install
+G1	pnpm dlx --color=always playwright install chromium
+G1	pnpm dlx --color=always puppeteer browsers install chrome
+G1	pnpm dlx --color=always @playwright/test install
+G1	pnpm dlx --no-color playwright install
+G1	pnpm dlx --no-color playwright install chromium
+G1	pnpm dlx --no-color puppeteer browsers install chrome
+G1	pnpm dlx --no-color @playwright/test install
+-	pnpm dlx --loglevel silent playwright install
+-	pnpm dlx --loglevel silent playwright install chromium
+-	pnpm dlx --loglevel silent puppeteer browsers install chrome
+-	pnpm dlx --loglevel silent @playwright/test install
+G1	pnpm dlx --quiet playwright install
+G1	pnpm dlx --quiet playwright install chromium
+G1	pnpm dlx --quiet puppeteer browsers install chrome
+G1	pnpm dlx --quiet @playwright/test install
+G1	pnpm dlx --package playwright playwright install
+G1	pnpm dlx --package playwright playwright install chromium
+G1	pnpm dlx --package playwright puppeteer browsers install chrome
+G1	pnpm dlx --package playwright @playwright/test install
+G1	pnpm dlx -p playwright playwright install
+G1	pnpm dlx -p playwright playwright install chromium
+G1	pnpm dlx -p playwright puppeteer browsers install chrome
+G1	pnpm dlx -p playwright @playwright/test install
+G1	pnpm dlx -n 5 playwright install
+G1	pnpm dlx -n 5 playwright install chromium
+G1	pnpm dlx -n 5 puppeteer browsers install chrome
+G1	pnpm dlx -n 5 @playwright/test install
+-	pnpm dlx -u root playwright install
+-	pnpm dlx -u root playwright install chromium
+-	pnpm dlx -u root puppeteer browsers install chrome
+-	pnpm dlx -u root @playwright/test install
+G1	pnpm dlx -E playwright install
+G1	pnpm dlx -E playwright install chromium
+G1	pnpm dlx -E puppeteer browsers install chrome
+G1	pnpm dlx -E @playwright/test install
+G1	pnpm dlx -i playwright install
+G1	pnpm dlx -i playwright install chromium
+G1	pnpm dlx -i puppeteer browsers install chrome
+G1	pnpm dlx -i @playwright/test install
+-	pnpm dlx -k 5 playwright install
+-	pnpm dlx -k 5 playwright install chromium
+-	pnpm dlx -k 5 puppeteer browsers install chrome
+-	pnpm dlx -k 5 @playwright/test install
+G1	pnpm dlx --preserve-status playwright install
+G1	pnpm dlx --preserve-status playwright install chromium
+G1	pnpm dlx --preserve-status puppeteer browsers install chrome
+G1	pnpm dlx --preserve-status @playwright/test install
+G1	pnpm dlx -- playwright install
+G1	pnpm dlx -- playwright install chromium
+G1	pnpm dlx -- puppeteer browsers install chrome
+G1	pnpm dlx -- @playwright/test install
+G1	pnpm dlx -v playwright install
+G1	pnpm dlx -v playwright install chromium
+G1	pnpm dlx -v puppeteer browsers install chrome
+G1	pnpm dlx -v @playwright/test install
+G1	pnpm exec playwright install
+G1	pnpm exec playwright install chromium
+G1	pnpm exec puppeteer browsers install chrome
+G1	pnpm exec @playwright/test install
+G1	pnpm exec --silent playwright install
+G1	pnpm exec --silent playwright install chromium
+G1	pnpm exec --silent puppeteer browsers install chrome
+G1	pnpm exec --silent @playwright/test install
+G1	pnpm exec --frozen-lockfile playwright install
+G1	pnpm exec --frozen-lockfile playwright install chromium
+G1	pnpm exec --frozen-lockfile puppeteer browsers install chrome
+G1	pnpm exec --frozen-lockfile @playwright/test install
+G1	pnpm exec --verbose playwright install
+G1	pnpm exec --verbose playwright install chromium
+G1	pnpm exec --verbose puppeteer browsers install chrome
+G1	pnpm exec --verbose @playwright/test install
+G1	pnpm exec -s playwright install
+G1	pnpm exec -s playwright install chromium
+G1	pnpm exec -s puppeteer browsers install chrome
+G1	pnpm exec -s @playwright/test install
+G1	pnpm exec -q playwright install
+G1	pnpm exec -q playwright install chromium
+G1	pnpm exec -q puppeteer browsers install chrome
+G1	pnpm exec -q @playwright/test install
+G1	pnpm exec --yes playwright install
+G1	pnpm exec --yes playwright install chromium
+G1	pnpm exec --yes puppeteer browsers install chrome
+G1	pnpm exec --yes @playwright/test install
+G1	pnpm exec -y playwright install
+G1	pnpm exec -y playwright install chromium
+G1	pnpm exec -y puppeteer browsers install chrome
+G1	pnpm exec -y @playwright/test install
+G1	pnpm exec --prefer-offline playwright install
+G1	pnpm exec --prefer-offline playwright install chromium
+G1	pnpm exec --prefer-offline puppeteer browsers install chrome
+G1	pnpm exec --prefer-offline @playwright/test install
+G1	pnpm exec --no-install playwright install
+G1	pnpm exec --no-install playwright install chromium
+G1	pnpm exec --no-install puppeteer browsers install chrome
+G1	pnpm exec --no-install @playwright/test install
+G1	pnpm exec --ignore-scripts playwright install
+G1	pnpm exec --ignore-scripts playwright install chromium
+G1	pnpm exec --ignore-scripts puppeteer browsers install chrome
+G1	pnpm exec --ignore-scripts @playwright/test install
+G1	pnpm exec --foo playwright install
+G1	pnpm exec --foo playwright install chromium
+G1	pnpm exec --foo puppeteer browsers install chrome
+G1	pnpm exec --foo @playwright/test install
+-	pnpm exec --foo x playwright install
+-	pnpm exec --foo x playwright install chromium
+-	pnpm exec --foo x puppeteer browsers install chrome
+-	pnpm exec --foo x @playwright/test install
+G1	pnpm exec -x playwright install
+G1	pnpm exec -x playwright install chromium
+G1	pnpm exec -x puppeteer browsers install chrome
+G1	pnpm exec -x @playwright/test install
+G1	pnpm exec --registry=https://r playwright install
+G1	pnpm exec --registry=https://r playwright install chromium
+G1	pnpm exec --registry=https://r puppeteer browsers install chrome
+G1	pnpm exec --registry=https://r @playwright/test install
+-	pnpm exec --registry https://r playwright install
+-	pnpm exec --registry https://r playwright install chromium
+-	pnpm exec --registry https://r puppeteer browsers install chrome
+-	pnpm exec --registry https://r @playwright/test install
+-	pnpm exec --cwd web playwright install
+-	pnpm exec --cwd web playwright install chromium
+-	pnpm exec --cwd web puppeteer browsers install chrome
+-	pnpm exec --cwd web @playwright/test install
+-	pnpm exec -C web playwright install
+-	pnpm exec -C web playwright install chromium
+-	pnpm exec -C web puppeteer browsers install chrome
+-	pnpm exec -C web @playwright/test install
+-	pnpm exec --filter web playwright install
+-	pnpm exec --filter web playwright install chromium
+-	pnpm exec --filter web puppeteer browsers install chrome
+-	pnpm exec --filter web @playwright/test install
+-	pnpm exec -w playwright install
+-	pnpm exec -w playwright install chromium
+-	pnpm exec -w puppeteer browsers install chrome
+-	pnpm exec -w @playwright/test install
+G1	pnpm exec --offline playwright install
+G1	pnpm exec --offline playwright install chromium
+G1	pnpm exec --offline puppeteer browsers install chrome
+G1	pnpm exec --offline @playwright/test install
+G1	pnpm exec --json playwright install
+G1	pnpm exec --json playwright install chromium
+G1	pnpm exec --json puppeteer browsers install chrome
+G1	pnpm exec --json @playwright/test install
+G1	pnpm exec --color=always playwright install
+G1	pnpm exec --color=always playwright install chromium
+G1	pnpm exec --color=always puppeteer browsers install chrome
+G1	pnpm exec --color=always @playwright/test install
+G1	pnpm exec --no-color playwright install
+G1	pnpm exec --no-color playwright install chromium
+G1	pnpm exec --no-color puppeteer browsers install chrome
+G1	pnpm exec --no-color @playwright/test install
+-	pnpm exec --loglevel silent playwright install
+-	pnpm exec --loglevel silent playwright install chromium
+-	pnpm exec --loglevel silent puppeteer browsers install chrome
+-	pnpm exec --loglevel silent @playwright/test install
+G1	pnpm exec --quiet playwright install
+G1	pnpm exec --quiet playwright install chromium
+G1	pnpm exec --quiet puppeteer browsers install chrome
+G1	pnpm exec --quiet @playwright/test install
+G1	pnpm exec --package playwright playwright install
+G1	pnpm exec --package playwright playwright install chromium
+G1	pnpm exec --package playwright puppeteer browsers install chrome
+G1	pnpm exec --package playwright @playwright/test install
+G1	pnpm exec -p playwright playwright install
+G1	pnpm exec -p playwright playwright install chromium
+G1	pnpm exec -p playwright puppeteer browsers install chrome
+G1	pnpm exec -p playwright @playwright/test install
+G1	pnpm exec -n 5 playwright install
+G1	pnpm exec -n 5 playwright install chromium
+G1	pnpm exec -n 5 puppeteer browsers install chrome
+G1	pnpm exec -n 5 @playwright/test install
+-	pnpm exec -u root playwright install
+-	pnpm exec -u root playwright install chromium
+-	pnpm exec -u root puppeteer browsers install chrome
+-	pnpm exec -u root @playwright/test install
+G1	pnpm exec -E playwright install
+G1	pnpm exec -E playwright install chromium
+G1	pnpm exec -E puppeteer browsers install chrome
+G1	pnpm exec -E @playwright/test install
+G1	pnpm exec -i playwright install
+G1	pnpm exec -i playwright install chromium
+G1	pnpm exec -i puppeteer browsers install chrome
+G1	pnpm exec -i @playwright/test install
+-	pnpm exec -k 5 playwright install
+-	pnpm exec -k 5 playwright install chromium
+-	pnpm exec -k 5 puppeteer browsers install chrome
+-	pnpm exec -k 5 @playwright/test install
+G1	pnpm exec --preserve-status playwright install
+G1	pnpm exec --preserve-status playwright install chromium
+G1	pnpm exec --preserve-status puppeteer browsers install chrome
+G1	pnpm exec --preserve-status @playwright/test install
+G1	pnpm exec -- playwright install
+G1	pnpm exec -- playwright install chromium
+G1	pnpm exec -- puppeteer browsers install chrome
+G1	pnpm exec -- @playwright/test install
+G1	pnpm exec -v playwright install
+G1	pnpm exec -v playwright install chromium
+G1	pnpm exec -v puppeteer browsers install chrome
+G1	pnpm exec -v @playwright/test install
+G1	npm exec playwright install
+G1	npm exec playwright install chromium
+G1	npm exec puppeteer browsers install chrome
+G1	npm exec @playwright/test install
+G1	npm exec --silent playwright install
+G1	npm exec --silent playwright install chromium
+G1	npm exec --silent puppeteer browsers install chrome
+G1	npm exec --silent @playwright/test install
+G1	npm exec --frozen-lockfile playwright install
+G1	npm exec --frozen-lockfile playwright install chromium
+G1	npm exec --frozen-lockfile puppeteer browsers install chrome
+G1	npm exec --frozen-lockfile @playwright/test install
+G1	npm exec --verbose playwright install
+G1	npm exec --verbose playwright install chromium
+G1	npm exec --verbose puppeteer browsers install chrome
+G1	npm exec --verbose @playwright/test install
+G1	npm exec -s playwright install
+G1	npm exec -s playwright install chromium
+G1	npm exec -s puppeteer browsers install chrome
+G1	npm exec -s @playwright/test install
+G1	npm exec -q playwright install
+G1	npm exec -q playwright install chromium
+G1	npm exec -q puppeteer browsers install chrome
+G1	npm exec -q @playwright/test install
+G1	npm exec --yes playwright install
+G1	npm exec --yes playwright install chromium
+G1	npm exec --yes puppeteer browsers install chrome
+G1	npm exec --yes @playwright/test install
+G1	npm exec -y playwright install
+G1	npm exec -y playwright install chromium
+G1	npm exec -y puppeteer browsers install chrome
+G1	npm exec -y @playwright/test install
+G1	npm exec --prefer-offline playwright install
+G1	npm exec --prefer-offline playwright install chromium
+G1	npm exec --prefer-offline puppeteer browsers install chrome
+G1	npm exec --prefer-offline @playwright/test install
+G1	npm exec --no-install playwright install
+G1	npm exec --no-install playwright install chromium
+G1	npm exec --no-install puppeteer browsers install chrome
+G1	npm exec --no-install @playwright/test install
+G1	npm exec --ignore-scripts playwright install
+G1	npm exec --ignore-scripts playwright install chromium
+G1	npm exec --ignore-scripts puppeteer browsers install chrome
+G1	npm exec --ignore-scripts @playwright/test install
+G1	npm exec --foo playwright install
+G1	npm exec --foo playwright install chromium
+G1	npm exec --foo puppeteer browsers install chrome
+G1	npm exec --foo @playwright/test install
+-	npm exec --foo x playwright install
+-	npm exec --foo x playwright install chromium
+-	npm exec --foo x puppeteer browsers install chrome
+-	npm exec --foo x @playwright/test install
+G1	npm exec -x playwright install
+G1	npm exec -x playwright install chromium
+G1	npm exec -x puppeteer browsers install chrome
+G1	npm exec -x @playwright/test install
+G1	npm exec --registry=https://r playwright install
+G1	npm exec --registry=https://r playwright install chromium
+G1	npm exec --registry=https://r puppeteer browsers install chrome
+G1	npm exec --registry=https://r @playwright/test install
+-	npm exec --registry https://r playwright install
+-	npm exec --registry https://r playwright install chromium
+-	npm exec --registry https://r puppeteer browsers install chrome
+-	npm exec --registry https://r @playwright/test install
+-	npm exec --cwd web playwright install
+-	npm exec --cwd web playwright install chromium
+-	npm exec --cwd web puppeteer browsers install chrome
+-	npm exec --cwd web @playwright/test install
+-	npm exec -C web playwright install
+-	npm exec -C web playwright install chromium
+-	npm exec -C web puppeteer browsers install chrome
+-	npm exec -C web @playwright/test install
+-	npm exec --filter web playwright install
+-	npm exec --filter web playwright install chromium
+-	npm exec --filter web puppeteer browsers install chrome
+-	npm exec --filter web @playwright/test install
+-	npm exec -w playwright install
+-	npm exec -w playwright install chromium
+-	npm exec -w puppeteer browsers install chrome
+-	npm exec -w @playwright/test install
+G1	npm exec --offline playwright install
+G1	npm exec --offline playwright install chromium
+G1	npm exec --offline puppeteer browsers install chrome
+G1	npm exec --offline @playwright/test install
+G1	npm exec --json playwright install
+G1	npm exec --json playwright install chromium
+G1	npm exec --json puppeteer browsers install chrome
+G1	npm exec --json @playwright/test install
+G1	npm exec --color=always playwright install
+G1	npm exec --color=always playwright install chromium
+G1	npm exec --color=always puppeteer browsers install chrome
+G1	npm exec --color=always @playwright/test install
+G1	npm exec --no-color playwright install
+G1	npm exec --no-color playwright install chromium
+G1	npm exec --no-color puppeteer browsers install chrome
+G1	npm exec --no-color @playwright/test install
+-	npm exec --loglevel silent playwright install
+-	npm exec --loglevel silent playwright install chromium
+-	npm exec --loglevel silent puppeteer browsers install chrome
+-	npm exec --loglevel silent @playwright/test install
+G1	npm exec --quiet playwright install
+G1	npm exec --quiet playwright install chromium
+G1	npm exec --quiet puppeteer browsers install chrome
+G1	npm exec --quiet @playwright/test install
+G1	npm exec --package playwright playwright install
+G1	npm exec --package playwright playwright install chromium
+G1	npm exec --package playwright puppeteer browsers install chrome
+G1	npm exec --package playwright @playwright/test install
+G1	npm exec -p playwright playwright install
+G1	npm exec -p playwright playwright install chromium
+G1	npm exec -p playwright puppeteer browsers install chrome
+G1	npm exec -p playwright @playwright/test install
+G1	npm exec -n 5 playwright install
+G1	npm exec -n 5 playwright install chromium
+G1	npm exec -n 5 puppeteer browsers install chrome
+G1	npm exec -n 5 @playwright/test install
+-	npm exec -u root playwright install
+-	npm exec -u root playwright install chromium
+-	npm exec -u root puppeteer browsers install chrome
+-	npm exec -u root @playwright/test install
+G1	npm exec -E playwright install
+G1	npm exec -E playwright install chromium
+G1	npm exec -E puppeteer browsers install chrome
+G1	npm exec -E @playwright/test install
+G1	npm exec -i playwright install
+G1	npm exec -i playwright install chromium
+G1	npm exec -i puppeteer browsers install chrome
+G1	npm exec -i @playwright/test install
+-	npm exec -k 5 playwright install
+-	npm exec -k 5 playwright install chromium
+-	npm exec -k 5 puppeteer browsers install chrome
+-	npm exec -k 5 @playwright/test install
+G1	npm exec --preserve-status playwright install
+G1	npm exec --preserve-status playwright install chromium
+G1	npm exec --preserve-status puppeteer browsers install chrome
+G1	npm exec --preserve-status @playwright/test install
+G1	npm exec -- playwright install
+G1	npm exec -- playwright install chromium
+G1	npm exec -- puppeteer browsers install chrome
+G1	npm exec -- @playwright/test install
+G1	npm exec -v playwright install
+G1	npm exec -v playwright install chromium
+G1	npm exec -v puppeteer browsers install chrome
+G1	npm exec -v @playwright/test install
+G1	yarn dlx playwright install
+G1	yarn dlx playwright install chromium
+G1	yarn dlx puppeteer browsers install chrome
+G1	yarn dlx @playwright/test install
+G1	yarn dlx --silent playwright install
+G1	yarn dlx --silent playwright install chromium
+G1	yarn dlx --silent puppeteer browsers install chrome
+G1	yarn dlx --silent @playwright/test install
+G1	yarn dlx --frozen-lockfile playwright install
+G1	yarn dlx --frozen-lockfile playwright install chromium
+G1	yarn dlx --frozen-lockfile puppeteer browsers install chrome
+G1	yarn dlx --frozen-lockfile @playwright/test install
+G1	yarn dlx --verbose playwright install
+G1	yarn dlx --verbose playwright install chromium
+G1	yarn dlx --verbose puppeteer browsers install chrome
+G1	yarn dlx --verbose @playwright/test install
+G1	yarn dlx -s playwright install
+G1	yarn dlx -s playwright install chromium
+G1	yarn dlx -s puppeteer browsers install chrome
+G1	yarn dlx -s @playwright/test install
+G1	yarn dlx -q playwright install
+G1	yarn dlx -q playwright install chromium
+G1	yarn dlx -q puppeteer browsers install chrome
+G1	yarn dlx -q @playwright/test install
+G1	yarn dlx --yes playwright install
+G1	yarn dlx --yes playwright install chromium
+G1	yarn dlx --yes puppeteer browsers install chrome
+G1	yarn dlx --yes @playwright/test install
+G1	yarn dlx -y playwright install
+G1	yarn dlx -y playwright install chromium
+G1	yarn dlx -y puppeteer browsers install chrome
+G1	yarn dlx -y @playwright/test install
+G1	yarn dlx --prefer-offline playwright install
+G1	yarn dlx --prefer-offline playwright install chromium
+G1	yarn dlx --prefer-offline puppeteer browsers install chrome
+G1	yarn dlx --prefer-offline @playwright/test install
+G1	yarn dlx --no-install playwright install
+G1	yarn dlx --no-install playwright install chromium
+G1	yarn dlx --no-install puppeteer browsers install chrome
+G1	yarn dlx --no-install @playwright/test install
+G1	yarn dlx --ignore-scripts playwright install
+G1	yarn dlx --ignore-scripts playwright install chromium
+G1	yarn dlx --ignore-scripts puppeteer browsers install chrome
+G1	yarn dlx --ignore-scripts @playwright/test install
+G1	yarn dlx --foo playwright install
+G1	yarn dlx --foo playwright install chromium
+G1	yarn dlx --foo puppeteer browsers install chrome
+G1	yarn dlx --foo @playwright/test install
+-	yarn dlx --foo x playwright install
+-	yarn dlx --foo x playwright install chromium
+-	yarn dlx --foo x puppeteer browsers install chrome
+-	yarn dlx --foo x @playwright/test install
+G1	yarn dlx -x playwright install
+G1	yarn dlx -x playwright install chromium
+G1	yarn dlx -x puppeteer browsers install chrome
+G1	yarn dlx -x @playwright/test install
+G1	yarn dlx --registry=https://r playwright install
+G1	yarn dlx --registry=https://r playwright install chromium
+G1	yarn dlx --registry=https://r puppeteer browsers install chrome
+G1	yarn dlx --registry=https://r @playwright/test install
+-	yarn dlx --registry https://r playwright install
+-	yarn dlx --registry https://r playwright install chromium
+-	yarn dlx --registry https://r puppeteer browsers install chrome
+-	yarn dlx --registry https://r @playwright/test install
+-	yarn dlx --cwd web playwright install
+-	yarn dlx --cwd web playwright install chromium
+-	yarn dlx --cwd web puppeteer browsers install chrome
+-	yarn dlx --cwd web @playwright/test install
+-	yarn dlx -C web playwright install
+-	yarn dlx -C web playwright install chromium
+-	yarn dlx -C web puppeteer browsers install chrome
+-	yarn dlx -C web @playwright/test install
+-	yarn dlx --filter web playwright install
+-	yarn dlx --filter web playwright install chromium
+-	yarn dlx --filter web puppeteer browsers install chrome
+-	yarn dlx --filter web @playwright/test install
+-	yarn dlx -w playwright install
+-	yarn dlx -w playwright install chromium
+-	yarn dlx -w puppeteer browsers install chrome
+-	yarn dlx -w @playwright/test install
+G1	yarn dlx --offline playwright install
+G1	yarn dlx --offline playwright install chromium
+G1	yarn dlx --offline puppeteer browsers install chrome
+G1	yarn dlx --offline @playwright/test install
+G1	yarn dlx --json playwright install
+G1	yarn dlx --json playwright install chromium
+G1	yarn dlx --json puppeteer browsers install chrome
+G1	yarn dlx --json @playwright/test install
+G1	yarn dlx --color=always playwright install
+G1	yarn dlx --color=always playwright install chromium
+G1	yarn dlx --color=always puppeteer browsers install chrome
+G1	yarn dlx --color=always @playwright/test install
+G1	yarn dlx --no-color playwright install
+G1	yarn dlx --no-color playwright install chromium
+G1	yarn dlx --no-color puppeteer browsers install chrome
+G1	yarn dlx --no-color @playwright/test install
+-	yarn dlx --loglevel silent playwright install
+-	yarn dlx --loglevel silent playwright install chromium
+-	yarn dlx --loglevel silent puppeteer browsers install chrome
+-	yarn dlx --loglevel silent @playwright/test install
+G1	yarn dlx --quiet playwright install
+G1	yarn dlx --quiet playwright install chromium
+G1	yarn dlx --quiet puppeteer browsers install chrome
+G1	yarn dlx --quiet @playwright/test install
+G1	yarn dlx --package playwright playwright install
+G1	yarn dlx --package playwright playwright install chromium
+G1	yarn dlx --package playwright puppeteer browsers install chrome
+G1	yarn dlx --package playwright @playwright/test install
+G1	yarn dlx -p playwright playwright install
+G1	yarn dlx -p playwright playwright install chromium
+G1	yarn dlx -p playwright puppeteer browsers install chrome
+G1	yarn dlx -p playwright @playwright/test install
+G1	yarn dlx -n 5 playwright install
+G1	yarn dlx -n 5 playwright install chromium
+G1	yarn dlx -n 5 puppeteer browsers install chrome
+G1	yarn dlx -n 5 @playwright/test install
+-	yarn dlx -u root playwright install
+-	yarn dlx -u root playwright install chromium
+-	yarn dlx -u root puppeteer browsers install chrome
+-	yarn dlx -u root @playwright/test install
+G1	yarn dlx -E playwright install
+G1	yarn dlx -E playwright install chromium
+G1	yarn dlx -E puppeteer browsers install chrome
+G1	yarn dlx -E @playwright/test install
+G1	yarn dlx -i playwright install
+G1	yarn dlx -i playwright install chromium
+G1	yarn dlx -i puppeteer browsers install chrome
+G1	yarn dlx -i @playwright/test install
+-	yarn dlx -k 5 playwright install
+-	yarn dlx -k 5 playwright install chromium
+-	yarn dlx -k 5 puppeteer browsers install chrome
+-	yarn dlx -k 5 @playwright/test install
+G1	yarn dlx --preserve-status playwright install
+G1	yarn dlx --preserve-status playwright install chromium
+G1	yarn dlx --preserve-status puppeteer browsers install chrome
+G1	yarn dlx --preserve-status @playwright/test install
+G1	yarn dlx -- playwright install
+G1	yarn dlx -- playwright install chromium
+G1	yarn dlx -- puppeteer browsers install chrome
+G1	yarn dlx -- @playwright/test install
+G1	yarn dlx -v playwright install
+G1	yarn dlx -v playwright install chromium
+G1	yarn dlx -v puppeteer browsers install chrome
+G1	yarn dlx -v @playwright/test install
+G1	yarn exec playwright install
+G1	yarn exec playwright install chromium
+G1	yarn exec puppeteer browsers install chrome
+G1	yarn exec @playwright/test install
+G1	yarn exec --silent playwright install
+G1	yarn exec --silent playwright install chromium
+G1	yarn exec --silent puppeteer browsers install chrome
+G1	yarn exec --silent @playwright/test install
+G1	yarn exec --frozen-lockfile playwright install
+G1	yarn exec --frozen-lockfile playwright install chromium
+G1	yarn exec --frozen-lockfile puppeteer browsers install chrome
+G1	yarn exec --frozen-lockfile @playwright/test install
+G1	yarn exec --verbose playwright install
+G1	yarn exec --verbose playwright install chromium
+G1	yarn exec --verbose puppeteer browsers install chrome
+G1	yarn exec --verbose @playwright/test install
+G1	yarn exec -s playwright install
+G1	yarn exec -s playwright install chromium
+G1	yarn exec -s puppeteer browsers install chrome
+G1	yarn exec -s @playwright/test install
+G1	yarn exec -q playwright install
+G1	yarn exec -q playwright install chromium
+G1	yarn exec -q puppeteer browsers install chrome
+G1	yarn exec -q @playwright/test install
+G1	yarn exec --yes playwright install
+G1	yarn exec --yes playwright install chromium
+G1	yarn exec --yes puppeteer browsers install chrome
+G1	yarn exec --yes @playwright/test install
+G1	yarn exec -y playwright install
+G1	yarn exec -y playwright install chromium
+G1	yarn exec -y puppeteer browsers install chrome
+G1	yarn exec -y @playwright/test install
+G1	yarn exec --prefer-offline playwright install
+G1	yarn exec --prefer-offline playwright install chromium
+G1	yarn exec --prefer-offline puppeteer browsers install chrome
+G1	yarn exec --prefer-offline @playwright/test install
+G1	yarn exec --no-install playwright install
+G1	yarn exec --no-install playwright install chromium
+G1	yarn exec --no-install puppeteer browsers install chrome
+G1	yarn exec --no-install @playwright/test install
+G1	yarn exec --ignore-scripts playwright install
+G1	yarn exec --ignore-scripts playwright install chromium
+G1	yarn exec --ignore-scripts puppeteer browsers install chrome
+G1	yarn exec --ignore-scripts @playwright/test install
+G1	yarn exec --foo playwright install
+G1	yarn exec --foo playwright install chromium
+G1	yarn exec --foo puppeteer browsers install chrome
+G1	yarn exec --foo @playwright/test install
+-	yarn exec --foo x playwright install
+-	yarn exec --foo x playwright install chromium
+-	yarn exec --foo x puppeteer browsers install chrome
+-	yarn exec --foo x @playwright/test install
+G1	yarn exec -x playwright install
+G1	yarn exec -x playwright install chromium
+G1	yarn exec -x puppeteer browsers install chrome
+G1	yarn exec -x @playwright/test install
+G1	yarn exec --registry=https://r playwright install
+G1	yarn exec --registry=https://r playwright install chromium
+G1	yarn exec --registry=https://r puppeteer browsers install chrome
+G1	yarn exec --registry=https://r @playwright/test install
+-	yarn exec --registry https://r playwright install
+-	yarn exec --registry https://r playwright install chromium
+-	yarn exec --registry https://r puppeteer browsers install chrome
+-	yarn exec --registry https://r @playwright/test install
+-	yarn exec --cwd web playwright install
+-	yarn exec --cwd web playwright install chromium
+-	yarn exec --cwd web puppeteer browsers install chrome
+-	yarn exec --cwd web @playwright/test install
+-	yarn exec -C web playwright install
+-	yarn exec -C web playwright install chromium
+-	yarn exec -C web puppeteer browsers install chrome
+-	yarn exec -C web @playwright/test install
+-	yarn exec --filter web playwright install
+-	yarn exec --filter web playwright install chromium
+-	yarn exec --filter web puppeteer browsers install chrome
+-	yarn exec --filter web @playwright/test install
+-	yarn exec -w playwright install
+-	yarn exec -w playwright install chromium
+-	yarn exec -w puppeteer browsers install chrome
+-	yarn exec -w @playwright/test install
+G1	yarn exec --offline playwright install
+G1	yarn exec --offline playwright install chromium
+G1	yarn exec --offline puppeteer browsers install chrome
+G1	yarn exec --offline @playwright/test install
+G1	yarn exec --json playwright install
+G1	yarn exec --json playwright install chromium
+G1	yarn exec --json puppeteer browsers install chrome
+G1	yarn exec --json @playwright/test install
+G1	yarn exec --color=always playwright install
+G1	yarn exec --color=always playwright install chromium
+G1	yarn exec --color=always puppeteer browsers install chrome
+G1	yarn exec --color=always @playwright/test install
+G1	yarn exec --no-color playwright install
+G1	yarn exec --no-color playwright install chromium
+G1	yarn exec --no-color puppeteer browsers install chrome
+G1	yarn exec --no-color @playwright/test install
+-	yarn exec --loglevel silent playwright install
+-	yarn exec --loglevel silent playwright install chromium
+-	yarn exec --loglevel silent puppeteer browsers install chrome
+-	yarn exec --loglevel silent @playwright/test install
+G1	yarn exec --quiet playwright install
+G1	yarn exec --quiet playwright install chromium
+G1	yarn exec --quiet puppeteer browsers install chrome
+G1	yarn exec --quiet @playwright/test install
+G1	yarn exec --package playwright playwright install
+G1	yarn exec --package playwright playwright install chromium
+G1	yarn exec --package playwright puppeteer browsers install chrome
+G1	yarn exec --package playwright @playwright/test install
+G1	yarn exec -p playwright playwright install
+G1	yarn exec -p playwright playwright install chromium
+G1	yarn exec -p playwright puppeteer browsers install chrome
+G1	yarn exec -p playwright @playwright/test install
+G1	yarn exec -n 5 playwright install
+G1	yarn exec -n 5 playwright install chromium
+G1	yarn exec -n 5 puppeteer browsers install chrome
+G1	yarn exec -n 5 @playwright/test install
+-	yarn exec -u root playwright install
+-	yarn exec -u root playwright install chromium
+-	yarn exec -u root puppeteer browsers install chrome
+-	yarn exec -u root @playwright/test install
+G1	yarn exec -E playwright install
+G1	yarn exec -E playwright install chromium
+G1	yarn exec -E puppeteer browsers install chrome
+G1	yarn exec -E @playwright/test install
+G1	yarn exec -i playwright install
+G1	yarn exec -i playwright install chromium
+G1	yarn exec -i puppeteer browsers install chrome
+G1	yarn exec -i @playwright/test install
+-	yarn exec -k 5 playwright install
+-	yarn exec -k 5 playwright install chromium
+-	yarn exec -k 5 puppeteer browsers install chrome
+-	yarn exec -k 5 @playwright/test install
+G1	yarn exec --preserve-status playwright install
+G1	yarn exec --preserve-status playwright install chromium
+G1	yarn exec --preserve-status puppeteer browsers install chrome
+G1	yarn exec --preserve-status @playwright/test install
+G1	yarn exec -- playwright install
+G1	yarn exec -- playwright install chromium
+G1	yarn exec -- puppeteer browsers install chrome
+G1	yarn exec -- @playwright/test install
+G1	yarn exec -v playwright install
+G1	yarn exec -v playwright install chromium
+G1	yarn exec -v puppeteer browsers install chrome
+G1	yarn exec -v @playwright/test install
+G1	npm x playwright install
+G1	npm x playwright install chromium
+G1	npm x puppeteer browsers install chrome
+G1	npm x @playwright/test install
+G1	npm x --silent playwright install
+G1	npm x --silent playwright install chromium
+G1	npm x --silent puppeteer browsers install chrome
+G1	npm x --silent @playwright/test install
+G1	npm x --frozen-lockfile playwright install
+G1	npm x --frozen-lockfile playwright install chromium
+G1	npm x --frozen-lockfile puppeteer browsers install chrome
+G1	npm x --frozen-lockfile @playwright/test install
+G1	npm x --verbose playwright install
+G1	npm x --verbose playwright install chromium
+G1	npm x --verbose puppeteer browsers install chrome
+G1	npm x --verbose @playwright/test install
+G1	npm x -s playwright install
+G1	npm x -s playwright install chromium
+G1	npm x -s puppeteer browsers install chrome
+G1	npm x -s @playwright/test install
+G1	npm x -q playwright install
+G1	npm x -q playwright install chromium
+G1	npm x -q puppeteer browsers install chrome
+G1	npm x -q @playwright/test install
+G1	npm x --yes playwright install
+G1	npm x --yes playwright install chromium
+G1	npm x --yes puppeteer browsers install chrome
+G1	npm x --yes @playwright/test install
+G1	npm x -y playwright install
+G1	npm x -y playwright install chromium
+G1	npm x -y puppeteer browsers install chrome
+G1	npm x -y @playwright/test install
+G1	npm x --prefer-offline playwright install
+G1	npm x --prefer-offline playwright install chromium
+G1	npm x --prefer-offline puppeteer browsers install chrome
+G1	npm x --prefer-offline @playwright/test install
+G1	npm x --no-install playwright install
+G1	npm x --no-install playwright install chromium
+G1	npm x --no-install puppeteer browsers install chrome
+G1	npm x --no-install @playwright/test install
+G1	npm x --ignore-scripts playwright install
+G1	npm x --ignore-scripts playwright install chromium
+G1	npm x --ignore-scripts puppeteer browsers install chrome
+G1	npm x --ignore-scripts @playwright/test install
+G1	npm x --foo playwright install
+G1	npm x --foo playwright install chromium
+G1	npm x --foo puppeteer browsers install chrome
+G1	npm x --foo @playwright/test install
+-	npm x --foo x playwright install
+-	npm x --foo x playwright install chromium
+-	npm x --foo x puppeteer browsers install chrome
+-	npm x --foo x @playwright/test install
+G1	npm x -x playwright install
+G1	npm x -x playwright install chromium
+G1	npm x -x puppeteer browsers install chrome
+G1	npm x -x @playwright/test install
+G1	npm x --registry=https://r playwright install
+G1	npm x --registry=https://r playwright install chromium
+G1	npm x --registry=https://r puppeteer browsers install chrome
+G1	npm x --registry=https://r @playwright/test install
+-	npm x --registry https://r playwright install
+-	npm x --registry https://r playwright install chromium
+-	npm x --registry https://r puppeteer browsers install chrome
+-	npm x --registry https://r @playwright/test install
+-	npm x --cwd web playwright install
+-	npm x --cwd web playwright install chromium
+-	npm x --cwd web puppeteer browsers install chrome
+-	npm x --cwd web @playwright/test install
+-	npm x -C web playwright install
+-	npm x -C web playwright install chromium
+-	npm x -C web puppeteer browsers install chrome
+-	npm x -C web @playwright/test install
+-	npm x --filter web playwright install
+-	npm x --filter web playwright install chromium
+-	npm x --filter web puppeteer browsers install chrome
+-	npm x --filter web @playwright/test install
+-	npm x -w playwright install
+-	npm x -w playwright install chromium
+-	npm x -w puppeteer browsers install chrome
+-	npm x -w @playwright/test install
+G1	npm x --offline playwright install
+G1	npm x --offline playwright install chromium
+G1	npm x --offline puppeteer browsers install chrome
+G1	npm x --offline @playwright/test install
+G1	npm x --json playwright install
+G1	npm x --json playwright install chromium
+G1	npm x --json puppeteer browsers install chrome
+G1	npm x --json @playwright/test install
+G1	npm x --color=always playwright install
+G1	npm x --color=always playwright install chromium
+G1	npm x --color=always puppeteer browsers install chrome
+G1	npm x --color=always @playwright/test install
+G1	npm x --no-color playwright install
+G1	npm x --no-color playwright install chromium
+G1	npm x --no-color puppeteer browsers install chrome
+G1	npm x --no-color @playwright/test install
+-	npm x --loglevel silent playwright install
+-	npm x --loglevel silent playwright install chromium
+-	npm x --loglevel silent puppeteer browsers install chrome
+-	npm x --loglevel silent @playwright/test install
+G1	npm x --quiet playwright install
+G1	npm x --quiet playwright install chromium
+G1	npm x --quiet puppeteer browsers install chrome
+G1	npm x --quiet @playwright/test install
+G1	npm x --package playwright playwright install
+G1	npm x --package playwright playwright install chromium
+G1	npm x --package playwright puppeteer browsers install chrome
+G1	npm x --package playwright @playwright/test install
+G1	npm x -p playwright playwright install
+G1	npm x -p playwright playwright install chromium
+G1	npm x -p playwright puppeteer browsers install chrome
+G1	npm x -p playwright @playwright/test install
+G1	npm x -n 5 playwright install
+G1	npm x -n 5 playwright install chromium
+G1	npm x -n 5 puppeteer browsers install chrome
+G1	npm x -n 5 @playwright/test install
+-	npm x -u root playwright install
+-	npm x -u root playwright install chromium
+-	npm x -u root puppeteer browsers install chrome
+-	npm x -u root @playwright/test install
+G1	npm x -E playwright install
+G1	npm x -E playwright install chromium
+G1	npm x -E puppeteer browsers install chrome
+G1	npm x -E @playwright/test install
+G1	npm x -i playwright install
+G1	npm x -i playwright install chromium
+G1	npm x -i puppeteer browsers install chrome
+G1	npm x -i @playwright/test install
+-	npm x -k 5 playwright install
+-	npm x -k 5 playwright install chromium
+-	npm x -k 5 puppeteer browsers install chrome
+-	npm x -k 5 @playwright/test install
+G1	npm x --preserve-status playwright install
+G1	npm x --preserve-status playwright install chromium
+G1	npm x --preserve-status puppeteer browsers install chrome
+G1	npm x --preserve-status @playwright/test install
+G1	npm x -- playwright install
+G1	npm x -- playwright install chromium
+G1	npm x -- puppeteer browsers install chrome
+G1	npm x -- @playwright/test install
+G1	npm x -v playwright install
+G1	npm x -v playwright install chromium
+G1	npm x -v puppeteer browsers install chrome
+G1	npm x -v @playwright/test install
+G1	sudo playwright install
+G1	sudo playwright install chromium
+G1	sudo puppeteer browsers install chrome
+G1	sudo @playwright/test install
+G1	sudo --silent playwright install
+G1	sudo --silent playwright install chromium
+G1	sudo --silent puppeteer browsers install chrome
+G1	sudo --silent @playwright/test install
+G1	sudo --frozen-lockfile playwright install
+G1	sudo --frozen-lockfile playwright install chromium
+G1	sudo --frozen-lockfile puppeteer browsers install chrome
+G1	sudo --frozen-lockfile @playwright/test install
+G1	sudo --verbose playwright install
+G1	sudo --verbose playwright install chromium
+G1	sudo --verbose puppeteer browsers install chrome
+G1	sudo --verbose @playwright/test install
+G1	sudo -s playwright install
+G1	sudo -s playwright install chromium
+G1	sudo -s puppeteer browsers install chrome
+G1	sudo -s @playwright/test install
+G1	sudo -q playwright install
+G1	sudo -q playwright install chromium
+G1	sudo -q puppeteer browsers install chrome
+G1	sudo -q @playwright/test install
+G1	sudo --yes playwright install
+G1	sudo --yes playwright install chromium
+G1	sudo --yes puppeteer browsers install chrome
+G1	sudo --yes @playwright/test install
+G1	sudo -y playwright install
+G1	sudo -y playwright install chromium
+G1	sudo -y puppeteer browsers install chrome
+G1	sudo -y @playwright/test install
+G1	sudo --prefer-offline playwright install
+G1	sudo --prefer-offline playwright install chromium
+G1	sudo --prefer-offline puppeteer browsers install chrome
+G1	sudo --prefer-offline @playwright/test install
+G1	sudo --no-install playwright install
+G1	sudo --no-install playwright install chromium
+G1	sudo --no-install puppeteer browsers install chrome
+G1	sudo --no-install @playwright/test install
+G1	sudo --ignore-scripts playwright install
+G1	sudo --ignore-scripts playwright install chromium
+G1	sudo --ignore-scripts puppeteer browsers install chrome
+G1	sudo --ignore-scripts @playwright/test install
+G1	sudo --foo playwright install
+G1	sudo --foo playwright install chromium
+G1	sudo --foo puppeteer browsers install chrome
+G1	sudo --foo @playwright/test install
+-	sudo --foo x playwright install
+-	sudo --foo x playwright install chromium
+-	sudo --foo x puppeteer browsers install chrome
+-	sudo --foo x @playwright/test install
+G1	sudo -x playwright install
+G1	sudo -x playwright install chromium
+G1	sudo -x puppeteer browsers install chrome
+G1	sudo -x @playwright/test install
+G1	sudo --registry=https://r playwright install
+G1	sudo --registry=https://r playwright install chromium
+G1	sudo --registry=https://r puppeteer browsers install chrome
+G1	sudo --registry=https://r @playwright/test install
+-	sudo --registry https://r playwright install
+-	sudo --registry https://r playwright install chromium
+-	sudo --registry https://r puppeteer browsers install chrome
+-	sudo --registry https://r @playwright/test install
+-	sudo --cwd web playwright install
+-	sudo --cwd web playwright install chromium
+-	sudo --cwd web puppeteer browsers install chrome
+-	sudo --cwd web @playwright/test install
+G1	sudo -C web playwright install
+G1	sudo -C web playwright install chromium
+G1	sudo -C web puppeteer browsers install chrome
+G1	sudo -C web @playwright/test install
+-	sudo --filter web playwright install
+-	sudo --filter web playwright install chromium
+-	sudo --filter web puppeteer browsers install chrome
+-	sudo --filter web @playwright/test install
+G1	sudo -w playwright install
+G1	sudo -w playwright install chromium
+G1	sudo -w puppeteer browsers install chrome
+G1	sudo -w @playwright/test install
+G1	sudo --offline playwright install
+G1	sudo --offline playwright install chromium
+G1	sudo --offline puppeteer browsers install chrome
+G1	sudo --offline @playwright/test install
+G1	sudo --json playwright install
+G1	sudo --json playwright install chromium
+G1	sudo --json puppeteer browsers install chrome
+G1	sudo --json @playwright/test install
+G1	sudo --color=always playwright install
+G1	sudo --color=always playwright install chromium
+G1	sudo --color=always puppeteer browsers install chrome
+G1	sudo --color=always @playwright/test install
+G1	sudo --no-color playwright install
+G1	sudo --no-color playwright install chromium
+G1	sudo --no-color puppeteer browsers install chrome
+G1	sudo --no-color @playwright/test install
+-	sudo --loglevel silent playwright install
+-	sudo --loglevel silent playwright install chromium
+-	sudo --loglevel silent puppeteer browsers install chrome
+-	sudo --loglevel silent @playwright/test install
+G1	sudo --quiet playwright install
+G1	sudo --quiet playwright install chromium
+G1	sudo --quiet puppeteer browsers install chrome
+G1	sudo --quiet @playwright/test install
+-	sudo --package playwright playwright install
+-	sudo --package playwright playwright install chromium
+-	sudo --package playwright puppeteer browsers install chrome
+-	sudo --package playwright @playwright/test install
+G1	sudo -p playwright playwright install
+G1	sudo -p playwright playwright install chromium
+G1	sudo -p playwright puppeteer browsers install chrome
+G1	sudo -p playwright @playwright/test install
+-	sudo -n 5 playwright install
+-	sudo -n 5 playwright install chromium
+-	sudo -n 5 puppeteer browsers install chrome
+-	sudo -n 5 @playwright/test install
+G1	sudo -u root playwright install
+G1	sudo -u root playwright install chromium
+G1	sudo -u root puppeteer browsers install chrome
+G1	sudo -u root @playwright/test install
+G1	sudo -E playwright install
+G1	sudo -E playwright install chromium
+G1	sudo -E puppeteer browsers install chrome
+G1	sudo -E @playwright/test install
+G1	sudo -i playwright install
+G1	sudo -i playwright install chromium
+G1	sudo -i puppeteer browsers install chrome
+G1	sudo -i @playwright/test install
+-	sudo -k 5 playwright install
+-	sudo -k 5 playwright install chromium
+-	sudo -k 5 puppeteer browsers install chrome
+-	sudo -k 5 @playwright/test install
+G1	sudo --preserve-status playwright install
+G1	sudo --preserve-status playwright install chromium
+G1	sudo --preserve-status puppeteer browsers install chrome
+G1	sudo --preserve-status @playwright/test install
+G1	sudo -- playwright install
+G1	sudo -- playwright install chromium
+G1	sudo -- puppeteer browsers install chrome
+G1	sudo -- @playwright/test install
+G1	sudo -v playwright install
+G1	sudo -v playwright install chromium
+G1	sudo -v puppeteer browsers install chrome
+G1	sudo -v @playwright/test install
+G1	env playwright install
+G1	env playwright install chromium
+G1	env puppeteer browsers install chrome
+G1	env @playwright/test install
+G1	env --silent playwright install
+G1	env --silent playwright install chromium
+G1	env --silent puppeteer browsers install chrome
+G1	env --silent @playwright/test install
+G1	env --frozen-lockfile playwright install
+G1	env --frozen-lockfile playwright install chromium
+G1	env --frozen-lockfile puppeteer browsers install chrome
+G1	env --frozen-lockfile @playwright/test install
+G1	env --verbose playwright install
+G1	env --verbose playwright install chromium
+G1	env --verbose puppeteer browsers install chrome
+G1	env --verbose @playwright/test install
+G1	env -s playwright install
+G1	env -s playwright install chromium
+G1	env -s puppeteer browsers install chrome
+G1	env -s @playwright/test install
+G1	env -q playwright install
+G1	env -q playwright install chromium
+G1	env -q puppeteer browsers install chrome
+G1	env -q @playwright/test install
+G1	env --yes playwright install
+G1	env --yes playwright install chromium
+G1	env --yes puppeteer browsers install chrome
+G1	env --yes @playwright/test install
+G1	env -y playwright install
+G1	env -y playwright install chromium
+G1	env -y puppeteer browsers install chrome
+G1	env -y @playwright/test install
+G1	env --prefer-offline playwright install
+G1	env --prefer-offline playwright install chromium
+G1	env --prefer-offline puppeteer browsers install chrome
+G1	env --prefer-offline @playwright/test install
+G1	env --no-install playwright install
+G1	env --no-install playwright install chromium
+G1	env --no-install puppeteer browsers install chrome
+G1	env --no-install @playwright/test install
+G1	env --ignore-scripts playwright install
+G1	env --ignore-scripts playwright install chromium
+G1	env --ignore-scripts puppeteer browsers install chrome
+G1	env --ignore-scripts @playwright/test install
+G1	env --foo playwright install
+G1	env --foo playwright install chromium
+G1	env --foo puppeteer browsers install chrome
+G1	env --foo @playwright/test install
+-	env --foo x playwright install
+-	env --foo x playwright install chromium
+-	env --foo x puppeteer browsers install chrome
+-	env --foo x @playwright/test install
+G1	env -x playwright install
+G1	env -x playwright install chromium
+G1	env -x puppeteer browsers install chrome
+G1	env -x @playwright/test install
+G1	env --registry=https://r playwright install
+G1	env --registry=https://r playwright install chromium
+G1	env --registry=https://r puppeteer browsers install chrome
+G1	env --registry=https://r @playwright/test install
+-	env --registry https://r playwright install
+-	env --registry https://r playwright install chromium
+-	env --registry https://r puppeteer browsers install chrome
+-	env --registry https://r @playwright/test install
+-	env --cwd web playwright install
+-	env --cwd web playwright install chromium
+-	env --cwd web puppeteer browsers install chrome
+-	env --cwd web @playwright/test install
+G1	env -C web playwright install
+G1	env -C web playwright install chromium
+G1	env -C web puppeteer browsers install chrome
+G1	env -C web @playwright/test install
+-	env --filter web playwright install
+-	env --filter web playwright install chromium
+-	env --filter web puppeteer browsers install chrome
+-	env --filter web @playwright/test install
+G1	env -w playwright install
+G1	env -w playwright install chromium
+G1	env -w puppeteer browsers install chrome
+G1	env -w @playwright/test install
+G1	env --offline playwright install
+G1	env --offline playwright install chromium
+G1	env --offline puppeteer browsers install chrome
+G1	env --offline @playwright/test install
+G1	env --json playwright install
+G1	env --json playwright install chromium
+G1	env --json puppeteer browsers install chrome
+G1	env --json @playwright/test install
+G1	env --color=always playwright install
+G1	env --color=always playwright install chromium
+G1	env --color=always puppeteer browsers install chrome
+G1	env --color=always @playwright/test install
+G1	env --no-color playwright install
+G1	env --no-color playwright install chromium
+G1	env --no-color puppeteer browsers install chrome
+G1	env --no-color @playwright/test install
+-	env --loglevel silent playwright install
+-	env --loglevel silent playwright install chromium
+-	env --loglevel silent puppeteer browsers install chrome
+-	env --loglevel silent @playwright/test install
+G1	env --quiet playwright install
+G1	env --quiet playwright install chromium
+G1	env --quiet puppeteer browsers install chrome
+G1	env --quiet @playwright/test install
+-	env --package playwright playwright install
+-	env --package playwright playwright install chromium
+-	env --package playwright puppeteer browsers install chrome
+-	env --package playwright @playwright/test install
+-	env -p playwright playwright install
+-	env -p playwright playwright install chromium
+-	env -p playwright puppeteer browsers install chrome
+-	env -p playwright @playwright/test install
+-	env -n 5 playwright install
+-	env -n 5 playwright install chromium
+-	env -n 5 puppeteer browsers install chrome
+-	env -n 5 @playwright/test install
+G1	env -u root playwright install
+G1	env -u root playwright install chromium
+G1	env -u root puppeteer browsers install chrome
+G1	env -u root @playwright/test install
+G1	env -E playwright install
+G1	env -E playwright install chromium
+G1	env -E puppeteer browsers install chrome
+G1	env -E @playwright/test install
+G1	env -i playwright install
+G1	env -i playwright install chromium
+G1	env -i puppeteer browsers install chrome
+G1	env -i @playwright/test install
+-	env -k 5 playwright install
+-	env -k 5 playwright install chromium
+-	env -k 5 puppeteer browsers install chrome
+-	env -k 5 @playwright/test install
+G1	env --preserve-status playwright install
+G1	env --preserve-status playwright install chromium
+G1	env --preserve-status puppeteer browsers install chrome
+G1	env --preserve-status @playwright/test install
+G1	env -- playwright install
+G1	env -- playwright install chromium
+G1	env -- puppeteer browsers install chrome
+G1	env -- @playwright/test install
+G1	env -v playwright install
+G1	env -v playwright install chromium
+G1	env -v puppeteer browsers install chrome
+G1	env -v @playwright/test install
+G1	nice playwright install
+G1	nice playwright install chromium
+G1	nice puppeteer browsers install chrome
+G1	nice @playwright/test install
+G1	nice --silent playwright install
+G1	nice --silent playwright install chromium
+G1	nice --silent puppeteer browsers install chrome
+G1	nice --silent @playwright/test install
+G1	nice --frozen-lockfile playwright install
+G1	nice --frozen-lockfile playwright install chromium
+G1	nice --frozen-lockfile puppeteer browsers install chrome
+G1	nice --frozen-lockfile @playwright/test install
+G1	nice --verbose playwright install
+G1	nice --verbose playwright install chromium
+G1	nice --verbose puppeteer browsers install chrome
+G1	nice --verbose @playwright/test install
+G1	nice -s playwright install
+G1	nice -s playwright install chromium
+G1	nice -s puppeteer browsers install chrome
+G1	nice -s @playwright/test install
+G1	nice -q playwright install
+G1	nice -q playwright install chromium
+G1	nice -q puppeteer browsers install chrome
+G1	nice -q @playwright/test install
+G1	nice --yes playwright install
+G1	nice --yes playwright install chromium
+G1	nice --yes puppeteer browsers install chrome
+G1	nice --yes @playwright/test install
+G1	nice -y playwright install
+G1	nice -y playwright install chromium
+G1	nice -y puppeteer browsers install chrome
+G1	nice -y @playwright/test install
+G1	nice --prefer-offline playwright install
+G1	nice --prefer-offline playwright install chromium
+G1	nice --prefer-offline puppeteer browsers install chrome
+G1	nice --prefer-offline @playwright/test install
+G1	nice --no-install playwright install
+G1	nice --no-install playwright install chromium
+G1	nice --no-install puppeteer browsers install chrome
+G1	nice --no-install @playwright/test install
+G1	nice --ignore-scripts playwright install
+G1	nice --ignore-scripts playwright install chromium
+G1	nice --ignore-scripts puppeteer browsers install chrome
+G1	nice --ignore-scripts @playwright/test install
+G1	nice --foo playwright install
+G1	nice --foo playwright install chromium
+G1	nice --foo puppeteer browsers install chrome
+G1	nice --foo @playwright/test install
+-	nice --foo x playwright install
+-	nice --foo x playwright install chromium
+-	nice --foo x puppeteer browsers install chrome
+-	nice --foo x @playwright/test install
+G1	nice -x playwright install
+G1	nice -x playwright install chromium
+G1	nice -x puppeteer browsers install chrome
+G1	nice -x @playwright/test install
+G1	nice --registry=https://r playwright install
+G1	nice --registry=https://r playwright install chromium
+G1	nice --registry=https://r puppeteer browsers install chrome
+G1	nice --registry=https://r @playwright/test install
+-	nice --registry https://r playwright install
+-	nice --registry https://r playwright install chromium
+-	nice --registry https://r puppeteer browsers install chrome
+-	nice --registry https://r @playwright/test install
+-	nice --cwd web playwright install
+-	nice --cwd web playwright install chromium
+-	nice --cwd web puppeteer browsers install chrome
+-	nice --cwd web @playwright/test install
+-	nice -C web playwright install
+-	nice -C web playwright install chromium
+-	nice -C web puppeteer browsers install chrome
+-	nice -C web @playwright/test install
+-	nice --filter web playwright install
+-	nice --filter web playwright install chromium
+-	nice --filter web puppeteer browsers install chrome
+-	nice --filter web @playwright/test install
+G1	nice -w playwright install
+G1	nice -w playwright install chromium
+G1	nice -w puppeteer browsers install chrome
+G1	nice -w @playwright/test install
+G1	nice --offline playwright install
+G1	nice --offline playwright install chromium
+G1	nice --offline puppeteer browsers install chrome
+G1	nice --offline @playwright/test install
+G1	nice --json playwright install
+G1	nice --json playwright install chromium
+G1	nice --json puppeteer browsers install chrome
+G1	nice --json @playwright/test install
+G1	nice --color=always playwright install
+G1	nice --color=always playwright install chromium
+G1	nice --color=always puppeteer browsers install chrome
+G1	nice --color=always @playwright/test install
+G1	nice --no-color playwright install
+G1	nice --no-color playwright install chromium
+G1	nice --no-color puppeteer browsers install chrome
+G1	nice --no-color @playwright/test install
+-	nice --loglevel silent playwright install
+-	nice --loglevel silent playwright install chromium
+-	nice --loglevel silent puppeteer browsers install chrome
+-	nice --loglevel silent @playwright/test install
+G1	nice --quiet playwright install
+G1	nice --quiet playwright install chromium
+G1	nice --quiet puppeteer browsers install chrome
+G1	nice --quiet @playwright/test install
+-	nice --package playwright playwright install
+-	nice --package playwright playwright install chromium
+-	nice --package playwright puppeteer browsers install chrome
+-	nice --package playwright @playwright/test install
+-	nice -p playwright playwright install
+-	nice -p playwright playwright install chromium
+-	nice -p playwright puppeteer browsers install chrome
+-	nice -p playwright @playwright/test install
+G1	nice -n 5 playwright install
+G1	nice -n 5 playwright install chromium
+G1	nice -n 5 puppeteer browsers install chrome
+G1	nice -n 5 @playwright/test install
+-	nice -u root playwright install
+-	nice -u root playwright install chromium
+-	nice -u root puppeteer browsers install chrome
+-	nice -u root @playwright/test install
+G1	nice -E playwright install
+G1	nice -E playwright install chromium
+G1	nice -E puppeteer browsers install chrome
+G1	nice -E @playwright/test install
+G1	nice -i playwright install
+G1	nice -i playwright install chromium
+G1	nice -i puppeteer browsers install chrome
+G1	nice -i @playwright/test install
+-	nice -k 5 playwright install
+-	nice -k 5 playwright install chromium
+-	nice -k 5 puppeteer browsers install chrome
+-	nice -k 5 @playwright/test install
+G1	nice --preserve-status playwright install
+G1	nice --preserve-status playwright install chromium
+G1	nice --preserve-status puppeteer browsers install chrome
+G1	nice --preserve-status @playwright/test install
+G1	nice -- playwright install
+G1	nice -- playwright install chromium
+G1	nice -- puppeteer browsers install chrome
+G1	nice -- @playwright/test install
+G1	nice -v playwright install
+G1	nice -v playwright install chromium
+G1	nice -v puppeteer browsers install chrome
+G1	nice -v @playwright/test install
+G1	timeout 5 playwright install
+G1	timeout 5 playwright install chromium
+G1	timeout 5 puppeteer browsers install chrome
+G1	timeout 5 @playwright/test install
+-	timeout 5 --silent playwright install
+-	timeout 5 --silent playwright install chromium
+-	timeout 5 --silent puppeteer browsers install chrome
+-	timeout 5 --silent @playwright/test install
+-	timeout 5 --frozen-lockfile playwright install
+-	timeout 5 --frozen-lockfile playwright install chromium
+-	timeout 5 --frozen-lockfile puppeteer browsers install chrome
+-	timeout 5 --frozen-lockfile @playwright/test install
+-	timeout 5 --verbose playwright install
+-	timeout 5 --verbose playwright install chromium
+-	timeout 5 --verbose puppeteer browsers install chrome
+-	timeout 5 --verbose @playwright/test install
+-	timeout 5 -s playwright install
+-	timeout 5 -s playwright install chromium
+-	timeout 5 -s puppeteer browsers install chrome
+-	timeout 5 -s @playwright/test install
+-	timeout 5 -q playwright install
+-	timeout 5 -q playwright install chromium
+-	timeout 5 -q puppeteer browsers install chrome
+-	timeout 5 -q @playwright/test install
+-	timeout 5 --yes playwright install
+-	timeout 5 --yes playwright install chromium
+-	timeout 5 --yes puppeteer browsers install chrome
+-	timeout 5 --yes @playwright/test install
+-	timeout 5 -y playwright install
+-	timeout 5 -y playwright install chromium
+-	timeout 5 -y puppeteer browsers install chrome
+-	timeout 5 -y @playwright/test install
+-	timeout 5 --prefer-offline playwright install
+-	timeout 5 --prefer-offline playwright install chromium
+-	timeout 5 --prefer-offline puppeteer browsers install chrome
+-	timeout 5 --prefer-offline @playwright/test install
+-	timeout 5 --no-install playwright install
+-	timeout 5 --no-install playwright install chromium
+-	timeout 5 --no-install puppeteer browsers install chrome
+-	timeout 5 --no-install @playwright/test install
+-	timeout 5 --ignore-scripts playwright install
+-	timeout 5 --ignore-scripts playwright install chromium
+-	timeout 5 --ignore-scripts puppeteer browsers install chrome
+-	timeout 5 --ignore-scripts @playwright/test install
+-	timeout 5 --foo playwright install
+-	timeout 5 --foo playwright install chromium
+-	timeout 5 --foo puppeteer browsers install chrome
+-	timeout 5 --foo @playwright/test install
+-	timeout 5 --foo x playwright install
+-	timeout 5 --foo x playwright install chromium
+-	timeout 5 --foo x puppeteer browsers install chrome
+-	timeout 5 --foo x @playwright/test install
+-	timeout 5 -x playwright install
+-	timeout 5 -x playwright install chromium
+-	timeout 5 -x puppeteer browsers install chrome
+-	timeout 5 -x @playwright/test install
+-	timeout 5 --registry=https://r playwright install
+-	timeout 5 --registry=https://r playwright install chromium
+-	timeout 5 --registry=https://r puppeteer browsers install chrome
+-	timeout 5 --registry=https://r @playwright/test install
+-	timeout 5 --registry https://r playwright install
+-	timeout 5 --registry https://r playwright install chromium
+-	timeout 5 --registry https://r puppeteer browsers install chrome
+-	timeout 5 --registry https://r @playwright/test install
+-	timeout 5 --cwd web playwright install
+-	timeout 5 --cwd web playwright install chromium
+-	timeout 5 --cwd web puppeteer browsers install chrome
+-	timeout 5 --cwd web @playwright/test install
+-	timeout 5 -C web playwright install
+-	timeout 5 -C web playwright install chromium
+-	timeout 5 -C web puppeteer browsers install chrome
+-	timeout 5 -C web @playwright/test install
+-	timeout 5 --filter web playwright install
+-	timeout 5 --filter web playwright install chromium
+-	timeout 5 --filter web puppeteer browsers install chrome
+-	timeout 5 --filter web @playwright/test install
+-	timeout 5 -w playwright install
+-	timeout 5 -w playwright install chromium
+-	timeout 5 -w puppeteer browsers install chrome
+-	timeout 5 -w @playwright/test install
+-	timeout 5 --offline playwright install
+-	timeout 5 --offline playwright install chromium
+-	timeout 5 --offline puppeteer browsers install chrome
+-	timeout 5 --offline @playwright/test install
+-	timeout 5 --json playwright install
+-	timeout 5 --json playwright install chromium
+-	timeout 5 --json puppeteer browsers install chrome
+-	timeout 5 --json @playwright/test install
+-	timeout 5 --color=always playwright install
+-	timeout 5 --color=always playwright install chromium
+-	timeout 5 --color=always puppeteer browsers install chrome
+-	timeout 5 --color=always @playwright/test install
+-	timeout 5 --no-color playwright install
+-	timeout 5 --no-color playwright install chromium
+-	timeout 5 --no-color puppeteer browsers install chrome
+-	timeout 5 --no-color @playwright/test install
+-	timeout 5 --loglevel silent playwright install
+-	timeout 5 --loglevel silent playwright install chromium
+-	timeout 5 --loglevel silent puppeteer browsers install chrome
+-	timeout 5 --loglevel silent @playwright/test install
+-	timeout 5 --quiet playwright install
+-	timeout 5 --quiet playwright install chromium
+-	timeout 5 --quiet puppeteer browsers install chrome
+-	timeout 5 --quiet @playwright/test install
+-	timeout 5 --package playwright playwright install
+-	timeout 5 --package playwright playwright install chromium
+-	timeout 5 --package playwright puppeteer browsers install chrome
+-	timeout 5 --package playwright @playwright/test install
+-	timeout 5 -p playwright playwright install
+-	timeout 5 -p playwright playwright install chromium
+-	timeout 5 -p playwright puppeteer browsers install chrome
+-	timeout 5 -p playwright @playwright/test install
+-	timeout 5 -n 5 playwright install
+-	timeout 5 -n 5 playwright install chromium
+-	timeout 5 -n 5 puppeteer browsers install chrome
+-	timeout 5 -n 5 @playwright/test install
+-	timeout 5 -u root playwright install
+-	timeout 5 -u root playwright install chromium
+-	timeout 5 -u root puppeteer browsers install chrome
+-	timeout 5 -u root @playwright/test install
+-	timeout 5 -E playwright install
+-	timeout 5 -E playwright install chromium
+-	timeout 5 -E puppeteer browsers install chrome
+-	timeout 5 -E @playwright/test install
+-	timeout 5 -i playwright install
+-	timeout 5 -i playwright install chromium
+-	timeout 5 -i puppeteer browsers install chrome
+-	timeout 5 -i @playwright/test install
+-	timeout 5 -k 5 playwright install
+-	timeout 5 -k 5 playwright install chromium
+-	timeout 5 -k 5 puppeteer browsers install chrome
+-	timeout 5 -k 5 @playwright/test install
+-	timeout 5 --preserve-status playwright install
+-	timeout 5 --preserve-status playwright install chromium
+-	timeout 5 --preserve-status puppeteer browsers install chrome
+-	timeout 5 --preserve-status @playwright/test install
+-	timeout 5 -- playwright install
+-	timeout 5 -- playwright install chromium
+-	timeout 5 -- puppeteer browsers install chrome
+-	timeout 5 -- @playwright/test install
+-	timeout 5 -v playwright install
+-	timeout 5 -v playwright install chromium
+-	timeout 5 -v puppeteer browsers install chrome
+-	timeout 5 -v @playwright/test install
+G1	time playwright install
+G1	time playwright install chromium
+G1	time puppeteer browsers install chrome
+G1	time @playwright/test install
+G1	time --silent playwright install
+G1	time --silent playwright install chromium
+G1	time --silent puppeteer browsers install chrome
+G1	time --silent @playwright/test install
+G1	time --frozen-lockfile playwright install
+G1	time --frozen-lockfile playwright install chromium
+G1	time --frozen-lockfile puppeteer browsers install chrome
+G1	time --frozen-lockfile @playwright/test install
+G1	time --verbose playwright install
+G1	time --verbose playwright install chromium
+G1	time --verbose puppeteer browsers install chrome
+G1	time --verbose @playwright/test install
+G1	time -s playwright install
+G1	time -s playwright install chromium
+G1	time -s puppeteer browsers install chrome
+G1	time -s @playwright/test install
+G1	time -q playwright install
+G1	time -q playwright install chromium
+G1	time -q puppeteer browsers install chrome
+G1	time -q @playwright/test install
+G1	time --yes playwright install
+G1	time --yes playwright install chromium
+G1	time --yes puppeteer browsers install chrome
+G1	time --yes @playwright/test install
+G1	time -y playwright install
+G1	time -y playwright install chromium
+G1	time -y puppeteer browsers install chrome
+G1	time -y @playwright/test install
+G1	time --prefer-offline playwright install
+G1	time --prefer-offline playwright install chromium
+G1	time --prefer-offline puppeteer browsers install chrome
+G1	time --prefer-offline @playwright/test install
+G1	time --no-install playwright install
+G1	time --no-install playwright install chromium
+G1	time --no-install puppeteer browsers install chrome
+G1	time --no-install @playwright/test install
+G1	time --ignore-scripts playwright install
+G1	time --ignore-scripts playwright install chromium
+G1	time --ignore-scripts puppeteer browsers install chrome
+G1	time --ignore-scripts @playwright/test install
+G1	time --foo playwright install
+G1	time --foo playwright install chromium
+G1	time --foo puppeteer browsers install chrome
+G1	time --foo @playwright/test install
+-	time --foo x playwright install
+-	time --foo x playwright install chromium
+-	time --foo x puppeteer browsers install chrome
+-	time --foo x @playwright/test install
+G1	time -x playwright install
+G1	time -x playwright install chromium
+G1	time -x puppeteer browsers install chrome
+G1	time -x @playwright/test install
+G1	time --registry=https://r playwright install
+G1	time --registry=https://r playwright install chromium
+G1	time --registry=https://r puppeteer browsers install chrome
+G1	time --registry=https://r @playwright/test install
+-	time --registry https://r playwright install
+-	time --registry https://r playwright install chromium
+-	time --registry https://r puppeteer browsers install chrome
+-	time --registry https://r @playwright/test install
+-	time --cwd web playwright install
+-	time --cwd web playwright install chromium
+-	time --cwd web puppeteer browsers install chrome
+-	time --cwd web @playwright/test install
+-	time -C web playwright install
+-	time -C web playwright install chromium
+-	time -C web puppeteer browsers install chrome
+-	time -C web @playwright/test install
+-	time --filter web playwright install
+-	time --filter web playwright install chromium
+-	time --filter web puppeteer browsers install chrome
+-	time --filter web @playwright/test install
+G1	time -w playwright install
+G1	time -w playwright install chromium
+G1	time -w puppeteer browsers install chrome
+G1	time -w @playwright/test install
+G1	time --offline playwright install
+G1	time --offline playwright install chromium
+G1	time --offline puppeteer browsers install chrome
+G1	time --offline @playwright/test install
+G1	time --json playwright install
+G1	time --json playwright install chromium
+G1	time --json puppeteer browsers install chrome
+G1	time --json @playwright/test install
+G1	time --color=always playwright install
+G1	time --color=always playwright install chromium
+G1	time --color=always puppeteer browsers install chrome
+G1	time --color=always @playwright/test install
+G1	time --no-color playwright install
+G1	time --no-color playwright install chromium
+G1	time --no-color puppeteer browsers install chrome
+G1	time --no-color @playwright/test install
+-	time --loglevel silent playwright install
+-	time --loglevel silent playwright install chromium
+-	time --loglevel silent puppeteer browsers install chrome
+-	time --loglevel silent @playwright/test install
+G1	time --quiet playwright install
+G1	time --quiet playwright install chromium
+G1	time --quiet puppeteer browsers install chrome
+G1	time --quiet @playwright/test install
+-	time --package playwright playwright install
+-	time --package playwright playwright install chromium
+-	time --package playwright puppeteer browsers install chrome
+-	time --package playwright @playwright/test install
+-	time -p playwright playwright install
+-	time -p playwright playwright install chromium
+-	time -p playwright puppeteer browsers install chrome
+-	time -p playwright @playwright/test install
+-	time -n 5 playwright install
+-	time -n 5 playwright install chromium
+-	time -n 5 puppeteer browsers install chrome
+-	time -n 5 @playwright/test install
+-	time -u root playwright install
+-	time -u root playwright install chromium
+-	time -u root puppeteer browsers install chrome
+-	time -u root @playwright/test install
+G1	time -E playwright install
+G1	time -E playwright install chromium
+G1	time -E puppeteer browsers install chrome
+G1	time -E @playwright/test install
+G1	time -i playwright install
+G1	time -i playwright install chromium
+G1	time -i puppeteer browsers install chrome
+G1	time -i @playwright/test install
+-	time -k 5 playwright install
+-	time -k 5 playwright install chromium
+-	time -k 5 puppeteer browsers install chrome
+-	time -k 5 @playwright/test install
+G1	time --preserve-status playwright install
+G1	time --preserve-status playwright install chromium
+G1	time --preserve-status puppeteer browsers install chrome
+G1	time --preserve-status @playwright/test install
+G1	time -- playwright install
+G1	time -- playwright install chromium
+G1	time -- puppeteer browsers install chrome
+G1	time -- @playwright/test install
+G1	time -v playwright install
+G1	time -v playwright install chromium
+G1	time -v puppeteer browsers install chrome
+G1	time -v @playwright/test install
+G1	command playwright install
+G1	command playwright install chromium
+G1	command puppeteer browsers install chrome
+G1	command @playwright/test install
+G1	command --silent playwright install
+G1	command --silent playwright install chromium
+G1	command --silent puppeteer browsers install chrome
+G1	command --silent @playwright/test install
+G1	command --frozen-lockfile playwright install
+G1	command --frozen-lockfile playwright install chromium
+G1	command --frozen-lockfile puppeteer browsers install chrome
+G1	command --frozen-lockfile @playwright/test install
+G1	command --verbose playwright install
+G1	command --verbose playwright install chromium
+G1	command --verbose puppeteer browsers install chrome
+G1	command --verbose @playwright/test install
+G1	command -s playwright install
+G1	command -s playwright install chromium
+G1	command -s puppeteer browsers install chrome
+G1	command -s @playwright/test install
+G1	command -q playwright install
+G1	command -q playwright install chromium
+G1	command -q puppeteer browsers install chrome
+G1	command -q @playwright/test install
+G1	command --yes playwright install
+G1	command --yes playwright install chromium
+G1	command --yes puppeteer browsers install chrome
+G1	command --yes @playwright/test install
+G1	command -y playwright install
+G1	command -y playwright install chromium
+G1	command -y puppeteer browsers install chrome
+G1	command -y @playwright/test install
+G1	command --prefer-offline playwright install
+G1	command --prefer-offline playwright install chromium
+G1	command --prefer-offline puppeteer browsers install chrome
+G1	command --prefer-offline @playwright/test install
+G1	command --no-install playwright install
+G1	command --no-install playwright install chromium
+G1	command --no-install puppeteer browsers install chrome
+G1	command --no-install @playwright/test install
+G1	command --ignore-scripts playwright install
+G1	command --ignore-scripts playwright install chromium
+G1	command --ignore-scripts puppeteer browsers install chrome
+G1	command --ignore-scripts @playwright/test install
+G1	command --foo playwright install
+G1	command --foo playwright install chromium
+G1	command --foo puppeteer browsers install chrome
+G1	command --foo @playwright/test install
+-	command --foo x playwright install
+-	command --foo x playwright install chromium
+-	command --foo x puppeteer browsers install chrome
+-	command --foo x @playwright/test install
+G1	command -x playwright install
+G1	command -x playwright install chromium
+G1	command -x puppeteer browsers install chrome
+G1	command -x @playwright/test install
+G1	command --registry=https://r playwright install
+G1	command --registry=https://r playwright install chromium
+G1	command --registry=https://r puppeteer browsers install chrome
+G1	command --registry=https://r @playwright/test install
+-	command --registry https://r playwright install
+-	command --registry https://r playwright install chromium
+-	command --registry https://r puppeteer browsers install chrome
+-	command --registry https://r @playwright/test install
+-	command --cwd web playwright install
+-	command --cwd web playwright install chromium
+-	command --cwd web puppeteer browsers install chrome
+-	command --cwd web @playwright/test install
+-	command -C web playwright install
+-	command -C web playwright install chromium
+-	command -C web puppeteer browsers install chrome
+-	command -C web @playwright/test install
+-	command --filter web playwright install
+-	command --filter web playwright install chromium
+-	command --filter web puppeteer browsers install chrome
+-	command --filter web @playwright/test install
+G1	command -w playwright install
+G1	command -w playwright install chromium
+G1	command -w puppeteer browsers install chrome
+G1	command -w @playwright/test install
+G1	command --offline playwright install
+G1	command --offline playwright install chromium
+G1	command --offline puppeteer browsers install chrome
+G1	command --offline @playwright/test install
+G1	command --json playwright install
+G1	command --json playwright install chromium
+G1	command --json puppeteer browsers install chrome
+G1	command --json @playwright/test install
+G1	command --color=always playwright install
+G1	command --color=always playwright install chromium
+G1	command --color=always puppeteer browsers install chrome
+G1	command --color=always @playwright/test install
+G1	command --no-color playwright install
+G1	command --no-color playwright install chromium
+G1	command --no-color puppeteer browsers install chrome
+G1	command --no-color @playwright/test install
+-	command --loglevel silent playwright install
+-	command --loglevel silent playwright install chromium
+-	command --loglevel silent puppeteer browsers install chrome
+-	command --loglevel silent @playwright/test install
+G1	command --quiet playwright install
+G1	command --quiet playwright install chromium
+G1	command --quiet puppeteer browsers install chrome
+G1	command --quiet @playwright/test install
+-	command --package playwright playwright install
+-	command --package playwright playwright install chromium
+-	command --package playwright puppeteer browsers install chrome
+-	command --package playwright @playwright/test install
+-	command -p playwright playwright install
+-	command -p playwright playwright install chromium
+-	command -p playwright puppeteer browsers install chrome
+-	command -p playwright @playwright/test install
+-	command -n 5 playwright install
+-	command -n 5 playwright install chromium
+-	command -n 5 puppeteer browsers install chrome
+-	command -n 5 @playwright/test install
+-	command -u root playwright install
+-	command -u root playwright install chromium
+-	command -u root puppeteer browsers install chrome
+-	command -u root @playwright/test install
+G1	command -E playwright install
+G1	command -E playwright install chromium
+G1	command -E puppeteer browsers install chrome
+G1	command -E @playwright/test install
+G1	command -i playwright install
+G1	command -i playwright install chromium
+G1	command -i puppeteer browsers install chrome
+G1	command -i @playwright/test install
+-	command -k 5 playwright install
+-	command -k 5 playwright install chromium
+-	command -k 5 puppeteer browsers install chrome
+-	command -k 5 @playwright/test install
+G1	command --preserve-status playwright install
+G1	command --preserve-status playwright install chromium
+G1	command --preserve-status puppeteer browsers install chrome
+G1	command --preserve-status @playwright/test install
+G1	command -- playwright install
+G1	command -- playwright install chromium
+G1	command -- puppeteer browsers install chrome
+G1	command -- @playwright/test install
+-	command -v playwright install
+-	command -v playwright install chromium
+-	command -v puppeteer browsers install chrome
+-	command -v @playwright/test install
+G1	exec playwright install
+G1	exec playwright install chromium
+G1	exec puppeteer browsers install chrome
+G1	exec @playwright/test install
+G1	exec --silent playwright install
+G1	exec --silent playwright install chromium
+G1	exec --silent puppeteer browsers install chrome
+G1	exec --silent @playwright/test install
+G1	exec --frozen-lockfile playwright install
+G1	exec --frozen-lockfile playwright install chromium
+G1	exec --frozen-lockfile puppeteer browsers install chrome
+G1	exec --frozen-lockfile @playwright/test install
+G1	exec --verbose playwright install
+G1	exec --verbose playwright install chromium
+G1	exec --verbose puppeteer browsers install chrome
+G1	exec --verbose @playwright/test install
+G1	exec -s playwright install
+G1	exec -s playwright install chromium
+G1	exec -s puppeteer browsers install chrome
+G1	exec -s @playwright/test install
+G1	exec -q playwright install
+G1	exec -q playwright install chromium
+G1	exec -q puppeteer browsers install chrome
+G1	exec -q @playwright/test install
+G1	exec --yes playwright install
+G1	exec --yes playwright install chromium
+G1	exec --yes puppeteer browsers install chrome
+G1	exec --yes @playwright/test install
+G1	exec -y playwright install
+G1	exec -y playwright install chromium
+G1	exec -y puppeteer browsers install chrome
+G1	exec -y @playwright/test install
+G1	exec --prefer-offline playwright install
+G1	exec --prefer-offline playwright install chromium
+G1	exec --prefer-offline puppeteer browsers install chrome
+G1	exec --prefer-offline @playwright/test install
+G1	exec --no-install playwright install
+G1	exec --no-install playwright install chromium
+G1	exec --no-install puppeteer browsers install chrome
+G1	exec --no-install @playwright/test install
+G1	exec --ignore-scripts playwright install
+G1	exec --ignore-scripts playwright install chromium
+G1	exec --ignore-scripts puppeteer browsers install chrome
+G1	exec --ignore-scripts @playwright/test install
+G1	exec --foo playwright install
+G1	exec --foo playwright install chromium
+G1	exec --foo puppeteer browsers install chrome
+G1	exec --foo @playwright/test install
+-	exec --foo x playwright install
+-	exec --foo x playwright install chromium
+-	exec --foo x puppeteer browsers install chrome
+-	exec --foo x @playwright/test install
+G1	exec -x playwright install
+G1	exec -x playwright install chromium
+G1	exec -x puppeteer browsers install chrome
+G1	exec -x @playwright/test install
+G1	exec --registry=https://r playwright install
+G1	exec --registry=https://r playwright install chromium
+G1	exec --registry=https://r puppeteer browsers install chrome
+G1	exec --registry=https://r @playwright/test install
+-	exec --registry https://r playwright install
+-	exec --registry https://r playwright install chromium
+-	exec --registry https://r puppeteer browsers install chrome
+-	exec --registry https://r @playwright/test install
+-	exec --cwd web playwright install
+-	exec --cwd web playwright install chromium
+-	exec --cwd web puppeteer browsers install chrome
+-	exec --cwd web @playwright/test install
+-	exec -C web playwright install
+-	exec -C web playwright install chromium
+-	exec -C web puppeteer browsers install chrome
+-	exec -C web @playwright/test install
+-	exec --filter web playwright install
+-	exec --filter web playwright install chromium
+-	exec --filter web puppeteer browsers install chrome
+-	exec --filter web @playwright/test install
+G1	exec -w playwright install
+G1	exec -w playwright install chromium
+G1	exec -w puppeteer browsers install chrome
+G1	exec -w @playwright/test install
+G1	exec --offline playwright install
+G1	exec --offline playwright install chromium
+G1	exec --offline puppeteer browsers install chrome
+G1	exec --offline @playwright/test install
+G1	exec --json playwright install
+G1	exec --json playwright install chromium
+G1	exec --json puppeteer browsers install chrome
+G1	exec --json @playwright/test install
+G1	exec --color=always playwright install
+G1	exec --color=always playwright install chromium
+G1	exec --color=always puppeteer browsers install chrome
+G1	exec --color=always @playwright/test install
+G1	exec --no-color playwright install
+G1	exec --no-color playwright install chromium
+G1	exec --no-color puppeteer browsers install chrome
+G1	exec --no-color @playwright/test install
+-	exec --loglevel silent playwright install
+-	exec --loglevel silent playwright install chromium
+-	exec --loglevel silent puppeteer browsers install chrome
+-	exec --loglevel silent @playwright/test install
+G1	exec --quiet playwright install
+G1	exec --quiet playwright install chromium
+G1	exec --quiet puppeteer browsers install chrome
+G1	exec --quiet @playwright/test install
+-	exec --package playwright playwright install
+-	exec --package playwright playwright install chromium
+-	exec --package playwright puppeteer browsers install chrome
+-	exec --package playwright @playwright/test install
+-	exec -p playwright playwright install
+-	exec -p playwright playwright install chromium
+-	exec -p playwright puppeteer browsers install chrome
+-	exec -p playwright @playwright/test install
+-	exec -n 5 playwright install
+-	exec -n 5 playwright install chromium
+-	exec -n 5 puppeteer browsers install chrome
+-	exec -n 5 @playwright/test install
+-	exec -u root playwright install
+-	exec -u root playwright install chromium
+-	exec -u root puppeteer browsers install chrome
+-	exec -u root @playwright/test install
+G1	exec -E playwright install
+G1	exec -E playwright install chromium
+G1	exec -E puppeteer browsers install chrome
+G1	exec -E @playwright/test install
+G1	exec -i playwright install
+G1	exec -i playwright install chromium
+G1	exec -i puppeteer browsers install chrome
+G1	exec -i @playwright/test install
+-	exec -k 5 playwright install
+-	exec -k 5 playwright install chromium
+-	exec -k 5 puppeteer browsers install chrome
+-	exec -k 5 @playwright/test install
+G1	exec --preserve-status playwright install
+G1	exec --preserve-status playwright install chromium
+G1	exec --preserve-status puppeteer browsers install chrome
+G1	exec --preserve-status @playwright/test install
+G1	exec -- playwright install
+G1	exec -- playwright install chromium
+G1	exec -- puppeteer browsers install chrome
+G1	exec -- @playwright/test install
+G1	exec -v playwright install
+G1	exec -v playwright install chromium
+G1	exec -v puppeteer browsers install chrome
+G1	exec -v @playwright/test install
+G1	nohup playwright install
+G1	nohup playwright install chromium
+G1	nohup puppeteer browsers install chrome
+G1	nohup @playwright/test install
+G1	nohup --silent playwright install
+G1	nohup --silent playwright install chromium
+G1	nohup --silent puppeteer browsers install chrome
+G1	nohup --silent @playwright/test install
+G1	nohup --frozen-lockfile playwright install
+G1	nohup --frozen-lockfile playwright install chromium
+G1	nohup --frozen-lockfile puppeteer browsers install chrome
+G1	nohup --frozen-lockfile @playwright/test install
+G1	nohup --verbose playwright install
+G1	nohup --verbose playwright install chromium
+G1	nohup --verbose puppeteer browsers install chrome
+G1	nohup --verbose @playwright/test install
+G1	nohup -s playwright install
+G1	nohup -s playwright install chromium
+G1	nohup -s puppeteer browsers install chrome
+G1	nohup -s @playwright/test install
+G1	nohup -q playwright install
+G1	nohup -q playwright install chromium
+G1	nohup -q puppeteer browsers install chrome
+G1	nohup -q @playwright/test install
+G1	nohup --yes playwright install
+G1	nohup --yes playwright install chromium
+G1	nohup --yes puppeteer browsers install chrome
+G1	nohup --yes @playwright/test install
+G1	nohup -y playwright install
+G1	nohup -y playwright install chromium
+G1	nohup -y puppeteer browsers install chrome
+G1	nohup -y @playwright/test install
+G1	nohup --prefer-offline playwright install
+G1	nohup --prefer-offline playwright install chromium
+G1	nohup --prefer-offline puppeteer browsers install chrome
+G1	nohup --prefer-offline @playwright/test install
+G1	nohup --no-install playwright install
+G1	nohup --no-install playwright install chromium
+G1	nohup --no-install puppeteer browsers install chrome
+G1	nohup --no-install @playwright/test install
+G1	nohup --ignore-scripts playwright install
+G1	nohup --ignore-scripts playwright install chromium
+G1	nohup --ignore-scripts puppeteer browsers install chrome
+G1	nohup --ignore-scripts @playwright/test install
+G1	nohup --foo playwright install
+G1	nohup --foo playwright install chromium
+G1	nohup --foo puppeteer browsers install chrome
+G1	nohup --foo @playwright/test install
+-	nohup --foo x playwright install
+-	nohup --foo x playwright install chromium
+-	nohup --foo x puppeteer browsers install chrome
+-	nohup --foo x @playwright/test install
+G1	nohup -x playwright install
+G1	nohup -x playwright install chromium
+G1	nohup -x puppeteer browsers install chrome
+G1	nohup -x @playwright/test install
+G1	nohup --registry=https://r playwright install
+G1	nohup --registry=https://r playwright install chromium
+G1	nohup --registry=https://r puppeteer browsers install chrome
+G1	nohup --registry=https://r @playwright/test install
+-	nohup --registry https://r playwright install
+-	nohup --registry https://r playwright install chromium
+-	nohup --registry https://r puppeteer browsers install chrome
+-	nohup --registry https://r @playwright/test install
+-	nohup --cwd web playwright install
+-	nohup --cwd web playwright install chromium
+-	nohup --cwd web puppeteer browsers install chrome
+-	nohup --cwd web @playwright/test install
+-	nohup -C web playwright install
+-	nohup -C web playwright install chromium
+-	nohup -C web puppeteer browsers install chrome
+-	nohup -C web @playwright/test install
+-	nohup --filter web playwright install
+-	nohup --filter web playwright install chromium
+-	nohup --filter web puppeteer browsers install chrome
+-	nohup --filter web @playwright/test install
+G1	nohup -w playwright install
+G1	nohup -w playwright install chromium
+G1	nohup -w puppeteer browsers install chrome
+G1	nohup -w @playwright/test install
+G1	nohup --offline playwright install
+G1	nohup --offline playwright install chromium
+G1	nohup --offline puppeteer browsers install chrome
+G1	nohup --offline @playwright/test install
+G1	nohup --json playwright install
+G1	nohup --json playwright install chromium
+G1	nohup --json puppeteer browsers install chrome
+G1	nohup --json @playwright/test install
+G1	nohup --color=always playwright install
+G1	nohup --color=always playwright install chromium
+G1	nohup --color=always puppeteer browsers install chrome
+G1	nohup --color=always @playwright/test install
+G1	nohup --no-color playwright install
+G1	nohup --no-color playwright install chromium
+G1	nohup --no-color puppeteer browsers install chrome
+G1	nohup --no-color @playwright/test install
+-	nohup --loglevel silent playwright install
+-	nohup --loglevel silent playwright install chromium
+-	nohup --loglevel silent puppeteer browsers install chrome
+-	nohup --loglevel silent @playwright/test install
+G1	nohup --quiet playwright install
+G1	nohup --quiet playwright install chromium
+G1	nohup --quiet puppeteer browsers install chrome
+G1	nohup --quiet @playwright/test install
+-	nohup --package playwright playwright install
+-	nohup --package playwright playwright install chromium
+-	nohup --package playwright puppeteer browsers install chrome
+-	nohup --package playwright @playwright/test install
+-	nohup -p playwright playwright install
+-	nohup -p playwright playwright install chromium
+-	nohup -p playwright puppeteer browsers install chrome
+-	nohup -p playwright @playwright/test install
+-	nohup -n 5 playwright install
+-	nohup -n 5 playwright install chromium
+-	nohup -n 5 puppeteer browsers install chrome
+-	nohup -n 5 @playwright/test install
+-	nohup -u root playwright install
+-	nohup -u root playwright install chromium
+-	nohup -u root puppeteer browsers install chrome
+-	nohup -u root @playwright/test install
+G1	nohup -E playwright install
+G1	nohup -E playwright install chromium
+G1	nohup -E puppeteer browsers install chrome
+G1	nohup -E @playwright/test install
+G1	nohup -i playwright install
+G1	nohup -i playwright install chromium
+G1	nohup -i puppeteer browsers install chrome
+G1	nohup -i @playwright/test install
+-	nohup -k 5 playwright install
+-	nohup -k 5 playwright install chromium
+-	nohup -k 5 puppeteer browsers install chrome
+-	nohup -k 5 @playwright/test install
+G1	nohup --preserve-status playwright install
+G1	nohup --preserve-status playwright install chromium
+G1	nohup --preserve-status puppeteer browsers install chrome
+G1	nohup --preserve-status @playwright/test install
+G1	nohup -- playwright install
+G1	nohup -- playwright install chromium
+G1	nohup -- puppeteer browsers install chrome
+G1	nohup -- @playwright/test install
+G1	nohup -v playwright install
+G1	nohup -v playwright install chromium
+G1	nohup -v puppeteer browsers install chrome
+G1	nohup -v @playwright/test install
+G1	xargs playwright install
+G1	xargs playwright install chromium
+G1	xargs puppeteer browsers install chrome
+G1	xargs @playwright/test install
+G1	xargs --silent playwright install
+G1	xargs --silent playwright install chromium
+G1	xargs --silent puppeteer browsers install chrome
+G1	xargs --silent @playwright/test install
+G1	xargs --frozen-lockfile playwright install
+G1	xargs --frozen-lockfile playwright install chromium
+G1	xargs --frozen-lockfile puppeteer browsers install chrome
+G1	xargs --frozen-lockfile @playwright/test install
+G1	xargs --verbose playwright install
+G1	xargs --verbose playwright install chromium
+G1	xargs --verbose puppeteer browsers install chrome
+G1	xargs --verbose @playwright/test install
+-	xargs -s playwright install
+-	xargs -s playwright install chromium
+-	xargs -s puppeteer browsers install chrome
+-	xargs -s @playwright/test install
+G1	xargs -q playwright install
+G1	xargs -q playwright install chromium
+G1	xargs -q puppeteer browsers install chrome
+G1	xargs -q @playwright/test install
+G1	xargs --yes playwright install
+G1	xargs --yes playwright install chromium
+G1	xargs --yes puppeteer browsers install chrome
+G1	xargs --yes @playwright/test install
+G1	xargs -y playwright install
+G1	xargs -y playwright install chromium
+G1	xargs -y puppeteer browsers install chrome
+G1	xargs -y @playwright/test install
+G1	xargs --prefer-offline playwright install
+G1	xargs --prefer-offline playwright install chromium
+G1	xargs --prefer-offline puppeteer browsers install chrome
+G1	xargs --prefer-offline @playwright/test install
+G1	xargs --no-install playwright install
+G1	xargs --no-install playwright install chromium
+G1	xargs --no-install puppeteer browsers install chrome
+G1	xargs --no-install @playwright/test install
+G1	xargs --ignore-scripts playwright install
+G1	xargs --ignore-scripts playwright install chromium
+G1	xargs --ignore-scripts puppeteer browsers install chrome
+G1	xargs --ignore-scripts @playwright/test install
+G1	xargs --foo playwright install
+G1	xargs --foo playwright install chromium
+G1	xargs --foo puppeteer browsers install chrome
+G1	xargs --foo @playwright/test install
+-	xargs --foo x playwright install
+-	xargs --foo x playwright install chromium
+-	xargs --foo x puppeteer browsers install chrome
+-	xargs --foo x @playwright/test install
+G1	xargs -x playwright install
+G1	xargs -x playwright install chromium
+G1	xargs -x puppeteer browsers install chrome
+G1	xargs -x @playwright/test install
+G1	xargs --registry=https://r playwright install
+G1	xargs --registry=https://r playwright install chromium
+G1	xargs --registry=https://r puppeteer browsers install chrome
+G1	xargs --registry=https://r @playwright/test install
+-	xargs --registry https://r playwright install
+-	xargs --registry https://r playwright install chromium
+-	xargs --registry https://r puppeteer browsers install chrome
+-	xargs --registry https://r @playwright/test install
+-	xargs --cwd web playwright install
+-	xargs --cwd web playwright install chromium
+-	xargs --cwd web puppeteer browsers install chrome
+-	xargs --cwd web @playwright/test install
+-	xargs -C web playwright install
+-	xargs -C web playwright install chromium
+-	xargs -C web puppeteer browsers install chrome
+-	xargs -C web @playwright/test install
+-	xargs --filter web playwright install
+-	xargs --filter web playwright install chromium
+-	xargs --filter web puppeteer browsers install chrome
+-	xargs --filter web @playwright/test install
+G1	xargs -w playwright install
+G1	xargs -w playwright install chromium
+G1	xargs -w puppeteer browsers install chrome
+G1	xargs -w @playwright/test install
+G1	xargs --offline playwright install
+G1	xargs --offline playwright install chromium
+G1	xargs --offline puppeteer browsers install chrome
+G1	xargs --offline @playwright/test install
+G1	xargs --json playwright install
+G1	xargs --json playwright install chromium
+G1	xargs --json puppeteer browsers install chrome
+G1	xargs --json @playwright/test install
+G1	xargs --color=always playwright install
+G1	xargs --color=always playwright install chromium
+G1	xargs --color=always puppeteer browsers install chrome
+G1	xargs --color=always @playwright/test install
+G1	xargs --no-color playwright install
+G1	xargs --no-color playwright install chromium
+G1	xargs --no-color puppeteer browsers install chrome
+G1	xargs --no-color @playwright/test install
+-	xargs --loglevel silent playwright install
+-	xargs --loglevel silent playwright install chromium
+-	xargs --loglevel silent puppeteer browsers install chrome
+-	xargs --loglevel silent @playwright/test install
+G1	xargs --quiet playwright install
+G1	xargs --quiet playwright install chromium
+G1	xargs --quiet puppeteer browsers install chrome
+G1	xargs --quiet @playwright/test install
+-	xargs --package playwright playwright install
+-	xargs --package playwright playwright install chromium
+-	xargs --package playwright puppeteer browsers install chrome
+-	xargs --package playwright @playwright/test install
+-	xargs -p playwright playwright install
+-	xargs -p playwright playwright install chromium
+-	xargs -p playwright puppeteer browsers install chrome
+-	xargs -p playwright @playwright/test install
+G1	xargs -n 5 playwright install
+G1	xargs -n 5 playwright install chromium
+G1	xargs -n 5 puppeteer browsers install chrome
+G1	xargs -n 5 @playwright/test install
+-	xargs -u root playwright install
+-	xargs -u root playwright install chromium
+-	xargs -u root puppeteer browsers install chrome
+-	xargs -u root @playwright/test install
+-	xargs -E playwright install
+-	xargs -E playwright install chromium
+-	xargs -E puppeteer browsers install chrome
+-	xargs -E @playwright/test install
+G1	xargs -i playwright install
+G1	xargs -i playwright install chromium
+G1	xargs -i puppeteer browsers install chrome
+G1	xargs -i @playwright/test install
+-	xargs -k 5 playwright install
+-	xargs -k 5 playwright install chromium
+-	xargs -k 5 puppeteer browsers install chrome
+-	xargs -k 5 @playwright/test install
+G1	xargs --preserve-status playwright install
+G1	xargs --preserve-status playwright install chromium
+G1	xargs --preserve-status puppeteer browsers install chrome
+G1	xargs --preserve-status @playwright/test install
+G1	xargs -- playwright install
+G1	xargs -- playwright install chromium
+G1	xargs -- puppeteer browsers install chrome
+G1	xargs -- @playwright/test install
+G1	xargs -v playwright install
+G1	xargs -v playwright install chromium
+G1	xargs -v puppeteer browsers install chrome
+G1	xargs -v @playwright/test install
+G1	doas playwright install
+G1	doas playwright install chromium
+G1	doas puppeteer browsers install chrome
+G1	doas @playwright/test install
+G1	doas --silent playwright install
+G1	doas --silent playwright install chromium
+G1	doas --silent puppeteer browsers install chrome
+G1	doas --silent @playwright/test install
+G1	doas --frozen-lockfile playwright install
+G1	doas --frozen-lockfile playwright install chromium
+G1	doas --frozen-lockfile puppeteer browsers install chrome
+G1	doas --frozen-lockfile @playwright/test install
+G1	doas --verbose playwright install
+G1	doas --verbose playwright install chromium
+G1	doas --verbose puppeteer browsers install chrome
+G1	doas --verbose @playwright/test install
+G1	doas -s playwright install
+G1	doas -s playwright install chromium
+G1	doas -s puppeteer browsers install chrome
+G1	doas -s @playwright/test install
+G1	doas -q playwright install
+G1	doas -q playwright install chromium
+G1	doas -q puppeteer browsers install chrome
+G1	doas -q @playwright/test install
+G1	doas --yes playwright install
+G1	doas --yes playwright install chromium
+G1	doas --yes puppeteer browsers install chrome
+G1	doas --yes @playwright/test install
+G1	doas -y playwright install
+G1	doas -y playwright install chromium
+G1	doas -y puppeteer browsers install chrome
+G1	doas -y @playwright/test install
+G1	doas --prefer-offline playwright install
+G1	doas --prefer-offline playwright install chromium
+G1	doas --prefer-offline puppeteer browsers install chrome
+G1	doas --prefer-offline @playwright/test install
+G1	doas --no-install playwright install
+G1	doas --no-install playwright install chromium
+G1	doas --no-install puppeteer browsers install chrome
+G1	doas --no-install @playwright/test install
+G1	doas --ignore-scripts playwright install
+G1	doas --ignore-scripts playwright install chromium
+G1	doas --ignore-scripts puppeteer browsers install chrome
+G1	doas --ignore-scripts @playwright/test install
+G1	doas --foo playwright install
+G1	doas --foo playwright install chromium
+G1	doas --foo puppeteer browsers install chrome
+G1	doas --foo @playwright/test install
+-	doas --foo x playwright install
+-	doas --foo x playwright install chromium
+-	doas --foo x puppeteer browsers install chrome
+-	doas --foo x @playwright/test install
+G1	doas -x playwright install
+G1	doas -x playwright install chromium
+G1	doas -x puppeteer browsers install chrome
+G1	doas -x @playwright/test install
+G1	doas --registry=https://r playwright install
+G1	doas --registry=https://r playwright install chromium
+G1	doas --registry=https://r puppeteer browsers install chrome
+G1	doas --registry=https://r @playwright/test install
+-	doas --registry https://r playwright install
+-	doas --registry https://r playwright install chromium
+-	doas --registry https://r puppeteer browsers install chrome
+-	doas --registry https://r @playwright/test install
+-	doas --cwd web playwright install
+-	doas --cwd web playwright install chromium
+-	doas --cwd web puppeteer browsers install chrome
+-	doas --cwd web @playwright/test install
+G1	doas -C web playwright install
+G1	doas -C web playwright install chromium
+G1	doas -C web puppeteer browsers install chrome
+G1	doas -C web @playwright/test install
+-	doas --filter web playwright install
+-	doas --filter web playwright install chromium
+-	doas --filter web puppeteer browsers install chrome
+-	doas --filter web @playwright/test install
+G1	doas -w playwright install
+G1	doas -w playwright install chromium
+G1	doas -w puppeteer browsers install chrome
+G1	doas -w @playwright/test install
+G1	doas --offline playwright install
+G1	doas --offline playwright install chromium
+G1	doas --offline puppeteer browsers install chrome
+G1	doas --offline @playwright/test install
+G1	doas --json playwright install
+G1	doas --json playwright install chromium
+G1	doas --json puppeteer browsers install chrome
+G1	doas --json @playwright/test install
+G1	doas --color=always playwright install
+G1	doas --color=always playwright install chromium
+G1	doas --color=always puppeteer browsers install chrome
+G1	doas --color=always @playwright/test install
+G1	doas --no-color playwright install
+G1	doas --no-color playwright install chromium
+G1	doas --no-color puppeteer browsers install chrome
+G1	doas --no-color @playwright/test install
+-	doas --loglevel silent playwright install
+-	doas --loglevel silent playwright install chromium
+-	doas --loglevel silent puppeteer browsers install chrome
+-	doas --loglevel silent @playwright/test install
+G1	doas --quiet playwright install
+G1	doas --quiet playwright install chromium
+G1	doas --quiet puppeteer browsers install chrome
+G1	doas --quiet @playwright/test install
+-	doas --package playwright playwright install
+-	doas --package playwright playwright install chromium
+-	doas --package playwright puppeteer browsers install chrome
+-	doas --package playwright @playwright/test install
+-	doas -p playwright playwright install
+-	doas -p playwright playwright install chromium
+-	doas -p playwright puppeteer browsers install chrome
+-	doas -p playwright @playwright/test install
+-	doas -n 5 playwright install
+-	doas -n 5 playwright install chromium
+-	doas -n 5 puppeteer browsers install chrome
+-	doas -n 5 @playwright/test install
+G1	doas -u root playwright install
+G1	doas -u root playwright install chromium
+G1	doas -u root puppeteer browsers install chrome
+G1	doas -u root @playwright/test install
+G1	doas -E playwright install
+G1	doas -E playwright install chromium
+G1	doas -E puppeteer browsers install chrome
+G1	doas -E @playwright/test install
+G1	doas -i playwright install
+G1	doas -i playwright install chromium
+G1	doas -i puppeteer browsers install chrome
+G1	doas -i @playwright/test install
+-	doas -k 5 playwright install
+-	doas -k 5 playwright install chromium
+-	doas -k 5 puppeteer browsers install chrome
+-	doas -k 5 @playwright/test install
+G1	doas --preserve-status playwright install
+G1	doas --preserve-status playwright install chromium
+G1	doas --preserve-status puppeteer browsers install chrome
+G1	doas --preserve-status @playwright/test install
+G1	doas -- playwright install
+G1	doas -- playwright install chromium
+G1	doas -- puppeteer browsers install chrome
+G1	doas -- @playwright/test install
+G1	doas -v playwright install
+G1	doas -v playwright install chromium
+G1	doas -v puppeteer browsers install chrome
+G1	doas -v @playwright/test install
+G1	uvx playwright install
+G1	uvx playwright install chromium
+G1	uvx puppeteer browsers install chrome
+G1	uvx @playwright/test install
+G1	uvx --silent playwright install
+G1	uvx --silent playwright install chromium
+G1	uvx --silent puppeteer browsers install chrome
+G1	uvx --silent @playwright/test install
+G1	uvx --frozen-lockfile playwright install
+G1	uvx --frozen-lockfile playwright install chromium
+G1	uvx --frozen-lockfile puppeteer browsers install chrome
+G1	uvx --frozen-lockfile @playwright/test install
+G1	uvx --verbose playwright install
+G1	uvx --verbose playwright install chromium
+G1	uvx --verbose puppeteer browsers install chrome
+G1	uvx --verbose @playwright/test install
+G1	uvx -s playwright install
+G1	uvx -s playwright install chromium
+G1	uvx -s puppeteer browsers install chrome
+G1	uvx -s @playwright/test install
+G1	uvx -q playwright install
+G1	uvx -q playwright install chromium
+G1	uvx -q puppeteer browsers install chrome
+G1	uvx -q @playwright/test install
+G1	uvx --yes playwright install
+G1	uvx --yes playwright install chromium
+G1	uvx --yes puppeteer browsers install chrome
+G1	uvx --yes @playwright/test install
+G1	uvx -y playwright install
+G1	uvx -y playwright install chromium
+G1	uvx -y puppeteer browsers install chrome
+G1	uvx -y @playwright/test install
+G1	uvx --prefer-offline playwright install
+G1	uvx --prefer-offline playwright install chromium
+G1	uvx --prefer-offline puppeteer browsers install chrome
+G1	uvx --prefer-offline @playwright/test install
+G1	uvx --no-install playwright install
+G1	uvx --no-install playwright install chromium
+G1	uvx --no-install puppeteer browsers install chrome
+G1	uvx --no-install @playwright/test install
+G1	uvx --ignore-scripts playwright install
+G1	uvx --ignore-scripts playwright install chromium
+G1	uvx --ignore-scripts puppeteer browsers install chrome
+G1	uvx --ignore-scripts @playwright/test install
+G1	uvx --foo playwright install
+G1	uvx --foo playwright install chromium
+G1	uvx --foo puppeteer browsers install chrome
+G1	uvx --foo @playwright/test install
+-	uvx --foo x playwright install
+-	uvx --foo x playwright install chromium
+-	uvx --foo x puppeteer browsers install chrome
+-	uvx --foo x @playwright/test install
+G1	uvx -x playwright install
+G1	uvx -x playwright install chromium
+G1	uvx -x puppeteer browsers install chrome
+G1	uvx -x @playwright/test install
+G1	uvx --registry=https://r playwright install
+G1	uvx --registry=https://r playwright install chromium
+G1	uvx --registry=https://r puppeteer browsers install chrome
+G1	uvx --registry=https://r @playwright/test install
+-	uvx --registry https://r playwright install
+-	uvx --registry https://r playwright install chromium
+-	uvx --registry https://r puppeteer browsers install chrome
+-	uvx --registry https://r @playwright/test install
+-	uvx --cwd web playwright install
+-	uvx --cwd web playwright install chromium
+-	uvx --cwd web puppeteer browsers install chrome
+-	uvx --cwd web @playwright/test install
+-	uvx -C web playwright install
+-	uvx -C web playwright install chromium
+-	uvx -C web puppeteer browsers install chrome
+-	uvx -C web @playwright/test install
+-	uvx --filter web playwright install
+-	uvx --filter web playwright install chromium
+-	uvx --filter web puppeteer browsers install chrome
+-	uvx --filter web @playwright/test install
+-	uvx -w playwright install
+-	uvx -w playwright install chromium
+-	uvx -w puppeteer browsers install chrome
+-	uvx -w @playwright/test install
+G1	uvx --offline playwright install
+G1	uvx --offline playwright install chromium
+G1	uvx --offline puppeteer browsers install chrome
+G1	uvx --offline @playwright/test install
+G1	uvx --json playwright install
+G1	uvx --json playwright install chromium
+G1	uvx --json puppeteer browsers install chrome
+G1	uvx --json @playwright/test install
+G1	uvx --color=always playwright install
+G1	uvx --color=always playwright install chromium
+G1	uvx --color=always puppeteer browsers install chrome
+G1	uvx --color=always @playwright/test install
+G1	uvx --no-color playwright install
+G1	uvx --no-color playwright install chromium
+G1	uvx --no-color puppeteer browsers install chrome
+G1	uvx --no-color @playwright/test install
+-	uvx --loglevel silent playwright install
+-	uvx --loglevel silent playwright install chromium
+-	uvx --loglevel silent puppeteer browsers install chrome
+-	uvx --loglevel silent @playwright/test install
+G1	uvx --quiet playwright install
+G1	uvx --quiet playwright install chromium
+G1	uvx --quiet puppeteer browsers install chrome
+G1	uvx --quiet @playwright/test install
+G1	uvx --package playwright playwright install
+G1	uvx --package playwright playwright install chromium
+G1	uvx --package playwright puppeteer browsers install chrome
+G1	uvx --package playwright @playwright/test install
+G1	uvx -p playwright playwright install
+G1	uvx -p playwright playwright install chromium
+G1	uvx -p playwright puppeteer browsers install chrome
+G1	uvx -p playwright @playwright/test install
+G1	uvx -n 5 playwright install
+G1	uvx -n 5 playwright install chromium
+G1	uvx -n 5 puppeteer browsers install chrome
+G1	uvx -n 5 @playwright/test install
+-	uvx -u root playwright install
+-	uvx -u root playwright install chromium
+-	uvx -u root puppeteer browsers install chrome
+-	uvx -u root @playwright/test install
+G1	uvx -E playwright install
+G1	uvx -E playwright install chromium
+G1	uvx -E puppeteer browsers install chrome
+G1	uvx -E @playwright/test install
+G1	uvx -i playwright install
+G1	uvx -i playwright install chromium
+G1	uvx -i puppeteer browsers install chrome
+G1	uvx -i @playwright/test install
+-	uvx -k 5 playwright install
+-	uvx -k 5 playwright install chromium
+-	uvx -k 5 puppeteer browsers install chrome
+-	uvx -k 5 @playwright/test install
+G1	uvx --preserve-status playwright install
+G1	uvx --preserve-status playwright install chromium
+G1	uvx --preserve-status puppeteer browsers install chrome
+G1	uvx --preserve-status @playwright/test install
+G1	uvx -- playwright install
+G1	uvx -- playwright install chromium
+G1	uvx -- puppeteer browsers install chrome
+G1	uvx -- @playwright/test install
+G1	uvx -v playwright install
+G1	uvx -v playwright install chromium
+G1	uvx -v puppeteer browsers install chrome
+G1	uvx -v @playwright/test install
+G1	pipx run playwright install
+G1	pipx run playwright install chromium
+G1	pipx run puppeteer browsers install chrome
+G1	pipx run @playwright/test install
+G1	pipx run --silent playwright install
+G1	pipx run --silent playwright install chromium
+G1	pipx run --silent puppeteer browsers install chrome
+G1	pipx run --silent @playwright/test install
+G1	pipx run --frozen-lockfile playwright install
+G1	pipx run --frozen-lockfile playwright install chromium
+G1	pipx run --frozen-lockfile puppeteer browsers install chrome
+G1	pipx run --frozen-lockfile @playwright/test install
+G1	pipx run --verbose playwright install
+G1	pipx run --verbose playwright install chromium
+G1	pipx run --verbose puppeteer browsers install chrome
+G1	pipx run --verbose @playwright/test install
+G1	pipx run -s playwright install
+G1	pipx run -s playwright install chromium
+G1	pipx run -s puppeteer browsers install chrome
+G1	pipx run -s @playwright/test install
+G1	pipx run -q playwright install
+G1	pipx run -q playwright install chromium
+G1	pipx run -q puppeteer browsers install chrome
+G1	pipx run -q @playwright/test install
+G1	pipx run --yes playwright install
+G1	pipx run --yes playwright install chromium
+G1	pipx run --yes puppeteer browsers install chrome
+G1	pipx run --yes @playwright/test install
+G1	pipx run -y playwright install
+G1	pipx run -y playwright install chromium
+G1	pipx run -y puppeteer browsers install chrome
+G1	pipx run -y @playwright/test install
+G1	pipx run --prefer-offline playwright install
+G1	pipx run --prefer-offline playwright install chromium
+G1	pipx run --prefer-offline puppeteer browsers install chrome
+G1	pipx run --prefer-offline @playwright/test install
+G1	pipx run --no-install playwright install
+G1	pipx run --no-install playwright install chromium
+G1	pipx run --no-install puppeteer browsers install chrome
+G1	pipx run --no-install @playwright/test install
+G1	pipx run --ignore-scripts playwright install
+G1	pipx run --ignore-scripts playwright install chromium
+G1	pipx run --ignore-scripts puppeteer browsers install chrome
+G1	pipx run --ignore-scripts @playwright/test install
+G1	pipx run --foo playwright install
+G1	pipx run --foo playwright install chromium
+G1	pipx run --foo puppeteer browsers install chrome
+G1	pipx run --foo @playwright/test install
+-	pipx run --foo x playwright install
+-	pipx run --foo x playwright install chromium
+-	pipx run --foo x puppeteer browsers install chrome
+-	pipx run --foo x @playwright/test install
+G1	pipx run -x playwright install
+G1	pipx run -x playwright install chromium
+G1	pipx run -x puppeteer browsers install chrome
+G1	pipx run -x @playwright/test install
+G1	pipx run --registry=https://r playwright install
+G1	pipx run --registry=https://r playwright install chromium
+G1	pipx run --registry=https://r puppeteer browsers install chrome
+G1	pipx run --registry=https://r @playwright/test install
+-	pipx run --registry https://r playwright install
+-	pipx run --registry https://r playwright install chromium
+-	pipx run --registry https://r puppeteer browsers install chrome
+-	pipx run --registry https://r @playwright/test install
+-	pipx run --cwd web playwright install
+-	pipx run --cwd web playwright install chromium
+-	pipx run --cwd web puppeteer browsers install chrome
+-	pipx run --cwd web @playwright/test install
+-	pipx run -C web playwright install
+-	pipx run -C web playwright install chromium
+-	pipx run -C web puppeteer browsers install chrome
+-	pipx run -C web @playwright/test install
+-	pipx run --filter web playwright install
+-	pipx run --filter web playwright install chromium
+-	pipx run --filter web puppeteer browsers install chrome
+-	pipx run --filter web @playwright/test install
+-	pipx run -w playwright install
+-	pipx run -w playwright install chromium
+-	pipx run -w puppeteer browsers install chrome
+-	pipx run -w @playwright/test install
+G1	pipx run --offline playwright install
+G1	pipx run --offline playwright install chromium
+G1	pipx run --offline puppeteer browsers install chrome
+G1	pipx run --offline @playwright/test install
+G1	pipx run --json playwright install
+G1	pipx run --json playwright install chromium
+G1	pipx run --json puppeteer browsers install chrome
+G1	pipx run --json @playwright/test install
+G1	pipx run --color=always playwright install
+G1	pipx run --color=always playwright install chromium
+G1	pipx run --color=always puppeteer browsers install chrome
+G1	pipx run --color=always @playwright/test install
+G1	pipx run --no-color playwright install
+G1	pipx run --no-color playwright install chromium
+G1	pipx run --no-color puppeteer browsers install chrome
+G1	pipx run --no-color @playwright/test install
+-	pipx run --loglevel silent playwright install
+-	pipx run --loglevel silent playwright install chromium
+-	pipx run --loglevel silent puppeteer browsers install chrome
+-	pipx run --loglevel silent @playwright/test install
+G1	pipx run --quiet playwright install
+G1	pipx run --quiet playwright install chromium
+G1	pipx run --quiet puppeteer browsers install chrome
+G1	pipx run --quiet @playwright/test install
+G1	pipx run --package playwright playwright install
+G1	pipx run --package playwright playwright install chromium
+G1	pipx run --package playwright puppeteer browsers install chrome
+G1	pipx run --package playwright @playwright/test install
+G1	pipx run -p playwright playwright install
+G1	pipx run -p playwright playwright install chromium
+G1	pipx run -p playwright puppeteer browsers install chrome
+G1	pipx run -p playwright @playwright/test install
+G1	pipx run -n 5 playwright install
+G1	pipx run -n 5 playwright install chromium
+G1	pipx run -n 5 puppeteer browsers install chrome
+G1	pipx run -n 5 @playwright/test install
+-	pipx run -u root playwright install
+-	pipx run -u root playwright install chromium
+-	pipx run -u root puppeteer browsers install chrome
+-	pipx run -u root @playwright/test install
+G1	pipx run -E playwright install
+G1	pipx run -E playwright install chromium
+G1	pipx run -E puppeteer browsers install chrome
+G1	pipx run -E @playwright/test install
+G1	pipx run -i playwright install
+G1	pipx run -i playwright install chromium
+G1	pipx run -i puppeteer browsers install chrome
+G1	pipx run -i @playwright/test install
+-	pipx run -k 5 playwright install
+-	pipx run -k 5 playwright install chromium
+-	pipx run -k 5 puppeteer browsers install chrome
+-	pipx run -k 5 @playwright/test install
+G1	pipx run --preserve-status playwright install
+G1	pipx run --preserve-status playwright install chromium
+G1	pipx run --preserve-status puppeteer browsers install chrome
+G1	pipx run --preserve-status @playwright/test install
+G1	pipx run -- playwright install
+G1	pipx run -- playwright install chromium
+G1	pipx run -- puppeteer browsers install chrome
+G1	pipx run -- @playwright/test install
+G1	pipx run -v playwright install
+G1	pipx run -v playwright install chromium
+G1	pipx run -v puppeteer browsers install chrome
+G1	pipx run -v @playwright/test install
+-	corepack yarn playwright install
+-	corepack yarn playwright install chromium
+-	corepack yarn puppeteer browsers install chrome
+-	corepack yarn @playwright/test install
+-	corepack yarn --silent playwright install
+-	corepack yarn --silent playwright install chromium
+-	corepack yarn --silent puppeteer browsers install chrome
+-	corepack yarn --silent @playwright/test install
+-	corepack yarn --frozen-lockfile playwright install
+-	corepack yarn --frozen-lockfile playwright install chromium
+-	corepack yarn --frozen-lockfile puppeteer browsers install chrome
+-	corepack yarn --frozen-lockfile @playwright/test install
+-	corepack yarn --verbose playwright install
+-	corepack yarn --verbose playwright install chromium
+-	corepack yarn --verbose puppeteer browsers install chrome
+-	corepack yarn --verbose @playwright/test install
+-	corepack yarn -s playwright install
+-	corepack yarn -s playwright install chromium
+-	corepack yarn -s puppeteer browsers install chrome
+-	corepack yarn -s @playwright/test install
+-	corepack yarn -q playwright install
+-	corepack yarn -q playwright install chromium
+-	corepack yarn -q puppeteer browsers install chrome
+-	corepack yarn -q @playwright/test install
+-	corepack yarn --yes playwright install
+-	corepack yarn --yes playwright install chromium
+-	corepack yarn --yes puppeteer browsers install chrome
+-	corepack yarn --yes @playwright/test install
+-	corepack yarn -y playwright install
+-	corepack yarn -y playwright install chromium
+-	corepack yarn -y puppeteer browsers install chrome
+-	corepack yarn -y @playwright/test install
+-	corepack yarn --prefer-offline playwright install
+-	corepack yarn --prefer-offline playwright install chromium
+-	corepack yarn --prefer-offline puppeteer browsers install chrome
+-	corepack yarn --prefer-offline @playwright/test install
+-	corepack yarn --no-install playwright install
+-	corepack yarn --no-install playwright install chromium
+-	corepack yarn --no-install puppeteer browsers install chrome
+-	corepack yarn --no-install @playwright/test install
+-	corepack yarn --ignore-scripts playwright install
+-	corepack yarn --ignore-scripts playwright install chromium
+-	corepack yarn --ignore-scripts puppeteer browsers install chrome
+-	corepack yarn --ignore-scripts @playwright/test install
+-	corepack yarn --foo playwright install
+-	corepack yarn --foo playwright install chromium
+-	corepack yarn --foo puppeteer browsers install chrome
+-	corepack yarn --foo @playwright/test install
+-	corepack yarn --foo x playwright install
+-	corepack yarn --foo x playwright install chromium
+-	corepack yarn --foo x puppeteer browsers install chrome
+-	corepack yarn --foo x @playwright/test install
+-	corepack yarn -x playwright install
+-	corepack yarn -x playwright install chromium
+-	corepack yarn -x puppeteer browsers install chrome
+-	corepack yarn -x @playwright/test install
+-	corepack yarn --registry=https://r playwright install
+-	corepack yarn --registry=https://r playwright install chromium
+-	corepack yarn --registry=https://r puppeteer browsers install chrome
+-	corepack yarn --registry=https://r @playwright/test install
+-	corepack yarn --registry https://r playwright install
+-	corepack yarn --registry https://r playwright install chromium
+-	corepack yarn --registry https://r puppeteer browsers install chrome
+-	corepack yarn --registry https://r @playwright/test install
+-	corepack yarn --cwd web playwright install
+-	corepack yarn --cwd web playwright install chromium
+-	corepack yarn --cwd web puppeteer browsers install chrome
+-	corepack yarn --cwd web @playwright/test install
+-	corepack yarn -C web playwright install
+-	corepack yarn -C web playwright install chromium
+-	corepack yarn -C web puppeteer browsers install chrome
+-	corepack yarn -C web @playwright/test install
+-	corepack yarn --filter web playwright install
+-	corepack yarn --filter web playwright install chromium
+-	corepack yarn --filter web puppeteer browsers install chrome
+-	corepack yarn --filter web @playwright/test install
+-	corepack yarn -w playwright install
+-	corepack yarn -w playwright install chromium
+-	corepack yarn -w puppeteer browsers install chrome
+-	corepack yarn -w @playwright/test install
+-	corepack yarn --offline playwright install
+-	corepack yarn --offline playwright install chromium
+-	corepack yarn --offline puppeteer browsers install chrome
+-	corepack yarn --offline @playwright/test install
+-	corepack yarn --json playwright install
+-	corepack yarn --json playwright install chromium
+-	corepack yarn --json puppeteer browsers install chrome
+-	corepack yarn --json @playwright/test install
+-	corepack yarn --color=always playwright install
+-	corepack yarn --color=always playwright install chromium
+-	corepack yarn --color=always puppeteer browsers install chrome
+-	corepack yarn --color=always @playwright/test install
+-	corepack yarn --no-color playwright install
+-	corepack yarn --no-color playwright install chromium
+-	corepack yarn --no-color puppeteer browsers install chrome
+-	corepack yarn --no-color @playwright/test install
+-	corepack yarn --loglevel silent playwright install
+-	corepack yarn --loglevel silent playwright install chromium
+-	corepack yarn --loglevel silent puppeteer browsers install chrome
+-	corepack yarn --loglevel silent @playwright/test install
+-	corepack yarn --quiet playwright install
+-	corepack yarn --quiet playwright install chromium
+-	corepack yarn --quiet puppeteer browsers install chrome
+-	corepack yarn --quiet @playwright/test install
+-	corepack yarn --package playwright playwright install
+-	corepack yarn --package playwright playwright install chromium
+-	corepack yarn --package playwright puppeteer browsers install chrome
+-	corepack yarn --package playwright @playwright/test install
+-	corepack yarn -p playwright playwright install
+-	corepack yarn -p playwright playwright install chromium
+-	corepack yarn -p playwright puppeteer browsers install chrome
+-	corepack yarn -p playwright @playwright/test install
+-	corepack yarn -n 5 playwright install
+-	corepack yarn -n 5 playwright install chromium
+-	corepack yarn -n 5 puppeteer browsers install chrome
+-	corepack yarn -n 5 @playwright/test install
+-	corepack yarn -u root playwright install
+-	corepack yarn -u root playwright install chromium
+-	corepack yarn -u root puppeteer browsers install chrome
+-	corepack yarn -u root @playwright/test install
+-	corepack yarn -E playwright install
+-	corepack yarn -E playwright install chromium
+-	corepack yarn -E puppeteer browsers install chrome
+-	corepack yarn -E @playwright/test install
+-	corepack yarn -i playwright install
+-	corepack yarn -i playwright install chromium
+-	corepack yarn -i puppeteer browsers install chrome
+-	corepack yarn -i @playwright/test install
+-	corepack yarn -k 5 playwright install
+-	corepack yarn -k 5 playwright install chromium
+-	corepack yarn -k 5 puppeteer browsers install chrome
+-	corepack yarn -k 5 @playwright/test install
+-	corepack yarn --preserve-status playwright install
+-	corepack yarn --preserve-status playwright install chromium
+-	corepack yarn --preserve-status puppeteer browsers install chrome
+-	corepack yarn --preserve-status @playwright/test install
+-	corepack yarn -- playwright install
+-	corepack yarn -- playwright install chromium
+-	corepack yarn -- puppeteer browsers install chrome
+-	corepack yarn -- @playwright/test install
+-	corepack yarn -v playwright install
+-	corepack yarn -v playwright install chromium
+-	corepack yarn -v puppeteer browsers install chrome
+-	corepack yarn -v @playwright/test install
+-	corepack pnpm playwright install
+-	corepack pnpm playwright install chromium
+-	corepack pnpm puppeteer browsers install chrome
+-	corepack pnpm @playwright/test install
+-	corepack pnpm --silent playwright install
+-	corepack pnpm --silent playwright install chromium
+-	corepack pnpm --silent puppeteer browsers install chrome
+-	corepack pnpm --silent @playwright/test install
+-	corepack pnpm --frozen-lockfile playwright install
+-	corepack pnpm --frozen-lockfile playwright install chromium
+-	corepack pnpm --frozen-lockfile puppeteer browsers install chrome
+-	corepack pnpm --frozen-lockfile @playwright/test install
+-	corepack pnpm --verbose playwright install
+-	corepack pnpm --verbose playwright install chromium
+-	corepack pnpm --verbose puppeteer browsers install chrome
+-	corepack pnpm --verbose @playwright/test install
+-	corepack pnpm -s playwright install
+-	corepack pnpm -s playwright install chromium
+-	corepack pnpm -s puppeteer browsers install chrome
+-	corepack pnpm -s @playwright/test install
+-	corepack pnpm -q playwright install
+-	corepack pnpm -q playwright install chromium
+-	corepack pnpm -q puppeteer browsers install chrome
+-	corepack pnpm -q @playwright/test install
+-	corepack pnpm --yes playwright install
+-	corepack pnpm --yes playwright install chromium
+-	corepack pnpm --yes puppeteer browsers install chrome
+-	corepack pnpm --yes @playwright/test install
+-	corepack pnpm -y playwright install
+-	corepack pnpm -y playwright install chromium
+-	corepack pnpm -y puppeteer browsers install chrome
+-	corepack pnpm -y @playwright/test install
+-	corepack pnpm --prefer-offline playwright install
+-	corepack pnpm --prefer-offline playwright install chromium
+-	corepack pnpm --prefer-offline puppeteer browsers install chrome
+-	corepack pnpm --prefer-offline @playwright/test install
+-	corepack pnpm --no-install playwright install
+-	corepack pnpm --no-install playwright install chromium
+-	corepack pnpm --no-install puppeteer browsers install chrome
+-	corepack pnpm --no-install @playwright/test install
+-	corepack pnpm --ignore-scripts playwright install
+-	corepack pnpm --ignore-scripts playwright install chromium
+-	corepack pnpm --ignore-scripts puppeteer browsers install chrome
+-	corepack pnpm --ignore-scripts @playwright/test install
+-	corepack pnpm --foo playwright install
+-	corepack pnpm --foo playwright install chromium
+-	corepack pnpm --foo puppeteer browsers install chrome
+-	corepack pnpm --foo @playwright/test install
+-	corepack pnpm --foo x playwright install
+-	corepack pnpm --foo x playwright install chromium
+-	corepack pnpm --foo x puppeteer browsers install chrome
+-	corepack pnpm --foo x @playwright/test install
+-	corepack pnpm -x playwright install
+-	corepack pnpm -x playwright install chromium
+-	corepack pnpm -x puppeteer browsers install chrome
+-	corepack pnpm -x @playwright/test install
+-	corepack pnpm --registry=https://r playwright install
+-	corepack pnpm --registry=https://r playwright install chromium
+-	corepack pnpm --registry=https://r puppeteer browsers install chrome
+-	corepack pnpm --registry=https://r @playwright/test install
+-	corepack pnpm --registry https://r playwright install
+-	corepack pnpm --registry https://r playwright install chromium
+-	corepack pnpm --registry https://r puppeteer browsers install chrome
+-	corepack pnpm --registry https://r @playwright/test install
+-	corepack pnpm --cwd web playwright install
+-	corepack pnpm --cwd web playwright install chromium
+-	corepack pnpm --cwd web puppeteer browsers install chrome
+-	corepack pnpm --cwd web @playwright/test install
+-	corepack pnpm -C web playwright install
+-	corepack pnpm -C web playwright install chromium
+-	corepack pnpm -C web puppeteer browsers install chrome
+-	corepack pnpm -C web @playwright/test install
+-	corepack pnpm --filter web playwright install
+-	corepack pnpm --filter web playwright install chromium
+-	corepack pnpm --filter web puppeteer browsers install chrome
+-	corepack pnpm --filter web @playwright/test install
+-	corepack pnpm -w playwright install
+-	corepack pnpm -w playwright install chromium
+-	corepack pnpm -w puppeteer browsers install chrome
+-	corepack pnpm -w @playwright/test install
+-	corepack pnpm --offline playwright install
+-	corepack pnpm --offline playwright install chromium
+-	corepack pnpm --offline puppeteer browsers install chrome
+-	corepack pnpm --offline @playwright/test install
+-	corepack pnpm --json playwright install
+-	corepack pnpm --json playwright install chromium
+-	corepack pnpm --json puppeteer browsers install chrome
+-	corepack pnpm --json @playwright/test install
+-	corepack pnpm --color=always playwright install
+-	corepack pnpm --color=always playwright install chromium
+-	corepack pnpm --color=always puppeteer browsers install chrome
+-	corepack pnpm --color=always @playwright/test install
+-	corepack pnpm --no-color playwright install
+-	corepack pnpm --no-color playwright install chromium
+-	corepack pnpm --no-color puppeteer browsers install chrome
+-	corepack pnpm --no-color @playwright/test install
+-	corepack pnpm --loglevel silent playwright install
+-	corepack pnpm --loglevel silent playwright install chromium
+-	corepack pnpm --loglevel silent puppeteer browsers install chrome
+-	corepack pnpm --loglevel silent @playwright/test install
+-	corepack pnpm --quiet playwright install
+-	corepack pnpm --quiet playwright install chromium
+-	corepack pnpm --quiet puppeteer browsers install chrome
+-	corepack pnpm --quiet @playwright/test install
+-	corepack pnpm --package playwright playwright install
+-	corepack pnpm --package playwright playwright install chromium
+-	corepack pnpm --package playwright puppeteer browsers install chrome
+-	corepack pnpm --package playwright @playwright/test install
+-	corepack pnpm -p playwright playwright install
+-	corepack pnpm -p playwright playwright install chromium
+-	corepack pnpm -p playwright puppeteer browsers install chrome
+-	corepack pnpm -p playwright @playwright/test install
+-	corepack pnpm -n 5 playwright install
+-	corepack pnpm -n 5 playwright install chromium
+-	corepack pnpm -n 5 puppeteer browsers install chrome
+-	corepack pnpm -n 5 @playwright/test install
+-	corepack pnpm -u root playwright install
+-	corepack pnpm -u root playwright install chromium
+-	corepack pnpm -u root puppeteer browsers install chrome
+-	corepack pnpm -u root @playwright/test install
+-	corepack pnpm -E playwright install
+-	corepack pnpm -E playwright install chromium
+-	corepack pnpm -E puppeteer browsers install chrome
+-	corepack pnpm -E @playwright/test install
+-	corepack pnpm -i playwright install
+-	corepack pnpm -i playwright install chromium
+-	corepack pnpm -i puppeteer browsers install chrome
+-	corepack pnpm -i @playwright/test install
+-	corepack pnpm -k 5 playwright install
+-	corepack pnpm -k 5 playwright install chromium
+-	corepack pnpm -k 5 puppeteer browsers install chrome
+-	corepack pnpm -k 5 @playwright/test install
+-	corepack pnpm --preserve-status playwright install
+-	corepack pnpm --preserve-status playwright install chromium
+-	corepack pnpm --preserve-status puppeteer browsers install chrome
+-	corepack pnpm --preserve-status @playwright/test install
+-	corepack pnpm -- playwright install
+-	corepack pnpm -- playwright install chromium
+-	corepack pnpm -- puppeteer browsers install chrome
+-	corepack pnpm -- @playwright/test install
+-	corepack pnpm -v playwright install
+-	corepack pnpm -v playwright install chromium
+-	corepack pnpm -v puppeteer browsers install chrome
+-	corepack pnpm -v @playwright/test install
+G1	npx -p playwright playwright install
+G1	npx -p playwright playwright install chromium
+G1	npx -p playwright puppeteer browsers install chrome
+G1	npx -p playwright @playwright/test install
+G1	npx -p playwright --silent playwright install
+G1	npx -p playwright --silent playwright install chromium
+G1	npx -p playwright --silent puppeteer browsers install chrome
+G1	npx -p playwright --silent @playwright/test install
+G1	npx -p playwright --frozen-lockfile playwright install
+G1	npx -p playwright --frozen-lockfile playwright install chromium
+G1	npx -p playwright --frozen-lockfile puppeteer browsers install chrome
+G1	npx -p playwright --frozen-lockfile @playwright/test install
+G1	npx -p playwright --verbose playwright install
+G1	npx -p playwright --verbose playwright install chromium
+G1	npx -p playwright --verbose puppeteer browsers install chrome
+G1	npx -p playwright --verbose @playwright/test install
+G1	npx -p playwright -s playwright install
+G1	npx -p playwright -s playwright install chromium
+G1	npx -p playwright -s puppeteer browsers install chrome
+G1	npx -p playwright -s @playwright/test install
+G1	npx -p playwright -q playwright install
+G1	npx -p playwright -q playwright install chromium
+G1	npx -p playwright -q puppeteer browsers install chrome
+G1	npx -p playwright -q @playwright/test install
+G1	npx -p playwright --yes playwright install
+G1	npx -p playwright --yes playwright install chromium
+G1	npx -p playwright --yes puppeteer browsers install chrome
+G1	npx -p playwright --yes @playwright/test install
+G1	npx -p playwright -y playwright install
+G1	npx -p playwright -y playwright install chromium
+G1	npx -p playwright -y puppeteer browsers install chrome
+G1	npx -p playwright -y @playwright/test install
+G1	npx -p playwright --prefer-offline playwright install
+G1	npx -p playwright --prefer-offline playwright install chromium
+G1	npx -p playwright --prefer-offline puppeteer browsers install chrome
+G1	npx -p playwright --prefer-offline @playwright/test install
+G1	npx -p playwright --no-install playwright install
+G1	npx -p playwright --no-install playwright install chromium
+G1	npx -p playwright --no-install puppeteer browsers install chrome
+G1	npx -p playwright --no-install @playwright/test install
+G1	npx -p playwright --ignore-scripts playwright install
+G1	npx -p playwright --ignore-scripts playwright install chromium
+G1	npx -p playwright --ignore-scripts puppeteer browsers install chrome
+G1	npx -p playwright --ignore-scripts @playwright/test install
+G1	npx -p playwright --foo playwright install
+G1	npx -p playwright --foo playwright install chromium
+G1	npx -p playwright --foo puppeteer browsers install chrome
+G1	npx -p playwright --foo @playwright/test install
+-	npx -p playwright --foo x playwright install
+-	npx -p playwright --foo x playwright install chromium
+-	npx -p playwright --foo x puppeteer browsers install chrome
+-	npx -p playwright --foo x @playwright/test install
+G1	npx -p playwright -x playwright install
+G1	npx -p playwright -x playwright install chromium
+G1	npx -p playwright -x puppeteer browsers install chrome
+G1	npx -p playwright -x @playwright/test install
+G1	npx -p playwright --registry=https://r playwright install
+G1	npx -p playwright --registry=https://r playwright install chromium
+G1	npx -p playwright --registry=https://r puppeteer browsers install chrome
+G1	npx -p playwright --registry=https://r @playwright/test install
+-	npx -p playwright --registry https://r playwright install
+-	npx -p playwright --registry https://r playwright install chromium
+-	npx -p playwright --registry https://r puppeteer browsers install chrome
+-	npx -p playwright --registry https://r @playwright/test install
+-	npx -p playwright --cwd web playwright install
+-	npx -p playwright --cwd web playwright install chromium
+-	npx -p playwright --cwd web puppeteer browsers install chrome
+-	npx -p playwright --cwd web @playwright/test install
+-	npx -p playwright -C web playwright install
+-	npx -p playwright -C web playwright install chromium
+-	npx -p playwright -C web puppeteer browsers install chrome
+-	npx -p playwright -C web @playwright/test install
+-	npx -p playwright --filter web playwright install
+-	npx -p playwright --filter web playwright install chromium
+-	npx -p playwright --filter web puppeteer browsers install chrome
+-	npx -p playwright --filter web @playwright/test install
+-	npx -p playwright -w playwright install
+-	npx -p playwright -w playwright install chromium
+-	npx -p playwright -w puppeteer browsers install chrome
+-	npx -p playwright -w @playwright/test install
+G1	npx -p playwright --offline playwright install
+G1	npx -p playwright --offline playwright install chromium
+G1	npx -p playwright --offline puppeteer browsers install chrome
+G1	npx -p playwright --offline @playwright/test install
+G1	npx -p playwright --json playwright install
+G1	npx -p playwright --json playwright install chromium
+G1	npx -p playwright --json puppeteer browsers install chrome
+G1	npx -p playwright --json @playwright/test install
+G1	npx -p playwright --color=always playwright install
+G1	npx -p playwright --color=always playwright install chromium
+G1	npx -p playwright --color=always puppeteer browsers install chrome
+G1	npx -p playwright --color=always @playwright/test install
+G1	npx -p playwright --no-color playwright install
+G1	npx -p playwright --no-color playwright install chromium
+G1	npx -p playwright --no-color puppeteer browsers install chrome
+G1	npx -p playwright --no-color @playwright/test install
+-	npx -p playwright --loglevel silent playwright install
+-	npx -p playwright --loglevel silent playwright install chromium
+-	npx -p playwright --loglevel silent puppeteer browsers install chrome
+-	npx -p playwright --loglevel silent @playwright/test install
+G1	npx -p playwright --quiet playwright install
+G1	npx -p playwright --quiet playwright install chromium
+G1	npx -p playwright --quiet puppeteer browsers install chrome
+G1	npx -p playwright --quiet @playwright/test install
+G1	npx -p playwright --package playwright playwright install
+G1	npx -p playwright --package playwright playwright install chromium
+G1	npx -p playwright --package playwright puppeteer browsers install chrome
+G1	npx -p playwright --package playwright @playwright/test install
+G1	npx -p playwright -p playwright playwright install
+G1	npx -p playwright -p playwright playwright install chromium
+G1	npx -p playwright -p playwright puppeteer browsers install chrome
+G1	npx -p playwright -p playwright @playwright/test install
+G1	npx -p playwright -n 5 playwright install
+G1	npx -p playwright -n 5 playwright install chromium
+G1	npx -p playwright -n 5 puppeteer browsers install chrome
+G1	npx -p playwright -n 5 @playwright/test install
+-	npx -p playwright -u root playwright install
+-	npx -p playwright -u root playwright install chromium
+-	npx -p playwright -u root puppeteer browsers install chrome
+-	npx -p playwright -u root @playwright/test install
+G1	npx -p playwright -E playwright install
+G1	npx -p playwright -E playwright install chromium
+G1	npx -p playwright -E puppeteer browsers install chrome
+G1	npx -p playwright -E @playwright/test install
+G1	npx -p playwright -i playwright install
+G1	npx -p playwright -i playwright install chromium
+G1	npx -p playwright -i puppeteer browsers install chrome
+G1	npx -p playwright -i @playwright/test install
+-	npx -p playwright -k 5 playwright install
+-	npx -p playwright -k 5 playwright install chromium
+-	npx -p playwright -k 5 puppeteer browsers install chrome
+-	npx -p playwright -k 5 @playwright/test install
+G1	npx -p playwright --preserve-status playwright install
+G1	npx -p playwright --preserve-status playwright install chromium
+G1	npx -p playwright --preserve-status puppeteer browsers install chrome
+G1	npx -p playwright --preserve-status @playwright/test install
+G1	npx -p playwright -- playwright install
+G1	npx -p playwright -- playwright install chromium
+G1	npx -p playwright -- puppeteer browsers install chrome
+G1	npx -p playwright -- @playwright/test install
+G1	npx -p playwright -v playwright install
+G1	npx -p playwright -v playwright install chromium
+G1	npx -p playwright -v puppeteer browsers install chrome
+G1	npx -p playwright -v @playwright/test install
+-	bun playwright install
+-	bun playwright install chromium
+-	bun puppeteer browsers install chrome
+-	bun @playwright/test install
+-	bun --silent playwright install
+-	bun --silent playwright install chromium
+-	bun --silent puppeteer browsers install chrome
+-	bun --silent @playwright/test install
+-	bun --frozen-lockfile playwright install
+-	bun --frozen-lockfile playwright install chromium
+-	bun --frozen-lockfile puppeteer browsers install chrome
+-	bun --frozen-lockfile @playwright/test install
+-	bun --verbose playwright install
+-	bun --verbose playwright install chromium
+-	bun --verbose puppeteer browsers install chrome
+-	bun --verbose @playwright/test install
+-	bun -s playwright install
+-	bun -s playwright install chromium
+-	bun -s puppeteer browsers install chrome
+-	bun -s @playwright/test install
+-	bun -q playwright install
+-	bun -q playwright install chromium
+-	bun -q puppeteer browsers install chrome
+-	bun -q @playwright/test install
+-	bun --yes playwright install
+-	bun --yes playwright install chromium
+-	bun --yes puppeteer browsers install chrome
+-	bun --yes @playwright/test install
+-	bun -y playwright install
+-	bun -y playwright install chromium
+-	bun -y puppeteer browsers install chrome
+-	bun -y @playwright/test install
+-	bun --prefer-offline playwright install
+-	bun --prefer-offline playwright install chromium
+-	bun --prefer-offline puppeteer browsers install chrome
+-	bun --prefer-offline @playwright/test install
+-	bun --no-install playwright install
+-	bun --no-install playwright install chromium
+-	bun --no-install puppeteer browsers install chrome
+-	bun --no-install @playwright/test install
+-	bun --ignore-scripts playwright install
+-	bun --ignore-scripts playwright install chromium
+-	bun --ignore-scripts puppeteer browsers install chrome
+-	bun --ignore-scripts @playwright/test install
+-	bun --foo playwright install
+-	bun --foo playwright install chromium
+-	bun --foo puppeteer browsers install chrome
+-	bun --foo @playwright/test install
+G1	bun --foo x playwright install
+G1	bun --foo x playwright install chromium
+G1	bun --foo x puppeteer browsers install chrome
+G1	bun --foo x @playwright/test install
+-	bun -x playwright install
+-	bun -x playwright install chromium
+-	bun -x puppeteer browsers install chrome
+-	bun -x @playwright/test install
+-	bun --registry=https://r playwright install
+-	bun --registry=https://r playwright install chromium
+-	bun --registry=https://r puppeteer browsers install chrome
+-	bun --registry=https://r @playwright/test install
+-	bun --registry https://r playwright install
+-	bun --registry https://r playwright install chromium
+-	bun --registry https://r puppeteer browsers install chrome
+-	bun --registry https://r @playwright/test install
+-	bun --cwd web playwright install
+-	bun --cwd web playwright install chromium
+-	bun --cwd web puppeteer browsers install chrome
+-	bun --cwd web @playwright/test install
+-	bun -C web playwright install
+-	bun -C web playwright install chromium
+-	bun -C web puppeteer browsers install chrome
+-	bun -C web @playwright/test install
+-	bun --filter web playwright install
+-	bun --filter web playwright install chromium
+-	bun --filter web puppeteer browsers install chrome
+-	bun --filter web @playwright/test install
+-	bun -w playwright install
+-	bun -w playwright install chromium
+-	bun -w puppeteer browsers install chrome
+-	bun -w @playwright/test install
+-	bun --offline playwright install
+-	bun --offline playwright install chromium
+-	bun --offline puppeteer browsers install chrome
+-	bun --offline @playwright/test install
+-	bun --json playwright install
+-	bun --json playwright install chromium
+-	bun --json puppeteer browsers install chrome
+-	bun --json @playwright/test install
+-	bun --color=always playwright install
+-	bun --color=always playwright install chromium
+-	bun --color=always puppeteer browsers install chrome
+-	bun --color=always @playwright/test install
+-	bun --no-color playwright install
+-	bun --no-color playwright install chromium
+-	bun --no-color puppeteer browsers install chrome
+-	bun --no-color @playwright/test install
+-	bun --loglevel silent playwright install
+-	bun --loglevel silent playwright install chromium
+-	bun --loglevel silent puppeteer browsers install chrome
+-	bun --loglevel silent @playwright/test install
+-	bun --quiet playwright install
+-	bun --quiet playwright install chromium
+-	bun --quiet puppeteer browsers install chrome
+-	bun --quiet @playwright/test install
+-	bun --package playwright playwright install
+-	bun --package playwright playwright install chromium
+-	bun --package playwright puppeteer browsers install chrome
+-	bun --package playwright @playwright/test install
+-	bun -p playwright playwright install
+-	bun -p playwright playwright install chromium
+-	bun -p playwright puppeteer browsers install chrome
+-	bun -p playwright @playwright/test install
+-	bun -n 5 playwright install
+-	bun -n 5 playwright install chromium
+-	bun -n 5 puppeteer browsers install chrome
+-	bun -n 5 @playwright/test install
+-	bun -u root playwright install
+-	bun -u root playwright install chromium
+-	bun -u root puppeteer browsers install chrome
+-	bun -u root @playwright/test install
+-	bun -E playwright install
+-	bun -E playwright install chromium
+-	bun -E puppeteer browsers install chrome
+-	bun -E @playwright/test install
+-	bun -i playwright install
+-	bun -i playwright install chromium
+-	bun -i puppeteer browsers install chrome
+-	bun -i @playwright/test install
+-	bun -k 5 playwright install
+-	bun -k 5 playwright install chromium
+-	bun -k 5 puppeteer browsers install chrome
+-	bun -k 5 @playwright/test install
+-	bun --preserve-status playwright install
+-	bun --preserve-status playwright install chromium
+-	bun --preserve-status puppeteer browsers install chrome
+-	bun --preserve-status @playwright/test install
+-	bun -- playwright install
+-	bun -- playwright install chromium
+-	bun -- puppeteer browsers install chrome
+-	bun -- @playwright/test install
+-	bun -v playwright install
+-	bun -v playwright install chromium
+-	bun -v puppeteer browsers install chrome
+-	bun -v @playwright/test install
+-	deno run -A npm:playwright install
+-	deno run -A npm:playwright install chromium
+-	deno run -A npm:puppeteer browsers install chrome
+-	deno run -A npm:@playwright/test install
+-	deno run -A --silent npm:playwright install
+-	deno run -A --silent npm:playwright install chromium
+-	deno run -A --silent npm:puppeteer browsers install chrome
+-	deno run -A --silent npm:@playwright/test install
+-	deno run -A --frozen-lockfile npm:playwright install
+-	deno run -A --frozen-lockfile npm:playwright install chromium
+-	deno run -A --frozen-lockfile npm:puppeteer browsers install chrome
+-	deno run -A --frozen-lockfile npm:@playwright/test install
+-	deno run -A --verbose npm:playwright install
+-	deno run -A --verbose npm:playwright install chromium
+-	deno run -A --verbose npm:puppeteer browsers install chrome
+-	deno run -A --verbose npm:@playwright/test install
+-	deno run -A -s npm:playwright install
+-	deno run -A -s npm:playwright install chromium
+-	deno run -A -s npm:puppeteer browsers install chrome
+-	deno run -A -s npm:@playwright/test install
+-	deno run -A -q npm:playwright install
+-	deno run -A -q npm:playwright install chromium
+-	deno run -A -q npm:puppeteer browsers install chrome
+-	deno run -A -q npm:@playwright/test install
+-	deno run -A --yes npm:playwright install
+-	deno run -A --yes npm:playwright install chromium
+-	deno run -A --yes npm:puppeteer browsers install chrome
+-	deno run -A --yes npm:@playwright/test install
+-	deno run -A -y npm:playwright install
+-	deno run -A -y npm:playwright install chromium
+-	deno run -A -y npm:puppeteer browsers install chrome
+-	deno run -A -y npm:@playwright/test install
+-	deno run -A --prefer-offline npm:playwright install
+-	deno run -A --prefer-offline npm:playwright install chromium
+-	deno run -A --prefer-offline npm:puppeteer browsers install chrome
+-	deno run -A --prefer-offline npm:@playwright/test install
+-	deno run -A --no-install npm:playwright install
+-	deno run -A --no-install npm:playwright install chromium
+-	deno run -A --no-install npm:puppeteer browsers install chrome
+-	deno run -A --no-install npm:@playwright/test install
+-	deno run -A --ignore-scripts npm:playwright install
+-	deno run -A --ignore-scripts npm:playwright install chromium
+-	deno run -A --ignore-scripts npm:puppeteer browsers install chrome
+-	deno run -A --ignore-scripts npm:@playwright/test install
+-	deno run -A --foo npm:playwright install
+-	deno run -A --foo npm:playwright install chromium
+-	deno run -A --foo npm:puppeteer browsers install chrome
+-	deno run -A --foo npm:@playwright/test install
+-	deno run -A --foo x npm:playwright install
+-	deno run -A --foo x npm:playwright install chromium
+-	deno run -A --foo x npm:puppeteer browsers install chrome
+-	deno run -A --foo x npm:@playwright/test install
+-	deno run -A -x npm:playwright install
+-	deno run -A -x npm:playwright install chromium
+-	deno run -A -x npm:puppeteer browsers install chrome
+-	deno run -A -x npm:@playwright/test install
+-	deno run -A --registry=https://r npm:playwright install
+-	deno run -A --registry=https://r npm:playwright install chromium
+-	deno run -A --registry=https://r npm:puppeteer browsers install chrome
+-	deno run -A --registry=https://r npm:@playwright/test install
+-	deno run -A --registry https://r npm:playwright install
+-	deno run -A --registry https://r npm:playwright install chromium
+-	deno run -A --registry https://r npm:puppeteer browsers install chrome
+-	deno run -A --registry https://r npm:@playwright/test install
+-	deno run -A --cwd web npm:playwright install
+-	deno run -A --cwd web npm:playwright install chromium
+-	deno run -A --cwd web npm:puppeteer browsers install chrome
+-	deno run -A --cwd web npm:@playwright/test install
+-	deno run -A -C web npm:playwright install
+-	deno run -A -C web npm:playwright install chromium
+-	deno run -A -C web npm:puppeteer browsers install chrome
+-	deno run -A -C web npm:@playwright/test install
+-	deno run -A --filter web npm:playwright install
+-	deno run -A --filter web npm:playwright install chromium
+-	deno run -A --filter web npm:puppeteer browsers install chrome
+-	deno run -A --filter web npm:@playwright/test install
+-	deno run -A -w npm:playwright install
+-	deno run -A -w npm:playwright install chromium
+-	deno run -A -w npm:puppeteer browsers install chrome
+-	deno run -A -w npm:@playwright/test install
+-	deno run -A --offline npm:playwright install
+-	deno run -A --offline npm:playwright install chromium
+-	deno run -A --offline npm:puppeteer browsers install chrome
+-	deno run -A --offline npm:@playwright/test install
+-	deno run -A --json npm:playwright install
+-	deno run -A --json npm:playwright install chromium
+-	deno run -A --json npm:puppeteer browsers install chrome
+-	deno run -A --json npm:@playwright/test install
+-	deno run -A --color=always npm:playwright install
+-	deno run -A --color=always npm:playwright install chromium
+-	deno run -A --color=always npm:puppeteer browsers install chrome
+-	deno run -A --color=always npm:@playwright/test install
+-	deno run -A --no-color npm:playwright install
+-	deno run -A --no-color npm:playwright install chromium
+-	deno run -A --no-color npm:puppeteer browsers install chrome
+-	deno run -A --no-color npm:@playwright/test install
+-	deno run -A --loglevel silent npm:playwright install
+-	deno run -A --loglevel silent npm:playwright install chromium
+-	deno run -A --loglevel silent npm:puppeteer browsers install chrome
+-	deno run -A --loglevel silent npm:@playwright/test install
+-	deno run -A --quiet npm:playwright install
+-	deno run -A --quiet npm:playwright install chromium
+-	deno run -A --quiet npm:puppeteer browsers install chrome
+-	deno run -A --quiet npm:@playwright/test install
+-	deno run -A --package playwright npm:playwright install
+-	deno run -A --package playwright npm:playwright install chromium
+-	deno run -A --package playwright npm:puppeteer browsers install chrome
+-	deno run -A --package playwright npm:@playwright/test install
+-	deno run -A -p playwright npm:playwright install
+-	deno run -A -p playwright npm:playwright install chromium
+-	deno run -A -p playwright npm:puppeteer browsers install chrome
+-	deno run -A -p playwright npm:@playwright/test install
+-	deno run -A -n 5 npm:playwright install
+-	deno run -A -n 5 npm:playwright install chromium
+-	deno run -A -n 5 npm:puppeteer browsers install chrome
+-	deno run -A -n 5 npm:@playwright/test install
+-	deno run -A -u root npm:playwright install
+-	deno run -A -u root npm:playwright install chromium
+-	deno run -A -u root npm:puppeteer browsers install chrome
+-	deno run -A -u root npm:@playwright/test install
+-	deno run -A -E npm:playwright install
+-	deno run -A -E npm:playwright install chromium
+-	deno run -A -E npm:puppeteer browsers install chrome
+-	deno run -A -E npm:@playwright/test install
+-	deno run -A -i npm:playwright install
+-	deno run -A -i npm:playwright install chromium
+-	deno run -A -i npm:puppeteer browsers install chrome
+-	deno run -A -i npm:@playwright/test install
+-	deno run -A -k 5 npm:playwright install
+-	deno run -A -k 5 npm:playwright install chromium
+-	deno run -A -k 5 npm:puppeteer browsers install chrome
+-	deno run -A -k 5 npm:@playwright/test install
+-	deno run -A --preserve-status npm:playwright install
+-	deno run -A --preserve-status npm:playwright install chromium
+-	deno run -A --preserve-status npm:puppeteer browsers install chrome
+-	deno run -A --preserve-status npm:@playwright/test install
+-	deno run -A -- npm:playwright install
+-	deno run -A -- npm:playwright install chromium
+-	deno run -A -- npm:puppeteer browsers install chrome
+-	deno run -A -- npm:@playwright/test install
+-	deno run -A -v npm:playwright install
+-	deno run -A -v npm:playwright install chromium
+-	deno run -A -v npm:puppeteer browsers install chrome
+-	deno run -A -v npm:@playwright/test install

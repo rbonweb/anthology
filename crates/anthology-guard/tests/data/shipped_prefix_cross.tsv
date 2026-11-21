@@ -1,0 +1,1595 @@
+G1	npm i -g puppeteer
+-	npm install --save-dev playwright
+-	pnpm add -D @playwright/test
+G1	yarn add puppeteer
+-	yarn global add playwright
+G1	bun add puppeteer
+G1	brew install chromium
+G1	brew install --cask google-chrome
+G1	apt-get -y install chromium
+G1	apt install chromium-browser
+G1	pip install playwright
+-	pip3 install pyppeteer
+G1	python3 -m playwright install
+G1	playwright install
+G1	npx playwright install
+G2	open -a "Google Chrome"
+G2	open -a Chromium https://x
+G2	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	google-chrome --headless
+G4	agent-browser open x
+G3	cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	ls "$HOME/Library/Application Support/Google/Chrome"
+G3	cp -r ~/.config/google-chrome /tmp/x
+G1	uv pip install playwright
+G1	uvx playwright install
+-	deno run -A npm:playwright install
+G1	npm init playwright@latest
+G1	pnpm create playwright
+G1	yarn create playwright
+G1	sudo npm i -g puppeteer
+-	sudo npm install --save-dev playwright
+-	sudo pnpm add -D @playwright/test
+G1	sudo yarn add puppeteer
+-	sudo yarn global add playwright
+G1	sudo bun add puppeteer
+G1	sudo brew install chromium
+G1	sudo brew install --cask google-chrome
+G1	sudo apt-get -y install chromium
+G1	sudo apt install chromium-browser
+G1	sudo pip install playwright
+-	sudo pip3 install pyppeteer
+G1	sudo python3 -m playwright install
+G1	sudo playwright install
+G1	sudo npx playwright install
+G2	sudo open -a "Google Chrome"
+G2	sudo open -a Chromium https://x
+G2	sudo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	sudo google-chrome --headless
+G4	sudo agent-browser open x
+G3	sudo cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	sudo ls "$HOME/Library/Application Support/Google/Chrome"
+G3	sudo cp -r ~/.config/google-chrome /tmp/x
+G1	sudo uv pip install playwright
+G1	sudo uvx playwright install
+-	sudo deno run -A npm:playwright install
+G1	sudo npm init playwright@latest
+G1	sudo pnpm create playwright
+G1	sudo yarn create playwright
+G1	sudo -E npm i -g puppeteer
+-	sudo -E npm install --save-dev playwright
+-	sudo -E pnpm add -D @playwright/test
+G1	sudo -E yarn add puppeteer
+-	sudo -E yarn global add playwright
+G1	sudo -E bun add puppeteer
+G1	sudo -E brew install chromium
+G1	sudo -E brew install --cask google-chrome
+G1	sudo -E apt-get -y install chromium
+G1	sudo -E apt install chromium-browser
+G1	sudo -E pip install playwright
+-	sudo -E pip3 install pyppeteer
+G1	sudo -E python3 -m playwright install
+G1	sudo -E playwright install
+G1	sudo -E npx playwright install
+G2	sudo -E open -a "Google Chrome"
+G2	sudo -E open -a Chromium https://x
+G2	sudo -E "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	sudo -E google-chrome --headless
+G4	sudo -E agent-browser open x
+G3	sudo -E cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	sudo -E ls "$HOME/Library/Application Support/Google/Chrome"
+G3	sudo -E cp -r ~/.config/google-chrome /tmp/x
+G1	sudo -E uv pip install playwright
+G1	sudo -E uvx playwright install
+-	sudo -E deno run -A npm:playwright install
+G1	sudo -E npm init playwright@latest
+G1	sudo -E pnpm create playwright
+G1	sudo -E yarn create playwright
+G1	env npm i -g puppeteer
+-	env npm install --save-dev playwright
+-	env pnpm add -D @playwright/test
+G1	env yarn add puppeteer
+-	env yarn global add playwright
+G1	env bun add puppeteer
+G1	env brew install chromium
+G1	env brew install --cask google-chrome
+G1	env apt-get -y install chromium
+G1	env apt install chromium-browser
+G1	env pip install playwright
+-	env pip3 install pyppeteer
+G1	env python3 -m playwright install
+G1	env playwright install
+G1	env npx playwright install
+G2	env open -a "Google Chrome"
+G2	env open -a Chromium https://x
+G2	env "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	env google-chrome --headless
+G4	env agent-browser open x
+G3	env cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	env ls "$HOME/Library/Application Support/Google/Chrome"
+G3	env cp -r ~/.config/google-chrome /tmp/x
+G1	env uv pip install playwright
+G1	env uvx playwright install
+-	env deno run -A npm:playwright install
+G1	env npm init playwright@latest
+G1	env pnpm create playwright
+G1	env yarn create playwright
+G1	env A=1 npm i -g puppeteer
+-	env A=1 npm install --save-dev playwright
+-	env A=1 pnpm add -D @playwright/test
+G1	env A=1 yarn add puppeteer
+-	env A=1 yarn global add playwright
+G1	env A=1 bun add puppeteer
+G1	env A=1 brew install chromium
+G1	env A=1 brew install --cask google-chrome
+G1	env A=1 apt-get -y install chromium
+G1	env A=1 apt install chromium-browser
+G1	env A=1 pip install playwright
+-	env A=1 pip3 install pyppeteer
+G1	env A=1 python3 -m playwright install
+G1	env A=1 playwright install
+G1	env A=1 npx playwright install
+G2	env A=1 open -a "Google Chrome"
+G2	env A=1 open -a Chromium https://x
+G2	env A=1 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	env A=1 google-chrome --headless
+G4	env A=1 agent-browser open x
+G3	env A=1 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	env A=1 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	env A=1 cp -r ~/.config/google-chrome /tmp/x
+G1	env A=1 uv pip install playwright
+G1	env A=1 uvx playwright install
+-	env A=1 deno run -A npm:playwright install
+G1	env A=1 npm init playwright@latest
+G1	env A=1 pnpm create playwright
+G1	env A=1 yarn create playwright
+G1	A=1 npm i -g puppeteer
+-	A=1 npm install --save-dev playwright
+-	A=1 pnpm add -D @playwright/test
+G1	A=1 yarn add puppeteer
+-	A=1 yarn global add playwright
+G1	A=1 bun add puppeteer
+G1	A=1 brew install chromium
+G1	A=1 brew install --cask google-chrome
+G1	A=1 apt-get -y install chromium
+G1	A=1 apt install chromium-browser
+G1	A=1 pip install playwright
+-	A=1 pip3 install pyppeteer
+G1	A=1 python3 -m playwright install
+G1	A=1 playwright install
+G1	A=1 npx playwright install
+G2	A=1 open -a "Google Chrome"
+G2	A=1 open -a Chromium https://x
+G2	A=1 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	A=1 google-chrome --headless
+G4	A=1 agent-browser open x
+G3	A=1 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	A=1 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	A=1 cp -r ~/.config/google-chrome /tmp/x
+G1	A=1 uv pip install playwright
+G1	A=1 uvx playwright install
+-	A=1 deno run -A npm:playwright install
+G1	A=1 npm init playwright@latest
+G1	A=1 pnpm create playwright
+G1	A=1 yarn create playwright
+G1	nice -n 5 npm i -g puppeteer
+-	nice -n 5 npm install --save-dev playwright
+-	nice -n 5 pnpm add -D @playwright/test
+G1	nice -n 5 yarn add puppeteer
+-	nice -n 5 yarn global add playwright
+G1	nice -n 5 bun add puppeteer
+G1	nice -n 5 brew install chromium
+G1	nice -n 5 brew install --cask google-chrome
+G1	nice -n 5 apt-get -y install chromium
+G1	nice -n 5 apt install chromium-browser
+G1	nice -n 5 pip install playwright
+-	nice -n 5 pip3 install pyppeteer
+G1	nice -n 5 python3 -m playwright install
+G1	nice -n 5 playwright install
+G1	nice -n 5 npx playwright install
+G2	nice -n 5 open -a "Google Chrome"
+G2	nice -n 5 open -a Chromium https://x
+G2	nice -n 5 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	nice -n 5 google-chrome --headless
+G4	nice -n 5 agent-browser open x
+G3	nice -n 5 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	nice -n 5 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	nice -n 5 cp -r ~/.config/google-chrome /tmp/x
+G1	nice -n 5 uv pip install playwright
+G1	nice -n 5 uvx playwright install
+-	nice -n 5 deno run -A npm:playwright install
+G1	nice -n 5 npm init playwright@latest
+G1	nice -n 5 pnpm create playwright
+G1	nice -n 5 yarn create playwright
+G1	time npm i -g puppeteer
+-	time npm install --save-dev playwright
+-	time pnpm add -D @playwright/test
+G1	time yarn add puppeteer
+-	time yarn global add playwright
+G1	time bun add puppeteer
+G1	time brew install chromium
+G1	time brew install --cask google-chrome
+G1	time apt-get -y install chromium
+G1	time apt install chromium-browser
+G1	time pip install playwright
+-	time pip3 install pyppeteer
+G1	time python3 -m playwright install
+G1	time playwright install
+G1	time npx playwright install
+G2	time open -a "Google Chrome"
+G2	time open -a Chromium https://x
+G2	time "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	time google-chrome --headless
+G4	time agent-browser open x
+G3	time cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	time ls "$HOME/Library/Application Support/Google/Chrome"
+G3	time cp -r ~/.config/google-chrome /tmp/x
+G1	time uv pip install playwright
+G1	time uvx playwright install
+-	time deno run -A npm:playwright install
+G1	time npm init playwright@latest
+G1	time pnpm create playwright
+G1	time yarn create playwright
+G1	command npm i -g puppeteer
+-	command npm install --save-dev playwright
+-	command pnpm add -D @playwright/test
+G1	command yarn add puppeteer
+-	command yarn global add playwright
+G1	command bun add puppeteer
+G1	command brew install chromium
+G1	command brew install --cask google-chrome
+G1	command apt-get -y install chromium
+G1	command apt install chromium-browser
+G1	command pip install playwright
+-	command pip3 install pyppeteer
+G1	command python3 -m playwright install
+G1	command playwright install
+G1	command npx playwright install
+G2	command open -a "Google Chrome"
+G2	command open -a Chromium https://x
+G2	command "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	command google-chrome --headless
+G4	command agent-browser open x
+G3	command cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	command ls "$HOME/Library/Application Support/Google/Chrome"
+G3	command cp -r ~/.config/google-chrome /tmp/x
+G1	command uv pip install playwright
+G1	command uvx playwright install
+-	command deno run -A npm:playwright install
+G1	command npm init playwright@latest
+G1	command pnpm create playwright
+G1	command yarn create playwright
+G1	exec npm i -g puppeteer
+-	exec npm install --save-dev playwright
+-	exec pnpm add -D @playwright/test
+G1	exec yarn add puppeteer
+-	exec yarn global add playwright
+G1	exec bun add puppeteer
+G1	exec brew install chromium
+G1	exec brew install --cask google-chrome
+G1	exec apt-get -y install chromium
+G1	exec apt install chromium-browser
+G1	exec pip install playwright
+-	exec pip3 install pyppeteer
+G1	exec python3 -m playwright install
+G1	exec playwright install
+G1	exec npx playwright install
+G2	exec open -a "Google Chrome"
+G2	exec open -a Chromium https://x
+G2	exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	exec google-chrome --headless
+G4	exec agent-browser open x
+G3	exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	exec cp -r ~/.config/google-chrome /tmp/x
+G1	exec uv pip install playwright
+G1	exec uvx playwright install
+-	exec deno run -A npm:playwright install
+G1	exec npm init playwright@latest
+G1	exec pnpm create playwright
+G1	exec yarn create playwright
+G1	nohup npm i -g puppeteer
+-	nohup npm install --save-dev playwright
+-	nohup pnpm add -D @playwright/test
+G1	nohup yarn add puppeteer
+-	nohup yarn global add playwright
+G1	nohup bun add puppeteer
+G1	nohup brew install chromium
+G1	nohup brew install --cask google-chrome
+G1	nohup apt-get -y install chromium
+G1	nohup apt install chromium-browser
+G1	nohup pip install playwright
+-	nohup pip3 install pyppeteer
+G1	nohup python3 -m playwright install
+G1	nohup playwright install
+G1	nohup npx playwright install
+G2	nohup open -a "Google Chrome"
+G2	nohup open -a Chromium https://x
+G2	nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	nohup google-chrome --headless
+G4	nohup agent-browser open x
+G3	nohup cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	nohup ls "$HOME/Library/Application Support/Google/Chrome"
+G3	nohup cp -r ~/.config/google-chrome /tmp/x
+G1	nohup uv pip install playwright
+G1	nohup uvx playwright install
+-	nohup deno run -A npm:playwright install
+G1	nohup npm init playwright@latest
+G1	nohup pnpm create playwright
+G1	nohup yarn create playwright
+G1	timeout 5 npm i -g puppeteer
+-	timeout 5 npm install --save-dev playwright
+-	timeout 5 pnpm add -D @playwright/test
+G1	timeout 5 yarn add puppeteer
+-	timeout 5 yarn global add playwright
+G1	timeout 5 bun add puppeteer
+G1	timeout 5 brew install chromium
+G1	timeout 5 brew install --cask google-chrome
+G1	timeout 5 apt-get -y install chromium
+G1	timeout 5 apt install chromium-browser
+G1	timeout 5 pip install playwright
+-	timeout 5 pip3 install pyppeteer
+G1	timeout 5 python3 -m playwright install
+G1	timeout 5 playwright install
+G1	timeout 5 npx playwright install
+G2	timeout 5 open -a "Google Chrome"
+G2	timeout 5 open -a Chromium https://x
+G2	timeout 5 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	timeout 5 google-chrome --headless
+G4	timeout 5 agent-browser open x
+G3	timeout 5 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	timeout 5 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	timeout 5 cp -r ~/.config/google-chrome /tmp/x
+G1	timeout 5 uv pip install playwright
+G1	timeout 5 uvx playwright install
+-	timeout 5 deno run -A npm:playwright install
+G1	timeout 5 npm init playwright@latest
+G1	timeout 5 pnpm create playwright
+G1	timeout 5 yarn create playwright
+G1	xargs npm i -g puppeteer
+-	xargs npm install --save-dev playwright
+-	xargs pnpm add -D @playwright/test
+G1	xargs yarn add puppeteer
+-	xargs yarn global add playwright
+G1	xargs bun add puppeteer
+G1	xargs brew install chromium
+G1	xargs brew install --cask google-chrome
+G1	xargs apt-get -y install chromium
+G1	xargs apt install chromium-browser
+G1	xargs pip install playwright
+-	xargs pip3 install pyppeteer
+G1	xargs python3 -m playwright install
+G1	xargs playwright install
+G1	xargs npx playwright install
+G2	xargs open -a "Google Chrome"
+G2	xargs open -a Chromium https://x
+G2	xargs "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	xargs google-chrome --headless
+G4	xargs agent-browser open x
+G3	xargs cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	xargs ls "$HOME/Library/Application Support/Google/Chrome"
+G3	xargs cp -r ~/.config/google-chrome /tmp/x
+G1	xargs uv pip install playwright
+G1	xargs uvx playwright install
+-	xargs deno run -A npm:playwright install
+G1	xargs npm init playwright@latest
+G1	xargs pnpm create playwright
+G1	xargs yarn create playwright
+G1	npx npm i -g puppeteer
+-	npx npm install --save-dev playwright
+-	npx pnpm add -D @playwright/test
+G1	npx yarn add puppeteer
+-	npx yarn global add playwright
+G1	npx bun add puppeteer
+G1	npx brew install chromium
+G1	npx brew install --cask google-chrome
+G1	npx apt-get -y install chromium
+G1	npx apt install chromium-browser
+G1	npx pip install playwright
+-	npx pip3 install pyppeteer
+G1	npx python3 -m playwright install
+G1	npx playwright install
+G1	npx npx playwright install
+G2	npx open -a "Google Chrome"
+G2	npx open -a Chromium https://x
+G2	npx "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	npx google-chrome --headless
+G4	npx agent-browser open x
+G3	npx cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	npx ls "$HOME/Library/Application Support/Google/Chrome"
+G3	npx cp -r ~/.config/google-chrome /tmp/x
+G1	npx uv pip install playwright
+G1	npx uvx playwright install
+-	npx deno run -A npm:playwright install
+G1	npx npm init playwright@latest
+G1	npx pnpm create playwright
+G1	npx yarn create playwright
+G1	pnpm npm i -g puppeteer
+-	pnpm npm install --save-dev playwright
+-	pnpm pnpm add -D @playwright/test
+G1	pnpm yarn add puppeteer
+-	pnpm yarn global add playwright
+G1	pnpm bun add puppeteer
+G1	pnpm brew install chromium
+G1	pnpm brew install --cask google-chrome
+G1	pnpm apt-get -y install chromium
+G1	pnpm apt install chromium-browser
+G1	pnpm pip install playwright
+-	pnpm pip3 install pyppeteer
+G1	pnpm python3 -m playwright install
+G1	pnpm playwright install
+G1	pnpm npx playwright install
+G2	pnpm open -a "Google Chrome"
+G2	pnpm open -a Chromium https://x
+G2	pnpm "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	pnpm google-chrome --headless
+G4	pnpm agent-browser open x
+G3	pnpm cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	pnpm ls "$HOME/Library/Application Support/Google/Chrome"
+G3	pnpm cp -r ~/.config/google-chrome /tmp/x
+G1	pnpm uv pip install playwright
+G1	pnpm uvx playwright install
+-	pnpm deno run -A npm:playwright install
+G1	pnpm npm init playwright@latest
+G1	pnpm pnpm create playwright
+G1	pnpm yarn create playwright
+G1	yarn npm i -g puppeteer
+-	yarn npm install --save-dev playwright
+-	yarn pnpm add -D @playwright/test
+G1	yarn yarn add puppeteer
+-	yarn yarn global add playwright
+G1	yarn bun add puppeteer
+G1	yarn brew install chromium
+G1	yarn brew install --cask google-chrome
+G1	yarn apt-get -y install chromium
+G1	yarn apt install chromium-browser
+G1	yarn pip install playwright
+-	yarn pip3 install pyppeteer
+G1	yarn python3 -m playwright install
+G1	yarn playwright install
+G1	yarn npx playwright install
+G2	yarn open -a "Google Chrome"
+G2	yarn open -a Chromium https://x
+G2	yarn "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	yarn google-chrome --headless
+G4	yarn agent-browser open x
+G3	yarn cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	yarn ls "$HOME/Library/Application Support/Google/Chrome"
+G3	yarn cp -r ~/.config/google-chrome /tmp/x
+G1	yarn uv pip install playwright
+G1	yarn uvx playwright install
+-	yarn deno run -A npm:playwright install
+G1	yarn npm init playwright@latest
+G1	yarn pnpm create playwright
+G1	yarn yarn create playwright
+G1	bunx npm i -g puppeteer
+-	bunx npm install --save-dev playwright
+-	bunx pnpm add -D @playwright/test
+G1	bunx yarn add puppeteer
+-	bunx yarn global add playwright
+G1	bunx bun add puppeteer
+G1	bunx brew install chromium
+G1	bunx brew install --cask google-chrome
+G1	bunx apt-get -y install chromium
+G1	bunx apt install chromium-browser
+G1	bunx pip install playwright
+-	bunx pip3 install pyppeteer
+G1	bunx python3 -m playwright install
+G1	bunx playwright install
+G1	bunx npx playwright install
+G2	bunx open -a "Google Chrome"
+G2	bunx open -a Chromium https://x
+G2	bunx "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	bunx google-chrome --headless
+G4	bunx agent-browser open x
+G3	bunx cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	bunx ls "$HOME/Library/Application Support/Google/Chrome"
+G3	bunx cp -r ~/.config/google-chrome /tmp/x
+G1	bunx uv pip install playwright
+G1	bunx uvx playwright install
+-	bunx deno run -A npm:playwright install
+G1	bunx npm init playwright@latest
+G1	bunx pnpm create playwright
+G1	bunx yarn create playwright
+G1	npm exec -- npm i -g puppeteer
+-	npm exec -- npm install --save-dev playwright
+-	npm exec -- pnpm add -D @playwright/test
+G1	npm exec -- yarn add puppeteer
+-	npm exec -- yarn global add playwright
+G1	npm exec -- bun add puppeteer
+G1	npm exec -- brew install chromium
+G1	npm exec -- brew install --cask google-chrome
+G1	npm exec -- apt-get -y install chromium
+G1	npm exec -- apt install chromium-browser
+G1	npm exec -- pip install playwright
+-	npm exec -- pip3 install pyppeteer
+G1	npm exec -- python3 -m playwright install
+G1	npm exec -- playwright install
+G1	npm exec -- npx playwright install
+G2	npm exec -- open -a "Google Chrome"
+G2	npm exec -- open -a Chromium https://x
+G2	npm exec -- "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	npm exec -- google-chrome --headless
+G4	npm exec -- agent-browser open x
+G3	npm exec -- cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	npm exec -- ls "$HOME/Library/Application Support/Google/Chrome"
+G3	npm exec -- cp -r ~/.config/google-chrome /tmp/x
+G1	npm exec -- uv pip install playwright
+G1	npm exec -- uvx playwright install
+-	npm exec -- deno run -A npm:playwright install
+G1	npm exec -- npm init playwright@latest
+G1	npm exec -- pnpm create playwright
+G1	npm exec -- yarn create playwright
+G1	pnpm exec npm i -g puppeteer
+-	pnpm exec npm install --save-dev playwright
+-	pnpm exec pnpm add -D @playwright/test
+G1	pnpm exec yarn add puppeteer
+-	pnpm exec yarn global add playwright
+G1	pnpm exec bun add puppeteer
+G1	pnpm exec brew install chromium
+G1	pnpm exec brew install --cask google-chrome
+G1	pnpm exec apt-get -y install chromium
+G1	pnpm exec apt install chromium-browser
+G1	pnpm exec pip install playwright
+-	pnpm exec pip3 install pyppeteer
+G1	pnpm exec python3 -m playwright install
+G1	pnpm exec playwright install
+G1	pnpm exec npx playwright install
+G2	pnpm exec open -a "Google Chrome"
+G2	pnpm exec open -a Chromium https://x
+G2	pnpm exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	pnpm exec google-chrome --headless
+G4	pnpm exec agent-browser open x
+G3	pnpm exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	pnpm exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	pnpm exec cp -r ~/.config/google-chrome /tmp/x
+G1	pnpm exec uv pip install playwright
+G1	pnpm exec uvx playwright install
+-	pnpm exec deno run -A npm:playwright install
+G1	pnpm exec npm init playwright@latest
+G1	pnpm exec pnpm create playwright
+G1	pnpm exec yarn create playwright
+G1	yarn exec npm i -g puppeteer
+-	yarn exec npm install --save-dev playwright
+-	yarn exec pnpm add -D @playwright/test
+G1	yarn exec yarn add puppeteer
+-	yarn exec yarn global add playwright
+G1	yarn exec bun add puppeteer
+G1	yarn exec brew install chromium
+G1	yarn exec brew install --cask google-chrome
+G1	yarn exec apt-get -y install chromium
+G1	yarn exec apt install chromium-browser
+G1	yarn exec pip install playwright
+-	yarn exec pip3 install pyppeteer
+G1	yarn exec python3 -m playwright install
+G1	yarn exec playwright install
+G1	yarn exec npx playwright install
+G2	yarn exec open -a "Google Chrome"
+G2	yarn exec open -a Chromium https://x
+G2	yarn exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	yarn exec google-chrome --headless
+G4	yarn exec agent-browser open x
+G3	yarn exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	yarn exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	yarn exec cp -r ~/.config/google-chrome /tmp/x
+G1	yarn exec uv pip install playwright
+G1	yarn exec uvx playwright install
+-	yarn exec deno run -A npm:playwright install
+G1	yarn exec npm init playwright@latest
+G1	yarn exec pnpm create playwright
+G1	yarn exec yarn create playwright
+G1	bash -c 'npm i -g puppeteer'
+-	bash -c 'npm install --save-dev playwright'
+-	bash -c 'pnpm add -D @playwright/test'
+G1	bash -c 'yarn add puppeteer'
+-	bash -c 'yarn global add playwright'
+G1	bash -c 'bun add puppeteer'
+G1	bash -c 'brew install chromium'
+G1	bash -c 'brew install --cask google-chrome'
+G1	bash -c 'apt-get -y install chromium'
+G1	bash -c 'apt install chromium-browser'
+G1	bash -c 'pip install playwright'
+-	bash -c 'pip3 install pyppeteer'
+G1	bash -c 'python3 -m playwright install'
+G1	bash -c 'playwright install'
+G1	bash -c 'npx playwright install'
+G2	bash -c 'open -a "Google Chrome"'
+G2	bash -c 'open -a Chromium https://x'
+G2	bash -c '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless'
+G2	bash -c 'google-chrome --headless'
+G4	bash -c 'agent-browser open x'
+G3	bash -c 'cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies'
+G3	bash -c 'ls "$HOME/Library/Application Support/Google/Chrome"'
+G3	bash -c 'cp -r ~/.config/google-chrome /tmp/x'
+G1	bash -c 'uv pip install playwright'
+G1	bash -c 'uvx playwright install'
+-	bash -c 'deno run -A npm:playwright install'
+G1	bash -c 'npm init playwright@latest'
+G1	bash -c 'pnpm create playwright'
+G1	bash -c 'yarn create playwright'
+G1	sh -c 'npm i -g puppeteer'
+-	sh -c 'npm install --save-dev playwright'
+-	sh -c 'pnpm add -D @playwright/test'
+G1	sh -c 'yarn add puppeteer'
+-	sh -c 'yarn global add playwright'
+G1	sh -c 'bun add puppeteer'
+G1	sh -c 'brew install chromium'
+G1	sh -c 'brew install --cask google-chrome'
+G1	sh -c 'apt-get -y install chromium'
+G1	sh -c 'apt install chromium-browser'
+G1	sh -c 'pip install playwright'
+-	sh -c 'pip3 install pyppeteer'
+G1	sh -c 'python3 -m playwright install'
+G1	sh -c 'playwright install'
+G1	sh -c 'npx playwright install'
+G2	sh -c 'open -a "Google Chrome"'
+G2	sh -c 'open -a Chromium https://x'
+G2	sh -c '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless'
+G2	sh -c 'google-chrome --headless'
+G4	sh -c 'agent-browser open x'
+G3	sh -c 'cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies'
+G3	sh -c 'ls "$HOME/Library/Application Support/Google/Chrome"'
+G3	sh -c 'cp -r ~/.config/google-chrome /tmp/x'
+G1	sh -c 'uv pip install playwright'
+G1	sh -c 'uvx playwright install'
+-	sh -c 'deno run -A npm:playwright install'
+G1	sh -c 'npm init playwright@latest'
+G1	sh -c 'pnpm create playwright'
+G1	sh -c 'yarn create playwright'
+G1	eval npm i -g puppeteer
+-	eval npm install --save-dev playwright
+-	eval pnpm add -D @playwright/test
+G1	eval yarn add puppeteer
+-	eval yarn global add playwright
+G1	eval bun add puppeteer
+G1	eval brew install chromium
+G1	eval brew install --cask google-chrome
+G1	eval apt-get -y install chromium
+G1	eval apt install chromium-browser
+G1	eval pip install playwright
+-	eval pip3 install pyppeteer
+G1	eval python3 -m playwright install
+G1	eval playwright install
+G1	eval npx playwright install
+-	eval open -a "Google Chrome"
+G2	eval open -a Chromium https://x
+-	eval "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	eval google-chrome --headless
+G4	eval agent-browser open x
+G3	eval cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	eval ls "$HOME/Library/Application Support/Google/Chrome"
+G3	eval cp -r ~/.config/google-chrome /tmp/x
+G1	eval uv pip install playwright
+G1	eval uvx playwright install
+-	eval deno run -A npm:playwright install
+G1	eval npm init playwright@latest
+G1	eval pnpm create playwright
+G1	eval yarn create playwright
+G1	watch npm i -g puppeteer
+-	watch npm install --save-dev playwright
+-	watch pnpm add -D @playwright/test
+G1	watch yarn add puppeteer
+-	watch yarn global add playwright
+G1	watch bun add puppeteer
+G1	watch brew install chromium
+G1	watch brew install --cask google-chrome
+G1	watch apt-get -y install chromium
+G1	watch apt install chromium-browser
+G1	watch pip install playwright
+-	watch pip3 install pyppeteer
+G1	watch python3 -m playwright install
+G1	watch playwright install
+G1	watch npx playwright install
+G2	watch open -a "Google Chrome"
+G2	watch open -a Chromium https://x
+G2	watch "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	watch google-chrome --headless
+G4	watch agent-browser open x
+G3	watch cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	watch ls "$HOME/Library/Application Support/Google/Chrome"
+G3	watch cp -r ~/.config/google-chrome /tmp/x
+G1	watch uv pip install playwright
+G1	watch uvx playwright install
+-	watch deno run -A npm:playwright install
+G1	watch npm init playwright@latest
+G1	watch pnpm create playwright
+G1	watch yarn create playwright
+G1	caffeinate npm i -g puppeteer
+-	caffeinate npm install --save-dev playwright
+-	caffeinate pnpm add -D @playwright/test
+G1	caffeinate yarn add puppeteer
+-	caffeinate yarn global add playwright
+G1	caffeinate bun add puppeteer
+G1	caffeinate brew install chromium
+G1	caffeinate brew install --cask google-chrome
+G1	caffeinate apt-get -y install chromium
+G1	caffeinate apt install chromium-browser
+G1	caffeinate pip install playwright
+-	caffeinate pip3 install pyppeteer
+G1	caffeinate python3 -m playwright install
+G1	caffeinate playwright install
+G1	caffeinate npx playwright install
+G2	caffeinate open -a "Google Chrome"
+G2	caffeinate open -a Chromium https://x
+G2	caffeinate "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	caffeinate google-chrome --headless
+G4	caffeinate agent-browser open x
+G3	caffeinate cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	caffeinate ls "$HOME/Library/Application Support/Google/Chrome"
+G3	caffeinate cp -r ~/.config/google-chrome /tmp/x
+G1	caffeinate uv pip install playwright
+G1	caffeinate uvx playwright install
+-	caffeinate deno run -A npm:playwright install
+G1	caffeinate npm init playwright@latest
+G1	caffeinate pnpm create playwright
+G1	caffeinate yarn create playwright
+G1	arch -arm64 npm i -g puppeteer
+-	arch -arm64 npm install --save-dev playwright
+-	arch -arm64 pnpm add -D @playwright/test
+G1	arch -arm64 yarn add puppeteer
+-	arch -arm64 yarn global add playwright
+G1	arch -arm64 bun add puppeteer
+G1	arch -arm64 brew install chromium
+G1	arch -arm64 brew install --cask google-chrome
+G1	arch -arm64 apt-get -y install chromium
+G1	arch -arm64 apt install chromium-browser
+G1	arch -arm64 pip install playwright
+-	arch -arm64 pip3 install pyppeteer
+G1	arch -arm64 python3 -m playwright install
+G1	arch -arm64 playwright install
+G1	arch -arm64 npx playwright install
+G2	arch -arm64 open -a "Google Chrome"
+G2	arch -arm64 open -a Chromium https://x
+G2	arch -arm64 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	arch -arm64 google-chrome --headless
+G4	arch -arm64 agent-browser open x
+G3	arch -arm64 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	arch -arm64 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	arch -arm64 cp -r ~/.config/google-chrome /tmp/x
+G1	arch -arm64 uv pip install playwright
+G1	arch -arm64 uvx playwright install
+-	arch -arm64 deno run -A npm:playwright install
+G1	arch -arm64 npm init playwright@latest
+G1	arch -arm64 pnpm create playwright
+G1	arch -arm64 yarn create playwright
+G1	stdbuf -oL npm i -g puppeteer
+-	stdbuf -oL npm install --save-dev playwright
+-	stdbuf -oL pnpm add -D @playwright/test
+G1	stdbuf -oL yarn add puppeteer
+-	stdbuf -oL yarn global add playwright
+G1	stdbuf -oL bun add puppeteer
+G1	stdbuf -oL brew install chromium
+G1	stdbuf -oL brew install --cask google-chrome
+G1	stdbuf -oL apt-get -y install chromium
+G1	stdbuf -oL apt install chromium-browser
+G1	stdbuf -oL pip install playwright
+-	stdbuf -oL pip3 install pyppeteer
+G1	stdbuf -oL python3 -m playwright install
+G1	stdbuf -oL playwright install
+G1	stdbuf -oL npx playwright install
+G2	stdbuf -oL open -a "Google Chrome"
+G2	stdbuf -oL open -a Chromium https://x
+G2	stdbuf -oL "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	stdbuf -oL google-chrome --headless
+G4	stdbuf -oL agent-browser open x
+G3	stdbuf -oL cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	stdbuf -oL ls "$HOME/Library/Application Support/Google/Chrome"
+G3	stdbuf -oL cp -r ~/.config/google-chrome /tmp/x
+G1	stdbuf -oL uv pip install playwright
+G1	stdbuf -oL uvx playwright install
+-	stdbuf -oL deno run -A npm:playwright install
+G1	stdbuf -oL npm init playwright@latest
+G1	stdbuf -oL pnpm create playwright
+G1	stdbuf -oL yarn create playwright
+-	chrt 1 npm i -g puppeteer
+-	chrt 1 npm install --save-dev playwright
+-	chrt 1 pnpm add -D @playwright/test
+-	chrt 1 yarn add puppeteer
+-	chrt 1 yarn global add playwright
+-	chrt 1 bun add puppeteer
+-	chrt 1 brew install chromium
+-	chrt 1 brew install --cask google-chrome
+-	chrt 1 apt-get -y install chromium
+-	chrt 1 apt install chromium-browser
+-	chrt 1 pip install playwright
+-	chrt 1 pip3 install pyppeteer
+-	chrt 1 python3 -m playwright install
+-	chrt 1 playwright install
+-	chrt 1 npx playwright install
+-	chrt 1 open -a "Google Chrome"
+-	chrt 1 open -a Chromium https://x
+-	chrt 1 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	chrt 1 google-chrome --headless
+G4	chrt 1 agent-browser open x
+G3	chrt 1 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	chrt 1 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	chrt 1 cp -r ~/.config/google-chrome /tmp/x
+-	chrt 1 uv pip install playwright
+-	chrt 1 uvx playwright install
+-	chrt 1 deno run -A npm:playwright install
+-	chrt 1 npm init playwright@latest
+-	chrt 1 pnpm create playwright
+-	chrt 1 yarn create playwright
+G1	ionice -c3 npm i -g puppeteer
+-	ionice -c3 npm install --save-dev playwright
+-	ionice -c3 pnpm add -D @playwright/test
+G1	ionice -c3 yarn add puppeteer
+-	ionice -c3 yarn global add playwright
+G1	ionice -c3 bun add puppeteer
+G1	ionice -c3 brew install chromium
+G1	ionice -c3 brew install --cask google-chrome
+G1	ionice -c3 apt-get -y install chromium
+G1	ionice -c3 apt install chromium-browser
+G1	ionice -c3 pip install playwright
+-	ionice -c3 pip3 install pyppeteer
+G1	ionice -c3 python3 -m playwright install
+G1	ionice -c3 playwright install
+G1	ionice -c3 npx playwright install
+G2	ionice -c3 open -a "Google Chrome"
+G2	ionice -c3 open -a Chromium https://x
+G2	ionice -c3 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	ionice -c3 google-chrome --headless
+G4	ionice -c3 agent-browser open x
+G3	ionice -c3 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	ionice -c3 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	ionice -c3 cp -r ~/.config/google-chrome /tmp/x
+G1	ionice -c3 uv pip install playwright
+G1	ionice -c3 uvx playwright install
+-	ionice -c3 deno run -A npm:playwright install
+G1	ionice -c3 npm init playwright@latest
+G1	ionice -c3 pnpm create playwright
+G1	ionice -c3 yarn create playwright
+-	taskset 1 npm i -g puppeteer
+-	taskset 1 npm install --save-dev playwright
+-	taskset 1 pnpm add -D @playwright/test
+-	taskset 1 yarn add puppeteer
+-	taskset 1 yarn global add playwright
+-	taskset 1 bun add puppeteer
+-	taskset 1 brew install chromium
+-	taskset 1 brew install --cask google-chrome
+-	taskset 1 apt-get -y install chromium
+-	taskset 1 apt install chromium-browser
+-	taskset 1 pip install playwright
+-	taskset 1 pip3 install pyppeteer
+-	taskset 1 python3 -m playwright install
+-	taskset 1 playwright install
+-	taskset 1 npx playwright install
+-	taskset 1 open -a "Google Chrome"
+-	taskset 1 open -a Chromium https://x
+-	taskset 1 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	taskset 1 google-chrome --headless
+G4	taskset 1 agent-browser open x
+G3	taskset 1 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	taskset 1 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	taskset 1 cp -r ~/.config/google-chrome /tmp/x
+-	taskset 1 uv pip install playwright
+-	taskset 1 uvx playwright install
+-	taskset 1 deno run -A npm:playwright install
+-	taskset 1 npm init playwright@latest
+-	taskset 1 pnpm create playwright
+-	taskset 1 yarn create playwright
+G1	unbuffer npm i -g puppeteer
+-	unbuffer npm install --save-dev playwright
+-	unbuffer pnpm add -D @playwright/test
+G1	unbuffer yarn add puppeteer
+-	unbuffer yarn global add playwright
+G1	unbuffer bun add puppeteer
+G1	unbuffer brew install chromium
+G1	unbuffer brew install --cask google-chrome
+G1	unbuffer apt-get -y install chromium
+G1	unbuffer apt install chromium-browser
+G1	unbuffer pip install playwright
+-	unbuffer pip3 install pyppeteer
+G1	unbuffer python3 -m playwright install
+G1	unbuffer playwright install
+G1	unbuffer npx playwright install
+G2	unbuffer open -a "Google Chrome"
+G2	unbuffer open -a Chromium https://x
+G2	unbuffer "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	unbuffer google-chrome --headless
+G4	unbuffer agent-browser open x
+G3	unbuffer cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	unbuffer ls "$HOME/Library/Application Support/Google/Chrome"
+G3	unbuffer cp -r ~/.config/google-chrome /tmp/x
+G1	unbuffer uv pip install playwright
+G1	unbuffer uvx playwright install
+-	unbuffer deno run -A npm:playwright install
+G1	unbuffer npm init playwright@latest
+G1	unbuffer pnpm create playwright
+G1	unbuffer yarn create playwright
+-	script -q /dev/null npm i -g puppeteer
+-	script -q /dev/null npm install --save-dev playwright
+-	script -q /dev/null pnpm add -D @playwright/test
+-	script -q /dev/null yarn add puppeteer
+-	script -q /dev/null yarn global add playwright
+-	script -q /dev/null bun add puppeteer
+-	script -q /dev/null brew install chromium
+-	script -q /dev/null brew install --cask google-chrome
+-	script -q /dev/null apt-get -y install chromium
+-	script -q /dev/null apt install chromium-browser
+-	script -q /dev/null pip install playwright
+-	script -q /dev/null pip3 install pyppeteer
+-	script -q /dev/null python3 -m playwright install
+-	script -q /dev/null playwright install
+-	script -q /dev/null npx playwright install
+-	script -q /dev/null open -a "Google Chrome"
+-	script -q /dev/null open -a Chromium https://x
+-	script -q /dev/null "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	script -q /dev/null google-chrome --headless
+G4	script -q /dev/null agent-browser open x
+G3	script -q /dev/null cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	script -q /dev/null ls "$HOME/Library/Application Support/Google/Chrome"
+G3	script -q /dev/null cp -r ~/.config/google-chrome /tmp/x
+-	script -q /dev/null uv pip install playwright
+-	script -q /dev/null uvx playwright install
+-	script -q /dev/null deno run -A npm:playwright install
+-	script -q /dev/null npm init playwright@latest
+-	script -q /dev/null pnpm create playwright
+-	script -q /dev/null yarn create playwright
+G1	doas npm i -g puppeteer
+-	doas npm install --save-dev playwright
+-	doas pnpm add -D @playwright/test
+G1	doas yarn add puppeteer
+-	doas yarn global add playwright
+G1	doas bun add puppeteer
+G1	doas brew install chromium
+G1	doas brew install --cask google-chrome
+G1	doas apt-get -y install chromium
+G1	doas apt install chromium-browser
+G1	doas pip install playwright
+-	doas pip3 install pyppeteer
+G1	doas python3 -m playwright install
+G1	doas playwright install
+G1	doas npx playwright install
+G2	doas open -a "Google Chrome"
+G2	doas open -a Chromium https://x
+G2	doas "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	doas google-chrome --headless
+G4	doas agent-browser open x
+G3	doas cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	doas ls "$HOME/Library/Application Support/Google/Chrome"
+G3	doas cp -r ~/.config/google-chrome /tmp/x
+G1	doas uv pip install playwright
+G1	doas uvx playwright install
+-	doas deno run -A npm:playwright install
+G1	doas npm init playwright@latest
+G1	doas pnpm create playwright
+G1	doas yarn create playwright
+-	dotenv -- npm i -g puppeteer
+-	dotenv -- npm install --save-dev playwright
+-	dotenv -- pnpm add -D @playwright/test
+-	dotenv -- yarn add puppeteer
+-	dotenv -- yarn global add playwright
+-	dotenv -- bun add puppeteer
+-	dotenv -- brew install chromium
+-	dotenv -- brew install --cask google-chrome
+-	dotenv -- apt-get -y install chromium
+-	dotenv -- apt install chromium-browser
+-	dotenv -- pip install playwright
+-	dotenv -- pip3 install pyppeteer
+-	dotenv -- python3 -m playwright install
+-	dotenv -- playwright install
+-	dotenv -- npx playwright install
+-	dotenv -- open -a "Google Chrome"
+-	dotenv -- open -a Chromium https://x
+-	dotenv -- "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	dotenv -- google-chrome --headless
+G4	dotenv -- agent-browser open x
+G3	dotenv -- cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	dotenv -- ls "$HOME/Library/Application Support/Google/Chrome"
+G3	dotenv -- cp -r ~/.config/google-chrome /tmp/x
+-	dotenv -- uv pip install playwright
+-	dotenv -- uvx playwright install
+-	dotenv -- deno run -A npm:playwright install
+-	dotenv -- npm init playwright@latest
+-	dotenv -- pnpm create playwright
+-	dotenv -- yarn create playwright
+-	cross-env A=1 npm i -g puppeteer
+-	cross-env A=1 npm install --save-dev playwright
+-	cross-env A=1 pnpm add -D @playwright/test
+-	cross-env A=1 yarn add puppeteer
+-	cross-env A=1 yarn global add playwright
+-	cross-env A=1 bun add puppeteer
+-	cross-env A=1 brew install chromium
+-	cross-env A=1 brew install --cask google-chrome
+-	cross-env A=1 apt-get -y install chromium
+-	cross-env A=1 apt install chromium-browser
+-	cross-env A=1 pip install playwright
+-	cross-env A=1 pip3 install pyppeteer
+-	cross-env A=1 python3 -m playwright install
+-	cross-env A=1 playwright install
+-	cross-env A=1 npx playwright install
+-	cross-env A=1 open -a "Google Chrome"
+-	cross-env A=1 open -a Chromium https://x
+-	cross-env A=1 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	cross-env A=1 google-chrome --headless
+G4	cross-env A=1 agent-browser open x
+G3	cross-env A=1 cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	cross-env A=1 ls "$HOME/Library/Application Support/Google/Chrome"
+G3	cross-env A=1 cp -r ~/.config/google-chrome /tmp/x
+-	cross-env A=1 uv pip install playwright
+-	cross-env A=1 uvx playwright install
+-	cross-env A=1 deno run -A npm:playwright install
+-	cross-env A=1 npm init playwright@latest
+-	cross-env A=1 pnpm create playwright
+-	cross-env A=1 yarn create playwright
+-	npm-run-all npm i -g puppeteer
+-	npm-run-all npm install --save-dev playwright
+-	npm-run-all pnpm add -D @playwright/test
+-	npm-run-all yarn add puppeteer
+-	npm-run-all yarn global add playwright
+-	npm-run-all bun add puppeteer
+-	npm-run-all brew install chromium
+-	npm-run-all brew install --cask google-chrome
+-	npm-run-all apt-get -y install chromium
+-	npm-run-all apt install chromium-browser
+-	npm-run-all pip install playwright
+-	npm-run-all pip3 install pyppeteer
+-	npm-run-all python3 -m playwright install
+-	npm-run-all playwright install
+-	npm-run-all npx playwright install
+-	npm-run-all open -a "Google Chrome"
+-	npm-run-all open -a Chromium https://x
+-	npm-run-all "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	npm-run-all google-chrome --headless
+G4	npm-run-all agent-browser open x
+G3	npm-run-all cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	npm-run-all ls "$HOME/Library/Application Support/Google/Chrome"
+G3	npm-run-all cp -r ~/.config/google-chrome /tmp/x
+-	npm-run-all uv pip install playwright
+-	npm-run-all uvx playwright install
+-	npm-run-all deno run -A npm:playwright install
+-	npm-run-all npm init playwright@latest
+-	npm-run-all pnpm create playwright
+-	npm-run-all yarn create playwright
+-	concurrently npm i -g puppeteer
+-	concurrently npm install --save-dev playwright
+-	concurrently pnpm add -D @playwright/test
+-	concurrently yarn add puppeteer
+-	concurrently yarn global add playwright
+-	concurrently bun add puppeteer
+-	concurrently brew install chromium
+-	concurrently brew install --cask google-chrome
+-	concurrently apt-get -y install chromium
+-	concurrently apt install chromium-browser
+-	concurrently pip install playwright
+-	concurrently pip3 install pyppeteer
+-	concurrently python3 -m playwright install
+-	concurrently playwright install
+-	concurrently npx playwright install
+-	concurrently open -a "Google Chrome"
+-	concurrently open -a Chromium https://x
+-	concurrently "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	concurrently google-chrome --headless
+G4	concurrently agent-browser open x
+G3	concurrently cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	concurrently ls "$HOME/Library/Application Support/Google/Chrome"
+G3	concurrently cp -r ~/.config/google-chrome /tmp/x
+-	concurrently uv pip install playwright
+-	concurrently uvx playwright install
+-	concurrently deno run -A npm:playwright install
+-	concurrently npm init playwright@latest
+-	concurrently pnpm create playwright
+-	concurrently yarn create playwright
+G1	rtk npm i -g puppeteer
+-	rtk npm install --save-dev playwright
+-	rtk pnpm add -D @playwright/test
+G1	rtk yarn add puppeteer
+-	rtk yarn global add playwright
+G1	rtk bun add puppeteer
+G1	rtk brew install chromium
+G1	rtk brew install --cask google-chrome
+G1	rtk apt-get -y install chromium
+G1	rtk apt install chromium-browser
+G1	rtk pip install playwright
+-	rtk pip3 install pyppeteer
+G1	rtk python3 -m playwright install
+G1	rtk playwright install
+G1	rtk npx playwright install
+G2	rtk open -a "Google Chrome"
+G2	rtk open -a Chromium https://x
+G2	rtk "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	rtk google-chrome --headless
+G4	rtk agent-browser open x
+G3	rtk cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	rtk ls "$HOME/Library/Application Support/Google/Chrome"
+G3	rtk cp -r ~/.config/google-chrome /tmp/x
+G1	rtk uv pip install playwright
+G1	rtk uvx playwright install
+-	rtk deno run -A npm:playwright install
+G1	rtk npm init playwright@latest
+G1	rtk pnpm create playwright
+G1	rtk yarn create playwright
+G1	rtk run npm i -g puppeteer
+-	rtk run npm install --save-dev playwright
+-	rtk run pnpm add -D @playwright/test
+G1	rtk run yarn add puppeteer
+-	rtk run yarn global add playwright
+G1	rtk run bun add puppeteer
+G1	rtk run brew install chromium
+G1	rtk run brew install --cask google-chrome
+G1	rtk run apt-get -y install chromium
+G1	rtk run apt install chromium-browser
+G1	rtk run pip install playwright
+-	rtk run pip3 install pyppeteer
+G1	rtk run python3 -m playwright install
+G1	rtk run playwright install
+G1	rtk run npx playwright install
+G2	rtk run open -a "Google Chrome"
+G2	rtk run open -a Chromium https://x
+G2	rtk run "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	rtk run google-chrome --headless
+G4	rtk run agent-browser open x
+G3	rtk run cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	rtk run ls "$HOME/Library/Application Support/Google/Chrome"
+G3	rtk run cp -r ~/.config/google-chrome /tmp/x
+G1	rtk run uv pip install playwright
+G1	rtk run uvx playwright install
+-	rtk run deno run -A npm:playwright install
+G1	rtk run npm init playwright@latest
+G1	rtk run pnpm create playwright
+G1	rtk run yarn create playwright
+G1	rtk bypass npm i -g puppeteer
+-	rtk bypass npm install --save-dev playwright
+-	rtk bypass pnpm add -D @playwright/test
+G1	rtk bypass yarn add puppeteer
+-	rtk bypass yarn global add playwright
+G1	rtk bypass bun add puppeteer
+G1	rtk bypass brew install chromium
+G1	rtk bypass brew install --cask google-chrome
+G1	rtk bypass apt-get -y install chromium
+G1	rtk bypass apt install chromium-browser
+G1	rtk bypass pip install playwright
+-	rtk bypass pip3 install pyppeteer
+G1	rtk bypass python3 -m playwright install
+G1	rtk bypass playwright install
+G1	rtk bypass npx playwright install
+G2	rtk bypass open -a "Google Chrome"
+G2	rtk bypass open -a Chromium https://x
+G2	rtk bypass "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	rtk bypass google-chrome --headless
+G4	rtk bypass agent-browser open x
+G3	rtk bypass cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	rtk bypass ls "$HOME/Library/Application Support/Google/Chrome"
+G3	rtk bypass cp -r ~/.config/google-chrome /tmp/x
+G1	rtk bypass uv pip install playwright
+G1	rtk bypass uvx playwright install
+-	rtk bypass deno run -A npm:playwright install
+G1	rtk bypass npm init playwright@latest
+G1	rtk bypass pnpm create playwright
+G1	rtk bypass yarn create playwright
+-	mise exec -- npm i -g puppeteer
+-	mise exec -- npm install --save-dev playwright
+-	mise exec -- pnpm add -D @playwright/test
+-	mise exec -- yarn add puppeteer
+-	mise exec -- yarn global add playwright
+-	mise exec -- bun add puppeteer
+-	mise exec -- brew install chromium
+-	mise exec -- brew install --cask google-chrome
+-	mise exec -- apt-get -y install chromium
+-	mise exec -- apt install chromium-browser
+-	mise exec -- pip install playwright
+-	mise exec -- pip3 install pyppeteer
+-	mise exec -- python3 -m playwright install
+-	mise exec -- playwright install
+-	mise exec -- npx playwright install
+-	mise exec -- open -a "Google Chrome"
+-	mise exec -- open -a Chromium https://x
+-	mise exec -- "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	mise exec -- google-chrome --headless
+G4	mise exec -- agent-browser open x
+G3	mise exec -- cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	mise exec -- ls "$HOME/Library/Application Support/Google/Chrome"
+G3	mise exec -- cp -r ~/.config/google-chrome /tmp/x
+-	mise exec -- uv pip install playwright
+-	mise exec -- uvx playwright install
+-	mise exec -- deno run -A npm:playwright install
+-	mise exec -- npm init playwright@latest
+-	mise exec -- pnpm create playwright
+-	mise exec -- yarn create playwright
+-	asdf exec npm i -g puppeteer
+-	asdf exec npm install --save-dev playwright
+-	asdf exec pnpm add -D @playwright/test
+-	asdf exec yarn add puppeteer
+-	asdf exec yarn global add playwright
+-	asdf exec bun add puppeteer
+-	asdf exec brew install chromium
+-	asdf exec brew install --cask google-chrome
+-	asdf exec apt-get -y install chromium
+-	asdf exec apt install chromium-browser
+-	asdf exec pip install playwright
+-	asdf exec pip3 install pyppeteer
+-	asdf exec python3 -m playwright install
+-	asdf exec playwright install
+-	asdf exec npx playwright install
+-	asdf exec open -a "Google Chrome"
+-	asdf exec open -a Chromium https://x
+-	asdf exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	asdf exec google-chrome --headless
+G4	asdf exec agent-browser open x
+G3	asdf exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	asdf exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	asdf exec cp -r ~/.config/google-chrome /tmp/x
+-	asdf exec uv pip install playwright
+-	asdf exec uvx playwright install
+-	asdf exec deno run -A npm:playwright install
+-	asdf exec npm init playwright@latest
+-	asdf exec pnpm create playwright
+-	asdf exec yarn create playwright
+-	direnv exec . npm i -g puppeteer
+-	direnv exec . npm install --save-dev playwright
+-	direnv exec . pnpm add -D @playwright/test
+-	direnv exec . yarn add puppeteer
+-	direnv exec . yarn global add playwright
+-	direnv exec . bun add puppeteer
+-	direnv exec . brew install chromium
+-	direnv exec . brew install --cask google-chrome
+-	direnv exec . apt-get -y install chromium
+-	direnv exec . apt install chromium-browser
+-	direnv exec . pip install playwright
+-	direnv exec . pip3 install pyppeteer
+-	direnv exec . python3 -m playwright install
+-	direnv exec . playwright install
+-	direnv exec . npx playwright install
+-	direnv exec . open -a "Google Chrome"
+-	direnv exec . open -a Chromium https://x
+-	direnv exec . "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	direnv exec . google-chrome --headless
+G4	direnv exec . agent-browser open x
+G3	direnv exec . cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	direnv exec . ls "$HOME/Library/Application Support/Google/Chrome"
+G3	direnv exec . cp -r ~/.config/google-chrome /tmp/x
+-	direnv exec . uv pip install playwright
+-	direnv exec . uvx playwright install
+-	direnv exec . deno run -A npm:playwright install
+-	direnv exec . npm init playwright@latest
+-	direnv exec . pnpm create playwright
+-	direnv exec . yarn create playwright
+-	nix-shell --run 'npm i -g puppeteer'
+-	nix-shell --run 'npm install --save-dev playwright'
+-	nix-shell --run 'pnpm add -D @playwright/test'
+-	nix-shell --run 'yarn add puppeteer'
+-	nix-shell --run 'yarn global add playwright'
+-	nix-shell --run 'bun add puppeteer'
+-	nix-shell --run 'brew install chromium'
+-	nix-shell --run 'brew install --cask google-chrome'
+-	nix-shell --run 'apt-get -y install chromium'
+-	nix-shell --run 'apt install chromium-browser'
+-	nix-shell --run 'pip install playwright'
+-	nix-shell --run 'pip3 install pyppeteer'
+-	nix-shell --run 'python3 -m playwright install'
+-	nix-shell --run 'playwright install'
+-	nix-shell --run 'npx playwright install'
+-	nix-shell --run 'open -a "Google Chrome"'
+-	nix-shell --run 'open -a Chromium https://x'
+-	nix-shell --run '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless'
+-	nix-shell --run 'google-chrome --headless'
+-	nix-shell --run 'agent-browser open x'
+-	nix-shell --run 'cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies'
+-	nix-shell --run 'ls "$HOME/Library/Application Support/Google/Chrome"'
+-	nix-shell --run 'cp -r ~/.config/google-chrome /tmp/x'
+-	nix-shell --run 'uv pip install playwright'
+-	nix-shell --run 'uvx playwright install'
+-	nix-shell --run 'deno run -A npm:playwright install'
+-	nix-shell --run 'npm init playwright@latest'
+-	nix-shell --run 'pnpm create playwright'
+-	nix-shell --run 'yarn create playwright'
+-	devbox run npm i -g puppeteer
+-	devbox run npm install --save-dev playwright
+-	devbox run pnpm add -D @playwright/test
+-	devbox run yarn add puppeteer
+-	devbox run yarn global add playwright
+-	devbox run bun add puppeteer
+-	devbox run brew install chromium
+-	devbox run brew install --cask google-chrome
+-	devbox run apt-get -y install chromium
+-	devbox run apt install chromium-browser
+-	devbox run pip install playwright
+-	devbox run pip3 install pyppeteer
+-	devbox run python3 -m playwright install
+-	devbox run playwright install
+-	devbox run npx playwright install
+-	devbox run open -a "Google Chrome"
+-	devbox run open -a Chromium https://x
+-	devbox run "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	devbox run google-chrome --headless
+G4	devbox run agent-browser open x
+G3	devbox run cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	devbox run ls "$HOME/Library/Application Support/Google/Chrome"
+G3	devbox run cp -r ~/.config/google-chrome /tmp/x
+-	devbox run uv pip install playwright
+-	devbox run uvx playwright install
+-	devbox run deno run -A npm:playwright install
+-	devbox run npm init playwright@latest
+-	devbox run pnpm create playwright
+-	devbox run yarn create playwright
+G1	pipx run npm i -g puppeteer
+-	pipx run npm install --save-dev playwright
+-	pipx run pnpm add -D @playwright/test
+G1	pipx run yarn add puppeteer
+-	pipx run yarn global add playwright
+G1	pipx run bun add puppeteer
+G1	pipx run brew install chromium
+G1	pipx run brew install --cask google-chrome
+G1	pipx run apt-get -y install chromium
+G1	pipx run apt install chromium-browser
+G1	pipx run pip install playwright
+-	pipx run pip3 install pyppeteer
+G1	pipx run python3 -m playwright install
+G1	pipx run playwright install
+G1	pipx run npx playwright install
+G2	pipx run open -a "Google Chrome"
+G2	pipx run open -a Chromium https://x
+G2	pipx run "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	pipx run google-chrome --headless
+G4	pipx run agent-browser open x
+G3	pipx run cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	pipx run ls "$HOME/Library/Application Support/Google/Chrome"
+G3	pipx run cp -r ~/.config/google-chrome /tmp/x
+G1	pipx run uv pip install playwright
+G1	pipx run uvx playwright install
+-	pipx run deno run -A npm:playwright install
+G1	pipx run npm init playwright@latest
+G1	pipx run pnpm create playwright
+G1	pipx run yarn create playwright
+G1	uv run npm i -g puppeteer
+-	uv run npm install --save-dev playwright
+-	uv run pnpm add -D @playwright/test
+G1	uv run yarn add puppeteer
+-	uv run yarn global add playwright
+G1	uv run bun add puppeteer
+G1	uv run brew install chromium
+G1	uv run brew install --cask google-chrome
+G1	uv run apt-get -y install chromium
+G1	uv run apt install chromium-browser
+G1	uv run pip install playwright
+-	uv run pip3 install pyppeteer
+G1	uv run python3 -m playwright install
+G1	uv run playwright install
+G1	uv run npx playwright install
+G2	uv run open -a "Google Chrome"
+G2	uv run open -a Chromium https://x
+G2	uv run "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	uv run google-chrome --headless
+G4	uv run agent-browser open x
+G3	uv run cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	uv run ls "$HOME/Library/Application Support/Google/Chrome"
+G3	uv run cp -r ~/.config/google-chrome /tmp/x
+G1	uv run uv pip install playwright
+G1	uv run uvx playwright install
+-	uv run deno run -A npm:playwright install
+G1	uv run npm init playwright@latest
+G1	uv run pnpm create playwright
+G1	uv run yarn create playwright
+G1	poetry run npm i -g puppeteer
+-	poetry run npm install --save-dev playwright
+-	poetry run pnpm add -D @playwright/test
+G1	poetry run yarn add puppeteer
+-	poetry run yarn global add playwright
+G1	poetry run bun add puppeteer
+G1	poetry run brew install chromium
+G1	poetry run brew install --cask google-chrome
+G1	poetry run apt-get -y install chromium
+G1	poetry run apt install chromium-browser
+G1	poetry run pip install playwright
+-	poetry run pip3 install pyppeteer
+G1	poetry run python3 -m playwright install
+G1	poetry run playwright install
+G1	poetry run npx playwright install
+G2	poetry run open -a "Google Chrome"
+G2	poetry run open -a Chromium https://x
+G2	poetry run "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	poetry run google-chrome --headless
+G4	poetry run agent-browser open x
+G3	poetry run cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	poetry run ls "$HOME/Library/Application Support/Google/Chrome"
+G3	poetry run cp -r ~/.config/google-chrome /tmp/x
+G1	poetry run uv pip install playwright
+G1	poetry run uvx playwright install
+-	poetry run deno run -A npm:playwright install
+G1	poetry run npm init playwright@latest
+G1	poetry run pnpm create playwright
+G1	poetry run yarn create playwright
+-	bundle exec npm i -g puppeteer
+-	bundle exec npm install --save-dev playwright
+-	bundle exec pnpm add -D @playwright/test
+-	bundle exec yarn add puppeteer
+-	bundle exec yarn global add playwright
+-	bundle exec bun add puppeteer
+-	bundle exec brew install chromium
+-	bundle exec brew install --cask google-chrome
+-	bundle exec apt-get -y install chromium
+-	bundle exec apt install chromium-browser
+-	bundle exec pip install playwright
+-	bundle exec pip3 install pyppeteer
+-	bundle exec python3 -m playwright install
+-	bundle exec playwright install
+-	bundle exec npx playwright install
+-	bundle exec open -a "Google Chrome"
+-	bundle exec open -a Chromium https://x
+-	bundle exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+-	bundle exec google-chrome --headless
+G4	bundle exec agent-browser open x
+G3	bundle exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	bundle exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	bundle exec cp -r ~/.config/google-chrome /tmp/x
+-	bundle exec uv pip install playwright
+-	bundle exec uvx playwright install
+-	bundle exec deno run -A npm:playwright install
+-	bundle exec npm init playwright@latest
+-	bundle exec pnpm create playwright
+-	bundle exec yarn create playwright
+G1	pnpm --silent npm i -g puppeteer
+-	pnpm --silent npm install --save-dev playwright
+-	pnpm --silent pnpm add -D @playwright/test
+G1	pnpm --silent yarn add puppeteer
+-	pnpm --silent yarn global add playwright
+G1	pnpm --silent bun add puppeteer
+G1	pnpm --silent brew install chromium
+G1	pnpm --silent brew install --cask google-chrome
+G1	pnpm --silent apt-get -y install chromium
+G1	pnpm --silent apt install chromium-browser
+G1	pnpm --silent pip install playwright
+-	pnpm --silent pip3 install pyppeteer
+G1	pnpm --silent python3 -m playwright install
+G1	pnpm --silent playwright install
+G1	pnpm --silent npx playwright install
+G2	pnpm --silent open -a "Google Chrome"
+G2	pnpm --silent open -a Chromium https://x
+G2	pnpm --silent "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	pnpm --silent google-chrome --headless
+G4	pnpm --silent agent-browser open x
+G3	pnpm --silent cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	pnpm --silent ls "$HOME/Library/Application Support/Google/Chrome"
+G3	pnpm --silent cp -r ~/.config/google-chrome /tmp/x
+G1	pnpm --silent uv pip install playwright
+G1	pnpm --silent uvx playwright install
+-	pnpm --silent deno run -A npm:playwright install
+G1	pnpm --silent npm init playwright@latest
+G1	pnpm --silent pnpm create playwright
+G1	pnpm --silent yarn create playwright
+G1	yarn --silent npm i -g puppeteer
+-	yarn --silent npm install --save-dev playwright
+-	yarn --silent pnpm add -D @playwright/test
+G1	yarn --silent yarn add puppeteer
+-	yarn --silent yarn global add playwright
+G1	yarn --silent bun add puppeteer
+G1	yarn --silent brew install chromium
+G1	yarn --silent brew install --cask google-chrome
+G1	yarn --silent apt-get -y install chromium
+G1	yarn --silent apt install chromium-browser
+G1	yarn --silent pip install playwright
+-	yarn --silent pip3 install pyppeteer
+G1	yarn --silent python3 -m playwright install
+G1	yarn --silent playwright install
+G1	yarn --silent npx playwright install
+G2	yarn --silent open -a "Google Chrome"
+G2	yarn --silent open -a Chromium https://x
+G2	yarn --silent "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	yarn --silent google-chrome --headless
+G4	yarn --silent agent-browser open x
+G3	yarn --silent cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	yarn --silent ls "$HOME/Library/Application Support/Google/Chrome"
+G3	yarn --silent cp -r ~/.config/google-chrome /tmp/x
+G1	yarn --silent uv pip install playwright
+G1	yarn --silent uvx playwright install
+-	yarn --silent deno run -A npm:playwright install
+G1	yarn --silent npm init playwright@latest
+G1	yarn --silent pnpm create playwright
+G1	yarn --silent yarn create playwright
+G1	npm --silent exec npm i -g puppeteer
+-	npm --silent exec npm install --save-dev playwright
+-	npm --silent exec pnpm add -D @playwright/test
+G1	npm --silent exec yarn add puppeteer
+-	npm --silent exec yarn global add playwright
+G1	npm --silent exec bun add puppeteer
+G1	npm --silent exec brew install chromium
+G1	npm --silent exec brew install --cask google-chrome
+G1	npm --silent exec apt-get -y install chromium
+G1	npm --silent exec apt install chromium-browser
+G1	npm --silent exec pip install playwright
+-	npm --silent exec pip3 install pyppeteer
+G1	npm --silent exec python3 -m playwright install
+G1	npm --silent exec playwright install
+G1	npm --silent exec npx playwright install
+G2	npm --silent exec open -a "Google Chrome"
+G2	npm --silent exec open -a Chromium https://x
+G2	npm --silent exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	npm --silent exec google-chrome --headless
+G4	npm --silent exec agent-browser open x
+G3	npm --silent exec cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	npm --silent exec ls "$HOME/Library/Application Support/Google/Chrome"
+G3	npm --silent exec cp -r ~/.config/google-chrome /tmp/x
+G1	npm --silent exec uv pip install playwright
+G1	npm --silent exec uvx playwright install
+-	npm --silent exec deno run -A npm:playwright install
+G1	npm --silent exec npm init playwright@latest
+G1	npm --silent exec pnpm create playwright
+G1	npm --silent exec yarn create playwright
+G1	pnpm -s dlx npm i -g puppeteer
+-	pnpm -s dlx npm install --save-dev playwright
+-	pnpm -s dlx pnpm add -D @playwright/test
+G1	pnpm -s dlx yarn add puppeteer
+-	pnpm -s dlx yarn global add playwright
+G1	pnpm -s dlx bun add puppeteer
+G1	pnpm -s dlx brew install chromium
+G1	pnpm -s dlx brew install --cask google-chrome
+G1	pnpm -s dlx apt-get -y install chromium
+G1	pnpm -s dlx apt install chromium-browser
+G1	pnpm -s dlx pip install playwright
+-	pnpm -s dlx pip3 install pyppeteer
+G1	pnpm -s dlx python3 -m playwright install
+G1	pnpm -s dlx playwright install
+G1	pnpm -s dlx npx playwright install
+G2	pnpm -s dlx open -a "Google Chrome"
+G2	pnpm -s dlx open -a Chromium https://x
+G2	pnpm -s dlx "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	pnpm -s dlx google-chrome --headless
+G4	pnpm -s dlx agent-browser open x
+G3	pnpm -s dlx cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	pnpm -s dlx ls "$HOME/Library/Application Support/Google/Chrome"
+G3	pnpm -s dlx cp -r ~/.config/google-chrome /tmp/x
+G1	pnpm -s dlx uv pip install playwright
+G1	pnpm -s dlx uvx playwright install
+-	pnpm -s dlx deno run -A npm:playwright install
+G1	pnpm -s dlx npm init playwright@latest
+G1	pnpm -s dlx pnpm create playwright
+G1	pnpm -s dlx yarn create playwright
+G1	yarn -s dlx npm i -g puppeteer
+-	yarn -s dlx npm install --save-dev playwright
+-	yarn -s dlx pnpm add -D @playwright/test
+G1	yarn -s dlx yarn add puppeteer
+-	yarn -s dlx yarn global add playwright
+G1	yarn -s dlx bun add puppeteer
+G1	yarn -s dlx brew install chromium
+G1	yarn -s dlx brew install --cask google-chrome
+G1	yarn -s dlx apt-get -y install chromium
+G1	yarn -s dlx apt install chromium-browser
+G1	yarn -s dlx pip install playwright
+-	yarn -s dlx pip3 install pyppeteer
+G1	yarn -s dlx python3 -m playwright install
+G1	yarn -s dlx playwright install
+G1	yarn -s dlx npx playwright install
+G2	yarn -s dlx open -a "Google Chrome"
+G2	yarn -s dlx open -a Chromium https://x
+G2	yarn -s dlx "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	yarn -s dlx google-chrome --headless
+G4	yarn -s dlx agent-browser open x
+G3	yarn -s dlx cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	yarn -s dlx ls "$HOME/Library/Application Support/Google/Chrome"
+G3	yarn -s dlx cp -r ~/.config/google-chrome /tmp/x
+G1	yarn -s dlx uv pip install playwright
+G1	yarn -s dlx uvx playwright install
+-	yarn -s dlx deno run -A npm:playwright install
+G1	yarn -s dlx npm init playwright@latest
+G1	yarn -s dlx pnpm create playwright
+G1	yarn -s dlx yarn create playwright
+G1	npm -s x npm i -g puppeteer
+-	npm -s x npm install --save-dev playwright
+-	npm -s x pnpm add -D @playwright/test
+G1	npm -s x yarn add puppeteer
+-	npm -s x yarn global add playwright
+G1	npm -s x bun add puppeteer
+G1	npm -s x brew install chromium
+G1	npm -s x brew install --cask google-chrome
+G1	npm -s x apt-get -y install chromium
+G1	npm -s x apt install chromium-browser
+G1	npm -s x pip install playwright
+-	npm -s x pip3 install pyppeteer
+G1	npm -s x python3 -m playwright install
+G1	npm -s x playwright install
+G1	npm -s x npx playwright install
+G2	npm -s x open -a "Google Chrome"
+G2	npm -s x open -a Chromium https://x
+G2	npm -s x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+G2	npm -s x google-chrome --headless
+G4	npm -s x agent-browser open x
+G3	npm -s x cat ~/Library/Application\ Support/Google/Chrome/Default/Cookies
+G3	npm -s x ls "$HOME/Library/Application Support/Google/Chrome"
+G3	npm -s x cp -r ~/.config/google-chrome /tmp/x
+G1	npm -s x uv pip install playwright
+G1	npm -s x uvx playwright install
+-	npm -s x deno run -A npm:playwright install
+G1	npm -s x npm init playwright@latest
+G1	npm -s x pnpm create playwright
+G1	npm -s x yarn create playwright
