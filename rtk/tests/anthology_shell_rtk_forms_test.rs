@@ -10,7 +10,7 @@
 //!
 //! Not named `fork_*`: the `FORK_TESTS` list is untouched.
 
-use std::process::Command;
+mod common;
 
 /// How `anthology_shell` reads `rtk <sub> ...`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,11 +122,7 @@ const PINNED: &[(&str, Form)] = &[
 ];
 
 fn rtk(args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_rtk"))
-        .args(args)
-        .env("RTK_SUPPRESS_HOOK_WARNING", "1")
-        .output()
-        .expect("run rtk");
+    let out = common::rtk_command().args(args).output().expect("run rtk");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
