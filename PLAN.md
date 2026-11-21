@@ -500,6 +500,7 @@ Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this
    - every probe in `crates/anthology-guard/tests/arith_holders.rs` is G0, and so is its neighbour outside `$((…))`;
    - an arithmetic expansion's own substitution words (`$(( $(date +%s) - 1 ))`) are still allowed;
    - the difftest at 10,000 cases has 0 unexplained diffs for shell.analyze, guard.check and guard.hook.
+6. **CI coverage gap (DT-4).** Pull requests run the difftest with only 2,000 generated cases, and a push to `rust` runs no CI at all (push triggers are `main` and `build` only), so a generated case past 2,000 is first seen by a manual 10,000-case batch run. The four DT-4 differences were all past 2,000.
 
 ---
 
