@@ -30,6 +30,8 @@ it to the reference too, so the difftest still checks everything else; each such
 - SH-FW review C-3: a command's brace expressions give one more alternate reading with them expanded, at
   most 64 words (`_add_alternates_braces` below); C-4: echo/printf text fed to a shell or to xargs/parallel
   is also fed decoded, not to an interpreter's code (`_collect_once`, `_literal_output` below).
+- SH-FW review I-2: a newline (heredoc bodies, comments, blank lines) right after a `|`/`|&` keeps the
+  pipeline (`_end_seg` below, part C).
 The narrow ones are declared per case (D-8, `fw:` cases): every `fd -x` group (R1-M2), and `doppler`/`op`/
 `dotenvx`/`infisical run` (R1-M3).
 
@@ -125,7 +127,8 @@ _ALTERNATES = []
 
 def _add_alternates(alternates, scripts, entry, ctx, exempt):
     """`_add_alternates`, recording every alternate whose command differs from the entry's instead of
-    checking G1 (the scripts are joined as the reference joins them, from every alternate)."""
+    checking G1. The scripts of every alternate are joined, as Rust does; the reference stops at the first
+    alternate G1 blocks, so it joins fewer (the oracle and Rust are the stricter ones here)."""
     main = G._strip_prefixes(entry.raw)[0]
     for alternate in alternates:
         cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
@@ -370,6 +373,25 @@ def _collect_once(text, ctx, exempt, depth):
 
 
 G._collect_once = _collect_once
+
+
+# --- part C
+
+_END_SEG = G._Lexer.end_seg
+
+
+def _end_seg(self, new_group):
+    """`_Lexer.end_seg` with Rust's pipeline rule (SH-FW review I-2): a break before any command follows a
+    `|`/`|&` keeps the group, so `echo X |\nsh` stays one pipeline."""
+    empty = not (self.has_word or self.seg.tokens or self.seg.redirs)
+    if new_group and getattr(self, "piped", False) and empty:
+        new_group = False
+    else:
+        self.piped = not new_group
+    _END_SEG(self, new_group)
+
+
+G._Lexer.end_seg = _end_seg
 
 
 def _entry(e, groups):

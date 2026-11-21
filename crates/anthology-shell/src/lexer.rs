@@ -253,6 +253,9 @@ struct Lexer<'t, 'a> {
     arith_unclosed: bool,
     /// The word being built contains a quote or escape.
     quoted: bool,
+    /// A `|`/`|&` with no command after it yet: a segment break there keeps the pipeline (Rust stricter,
+    /// SH-FW review I-2; the oracle applies it to the reference too).
+    piped: bool,
     /// Elements of the `name=( ... )` being lexed.
     array: Option<Vec<String>>,
     array_word: String,
@@ -296,6 +299,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             arith: None,
             arith_unclosed: false,
             quoted: false,
+            piped: false,
             array: None,
             array_word: String::new(),
             array_start: 0,
@@ -345,7 +349,15 @@ impl<'t, 'a> Lexer<'t, 'a> {
         }
     }
 
-    fn end_seg(&mut self, new_group: bool) {
+    /// End the segment; `new_group`: the pipeline ends too, unless no command followed a `|` yet (a newline,
+    /// heredoc bodies, comments or blank lines after a `|` do not end it).
+    fn end_seg(&mut self, mut new_group: bool) {
+        let empty = !self.has_word && self.tokens.is_empty() && self.redirs.is_empty();
+        if new_group && self.piped && empty {
+            new_group = false;
+        } else {
+            self.piped = !new_group;
+        }
         self.end_word();
         self.pending = None;
         if !self.tokens.is_empty() || !self.redirs.is_empty() {
