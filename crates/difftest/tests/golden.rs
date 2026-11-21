@@ -55,9 +55,28 @@ fn fake() -> Option<(tempfile::TempDir, String, String)> {
     Some((dir, python, golden))
 }
 
+/// A golden file's text (the files are gzip).
+fn read_golden(path: &Path) -> String {
+    use std::io::Read;
+    let bytes = std::fs::read(path).expect("read the golden");
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes.as_slice())
+        .read_to_string(&mut text)
+        .expect("gunzip the golden");
+    text
+}
+
+/// Writes `text` as a golden file (gzip).
+fn write_golden(path: &Path, text: &str) {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(text.as_bytes()).expect("gzip");
+    std::fs::write(path, gz.finish().expect("gzip")).expect("write the golden");
+}
+
 /// core.lock's golden under a `--golden DIR` (the repository's layout).
 fn lock_golden(golden: &str) -> PathBuf {
-    Path::new(golden).join("crates/anthology-core/tests/golden/core.lock.jsonl")
+    Path::new(golden).join("crates/anthology-core/tests/golden/core.lock.jsonl.gz")
 }
 
 fn freeze_core_lock(python: &str, golden: &str) -> String {
@@ -79,7 +98,7 @@ fn freeze_core_lock(python: &str, golden: &str) -> String {
         out.contains(&format!("freeze: wrote {} (820 cases)", path.display())),
         "{out}"
     );
-    std::fs::read_to_string(path).expect("golden")
+    read_golden(&path)
 }
 
 #[test]
@@ -139,7 +158,7 @@ fn bless_records_rust_for_a_changed_case_only() {
     assert!(second.ends_with("\"marks\": []}"), "{second}");
     let changed = second.replace("\"expect\": {\"exit\": ", "\"expect\": {\"exit\": 9");
     assert_ne!(changed, second);
-    std::fs::write(&path, text.replacen(second, &changed, 1)).expect("write");
+    write_golden(&path, &text.replacen(second, &changed, 1));
     let check = [
         "golden",
         "check",
@@ -168,7 +187,7 @@ fn bless_records_rust_for_a_changed_case_only() {
         "{out}"
     );
     // Rust's result is what Python answered: the file is the frozen one again, byte for byte.
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), text);
+    assert_eq!(read_golden(&path), text);
     let (code, out) = difftest(&check);
     assert_eq!(code, 0, "{out}");
 }
@@ -209,13 +228,13 @@ fn a_waived_case_pins_rust_and_drift_fails() {
         "--divergences",
         &d,
     ];
-    std::fs::write(&path, text.replacen(second, &pinned(expect), 1)).expect("write");
+    write_golden(&path, &text.replacen(second, &pinned(expect), 1));
     let (code, out) = difftest(&check);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("core.lock: waived 1 diff(s) by "), "{out}");
     // Rust's result differs from the pinned one: the waiver no longer hides it.
     let drifted = expect.replacen("{\"exit\": ", "{\"exit\": 8", 1);
-    std::fs::write(&path, text.replacen(second, &pinned(&drifted), 1)).expect("write");
+    write_golden(&path, &text.replacen(second, &pinned(&drifted), 1));
     let (code, out) = difftest(&check);
     assert_eq!(code, 1, "{out}");
     assert!(
@@ -237,7 +256,7 @@ fn a_waived_case_pins_rust_and_drift_fails() {
     ];
     let (code, out) = difftest(&bless);
     assert_eq!(code, 0, "{out}");
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), text);
+    assert_eq!(read_golden(&path), text);
     // And bless refuses in CI.
     let out = Command::new(BIN)
         .args(bless)
@@ -342,7 +361,7 @@ fn golden_usage_errors_exit_2() {
                 "--golden",
                 "/nonexistent",
             ][..],
-            "core.lock: no golden at /nonexistent/crates/anthology-core/tests/golden/core.lock.jsonl",
+            "core.lock: no golden at /nonexistent/crates/anthology-core/tests/golden/core.lock.jsonl.gz",
         ),
     ] {
         let (code, out) = difftest(args);
@@ -351,9 +370,33 @@ fn golden_usage_errors_exit_2() {
     }
 }
 
-/// The committed goldens (`crates/*/tests/golden/<surface>.jsonl`, written by `difftest freeze`
+/// The committed goldens (`crates/*/tests/golden/<surface>.jsonl.gz`, written by `difftest freeze`
 /// at CO2) replay clean. Before they exist every surface is a `skip`; after the cutover a ported
 /// surface without one fails.
+/// The committed goldens stay small enough for the repository (CO2-prep ruling): at most 5 MB
+/// per file and 20 MB in all.
+#[test]
+fn the_committed_goldens_fit_the_size_caps() {
+    const FILE_CAP: u64 = 5_000_000;
+    const TOTAL_CAP: u64 = 20_000_000;
+    let mut total = 0;
+    for krate in std::fs::read_dir(root().join("crates")).expect("ls crates") {
+        let dir = krate.expect("entry").path().join("tests/golden");
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for f in files {
+            let p = f.expect("entry").path();
+            if p.to_string_lossy().ends_with(".jsonl.gz") {
+                let n = std::fs::metadata(&p).expect("stat").len();
+                assert!(n <= FILE_CAP, "{}: {n} bytes", p.display());
+                total += n;
+            }
+        }
+    }
+    assert!(total <= TOTAL_CAP, "the goldens hold {total} bytes");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn the_committed_goldens_replay_clean() {

@@ -129,8 +129,18 @@ pub const TIMED_OUT: i32 = -2;
 /// The exit code of a call that could not start.
 pub const NOT_STARTED: i32 = -1;
 
-/// The staged guardrails plugin, relative to the repository root.
-pub const STAGED_PLUGIN: &str = "port/staging/plugins/anthology-guardrails";
+/// The staged guardrails plugin under `repo`: in `port/staging/` while that folder exists (before
+/// CO2 moves it into place), else in `plugins/` (the rule of `anthology_testkit::staged`).
+pub fn staged_plugin(repo: &Path) -> PathBuf {
+    let staging = repo.join("port/staging");
+    let base = if staging.is_dir() {
+        staging
+    } else {
+        repo.to_path_buf()
+    };
+    base.join("plugins/anthology-guardrails")
+}
+
 /// Python's guard, relative to the repository root.
 pub const GUARD_PY: &str = "plugins/anthology-guardrails/scripts/guard.py";
 
@@ -206,7 +216,7 @@ impl Setup {
 
     /// The scratch copy of the staged guardrails hooks and its lock (module docs).
     fn stage_plugin(&mut self, repo: &Path) -> Result<(), String> {
-        let staged = repo.join(STAGED_PLUGIN);
+        let staged = staged_plugin(repo);
         let hooks = self.plugin.join("hooks");
         fs::create_dir_all(&hooks).map_err(|e| format!("{}: {e}", hooks.display()))?;
         let entries = fs::read_dir(staged.join("hooks"))

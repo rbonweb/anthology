@@ -20,7 +20,8 @@
 //! traceback; Rust prints `anthology-dev <tool>: <Type>: ...`).
 //!
 //! The Linux oracle image has no git, so the git paths of version-bump and memory-diff compare
-//! their git-missing outcome there; macOS runs them for real.
+//! their git-missing outcome on Linux (Rust's side leaves git off its PATH there, so the golden
+//! replay in an image with git agrees); macOS runs them for real.
 
 use std::path::Path;
 
@@ -234,6 +235,20 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The PATH Rust's side gives the tool. On Linux the folders that hold a `git` are left out: the
+/// oracle image has none, so the live run, the freeze and the golden replay (in the Rust image,
+/// which has git) all compare the git-missing outcome. macOS keeps git and runs it for real.
+fn tool_path(path: &str) -> String {
+    if !cfg!(target_os = "linux") {
+        return path.to_string();
+    }
+    let kept: Vec<&str> = path
+        .split(':')
+        .filter(|d| !Path::new(d).join("git").exists())
+        .collect();
+    kept.join(":")
+}
+
 /// The environment both sides give the tool: PATH, HOME, LANG and the case's `env`.
 fn env_for(case: &Value, home: &Path) -> Env {
     let process = Env::from_process();
@@ -246,7 +261,10 @@ fn env_for(case: &Value, home: &Path) -> Env {
         env = env.without(&k);
     }
     env = env
-        .with("PATH", process.get("PATH").unwrap_or("/usr/bin:/bin"))
+        .with(
+            "PATH",
+            &tool_path(process.get("PATH").unwrap_or("/usr/bin:/bin")),
+        )
         .with_os("HOME", home)
         .with("LANG", "C.UTF-8");
     if let Some(m) = field(case, "env").as_object() {

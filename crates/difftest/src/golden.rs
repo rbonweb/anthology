@@ -2,13 +2,14 @@
 //!
 //! `difftest freeze` runs a surface against the oracle as usual and, when the run is clean (no
 //! unexplained diff, no oracle error), writes every case with Python's side of it to
-//! `crates/<owner>/tests/golden/<surface>.jsonl` ([`path`]). `difftest golden check` then judges
+//! `crates/<owner>/tests/golden/<surface>.jsonl.gz` ([`path`]). `difftest golden check` then judges
 //! Rust against those answers with no oracle at all: the recorded cases, the recorded Python
 //! result and the recorded divergence marks, against the same `port/difftest/divergences` files.
 //! `difftest golden bless` rewrites the expected result of each case that fails with a diff to
 //! Rust's current output (and drops its marks), so every deliberate change is a visible diff.
 //!
-//! The file is JSONL, ASCII only (`json.dumps` defaults):
+//! The file is gzip ([`write`]: best compression, no name, mtime 0, so the same golden is the same
+//! bytes on every machine; `zcat` reads it) of JSONL, ASCII only (`json.dumps` defaults):
 //!
 //! - line 1, the header: `{"difftest_golden": 1, "surface": S, "seed": N, "gen": N, "cases": N}`;
 //! - then one line per case, in run order:
@@ -20,7 +21,7 @@
 //! `<key>_len` instead (the F2 rule for big outputs), and Rust's side is digested the same way
 //! before comparing.
 //!
-//! A case whose data would pass [`DIGEST_OVER`] bytes (the shell sweeps, hostile repeats) is kept
+//! A case whose data would pass [`CASE_DIGEST_OVER`] bytes (the shell sweeps, hostile repeats) is kept
 //! as `case_sha256` and `case_len` instead of `case`: [`resolve`] gets it back from the surface's
 //! own `seeds()` and `generate()` (the header's seed and gen) and checks the digest, so such a
 //! case fails loudly if the surface stops making it.
@@ -39,6 +40,11 @@ pub const VERSION: i64 = 1;
 
 /// A stored stream or tree over this many bytes is kept as a digest.
 pub const DIGEST_OVER: usize = 16 * 1024;
+
+/// A case's data over this many bytes is kept as a digest. Lower than [`DIGEST_OVER`]: a case
+/// comes back from the surface, Python's answer does not. At 8 KiB the shell code-point sweeps
+/// are digested, which takes `shell.segments` from about 6 MB to 0.5 MB compressed (CO2-prep).
+pub const CASE_DIGEST_OVER: usize = 8 * 1024;
 
 /// The crate a surface's golden lives in (its Rust side's crate).
 pub fn owner(surface: &str) -> &'static str {
@@ -65,7 +71,7 @@ pub fn path(root: &Path, dir: Option<&Path>, surface: &str) -> PathBuf {
         .join("crates")
         .join(owner(surface))
         .join("tests/golden")
-        .join(format!("{surface}.jsonl"))
+        .join(format!("{surface}.jsonl.gz"))
 }
 
 /// One frozen case.
@@ -226,7 +232,7 @@ pub fn render(header: &Header, cases: &[Frozen]) -> String {
         let mut m = Map::new();
         m.insert("id".into(), Value::Str(c.id.clone()));
         let data = json::dumps(&c.data, &PY_DEFAULT);
-        if data.len() > DIGEST_OVER {
+        if data.len() > CASE_DIGEST_OVER {
             digest(&mut m, "case", data.as_bytes());
         } else {
             m.insert("case".into(), c.data.clone());
@@ -243,12 +249,23 @@ pub fn render(header: &Header, cases: &[Frozen]) -> String {
     out
 }
 
+/// The gzip of `text` (module docs: deterministic; flate2 and miniz_oxide are pinned).
+pub fn compress(text: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut gz = flate2::GzBuilder::new()
+        .mtime(0)
+        .write(Vec::new(), flate2::Compression::best());
+    gz.write_all(text.as_bytes()).expect("gzip into memory");
+    gz.finish().expect("gzip into memory")
+}
+
 /// Writes a golden file (its folder is created).
 pub fn write(path: &Path, header: &Header, cases: &[Frozen]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(path, render(header, cases)).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::write(path, compress(&render(header, cases)))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Parses a golden file's text; `label` names it in errors, `surface` is the one expected.
@@ -387,11 +404,17 @@ pub fn resolve(surface: &dyn Surface, header: &Header, cases: &mut [Frozen]) -> 
 
 /// Reads `surface`'s golden at `path`; `Ok(None)` when there is none.
 pub fn read(path: &Path, surface: &str) -> Result<Option<(Header, Vec<Frozen>)>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text, &path.display().to_string(), surface).map(Some),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+    use std::io::Read;
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes.as_slice())
+        .read_to_string(&mut text)
+        .map_err(|e| format!("{}: not a gzip of UTF-8 text: {e}", path.display()))?;
+    parse(&text, &path.display().to_string(), surface).map(Some)
 }
 
 #[cfg(test)]
@@ -528,6 +551,18 @@ mod tests {
         assert_eq!(back, cases);
         assert_eq!(expected(&back[0].expect), with_files);
         assert_eq!(expected(&back[1].expect), raw);
+        // On disk it is gzip with no name and mtime 0: the same golden is the same bytes.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = path(dir.path(), None, "core.lock");
+        write(&file, &header, &cases).expect("write");
+        let bytes = std::fs::read(&file).expect("read");
+        assert_eq!(bytes, compress(&text));
+        assert_eq!(&bytes[..4], &[0x1f, 0x8b, 8, 0]);
+        assert_eq!(&bytes[4..8], &[0, 0, 0, 0]);
+        assert_eq!(read(&file, "core.lock").expect("reads"), Some((h, back)));
+        std::fs::write(&file, &text).expect("write");
+        let e = read(&file, "core.lock").expect_err("plain text");
+        assert!(e.contains("not a gzip of UTF-8 text"), "{e}");
     }
 
     #[test]
@@ -654,11 +689,11 @@ mod tests {
         }
         assert_eq!(
             path(Path::new("/r"), None, "guard.check"),
-            Path::new("/r/crates/anthology-guard/tests/golden/guard.check.jsonl")
+            Path::new("/r/crates/anthology-guard/tests/golden/guard.check.jsonl.gz")
         );
         assert_eq!(
             path(Path::new("/r"), Some(Path::new("/g")), "mem"),
-            Path::new("/g/crates/anthology-memory/tests/golden/mem.jsonl")
+            Path::new("/g/crates/anthology-memory/tests/golden/mem.jsonl.gz")
         );
     }
 }

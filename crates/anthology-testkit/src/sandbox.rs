@@ -58,6 +58,19 @@ pub fn repo_root() -> PathBuf {
     }
 }
 
+/// Where a file CO2 moves out of `port/staging/` is: `<repo>/port/staging/<rel>` while that
+/// folder exists (before the cutover), else `<repo>/<rel>` (after it). The one switch for every
+/// test that reads a staged file, so the move itself needs no test edit.
+pub fn staged(rel: &str) -> PathBuf {
+    let root = repo_root();
+    let staging = root.join("port/staging");
+    if staging.is_dir() {
+        staging.join(rel)
+    } else {
+        root.join(rel)
+    }
+}
+
 /// A plugin of this repository.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Plugin {

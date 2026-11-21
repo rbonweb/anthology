@@ -507,7 +507,7 @@ impl Sandbox {
             masks: AtomicUsize::new(0),
         };
         for p in ["anthology", "anthology-guardrails"] {
-            let src = repo_root().join("port/staging/plugins").join(p);
+            let src = crate::sandbox::staged("plugins").join(p);
             for sub in ["hooks", "bin"] {
                 if src.join(sub).is_dir() {
                     copy_tree(&src.join(sub), &sb.plugin(p).join(sub));

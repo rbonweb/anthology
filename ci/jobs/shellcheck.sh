@@ -11,7 +11,10 @@ if [ -z "$image" ]; then
     exit 1
 fi
 
-staging=port/staging/plugins
+# The shims are in port/staging/ until CO2 moves them into plugins/ (the switch of
+# anthology_testkit::staged).
+staging=plugins
+[ ! -d "$root/port/staging" ] || staging=port/staging/plugins
 set -- \
     "$staging/anthology/hooks/lib.sh" \
     "$staging/anthology/hooks/bootstrap.sh" \

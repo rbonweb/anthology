@@ -610,8 +610,7 @@ exit 0
             fx.git(&["config", "commit.gpgsign", "false"]);
             fx.git(&["config", "tag.gpgsign", "false"]);
             // The script under test is RL1's staging release.sh (it becomes scripts/release.sh).
-            let script =
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../port/staging/scripts/release.sh");
+            let script = anthology_testkit::staged("scripts/release.sh");
             fs::create_dir(fx.repo.join("scripts")).unwrap();
             fs::copy(&script, fx.repo.join("scripts/release.sh")).unwrap();
             fx.write(
@@ -721,8 +720,7 @@ exit 0
     #[test]
     fn test_script_is_executable_in_the_real_repo() {
         // The staging script becomes scripts/release.sh at CO2, so it must be executable now.
-        let script =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../port/staging/scripts/release.sh");
+        let script = anthology_testkit::staged("scripts/release.sh");
         let mode = fs::metadata(script).unwrap().permissions().mode();
         assert!(mode & 0o100 != 0, "mode {mode:o}");
     }
