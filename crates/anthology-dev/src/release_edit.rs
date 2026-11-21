@@ -149,9 +149,21 @@ fn list_names(dir: &Path) -> Option<Vec<OsString>> {
 /// included); a listing that fails is skipped; `*` and `.claude-plugin` must be directories
 /// (symlinks followed) and `plugin.json` may be anything, a dangling symlink included. Sorted by
 /// plugin directory name (pathlib compares path components).
-fn glob_manifests(plugins_dir: &Path) -> Vec<(OsString, PathBuf)> {
-    if !plugins_dir.is_dir() {
-        return Vec::new();
+///
+/// `select_from` starts with `Path.is_dir()`, which ignores only ENOENT, ENOTDIR, EBADF and
+/// ELOOP; any other error from stat-ing `plugins_dir` is returned.
+fn glob_manifests(plugins_dir: &Path) -> Result<Vec<(OsString, PathBuf)>, std::io::Error> {
+    #[cfg(target_os = "macos")]
+    const ELOOP: i32 = 62;
+    #[cfg(not(target_os = "macos"))]
+    const ELOOP: i32 = 40;
+    match fs::metadata(plugins_dir) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return Ok(Vec::new()),
+        Err(e) if matches!(e.raw_os_error(), Some(2 | 20 | 9 | ELOOP)) => {
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e),
     }
     let mut names = list_names(plugins_dir).unwrap_or_default();
     names.sort();
@@ -175,7 +187,7 @@ fn glob_manifests(plugins_dir: &Path) -> Vec<(OsString, PathBuf)> {
             found.push((name, cp.join("plugin.json")));
         }
     }
-    found
+    Ok(found)
 }
 
 /// `check_dependents`: the problems (one message each) for plugins under `root/plugins` whose
@@ -200,7 +212,9 @@ fn check_dependents_in(
         r => format!("{r}/{rel}"),
     };
     let plugins_dir = cwd.join(root).join("plugins");
-    for (name, manifest) in glob_manifests(&plugins_dir) {
+    let manifests = glob_manifests(&plugins_dir)
+        .map_err(|e| Failure::Os(os_error_str(e, &shown("plugins"))))?;
+    for (name, manifest) in manifests {
         let dependent = name.to_string_lossy().into_owned();
         let rel = format!("plugins/{dependent}/.claude-plugin/plugin.json");
         let bytes = fs::read(&manifest).map_err(|e| Failure::Os(os_error_str(e, &shown(&rel))))?;

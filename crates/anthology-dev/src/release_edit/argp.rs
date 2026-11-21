@@ -136,6 +136,14 @@ fn classify(p: &Parser<'_>, s: &str) -> Kind {
         if hits.len() == 1 {
             return hits.remove(0);
         }
+    } else if s.starts_with("-=") {
+        // The single-dash prefix before `=` is `-`, which every option string starts with.
+        let mut names = vec!["-h", "--help"];
+        names.extend(p.opts.iter().map(|o| o.long));
+        return Kind::Ambiguous(format!(
+            "ambiguous option: {s} could match {}",
+            names.join(", ")
+        ));
     } else if let Some(rest) = s.strip_prefix("-h") {
         // A single-dash cluster (`-hx`): Python 3.12 runs `-h` and leaves the rest as strays
         // (the help exits first); an `=` or a `-` right after `-h` is an error.
@@ -158,13 +166,8 @@ pub fn parse_known(p: &Parser<'_>, args: &[OsString]) -> Result<Parsed, Stop> {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let n = strs.len();
-    // argparse classifies every argument before the first `--` up front, so an ambiguous
-    // option abbreviation is reported before anything else.
-    for s in strs.iter().take_while(|s| *s != "--") {
-        if let Kind::Ambiguous(m) = classify(p, s) {
-            return Err(Stop::Error(m));
-        }
-    }
+    // argparse classifies every argument up front but only raises an ambiguous-option error
+    // when parsing reaches that argument (an earlier `-h` or a missing option value wins).
     let mut out = Parsed::default();
     let mut dashdash = false;
     // The index just after the last positional (a `--` right there is swallowed with it).

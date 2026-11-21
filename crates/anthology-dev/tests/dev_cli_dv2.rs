@@ -230,6 +230,82 @@ mod release_edit_cli {
             "{}",
             r.err
         );
+        // The error is raised when parsing reaches the argument: an earlier `-h`, or an option
+        // still waiting for its value, wins.
+        let r = release(cwd, &["changelog-move", "-h", "--=x"]);
+        assert_eq!((r.code, r.err.as_str()), (0, ""));
+        let r = release(cwd, &["changelog-move", "--date", "--=x", "a", "b", "c"]);
+        assert_eq!(r.code, 2);
+        assert!(
+            r.err
+                .ends_with("error: argument --date: expected one argument\n"),
+            "{}",
+            r.err
+        );
+        let r = bump(cwd, &Env::default(), &["-h", "--=x"]);
+        assert_eq!((r.code, r.err.as_str()), (0, ""));
+        let r = bump(cwd, &Env::default(), &["--repo", "--=x", "a", "b"]);
+        assert_eq!(r.code, 2);
+        assert!(
+            r.err
+                .ends_with("error: argument --repo: expected one argument\n"),
+            "{}",
+            r.err
+        );
+        // `-=x` matches every option string.
+        for (a, prog, could) in [
+            (
+                &["-=x", "check-version", "1", "2", "1"][..],
+                "",
+                "-h, --help",
+            ),
+            (
+                &["check-version", "1", "2", "1", "-=x"][..],
+                " check-version",
+                "-h, --help",
+            ),
+            (
+                &["changelog-move", "a", "b", "c", "-=x"][..],
+                " changelog-move",
+                "-h, --help, --date",
+            ),
+            (&["-="][..], "", "-h, --help"),
+        ] {
+            let r = release(cwd, a);
+            assert_eq!(r.code, 2, "{a:?}");
+            let arg = a.iter().rev().find(|s| s.starts_with("-=")).unwrap();
+            let want = format!(
+                "anthology-dev release-edit{prog}: error: ambiguous option: {arg} could match {could}\n"
+            );
+            assert!(r.err.ends_with(&want), "{a:?}: {}", r.err);
+        }
+        let r = bump(cwd, &Env::default(), &["-=x"]);
+        assert_eq!(r.code, 2);
+        assert!(
+            r.err
+                .ends_with("error: ambiguous option: -=x could match -h, --help, --repo\n"),
+            "{}",
+            r.err
+        );
+    }
+
+    #[test]
+    fn an_unsearchable_root_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("g");
+        fs::create_dir_all(root.join("plugins")).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+        // Root ignores the mode: then the directory stays searchable and nothing fails.
+        let searchable = fs::metadata(root.join("plugins")).is_ok();
+        let r = release(tmp.path(), &["check-dependents", "g", "core", "1.0.0"]);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        if searchable {
+            return;
+        }
+        assert_eq!(r.code, 1, "{}", r.err);
+        assert!(r.err.starts_with("release: [Errno 13] "), "{}", r.err);
+        assert!(r.err.ends_with(": 'g/plugins'\n"), "{}", r.err);
     }
 
     #[test]
