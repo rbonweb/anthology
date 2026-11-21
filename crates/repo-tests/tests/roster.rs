@@ -602,6 +602,17 @@ mod roster_test {
                 );
                 if spec.edits == "yes" {
                     expect_in(p, "chore(memory)", &memory, "Memory");
+                    // Notes are saved before the final commit and committed with it.
+                    expect_in(p, "Before your final commit, save", &memory, "Memory");
+                    expect_in(
+                        p,
+                        &format!(
+                            "Include `.claude/agent-memory/anthology-{}/` in that final commit",
+                            spec.name
+                        ),
+                        &memory,
+                        "Memory",
+                    );
                 } else {
                     expect_in(p, "uncommitted", &memory, "Memory");
                 }
