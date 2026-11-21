@@ -1,7 +1,8 @@
 //! `check()`: the rule order of GC-6 (GD1), guard_rules.py `_check` and `check`.
 //!
 //! Order: G5 on the tool name; G6 (file tool, then command); G3 on the tool input's paths,
-//! search roots and code; then per entry G3, G4, G1, G2.
+//! search roots and code; then per entry G3, G4, G1, G2; then G1 on each alternate reading of a
+//! wrapped command (`Analysis.alternates`).
 //!
 //! Python turns any exception into "allow". Rust has no such path: it blocks where it cannot
 //! finish (design §9.5, D-1/D-7):
@@ -185,6 +186,11 @@ fn run(
         if g2(entry) {
             return Verdict::Block(Rule::G2);
         }
+    }
+    // Each other reading of a wrapped command (`Analysis.alternates`) is checked against G1 only, as
+    // guard_rules.py `_add_alternates` checks it (SH lead ruling Q3=A).
+    if analysis.alternates.iter().any(|alt| g1_with(alt, fw)) {
+        return Verdict::Block(Rule::G1);
     }
     let regex_limit = analysis
         .entries

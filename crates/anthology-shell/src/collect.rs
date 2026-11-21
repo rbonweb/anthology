@@ -350,7 +350,24 @@ fn expand_braces(
     work: &mut Work,
 ) -> Result<(), TooComplex> {
     work.charge_extra(WORD + 2 * word.len())?;
-    let Some((open, close, commas)) = brace_at(word) else {
+    let comma = brace_at(word);
+    let sequence = brace_sequences(word).into_iter().find_map(|(open, close)| {
+        int_sequence(&word[open + 1..close]).map(|seq| (open, close, seq))
+    });
+    if let Some((open, close, seq)) = sequence
+        && comma.as_ref().is_none_or(|(at, _, _)| open < *at)
+    {
+        if level >= MAX_BRACE_DEPTH {
+            return Err(TooComplex);
+        }
+        work.charge_extra(seq.count * (WORD + seq.len))?;
+        let (pre, post) = (&word[..open], &word[close + 1..]);
+        for number in seq.words() {
+            expand_braces(&format!("{pre}{number}{post}"), level + 1, out, work)?;
+        }
+        return Ok(());
+    }
+    let Some((open, close, commas)) = comma else {
         if out.len() >= MAX_BRACE_WORDS {
             return Err(TooComplex);
         }
@@ -384,7 +401,7 @@ fn brace_reading(tokens: &[String], work: &mut Work) -> Result<Option<Vec<String
             continue;
         }
         work.charge_extra(token.len())?;
-        if brace_at(token).is_none() {
+        if brace_at(token).is_none() && brace_sequences(token).is_empty() {
             reading.push(token.clone());
             continue;
         }
@@ -437,12 +454,82 @@ const COMMAND_ENV: &[&str] = &[
 ];
 
 /// Fail closed (controller ruling): words whose bash expansion the analysis does not model. `braces`: the
-/// segment had an unquoted `{`.
-fn fail_closed(tokens: &[String], braces: bool) -> bool {
+/// segment had an unquoted `{`; `quoted_braces`: one of its words held a quoted or escaped `{`, `}` or `,`.
+fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool) -> bool {
+    if braces && mixed_braces(tokens, quoted_braces) {
+        return true;
+    }
     tokens.iter().any(|t| {
-        (braces && t.contains('{') && (brace_sequence(t) || brace_item_space(t)))
+        (braces
+            && t.contains('{')
+            && (letter_sequence(t) || brace_item_space(t) || sequence_nested_comma(t)))
             || subscript_runs(t)
     })
+}
+
+/// SH-seq review C-1: the brace reading expands every brace past quote removal, so it is bash's only when
+/// nothing brace-like was quoted, and (interim rule) when an integer sequence is the only brace expression of
+/// the command. Otherwise neither reading need be bash's: too complex.
+fn mixed_braces(tokens: &[String], quoted_braces: bool) -> bool {
+    let count: usize = tokens.iter().map(|t| brace_expressions(t)).sum();
+    count > 0
+        && (quoted_braces || (count > 1 && tokens.iter().any(|t| !brace_sequences(t).is_empty())))
+}
+
+/// The brace expressions of `word` (not `${`): braces holding a comma at their own level, or a `..`.
+fn brace_expressions(word: &str) -> usize {
+    let b = word.as_bytes();
+    let mut stack: Vec<(usize, bool)> = Vec::new(); // (open, a comma at its level)
+    let mut count = 0;
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'{' => stack.push((j, false)),
+            b',' => {
+                if let Some(top) = stack.last_mut() {
+                    top.1 = true;
+                }
+            }
+            b'}' => {
+                if let Some((open, comma)) = stack.pop()
+                    && (open == 0 || b[open - 1] != b'$')
+                    && (comma || word[open + 1..j].contains(".."))
+                {
+                    count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
+/// SH-seq review I-1: a `..` brace holding a comma brace (`{-1..{1,}}`): bash reads the comma first, then no
+/// sequence; this analysis would read a sequence. Too complex.
+fn sequence_nested_comma(word: &str) -> bool {
+    let b = word.as_bytes();
+    let mut stack: Vec<(usize, bool, bool)> = Vec::new(); // (open, comma at its level, a comma deeper)
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'{' => stack.push((j, false, false)),
+            b',' => {
+                if let Some(top) = stack.last_mut() {
+                    top.1 = true;
+                }
+            }
+            b'}' => {
+                if let Some((open, comma, deeper)) = stack.pop() {
+                    if deeper && !comma && word[open + 1..j].contains("..") {
+                        return true;
+                    }
+                    if let Some(parent) = stack.last_mut() {
+                        parent.2 |= comma || deeper;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A brace expression whose items hold whitespace (a quoted item, `{'a b',c}`); whitespace elsewhere in the
@@ -451,9 +538,10 @@ fn brace_item_space(word: &str) -> bool {
     brace_at(word).is_some_and(|(open, close, _)| word[open..=close].contains(char::is_whitespace))
 }
 
-/// A brace sequence `{x..y}` (not `${`): bash expands it to a list of words.
-fn brace_sequence(word: &str) -> bool {
+/// The brace sequences `{x..y}` of `word` (not `${`), as (open, close), in order.
+fn brace_sequences(word: &str) -> Vec<(usize, usize)> {
     let b = word.as_bytes();
+    let mut out = Vec::new();
     let mut open = None;
     for (j, &c) in b.iter().enumerate() {
         match c {
@@ -463,13 +551,93 @@ fn brace_sequence(word: &str) -> bool {
                 if let Some(at) = open.take()
                     && word[at + 1..j].contains("..")
                 {
-                    return true;
+                    out.push((at, j));
                 }
             }
             _ => {}
         }
     }
-    false
+    out
+}
+
+/// A brace sequence other than an integer one (`{a..e}`, `{1..x}`): too complex (controller ruling).
+fn letter_sequence(word: &str) -> bool {
+    brace_sequences(word)
+        .into_iter()
+        .any(|(open, close)| int_sequence(&word[open + 1..close]).is_none())
+}
+
+/// An integer sequence (`1..5`, `01..10`, `0..20..5`, `5..1`): its bounds, read without building its words
+/// (SH-seq review M-1).
+struct IntSequence {
+    start: i64,
+    end: i64,
+    step: u64,
+    width: usize,
+    count: usize,
+    /// The longer endpoint's length: no word is longer.
+    len: usize,
+}
+
+impl IntSequence {
+    /// Its words, as bash 5 writes them: zero-padded to the wider endpoint when either has a leading zero.
+    fn words(&self) -> Vec<String> {
+        let (start, end, step, width) = (self.start, self.end, self.step, self.width);
+        let mut out = Vec::with_capacity(self.count);
+        let mut n = start;
+        for _ in 0..self.count {
+            out.push(if n < 0 {
+                format!("-{:0w$}", n.unsigned_abs(), w = width.saturating_sub(1))
+            } else {
+                format!("{n:0width$}")
+            });
+            n = if start <= end {
+                n.saturating_add(step as i64)
+            } else {
+                n.saturating_sub(step as i64)
+            };
+        }
+        out
+    }
+}
+
+/// `inner` read as an integer sequence; the step's sign is ignored. `None` when it is not one, or would give
+/// more than `MAX_BRACE_WORDS` words.
+fn int_sequence(inner: &str) -> Option<IntSequence> {
+    let parts: Vec<&str> = inner.split("..").collect();
+    let int = |p: &str| -> Option<i64> {
+        let digits = p.strip_prefix('-').unwrap_or(p);
+        if digits.is_empty() || digits.len() > 18 || !digits.bytes().all(|d| d.is_ascii_digit()) {
+            return None;
+        }
+        p.parse().ok()
+    };
+    let (start, end, step) = match parts.as_slice() {
+        [a, b] => (int(a)?, int(b)?, 1),
+        [a, b, s] => (int(a)?, int(b)?, int(s)?.unsigned_abs().max(1)),
+        _ => return None,
+    };
+    let padded = |p: &str| {
+        let d = p.strip_prefix('-').unwrap_or(p);
+        d.len() > 1 && d.starts_with('0')
+    };
+    let width = if padded(parts[0]) || padded(parts[1]) {
+        parts[0].len().max(parts[1].len())
+    } else {
+        0
+    };
+    let count = start.abs_diff(end) / step + 1;
+    if count > MAX_BRACE_WORDS as u64 {
+        return None;
+    }
+    Some(IntSequence {
+        start,
+        end,
+        step,
+        width,
+        count: count as usize,
+        len: parts[0].len().max(parts[1].len()),
+    })
 }
 
 /// A `[...]` subscript holding `$(`, a backtick or `$'`: bash evaluates it (arithmetic), running the
@@ -630,6 +798,8 @@ pub(crate) struct Ctx<'a> {
     /// The commands `add_one` adds come from a segment with an unquoted `{` (`Segment::braces`); scoped to
     /// one `collect` call.
     braces: bool,
+    /// The same segment's `Segment::quoted_braces`.
+    quoted_braces: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -648,6 +818,7 @@ impl<'a> Ctx<'a> {
             stdin_runs: HashMap::new(),
             arith: false,
             braces: false,
+            quoted_braces: false,
         }
     }
 
@@ -821,9 +992,9 @@ impl<'a> Ctx<'a> {
             return false;
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
-        let braces = self.braces;
+        let (braces, quoted_braces) = (self.braces, self.quoted_braces);
         self.collect_once(text, exempt, depth);
-        self.braces = braces;
+        (self.braces, self.quoted_braces) = (braces, quoted_braces);
         self.seen.insert(key, (depth, self.cwd.clone()));
         false
     }
@@ -858,6 +1029,7 @@ impl<'a> Ctx<'a> {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
             self.braces = seg.braces;
+            self.quoted_braces = seg.quoted_braces;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
                 Some(entry) => {
                     new_entries.push(entry);
@@ -1399,7 +1571,7 @@ impl<'a> Ctx<'a> {
         if !self.spend(1 + 2 * size) {
             return None;
         }
-        if fail_closed(&tokens, self.braces) {
+        if fail_closed(&tokens, self.braces, self.quoted_braces) {
             self.halt();
             return None;
         }
@@ -1422,6 +1594,15 @@ impl<'a> Ctx<'a> {
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
         let prefix = &tokens[..tokens.len().saturating_sub(cmd.len())];
+        // an integer sequence is allowed after the program word only: before it, or as it, it could form one
+        if self.braces
+            && tokens[..(prefix.len() + 1).min(tokens.len())]
+                .iter()
+                .any(|t| !brace_sequences(t).is_empty())
+        {
+            self.halt();
+            return None;
+        }
         if option_env_unmodelled(prefix, &prog, &args) {
             self.halt();
             return None;

@@ -192,12 +192,14 @@ def _lenient_segments(text):
             seg = G._Seg(G._Group())
             seg.tokens = tokens
             seg.braces = True                             # re-review F-1: quoting is unknown here
+            seg.quoted_braces = True                      # SH-seq C-1: so no brace reading is trusted
             out.append(seg)
             for start, first in G._script_starts(tokens):   # `bash -c <rest of the line>`
                 G._charge(len(tokens) - start)
                 extra = G._Seg(G._Group())
                 extra.tokens = [first] + tokens[start + 1:]
                 extra.braces = True
+                extra.quoted_braces = True
                 out.append(extra)
     return out
 
@@ -259,6 +261,15 @@ def _brace_at(word):
 def _expand_braces(word, level, out):
     """Bash's brace expansion of `word`, appended to `out`; too complex past `_MAX_BRACE_WORDS`."""
     found = _brace_at(word)
+    sequence = next(((o, c, w) for o, c in _brace_sequences(word)
+                     for w in [_int_sequence(word[o + 1:c])] if w is not None), None)
+    if sequence is not None and (found is None or sequence[0] < found[0]):
+        if level >= _MAX_BRACE_DEPTH:
+            raise G._TooComplex()
+        o, c, words = sequence
+        for number in words:
+            _expand_braces(word[:o] + number + word[c + 1:], level + 1, out)
+        return
     if found is None:
         if len(out) >= _MAX_BRACE_WORDS:
             raise G._TooComplex()
@@ -277,7 +288,7 @@ def _brace_reading(tokens):
     """C-3: `tokens` with every brace expression expanded, empty words dropped; None without one."""
     words, reading, found = [], [], False
     for token in tokens:
-        if "{" not in token or _brace_at(token) is None:
+        if "{" not in token or (_brace_at(token) is None and not _brace_sequences(token)):
             reading.append(token)
             continue
         found = True
@@ -490,8 +501,9 @@ _COMMAND_ENV = ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_PAGER", "GIT_EDITOR", "GIT_SE
                 "VISUAL", "RSYNC_RSH")
 
 
-def _brace_sequence(word):
-    open_ = None
+def _brace_sequences(word):
+    """collect.rs `brace_sequences`: each `{x..y}` (not `${`) as (open, close)."""
+    out, open_ = [], None
     for j, c in enumerate(word):
         if c == "{":
             open_ = j if j == 0 or word[j - 1] != "$" else None
@@ -499,9 +511,44 @@ def _brace_sequence(word):
             open_ = None
         elif c == "}":
             if open_ is not None and ".." in word[open_ + 1:j]:
-                return True
+                out.append((open_, j))
             open_ = None
-    return False
+    return out
+
+
+def _int_sequence(inner):
+    """collect.rs `int_sequence`: an integer sequence's words, or None."""
+    parts = inner.split("..")
+
+    def num(p):
+        d = p[1:] if p.startswith("-") else p
+        if not d or len(d) > 18 or not all(c in "0123456789" for c in d):
+            return None
+        return int(p)
+    if len(parts) not in (2, 3):
+        return None
+    start, end = num(parts[0]), num(parts[1])
+    step = num(parts[2]) if len(parts) == 3 else 1
+    if start is None or end is None or step is None:
+        return None
+    step = max(abs(step), 1)
+
+    def padded(p):
+        d = p[1:] if p.startswith("-") else p
+        return len(d) > 1 and d.startswith("0")
+    width = max(len(parts[0]), len(parts[1])) if padded(parts[0]) or padded(parts[1]) else 0
+    count = abs(start - end) // step + 1
+    if count > _MAX_BRACE_WORDS:
+        return None
+    out, n = [], start
+    for _ in range(count):
+        out.append("-" + str(-n).zfill(max(width - 1, 0)) if n < 0 else str(n).zfill(width))
+        n = n + step if start <= end else n - step
+    return out
+
+
+def _letter_sequence(word):
+    return any(_int_sequence(word[o + 1:c]) is None for o, c in _brace_sequences(word))
 
 
 def _brace_item_space(word):
@@ -521,9 +568,49 @@ def _subscript_runs(word):
     return False
 
 
-def _fail_closed(tokens, braces):
+def _brace_expressions(word):
+    """collect.rs `brace_expressions`: braces (not `${`) holding a comma at their level, or a `..`."""
+    stack, count = [], 0
+    for j, c in enumerate(word):
+        if c == "{":
+            stack.append([j, False])
+        elif c == "," and stack:
+            stack[-1][1] = True
+        elif c == "}" and stack:
+            open_, comma = stack.pop()
+            if (open_ == 0 or word[open_ - 1] != "$") and (comma or ".." in word[open_ + 1:j]):
+                count += 1
+    return count
+
+
+def _sequence_nested_comma(word):
+    """collect.rs `sequence_nested_comma` (SH-seq review I-1): a `..` brace holding a comma brace."""
+    stack = []
+    for j, c in enumerate(word):
+        if c == "{":
+            stack.append([j, False, False])
+        elif c == "," and stack:
+            stack[-1][1] = True
+        elif c == "}" and stack:
+            open_, comma, deeper = stack.pop()
+            if deeper and not comma and ".." in word[open_ + 1:j]:
+                return True
+            if stack:
+                stack[-1][2] = stack[-1][2] or comma or deeper
+    return False
+
+
+def _mixed_braces(tokens, quoted_braces):
+    """collect.rs `mixed_braces` (SH-seq review C-1)."""
+    count = sum(_brace_expressions(t) for t in tokens)
+    return count > 0 and (quoted_braces or (count > 1 and any(_brace_sequences(t) for t in tokens)))
+
+
+def _fail_closed(tokens, braces, quoted_braces=False):
+    if braces and _mixed_braces(tokens, quoted_braces):
+        return True
     return any(
-        (braces and "{" in t and (_brace_sequence(t) or _brace_item_space(t)))
+        (braces and "{" in t and (_letter_sequence(t) or _brace_item_space(t) or _sequence_nested_comma(t)))
         or _subscript_runs(t)
         for t in tokens)
 
@@ -559,7 +646,7 @@ _ADD_COMMAND = G._add_command
 def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     """`_add_command` with Rust's fail-closed checks (collect.rs `add_one`): too complex words, unmodelled
     option environment; an exported command variable runs its value."""
-    if _fail_closed(tokens, getattr(ctx, "braces", False)):
+    if _fail_closed(tokens, getattr(ctx, "braces", False), getattr(ctx, "quoted_braces", False)):
         raise G._TooComplex()
     # Rust stops before it adds the entry: read the command unbudgeted (`_add_command` reads it again)
     left, paren_lines = G._STATE.left, G._STATE.paren_lines
@@ -569,6 +656,8 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     finally:
         G._STATE.left, G._STATE.paren_lines = left, paren_lines
     prefix = list(tokens)[:len(tokens) - len(cmd)]
+    if getattr(ctx, "braces", False) and any(_brace_sequences(t) for t in list(tokens)[:len(prefix) + 1]):
+        raise G._TooComplex()                             # a sequence before or as the program word
     if _option_env_unmodelled(prefix, G._prog_name(cmd[0]) if cmd else "", cmd[1:]):
         raise G._TooComplex()
     entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
@@ -601,11 +690,11 @@ def _collect_once(text, ctx, exempt, depth):
     """`_collect_once`, with each echo/printf text also fed decoded to a shell and to xargs/parallel, not
     to an interpreter's code (C-4); brace readings scoped to the segment (re-review F-1); a pipeline headed
     by a compound command or a function call fed what the commands before it print (re-review I-2a)."""
-    outer = getattr(ctx, "braces", False)
+    outer = getattr(ctx, "braces", False), getattr(ctx, "quoted_braces", False)
     try:
         _collect_once_body(text, ctx, exempt, depth)
     finally:
-        ctx.braces = outer
+        ctx.braces, ctx.quoted_braces = outer
 
 
 _CLOSERS = ("}", "fi", "done", "esac")
@@ -615,6 +704,7 @@ def _collect_once_body(text, ctx, exempt, depth):
     new_entries, braced, after_compound = [], set(), set()
     for seg in G._segments(text):
         ctx.braces = seg.braces
+        ctx.quoted_braces = seg.quoted_braces
         entry = G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth)
         new_entries.append(entry)
         if seg.braces:
@@ -720,12 +810,15 @@ def _end_seg(self, new_group):
         if not new_group and empty and not piped:
             self.compound = True
         self.piped = not new_group
+    self.end_word()                                       # it may note quoted braces (SH-seq C-1)
     braces, self.braces = getattr(self, "braces", False), False
+    quoted_braces, self.quoted_braces = getattr(self, "quoted_braces", False), False
     count = len(self.out)
     _END_SEG(self, new_group)
     if len(self.out) > count:
         seg = self.out[-1]
         seg.braces = braces
+        seg.quoted_braces = quoted_braces
         seg.after_compound, self.compound = getattr(self, "compound", False), False
     if new_group:
         self.compound = False
@@ -737,26 +830,54 @@ _ADD = G._Lexer.add
 _RUN = G._Lexer.run.__code__
 
 
+_DOLLAR = G._Lexer.dollar.__code__
+_MARKS = "{},"
+
+
+def _marks(text):
+    return sum(text.count(c) for c in _MARKS)
+
+
 def _add(self, chars):
-    """`_Lexer.add`, noting an unquoted `{` (`run`'s default branch; re-review F-1)."""
-    if chars == "{":
-        caller = sys._getframe(1)
-        if caller.f_code is _RUN and caller.f_locals.get("c") == "{":
+    """`_Lexer.add`, noting an unquoted `{` (`run`'s default branch; re-review F-1), and counting the
+    word's unquoted `{`, `}` and `,` (`run`'s default branch, a `${...}`; SH-seq review C-1)."""
+    caller = sys._getframe(1)
+    if chars in _MARKS and caller.f_code is _RUN and caller.f_locals.get("c") == chars:
+        if chars == "{":
             self.braces = True
+        self.marks = getattr(self, "marks", 0) + 1
+    elif chars.startswith("${") and caller.f_code is _DOLLAR:
+        self.marks = getattr(self, "marks", 0) + _marks(chars)
     _ADD(self, chars)
 
 
 G._Lexer.add = _add
 
+_END_WORD = G._Lexer.end_word
+
+
+def _end_word(self):
+    """`_Lexer.end_word`, noting a word with more `{`, `}` or `,` than were added unquoted (lexer.rs
+    `quoted_braces`)."""
+    if self.has_word:
+        if _marks("".join(self.cur)) > getattr(self, "marks", 0):
+            self.quoted_braces = True
+        self.marks = 0
+    _END_WORD(self)
+
+
+G._Lexer.end_word = _end_word
+
 
 class _Seg(G._Seg):
     """`_Seg` with Rust's segment flags (re-review F-1, I-2a)."""
-    __slots__ = ("braces", "after_compound")
+    __slots__ = ("braces", "after_compound", "quoted_braces")
 
     def __init__(self, group):
         super().__init__(group)
         self.braces = False
         self.after_compound = False
+        self.quoted_braces = False
 
 
 G._Seg = _Seg
