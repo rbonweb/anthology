@@ -1519,7 +1519,7 @@ mod wrapper_test {
             "test_rtk_install",
             "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk",
         );
-        assert_eq!(table.len(), 19);
+        assert_eq!(table.len(), 10);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));
@@ -1540,14 +1540,15 @@ mod wrapper_test {
 
     #[test]
     fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk() {
-        // A `$'` that ends a quoted regex, or an ANSI-C string with no escape, is not rtk.
+        // An ANSI-C `$'...'` is never a mention: `Bash(rtk *)` never auto-allows one, and a `$'` in a
+        // heredoc body is not decoded by the shell. So the ask is dropped and the command runs as typed.
         let w = setup();
         w.answer_fake(ASK, 0);
         let table: Vec<Row> = rows(
             "test_rtk_install",
             "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk",
         );
-        assert_eq!(table.len(), 11);
+        assert_eq!(table.len(), 22);
         for row in table {
             let command = row.str("command");
             let res = w.run_bin("rtk-hook", &[], &hook_input(command));

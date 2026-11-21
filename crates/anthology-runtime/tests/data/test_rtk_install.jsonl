@@ -41,30 +41,32 @@
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 3, "params": {"command": "r\"t\"k x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 4, "params": {"command": "r\\tk x"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 5, "params": {"command": "r\\\ntk x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 6, "params": {"command": "$'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 7, "params": {"command": "rtk x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 8, "params": {"command": "x; rtk git push"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 9, "params": {"command": "$'\\162tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 10, "params": {"command": "r$'tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 11, "params": {"command": "grep 'a$' f; $'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 12, "params": {"command": "ls\n$'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 13, "params": {"command": "ls;\t$'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 14, "params": {"command": "x=$'\\x72tk'; $x y"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 15, "params": {"command": "ls|$'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 16, "params": {"command": "ls&&$'\\x72tk' x"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 17, "params": {"command": "($'\\x72tk' x)"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 18, "params": {"command": "`$'\\x72tk' x`"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 0, "params": {"command": "ls | grep -v '^a$'"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 1, "params": {"command": "sed -n '/a$/p' f"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 2, "params": {"command": "grep -c '^$' f"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 3, "params": {"command": "echo $'a b'"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 4, "params": {"command": "grep 'a$' f | grep -v 'b\\|c'"}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 5, "params": {"command": "grep -E 'a$' f | grep -v \"b\\|c\""}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 6, "params": {"command": "grep -c '^$' f | grep \"a\\|b\""}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 7, "params": {"command": "ls | grep -E '(a|b)$' | grep \"c\\.d\""}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 8, "params": {"command": "ls | grep -E '[0-9]$' | grep \"c\\.d\""}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 9, "params": {"command": "ls | grep -E 'x{2}$' | grep \"c\\.d\""}}
-{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 10, "params": {"command": "ls | grep -E 'a1$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 6, "params": {"command": "rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 7, "params": {"command": "x; rtk git push"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 8, "params": {"command": "r$'tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 9, "params": {"command": "\"r\"tk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 0, "params": {"command": "$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 1, "params": {"command": "$'\\162tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 2, "params": {"command": "grep 'a$' f; $'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 3, "params": {"command": "ls\n$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 4, "params": {"command": "ls;\t$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 5, "params": {"command": "x=$'\\x72tk'; $x y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 6, "params": {"command": "ls|$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 7, "params": {"command": "ls&&$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 8, "params": {"command": "($'\\x72tk' x)"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 9, "params": {"command": "`$'\\x72tk' x`"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 10, "params": {"command": "cat > f <<'EOF'\n\"$'\\x41'\"\nEOF"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 11, "params": {"command": "ls | grep -v '^a$'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 12, "params": {"command": "sed -n '/a$/p' f"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 13, "params": {"command": "grep -c '^$' f"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 14, "params": {"command": "echo $'a b'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 15, "params": {"command": "grep 'a$' f | grep -v 'b\\|c'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 16, "params": {"command": "grep -E 'a$' f | grep -v \"b\\|c\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 17, "params": {"command": "grep -c '^$' f | grep \"a\\|b\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 18, "params": {"command": "ls | grep -E '(a|b)$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 19, "params": {"command": "ls | grep -E '[0-9]$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 20, "params": {"command": "ls | grep -E 'x{2}$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 21, "params": {"command": "ls | grep -E 'a1$' | grep \"c\\.d\""}}
 {"py": "test_rtk_install.WrapperTest.test_hook_passes_rewrites_and_denies_through", "row": 0, "params": {"answer": "rewrite"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_passes_rewrites_and_denies_through", "row": 1, "params": {"answer": "deny"}}
 {"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 0, "params": {"answer": "ask", "rc": 2}}
