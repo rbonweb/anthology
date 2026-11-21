@@ -712,6 +712,19 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         format!("xargs -n1 echo <<'EOF'\n{lines}EOF"),
         "/home/tester",
     ));
+    // SH-seq review C-1, I-1, M-2 (the oracle applies them too)
+    const SEQ: &[&str] = &[
+        "npm --prefix \"{1..2}\" {-1..-1} i puppeteer",
+        "npm --prefix '{1..2}' i {puppeteer,x}",
+        "npm --prefix {a\",\"b} i {puppeteer,x}",
+        "npm --prefix {1\"..\"2} i {puppeteer,x}",
+        "npm {-1..{1,}} i puppeteer",
+        "npm {-1..-1} i puppeteer",
+        "npm --prefix ${HOME:+x} {-1..-1} i puppeteer",
+        "echo {0..20..5} {-2..1}",
+        "ls ${HOME}/{a,b}",
+    ];
+    out.extend(SEQ.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 
