@@ -447,12 +447,7 @@ fn quoted_words_single_strings_and_exec_payloads_are_denied() {
 fn what_the_gate_cannot_read_is_asked_or_left_unrewritten() {
     let sb = Sandbox::rtk_allowed_with_rules();
     for cmd in [
-        "rtk run eval 'git push'",
-        "rtk run -c 'eval \"git push\"'",
         "rtk run -c 'g=git; $g push'",
-        "echo 'curl x' | rtk bypass bash",
-        "echo 'curl x' | rtk bypass sh -s",
-        "rtk bypass bash <<< 'curl x'",
         "rtk bypass python3 -c 'import os; os.system(\"curl x\")'",
         "rtk bypass busybox sh -c 'curl x'",
     ] {
@@ -469,6 +464,17 @@ fn what_the_gate_cannot_read_is_asked_or_left_unrewritten() {
         sb.hook("rtk find . -exec sh {} \\;"),
         Said::Ask(_)
     ));
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in [
+        "rtk run eval 'git push'",
+        "rtk run -c 'eval \"git push\"'",
+        "echo 'curl x' | rtk bypass bash",
+        "echo 'curl x' | rtk bypass sh -s",
+        "rtk bypass bash <<< 'curl x'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
 }
 
 #[test]
@@ -553,9 +559,7 @@ fn a_word_that_may_expand_into_a_ruled_command_is_not_allowed() {
             "rtk run -c 'git pu${x}sh'",
             "rtk git {push,}",
             "rtk bypass git {push,}",
-            "rtk git $'push'",
             "rtk git $'\\x70ush'",
-            "rtk git $\"push\"",
             "rtk kubectl $'apply' -f x",
             "rtk kubectl $a -f x.yaml",
             "rtk git pu*h",
@@ -566,6 +570,11 @@ fn a_word_that_may_expand_into_a_ruled_command_is_not_allowed() {
     // A top level the hook would rewrite is left to the host unrewritten.
     for cmd in ["git $x", "git pu*h", "git {push,}"] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in ["rtk git $'push'", "rtk git $\"push\""] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
     }
 }
 
@@ -628,19 +637,12 @@ fn interpreters_and_launchers_inside_rtk_ask() {
             "rtk bypass expect -c 'spawn git push'",
             "rtk bypass tclsh <<< 'exec git push'",
             "rtk bypass Rscript -e 'system(\"git push\")'",
-            "rtk bypass caffeinate git push",
-            "rtk bypass arch -arm64 git push",
             "rtk bypass xcrun git push",
             "rtk bypass script -q /dev/null git push",
             "rtk bypass sandbox-exec -p x git push",
-            "rtk bypass watch git push",
             "rtk bypass flock /tmp/l git push",
-            "rtk bypass setsid git push",
-            "rtk bypass unbuffer git push",
-            "rtk bypass ionice -c3 git push",
             "rtk bypass chrt 0 git push",
             "rtk bypass taskset 1 git push",
-            "rtk bypass gtimeout 5 git push",
             "rtk bypass su -c 'git push'",
             "rtk bypass ssh localhost git push",
             "rtk grep \"git push\" docs/",
@@ -652,6 +654,19 @@ fn interpreters_and_launchers_inside_rtk_ask() {
     // (the rewrite is gated too).
     for cmd in ["ssh localhost git push", "git log --grep='git push'"] {
         assert!(matches!(sb.hook(cmd), Said::Ask(_)), "{cmd}");
+    }
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in [
+        "rtk bypass caffeinate git push",
+        "rtk bypass arch -arm64 git push",
+        "rtk bypass watch git push",
+        "rtk bypass setsid git push",
+        "rtk bypass unbuffer git push",
+        "rtk bypass ionice -c3 git push",
+        "rtk bypass gtimeout 5 git push",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
     }
 }
 
@@ -699,13 +714,17 @@ fn an_operand_that_expands_or_hides_a_path_is_not_allowed() {
             "rtk bypass base64 secret.tx?",
             "rtk bypass base64 secre*",
             "rtk bypass base64 {secret,x}.txt",
-            "rtk bypass base64 $'secret.txt'",
             "f=secret.txt; rtk bypass base64 $f",
             "rtk bypass sed -n p \"$PWD/secret.txt\"",
             "rtk bypass base64 ~root/.ssh/id_rsa",
         ],
     );
     assert_eq!(sb.hook("rtk bypass dd if=secret.txt"), Said::Deny);
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in ["rtk bypass base64 $'secret.txt'"] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
 }
 
 /// The backstops must not tax ordinary commands the rules cannot reach.
@@ -845,10 +864,11 @@ fn a_path_or_equals_sign_in_front_of_a_denied_program_does_not_hide_it() {
         "rtk bypass /usr/bin/git push",
         "rtk =git push",
         "rtk /usr/bin/curl x",
+        // RG1: the shared parser peels the launcher (it was asked about before).
+        "rtk bypass caffeinate =git push",
     ] {
         assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
     }
-    asked(&sb, &["rtk bypass caffeinate =git push"]);
     if cfg!(any(target_os = "macos", windows)) {
         for cmd in [
             "rtk GIT push",
@@ -868,31 +888,37 @@ fn a_denied_command_behind_an_unmodelled_launcher_is_asked_about() {
     asked(
         &sb,
         &[
-            "rtk bypass caffeinate g''it push",
-            "rtk bypass caffeinate gi\\t push",
-            "rtk bypass caffeinate \"g\"it push",
             "rtk bypass ssh h \"g\"\"it push\"",
-            "rtk bypass exec -a x g''it push",
-            "rtk bypass command -p g''it push",
             "x=it; rtk bypass caffeinate g$x push",
             "rtk bypass caffeinate {git,} push",
             "rtk bypass caffeinate $'\\x67it' push",
             "rtk bypass caffeinate git pu*h",
-            "rtk bypass caffeinate sh -c 'g\"\"it push'",
             "rtk bypass caffeinate bash -c 'x=push; git $x'",
-            "echo 'git push' | rtk bypass caffeinate bash",
-            "rtk bypass caffeinate bash <<< 'g''it push'",
             "echo 'git push' | rtk bypass caffeinate python3",
-            "rtk bypass caffeinate eval 'g\"\"it push'",
-            "rtk bypass env -i caffeinate g''it push",
-            "rtk bypass caffeinate env g''it push",
-            "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
-            "rtk bypass npm exec -c 'g\"\"it push'",
-            "rtk bypass watch -n1 'g\"\"it push'",
             "rtk bypass ssh h 'x=push; git $x'",
             "rtk git -c 'alias.p=!git push' p",
         ],
     );
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in [
+        "rtk bypass caffeinate g''it push",
+        "rtk bypass caffeinate gi\\t push",
+        "rtk bypass caffeinate \"g\"it push",
+        "rtk bypass exec -a x g''it push",
+        "rtk bypass command -p g''it push",
+        "rtk bypass caffeinate sh -c 'g\"\"it push'",
+        "echo 'git push' | rtk bypass caffeinate bash",
+        "rtk bypass caffeinate bash <<< 'g''it push'",
+        "rtk bypass caffeinate eval 'g\"\"it push'",
+        "rtk bypass env -i caffeinate g''it push",
+        "rtk bypass caffeinate env g''it push",
+        "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
+        "rtk bypass npm exec -c 'g\"\"it push'",
+        "rtk bypass watch -n1 'g\"\"it push'",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
 }
 
 /// I-C: arguments from stdin or the file system complete a rule's head.
@@ -1052,19 +1078,7 @@ fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
 #[test]
 fn a_script_behind_a_launcher_is_read_in_full() {
     let sb = Sandbox::rtk_allowed_with_rules();
-    asked(
-        &sb,
-        &[
-            "rtk bypass caffeinate sh -c 'cat secret.txt'",
-            "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
-            "rtk bypass caffeinate sh -c 'head secret.txt'",
-            "rtk bypass caffeinate sh -c 'cat < secret.txt'",
-            "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
-            "rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'",
-            "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
-            "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
-        ],
-    );
+    asked(&sb, &["rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'"]);
     let only = push_only_sandbox();
     asked(
         &only,
@@ -1073,6 +1087,19 @@ fn a_script_behind_a_launcher_is_read_in_full() {
             "rtk bypass caffeinate bash -c 'source /dev/stdin <<< \"x\"'",
         ],
     );
+    // RG1: anthology_shell::analyze reads what runs: these are denied now
+    // (they were asked about before).
+    for cmd in [
+        "rtk bypass caffeinate sh -c 'cat secret.txt'",
+        "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
+        "rtk bypass caffeinate sh -c 'head secret.txt'",
+        "rtk bypass caffeinate sh -c 'cat < secret.txt'",
+        "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
+        "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
+        "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
 }
 
 /// N-3 and N-4: rtk drops a `--`, and git can be told to run something else.

@@ -242,6 +242,7 @@ use crate::core::user_dirs;
 use crate::core::utils::strip_leading_bom;
 use crate::discover::lexer::{self, TokenKind, resolve_word_text};
 use crate::discover::registry;
+use anthology_shell::{Entry as ShellEntry, analyze};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -912,7 +913,7 @@ pub(crate) fn evaluate(
         .map(PathBuf::from)
         .or_else(|| user_dirs::current_dir().ok());
     let mut scanner = Scanner::new(rules, initial.as_deref(), cmd);
-    let mut cwds = Cwds::new(initial);
+    let mut cwds = Cwds::new(initial.clone());
     let ctx = Ctx {
         inner: false,
         in_rtk: false,
@@ -921,7 +922,9 @@ pub(crate) fn evaluate(
         demote: false,
         open: false,
     };
-    if scanner.scan_text(cmd, 0, ctx, &mut cwds).is_err() {
+    if scanner.scan_text(cmd, 0, ctx, &mut cwds).is_err()
+        || scanner.scan_shared(cmd, initial.as_deref()).is_err()
+    {
         return Gate::Deny;
     }
     if scanner.exhausted {
@@ -1843,6 +1846,279 @@ impl<'a> Scanner<'a> {
                     None => ReadOutcome::Clear,
                 };
                 self.apply_read(denied, asked, ctx, false);
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shared parser (RG1): what the guard says runs
+// ---------------------------------------------------------------------------
+
+/// rtk subcommands that read their operands as files, read as `cat` too.
+const RTK_READS: &[&str] = &["read", "json", "log", "smart", "deps"];
+
+/// The home `anthology_shell::analyze` expands `~` and `$HOME` with. Only the
+/// guard's own path fields use it; the gate resolves paths itself.
+fn shell_home() -> String {
+    user_dirs::home()
+        .map(|home| home.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether the entry was reached through an `rtk` word (`rtk read x`, `nice rtk
+/// git push`): its `raw` words hold one before the program the analysis found.
+fn entry_via_rtk(entry: &ShellEntry) -> bool {
+    entry.raw.iter().any(|word| {
+        matches!(
+            basename(word).to_ascii_lowercase().as_str(),
+            "rtk" | "rtk.exe"
+        )
+    })
+}
+
+/// The entry's command word as a rule sees it ([`norm_command`]). The analysis
+/// lowercases its program name; where the program word stands in `raw` just before
+/// the arguments, its case is kept, so a case-sensitive file system reads `GIT`
+/// as the different program it is.
+fn entry_command_word(entry: &ShellEntry) -> String {
+    let raw = &entry.raw;
+    let args = &entry.args;
+    if raw.len() > args.len() {
+        let at = raw.len() - args.len() - 1;
+        if raw[at + 1..] == args[..] && anthology_shell::prog_name(&raw[at]) == entry.prog {
+            return norm_command(&raw[at]);
+        }
+    }
+    norm_command(&entry.prog)
+}
+
+/// A literal word as the gate's word reader takes it: single-quoted (`'` as
+/// `'\''`) when it holds anything the shell would expand or unquote, except a
+/// leading `~` (the home), which stays as it is.
+fn quote_literal(word: &str) -> String {
+    let special = |c: char| !(c.is_ascii_alphanumeric() || "-_./:,=+%@~^#".contains(c));
+    if word.starts_with('~') || !word.contains(special) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// Every way a Bash rule may name what one entry runs: its program and arguments,
+/// its words as typed (wrappers included), past git's global options, a dashed git
+/// builtin as `git <sub>`, and an rtk read subcommand as `cat`.
+fn entry_readings(entry: &ShellEntry, words: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    push_unique(&mut out, words.join(" "));
+    push_unique(&mut out, entry.raw.join(" "));
+    let prog = words[0].as_str();
+    let tail = |k: usize| words.get(k..).unwrap_or_default().join(" ");
+    if prog == "git" {
+        let raw: Vec<&str> = words.iter().map(String::as_str).collect();
+        let sub = git_subcommand_index(words, &raw, 0);
+        if sub > 1 && sub < words.len() {
+            push_unique(&mut out, join_command("git", &tail(sub)));
+        }
+    }
+    if let Some(sub) = prog.strip_prefix("git-")
+        && !sub.is_empty()
+    {
+        push_unique(&mut out, join_command(&format!("git {sub}"), &tail(1)));
+    }
+    if entry_via_rtk(entry) {
+        if RTK_READS.contains(&prog) {
+            push_unique(&mut out, join_command("cat", &tail(1)));
+        } else if matches!(prog, "grep" | "rg") {
+            push_unique(&mut out, join_command("grep", &tail(1)));
+            push_unique(&mut out, join_command("rg", &tail(1)));
+        }
+        // clap drops a `--` before the nested command: `rtk cargo -- test`.
+        if let Some(at) = words.iter().skip(1).position(|word| word == "--") {
+            let mut kept = words.to_vec();
+            kept.remove(at + 1);
+            push_unique(&mut out, kept.join(" "));
+        }
+    }
+    out
+}
+
+impl Scanner<'_> {
+    /// The command as the guard reads it: `anthology_shell::analyze` (bounded)
+    /// flattens everything that runs (rtk runner and passthrough forms, wrappers,
+    /// shells' scripts, substitutions, heredocs and here-strings fed to a shell,
+    /// `eval`, `find -exec`, docker shells) into entries, and each entry meets the
+    /// rules here. This pass only adds to what the rule scan above found:
+    ///
+    /// - a deny rule that matches an entry denies; an ask rule asks;
+    /// - an analysis cut short (`incomplete`: a regex or work limit) asks;
+    /// - in a line that may run rtk, an entry the analysis could not see into
+    ///   (`opaque`), a word a rule's head can still extend, a path a `Read()` rule
+    ///   names or that cannot be resolved asks; elsewhere the line is left to the
+    ///   host unrewritten (a defer), as the rule scan does at top level;
+    /// - a `Read()`-denied path an entry names, or reads through `<`, denies.
+    fn scan_shared(&mut self, cmd: &str, initial: Option<&Path>) -> Result<(), Denied> {
+        if !self.spend(SEGMENT_COST + cmd.len() / 16) {
+            return Ok(());
+        }
+        let analysis = analyze(cmd, &shell_home());
+        if analysis.incomplete {
+            self.ask = true;
+        }
+        let rtk_line = mentions_rtk(cmd);
+        // One simple command with nothing the shell expands outside single quotes.
+        let literal = plain_words(cmd).is_some();
+        for entry in &analysis.entries {
+            let size: usize = entry.raw.iter().map(|word| 1 + word.len()).sum();
+            if !self.spend(SEGMENT_COST + size / 8) {
+                return Ok(());
+            }
+            if rtk_line && !entry.opaque.is_empty() {
+                self.ask = true;
+            }
+            if entry.prog.is_empty() {
+                continue;
+            }
+            let words: Vec<String> = std::iter::once(entry_command_word(entry))
+                .chain(entry.args.iter().cloned())
+                .collect();
+            self.shared_rules(entry, &words, rtk_line)?;
+            if self.reading() {
+                self.shared_reads(entry, &words, rtk_line, literal, initial)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// What the gate cannot settle for an entry: ask in a line that may run rtk,
+    /// else leave the line to the host unrewritten.
+    fn unsettled(&mut self, rtk_line: bool) {
+        if rtk_line {
+            self.ask = true;
+        } else {
+            self.defer = true;
+        }
+    }
+
+    /// The Bash rules against one entry.
+    fn shared_rules(
+        &mut self,
+        entry: &ShellEntry,
+        words: &[String],
+        rtk_line: bool,
+    ) -> Result<(), Denied> {
+        if !self.bash_rules {
+            return Ok(());
+        }
+        let readings = entry_readings(entry, words);
+        if !self.spend(readings.iter().map(|r| 1 + r.len() / 16).sum()) {
+            return Ok(());
+        }
+        for reading in &readings {
+            if self
+                .rules
+                .deny
+                .iter()
+                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
+            {
+                return Err(Denied);
+            }
+            if self
+                .rules
+                .ask
+                .iter()
+                .any(|pattern| permissions::command_matches_pattern(reading, pattern))
+            {
+                self.ask = true;
+            }
+        }
+        // A word that expands at run time after literal words a rule can still
+        // extend (`git $x`), or options between a rule's words (`git -C . push`).
+        let extends = match words.iter().position(|word| is_expanding(word)) {
+            Some(0) => self.rules.extendable(&[]),
+            Some(at) => self.rules.extendable(&words[..at]),
+            None => false,
+        };
+        if extends || self.rules.subsequence_hit(words) {
+            self.unsettled(rtk_line);
+        }
+        Ok(())
+    }
+
+    /// The `Read()` rules against one entry's operands and input redirects.
+    fn shared_reads(
+        &mut self,
+        entry: &ShellEntry,
+        words: &[String],
+        rtk_line: bool,
+        literal: bool,
+        initial: Option<&Path>,
+    ) -> Result<(), Denied> {
+        let via_rtk = entry_via_rtk(entry);
+        let name = match words[0].as_str() {
+            prog if via_rtk && RTK_READS.contains(&prog) => "cat",
+            prog => prog,
+        };
+        let generic = !READ_COMMANDS.contains(&name);
+        // Outside a line that may run rtk only the commands rtk rewrites into reads
+        // are read (as the rule scan does); a `cd` or `-C` the analysis followed
+        // leaves a relative path unresolved.
+        let cwds = if entry.cwd.is_some() {
+            Cwds { states: vec![None] }
+        } else {
+            Cwds::new(initial.map(Path::to_path_buf))
+        };
+        let mut outcomes: Vec<(ReadOutcome, ReadOutcome)> = Vec::new();
+        for redirect in &entry.redirs {
+            if matches!(redirect.op.as_str(), "<" | "<>") && redirect.target != "/dev/null" {
+                if redirect.target.contains(['\'', '"', '\\']) {
+                    outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
+                    continue;
+                }
+                let check = |m: &Option<ReadMatcher>| match m {
+                    Some(m) => ReadOutcome::from(m.check_word(&redirect.target, &cwds, false)),
+                    None => ReadOutcome::Clear,
+                };
+                outcomes.push((check(&self.reads), check(&self.read_asks)));
+            }
+        }
+        if !generic || rtk_line {
+            let args = &words[1..];
+            if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
+                return Ok(());
+            }
+            // The analysis took the quotes off. In a line of literal words (see
+            // [`plain_words`]) each word is quoted back, so `'$(id)'` stays a name;
+            // otherwise a quote or backslash left in a word is one the gate would
+            // read differently, and a `$` or glob in it may expand.
+            let quoted: Vec<String>;
+            let args: Vec<&str> = if literal {
+                quoted = args.iter().map(|arg| quote_literal(arg)).collect();
+                quoted.iter().map(String::as_str).collect()
+            } else {
+                if args.iter().any(|arg| arg.contains(['\'', '"', '\\'])) {
+                    outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
+                }
+                args.iter().map(String::as_str).collect()
+            };
+            let check = |m: &Option<ReadMatcher>| match m {
+                Some(m) => m.check_command(name, &args, &cwds, generic),
+                None => ReadOutcome::Clear,
+            };
+            outcomes.push((check(&self.reads), check(&self.read_asks)));
+        }
+        for (denied, asked) in outcomes {
+            if denied == ReadOutcome::Denied {
+                return Err(Denied);
+            }
+            if denied == ReadOutcome::Uncertain && entry.cwd.is_none() {
+                // A path that cannot be resolved asks, at top level too (round 6).
+                self.ask = true;
+            } else if denied == ReadOutcome::Uncertain || asked != ReadOutcome::Clear {
+                // Only the directory is unknown (the rule scan follows a `cd`
+                // itself), or a `Read()` ask rule names the path.
+                self.unsettled(rtk_line);
             }
         }
         Ok(())
@@ -3320,6 +3596,9 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     if first.text != "rtk" || first.tilde || first.revish {
         return Gate::Ask;
     }
+    if !shared_parser_agrees(cmd, &words) {
+        return Gate::Ask;
+    }
     let mut checks = Vec::new();
     let found = if rest.first().is_some_and(|word| word.text == "find") {
         find_args(&rest[1..], &mut checks)
@@ -3397,6 +3676,26 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
         }
     }
     gate
+}
+
+/// Whether the guard's parser reads a plain line as [`plain_words`] does: one
+/// complete analysis, one entry with nothing opaque and no redirect, and the
+/// same words. Two lexers that disagree on a line the gate would let through is
+/// a reason to ask (design G-2).
+fn shared_parser_agrees(cmd: &str, words: &[PlainWord]) -> bool {
+    let analysis = analyze(cmd, &shell_home());
+    let [entry] = analysis.entries.as_slice() else {
+        return false;
+    };
+    !analysis.incomplete
+        && entry.opaque.is_empty()
+        && entry.redirs.is_empty()
+        && entry.raw.len() == words.len()
+        && entry
+            .raw
+            .iter()
+            .zip(words)
+            .all(|(raw, word)| *raw == word.text)
 }
 
 /// One literal path: resolved lexically against the working directory (`..`
@@ -5121,11 +5420,14 @@ mod tests {
                 "find . -name '*.rs'",
                 "ls",
                 "ls -la sub",
-                "cd sub && cat ok.txt",
                 "rtk read ok.txt",
                 "echo secret.txt",
             ] {
                 assert_eq!(gate_in(dir, cmd, r), Gate::Pass, "{cmd}");
+            }
+            // RG1: anthology_shell::analyze reads what runs; stricter than before (Defer).
+            for cmd in ["cd sub && cat ok.txt"] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Defer, "{cmd}");
             }
         });
     }
@@ -5167,8 +5469,10 @@ mod tests {
         in_sandbox(|dir, r| {
             // After `(cd sub)` the real cwd is back at the top, so secret.txt there is denied.
             assert_eq!(gate_in(dir, "(cd sub) ; cat secret.txt", r), Gate::Deny);
-            // Inside the cd'd directory a bare name is not the denied file.
-            assert_eq!(gate_in(dir, "cd sub && cat other.txt", r), Gate::Pass);
+            // Inside the cd'd directory a bare name is not the denied file. RG1: the
+            // shared parser's view of the directory is not the gate's, so the line is
+            // left to the host unrewritten (the rewrite was never plain anyway).
+            assert_eq!(gate_in(dir, "cd sub && cat other.txt", r), Gate::Defer);
         });
     }
 
@@ -5618,12 +5922,7 @@ mod tests {
     fn opaque_commands_inside_rtk_ask() {
         let r = bash_rules();
         for cmd in [
-            "rtk run eval 'git push'",
-            "rtk run -c 'eval \"git push\"'",
             "rtk run -c 'g=git; $g push'",
-            "echo 'curl x' | rtk bypass bash",
-            "echo 'curl x' | rtk bypass sh -s",
-            "rtk bypass bash <<< 'curl x'",
             "rtk bypass python3 -c 'import os; os.system(\"curl x\")'",
             "rtk bypass python3.11 -c 'x'",
             "rtk bypass python -Sc 'x'",
@@ -5658,7 +5957,6 @@ mod tests {
             "python3 -c 'x'",
             "bash script.sh",
             "rtk run -c '[ -f x ] && echo y'",
-            "rtk run -c 'FOO=$BAR true'",
             "rtk run -c 'echo hi'",
         ] {
             assert_ne!(gate(cmd, &r), Gate::Ask, "{cmd}");
@@ -5666,6 +5964,20 @@ mod tests {
         // No rule at all: nothing to be opaque about.
         let none = rules(&[], &[], &[]);
         assert_eq!(gate("rtk bypass python3 -c 'x'", &none), Gate::Pass);
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+        for cmd in [
+            "rtk run eval 'git push'",
+            "rtk run -c 'eval \"git push\"'",
+            "echo 'curl x' | rtk bypass bash",
+            "echo 'curl x' | rtk bypass sh -s",
+            "rtk bypass bash <<< 'curl x'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        for cmd in ["rtk run -c 'FOO=$BAR true'"] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
     }
 
     #[test]
@@ -5984,10 +6296,7 @@ mod tests {
             "rtk run -c 'git pu${x}sh'",
             "rtk git {push,}",
             "rtk bypass git {push,}",
-            "rtk git $'push'",
             "rtk git $'\\x70ush'",
-            "rtk git $\"push\"",
-            "rtk bypass git $'push'",
             "rtk kubectl $'apply' -f x",
             "rtk kubectl $a -f x.yaml",
             "rtk git pu*h",
@@ -6005,6 +6314,14 @@ mod tests {
         // Wildcard rules make any expansion extendable.
         let wild = rules(&["* --force"], &[], &[]);
         assert_eq!(gate("ls $x", &wild), Gate::Defer);
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+        for cmd in [
+            "rtk git $'push'",
+            "rtk git $\"push\"",
+            "rtk bypass git $'push'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
     }
 
     #[test]
@@ -6029,20 +6346,12 @@ mod tests {
     fn a_rule_head_embedded_anywhere_inside_rtk_asks() {
         let r = bash_rules();
         for cmd in [
-            "rtk bypass caffeinate git push",
-            "rtk bypass caffeinate -i git push",
-            "rtk bypass arch -arm64 git push",
             "rtk bypass xcrun git push",
             "rtk bypass script -q /dev/null git push",
             "rtk bypass sandbox-exec -p x git push",
-            "rtk bypass watch git push",
             "rtk bypass flock /tmp/l git push",
-            "rtk bypass setsid git push",
-            "rtk bypass unbuffer git push",
-            "rtk bypass ionice -c3 git push",
             "rtk bypass chrt 0 git push",
             "rtk bypass taskset 1 git push",
-            "rtk bypass gtimeout 5 git push",
             "rtk bypass su -c 'git push'",
             "rtk bypass ssh localhost git push",
             "rtk grep \"git push\" docs/",
@@ -6071,6 +6380,19 @@ mod tests {
             ),
             HookDecision::AskRewrite("rtk git status".into(), AskOwner::Host)
         );
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+        for cmd in [
+            "rtk bypass caffeinate git push",
+            "rtk bypass caffeinate -i git push",
+            "rtk bypass arch -arm64 git push",
+            "rtk bypass watch git push",
+            "rtk bypass setsid git push",
+            "rtk bypass unbuffer git push",
+            "rtk bypass ionice -c3 git push",
+            "rtk bypass gtimeout 5 git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
     }
 
     #[test]
@@ -6269,7 +6591,6 @@ mod tests {
                 "rtk bypass base64 secret.tx?",
                 "rtk bypass base64 secre*",
                 "rtk bypass base64 {secret,x}.txt",
-                "rtk bypass base64 $'secret.txt'",
                 "f=secret.txt; rtk bypass base64 $f",
                 "rtk bypass sed -n p \"$PWD/secret.txt\"",
                 "rtk bypass base64 ~root/.ssh/id_rsa",
@@ -6286,6 +6607,10 @@ mod tests {
                 Gate::Pass
             );
             assert_eq!(gate_in(dir, "rtk bypass dd if=$x", r), Gate::Ask);
+            // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+            for cmd in ["rtk bypass base64 $'secret.txt'"] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
         });
     }
 
@@ -6555,11 +6880,6 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
         }
-        assert_eq!(gate("rtk bypass caffeinate =git push", &r), Gate::Ask);
-        assert_eq!(
-            gate("rtk bypass caffeinate /usr/bin/git push", &r),
-            Gate::Ask
-        );
         // Where the file system folds case the program name is read folded.
         let folded = [
             "rtk GIT push",
@@ -6575,37 +6895,28 @@ mod tests {
             };
             assert_eq!(gate(cmd, &r), expected, "{cmd}");
         }
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+        for cmd in [
+            "rtk bypass caffeinate =git push",
+            "rtk bypass caffeinate /usr/bin/git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
     }
 
     #[test]
     fn a_denied_command_behind_an_unmodelled_launcher_asks() {
         let r = push_only();
         for cmd in [
-            "rtk bypass caffeinate g''it push",
-            "rtk bypass caffeinate gi\\t push",
-            "rtk bypass caffeinate \"g\"it push",
             "rtk bypass ssh h \"g\"\"it push\"",
-            "rtk bypass exec -a x g''it push",
-            "rtk bypass command -p g''it push",
             "x=it; rtk bypass caffeinate g$x push",
             "rtk bypass caffeinate {git,} push",
             "rtk bypass caffeinate $'\\x67it' push",
             "rtk bypass caffeinate git pu*h",
-            "rtk bypass caffeinate sh -c 'g\"\"it push'",
             "rtk bypass caffeinate bash -c 'x=push; git $x'",
-            "echo 'git push' | rtk bypass caffeinate bash",
-            "rtk bypass caffeinate bash <<< 'g''it push'",
             "echo 'git push' | rtk bypass caffeinate python3",
-            "rtk bypass caffeinate eval 'g\"\"it push'",
-            "rtk bypass env -i caffeinate g''it push",
-            "rtk bypass caffeinate env g''it push",
-            "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
-            "rtk bypass npm exec -c 'g\"\"it push'",
-            "rtk bypass watch -n1 'g\"\"it push'",
             "rtk bypass ssh h 'x=push; git $x'",
             "rtk git -c 'alias.p=!git push' p",
-            "rtk bypass caffeinate git -C . push",
-            "rtk bypass caffeinate /usr/bin/git push",
         ] {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
@@ -6613,14 +6924,40 @@ mod tests {
         // command in the same place passes.
         for cmd in [
             "rtk bypass caffeinate git status",
-            "rtk bypass ssh h ls -la",
-            "rtk bypass watch -n1 'git status'",
             "rtk grep python src/",
             "rtk grep -rn node src/",
             "rtk git commit -m 'use python and node here'",
             "rtk git log --oneline -n 5",
         ] {
             assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        }
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+        for cmd in [
+            "rtk bypass caffeinate g''it push",
+            "rtk bypass caffeinate gi\\t push",
+            "rtk bypass caffeinate \"g\"it push",
+            "rtk bypass exec -a x g''it push",
+            "rtk bypass command -p g''it push",
+            "rtk bypass caffeinate sh -c 'g\"\"it push'",
+            "echo 'git push' | rtk bypass caffeinate bash",
+            "rtk bypass caffeinate bash <<< 'g''it push'",
+            "rtk bypass caffeinate eval 'g\"\"it push'",
+            "rtk bypass env -i caffeinate g''it push",
+            "rtk bypass caffeinate env g''it push",
+            "rtk bypass caffeinate find . -maxdepth 0 -exec g''it push \\;",
+            "rtk bypass npm exec -c 'g\"\"it push'",
+            "rtk bypass watch -n1 'g\"\"it push'",
+            "rtk bypass caffeinate git -C . push",
+            "rtk bypass caffeinate /usr/bin/git push",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Deny, "{cmd}");
+        }
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        for cmd in [
+            "rtk bypass ssh h ls -la",
+            "rtk bypass watch -n1 'git status'",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
     }
 
@@ -6640,15 +6977,20 @@ mod tests {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
         for cmd in [
-            "rtk bypass xargs git status",
             "xargs rm",
             "find . -name x -exec grep foo {} \\;",
             "find . -type f -exec git add {} \\;",
-            "rtk bypass parallel echo ::: a b",
         ] {
             assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
         }
         assert_eq!(gate("rtk bypass parallel git push ::: a", &r), Gate::Deny);
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        for cmd in [
+            "rtk bypass xargs git status",
+            "rtk bypass parallel echo ::: a b",
+        ] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
     }
 
     #[test]
@@ -6687,7 +7029,6 @@ mod tests {
             "rtk docker build -t app .",
             "rtk bypass rsync -a . /tmp/x",
             "rtk docker exec app python manage.py migrate",
-            "rtk uv run python script.py",
             "rtk cargo build $FLAGS",
             "rtk run -c 'ruff check . && mypy .'",
         ] {
@@ -6708,21 +7049,16 @@ mod tests {
         ] {
             assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
         }
+        // RG1: anthology_shell::analyze reads what runs; stricter than before (Ask).
+        for cmd in ["rtk uv run python script.py"] {
+            assert_eq!(gate(cmd, &r), Gate::Ask, "{cmd}");
+        }
     }
 
     #[test]
     fn a_script_a_launcher_runs_is_read_in_full() {
         in_sandbox(|dir, r| {
-            for cmd in [
-                "rtk bypass caffeinate sh -c 'cat secret.txt'",
-                "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
-                "rtk bypass caffeinate sh -c 'head secret.txt'",
-                "rtk bypass caffeinate sh -c 'cat < secret.txt'",
-                "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
-                "rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'",
-                "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
-                "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
-            ] {
+            for cmd in ["rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'"] {
                 // What only a launcher's argument list reaches is a question.
                 assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
             }
@@ -6739,6 +7075,18 @@ mod tests {
                 gate_in(dir, "rtk bypass caffeinate sh -c 'cat ok.txt'", r),
                 Gate::Pass
             );
+            // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
+            for cmd in [
+                "rtk bypass caffeinate sh -c 'cat secret.txt'",
+                "rtk bypass caffeinate sh -c 'base64 -i secret.txt'",
+                "rtk bypass caffeinate sh -c 'head secret.txt'",
+                "rtk bypass caffeinate sh -c 'cat < secret.txt'",
+                "rtk bypass caffeinate sh -c \"cat secret.txt; echo\"",
+                "rtk bypass caffeinate sh -c 'cp secret.txt /tmp/x'",
+                "rtk find . -maxdepth 0 -exec caffeinate sh -c 'cat secret.txt' \\;",
+            ] {
+                assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
+            }
         });
         let r = push_only();
         for cmd in [

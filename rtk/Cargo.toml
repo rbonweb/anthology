@@ -67,6 +67,8 @@ which = "8"
 # Opt-in, not on the hot startup path -- doesn't affect the <10ms budget.
 ratatui = "0.30"
 crossterm = "0.29"
+# anthology fork: shared shell parser
+anthology-shell = { path = "../crates/anthology-shell" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
