@@ -1,0 +1,1 @@
+/x$HOMEcd ~u/a/../b && pushd ${HOME}/c && tar -C .. -xf f && env -S 'ls -la' -S x

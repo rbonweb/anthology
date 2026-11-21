@@ -7,7 +7,7 @@
 #    that no longer matches stops it with exit 1, naming the file and the anchor, so an
 #    upstream refactor of a trimmed region is noticed.
 # 2. Cargo.lock is pruned by `cargo metadata --offline` in the pinned image (the FROM line of
-#    ci/images/rust.Dockerfile), online only when the registry volume lacks a crate. With an
+#    ci/images/rust.Dockerfile; the repository root is mounted, for ../crates/anthology-shell), online only when the registry volume lacks a crate. With an
 #    existing lockfile cargo only drops unused packages; a guard fails (and restores the old
 #    lockfile) if any package is added or any locked version changes.
 #
@@ -39,10 +39,10 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 metadata() {
     docker run --rm \
-        -v "$root/rtk":/w \
+        -v "$root":/w \
         -v anthology-cargo:/usr/local/cargo/registry \
         -e OWNER="$owner" \
-        -w /w "$image" sh -c '
+        -w /w/rtk "$image" sh -c '
             status=0
             cargo metadata "$@" --format-version 1 >/dev/null || status=$?
             [ -z "$OWNER" ] || chown "$OWNER" Cargo.lock
