@@ -9,13 +9,15 @@
 #    (upstream edits to files the trim deletes are modify/delete conflicts, "deleted by us":
 #    they are resolved by deletion, as the trim would delete them again; on any other
 #    conflict it prints the conflicted files and stops, leaving the branch for review);
-# 4. records the merged tag and its commit as the upstream pin in vendor/sources.json;
+# 4. records the merged tag and its commit as the upstream pin in vendor/sources.json
+#    (`scripts/dev.sh vendor set-rtk-upstream`, which prints the old pin as `<ref> <commit>`);
 # 5. runs scripts/rtk-trim.sh (required: the sync fails without it);
 # 6. runs $RTK_TEST (scripts/rtk-test.sh: the pinned image from ci/images/rust.Dockerfile);
 # 7. prints a summary.
 #
 # The pin and the trim's changes are left uncommitted on the branch, for review with it.
 # It never pushes and never merges into another branch: the branch is left for review.
+# The tools run as `scripts/dev.sh <subcommand>` (anthology-dev in the pinned Rust image; F-17).
 set -eu
 
 UPSTREAM=https://github.com/rtk-ai/rtk
@@ -63,7 +65,7 @@ if ! git subtree pull --prefix="$PREFIX" "$UPSTREAM" "$tag" -m "$message"; then
     # Upstream edited files the trim deletes ("deleted by us"): delete them again.
     trimmed=
     if [ -n "$conflicts" ]; then
-        trimmed=$(git status --porcelain | python3 scripts/rtk_trim.py --trimmed-conflicts)
+        trimmed=$(git status --porcelain | scripts/dev.sh rtk-trim --trimmed-conflicts)
     fi
     if [ -n "$trimmed" ]; then
         while IFS= read -r path; do
@@ -98,21 +100,7 @@ merge=$(git rev-parse --short HEAD)
 # The pin: the commit the tag names (an annotated tag is peeled to its commit).
 git fetch --no-tags --quiet "$UPSTREAM" "refs/tags/$tag"
 upstream_commit=$(git rev-parse "FETCH_HEAD^{commit}")
-old_pin=$(python3 - "$tag" "$upstream_commit" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path("vendor/sources.json")
-data = json.loads(path.read_text(encoding="utf-8"))
-entry = next(e for e in data["sources"] if e.get("name") == "rtk")
-upstream = entry["upstream"]
-print(f"{upstream['ref']} {upstream['commit']}")
-upstream["ref"], upstream["commit"] = sys.argv[1], sys.argv[2]
-# The same layout as vendor.py's save_sources.
-path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-PY
-)
+old_pin=$(scripts/dev.sh vendor set-rtk-upstream --ref "$tag" --commit "$upstream_commit")
 if [ "$old_pin" = "$tag $upstream_commit" ]; then
     pin="unchanged ($tag $upstream_commit)"
 else

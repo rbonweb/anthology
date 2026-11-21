@@ -12,10 +12,11 @@
 #
 # Nothing is ever pushed without --push. The `claude` binary is $CLAUDE_BIN if set.
 # $RELEASE_DATE (YYYY-MM-DD) overrides today's date in the new CHANGELOG heading.
-# The text and JSON edits live in scripts/release_edit.py. Works with bash 3.2 (macOS).
+# The text and JSON edits are `anthology-dev release-edit …`, run through scripts/dev.sh (the
+# pinned Rust image, so Docker is needed) or through $ANTHOLOGY_DEV if set. A plugin that ships
+# anthology.lock is released only if `anthology-dev lock check-fresh` passes: the binary it pins
+# must have been built from the shipped crates as they are now. Works with bash 3.2 (macOS).
 set -euo pipefail
-# The helper must never leave __pycache__ in the checkout (it would make the tree dirty).
-export PYTHONDONTWRITEBYTECODE=1
 
 die() { echo "release: $*" >&2; exit 1; }
 
@@ -25,7 +26,7 @@ usage() {
 }
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-EDIT="$ROOT/scripts/release_edit.py"
+DEV=${ANTHOLOGY_DEV:-$ROOT/scripts/dev.sh}
 CLAUDE=${CLAUDE_BIN:-claude}
 
 PLUGIN=""
@@ -62,18 +63,25 @@ if [ "$DRY_RUN" = 1 ] && [ "$PUSH" = 1 ]; then
   die "--dry-run and --push cannot be combined (a dry run never pushes)"
 fi
 
+# anthology-dev runs at the repository root and is given paths relative to it: scripts/dev.sh
+# mounts only the repository into its container.
+dev() { (cd "$ROOT" && "$DEV" "$@"); }
+
 # ---- preconditions: every failure leaves the repository exactly as it was -----------
 
 case "$PLUGIN" in
   *[!a-z0-9-]*|-*) die "invalid plugin name '$PLUGIN' (lowercase letters, digits, hyphens)" ;;
 esac
 MANIFEST_REL="plugins/$PLUGIN/.claude-plugin/plugin.json"
+LOCK_REL="plugins/$PLUGIN/anthology.lock"
 TAG="$PLUGIN--v$VERSION"
 
 cd "$ROOT"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$ROOT is not a git work tree"
 [ -f "$MANIFEST_REL" ] || die "no such plugin: $MANIFEST_REL does not exist"
-command -v python3 >/dev/null 2>&1 || die "python3 is required"
+if [ ! -x "$DEV" ] && ! command -v "$DEV" >/dev/null 2>&1; then
+  die "'$DEV' not found (scripts/dev.sh needs Docker; or set ANTHOLOGY_DEV to an anthology-dev binary)"
+fi
 command -v "$CLAUDE" >/dev/null 2>&1 || die "'$CLAUDE' not found (install Claude Code, or set CLAUDE_BIN)"
 if [ "$PUSH" = 1 ]; then
   git remote get-url "$REMOTE" >/dev/null 2>&1 || die "no git remote named '$REMOTE'"
@@ -85,17 +93,23 @@ if [ -n "$(git status --porcelain)" ]; then
   die "working tree is not clean; commit or stash your changes first"
 fi
 
-CURRENT=$(python3 "$EDIT" plugin-version "$MANIFEST_REL")
+if [ -f "$LOCK_REL" ]; then
+  # The binary that anthology.lock pins must match the shipped crates at HEAD (design §8.5).
+  dev lock check-fresh >&2 || die "the anthology binary is stale: release a new one (tag anthology-bin--v<next>) and run 'scripts/dev.sh lock write', or see the lines above"
+fi
+
+CURRENT=$(dev release-edit plugin-version "$MANIFEST_REL")
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
   die "tag $TAG already exists"
 fi
-MODE=$(python3 "$EDIT" check-version "$CURRENT" "$VERSION" 0)
-python3 "$EDIT" changelog-check CHANGELOG.md "$PLUGIN"
-python3 "$EDIT" check-dependents "$ROOT" "$PLUGIN" "$VERSION"
+MODE=$(dev release-edit check-version "$CURRENT" "$VERSION" 0)
+dev release-edit changelog-check CHANGELOG.md "$PLUGIN"
+dev release-edit check-dependents . "$PLUGIN" "$VERSION"
 
 # ---- work area: this checkout, or (dry run) a throwaway detached worktree -----------
 
 WORK=$ROOT
+WORK_REL=.
 TMPDIR_DRY=""
 EDITED=""
 cleanup() {
@@ -117,9 +131,12 @@ trap cleanup EXIT
 
 GIT_COMMIT_OPTS=""
 if [ "$DRY_RUN" = 1 ]; then
-  TMPDIR_DRY=$(mktemp -d "${TMPDIR:-/tmp}/anthology-release.XXXXXX")
+  # Inside the repository (target/ is ignored), so the scripts/dev.sh container sees it.
+  mkdir -p "$ROOT/target"
+  TMPDIR_DRY=$(mktemp -d "$ROOT/target/release-dry-run.XXXXXX")
   git worktree add -q --detach "$TMPDIR_DRY/wt" HEAD
   WORK="$TMPDIR_DRY/wt"
+  WORK_REL=${WORK#"$ROOT"/}
   # The throwaway commit must not sign, run hooks or need a configured identity; the
   # placeholder identity is passed per command and never written to any config.
   GIT_COMMIT_OPTS="-c commit.gpgsign=false"
@@ -134,17 +151,17 @@ fi
 # ---- edits ---------------------------------------------------------------------------
 
 FILES="CHANGELOG.md"
-python3 "$EDIT" changelog-move "$WORK/CHANGELOG.md" "$PLUGIN" "$VERSION" \
+dev release-edit changelog-move "$WORK_REL/CHANGELOG.md" "$PLUGIN" "$VERSION" \
   ${RELEASE_DATE:+--date "$RELEASE_DATE"}
 EDITED="$FILES"
 
 if [ "$MODE" = bump ]; then
-  python3 "$EDIT" set-version "$WORK/$MANIFEST_REL" "$VERSION"
+  dev release-edit set-version "$WORK_REL/$MANIFEST_REL" "$VERSION"
   FILES="$FILES $MANIFEST_REL"
   EDITED="$FILES"
   if [ "$PLUGIN" = anthology-superpowers ]; then
-    # Generated plugin: vendor.py takes its version from sources.json, so keep them in step.
-    python3 "$EDIT" set-source-version "$WORK/vendor/sources.json" \
+    # Generated plugin: vendor sync takes its version from sources.json, so keep them in step.
+    dev release-edit set-source-version "$WORK_REL/vendor/sources.json" \
       "plugins/anthology-superpowers" "$VERSION"
     FILES="$FILES vendor/sources.json"
     EDITED="$FILES"

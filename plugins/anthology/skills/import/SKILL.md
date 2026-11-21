@@ -15,7 +15,7 @@ scan), and never overwrites a note.
 1. **Dry run.** Show what would happen. This writes nothing:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" import "<file>" --dry-run
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" memory import "<file>" --dry-run
    ```
 
    The first line of the output carries the archive's `sha256`; note it. If the command
@@ -31,7 +31,7 @@ scan), and never overwrites a note.
 4. **Apply** exactly the archive that was shown, by passing the sha256 from the dry run:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" import "<file>" --yes --sha256 <sha256 from the dry run>
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" memory import "<file>" --yes --sha256 <sha256 from the dry run>
    ```
 
    Report how many notes were written, and which repo notes went to personal memory because

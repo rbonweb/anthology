@@ -128,7 +128,6 @@ claude=$scratch/claude-code/node_modules/.bin/claude
 "$claude" --version
 for plugin in anthology anthology-guardrails; do
     cp -R "$root/plugins/$plugin" "$scratch/$plugin"
-    cp -R "$root/port/staging/plugins/$plugin/." "$scratch/$plugin/"
     if DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
         "$claude" plugin validate --strict "$scratch/$plugin"; then
         echo "shims-distros: $plugin validates"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # CI job `shellcheck` (design §14.1; plan BS1 acceptance 10). `shellcheck -s sh` on every shim
-# under port/staging/plugins and on the BS job scripts, in the pinned image
+# under plugins/ and on the BS job scripts, in the pinned image
 # (ci/images/shellcheck.Dockerfile). Sourced files are followed from each script's directory.
 set -eu
 
@@ -11,7 +11,7 @@ if [ -z "$image" ]; then
     exit 1
 fi
 
-staging=port/staging/plugins
+staging=plugins
 set -- \
     "$staging/anthology/hooks/lib.sh" \
     "$staging/anthology/hooks/bootstrap.sh" \
