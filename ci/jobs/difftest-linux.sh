@@ -4,9 +4,18 @@
 #
 # Oracle scripts run as `python -I` (isolated: the script's folder is not on sys.path), because
 # port/difftest/oracle/json.py shadows the standard library's json for anything run from there.
+#
+# After the cutover (CO2 deletes port/difftest/oracle/ and the Python images) there is no oracle:
+# the job replays the frozen goldens instead (`anthology-dev golden check --all` in the Rust
+# image), which fails for any ported surface without one. Design §14.2 removes this job at CO2;
+# cargo test keeps the same replay (crates/difftest/tests/golden.rs).
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+if [ ! -f "$root/port/difftest/oracle/_driver.py" ]; then
+    echo "difftest-linux: no Python oracle (after the cutover): replaying the frozen goldens"
+    exec "$root/scripts/dev.sh" golden check --all
+fi
 image=$(awk '$1 == "FROM" {print $2; exit}' "$root/ci/images/python.Dockerfile")
 
 # F1's oracle: the guard data, the G6 secret patterns and the roster equal the Python values.
@@ -81,3 +90,29 @@ if ! "$root/scripts/difftest.sh" --surface core.lock --gen 0 --inject-diff core.
     exit 1
 fi
 echo "difftest-linux: an injected diff fails, and a matching divergence entry passes"
+
+# CO2's tools against the real oracle, on a small sample: `difftest freeze` writes goldens from
+# Python, `golden check` replays them with no oracle (0 unexplained), and an injected diff fails
+# there too. The goldens go to target/difftest/golden-selftest (/out/golden-selftest), never to
+# the committed crates/*/tests/golden/ (the real freeze is a CO2 step).
+selftest="$root/target/difftest/golden-selftest"
+rm -rf "$selftest"
+if ! "$root/scripts/difftest.sh" freeze --surface core.lock,core.state --gen 200 \
+    --golden /out/golden-selftest >"$log" 2>&1 \
+    || ! "$root/scripts/difftest.sh" golden check --surface core.lock,core.state \
+        --golden /out/golden-selftest >>"$log" 2>&1; then
+    cat "$log" >&2
+    echo "difftest-linux: freeze, then golden check, did not pass on the sample" >&2
+    exit 1
+fi
+set +e
+"$root/scripts/difftest.sh" golden check --surface core.lock --golden /out/golden-selftest \
+    --inject-diff core.lock >"$log" 2>&1
+code=$?
+set -e
+if [ "$code" -ne 1 ] || ! grep -q '^FAIL core.lock golden:1: unexplained diff' "$log"; then
+    cat "$log" >&2
+    echo "difftest-linux: an injected diff did not fail golden check (exit $code)" >&2
+    exit 1
+fi
+echo "difftest-linux: freeze and golden check agree on the sample, and an injected diff fails"
