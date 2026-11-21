@@ -29,12 +29,22 @@ export RTK_SUPPRESS_HOOK_WARNING
 # many commands it leaves as typed (`node --version; bun --version`). So an ask is dropped:
 # the command then runs as typed, under the user's own mode and rules, as it would without rtk.
 # Kept: a deny, a non-zero exit, and an ask on a line that mentions rtk, which `Bash(rtk *)`
-# would otherwise allow. The rtk test mirrors the gate's `mentions_rtk` on the value of every
-# `"command"` key of the raw hook input (quotes and backslashes removed, a line continuation
-# joined, case folded; a `$'` counts as a mention). In JSON a quote inside a string is always
-# `\"`, so the pattern below only ever matches a real key and its whole string value. A `\u`
-# escape anywhere (a key spelled with one too) counts as a mention, and an input with no such
-# key is matched whole: both only keep more asks.
+# would otherwise allow. The rtk test runs on the value of every `"command"` key of the raw hook
+# input: quotes, `$` and backslashes removed, a line continuation joined, case folded. In JSON
+# a quote inside a string is always `\"`, so the pattern below only ever matches a real key and
+# its whole string value. A `\u` escape anywhere (a key spelled with one too) counts as a
+# mention, and an input with no such key is matched whole: both only keep more asks.
+# An ANSI-C string `$'...'` can spell rtk in disguise (`$'\x72tk'`) only through a backslash
+# escape; without one its text is literal and the rtk test sees it. So a `$'` counts as a
+# mention when a shell backslash (`\\` in JSON) follows before the next `'`, and when the `$`
+# is at the start, after a JSON `\n`, `\t`, `\r`, `\b` or `\f`, or after a character that is not
+# a word, regex or escape character. That leaves out the end of a quoted regex (`'^a$'`) and a
+# later `\|` in the same line; a `$'` glued to a word (`r$'\x74k'`) is not a spelling the
+# `Bash(rtk *)` allow can match, so it gets the user's own checks.
+# Ruling: a `)` before `$'` is not a mention either (`case a in a)$'\x72tk';; esac`) — such a
+# line starts with `case`, `for` or `f()`, which `Bash(rtk *)` cannot allow, and Claude Code
+# does not decode `$'...'` for an allow match — cost if wrong: that line gets the user's own
+# checks, not rtk's ask.
 input=$(cat)
 out=$(printf '%s' "$input" | "$rtk_path" hook claude)
 rc=$?
@@ -47,11 +57,14 @@ if [ "$rc" -eq 0 ] &&
       cmd=$(printf '%s' "$input" | tr -d '\n\r' |
         LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
       [ -n "$cmd" ] || cmd=$input
-      case $cmd in
-        *"\$'"*) ;;
-        *) printf '%s' "$cmd" | LC_ALL=C sed 's/\\n//g' | LC_ALL=C tr -d "\\\\\"'" |
-             LC_ALL=C grep -qi rtk || exit 0 ;;
-      esac ;;
+      sq=\'
+      if printf '%s' "$cmd" |
+         LC_ALL=C grep -Eq "(^|[^]A-Za-z0-9_.*+?)}^\\\\\$]|\\\\[nrtbf])\\\$$sq[^$sq]*\\\\\\\\"; then
+        :
+      else
+        printf '%s' "$cmd" | LC_ALL=C sed 's/\\n//g' | LC_ALL=C tr -d "\\\\\"'\$" |
+          LC_ALL=C grep -qi rtk || exit 0
+      fi ;;
   esac
 fi
 [ -z "$out" ] || printf '%s\n' "$out"
