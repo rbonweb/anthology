@@ -1227,10 +1227,16 @@ fn gen_member(rng: &mut Rng) -> (String, Spec) {
     (name, spec)
 }
 
-/// An archive of random members (or one of the malicious kinds), planned, applied, imported.
-fn gen_archive(rng: &mut Rng) -> Value {
+/// An archive of random members (or one of the malicious kinds), planned, applied, imported;
+/// `corrupt` for the kinds that are not a readable archive.
+fn gen_archive(rng: &mut Rng) -> (&'static str, Value) {
+    let mut cat = "archive";
     let a = if rng.chance(0.25) {
-        bad_hex(rng.pick(&mx::KINDS))
+        let kind = *rng.pick(&mx::KINDS);
+        if matches!(kind, "not-gzip" | "empty-file" | "truncated") {
+            cat = "corrupt";
+        }
+        bad_hex(kind)
     } else if rng.chance(0.1) {
         let manifest = *rng.pick(MANIFESTS);
         archive_hex(|p| mx::manifest_variant(p, manifest.as_bytes()))
@@ -1245,7 +1251,7 @@ fn gen_archive(rng: &mut Rng) -> Value {
             mx::make_archive(p, &m, manifest, false)
         })
     };
-    archive_case(rng, a)
+    (cat, archive_case(rng, a))
 }
 
 fn archive_case(rng: &mut Rng, a: String) -> Value {
@@ -1403,7 +1409,7 @@ fn generate(rng: &mut Rng) -> (&'static str, Value) {
     match rng.below(10) {
         0 | 1 => ("flow", gen_flow(rng)),
         2 | 3 => ("cli", gen_cli(rng)),
-        4..=6 => ("archive", gen_archive(rng)),
+        4..=6 => gen_archive(rng),
         7 | 8 => ("corrupt", gen_corrupt(rng)),
         _ => ("forged", gen_forged(rng)),
     }

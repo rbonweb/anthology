@@ -13,15 +13,24 @@ takes the "not an approved repo" path. `files` (text) and `bytes` (hex) are writ
 `<ROOT>`; archives built by the generator arrive as `bytes`, so both sides read the same file.
 Each step is one call (`export`, `plan`, `apply`, `cli`) or a file change.
 
-An exception that the called function does not turn into ImportRejected, ExportRefused,
-ValueError or OSError (or, for `cli`, one that `main` does not catch: Python prints a
-traceback) is printed as `error <Type>: <message>` (`cli`: stderr `Traceback: <Type>:
-<message>`, exit 1) and marked D-1.
+Marks (GC-16):
+- D-1: `apply_import` of a hand-forged plan Python cannot iterate (`"blocked": 5`, `"new":
+  null`) raises TypeError; the port rejects the plan, so the expected line is `error
+  ImportRejected: malformed plan`. Any other exception a call does not turn into
+  ImportRejected, ExportRefused, ValueError or OSError is printed as `error <Type>: <message>`
+  (`cli`: stderr `Traceback: <Type>: <message>`, exit 1), also marked D-1, and diffs.
+- D-4: argparse's own output (`-h`, a usage error) names the parser `memory_portable.py`; the
+  port names it as its CLI shows it, `anthology memory`. The oracle runs `main` with the
+  parser renamed (`_port_prog`), so argparse itself lays the text out for that name, and
+  marks the cases where that output was shown.
+- D-2 is the surface's normalization hook, not the oracle's (the text after `not a readable
+  memory archive: `).
 
 Python 3.9+ and the standard library only.
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import copy
 import datetime
@@ -37,6 +46,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "plugins" / "anthology" / "scripts"
+PORT_PROG = "anthology memory"
 
 
 def _module():
@@ -150,6 +160,31 @@ def _tree(tmp, today):
     return "".join(line + "\n" for line in lines)
 
 
+@contextlib.contextmanager
+def _port_prog():
+    """`main`'s parser named `anthology memory`, as the port's CLI names it, so argparse lays
+    out its usage for that name (its continuation lines align under the prog)."""
+    real = argparse.ArgumentParser.__init__
+
+    def named(self, *args, **kw):
+        if kw.get("prog") == "memory_portable.py":
+            kw["prog"] = PORT_PROG
+        real(self, *args, **kw)
+
+    argparse.ArgumentParser.__init__ = named
+    try:
+        yield
+    finally:
+        argparse.ArgumentParser.__init__ = real
+
+
+def _mark(mark, new):
+    """One divergence mark per case: two different ones would hide one of them."""
+    if mark not in (None, new):
+        raise ValueError("a case needs both %s and %s: split it" % (mark, new))
+    return new
+
+
 def _call(fn, mp):
     """`(text, raised)`: the JSON result, or `error <Type>: <message>`; `raised` when the
     exception is not one the port names (D-1)."""
@@ -199,20 +234,25 @@ def run(case):
                 plan = _subst(arg["plan"], tmp) if "plan" in arg else copy.deepcopy(last)
                 plan = _edit(plan, _subst(arg.get("edits"), tmp))
                 text, _res, raised = _call(lambda: mp.apply_import(plan), mp)
+                if raised:  # a plan Python cannot iterate: the port rejects it (D-1)
+                    text = "error ImportRejected: malformed plan\n"
                 out.append("## %d apply\n%s" % (n, text))
             elif "cli" in step:
-                args = _subst(list(step["cli"]), tmp)
+                args = [a.replace("<TODAY>", today) for a in _subst(list(step["cli"]), tmp)]
                 so, se = io.StringIO(), io.StringIO()
                 raised = False
+                usage = False
                 os.chdir(cwd)
                 os.environ.clear()
                 os.environ.update(env)
                 try:
                     with contextlib.redirect_stdout(so), contextlib.redirect_stderr(se):
                         try:
-                            code = mp.main(args)
-                        except SystemExit as exc:
+                            with _port_prog():
+                                code = mp.main(args)
+                        except SystemExit as exc:  # argparse: usage, help or an error
                             code = exc.code if isinstance(exc.code, int) else 1
+                            usage = True
                         except Exception as exc:  # noqa: BLE001 — Python's traceback: exit 1
                             print("Traceback: %s: %s" % (type(exc).__name__, exc), file=se)
                             code, raised = 1, True
@@ -220,12 +260,15 @@ def run(case):
                     os.chdir(old_cwd)
                     os.environ.clear()
                     os.environ.update(old_env)
+                so, se = so.getvalue(), se.getvalue()
+                if usage and PORT_PROG in so + se:
+                    mark = _mark(mark, "D-4")
                 out.append("## %d $ %s\nexit %d\n--- stdout\n%s--- stderr\n%s"
-                           % (n, " ".join(args), code, so.getvalue(), se.getvalue()))
+                           % (n, " ".join(args), code, so, se))
             else:
                 raise ValueError("unknown step %r" % (step,))
             if raised:
-                mark = "D-1"
+                mark = _mark(mark, "D-1")
         out.append("=== tree ===\n" + _tree(tmp, today))
     finally:
         os.chdir(old_cwd)
