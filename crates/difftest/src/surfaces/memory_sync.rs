@@ -596,6 +596,13 @@ fn seeds() -> Vec<Case> {
             .file(&format!("{PERSONAL}/MEMORY.md"), "hand-made\nindex\n")
             .case("seed:hand-made-personal-index"),
         B::new("run")
+            .set("in_repo", Value::Bool(false))
+            .set("cwd", s_val("plain"))
+            .dir(PERSONAL)
+            .file("outside.txt", "outside the memory folder\n")
+            .link(&format!("{PERSONAL}/MEMORY.md"), "outside.txt")
+            .case("seed:symlinked-hand-made-index"),
+        B::new("run")
             .file(
                 &format!("{REPO_MEM}/MEMORY.md"),
                 "## user\n- [user-role](user-role.md)\n",
