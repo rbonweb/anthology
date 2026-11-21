@@ -149,3 +149,9 @@ a new version section.
   browser: `start-server.sh` has no `--open`, the server prints its URL, and the skill
   tells Claude to open it in BrowserOS Neo.
 - The README carries the `/plugin install anthology-superpowers@anthology` line.
+- subagent-driven-development gains `references/large-builds.md`, read on demand for
+  large or long multi-agent builds: start tasks against published interfaces with marked
+  stand-ins, keep idle agents busy, test at the cheapest level once, one review per task,
+  batch merges, rulings instead of questions, no working around a refused action, and
+  status reports in feature terms. SKILL.md, `references/fix-loop.md` and
+  dispatching-parallel-agents point to it.

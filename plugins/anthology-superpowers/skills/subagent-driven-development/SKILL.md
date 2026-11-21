@@ -135,7 +135,9 @@ rulings made without one are provisional.
 
 Before dispatching Task 1, read [references/preflight.md](references/preflight.md)
 and run the conflict scan it describes. Its table and rulings go in the
-ledger.
+ledger. For a large or long build, also read
+[references/large-builds.md](references/large-builds.md); it wins where
+they differ.
 
 ## Model Selection
 
@@ -232,7 +234,8 @@ and fix-round diffs need it.
   a pointer to that ledger entry in the dispatch.
 - Record the implementer's agent identity from the dispatch result —
   fix-loop rounds 1-3 resume this agent.
-- Never dispatch multiple implementation subagents in parallel (conflicts).
+- Never dispatch multiple implementation subagents in parallel on one
+  working tree (conflicts).
 
 Template: [implementer-prompt.md](implementer-prompt.md)
 
