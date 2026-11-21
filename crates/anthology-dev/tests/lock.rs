@@ -833,3 +833,37 @@ fn a_crate_root_outside_src_is_an_error() {
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("outside src/"), "{out}");
 }
+
+#[test]
+fn a_mod_inside_a_followed_file_outside_src_is_an_error() {
+    let Some(r) = repo() else { return };
+    r.write("shared/x.rs", "pub mod y;\n");
+    r.write("shared/y.rs", "pub fn y() {}\n");
+    r.edit(
+        "crates/anthology-core/src/lib.rs",
+        "pub mod inner;",
+        "pub mod inner;\n#[path = \"../../../shared/x.rs\"]\nmod x;",
+    );
+    r.commit("nested mod");
+    let (code, out) = r.fresh();
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("a `mod name;` in a file outside src/"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_path_attribute_beside_an_inline_module_is_an_error() {
+    let Some(r) = repo() else { return };
+    r.write("crates/anthology-core/src/m/z.rs", "pub fn z() {}\n");
+    r.edit(
+        "crates/anthology-core/src/lib.rs",
+        "pub mod inner;",
+        "pub mod inner;\nmod m {\n    #[path = \"z.rs\"]\n    mod z;\n}",
+    );
+    r.commit("inline");
+    let (code, out) = r.fresh();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("inline module block"), "{out}");
+}

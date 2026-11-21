@@ -12,7 +12,8 @@
 //! 2. every file those sources pull in from outside `src/`: `include_str!`, `include_bytes!`,
 //!    `include!` and `#[path = "…"]` modules, followed transitively through the Rust ones. An
 //!    include whose argument is neither a string literal nor `concat!(env!("OUT_DIR"), …)`,
-//!    a non-literal `#[path]` and a `cfg_attr(…, path = …)` are errors;
+//!    a non-literal `#[path]`, a `cfg_attr(…, path = …)`, a `#[path]` in a file with an inline
+//!    `mod m { … }`, and a `mod name;` in a followed file outside `src/` are errors;
 //! 3. the files a build script declares with `cargo:rerun-if-changed=`; a build script that
 //!    reads files without declaring any is an error;
 //! 4. in `Cargo.lock`, the `[[package]]` blocks of every package name in the graph;
@@ -330,7 +331,27 @@ impl ShippedSet {
                 Err(e) => return Err(format!("{file}: {e}")),
             };
             let dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-            for r in references(&text).map_err(|e| format!("{file}: {e}"))? {
+            if !in_src(&file)
+                && let Some(n) = outline_mod(&text)
+            {
+                // Its file would sit beside this one, outside the compared tree.
+                return Err(format!(
+                    "{file}: line {n}: a `mod name;` in a file outside src/; check-fresh cannot \
+                     follow it"
+                ));
+            }
+            let refs = references(&text).map_err(|e| format!("{file}: {e}"))?;
+            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            if compact.contains("#[path=")
+                && let Some(n) = inline_mod(&text)
+            {
+                // rustc resolves a #[path] inside `mod m { … }` under `<stem>/m/`.
+                return Err(format!(
+                    "{file}: line {n}: #[path] in a file with an inline module block; \
+                     check-fresh cannot tell which directory it resolves from"
+                ));
+            }
+            for r in refs {
                 let target = if r.path.starts_with('/') {
                     relative(root, Path::new(&r.path))?
                 } else {
@@ -520,6 +541,72 @@ pub fn references(text: &str) -> Result<Vec<Ref>, String> {
     Ok(out)
 }
 
+/// How a `mod` item on a line ends: `Some(true)` for `mod name;`, `Some(false)` for
+/// `mod name {`, `None` for no `mod` item. A `mod name` with neither on the line counts as both.
+fn mod_item(line: &str) -> Option<(bool, bool)> {
+    let mut s = line.trim_start();
+    if s.starts_with("//") {
+        return None;
+    }
+    // Leading attributes on the same line: `#[cfg(test)] mod tests;`.
+    while let Some(rest) = s.strip_prefix("#[") {
+        let mut depth = 1;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        s = rest[end? + 1..].trim_start();
+    }
+    if let Some(rest) = s.strip_prefix("pub(") {
+        s = rest.split_once(')')?.1.trim_start();
+    } else if let Some(rest) = s.strip_prefix("pub ") {
+        s = rest.trim_start();
+    }
+    let rest = s.strip_prefix("mod")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let ident_end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    if ident_end == 0 {
+        return None;
+    }
+    let after = rest[ident_end..].trim_start();
+    if after.starts_with(';') {
+        Some((true, false))
+    } else if after.starts_with('{') {
+        Some((false, true))
+    } else {
+        Some((true, true))
+    }
+}
+
+/// The line number of the first `mod name;` (a module in its own file) in `text`.
+pub fn outline_mod(text: &str) -> Option<usize> {
+    text.lines()
+        .position(|l| mod_item(l).is_some_and(|(outline, _)| outline))
+        .map(|i| i + 1)
+}
+
+/// The line number of the first inline `mod name { … }` in `text`.
+pub fn inline_mod(text: &str) -> Option<usize> {
+    text.lines()
+        .position(|l| mod_item(l).is_some_and(|(_, inline)| inline))
+        .map(|i| i + 1)
+}
+
 /// The files a build script declares with `cargo:rerun-if-changed=` (relative to the package),
 /// except itself. A build script that reads files (`fs::`, `File::`, `read_to_string`,
 /// `read_dir`) without declaring any is an error: check-fresh could not see its inputs.
@@ -533,6 +620,11 @@ pub fn build_inputs(text: &str) -> Result<Vec<String>, String> {
         if path.is_empty() || path.contains(['{', '}', '\\']) {
             return Err(format!(
                 "rerun-if-changed={path:?} is not a literal path; the shipped set cannot follow it"
+            ));
+        }
+        if path.starts_with('/') {
+            return Err(format!(
+                "rerun-if-changed={path:?} is an absolute path; the shipped set cannot follow it"
             ));
         }
         if path != "build.rs" {
@@ -839,7 +931,14 @@ pub fn root_manifest_items(text: &str, names: &BTreeSet<String>) -> BTreeMap<Str
                 ) => continue,
                 (Some("profile"), Some(p)) if p != "release" => continue,
                 (Some("workspace"), Some("dependencies")) => {
-                    let Some(dep) = seg(2) else { continue };
+                    let Some(dep) = seg(2) else {
+                        // `dependencies = { … }` under `[workspace]`: compared whole.
+                        items
+                            .entry("Cargo.toml [workspace.dependencies]".into())
+                            .or_default()
+                            .push(line);
+                        continue;
+                    };
                     match &path[3..] {
                         [] => {
                             if let Some(p) = renamed_package(&e.value) {

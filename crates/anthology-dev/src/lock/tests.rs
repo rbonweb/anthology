@@ -366,3 +366,35 @@ fn renamed_workspace_dependencies_are_found_by_their_package_key() {
         ]
     );
 }
+
+#[test]
+fn module_items_are_told_apart() {
+    assert_eq!(outline_mod("pub mod y;\n"), Some(1));
+    assert_eq!(
+        outline_mod("// mod y;\nfn f() {}\n#[cfg(test)] pub(crate) mod t ;\n"),
+        Some(3)
+    );
+    assert_eq!(
+        outline_mod("mod inline {\n}\nfn module() {}\nlet modx = 1;\n"),
+        None
+    );
+    assert_eq!(inline_mod("mod inline {\n}\n"), Some(1));
+    assert_eq!(inline_mod("pub mod y;\n"), None);
+    assert_eq!(
+        outline_mod("mod split\n{\n}\n"),
+        Some(1),
+        "unclear counts as both"
+    );
+    assert_eq!(inline_mod("mod split\n{\n}\n"), Some(1));
+}
+
+#[test]
+fn absolute_build_inputs_and_inline_workspace_dependencies() {
+    assert!(build_inputs("fn main() { println!(\"cargo:rerun-if-changed=/etc/x\"); }").is_err());
+    let names: BTreeSet<String> = BTreeSet::new();
+    let items = root_manifest_items("[workspace]\ndependencies = { a = \"1\" }\n", &names);
+    assert!(
+        items.contains_key("Cargo.toml [workspace.dependencies]"),
+        "{items:?}"
+    );
+}
