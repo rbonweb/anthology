@@ -13,7 +13,9 @@
 #    -- --list` and what it would skip, `-- --list --ignored`, each plain and with --all-features
 #    (as rust-test.sh runs them), into the same directory, then runs `anthology-dev ledger
 #    check`: it compares the extraction with the committed port/ files, requires every `ported`
-#    Rust target in a listing and in no ignored listing, and checks every port/ledger/<module>.tsv.
+#    Rust target in a listing and in no ignored listing, and checks every port/ledger/<module>.tsv
+#    and port/regex-resolved.tsv (every `unresolved` inventory row has a resolution there whose
+#    Rust test is listed, or a `todo:<TASK>` naming its owner).
 #
 # After the cutover (CO2 deletes port/extract/, tests/ and the Python images) there is nothing
 # to extract: the committed id list, row counts and regex inventory are final. Step 1 is then

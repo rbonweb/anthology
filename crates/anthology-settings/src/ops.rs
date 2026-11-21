@@ -6,12 +6,13 @@ use std::path::Path;
 use anthology_core::Env;
 use anthology_guard::data::{PREFIX_VARIANTS, PROFILE_ROOTS};
 use anthology_pycompat::json::{Map, Value};
+use anthology_pycompat::path::realpath;
 
 use crate::scanner::py;
 use crate::validate::validate_plugin_root;
 
 /// `BYPASS_NOTE` (GC-8).
-pub const BYPASS_NOTE: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; the guardrails and deny rules still apply to the wrapped command.";
+pub const BYPASS_NOTE: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
 /// `ALLOW_RTK`.
 pub const ALLOW_RTK: &str = "Bash(rtk *)";
 /// `ALLOW_MEM_SAVE`: lets read-only agents save memory notes.
@@ -170,7 +171,7 @@ impl Default for SettingsDeps {
 
 /// `plugin_read_rule(plugin_root)`: `Read(//<parent of the real plugin root>/**)`.
 pub fn plugin_read_rule(plugin_root: &Path) -> String {
-    let real = py::realpath_os(plugin_root.as_os_str());
+    let real = realpath(plugin_root);
     let parent = py::dirname(&real.to_string_lossy());
     format!("Read(//{}/**)", parent.trim_start_matches('/'))
 }

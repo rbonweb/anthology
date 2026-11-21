@@ -292,7 +292,7 @@ claude plugin uninstall anthology@anthology --prune -y
 
 Anthology carries its own copies, so setup recommends uninstalling the official ones:
 
-- **superpowers.** `anthology-superpowers` is the same skills library under a different name, so it does not clash with the official `superpowers` (two enabled plugins with one name lose hooks and collide on commands). Both would work side by side, but their instructions would load twice.
+- **superpowers.** `anthology-superpowers` is the same skills library under a different name, so it does not clash with the official `superpowers` (two enabled plugins with one name lose hooks and collide on commands). Both would work side by side, but their instructions would load twice. Anthology's copy also adds `references/large-builds.md` to subagent-driven-development: the rules the main session follows on long multi-agent builds (start work against published interfaces, test once at the cheapest level, one review per task, batch merges, plain-language status reports). The main session reads it only when it runs such a build.
 - **design-skills.** Anthology uses it only inside its agents' knowledge. An installed copy would expose its skills loose in the main session.
 
 Setup finds the duplicates and shows the commands. You run them yourself; setup does not:

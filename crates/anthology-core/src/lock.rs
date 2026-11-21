@@ -24,11 +24,10 @@
 //! anthology lock, and keep the detail for logs or `--verbose` output only.
 #![forbid(unsafe_code)]
 
-mod tables;
-
 use std::collections::BTreeMap;
 
 use anthology_pycompat::json::{self, Int, Map, Value};
+use anthology_pycompat::str as pystr;
 
 use crate::platform::Target;
 
@@ -181,7 +180,7 @@ pub fn render_anthology(lock: &Lock) -> String {
 
 /// `VERSION_RE.fullmatch(v)`: `\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`.
 fn rtk_version_ok(v: &str) -> bool {
-    let Some(rest) = three_numbers(v, |c| tables::in_ranges(tables::DECIMAL, c)) else {
+    let Some(rest) = three_numbers(v, pystr::is_decimal) else {
         return false;
     };
     if rest.is_empty() {
@@ -270,7 +269,7 @@ fn push_repr_str(out: &mut String, s: &str) {
                 out.push(c);
             }
             _ if n < 0x20 || n == 0x7f => out.push_str(&format!("\\x{n:02x}")),
-            _ if n < 0x7f || !tables::in_ranges(tables::NOT_PRINTABLE, c) => out.push(c),
+            _ if n < 0x7f || pystr::is_printable(c) => out.push(c),
             _ if n <= 0xff => out.push_str(&format!("\\x{n:02x}")),
             _ if n <= 0xffff => out.push_str(&format!("\\u{n:04x}")),
             _ => out.push_str(&format!("\\U{n:08x}")),

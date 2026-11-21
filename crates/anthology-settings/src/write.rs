@@ -12,9 +12,8 @@ use anthology_core::Env;
 use anthology_core::fsx;
 use anthology_core::paths::home_raw;
 use anthology_pycompat::json;
+use anthology_pycompat::path::realpath;
 use anthology_pycompat::pyerr::PyExc;
-
-use crate::scanner::py;
 
 /// `str(pathlib.PurePosixPath(p))` for a non-empty `p`: `//` and `/./` collapse, a trailing `/`
 /// goes, and exactly two leading slashes stay two.
@@ -138,7 +137,7 @@ fn mkdir_parents(p: &Path) -> Result<(), PyExc> {
 /// written through to its target.
 pub fn write_text(path: &Path, text: &str) -> Result<(), PyExc> {
     let target = if is_symlink(path)? {
-        PathBuf::from(py::realpath_os(path.as_os_str()))
+        realpath(path)
     } else {
         path.to_path_buf()
     };

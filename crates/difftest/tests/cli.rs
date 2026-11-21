@@ -250,7 +250,7 @@ fn a_wrong_class_fails_and_an_unknown_key_is_an_error() {
     );
     std::fs::write(
         div.join("core.lock.toml"),
-        "[[divergence]]\nclass = \"D-8\"\nreason = \"r\"\n",
+        "[[divergence]]\nclass = \"D-9\"\nreason = \"r\"\n",
     )
     .expect("write");
     let (code, out) = difftest(&args);

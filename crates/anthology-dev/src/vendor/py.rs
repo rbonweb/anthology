@@ -1,111 +1,22 @@
-//! The bits of Python semantics vendor.py relies on that `anthology_pycompat` does not publish.
+//! The bits of Python semantics vendor.py relies on that `anthology_pycompat` does not publish,
+//! plus re-exports of the `pycompat` items the vendor tool shares.
 //!
-//! Items marked `P1:` stand in for a `pycompat` item of plan §3.2 until P1 lands; DV1d swaps
-//! them for re-exports.
+//! Not in pycompat, so kept here: `rstrip`/`lstrip`, `bytes.strip`, `str.splitlines`, a bytes-pattern
+//! `re` ([`compile_bytes_ignorecase`]: pycompat's `re` takes str subjects, and vendor.py matches
+//! the raw bytes of a file), the `re.sub` template parser, and the `repr` of bytes and JSON values.
 
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use anthology_pycompat::json::{self, Int, Value};
 use anthology_pycompat::pyerr::PyExc;
 
-/// Python's `\w` in a str pattern: `str.isalnum()` or `_` (P1: `pycompat::re::W`).
-pub const W: &str = r"[\p{L}\p{N}_]";
-/// The inside of [`W`], for building classes such as `[\w-]` (P1: from `pycompat::re::W`).
-pub const W_INNER: &str = r"\p{L}\p{N}_";
-/// Python's `\d` in a str pattern: Unicode decimal digits, `Nd` (P1: `pycompat::re::D`).
-pub const D: &str = r"\d";
-/// Python's `\s` in a str pattern: `str.isspace()` (P1: `pycompat::re::S`).
-pub const S: &str = r"[\s\x1c-\x1f]";
-
-/// SWAP(P1): Python's IGNORECASE matches U+0130 (`İ`, whose simple lowercase is `i`) and
-/// U+0131 (`ı`, an sre case equivalence of `i`) to `i` and `I`; Rust's simple case folding does
-/// not. This rewrites each literal `i`/`I` of a `(?i)` pattern into a class holding all four.
-/// Replace it with pycompat's fold once P1 provides one. A class range with `i`/`I` at one end
-/// (`[i-k]`) is not supported: no vendor pattern has one.
-pub fn py_casefold_pattern(pattern: &str) -> String {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut out = String::with_capacity(pattern.len() + 16);
-    let mut in_class = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\\' => {
-                out.push(c);
-                if let Some(&e) = chars.get(i + 1) {
-                    out.push(e);
-                    i += 1;
-                    if matches!(e, 'p' | 'P' | 'x') && chars.get(i + 1) == Some(&'{') {
-                        while let Some(&b) = chars.get(i + 1) {
-                            out.push(b);
-                            i += 1;
-                            if b == '}' {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            '(' if !in_class && chars.get(i + 1) == Some(&'?') => {
-                // A group's flags or kind (`(?i)`, `(?:`, `(?!`) are not literals.
-                out.push_str("(?");
-                i += 1;
-                while let Some(&f) = chars.get(i + 1) {
-                    if !(f.is_ascii_alphabetic() || f == '-') {
-                        break;
-                    }
-                    out.push(f);
-                    i += 1;
-                }
-            }
-            '[' if !in_class => {
-                in_class = true;
-                out.push(c);
-            }
-            ']' if in_class => {
-                in_class = false;
-                out.push(c);
-            }
-            'i' | 'I' if in_class => {
-                out.push(c);
-                out.push_str("\u{130}\u{131}");
-            }
-            'i' | 'I' => out.push_str("[iI\u{130}\u{131}]"),
-            _ => out.push(c),
-        }
-        i += 1;
-    }
-    out
-}
-
-/// `str.isspace()` for one code point (P1: `pycompat::str::is_space`).
-pub fn is_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n'
-            | '\u{0b}'
-            | '\u{0c}'
-            | '\r'
-            | '\u{1c}'..='\u{1f}'
-            | ' '
-            | '\u{85}'
-            | '\u{a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-    )
-}
-
-/// `s.strip()` (P1: `pycompat::str::strip_ws`).
-pub fn strip(s: &str) -> &str {
-    s.trim_matches(is_space)
-}
+pub use anthology_pycompat::difflib::unified_diff_lineterm;
+pub use anthology_pycompat::quote::quote;
+pub use anthology_pycompat::re::{D, S, W};
+pub use anthology_pycompat::str::{is_space, lower, repr as repr_str, strip_ws as strip};
+/// The inside of [`W`], for building classes such as `[\w-]`.
+pub use anthology_pycompat::tables::WORD_ITEMS as W_INNER;
 
 /// `s.rstrip()`.
 pub fn rstrip(s: &str) -> &str {
@@ -241,11 +152,6 @@ pub fn os_error_text(e: &std::io::Error, path: &Path) -> String {
         filename: Some(path.to_string_lossy().into_owned()),
     }
     .py_str()
-}
-
-/// `s.lower()` (P1: `pycompat::str::lower`).
-pub fn lower(s: &str) -> String {
-    s.to_lowercase()
 }
 
 /// The first `n` code points of `s` (`s[:n]`).
@@ -433,49 +339,6 @@ pub fn repr_float(f: f64) -> String {
     }
 }
 
-/// Python's `str.isprintable()` for one code point.
-pub fn is_printable(c: char) -> bool {
-    static NOT_PRINTABLE: OnceLock<regex::Regex> = OnceLock::new();
-    if c == ' ' {
-        return true;
-    }
-    let re = NOT_PRINTABLE.get_or_init(|| {
-        regex::Regex::new(r"^[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]$")
-            .unwrap_or_else(|_| unreachable!("a fixed pattern"))
-    });
-    let mut buf = [0u8; 4];
-    !re.is_match(c.encode_utf8(&mut buf))
-}
-
-/// `repr(str)`.
-pub fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if is_printable(c) => out.push(c),
-            c if (c as u32) < 0x100 => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c if (c as u32) < 0x10000 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push_str(&format!("\\U{:08x}", c as u32)),
-        }
-    }
-    out.push(quote);
-    out
-}
-
 /// `repr(bytes)`.
 pub fn repr_bytes(b: &[u8]) -> String {
     let quote = if b.contains(&b'\'') && !b.contains(&b'"') {
@@ -657,9 +520,10 @@ pub fn unlatin1(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// A Python regex in fancy-regex syntax (P1: `pycompat::re::translate`). `unicode` is a str
-/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern (the UTF-8 of the str),
-/// compiled in fancy-regex's ASCII bytes mode, whose classes are already Python's.
+/// A Python bytes pattern (the UTF-8 of the str) in fancy-regex syntax, to compile in
+/// fancy-regex's ASCII bytes mode, whose classes are already Python's. pycompat's `re` matches
+/// str subjects only, so it cannot run a pattern over the raw bytes of a file; str patterns go
+/// through `pycompat::re::compile`.
 ///
 /// Translated: `$` (no MULTILINE) also matches before a final `\n`; `\Z` is `\z`; `\B` does not
 /// match an empty subject; `{,n}` is `{0,n}`; a `{` or `}` that is not a repeat is a literal;
@@ -677,7 +541,7 @@ pub fn unlatin1(s: &str) -> Vec<u8> {
 ///
 /// `\b`/`\B` keep fancy-regex's word definition, which differs from Python's `\w` only around
 /// non-ASCII marks and numbers. Regex error texts are fancy-regex's, not Python's.
-pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
+fn translate_bytes(py: &str) -> Result<String, String> {
     let chars: Vec<char> = py.chars().collect();
     let mut out = String::with_capacity(py.len() + 8);
     let mut in_class = false;
@@ -695,10 +559,10 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
             None
         }
     };
-    // A literal character: a `\x{…}` escape; in a bytes pattern, one per UTF-8 byte.
+    // A literal character: a `\x{…}` escape, one per UTF-8 byte.
     let literal = |out: &mut String, code: u32| {
         let c = char::from_u32(code).unwrap_or('\u{fffd}');
-        if unicode || code < 0x80 {
+        if code < 0x80 {
             out.push_str(&format!("\\x{{{code:x}}}"));
         } else {
             let mut buf = [0u8; 4];
@@ -719,27 +583,18 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                     return Err(format!("bad escape (end of pattern) at position {at}"));
                 };
                 i += 1;
-                match (e, in_class, unicode) {
-                    ('w', false, true) => out.push_str(W),
-                    ('w', true, true) => out.push_str(W_INNER),
-                    ('W', false, true) => out.push_str(r"[^\p{L}\p{N}_]"),
-                    ('s', false, true) => out.push_str(S),
-                    ('s', true, true) => out.push_str(r"\s\x1c-\x1f"),
-                    ('S', false, true) => out.push_str(r"[^\s\x1c-\x1f]"),
-                    ('W' | 'S', true, true) => {
-                        return Err(format!("\\{e} inside a class is not supported"));
-                    }
-                    ('b', true, _) => out.push_str(r"\x08"),
-                    ('Z', false, _) => {
+                match (e, in_class) {
+                    ('b', true) => out.push_str(r"\x08"),
+                    ('Z', false) => {
                         out.push_str(r"\z");
                         atom = false;
                     }
                     // 3.12's `\B` does not match an empty subject.
-                    ('B', false, _) => {
+                    ('B', false) => {
                         out.push_str(r"(?!\A\z)\B");
                         atom = false;
                     }
-                    ('A' | 'b', false, _) => {
+                    ('A' | 'b', false) => {
                         out.push('\\');
                         out.push(e);
                         atom = false;
@@ -762,15 +617,6 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                         out.push_str(&format!("\\x{{{code:x}}}"));
                         i += 2;
                     }
-                    ('u' | 'U', _, true) => {
-                        let n = if e == 'u' { 4 } else { 8 };
-                        let Some(code) = hex(i + 1, n).filter(|&c| char::from_u32(c).is_some())
-                        else {
-                            return Err(format!("incomplete or bad escape \\{e} at position {at}"));
-                        };
-                        literal(&mut out, code);
-                        i += n;
-                    }
                     ('0', ..) => {
                         // `\0`, `\0o`, `\0oo`: an octal escape of up to three digits.
                         let mut code = 0;
@@ -787,9 +633,6 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                             "backreferences and octal escapes (\\{e} at position {at}) are not \
                              supported"
                         ));
-                    }
-                    ('N', _, true) => {
-                        return Err(format!("\\N{{…}} (at position {at}) is not supported"));
                     }
                     (e, ..) if e.is_ascii_alphabetic() => {
                         return Err(format!("bad escape \\{e} at position {at}"));
@@ -816,7 +659,7 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                         "`--` in a class (at position {at}) is not supported"
                     ));
                 }
-                c if !unicode && !c.is_ascii() => literal(&mut out, u32::from(c)),
+                c if !c.is_ascii() => literal(&mut out, u32::from(c)),
                 c => out.push(c),
             },
             '[' => {
@@ -963,7 +806,7 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                 groups.pop();
                 out.push(c);
             }
-            c if !unicode && !c.is_ascii() => literal(&mut out, u32::from(c)),
+            c if !c.is_ascii() => literal(&mut out, u32::from(c)),
             c => out.push(c),
         }
         if !in_class {
@@ -976,253 +819,15 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
     Ok(out)
 }
 
-/// `re.compile(pattern)` of a str pattern (P1: `pycompat::re::compile`).
-pub fn compile_str(py: &str) -> Result<fancy_regex::Regex, String> {
-    let pattern = translate(py, true)?;
-    fancy_regex::Regex::new(&pattern).map_err(|e| e.to_string())
-}
-
 /// `re.compile(pattern.encode(), re.IGNORECASE)` of a bytes pattern: ASCII classes, ASCII case
 /// folding, any byte matched by `.`.
 pub fn compile_bytes_ignorecase(py: &str) -> Result<fancy_regex::Regex, String> {
-    let pattern = translate(py, false)?;
+    let pattern = translate_bytes(py)?;
     fancy_regex::RegexBuilder::new(&pattern)
         .bytes_mode(fancy_regex::BytesMode::Ascii)
         .case_insensitive(true)
         .build()
         .map_err(|e| e.to_string())
-}
-
-/// `urllib.parse.quote(s, safe)`: UTF-8 bytes, `%XX` (upper case) for everything but ASCII
-/// letters, digits, `_.-~` and the `safe` characters (P1: `pycompat::quote::quote`).
-pub fn quote(s: &str, safe: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        let c = char::from(b);
-        if b.is_ascii_alphanumeric()
-            || matches!(c, '_' | '.' | '-' | '~')
-            || (b < 0x80 && safe.contains(c))
-        {
-            out.push(c);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-/// `difflib.SequenceMatcher(None, a, b)` (autojunk on), enough for `get_grouped_opcodes`.
-struct Matcher<'a> {
-    a: &'a [&'a str],
-    b: &'a [&'a str],
-    b2j: std::collections::HashMap<&'a str, Vec<usize>>,
-}
-
-type Opcode = (char, usize, usize, usize, usize);
-
-impl<'a> Matcher<'a> {
-    fn new(a: &'a [&'a str], b: &'a [&'a str]) -> Matcher<'a> {
-        let mut b2j: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
-        for (i, elt) in b.iter().enumerate() {
-            b2j.entry(elt).or_default().push(i);
-        }
-        let n = b.len();
-        if n >= 200 {
-            let ntest = n / 100 + 1;
-            b2j.retain(|_, idxs| idxs.len() <= ntest);
-        }
-        Matcher { a, b, b2j }
-    }
-
-    fn find_longest_match(
-        &self,
-        alo: usize,
-        ahi: usize,
-        blo: usize,
-        bhi: usize,
-    ) -> (usize, usize, usize) {
-        let (a, b) = (self.a, self.b);
-        let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0);
-        let mut j2len: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        for (i, ai) in a.iter().enumerate().take(ahi).skip(alo) {
-            let mut newj2len = std::collections::HashMap::new();
-            if let Some(js) = self.b2j.get(ai) {
-                for &j in js {
-                    if j < blo {
-                        continue;
-                    }
-                    if j >= bhi {
-                        break;
-                    }
-                    let k = j
-                        .checked_sub(1)
-                        .and_then(|p| j2len.get(&p))
-                        .copied()
-                        .unwrap_or(0)
-                        + 1;
-                    newj2len.insert(j, k);
-                    if k > bestsize {
-                        (besti, bestj, bestsize) = (i + 1 - k, j + 1 - k, k);
-                    }
-                }
-            }
-            j2len = newj2len;
-        }
-        // No junk function: extend with equal (popular) elements on both ends.
-        while besti > alo && bestj > blo && a[besti - 1] == b[bestj - 1] {
-            (besti, bestj, bestsize) = (besti - 1, bestj - 1, bestsize + 1);
-        }
-        while besti + bestsize < ahi
-            && bestj + bestsize < bhi
-            && a[besti + bestsize] == b[bestj + bestsize]
-        {
-            bestsize += 1;
-        }
-        (besti, bestj, bestsize)
-    }
-
-    fn matching_blocks(&self) -> Vec<(usize, usize, usize)> {
-        let (la, lb) = (self.a.len(), self.b.len());
-        let mut queue = vec![(0, la, 0, lb)];
-        let mut blocks = Vec::new();
-        while let Some((alo, ahi, blo, bhi)) = queue.pop() {
-            let (i, j, k) = self.find_longest_match(alo, ahi, blo, bhi);
-            if k > 0 {
-                blocks.push((i, j, k));
-                if alo < i && blo < j {
-                    queue.push((alo, i, blo, j));
-                }
-                if i + k < ahi && j + k < bhi {
-                    queue.push((i + k, ahi, j + k, bhi));
-                }
-            }
-        }
-        blocks.sort_unstable();
-        let (mut i1, mut j1, mut k1) = (0, 0, 0);
-        let mut out = Vec::new();
-        for (i2, j2, k2) in blocks {
-            if i1 + k1 == i2 && j1 + k1 == j2 {
-                k1 += k2;
-            } else {
-                if k1 > 0 {
-                    out.push((i1, j1, k1));
-                }
-                (i1, j1, k1) = (i2, j2, k2);
-            }
-        }
-        if k1 > 0 {
-            out.push((i1, j1, k1));
-        }
-        out.push((la, lb, 0));
-        out
-    }
-
-    fn opcodes(&self) -> Vec<Opcode> {
-        let (mut i, mut j) = (0, 0);
-        let mut out = Vec::new();
-        for (ai, bj, size) in self.matching_blocks() {
-            let tag = if i < ai && j < bj {
-                Some('r')
-            } else if i < ai {
-                Some('d')
-            } else if j < bj {
-                Some('i')
-            } else {
-                None
-            };
-            if let Some(tag) = tag {
-                out.push((tag, i, ai, j, bj));
-            }
-            (i, j) = (ai + size, bj + size);
-            if size > 0 {
-                out.push(('e', ai, i, bj, j));
-            }
-        }
-        out
-    }
-
-    fn grouped_opcodes(&self, n: usize) -> Vec<Vec<Opcode>> {
-        let mut codes = self.opcodes();
-        if codes.is_empty() {
-            codes.push(('e', 0, 1, 0, 1));
-        }
-        if let Some(c) = codes.first_mut()
-            && c.0 == 'e'
-        {
-            *c = (
-                'e',
-                c.1.max(c.2.saturating_sub(n)),
-                c.2,
-                c.3.max(c.4.saturating_sub(n)),
-                c.4,
-            );
-        }
-        if let Some(c) = codes.last_mut()
-            && c.0 == 'e'
-        {
-            *c = ('e', c.1, c.2.min(c.1 + n), c.3, c.4.min(c.3 + n));
-        }
-        let nn = n + n;
-        let mut groups = Vec::new();
-        let mut group = Vec::new();
-        for (tag, mut i1, i2, mut j1, j2) in codes {
-            if tag == 'e' && i2 - i1 > nn {
-                group.push((tag, i1, i2.min(i1 + n), j1, j2.min(j1 + n)));
-                groups.push(std::mem::take(&mut group));
-                (i1, j1) = (i1.max(i2.saturating_sub(n)), j1.max(j2.saturating_sub(n)));
-            }
-            group.push((tag, i1, i2, j1, j2));
-        }
-        if !group.is_empty() && !(group.len() == 1 && group[0].0 == 'e') {
-            groups.push(group);
-        }
-        groups
-    }
-}
-
-/// `difflib._format_range_unified(start, stop)`.
-fn unified_range(start: usize, stop: usize) -> String {
-    let mut beginning = start + 1;
-    let length = stop - start;
-    if length == 1 {
-        return beginning.to_string();
-    }
-    if length == 0 {
-        beginning -= 1;
-    }
-    format!("{beginning},{length}")
-}
-
-/// `difflib.unified_diff(a, b, fromfile, tofile, n=n, lineterm="\n")` (P1:
-/// `pycompat::difflib::unified_diff`).
-pub fn unified_diff(a: &[&str], b: &[&str], fromfile: &str, tofile: &str, n: usize) -> Vec<String> {
-    let m = Matcher::new(a, b);
-    let mut out = Vec::new();
-    for (k, group) in m.grouped_opcodes(n).into_iter().enumerate() {
-        if k == 0 {
-            out.push(format!("--- {fromfile}\n"));
-            out.push(format!("+++ {tofile}\n"));
-        }
-        let (first, last) = (group[0], group[group.len() - 1]);
-        out.push(format!(
-            "@@ -{} +{} @@\n",
-            unified_range(first.1, last.2),
-            unified_range(first.3, last.4)
-        ));
-        for (tag, i1, i2, j1, j2) in group {
-            if tag == 'e' {
-                out.extend(a[i1..i2].iter().map(|l| format!(" {l}")));
-                continue;
-            }
-            if tag == 'r' || tag == 'd' {
-                out.extend(a[i1..i2].iter().map(|l| format!("-{l}")));
-            }
-            if tag == 'r' || tag == 'i' {
-                out.extend(b[j1..j2].iter().map(|l| format!("+{l}")));
-            }
-        }
-    }
-    out
 }
 
 /// A `json::Map` built from `(key, int)` pairs, for the stats dicts.
@@ -1367,7 +972,8 @@ mod tests {
         ("str", "\u{e9}*", "\u{e9}\u{e9}", "0,2"),
     ];
 
-    /// Patterns Python accepts that the stand-in refuses instead of reinterpreting.
+    /// Patterns Python accepts that the bytes translation or pycompat's `re` refuses instead of
+    /// reinterpreting; a pattern that compiles must still give Python's answer.
     const REFUSED: &[&str] = &[
         "[!--]",
         "[--z]",
@@ -1385,44 +991,50 @@ mod tests {
         "(?:)*a",
     ];
 
+    /// Patterns Python rejects (a look-behind without a fixed width) that pycompat's `re` runs
+    /// anyway (its documented difference: no Python source can hold one).
+    const ACCEPTED_WIDER: &[&str] = &["(?<=a?)b", "(?<=a|bc)d", "(?<=\\d*)x"];
+
+    /// Python's span of the first match: code points for a str pattern, bytes for a bytes one.
+    fn span(mode: &str, pattern: &str, subject: &str) -> Result<String, String> {
+        let found = if mode == "str" {
+            let re = anthology_pycompat::re::compile(pattern, false)?;
+            re.find_at(subject, 0).map_err(|e| e.to_string())?
+        } else {
+            let re = compile_bytes_ignorecase(pattern)?;
+            re.find(subject)
+                .map_err(|e| e.to_string())?
+                .map(|m| (m.start(), m.end()))
+        };
+        Ok(match found {
+            None => "none".to_string(),
+            Some((a, b)) if mode == "str" => format!(
+                "{},{}",
+                subject[..a].chars().count(),
+                subject[..b].chars().count()
+            ),
+            Some((a, b)) => format!("{a},{b}"),
+        })
+    }
+
     #[test]
-    fn translate_matches_python_or_refuses() {
+    fn regex_matches_python_or_refuses() {
         let mut failures = Vec::new();
         for (mode, pattern, subject, want) in RE_CASES {
-            let compiled = if *mode == "str" {
-                compile_str(pattern)
-            } else {
-                compile_bytes_ignorecase(pattern)
-            };
-            let re = match compiled {
+            match span(mode, pattern, subject) {
                 Err(e) => {
                     if *want != "error" && !REFUSED.contains(pattern) {
                         failures.push(format!("{pattern:?} refused ({e}) but Python gives {want}"));
                     }
-                    continue;
                 }
-                Ok(re) => re,
-            };
-            if REFUSED.contains(pattern) || *want == "error" {
-                failures.push(format!(
+                Ok(_) if *want == "error" && ACCEPTED_WIDER.contains(pattern) => {}
+                Ok(_) if *want == "error" => failures.push(format!(
                     "{mode} {pattern:?} compiles but Python gives {want}"
-                ));
-                continue;
-            }
-            let got = match re.find(subject).unwrap() {
-                None => "none".to_string(),
-                // Python's str spans count code points; bytes spans count bytes.
-                Some(m) if *mode == "str" => format!(
-                    "{},{}",
-                    subject[..m.start()].chars().count(),
-                    subject[..m.end()].chars().count()
-                ),
-                Some(m) => format!("{},{}", m.start(), m.end()),
-            };
-            if got != *want {
-                failures.push(format!(
+                )),
+                Ok(got) if got != *want => failures.push(format!(
                     "{mode} {pattern:?} on {subject:?}: {got}, Python {want}"
-                ));
+                )),
+                Ok(_) => {}
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -1495,14 +1107,6 @@ mod tests {
         assert_eq!(
             decode_utf8(b"\xed\xa0\x80").unwrap_err(),
             "'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte"
-        );
-    }
-
-    #[test]
-    fn casefold_pattern_rewrites_literal_i_only() {
-        assert_eq!(
-            py_casefold_pattern(r"(?i)\Aif\b[\p{L}i](?:x)\x{69}"),
-            "(?i)\\A[iI\u{130}\u{131}]f\\b[\\p{L}i\u{130}\u{131}](?:x)\\x{69}"
         );
     }
 

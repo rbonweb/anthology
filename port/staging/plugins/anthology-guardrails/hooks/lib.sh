@@ -14,6 +14,7 @@ ANTH_BUDGET=20
 ANTH_PROBE_TIMEOUT=5
 ANTH_MAX_BYTES=67108864
 ANTH_TAG_PREFIX='anthology-bin--v'
+ANTH_R_HOME='HOME or CLAUDE_CONFIG_DIR is not an absolute path'
 ANTH_NL='
 '
 ANTH_P='; if this keeps happening, disable anthology-guardrails with /plugin'
@@ -30,20 +31,37 @@ ANTH_RC='' ANTH_ERR='' ANTH_H='' ANTH_SHA_CMD='' ANTH_STRIKES='' ANTH_QUAR='' AN
 
 # --- paths (GC-1) -------------------------------------------------------------------------
 
-# anth_paths ROOT: the plugin root, its lock, and <ah>/bin.
+# anth_paths ROOT: the plugin root, its lock, and <ah>/bin. <ah> is $CLAUDE_CONFIG_DIR/anthology
+# when that is set, else $HOME/.claude/anthology, and it must be an absolute path: a relative
+# one would pick a binary under the hook's working folder, which the hot path runs unhashed,
+# and an unset or empty HOME is not a home (there is no passwd lookup here). Otherwise ANTH_AH
+# and every path below it stay empty and anth_home_ok fails, as
+# `anthology_core::paths::install_home` does.
 anth_paths() {
     ANTH_ROOT=$1
     ANTH_LOCK=$1/anthology.lock
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
         ANTH_AH=$CLAUDE_CONFIG_DIR/anthology
+    elif [ -n "${HOME:-}" ]; then
+        ANTH_AH=$HOME/.claude/anthology
     else
-        ANTH_AH=${HOME:-}/.claude/anthology
+        ANTH_AH=
     fi
-    ANTH_BINDIR=$ANTH_AH/bin
+    case $ANTH_AH in
+        /*) ANTH_BINDIR=$ANTH_AH/bin ;;
+        *) ANTH_AH='' ANTH_BINDIR='' ;;
+    esac
 }
 
-# anth_vpaths: <ah>/bin/<version> and its binary (after anth_lock).
+# anth_home_ok: <ah> is usable (after anth_paths).
+anth_home_ok() {
+    [ -n "$ANTH_AH" ]
+}
+
+# anth_vpaths: <ah>/bin/<version> and its binary (after anth_lock); both empty without <ah>.
 anth_vpaths() {
+    ANTH_VDIR='' ANTH_BIN=''
+    anth_home_ok || return 0
     ANTH_VDIR=$ANTH_BINDIR/$ANTH_VERSION
     ANTH_BIN=$ANTH_VDIR/anthology
 }
@@ -207,6 +225,7 @@ anth_resolve() {
     anth_paths "$1"
     anth_platform || return 1
     anth_lock || return 1
+    anth_home_ok || return 1
     anth_vpaths
 }
 
@@ -368,6 +387,10 @@ anth_watch() {
     shift
     "$@" </dev/null &
     _w_p=$!
+    # bootstrap.sh's EXIT trap removes $ANTH_TMP, and a fast-failing probe can send TERM to the
+    # watcher before it has reset the traps it inherited: bash then runs that trap in the
+    # subshell and deletes the staging folder under the parent. The subshell sees it empty.
+    _w_t=$ANTH_TMP ANTH_TMP=
     (
         exec </dev/null >/dev/null 2>&1
         _w_s=
@@ -378,6 +401,7 @@ anth_watch() {
         kill -9 "$_w_p" 2>/dev/null
     ) &
     _w_w=$!
+    ANTH_TMP=$_w_t
     wait "$_w_p" 2>/dev/null
     _w_rc=$?
     kill "$_w_w" 2>/dev/null
@@ -603,6 +627,10 @@ anth_bootstrap() {
         ANTH_REASON='anthology.lock is not valid'
         return 1
     fi
+    if ! anth_home_ok; then
+        ANTH_REASON=$ANTH_R_HOME
+        return 1
+    fi
     anth_vpaths
     # 3. The install folder; a symlink is refused (m-R2).
     [ ! -h "$ANTH_BINDIR" ] || anth_cannot_write || return 1
@@ -733,6 +761,10 @@ anth_msg_unsupported() {
     ANTH_MSG="Blocked by anthology-guardrails (setup): there is no guard binary for this platform ($ANTH_OS/$ANTH_ARCH); Anthology supports macOS and Linux on x86_64 and arm64. Disable anthology-guardrails (/plugin) to use Claude Code here"
 }
 
+anth_msg_home() {
+    ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary cannot be found because $ANTH_R_HOME; set it to an absolute path, then start a new session$ANTH_P"
+}
+
 anth_msg_lock() {
     ANTH_MSG="Blocked by anthology-guardrails (setup): anthology.lock in the anthology-guardrails plugin is not valid; reinstall anthology-guardrails$ANTH_P"
 }
@@ -752,6 +784,7 @@ anth_msg_reason() {
             ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary $ANTH_VERSION does not run on this machine (wrong architecture, or a home folder mounted noexec); disable anthology-guardrails with /plugin, then fix the cause and start a new session"
             ;;
         'anthology.lock is not valid') anth_msg_lock ;;
+        "$ANTH_R_HOME") anth_msg_home ;;
         'unsupported platform '*) anth_msg_unsupported ;;
         *) anth_msg_not_installed "$1" ;;
     esac
@@ -773,7 +806,7 @@ anth_quarantine_msg() {
 }
 
 # anth_guard_state ROOT: ANTH_STATE = hot (installed), broken (a binary that must not run;
-# ANTH_WHY), missing, or closed (lock invalid or platform unsupported; ANTH_MSG). No binary
+# ANTH_WHY), missing, or closed (platform unsupported, lock invalid or no <ah>; ANTH_MSG). No binary
 # runs here.
 anth_guard_state() {
     ANTH_STATE='' ANTH_MSG='' ANTH_WHY='' ANTH_RUN=''
@@ -785,6 +818,11 @@ anth_guard_state() {
     fi
     if ! anth_lock; then
         anth_msg_lock
+        ANTH_STATE=closed
+        return 0
+    fi
+    if ! anth_home_ok; then
+        anth_msg_home
         ANTH_STATE=closed
         return 0
     fi

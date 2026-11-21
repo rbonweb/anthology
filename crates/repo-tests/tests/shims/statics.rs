@@ -223,7 +223,7 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_rtk_hook() {
           "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"], "timeout": 60}]}],
           "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "sh",
-              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]}]}]
+              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"], "timeout": 60, "onFailure": "block"}]}]
         }}"#,
     )
     .unwrap();
@@ -307,4 +307,26 @@ fn the_wrappers_differ_only_in_name_and_the_mem_argument() {
     };
     assert_eq!(norm(&a), norm(&m));
     assert_eq!(m.matches("exec \"$ANTH_BIN\" mem \"$@\"").count(), 2);
+}
+
+/// bootstrap.sh's EXIT trap removes `$ANTH_TMP`. The watchdog's subshell inherits it, and bash
+/// runs it there when a fast-failing probe's TERM lands before the subshell resets its traps,
+/// which deleted the staging folder under the parent (the flaky other-arch ELF probe). So the
+/// subshell must start with `ANTH_TMP` empty and the parent must get it back.
+#[test]
+fn the_watchdog_subshell_starts_without_anth_tmp() {
+    let lib = staged("anthology/hooks/lib.sh");
+    let start = lib.find("anth_watch() {").unwrap();
+    let body = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+    let clear = body
+        .find("_w_t=$ANTH_TMP ANTH_TMP=\n")
+        .expect("clears ANTH_TMP");
+    let fork = body.find("    (\n").expect("the watchdog subshell");
+    let restore = body
+        .find("    ANTH_TMP=$_w_t\n")
+        .expect("restores ANTH_TMP");
+    let wait = body
+        .find("    wait \"$_w_p\"")
+        .expect("waits for the probe");
+    assert!(clear < fork && fork < restore && restore < wait, "{body}");
 }

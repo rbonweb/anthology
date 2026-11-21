@@ -735,3 +735,34 @@ The guard and rtk's Anthology gate (ADR-022) each had their own shell reading. D
 **Consequences**
 
 More lines are denied where they used to be asked about, and some lines behind `rtk` that the plain shape never passed now ask for a second reason; no line that used to be asked about or denied passes. Measured on 3,814 commands (the gate's tests, the F1 review kits, the guard's corpus and the shell seeds) under five rule sets: no verdict got looser, and with no rules every output is byte-identical. An upstream sync now carries one more `# anthology fork:` line in `rtk/Cargo.toml`; `rtk_trim`'s lock guard allows path packages under `../crates/` and their dependency closure (DV4). Cost if wrong: an `anthology-shell` bug that over-reads a command adds a prompt or a deny; one that under-reads is still covered by the rule scan.
+
+**Addendum (RG2, 2026-11-21): the gate's work bound on huge lines**
+
+- A 1 MB `rtk ls a a a ...` took about 41 s with any rule: the plain shape and the `Read()` checks made several `canonicalize` calls per path word, and the work budget did not charge them. A `PreToolUse` hook that outlives its timeout is no decision (Claude Code continues through the normal permission flow unless `onFailure` is `block`), so `Bash(rtk *)` would allow the line.
+- Disk lookups now have their own budget (`PROBE_COST` per path, working directory and matcher). When it runs out, symlinks are no longer resolved for the rest of the command, every path is still matched as written, the text is still read in full within the scan's own budget, and the command asks at the end. **Unverified paths ask:** past the lookup budget, a `Read()` deny that only a symlink lookup would find is an ask, not a deny; a path denied as written (lexical `..` included) still denies, and so does a Bash deny rule later in the line.
+- A line whose bytes alone would spend the scan's budget (`LINE_BYTE_COST`, 125 KB) never passes: the budgeted scan still runs and its deny stands, otherwise the hook asks on the line as written, with no plain-shape check and no rewrite. With no rules the gate stays inert.
+- Consequences: a 1 MB line answers in well under a second (release build, 0.05-0.42 s measured); lines with about a thousand or more literal paths, and any line over 125 KB, now prompt when any rule exists. RG1's old/new corpus is byte-identical.
+
+## ADR-024: safety hooks fail closed on a timeout or crash (`onFailure: "block"`; supersedes part of ADR-010)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane HK1 (from the RG2 finding)
+- **Status:** Accepted
+
+**Context**
+
+- Neither safety `PreToolUse` hook set `timeout` or `onFailure`: the guardrails guard (matcher `*`) and rtk's hook (matcher `Bash`, which runs the ADR-022/023 gate behind `Bash(rtk *)`).
+- The Claude Code hooks reference says a command hook's `timeout` defaults to 600 s, and "On `PreToolUse`, a timed-out `command`, `http`, or `mcp_tool` hook doesn't block the tool call, except for hooks whose failure blocks the action. The call continues through the normal permission flow". A hook that can't start, or exits with anything but 0 or 2, is also a non-blocking error. So a stalled, killed or crashed rtk hook let an `rtk …` line through on `Bash(rtk *)` alone. The same applied to the guard.
+- `"onFailure": "block"` makes each of those failures (can't start, exit other than 0 or 2, timeout, invalid JSON output) do what exit 2 does: on `PreToolUse`, it blocks the call. It needs v2.1.295 for command hooks (ADR-010, ADR-012); the plugins already declare `>=2.1.311`. The smoke `guard-timeout` checks it on a real client.
+- ADR-010 kept the guard fail-open, because a missing `python3` would then block every tool. The owner's later fail-mode answer for the Rust port is fail closed, and the staged guardrails `hooks.json` (design §9.1) already has `"timeout": 60, "onFailure": "block"`.
+
+**Decision**
+
+- Every safety `PreToolUse` hook sets `"timeout": 60` and `"onFailure": "block"`. That is the live guard (`python3 scripts/guard.py`), the live rtk hook (`sh bin/rtk-hook`), and the staged rtk hook in `port/staging/plugins/anthology/hooks/hooks.json`, so the cutover keeps it. The staged guard already had both.
+- Ruling: one timeout, 60 s, the design §9.1 value for both hooks. Why: the guard decides in about 10 ms and rtk's gate is bounded (RG2: a 1 MB line in under 0.5 s; the history write after the answer waits at most 5 s), so 60 s only bounds a stall. With `block`, a shorter timeout can only add blocks, never allow a call. Cost if wrong: a pathological stall holds a tool call for up to 60 s before it is blocked.
+- Ruling: this supersedes ADR-010's "the guard keeps failing open" for the Python build. Why: a stalled or killed guard must not turn into an allow, and the release ships the Rust shim with the same setting anyway. Cost if wrong: until the cutover, a machine without a working `python3` gets every tool call blocked, with a `failed; blocking because onFailure is "block"` error, until `python3` is installed or the guardrails plugin is disabled (`/plugin`).
+- Unchanged: both hooks still exit 0 on malformed input. `guard.py` catches every exception and allows, and rtk's hook answers `ask` on unreadable input and exits 0 when rtk is not installed. So `block` only fires when the process itself fails or stalls.
+
+**Consequences**
+
+A timeout or crash of either safety hook now blocks the call, and the error names the hook. rtk exiting 1 or panicking blocks that Bash call, instead of letting it fall through to `Bash(rtk *)`. No minimum-version change.

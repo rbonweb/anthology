@@ -116,7 +116,7 @@ const OPTIONS: [&str; 11] = [
 ];
 
 /// Options without a value.
-const FLAGS: [&str; 1] = ["--allow-standins"];
+const FLAGS: [&str; 0] = [];
 
 fn parse_opts(args: &[OsString]) -> Result<Opts, String> {
     let mut opts = Opts::default();
@@ -652,7 +652,6 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         calls_total: calls.iter().map(|c| c.count).sum(),
         texts_distinct: texts.len() as u64,
         texts_total: texts.iter().map(|(n, _)| n).sum(),
-        standins: compare::STANDINS && (surfaces.analyze || surfaces.check),
         ..Summary::default()
     };
     let mut details = String::new();
@@ -816,12 +815,6 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
              transparency was not checked\n",
         );
     }
-    if s.standins {
-        stderr.push_str(
-            "anthology-dev replay run: the guard check and shell analysis are SWAP(GD2) \
-             stand-ins until GD2 merges; their differences are expected\n",
-        );
-    }
     let n = quarantined.into_inner();
     if n > 0 {
         let _ = writeln!(
@@ -898,7 +891,7 @@ fn identity_strings(env: &Env) -> Vec<String> {
 }
 
 fn cmd_report(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
-    opts.only(&["--dir", "--date", "--repo", "--out", "--allow-standins"])?;
+    opts.only(&["--dir", "--date", "--repo", "--out"])?;
     let dir = opts.dir(env, cwd);
     collect::refuse_in_checkout(&dir, cwd)?;
     let date = match opts.str("--date")? {
@@ -920,13 +913,6 @@ fn cmd_report(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
         Some(o) => cwd.join(o),
         None => repo_of(opts, cwd)?.join(format!("port/replay-reports/{date}.md")),
     };
-    if summary.standins && !opts.0.contains_key("--allow-standins") {
-        return Err(format!(
-            "{} used the SWAP(GD2) stand-ins for the guard and shell, so it proves nothing; \
-             replay again once GD2 has merged (or pass --allow-standins for a test report)",
-            run_file.display()
-        ));
-    }
     let rendered = report::render(&summary);
     let strings = report::corpus_strings(&dir, identity_strings(env))?;
     let check = report::check_report(&rendered, &mut strings.into_iter());

@@ -291,9 +291,7 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
             .expect("details");
         assert!(!details.contains("oracle error"), "{details}");
     }
-    // SWAP(GD2): once the guard and shell are real, the whole run is clean:
-    // assert_eq!(summary.unexplained(), 0, "{stderr}");
-    assert!(summary.standins == python, "the run says it used stand-ins");
+    assert_eq!(summary.unexplained(), 0, "{stderr}");
 
     let out_md = c.home.join("report.md");
     let out = replay::run_in(
@@ -301,7 +299,6 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
             "report",
             "--date",
             "2026-01-02",
-            "--allow-standins",
             "--out",
             out_md.to_str().expect("utf8"),
         ]),
@@ -399,5 +396,4 @@ fn runner_3_runs_the_seeded_binary_and_matches_runner_2() {
         Some(&[[7, 0, 0], [1, 0, 0], [1, 0, 0]])
     );
     assert!(summary.diffs.is_empty());
-    assert!(!summary.standins);
 }
