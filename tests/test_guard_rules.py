@@ -2240,5 +2240,233 @@ class RunnerBypassTest(unittest.TestCase):
         self.assertLess(time.perf_counter() - start, 1.0)
 
 
+class RunnerBypassRound1Test(unittest.TestCase):
+    """FW-I review round 1: cost bounds (C1), xargs replace strings (I1), git subcommands that
+    run commands (I2), commands after `--` of unknown runners (I3), and the minor findings."""
+
+    def assert_table(self, expected_rule, cases):
+        for case in cases:
+            with self.subTest(rule=expected_rule, case=case):
+                self.assertEqual(rule_of(bash(case)), expected_rule)
+
+    # C1: each shape the review found exponential or quadratic stays linear.
+    COST_SHAPES = {
+        "watch": ("watch ", "npx playwright install"),
+        "sg": ("sg x ", "npx playwright install"),
+        "parallel": ("parallel ", "npx playwright install"),
+        "sudo watch": ("sudo watch -n1 ", "npx playwright install"),
+        "quoted watch": ("watch 'a b' ", "npx playwright install"),
+        "su -c": ("su -c x ", "npx playwright install"),
+        "fd -x": ("fd -x a ", ""),
+        "fd -x ;": ("fd -x a \\; ", ""),
+        "xargs chain": ("xargs ", "npx"),
+        "env -S": ("env -S 'a b' ", "npx playwright install"),
+    }
+
+    @staticmethod
+    def build(shape, size):
+        unit, tail = RunnerBypassRound1Test.COST_SHAPES[shape]
+        body = unit * (size // len(unit) + 1)
+        if shape == "xargs chain":
+            return "echo 'playwright install' | " + body + tail
+        return body + tail
+
+    @staticmethod
+    def cost(command):
+        import time
+        start = time.perf_counter()
+        guard_rules.check("Bash", {"command": command}, HOME)
+        return time.perf_counter() - start
+
+    def test_wrapper_chains_cost_linear_time(self):
+        for shape in self.COST_SHAPES:
+            with self.subTest(shape=shape):
+                self.assertLess(self.cost(self.build(shape, 100_000)), 1.0)
+                small = self.cost(self.build(shape, 25_000))
+                large = self.cost(self.build(shape, 100_000))
+                self.assertLess(large, 6 * max(small, 0.01))
+
+    def test_short_wrapper_chains_still_block(self):
+        self.assert_table("G1", [
+            "watch " * 20 + "npx playwright install",
+            "sg x " * 16 + "npx playwright install",
+            "parallel " * 16 + "npx playwright install",
+            "sudo watch -n1 " * 16 + "npx playwright install",
+            "watch watch 'npx playwright install'",
+            "watch sg x 'npx playwright install'",
+            "echo 'playwright install' | xargs xargs npx",
+        ])
+
+    def test_xargs_replace_string_forms(self):
+        self.assert_table("G1", [
+            "echo install | xargs --replace npx playwright {}",
+            "echo playwright | xargs --replace npx {} install",
+            "echo install | xargs --replace=@ npx playwright @",
+            "echo install | xargs -tI{} npx playwright {}",
+            "echo install | xargs -tI {} npx playwright {}",
+            "echo install | xargs -I{} npx playwright {}",
+            "echo install | xargs -i npx playwright {}",
+            "echo install | xargs -iX npx playwright X",
+            "echo install | xargs -ti npx playwright {}",
+        ])
+        self.assert_table(None, [
+            # with a replace string each line is ONE argument: npx gets "playwright install"
+            "echo 'playwright install' | xargs --replace npx {}",
+            "echo src | xargs --replace ls {}",
+            "echo src | xargs -tI{} ls {}",
+        ])
+
+    def test_git_subcommands_that_run_a_command(self):
+        self.assert_table("G1", [
+            "git bisect run npx playwright test e2e/x.spec.ts",
+            "git -C repo bisect run npx playwright install",
+            "git rebase -x 'npx playwright install' HEAD~1",
+            "git rebase --exec 'npx playwright install' HEAD~1",
+            "git rebase --exec='npx playwright install' HEAD~1",
+            "git rebase -i --exec 'npx playwright install' main",
+            "git submodule foreach 'npx playwright install'",
+            "git submodule foreach --recursive 'npx playwright install'",
+            "git submodule --quiet foreach npx playwright install",
+            "git difftool -y -x 'npx playwright install'",
+            "git difftool -y --extcmd='npx playwright install'",
+            "git difftool --extcmd 'npx playwright install'",
+        ])
+        self.assert_table(None, [
+            "git bisect run make test",
+            "git bisect start HEAD HEAD~5",
+            "git rebase -i HEAD~3",
+            "git rebase -x 'cargo test' main",
+            "git submodule foreach git pull",
+            "git submodule update --init",
+            "git difftool -y",
+        ])
+
+    def test_command_after_dashdash_of_an_unknown_runner(self):
+        self.assert_table("G1", [
+            "doppler run -- npx playwright install",
+            "op run -- npx playwright install",
+            "dotenvx run -- npx playwright install",
+            "infisical run --env=dev -- npx playwright install",
+            "aws-vault exec prof -- npx playwright install",
+            "lerna exec -- npx playwright install",
+            "nx exec -- npx playwright install",
+            "cpulimit -l 50 -- npx playwright install",
+            "with-secrets -- pnpm dlx playwright install",
+            "nix develop -c npx playwright install",
+            "nix develop .#e2e --command npx playwright install",
+            "nix shell nixpkgs#nodejs -c npx playwright install",
+            "nix-shell --run 'npx playwright install'",
+            "nix-shell -p nodejs --command 'npx playwright install'",
+            "systemd-run --user --scope npx playwright install",
+            "systemd-run -p MemoryMax=1G --wait npx playwright install",
+            "dbus-launch npx playwright install",
+            "ssh-agent npx playwright install",
+            "ltrace -f npx playwright install",
+            "valgrind -q --trace-children=yes npx playwright install",
+            "gdb -batch -ex run --args npx playwright install",
+            "perf stat -e cycles npx playwright install",
+            "chpst -u root npx playwright install",
+        ])
+        self.assert_table(None, [
+            "git checkout -- playwright install",
+            "git diff HEAD -- playwright install",
+            "npm run e2e -- playwright test",
+            "pnpm run e2e -- playwright test",
+            "npm test -- playwright install",
+            "cargo test -- playwright install",
+            "cargo run -- playwright install",
+            "docker run --rm img -- npx playwright install",
+            "kubectl exec pod -- npx playwright install",
+            "rg -- playwright install",
+            "grep -r -- playwright install",
+            "node script.js -- playwright install",
+            "bash run.sh -- playwright install",
+            "doppler run -- npm test",
+            "make -- test",
+            "mytool -- --help",
+        ])
+
+    def test_round_1_minor_forms(self):
+        self.assert_table("G1", [
+            "source /dev/stdin <<< 'npx playwright install'",
+            ". /dev/stdin <<< 'npx playwright install'",
+            "bash /dev/fd/3 3<<<'npx playwright install'",
+            "sh /dev/fd/3 3<<'EOF'\nnpx playwright install\nEOF",
+            "exec 3<<EOF\nnpx playwright install\nEOF\nsh <&3",
+            "sh /proc/self/fd/0 <<< 'npx playwright install'",
+            "busybox ash -c 'npx playwright install'",
+            "ash -c 'npx playwright install'",
+            "mksh -c 'npx playwright install'",
+            "parallel -I@@ npx playwright @@ ::: install",
+            "parallel npx {1} {2} ::: playwright ::: install",
+            "tar -cf b.tar -I'npx playwright install' f",
+            "tar -cf b.tar -F'npx playwright install' f",
+            "python3 -Bm playwright install",
+            "python3 -X dev -m playwright install",
+            "python3 -W ignore -m playwright install",
+            "python3 -mplaywright install",
+            "sudo apt-get -o Dpkg::Options::=--force-confnew install chromium",
+            "apt-get --option x=y install chromium",
+            "dnf --setopt x=y install chromium",
+        ])
+        self.assert_table(None, [
+            "python3 -Bc 'import playwright'",
+            "python3 -X dev script.py install",
+            "python3 -W ignore -m pytest",
+            "apt-get -o Dpkg::Options::=--force-confnew install jq",
+            "source /dev/stdin <<< 'ls'",
+            "bash /dev/fd/3 3<<<'make'",
+            "parallel -I@@ gzip @@ ::: a.log",
+            "tar -I zstd -xf a.tar.zst",
+        ])
+
+    def test_round_1_rules_without_a_row_before(self):
+        self.assert_table("G1", [
+            "dumb-init npx playwright install",
+            "tini -- npx playwright install",
+            "pkexec npx playwright install",
+            "hyperfine 'npx playwright install'",
+            "volta run --node 20 npx playwright install",
+            "fnm exec --using=20 npx playwright install",
+            "devbox run npx playwright install",
+            "pixi run npx playwright install",
+            "asdf exec npx playwright install",
+            "rtx x -- npx playwright install",
+            "gtimeout 5 npx playwright install",
+            "GIT_SEQUENCE_EDITOR='npx playwright install' git rebase -i HEAD~1",
+            "GIT_EXTERNAL_DIFF='npx playwright install' git diff",
+            "GIT_ASKPASS='npx playwright install' git fetch",
+            "GIT_SSH='npx playwright install' git fetch",
+            "PAGER='npx playwright install' git log",
+            "VISUAL='npx playwright install' git commit",
+            "git -c pager.log='npx playwright install' log",
+            "git -c merge.x.driver='npx playwright install' merge b",
+            "git -c filter.x.clean='npx playwright install' add f",
+            "git -c filter.x.smudge='npx playwright install' checkout f",
+            "git -c filter.x.process='npx playwright install' add f",
+            "git -c sequence.editor='npx playwright install' rebase -i HEAD~1",
+            "git -c diff.external='npx playwright install' diff",
+            "git -c interactive.diffFilter='npx playwright install' add -p",
+            "git -c core.askPass='npx playwright install' fetch",
+            "tar -F 'npx playwright install' -cf a.tar f",
+            "tar --info-script='npx playwright install' -cf a.tar f",
+            "tar --new-volume-script 'npx playwright install' -cf a.tar f",
+            "tar --rsh-command='npx playwright install' -cf h:a.tar f",
+            # over-blocks ADR-024 accepts, pinned so a change is seen
+            "timeout 5 mytool npx playwright install",
+            "echo 'playwright install' | xargs -0 npx",
+            "diff <(echo npx playwright install) x; sh run.sh",
+        ])
+        self.assert_table(None, [
+            # alternate readings stop at programs that run elsewhere
+            "sudo ssh host npx playwright install",
+            "sudo podman run img npx playwright install",
+            "nohup orb run npx playwright install",
+            # sudo escapes the spaces of a one-word `-s` command: it does not run
+            "sudo -s 'npx playwright install'",
+            "tar --to=x -cf a.tar f",
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()
