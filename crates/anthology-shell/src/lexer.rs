@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::heredoc::{find_heredoc_end, join_continuations};
 use crate::lenient::lenient_segments;
-use crate::limits::{Limits, MAX_DEPTH, extra_limit, work_limit};
+use crate::limits::{Limits, MAX_DEPTH, SEGMENT_COST, extra_limit, work_limit};
 use crate::shell_args::Budget;
 use scan::{
     MAX_UNCLOSED, body_substitutions, bracket_pairs, scan_paren, scan_paren_ex, substitution,
@@ -288,6 +288,8 @@ struct Lexer<'t, 'a> {
     brackets: Option<HashMap<usize, usize>>,
     /// The widest span `scan_expanded` took, without and with `dq`.
     expanded: [Option<(usize, usize)>; 2],
+    /// A segment was over the Rust-only budget (`SEGMENT_COST`): it was not kept, and `run` fails (M-1).
+    overflow: bool,
 }
 
 impl<'t, 'a> Lexer<'t, 'a> {
@@ -333,6 +335,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             memo: Memo::default(),
             brackets: None,
             expanded: [None, None],
+            overflow: false,
         }
     }
 
@@ -381,6 +384,15 @@ impl<'t, 'a> Lexer<'t, 'a> {
         }
     }
 
+    /// One more kept segment: `SEGMENT_COST` of the Rust-only budget. Out of budget, `overflow` is set and no
+    /// segment is kept from then on (`run` fails, so nothing is dropped silently).
+    fn charge_segment(&mut self) -> bool {
+        if self.overflow || self.sh.work.charge_extra(SEGMENT_COST).is_err() {
+            self.overflow = true;
+        }
+        !self.overflow
+    }
+
     /// End the segment; `new_group`: the pipeline ends too, unless no command followed a `|` yet (a newline,
     /// heredoc bodies, comments or blank lines after a `|` do not end it).
     fn end_seg(&mut self, mut new_group: bool) {
@@ -395,7 +407,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         self.pending = None;
         let braces = std::mem::take(&mut self.braces);
         let quoted_braces = std::mem::take(&mut self.quoted_braces);
-        if !self.tokens.is_empty() || !self.redirs.is_empty() {
+        if (!self.tokens.is_empty() || !self.redirs.is_empty()) && self.charge_segment() {
             let group = self.group();
             self.out.push(Segment {
                 tokens: std::mem::take(&mut self.tokens),
@@ -446,7 +458,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
     /// The elements become the arguments of an `echo`, and `name=( ... )` stays one assignment word.
     fn close_array(&mut self, i: usize) {
         let elements = self.array.take().unwrap_or_default();
-        if !elements.is_empty() {
+        if !elements.is_empty() && self.charge_segment() {
             let group = self.sh.new_group();
             let mut tokens = Vec::with_capacity(elements.len() + 1);
             tokens.push("echo".to_string());
@@ -617,6 +629,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
             self.close_array(n);
         }
         self.end_seg(true);
+        if self.overflow {
+            return Err(LexError::TooComplex);
+        }
         Ok(self.out)
     }
 

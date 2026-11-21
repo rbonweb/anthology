@@ -29,6 +29,12 @@ pub const EXTRA_PER_BYTE: usize = 128;
 /// See `EXTRA_PER_BYTE`.
 pub const EXTRA_BASE: usize = 4_000_000;
 
+/// The Rust-only budget one kept `Entry` costs (M-1: its memory is not otherwise bounded; about 380 bytes
+/// each, measured). `"a;" * 1_000_000` runs out at about 500k entries.
+pub const ENTRY_COST: usize = 512;
+/// The Rust-only budget one lexed `Segment` costs (M-1; about 240 bytes each, measured).
+pub const SEGMENT_COST: usize = 512;
+
 /// The work budget for `command` (Python's figures, by character).
 pub fn work_limit(command: &str) -> usize {
     command

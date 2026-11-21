@@ -48,7 +48,7 @@ use crate::lexer::{
     Group, GroupId, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
     skip_escape,
 };
-use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
+use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
 use crate::prefixes::hidden::runs_option_command;
 use crate::prefixes::{
@@ -1680,7 +1680,9 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             differs |= at < main_at;
-            if !self.spend(1 + size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>()) {
+            if !self.spend(
+                ENTRY_COST + 1 + size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>(),
+            ) {
                 return None;
             }
             let other_prog = other.cmd.first().map(|w| prog_name(w)).unwrap_or_default();
@@ -1764,6 +1766,10 @@ impl<'a> Ctx<'a> {
             }
         }
         let entry_exempt = exempt || DOCKER.contains(&prog.as_str());
+        // M-1: a kept entry is charged before it is stored (out of budget: incomplete, nothing dropped)
+        if !self.spend(ENTRY_COST) {
+            return None;
+        }
         self.entries.push(Entry {
             raw: tokens,
             redirs,
