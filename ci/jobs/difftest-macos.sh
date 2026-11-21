@@ -12,4 +12,4 @@ cargo --version
 python3 --version
 python3 -I port/difftest/oracle/_driver.py --self-test
 cargo build -p difftest --locked
-target/debug/difftest --all --gen 10000 --python python3
+target/debug/difftest --all --gen "${DIFFTEST_GEN:-10000}" --python python3

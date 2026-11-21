@@ -46,7 +46,8 @@ docker run --rm -v "$root":/w:ro -w /w "$image" \
 
 # F4: every ported surface, its seeds and 10,000 generated cases, through the static musl
 # difftest in the same 3.12 image (scripts/difftest.sh). 0 unexplained diffs or the job fails.
-"$root/scripts/difftest.sh" --all --gen 10000 --report /out/report.json
+# Pull requests run fewer generated cases (CI sets DIFFTEST_GEN); batch merges and build/main run 10,000.
+"$root/scripts/difftest.sh" --all --gen "${DIFFTEST_GEN:-10000}" --report /out/report.json
 echo "difftest-linux: 0 unexplained diffs (report: target/difftest/report.json)"
 
 # The harness self-test: a diff injected into core.lock's first case (golden:1) must fail
