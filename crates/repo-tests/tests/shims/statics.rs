@@ -223,7 +223,7 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_rtk_hook() {
           "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"], "timeout": 60}]}],
           "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "sh",
-              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]}]}]
+              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"], "timeout": 60, "onFailure": "block"}]}]
         }}"#,
     )
     .unwrap();
