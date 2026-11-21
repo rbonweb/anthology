@@ -43,6 +43,28 @@ pub(crate) fn scan_paren<'t>(
     Ok((s.inner.unwrap_or(""), s.end.unwrap_or(text.len())))
 }
 
+/// `bytes[j..]` reads `case` and a blank once line continuations (`\\` newline) are removed (#89 review F-2:
+/// `ca\\<newline>se` is `case` to bash).
+fn case_word(bytes: &[u8], j: usize) -> bool {
+    let mut k = j;
+    let mut read = 0;
+    while k < bytes.len() {
+        if bytes[k] == b'\\' && bytes.get(k + 1) == Some(&b'\n') {
+            k += 2;
+            continue;
+        }
+        if read == 4 {
+            return matches!(bytes[k], b' ' | b'\t' | b'\n');
+        }
+        if bytes[k] != b"case"[read] {
+            return false;
+        }
+        read += 1;
+        k += 1;
+    }
+    false
+}
+
 /// `_scan_paren_ex`: scan the parenthesis opened just before `i` as bash's parser matches it. With `arith`
 /// (`text[i]` is the second `(` of `$((` or `((`) it closes only with `))`.
 pub(crate) fn scan_paren_ex<'t>(
@@ -190,8 +212,7 @@ fn walk<'t>(
                 continue;
             }
             b'c' if !arith_at
-                && text[j..].starts_with("case")
-                && matches!(byte_at(text, j + 4), Some(b' ' | b'\t' | b'\n'))
+                && case_word(bytes, j)
                 && (j == i
                     || matches!(
                         bytes[j - 1],

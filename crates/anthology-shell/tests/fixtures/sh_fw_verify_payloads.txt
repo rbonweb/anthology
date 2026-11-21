@@ -580,3 +580,97 @@ $(echo npx playwright install)
 sudo $(echo npx) playwright install
 #---
 $(which npx) playwright install
+#---
+npm --userconfig <(echo) i puppeteer
+echo "x
+#---
+npm --userconfig >(cat) i puppeteer
+`
+#---
+echo npx playwright install | sudo -s
+echo "x
+#---
+echo npx playwright install | sh
+echo "x
+#---
+curl -s x | sh
+echo "x
+#---
+echo "$(case\
+ a in a) npm i puppeteer;; esac)"
+#---
+echo $(case\
+ a in a) npx playwright install;; esac)
+#---
+echo ${x:-$(case\
+ a in a) npx playwright install;; esac)}
+#---
+npm --userconfig <(case\
+ x in x) echo;; esac) i puppeteer
+#---
+npm --userconfig <(cas\
+e x in x) echo;; esac) i puppeteer
+#---
+npm --prefix ${x:-"}"{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\}{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer
+#---
+echo npx playwright install | sh -c "$(cat) "
+#---
+echo npx playwright install | sh -c "$(cat);"
+#---
+echo npx playwright install | eval " $(cat)"
+#---
+echo npx playwright install | eval "$(cat);"
+#---
+echo npx playwright install | sh -c "`cat` "
+#---
+echo npx playwright install > >(su)
+#---
+echo npx playwright install | tee >(sudo -s)
+#---
+su < <(echo npx playwright install)
+#---
+sudo -s < <(echo npx playwright install)
+#---
+echo npx playwright install > >(eval "$(cat)")
+#---
+echo npx playwright install | bash -c sh
+#---
+echo npx playwright install | sh -c 'eval "$(cat)"'
+#---
+echo npx playwright install | su -c sh
+#---
+echo npx playwright install | script -qc sh /dev/null
+#---
+echo npx playwright install | if true; then sh; fi
+#---
+echo npx playwright install | doas -s
+#---
+echo npx playwright install | runuser -l root
+#---
+echo npx playwright install | su root -s /bin/bash
+#---
+echo npx playwright install | chroot /
+#---
+echo npx playwright install | unshare
+#---
+echo npx playwright install | nsenter -t 1
+#---
+echo npx playwright install | toybox sh
+#---
+echo npx playwright install | posh
+#---
+echo npx playwright install | rbash
+#---
+echo npx playwright install | unshare -r
+#---
+echo npx playwright install | sh -c "$(cat) " > /dev/null
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh \;
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;
+#---
+echo npx playwright install | sh -c "$(cat) " 2>/dev/null

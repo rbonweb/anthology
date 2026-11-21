@@ -251,7 +251,7 @@ struct Lexer<'t, 'a> {
     depth: usize,
     sh: &'a mut Shared,
     /// The segments, each with its `Holder`s (`Lexer::holders`).
-    out: Vec<(Segment, Vec<Holder>)>,
+    out: Vec<(Segment, Vec<Holder>, bool)>,
     /// The current group, created on first use (Python creates one per segment break; only identity matters).
     group: Option<GroupId>,
     tokens: Vec<String>,
@@ -292,6 +292,8 @@ struct Lexer<'t, 'a> {
     marks: usize,
     /// A word of this segment held more `{`, `}` and `,` than were added unquoted.
     quoted_braces: bool,
+    /// SH-F3: a word of the segment being built held a `$(` or a backtick (not `<(`/`>(`, not `$((`).
+    held: bool,
     /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
     compound: bool,
     /// Elements of the `name=( ... )` being lexed.
@@ -347,6 +349,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             braces: false,
             marks: 0,
             quoted_braces: false,
+            held: false,
             compound: false,
             array: None,
             array_word: String::new(),
@@ -378,6 +381,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
 
     fn end_word(&mut self) {
         let subs = std::mem::take(&mut self.subs);
+        // SH-F3 `held`: a word of the segment holds a `$(` or a backtick, whatever its role (a token, a redirect
+        // target, a here-string, an array element)
+        self.held |= !subs.is_empty();
         if !self.has_word {
             return;
         }
@@ -445,6 +451,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
         if self.arith.is_some() {
             holders.clear();
         }
+        // SH-F3: the segment held a `$(` or a backtick (`end_word` derives it from the words' substitutions)
+        let held = std::mem::take(&mut self.held);
         if (!self.tokens.is_empty() || !self.redirs.is_empty()) && self.charge_segment() {
             let group = self.group();
             let segment = Segment {
@@ -456,7 +464,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 after_compound: std::mem::take(&mut self.compound),
                 quoted_braces,
             };
-            self.out.push((segment, holders));
+            self.out.push((segment, holders, held));
         }
         if new_group {
             self.group = None;
@@ -518,7 +526,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 after_compound: false,
                 quoted_braces: false,
             };
-            self.out.push((segment, Vec::new()));
+            self.out.push((segment, Vec::new(), false));
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
         let word = format!("{}({body})", self.array_word);
@@ -593,7 +601,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         Ok(())
     }
 
-    fn run(mut self) -> Result<Vec<(Segment, Vec<Holder>)>, LexError> {
+    fn run(mut self) -> Result<Vec<(Segment, Vec<Holder>, bool)>, LexError> {
         let text = self.text;
         let bytes = text.as_bytes();
         let n = text.len();
@@ -709,7 +717,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 && self.parens <= a + 1
             {
                 self.arith = None;
-                // the segment ends here, inside the arithmetic: its words run no program (F-8)
+                // the segment ends here, inside the arithmetic: its words run no program (F-8). The words still
+                // held their substitutions (F-3)
+                self.held |= !self.subs.is_empty();
                 self.holders.clear();
                 self.subs.clear();
             }
@@ -818,7 +828,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 let first = self.out.len();
                 self.nested(&inner, Some(i), comsub)?;
                 if !comsub {
-                    for (seg, holders) in &mut self.out[first..] {
+                    for (seg, holders, _) in &mut self.out[first..] {
                         seg.arith = true;
                         holders.clear(); // an arithmetic segment runs no program word
                     }
@@ -1016,15 +1026,19 @@ pub(crate) fn segments_in(
     shallow: bool,
     comsub: bool,
     sh: &mut Shared,
-) -> Result<Vec<(Segment, Vec<Holder>)>, TooComplex> {
+) -> Result<Vec<(Segment, Vec<Holder>, bool)>, TooComplex> {
     sh.work.charge(text.len() + 1)?;
     match Lexer::new(text, depth, full, shallow, comsub, sh).run() {
         Ok(segments) => Ok(segments),
         Err(LexError::TooComplex) => Err(TooComplex),
         Err(LexError::Unbalanced) => {
             sh.info.nested_lenient = true;
-            lenient_segments(text, sh)
-                .map(|segments| segments.into_iter().map(|s| (s, Vec::new())).collect())
+            lenient_segments(text, sh).map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|s| (s, Vec::new(), false))
+                    .collect()
+            })
         }
     }
 }
@@ -1035,6 +1049,8 @@ pub(crate) struct LexOut {
     pub(crate) lexed: Lexed,
     pub(crate) info: LexInfo,
     pub(crate) holders: Vec<Vec<Holder>>,
+    /// SH-F3: per segment of `lexed.segments`, whether it held a `$(` or a backtick.
+    pub(crate) held: Vec<bool>,
 }
 
 /// `_segments(text, depth)` at the top level, spending from `work` (`analyze` threads one budget through the
@@ -1057,7 +1073,10 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
             Err(LexError::Unbalanced) => {
                 sh.info.nested_lenient = true;
                 lenient_segments(text, &mut sh).map(|segments| {
-                    let segments = segments.into_iter().map(|s| (s, Vec::new())).collect();
+                    let segments = segments
+                        .into_iter()
+                        .map(|s| (s, Vec::new(), false))
+                        .collect();
                     (segments, true)
                 })
             }
@@ -1068,7 +1087,14 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
         Ok((pairs, lenient)) => (pairs, lenient, false),
         Err(TooComplex) => (Vec::new(), false, true),
     };
-    let (segments, holders): (Vec<Segment>, Vec<Vec<Holder>>) = pairs.into_iter().unzip();
+    let mut segments = Vec::with_capacity(pairs.len());
+    let mut holders = Vec::with_capacity(pairs.len());
+    let mut held = Vec::with_capacity(pairs.len());
+    for (segment, segment_holders, segment_held) in pairs {
+        segments.push(segment);
+        holders.push(segment_holders);
+        held.push(segment_held);
+    }
     let mut ids: Vec<u32> = segments.iter().map(|s| s.group.0).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -1092,6 +1118,7 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
         },
         info: sh.info,
         holders,
+        held,
     }
 }
 

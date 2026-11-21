@@ -64,6 +64,8 @@ const CHDIR_PROGRAMS: &[&str] = &["tar", "git", "make"];
 const FIND_EXEC: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
 const FD_PROGRAMS: &[&str] = &["fd", "fdfind"];
 const FD_EXEC: &[&str] = &["-x", "--exec", "-X", "--exec-batch"];
+/// SH-F3: the compound commands whose body reads the pipe that feeds them (`echo X | if true; then sh; fi`).
+const COMPOUND_WORDS: &[&str] = &["if", "while", "until", "for", "select", "case"];
 
 /// `find -exec find -exec ...` levels walked before giving up (Python raises `RecursionError` well below).
 pub(crate) const FIND_EXEC_CAP: usize = 1000;
@@ -293,9 +295,18 @@ const MAX_BRACE_DEPTH: usize = 64;
 /// SH-seq re-review R-1: the index after the `}` closing the `${` at `j` (`word[j]` is `$`), or the word's
 /// end. Bash does not brace-expand inside `${...}`, so the brace scanners skip it whole.
 fn param_end(b: &[u8], j: usize) -> usize {
+    // quotes and escapes inside `${...}` hide their braces (#89 review F-4), as in the lexer's `brace_scan`
     let mut depth = 0usize;
-    for (k, &c) in b.iter().enumerate().skip(j + 1) {
-        match c {
+    let mut k = j + 1;
+    while k < b.len() {
+        match b[k] {
+            b'\\' => k += 1,
+            q @ (b'\'' | b'"') => {
+                k += 1;
+                while k < b.len() && b[k] != q {
+                    k += usize::from(q == b'"' && b[k] == b'\\') + 1;
+                }
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
@@ -305,6 +316,7 @@ fn param_end(b: &[u8], j: usize) -> usize {
             }
             _ => {}
         }
+        k += 1;
     }
     b.len()
 }
@@ -882,6 +894,17 @@ pub(crate) struct Ctx<'a> {
     quoted_braces: bool,
     /// The words of the segment `add_one` is about to add that hold a substitution (`Holder`, F-8).
     holders: Vec<Holder>,
+    /// SH-F3: the segment `add_one` is about to add holds a `$(` or a backtick (`LexOut::held`).
+    subst: bool,
+    /// SH-F3: the entries whose segment held a `$(` or a backtick.
+    held_entries: HashSet<usize>,
+    /// SH-F3: how many stdin-reading entries have been added (`reads_stdin_as_shell`), in this pass or
+    /// earlier. A text that adds one bumps it; a memoized text that did bumps it again.
+    readers: usize,
+    /// SH-F3: the entries whose `-c`/`eval` scripts added a stdin reader.
+    script_readers: HashSet<usize>,
+    /// SH-F3: the texts (keys of `seen`) whose analysis added a stdin reader.
+    reads_seen: HashSet<SeenKey>,
 }
 
 impl<'a> Ctx<'a> {
@@ -903,6 +926,11 @@ impl<'a> Ctx<'a> {
             braces: false,
             quoted_braces: false,
             holders: Vec::new(),
+            subst: false,
+            held_entries: HashSet::new(),
+            readers: 0,
+            script_readers: HashSet::new(),
+            reads_seen: HashSet::new(),
         }
     }
 
@@ -916,6 +944,7 @@ impl<'a> Ctx<'a> {
     pub(crate) fn next_pass(&mut self, reading: Reading) {
         self.cwd = None;
         self.seen.clear();
+        self.reads_seen.clear();
         self.work.reading = reading;
     }
 
@@ -1070,6 +1099,9 @@ impl<'a> Ctx<'a> {
         {
             // analyzed already: same entries, same cwd
             self.cwd = cwd.clone();
+            if self.reads_seen.contains(&key) {
+                self.readers += 1;
+            }
             return false;
         }
         if !self.spend(1 + 2 * text.len()) {
@@ -1077,18 +1109,24 @@ impl<'a> Ctx<'a> {
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
         let (braces, quoted_braces) = (self.braces, self.quoted_braces);
+        let readers = self.readers;
         self.collect_once(text, exempt, depth);
         (self.braces, self.quoted_braces) = (braces, quoted_braces);
+        if self.readers > readers {
+            self.reads_seen.insert(key.clone());
+        }
         self.seen.insert(key, (depth, self.cwd.clone()));
         false
     }
 
     /// `_collect_once`.
     fn collect_once(&mut self, text: &str, exempt: bool, depth: usize) {
+        let readers_at_start = self.readers;
         let LexOut {
             lexed,
             info,
             holders,
+            held,
         } = lex_in(text, 0, &mut self.work);
         if lexed.incomplete {
             self.halt(); // Python raises `_TooComplex`
@@ -1113,12 +1151,13 @@ impl<'a> Ctx<'a> {
         let mut new_entries = Vec::new();
         let mut braced: HashSet<usize> = HashSet::new();
         let mut after_compound: HashSet<usize> = HashSet::new();
-        for (seg, seg_holders) in lexed.segments.into_iter().zip(holders) {
+        for ((seg, seg_holders), subst) in lexed.segments.into_iter().zip(holders).zip(held) {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
             self.braces = seg.braces;
             self.quoted_braces = seg.quoted_braces;
             self.holders = seg_holders;
+            self.subst = subst;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
                 Some(entry) => {
                     new_entries.push(entry);
@@ -1146,6 +1185,27 @@ impl<'a> Ctx<'a> {
                     Vec::new()
                 })
                 .push(e);
+        }
+        // SH-F3: a `-c`/`eval` script that holds a stdin reader is fed a pipe or a process substitution
+        // (`echo X | bash -c sh`, `sh -c 'eval "$(cat)"' < <(…)`), and a compound body after a pipe holds one
+        // (`echo X | if true; then sh; fi`): what is fed reaches that reader. Too complex.
+        let piped: Vec<usize> = members
+            .values()
+            .flat_map(|es| es.iter().skip(1).copied())
+            .collect();
+        let procsub = text.contains("<(") || text.contains(">(");
+        let fed_script = new_entries
+            .iter()
+            .any(|e| self.script_readers.contains(e) && (procsub || piped.contains(e)));
+        let fed_compound = piped.iter().any(|&e| {
+            self.entries[e]
+                .raw
+                .first()
+                .is_some_and(|w| COMPOUND_WORDS.contains(&w.as_str()))
+        });
+        if fed_script || (fed_compound && self.readers > readers_at_start) {
+            self.halt();
+            return;
         }
         let Some(defined) = self.defined_names(&new_entries) else {
             return;
@@ -1296,14 +1356,17 @@ impl<'a> Ctx<'a> {
         // A shell or `source` given a process substitution runs what it prints (`sh <(echo X)`,
         // `cat <(echo X) | sh`): any such consumer in the text makes the literal output of every `<(...)` in it
         // a command.
-        let consumers: Vec<usize> = new_entries
-            .iter()
-            .copied()
-            .filter(|&e| {
+        // SH-F3: and every stdin reader (`> >(su)`, `< <(sudo -s)`, `> >(eval "$(cat)")`)
+        let mut consumers: Vec<usize> = Vec::new();
+        for &e in &new_entries {
+            let named = {
                 let prog = self.entries[e].prog.as_str();
                 SHELLS.contains(&prog) || prog == "source" || prog == "."
-            })
-            .collect();
+            };
+            if named || self.reads_stdin_as_shell(e) == Some(true) {
+                consumers.push(e);
+            }
+        }
         // fail closed: `> >(sh)`, `coproc` with a shell, a shell running a file the text wrote
         let coproc = new_entries
             .iter()
@@ -1554,16 +1617,19 @@ impl<'a> Ctx<'a> {
                     .is_some_and(|f| is_stdin_path(f)),
                 // SH-seq I-2: `sh -c "$(cat)"`. The lexer leaves `""` for a double-quoted substitution, so an
                 // empty script counts as one; a single-quoted `'$(cat)'` is read as written.
-                ShellMode::Command => parsed
-                    .scripts
-                    .iter()
-                    .any(|(_, script)| script.is_empty() || reads_stdin_substitution(script)),
+                ShellMode::Command => {
+                    self.held_entries.contains(&e)
+                        || parsed.scripts.iter().any(|(_, script)| {
+                            script.is_empty() || reads_stdin_substitution(script)
+                        })
+                }
             });
         }
         if prog == "eval" {
             // SH-seq I-2: `eval "$(cat)"`, `eval '$(</dev/stdin)'`: the words are the script
             return Some(
-                entry.args.iter().any(String::is_empty)
+                self.held_entries.contains(&e)
+                    || entry.args.iter().any(String::is_empty)
                     || reads_stdin_substitution(&entry.args.join(" ")),
             );
         }
@@ -1644,9 +1710,15 @@ impl<'a> Ctx<'a> {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
                 return;
             }
+            // SH-F3: a payload that reads stdin (`find . -exec sh \;`) makes the command running it a stdin
+            // reader, and a runtime substitution in the command (`-exec sh -c "$(cat) " \;`) is one in its payload
+            self.subst = self.held_entries.contains(&e);
             let Some(child) = self.add_one(payload, Vec::new(), group, exempt, depth, &[]) else {
                 return;
             };
+            if self.reads_stdin_as_shell(child) == Some(true) {
+                self.launchers.insert(e);
+            }
             let child = &self.entries[child];
             if child.prog == "find" || FD_PROGRAMS.contains(&child.prog.as_str()) {
                 let frame = ExecFrame {
@@ -1673,6 +1745,7 @@ impl<'a> Ctx<'a> {
     ) -> Option<usize> {
         let arith = std::mem::take(&mut self.arith);
         let holders = std::mem::take(&mut self.holders);
+        let subst = std::mem::take(&mut self.subst);
         let size: usize = tokens.iter().map(|t| WORD + t.len()).sum();
         if !self.spend(1 + 2 * size) {
             return None;
@@ -1916,10 +1989,20 @@ impl<'a> Ctx<'a> {
         if peeled.shell_launch {
             self.launchers.insert(e);
         }
+        if subst {
+            self.held_entries.insert(e);
+        }
+        if self.reads_stdin_as_shell(e) == Some(true) {
+            self.readers += 1;
+        }
+        let readers = self.readers;
         for script in &scripts {
             if self.collect(script, exempt, depth + 1) {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
             }
+        }
+        if self.readers > readers {
+            self.script_readers.insert(e);
         }
         for script in &extra {
             // F-2: GNU parallel lines past the reference's

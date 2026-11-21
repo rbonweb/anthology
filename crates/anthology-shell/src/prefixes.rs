@@ -135,6 +135,7 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("unbuffer", &[]),
     ("builtin", &[]),
     ("busybox", &[]),
+    ("toybox", &[]),
     ("chroot", &["--userspec", "--groups"]),
     (
         "nsenter",
@@ -739,9 +740,37 @@ fn launches_shell(name: &str, words: &[String], scripts_empty: bool) -> bool {
                 || t == "--login"
                 || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains(['s', 'i']))
         }),
-        "su" | "script" => scripts_empty,
+        // SH-F3: `doas -s` runs the shell; `chroot DIR`, `unshare` and `nsenter -t PID` with no command run one
+        "doas" => words
+            .iter()
+            .skip(1)
+            .any(|t| t.starts_with('-') && !t.starts_with("--") && t[1..].contains('s')),
+        "chroot" | "unshare" | "nsenter" => true,
+        "su" | "script" | "runuser" => scripts_empty,
         _ => false,
     }
+}
+
+/// SH-F3: the operands of `su` / `runuser` words: options and the values of `SU_VALUE_FLAGS` do not count,
+/// and neither does the `-` that starts a login shell.
+fn su_operands(words: &[String]) -> usize {
+    let mut count = 0;
+    let mut k = 0;
+    while k < words.len() {
+        let word = words[k].as_str();
+        if word == "--" {
+            return count + words.len() - k - 1;
+        }
+        if word.starts_with('-') && word.len() > 1 {
+            if SU_VALUE_FLAGS.contains(&word) {
+                k += 1;
+            }
+        } else if word != "-" {
+            count += 1;
+        }
+        k += 1;
+    }
+    count
 }
 
 /// One xargs or GNU parallel layer whose command takes words or lines from stdin: (kind, template, replace
@@ -2171,7 +2200,9 @@ pub(crate) fn strip_prefixes(
             drop(tail);
             let words = split_words(&value);
             toks.splice(at..at, words);
-        } else if name == "busybox" && (toks.len() < 2 || toks[1].starts_with('-')) {
+        } else if (name == "busybox" || name == "toybox")
+            && (toks.len() < 2 || toks[1].starts_with('-'))
+        {
             break; // `busybox --list`: no applet
         } else if let Some(flags) = table(WRAPPERS, &name) {
             if let Some(options) = table(WRAPPER_SCRIPT_OPTIONS, &name)
@@ -2188,13 +2219,9 @@ pub(crate) fn strip_prefixes(
             }
             peeled.unknown_option |= unknown || (flags.is_empty() && has_option(&toks, i, &name));
             let rest = toks.get(i..).unwrap_or(&[]);
-            // `su [-] [user]` runs the user's shell too: at most one operand, the user, not a program
-            let su_rest = if name == "su" && rest.first().is_some_and(|w| w == "-") {
-                &rest[1..]
-            } else {
-                rest
-            };
-            let bare = rest.is_empty() || (name == "su" && su_rest.len() <= 1);
+            // `su [-] [user] [options]` runs the user's shell too: at most one operand, the user, not a program
+            let bare =
+                rest.is_empty() || ((name == "su" || name == "runuser") && su_operands(rest) <= 1);
             if bare && launches_shell(&name, &toks[..i.min(toks.len())], scripts.is_empty()) {
                 peeled.shell_launch = true;
             }
