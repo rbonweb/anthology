@@ -803,9 +803,7 @@ class WrapperTest(Base):
         # `Bash(rtk *)` would allow these as typed, so the ask stands.
         self.answer_fake(self.ASK)
         for command in ("rtk run -c 'kubectl apply'", "RTK bypass x", "r''tk run -c x", 'r"t"k x', "r\\tk x",
-                        "r\\\ntk x", "$'\\x72tk' x", "rtk x", "x; rtk git push", "$'\\162tk' x", "r$'tk' x",
-                        "grep 'a$' f; $'\\x72tk' x", "ls\n$'\\x72tk' x", "ls;\t$'\\x72tk' x", "x=$'\\x72tk'; $x y",
-                        "ls|$'\\x72tk' x", "ls&&$'\\x72tk' x", "($'\\x72tk' x)", "`$'\\x72tk' x`"):
+                        "r\\\ntk x", "rtk x", "x; rtk git push", "r$'tk' x"):
             with self.subTest(command=command):
                 res = self.run_bin("rtk-hook", stdin=self.hook_input(command))
                 self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))
@@ -813,9 +811,13 @@ class WrapperTest(Base):
         self.assertEqual((res.returncode, res.stdout), (0, self.ASK + "\n"))  # a JSON escape counts
 
     def test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk(self):
-        # A `$'` that ends a quoted regex, or an ANSI-C string with no escape, is not rtk.
+        # An ANSI-C `$'...'` is never a mention: `Bash(rtk *)` cannot allow a disguised spelling, and
+        # heredoc data with a `$'` is never run. So the ask is dropped and the command runs as typed.
         self.answer_fake(self.ASK)
-        for command in ("ls | grep -v '^a$'", "sed -n '/a$/p' f", "grep -c '^$' f", "echo $'a b'",
+        for command in ("$'\\x72tk' x", "$'\\162tk' x", "grep 'a$' f; $'\\x72tk' x", "ls\n$'\\x72tk' x",
+                        "ls;\t$'\\x72tk' x", "x=$'\\x72tk'; $x y", "ls|$'\\x72tk' x", "ls&&$'\\x72tk' x",
+                        "($'\\x72tk' x)", "`$'\\x72tk' x`", "cat > f <<'EOF'\n\"$'\\x41'\"\nEOF",
+                        "ls | grep -v '^a$'", "sed -n '/a$/p' f", "grep -c '^$' f", "echo $'a b'",
                         "grep 'a$' f | grep -v 'b\\|c'", 'grep -E \'a$\' f | grep -v "b\\|c"',
                         'grep -c \'^$\' f | grep "a\\|b"', 'ls | grep -E \'(a|b)$\' | grep "c\\.d"',
                         'ls | grep -E \'[0-9]$\' | grep "c\\.d"', 'ls | grep -E \'x{2}$\' | grep "c\\.d"',
