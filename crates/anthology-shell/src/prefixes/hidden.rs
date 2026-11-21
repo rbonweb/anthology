@@ -1,7 +1,5 @@
-//! Rust-only rules for `Opaque` (SH2 review rounds 2–3): commands the analysis may have misread, and wrapper
+//! Rust-only rules for `Opaque` (SH2 review rounds 2–5): commands the analysis may have misread, and wrapper
 //! options known to be harmless. Python has none of these; they never change an entry's parity fields.
-
-use crate::shell_args::prog_name;
 
 /// Wrapper options known to take no value: past one of these the next word is surely the program.
 const WRAPPER_BOOL_FLAGS: &[(&str, &[&str])] = &[
@@ -152,92 +150,55 @@ pub(crate) fn env_attached_split(token: &str) -> bool {
     token.starts_with("--split-string=") || (token.starts_with("-S") && token.len() > 2)
 }
 
-/// Programs a command-valued variable or option commonly names that run nothing else: pagers, editors and
-/// no-ops (`GIT_PAGER=cat`, `EDITOR=vim`, `git -c core.pager=less`).
-const HARMLESS_PROGRAMS: &[&str] = &[
-    "cat",
-    "less",
-    "more",
-    "most",
-    "bat",
-    "delta",
-    "diff-so-fancy",
+/// The only command values exempt from a mark (controller ruling): the WHOLE value, after quote removal,
+/// must be one of these. No word-wise or prefix inspection: anything else is opaque, so rtk asks.
+const HARMLESS_VALUES: &[&str] = &[
+    "",
     "true",
     "false",
-    ":",
+    "0",
+    "1",
+    "yes",
+    "no",
+    "cat",
+    "less",
+    "less -R",
+    "more",
     "vi",
     "vim",
-    "nvim",
     "nano",
-    "emacs",
-    "emacsclient",
-    "code",
-    "subl",
-    "mate",
-    "micro",
-    "hx",
-    "ed",
+    "ssh",
+    "git-lfs",
+    "store",
+    "cache",
+    "osxkeychain",
+    "manager",
+    "manager-core",
 ];
 
-/// A boolean config or variable value.
-fn is_boolean(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "true" | "false" | "yes" | "no" | "on" | "off" | "0" | "1"
-    )
-}
-
-/// The first word of a command value, as a program name (`"ssh -p 22"` → `ssh`).
-fn value_program(value: &str) -> String {
-    prog_name(value.split_whitespace().next().unwrap_or(""))
-}
-
-/// Git, editors and pagers run a value holding any of these through `sh -c`, so its first word says nothing.
-const SHELL_METACHARS: &[char] = &[
-    ';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\\', '\'', '"',
-];
-
-/// ssh options that run a local command (`-o ProxyCommand=...`), or a config file that may set them (`-F f`).
-fn ssh_runs_command(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    ["proxycommand", "localcommand", "knownhostscommand"]
-        .iter()
-        .any(|option| lower.contains(option))
-        || value.split_whitespace().any(|w| w.starts_with("-F"))
-}
-
-/// A command value that runs nothing beyond a harmless program (`extra` are also harmless here): no shell
-/// metacharacter, and for ssh no option that runs a local command.
-fn harmless_command(value: &str, extra: &[&str]) -> bool {
-    let program = value_program(value);
-    if value.trim().is_empty() || is_boolean(value.trim()) {
-        return true;
-    }
-    if value.contains(SHELL_METACHARS) || (program == "ssh" && ssh_runs_command(value)) {
-        return false;
-    }
-    HARMLESS_PROGRAMS.contains(&program.as_str()) || extra.contains(&program.as_str())
+fn harmless_value(value: &str) -> bool {
+    HARMLESS_VALUES.contains(&value)
 }
 
 /// Assignments whose value the shell or a program later runs as a command (`GIT_PAGER='...' git log`,
-/// `BASH_ENV=f bash -c ...`), unless the value is empty or a harmless program (`GIT_PAGER=cat`).
+/// `BASH_ENV=f bash -c ...`), unless the whole value is in `HARMLESS_VALUES` (`GIT_PAGER=cat`).
 pub(crate) fn runs_assigned_command(word: &str) -> bool {
-    /// Run as a command unless harmless.
-    const COMMAND_VARS: &[(&str, &[&str])] = &[
-        ("GIT_SSH_COMMAND", &["ssh"]),
-        ("GIT_SSH", &["ssh"]),
-        ("RSYNC_RSH", &["ssh"]),
-        ("GIT_PAGER", &[]),
-        ("GIT_EDITOR", &[]),
-        ("GIT_SEQUENCE_EDITOR", &[]),
-        ("GIT_ASKPASS", &[]),
-        ("SSH_ASKPASS", &[]),
-        ("GIT_EXTERNAL_DIFF", &[]),
-        ("GIT_PROXY_COMMAND", &[]),
-        ("PAGER", &[]),
-        ("MANPAGER", &[]),
-        ("EDITOR", &[]),
-        ("VISUAL", &[]),
+    /// Run as a command unless the whole value is harmless.
+    const COMMAND_VARS: &[&str] = &[
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "RSYNC_RSH",
+        "GIT_PAGER",
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_PROXY_COMMAND",
+        "PAGER",
+        "MANPAGER",
+        "EDITOR",
+        "VISUAL",
     ];
     /// Always run something (a file, a library, git config) when set.
     const RUN_VARS: &[&str] = &[
@@ -256,10 +217,7 @@ pub(crate) fn runs_assigned_command(word: &str) -> bool {
     if RUN_VARS.contains(&name) || name.starts_with("GIT_CONFIG_VALUE_") {
         return true;
     }
-    COMMAND_VARS
-        .iter()
-        .find(|(var, _)| *var == name)
-        .is_some_and(|(_, extra)| !harmless_command(value, extra))
+    COMMAND_VARS.contains(&name) && !harmless_value(value)
 }
 
 /// The values of options `long` (`--long=v` or `--long v`) and of the short options `shorts`. With
@@ -311,6 +269,7 @@ fn git_key_runs_command(key: &str) -> bool {
         "core.sshcommand",
         "core.editor",
         "core.fsmonitor",
+        "core.hookspath",
         "core.askpass",
         "core.gitproxy",
         "sequence.editor",
@@ -330,38 +289,22 @@ fn git_key_runs_command(key: &str) -> bool {
         || (key.starts_with("merge.") && key.ends_with(".driver"))
 }
 
-/// `git -c key=value` that makes git run a command: a `!` alias, a hooks directory, or a command-valued key
-/// that is not empty, a boolean, a harmless program or git-lfs's own filter.
+/// `git -c key=value` that makes git run a command: a `!` alias, or a command-valued key whose whole value is
+/// not in `HARMLESS_VALUES`.
 fn git_config_runs_command(config: &str) -> bool {
     let Some((key, value)) = config.split_once('=') else {
         return false;
     };
-    let lower = key.to_ascii_lowercase();
-    if lower.starts_with("alias.") {
+    if key.to_ascii_lowercase().starts_with("alias.") {
         return value.trim_start().starts_with('!');
     }
-    if lower == "core.hookspath" {
-        return !matches!(value.trim(), "" | "/dev/null");
-    }
-    /// `credential.helper=store` runs git's own `git-credential-store`.
-    const CREDENTIAL_HELPERS: &[&str] = &[
-        "git-lfs",
-        "git",
-        "store",
-        "cache",
-        "osxkeychain",
-        "manager",
-        "manager-core",
-        "libsecret",
-        "wincred",
-        "gnome-keyring",
-    ];
-    git_key_runs_command(key) && !harmless_command(value, CREDENTIAL_HELPERS)
+    git_key_runs_command(key) && !harmless_value(value)
 }
 
 /// The program runs a command given in its arguments that the analysis does not parse: `trap 'cmd' EXIT`,
 /// `fd -x cmd`, `git -c alias.x='!cmd'`, `git --config-env=core.pager=V`, `tar --to-command=cmd`, `tar -I cmd`
-/// (other than a compressor), `rsync -e cmd` (other than ssh), `rsync --rsync-path=cmd`, and
+/// (other than exactly a compressor's name), `rsync -e cmd` (other than exactly `ssh`), `rsync --rsync-path=cmd`
+/// (other than exactly `rsync`), and
 /// `export GIT_PAGER=cmd` (as `runs_assigned_command`).
 pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
     match prog {
@@ -399,7 +342,6 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                         c.split_once('=').is_some_and(|(key, _)| {
                             git_key_runs_command(key)
                                 || key.to_ascii_lowercase().starts_with("alias.")
-                                || key.eq_ignore_ascii_case("core.hookspath")
                         })
                     })
         }
@@ -425,15 +367,15 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                     .any(|a| a.starts_with("--checkpoint-action=exec"))
                 || option_values(args, &["--use-compress-program"], &['I'], true)
                     .iter()
-                    .any(|v| !COMPRESSORS.contains(&value_program(v).as_str()))
+                    .any(|v| !COMPRESSORS.contains(v))
         }
         "rsync" => {
             option_values(args, &["--rsh"], &['e'], true)
                 .iter()
-                .any(|v| value_program(v) != "ssh" || !harmless_command(v, &["ssh"]))
+                .any(|v| *v != "ssh")
                 || option_values(args, &["--rsync-path"], &[], false)
                     .iter()
-                    .any(|v| value_program(v) != "rsync")
+                    .any(|v| *v != "rsync")
         }
         _ => false,
     }

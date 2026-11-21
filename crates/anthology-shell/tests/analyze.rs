@@ -330,6 +330,8 @@ fn opaque_marks_the_forms_python_misreads() {
         "GIT_SSH_COMMAND='ssh -o ProxyCommand=\"npx playwright install\"' git fetch",
         "GIT_SSH_COMMAND='ssh -F ./cfg' git fetch",
         "rsync -e 'ssh -o ProxyCommand=npx' a b:c",
+        // review round 5
+        "git -c core.pager='git -c alias.x=!npx x playwright install' log",
     ];
     for command in unknown {
         assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
@@ -365,6 +367,37 @@ fn opaque_marks_the_forms_python_misreads() {
                 .any(|e| e.prog == "sh" && !e.opaque.is_empty()),
             "{command}"
         );
+    }
+}
+
+#[test]
+fn only_exactly_listed_command_values_are_exempt() {
+    // Controller ruling: a command value is exempt only when the whole value is in a small literal list, so
+    // these everyday forms ask (an extra ask is fine; a hole is not).
+    for command in [
+        "GIT_SEQUENCE_EDITOR=: git rebase -i HEAD~3",
+        "GIT_SSH_COMMAND='ssh -i key' git fetch",
+        "git -c filter.lfs.smudge='git-lfs smudge -- %f' -c filter.lfs.required=true clone x",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git -c credential.helper='cache --timeout=3600' push",
+        "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git fetch",
+        "rsync -e 'ssh -p 2222' a b:c",
+        "rsync -avz -e 'ssh -p 22' a b:c",
+        "tar -I 'zstd -19 -T0' -cf a.tar.zst x",
+    ] {
+        assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
+    }
+    for command in [
+        "GIT_PAGER=cat git log",
+        "GIT_PAGER='less -R' git log",
+        "EDITOR=nano git commit",
+        "git -c core.pager=less log",
+        "git -c credential.helper=osxkeychain push",
+        "GIT_SSH_COMMAND=ssh git fetch",
+        "rsync -e ssh a b:c",
+        "tar -I zstd -xf a.tar.zst",
+    ] {
+        assert!(clear(command), "{command}");
     }
 }
 
@@ -418,9 +451,7 @@ fn common_forms_stay_clear() {
         "git -c user.name=x commit -m y",
         "git commit -c HEAD",
         "tar -I zstd -xf a.tar.zst",
-        "tar -I 'zstd -19 -T0' -cf a.tar.zst x",
         "tar -xzf a.tgz -C out",
-        "rsync -avz -e 'ssh -p 22' a b:c",
         "rsync -a --rsync-path=rsync a b:c",
         "PAGER= git log",
         "GIT_DIR=.git git status",
@@ -428,17 +459,13 @@ fn common_forms_stay_clear() {
         "GIT_PAGER=cat git log",
         "PAGER=cat git log",
         "GIT_EDITOR=true git commit",
-        "GIT_SEQUENCE_EDITOR=: git rebase -i HEAD~3",
         "EDITOR=vim git commit",
-        "GIT_SSH_COMMAND='ssh -i key' git fetch",
         "ENV=production npm run build",
         "git -c core.pager=cat log",
         "git -c pager.log=false log",
         "git -c credential.helper= fetch",
         "git -c credential.useHttpPath=true fetch",
-        "git -c core.hooksPath=/dev/null commit -m x",
         "git -c core.fsmonitor=false status",
-        "git -c filter.lfs.smudge='git-lfs smudge -- %f' -c filter.lfs.required=true clone x",
         "nice -10 make",
         "nice -n10 make",
         "rsync -avze ssh a b:c",
@@ -448,10 +475,7 @@ fn common_forms_stay_clear() {
         "tar -Izstd -xf a.tar.zst",
         // review round 4
         "git -c credential.helper=store push",
-        "git -c credential.helper='cache --timeout=3600' push",
         "git -c credential.helper=osxkeychain push",
-        "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git fetch",
-        "rsync -e 'ssh -p 2222' a b:c",
     ] {
         assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
     }
