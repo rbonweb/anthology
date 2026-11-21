@@ -28,7 +28,7 @@ pub(crate) enum Secret {
     /// a long text cannot exhaust one search-wide budget.
     Py {
         whole: PyRegex,
-        starts: Option<(PyRegex, PyRegex)>,
+        starts: Option<Box<(PyRegex, PyRegex)>>,
     },
     /// Built with a lowered limit (tests force a backtrack limit, GC-19).
     Plain(regex::Regex),
@@ -39,9 +39,9 @@ impl Secret {
     fn search(&self, text: &str) -> Result<bool, Limit> {
         match self {
             Secret::Py {
-                starts: Some((head, anchored)),
-                ..
+                starts: Some(pair), ..
             } => {
+                let (head, anchored) = &**pair;
                 let mut limited = false;
                 let mut pos = 0;
                 while let Some((start, _)) = head.find_at(text, pos).map_err(|_| Limit)? {
@@ -92,7 +92,7 @@ pub(crate) fn compile_secrets(limit: usize) -> Vec<Option<Secret>> {
         .map(|(py, ignorecase)| {
             if limit == default {
                 let whole = anthology_pycompat::re::compile(py, *ignorecase).ok()?;
-                let starts = per_start(py, *ignorecase, &whole);
+                let starts = per_start(py, *ignorecase, &whole).map(Box::new);
                 return Some(Secret::Py { whole, starts });
             }
             let flags = anthology_pycompat::re::Flags {
