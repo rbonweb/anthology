@@ -8,9 +8,15 @@
 //! finish (design §9.5, D-1/D-7):
 //! - a backtrack limit (anthology-shell's lexer or path patterns, or this crate's
 //!   `_ESCAPED_SPACE` and G6 patterns) gives [`Verdict::Incomplete`] (GC-14 limit block);
-//! - an analysis anthology-shell stopped at its work budget, or one with text nested past its depth
-//!   cap (`Opaque::DepthCap`), gives [`Verdict::TooComplex`] (owner direction, FW-H: "this command
-//!   is too complex to check safely", naming `/plugin`).
+//! - an analysis anthology-shell stopped at its work budget gives [`Verdict::TooComplex`]
+//!   (owner direction, FW-H: "this command is too complex to check safely", naming `/plugin`);
+//! - past one of Python's caps (owner direction LR-G, fail closed; D-8 "Rust stricter"), where
+//!   Python stops reading and allows: a command nested past anthology-shell's `MAX_DEPTH` (an
+//!   entry marked [`Opaque::DepthCap`]), a `cd` whose directory `cd` tracking drops
+//!   (`MAX_CWD_DEPTH`), or a brace expansion too large to check ([`crate::paths`]) gives
+//!   [`Verdict::TooComplex`]. Where it can, Rust reads what Python skips instead: the whole tool
+//!   input (no depth cap), words over 4096 code points, every brace expansion, and a home path
+//!   under a relative or empty home.
 //!
 //! A rule that blocks on what was analyzed is reported first, in GC-6 order; only when no rule
 //! blocks does an unfinished check become `Incomplete` or `TooComplex`. Either way nothing
@@ -19,7 +25,9 @@
 use std::sync::LazyLock;
 
 use anthology_pycompat::json::Value;
-use anthology_shell::{Analysis, Limits, Opaque, analyze_with};
+use anthology_shell::{
+    Analysis, Entry, Limits, MAX_CWD_DEPTH, Opaque, analyze_with, normalize_with,
+};
 
 use crate::paths::Paths;
 use crate::rules::g1::g1_with;
@@ -87,12 +95,13 @@ pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Li
     }
 }
 
-/// [`check`] with two owner-directed Rust-stricter parts left out: the FW-I readings of G1's own
-/// tables (`g1_with(.., false)`) and the depth-cap block (final review I-1). Only those two: the
-/// analyzer's FW readings (`fd -x`, `tar`, git aliases, the unknown-option reading of a package
-/// manager and its alternates) stay on, so a generated case that differs from Python by one of them
-/// still shows as unexplained (loud, not silent). Not for production: the difftest's generator drops
-/// a generated case whose verdict this changes, so those two parts of D-8 stay case-scoped (GC-16).
+/// [`check`] with the owner-directed D-8 parts left out: the FW-I readings of G1's own tables
+/// (`g1_with(.., false)`) and LR-G's blocks past Python's caps (the depth cap, `cd` tracking, brace
+/// expansion; final review I-1). Only those: the analyzer's FW readings (`fd -x`, `tar`, git aliases,
+/// the unknown-option reading of a package manager and its alternates) stay on, so a generated case
+/// that differs from Python by one of them still shows as unexplained (loud, not silent). Not for
+/// production: the difftest's generator drops a generated case whose verdict this changes, so those
+/// parts of D-8 stay case-scoped (GC-16).
 pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
     run(
         tool_name,
@@ -151,7 +160,7 @@ fn run(
         Some(c) => analyze_with(c, home, limits),
         None => Analysis::default(),
     };
-    let paths = Paths::new(home, limits);
+    let paths = Paths::new(home, limits, fw);
     let mut out = Outcome::default();
 
     let g6 = crate::rules::either(
@@ -188,17 +197,42 @@ fn run(
         .entries
         .iter()
         .any(|e| e.opaque.contains(&Opaque::RegexLimit));
-    // Text nested past anthology-shell's depth cap was never analyzed (final review I-1).
-    let depth_cap = analysis
-        .entries
-        .iter()
-        .chain(&analysis.alternates)
-        .any(|e| e.opaque.contains(&Opaque::DepthCap));
+    let mut capped = paths.capped.get();
+    if fw && !capped {
+        for entry in analysis.entries.iter().chain(&analysis.alternates) {
+            match past_a_cap(entry, home, limits) {
+                Ok(true) => capped = true,
+                Ok(false) => {}
+                Err(Limit) => out.limited = true,
+            }
+        }
+    }
     if out.limited || (analysis.incomplete && regex_limit) {
         Verdict::Incomplete
-    } else if analysis.incomplete || (fw && depth_cap) {
+    } else if analysis.incomplete || capped {
         Verdict::TooComplex
     } else {
         Verdict::Allow
+    }
+}
+
+/// Whether anthology-shell stopped reading `entry` at one of Python's caps: a script nested past
+/// `MAX_DEPTH` ([`Opaque::DepthCap`]), or a `cd` whose new directory has more than
+/// `MAX_CWD_DEPTH` slashes, which `cd` tracking does not follow (the later words would resolve
+/// against the old directory).
+fn past_a_cap(entry: &Entry, home: &str, limits: &Limits) -> Result<bool, Limit> {
+    if entry.opaque.contains(&Opaque::DepthCap) {
+        return Ok(true);
+    }
+    if entry.prog != "cd" && entry.prog != "pushd" {
+        return Ok(false);
+    }
+    match crate::rules::first_arg(&entry.args) {
+        None | Some("-") => Ok(false),
+        Some(target) => {
+            let dir =
+                normalize_with(target, home, entry.cwd.as_deref(), limits).map_err(|_| Limit)?;
+            Ok(dir.matches('/').count() > MAX_CWD_DEPTH)
+        }
     }
 }

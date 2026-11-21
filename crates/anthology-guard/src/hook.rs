@@ -2,6 +2,9 @@
 //!
 //! - **Envelope** (GC-6): stdin is decoded as lossy UTF-8 and parsed with `pycompat::json`. Not JSON,
 //!   not an object, or a `tool_name` that is not a string → allow (exit 0), as guard.py does.
+//!   An integer past Python's 4300-digit limit is not malformed JSON but an input too large to
+//!   read: guard.py's `ValueError` allowed it; Rust blocks it as too complex (G0; owner
+//!   direction, fail closed, D-8).
 //! - **Verdict**: a block writes `Blocked by anthology-guardrails ({rule}): {message}\n` and exits 2.
 //!   [`Verdict::Incomplete`] writes the GC-14 limit line, [`Verdict::TooComplex`] the `(G0)` line.
 //! - **Panics** (m-5): [`hook`] installs a silent panic hook, so nothing but our line reaches stderr, and
@@ -97,8 +100,11 @@ pub fn decide(raw: &[u8], home: &str, shim: bool) -> HookResult {
 /// [`decide`] with explicit limits (a test forces a backtrack limit, GC-19).
 pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookResult {
     let verdict = catch_unwind(AssertUnwindSafe(|| {
-        let Ok(data) = json::loads_bytes_lossy(raw) else {
-            return Verdict::Allow;
+        let data = match json::loads_bytes_lossy(raw) {
+            Ok(data) => data,
+            // `ValueError`: a number past the integer-digit limit
+            Err(e) if e.type_name() == "ValueError" => return Verdict::TooComplex,
+            Err(_) => return Verdict::Allow,
         };
         let Some(map) = data.as_object() else {
             return Verdict::Allow;
@@ -262,6 +268,38 @@ mod tests {
             assert_eq!(decide(raw, HOME, false).code, 0);
             assert_eq!(decide(raw, HOME, true).stderr, "anthology-guard:allow:v1\n");
         }
+    }
+
+    #[test]
+    fn an_integer_past_the_digit_limit_blocks_as_too_complex() {
+        let too_complex = block_line(Verdict::TooComplex).unwrap();
+        for digits in [4301, 100_000] {
+            let raw = payload(
+                "Bash",
+                &format!(r#"{{"command": "ls", "n": {}}}"#, "9".repeat(digits)),
+            );
+            for shim in [false, true] {
+                assert_eq!(
+                    decide(&raw, HOME, shim),
+                    HookResult {
+                        code: 2,
+                        stderr: too_complex.clone()
+                    }
+                );
+            }
+        }
+        // at the limit, and as a float, it is an ordinary number
+        let raw = payload(
+            "Bash",
+            &format!(r#"{{"command": "ls", "n": {}}}"#, "9".repeat(4300)),
+        );
+        assert_eq!(decide(&raw, HOME, false).code, 0);
+        let raw = payload(
+            "Bash",
+            &format!(r#"{{"command": "ls", "n": {}.5}}"#, "9".repeat(5000)),
+        );
+        assert_eq!(decide(&raw, HOME, false).code, 0);
+        assert!(too_complex.contains("/plugin disable anthology-guardrails@anthology"));
     }
 
     #[test]

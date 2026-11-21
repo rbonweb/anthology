@@ -27,7 +27,7 @@ pub(crate) fn g3_input(tool_name: &str, input: &Value, paths: &Paths<'_>) -> Res
     }
     let mut words: Vec<String> = Vec::new();
     let mut found = Vec::new();
-    path_strings(input, &skip, &mut found);
+    path_strings(input, &skip, paths.walk_depth(), &mut found);
     words.extend(found.iter().map(|s| (*s).to_string()));
     let keys: &[&str] = if grep {
         &["glob"]
@@ -39,7 +39,7 @@ pub(crate) fn g3_input(tool_name: &str, input: &Value, paths: &Paths<'_>) -> Res
         paths.words_hit(&words, None, |p, c, cwd| p.is_profile_path(c, cwd, false)),
         || {
             let mut code = Vec::new();
-            code_strings(input, &mut code);
+            code_strings(input, paths.walk_depth(), &mut code);
             paths.code_hits_profile(&code, None)
         },
     )
