@@ -17,7 +17,6 @@ heredocs) into entries; the per-rule predicates then run over the entries.
 from __future__ import annotations
 
 import fnmatch
-import itertools
 import posixpath
 import re
 import shlex
@@ -1081,6 +1080,7 @@ def _parallel_lines(line, replace, groups):
     """The command lines GNU parallel runs: for each combination of one input per source (at
     most `_MAX_FED`), `{1}`, `{2}`, ... are put in place, else the replacement string, else the
     inputs are appended; with no command line the inputs are the command."""
+    import itertools                                      # only GNU parallel inputs need it
     out = []
     for combo in itertools.islice(itertools.product(*groups), _MAX_FED) if groups else ():
         joined = " ".join(combo)
