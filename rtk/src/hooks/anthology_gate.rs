@@ -233,7 +233,13 @@
 //! - rtk's argument parser drops a `--` before the nested command, so `rtk git --
 //!   push` is read as `git push`.
 //! - When the work budget is spent and any rule exists, the hook asks. Every peel
-//!   step and suffix reading is charged to it.
+//!   step and suffix reading is charged to it, and every path a `Read()` check or
+//!   the plain shape looks up on the disk (RG2); past it the paths of the command
+//!   being read are matched as written only, so a plainly named denied path
+//!   still denies. A line whose bytes alone would spend it ([`unread`], 125 KB) is
+//!   not read at all: it asks as written, with no rewrite, so the hook answers in
+//!   well under a second (a timed-out hook is no decision, and `Bash(rtk *)` would
+//!   allow the line).
 //! - Globs are never expanded against the disk: `rtk git add src/*.rs` asks (no
 //!   plain shape), and `cat *.txt` asks when a `Read()` rule exists.
 //! - `env` (with its options), `xargs` (with its options) and `find -exec` payloads
@@ -266,6 +272,21 @@ const MAX_DEPTH: usize = 4;
 const WORK_BUDGET: usize = 1_000_000;
 /// The least a segment costs: 4000 segments use the whole budget.
 const SEGMENT_COST: usize = 250;
+/// What one path costs a `Read()` matcher (or the plain shape) on the disk: a
+/// `canonicalize` is tens of microseconds, so about 8000 of them use the whole
+/// budget (RG2: a 1 MB `rtk ls a a a ...` made half a million of them, 41 s).
+const PROBE_COST: usize = 128;
+/// What one byte of the line costs before any rule is met: the rule scan, the
+/// shared parser and the plain shape each read the whole line, and again rtk's
+/// rewrite of it (RG2: up to two microseconds a byte in all, release build). A
+/// line whose bytes alone spend [`WORK_BUDGET`] (125 KB) is not read: with any
+/// rule it asks, as written, as a hook input over the 1 MiB cap does.
+const LINE_BYTE_COST: usize = 8;
+
+/// Whether `cmd` is too long for the gate to read within its budget ([`LINE_BYTE_COST`]).
+pub(crate) fn unread(cmd: &str) -> bool {
+    cmd.len().saturating_mul(LINE_BYTE_COST) > WORK_BUDGET
+}
 /// The shells whose `-c` script the gate reads.
 const SHELLS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "ash",
@@ -919,6 +940,9 @@ pub(crate) fn evaluate(
     if !rules.active() {
         return Gate::Pass;
     }
+    if unread(cmd) {
+        return Gate::Ask;
+    }
     let initial = cwd
         .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
@@ -1344,6 +1368,28 @@ impl<'a> Scanner<'a> {
         true
     }
 
+    /// Spend the disk work of checking `words` path words against the `Read()`
+    /// matchers: [`PROBE_COST`] per word, working directory and matcher. When the
+    /// budget cannot pay for it, the budget is spent (the command asks) and the
+    /// matchers stop resolving symlinks: these words are still matched as
+    /// written, so a denied path named plainly stays a deny.
+    fn spend_probes(&mut self, words: usize, cwds: &Cwds) {
+        let matchers = usize::from(self.reads.is_some()) + usize::from(self.read_asks.is_some());
+        let cost = words
+            .saturating_mul(cwds.states.len().max(1))
+            .saturating_mul(matchers)
+            .saturating_mul(PROBE_COST);
+        if cost <= self.budget {
+            self.budget -= cost;
+            return;
+        }
+        self.exhausted = true;
+        self.budget = 0;
+        for matcher in [&mut self.reads, &mut self.read_asks].into_iter().flatten() {
+            matcher.disk = false;
+        }
+    }
+
     /// Something the gate cannot read was met: inside an rtk expansion the hook
     /// asks, inside the payload of a top-level exec action the command is left to
     /// the host unrewritten.
@@ -1747,6 +1793,7 @@ impl<'a> Scanner<'a> {
         if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
             return Ok(());
         }
+        self.spend_probes(args.len(), cwds);
         let denied = match &self.reads {
             Some(reads) => reads.check_command(name, args, cwds, generic),
             None => ReadOutcome::Clear,
@@ -1845,6 +1892,7 @@ impl<'a> Scanner<'a> {
                 if !self.spend(1 + word.len() / 16) {
                     return Ok(());
                 }
+                self.spend_probes(1, cwds);
                 let denied = match &self.reads {
                     Some(reads) => ReadOutcome::from(reads.check_word(&word, cwds, false)),
                     None => ReadOutcome::Clear,
@@ -2100,6 +2148,11 @@ impl Scanner<'_> {
         if unclear {
             outcomes.push((ReadOutcome::Uncertain, ReadOutcome::Clear));
         }
+        let args = &words[1..];
+        if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
+            return Ok(());
+        }
+        self.spend_probes(targets.len() + args.len(), &cwds);
         for target in &targets {
             let word = resolve_word_text(target);
             let check = |m: &Option<ReadMatcher>| match m {
@@ -2109,10 +2162,6 @@ impl Scanner<'_> {
                 None => ReadOutcome::Clear,
             };
             outcomes.push((check(&self.reads), check(&self.read_asks)));
-        }
-        let args = &words[1..];
-        if !self.spend(1 + args.iter().map(|arg| 1 + arg.len() / 16).sum::<usize>()) {
-            return Ok(());
         }
         let (args, unclear) = literal_words(args, literal);
         if unclear {
@@ -3674,8 +3723,17 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
             )
         })
     };
-    let reads = matcher(&rules.read_deny);
-    let read_asks = matcher(&rules.read_ask);
+    let mut reads = matcher(&rules.read_deny);
+    let mut read_asks = matcher(&rules.read_ask);
+    // The disk work is bounded as the rule scan's is (RG2): each path costs its
+    // probes (two `canonicalize`s, then one per matcher for each of its two
+    // spellings), a stem's directory read its cap. Past the budget the line asks,
+    // and the paths left are matched as written only, so a denied path named
+    // plainly stays a deny.
+    let matchers = usize::from(reads.is_some()) + usize::from(read_asks.is_some());
+    let path_cost = PROBE_COST * (2 + 2 * matchers);
+    let mut budget = WORK_BUDGET.saturating_sub(cmd.len() / 16);
+    let mut disk = true;
     let mut gate = Gate::Pass;
     for check in &checks {
         let mut texts = vec![(check.text.clone(), check.tilde)];
@@ -3689,13 +3747,26 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
                 return Gate::Ask;
             }
             let stem = check.text.split(['~', '^']).next().unwrap_or_default();
-            match stem_matches(stem, cwd.as_deref(), fold, STEM_SCAN_CAP) {
-                Some(names) => texts.extend(names.into_iter().map(|t| (t, false))),
-                None => return Gate::Ask,
+            if disk && budget >= PROBE_COST + STEM_SCAN_CAP {
+                budget -= PROBE_COST + STEM_SCAN_CAP;
+                match stem_matches(stem, cwd.as_deref(), fold, STEM_SCAN_CAP) {
+                    Some(names) => texts.extend(names.into_iter().map(|t| (t, false))),
+                    None => return Gate::Ask,
+                }
+            } else {
+                disk = false;
             }
         }
         for (text, tilde) in texts {
-            let verdict = plain_path(&text, tilde, cwd.as_deref(), fold, |path| {
+            if disk && budget >= path_cost {
+                budget -= path_cost;
+            } else {
+                disk = false;
+                for matcher in [&mut reads, &mut read_asks].into_iter().flatten() {
+                    matcher.disk = false;
+                }
+            }
+            let verdict = plain_path(&text, tilde, cwd.as_deref(), fold, disk, |path| {
                 let verdict = |m: &Option<ReadMatcher>| {
                     m.as_ref()
                         .map_or(WordVerdict::Allowed, |m| m.check_literal(path))
@@ -3712,6 +3783,9 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
                 _ => Gate::Pass,
             };
         }
+    }
+    if !disk && gate != Gate::Deny {
+        return Gate::Ask;
     }
     gate
 }
@@ -3746,6 +3820,7 @@ fn plain_path(
     tilde: bool,
     cwd: Option<&Path>,
     fold: bool,
+    disk: bool,
     read: impl Fn(&str) -> Gate,
 ) -> Gate {
     if text.is_empty() {
@@ -3788,9 +3863,11 @@ fn plain_path(
     };
     // The kernel resolves `link/..` through the link, the lexical form does not:
     // both are checked (the matcher normalises and resolves `path` itself).
+    // Past the work budget (`disk` off) only the lexical form is checked.
     if special(&lexical)
-        || std::fs::canonicalize(&path).is_ok_and(|real| special(&real))
-        || std::fs::canonicalize(&lexical).is_ok_and(|real| special(&real))
+        || (disk
+            && (std::fs::canonicalize(&path).is_ok_and(|real| special(&real))
+                || std::fs::canonicalize(&lexical).is_ok_and(|real| special(&real))))
     {
         return Gate::Ask;
     }
@@ -4344,6 +4421,9 @@ struct ReadMatcher {
     case_insensitive: bool,
     /// The command changes `HOME` or `CDPATH`: `~` names nothing the gate knows.
     home_unstable: bool,
+    /// Symlinks are resolved on the disk. Off once the work budget is spent
+    /// (RG2): a path is then matched as written only, and the command asks.
+    disk: bool,
 }
 
 impl ReadMatcher {
@@ -4443,6 +4523,7 @@ impl ReadMatcher {
             rules,
             case_insensitive,
             home_unstable: false,
+            disk: true,
         }
     }
 
@@ -4485,7 +4566,7 @@ impl ReadMatcher {
     fn check_literal(&self, path: &str) -> WordVerdict {
         let path = Path::new(path);
         if self.denied(&normalize(path), true)
-            || std::fs::canonicalize(path).is_ok_and(|real| self.denied(&real, true))
+            || (self.disk && std::fs::canonicalize(path).is_ok_and(|real| self.denied(&real, true)))
         {
             WordVerdict::Denied
         } else {
@@ -4544,7 +4625,8 @@ impl ReadMatcher {
             if self.denied(&normalize(path), generic) {
                 return WordVerdict::Denied;
             }
-            if let Ok(real) = std::fs::canonicalize(path)
+            if self.disk
+                && let Ok(real) = std::fs::canonicalize(path)
                 && self.denied(&real, generic)
             {
                 return WordVerdict::Denied;
@@ -6429,10 +6511,17 @@ mod tests {
         in_sandbox(|dir, _| {
             let r = rules(&[], &[], &["**/*key*.json"]);
             let started = std::time::Instant::now();
-            let word = "key".repeat(100_000);
+            // RG2: 120k characters, so the line stays under the cap (`unread`); the
+            // review's 300k now asks unread.
+            let word = "key".repeat(40_000);
             assert_eq!(
                 gate_in(dir, &format!("cat {word}; rtk git push"), &r),
                 Gate::Pass
+            );
+            let longer = "key".repeat(100_000);
+            assert_eq!(
+                gate_in(dir, &format!("cat {longer}; rtk git push"), &r),
+                Gate::Ask
             );
             assert!(
                 started.elapsed() < time_bound(10),
@@ -7121,6 +7210,108 @@ mod tests {
         // A long argument list is no reason to stall either.
         let (_, took) = timed(&format!("rtk bypass echo {}", "word ".repeat(100_000)));
         assert!(took < time_bound(10), "{took:?}");
+    }
+
+    /// RG2: the hook's bound on a line too long to read. A 1 MB `rtk ls a a a ...`
+    /// took 41 s with any rule (a `canonicalize` a word, then the rewrite read
+    /// again); a timed-out hook is no decision, so `Bash(rtk *)` would allow it.
+    fn megabyte_bound() -> std::time::Duration {
+        // The release build answers in about 0.1 s (the upstream verdict still
+        // reads the line); a debug build on a slow CI runner gets the room it needs.
+        std::time::Duration::from_millis(if cfg!(debug_assertions) { 10_000 } else { 500 })
+    }
+
+    #[test]
+    fn a_megabyte_line_asks_at_once_as_written() {
+        with_machine(|m| {
+            write(
+                &m.project.join(".claude"),
+                "settings.json",
+                &settings(
+                    &["Bash(git push:*)", "Read(./secret.txt)"],
+                    &[],
+                    &["Bash(rtk *)"],
+                ),
+            );
+            for cmd in [
+                format!("rtk ls {}", "a ".repeat(500_000)),
+                format!("ls {}", "a ".repeat(500_000)),
+                format!("echo {}", "a; ".repeat(330_000)),
+                format!("rtk bypass echo {}git push", "x ".repeat(500_000)),
+            ] {
+                assert!(unread(&cmd));
+                let started = std::time::Instant::now();
+                let said = hook(&cmd);
+                let took = started.elapsed();
+                assert_eq!(
+                    said,
+                    HookDecision::AskRewrite(cmd.clone(), AskOwner::Hook),
+                    "{}",
+                    &cmd[..16]
+                );
+                assert!(took < megabyte_bound(), "{}: {took:?}", &cmd[..16]);
+            }
+            // The upstream verdict still denies what it reads, however long.
+            let pushed = format!("git push {}", "a ".repeat(500_000));
+            assert_eq!(hook(&pushed), HookDecision::Deny);
+        });
+    }
+
+    #[test]
+    fn a_line_under_the_cap_reads_whole_and_without_rules_is_untouched() {
+        let r = bash_rules();
+        let under = format!("rtk git push {}", "a ".repeat(60_000));
+        assert!(!unread(&under));
+        assert_eq!(gate(&under, &r), Gate::Deny);
+        let none = rules(&[], &[], &[]);
+        let over = format!("rtk ls {}", "a ".repeat(500_000));
+        assert_eq!(gate(&over, &none), Gate::Pass);
+    }
+
+    /// RG2: every path the `Read()` checks or the plain shape look up on the disk
+    /// is charged to the work budget, so many paths under the line cap ask in a
+    /// bounded time; a denied path met before the budget ran out stays a deny.
+    #[test]
+    fn the_disk_work_of_many_paths_is_charged_to_the_budget() {
+        in_sandbox(|dir, r| {
+            let words: String = (0..15_000).map(|i| format!("f{i} ")).collect();
+            let cwd = dir.to_string_lossy().into_owned();
+            let timed = |f: &dyn Fn() -> Gate| {
+                let started = std::time::Instant::now();
+                let said = f();
+                (said, started.elapsed())
+            };
+            for cmd in [format!("cat {words}"), format!("rtk read {words}")] {
+                assert!(!unread(&cmd));
+                let (said, took) = timed(&|| gate_in(dir, &cmd, r));
+                assert_eq!(said, Gate::Ask, "{}", &cmd[..12]);
+                assert!(took < megabyte_bound(), "{}: {took:?}", &cmd[..12]);
+            }
+            let listed = format!("rtk ls {words}");
+            let (said, took) = timed(&|| plain(&listed, r, Some(&cwd)));
+            assert_eq!(said, Gate::Ask);
+            assert!(took < megabyte_bound(), "plain: {took:?}");
+            // Past the budget a path is still matched as written: a denied one
+            // named plainly is a deny wherever it stands; behind a symlink it asks.
+            for cmd in [
+                format!("rtk ls secret.txt {words}"),
+                format!("rtk ls {words} secret.txt"),
+            ] {
+                assert_eq!(plain(&cmd, r, Some(&cwd)), Gate::Deny, "{}", &cmd[..12]);
+            }
+            assert_eq!(
+                plain(&format!("rtk ls {words} link"), r, Some(&cwd)),
+                Gate::Ask
+            );
+            for cmd in [
+                format!("cat secret.txt {words}"),
+                format!("cat {words} secret.txt"),
+                format!("rtk read {words} secret.txt"),
+            ] {
+                assert_eq!(gate_in(dir, &cmd, r), Gate::Deny, "{}", &cmd[..12]);
+            }
+            assert_eq!(gate_in(dir, &format!("cat {words} link"), r), Gate::Ask);
+        });
     }
 
     #[test]
