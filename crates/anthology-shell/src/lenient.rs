@@ -8,7 +8,7 @@
 
 use crate::lexer::pystr;
 use crate::lexer::{Segment, Shared};
-use crate::shell_args::script_starts_in;
+use crate::shell_args::{WORD, script_starts_in};
 
 /// `re.split(r"[;&|\n()`]+|\$\(", text)`: the pieces between separators (empty pieces included).
 fn pieces(text: &str) -> Vec<&str> {
@@ -49,7 +49,7 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared<'_>) -> Vec<Segment> 
         // the cost of tokens[k..].
         let mut cost = vec![0usize; tokens.len() + 1];
         for k in (0..tokens.len()).rev() {
-            cost[k] = cost[k + 1].saturating_add(1 + tokens[k].len());
+            cost[k] = cost[k + 1].saturating_add(WORD + tokens[k].len());
         }
         if !sh.budget.spend(cost[0]) {
             sh.incomplete = true;
@@ -67,7 +67,7 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared<'_>) -> Vec<Segment> 
         for (start, first) in starts {
             let rest = tokens.get(start + 1..).unwrap_or(&[]);
             let rest_cost = cost.get(start + 1).copied().unwrap_or(0);
-            if !sh.budget.spend(1 + first.len() + rest_cost) {
+            if !sh.budget.spend(WORD + first.len() + rest_cost) {
                 sh.incomplete = true;
                 return out;
             }

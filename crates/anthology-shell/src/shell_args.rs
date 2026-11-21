@@ -177,6 +177,9 @@ fn fish_option_at(args: &[String], i: usize) -> (Vec<(usize, String)>, bool, boo
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Budget(pub(crate) usize);
 
+/// The charge for one copied word on top of its bytes: about what a `String` costs besides its text.
+pub(crate) const WORD: usize = 24;
+
 impl Budget {
     /// Spend `n` units; false (and nothing left) when there were not enough.
     pub(crate) fn spend(&mut self, n: usize) -> bool {
@@ -229,11 +232,11 @@ pub(crate) fn parse_fish_args_in(
     let mut scripts: Vec<(usize, String)> = Vec::new();
     let mut seen: HashSet<(usize, String)> = HashSet::new();
     for k in first..n {
-        if !budget.spend(1 + args[k].len()) {
+        if !budget.spend(WORD + args[k].len()) {
             return None;
         }
         for found in fish_option_at(args, k).0 {
-            if !budget.spend(1 + 2 * found.1.len()) {
+            if !budget.spend(WORD + 2 * found.1.len()) {
                 return None;
             }
             if seen.insert(found.clone()) {
@@ -348,7 +351,7 @@ pub(crate) fn script_starts_in(
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
             let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
-            let cost = parsed.scripts.iter().map(|(_, s)| 1 + s.len()).sum();
+            let cost = parsed.scripts.iter().map(|(_, s)| WORD + s.len()).sum();
             if !budget.spend(cost) {
                 return None;
             }
@@ -357,7 +360,7 @@ pub(crate) fn script_starts_in(
             continue;
         }
         if is_shell_c_flag(word) {
-            if !budget.spend(1 + words[k + 1].len()) {
+            if !budget.spend(WORD + words[k + 1].len()) {
                 return None;
             }
             starts.push((k + 1, words[k + 1].clone()));

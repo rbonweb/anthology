@@ -688,7 +688,7 @@ fn segments_case(text: String, depth: usize) -> Value {
     ])
 }
 
-fn sweep_chars() -> Vec<char> {
+pub(crate) fn sweep_chars() -> Vec<char> {
     // Every non-surrogate code point above ASCII, plus the ASCII letters and digits.
     let ascii = ('0'..='9').chain('a'..='z').chain('A'..='Z');
     ascii

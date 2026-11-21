@@ -680,6 +680,16 @@ pub(crate) fn segments_inner(text: &str, depth: usize, sh: &mut Shared<'_>) -> V
 /// level falls back to lenient) still leaves `incomplete`, `depth_capped` and `nested_lenient` set. So Rust
 /// may report `incomplete` (and the guard block) where Python allowed: a D-7 case, never the reverse.
 pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo) {
+    lex_in(text, depth, limits, &mut Budget(LEX_BUDGET))
+}
+
+/// `lex` spending from a caller's budget (`analyze` threads one budget through the whole analysis).
+pub(crate) fn lex_in(
+    text: &str,
+    depth: usize,
+    limits: &Limits,
+    budget: &mut Budget,
+) -> (Lexed, LexInfo) {
     let built;
     let re = if limits.backtrack_limit == DEFAULT_BACKTRACK_LIMIT {
         HEREDOC_DEFAULT.as_ref()
@@ -692,7 +702,7 @@ pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo)
         groups: Vec::new(),
         incomplete: false,
         info: LexInfo::default(),
-        budget: Budget(LEX_BUDGET),
+        budget: *budget,
     };
     let (segments, lenient) = match Lexer::new(text, depth, &mut sh).run() {
         Ok(segments) => (segments, false),
@@ -721,6 +731,7 @@ pub(crate) fn lex(text: &str, depth: usize, limits: &Limits) -> (Lexed, LexInfo)
         lenient,
         incomplete: sh.incomplete,
     };
+    *budget = sh.budget;
     (lexed, sh.info)
 }
 
