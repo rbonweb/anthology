@@ -320,9 +320,9 @@ def _check_rtk_savings(env):
     rtk keeps the file in WAL mode, which a read-only reader cannot open, so it is read as
     immutable: no lock, no write, and what rtk last checkpointed."""
     db = _config_dir(env) / "anthology" / "rtk" / "history.db"
-    if not db.is_file():
-        return None, "rtk has no history yet"
     try:
+        if not db.is_file():
+            return None, "rtk has no history yet"
         import sqlite3
         from urllib.parse import quote
         con = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(str(db)), uri=True)
