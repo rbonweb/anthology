@@ -9,6 +9,7 @@
 # is still writable. So, inside the container only, this installs those test-only
 # tools from the image's own Debian release (never shipped), then runs the tests as
 # a non-root user. Local runs, ci.yml's rtk-test job and sync-rtk.sh all use it.
+# The repository root is mounted, not rtk/ alone: rtk depends on ../crates/anthology-shell.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -43,7 +44,7 @@ exec runuser -u "$user" -- env -i \
 '
 
 exec docker run --rm \
-    -v "$root/rtk":/w \
+    -v "$root":/w \
     -v anthology-cargo:/usr/local/cargo/registry \
     -v anthology-rtk-target:/target \
-    -w /w "$image" sh -c "$inner" rtk-test "$@"
+    -w /w/rtk "$image" sh -c "$inner" rtk-test "$@"
