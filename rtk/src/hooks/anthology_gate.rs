@@ -97,7 +97,7 @@
 //!   (or two of those joined by `..` or `...`), `REF` being letters, digits, `_`
 //!   and `-` with no `/` or `.` (`HEAD~1`, `main^`, `HEAD~5..HEAD`). A leading `~`
 //!   is the home only as `~` or `~/...` with no later `^`, `~` or `#` (from
-//!   `$HOME`; an unset `HOME` asks).
+//!   `$HOME`; an unset, empty or relative `HOME` asks).
 //! - **`rtk <sub>` from [`PLAIN`].** The first word is `rtk` (so no assignment,
 //!   `cd`, `exec`, `eval`, `source`, launcher or rtk global flag in front), then
 //!   one of: `ls`, `tree`, `read`, `wc`, `diff`, `grep`, `rg`, `find`; `git status`,
@@ -3400,7 +3400,7 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
 }
 
 /// One literal path: resolved lexically against the working directory (`..`
-/// normalised; a leading `~` is `$HOME`, and an unset `HOME` asks), asked about
+/// normalised; a leading `~` is `$HOME`; an unset, empty or relative `HOME` asks), asked about
 /// under `/dev`, `/proc` or `/sys` (case folded where the file system folds it),
 /// and when it is `-` (standard input); else what `read` says about the absolute
 /// path (which also resolves symlinks).
@@ -3418,9 +3418,11 @@ fn plain_path(
         return Gate::Ask;
     }
     let path = if tilde {
-        let home_set = crate::core::user_env::var("HOME").is_some_and(|home| !home.is_empty());
-        match user_dirs::home().filter(|_| home_set) {
-            Some(home) => home.join(text.trim_start_matches('~').trim_start_matches('/')),
+        // The shell expands `~` from `$HOME` as it stands, relative or not.
+        match crate::core::user_env::var("HOME").filter(|home| !home.is_empty()) {
+            Some(home) => {
+                PathBuf::from(home).join(text.trim_start_matches('~').trim_start_matches('/'))
+            }
             None => return Gate::Ask,
         }
     } else if Path::new(text).is_absolute() {
@@ -3431,6 +3433,10 @@ fn plain_path(
             None => return Gate::Ask,
         }
     };
+    // A relative `HOME` or working directory names nothing a rule can anchor to.
+    if !path.is_absolute() {
+        return Gate::Ask;
+    }
     let lexical = normalize(&path);
     let special = |path: &Path| {
         path.components()
@@ -6922,10 +6928,12 @@ mod tests {
             let got = crate::core::user_env::with_vars(&[("HOME", Some("/home/u"))], || at(cmd));
             assert_eq!(got, Gate::Pass, "{cmd}");
         }
-        // HOME unset: a `~` names nothing the hook can check.
-        for cmd in ["rtk ls ~", "rtk ls ~/x"] {
-            let got = crate::core::user_env::with_vars(&[("HOME", None)], || at(cmd));
-            assert_eq!(got, Gate::Ask, "{cmd}");
+        // HOME unset, empty or relative: a `~` names nothing the hook can check.
+        for home in [None, Some(""), Some("../home"), Some("home")] {
+            for cmd in ["rtk ls ~", "rtk ls ~/x", "rtk read ~/notes.txt"] {
+                let got = crate::core::user_env::with_vars(&[("HOME", home)], || at(cmd));
+                assert_eq!(got, Gate::Ask, "{cmd} with HOME={home:?}");
+            }
         }
         for cmd in [
             // Not one simple command, or something the shell expands or redirects.
