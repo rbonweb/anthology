@@ -458,6 +458,13 @@ fn parse_stdin(stdin: &str) -> Map {
         .unwrap_or_default()
 }
 
+/// `_is_subagent`: Claude Code puts `agent_id` in the hook input when the hook fires inside a
+/// subagent or teammate (a SessionStart after it compacts). `agent_type` is not used: it is
+/// also set for a main session started with `--agent`.
+pub fn is_subagent(hook: &Map) -> bool {
+    matches!(hook.get("agent_id").and_then(Value::as_str), Some(id) if !id.is_empty())
+}
+
 /// The real `_guard_selftest` (module docs, F-4).
 pub fn guard_selftest(
     env: &Env,
@@ -621,7 +628,11 @@ pub fn compose(guide: &str, memory: &str, home: &Path) -> String {
     if memory.is_empty() {
         return guide.trim_end_matches('\n').to_string();
     }
-    let head = format!("{guide}\n");
+    let head = if guide.is_empty() {
+        String::new()
+    } else {
+        format!("{guide}\n")
+    };
     let room = CONTEXT_BUDGET as i64 - char_len(&head) as i64;
     if char_len(memory) as i64 <= room {
         return head + memory;
@@ -912,20 +923,31 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         },
         (String::new(), Vec::new()),
     );
-
-    let guide = step(
-        &mut warnings,
-        label::GUIDE,
-        |_| {
-            fault(deps, "_read_guide")?;
-            Ok(read_guide(&root))
-        },
-        None,
-    );
-    if guide.is_none() {
-        warnings.push(GUIDE_MISSING.into());
+    // A compact that runs in a git worktree the session moved into (or an agent's worktree)
+    // really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
+    let mut messages = messages;
+    if hook.get("source").and_then(Value::as_str) == Some("compact") {
+        messages.retain(|m| m != anthology_memory::sync::DIR_SET);
     }
-    let guide_text = guide.unwrap_or_default();
+
+    // The routing guide is for the lead only.
+    let guide_text = if is_subagent(&hook) {
+        String::new()
+    } else {
+        let guide = step(
+            &mut warnings,
+            label::GUIDE,
+            |_| {
+                fault(deps, "_read_guide")?;
+                Ok(read_guide(&root))
+            },
+            None,
+        );
+        if guide.is_none() {
+            warnings.push(GUIDE_MISSING.into());
+        }
+        guide.unwrap_or_default()
+    };
     let context = step(
         &mut warnings,
         label::COMPOSE,
