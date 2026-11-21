@@ -3273,3 +3273,15 @@ git commit -m "fix a, b" -- src/{a,b}.rs
 rg 'foo, bar' src/{a,b}
 #---
 ls ${HOME}/{a,b}
+#---
+$(which python3) -m venv .venv
+#---
+"$(command -v node)" --version
+#---
+${EDITOR:-vi} file.txt
+#---
+${PYTHON:-python3} script.py
+#---
+echo $(date)
+#---
+x=$(git rev-parse HEAD)

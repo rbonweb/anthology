@@ -760,6 +760,27 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "while read l; do :; done < <(ls)",
     ];
     out.extend(R2.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // SH-FW final F-8: a program word that is a default or alternate, or a substitution (payloads), and the
+    // everyday forms that must stay allowed (controls)
+    const F8: &[&str] = &[
+        "${x:-npx} playwright install",
+        "${x-npx} playwright install",
+        "x=1; ${x:+npx} playwright install",
+        "${x:=npm} i puppeteer",
+        "$(echo npx playwright install)",
+        "`echo npx` playwright install",
+        r#""$(echo npx)" playwright install"#,
+        "sudo $(echo npx) playwright install",
+        "$(which npx) playwright install",
+        "npm ${x:-i} puppeteer",
+        "$(which python3) -m venv .venv",
+        r#""$(command -v node)" --version"#,
+        "${EDITOR:-vi} file.txt",
+        "${PYTHON:-python3} script.py",
+        "echo $(date)",
+        "x=$(git rev-parse HEAD)",
+    ];
+    out.extend(F8.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

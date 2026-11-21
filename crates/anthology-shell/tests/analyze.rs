@@ -125,11 +125,8 @@ fn path_helpers_match_python() {
 
 #[test]
 fn opaque_dynamic_command_word() {
-    assert!(has(
-        &analyze("$(echo rm) -rf x", HOME),
-        "-rf",
-        Opaque::DynamicCommandWord
-    ));
+    // F-8(b): a substitution at program position is too complex (it was a dynamic word before)
+    assert!(analyze("$(echo rm) -rf x", HOME).incomplete);
     assert!(has(
         &analyze("$cmd x", HOME),
         "$cmd",
@@ -192,9 +189,16 @@ fn opaque_depth_cap() {
             .any(|e| e.opaque.contains(&Opaque::DepthCap))
     );
     assert!(!a.incomplete);
+    // a substitution at program position is too complex (F-8(b)); the depth cap is reached through arguments
+    let program = format!(
+        "{}ls{}",
+        "$(".repeat(MAX_DEPTH + 2),
+        ")".repeat(MAX_DEPTH + 2)
+    );
+    assert!(analyze(&program, HOME).incomplete);
     let nested = format!(
         "echo {}ls{}",
-        "$(".repeat(MAX_DEPTH + 2),
+        "$(echo ".repeat(MAX_DEPTH + 2),
         ")".repeat(MAX_DEPTH + 2)
     );
     let a = analyze(&nested, HOME);

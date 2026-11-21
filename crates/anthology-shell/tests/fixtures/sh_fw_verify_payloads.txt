@@ -562,3 +562,21 @@ npm --prefix ${x:-\{a,b\}} {-x,} i puppeteer
 npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer
 #---
 npm --prefix "${x:-{a,b}}" {-x,} i puppeteer
+#---
+${x:-npx} playwright install
+#---
+${x-npx} playwright install
+#---
+x=1; ${x:+npx} playwright install
+#---
+${x:=npm} i puppeteer
+#---
+$(echo npx playwright install)
+#---
+`echo npx` playwright install
+#---
+"$(echo npx)" playwright install
+#---
+sudo $(echo npx) playwright install
+#---
+$(which npx) playwright install

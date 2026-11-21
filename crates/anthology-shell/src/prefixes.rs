@@ -1442,6 +1442,89 @@ fn alternates_of(
     Ok(out)
 }
 
+/// Where the value of a `${name:-`, `${name-`, `${name:+`, `${name+`, `${name:=` or `${name=` operator starts, for
+/// the `${` at `name_at - 2`. `None`: no such operator there.
+fn default_value_start(word: &str, name_at: usize) -> Option<usize> {
+    let rest = word.get(name_at..)?;
+    let mut name_len = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    if name_len == 0 {
+        // a special parameter (`${@:-x}`, `${-:-x}`)
+        name_len = rest
+            .chars()
+            .next()
+            .filter(|c| "@*?$!-".contains(*c))
+            .map_or(0, char::len_utf8);
+    }
+    if name_len == 0 {
+        return None;
+    }
+    let after = name_at + name_len;
+    let tail = word.get(after..)?;
+    if tail.starts_with(":-") || tail.starts_with(":+") || tail.starts_with(":=") {
+        Some(after + 2)
+    } else if tail.starts_with(['-', '+', '=']) {
+        Some(after + 1)
+    } else {
+        None
+    }
+}
+
+/// The literal text of a default or alternate value `W` (F-8(a)): quotes are removed, and `$`, a backtick, a
+/// backslash, braces or an unclosed quote make it not literal, as do characters that word splitting or globbing
+/// would change. Empty is literal (`${x:-}` is removed by bash).
+fn literal_default(value: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    d => out.push(d),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '$' | '`' | '\\' => return None,
+                    d => out.push(d),
+                }
+            },
+            '$' | '`' | '\\' | '{' | '}' => return None,
+            _ => out.push(c),
+        }
+    }
+    out.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._+@/-".contains(c))
+        .then_some(out)
+}
+
+/// F-8(a): the literal default or alternate `W` of a program word that is one parameter expansion `${x:-W}`
+/// (`${x-W}`, `${x:+W}`, `${x+W}`, `${x:=W}`, `${x=W}`). `Ok(None)`: the word holds no such expansion. Too
+/// complex when `W` is not literal (`literal_default`), or when the word has text around the expansion or a
+/// nested `${` (`pre${x:-npx}`, `${x:-${y}}`).
+pub(crate) fn default_program(word: &str) -> Result<Option<String>, TooComplex> {
+    let applies = word
+        .match_indices("${")
+        .any(|(at, _)| default_value_start(word, at + 2).is_some());
+    if !applies {
+        return Ok(None);
+    }
+    let start = word
+        .starts_with("${")
+        .then(|| default_value_start(word, 2))
+        .flatten();
+    match start {
+        Some(start) if word.ends_with('}') && start < word.len() => {
+            let value = &word[start..word.len() - 1];
+            literal_default(value).map(Some).ok_or(TooComplex)
+        }
+        _ => Err(TooComplex),
+    }
+}
+
 /// Rust (SH-FW final review I-3): the shipped reading of a package manager's options, where each option the
 /// tables do not know is a flag with no value (`_skip_flags` of the shipped guard), for a package manager word
 /// at `tokens[at]` (`rel` is `tokens[at..]`) whose subcommand `pm_verb_index` reads elsewhere. A yarn or pnpm
@@ -2347,20 +2430,33 @@ pub(crate) fn strip_prefixes(
     if let Some(alternates) = alternates {
         let main = toks.first().map(|w| prog_name(w)).unwrap_or_default();
         let main_at = tokens.len().saturating_sub(toks.len());
+        let mut found = Vec::new();
         if let Some((start, end)) = alternate_span(tokens, main_at)
             && !has(QUIET_PROGRAMS, &main)
         {
-            let mut found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
+            found = alternates_of(tokens, start, end, (main_at, &toks), work)?;
             shipped_pm_alternates(tokens, start, end, &mut found, work)?;
-            work.charge_extra(
-                found
-                    .iter()
-                    .flat_map(|(_, alt, _)| alt)
-                    .map(|w| WORD + w.len())
-                    .sum(),
-            )?;
-            alternates.extend(found);
         }
+        // F-8(a): a program word `${x:-W}` (`${x-W}`, `${x:+W}`, `${x+W}`, `${x:=W}`, `${x=W}`) also reads as
+        // the same command with the literal W as its program word
+        if let Some(word) = toks.first()
+            && let Some(literal) = default_program(word)?
+        {
+            if tokens.get(main_at) != toks.first() {
+                return Err(TooComplex);
+            }
+            let mut alt = tokens.to_vec();
+            alt[main_at] = literal;
+            found.push((main_at, alt, false));
+        }
+        work.charge_extra(
+            found
+                .iter()
+                .flat_map(|(_, alt, _)| alt)
+                .map(|w| WORD + w.len())
+                .sum(),
+        )?;
+        alternates.extend(found);
     }
     Ok(Stripped {
         cmd: toks,

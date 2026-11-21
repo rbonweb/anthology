@@ -66,6 +66,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -721,24 +722,38 @@ def _option_env_unmodelled(prefix, prog, args):
 _ADD_COMMAND = G._add_command
 
 
+_RESOLVED = None                                          # (tokens, words) while `_ADD_COMMAND` reads one command (F-8)
+
+
 def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
     """`_add_command` with Rust's fail-closed checks (collect.rs `add_one`): too complex words, unmodelled
-    option environment; an exported command variable runs its value."""
+    option environment; an exported command variable runs its value. The words are read as Rust reads them: a
+    substitution at program position is resolved or too complex (SH-FW final F-8, `_resolve_holders`)."""
+    global _RESOLVED
+    holders = getattr(ctx, "holders", [])
+    ctx.holders = []                                      # the holders belong to this command only
     if _fail_closed(tokens, getattr(ctx, "braces", False), getattr(ctx, "quoted_braces", False)):
         raise G._TooComplex()
     # Rust stops before it adds the entry: read the command unbudgeted (`_add_command` reads it again)
     left, paren_lines = G._STATE.left, G._STATE.paren_lines
     G._STATE.left = float("inf")
     try:
-        cmd = G._strip_prefixes(list(tokens))[0]
+        words = _resolve_holders(list(tokens), holders)
+        cmd = G._strip_prefixes(list(words))[0]
     finally:
         G._STATE.left, G._STATE.paren_lines = left, paren_lines
-    prefix = list(tokens)[:len(tokens) - len(cmd)]
-    if getattr(ctx, "braces", False) and any(_brace_sequences(t) for t in list(tokens)[:len(prefix) + 1]):
+    if cmd and "${" in cmd[0] and ("$(" in cmd[0] or "`" in cmd[0]):
+        raise G._TooComplex()                             # F-8(b): `${x#$(f)}` at program position
+    prefix = words[:len(words) - len(cmd)]
+    if getattr(ctx, "braces", False) and any(_brace_sequences(t) for t in words[:len(prefix) + 1]):
         raise G._TooComplex()                             # a sequence before or as the program word
     if _option_env_unmodelled(prefix, G._prog_name(cmd[0]) if cmd else "", cmd[1:]):
         raise G._TooComplex()
-    entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
+    saved, _RESOLVED = _RESOLVED, (tokens, words)
+    try:
+        entry = _ADD_COMMAND(tokens, redirs, group, ctx, exempt, depth)
+    finally:
+        _RESOLVED = saved
     if entry.prog in _EXPORTERS:
         for arg in entry.args:
             name, eq, value = arg.partition("=")
@@ -783,6 +798,7 @@ def _collect_once_body(text, ctx, exempt, depth):
     for seg in G._segments(text):
         ctx.braces = seg.braces
         ctx.quoted_braces = seg.quoted_braces
+        ctx.holders = seg.holders
         entry = G._add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth)
         new_entries.append(entry)
         if seg.braces:
@@ -889,6 +905,8 @@ def _end_seg(self, new_group):
             self.compound = True
         self.piped = not new_group
     self.end_word()                                       # it may note quoted braces (SH-seq C-1)
+    if getattr(self, "arith", None) is not None:          # F-8: an arithmetic segment runs no program word
+        self.seg.holders = []
     braces, self.braces = getattr(self, "braces", False), False
     quoted_braces, self.quoted_braces = getattr(self, "quoted_braces", False), False
     count = len(self.out)
@@ -949,27 +967,35 @@ _END_WORD = G._Lexer.end_word
 
 def _end_word(self):
     """`_Lexer.end_word`, noting a word with more `{`, `}` or `,` than were added unquoted (lexer.rs
-    `quoted_braces`)."""
+    `quoted_braces`), and recording a word that held a substitution as a holder of its segment (SH-FW final F-8:
+    lexer.rs `Lexer::end_word`)."""
+    subs, self.word_subs = getattr(self, "word_subs", []), []
+    word = ""
     if self.has_word:
         word = "".join(self.cur)
         if _marks(word) > getattr(self, "marks", 0) and "{" in word:
             self.quoted_braces = True
         self.marks = 0
+    before = len(self.seg.tokens)
     _END_WORD(self)
+    if subs and len(self.seg.tokens) == before + 1:       # a plain word: it became the segment's token
+        self.seg.holders.append((before, subs[0], len(subs) == 1 and word == ""))
 
 
 G._Lexer.end_word = _end_word
 
 
 class _Seg(G._Seg):
-    """`_Seg` with Rust's segment flags (re-review F-1, I-2a)."""
-    __slots__ = ("braces", "after_compound", "quoted_braces")
+    """`_Seg` with Rust's segment flags (re-review F-1, I-2a) and its substitution-holding words (SH-FW final F-8:
+    `(token index, body, sole)` for each word that held a `$(...)` or a backtick)."""
+    __slots__ = ("braces", "after_compound", "quoted_braces", "holders")
 
     def __init__(self, group):
         super().__init__(group)
         self.braces = False
         self.after_compound = False
         self.quoted_braces = False
+        self.holders = []
 
 
 G._Seg = _Seg
@@ -1010,6 +1036,185 @@ def _call(data):
     if op == "analyze":
         return _analyze, (data["command"], data["home"])
     raise ValueError("shell oracle: unknown op %r" % (op,))
+
+
+# --- SH-FW final F-8 (Rust: lexer.rs `Holder`, collect.rs `resolve_holders` and `lookup_program`,
+# prefixes.rs `default_program`). A program word that is a `$(...)`/backtick (or holds one through a `${...}`) is
+# too complex, unless it is the sole substitution and reads `which X`, `command -v X`, `type -p X` or
+# `realpath X` (then X is the program). A program word `${x:-W}` (`-`, `+`, `=` and `:` forms) also reads as
+# the same command with the literal W as its program word: an alternate, checked against G1 only.
+
+_STRIP_PREFIXES = G._strip_prefixes
+_NESTED = G._Lexer.nested
+_BACKTICK = G._Lexer.backtick
+_DOLLAR_FN = G._Lexer.dollar
+_PAREN = G._Lexer.paren
+_DEFAULT_OP = re.compile(r"(?:[A-Za-z0-9_]+|[@*?$!-])(?::[-+=]|[-+=])")
+_LITERAL_CHARS = frozenset("._+@/-")
+
+
+def _push_sub(self, body):
+    self.word_subs = getattr(self, "word_subs", []) + [body]
+
+
+def _nested(self, inner, pos=None, comsub=False):
+    """`_Lexer.nested`: a `$(...)` in a word (`dollar`, `double_quoted`, not `$((...))`) is a substitution of the
+    word being built."""
+    if comsub and sys._getframe(1).f_code in (_DOLLAR, _DQ):
+        _push_sub(self, inner)
+    _NESTED(self, inner, pos, comsub)
+
+
+def _backtick(self, i, j, dq=False):
+    """`_Lexer.backtick`: a backtick substitution is one of the word being built."""
+    _push_sub(self, self.text[i + 1:j])
+    _BACKTICK(self, i, j, dq)
+
+
+def _dollar(self, i):
+    """`_Lexer.dollar`: the segments of an arithmetic expansion run no program word."""
+    first = len(self.out)
+    result = _DOLLAR_FN(self, i)
+    if self.text[i + 1:i + 2] == "(" and self.text[i + 2:i + 4] == "((":
+        for seg in self.out[first:]:
+            seg.holders = []
+    return result
+
+
+def _paren(self, c, i):
+    """`_Lexer.paren`: a `))` that closes an arithmetic command ends its segment inside the arithmetic."""
+    was = self.arith
+    _PAREN(self, c, i)
+    if c == ")" and was is not None and self.arith is None:
+        self.seg.holders = []
+        self.word_subs = []
+
+
+G._Lexer.nested = _nested
+G._Lexer.backtick = _backtick
+G._Lexer.dollar = _dollar
+G._Lexer.paren = _paren
+
+
+def _lookup_program(body):
+    """collect.rs `lookup_program`: the one literal word X of `which X`, `realpath X`, `command -v X` or
+    `type -p X`, else None."""
+    words = body.split()
+    if len(words) == 2 and words[0] in ("which", "realpath"):
+        name = words[1]
+    elif len(words) == 3 and words[:2] in (["command", "-v"], ["type", "-p"]):
+        name = words[2]
+    else:
+        return None
+    if name and not name.startswith("-") and all(c.isascii() and (c.isalnum() or c in _LITERAL_CHARS) for c in name):
+        return name
+    return None
+
+
+def _literal_default(value):
+    """prefixes.rs `literal_default`: the text of W with its quotes removed; `$`, a backtick, a backslash, braces
+    or an unclosed quote, or a character word splitting or globbing would change, is too complex."""
+    out = []
+    chars = iter(value)
+    for c in chars:
+        if c == "'":
+            for d in chars:
+                if d == "'":
+                    break
+                out.append(d)
+            else:
+                raise G._TooComplex()
+        elif c == '"':
+            for d in chars:
+                if d == '"':
+                    break
+                if d in "$`\\":
+                    raise G._TooComplex()
+                out.append(d)
+            else:
+                raise G._TooComplex()
+        elif c in "$`\\{}":
+            raise G._TooComplex()
+        else:
+            out.append(c)
+    text = "".join(out)
+    if all(c.isascii() and (c.isalnum() or c in _LITERAL_CHARS) for c in text):
+        return text
+    raise G._TooComplex()
+
+
+def _default_program(word):
+    """prefixes.rs `default_program`: the literal W of a program word that is one `${x:-W}` (`${x-W}`, `${x:+W}`,
+    `${x+W}`, `${x:=W}`, `${x=W}`); None when the word has no such expansion; too complex when W is not literal or
+    the word has text around the expansion or a nested `${`."""
+    applies = any(
+        _DEFAULT_OP.match(word, at + 2) is not None
+        for at in range(len(word) - 1) if word.startswith("${", at)
+    )
+    if not applies:
+        return None
+    match = _DEFAULT_OP.match(word, 2) if word.startswith("${") else None
+    if match is None or not word.endswith("}") or match.end() > len(word) - 1:
+        raise G._TooComplex()
+    return _literal_default(word[match.end():-1])
+
+
+def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True, launches=None):
+    """`_strip_prefixes` as `add_one` reads it: the list an entry was made from is read as its resolved words, and
+    with `alternates` (the main reading) the `${x:-W}` reading joins them, after the others (F-8(a))."""
+    if _RESOLVED is not None and tokens is _RESOLVED[0]:
+        tokens = _RESOLVED[1]
+    cmd, scripts = _STRIP_PREFIXES(tokens, alternates, stdin_runs, layer_scripts, launches=launches)
+    if alternates is not None and cmd:
+        literal = _default_program(cmd[0])
+        if literal is not None:
+            main_at = max(len(tokens) - len(cmd), 0)
+            if main_at >= len(tokens) or tokens[main_at] != cmd[0]:
+                raise G._TooComplex()
+            alternate = list(tokens)
+            alternate[main_at] = literal
+            alternates.append(alternate)
+    return cmd, scripts
+
+
+G._strip_prefixes = _strip_prefixes
+
+
+def _resolve_holders(tokens, holders):
+    """collect.rs `resolve_holders`: the words with each substitution at program position resolved. A stand-in
+    for each holder the probe copy holds (a marker no word contains, and the holder's index); the first word
+    `strip_prefixes` leaves as the command is the program, and a holder there is too complex unless it is the
+    sole substitution and `_lookup_program` reads it."""
+    if not holders:
+        return list(tokens)
+    n = 0
+    while any(("\x01%d\x01" % n) in t for t in tokens):
+        n += 1
+    mark = "\x01%d\x01" % n
+    words = None
+    open_holders = list(holders)
+    while open_holders:
+        current = words if words is not None else tokens
+        probe = [
+            mark + str(k) if any(h[0] == k for h in open_holders) and not G._ASSIGNMENT.match(w) else w
+            for k, w in enumerate(current)
+        ]
+        cmd = _STRIP_PREFIXES(probe)[0]
+        first = cmd[0] if cmd else ""
+        if not (first.startswith(mark) and first[len(mark):].isdigit()):
+            break
+        k = int(first[len(mark):])
+        pos = next((p for p, h in enumerate(open_holders) if h[0] == k), None)
+        if pos is None:
+            raise G._TooComplex()
+        _, body, sole = open_holders.pop(pos)
+        program = _lookup_program(body) if sole else None
+        if program is None:
+            raise G._TooComplex()
+        if words is None:
+            words = list(tokens)
+        words[k] = program
+    return words if words is not None else list(tokens)
 
 
 def run(case):

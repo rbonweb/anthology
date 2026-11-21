@@ -45,7 +45,7 @@ use crate::analyze::Entry;
 use crate::lexer::scan::{body_substitutions, scan_paren};
 use crate::lexer::words::{Memo, ansi_c_decode};
 use crate::lexer::{
-    Group, GroupId, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
+    Group, GroupId, Holder, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
     skip_escape,
 };
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
@@ -880,6 +880,8 @@ pub(crate) struct Ctx<'a> {
     braces: bool,
     /// The same segment's `Segment::quoted_braces`.
     quoted_braces: bool,
+    /// The words of the segment `add_one` is about to add that hold a substitution (`Holder`, F-8).
+    holders: Vec<Holder>,
 }
 
 impl<'a> Ctx<'a> {
@@ -900,6 +902,7 @@ impl<'a> Ctx<'a> {
             arith: false,
             braces: false,
             quoted_braces: false,
+            holders: Vec::new(),
         }
     }
 
@@ -1082,7 +1085,11 @@ impl<'a> Ctx<'a> {
 
     /// `_collect_once`.
     fn collect_once(&mut self, text: &str, exempt: bool, depth: usize) {
-        let LexOut { lexed, info } = lex_in(text, 0, &mut self.work);
+        let LexOut {
+            lexed,
+            info,
+            holders,
+        } = lex_in(text, 0, &mut self.work);
         if lexed.incomplete {
             self.halt(); // Python raises `_TooComplex`
             return;
@@ -1106,11 +1113,12 @@ impl<'a> Ctx<'a> {
         let mut new_entries = Vec::new();
         let mut braced: HashSet<usize> = HashSet::new();
         let mut after_compound: HashSet<usize> = HashSet::new();
-        for seg in lexed.segments {
+        for (seg, seg_holders) in lexed.segments.into_iter().zip(holders) {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
             self.braces = seg.braces;
             self.quoted_braces = seg.quoted_braces;
+            self.holders = seg_holders;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
                 Some(entry) => {
                     new_entries.push(entry);
@@ -1664,6 +1672,7 @@ impl<'a> Ctx<'a> {
         from_text: &[Opaque],
     ) -> Option<usize> {
         let arith = std::mem::take(&mut self.arith);
+        let holders = std::mem::take(&mut self.holders);
         let size: usize = tokens.iter().map(|t| WORD + t.len()).sum();
         if !self.spend(1 + 2 * size) {
             return None;
@@ -1672,10 +1681,14 @@ impl<'a> Ctx<'a> {
             self.halt();
             return None;
         }
+        // F-8(b): the words as they are read, with a substitution at program position resolved (`which X`)
+        let result = resolve_holders(&tokens, &holders, &mut self.work);
+        let resolved = self.take(result)?;
+        let words = resolved.as_deref().unwrap_or(tokens.as_slice());
         let mut alternates = Vec::new();
         let mut runs = Vec::new();
         let result = strip_prefixes(
-            &tokens,
+            words,
             Some(&mut alternates),
             Some(&mut runs),
             true,
@@ -1687,10 +1700,19 @@ impl<'a> Ctx<'a> {
             extra,
             peeled,
         } = self.take(result)?;
+        // F-8(b): a program word whose `${...}` holds a substitution (`${x#$(f)}`) is too complex; the lexer keeps
+        // such a word's text, and no other word text is a substitution
+        if cmd
+            .first()
+            .is_some_and(|w| w.contains("${") && (w.contains("$(") || w.contains('`')))
+        {
+            self.halt();
+            return None;
+        }
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
-        let prefix = &tokens[..tokens.len().saturating_sub(cmd.len())];
+        let prefix = &words[..words.len().saturating_sub(cmd.len())];
         // an integer sequence is allowed after the program word only: before it, or as it, it could form one
         if self.braces
             && tokens[..(prefix.len() + 1).min(tokens.len())]
@@ -1952,6 +1974,76 @@ impl<'a> Ctx<'a> {
         }
         if self.halted { None } else { Some(e) }
     }
+}
+
+/// `which X`, `command -v X`, `type -p X` and `realpath X` (F-8(b)): the one literal word X the body names, which
+/// bash runs as the program. Anything else is `None`.
+fn lookup_program(body: &str) -> Option<String> {
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let name = match words.as_slice() {
+        ["which" | "realpath", name] => *name,
+        ["command", "-v", name] | ["type", "-p", name] => *name,
+        _ => return None,
+    };
+    let literal = !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+@/-".contains(c));
+    (literal && !name.is_empty()).then(|| name.to_string())
+}
+
+/// F-8(b): the words of a segment with each substitution at program position resolved. The program word is the
+/// one `strip_prefixes` reads: each holder (a word that held a `$(...)` or a backtick) is replaced by a stand-in
+/// in a probe copy, and a holder the probe reads as the program is too complex, unless it is the sole word and
+/// `lookup_program` reads it as X (then X is the program, `$(which npx) playwright install` is `npx playwright
+/// install`). `None`: no holder is at program position, and the words stand as they are.
+fn resolve_holders(
+    tokens: &[String],
+    holders: &[Holder],
+    work: &mut Work,
+) -> Result<Option<Vec<String>>, TooComplex> {
+    if holders.is_empty() {
+        return Ok(None);
+    }
+    // a stand-in marker that no word of the segment contains
+    let mut n = 0;
+    let mark = loop {
+        let mark = format!("\u{1}{n}\u{1}");
+        if !tokens.iter().any(|t| t.contains(&mark)) {
+            break mark;
+        }
+        n += 1;
+    };
+    let mut words: Option<Vec<String>> = None;
+    let mut open: Vec<&Holder> = holders.iter().collect();
+    while !open.is_empty() {
+        let current = words.as_deref().unwrap_or(tokens);
+        let probe: Vec<String> = current
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                if open.iter().any(|h| h.index == k) && !is_assignment(w) {
+                    format!("{mark}{k}")
+                } else {
+                    w.clone()
+                }
+            })
+            .collect();
+        let stripped = strip_prefixes(&probe, None, None, true, work)?;
+        let at = stripped
+            .cmd
+            .first()
+            .and_then(|w| w.strip_prefix(mark.as_str()))
+            .and_then(|k| k.parse::<usize>().ok());
+        let Some(k) = at else { break };
+        let pos = open.iter().position(|h| h.index == k).ok_or(TooComplex)?;
+        let holder = open.swap_remove(pos);
+        let program = lookup_program(&holder.body)
+            .filter(|_| holder.sole)
+            .ok_or(TooComplex)?;
+        words.get_or_insert_with(|| tokens.to_vec())[k] = program;
+    }
+    Ok(words)
 }
 
 /// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped, all of them (the reference reads the
