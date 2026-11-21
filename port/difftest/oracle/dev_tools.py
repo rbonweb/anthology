@@ -16,7 +16,7 @@ Library surface: `run(case: dict) -> dict`. The case layout is documented in
   `=== <rel> ===` and the file's text (or `<absent>`). An exception the script does not catch
   (Python prints a traceback) becomes stderr `anthology-dev <tool>: <Type>: <message>`, what the
   Rust port prints (ruling R10), marked D-1. eval-baseline's `cannot read the ...: <strerror>`
-  is written `...: errno N`, the Rust port's text until P1's errno tables (ruling R3), marked D-2.
+  is compared as is: P1's errno tables give the Rust port the OS text.
 - Library ops (`parse`, `compare`, `changed`, `verdict`, `range`, `parse_ns`, `escape`,
   `render`, `sections`, `split`) call one function and print a fixed rendering of its result
   (`repr`), or exit 1 with `<Type>: <message>`.
@@ -85,25 +85,6 @@ def _rooted(text, tmp):
     return text
 
 
-_CANNOT_READ = "eval_baseline: cannot read the "
-
-
-def _strerror_numbered(err):
-    """eval-baseline's `cannot read the <what> <path>: <strerror>` with the OS text written
-    `errno N`, what the Rust port prints until P1 commits the errno tables (ruling R3). Returns
-    the text and whether it changed (a D-2 mark)."""
-    numbers = {}
-    for n in range(1, 256):
-        numbers.setdefault(os.strerror(n), n)
-    lines, changed = [], False
-    for line in err.split("\n"):
-        head, sep, tail = line.rpartition(": ")
-        if line.startswith(_CANNOT_READ) and sep and tail in numbers:
-            line, changed = f"{head}: errno {numbers[tail]}", True
-        lines.append(line)
-    return "\n".join(lines), changed
-
-
 def _cli(case):
     tool = case["tool"]
     mod = _mod(tool)
@@ -145,10 +126,6 @@ def _cli(case):
             shown.append(path.read_text(encoding="utf-8") if path.is_file() else "<absent>\n")
         text = out.getvalue() + "".join(shown)
         err_text = err.getvalue()
-        if tool == "eval-baseline":
-            err_text, numbered = _strerror_numbered(err_text)
-            if numbered:
-                mark = mark or "D-2"
         return _result(code or 0, _rooted(text, tmp), _rooted(err_text, tmp), mark)
     finally:
         sys.argv = old_argv

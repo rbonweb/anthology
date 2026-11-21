@@ -560,23 +560,32 @@ anth_fresh() {
 
 # anth_stamp FILE MINUTES REASON: the noclobber stamp. A fresh stamp stops with REASON; a
 # stale one is retired atomically (only one racer's rename finds it) and a new one created.
+#
+# Parallel calls race here: between one call's freshness test and its retire, another can
+# create a fresh stamp, which the first then retires; a third call's create then fails while
+# no stamp exists. So a failed create with no fresh stamp is tried again, up to five times,
+# before it is "cannot write". In a folder that cannot be written every try fails at once, so
+# a stale stamp there is still "cannot write", never REASON forever (m2-3).
 anth_stamp() {
-    if anth_fresh "$1" "$2"; then
-        ANTH_REASON=$3
-        return 1
-    fi
-    if [ -e "$1" ] || [ -h "$1" ]; then
-        mv -f "$1" "$1.stale.$$" 2>/dev/null && rm -f "$1.stale.$$"
-    fi
-    if (set -C && : >"$1") 2>/dev/null; then
-        return 0
-    fi
-    # A failed create is REASON only when the stamp is fresh; a stale stamp in an unwritable
-    # folder is "cannot write", never REASON forever (m2-3).
-    if anth_fresh "$1" "$2"; then
-        ANTH_REASON=$3
-        return 1
-    fi
+    _t_try=0
+    while [ "$_t_try" -lt 5 ]; do
+        _t_try=$((_t_try + 1))
+        if anth_fresh "$1" "$2"; then
+            ANTH_REASON=$3
+            return 1
+        fi
+        if [ -e "$1" ] || [ -h "$1" ]; then
+            mv -f "$1" "$1.stale.$$" 2>/dev/null && rm -f "$1.stale.$$"
+        fi
+        if (set -C && : >"$1") 2>/dev/null; then
+            return 0
+        fi
+        # A failed create is REASON only when the stamp is fresh.
+        if anth_fresh "$1" "$2"; then
+            ANTH_REASON=$3
+            return 1
+        fi
+    done
     anth_cannot_write
 }
 
