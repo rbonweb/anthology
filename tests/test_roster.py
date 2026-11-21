@@ -131,6 +131,12 @@ class RosterTest(unittest.TestCase):
                 self.assertIn(f".claude/agent-memory/anthology-{name}/", memory)
                 if spec["edits"] == "yes":
                     self.assertIn("chore(memory)", memory)
+                    # Notes are saved before the final commit and committed with it, so no
+                    # uncommitted memory change is left behind to block a later merge.
+                    self.assertIn("Before your final commit, save", memory)
+                    self.assertIn(
+                        f"Include `.claude/agent-memory/anthology-{name}/` in that final commit",
+                        memory)
                 else:
                     self.assertIn("uncommitted", memory)
                 if spec["edits"] == "no":
