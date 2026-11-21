@@ -1799,7 +1799,7 @@ mod framework_extra {
     }
 }
 
-/// Review fixes of EV1a (m-1 to m-5): Rust-only tests of the framework, not in the ledger.
+/// Review fixes of EV1a (m-2 to m-5; m-1, a process-group kill, is NOT done: it would orphan `claude` on Ctrl-C): Rust-only tests of the framework, not in the ledger.
 mod review_fixes {
     use super::*;
 
@@ -1826,35 +1826,6 @@ mod review_fixes {
             deps(),
         );
         assert_eq!(code, 0, "{out}");
-    }
-
-    #[test]
-    fn a_timeout_kills_the_grandchildren_too() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let pidfile = dir.path().join("pid");
-        let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
-        let env = EnvMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
-        let p = run_process(
-            &to_strings(&["sh", "-c", &script]),
-            dir.path(),
-            &env,
-            1,
-            None,
-        );
-        assert_eq!(p.code, -1);
-        let pid = fs::read_to_string(&pidfile)
-            .expect("pid file")
-            .trim()
-            .to_string();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        // A killed process may linger as a zombie when nothing reaps it (a container's PID 1).
-        let state = std::process::Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        let alive = !state.is_empty() && !state.starts_with('Z');
-        assert!(!alive, "the grandchild {pid} outlived the timeout");
     }
 
     #[test]

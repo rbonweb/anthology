@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::ops::Deref;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -87,7 +87,7 @@ fn read_all<R: Read + Send + 'static>(
 
 /// `run(argv, cwd, env, timeout, stdin)`: the process runs with exactly `env`, stdin from
 /// `/dev/null` (or `stdin`), and both pipes read to the end inside the timeout. A timeout is
-/// `Proc(-1, "", "timed out after Ns")`, a failure to start `Proc(-1, "", "could not run X: …")`.
+/// `Proc(-1, "", "timed out after Ns")` (only the direct child is killed, as in Python; the child keeps our process group so Ctrl-C reaches `claude`), a failure to start `Proc(-1, "", "could not run X: …")`.
 pub fn run_process(
     argv: &[String],
     cwd: &Path,
@@ -99,9 +99,7 @@ pub fn run_process(
         return Proc::new(-1, "", "could not run : IndexError");
     };
     let mut cmd = Command::new(program);
-    // Its own process group, so a timeout can end the grandchildren too (hooks, tool processes).
     cmd.args(&argv[1..])
-        .process_group(0)
         .current_dir(cwd)
         .env_clear()
         .envs(env)
@@ -158,7 +156,6 @@ pub fn run_process(
             };
         }
         if Instant::now() >= deadline {
-            kill_group(child.id());
             let _ = child.kill();
             let _ = child.wait();
             return Proc::new(-1, "", &format!("timed out after {timeout}s"));
@@ -173,22 +170,6 @@ pub fn run_process(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
-}
-
-/// SIGKILL to the process group `pgid` (the child is its leader, see `process_group(0)`), through
-/// the shell's builtin `kill`: the crate forbids `unsafe`, so no direct `killpg`.
-fn kill_group(pgid: u32) {
-    let _ = Command::new("sh")
-        .args([
-            "-c",
-            "kill -s KILL -- \"-$1\" 2>/dev/null",
-            "sh",
-            &pgid.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 // ---- the seams (GC-19 `dev::smoke`) -------------------------------------------------------
