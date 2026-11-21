@@ -141,6 +141,7 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segmen
                 braces: true,
                 after_compound: false,
                 quoted_braces: true, // quoting is unknown: no brace reading is trusted
+                defines: true,       // nor whether a `(` follows
             });
             let starts = script_starts_in(&tokens, &mut sh.work.extra).ok_or(TooComplex)?;
             for (start, first) in starts {
@@ -159,6 +160,7 @@ pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segmen
                     braces: true,
                     after_compound: false,
                     quoted_braces: true, // quoting is unknown: no brace reading is trusted
+                    defines: true,
                 });
             }
         }

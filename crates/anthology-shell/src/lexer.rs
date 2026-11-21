@@ -58,6 +58,9 @@ pub struct Segment {
     /// Rust-only: a word holds a `{`, `}` or `,` that was quoted, escaped or expanded, so its brace reading
     /// is not bash's (SH-seq review C-1).
     pub(crate) quoted_braces: bool,
+    /// Rust-only (G0-FP): a `(` ended it, as in `f()` or `f ()`, so a one-word segment may define a function
+    /// (collect.rs `defined_names`). The lenient split, which cannot tell, sets it on every segment.
+    pub(crate) defines: bool,
 }
 
 /// A pipeline's literal stdin text (heredoc bodies, here-strings).
@@ -466,6 +469,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 braces,
                 after_compound: std::mem::take(&mut self.compound),
                 quoted_braces,
+                defines: false,
             };
             self.out.push((segment, holders, held));
         }
@@ -528,6 +532,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 braces: false,
                 after_compound: false,
                 quoted_braces: false,
+                defines: false,
             };
             self.out.push((segment, Vec::new(), false));
         }
@@ -658,7 +663,14 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 }
                 b';' | b'(' | b')' => {
                     self.paren(c, i)?;
+                    let before = self.out.len();
                     self.end_seg(true);
+                    if c == b'(' && self.out.len() > before {
+                        // `f()`: the segment just ended may define a function (`Segment::defines`)
+                        if let Some((segment, _, _)) = self.out.last_mut() {
+                            segment.defines = true;
+                        }
+                    }
                     i += 1;
                 }
                 b'&' if byte_at(text, skip_continuations(text, i + 1)) != Some(b'>') => {

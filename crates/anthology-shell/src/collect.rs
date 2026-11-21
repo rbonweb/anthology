@@ -28,13 +28,15 @@
 //!   `if ...; fi | sh`, `f | sh`) is fed the literal output of the commands before it in the text (I-2a).
 //! - Fail-closed families (controller ruling after the narrow verification; `fail_closed` and the group loop
 //!   of `collect_once`): a brace sequence `{x..y}` or a brace expression in a word holding whitespace (a
-//!   quoted item); a `[...]` subscript holding `$(`, a backtick or `$'` in any word; an assignment, export or
+//!   quoted item); a `[...]` subscript holding a closed `$(...)`, backtick pair or `$'...'` in any word (G0-FP:
+//!   not after a `\[`); an assignment, export or
 //!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modelled prefix of `tar` / `git`, a git alias
 //!   given twice or through `GIT_CONFIG_*`, `git --config-env`; a shell reading stdin from a producer that
 //!   is not literal (`curl | sh`, `f | tr | sh`), from a compound command with a redirect or here-string, or
 //!   from a compound with no literal output; a here-string that is only a substitution (`sh <<< "$(f)"`);
 //!   `>(` with a shell; a `<(` with no literal output given to a shell; `coproc`; a shell running a file an
-//!   earlier command wrote. Each is too complex (the guard blocks).
+//!   earlier command wrote (G0-FP: as its script, not as an argument of the script; `2>&1` writes none).
+//!   Each is too complex (the guard blocks).
 //! - SH-F2: an xargs/parallel layer fed a `<(...)` (a `<` redirect or `-a`) gets its literal output, as from a
 //!   pipe; a `-c` script, eval words or a program word that use a variable `read`/`mapfile` set (or a `for` or
 //!   assignment over a substitution) read stdin as commands, and a text that feeds such a setter, or feeds a
@@ -725,20 +727,62 @@ fn int_sequence(inner: &str) -> Option<IntSequence> {
 
 /// A `[...]` subscript holding `$(`, a backtick or `$'`: bash evaluates it (arithmetic), running the
 /// substitution even where it was quoted.
+///
+/// G0-FP: bash runs nothing for an unclosed substitution or subscript, and no name ends in a backslash, so the
+/// substitution start counts only with its closer (`` ` ``, `)`, `'`) and then a `]` after it, and a `[` right
+/// after a backslash opens nothing (`echo '[`'`, `grep '\[`x`\]'`, a regex `` [`] `` stay complete).
 fn subscript_runs(word: &str) -> bool {
-    // one pass: a substitution start with a `[` before it and no `]` between
     let b = word.as_bytes();
+    let Some(close) = word.rfind(']') else {
+        return false;
+    };
+    // the last closer of each kind before the last `]`: a start before it is closed, and a `]` follows
+    let last = |closer: u8| b[..close].iter().rposition(|&c| c == closer);
+    let (tick, paren, quote) = (last(b'`'), last(b')'), last(b'\''));
+    // one pass: a substitution start with a `[` before it and no `]` between
     let mut open = false;
-    for (j, &c) in b.iter().enumerate() {
+    for (j, &c) in b[..close].iter().enumerate() {
         match c {
-            b'[' => open = true,
+            b'[' if j == 0 || b[j - 1] != b'\\' => open = true,
             b']' => open = false,
-            b'`' if open => return true,
-            b'$' if open && matches!(b.get(j + 1), Some(b'(' | b'\'')) => return true,
+            b'`' if open && tick.is_some_and(|k| k > j) => return true,
+            b'$' if open => match b.get(j + 1) {
+                Some(b'(') if paren.is_some_and(|k| k > j + 1) => return true,
+                Some(b'\'') if quote.is_some_and(|k| k > j + 1) => return true,
+                _ => {}
+            },
             _ => {}
         }
     }
     false
+}
+
+/// `runs_written_file`: `r` writes a file named by its target. `>&N`, `>&N-` and `>&-` (`2>&1`) duplicate or
+/// close a descriptor instead (G0-FP).
+fn writes_file(r: &Redirect) -> bool {
+    let dup = r.op == ">&" && {
+        let fd = r.target.strip_suffix('-').unwrap_or(&r.target);
+        fd.bytes().all(|c| c.is_ascii_digit())
+    };
+    (r.op.starts_with('>') || r.op.starts_with("&>")) && !dup
+}
+
+/// `runs_written_file`: the words of consumer `entry` that may name a file it runs. A shell given a script file
+/// (`sh x.sh 1 2`) and `source x.sh 1 2` run only that file, so the words after it, its positional parameters,
+/// do not count (G0-FP); every other consumer's arguments do (`sh -c ... _ x.sh`, `sudo -s`).
+fn run_words(entry: &Entry) -> &[String] {
+    let args = entry.args.as_slice();
+    let prog = entry.prog.as_str();
+    if SHELLS.contains(&prog) {
+        let parsed = shell_parse(prog, args, 0);
+        if parsed.mode == ShellMode::File {
+            return &args[..(parsed.start + 1).min(args.len())];
+        }
+    } else if (prog == "source" || prog == ".") && args.first().is_some_and(|a| !a.starts_with('-'))
+    {
+        return &args[..1];
+    }
+    args
 }
 
 /// A text that is only a command substitution (`$(f)`, `` `f` ``): what it gives is a command's output.
@@ -1318,26 +1362,30 @@ impl<'a> Ctx<'a> {
         let written: HashSet<&str> = entries
             .iter()
             .flat_map(|&e| self.entries[e].redirs.iter())
-            .filter(|r| r.op.starts_with('>') || r.op.starts_with("&>"))
+            .filter(|r| writes_file(r))
             .map(|r| r.target.as_str())
             .collect();
         !written.is_empty()
             && consumers.iter().any(|&c| {
-                self.entries[c]
-                    .args
+                run_words(&self.entries[c])
                     .iter()
                     .any(|a| written.contains(a.as_str()))
             })
     }
 
     /// The names the commands `entries` may define as functions, each with its first entry: `f()` lexes as
-    /// the command `f`, `function f {` as `function f ...`. `None` once the analysis has stopped.
-    fn defined_names(&mut self, entries: &[usize]) -> Option<HashMap<String, usize>> {
+    /// the command `f` ended by a `(` (`defining`, `Segment::defines`), `function f {` as `function f ...`.
+    /// `None` once the analysis has stopped.
+    fn defined_names(
+        &mut self,
+        entries: &[usize],
+        defining: &HashSet<usize>,
+    ) -> Option<HashMap<String, usize>> {
         let mut defined = HashMap::new();
         for &e in entries {
             let raw = &self.entries[e].raw;
             let name = match raw.as_slice() {
-                [name] => name,
+                [name] if defining.contains(&e) => name,
                 [function, name, ..] if function == "function" => name,
                 _ => continue,
             };
@@ -1463,6 +1511,7 @@ impl<'a> Ctx<'a> {
         let mut new_entries = Vec::new();
         let mut braced: HashSet<usize> = HashSet::new();
         let mut after_compound: HashSet<usize> = HashSet::new();
+        let mut defining: HashSet<usize> = HashSet::new();
         for ((seg, seg_holders), subst) in lexed.segments.into_iter().zip(holders).zip(held) {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
@@ -1479,11 +1528,14 @@ impl<'a> Ctx<'a> {
                     if seg.after_compound {
                         after_compound.insert(entry);
                     }
+                    if seg.defines {
+                        defining.insert(entry);
+                    }
                 }
                 None => return,
             }
         }
-        let Some(defined) = self.defined_names(&new_entries) else {
+        let Some(defined) = self.defined_names(&new_entries, &defining) else {
             return;
         };
         // SH-F4 (review-sh-f3 I-1): a call of a function the text defines, with arguments, also runs its body

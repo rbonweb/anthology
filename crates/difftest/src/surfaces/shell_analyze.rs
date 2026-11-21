@@ -1032,6 +1032,16 @@ pub(crate) fn fixed_cases() -> Vec<Value> {
         "xargs -I {} sh -c 'echo {}'",
         "fish --comm='npx x'; fish -ic 'y'",
         "a=(x y) b; deps=(\n npx\n)\nls",
+        // G0-FP (replay false positives, and neighbours that stay too complex): a bracket with a backtick
+        // and no closed subscript; a script's arguments and `2>&1`; a one-word command defines no function
+        "echo '[`'; grep '\\[`u`\\]' x; grep \"\\[`u`\\]\" x; grep -n '[`]' y",
+        "echo 'a[`npx playwright install`]'; x='[$(npx playwright install)]'",
+        "sh run.sh 1 2>&1; sh run.sh 1 >&2; bash -e run.sh 2 3>&1-",
+        "cd /tmp && python3 gen.py 2 200 > work/p.hex && sh cmp.sh work/p.hex",
+        "printf 'npx playwright install' > p.sh; sh p.sh 1 2>&1",
+        "echo x >&p.sh; sh -e p.sh; printf y > q.sh; . q.sh 1",
+        "git ls-files | xargs grep -n \"/U/\\|rb\" | head; git diff | grep \"^+\" | grep -n \"/U/\\|rb\" | head",
+        "f () { sh; }; echo npx playwright install | f; g() ( sh ); echo npx | g",
     ];
     let mut out: Vec<Value> = Vec::new();
     for text in TRICKY {
