@@ -1,24 +1,10 @@
 //! The pieces of Python's `str` that scripts/rtk_trim.py relies on, written once: `strip`,
-//! `lstrip`, `rstrip`, `splitlines`, `repr` and the `\s` / `\w` classes of `re`.
+//! `lstrip`, `rstrip`, `splitlines` and `repr`.
 //!
-//! Python's whitespace (`str.isspace`, and `\s` in a `str` pattern) is the Unicode White_Space
-//! set plus U+001C..U+001F, which Rust's `char::is_whitespace` lacks.
-//!
-//! TODO P1: replace these helpers with `pycompat::str` / `pycompat::re` once they exist.
-//!
-//! Known gap (ruling, P1 owns the Unicode tables): Python's `\w` is `str.isalnum()` or `_`, i.e.
-//! categories L* and N*. `char::is_alphanumeric` also counts the `Other_Alphabetic` marks (some
-//! combining characters), so those differ. Every identifier the trim looks for is ASCII.
+//! Whitespace is `anthology_pycompat::str::is_space` (the `\s` of a `str` pattern); `\w` is
+//! `anthology_pycompat::str::is_word`.
 
-/// Python's `str.isspace` for one character (and the `\s` class of `re` for `str` patterns).
-pub fn is_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-/// Python's `\w` for one character: `str.isalnum()` or `_` (see the module note for the gap).
-pub fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+use anthology_pycompat::str::is_space;
 
 /// `str.strip()` without arguments.
 pub fn strip(s: &str) -> &str {

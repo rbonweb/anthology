@@ -879,9 +879,9 @@ fn seeds() -> Vec<Case> {
         ),
     );
 
-    // Non-ASCII beside a dropped name. A combining mark: Python's `\w` does not count it, and
-    // Rust fails closed the same way, so both stop. A letter: Python counts it as part of the
-    // name (the item is gone), Rust stops (fail closed), which the divergence entry allows.
+    // Non-ASCII beside a dropped name. A combining mark: Python's `\w` does not count it, so
+    // the item is still there and both stop. A letter: Python counts it as part of a longer
+    // word (the item is gone) and both skip.
     add(
         "nonascii-mark",
         prim_case(
