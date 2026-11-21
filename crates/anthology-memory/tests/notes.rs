@@ -311,3 +311,73 @@ fn legacy_dirs_cover_the_worktree_and_the_main_clone() {
         [enc(&plain)]
     );
 }
+
+/// `SymlinkSafetyTest.test_symlinked_gitattributes_is_not_appended_through`'s MS1 half (the
+/// id itself is MS2's): the approval is recorded before the union attributes are refused,
+/// and nothing is written through the link.
+#[test]
+fn approval_is_recorded_before_a_symlinked_gitattributes_is_refused() {
+    use anthology_memory::approve::{approve, ensure_union_attrs, is_approved};
+    use anthology_memory::repo::repo_key;
+    use anthology_pycompat::pyerr::PyExc;
+    let case = MemCase::new();
+    let root = case.tmp.join("r");
+    fs::create_dir(&root).expect("mkdir");
+    let victim = write(&case.tmp.join("victim.rc"), "export X=1\n", None);
+    symlink(&victim, root.join(".gitattributes")).expect("symlink");
+    let refused = |r: Result<_, PyExc>| matches!(r, Err(PyExc::Other("UnsafeTarget", _)));
+    assert!(refused(approve(&root, &case.env, &RealGit).map(|_| ())));
+    assert_eq!(fs::read_to_string(&victim).expect("victim"), "export X=1\n");
+    assert!(is_approved(
+        &repo_key(&root, &case.env, &RealGit),
+        &case.env
+    ));
+    assert!(refused(ensure_union_attrs(&root).map(|_| ())));
+    assert_eq!(fs::read_to_string(&victim).expect("victim"), "export X=1\n");
+}
+
+/// Time of the fastest of three parses of `text`.
+fn best_parse_time(text: &str) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            std::hint::black_box(parse(text));
+            t.elapsed()
+        })
+        .min()
+        .expect("three runs")
+}
+
+/// Many distinct keys cost linear time, as Python's dict does (a hostile repo note): 4x the
+/// keys must cost less than 6x, with a floor so a very fast parse cannot flake.
+#[test]
+fn many_keys_parse_in_linear_time() {
+    let note = |n: usize| {
+        let keys: String = (0..n).map(|i| format!("k{i}: v\n")).collect();
+        format!("---\n{keys}---\nbody\n")
+    };
+    let small = best_parse_time(&note(10_000));
+    let large = best_parse_time(&note(40_000));
+    let bound = (small * 6).max(std::time::Duration::from_millis(200));
+    assert!(large < bound, "10k keys {small:?}, 40k keys {large:?}");
+}
+
+/// A note nested thousands of levels deep parses and is dropped on a small stack: neither the
+/// parse nor the parsed tree recurses per level.
+#[test]
+fn deep_nesting_needs_no_deep_stack() {
+    let mut text = String::from("---\nmetadata:\n  relations:\n");
+    for d in 3..4_000 {
+        text.push_str(&" ".repeat(d));
+        text.push_str("k:\n");
+    }
+    text.push_str("---\nbody\n");
+    let info = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || parse(&text))
+        .expect("thread")
+        .join()
+        .expect("no stack overflow");
+    assert_eq!(info.body, "body\n");
+    assert_eq!(info.relations, Relations::default());
+}

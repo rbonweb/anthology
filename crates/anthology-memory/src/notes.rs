@@ -17,6 +17,7 @@
 //! `None`, which every function here reads as `"other"`); `updated` is `None` where Python's is
 //! `""`. `relations` keeps the three kinds the indexer reads (`RELATION_KINDS`).
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
@@ -136,7 +137,7 @@ pub fn parse_text_ok(text: &str, stem: &str) -> (NoteInfo, bool) {
     if let Some(Y::Map(rel)) = meta.get("relations") {
         // `{_text(k): _targets(v) for k, v in relations.items() if _targets(v)}`: per kind, the
         // last key that strips to it and has targets wins.
-        for (k, v) in &rel.0 {
+        for (k, v) in &rel.entries {
             let targets = targets_of(v);
             if targets.is_empty() {
                 continue;
@@ -245,18 +246,25 @@ enum Y {
 }
 
 /// A Python dict: insertion order, a repeated key replaces the value in its first position.
+/// The index keeps a frontmatter of many keys linear, as Python's dict is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct YMap(Vec<(String, Y)>);
+struct YMap {
+    entries: Vec<(String, Y)>,
+    index: HashMap<String, usize>,
+}
 
 impl YMap {
     fn get(&self, k: &str) -> Option<&Y> {
-        self.0.iter().find(|(key, _)| key == k).map(|(_, v)| v)
+        self.index.get(k).map(|&i| &self.entries[i].1)
     }
 
     fn insert(&mut self, k: String, v: Y) {
-        match self.0.iter_mut().find(|(key, _)| *key == k) {
-            Some(slot) => slot.1 = v,
-            None => self.0.push((k, v)),
+        match self.index.get(&k) {
+            Some(&i) => self.entries[i].1 = v,
+            None => {
+                self.index.insert(k.clone(), self.entries.len());
+                self.entries.push((k, v));
+            }
         }
     }
 }
@@ -371,6 +379,23 @@ struct Frame {
     out: YMap,
     indent: usize,
     pending: Option<String>,
+    /// Whether its entries are kept (see [`KEPT_DEPTH`]).
+    keep: bool,
+}
+
+/// Maps nested deeper than this (the top level is 0, `metadata` 1, `relations` 2) are parsed
+/// for their extent but keep no entries: nothing reads below `relations.<kind>`, where only
+/// "it is a map" matters. So the parsed tree is never more than a few levels deep, and
+/// neither building nor dropping it recurses per nesting level.
+const KEPT_DEPTH: usize = 3;
+
+impl Frame {
+    /// `out[key] = value`, when this frame keeps its entries.
+    fn put(&mut self, key: String, value: Y) {
+        if self.keep {
+            self.out.insert(key, value);
+        }
+    }
 }
 
 /// `_parse_block(lines, start, indent)`'s value, without recursion: a nested map is a new
@@ -384,6 +409,7 @@ fn parse_block(lines: &[(usize, &str)], start: usize, indent: usize) -> Y {
         out: YMap::default(),
         indent,
         pending: None,
+        keep: true,
     }];
     loop {
         let top = stack.last_mut().expect("a frame");
@@ -410,7 +436,7 @@ fn parse_block(lines: &[(usize, &str)], start: usize, indent: usize) -> Y {
                     {
                         if is_item(n_text) {
                             let (items, next) = parse_items(lines, i, n_ind);
-                            top.out.insert(key, items);
+                            top.put(key, items);
                             i = next;
                         } else {
                             top.pending = Some(key);
@@ -418,7 +444,7 @@ fn parse_block(lines: &[(usize, &str)], start: usize, indent: usize) -> Y {
                             break;
                         }
                     }
-                    _ => top.out.insert(key, Y::Str(String::new())),
+                    _ => top.put(key, Y::Str(String::new())),
                 }
             } else if is_block_scalar(val) {
                 let mut parts = Vec::new();
@@ -426,18 +452,20 @@ fn parse_block(lines: &[(usize, &str)], start: usize, indent: usize) -> Y {
                     parts.push(lines[i].1);
                     i += 1;
                 }
-                top.out.insert(key, Y::Str(parts.join(" ")));
+                top.put(key, Y::Str(parts.join(" ")));
             } else if val.starts_with('[') {
-                top.out.insert(key, flow_list(val));
+                top.put(key, flow_list(val));
             } else {
-                top.out.insert(key, Y::Str(scalar(val)));
+                top.put(key, Y::Str(scalar(val)));
             }
         }
         if let Some(indent) = nested {
+            let keep = stack.len() < KEPT_DEPTH;
             stack.push(Frame {
                 out: YMap::default(),
                 indent,
                 pending: None,
+                keep,
             });
             continue;
         }
@@ -446,7 +474,7 @@ fn parse_block(lines: &[(usize, &str)], start: usize, indent: usize) -> Y {
             None => return Y::Map(done.out),
             Some(parent) => {
                 let key = parent.pending.take().expect("a pending key");
-                parent.out.insert(key, Y::Map(done.out));
+                parent.put(key, Y::Map(done.out));
             }
         }
     }

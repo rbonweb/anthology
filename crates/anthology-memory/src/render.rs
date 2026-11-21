@@ -8,6 +8,7 @@
 //! headings and pointers of all types do not fit, the last types collapse into one "N more in
 //! other types" pointer.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -161,14 +162,14 @@ pub fn render_index(
     }
     notes.sort_by(|a, b| (&a.1.name, &a.0).cmp(&(&b.1.name, &b.0)));
     // `by_type`, then sorted by `_type_rank` (the keys are distinct, so the order is total).
-    let mut by_type: Vec<(String, Vec<&(String, NoteInfo)>)> = Vec::new();
+    let mut grouped: BTreeMap<&str, Vec<&(String, NoteInfo)>> = BTreeMap::new();
     for n in &notes {
-        let t = n.1.type_str();
-        match by_type.iter_mut().find(|(k, _)| k == t) {
-            Some((_, items)) => items.push(n),
-            None => by_type.push((t.to_string(), vec![n])),
-        }
+        grouped.entry(n.1.type_str()).or_default().push(n);
     }
+    let mut by_type: Vec<(String, Vec<&(String, NoteInfo)>)> = grouped
+        .into_iter()
+        .map(|(t, items)| (t.to_string(), items))
+        .collect();
     by_type.sort_by(|a, b| type_rank(&a.0).cmp(&type_rank(&b.0)));
     let mut groups: Vec<(String, Vec<String>)> = by_type
         .into_iter()
