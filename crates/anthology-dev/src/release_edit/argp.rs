@@ -313,11 +313,56 @@ pub fn usage_error(p: &Parser<'_>, message: &str) -> Output {
 
 /// The exit-0 output of `-h`.
 pub fn help(p: &Parser<'_>) -> Output {
+    let text = HELPS
+        .iter()
+        .find(|(prog, _)| *prog == p.prog)
+        .map_or_else(|| format!("{}\n", p.usage), |(_, h)| (*h).to_string());
     Output {
-        stdout: format!("{}\n", p.usage).into_bytes(),
+        stdout: text.into_bytes(),
         ..Output::default()
     }
 }
+
+/// `format_help()` of each parser, as CPython 3.12.16 prints it at 80 columns (captured from
+/// the pinned image), by `prog`.
+const HELPS: &[(&str, &str)] = &[
+    (
+        "check_version_bump.py",
+        "usage: check_version_bump.py [-h] [--repo REPO] base head\n\nVersion-bump gate: a plugin whose files changed must carry a higher version.\n\npositional arguments:\n  base         base commit (all zeros = new branch, no-op)\n  head         head commit\n\noptions:\n  -h, --help   show this help message and exit\n  --repo REPO  repository root (default: current directory)\n",
+    ),
+    (
+        "release_edit.py",
+        "usage: release_edit.py [-h]\n                       {plugin-version,check-version,check-dependents,changelog-check,changelog-move,set-version,set-source-version}\n                       ...\n\nText and JSON helpers for scripts/release.sh (the shell orchestrates git and\nclaude).\n\npositional arguments:\n  {plugin-version,check-version,check-dependents,changelog-check,changelog-move,set-version,set-source-version}\n\noptions:\n  -h, --help            show this help message and exit\n",
+    ),
+    (
+        "release_edit.py plugin-version",
+        "usage: release_edit.py plugin-version [-h] path\n\npositional arguments:\n  path\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+    (
+        "release_edit.py check-version",
+        "usage: release_edit.py check-version [-h] current new {0,1}\n\npositional arguments:\n  current\n  new\n  {0,1}\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+    (
+        "release_edit.py check-dependents",
+        "usage: release_edit.py check-dependents [-h] root plugin version\n\npositional arguments:\n  root\n  plugin\n  version\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+    (
+        "release_edit.py changelog-check",
+        "usage: release_edit.py changelog-check [-h] path plugin\n\npositional arguments:\n  path\n  plugin\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+    (
+        "release_edit.py changelog-move",
+        "usage: release_edit.py changelog-move [-h] [--date DATE] path plugin version\n\npositional arguments:\n  path\n  plugin\n  version\n\noptions:\n  -h, --help   show this help message and exit\n  --date DATE\n",
+    ),
+    (
+        "release_edit.py set-version",
+        "usage: release_edit.py set-version [-h] path version\n\npositional arguments:\n  path\n  version\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+    (
+        "release_edit.py set-source-version",
+        "usage: release_edit.py set-source-version [-h] path target version\n\npositional arguments:\n  path\n  target\n  version\n\noptions:\n  -h, --help  show this help message and exit\n",
+    ),
+];
 
 /// `parser.parse_args(args)`: errors on a leftover argument, as `parse_args` does.
 pub fn parse_args(p: &Parser<'_>, args: &[OsString]) -> Result<Parsed, Output> {

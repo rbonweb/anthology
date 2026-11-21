@@ -337,13 +337,27 @@ mod lead_extras {
         r.write("README.md", "hi\n");
         let base = r.commit("base");
         let args = [OsString::from(&base), OsString::from(&base)];
+        // A git that hangs: a script named `git` first on PATH.
+        let bin = r._tmp.path().join("slow-bin");
+        fs::create_dir(&bin).expect("mkdir");
+        let fake = bin.join("git");
+        fs::write(&fake, "#!/bin/sh\nexec sleep 30\n").expect("write");
+        let mode = <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755);
+        fs::set_permissions(&fake, mode).expect("chmod");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let started = std::time::Instant::now();
         let out = memory_diff::run_with_timeout(
             &args,
             &mut std::io::empty(),
-            &base_env(),
+            &base_env().with("PATH", &path),
             &r.repo,
-            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(200),
         );
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
         assert_eq!(out.code, 1);
         assert_eq!(
             out.stderr,

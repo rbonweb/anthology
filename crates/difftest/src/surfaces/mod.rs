@@ -2,6 +2,7 @@
 
 pub mod core_lock;
 pub mod core_state;
+pub mod dev_dv2;
 pub mod dev_eval_baseline;
 pub mod dev_memory_diff;
 pub mod dev_release_edit;

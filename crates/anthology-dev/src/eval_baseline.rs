@@ -506,11 +506,7 @@ fn cmd_compare(
 const PROG: &str = "eval_baseline.py";
 const MAIN_USAGE: &str = "usage: eval_baseline.py [-h] {record,candidate,compare} ...";
 const COMMANDS: [&str; 3] = ["record", "candidate", "compare"];
-const MAIN_HELP: &str = "\nBaseline gate for the behaviour evals: record scores, then fail on a \
-regression.\n\npositional arguments:\n  {record,candidate,compare}\n    record              \
-write the baseline from a full run\n    candidate           write a candidate baseline, partial \
-runs allowed\n    compare             compare a run with the baseline\n\noptions:\n  -h, --help  \
-          show this help message and exit\n";
+const MAIN_HELP: &str = "\nBaseline gate for the behaviour evals: record scores, then fail on a\nregression.\n\npositional arguments:\n  {record,candidate,compare}\n    record              write the baseline from a full run\n    candidate           write a candidate baseline, partial runs allowed\n    compare             compare a run with the baseline\n\noptions:\n  -h, --help            show this help message and exit\n";
 
 const TWO_POS: [Pos; 2] = [
     Pos {
@@ -555,28 +551,21 @@ fn sub_spec(cmd: &str) -> Spec<'static> {
         "record" => Spec {
             prog: "eval_baseline.py record",
             usage: "usage: eval_baseline.py record [-h] result baseline",
-            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help  show \
-                   this help message and exit\n",
+            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help  show this help message and exit\n",
             opts: &[],
             pos: &TWO_POS,
         },
         "candidate" => Spec {
             prog: "eval_baseline.py candidate",
             usage: "usage: eval_baseline.py candidate [-h] result out",
-            help: "\npositional arguments:\n  result\n  out\n\noptions:\n  -h, --help  show this \
-                   help message and exit\n",
+            help: "\npositional arguments:\n  result\n  out\n\noptions:\n  -h, --help  show this help message and exit\n",
             opts: &[],
             pos: &CANDIDATE_POS,
         },
         _ => Spec {
             prog: "eval_baseline.py compare",
-            usage: "usage: eval_baseline.py compare [-h] [--tolerance TOLERANCE] \
-                    [--allow-missing]\n                                [--summary PATH]\n      \
-                    result baseline",
-            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help      \
-                   show this help message and exit\n  --tolerance TOLERANCE\n  --allow-missing  \
-                   a baseline case absent from the result is not a regression\n  --summary PATH  \
-                   append a Markdown table to PATH\n",
+            usage: "usage: eval_baseline.py compare [-h] [--tolerance TOLERANCE] [--allow-missing]\n                                [--summary PATH]\n                                result baseline",
+            help: "\npositional arguments:\n  result\n  baseline\n\noptions:\n  -h, --help            show this help message and exit\n  --tolerance TOLERANCE\n  --allow-missing       a baseline case absent from the result is not a\n                        regression\n  --summary PATH        append a Markdown table to PATH\n",
             opts: &COMPARE_OPTS,
             pos: &TWO_POS,
         },

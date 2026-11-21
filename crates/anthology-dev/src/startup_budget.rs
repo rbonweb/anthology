@@ -337,10 +337,7 @@ pub fn default_root() -> PathBuf {
 
 const PROG: &str = "startup_budget.py";
 const USAGE: &str = "usage: startup_budget.py [-h] [--root ROOT] [agents ...]";
-const HELP: &str = "\nPrint each agent's startup size against its budget.\n\n\
-positional arguments:\n  agents       agent names (default: all)\n\n\
-options:\n  -h, --help   show this help message and exit\n  \
---root ROOT  repository root (default: this checkout)\n";
+const HELP: &str = "\nPrint each agent's startup size against its budget.\n\npositional arguments:\n  agents       agent names (default: all)\n\noptions:\n  -h, --help   show this help message and exit\n  --root ROOT  repository root (default: this checkout)\n";
 const SPEC: Spec<'static> = Spec {
     prog: PROG,
     usage: USAGE,

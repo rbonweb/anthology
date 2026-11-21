@@ -61,13 +61,22 @@ fn dev_sh(args: &[&str], tool_cwd: Option<&Path>) -> Output {
 
 #[test]
 fn stdout_is_only_the_tools_output_and_the_exit_status_passes_through() {
-    let out = dev_sh(&["release-edit", "check-version", "1.0.0", "1.0.1", "0"], None);
+    let out = dev_sh(
+        &["release-edit", "check-version", "1.0.0", "1.0.1", "0"],
+        None,
+    );
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(out.stdout, b"bump\n");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("(setup noise)") && err.contains("(build noise)"), "{err}");
+    assert!(
+        err.contains("(setup noise)") && err.contains("(build noise)"),
+        "{err}"
+    );
 
-    let out = dev_sh(&["release-edit", "check-version", "1.0.0", "0.9.0", "0"], None);
+    let out = dev_sh(
+        &["release-edit", "check-version", "1.0.0", "0.9.0", "0"],
+        None,
+    );
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("release: 0.9.0 is lower"));
