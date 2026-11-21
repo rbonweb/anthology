@@ -164,6 +164,31 @@ fn a_substitution_at_program_position_is_too_complex() {
 }
 
 #[test]
+fn a_substitution_at_program_position_inside_an_arithmetic_expansion_is_too_complex() {
+    // DT-4: the arithmetic text runs no program word, but the commands of a substitution in it do
+    for command in [
+        "echo $(( $(`echo npx` playwright install) ))",
+        "echo $(( $($(echo npm) i puppeteer) ))",
+        "echo $(( 1 + $(`echo npx` playwright install) ))",
+        "echo $(( $(true\n`echo npx` playwright install) ))",
+    ] {
+        assert!(
+            analyze(command, HOME).incomplete,
+            "{command}: not too complex"
+        );
+    }
+    // a substitution that is the arithmetic's own word is not a program word
+    for command in [
+        "echo $(( $(date +%s) - 1 ))",
+        "echo $(( `date +%s` ))",
+        "echo $(( 1\n`date +%s`\n ))",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(!a.incomplete, "{command}: {}", summary(&a));
+    }
+}
+
+#[test]
 fn a_lookup_of_one_literal_word_reads_that_word() {
     // (b): `$(which npx)` is `npx`, which runs the same program as `npx playwright install`
     let a = analyze("$(which npx) playwright install", HOME);
