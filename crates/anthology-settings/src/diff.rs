@@ -5,8 +5,10 @@
 //! `worktree.baseRef` (all of them, the user's own rules included). Every other string or
 //! scalar reads `"<redacted>"`, in any layout; keys, layout and line count are kept.
 
+use anthology_pycompat::difflib::unified_diff;
+
 use crate::ops::{REDACTED, SHOWN_PATHS};
-use crate::scanner::py::{splitlines, unified_diff};
+use crate::scanner::py::splitlines;
 use crate::scanner::{Doc, Kind, is_blank, parse};
 
 /// `_hidden_leaves(node, path, out)`: the string and scalar nodes outside `SHOWN_PATHS` (an
