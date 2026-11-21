@@ -1,0 +1,30 @@
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 0, "params": {"shape": "closing quotes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 1, "params": {"shape": "quote then blanks"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 2, "params": {"shape": "key quote colon"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 3, "params": {"shape": "key quote colon blanks"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 4, "params": {"shape": "key quote colon quotes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 5, "params": {"shape": "single quotes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 6, "params": {"shape": "null values"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 7, "params": {"shape": "empty values"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 8, "params": {"shape": "object values"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 9, "params": {"shape": "short values"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 10, "params": {"shape": "escaped quotes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 11, "params": {"shape": "escaped null"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 12, "params": {"shape": "angle placeholders"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 13, "params": {"shape": "open angles"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 14, "params": {"shape": "template placeholders"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 15, "params": {"shape": "open templates"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 16, "params": {"shape": "star runs"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 17, "params": {"shape": "x then more"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 18, "params": {"shape": "prefix words"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 19, "params": {"shape": "quoted skip then comma"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 20, "params": {"shape": "quoted skip then brace"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 21, "params": {"run": "blanks"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 22, "params": {"run": "quotes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 23, "params": {"run": "open braces"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 24, "params": {"run": "letters"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 25, "params": {"run": "escapes"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 26, "params": {"run": "angles"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 27, "params": {"run": "stars"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 28, "params": {"run": "x run"}}
+{"py": "test_memory_privacy.QuotedKeyTest.test_quoted_key_patterns_scan_in_linear_time", "row": 29, "params": {"run": "dollar braces"}}

@@ -1,0 +1,71 @@
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 0, "params": {"$msg": "{\"a\": 1,}"}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 1, "params": {"$msg": "{"}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 2, "params": {"$msg": "[1, 2]"}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 3, "params": {"$msg": "\"x\""}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 4, "params": {"$msg": "null"}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 5, "params": {"$msg": "{\"a\": 1} trailing"}}
+{"py": "test_settings_patch.InvalidInputTest.test_unparseable_or_non_object_text_is_refused", "row": 6, "params": {"$msg": "// c\u000a{}"}}
+{"py": "test_settings_patch.InvalidInputTest.test_wrong_container_types_are_refused", "row": 0, "params": {"$msg": {"permissions": []}}}
+{"py": "test_settings_patch.InvalidInputTest.test_wrong_container_types_are_refused", "row": 1, "params": {"$msg": {"permissions": {"allow": "x"}}}}
+{"py": "test_settings_patch.InvalidInputTest.test_wrong_container_types_are_refused", "row": 2, "params": {"$msg": {"worktree": 3}}}
+{"py": "test_settings_patch.InvalidInputTest.test_wrong_container_types_are_refused", "row": 3, "params": {"$msg": {"permissions": {"deny": {}}}}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 0, "params": {"$msg": "two-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 1, "params": {"$msg": "two-space-no-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 2, "params": {"$msg": "four-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 3, "params": {"$msg": "tab"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 4, "params": {"$msg": "compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 5, "params": {"$msg": "compact-spaces"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 6, "params": {"$msg": "crlf"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 7, "params": {"$msg": "missing"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 8, "params": {"$msg": "blank-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 9, "params": {"$msg": "empty-object"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 10, "params": {"$msg": "empty-object-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 11, "params": {"$msg": "empty-object-spaced"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 12, "params": {"$msg": "other-keys-only"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 13, "params": {"$msg": "empty-permissions"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 14, "params": {"$msg": "empty-arrays"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 15, "params": {"$msg": "empty-arrays-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 16, "params": {"$msg": "unicode"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 17, "params": {"$msg": "empty-worktree"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 18, "params": {"$msg": "baseref-fresh"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 19, "params": {"$msg": "allow-one-item-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_then_revert_restores_the_original_bytes", "row": 20, "params": {"$msg": "nested-values"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 0, "params": {"$msg": "two-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 1, "params": {"$msg": "two-space-no-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 2, "params": {"$msg": "four-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 3, "params": {"$msg": "tab"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 4, "params": {"$msg": "compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 5, "params": {"$msg": "compact-spaces"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 6, "params": {"$msg": "crlf"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 7, "params": {"$msg": "missing"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 8, "params": {"$msg": "blank-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 9, "params": {"$msg": "empty-object"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 10, "params": {"$msg": "empty-object-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 11, "params": {"$msg": "empty-object-spaced"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 12, "params": {"$msg": "other-keys-only"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 13, "params": {"$msg": "empty-permissions"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 14, "params": {"$msg": "empty-arrays"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 15, "params": {"$msg": "empty-arrays-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 16, "params": {"$msg": "unicode"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 17, "params": {"$msg": "empty-worktree"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 18, "params": {"$msg": "baseref-fresh"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 19, "params": {"$msg": "allow-one-item-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_apply_twice_equals_apply_once", "row": 20, "params": {"$msg": "nested-values"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 0, "params": {"$msg": "two-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 1, "params": {"$msg": "two-space-no-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 2, "params": {"$msg": "four-space"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 3, "params": {"$msg": "tab"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 4, "params": {"$msg": "compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 5, "params": {"$msg": "compact-spaces"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 6, "params": {"$msg": "crlf"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 7, "params": {"$msg": "empty-object"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 8, "params": {"$msg": "empty-object-newline"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 9, "params": {"$msg": "empty-object-spaced"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 10, "params": {"$msg": "other-keys-only"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 11, "params": {"$msg": "empty-permissions"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 12, "params": {"$msg": "empty-arrays"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 13, "params": {"$msg": "empty-arrays-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 14, "params": {"$msg": "unicode"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 15, "params": {"$msg": "empty-worktree"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 16, "params": {"$msg": "allow-one-item-compact"}}
+{"py": "test_settings_patch.RoundTripTest.test_everything_outside_the_edit_is_untouched", "row": 17, "params": {"$msg": "nested-values"}}

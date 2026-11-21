@@ -1,0 +1,3 @@
+open http://nas.lan:8080/
+ssh deploy@build-01
+~/.ssh/id_rsa
