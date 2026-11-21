@@ -90,6 +90,32 @@ pub fn home() -> Option<PathBuf> {
     }
 }
 
+/// The directory Claude Code reads its managed (organisation-enforced)
+/// settings from: `managed-settings.json` and the `managed-settings.d/` drop-in
+/// directory sit in it.
+///
+/// anthology fork: only the Claude hook's rule scan asks (see
+/// `hooks::anthology_gate`). There is deliberately no environment override in a
+/// release build, because one could point the scan away from the policy; a test
+/// build resolves under `test_isolation::root`, so `cargo test` neither reads
+/// the machine's managed settings nor takes its results from them.
+pub fn managed_settings_dir() -> PathBuf {
+    #[cfg(not(test))]
+    {
+        if cfg!(target_os = "macos") {
+            PathBuf::from("/Library/Application Support/ClaudeCode")
+        } else if cfg!(windows) {
+            PathBuf::from(r"C:\Program Files\ClaudeCode")
+        } else {
+            PathBuf::from("/etc/claude-code")
+        }
+    }
+    #[cfg(test)]
+    {
+        test_isolation::root().join("managed")
+    }
+}
+
 /// [`data`], falling back to rtk's own directory under `root` where the
 /// platform gives no answer. For callers that carry on without one rather
 /// than failing.

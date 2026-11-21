@@ -1,0 +1,37 @@
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 0, "params": {"$msg": "symlink rtk"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 1, "params": {"$msg": "hardlink rtk"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 2, "params": {"$msg": "dotdot member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 3, "params": {"$msg": "nested member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 4, "params": {"$msg": "absolute member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 5, "params": {"$msg": "no rtk member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 6, "params": {"$msg": "duplicate rtk"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 0, "params": {"$msg": "uppercase hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 1, "params": {"$msg": "short hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 2, "params": {"$msg": "non-hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 3, "params": {"$msg": "trailing newline"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 4, "params": {"$msg": "wrong tag"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 5, "params": {"$msg": "no tag prefix"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 6, "params": {"$msg": "extra target"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 7, "params": {"$msg": "missing target"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 8, "params": {"$msg": "bad version"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 9, "params": {"$msg": "path version"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 10, "params": {"$msg": "unsafe repo"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 11, "params": {"$msg": "repo with space"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 12, "params": {"$msg": "repo with query"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 13, "params": {"$msg": "repo no slash"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 14, "params": {"$msg": "unknown key"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 15, "params": {"$msg": "missing key"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 16, "params": {"$msg": "sha not a map"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 17, "params": {"$msg": "not an object"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 0, "params": {"value": "<tmp>/gone"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 1, "params": {"value": "<tmp>/notexec"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 2, "params": {"value": "<tmp>"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 3, "params": {"value": "relative/rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 4, "params": {"value": ""}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 5, "params": {"value": "<tmp>/fake-rtk\"; touch /tmp/pwned; \""}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 6, "params": {"value": "C:\\rtk.exe"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 7, "params": {"value": "<tmp>/fake-rtk\\"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 1, "params": {"name": "rtk-hook"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 1, "params": {"name": "rtk-hook"}}
