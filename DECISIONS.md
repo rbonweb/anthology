@@ -728,3 +728,24 @@ Users with deny, ask or Read rules get them enforced behind rtk, at the cost of 
 **Consequences**
 
 When the user settings.json is the only place, the tiers apply after one yes and a restart. A value set elsewhere, or a shell value hidden behind a settings value, still applies until it is removed there; session start keeps warning and points at `/anthology:setup`. Cost if wrong: a user who relied on the override loses it until `setup remove` or a manual edit. The previous value sits in `state.json` next to the other undo data.
+
+## ADR-026: working rules live in the plugin (karpathy-guidelines, large-builds)
+
+- **Date:** 2026-11-21
+- **Task:** owner request (move the owner's local working rules into Anthology)
+- **Status:** Accepted
+
+**Context**
+
+Every working rule belongs in Anthology, never in a user's global Claude config. Four rules lived outside it: follow the Karpathy coding guidelines, read a large-build rulebook before a long multi-agent build, write plain feature-based status reports, and record rulings when the owner is away.
+
+**Decision**
+
+- `karpathy-guidelines` is vendored like the other knowledge: `multica-ai/andrej-karpathy-skills`, `skills/karpathy-guidelines/` at `main` = `2c606141936f1eeef17fa3043a72095b4765b9c2`, by forrestchang and contributors, MIT. The repository ships no LICENSE file; the license is declared in its README, SKILL.md frontmatter and plugin.json, so `vendor/licenses/` carries the standard MIT text with that note and the folder ships it as `LICENSE`. One patch adds a single line: in an autonomous run, record the assumption and carry on.
+- `implementer`, `debugger` and `reviewer` read it at startup (knowledge belongs to agents). Their startup budgets were raised to ceil(measured x 1.15).
+- `large-builds` is first-party, so it is a model-invoked skill in the `anthology` plugin (`anthology:large-builds`), next to the three user commands. Its "Every session" section carries the coding rule (karpathy-guidelines) and marks the rulings and status-report sections as rules for every session.
+- The routing guide gets one pointer line: coding, long builds, status reports and rulings load `anthology:large-builds`. To fit its 3,800-character ceiling, three existing lines were tightened without changing what they say; the ceiling and the 9,000-character session-start budget are unchanged.
+
+**Consequences**
+
+Ruling: the detail lives in `anthology:large-builds`, with one pointer in the guide — the guide was 5 characters under its ceiling — cost if wrong: the main session reads an 8 KB skill before coding or reporting. Ruling: karpathy-guidelines is knowledge, not a main-session skill — `vendor.py` writes only to knowledge folders, and the coding agents are where code is written — cost if wrong: the main session reaches the full text only through the skill's pointer when it codes inline.

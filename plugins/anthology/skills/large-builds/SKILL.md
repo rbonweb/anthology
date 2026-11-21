@@ -1,0 +1,167 @@
+---
+name: large-builds
+description: Rules for long or large multi-agent builds (many tasks, several agents at once, runs measured in hours) — start work early against published interfaces, keep agents busy with a ~10-minute check for startable work, tiered testing (CI is the PR gate), one review per task, batch merges, rulings instead of waiting, never route around a refusal, plain-language status reports. Use with anthology-superpowers:subagent-driven-development or dispatching-parallel-agents whenever a build spans many tasks or hours; where they differ, this wins for that run. Also the rules for every session: how to code, how to report status, and rulings while the user is away.
+---
+
+# Large Builds
+
+Read this before the first task of a large or long build (many tasks, several agents working at once, or a run measured in hours). It sits on top of anthology-superpowers:subagent-driven-development and anthology-superpowers:dispatching-parallel-agents; where it differs from them, this file wins for that run. Each rule is followed by why.
+
+## Every session, not only large builds
+
+- Writing, reviewing or refactoring code: follow karpathy-guidelines (think
+  before coding, simplicity first, surgical changes, goal-driven
+  verification). The full text is
+  `${CLAUDE_PLUGIN_ROOT}/knowledge/karpathy-guidelines/SKILL.md`; the
+  implementer, debugger and reviewer read it at startup. Why: most wasted
+  agent work is unasked-for scope and unverified claims.
+- "Decide; don't wait" and "Status reports for humans" below apply to every
+  session. Why: a parked question or an unreadable report costs the same in
+  a short session as in a long one.
+
+## Long runs
+
+- Set a recurring ~10-minute check (CronCreate) at the start of a long run, and delete it (CronDelete) when the run ends.
+
+## Start early
+
+- Start every task whose inputs are published interfaces, not merged code.
+  Why: waiting for merges serialises the whole plan behind its slowest task.
+- Code against the signatures the spec or plan publishes, exactly. Why: the
+  real code lands with those signatures, so the later swap is mechanical.
+- When a body you need does not exist yet, write a minimal private stand-in
+  in your own files, mark it `// SWAP(<task>)` in the file's comment syntax,
+  and list it in your report. Why: a greppable marker turns the swap into a
+  search instead of an investigation.
+- When the dependency merges, merge it into your branch, replace every
+  `SWAP(<task>)` stand-in and delete the markers. Why: a leftover stand-in is
+  untested code that looks real.
+- Never edit another task's files to unblock yourself; stand in for them.
+  Why: two writers on one file is a conflict and a review nobody owns.
+
+## Run in parallel without collisions
+
+- Give each parallel implementer a disjoint file slice and its own worktree
+  or sub-branch, and merge the results yourself. Why: separate trees cannot
+  clobber each other. This is the exception to anthology-superpowers:subagent-driven-development's "never in
+  parallel": one working tree still gets one writer.
+- Nested subagents are fine on the same terms: disjoint slice, own worktree,
+  the parent merges. Why: a big task often splits cleanly by module.
+- In a shared registry (a module list, an owners table), append your own
+  line only; never reorder or edit other lines. Why: append-only edits merge
+  without conflicts.
+- Put in each dispatch: the slice, the interfaces to code against, the SWAP
+  rule, the test tier below, and "no reviewers". Why: a worker cannot follow
+  rules it was never given.
+
+## Keep capacity busy
+
+- On a long run, every ~10 minutes, look for work that could start now:
+  swaps for dependencies that just merged, plumbing, docs, early reviews of
+  finished tasks, release prep. Start it. Why: agents idling on a test queue
+  are the costliest waste in a long run.
+- Use each bounded wait (anthology-superpowers:subagent-driven-development, "Waiting on dispatched subagents") for
+  this check. Why: the wait is already a check-in, so the scan costs nothing.
+- Never park an agent on a shared queue (a build server, a slow job) while
+  other work exists. Why: queue time is wall-clock time the whole build pays.
+- Treat machine or server load as temporary. If you throttle (fewer jobs,
+  avoid a server, serialize work) because something is busy, re-check after
+  5–10 minutes and lift the limit once the load is gone; never let a
+  momentary limit become a standing rule. Why: a 5-minute spike turned into
+  a permanent throttle costs hours of build time.
+- After any container work (tests, builds), remove the containers, the
+  images you built, and the volumes they used once you no longer need them.
+  Touch only your own: other projects share the same Docker. Why: leftover
+  build volumes fill the disk fast (hundreds of GB in one day).
+
+## Test at the cheapest level that catches the bug, once
+
+- While coding: only the tests for the part you changed (the test file,
+  module or package), plus its formatter and linter. Never run the full
+  suite during development, not even on a fast server. Run the full suite
+  once, at the final go for the feature, which is usually CI on the PR. Why:
+  repeated full runs take far longer than they're worth and hold shared
+  capacity.
+- Before opening or updating a PR: the same, nothing more. CI is the PR
+  gate; never repeat its full matrix locally. Why: a duplicate run holds
+  capacity and finds nothing CI would miss.
+- After a batch merge: one integration run on the merged result. Why:
+  integration bugs exist only once branches meet.
+- At release: the full run of everything, once. Why: that is the one point
+  where every platform and suite must agree.
+- A known flaky test gets one re-run, not an investigation; a second failure
+  is real. Why: chasing a known flake burns hours and changes nothing.
+- Slow or secondary platforms do not block a merge; fix their failures
+  forward. Why: one slow runner should not hold every branch hostage.
+
+## Write timing tests that survive shared runners
+
+- To assert linear time, bound the growth ratio, not the absolute time: run
+  sizes n and 4n and require t(4n) < 10 × t(n). Why: linear growth gives
+  about 4x and quadratic about 16x, so 10x separates them on any machine.
+- Give the baseline a floor: compare against max(t(n), a few tens of
+  milliseconds), or repeat the small run until it reaches that. Why: a tiny
+  baseline jitters on a shared CI runner and makes any ratio meaningless.
+
+## Review budget
+
+- One independent review per task. Why: a second review mostly re-finds the
+  first one's points.
+- Fix every Critical and Important finding. List the Minors in the ledger
+  and the report, with no fix loop. Why: Minors rarely pay for another round.
+- No re-review after the fixes, except after a Critical finding in security
+  code (authentication, permission or command guards, sandboxing, secrets,
+  privacy): there, one scoped re-review. Why: that is where an unverified fix
+  costs most. This replaces the fix-loop's rounds for the run.
+- Docs-only, test-only and mechanical changes (renames, stand-in swaps,
+  regenerated files) get no review; CI covers them. Why: a reviewer adds
+  nothing a passing build has not already shown.
+
+## Merge in batches
+
+- Merge green branches together, then run one integration test on the batch.
+  Why: one run per batch instead of one per branch.
+- If the batch run fails, find the branch that broke it, take it out of the
+  batch and merge the rest. Why: one bad branch should not hold up the
+  green ones.
+- Merge, never rebase, a branch that already has a PR. Why: a rebase
+  rewrites the commits the reviewer saw.
+
+## Decide; don't wait
+
+- When the human is away, decide and record
+  `Ruling: <what> — <why> — <cost if wrong>` in the ledger and the report.
+  Why: a wrong ruling costs visible, undoable rework; a parked question
+  costs the whole day.
+- Still stop for what anthology-superpowers:subagent-driven-development lists: irreversible, security-sensitive and
+  outward-facing actions (outside the worktree: a merge, a push to a shared
+  branch, a publish). Why: those cannot be undone by rework.
+
+## Permissions
+
+- When a safety check, hook or permission prompt refuses one agent's action,
+  no other agent may do it on that agent's behalf. Why: routing around a
+  refusal defeats the check and hides it from the human.
+- Never edit permission settings, hooks or agent configuration to get past
+  a refusal. Why: the same reason.
+- Take it to the human with the one exact command that fixes it and what
+  that command changes. Example: git keeps using a stale saved credential;
+  the fix is `gh auth setup-git`, which makes git use the GitHub CLI's
+  login. Why: one command is a quick yes or no; a vague report stalls.
+
+## Status reports for humans
+
+- Write for a non-technical owner, in feature terms ("search now works
+  offline"), not task ids, branches or file names. Why: the owner decides
+  on features, not on plumbing.
+- Lead with what is done, then what is running, then what is blocked and
+  who must act. Why: done is what the owner can use or check today.
+- Give an honest time estimate for the rest, and say what it depends on.
+  Why: a hopeful estimate that slips costs more trust than a long one.
+
+```text
+Done: <features that now work>.
+Running: <feature>: <what is happening>, about <time>.
+Blocked: <feature>: needs <who, what>.
+Remaining: about <time>, if <assumption>.
+```

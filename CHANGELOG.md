@@ -18,7 +18,7 @@ a new version section.
   - Opus: `researcher`, `architect`, `reviewer`, `ui-reviewer`, `product-planner`.
   - Sonnet: `implementer`, `debugger`, `docs-writer`, `ui-designer`, `marketer`.
   - Haiku: `scout`.
-- Knowledge library: 28 folders (design, engineering, product, marketing, UI and house
+- Knowledge library: 29 folders (design, engineering, product, marketing, UI and house
   style), generated from pinned upstream sources by `scripts/vendor.py`. Agents read them
   from their own startup lists; the main session does not see them. Each folder ships its
   upstream license text inside the plugin, and `caveman` also ships its `NOTICE` and
@@ -37,6 +37,12 @@ a new version section.
   and the lead's memory duties, including committing the `.claude/agent-memory/` notes that
   read-only and docs-only agents leave uncommitted (once per merge batch or at task end)
   and acting on each report's "Worth remembering" items.
+- Working rules ship with the plugin instead of living in a user's global config
+  (ADR-026). `karpathy-guidelines` (multica-ai/andrej-karpathy-skills by forrestchang and
+  contributors, MIT) is a knowledge folder read by the implementer, debugger and reviewer.
+  `anthology:large-builds` is a skill for long multi-agent builds, status reports and
+  rulings while the user is away, and it carries the coding rule; the routing guide points to
+  it in one line.
 - Worktree agents (implementer, debugger, docs-writer, ui-designer) change files with
   Edit/Write and keep one plain command per Bash call, because Claude Code refuses
   commands in a worktree that it cannot check; a multi-step script goes in a file run

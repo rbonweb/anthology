@@ -28,14 +28,14 @@ def knowledge_sources():
 class KnowledgeLicenseTest(unittest.TestCase):
     def test_every_knowledge_folder_has_a_license(self):
         folders = sorted(p for p in KNOWLEDGE.iterdir() if p.is_dir())
-        self.assertEqual(len(folders), 28)
+        self.assertEqual(len(folders), 29)
         for folder in folders:
             self.assertTrue(any((folder / n).is_file() for n in LICENSE_NAMES),
                             f"{folder.name} ships no LICENSE, LICENSE.txt or LICENSE.md")
 
     def test_every_knowledge_source_ships_the_license_it_names(self):
         sources = knowledge_sources()
-        self.assertEqual(len(sources), 28)
+        self.assertEqual(len(sources), 29)
         for e in sources:
             name = e["license_file"] and posixpath.basename(e["license_file"]) or "LICENSE"
             shipped = ROOT / e["target"] / name
@@ -51,13 +51,21 @@ class KnowledgeLicenseTest(unittest.TestCase):
             expected = (ROOT / "vendor" / "licenses" / f"{vendor.source_slug(e)}.txt").read_bytes()
             self.assertEqual((ROOT / e["target"] / name).read_bytes(), expected, e["name"])
             checked += 1
-        self.assertEqual(checked, 27)
+        self.assertEqual(checked, 28)
 
     def test_the_fixed_text_ships_as_license_for_web_design_guidelines(self):
         e = {s["name"]: s for s in knowledge_sources()}["web-design-guidelines"]
         self.assertIsNone(e["license_file"])
         self.assertEqual((ROOT / e["target"] / "LICENSE").read_bytes(),
                          (ROOT / "vendor" / "licenses" / "vercel-labs-agent-skills.txt").read_bytes())
+
+    def test_the_fixed_text_ships_as_license_for_karpathy_guidelines(self):
+        e = {s["name"]: s for s in knowledge_sources()}["karpathy-guidelines"]
+        self.assertIsNone(e["license_file"])
+        text = (ROOT / e["target"] / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("MIT License", text)
+        self.assertIn("forrestchang", text)
+        self.assertIn("multica-ai/andrej-karpathy-skills", text.splitlines()[0])
 
     def test_caveman_ships_its_notice_and_the_mit_text(self):
         caveman = KNOWLEDGE / "caveman"
