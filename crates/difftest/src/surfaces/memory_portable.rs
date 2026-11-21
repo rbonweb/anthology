@@ -3,11 +3,11 @@
 //! `port/difftest/oracle/memory_portable.py`.
 //!
 //! A case is `{"files": {rel: text}, "bytes": {rel: hex}, "steps": [...]}`. Both sides make a
-//! fresh folder `<ROOT>` with two machines, `a/home` and `b/home`, and `plain/`, the working
+//! fresh folder `<ROOT>` with two machines, `a/user` and `b/user`, and `plain/`, the working
 //! folder; then write `files` (UTF-8) and `bytes` under it. The archives the generator builds
 //! (with `anthology_testkit::mx`, the way `test_memory_portable.py` builds them) arrive as
 //! `bytes` under `in/`, so both sides read the identical file. A step runs on machine
-//! `"home"` (`a` by default: HOME `<ROOT>/<m>/home`, `LANG=C.UTF-8`, PATH) and is one of:
+//! `"home"` (`a` by default: HOME `<ROOT>/<m>/user`, `LANG=C.UTF-8`, PATH) and is one of:
 //!
 //! - `{"export": {"out": rel | null, "today": d}}`: `export(<ROOT>/plain, out, today)`;
 //! - `{"plan": {"archive": rel, "today": d}}`: `plan_import`; a plan it returns is kept;
@@ -399,7 +399,7 @@ fn run_rust(case: &Value) -> Observed {
     let tmp = fs::canonicalize(dir.path()).expect("realpath");
     let root_s = tmp.display().to_string();
     let today = anthology_core::clock::today_local().iso();
-    for d in ["a/home", "b/home", "plain"] {
+    for d in ["a/user", "b/user", "plain"] {
         fs::create_dir_all(tmp.join(d)).expect("mkdir");
     }
     let cwd = tmp.join("plain");
@@ -420,7 +420,7 @@ fn run_rust(case: &Value) -> Observed {
         let machine = field(step, "home").and_then(Value::as_str).unwrap_or("a");
         let env = Env::default()
             .with_os("PATH", &path)
-            .with_os("HOME", tmp.join(machine).join("home"))
+            .with_os("HOME", tmp.join(machine).join("user"))
             .with("LANG", "C.UTF-8");
         let today_arg = |a: &Value| {
             field(a, "today")
@@ -516,7 +516,7 @@ fn path(parts: &[&str]) -> Value {
         .collect())
 }
 
-const PM: &str = "home/.claude/anthology/personal-memory/";
+const PM: &str = "user/.claude/anthology/personal-memory/";
 
 /// The personal-memory folder of a machine.
 fn pm(machine: &str, name: &str) -> String {
@@ -634,7 +634,7 @@ fn forged_edits() -> Vec<Vec<Value>> {
             set(&["new", "#0", "name"], s("never-in-archive.md")),
         ],
         vec![set(&["home"], s("<ROOT>/not-anthology"))],
-        vec![set(&["home"], s("<ROOT>/b/home/.claude/anthology/"))],
+        vec![set(&["home"], s("<ROOT>/b/user/.claude/anthology/"))],
         vec![set(&["home"], int(5))],
         vec![set(&["archive"], s("<ROOT>/missing.tar.gz"))],
         vec![set(&["archive"], s("<ROOT>/plain"))],
@@ -931,7 +931,7 @@ fn seeds() -> Vec<(String, Value)> {
             ("archive", s("<ROOT>/in/bad.tar.gz")),
             ("sha256", s(&sha(&unhex(&bad_hex(kind))))),
             ("date", s("2026-04-06")),
-            ("home", s("<ROOT>/b/home/.claude/anthology")),
+            ("home", s("<ROOT>/b/user/.claude/anthology")),
             ("repo_root", Value::Null),
             (
                 "new",
@@ -996,7 +996,7 @@ fn seeds() -> Vec<(String, Value)> {
             one(
                 "symlink",
                 obj(vec![(
-                    "b/home/.claude/anthology/personal-memory",
+                    "b/user/.claude/anthology/personal-memory",
                     s("<ROOT>/outside"),
                 )]),
             ),
@@ -1005,7 +1005,7 @@ fn seeds() -> Vec<(String, Value)> {
             "anthology-symlink",
             one(
                 "symlink",
-                obj(vec![("b/home/.claude/anthology", s("<ROOT>/outside"))]),
+                obj(vec![("b/user/.claude/anthology", s("<ROOT>/outside"))]),
             ),
         ),
         (
@@ -1013,7 +1013,7 @@ fn seeds() -> Vec<(String, Value)> {
             one(
                 "write",
                 files(&[(
-                    "b/home/.claude/anthology/personal-memory".into(),
+                    "b/user/.claude/anthology/personal-memory".into(),
                     "x".into(),
                 )]),
             ),
@@ -1148,7 +1148,7 @@ fn gen_flow(rng: &mut Rng) -> Value {
     let (out, archive) = match rng.below(10) {
         0 | 1 => (
             Value::Null,
-            format!("a/home/.claude/anthology/exports/anthology-memory-{day}.tar.gz"),
+            format!("a/user/.claude/anthology/exports/anthology-memory-{day}.tar.gz"),
         ),
         2 => {
             fs_.push(("work/.git/HEAD".into(), "x".into()));

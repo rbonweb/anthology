@@ -6,8 +6,8 @@ The plugin's `scripts/` folder is put there, for `memory_portable`'s own imports
 
 Library surface: `run(case: dict) -> dict`. The case layout and the transcript are documented
 in `crates/difftest/src/surfaces/memory_portable.rs`; this file and the Rust side render the
-same transcript. In short: a fresh folder `<ROOT>` holds two machines, `a/home` and `b/home`
-(HOME; the config folder is `<m>/home/.claude`), and `plain/`, the working folder, which is
+same transcript. In short: a fresh folder `<ROOT>` holds two machines, `a/user` and `b/user`
+(HOME; the config folder is `<m>/user/.claude`), and `plain/`, the working folder, which is
 never in a git repository (the oracle image has no git at all), so every repo or agent note
 takes the "not an approved repo" path. `files` (text) and `bytes` (hex) are written under
 `<ROOT>`; archives built by the generator arrive as `bytes`, so both sides read the same file.
@@ -57,7 +57,7 @@ def _module():
 
 
 def _env(tmp, machine):
-    home = os.path.join(tmp, machine, "home")
+    home = os.path.join(tmp, machine, "user")
     return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": home, "LANG": "C.UTF-8"}
 
 
@@ -204,7 +204,7 @@ def run(case):
     today = datetime.date.today().isoformat()
     out, mark, last = [], None, None
     try:
-        for d in ("a/home", "b/home", "plain"):
+        for d in ("a/user", "b/user", "plain"):
             os.makedirs(os.path.join(tmp, d))
         cwd = os.path.join(tmp, "plain")
         _write_files(tmp, case.get("files"), False)
