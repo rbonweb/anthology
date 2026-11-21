@@ -127,6 +127,7 @@ pub const VOCABULARY: &[&str] = &[
     "D-5",
     "D-6",
     "D-7",
+    "D-8",
     "Difference",
     "ids",
     "stand-ins",

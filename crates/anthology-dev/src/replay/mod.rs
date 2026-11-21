@@ -285,7 +285,8 @@ struct CallDone {
     id: String,
     bucket: usize,
     outs: Vec<(Runner, RunOut)>,
-    kinds: Vec<(&'static str, Outcome, String, String)>,
+    /// Kind, outcome, Python's side, Rust's side, and whether Rust is the stricter side (D-8).
+    kinds: Vec<(&'static str, Outcome, String, String, bool)>,
 }
 
 /// One text's privacy result.
@@ -294,6 +295,7 @@ struct TextDone {
     outcome: Outcome,
     python: String,
     rust: String,
+    stricter: bool,
 }
 
 fn py_text(p: &PySide) -> String {
@@ -345,6 +347,7 @@ fn replay_call(
             compare::classify_check(&py, &rust_verdict),
             py_text(&py),
             rust_verdict.clone(),
+            compare::stricter_check(&py, &rust_verdict),
         ));
     }
     let compared: Vec<(Runner, RunOut)> = outs
@@ -369,7 +372,8 @@ fn replay_call(
             .map(|(r, o)| format!("runner {}: {}", r.number(), show(o)))
             .collect::<Vec<_>>()
             .join(" | ");
-        kinds.insert(0, ("runners", outcome, py, rust));
+        let stricter = compare::stricter_runners(&compared);
+        kinds.insert(0, ("runners", outcome, py, rust, stricter));
     }
     if ctx.surfaces.analyze
         && let Some(command) = compare::bash_command(&envelope)
@@ -382,7 +386,15 @@ fn replay_call(
             _ => compare::classify_analyze(&py, d6, &rust),
         };
         let rust_text = json::dumps(&rust, &json::COMPACT_SORTED);
-        kinds.push(("analyze", outcome, py_text(&py), rust_text));
+        // Both verdict comparisons ran on this call and were equal.
+        let same = |kind: &str| {
+            kinds
+                .iter()
+                .any(|(k, o, ..)| *k == kind && *o == Outcome::Same)
+        };
+        let same_verdicts = same("runners") && same("check");
+        let stricter = compare::stricter_analyze(&py, &rust, &rust_verdict, same_verdicts);
+        kinds.push(("analyze", outcome, py_text(&py), rust_text, stricter));
     }
     CallDone {
         id,
@@ -413,6 +425,7 @@ fn replay_text(ctx: &Ctx<'_>, oracle: &mut Oracle, text: &str) -> TextDone {
     TextDone {
         id,
         outcome: compare::classify_privacy(&py, &rust),
+        stricter: compare::stricter_privacy(&py, &rust),
         python: py_text(&py),
         rust: rust_text,
     }
@@ -659,19 +672,15 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
     let mut note = |id: &str,
                     kind: &'static str,
                     outcome: Outcome,
+                    stricter: bool,
                     python: &str,
                     rust: &str,
                     tool: Option<&Call>,
                     s: &mut Summary| {
         let e = s.compared.entry(kind.to_string()).or_default();
         e.0 += 1;
-        let outcome = match outcome {
-            Outcome::Diff => match explained.get(&(id.to_string(), kind.to_string())) {
-                Some(class) => Outcome::Explained(class),
-                None => Outcome::Diff,
-            },
-            o => o,
-        };
+        let entry = explained.get(&(id.to_string(), kind.to_string())).copied();
+        let outcome = compare::apply_explained(outcome, entry, stricter);
         let class = match outcome {
             Outcome::Same => {
                 e.1 += 1;
@@ -731,11 +740,12 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
                 row[3 + col] += 1;
             }
         }
-        for (kind, outcome, py, rust) in &done.kinds {
+        for (kind, outcome, py, rust, stricter) in &done.kinds {
             note(
                 &done.id,
                 kind,
                 outcome.clone(),
+                *stricter,
                 py,
                 rust,
                 Some(call),
@@ -748,6 +758,7 @@ fn cmd_run(opts: &Opts, env: &Env, cwd: &Path) -> Result<Output, String> {
             &t.id,
             "privacy",
             t.outcome.clone(),
+            t.stricter,
             &t.python,
             &t.rust,
             None,

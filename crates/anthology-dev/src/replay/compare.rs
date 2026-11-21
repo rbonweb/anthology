@@ -28,6 +28,9 @@
 //!   limit on the same input (D-7).
 //! - Any other difference is unexplained until the owner records it, after looking at the local
 //!   details, in `<replay>/replay-corpus-explained.tsv` (`<id>\t<kind>\t<D-n>\t<note>`).
+//! - D-8 ("Rust stricter: owner direction", FW-H/FW-I) comes only from that file, one case id at
+//!   a time, and explains a difference only where Rust is the stricter side ([`stricter_check`]
+//!   and its siblings), as difftest's D-8 entries do; elsewhere the difference stays unexplained.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -88,7 +91,94 @@ impl Outcome {
 pub const KINDS: [&str; 4] = ["runners", "check", "analyze", "privacy"];
 
 /// The GC-16 classes.
-pub const CLASSES: [&str; 7] = ["D-1", "D-2", "D-3", "D-4", "D-5", "D-6", "D-7"];
+pub const CLASSES: [&str; 8] = ["D-1", "D-2", "D-3", "D-4", "D-5", "D-6", "D-7", "D-8"];
+
+/// The outcome once the owner's explained file is applied: a [`Outcome::Diff`] the file names
+/// is explained by its class, except a D-8 entry, which needs `stricter` (module docs).
+pub fn apply_explained(outcome: Outcome, entry: Option<&'static str>, stricter: bool) -> Outcome {
+    match (outcome, entry) {
+        (Outcome::Diff, Some("D-8")) if !stricter => Outcome::Diff,
+        (Outcome::Diff, Some(class)) => Outcome::Explained(class),
+        (o, _) => o,
+    }
+}
+
+/// Whether Rust's verdict blocks (a rule, a limit or the shell work budget).
+fn rust_blocks(verdict: &str) -> bool {
+    verdict.starts_with("block:") || verdict == "incomplete" || verdict == "toocomplex"
+}
+
+/// D-8 direction for `runners`: every Rust runner that ran blocked, and Python allowed or blocked
+/// (by another rule: never looser).
+pub fn stricter_runners(outs: &[(Runner, RunOut)]) -> bool {
+    let mut rust = outs
+        .iter()
+        .filter(|(r, _)| matches!(r, Runner::Hook | Runner::Shim))
+        .peekable();
+    let py_answered = outs
+        .iter()
+        .any(|(r, o)| *r == Runner::Python && (o.allowed() || o.blocked()));
+    py_answered && rust.peek().is_some() && rust.all(|(_, o)| o.blocked())
+}
+
+/// D-8 direction for `check`: Rust blocks, and Python allowed or blocked by another rule.
+pub fn stricter_check(py: &PySide, rust: &str) -> bool {
+    let py_answered = matches!(py, PySide::Value(v)
+        if v.as_str().is_some_and(|p| p == "allow" || p.starts_with("block:")));
+    py_answered && rust_blocks(rust)
+}
+
+/// D-8 direction for `analyze`, any of:
+/// - Rust's guard blocks the call (difftest's `guard_blocks`);
+/// - Rust's entries hold every entry of Python's (group numbers aside), so the guard sees at
+///   least what Python's sees (difftest's `analysis_stricter`);
+/// - `same_verdicts`: the call's runners and check comparisons were both run and equal, so a
+///   bash-accurate reading that replaces Python's changed no verdict (the controller's ruling).
+pub fn stricter_analyze(
+    py: &PySide,
+    rust: &Value,
+    rust_verdict: &str,
+    same_verdicts: bool,
+) -> bool {
+    rust_blocks(rust_verdict) || same_verdicts || analysis_superset(py, rust)
+}
+
+/// Rust's analysis has every entry Python's has, with `group` left out.
+fn analysis_superset(py: &PySide, rust: &Value) -> bool {
+    let PySide::Value(Value::Str(text)) = py else {
+        return false;
+    };
+    let Ok(py) = json::loads(text) else {
+        return false;
+    };
+    let entries = |v: &Value| -> Option<Vec<Value>> {
+        let items = v.as_object()?.get("entries")?.as_array()?;
+        Some(
+            items
+                .iter()
+                .map(|e| {
+                    let mut e = e.clone();
+                    if let Value::Object(m) = &mut e {
+                        m.remove("group");
+                    }
+                    e
+                })
+                .collect(),
+        )
+    };
+    match (entries(&py), entries(rust)) {
+        (Some(p), Some(r)) => p.iter().all(|e| r.contains(e)),
+        _ => false,
+    }
+}
+
+/// D-8 direction for `privacy`: Rust reports every finding Python reports, and more.
+pub fn stricter_privacy(py: &PySide, rust: &Option<Vec<(usize, String)>>) -> bool {
+    let (PySide::Value(v), Some(rust)) = (py, rust) else {
+        return false;
+    };
+    findings_of(v).is_some_and(|py| py.len() < rust.len() && py.iter().all(|f| rust.contains(f)))
+}
 
 // --- runners -------------------------------------------------------------------------------
 
@@ -936,7 +1026,7 @@ mod tests {
             Some(&"D-3")
         );
         for bad in [
-            "0123456789abcdef\tcheck\tD-8\tx\n",
+            "0123456789abcdef\tcheck\tD-9\tx\n",
             "0123456789abcdef\tcheck\tD-3\t \n",
             "0123456789abcdeg\tcheck\tD-3\tx\n",
             "0123456789abcdef\tguard\tD-3\tx\n",
@@ -945,5 +1035,93 @@ mod tests {
             std::fs::write(&path, bad).expect("write");
             assert!(load_explained(dir.path()).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn d8_explains_only_where_rust_is_stricter() {
+        let allow = out(0, b"");
+        let block = out(2, G1);
+        let py_allows = [
+            (Runner::Python, allow.clone()),
+            (Runner::Hook, block.clone()),
+            (Runner::Shim, block.clone()),
+        ];
+        assert!(stricter_runners(&py_allows));
+        let py_blocks = [
+            (Runner::Python, block.clone()),
+            (Runner::Hook, allow.clone()),
+        ];
+        assert!(!stricter_runners(&py_blocks));
+        assert!(!stricter_runners(&[(Runner::Python, allow.clone())]));
+        let both_block = [
+            (Runner::Python, block.clone()),
+            (Runner::Hook, out(2, SETUP)),
+        ];
+        assert!(stricter_runners(&both_block));
+        let py_timed_out = [(Runner::Python, out(TIMED_OUT, b"")), (Runner::Hook, block)];
+        assert!(!stricter_runners(&py_timed_out));
+
+        let py = |v: &str| PySide::Value(Value::Str(v.into()));
+        assert!(stricter_check(&py("allow"), "block:G1"));
+        assert!(stricter_check(&py("allow"), "toocomplex"));
+        assert!(stricter_check(&py("block:G1"), "toocomplex"));
+        assert!(!stricter_check(&py("block:G1"), "allow"));
+        assert!(!stricter_check(&PySide::TimedOut, "block:G1"));
+
+        // analyze: Rust's guard blocks, Rust's entries are a superset, or the verdicts were equal
+        let entry = |raw: &str, group: i64| {
+            let mut m = Map::new();
+            m.insert("raw".into(), Value::Str(raw.into()));
+            m.insert("group".into(), Value::Int(Int::Small(group)));
+            Value::Object(m)
+        };
+        let analysis = |es: Vec<Value>| {
+            let mut m = Map::new();
+            m.insert("entries".into(), Value::Array(es));
+            Value::Object(m)
+        };
+        let py_a = PySide::Value(Value::Str(json::dumps(
+            &analysis(vec![entry("a", 0)]),
+            &json::COMPACT_SORTED,
+        )));
+        let more = analysis(vec![entry("b", 0), entry("a", 1)]);
+        let other = analysis(vec![entry("c", 0)]);
+        assert!(stricter_analyze(&py_a, &more, "allow", false));
+        assert!(!stricter_analyze(&py_a, &other, "allow", false));
+        assert!(stricter_analyze(&py_a, &other, "toocomplex", false));
+        assert!(stricter_analyze(&py_a, &other, "allow", true));
+
+        let found = |f: &[(i64, &str)]| {
+            PySide::Value(Value::Array(
+                f.iter()
+                    .map(|(l, k)| {
+                        Value::Array(vec![Value::Int(Int::Small(*l)), Value::Str((*k).into())])
+                    })
+                    .collect(),
+            ))
+        };
+        let rust = Some(vec![(1, "home".to_string()), (2, "key".to_string())]);
+        assert!(stricter_privacy(&found(&[(1, "home")]), &rust));
+        assert!(!stricter_privacy(&found(&[(1, "home"), (2, "key")]), &rust));
+        assert!(!stricter_privacy(&found(&[(3, "host")]), &rust));
+
+        // the explained file's D-8 entry waives a stricter diff only
+        assert_eq!(
+            apply_explained(Outcome::Diff, Some("D-8"), true),
+            Outcome::Explained("D-8")
+        );
+        assert_eq!(
+            apply_explained(Outcome::Diff, Some("D-8"), false),
+            Outcome::Diff
+        );
+        assert_eq!(
+            apply_explained(Outcome::Diff, Some("D-3"), false),
+            Outcome::Explained("D-3")
+        );
+        assert_eq!(
+            apply_explained(Outcome::Never, Some("D-8"), true),
+            Outcome::Never
+        );
+        assert_eq!(apply_explained(Outcome::Diff, None, true), Outcome::Diff);
     }
 }
