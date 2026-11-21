@@ -562,3 +562,39 @@ npm --prefix ${x:-\{a,b\}} {-x,} i puppeteer
 npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer
 #---
 npm --prefix "${x:-{a,b}}" {-x,} i puppeteer
+#---
+npm --userconfig <(echo) i puppeteer
+echo "x
+#---
+npm --userconfig >(cat) i puppeteer
+`
+#---
+echo npx playwright install | sudo -s
+echo "x
+#---
+echo npx playwright install | sh
+echo "x
+#---
+curl -s x | sh
+echo "x
+#---
+echo "$(case\
+ a in a) npm i puppeteer;; esac)"
+#---
+echo $(case\
+ a in a) npx playwright install;; esac)
+#---
+echo ${x:-$(case\
+ a in a) npx playwright install;; esac)}
+#---
+npm --userconfig <(case\
+ x in x) echo;; esac) i puppeteer
+#---
+npm --userconfig <(cas\
+e x in x) echo;; esac) i puppeteer
+#---
+npm --prefix ${x:-"}"{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\}{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer

@@ -182,6 +182,8 @@ def _lenient_segments(text):
     """`_lenient_segments` with Rust's third reading (FW-H review R1-M1, D-8)."""
     out = []
     G._charge(2 * len(text))
+    if "<(" in text or ">(" in text or "|" in text:       # #89 review F-1 (lenient.rs)
+        raise G._TooComplex()
     for piece in G.re.split(r"[;&|\n()`]+|\$\(", text):
         spaced = piece.replace("'", " ").replace('"', " ").split()
         joined = G._LENIENT_QUOTES.sub("", piece).split()
@@ -280,16 +282,25 @@ _MAX_BRACE_DEPTH = 64
 
 
 def _param_end(word, j):
-    """collect.rs `param_end` (SH-seq re-review R-1): the index after the `}` closing the `${` at `j`."""
-    depth = 0
-    for k in range(j + 1, len(word)):
-        if word[k] == "{":
+    """collect.rs `param_end` (SH-seq re-review R-1, #89 F-4): the index after the `}` closing the `${` at
+    `j`; quotes and escapes hide their braces."""
+    depth, k, n = 0, j + 1, len(word)
+    while k < n:
+        c = word[k]
+        if c == "\\":
+            k += 1
+        elif c in "'\"":
+            k += 1
+            while k < n and word[k] != c:
+                k += 2 if c == '"' and word[k] == "\\" else 1
+        elif c == "{":
             depth += 1
-        elif word[k] == "}":
+        elif c == "}":
             depth -= 1
             if depth == 0:
                 return k + 1
-    return len(word)
+        k += 1
+    return n
 
 
 def _param_at(word, j):

@@ -663,6 +663,22 @@ def _scan_paren_ex(text, i, arith=False, memo=None):
     return inner, end, closes
 
 
+def _case_word(text, j):
+    """scan.rs `case_word` (#89 review F-2): `case` and a blank, line continuations removed."""
+    k, read, n = j, 0, len(text)
+    while k < n:
+        if text[k] == "\\" and text[k + 1:k + 2] == "\n":
+            k += 2
+            continue
+        if read == 4:
+            return text[k] in " \t\n"
+        if text[k] != "case"[read]:
+            return False
+        read += 1
+        k += 1
+    return False
+
+
 def _scan_paren_walk(text, i, arith, memo):
     depth, j, n = 1, i, len(text)
     arith_at = 0 if arith else None                       # inside `$((`: `<<` is a shift
@@ -737,8 +753,7 @@ def _scan_paren_walk(text, i, arith, memo):
             k = _backtick_end(text, j + 1)
             j = n if k < 0 else k + 1
             continue
-        if (c == "c" and arith_at is None and text.startswith("case", j)
-                and text[j + 4:j + 5] in (" ", "\t", "\n") and text[j + 4:j + 5] != ""
+        if (c == "c" and arith_at is None and _case_word(text, j)
                 and (j == i or text[j - 1] in " \t\n;&|(){}!")):
             raise _TooComplex()                           # `$(case a in a) x;; esac)`: unmodelled
         if (c == "#" and arith_at is None

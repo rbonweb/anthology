@@ -89,6 +89,11 @@ fn words(text: &str) -> Vec<String> {
 pub(crate) fn lenient_segments(text: &str, sh: &mut Shared) -> Result<Vec<Segment>, TooComplex> {
     let mut out = Vec::new();
     sh.work.charge(2 * text.len())?;
+    // #89 review F-1: the split cuts a process substitution and drops a pipe, though bash runs every complete
+    // line before the broken one; a broken command with either is too complex
+    if text.contains("<(") || text.contains(">(") || text.contains('|') {
+        return Err(TooComplex);
+    }
     for piece in pieces(text) {
         let spaced = words(&piece.replace(['\'', '"'], " "));
         let joined = words(&drop_quotes(piece));

@@ -244,6 +244,10 @@ fn an_alternate_reading_is_checked_against_g1() {
         "npm --prefix ${x:-\\{a,b\\}} {-x,} i puppeteer",
         "npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer",
         "npm --prefix \"${x:-{a,b}}\" {-x,} i puppeteer",
+        // #89 review F-4: quotes and escapes inside `${...}` hide braces
+        "npm --prefix ${x:-\"}\"{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-\\}{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer",
     ] {
         assert_ne!(verdict(command), Verdict::Allow, "{command}");
     }

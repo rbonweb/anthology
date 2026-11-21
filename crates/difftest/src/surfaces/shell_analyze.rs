@@ -760,6 +760,26 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "while read l; do :; done < <(ls)",
     ];
     out.extend(R2.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // #89 review F-1, F-2, F-4 (the oracle applies them too)
+    const F124: &[&str] = &[
+        "npm --userconfig <(echo) i puppeteer\necho \"x",
+        "npm --userconfig >(cat) i puppeteer\n`",
+        "echo npx playwright install | sudo -s\necho \"x",
+        "echo npx playwright install | sh\necho \"x",
+        "curl -s x | sh\necho \"x",
+        "echo \"$(case\\\n a in a) npm i puppeteer;; esac)\"",
+        "echo $(case\\\n a in a) npx playwright install;; esac)",
+        "echo ${x:-$(case\\\n a in a) npx playwright install;; esac)}",
+        "npm --userconfig <(case\\\n x in x) echo;; esac) i puppeteer",
+        "npm --userconfig <(cas\\\ne x in x) echo;; esac) i puppeteer",
+        "npm --prefix ${x:-\"}\"{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-\\}{a,b}} {-x,} i puppeteer",
+        "npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer",
+    ];
+    out.extend(
+        F124.iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     out
 }
 

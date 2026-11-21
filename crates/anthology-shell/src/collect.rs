@@ -293,9 +293,18 @@ const MAX_BRACE_DEPTH: usize = 64;
 /// SH-seq re-review R-1: the index after the `}` closing the `${` at `j` (`word[j]` is `$`), or the word's
 /// end. Bash does not brace-expand inside `${...}`, so the brace scanners skip it whole.
 fn param_end(b: &[u8], j: usize) -> usize {
+    // quotes and escapes inside `${...}` hide their braces (#89 review F-4), as in the lexer's `brace_scan`
     let mut depth = 0usize;
-    for (k, &c) in b.iter().enumerate().skip(j + 1) {
-        match c {
+    let mut k = j + 1;
+    while k < b.len() {
+        match b[k] {
+            b'\\' => k += 1,
+            q @ (b'\'' | b'"') => {
+                k += 1;
+                while k < b.len() && b[k] != q {
+                    k += usize::from(q == b'"' && b[k] == b'\\') + 1;
+                }
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
@@ -305,6 +314,7 @@ fn param_end(b: &[u8], j: usize) -> usize {
             }
             _ => {}
         }
+        k += 1;
     }
     b.len()
 }
