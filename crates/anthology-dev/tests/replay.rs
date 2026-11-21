@@ -24,6 +24,17 @@ fn args(a: &[&str]) -> Vec<OsString> {
     a.iter().map(OsString::from).collect()
 }
 
+/// `replay run` compares the Rust guard with the Python one, so it needs a checkout that still has
+/// the oracle (`--repo`): after the cutover (CO2 deletes the Python) the replay runs from a
+/// pre-cutover checkout, such as the CO1 tag, and the tests that run it on this checkout skip.
+fn has_oracle(repo: &Path) -> bool {
+    let present = repo.join("port/difftest/oracle/_driver.py").is_file();
+    if !present {
+        eprintln!("skipped: no Python oracle in this checkout (after the cutover)");
+    }
+    present
+}
+
 fn have_python() -> bool {
     Command::new("python3")
         .args([
@@ -205,8 +216,11 @@ fn nothing_is_written_inside_the_repository() {
 
 #[test]
 fn the_whole_tool_runs_on_a_synthetic_corpus() {
-    let c = corpus();
     let repo = repo();
+    if !has_oracle(&repo) {
+        return;
+    }
+    let c = corpus();
     let dir = c.home.join(".claude/anthology/replay");
     assert_eq!(replay::run_in(&args(&["collect"]), &c.env, &c.home).code, 0);
     let bin = anthology_testkit::run::anthology_bin();
@@ -351,8 +365,11 @@ fn the_whole_tool_runs_on_a_synthetic_corpus() {
 /// runs the seeded copy) and the runner 2 vs 3 comparison without waiting for GD2.
 #[test]
 fn runner_3_runs_the_seeded_binary_and_matches_runner_2() {
-    let c = corpus();
     let repo = repo();
+    if !has_oracle(&repo) {
+        return;
+    }
+    let c = corpus();
     let dir = c.home.join(".claude/anthology/replay");
     assert_eq!(replay::run_in(&args(&["collect"]), &c.env, &c.home).code, 0);
     let bin = c.home.join("fake-anthology");

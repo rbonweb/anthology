@@ -787,3 +787,114 @@ A timeout or crash of either safety hook now blocks the call, and the error name
 **Consequences**
 
 When the user settings.json is the only place, the tiers apply after one yes and a restart. A value set elsewhere, or a shell value hidden behind a settings value, still applies until it is removed there; session start keeps warning and points at `/anthology:setup`. Cost if wrong: a user who relied on the override loses it until `setup remove` or a manual edit. The previous value sits in `state.json` next to the other undo data.
+
+## ADR-026: the Rust port (one language; the difftest frozen into goldens; the test ledger)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port, cutover CO2 (design `docs/superpowers/specs/2026-11-20-rust-port-design.md` §1 and §4.5, plan CO2)
+- **Status:** Accepted
+
+**Context**
+
+Anthology was two languages. About 12k lines of first-party Python (the 14 plugin modules in `plugins/anthology/scripts/`, the guard in `plugins/anthology-guardrails/scripts/`, 8 maintainer tools in `scripts/`, the smoke runner `evals/smoke/smoke.py`) and about 19k lines of Python tests ran next to rtk's Rust. Users needed a working `python3` (3.9 or newer), the guard could not run without it (ADR-010), and the guard and rtk's gate each had their own shell parser. The owner decided on 2026-11-20 to maintain Anthology in Rust only, with no Python at runtime.
+
+**Decision**
+
+- All first-party Python is ported to the cargo workspace in `crates/`. `anthology-cli` builds the one shipped program, `anthology`, from `anthology-core`, `anthology-guard`, `anthology-shell`, `anthology-memory`, `anthology-runtime`, `anthology-settings` and `anthology-pycompat`. `anthology-dev` (the maintainer tools), `difftest`, `anthology-testkit` and `repo-tests` never ship. The vendored superpowers files are untouched.
+- Behaviour parity: every hook, command, file write, exit code and message matches the Python at the baseline, except the forced changes the plan lists (GC-15, F-1 to F-20): no Python, fail closed (ADR-027), and the messages and commands that named Python. `anthology-pycompat` re-implements what the outputs depend on (`json.loads` and `json.dumps`, `\s` and `\w`, `str.lower`, strerror texts), so parity is byte for byte.
+- Proof during the port: a live differential test ran every ported surface against the Python as the oracle, on seeds and generated cases. At cutover the oracle's answers were frozen into gzip golden files (`crates/<crate>/tests/golden/`), which `cargo test` replays. A golden changes only through `anthology-dev golden bless`, so every behaviour change is a visible diff. The oracle (`port/difftest/oracle`) and the extraction scripts were then deleted; `crates/difftest` stays as the replayer.
+- Proof that nothing was dropped: every Python test id (`port/python-test-ids.txt`) has a row in `port/ledger/<module>.tsv` naming the Rust test that ports it or a reviewed drop reason. `anthology-dev ledger check` (the `ledger` job) fails on an id without a row and on a row whose Rust test cargo does not run.
+- The glue around docker, git and `claude` stays shell, with no Python calls: `release.sh`, `run-evals.sh`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `rtk-net-test.sh`. Maintainer tools run as `scripts/dev.sh <command>` in the pinned Rust image, so contributors need no host Rust.
+- CO2 deleted `plugins/anthology/scripts/`, `plugins/anthology-guardrails/scripts/`, `scripts/*.py`, `evals/smoke/smoke.py`, `tests/`, the Python CI images and the Python CI jobs (design §14.2).
+
+**Consequences**
+
+Users no longer need Python; the runtime is one static binary per platform, downloaded and pinned (ADR-028). No CI job uses Python. A deliberate behaviour change now needs a blessed golden and, for a removed test, a ledger row with its reason. Cost if wrong: the goldens cover only the frozen cases, so a behaviour no seed or generator reached can drift without a diff; the fuzz targets and the property tests cover the parsers.
+
+## ADR-027: the guard fails closed when its binary is missing or broken (supersedes ADR-010's fail-open guard)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port, cutover CO2 (design §1.2 decision 4, §9; plan GC-14)
+- **Status:** Accepted
+
+**Context**
+
+- ADR-010 kept the guard fail-open, because a missing `python3` would otherwise block every tool, and added a POSIX `sh` sentinel hook that said loudly when `python3` was missing.
+- ADR-024 already superseded part of that: a guard hook that crashes, stalls or cannot start blocks the call (`"onFailure": "block"`, 60 s timeout).
+- After the port the guard is a downloaded binary. A missing binary must not mean no guardrails, and the owner's binding decision for the port is fail closed.
+
+**Decision**
+
+- `hooks/guard.sh` (POSIX `sh`) has exactly two allow paths: the binary's positive allow token (exit 0 with exactly `anthology-guard:allow:v1` on stderr), and, when the binary cannot run, a read-only allowlist (`Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, the `Task*` tools, `Task`, `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, the plan-mode tools, `BashOutput`, `KillShell`). Every other path blocks with exit 2: shell commands, file writes and edits, `mcp__*` and any tool not on the list.
+- An installed binary that answers with anything but the token or a well-formed block is quarantined and reinstalled on a later call, at most once a minute. Three failures in 24 hours stop the reinstalls from tool calls; a new session tries once an hour.
+- Inside the binary, a panic, a regex limit or the 8 s watchdog blocks with an `(internal)` message. Malformed input still exits 0, as before.
+- Every `(setup)` and `(internal)` message names the fix and the escape that always works: disabling `anthology-guardrails` with `/plugin`, which never passes through `PreToolUse`.
+- On a platform with no guard binary (Windows included), read-only tools are allowed and everything else is blocked with a message naming `/plugin`.
+- This supersedes the rest of ADR-010's guard decision: the fail-open choice and the `python3` sentinel hook. ADR-024's `"onFailure": "block"` and 60 s timeout stay as the backstop under the shim. ADR-010's hook-output budget (9,000 characters) still stands.
+
+**Consequences**
+
+An offline first session can read but not run, write or call MCP tools until the binary installs, and it heals by itself once the network is back. While the binary is missing, G3 is not enforced for the read-only tools that are let through; the native `Read(…)` deny rules still apply (SECURITY.md). A guard stopped by SIGSTOP reaches the hook timeout and gets Claude Code's generic `onFailure` message, which names neither the cause nor `/plugin`. Cost if wrong: a harmless tool that is not on the allowlist is blocked until the binary installs. Evidence: the shim tests (`crates/repo-tests/tests/shims/`) and the `binary-missing` smoke.
+
+## ADR-028: the `anthology` binary: release, pin and install
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lanes RL1 and BS1, cutover CO1 and CO2 (design §8, §10)
+- **Status:** Accepted
+
+**Context**
+
+The `anthology` binary has to reach users the way rtk does (ADR-017): built in this repo, verifiable, pinned in a reviewed commit, and installed without Python. Both plugins need it, and `anthology-guardrails` must work when it is installed alone.
+
+**Decision**
+
+- **Release.** `.github/workflows/anthology-release.yml` runs on a tag `anthology-bin--v<version>`, which must equal `[workspace.package].version`. On four native runners it runs `cargo deny check` and the tests of the shipped crates, builds `anthology-cli` with `--release --locked` (static musl on Linux, with no interpreter or shared-library dependency), checks `anthology --version`, packs `anthology-<target>.tar.gz` (the binary and `LICENSE`), attests the archives with build provenance and publishes them with `checksums.txt`. It fails if the release exists. A pull request touching the workflow, `rust-toolchain.toml` or `deny.toml` runs a dry run. No Apple codesigning, as for rtk.
+- **Pin.** Each plugin ships `anthology.lock`, byte-identical in both: `version`, `tag`, `repo` and one sha256 per target archive, in rtk.lock's layout, one key per line so `sh` can read it. Only `anthology-dev lock write` writes it, from `checksums.txt`, and it refuses a hash that differs from GitHub's own digest of the asset. The `anthology-bin--v` prefix cannot collide with plugin tags or `rtk--v`.
+- **Install.** `hooks/bootstrap.sh` and `hooks/lib.sh` (POSIX `sh`, identical in both plugins) install into `${CLAUDE_CONFIG_DIR:-~/.claude}/anthology/bin/<version>/`, shared by both plugins. A user-placed seed `anthology-<target>.tar.gz` in that folder is tried first, then `curl`, GNU or BusyBox `wget`, then `node`, within a 20 s budget. The archive's sha256 must match the lock before anything is unpacked, the binary must print exactly `anthology <version> (<target>)`, and the install marker is written last. Each session start re-checks the install against the lock.
+- **Freshness.** `release.sh` runs `anthology-dev lock check-fresh` before releasing a plugin that ships `anthology.lock`. It compares the shipped set (the `src/` and `Cargo.toml` of every crate in `anthology-cli`'s build graph, their `Cargo.lock` entries, `rust-toolchain.toml`, the release profile and the workspace keys that graph uses) between the lock's tag commit and `HEAD`, and fails when it changed. Tests, `anthology-dev`, the difftest and the goldens are outside it.
+- **Lifecycle.** A plugin update installs the new version beside the old one; session start deletes versions no lock pins after 30 days unused. `/anthology:setup remove` deletes the folder only when `anthology-guardrails` is no longer installed.
+
+**Consequences**
+
+A change to the shipped crates reaches users only after a new binary tag and a `lock write` commit, then a release of both plugins. CO2 changed nothing in the shipped set, so the binary the replay validated (ADR-030) is the one that ships. Cost if wrong: about 6 MB per version stays behind after an uninstall that skips `remove`, until the user deletes it.
+
+## ADR-029: one shell parser for the guard and rtk's gate (`anthology-shell`)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lanes SH1, SH2, GD1 and RG1 (design §4.1, §7)
+- **Status:** Accepted
+
+**Context**
+
+The Python guard read shell commands with its own lexer and expansion. rtk's Anthology gate (ADR-022) had a flat lexer plus its own partial recursion. Disagreement between the readers was the main source of guard bypass findings. rtk's lexer cannot see into substitutions, heredocs or `sh -c`, which the guard must open.
+
+**Decision**
+
+- `crates/anthology-shell` is a direct port of the guard's lexer and expansion (`analyze(command, home)`), proven against the Python by the difftest. It depends only on `regex` and `fancy-regex` (for the patterns with lookaround or backreferences), forbids unsafe code and has a self-contained `Cargo.toml`, because rtk's own workspace builds it too.
+- `analyze` returns the entries that actually run (program, arguments, redirects, working folder, docker exemption), plus what it could not see into (`opaque`) and whether a regex or work limit cut it short (`incomplete`).
+- The guard (`anthology-guard`) decides from the entries, ignores `opaque` to keep parity with the Python, and blocks on `incomplete`. rtk's gate asks on either, and depends on the crate through one `# anthology fork:` path dependency (ADR-023).
+
+**Consequences**
+
+A parser fix reaches both the guard and the gate. They ship separately (the guard in the `anthology` binary, the gate in rtk's releases), so between releases the two can run different versions of the parser. Cost if wrong: if an upstream rtk restructure makes the path dependency painful, fall back to a shared conformance corpus, with the guard keeping `anthology-shell`.
+
+## ADR-030: replay of local transcripts before the cutover
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane RP1, cutover CO1 and CO2 (design §4.6, §13.7; architect's calls A18 and A29)
+- **Status:** Accepted
+
+**Context**
+
+The difftest proves parity on seeds and generated inputs, but real tool calls carry encodings, subagent payloads and MCP inputs no generator writes. Revision 1 of the design planned a 7-day live shadow run, which costs calendar time, sees only new calls and compares verdicts only. The repo is public, so nothing from real transcripts may be committed.
+
+**Decision**
+
+- `anthology-dev replay collect|run|report` replays every `tool_use` in the owner's local transcripts (`~/.claude/projects/**/*.jsonl`, subagent transcripts included), deduplicated, as Claude Code's `PreToolUse` envelope with the raw input bytes. This replaces the shadow run (A18).
+- Four runners per call: the Python guard (the authority), `anthology guard hook`, the shim with the binary seeded, and the shim with the binary missing. Runners 1 to 3 must agree byte for byte on exit code and stderr. It also compares `analyze` entries on every Bash command and the privacy findings on every text field. Runner 4 counts what fail closed would block, by tool, which checks the read-only allowlist (ADR-027).
+- It runs at CO1 on the tagged binary, after every merge that touches the guard, the parser or the privacy scan, and at CO2. The gate is zero unexplained differences.
+- The corpus and the full details stay local, under `~/.claude/anthology/replay/`. `.gitignore` and `no_replay_tracked.rs` keep them out of the repo. The committed report `port/replay-reports/<date>.md` holds only aggregate counts, tools bucketed as `builtin`, `mcp` or `other`, and case ids that are HMAC-SHA256 values under a key that never leaves the machine. A test checks the report for every corpus string before it is written (A29).
+
+**Consequences**
+
+The binary that ships was checked against every real tool call on record, deeper than verdicts, with no calendar wait. The replay proves parity on real traffic, not bypass resistance: the generators and the monotonicity properties cover that. Runner 1 now needs a checkout from before CO2 (`--repo`), since the Python is gone from `HEAD`. Cost if wrong: less diagnostic detail in the committed report; the full detail stays on the owner's machine.
