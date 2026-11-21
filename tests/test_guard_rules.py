@@ -1927,5 +1927,318 @@ class RuleTableTest(unittest.TestCase):
         self.assertEqual(tool_input, {"command": "npx playwright install"})
 
 
+class RunnerBypassTest(unittest.TestCase):
+    """Fix lane FW-I (SH2 review I-1): every form here runs `npx playwright install` (or the
+    named launch) under bash 5.2 or the macOS tools; each was allowed before the fix."""
+
+    def assert_table(self, expected_rule, cases):
+        for case in cases:
+            with self.subTest(rule=expected_rule, case=case):
+                self.assertEqual(rule_of(bash(case)), expected_rule)
+
+    def test_env_split_string_is_read_from_envs_own_options(self):
+        self.assert_table("G1", [
+            # `-S` after the program is the program's argument, not env's option
+            "env A=1 npx playwright install -S x",
+            "sudo env npx playwright install -S ls",
+            "env npx playwright install --split-string x",
+            # attached forms
+            "env -S\"npx playwright install\"",
+            "env -S'npx playwright install'",
+            "env --split-string='npx playwright install'",
+            "env --split-string=\"npx playwright install\"",
+            "env -iS\"npx playwright install\"",
+            "env -vS'npx playwright install'",
+            # the split words are env's arguments: options, assignments, then the rest
+            "env -S 'A=1 npx playwright' install",
+            "env -S\"-i PATH=/usr/bin npx playwright install\"",
+            "env -C / npx playwright install",
+            "env --chdir=/ npx playwright install",
+            "env -u HOME -S 'npx playwright install'",
+        ])
+        self.assert_table(None, [
+            "env FOO=1 make",
+            "env -S 'make test'",
+            "env -i PATH=/usr/bin make -S x",
+            "env -- -S x",
+        ])
+
+    def test_runner_options_the_table_does_not_know(self):
+        self.assert_table("G1", [
+            "npx --registry https://r.example playwright install",
+            "npx --cache /tmp/c playwright install",
+            "npx --registry https://r.example playwright@1.49.0 install",
+            "npm --loglevel silent exec playwright install",
+            "npm exec --registry https://r.example playwright install",
+            "npm --loglevel silent i puppeteer",
+            "npm --loglevel silent init playwright",
+            "pnpm --reporter silent dlx playwright install",
+            "pnpm --reporter silent add puppeteer",
+            "yarn --frozen-lockfile playwright install",
+            "bunx --some-flag value playwright install",
+            "uvx --index https://i.example playwright install",
+            "npx cross-env CI=1 playwright install",
+            "npx dotenv -e .env -- playwright install",
+            "pnpm dlx --unknown x playwright install",
+            # options no table lists, so only the construction catches them
+            "npx --foo-bar https://r.example playwright install",
+            "npm --foo-bar silent exec playwright install",
+            "npm --foo-bar silent i puppeteer",
+            "npm --foo-bar silent init playwright",
+            "pnpm --foo-bar silent dlx playwright install",
+            "yarn --foo-bar silent playwright install",
+            "sudo --foo-bar 3 npx playwright install",
+            "timeout --foo-bar 3 5 npx playwright install",
+            "env --foo-bar 3 sh -c 'npx playwright install'",
+        ])
+        self.assert_table(None, [
+            "npx prettier --write .",
+            "npx --registry https://r.example prettier --write .",
+            "npm --loglevel silent install",
+            "npm --loglevel silent i playwright",
+            "npx eslint playwright.config.ts",
+            "npm i -D playwright @playwright/test",
+            "pnpm --reporter silent run build",
+            "npx tsc --noEmit -p playwright",
+        ])
+
+    def test_xargs_runs_its_stdin_words(self):
+        self.assert_table("G1", [
+            "echo playwright install | xargs npx",
+            "echo install | xargs npx playwright",
+            "printf 'playwright install\\n' | xargs npx",
+            "printf 'playwright\\ninstall\\n' | xargs npx",
+            "xargs npx <<< 'playwright install'",
+            "xargs -a /dev/stdin npx <<< 'playwright install'",
+            "echo 'npx playwright install' | xargs -I{} sh -c '{}'",
+            "echo playwright install | xargs -I{} sh -c 'npx {}'",
+            "echo puppeteer | xargs npm i",
+            "echo x | xargs --replace npx playwright install",
+            "echo x | xargs -J % npx playwright install",
+            "echo x | xargs -t -P4 --null npx playwright install",
+        ])
+        self.assert_table(None, [
+            "xargs rm",
+            "ls | xargs rm",
+            "find . -name '*.log' | xargs rm -f",
+            "echo src | xargs -I{} ls {}",
+            "echo prettier | xargs npx",
+            "git ls-files | xargs npx prettier --check",
+        ])
+
+    def test_command_runners_missing_from_the_tables(self):
+        self.assert_table("G1", [
+            "builtin eval 'npx playwright install'",
+            "builtin command npx playwright install",
+            "su -c 'npx playwright install' root",
+            "su root -c 'npx playwright install'",
+            "su - root -c 'npx playwright install'",
+            "su -lc 'npx playwright install'",
+            "su --command='npx playwright install'",
+            "su --session-command='npx playwright install'",
+            "runuser -u root -- npx playwright install",
+            "runuser -c 'npx playwright install' root",
+            "sg root 'npx playwright install'",
+            "sg root -c 'npx playwright install'",
+            "script -qc 'npx playwright install' /dev/null",
+            "script -q -c 'npx playwright install' /dev/null",
+            "script --command 'npx playwright install' /dev/null",
+            "script -q /dev/null npx playwright install",
+            "flock /tmp/l npx playwright install",
+            "flock -x /tmp/l npx playwright install",
+            "flock -w 5 /tmp/l npx playwright install",
+            "flock /tmp/l -c 'npx playwright install'",
+            "flock -n /tmp/l --command 'npx playwright install'",
+            "busybox sh -c 'npx playwright install'",
+            "busybox env npx playwright install",
+            "busybox timeout 5 npx playwright install",
+            "chroot / npx playwright install",
+            "chroot --userspec=0:0 / npx playwright install",
+            "nsenter -t 1 npx playwright install",
+            "nsenter -a -t 1 npx playwright install",
+            "nsenter --target 1 --mount npx playwright install",
+            "unshare -r npx playwright install",
+            "unshare --map-root-user npx playwright install",
+            "parallel ::: 'npx playwright install'",
+            "parallel npx playwright ::: install",
+            "parallel -j1 npx playwright ::: install",
+            "parallel 'npx playwright {}' ::: install",
+            "echo 'npx playwright install' | parallel",
+            "taskset -c 0 npx playwright install",
+            "taskset 1 npx playwright install",
+            "chrt -o 0 npx playwright install",
+            "setpriv --reuid 0 npx playwright install",
+            "prlimit --nofile=1024 npx playwright install",
+            "setarch x86_64 -R npx playwright install",
+            "fakeroot -- npx playwright install",
+            "strace -f -o /dev/null npx playwright install",
+            "dbus-run-session -- npx playwright install",
+            "stdbuf -o L npx playwright install",
+            "stdbuf --output L npx playwright install",
+            "arch -arch arm64 npx playwright install",
+            "time -f %e npx playwright install",
+            "sudo --close-from 3 npx playwright install",
+            "timeout --signal=KILL 5 npx playwright install",
+            "nice -n 5 -- npx playwright install",
+            "doas -u root npx playwright install",
+            "entr -s 'npx playwright install'",
+            "entr -n npx playwright install",
+            "corepack pnpm dlx playwright install",
+            "npx concurrently 'npm:dev' 'npx playwright test'",
+            "nodemon --exec 'npx playwright test'",
+            "mise exec node@20 -- npx playwright install",
+            "direnv exec . npx playwright install",
+            "nvm exec 20 npx playwright install",
+            "cross-env CI=1 npx playwright install",
+            "env-cmd -f .env npx playwright install",
+            # watch runs its words as one `sh -c` line, whether or not one holds a space
+            "watch 'npx\tplaywright\tinstall'",
+            "watch -n1 'npx playwright install;true'",
+            "watch -x npx playwright install",
+        ])
+        self.assert_table("G2", [
+            "flock /tmp/l google-chrome",
+            "chroot / chromium --headless",
+            "su -c 'open -a \"Google Chrome\"' root",
+        ])
+        self.assert_table(None, [
+            "timeout 5 cargo test",
+            "sudo apt-get install jq",
+            "sudo -u www-data ls",
+            "nice -n 10 make -j8",
+            "nohup python3 server.py &",
+            "flock /tmp/l make",
+            "su -c 'make install' root",
+            "script -q /dev/null ls",
+            "parallel gzip ::: a.log b.log",
+            "parallel rm ::: chromium-cache",
+            "watch -n 5 'ls -la'",
+            "watch git status",
+            "chroot /srv/root ls",
+            "unshare -r id",
+            "builtin cd /tmp",
+            "busybox ls",
+            "entr -r make",
+            "taskset -c 0 cargo bench",
+            "sudo docker run --rm mcr.microsoft.com/playwright:v1.49.0 npx playwright test",
+            "timeout 600 docker compose run e2e npx playwright test",
+            "sudo echo playwright install",
+            "timeout 5 grep -r playwright install",
+            "rtk grep playwright install",
+            "sudo rm -rf playwright install",
+            "xargs -n1 echo playwright install",
+            "npx concurrently 'npm:dev' 'npm:test'",
+            "nodemon --exec 'node server.js'",
+        ])
+
+    def test_options_and_settings_that_run_a_command(self):
+        """SH2 round 2: trap, fd -x, git config commands, tar and rsync command options."""
+        self.assert_table("G1", [
+            "env --split-string='npx playwright install' ls",
+            "env --split='npx playwright install'",
+            "trap 'npx playwright install' EXIT",
+            "trap -- 'npx playwright install' EXIT",
+            "trap 'npx playwright install' ERR; false",
+            "fd -x npx playwright install",
+            "fd a1 /tmp -x npx playwright install",
+            "fd a1 /tmp --exec npx playwright install \\;",
+            "fd a1 /tmp -X npx playwright install",
+            "fdfind a1 /tmp --exec-batch npx playwright install",
+            "git -c alias.x='!npx playwright install' x",
+            "git -c 'alias.x=!npx playwright install' x",
+            "git -c core.sshCommand='npx playwright install' ls-remote ssh://h/x",
+            "git -c core.fsmonitor='npx playwright install' status",
+            "git -c core.pager='npx playwright install' log",
+            "git -c core.editor='npx playwright install' commit --allow-empty",
+            "git -c credential.helper='!npx playwright install' fetch",
+            "git -C repo -c diff.pw.textconv='npx playwright install' diff",
+            "git config alias.pw '!npx playwright install'",
+            "git config --global core.pager 'npx playwright install'",
+            "git config set alias.pw '!npx playwright install'",
+            "GIT_SSH_COMMAND='npx playwright install' git ls-remote ssh://h/x",
+            "GIT_PAGER='npx playwright install' git log",
+            "GIT_EDITOR='npx playwright install' git commit --allow-empty",
+            "env GIT_SSH_COMMAND='npx playwright install' git fetch",
+            "GIT_CONFIG_PARAMETERS=\"'alias.x=!npx playwright install'\" git x",
+            "GIT_CONFIG_PARAMETERS=\"'alias.x'='!npx playwright install'\" git x",
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x "
+            "GIT_CONFIG_VALUE_0='!npx playwright install' git x",
+            "tar -xf a.tar --to-command='npx playwright install'",
+            "tar -xf a.tar --to-command 'npx playwright install'",
+            "tar --to-com='npx playwright install' -xf a.tar",
+            "tar -I 'npx playwright install' -cf a.tar f",
+            "tar --use-compress-program='npx playwright install' -cf a.tar f",
+            "tar --use-compress-program 'npx playwright install' -cf a.tar f",
+            "tar -cf a.tar --checkpoint=1 --checkpoint-action=exec='npx playwright install' f",
+            "rsync -e 'npx playwright install' f h:/tmp/",
+            "rsync -avze 'npx playwright install' f h:/tmp/",
+            "rsync --rsh='npx playwright install' f h:/tmp/",
+            "rsync --rsh 'npx playwright install' f h:/tmp/",
+            "RSYNC_RSH='npx playwright install' rsync f h:/tmp/",
+            "find . -execdir npx playwright install \\;",
+            "find . -ok npx playwright install \\;",
+        ])
+        self.assert_table(None, [
+            "fd -e rs",
+            "fd -e rs -x wc -l",
+            "fd --extension md --exec cat",
+            "git -c color.ui=always log",
+            "git -c core.pager=less log",
+            "git -c alias.st=status st",
+            "git -c core.editor=vim commit",
+            "git commit -c HEAD",
+            "git config --global alias.st status",
+            "git config --get alias.pw",
+            "GIT_SSH_COMMAND='ssh -i ~/.ssh/key' git fetch",
+            "EDITOR=vim git commit",
+            "tar -xzf x.tgz",
+            "tar -czf out.tgz -C dir .",
+            "tar -I zstd -xf a.tar.zst",
+            "tar --totals -cf a.tar f",
+            "rsync -av a b",
+            "rsync -avz -e ssh src/ host:dst/",
+            "trap 'rm -f /tmp/x' EXIT",
+            "trap - EXIT",
+            "trap '' INT",
+            "trap INT",
+        ])
+
+    def test_shell_fed_by_process_substitution_or_fd(self):
+        self.assert_table("G1", [
+            "sh <(echo npx playwright install)",
+            "bash <(echo npx playwright install)",
+            "bash -x <(printf 'npx playwright install\\n')",
+            "cat <(echo npx playwright install) | sh",
+            "source <(echo npx playwright install)",
+            ". <(echo npx playwright install)",
+            "sh <(cat <<'EOF'\nnpx playwright install\nEOF\n)",
+            "exec 3<<<'npx playwright install'; sh <&3",
+            "exec 3<<<'npx playwright install'; bash <&3",
+            "exec 3<<<'npx playwright install'; sh /dev/fd/3",
+            "exec 3< <(echo npx playwright install); sh <&3",
+            "sh /dev/stdin <<< 'npx playwright install'",
+            "bash /dev/fd/0 <<< 'npx playwright install'",
+        ])
+        self.assert_table(None, [
+            "diff <(echo a) <(echo b)",
+            "diff <(echo npx playwright install) notes.txt",
+            "sh <(echo make test)",
+            "exec 3<<<'make'; sh <&3",
+            "exec 3<<<'npx playwright install'; cat <&3",
+            "sh /dev/stdin <<< 'ls'",
+        ])
+
+    def test_alternate_readings_stay_cheap(self):
+        import time
+        command = "sudo " + "npx " * 20_000 + "playwright install"
+        start = time.perf_counter()
+        rule_of(bash(command))
+        self.assertLess(time.perf_counter() - start, 1.0)
+        command = "echo " + "playwright install " * 2000 + "| xargs npx"
+        start = time.perf_counter()
+        self.assertEqual(rule_of(bash(command)), "G1")
+        self.assertLess(time.perf_counter() - start, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
