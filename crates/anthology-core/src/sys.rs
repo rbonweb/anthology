@@ -1,6 +1,7 @@
 //! The only `unsafe` code in the workspace (GC-18): thin, checked wrappers over libc.
 //!
 //! - [`passwd_home`]: `getpwuid_r(getuid())`'s `pw_dir`, as `pwd.getpwuid(os.getuid()).pw_dir`.
+//! - [`user_home`]: `getpwnam_r(name)`'s `pw_dir`, as `pwd.getpwnam(name).pw_dir`.
 //! - [`local_date`]: `tzset` then `localtime_r`, as `datetime.date.fromtimestamp`.
 //! - [`hostname`]: `gethostname`, as `socket.gethostname`.
 //! - [`uname`]: `uname`'s `sysname` and `machine`, as `platform.system()` and `machine()`.
@@ -21,30 +22,28 @@ unsafe extern "C" {
     fn tzset();
 }
 
-/// The largest buffer [`passwd_home`] tries before it gives up.
+/// The largest buffer the passwd lookups try before they give up.
 const PASSWD_BUF_MAX: usize = 1 << 20;
 
-/// The current user's home directory from the password database, or `None` when the uid has
-/// no entry (Python: `KeyError`) or the lookup fails.
-pub fn passwd_home() -> Option<OsString> {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
+/// Runs a `getpw*_r` call, growing the buffer on `ERANGE`, and returns the entry's `pw_dir`.
+/// `call` gets the `passwd` storage, the string buffer and its size, and the result out pointer.
+fn pw_dir<F>(call: F) -> Option<OsString>
+where
+    F: Fn(*mut libc::passwd, *mut libc::c_char, usize, *mut *mut libc::passwd) -> libc::c_int,
+{
     let mut size = 1024usize;
     loop {
         let mut buf = vec![0u8; size];
         let mut pwd = MaybeUninit::<libc::passwd>::uninit();
         let mut result: *mut libc::passwd = std::ptr::null_mut();
-        // SAFETY: `pwd` is writable storage for one `passwd`, `buf` is `size` writable bytes
-        // and `result` is a valid out pointer; all three outlive the call.
-        let rc = unsafe {
-            libc::getpwuid_r(
-                uid,
-                pwd.as_mut_ptr(),
-                buf.as_mut_ptr().cast::<libc::c_char>(),
-                size,
-                &mut result,
-            )
-        };
+        // `pwd` is writable storage for one `passwd`, `buf` is `size` writable bytes and
+        // `result` is a valid out pointer; all three outlive the call.
+        let rc = call(
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            size,
+            &mut result,
+        );
         if rc == libc::ERANGE && size < PASSWD_BUF_MAX {
             size *= 2;
             continue;
@@ -52,7 +51,7 @@ pub fn passwd_home() -> Option<OsString> {
         if rc != 0 || result.is_null() {
             return None;
         }
-        // SAFETY: on success `result` points at `pwd`, initialised by getpwuid_r, whose
+        // SAFETY: on success `result` points at `pwd`, initialised by the lookup, whose
         // `pw_dir` is null or a NUL-terminated string inside `buf`, which is still alive.
         let dir = unsafe { (*result).pw_dir };
         if dir.is_null() {
@@ -63,6 +62,27 @@ pub fn passwd_home() -> Option<OsString> {
         let bytes = unsafe { CStr::from_ptr(dir) }.to_bytes().to_vec();
         return Some(OsString::from_vec(bytes));
     }
+}
+
+/// The current user's home directory from the password database, or `None` when the uid has
+/// no entry (Python: `KeyError`) or the lookup fails.
+pub fn passwd_home() -> Option<OsString> {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: the pointers come from `pw_dir`, which upholds getpwuid_r's contract.
+    pw_dir(|pwd, buf, size, result| unsafe { libc::getpwuid_r(uid, pwd, buf, size, result) })
+}
+
+/// The home directory of the user called `name` from the password database
+/// (`pwd.getpwnam(name).pw_dir`), or `None` when there is no such user, the lookup fails, or
+/// `name` holds a NUL byte.
+pub fn user_home(name: &[u8]) -> Option<OsString> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `name` is NUL-terminated and outlives the call; the other pointers come from
+    // `pw_dir`, which upholds getpwnam_r's contract.
+    pw_dir(|pwd, buf, size, result| unsafe {
+        libc::getpwnam_r(name.as_ptr(), pwd, buf, size, result)
+    })
 }
 
 /// The local calendar date `(year, month 1-12, day 1-31)` of the epoch second `t`, after
@@ -161,6 +181,15 @@ mod tests {
         let (system, machine) = uname().expect("uname");
         assert!(["Linux", "Darwin"].contains(&system.as_str()), "{system}");
         assert!(!machine.is_empty());
+    }
+
+    #[test]
+    fn user_home_looks_a_user_up_by_name() {
+        let root = user_home(b"root").expect("root has a passwd entry");
+        assert!(!root.is_empty());
+        assert_eq!(user_home(b"no-such-user-ms1-f"), None);
+        assert_eq!(user_home(b"ro\0ot"), None);
+        assert_eq!(user_home(b""), None);
     }
 
     #[test]

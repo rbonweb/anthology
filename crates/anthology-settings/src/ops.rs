@@ -12,7 +12,7 @@ use crate::scanner::py;
 use crate::validate::validate_plugin_root;
 
 /// `BYPASS_NOTE` (GC-8).
-pub const BYPASS_NOTE: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command; the guardrails and deny rules still apply to the wrapped command.";
+pub const BYPASS_NOTE: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
 /// `ALLOW_RTK`.
 pub const ALLOW_RTK: &str = "Bash(rtk *)";
 /// `ALLOW_MEM_SAVE`: lets read-only agents save memory notes.
