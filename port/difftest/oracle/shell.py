@@ -206,6 +206,7 @@ def _lenient_segments(text):
             seg.tokens = tokens
             seg.braces = True                             # re-review F-1: quoting is unknown here
             seg.quoted_braces = True                      # SH-seq C-1: so no brace reading is trusted
+            seg.defines = True                            # G0-FP: nor whether a `(` follows
             out.append(seg)
             for start, first in G._script_starts(tokens):   # `bash -c <rest of the line>`
                 G._charge(len(tokens) - start)
@@ -213,6 +214,7 @@ def _lenient_segments(text):
                 extra.tokens = [first] + tokens[start + 1:]
                 extra.braces = True
                 extra.quoted_braces = True
+                extra.defines = True
                 out.append(extra)
     return out
 
@@ -644,15 +646,42 @@ def _brace_item_space(word):
 
 
 def _subscript_runs(word):
+    """collect.rs `subscript_runs` (G0-FP: a start counts with its closer and a `]` after it; `\\[` opens none)."""
+    close = word.rfind("]")
+    if close < 0:
+        return False
+    head = word[:close]
+    tick, paren, quote = head.rfind("`"), head.rfind(")"), head.rfind("'")
     open_ = False
-    for j, c in enumerate(word):
+    for j, c in enumerate(head):
         if c == "[":
-            open_ = True
+            if j == 0 or head[j - 1] != "\\":
+                open_ = True
         elif c == "]":
             open_ = False
-        elif open_ and (c == "`" or (c == "$" and word[j + 1:j + 2] in ("(", "'"))):
+        elif open_ and ((c == "`" and tick > j)
+                        or (c == "$" and ((word[j + 1:j + 2] == "(" and paren > j + 1)
+                                          or (word[j + 1:j + 2] == "'" and quote > j + 1)))):
             return True
     return False
+
+
+def _writes_file(op, target):
+    """collect.rs `writes_file` (G0-FP): `>&N`, `>&N-` and `>&-` duplicate or close a descriptor."""
+    fd = target[:-1] if target.endswith("-") else target
+    dup = op == ">&" and all(ch in "0123456789" for ch in fd)
+    return (op.startswith(">") or op.startswith("&>")) and not dup
+
+
+def _run_words(e):
+    """collect.rs `run_words` (G0-FP): a shell given a script file, and `source`, run only that file."""
+    if e.prog in G._SHELLS:
+        mode, start, _scripts = G._shell_parse(e.prog, e.args)
+        if mode == "file":
+            return e.args[:start + 1]
+    elif e.prog in ("source", ".") and e.args and not e.args[0].startswith("-"):
+        return e.args[:1]
+    return e.args
 
 
 def _brace_expressions(word):
@@ -842,7 +871,7 @@ _COMPOUND = ("if", "while", "until", "for", "select", "case")          # SH-F3: 
 def _collect_once_body(text, ctx, exempt, depth):
     readers_at_start = ctx.readers                        # SH-F3
     feeders_at_start = getattr(ctx, "feeders", 0)         # SH-F2 review I-1
-    new_entries, braced, after_compound = [], set(), set()
+    new_entries, braced, after_compound, defining = [], set(), set(), set()
     segs, orphan_texts = _segments_orphans(text)          # SH-F2
     for seg in segs:
         ctx.braces = seg.braces
@@ -855,10 +884,12 @@ def _collect_once_body(text, ctx, exempt, depth):
             braced.add(id(entry))
         if seg.after_compound:
             after_compound.add(id(entry))
+        if seg.defines:
+            defining.add(id(entry))
     position = {id(e): k for k, e in enumerate(new_entries)}
     defined = {}                                          # I-2a: `f()` lexes as `f`, `function f` as is
     for k, e in enumerate(new_entries):
-        if len(e.raw) == 1:
+        if len(e.raw) == 1 and id(e) in defining:         # G0-FP: `f` ended by a `(` (lexer.rs `defines`)
             defined.setdefault(e.raw[0], k)
         elif len(e.raw) >= 2 and e.raw[0] == "function":
             defined.setdefault(e.raw[1], k)
@@ -959,11 +990,10 @@ def _collect_once_body(text, ctx, exempt, depth):
     # SH-F3: and every stdin reader (`> >(su)`, `< <(sudo -s)`, `> >(eval "$(cat)")`)
     consumers = [e for e in new_entries
                  if e.prog in G._SHELLS or e.prog in ("source", ".") or G._reads_stdin_as_shell(e)]
-    written = {target for e in new_entries for op, target in e.redirs
-               if op.startswith(">") or op.startswith("&>")}
+    written = {target for e in new_entries for op, target in e.redirs if _writes_file(op, target)}
     coproc = any(e.raw[:1] == ["coproc"] for e in new_entries)
     if ((consumers and (">(" in text or coproc))
-            or (written and any(a in written for c in consumers for a in c.args))):
+            or (written and any(a in written for c in consumers for a in _run_words(c)))):
         raise G._TooComplex()                             # fail closed
     if "<(" in text and consumers:                        # SH-F3: the consumers include the stdin readers
         for inner in G._process_substitutions(text):
@@ -1016,12 +1046,15 @@ def _end_seg(self, new_group):
     braces, self.braces = getattr(self, "braces", False), False
     quoted_braces, self.quoted_braces = getattr(self, "quoted_braces", False), False
     count = len(self.out)
+    caller = sys._getframe(1)
     _END_SEG(self, new_group)
     if len(self.out) > count:
         seg = self.out[-1]
         seg.braces = braces
         seg.quoted_braces = quoted_braces
         seg.after_compound, self.compound = getattr(self, "compound", False), False
+        # G0-FP: a `(` ended it (`run`'s `;()` branch), so a one-word segment may define a function
+        seg.defines = caller.f_code is _RUN and caller.f_locals.get("c") == "("
     if new_group:
         self.compound = False
 
@@ -1096,7 +1129,7 @@ G._Lexer.end_word = _end_word
 class _Seg(G._Seg):
     """`_Seg` with Rust's segment flags (re-review F-1, I-2a) and its substitution-holding words (SH-FW final F-8:
     `(token index, body, sole)` for each word that held a `$(...)` or a backtick)."""
-    __slots__ = ("braces", "after_compound", "quoted_braces", "holders")
+    __slots__ = ("braces", "after_compound", "quoted_braces", "holders", "defines")
 
     def __init__(self, group):
         super().__init__(group)
@@ -1104,6 +1137,7 @@ class _Seg(G._Seg):
         self.after_compound = False
         self.quoted_braces = False
         self.holders = []
+        self.defines = False                              # G0-FP: lexer.rs `Segment::defines`
 
 
 G._Seg = _Seg
