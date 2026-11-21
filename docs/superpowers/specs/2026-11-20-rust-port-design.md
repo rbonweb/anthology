@@ -609,6 +609,12 @@ Read-only tools are allowed. Everything else is blocked with the "no guard binar
 The guard is one layer of defence. It stops accidental installs and launches by cooperative agents, not a determined bypass. Most commands it cannot model are too complex (G0); the routes below are not, and are allowed. The shell-gap chase stopped at SH-F4 (controller ruling). These routes are known and stay open. Each one needs a value that an earlier command computes, or a shell feature that is not modelled:
 - **Plain variables.** A value assigned before it is used is not read into the word: `x=i; npm $x puppeteer`, `: ${x:=i}; npm $x …`, `read l <<< "i puppeteer"; npm $l`, `echo i puppeteer | while read l; do npm $l; done`, and a function that copies a literal argument before running it (`f() { local c=$1; eval "$c"; }; f "npx …"`).
 - **Subscripts split across words** (G0-FP). A word is too complex when it holds a whole subscript that runs a substitution: a `[` (not after a backslash), a closed `$(…)`, backtick pair or `$'…'`, then a `]`. A subscript assembled from pieces of several words or values (`x='[$(id'; unset "a${x})]"`) is not read, as one split at its `[` never was.
+- **Files written, then run** (G0-FP review P-1; post-release). The "shell running a file the text wrote" check only matches `sh FILE` (any shell, with its options) and `source FILE` / `. FILE`, where FILE is a redirect target of the same text. It does not catch:
+  - `chmod +x x && ./x`, `bash < x` and `. ./x` (a different spelling of the path);
+  - `BASH_ENV=f bash …`;
+  - a file written by `tee`, or by any means other than a redirect;
+  - a file written in an earlier tool call.
+- **A script's arguments** (G0-FP review M-1). A shell given a script file is checked on that file only, not on the words after it, which are the script's positional parameters. So `printf X > p.sh; sh run.sh p.sh` is allowed, even when `run.sh` runs or sources its argument (`. "$1"`). This is the same as `sh run.sh` alone, whose content is never read.
 - **Substitution output.** What a `$(…)` prints is not read as a command or a word: `sh -c "$(echo npx …)"`, `for l in $(echo npx …); do eval "$l"; done`, `npm ${x:-$(echo i)} puppeteer`.
 - **`xargs -0`.** NUL-separated output from a literal producer is not split into arguments (`printf 'a\0b\0' | xargs -0 …`), in the pipe form as in the `<(…)` form.
 - **Contrived stdin-to-shell routes** (review-sh-f3 M-1):
