@@ -1,0 +1,10 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -19,6 +19,7 @@
+ - If multiple interpretations exist, present them - don't pick silently.
+ - If a simpler approach exists, say so. Push back when warranted.
+ - If something is unclear, stop. Name what's confusing. Ask.
++- In autonomous runs (no one to answer), record the assumption and carry on instead of stopping to ask.
+
+ ## 2. Simplicity First
+
