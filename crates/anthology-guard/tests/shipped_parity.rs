@@ -195,9 +195,6 @@ fn an_unknown_option_bypass_the_fw_reference_found_still_blocks() {
 }
 
 #[test]
-#[ignore = "needs SH (final review I-3): anthology-shell must keep the shipped reading of an unknown \
-            option (a flag with no value) as an alternate whatever its program; the guard already \
-            checks alternates against G2"]
 fn an_unknown_option_before_a_g2_launch_still_blocks() {
     // the shipped Python blocks both as G2
     for command in [
@@ -320,10 +317,7 @@ const PREFIX_TARGETS: &[&str] = &[
 
 /// Shipped blocks Rust still allows until SH keeps the shipped reading of an unknown option as an
 /// alternate (final review I-3). Remove each once SH lands; the list may only shrink.
-const PENDING_SH: &[&str] = &[
-    "pnpm --silent open -a Chromium https://x",
-    "yarn --silent open -a Chromium https://x",
-];
+const PENDING_SH: &[&str] = &[];
 
 fn prefix_commands() -> Vec<String> {
     let mut out = Vec::new();
@@ -454,8 +448,6 @@ fn rust_blocks_every_g6_cross_case_the_shipped_python_blocks() {
 }
 
 #[test]
-#[ignore = "needs SH (#89, port-sh-final): the shipped reading of an unknown option as an \
-            alternate; G6 already reads alternates (review-gd-final I-1)"]
 fn a_secret_written_to_memory_behind_an_unknown_option_is_g6() {
     // review-gd-final I-1: the shipped reading (an alternate) writes memory
     let token = gh_token();

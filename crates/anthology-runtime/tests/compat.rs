@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use anthology_core::Env;
 use anthology_runtime::compat::{
     self, REPO_READ_LIMIT, agent_memory_hint, agent_memory_problems, read_json_limited,
-    repo_top_with, subagent_model_source, wrapper_problems,
+    repo_top_with, subagent_model_source, subagent_model_sources, subagent_model_sources_with,
+    wrapper_problems,
 };
 use anthology_testkit::rt_a::{RealTemp, write};
 
@@ -57,7 +58,7 @@ impl Case {
             .with("PATH", "/bin")
     }
 
-    fn source(&self) -> Option<&'static str> {
+    fn source(&self) -> Option<String> {
         subagent_model_source(&self.env(), &self.cwd)
     }
 
@@ -229,6 +230,74 @@ fn test_set_only_in_user_settings() {
     let label = c.source().unwrap();
     assert!(label.contains("settings.json"), "{label}");
     assert!(!label.contains("SECRETMODEL"));
+}
+
+#[test]
+fn test_process_env_copied_from_a_settings_file_names_only_the_file() {
+    // Claude Code copies a settings file's env into the commands it runs
+    let c = Case::new();
+    write(&c.config.join("settings.json"), MODEL);
+    let env = c.env().with("CLAUDE_CODE_SUBAGENT_MODEL", "m");
+    assert_eq!(subagent_model_sources(&env, &c.cwd), ["user settings.json"]);
+    let env = c.env().with("CLAUDE_CODE_SUBAGENT_MODEL", "x");
+    assert_eq!(
+        subagent_model_sources(&env, &c.cwd),
+        ["user settings.json", "the process environment"]
+    );
+}
+
+#[test]
+fn test_every_place_is_listed_in_order() {
+    let c = Case::new();
+    let managed = c.tmp.join("managed-settings.json");
+    for path in [
+        c.config.join("settings.json"),
+        c.cwd.join(".claude/settings.local.json"),
+        managed.clone(),
+    ] {
+        write(&path, MODEL);
+    }
+    let found = subagent_model_sources_with(&c.env(), &c.cwd, std::slice::from_ref(&managed));
+    assert_eq!(
+        found,
+        [
+            "user settings.json",
+            "the project's .claude/settings.local.json",
+            "managed settings"
+        ]
+    );
+    // doctor's `(%s)` is every place, joined
+    assert_eq!(
+        found.join(", "),
+        "user settings.json, the project's .claude/settings.local.json, managed settings"
+    );
+    for label in found {
+        assert!(
+            compat::subagent_model_hint(label).contains("CLAUDE_CODE_SUBAGENT_MODEL"),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn test_set_in_managed_settings() {
+    let c = Case::new();
+    let managed = c.tmp.join("managed-settings.json");
+    write(
+        &managed,
+        r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "SECRETMODEL"}}"#,
+    );
+    let found = subagent_model_sources_with(&c.env(), &c.cwd, &[managed]);
+    assert_eq!(found, ["managed settings"]);
+    assert!(!found.join(", ").contains("SECRETMODEL"));
+}
+
+#[test]
+fn test_run_in_the_home_folder_the_user_file_is_listed_once() {
+    let c = Case::new();
+    let env = c.env().with_os("CLAUDE_CONFIG_DIR", c.cwd.join(".claude"));
+    write(&c.cwd.join(".claude/settings.json"), MODEL);
+    assert_eq!(subagent_model_sources(&env, &c.cwd), ["user settings.json"]);
 }
 
 #[test]

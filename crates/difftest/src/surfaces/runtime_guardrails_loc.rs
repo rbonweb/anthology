@@ -190,7 +190,7 @@ fn run(case: &Value) -> Observed {
         "subagent_model" => obj(vec![(
             "source",
             compat::subagent_model_source(&env, Path::new(&arg(case, "cwd", &root)))
-                .map_or(Value::Null, |s| Value::Str(s.into())),
+                .map_or(Value::Null, Value::Str),
         )]),
         "repo_top" => obj(vec![(
             "top",

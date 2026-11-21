@@ -66,7 +66,7 @@ pub const NAG: &str =
 /// No `CLAUDE_PLUGIN_DATA`.
 pub const NO_DATA: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory search index have no data folder (compatibility check)";
 /// `CLAUDE_CODE_SUBAGENT_MODEL` is set somewhere.
-pub const SUBAGENT_MODEL_SET: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply";
+pub const SUBAGENT_MODEL_SET: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply; run /anthology:setup to see where it is set";
 /// The plugin-read rule names another folder.
 pub const MOVED: &str =
     "anthology: the plugin moved; re-run /anthology:setup so agents can read their knowledge";
@@ -206,7 +206,7 @@ pub struct CompatDeps {
     pub agent_memory_problems: fn(&Path) -> (Vec<String>, Vec<String>),
     pub repo_top: fn(&Path) -> Option<PathBuf>,
     pub agent_memory_hint: fn(&str) -> String,
-    pub subagent_model_source: fn(&Env, &Path) -> Option<&'static str>,
+    pub subagent_model_source: fn(&Env, &Path) -> Option<String>,
 }
 
 impl Default for CompatDeps {

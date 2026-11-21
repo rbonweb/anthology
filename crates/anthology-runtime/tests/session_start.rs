@@ -43,7 +43,7 @@ use anthology_testkit::session::{
 };
 
 const DATA_LINE: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory search index have no data folder (compatibility check)";
-const MODEL_LINE: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply";
+const MODEL_LINE: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply; run /anthology:setup to see where it is set";
 const AGENTS: [&str; 11] = [
     "researcher",
     "architect",

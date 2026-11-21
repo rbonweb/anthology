@@ -860,6 +860,245 @@ fn test_rule_the_user_deleted_is_added_again_without_duplicating_the_record() {
     assert_eq!(keys.len(), unique.len());
 }
 
+// --- SubagentModelOpTest -------------------------------------------------------------------
+
+const SUBAGENT_KEY: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+/// `SubagentModelOpTest.texts()`: name -> settings text for the opt-in `unset` op.
+fn subagent_texts() -> Vec<(&'static str, String)> {
+    let with_other = format!(
+        r#"{{"model": "x", "env": {{"A": "1", "{SUBAGENT_KEY}": "SECRETMODEL"}}, "permissions": {{"allow": []}}}}"#
+    );
+    let alone = format!(r#"{{"env": {{"{SUBAGENT_KEY}": "SECRETMODEL"}}, "z": 1}}"#);
+    let first_of_two = format!(r#"{{"env": {{"{SUBAGENT_KEY}": "SECRETMODEL", "B": "2"}}}}"#);
+    vec![
+        ("two-space", indent2(&with_other)),
+        (
+            "four-space-alone",
+            dumps_indent(&v(&alone), "    ", true) + "\n",
+        ),
+        ("compact", dumps_sep(&v(&with_other), ",", ":")),
+        ("crlf", indent2(&alone).replace('\n', "\r\n")),
+        ("first-of-two", indent2(&first_of_two)),
+    ]
+}
+
+fn subagent_text(name: &str) -> String {
+    subagent_texts()
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .unwrap()
+        .1
+}
+
+/// The object without `key` (Python's `{k: v for k, v in data.items() if k != key}`).
+fn without_key(data: &Value, key: &str) -> Map {
+    let mut m = data.as_object().unwrap().clone();
+    m.remove(key);
+    m
+}
+
+// Same name as RoundTripTest's test above, so in its class's module (the ledger keeps the
+// Python method name).
+mod subagent_model_op_test {
+    use super::*;
+
+    #[test]
+    fn test_apply_then_revert_restores_the_original_bytes() {
+        let op = subagent_model_op();
+        for (name, text) in subagent_texts() {
+            let planned = plan(&text, std::slice::from_ref(&op)).unwrap();
+            assert_eq!(planned.stored.len(), 1, "{name}");
+            assert_eq!(
+                at(&planned.stored[0], &["previous"]),
+                &v(r#"{"present": true, "raw": "\"SECRETMODEL\""}"#),
+                "{name}"
+            );
+            let (new, _) = apply(&text, &planned.ops).unwrap();
+            let data = v(&new);
+            assert!(
+                !at(&data, &["env"])
+                    .as_object()
+                    .unwrap()
+                    .contains_key(SUBAGENT_KEY),
+                "{name}"
+            );
+            assert_eq!(
+                without_key(&data, "env"),
+                without_key(&v(&text), "env"),
+                "{name}"
+            );
+            assert!(
+                plan(&new, std::slice::from_ref(&op))
+                    .unwrap()
+                    .stored
+                    .is_empty(),
+                "{name}"
+            );
+            let back = revert(&new, &planned.stored).unwrap();
+            if name == "first-of-two" {
+                // put back as the env block's last key
+                let restored = v(&back);
+                assert_eq!(restored, v(&text), "{name}");
+                let keys: Vec<&str> = at(&restored, &["env"])
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                assert_eq!(keys, ["B", SUBAGENT_KEY], "{name}");
+            } else {
+                assert_eq!(back, text, "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_absent_or_blank_file_plans_nothing() {
+    let op = subagent_model_op();
+    for text in ["", "{}", r#"{"env": {"A": "1"}}"#, r#"{"model": "x"}"#] {
+        assert!(
+            plan(text, std::slice::from_ref(&op))
+                .unwrap()
+                .stored
+                .is_empty(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn test_the_diff_shows_the_key_but_never_the_value() {
+    let (_, diff) = apply(&subagent_text("two-space"), &[subagent_model_op()]).unwrap();
+    assert!(diff.contains(r#"-    "CLAUDE_CODE_SUBAGENT_MODEL": "<redacted>""#));
+    assert!(!diff.contains("SECRETMODEL"));
+}
+
+#[test]
+fn test_a_value_set_again_since_is_left_alone_on_revert() {
+    let text = subagent_text("two-space");
+    let planned = plan(&text, &[subagent_model_op()]).unwrap();
+    let (new, _) = apply(&text, &planned.ops).unwrap();
+    let mut data = v(&new);
+    data.as_object_mut()
+        .unwrap()
+        .get_mut("env")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(SUBAGENT_KEY.into(), Value::Str("mine-now".into()));
+    let edited = dumps_indent(&data, "  ", true) + "\n";
+    let (back, diff) = revert_with_diff(&edited, &planned.stored).unwrap();
+    assert_eq!(back, edited);
+    assert_eq!(diff, "");
+}
+
+#[test]
+fn test_restored_when_the_env_block_went_away() {
+    let text = subagent_text("two-space");
+    let planned = plan(&text, &[subagent_model_op()]).unwrap();
+    let (new, _) = apply(&text, &planned.ops).unwrap();
+    let mut data = v(&new);
+    data.as_object_mut().unwrap().remove("env");
+    let (back, _) =
+        revert_with_diff(&(dumps_indent(&data, "  ", true) + "\n"), &planned.stored).unwrap();
+    assert_eq!(
+        at(&v(&back), &["env"]),
+        &v(&format!(r#"{{"{SUBAGENT_KEY}": "SECRETMODEL"}}"#))
+    );
+}
+
+#[test]
+fn test_reverted_together_with_the_setup_ops() {
+    let text = subagent_text("two-space");
+    let mut desired = ops();
+    desired.push(subagent_model_op());
+    let (new, _, stored) = reconcile(&text, &desired, &[]).unwrap();
+    assert!(
+        !at(&v(&new), &["env"])
+            .as_object()
+            .unwrap()
+            .contains_key(SUBAGENT_KEY)
+    );
+    // a later run without the opt-in keeps the record, so remove still restores it
+    let (again, _, stored2) = reconcile(&new, &ops(), &stored).unwrap();
+    assert_eq!(again, new);
+    assert_eq!(stored2, stored);
+    assert_eq!(revert(&again, &stored2).unwrap(), text);
+}
+
+#[test]
+fn test_a_key_set_twice_or_a_non_object_parent_plans_nothing() {
+    let op = subagent_model_op();
+    let twice = format!(r#"{{"env": {{"{SUBAGENT_KEY}": "a", "A": "1", "{SUBAGENT_KEY}": "b"}}}}"#);
+    assert!(
+        plan(&twice, std::slice::from_ref(&op))
+            .unwrap()
+            .stored
+            .is_empty()
+    );
+    assert_eq!(
+        apply(&twice, std::slice::from_ref(&op)).unwrap(),
+        (twice.clone(), String::new())
+    );
+    for text in [r#"{"env": "x"}"#, r#"{"env": [1]}"#] {
+        assert!(
+            plan(text, std::slice::from_ref(&op))
+                .unwrap()
+                .stored
+                .is_empty(),
+            "{text}"
+        );
+    }
+    assert!(plan("{nope", std::slice::from_ref(&op)).is_err());
+}
+
+#[test]
+fn test_a_broken_record_is_skipped_on_revert() {
+    let text = indent2(r#"{"env": {"A": "1"}}"#);
+    let path = format!(r#"["env", "{SUBAGENT_KEY}"]"#);
+    let records = [
+        format!(r#"{{"op": "unset", "path": {path}}}"#),
+        format!(r#"{{"op": "unset", "path": {path}, "previous": "x"}}"#),
+        format!(r#"{{"op": "unset", "path": {path}, "previous": {{"present": true, "raw": 3}}}}"#),
+        format!(
+            r#"{{"op": "unset", "path": {path}, "previous": {{"present": true, "raw": "not json"}}}}"#
+        ),
+        format!(
+            r#"{{"op": "unset", "path": {path}, "previous": {{"present": false, "raw": "\"m\""}}}}"#
+        ),
+        r#"{"op": "unset", "path": ["env", 1], "previous": {"present": true, "raw": "\"m\""}}"#
+            .to_string(),
+        r#"{"op": "unset", "path": [], "previous": {"present": true, "raw": "\"m\""}}"#.to_string(),
+    ];
+    for rec in records {
+        let stored = [v(&rec)];
+        assert_eq!(
+            revert_with_diff(&text, &stored).unwrap(),
+            (text.clone(), String::new()),
+            "{rec}"
+        );
+    }
+    assert!(
+        plan(&text, &[Op::Unset { path: vec![] }])
+            .unwrap()
+            .stored
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_not_part_of_the_setup_ops_or_their_version() {
+    assert!(!ops().iter().any(|o| o.kind() == "unset"));
+    assert_eq!(
+        subagent_model_op().to_value(),
+        v(&format!(
+            r#"{{"op": "unset", "path": ["env", "{SUBAGENT_KEY}"]}}"#
+        ))
+    );
+}
+
 // --- InvalidInputTest ----------------------------------------------------------------------
 
 #[test]

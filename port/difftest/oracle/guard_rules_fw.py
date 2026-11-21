@@ -66,7 +66,7 @@ _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
 _SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "mksh", "hush", "yash",
-                     "csh", "tcsh"))
+                     "csh", "tcsh", "rbash", "posh"))
 # Long shell options that take the next word as their value (bash `--rcfile x`, zsh `--emulate sh`).
 _SHELL_VALUE_OPTIONS = frozenset(("--rcfile", "--init-file", "--emulate"))
 # Programs whose arguments (and fed stdin text) are inline code: `python3 -c`, `node -e`, ...
@@ -135,12 +135,13 @@ class _Group:
 
 class _Seg:
     """One simple command: its words and its redirections [(operator, target)]."""
-    __slots__ = ("tokens", "redirs", "group")
+    __slots__ = ("tokens", "redirs", "group", "held")
 
     def __init__(self, group):
         self.tokens = []
         self.redirs = []
         self.group = group
+        self.held = False                                 # SH-F3: a `$(` or a backtick is among its words
 
 
 # Heredocs follow bash (each rule below was checked against bash 3.2 and 5.2):
@@ -635,8 +636,8 @@ def _join_continuations(body):
 
 
 _BRACKET_STOP = re.compile(r"[\\\[\]]")
-_SCAN_SPECIAL = frozenset("\\<\n'\"$#()")
-_SCAN_STOP = re.compile(r"[\\<\n'\"$#()]")
+_SCAN_SPECIAL = frozenset("\\<\n'\"$#()`c")         # Rust (paramsub): backticks, `case`
+_SCAN_STOP = re.compile(r"[\\<\n'\"$#()`c]")
 _DQ_STOP = re.compile(r'["\\]')
 
 
@@ -661,6 +662,22 @@ def _scan_paren_ex(text, i, arith=False, memo=None):
     inner, end, closes, visited = _scan_paren_walk(text, i, arith, memo)
     _charge(visited - i)
     return inner, end, closes
+
+
+def _case_word(text, j):
+    """scan.rs `case_word` (#89 review F-2): `case` and a blank, line continuations removed."""
+    k, read, n = j, 0, len(text)
+    while k < n:
+        if text[k] == "\\" and text[k + 1:k + 2] == "\n":
+            k += 2
+            continue
+        if read == 4:
+            return text[k] in " \t\n"
+        if text[k] != "case"[read]:
+            return False
+        read += 1
+        k += 1
+    return False
 
 
 def _scan_paren_walk(text, i, arith, memo):
@@ -733,6 +750,13 @@ def _scan_paren_walk(text, i, arith, memo):
             k = _ansi_c_end(text, j + 2)
             j = n if k < 0 else k + 1
             continue
+        if c == "`":                                      # `$(echo `echo )`; x)`: not a close
+            k = _backtick_end(text, j + 1)
+            j = n if k < 0 else k + 1
+            continue
+        if (c == "c" and arith_at is None and _case_word(text, j)
+                and (j == i or text[j - 1] in " \t\n;&|(){}!")):
+            raise _TooComplex()                           # `$(case a in a) x;; esac)`: unmodelled
         if (c == "#" and arith_at is None
                 and (j == i or text[j - 1] in " \t\n;&|()<>")):
             k = text.find("\n", j)                        # a comment: no `<<`, quote or paren
@@ -834,6 +858,10 @@ def _bracket_pairs(text):
         j += 1
 
 
+# The word a process substitution stands for in its command (bash passes `/dev/fd/N`).
+_PROCSUB_PATH = "/dev/fd/63"
+
+
 class _Lexer:
     """Quote-aware splitter. Nested `$(...)`, backticks and `( ... )` are lexed recursively and
     their segments spliced in ahead of the segment that contains them (execution order).
@@ -912,13 +940,20 @@ class _Lexer:
         self.array, self.array_start = [], i + 1
         return i + 1
 
+    def procsub(self, i):
+        """`<(cmd)` or `>(cmd)` at text[i]: bash runs cmd and passes its path as one word. The body
+        is lexed as a nested command, and the word continues the one being built (`x<(a)y` is one
+        word, `2<(a)` keeps the 2). The path is `_PROCSUB_PATH`; no rule reads its number."""
+        inner, j = _scan_paren(self.text, i + 2, self.memo)
+        self.nested(inner, i, comsub=True)
+        self.add(_PROCSUB_PATH)
+        return j
+
     def array_char(self, i):
         """A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run."""
         text, c = self.text, self.text[i]
         if c in "<>" and text[i + 1:i + 2] == "(":
-            inner, j = _scan_paren(text, i + 2, self.memo)
-            self.nested(inner, i, comsub=True)
-            return j
+            return self.procsub(i)
         self.end_word()
         if c == ")":
             self.close_array(i)
@@ -1026,6 +1061,8 @@ class _Lexer:
                 double = text[i + 1:i + 2] == "|"
                 self.end_seg(new_group=double)
                 i += 2 if double or text[i + 1:i + 2] == "&" else 1
+            elif c in "<>" and text[i + 1:i + 2] == "(":
+                i = self.procsub(i)
             elif c in "<>&":
                 i = self.redirect(i)
             else:
@@ -1122,6 +1159,9 @@ class _Lexer:
             return j
         if nxt == "{":
             k = self.brace_end(i)
+            if "<(" in text[i + 2:k] or ">(" in text[i + 2:k]:
+                # bash runs a `<(...)` in an unquoted `${...}`; that is not modelled, so too complex
+                raise _TooComplex()
             self.scan_expanded(i + 2, k, record=False)
             self.add(text[i:k + 1])
             return k + 1
@@ -1159,7 +1199,7 @@ class _Lexer:
                 op, j = op + text[j], _skip_continuations(text, j + 1)
         if op in ("<<", "<<-"):
             return j if self.arith is not None else self.heredoc(op, j)  # `((`: a shift
-        if text[j:j + 1] != "(":                          # `<(cmd)` is a substitution, not a file
+        if text[j:j + 1] != "(":                          # a `(` after `>>`, `&>` is a syntax error
             self.pending = op
         return j
 
@@ -1288,6 +1328,7 @@ _WRAPPERS = {
     # util-linux, busybox and other programs that run the command after their options (FW-I)
     "builtin": frozenset(),
     "busybox": frozenset(),
+    "toybox": frozenset(),
     "chroot": frozenset(("--userspec", "--groups")),
     "nsenter": frozenset(("-t", "--target", "-S", "--setuid", "-G", "--setgid")),
     "unshare": frozenset(("-S", "--setuid", "-G", "--setgid", "-R", "--root", "-w", "--wd",
@@ -2113,13 +2154,14 @@ def _trap_script(args):
     return args[i] if len(args) - i >= 2 and args[i] != "-" else None
 
 
-def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True):
+def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True, launches=None):
     """Peel assignments, keywords, wrappers and package runners off a command.
 
     Returns (command tokens starting at the program, embedded scripts to analyze). When given,
     `alternates` receives other token lists that may be the real command (`_alternates`), and
     `stdin_runs` receives (kind, template, replace string) for each xargs or parallel layer,
-    whose command takes words or lines from stdin."""
+    whose command takes words or lines from stdin. `launches` receives True when a shell
+    launcher was peeled with no program left (`sudo -s`, SH-seq I-2)."""
     toks = list(tokens)
     scripts = []
     assigned = []
@@ -2144,7 +2186,7 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
         elif name == "env" and _env_split_string(toks) is not None:
             at, after, value = _env_split_string(toks)    # the split words are env's arguments
             toks = toks[:at] + _split_words(value) + toks[after:]
-        elif name == "busybox" and (len(toks) < 2 or toks[1].startswith("-")):
+        elif name in ("busybox", "toybox") and (len(toks) < 2 or toks[1].startswith("-")):
             break                                         # `busybox --list`: no applet
         elif name in _WRAPPERS:
             flags = _WRAPPERS[name]
@@ -2154,6 +2196,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
             i = _skip_flags(toks, 1, flags)
             if name in _WRAPPER_OPERANDS and i < len(toks):
                 i = _skip_flags(toks, i + _WRAPPER_OPERANDS[name], flags)
+            # `su [-] [user] [options]` runs the user's shell too: at most one operand, the user, not a program
+            bare = i >= len(toks) or (name in ("su", "runuser") and _su_operands(toks[i:]) <= 1)
+            if launches is not None and bare and _launches_shell(name, toks[:i], not scripts):
+                launches.append(True)                     # `sudo -s`: no program, a shell reads stdin
             if name == "watch" and not joined:            # watch runs its words via sh -c
                 joined = True
                 if _needs_shell(toks[i:]):
@@ -2168,7 +2214,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
         elif name == "sg":                                # `sg [-] group [-c] command`: sh -c
             rest = toks[1:]
             rest = rest[2:] if rest[:1] == ["-"] else rest[1:]
-            rest = rest[1:] if rest[:1] == ["-c"] else rest
+            had_c = rest[:1] == ["-c"]
+            rest = rest[1:] if had_c else rest
+            if not rest and not had_c and launches is not None:
+                launches.append(True)                     # `sg grp` alone: a shell reading stdin
             if not joined:
                 joined = True
                 if _needs_shell(rest):
@@ -2273,9 +2322,12 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True
 class _Entry:
     """A flattened command ready for the per-rule predicates."""
     __slots__ = ("raw", "redirs", "prog", "prog_path", "args", "cwd", "exempt", "group", "code",
-                 "stdin_runs")
+                 "stdin_runs", "shell_launch", "held", "script_reads")
 
     def __init__(self, raw, redirs, cmd, cwd, exempt, group):
+        self.shell_launch = False                         # a shell launcher with no program (SH-seq I-2)
+        self.held = False                                 # SH-F3: its segment held a `$(` or a backtick
+        self.script_reads = False                         # SH-F3: a `-c`/`eval` script added a stdin reader
         self.raw = raw                                    # every word, wrappers included
         self.redirs = redirs
         self.prog_path = cmd[0].lower() if cmd else ""
@@ -2297,6 +2349,10 @@ class _Context:
         # (text, exempt, cwd at the start) -> (depth, cwd at the end) for every text analyzed:
         # the same text from the same state gives the same entries, so it is analyzed once.
         self.seen = {}
+        self.subst = False                                # SH-F3: the next command's segment held a substitution
+        self.readers = 0                                  # SH-F3: stdin-reading entries added so far
+        self.reads_seen = set()                           # SH-F3: texts whose analysis added one
+        self.exec_root = None                             # SH-F3: the find/fd command whose payloads run
 
 
 _CHDIR_PROGRAMS = frozenset(("tar", "git", "make"))
@@ -2315,13 +2371,73 @@ def _shell_script_file(entry):
     return entry.args[start] if mode == "file" else None
 
 
+def _launches_shell(name, words, scripts_empty):
+    """SH-seq I-2: a wrapper peeled with no program that starts a shell reading stdin: `sudo -s`/`-i`
+    (`--shell`, `--login`), or `su`/`script` with no script found. SH-F3: `doas -s`; `chroot DIR`,
+    `unshare` and `nsenter -t PID` with no command."""
+    if name == "sudo":
+        return any(w in ("--shell", "--login") or (
+            w[:1] == "-" and w[1:2] != "-" and ("s" in w[1:] or "i" in w[1:])) for w in words[1:])
+    if name == "doas":
+        return any(w[:1] == "-" and w[1:2] != "-" and "s" in w[1:] for w in words[1:])
+    if name in ("chroot", "unshare", "nsenter"):
+        return True
+    return name in ("su", "script", "runuser") and scripts_empty
+
+
+def _su_operands(words):
+    """SH-F3: the operands of `su` / `runuser` words: options and the values of `_SU_VALUE_FLAGS` do not
+    count, nor the `-` of a login shell (Rust: `prefixes::su_operands`)."""
+    count, k = 0, 0
+    while k < len(words):
+        word = words[k]
+        if word == "--":
+            return count + len(words) - k - 1
+        if word[:1] == "-" and len(word) > 1:
+            if word in _SU_VALUE_FLAGS:
+                k += 1
+        elif word != "-":
+            count += 1
+        k += 1
+    return count
+
+
+def _reads_stdin_substitution(text):
+    """SH-seq I-2: a text that is only a substitution of a stdin reader: `$(cat)`, `` `cat -` ``,
+    `$(</dev/stdin)`, `$(cat /dev/stdin)`."""
+    t = text.strip()
+    if t.startswith("$(") and t.endswith(")"):
+        inner = t[2:-1]
+    elif len(t) > 1 and t.startswith("`") and t.endswith("`"):
+        inner = t[1:-1]
+    else:
+        return False
+    inner = inner.strip()
+    if inner.startswith("<"):
+        return bool(_STDIN_PATH.match(inner[1:].strip()))
+    words = inner.split()
+    return bool(words) and words[0] == "cat" and all(
+        w == "-" or (w.startswith("-") and len(w) > 1) or bool(_STDIN_PATH.match(w))
+        for w in words[1:])
+
+
 def _reads_stdin_as_shell(entry):
-    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`)
-    or a docker command that runs one."""
+    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`),
+    a shell or eval whose script is a stdin reader's substitution, a shell launcher with no program
+    (`sudo -s`, `newgrp`), or a docker command that runs one. SH-F3: a `-c`/`eval` script holding a
+    `$(` or a backtick counts (any runtime value), and so does a find/fd whose payload reads stdin."""
+    if entry.shell_launch or entry.prog == "newgrp":
+        return True
     if entry.prog in _SHELLS:
-        if _shell_parse(entry.prog, entry.args)[0] == "stdin":
+        mode, _start, scripts = _shell_parse(entry.prog, entry.args)
+        if mode == "stdin":
             return True
+        if mode == "c":
+            return entry.held or any(s == "" or _reads_stdin_substitution(s) for _i, s in scripts)
         return bool(_STDIN_PATH.match(_shell_script_file(entry) or ""))
+    if entry.prog == "eval":
+        return entry.held or any(a == "" for a in entry.args) or _reads_stdin_substitution(
+            " ".join(entry.args))
     if entry.prog in ("source", "."):
         return bool(_STDIN_PATH.match(_first_arg(entry.args) or ""))
     if entry.prog in _DOCKER:
@@ -2344,19 +2460,25 @@ def _reads_fd_as_shell(entry):
 
 
 def _add_command(tokens, redirs, group, ctx, exempt, depth):
-    alternates, stdin_runs = [], []
-    cmd, scripts = _strip_prefixes(tokens, alternates, stdin_runs)
+    alternates, stdin_runs, launches = [], [], []
+    cmd, scripts = _strip_prefixes(tokens, alternates, stdin_runs, launches=launches)
     entry = _Entry(tokens, redirs, cmd, ctx.cwd, exempt, group)
     entry.exempt = exempt or entry.prog in _DOCKER
     entry.stdin_runs = stdin_runs
+    entry.shell_launch = bool(launches)
+    entry.held, ctx.subst = ctx.subst, False
     if entry.prog in _CHDIR_PROGRAMS:                     # `tar -C dir x`, `git -C dir ...`
         for k, arg in enumerate(entry.args[:-1]):
             if arg in ("-C", "--directory"):
                 entry.cwd = _normalize(entry.args[k + 1], ctx.home, ctx.cwd) or entry.cwd
     ctx.entries.append(entry)
+    if _reads_stdin_as_shell(entry):
+        ctx.readers += 1
+    readers = ctx.readers
     _add_alternates(alternates, scripts, entry, ctx, exempt)
     for script in scripts:
         _collect(script, ctx, exempt, depth + 1)
+    entry.script_reads = ctx.readers > readers
     if entry.prog in _DOCKER:                             # `docker run img sh -euc "..."`
         for _start, script in _script_starts(entry.args):
             _collect(script, ctx, True, depth + 1)
@@ -2389,18 +2511,36 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
             return
 
 
+def _exec_payload(entry, words, ctx, depth):
+    """SH-F3 (Rust: `exec_walk`): a payload runs with the stdin of its find/fd command, and a payload
+    that reads stdin makes the outermost command a stdin reader; a substitution in the command holds in
+    its payloads. A nested find/fd reports to the outermost command."""
+    root = ctx.exec_root
+    ctx.subst = root.held
+    child = _add_command(words, [], entry.group, ctx, entry.exempt, depth + 1)
+    if _reads_stdin_as_shell(child):
+        root.shell_launch = True
+
+
 def _collect_find_exec(entry, ctx, depth):
-    args = entry.args
-    k = 0
-    while k < len(args):
-        if args[k] in ("-exec", "-execdir", "-ok", "-okdir"):
-            end = k + 1
-            while end < len(args) and args[end] not in (";", "+"):
-                end += 1
-            if end > k + 1:
-                _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
-            k = end
-        k += 1
+    own = ctx.exec_root is None
+    if own:
+        ctx.exec_root = entry
+    try:
+        args = entry.args
+        k = 0
+        while k < len(args):
+            if args[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+                end = k + 1
+                while end < len(args) and args[end] not in (";", "+"):
+                    end += 1
+                if end > k + 1:
+                    _exec_payload(entry, args[k + 1:end], ctx, depth)
+                k = end
+            k += 1
+    finally:
+        if own:
+            ctx.exec_root = None
 
 
 def _collect_fd_exec(entry, ctx, depth):
@@ -2411,7 +2551,14 @@ def _collect_fd_exec(entry, ctx, depth):
     if k >= 0:
         end = next((j for j in range(k + 1, len(args)) if args[j] == ";"), len(args))
         if end > k + 1:
-            _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
+            own = ctx.exec_root is None
+            if own:
+                ctx.exec_root = entry
+            try:
+                _exec_payload(entry, args[k + 1:end], ctx, depth)
+            finally:
+                if own:
+                    ctx.exec_root = None
 
 
 def _echo_args_text(args):
@@ -2489,9 +2636,14 @@ def _collect(text, ctx, exempt, depth):
     key = (text, exempt, ctx.cwd)
     if key in ctx.seen and ctx.seen[key][0] <= depth:
         ctx.cwd = ctx.seen[key][1]                        # analyzed already: same entries, same cwd
+        if key in ctx.reads_seen:
+            ctx.readers += 1
         return
     ctx.seen[key] = (depth, ctx.cwd)
+    readers = ctx.readers
     _collect_once(text, ctx, exempt, depth)
+    if ctx.readers > readers:
+        ctx.reads_seen.add(key)
     ctx.seen[key] = (depth, ctx.cwd)
 
 

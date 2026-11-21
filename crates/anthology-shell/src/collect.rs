@@ -45,10 +45,10 @@ use crate::analyze::Entry;
 use crate::lexer::scan::{body_substitutions, scan_paren};
 use crate::lexer::words::{Memo, ansi_c_decode};
 use crate::lexer::{
-    Group, GroupId, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
+    Group, GroupId, Holder, LexOut, Reading, Redirect, TooComplex, Work, find_from, lex_in, pystr,
     skip_escape,
 };
-use crate::limits::{DEFAULT_BACKTRACK_LIMIT, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
+use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
 use crate::prefixes::hidden::runs_option_command;
 use crate::prefixes::{
@@ -64,6 +64,8 @@ const CHDIR_PROGRAMS: &[&str] = &["tar", "git", "make"];
 const FIND_EXEC: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
 const FD_PROGRAMS: &[&str] = &["fd", "fdfind"];
 const FD_EXEC: &[&str] = &["-x", "--exec", "-X", "--exec-batch"];
+/// SH-F3: the compound commands whose body reads the pipe that feeds them (`echo X | if true; then sh; fi`).
+const COMPOUND_WORDS: &[&str] = &["if", "while", "until", "for", "select", "case"];
 
 /// `find -exec find -exec ...` levels walked before giving up (Python raises `RecursionError` well below).
 pub(crate) const FIND_EXEC_CAP: usize = 1000;
@@ -290,6 +292,40 @@ const SUBSCRIPT_V_PROGRAMS: &[&str] = &["printf", "test", "["];
 const MAX_BRACE_WORDS: usize = 4096;
 const MAX_BRACE_DEPTH: usize = 64;
 
+/// SH-seq re-review R-1: the index after the `}` closing the `${` at `j` (`word[j]` is `$`), or the word's
+/// end. Bash does not brace-expand inside `${...}`, so the brace scanners skip it whole.
+fn param_end(b: &[u8], j: usize) -> usize {
+    // quotes and escapes inside `${...}` hide their braces (#89 review F-4), as in the lexer's `brace_scan`
+    let mut depth = 0usize;
+    let mut k = j + 1;
+    while k < b.len() {
+        match b[k] {
+            b'\\' => k += 1,
+            q @ (b'\'' | b'"') => {
+                k += 1;
+                while k < b.len() && b[k] != q {
+                    k += usize::from(q == b'"' && b[k] == b'\\') + 1;
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return k + 1;
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    b.len()
+}
+
+/// `word[j]` starts a `${`.
+fn param_at(b: &[u8], j: usize) -> bool {
+    b[j] == b'$' && b.get(j + 1) == Some(&b'{')
+}
+
 /// The first brace expression of `word`, as (open, close, commas): a `{` (not `${`) with its matching `}` and
 /// a comma at its own level between them. One whose text holds a quote character is not one: past quote
 /// removal, that was quoted text (a JSON body).
@@ -303,7 +339,15 @@ fn brace_at(word: &str) -> Option<(usize, usize, Vec<usize>)> {
     let b = word.as_bytes();
     let mut stack: Vec<Open> = Vec::new();
     let mut first: Option<(usize, usize, Vec<usize>)> = None;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push(Open {
                 at: j,
@@ -481,7 +525,15 @@ fn brace_expressions(word: &str) -> usize {
     let b = word.as_bytes();
     let mut stack: Vec<(usize, bool)> = Vec::new(); // (open, a comma at its level)
     let mut count = 0;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push((j, false)),
             b',' => {
@@ -508,7 +560,15 @@ fn brace_expressions(word: &str) -> usize {
 fn sequence_nested_comma(word: &str) -> bool {
     let b = word.as_bytes();
     let mut stack: Vec<(usize, bool, bool)> = Vec::new(); // (open, comma at its level, a comma deeper)
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => stack.push((j, false, false)),
             b',' => {
@@ -543,7 +603,15 @@ fn brace_sequences(word: &str) -> Vec<(usize, usize)> {
     let b = word.as_bytes();
     let mut out = Vec::new();
     let mut open = None;
+    let mut skip = 0;
     for (j, &c) in b.iter().enumerate() {
+        if j < skip {
+            continue;
+        }
+        if param_at(b, j) {
+            skip = param_end(b, j);
+            continue;
+        }
         match c {
             b'{' => open = (j == 0 || b[j - 1] != b'$').then_some(j),
             b',' => open = None,
@@ -712,6 +780,28 @@ fn is_stdin_path(path: &str) -> bool {
     matches!(path, "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
 }
 
+/// SH-seq I-2: a text that is only a substitution of a stdin reader: `$(cat)`, `` `cat -` ``, `$(</dev/stdin)`,
+/// `$(cat /dev/stdin)` (`cat` with no file operand, or a stdin redirect alone).
+fn reads_stdin_substitution(text: &str) -> bool {
+    let t = pystr::strip_ws(text);
+    let inner = match t.strip_prefix("$(").and_then(|r| r.strip_suffix(')')) {
+        Some(body) => body,
+        None => match t.strip_prefix('`').and_then(|r| r.strip_suffix('`')) {
+            Some(body) => body,
+            None => return false,
+        },
+    };
+    let inner = pystr::strip_ws(inner);
+    if let Some(path) = inner.strip_prefix('<') {
+        return is_stdin_path(pystr::strip_ws(path));
+    }
+    let words = pystr::split_ws(inner);
+    words.first() == Some(&"cat")
+        && words[1..]
+            .iter()
+            .all(|w| *w == "-" || (w.starts_with('-') && w.len() > 1) || is_stdin_path(w))
+}
+
 /// `_FD_PATH`: a numbered file descriptor.
 fn is_fd_path(path: &str) -> bool {
     ["/dev/fd/", "/proc/self/fd/"].iter().any(|prefix| {
@@ -793,6 +883,8 @@ pub(crate) struct Ctx<'a> {
     seen: HashMap<SeenKey, (usize, Option<String>)>,
     /// `_Entry.stdin_runs`, by entry index.
     stdin_runs: HashMap<usize, Vec<StdinRun>>,
+    /// Entries that are a shell launcher peeled with no program (`sudo -s`): a shell reading stdin (SH-seq I-2).
+    launchers: HashSet<usize>,
     /// The segment `add_one` is about to add came from a `$((...))` (`Segment::arith`).
     arith: bool,
     /// The commands `add_one` adds come from a segment with an unquoted `{` (`Segment::braces`); scoped to
@@ -800,6 +892,19 @@ pub(crate) struct Ctx<'a> {
     braces: bool,
     /// The same segment's `Segment::quoted_braces`.
     quoted_braces: bool,
+    /// The words of the segment `add_one` is about to add that hold a substitution (`Holder`, F-8).
+    holders: Vec<Holder>,
+    /// SH-F3: the segment `add_one` is about to add holds a `$(` or a backtick (`LexOut::held`).
+    subst: bool,
+    /// SH-F3: the entries whose segment held a `$(` or a backtick.
+    held_entries: HashSet<usize>,
+    /// SH-F3: how many stdin-reading entries have been added (`reads_stdin_as_shell`), in this pass or
+    /// earlier. A text that adds one bumps it; a memoized text that did bumps it again.
+    readers: usize,
+    /// SH-F3: the entries whose `-c`/`eval` scripts added a stdin reader.
+    script_readers: HashSet<usize>,
+    /// SH-F3: the texts (keys of `seen`) whose analysis added a stdin reader.
+    reads_seen: HashSet<SeenKey>,
 }
 
 impl<'a> Ctx<'a> {
@@ -816,9 +921,16 @@ impl<'a> Ctx<'a> {
             halted: false,
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
+            launchers: HashSet::new(),
             arith: false,
             braces: false,
             quoted_braces: false,
+            holders: Vec::new(),
+            subst: false,
+            held_entries: HashSet::new(),
+            readers: 0,
+            script_readers: HashSet::new(),
+            reads_seen: HashSet::new(),
         }
     }
 
@@ -832,6 +944,7 @@ impl<'a> Ctx<'a> {
     pub(crate) fn next_pass(&mut self, reading: Reading) {
         self.cwd = None;
         self.seen.clear();
+        self.reads_seen.clear();
         self.work.reading = reading;
     }
 
@@ -986,6 +1099,9 @@ impl<'a> Ctx<'a> {
         {
             // analyzed already: same entries, same cwd
             self.cwd = cwd.clone();
+            if self.reads_seen.contains(&key) {
+                self.readers += 1;
+            }
             return false;
         }
         if !self.spend(1 + 2 * text.len()) {
@@ -993,15 +1109,25 @@ impl<'a> Ctx<'a> {
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
         let (braces, quoted_braces) = (self.braces, self.quoted_braces);
+        let readers = self.readers;
         self.collect_once(text, exempt, depth);
         (self.braces, self.quoted_braces) = (braces, quoted_braces);
+        if self.readers > readers {
+            self.reads_seen.insert(key.clone());
+        }
         self.seen.insert(key, (depth, self.cwd.clone()));
         false
     }
 
     /// `_collect_once`.
     fn collect_once(&mut self, text: &str, exempt: bool, depth: usize) {
-        let LexOut { lexed, info } = lex_in(text, 0, &mut self.work);
+        let readers_at_start = self.readers;
+        let LexOut {
+            lexed,
+            info,
+            holders,
+            held,
+        } = lex_in(text, 0, &mut self.work);
         if lexed.incomplete {
             self.halt(); // Python raises `_TooComplex`
             return;
@@ -1025,11 +1151,13 @@ impl<'a> Ctx<'a> {
         let mut new_entries = Vec::new();
         let mut braced: HashSet<usize> = HashSet::new();
         let mut after_compound: HashSet<usize> = HashSet::new();
-        for seg in lexed.segments {
+        for ((seg, seg_holders), subst) in lexed.segments.into_iter().zip(holders).zip(held) {
             let group = ids.get(&seg.group).copied().unwrap_or(GroupId(u32::MAX));
             self.arith = seg.arith;
             self.braces = seg.braces;
             self.quoted_braces = seg.quoted_braces;
+            self.holders = seg_holders;
+            self.subst = subst;
             match self.add_command(seg.tokens, seg.redirs, group, exempt, depth, &from_text) {
                 Some(entry) => {
                     new_entries.push(entry);
@@ -1057,6 +1185,27 @@ impl<'a> Ctx<'a> {
                     Vec::new()
                 })
                 .push(e);
+        }
+        // SH-F3: a `-c`/`eval` script that holds a stdin reader is fed a pipe or a process substitution
+        // (`echo X | bash -c sh`, `sh -c 'eval "$(cat)"' < <(…)`), and a compound body after a pipe holds one
+        // (`echo X | if true; then sh; fi`): what is fed reaches that reader. Too complex.
+        let piped: Vec<usize> = members
+            .values()
+            .flat_map(|es| es.iter().skip(1).copied())
+            .collect();
+        let procsub = text.contains("<(") || text.contains(">(");
+        let fed_script = new_entries
+            .iter()
+            .any(|e| self.script_readers.contains(e) && (procsub || piped.contains(e)));
+        let fed_compound = piped.iter().any(|&e| {
+            self.entries[e]
+                .raw
+                .first()
+                .is_some_and(|w| COMPOUND_WORDS.contains(&w.as_str()))
+        });
+        if fed_script || (fed_compound && self.readers > readers_at_start) {
+            self.halt();
+            return;
         }
         let Some(defined) = self.defined_names(&new_entries) else {
             return;
@@ -1207,14 +1356,17 @@ impl<'a> Ctx<'a> {
         // A shell or `source` given a process substitution runs what it prints (`sh <(echo X)`,
         // `cat <(echo X) | sh`): any such consumer in the text makes the literal output of every `<(...)` in it
         // a command.
-        let consumers: Vec<usize> = new_entries
-            .iter()
-            .copied()
-            .filter(|&e| {
+        // SH-F3: and every stdin reader (`> >(su)`, `< <(sudo -s)`, `> >(eval "$(cat)")`)
+        let mut consumers: Vec<usize> = Vec::new();
+        for &e in &new_entries {
+            let named = {
                 let prog = self.entries[e].prog.as_str();
                 SHELLS.contains(&prog) || prog == "source" || prog == "."
-            })
-            .collect();
+            };
+            if named || self.reads_stdin_as_shell(e) == Some(true) {
+                consumers.push(e);
+            }
+        }
         // fail closed: `> >(sh)`, `coproc` with a shell, a shell running a file the text wrote
         let coproc = new_entries
             .iter()
@@ -1451,6 +1603,10 @@ impl<'a> Ctx<'a> {
     fn reads_stdin_as_shell(&mut self, e: usize) -> Option<bool> {
         let entry = &self.entries[e];
         let prog = entry.prog.as_str();
+        // SH-seq I-2: a shell launcher with no program (`sudo -s`, `su`, `script`, `sg grp`), and `newgrp`
+        if self.launchers.contains(&e) || prog == "newgrp" {
+            return Some(true);
+        }
         if SHELLS.contains(&prog) {
             let parsed = shell_parse(prog, &entry.args, 0);
             return Some(match parsed.mode {
@@ -1459,8 +1615,23 @@ impl<'a> Ctx<'a> {
                     .args
                     .get(parsed.start)
                     .is_some_and(|f| is_stdin_path(f)),
-                _ => false,
+                // SH-seq I-2: `sh -c "$(cat)"`. The lexer leaves `""` for a double-quoted substitution, so an
+                // empty script counts as one; a single-quoted `'$(cat)'` is read as written.
+                ShellMode::Command => {
+                    self.held_entries.contains(&e)
+                        || parsed.scripts.iter().any(|(_, script)| {
+                            script.is_empty() || reads_stdin_substitution(script)
+                        })
+                }
             });
+        }
+        if prog == "eval" {
+            // SH-seq I-2: `eval "$(cat)"`, `eval '$(</dev/stdin)'`: the words are the script
+            return Some(
+                self.held_entries.contains(&e)
+                    || entry.args.iter().any(String::is_empty)
+                    || reads_stdin_substitution(&entry.args.join(" ")),
+            );
         }
         if prog == "source" || prog == "." {
             return Some(first_arg(&entry.args).is_some_and(is_stdin_path));
@@ -1539,9 +1710,15 @@ impl<'a> Ctx<'a> {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
                 return;
             }
+            // SH-F3: a payload that reads stdin (`find . -exec sh \;`) makes the command running it a stdin
+            // reader, and a runtime substitution in the command (`-exec sh -c "$(cat) " \;`) is one in its payload
+            self.subst = self.held_entries.contains(&e);
             let Some(child) = self.add_one(payload, Vec::new(), group, exempt, depth, &[]) else {
                 return;
             };
+            if self.reads_stdin_as_shell(child) == Some(true) {
+                self.launchers.insert(e);
+            }
             let child = &self.entries[child];
             if child.prog == "find" || FD_PROGRAMS.contains(&child.prog.as_str()) {
                 let frame = ExecFrame {
@@ -1567,6 +1744,8 @@ impl<'a> Ctx<'a> {
         from_text: &[Opaque],
     ) -> Option<usize> {
         let arith = std::mem::take(&mut self.arith);
+        let holders = std::mem::take(&mut self.holders);
+        let subst = std::mem::take(&mut self.subst);
         let size: usize = tokens.iter().map(|t| WORD + t.len()).sum();
         if !self.spend(1 + 2 * size) {
             return None;
@@ -1575,10 +1754,14 @@ impl<'a> Ctx<'a> {
             self.halt();
             return None;
         }
+        // F-8(b): the words as they are read, with a substitution at program position resolved (`which X`)
+        let result = resolve_holders(&tokens, &holders, &mut self.work);
+        let resolved = self.take(result)?;
+        let words = resolved.as_deref().unwrap_or(tokens.as_slice());
         let mut alternates = Vec::new();
         let mut runs = Vec::new();
         let result = strip_prefixes(
-            &tokens,
+            words,
             Some(&mut alternates),
             Some(&mut runs),
             true,
@@ -1590,10 +1773,19 @@ impl<'a> Ctx<'a> {
             extra,
             peeled,
         } = self.take(result)?;
+        // F-8(b): a program word whose `${...}` holds a substitution (`${x#$(f)}`) is too complex; the lexer keeps
+        // such a word's text, and no other word text is a substitution
+        if cmd
+            .first()
+            .is_some_and(|w| w.contains("${") && (w.contains("$(") || w.contains('`')))
+        {
+            self.halt();
+            return None;
+        }
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
-        let prefix = &tokens[..tokens.len().saturating_sub(cmd.len())];
+        let prefix = &words[..words.len().saturating_sub(cmd.len())];
         // an integer sequence is allowed after the program word only: before it, or as it, it could form one
         if self.braces
             && tokens[..(prefix.len() + 1).min(tokens.len())]
@@ -1653,13 +1845,21 @@ impl<'a> Ctx<'a> {
             let result = brace_reading(&tokens, &mut self.work);
             if let Some(reading) = self.take(result)? {
                 braced = Some(alternates.len());
-                alternates.push((main_at, reading));
+                alternates.push((main_at, reading, false));
             }
         }
         let mut differs = false;
-        for (k, (at, alternate)) in alternates.into_iter().enumerate() {
-            let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
-            let other = self.take(result)?;
+        for (k, (at, alternate, verbatim)) in alternates.into_iter().enumerate() {
+            let other = if verbatim {
+                // the shipped reading of a package manager: its words are the command, as they are
+                Stripped {
+                    cmd: alternate.clone(),
+                    ..Stripped::default()
+                }
+            } else {
+                let result = strip_prefixes(&alternate, None, None, false, &mut self.work);
+                self.take(result)?
+            };
             if braced == Some(k)
                 && other.cmd.first() != cmd.first()
                 && (other.cmd.len() < alternate.len()
@@ -1680,7 +1880,9 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             differs |= at < main_at;
-            if !self.spend(1 + size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>()) {
+            if !self.spend(
+                ENTRY_COST + 1 + size + other.cmd.iter().map(|t| WORD + t.len()).sum::<usize>(),
+            ) {
                 return None;
             }
             let other_prog = other.cmd.first().map(|w| prog_name(w)).unwrap_or_default();
@@ -1764,6 +1966,10 @@ impl<'a> Ctx<'a> {
             }
         }
         let entry_exempt = exempt || DOCKER.contains(&prog.as_str());
+        // M-1: a kept entry is charged before it is stored (out of budget: incomplete, nothing dropped)
+        if !self.spend(ENTRY_COST) {
+            return None;
+        }
         self.entries.push(Entry {
             raw: tokens,
             redirs,
@@ -1780,10 +1986,23 @@ impl<'a> Ctx<'a> {
         if !runs.is_empty() {
             self.stdin_runs.insert(e, runs);
         }
+        if peeled.shell_launch {
+            self.launchers.insert(e);
+        }
+        if subst {
+            self.held_entries.insert(e);
+        }
+        if self.reads_stdin_as_shell(e) == Some(true) {
+            self.readers += 1;
+        }
+        let readers = self.readers;
         for script in &scripts {
             if self.collect(script, exempt, depth + 1) {
                 mark(&mut self.entries[e].opaque, Opaque::DepthCap);
             }
+        }
+        if self.readers > readers {
+            self.script_readers.insert(e);
         }
         for script in &extra {
             // F-2: GNU parallel lines past the reference's
@@ -1838,6 +2057,76 @@ impl<'a> Ctx<'a> {
         }
         if self.halted { None } else { Some(e) }
     }
+}
+
+/// `which X`, `command -v X`, `type -p X` and `realpath X` (F-8(b)): the one literal word X the body names, which
+/// bash runs as the program. Anything else is `None`.
+fn lookup_program(body: &str) -> Option<String> {
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let name = match words.as_slice() {
+        ["which" | "realpath", name] => *name,
+        ["command", "-v", name] | ["type", "-p", name] => *name,
+        _ => return None,
+    };
+    let literal = !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+@/-".contains(c));
+    (literal && !name.is_empty()).then(|| name.to_string())
+}
+
+/// F-8(b): the words of a segment with each substitution at program position resolved. The program word is the
+/// one `strip_prefixes` reads: each holder (a word that held a `$(...)` or a backtick) is replaced by a stand-in
+/// in a probe copy, and a holder the probe reads as the program is too complex, unless it is the sole word and
+/// `lookup_program` reads it as X (then X is the program, `$(which npx) playwright install` is `npx playwright
+/// install`). `None`: no holder is at program position, and the words stand as they are.
+fn resolve_holders(
+    tokens: &[String],
+    holders: &[Holder],
+    work: &mut Work,
+) -> Result<Option<Vec<String>>, TooComplex> {
+    if holders.is_empty() {
+        return Ok(None);
+    }
+    // a stand-in marker that no word of the segment contains
+    let mut n = 0;
+    let mark = loop {
+        let mark = format!("\u{1}{n}\u{1}");
+        if !tokens.iter().any(|t| t.contains(&mark)) {
+            break mark;
+        }
+        n += 1;
+    };
+    let mut words: Option<Vec<String>> = None;
+    let mut open: Vec<&Holder> = holders.iter().collect();
+    while !open.is_empty() {
+        let current = words.as_deref().unwrap_or(tokens);
+        let probe: Vec<String> = current
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                if open.iter().any(|h| h.index == k) && !is_assignment(w) {
+                    format!("{mark}{k}")
+                } else {
+                    w.clone()
+                }
+            })
+            .collect();
+        let stripped = strip_prefixes(&probe, None, None, true, work)?;
+        let at = stripped
+            .cmd
+            .first()
+            .and_then(|w| w.strip_prefix(mark.as_str()))
+            .and_then(|k| k.parse::<usize>().ok());
+        let Some(k) = at else { break };
+        let pos = open.iter().position(|h| h.index == k).ok_or(TooComplex)?;
+        let holder = open.swap_remove(pos);
+        let program = lookup_program(&holder.body)
+            .filter(|_| holder.sole)
+            .ok_or(TooComplex)?;
+        words.get_or_insert_with(|| tokens.to_vec())[k] = program;
+    }
+    Ok(words)
 }
 
 /// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped, all of them (the reference reads the

@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::heredoc::{find_heredoc_end, join_continuations};
 use crate::lenient::lenient_segments;
-use crate::limits::{Limits, MAX_DEPTH, extra_limit, work_limit};
+use crate::limits::{Limits, MAX_DEPTH, SEGMENT_COST, extra_limit, work_limit};
 use crate::shell_args::Budget;
 use scan::{
     MAX_UNCLOSED, body_substitutions, bracket_pairs, scan_paren, scan_paren_ex, substitution,
@@ -229,14 +229,29 @@ pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usi
     backtick_end(text, i, work)?.ok_or(LexError::Unbalanced)
 }
 
+/// The word a process substitution stands for in its command (bash passes `/dev/fd/N`; the number is not
+/// modelled, and no rule reads it).
+const PROCSUB_PATH: &str = "/dev/fd/63";
+
 /// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
 type Pending = (Vec<String>, GroupId, bool, bool);
+
+/// Rust-only (SH-FW final F-8): a word of a segment that held a `$(...)` or a backtick. The word itself is ""
+/// (or the text around it), so the lexer keeps the substitution here: `index` is the word's place in the
+/// segment's words, `body` the text of its first substitution, `sole` that the word is nothing else.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Holder {
+    pub(crate) index: usize,
+    pub(crate) body: String,
+    pub(crate) sole: bool,
+}
 
 struct Lexer<'t, 'a> {
     text: &'t str,
     depth: usize,
     sh: &'a mut Shared,
-    out: Vec<Segment>,
+    /// The segments, each with its `Holder`s (`Lexer::holders`).
+    out: Vec<(Segment, Vec<Holder>, bool)>,
     /// The current group, created on first use (Python creates one per segment break; only identity matters).
     group: Option<GroupId>,
     tokens: Vec<String>,
@@ -277,6 +292,8 @@ struct Lexer<'t, 'a> {
     marks: usize,
     /// A word of this segment held more `{`, `}` and `,` than were added unquoted.
     quoted_braces: bool,
+    /// SH-F3: a word of the segment being built held a `$(` or a backtick (not `<(`/`>(`, not `$((`).
+    held: bool,
     /// A `|` came with no command before it in its pipeline: the next segment is `Segment::after_compound`.
     compound: bool,
     /// Elements of the `name=( ... )` being lexed.
@@ -288,6 +305,12 @@ struct Lexer<'t, 'a> {
     brackets: Option<HashMap<usize, usize>>,
     /// The widest span `scan_expanded` took, without and with `dq`.
     expanded: [Option<(usize, usize)>; 2],
+    /// A segment was over the Rust-only budget (`SEGMENT_COST`): it was not kept, and `run` fails (M-1).
+    overflow: bool,
+    /// Bodies of the substitutions in the word being built (`Holder`).
+    subs: Vec<String>,
+    /// The holders of the segment being built (`Holder`, F-8).
+    holders: Vec<Holder>,
 }
 
 impl<'t, 'a> Lexer<'t, 'a> {
@@ -326,6 +349,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             braces: false,
             marks: 0,
             quoted_braces: false,
+            held: false,
             compound: false,
             array: None,
             array_word: String::new(),
@@ -333,6 +357,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
             memo: Memo::default(),
             brackets: None,
             expanded: [None, None],
+            overflow: false,
+            subs: Vec::new(),
+            holders: Vec::new(),
         }
     }
 
@@ -353,6 +380,10 @@ impl<'t, 'a> Lexer<'t, 'a> {
     }
 
     fn end_word(&mut self) {
+        let subs = std::mem::take(&mut self.subs);
+        // SH-F3 `held`: a word of the segment holds a `$(` or a backtick, whatever its role (a token, a redirect
+        // target, a here-string, an array element)
+        self.held |= !subs.is_empty();
         if !self.has_word {
             return;
         }
@@ -363,13 +394,24 @@ impl<'t, 'a> Lexer<'t, 'a> {
             .bytes()
             .filter(|b| matches!(b, b'{' | b'}' | b','))
             .count();
-        self.quoted_braces |= marks > std::mem::take(&mut self.marks);
+        // a word with no `{` holds no brace expression (re-review: `-m "a, b"` is fine)
+        self.quoted_braces |= marks > std::mem::take(&mut self.marks) && word.contains('{');
         if let Some(array) = self.array.as_mut() {
             array.push(word);
             return;
         }
         match self.pending.take() {
-            None => self.tokens.push(word),
+            None => {
+                if let Some(body) = subs.first() {
+                    let sole = subs.len() == 1 && word.is_empty();
+                    self.holders.push(Holder {
+                        index: self.tokens.len(),
+                        body: body.clone(),
+                        sole,
+                    });
+                }
+                self.tokens.push(word)
+            }
             Some("<<<") => {
                 let group = self.group();
                 self.sh.push_text(group, word);
@@ -379,6 +421,15 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 target: word,
             }),
         }
+    }
+
+    /// One more kept segment: `SEGMENT_COST` of the Rust-only budget. Out of budget, `overflow` is set and no
+    /// segment is kept from then on (`run` fails, so nothing is dropped silently).
+    fn charge_segment(&mut self) -> bool {
+        if self.overflow || self.sh.work.charge_extra(SEGMENT_COST).is_err() {
+            self.overflow = true;
+        }
+        !self.overflow
     }
 
     /// End the segment; `new_group`: the pipeline ends too, unless no command followed a `|` yet (a newline,
@@ -395,9 +446,16 @@ impl<'t, 'a> Lexer<'t, 'a> {
         self.pending = None;
         let braces = std::mem::take(&mut self.braces);
         let quoted_braces = std::mem::take(&mut self.quoted_braces);
-        if !self.tokens.is_empty() || !self.redirs.is_empty() {
+        // an arithmetic segment runs no program word: its substitutions are lexed and analyzed as commands anyway
+        let mut holders = std::mem::take(&mut self.holders);
+        if self.arith.is_some() {
+            holders.clear();
+        }
+        // SH-F3: the segment held a `$(` or a backtick (`end_word` derives it from the words' substitutions)
+        let held = std::mem::take(&mut self.held);
+        if (!self.tokens.is_empty() || !self.redirs.is_empty()) && self.charge_segment() {
             let group = self.group();
-            self.out.push(Segment {
+            let segment = Segment {
                 tokens: std::mem::take(&mut self.tokens),
                 redirs: std::mem::take(&mut self.redirs),
                 group,
@@ -405,7 +463,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 braces,
                 after_compound: std::mem::take(&mut self.compound),
                 quoted_braces,
-            });
+            };
+            self.out.push((segment, holders, held));
         }
         if new_group {
             self.group = None;
@@ -423,14 +482,21 @@ impl<'t, 'a> Lexer<'t, 'a> {
         i + 1
     }
 
+    /// `<(cmd)` or `>(cmd)` at `i`: bash runs `cmd` and passes its path as one word. The body is lexed as a
+    /// nested command, and the word continues the one being built (`x<(a)y` is one word, `2<(a)` keeps the 2).
+    fn procsub(&mut self, i: usize) -> Result<usize, LexError> {
+        let (inner, j) = scan_paren(self.text, i + 2, &mut self.memo, &mut self.sh.work)?;
+        self.nested(inner, Some(i), true)?;
+        self.add(PROCSUB_PATH);
+        Ok(j)
+    }
+
     /// A metacharacter inside an array literal: words end; `<(..)`/`>(..)` still run.
     fn array_char(&mut self, i: usize) -> Result<usize, LexError> {
         let text = self.text;
         let c = text.as_bytes()[i];
         if (c == b'<' || c == b'>') && byte_at(text, i + 1) == Some(b'(') {
-            let (inner, j) = scan_paren(text, i + 2, &mut self.memo, &mut self.sh.work)?;
-            self.nested(inner, Some(i), true)?;
-            return Ok(j);
+            return self.procsub(i);
         }
         self.end_word();
         if c == b')' {
@@ -446,12 +512,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
     /// The elements become the arguments of an `echo`, and `name=( ... )` stays one assignment word.
     fn close_array(&mut self, i: usize) {
         let elements = self.array.take().unwrap_or_default();
-        if !elements.is_empty() {
+        if !elements.is_empty() && self.charge_segment() {
             let group = self.sh.new_group();
             let mut tokens = Vec::with_capacity(elements.len() + 1);
             tokens.push("echo".to_string());
             tokens.extend(elements);
-            self.out.push(Segment {
+            let segment = Segment {
                 tokens,
                 redirs: Vec::new(),
                 group,
@@ -459,7 +525,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 braces: false,
                 after_compound: false,
                 quoted_braces: false,
-            });
+            };
+            self.out.push((segment, Vec::new(), false));
         }
         let body = self.text.get(self.array_start..i).unwrap_or("");
         let word = format!("{}({body})", self.array_word);
@@ -526,6 +593,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
     fn backtick(&mut self, i: usize, j: usize, dq: bool) -> Result<(), TooComplex> {
         let text = self.text;
         let raw = &text[i + 1..j];
+        self.subs.push(raw.to_string()); // F-8: the word holds a substitution
         self.nested(raw, Some(i), false)?;
         if let Some(unescaped) = unescape_backticks(raw, dq, &mut self.sh.work)? {
             self.nested(&unescaped, Some(i), false)?;
@@ -533,7 +601,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         Ok(())
     }
 
-    fn run(mut self) -> Result<Vec<Segment>, LexError> {
+    fn run(mut self) -> Result<Vec<(Segment, Vec<Holder>, bool)>, LexError> {
         let text = self.text;
         let bytes = text.as_bytes();
         let n = text.len();
@@ -600,6 +668,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     self.end_seg(double);
                     i += if double || next == Some(b'&') { 2 } else { 1 };
                 }
+                b'<' | b'>' if byte_at(text, i + 1) == Some(b'(') => i = self.procsub(i)?,
                 b'<' | b'>' | b'&' => i = self.redirect(i)?,
                 _ => {
                     let ch = char_at(text, i).unwrap_or('\u{fffd}');
@@ -617,6 +686,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
             self.close_array(n);
         }
         self.end_seg(true);
+        if self.overflow {
+            return Err(LexError::TooComplex);
+        }
         Ok(self.out)
     }
 
@@ -645,6 +717,11 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 && self.parens <= a + 1
             {
                 self.arith = None;
+                // the segment ends here, inside the arithmetic: its words run no program (F-8). The words still
+                // held their substitutions (F-3)
+                self.held |= !self.subs.is_empty();
+                self.holders.clear();
+                self.subs.clear();
             }
         }
         Ok(())
@@ -678,6 +755,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 b'$' if byte_at(text, j + 1) == Some(b'(') => {
                     let (inner, k) = substitution(text, j, &mut self.memo, &mut self.sh.work)?;
                     let comsub = !inner.starts_with("((");
+                    if comsub {
+                        self.subs.push(inner.to_string()); // F-8: the word holds a substitution
+                    }
                     self.nested(&inner, Some(j), comsub)?;
                     j = k;
                 }
@@ -685,7 +765,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     let k = self.brace_end(j)?;
                     self.scan_expanded(j + 2, k, true, false)?;
                     let after = after_char(text, k);
-                    self.cur.push_str(text.get(j..after).unwrap_or(""));
+                    let part = text.get(j..after).unwrap_or("");
+                    // as unquoted: `${...}` is never brace-expanded (re-review over-block fix)
+                    self.marks += part
+                        .bytes()
+                        .filter(|b| matches!(b, b'{' | b'}' | b','))
+                        .count();
+                    self.cur.push_str(part);
                     j = after;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'[') => {
@@ -736,17 +822,28 @@ impl<'t, 'a> Lexer<'t, 'a> {
             Some(b'(') => {
                 let (inner, j) = substitution(text, i, &mut self.memo, &mut self.sh.work)?;
                 let comsub = !inner.starts_with("((");
+                if comsub {
+                    self.subs.push(inner.to_string()); // F-8: the word holds a substitution
+                }
                 let first = self.out.len();
                 self.nested(&inner, Some(i), comsub)?;
                 if !comsub {
-                    for seg in &mut self.out[first..] {
+                    for (seg, holders, _) in &mut self.out[first..] {
                         seg.arith = true;
+                        holders.clear(); // an arithmetic segment runs no program word
                     }
                 }
                 return Ok(j);
             }
             Some(b'{') => {
                 let k = self.brace_end(i)?;
+                // bash runs a `<(...)` in an unquoted `${...}`; that is not modelled here, so it is too complex
+                if text
+                    .get(i + 2..k)
+                    .is_some_and(|body| body.contains("<(") || body.contains(">("))
+                {
+                    return Err(LexError::TooComplex);
+                }
                 self.scan_expanded(i + 2, k, false, false)?;
                 let after = after_char(text, k);
                 let part = text.get(i..after).unwrap_or("");
@@ -824,7 +921,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             return self.heredoc(op, j);
         }
         if byte_at(text, j) != Some(b'(') {
-            // `<(cmd)` is a substitution, not a file
+            // a `(` after `>>`, `&>` and the like is a syntax error in bash; `<(`/`>(` never reach here (`procsub`)
             self.pending = Some(op);
         }
         Ok(j)
@@ -929,23 +1026,31 @@ pub(crate) fn segments_in(
     shallow: bool,
     comsub: bool,
     sh: &mut Shared,
-) -> Result<Vec<Segment>, TooComplex> {
+) -> Result<Vec<(Segment, Vec<Holder>, bool)>, TooComplex> {
     sh.work.charge(text.len() + 1)?;
     match Lexer::new(text, depth, full, shallow, comsub, sh).run() {
         Ok(segments) => Ok(segments),
         Err(LexError::TooComplex) => Err(TooComplex),
         Err(LexError::Unbalanced) => {
             sh.info.nested_lenient = true;
-            lenient_segments(text, sh)
+            lenient_segments(text, sh).map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|s| (s, Vec::new(), false))
+                    .collect()
+            })
         }
     }
 }
 
 /// `lex`'s result: the segments, what could not be seen into, and whether a heredoc line inside `$(...)` made
-/// the other readings matter.
+/// the other readings matter. `holders[k]` belongs to `lexed.segments[k]` (Rust-only, F-8).
 pub(crate) struct LexOut {
     pub(crate) lexed: Lexed,
     pub(crate) info: LexInfo,
+    pub(crate) holders: Vec<Vec<Holder>>,
+    /// SH-F3: per segment of `lexed.segments`, whether it held a `$(` or a backtick.
+    pub(crate) held: Vec<bool>,
 }
 
 /// `_segments(text, depth)` at the top level, spending from `work` (`analyze` threads one budget through the
@@ -967,15 +1072,29 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
             Err(LexError::TooComplex) => Err(TooComplex),
             Err(LexError::Unbalanced) => {
                 sh.info.nested_lenient = true;
-                lenient_segments(text, &mut sh).map(|segments| (segments, true))
+                lenient_segments(text, &mut sh).map(|segments| {
+                    let segments = segments
+                        .into_iter()
+                        .map(|s| (s, Vec::new(), false))
+                        .collect();
+                    (segments, true)
+                })
             }
         },
     };
     *work = sh.work;
-    let (segments, lenient, incomplete) = match result {
-        Ok((segments, lenient)) => (segments, lenient, false),
+    let (pairs, lenient, incomplete) = match result {
+        Ok((pairs, lenient)) => (pairs, lenient, false),
         Err(TooComplex) => (Vec::new(), false, true),
     };
+    let mut segments = Vec::with_capacity(pairs.len());
+    let mut holders = Vec::with_capacity(pairs.len());
+    let mut held = Vec::with_capacity(pairs.len());
+    for (segment, segment_holders, segment_held) in pairs {
+        segments.push(segment);
+        holders.push(segment_holders);
+        held.push(segment_held);
+    }
     let mut ids: Vec<u32> = segments.iter().map(|s| s.group.0).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -998,6 +1117,8 @@ pub(crate) fn lex_in(text: &str, depth: usize, work: &mut Work) -> LexOut {
             incomplete,
         },
         info: sh.info,
+        holders,
+        held,
     }
 }
 

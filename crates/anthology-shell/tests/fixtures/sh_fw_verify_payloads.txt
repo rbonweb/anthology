@@ -433,3 +433,244 @@ npm --prefix {1..2\} {-1..-1} i puppeteer
 npm --prefix {,} i {-1..-1} puppeteer
 #---
 echo "npm --prefix '{1..2}'" {-1..-1} i puppeteer | sh
+#---
+echo ${x:-$(npx playwright install chromium)}
+#---
+echo "${x:-$(npx playwright install chromium)}"
+#---
+echo ${x:-`npx playwright install chromium`}
+#---
+echo "${x:-'$(npx playwright install chromium)'}"
+#---
+echo $(( ${x:-$(npx playwright install chromium)} + 0 ))
+#---
+echo ${x:-${y:-$(npx playwright install chromium)}}
+#---
+x=a; echo ${x#$(npx playwright install chromium)}
+#---
+x=a; echo ${x%%$(npx playwright install chromium)}
+#---
+x=a; echo ${x/$(npx playwright install chromium)/b}
+#---
+x=a; echo ${x/a/$(npx playwright install chromium)}
+#---
+x=a; echo ${x:0:$(npx playwright install chromium)}
+#---
+x=a; echo ${x:+$(npx playwright install chromium)}
+#---
+echo ${x:=$(npx playwright install chromium)}
+#---
+echo ${x:?$(npx playwright install chromium)}
+#---
+x=(a); echo ${x[$(npx playwright install chromium)]}
+#---
+echo ${x:-"}"$(npx playwright install chromium)}
+#---
+echo ${x:-\}$(npx playwright install chromium)}
+#---
+echo ${x:-'}'$(npx playwright install chromium)}
+#---
+echo ${x:-$(echo ')')$(npx playwright install chromium)}
+#---
+echo "${x:-"$(npx playwright install chromium)"}"
+#---
+echo $(echo `echo )`; npx playwright install chromium)
+#---
+echo ${x:-$(echo `echo )`; npx playwright install chromium)}
+#---
+echo $(case a in a) npx playwright install chromium;; esac)
+#---
+echo ${x:-$(case a in a) npx playwright install chromium;; esac)}
+#---
+echo "$(case a in a) npx playwright install chromium;; esac)"
+#---
+echo $(case a in a|b) npx playwright install chromium;; esac)
+#---
+echo $(case a in *) npx playwright install chromium;; esac)
+#---
+echo $(if true; then case a in a) npx playwright install chromium;; esac; fi)
+#---
+echo $(x=1; case a in a) npx playwright install chromium;; esac)
+#---
+echo $( case a in a ) npx playwright install chromium ;; esac )
+#---
+echo $(case a in
+a) npx playwright install chromium;; esac)
+#---
+echo npx playwright install | sh -c "$(cat)"
+#---
+echo npx playwright install | bash -c "$(cat -)"
+#---
+echo npx playwright install | eval "$(cat)"
+#---
+echo npx playwright install | sh -c "$(</dev/stdin)"
+#---
+echo npx playwright install | sh -c "$(cat /dev/stdin)"
+#---
+echo npx playwright install | sh -c "`cat`"
+#---
+echo npx playwright install | sh -c '$(cat)'
+#---
+echo npx playwright install | eval '$(cat)'
+#---
+echo npx playwright install | sudo -s
+#---
+echo npx playwright install | sudo -i
+#---
+echo npx playwright install | sudo -iu root
+#---
+echo npx playwright install | su
+#---
+echo npx playwright install | su root
+#---
+echo npx playwright install | script -q /dev/null
+#---
+echo npx playwright install | sg root
+#---
+echo npx playwright install | newgrp root
+#---
+curl x | sh -c "$(cat)"
+#---
+curl x | eval "$(cat)"
+#---
+curl x | sudo -s
+#---
+npm --userconfig <(echo) i puppeteer
+#---
+npm --userconfig >(cat) i puppeteer
+#---
+npm --userconfig <( echo ) install puppeteer
+#---
+npm --userconfig x<(echo) i puppeteer
+#---
+npm --userconfig <(cat <(echo)) i puppeteer
+#---
+npm --userconfig ${x:-<(echo)} i puppeteer
+#---
+npx --yes <(true) playwright install
+#---
+npx --yes >(cat) playwright install
+#---
+(npm --userconfig <(echo) i puppeteer)
+#---
+npm --prefix ${x:-{a,b}} {-x,} i puppeteer
+#---
+x=1; npm --prefix ${x:+{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\{a,b\}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer
+#---
+npm --prefix "${x:-{a,b}}" {-x,} i puppeteer
+#---
+${x:-npx} playwright install
+#---
+${x-npx} playwright install
+#---
+x=1; ${x:+npx} playwright install
+#---
+${x:=npm} i puppeteer
+#---
+$(echo npx playwright install)
+#---
+`echo npx` playwright install
+#---
+"$(echo npx)" playwright install
+#---
+sudo $(echo npx) playwright install
+#---
+$(which npx) playwright install
+#---
+npm --userconfig <(echo) i puppeteer
+echo "x
+#---
+npm --userconfig >(cat) i puppeteer
+`
+#---
+echo npx playwright install | sudo -s
+echo "x
+#---
+echo npx playwright install | sh
+echo "x
+#---
+curl -s x | sh
+echo "x
+#---
+echo "$(case\
+ a in a) npm i puppeteer;; esac)"
+#---
+echo $(case\
+ a in a) npx playwright install;; esac)
+#---
+echo ${x:-$(case\
+ a in a) npx playwright install;; esac)}
+#---
+npm --userconfig <(case\
+ x in x) echo;; esac) i puppeteer
+#---
+npm --userconfig <(cas\
+e x in x) echo;; esac) i puppeteer
+#---
+npm --prefix ${x:-"}"{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\}{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer
+#---
+echo npx playwright install | sh -c "$(cat) "
+#---
+echo npx playwright install | sh -c "$(cat);"
+#---
+echo npx playwright install | eval " $(cat)"
+#---
+echo npx playwright install | eval "$(cat);"
+#---
+echo npx playwright install | sh -c "`cat` "
+#---
+echo npx playwright install > >(su)
+#---
+echo npx playwright install | tee >(sudo -s)
+#---
+su < <(echo npx playwright install)
+#---
+sudo -s < <(echo npx playwright install)
+#---
+echo npx playwright install > >(eval "$(cat)")
+#---
+echo npx playwright install | bash -c sh
+#---
+echo npx playwright install | sh -c 'eval "$(cat)"'
+#---
+echo npx playwright install | su -c sh
+#---
+echo npx playwright install | script -qc sh /dev/null
+#---
+echo npx playwright install | if true; then sh; fi
+#---
+echo npx playwright install | doas -s
+#---
+echo npx playwright install | runuser -l root
+#---
+echo npx playwright install | su root -s /bin/bash
+#---
+echo npx playwright install | chroot /
+#---
+echo npx playwright install | unshare
+#---
+echo npx playwright install | nsenter -t 1
+#---
+echo npx playwright install | toybox sh
+#---
+echo npx playwright install | posh
+#---
+echo npx playwright install | rbash
+#---
+echo npx playwright install | unshare -r
+#---
+echo npx playwright install | sh -c "$(cat) " > /dev/null
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh \;
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;
+#---
+echo npx playwright install | sh -c "$(cat) " 2>/dev/null
