@@ -89,9 +89,24 @@ pub const MAX_DEPTH: usize = 329;
 pub const MAX_SPARSE: usize = 4096;
 /// `tarfile.data_filter` resolves each name under a fresh `tempfile.mkdtemp()`; on the oracle
 /// that is `/tmp/tmpXXXXXXXX` (8 random characters; the port, which creates no folder, names
-/// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails.
+/// it with the X's), and `os.lstat` of a path of `PATH_MAX` bytes or more fails. On macOS the
+/// filter realpaths `/tmp` to `/private/tmp`, and `PATH_MAX` is 1024.
+///
+/// Known leniency: this models Python with no `TMPDIR` (as the difftest oracle runs). On a
+/// real Mac `TMPDIR` is `/var/folders/…/T/`, about 68 bytes once realpathed against the 25
+/// modelled here, so Python refuses names of roughly 950 to 990 bytes that the port lets
+/// through at load. A note under such a name has a part over 255 bytes, which apply refuses
+/// before any write (`NAME_MAX`), so only the stage and text of the refusal differ; a bare
+/// agent folder member of that length has nothing to write. Linux has the same gap whenever
+/// `TMPDIR` is set.
+#[cfg(target_os = "macos")]
+const FILTER_DEST: &str = "/private/tmp/tmpXXXXXXXX";
+#[cfg(not(target_os = "macos"))]
 const FILTER_DEST: &str = "/tmp/tmpXXXXXXXX";
 const FILTER_DEST_LEN: usize = FILTER_DEST.len() + 1;
+#[cfg(target_os = "macos")]
+const PATH_MAX: usize = 1024;
+#[cfg(not(target_os = "macos"))]
 const PATH_MAX: usize = 4096;
 #[cfg(target_os = "macos")]
 const ENAMETOOLONG: i32 = 63;
@@ -2860,6 +2875,27 @@ mod tests {
         );
     }
 
+    /// The host's values, as literals: the test below derives its names from them.
+    #[test]
+    fn the_tar_filter_folder_and_path_limit_are_the_hosts() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            (PATH_MAX, FILTER_DEST, ENAMETOOLONG),
+            (1024, "/private/tmp/tmpXXXXXXXX", 63)
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            (PATH_MAX, FILTER_DEST, ENAMETOOLONG),
+            (4096, "/tmp/tmpXXXXXXXX", 36)
+        );
+        // The longest note name that passes: `personal/` + 986 (macOS) or 4066 (Linux) + `.md`.
+        let longest = PATH_MAX - FILTER_DEST_LEN - 1;
+        #[cfg(target_os = "macos")]
+        assert_eq!(longest, 9 + 986 + 3);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(longest, 9 + 4066 + 3);
+    }
+
     #[test]
     fn names_too_long_for_the_tar_filter_are_refused() {
         let long = |n: usize| [b"personal/".to_vec(), vec![b'a'; n], b".md".to_vec()].concat();
@@ -2879,11 +2915,11 @@ mod tests {
             load(&tar),
             Err(format!(
                 "member '{name}' rejected by the tar filter: {too_long}: \
-                 '/tmp/tmpXXXXXXXX/{name}'"
+                 '{FILTER_DEST}/{name}'"
             ))
         );
         // The first part of the path that is too long is named (os.lstat part by part).
-        let agent = "a".repeat(4080);
+        let agent = "a".repeat(PATH_MAX - 16);
         let name = format!("repo/agent-memory/{agent}/n.md");
         let tar = [
             manifest(),
@@ -2895,7 +2931,7 @@ mod tests {
             load(&tar),
             Err(format!(
                 "member '{name}' rejected by the tar filter: {too_long}: \
-                 '/tmp/tmpXXXXXXXX/repo/agent-memory/{agent}'"
+                 '{FILTER_DEST}/repo/agent-memory/{agent}'"
             ))
         );
     }

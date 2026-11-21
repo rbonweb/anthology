@@ -93,13 +93,18 @@ fn d2() -> Normalizer {
 
 /// `tarfile.data_filter`'s ENAMETOOLONG text names a path under a random `/tmp/tmpXXXXXXXX`
 /// (8 characters), which the port prints with the X's; and the errno is the host's (Linux 36,
-/// macOS 63), while the Rust side may run on macOS against the Linux oracle. Both sides.
+/// macOS 63), while the Rust side may run on macOS against the Linux oracle. On macOS the
+/// oracle's folder is `/private/tmp/tmp…`: the oracle runs with no `TMPDIR`, so `tempfile`
+/// picks `/tmp`, and `data_filter` realpaths it through macOS's `/tmp -> private/tmp` link.
+/// Both sides.
 fn too_long(o: &mut Observed) {
     const AT: &str = "File name too long: '/tmp/tmp";
-    let text = String::from_utf8_lossy(&o.stdout).replace(
-        "[Errno 63] File name too long",
-        "[Errno 36] File name too long",
-    );
+    let text = String::from_utf8_lossy(&o.stdout)
+        .replace(
+            "[Errno 63] File name too long",
+            "[Errno 36] File name too long",
+        )
+        .replace("File name too long: '/private/tmp/tmp", AT);
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();
     while let Some(i) = rest.find(AT) {
@@ -1103,6 +1108,38 @@ fn seeds() -> Vec<(String, Value)> {
                     plan_step("b", "in/m.tar.gz", "2026-04-06"),
                     apply_last("b", vec![arr(vec![path(&["date"]), s(date)])]),
                 ],
+            ),
+        ));
+    }
+    // macOS only: names at the tar filter's cut-off there (a path of 1024 bytes under
+    // `/private/tmp/tmpXXXXXXXX`), which the generator's Linux lengths never reach. A note of
+    // 986 `n`s fits and one of 987 does not; an agent folder of 975 `a`s fits with its note, one
+    // of 980 is refused by its full path, one of 981 by the folder. Linux runs no extra case.
+    #[cfg(target_os = "macos")]
+    for (label, name) in [985, 986, 987]
+        .map(|k| (format!("n{k}"), format!("personal/{}.md", "n".repeat(k))))
+        .into_iter()
+        .chain([975, 980, 981].map(|k| {
+            let agent = "a".repeat(k);
+            (format!("a{k}"), format!("repo/agent-memory/{agent}/x.md"))
+        }))
+    {
+        let a = archive_hex(|p| {
+            mx::make_archive(
+                p,
+                &[(name.as_str(), Spec::File(b"x\n".to_vec()))],
+                true,
+                false,
+            )
+        });
+        let mut bytes = Map::new();
+        bytes.insert("in/x.tar.gz".into(), s(&a));
+        out.push((
+            format!("macos-cutoff-{label}"),
+            case(
+                obj(vec![]),
+                Value::Object(bytes),
+                vec![plan_step("b", "in/x.tar.gz", "2026-04-06")],
             ),
         ));
     }
