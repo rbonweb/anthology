@@ -300,8 +300,15 @@ fn after_the_cutover_every_ported_surface_needs_a_golden() {
     );
     assert!(out.contains("core.lock: 820 cases"), "{out}");
     assert!(out.contains("FAIL core.state: no golden at "), "{out}");
-    // While the oracle exists, a surface without a golden is only skipped.
-    let (code, out) = difftest(&["golden", "check", "--all", "--golden", &golden]);
+    // While the oracle exists, a surface without a golden is only skipped. The same scratch root
+    // with an oracle driver stands for a checkout before the cutover, so this half also holds
+    // after it.
+    let driver = Path::new(&cut).join("port/difftest/oracle/_driver.py");
+    std::fs::create_dir_all(driver.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&driver, "").expect("write");
+    let (code, out) = difftest(&[
+        "golden", "check", "--all", "--golden", &golden, "--root", &cut,
+    ]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("skip core.state (no golden yet)"), "{out}");
 }

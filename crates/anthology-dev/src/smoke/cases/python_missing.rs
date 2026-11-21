@@ -1,6 +1,7 @@
 //! `python-missing` (U8, no model): the sh SessionStart wrapper prints a systemMessage naming
 //! python3 when python3 is missing. The guardrails sentinel (PLAN U8) must also print nothing
-//! when python3 is present. Keeps the Python-era semantics until CO2.
+//! when python3 is present. Keeps the Python-era semantics until CO2; once CO2 has deleted the
+//! Python plugin scripts it skips, and `binary-missing` checks the missing-runtime messages.
 
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -44,6 +45,13 @@ fn names_python3(out: &str) -> bool {
 
 pub fn run(ctx: &Ctx) -> Res<Outcome> {
     let root = ctx.root()?;
+    if !root.join("plugins/anthology/scripts").is_dir() {
+        return Ok((
+            Status::Skip,
+            "no Python plugin scripts (after CO2); binary-missing covers the missing runtime"
+                .to_string(),
+        ));
+    }
     let mut cmds: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for plugin in ["anthology", "anthology-guardrails"] {
         let plugin_root = root.join("plugins").join(plugin);
