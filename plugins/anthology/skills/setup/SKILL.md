@@ -31,9 +31,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      rename it. `null` means no BrowserOS server is configured (the BrowserOS check above covers it),
      or that the only one was found in the project's `.mcp.json` and is not approved (the `detail`
      says so): ask the user to approve it in Claude Code, or add the server at user scope.
-   - `subagent_model` false: show the `detail` warning clearly. `CLAUDE_CODE_SUBAGENT_MODEL` overrides
-     every agent's model, so the roster's opus/sonnet/haiku tiers do not apply. Anthology never
-     changes it, and whether to keep it is the user's choice. Continue either way.
+   - `subagent_model` false: `CLAUDE_CODE_SUBAGENT_MODEL` overrides every agent's model, so the
+     roster's opus/sonnet/haiku tiers do not apply. Step 4 handles it from the top-level
+     `subagent_model`. Continue either way.
    - `path_wrappers` or `plugin_data` false: a Claude Code change broke an assumption Anthology
      relies on (the plugin's `bin/` on PATH or the plugin data folder). Show the `detail`, say so, and
      ask the user to report it. `null` just means there is nothing to check yet.
@@ -50,7 +50,9 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    read, so duplicates were not checked; setup can continue.
 4. Show every change listed below, then ask for one confirmation: apply these changes and, if
    `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
-   (recommend none):
+   (recommend none). If `subagent_model.removable` is true, ask a separate yes/no question in the same
+   message: remove `CLAUDE_CODE_SUBAGENT_MODEL` from settings.json so the roster's model tiers apply
+   (recommend **yes**; `/anthology:setup remove` puts it back):
    - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
    - **settings.json:** show `settings.diff` as a diff. Values outside
@@ -59,6 +61,11 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      deny rules would reach the conversation. Then print this note verbatim:
      `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
+   - **CLAUDE_CODE_SUBAGENT_MODEL:** `subagent_model.set_in` lists where it is set (never its value).
+     If `removable` is true, show `subagent_model.diff` as a diff (the value reads `"<redacted>"`): this is
+     the separate change the yes/no question above is about. For each item in `subagent_model.elsewhere`,
+     say it is set in `where` and show `how` (one line on removing it there). Setup never changes those
+     places. If `set_in` is empty, say nothing about it.
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
      is skipped.
@@ -79,9 +86,11 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 
    Add `--promote <file>` once for each legacy note the user chose to move into the repo (the bare
    `file` name from `memory.legacy_notes`); add nothing if they chose none. Add `--skip-approve` if the
-   user does not want this repo approved (it cannot be combined with `--promote`). If it reports that
+   user does not want this repo approved (it cannot be combined with `--promote`). Add
+   `--remove-subagent-model` only if the user said yes to removing `CLAUDE_CODE_SUBAGENT_MODEL`. If it reports that
    settings.json changed since the preview, run the preview again and ask again.
-6. Report the result: what changed, any `warnings`, and `memory.approve_error` if present (the repo is
+6. Report the result: what changed (`subagent_model.removed` says whether `CLAUDE_CODE_SUBAGENT_MODEL`
+   was removed), any `warnings`, and `memory.approve_error` if present (the repo is
    still approved; say which file was refused). `memory.migrated` lists the legacy notes copied into the
    repo (`repo`) and into personal memory (`personal`). If `memory.blocked` is not empty, list each
    `file` with its `reason`: those notes stayed in personal memory. Tell the user to restart the
@@ -98,7 +107,8 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
    If it reports an error (for example settings.json is not valid JSON), show the message and stop.
 2. Show every change it would make:
    - `settings.diff` as a diff: the settings.json entries Anthology added come out, and
-     `worktree.baseRef` goes back to its previous value. Rules the user added themselves are never touched.
+     `worktree.baseRef` goes back to its previous value, as does `env.CLAUDE_CODE_SUBAGENT_MODEL` if setup
+     removed it (unless the user has set it again since). Rules the user added themselves are never touched.
      Values outside `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`;
      those three are shown as they are, including your own rules.
    - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).

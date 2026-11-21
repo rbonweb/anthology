@@ -372,8 +372,8 @@ def _check_subagent_model(env, cwd):
     if where is None:
         return True, "CLAUDE_CODE_SUBAGENT_MODEL is not set"
     return False, ("CLAUDE_CODE_SUBAGENT_MODEL is set (%s): it overrides every agent's model, so the "
-                   "roster's opus/sonnet/haiku tiers do not apply. Anthology never changes it; remove it "
-                   "yourself if you want the tiers." % where)
+                   "roster's opus/sonnet/haiku tiers do not apply. Run /anthology:setup: it offers to remove "
+                   "it from user settings.json and says how to remove it anywhere else." % where)
 
 
 def check_env(env=None, lock=None, plugin_root=None, cwd=None):

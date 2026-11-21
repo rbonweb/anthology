@@ -399,6 +399,86 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
 
 
+class SubagentModelOpTest(unittest.TestCase):
+    """The opt-in `unset` op that drops env.CLAUDE_CODE_SUBAGENT_MODEL, and its undo."""
+    KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+    def texts(self):
+        with_other = {"model": "x", "env": {"A": "1", self.KEY: "SECRETMODEL"}, "permissions": {"allow": []}}
+        alone = {"env": {self.KEY: "SECRETMODEL"}, "z": 1}
+        return {"two-space": json.dumps(with_other, indent=2) + "\n",
+                "four-space-alone": json.dumps(alone, indent=4) + "\n",
+                "compact": json.dumps(with_other, separators=(",", ":")),
+                "crlf": (json.dumps(alone, indent=2) + "\n").replace("\n", "\r\n"),
+                "first-of-two": json.dumps({"env": {self.KEY: "SECRETMODEL", "B": "2"}}, indent=2) + "\n"}
+
+    def test_apply_then_revert_restores_the_original_bytes(self):
+        op = settings_patch.subagent_model_op()
+        for name, text in self.texts().items():
+            planned = settings_patch.plan(text, [op])
+            self.assertEqual(len(planned), 1, name)
+            self.assertEqual(planned[0]["previous"], {"present": True, "raw": '"SECRETMODEL"'}, name)
+            new, _ = settings_patch.apply(text, planned)
+            data = json.loads(new)
+            self.assertNotIn(self.KEY, data["env"], name)
+            self.assertEqual({k: v for k, v in data.items() if k != "env"},
+                             {k: v for k, v in json.loads(text).items() if k != "env"}, name)
+            self.assertEqual(settings_patch.plan(new, [op]), [], name)  # already satisfied
+            back, _ = settings_patch.revert(new, planned)
+            if name == "first-of-two":  # put back as the env block's last key
+                self.assertEqual(json.loads(back), json.loads(text))
+                self.assertEqual(list(json.loads(back)["env"]), ["B", self.KEY])
+            else:
+                self.assertEqual(back, text, name)
+
+    def test_absent_or_blank_file_plans_nothing(self):
+        op = settings_patch.subagent_model_op()
+        for text in ("", "{}", json.dumps({"env": {"A": "1"}}), json.dumps({"model": "x"})):
+            self.assertEqual(settings_patch.plan(text, [op]), [], text)
+
+    def test_the_diff_shows_the_key_but_never_the_value(self):
+        text = self.texts()["two-space"]
+        _, diff = settings_patch.apply(text, [settings_patch.subagent_model_op()])
+        self.assertIn('-    "CLAUDE_CODE_SUBAGENT_MODEL": "<redacted>"', diff)
+        self.assertNotIn("SECRETMODEL", diff)
+
+    def test_a_value_set_again_since_is_left_alone_on_revert(self):
+        text = self.texts()["two-space"]
+        planned = settings_patch.plan(text, [settings_patch.subagent_model_op()])
+        new, _ = settings_patch.apply(text, planned)
+        data = json.loads(new)
+        data["env"][self.KEY] = "mine-now"
+        edited = json.dumps(data, indent=2) + "\n"
+        back, diff = settings_patch.revert(edited, planned)
+        self.assertEqual(back, edited)
+        self.assertEqual(diff, "")
+
+    def test_restored_when_the_env_block_went_away(self):
+        text = self.texts()["two-space"]
+        planned = settings_patch.plan(text, [settings_patch.subagent_model_op()])
+        new, _ = settings_patch.apply(text, planned)
+        data = json.loads(new)
+        del data["env"]
+        back, _ = settings_patch.revert(json.dumps(data, indent=2) + "\n", planned)
+        self.assertEqual(json.loads(back)["env"], {self.KEY: "SECRETMODEL"})
+
+    def test_reverted_together_with_the_setup_ops(self):
+        text = self.texts()["two-space"]
+        new, _, stored = settings_patch.reconcile(text, ops() + [settings_patch.subagent_model_op()], [])
+        self.assertNotIn(self.KEY, json.loads(new)["env"])
+        # a later run without the opt-in keeps the record, so remove still restores it
+        again, _, stored2 = settings_patch.reconcile(new, ops(), stored)
+        self.assertEqual(again, new)
+        self.assertEqual(stored2, stored)
+        back, _ = settings_patch.revert(again, stored2)
+        self.assertEqual(back, text)
+
+    def test_not_part_of_the_setup_ops_or_their_version(self):
+        self.assertNotIn("unset", [o["op"] for o in ops()])
+        self.assertEqual(settings_patch.subagent_model_op(),
+                         {"op": "unset", "path": ["env", self.KEY]})
+
+
 class InvalidInputTest(unittest.TestCase):
     def test_unparseable_or_non_object_text_is_refused(self):
         for text in ('{"a": 1,}', "{", "[1, 2]", '"x"', "null", '{"a": 1} trailing', "// c\n{}"):
