@@ -38,3 +38,68 @@ reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options)
 class = "D-8"
 case = "fw:7"
 reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `dnf --setopt x=y install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+
+[[divergence]]
+class = "D-8"
+case = "cap:1"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A command nested in 13 shells is past MAX_DEPTH; guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:2"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A cd into a directory with more than 64 slashes is not tracked (MAX_CWD_DEPTH), so later relative words resolve against the old directory; guard_rules.py allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:3"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A profile path under 13 nested tool-input keys is past _MAX_WALK_DEPTH; guard_rules.py does not read it, Rust reads the whole input and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:4"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A profile path over 4096 code points is past _MAX_PATH_STRING; guard_rules.py skips the word, Rust reads it and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:5"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). The 33rd brace alternative is past the _expand_braces limit of 32; guard_rules.py drops it, Rust expands it as well (union) and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:6"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A fifth brace group is past the four _expand_braces rounds; guard_rules.py leaves it as text, Rust expands it as well (union) and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:7"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). 8192 brace expansions are past what Rust checks (4096 results); guard_rules.py checks its first 32 and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:8"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). Under a relative HOME, ~/.config/chromium is a relative path that G3 reads only from its start; guard_rules.py allows, Rust also reads it under an absolute stand-in for the home and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "cap:9"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). Under a relative HOME, cd ~/.config leaves a relative directory, so chromium/x is read from its start only; guard_rules.py allows, Rust also reads it under an absolute stand-in for the directory and blocks it (G3).'
+
+[[divergence]]
+class = "D-8"
+case = "shell:5"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "shell:6"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "shell:7"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $(cat <<EOF past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "shell:381"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting echo $( 40 deep, past MAX_DEPTH; guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'

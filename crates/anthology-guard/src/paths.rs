@@ -6,14 +6,25 @@
 //! implementation for the tracked `cd` directory and the rules (lane notes). Their fancy-regex
 //! patterns (`_HOME_VAR`, `_TILDE_USER`) run under the check's backtrack limit; hitting it is a
 //! [`Limit`] (GC-16). `_ESCAPED_SPACE` is a linear scan ([`unescape_spaces`]).
+//!
+//! **Past Python's caps** (owner direction, fail closed; D-8 "Rust stricter"): Python stops
+//! reading a tool input below 12 nested levels, skips a word over 4096 code points, keeps 32
+//! brace expansions and expands braces for 4 rounds, and allows what it did not read. With
+//! `strict` (production) Rust reads the whole input and every word, whatever its length, and
+//! expands braces fully on top of Python's expansions (a union, so Rust never allows what
+//! Python blocks). Only a brace expansion too large to check ([`BRACE_MAX_RESULTS`],
+//! [`BRACE_MAX_BYTES`]) is left unread; it marks the check [`Paths::capped`], and `check`
+//! blocks it as too complex (G0). Under a relative or empty home, a G3 path that uses the home
+//! (or a relative `cd` directory) is also read against an absolute stand-in for it
+//! ([`STANDIN_HOME`]), so a profile under that home is found wherever the home really is.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use anthology_pycompat::json::Value;
 use anthology_pycompat::str as pystr;
 use anthology_pycompat::{fnmatch, path as pypath, quote};
-use anthology_shell::{Limits, normalize_with};
+use anthology_shell::{Limits, expand_with, normalize_with};
 
 use crate::data::{PREFIX_VARIANTS, PROFILE_ROOTS};
 use crate::rules::{Limit, any_of, either};
@@ -22,9 +33,24 @@ use crate::rules::{Limit, any_of, either};
 pub(crate) const MAX_WALK_DEPTH: usize = 12;
 /// `_MAX_PATH_STRING`: longer words (in code points) are not read as paths.
 pub(crate) const MAX_PATH_STRING: usize = 4096;
+/// Strict: the backtrack budget of `_HOME_VAR` and `_TILDE_USER` per byte of a word longer
+/// than [`MAX_PATH_STRING`]. Both patterns are linear (a step or two per position), so the
+/// default limit would stop a long ordinary word near a million bytes; scaled, it still only
+/// stops a pattern that backtracks.
+const STEPS_PER_BYTE: usize = 8;
 /// `_expand_braces`'s default `limit` and its round count.
 const BRACE_LIMIT: usize = 32;
 const BRACE_ROUNDS: usize = 4;
+/// Strict brace expansion: more results than this, or more bytes than [`BRACE_MAX_BYTES`], or
+/// more rounds than [`BRACE_MAX_ROUNDS`], is too large to check (the check is capped).
+pub(crate) const BRACE_MAX_RESULTS: usize = 4096;
+pub(crate) const BRACE_MAX_BYTES: usize = 8 << 20;
+const BRACE_MAX_ROUNDS: usize = 64;
+/// Strict, under a relative or empty home: the absolute folder the home is read under, and the
+/// one a relative `cd` directory is read under. No real path holds the NUL, so a profile
+/// sequence found below one is in the home (or the directory) itself.
+const STANDIN_HOME: &str = "/\u{0}home";
+const STANDIN_CWD: &str = "/\u{0}cwd";
 
 /// `_MEMORY_COMPONENTS`.
 const MEMORY_SEQUENCES: &[&[&str]] = &[&[".claude", "memory"], &[".claude", "agent-memory"]];
@@ -77,10 +103,17 @@ pub(crate) struct Paths<'a> {
     /// `[c for c in _normalize(home, home, None).split("/") if c] if home else []`.
     home_comps: Result<Vec<String>, Limit>,
     globs: RefCell<HashMap<String, Option<fnmatch::Pattern>>>,
+    /// Production's readings past Python's caps (module docs); `false` is Python's.
+    pub(crate) strict: bool,
+    /// Something was too large to read (strict only): `check` blocks as too complex.
+    pub(crate) capped: Cell<bool>,
+    /// Strict, under a relative or empty home: [`STANDIN_HOME`] joined with the home, and its
+    /// components (`home_comps` for it).
+    standin: Option<(String, Result<Vec<String>, Limit>)>,
 }
 
 impl<'a> Paths<'a> {
-    pub(crate) fn new(home: &'a str, limits: &'a Limits) -> Paths<'a> {
+    pub(crate) fn new(home: &'a str, limits: &'a Limits, strict: bool) -> Paths<'a> {
         // `_PROFILE_COMPONENTS`: lowercased components, and whether the last one is matched as
         // a prefix (`google-chrome-beta`).
         let profile = PROFILE_ROOTS
@@ -90,9 +123,7 @@ impl<'a> Paths<'a> {
                 (comps, root.starts_with(".config/"))
             })
             .collect();
-        let home_comps = if home.is_empty() {
-            Ok(Vec::new())
-        } else {
+        let comps_of = |home: &str| {
             normalize_with(home, home, None, limits)
                 .map(|h| {
                     h.split('/')
@@ -102,6 +133,20 @@ impl<'a> Paths<'a> {
                 })
                 .map_err(|_| Limit)
         };
+        let home_comps = if home.is_empty() {
+            Ok(Vec::new())
+        } else {
+            comps_of(home)
+        };
+        let standin = (strict && !home.starts_with('/')).then(|| {
+            let h = if home.is_empty() {
+                STANDIN_HOME.to_string()
+            } else {
+                format!("{STANDIN_HOME}/{home}")
+            };
+            let comps = comps_of(&h);
+            (h, comps)
+        });
         let memory = MEMORY_SEQUENCES
             .iter()
             .map(|seq| (seq.iter().map(|c| (*c).to_string()).collect(), false))
@@ -113,12 +158,69 @@ impl<'a> Paths<'a> {
             memory,
             home_comps,
             globs: RefCell::new(HashMap::new()),
+            strict,
+            capped: Cell::new(false),
+            standin,
         }
+    }
+
+    /// How deep the tool-input walkers read: Python's [`MAX_WALK_DEPTH`], or all of it.
+    pub(crate) fn walk_depth(&self) -> Option<usize> {
+        (!self.strict).then_some(MAX_WALK_DEPTH)
+    }
+
+    /// Strict, under a relative or empty home ([`Paths::standin`]): `_is_profile_path` read
+    /// against the stand-in home, for a candidate that uses the home or resolves against a
+    /// relative `cd` directory (read under [`STANDIN_CWD`]). Python reads such a path as
+    /// relative, from its start only, so `~/.config/chromium` under `HOME=relative/home` was not
+    /// a profile. A path that climbs out of the stand-ins (`~/../..`) leads somewhere unknown:
+    /// a [`Limit`].
+    fn standin_profile_path(
+        &self,
+        candidate: &str,
+        cwd: Option<&str>,
+        anywhere: bool,
+    ) -> Result<bool, Limit> {
+        let Some((home, comps)) = &self.standin else {
+            return Ok(false);
+        };
+        let limits = self.limits_for(candidate);
+        // `_expand` with a marker home: the marker shows up only where the home is used.
+        let marked = expand_with(candidate, "\0", &limits).map_err(|_| Limit)?;
+        let uses_home = marked.matches('\0').count() > candidate.matches('\0').count();
+        let expanded = expand_with(candidate, home, &limits).map_err(|_| Limit)?;
+        let relative = !expanded.starts_with('/');
+        let relative_cwd = cwd.filter(|c| !c.is_empty() && !c.starts_with('/'));
+        if !uses_home && !(relative && relative_cwd.is_some()) {
+            return Ok(false);
+        }
+        let base = match cwd.filter(|c| !c.is_empty()) {
+            Some(c) if c.starts_with('/') => c.to_string(),
+            Some(c) => format!("{STANDIN_CWD}/{c}"),
+            None => STANDIN_CWD.to_string(),
+        };
+        let path = normalize_with(candidate, home, Some(&base), &limits).map_err(|_| Limit)?;
+        if !path.contains('\0') {
+            return Err(Limit);
+        }
+        let comps = comps.as_ref().map_err(|_| Limit)?;
+        Ok(self.contains_sequence(&path, &self.profile, comps, anywhere))
     }
 
     /// `_normalize(path, home, cwd)`.
     fn normalize(&self, path: &str, cwd: Option<&str>) -> Result<String, Limit> {
-        normalize_with(path, self.home, cwd, self.limits).map_err(|_| Limit)
+        normalize_with(path, self.home, cwd, &self.limits_for(path)).map_err(|_| Limit)
+    }
+
+    /// The limits for reading `path`: the check's, with the backtrack limit scaled to a long
+    /// word in strict mode ([`STEPS_PER_BYTE`]).
+    fn limits_for(&self, path: &str) -> Limits {
+        let mut limits = *self.limits;
+        if self.strict && path.len() > MAX_PATH_STRING {
+            let scaled = path.len().saturating_mul(STEPS_PER_BYTE);
+            limits.backtrack_limit = limits.backtrack_limit.max(scaled);
+        }
+        limits
     }
 
     /// `_component_matches(candidate, protected, prefix)`.
@@ -209,11 +311,12 @@ impl<'a> Paths<'a> {
         let Ok(home_comps) = &self.home_comps else {
             return Err(Limit);
         };
-        any_of(bases(cwd), |base| {
+        let hit = any_of(bases(cwd), |base| {
             let path = self.normalize(candidate, base)?;
             Ok(!path.is_empty()
                 && self.contains_sequence(&path, &self.profile, home_comps, anywhere))
-        })
+        });
+        either(hit, || self.standin_profile_path(candidate, cwd, anywhere))
     }
 
     /// `_is_memory_path(candidate, home, cwd)`.
@@ -233,14 +336,21 @@ impl<'a> Paths<'a> {
     ) -> Result<bool, Limit> {
         any_of(words, |word| {
             let word = word.as_ref();
-            if pystr::char_len(word) > MAX_PATH_STRING {
+            if !self.strict && pystr::char_len(word) > MAX_PATH_STRING {
                 return Ok(false);
             }
             any_of(path_candidates(word), |piece| {
-                let candidates = if piece.contains('{') {
-                    expand_braces(&piece)
-                } else {
+                let candidates = if !piece.contains('{') {
                     vec![piece]
+                } else if self.strict {
+                    let mut all = expand_braces(&piece);
+                    match expand_braces_fully(&piece) {
+                        Some(full) => all.extend(full),
+                        None => self.capped.set(true),
+                    }
+                    all
+                } else {
+                    expand_braces(&piece)
                 };
                 any_of(&candidates, |c| predicate(self, c.as_str(), cwd))
             })
@@ -400,6 +510,46 @@ pub(crate) fn expand_braces(path: &str) -> Vec<String> {
     results
 }
 
+/// Every expansion of `path`'s brace groups, round after round until none is left (no
+/// truncation); `None` when that is more than [`BRACE_MAX_RESULTS`] results,
+/// [`BRACE_MAX_BYTES`] bytes or [`BRACE_MAX_ROUNDS`] rounds.
+pub(crate) fn expand_braces_fully(path: &str) -> Option<Vec<String>> {
+    let mut results = vec![path.to_string()];
+    for _ in 0..BRACE_MAX_ROUNDS {
+        let mut expanded = Vec::new();
+        let mut bytes = 0usize;
+        let mut changed = false;
+        for item in &results {
+            let groups = match BRACE_ALTERNATIVES.captures_at(item, 0) {
+                Ok(Some(groups)) => groups,
+                _ => {
+                    bytes += item.len();
+                    expanded.push(item.clone());
+                    continue;
+                }
+            };
+            let (Some((start, end)), Some((gs, ge))) = (groups[0], groups[1]) else {
+                bytes += item.len();
+                expanded.push(item.clone());
+                continue;
+            };
+            changed = true;
+            for alt in item[gs..ge].split(',') {
+                bytes += start + alt.len() + (item.len() - end);
+                if expanded.len() >= BRACE_MAX_RESULTS || bytes > BRACE_MAX_BYTES {
+                    return None;
+                }
+                expanded.push(format!("{}{alt}{}", &item[..start], &item[end..]));
+            }
+        }
+        results = expanded;
+        if !changed {
+            return Some(results);
+        }
+    }
+    None
+}
+
 /// `_may_name_profile(candidate)`: a separator (`/`, a backslash or an encoded `%2F`) and a
 /// root-like word or a glob.
 fn may_name_profile(candidate: &str) -> bool {
@@ -428,41 +578,42 @@ const PATH_KEY_WORDS: &[&str] = &[
 ];
 
 /// `_path_strings(value, skip)`: strings under path-like keys at any depth (lists included);
-/// keys in `skip` are never read.
-pub(crate) fn path_strings<'v>(value: &'v Value, skip: &[&str], out: &mut Vec<&'v str>) {
-    walk_paths(value, skip, false, 0, out);
-}
-
-fn walk_paths<'v>(
+/// keys in `skip` are never read. `max_depth` is Python's cap ([`Paths::walk_depth`]); `None`
+/// reads the whole value. Iterative, so any depth is safe; the order is Python's.
+pub(crate) fn path_strings<'v>(
     value: &'v Value,
     skip: &[&str],
-    in_path_key: bool,
-    depth: usize,
+    max_depth: Option<usize>,
     out: &mut Vec<&'v str>,
 ) {
-    if depth > MAX_WALK_DEPTH {
-        return;
-    }
-    match value {
-        Value::Str(s) if in_path_key => out.push(s),
-        Value::Object(map) => {
-            for (key, item) in map.iter() {
-                if skip.contains(&key) {
-                    continue;
+    let mut stack = vec![(value, false, 0usize)];
+    while let Some((value, in_path_key, depth)) = stack.pop() {
+        if max_depth.is_some_and(|m| depth > m) {
+            continue;
+        }
+        match value {
+            Value::Str(s) if in_path_key => out.push(s),
+            Value::Object(map) => {
+                let start = stack.len();
+                for (key, item) in map.iter() {
+                    if skip.contains(&key) {
+                        continue;
+                    }
+                    let path_like = in_path_key || {
+                        let lowered = pystr::lower(key);
+                        PATH_KEY_WORDS.iter().any(|w| lowered.contains(w))
+                    };
+                    stack.push((item, path_like, depth + 1));
                 }
-                let path_like = in_path_key || {
-                    let lowered = pystr::lower(key);
-                    PATH_KEY_WORDS.iter().any(|w| lowered.contains(w))
-                };
-                walk_paths(item, skip, path_like, depth + 1, out);
+                stack[start..].reverse();
             }
-        }
-        Value::Array(items) => {
-            for item in items {
-                walk_paths(item, skip, in_path_key, depth + 1, out);
+            Value::Array(items) => {
+                let start = stack.len();
+                stack.extend(items.iter().map(|item| (item, in_path_key, depth + 1)));
+                stack[start..].reverse();
             }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -470,29 +621,30 @@ fn walk_paths<'v>(
 const CODE_KEYS: &[&str] = &["script", "code", "expression", "func", "fn"];
 
 /// `_code_strings(value)`: strings under keys named `script`, `code`, `expression`, `func` or
-/// `fn`, at any depth (code a tool runs).
-pub(crate) fn code_strings<'v>(value: &'v Value, out: &mut Vec<&'v str>) {
-    walk_code(value, false, 0, out);
-}
-
-fn walk_code<'v>(value: &'v Value, in_code_key: bool, depth: usize, out: &mut Vec<&'v str>) {
-    if depth > MAX_WALK_DEPTH {
-        return;
-    }
-    match value {
-        Value::Str(s) if in_code_key => out.push(s),
-        Value::Object(map) => {
-            for (key, item) in map.iter() {
-                let code_key = in_code_key || CODE_KEYS.contains(&pystr::lower(key).as_str());
-                walk_code(item, code_key, depth + 1, out);
-            }
+/// `fn`, at any depth (code a tool runs). `max_depth` as in [`path_strings`].
+pub(crate) fn code_strings<'v>(value: &'v Value, max_depth: Option<usize>, out: &mut Vec<&'v str>) {
+    let mut stack = vec![(value, false, 0usize)];
+    while let Some((value, in_code_key, depth)) = stack.pop() {
+        if max_depth.is_some_and(|m| depth > m) {
+            continue;
         }
-        Value::Array(items) => {
-            for item in items {
-                walk_code(item, in_code_key, depth + 1, out);
+        match value {
+            Value::Str(s) if in_code_key => out.push(s),
+            Value::Object(map) => {
+                let start = stack.len();
+                for (key, item) in map.iter() {
+                    let code_key = in_code_key || CODE_KEYS.contains(&pystr::lower(key).as_str());
+                    stack.push((item, code_key, depth + 1));
+                }
+                stack[start..].reverse();
             }
+            Value::Array(items) => {
+                let start = stack.len();
+                stack.extend(items.iter().map(|item| (item, in_code_key, depth + 1)));
+                stack[start..].reverse();
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -538,17 +690,39 @@ mod tests {
     }
 
     #[test]
+    fn full_brace_expansion_has_no_round_or_count_truncation() {
+        let many = "{a,b,c,d,e,f,g,h}{a,b,c,d,e,f,g,h}{a,b}";
+        assert_eq!(expand_braces_fully(many).map(|r| r.len()), Some(128));
+        // a fifth group Python leaves as text
+        let five = "~/{a,b}/{a,b}/{a,b}/{a,b}/../../../../{.config,x}/chromium";
+        assert!(expand_braces(five).iter().all(|r| r.contains('{')));
+        let full = expand_braces_fully(five).unwrap();
+        assert_eq!(full.len(), 32);
+        assert!(full.contains(&"~/a/a/a/a/../../../../.config/chromium".to_string()));
+        assert_eq!(expand_braces_fully("a/b"), Some(vec!["a/b".to_string()]));
+        // past the caps: too large to check
+        assert_eq!(expand_braces_fully(&"{a,b}".repeat(13)), None);
+        assert!(expand_braces_fully(&"{a,b}".repeat(12)).is_some());
+        let wide = format!("{{{}}}", vec!["x"; BRACE_MAX_RESULTS + 1].join(","));
+        assert_eq!(expand_braces_fully(&wide), None);
+        let long = format!("{}{{a,b}}", "x".repeat(BRACE_MAX_BYTES / 2));
+        assert_eq!(expand_braces_fully(&long), None);
+    }
+
+    #[test]
     fn walkers_follow_keys_and_stop_at_depth() {
         let v = anthology_pycompat::json::loads(
             r#"{"file_path": "a", "content": "b", "nested": {"Dir": ["c", {"x": "d"}]}, "code": "e"}"#,
         )
         .unwrap();
-        let mut out = Vec::new();
-        path_strings(&v, &["content"], &mut out);
-        assert_eq!(out, ["a", "c", "d"]);
-        let mut out = Vec::new();
-        code_strings(&v, &mut out);
-        assert_eq!(out, ["e"]);
+        for depth in [Some(MAX_WALK_DEPTH), None] {
+            let mut out = Vec::new();
+            path_strings(&v, &["content"], depth, &mut out);
+            assert_eq!(out, ["a", "c", "d"]);
+            let mut out = Vec::new();
+            code_strings(&v, depth, &mut out);
+            assert_eq!(out, ["e"]);
+        }
         let mut deep = anthology_pycompat::json::Value::Str("~/.config/chromium".into());
         for _ in 0..20 {
             deep = anthology_pycompat::json::Value::Array(vec![deep]);
@@ -557,8 +731,11 @@ mod tests {
         map.insert("path".into(), deep);
         let deep = Value::Object(map);
         let mut out = Vec::new();
-        path_strings(&deep, &[], &mut out);
+        path_strings(&deep, &[], Some(MAX_WALK_DEPTH), &mut out);
         assert!(out.is_empty());
+        // strict: the whole input is read, at any depth
+        path_strings(&deep, &[], None, &mut out);
+        assert_eq!(out, ["~/.config/chromium"]);
     }
 
     #[test]

@@ -3,3 +3,33 @@
 [[divergence]]
 class = "D-1"
 reason = 'guard.py allowed because Python raised (json.loads RecursionError on deep nesting, or _check raising); the oracle marks it. Rust parses iteratively and checks (F-10): it may block or match.'
+
+[[divergence]]
+class = "D-8"
+case = "fixed:35"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). An envelope holding an integer of more than 4300 digits is past the Python int_max_str_digits limit; guard.py json.loads raises ValueError and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:5"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:6"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $( past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:7"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting $(cat <<EOF past MAX_DEPTH (hostile nesting); guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:381"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). A shell seed nesting echo $( 40 deep, past MAX_DEPTH; guard_rules.py stops reading and allows, Rust blocks it as too complex (G0).'
+
+[[divergence]]
+class = "D-8"
+case = "check:shell:1167"
+reason = 'Rust stricter: owner direction, LR-G (past a cap the guard blocks, never allows). The seed runs with HOME unset; where the passwd home is not an absolute path (a container user without a passwd entry), guard.py reads ~/Library/Application Support/Google as a relative path and allows, Rust reads it under an absolute stand-in for the home and blocks it (G3). Unused where the passwd home is absolute.'

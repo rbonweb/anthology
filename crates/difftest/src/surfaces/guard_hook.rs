@@ -50,8 +50,8 @@ impl Surface for GuardHook {
         }
         let surface = guard_check::surface().expect("guard.check is ported");
         for c in surface.seeds() {
-            // the fw:* cases are D-8 on guard.check; here they would be the same divergence again
-            if c.id.starts_with("fw:") {
+            // the fw:* and cap:* cases are D-8 on guard.check; here they would be the same divergence again
+            if c.id.starts_with("fw:") || c.id.starts_with("cap:") {
                 continue;
             }
             out.push(Case::new(format!("check:{}", c.id), from_check(&c.data)));
@@ -62,11 +62,15 @@ impl Surface for GuardHook {
     fn generate(&self, rng: &mut Rng, n: usize) -> Vec<Case> {
         let seed = rng.next_u64();
         let mut g = GenRng::new(seed);
-        guard_check::generate(seed ^ 0x5eed, n)
+        // A case `guard.check` kept can still be a D-8 shape here: an empty home becomes an unset
+        // HOME, so the hook runs with the passwd home, which may be relative (LR-G). It is dropped.
+        guard_check::generate(seed ^ 0x5eed, 2 * n)
             .into_iter()
+            .map(|data| from_check(&data))
+            .filter(|c| !is_d8_payload(c))
+            .take(n)
             .enumerate()
-            .map(|(k, data)| {
-                let mut c = from_check(&data);
+            .map(|(k, mut c)| {
                 if g.chance(10) {
                     let mutated = mutate_bytes(&mut g, &c);
                     // a mutation that makes a D-8 shape keeps the unmutated payload (D-8 is case-scoped)
@@ -93,14 +97,7 @@ fn run_rust(data: &Value) -> Observed {
         return Observed::text(2, "", "guard.hook: unknown op");
     }
     let raw = unhex(field_str(data, "stdin_hex"));
-    let home = match field(data, "home") {
-        Some(Value::Str(h)) if !h.is_empty() => h.clone(),
-        // `os.environ.get("HOME") or os.path.expanduser("~")` with HOME unset or empty
-        _ => anthology_core::paths::home(&anthology_core::Env::default())
-            .to_string_lossy()
-            .into_owned(),
-    };
-    let r = decide(&raw, &home, false);
+    let r = decide(&raw, &hook_home(data), false);
     Observed {
         exit: r.code,
         stdout: Vec::new(),
@@ -109,7 +106,18 @@ fn run_rust(data: &Value) -> Observed {
     }
 }
 
-/// Whether only an owner-directed D-8 reading of G1 changes the hook's verdict on this payload.
+/// The home the hook runs with for this case.
+fn hook_home(data: &Value) -> String {
+    match field(data, "home") {
+        Some(Value::Str(h)) if !h.is_empty() => h.clone(),
+        // `os.environ.get("HOME") or os.path.expanduser("~")` with HOME unset or empty
+        _ => anthology_core::paths::home(&anthology_core::Env::default())
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+/// Whether only an owner-directed D-8 reading changes the hook's verdict on this payload.
 fn is_d8_payload(case: &Value) -> bool {
     let Ok(data) = json::loads_bytes_lossy(&unhex(field_str(case, "stdin_hex"))) else {
         return false;
@@ -121,9 +129,10 @@ fn is_d8_payload(case: &Value) -> bool {
         return false;
     };
     let input = map.get("tool_input").unwrap_or(&null);
-    let home = field_str(case, "home");
-    anthology_guard::check(tool, input, home)
-        != anthology_guard::check_without_d8(tool, input, home)
+    // the home the hook will run with (an unset HOME is the passwd home, which may be relative)
+    let home = hook_home(case);
+    anthology_guard::check(tool, input, &home)
+        != anthology_guard::check_without_d8(tool, input, &home)
 }
 
 fn hex(raw: &[u8]) -> String {
@@ -230,5 +239,13 @@ fn fixed_payloads() -> Vec<Vec<u8>> {
             .to_vec(),
     );
     out.push(b"\xef\xbb\xbf{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"npx playwright install\"}}".to_vec());
+    // D-8 (LR-G): an integer past Python's 4300-digit limit; guard.py's ValueError allowed it
+    out.push(
+        format!(
+            "{{\"tool_name\": \"Bash\", \"tool_input\": {{\"command\": \"ls\", \"n\": {}}}}}",
+            "9".repeat(4301)
+        )
+        .into_bytes(),
+    );
     out
 }
