@@ -540,15 +540,21 @@ mod hook_check {
     #[cfg(unix)]
     #[test]
     fn claude_hook_defers_a_denied_script_behind_a_configured_transparent_prefix() {
-        let sb = Sandbox::with_rules(&["git push:*"], &[], &["*"]);
-        sb.write_config("[hooks]\ntransparent_prefixes = [\"mywrap\"]\n");
-
-        // The control: the prefix is read, or nothing below is reached.
+        // The control, without a deny rule (with one, anthology's gate rewrites only
+        // into a plain `rtk` line): the prefix is read, or nothing below is reached.
+        let control = Sandbox::with_rules(&[], &[], &["*"]);
+        control.write_config("[hooks]\ntransparent_prefixes = [\"mywrap\"]\n");
         assert_eq!(
-            sb.hook_claude_rewrite("mywrap bash -c 'git status'")
+            control
+                .hook_claude_rewrite("mywrap bash -c 'git status'")
                 .as_deref(),
             Some("mywrap bash -c 'rtk git status'")
         );
+
+        let sb = Sandbox::with_rules(&["git push:*"], &[], &["*"]);
+        sb.write_config("[hooks]\ntransparent_prefixes = [\"mywrap\"]\n");
+        // Anthology fork: with a rule, a rewrite out of the plain shape is not made.
+        assert_eq!(sb.hook_claude_rewrite("mywrap bash -c 'git status'"), None);
 
         let denied = "mywrap bash -c 'git push'";
         assert_eq!(sb.hook_claude_rewrite(denied), None, "rtk hook claude");
