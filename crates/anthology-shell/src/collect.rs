@@ -903,8 +903,97 @@ fn uses_name(text: &str, any_read: bool, is_read: impl Fn(&str) -> bool) -> bool
     })
 }
 
+/// SH-F4: the commands of the `{ ... }` body of the function whose definition is `run[0]` (`f` of `f() {`, or
+/// `function f ...`), from the entries `run` (the definition and the entries after it): each command's words
+/// with its leading `{` words dropped, until the `}` that closes the body. Not a `{` body (`f() ( ... )`):
+/// nothing.
+fn function_body(entries: &[Entry], run: &[usize]) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let Some((&first, rest)) = run.split_first() else {
+        return out;
+    };
+    let head = &entries[first].raw;
+    let (mut words, mut tail): (&[String], &[usize]) = match head.as_slice() {
+        [_] => match rest.split_first() {
+            Some((&next, tail)) => (&entries[next].raw, tail),
+            None => return out,
+        },
+        [function, _, more @ ..] if function == "function" => {
+            if more.is_empty() {
+                match rest.split_first() {
+                    Some((&next, tail)) => (&entries[next].raw, tail),
+                    None => return out,
+                }
+            } else {
+                (more, rest)
+            }
+        }
+        _ => return out,
+    };
+    if words.first().is_none_or(|w| w != "{") {
+        return out;
+    }
+    let mut depth = 0usize;
+    loop {
+        if words.len() == 1 && words[0] == "}" {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return out;
+            }
+        } else {
+            let opened = words.iter().take_while(|w| *w == "{").count();
+            depth += opened;
+            if words.len() > opened {
+                out.push(words[opened..].to_vec());
+            }
+        }
+        let Some((&next, more)) = tail.split_first() else {
+            return out;
+        };
+        words = &entries[next].raw;
+        tail = more;
+    }
+}
+
+/// SH-F4: a function body's words with a call's positional parameters (`params[0]` is the name) put in place:
+/// a word that is `$@`, `$*`, `${@}` or `${*}` becomes the arguments, each word, and any other word gets
+/// `positional_script`'s reading.
+fn positional_words(words: &[String], params: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in words {
+        if matches!(word.as_str(), "$@" | "$*" | "${@}" | "${*}") {
+            out.extend(params.iter().skip(1).cloned());
+        } else {
+            out.push(positional_script(word, params));
+        }
+    }
+    out
+}
+
+/// SH-F4 review I-1: the body words with every word that holds a positional parameter split on blanks, as
+/// bash splits an unquoted `$1` (`f() { $1; }; f "npx x"`). The lexed words no longer show the quotes, so
+/// this is a second reading next to `positional_words` (a quoted path with a space stays whole there).
+/// `None` when it reads the same.
+fn positional_split(words: &[String], params: &[String]) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for word in words {
+        if matches!(word.as_str(), "$@" | "$*" | "${@}" | "${*}") {
+            out.extend(params.iter().skip(1).cloned());
+            continue;
+        }
+        let value = positional_script(word, params);
+        if value == *word {
+            out.push(value);
+        } else {
+            out.extend(pystr::split_ws(&value).into_iter().map(str::to_owned));
+        }
+    }
+    (out != positional_words(words, params)).then_some(out)
+}
+
 /// SH-F2 review I-2: `sh -c S $0 $1 ...` read with its positional parameters put in place (`$1`, `${10}`, `$@`,
-/// `$*`, `${@}`), so `sh -c 'eval "$1"' _ "$l"` reads as `eval "$l"`. `params[0]` is `$0`.
+/// `$*`, `${@}`), so `sh -c 'eval "$1"' _ "$l"` reads as `eval "$l"`. `params[0]` is `$0`. SH-F4: a quoted
+/// `"$@"` (or `"$*"`, `"${@}"`) loses its quotes, so its words stay words (`sh -c '"$@"' _ npx x`).
 fn positional_script(script: &str, params: &[String]) -> String {
     let b = script.as_bytes();
     let mut out = String::new();
@@ -934,10 +1023,15 @@ fn positional_script(script: &str, params: &[String]) -> String {
         } else {
             None
         };
-        let Some((key, end)) = found else {
+        let Some((key, mut end)) = found else {
             i += 1;
             continue;
         };
+        let mut at = i;
+        if matches!(key, "@" | "*") && i > last && b[i - 1] == b'"' && b.get(end) == Some(&b'"') {
+            at = i - 1;
+            end += 1;
+        }
         let value = match key {
             "@" | "*" => params.get(1..).unwrap_or(&[]).join(" "),
             n => n
@@ -947,7 +1041,7 @@ fn positional_script(script: &str, params: &[String]) -> String {
                 .cloned()
                 .unwrap_or_default(),
         };
-        out.push_str(&script[last..i]);
+        out.push_str(&script[last..at]);
         out.push_str(&value);
         last = end;
         i = end;
@@ -1258,6 +1352,49 @@ impl<'a> Ctx<'a> {
         Some(defined)
     }
 
+    /// SH-F4: for each call in `new_entries` of a function an earlier entry defined (`f() {` or `function f`),
+    /// with arguments, the commands of its `{ ... }` body (`function_body`) are added once more with the call's
+    /// words in place of `$1`... (`positional_words`). False once the analysis has stopped.
+    fn call_bodies(
+        &mut self,
+        new_entries: &[usize],
+        defined: &HashMap<String, usize>,
+        depth: usize,
+    ) -> bool {
+        for (k, &e) in new_entries.iter().enumerate() {
+            let entry = &self.entries[e];
+            let Some(&at) = defined.get(&entry.prog) else {
+                continue;
+            };
+            if at >= e || entry.args.is_empty() {
+                continue;
+            }
+            let Some(start) = new_entries[..k].iter().position(|&x| x == at) else {
+                continue;
+            };
+            let mut params = vec![entry.prog.clone()];
+            params.extend(entry.args.iter().cloned());
+            let (group, exempt) = (entry.group, entry.exempt);
+            let body = function_body(&self.entries, &new_entries[start..k]);
+            for words in body {
+                let split = positional_split(&words, &params).filter(|t| !t.is_empty());
+                for tokens in std::iter::once(positional_words(&words, &params)).chain(split) {
+                    if !self.spend(tokens.iter().map(|t| WORD + t.len()).sum()) {
+                        return false;
+                    }
+                    (self.braces, self.quoted_braces) = (false, false);
+                    if self
+                        .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                        .is_none()
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        !self.halted
+    }
+
     /// `_collect(text, ctx, exempt, depth)`, memoized on (text, exempt, cwd) as Python's is. Returns true when
     /// `text` was skipped at `MAX_DEPTH` (the caller marks the entry it belongs to `DepthCap`).
     pub(crate) fn collect(&mut self, text: &str, exempt: bool, depth: usize) -> bool {
@@ -1346,6 +1483,14 @@ impl<'a> Ctx<'a> {
                 None => return,
             }
         }
+        let Some(defined) = self.defined_names(&new_entries) else {
+            return;
+        };
+        // SH-F4 (review-sh-f3 I-1): a call of a function the text defines, with arguments, also runs its body
+        // with them in place of its positional parameters (`f() { eval "$1"; }; f "$l"`)
+        if !self.call_bodies(&new_entries, &defined, depth) {
+            return;
+        }
         // Literal text that reaches a shell's stdin is a command (heredocs, here-strings, `echo | sh`), text that
         // reaches an interpreter's stdin is code, and text that reaches xargs or parallel becomes the words or
         // lines of their command. Groups in first-appearance order.
@@ -1388,9 +1533,6 @@ impl<'a> Ctx<'a> {
             self.setters.contains(&e)
                 && (piped_set.contains(&e) || self.has_texts(self.entries[e].group))
         });
-        let Some(defined) = self.defined_names(&new_entries) else {
-            return;
-        };
         // review I-1, I-2: a bare `exec` given a here-string (unless a shell reads a descriptor: `exec 3<<<X;
         // sh <&3` runs X, read below), and a call of a function the text defines that is piped or given a
         // here-string (`f <<< X`, `echo X | f`), feed what runs after or inside them
@@ -2289,26 +2431,21 @@ impl<'a> Ctx<'a> {
         if self.reads_stdin_as_shell(e) == Some(true) {
             self.readers += 1;
         }
-        // SH-F2 review I-2: a shell's positional parameters that use a read name, put in place in its script
-        // (`sh -c 'eval "$1"' _ "$l"`)
-        if !self.read_names.is_empty() && SHELLS.contains(&prog.as_str()) && prog != "fish" {
+        // SH-F2 review I-2: a shell's positional parameters put in place in its script (`sh -c 'eval "$1"' _
+        // "$l"`); SH-F4 (review-sh-f3 I-1): whatever they hold (`sh -c '"$@"' _ npx playwright install`)
+        if SHELLS.contains(&prog.as_str()) && prog != "fish" {
             let parsed = shell_parse(&prog, &args, 0);
             if parsed.mode == ShellMode::Command
                 && let Some(script) = args.get(parsed.start)
+                && args.len() > parsed.start + 1
             {
-                let params = args.get(parsed.start + 1..).unwrap_or(&[]);
-                let names = &self.read_names;
-                if params
-                    .iter()
-                    .any(|p| uses_name(p, true, |n| names.contains(n)))
-                {
-                    let text = positional_script(script, params);
-                    if !self.spend(WORD + text.len()) {
-                        return None;
-                    }
-                    if text != *script {
-                        scripts.push(text);
-                    }
+                let params = &args[parsed.start + 1..];
+                let text = positional_script(script, params);
+                if !self.spend(WORD + text.len()) {
+                    return None;
+                }
+                if text != *script {
+                    scripts.push(text);
                 }
             }
         }

@@ -604,6 +604,25 @@ Read-only tools are allowed. Everything else is blocked with the "no guard binar
 - "A block wins over rtk" (ADR-008).
 - The four guard evals grade `anthology-guardrails \(Gn\)` unchanged.
 
+### 9.8 Shell analysis: known limits (SH-F2 to SH-F4)
+
+The guard is one layer of defence. It stops accidental installs and launches by cooperative agents, not a determined bypass. Most commands it cannot model are too complex (G0); the routes below are not, and are allowed. The shell-gap chase stopped at SH-F4 (controller ruling). These routes are known and stay open. Each one needs a value that an earlier command computes, or a shell feature that is not modelled:
+- **Plain variables.** A value assigned before it is used is not read into the word: `x=i; npm $x puppeteer`, `: ${x:=i}; npm $x …`, `read l <<< "i puppeteer"; npm $l`, `echo i puppeteer | while read l; do npm $l; done`, and a function that copies a literal argument before running it (`f() { local c=$1; eval "$c"; }; f "npx …"`).
+- **Substitution output.** What a `$(…)` prints is not read as a command or a word: `sh -c "$(echo npx …)"`, `for l in $(echo npx …); do eval "$l"; done`, `npm ${x:-$(echo i)} puppeteer`.
+- **`xargs -0`.** NUL-separated output from a literal producer is not split into arguments (`printf 'a\0b\0' | xargs -0 …`), in the pipe form as in the `<(…)` form.
+- **Contrived stdin-to-shell routes** (review-sh-f3 M-1):
+  - `printf -v x %s "$l"; eval "$x"`;
+  - `command exec <<< X; xargs …`;
+  - `for` over the positional parameters inside `sh -c` (`sh -c 'for a; do eval "$a"; done' _ "$l"`);
+  - `set -- $l; "$@"`, and `shift`;
+  - a double `eval` (`eval "eval \$$n"`);
+  - a function defined inside `eval` (`eval 'f() { sh; }'; echo X | f`).
+- **Function calls the body reading does not follow** (review-sh-f4 M-1, M-2). A call's body is read once, with its arguments in place, only for a call among the text's own commands:
+  - a wrapper that calls a wrapper (`g() { f "$@"; }; f() { npx "$@"; }; g playwright install`, and deeper chains);
+  - a call inside `eval` (`f() { npx "$@"; }; eval 'f playwright install'`);
+  - a subshell body (`f() ( npx "$@" ); f playwright install`).
+- **Heredocs on the lenient path** (review-sh-f3 M-3). After a broken later line, the lenient split is too complex for `<<<` and for a heredoc right after a compound closer. A heredoc after a redirect word (`done 0<<EOF`, `done 2>/dev/null <<EOF`), on a function call or on `exec` is not matched. The lenient reading of the heredoc body still blocks every such form that has been tried (G1).
+
 ---
 
 ## 10. Release pipeline

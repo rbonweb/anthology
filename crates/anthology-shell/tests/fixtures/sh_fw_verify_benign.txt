@@ -3411,3 +3411,27 @@ ls | parallel gzip
 parallel -j4 convert {} {.}.png :::: files.txt
 #---
 mapfile -t arr < <(ls); for f in "${arr[@]}"; do wc -l "$f"; done
+#---
+sh -c 'echo "$1"' _ hello
+#---
+find . -name '*.md' -exec sh -c 'wc -l "$1"' _ {} \;
+#---
+greet() { echo "hello $1"; }; greet world
+#---
+build() { make "$@"; }; build all
+#---
+log() { printf '%s\n' "$*" >&2; }; log starting build
+#---
+run() { "$@"; }; run make test
+#---
+retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000
+#---
+docker run --rm img sh -c 'echo "$0 $1"' a b
+#---
+bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt
+#---
+f() { cd "$1" && git pull; }; f repo
+#---
+gh_pr() { gh pr create --title "$1" --body "$2"; }; gh_pr fix "npx playwright install was flaky"
+#---
+f() { echo "$1"; }; f "npx playwright install"

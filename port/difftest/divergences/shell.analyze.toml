@@ -154,3 +154,8 @@ reason = "Rust stricter: SH-FW re-review F-2 control, all 70 GNU parallel inputs
 class = "D-8"
 case = "fw:58"
 reason = "Rust stricter: SH-FW re-review F-2 control, all 70 fed lines are read (the reference reads 64), no install either way."
+
+[[divergence]]
+class = "D-8"
+case = "fw:261"
+reason = "Rust stricter: the SH-FW re-review I-2a reading of function f { cmd; } (as fw:52) on the SH-F4 seed; both block the call f playwright install, only the entries differ."

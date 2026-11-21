@@ -969,6 +969,29 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         F2R.iter()
             .map(|text| case(text.to_string(), "/home/tester")),
     );
+    // SH-F4 (review-sh-f3.md): positional parameters and function arguments put in place; the oracle too
+    const F4: &[&str] = &[
+        r#"sh -c '"$@"' _ npx playwright install"#,
+        r#"sh -c 'eval "$1"' _ "npx playwright install""#,
+        "bash -c '$1 $2 $3' _ npx playwright install",
+        r#"echo npx playwright install | xargs sh -c '"$@"' _"#,
+        r#"f() { npx "$@"; }; f playwright install"#,
+        r#"function f { npx "$@"; }; f playwright install"#,
+        r#"f() { eval "$1"; }; echo npx playwright install | while read l; do f "$l"; done"#,
+        "f() {\n  local cmd=$1\n  eval \"$cmd\"\n}; echo npx playwright install | while read l; do f \"$l\"; done",
+        "rmall() { xargs rm -f; }; find . -name '*.tmp' | rmall",
+        r#"sh -c 'echo "$1"' _ hello"#,
+        r#"bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt"#,
+        r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS x"#,
+        "f() { { echo a; }; echo \"$1\"; }; f b",
+        "f() ( echo \"$1\" ); f b",
+        // SH-F4 review I-1: an unquoted positional in a body is split; a quoted one is read whole too
+        r#"f() { $1; }; f "npx playwright install""#,
+        r#"f() { npx $1; }; f "playwright install""#,
+        r#"f() { cat "$1"; }; f "a b.txt""#,
+        r#"f() { echo $2; }; f a"#,
+    ];
+    out.extend(F4.iter().map(|text| case(text.to_string(), "/home/tester")));
     out
 }
 

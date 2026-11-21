@@ -784,18 +784,17 @@ def _add_command_checked(tokens, redirs, group, ctx, exempt, depth):
         _RESOLVED = saved
     if names:
         ctx.setters.add(id(entry))
-    # SH-F2 review I-2: a shell's positional parameters that use a read name, put in place in its script
-    if ctx.read_names and entry.prog in G._SHELLS and entry.prog != "fish":
+    # SH-F2 review I-2, SH-F4: a shell's positional parameters, whatever they hold, put in place in its script
+    if entry.prog in G._SHELLS and entry.prog != "fish":
         mode, start, _scripts = G._shell_parse(entry.prog, entry.args)
-        if mode == "c" and start < len(entry.args):
+        if mode == "c" and len(entry.args) > start + 1:
             params = entry.args[start + 1:]
-            if any(_uses_name(a, True, ctx.read_names.__contains__) for a in params):
-                text = _positional_script(entry.args[start], params)
-                if text != entry.args[start]:
-                    readers = ctx.readers
-                    G._collect(text, ctx, exempt, depth + 1)
-                    if ctx.readers > readers:
-                        entry.script_reads = True
+            text = _positional_script(entry.args[start], params)
+            if text != entry.args[start]:
+                readers = ctx.readers
+                G._collect(text, ctx, exempt, depth + 1)
+                if ctx.readers > readers:
+                    entry.script_reads = True
     if entry.prog in _EXPORTERS:
         for arg in entry.args:
             name, eq, value = arg.partition("=")
@@ -863,6 +862,20 @@ def _collect_once_body(text, ctx, exempt, depth):
             defined.setdefault(e.raw[0], k)
         elif len(e.raw) >= 2 and e.raw[0] == "function":
             defined.setdefault(e.raw[1], k)
+    # SH-F4: a call of a function the text defines, with arguments, also runs its body with them in place
+    for k, e in enumerate(new_entries):
+        at = defined.get(e.prog)
+        if at is None or at >= k or not e.args:
+            continue
+        params = [e.prog] + list(e.args)
+        for words in _function_body(new_entries[at:k]):
+            readings = [_positional_words(words, params)]
+            split = _positional_split(words, params)
+            if split:
+                readings.append(split)
+            for tokens in readings:
+                ctx.braces = ctx.quoted_braces = False
+                G._add_command(tokens, [], e.group, ctx, e.exempt, depth + 1)
     fed_from = 0
     by_group = {}
     for entry in new_entries:
@@ -1336,7 +1349,7 @@ def _resolve_holders(tokens, holders):
 _MAX_DEFAULT_DEPTH = 8
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _NAME_USE = re.compile(r"\$(\{)?([!#])?([A-Za-z_][A-Za-z0-9_]*)")
-_POSITIONAL = re.compile(r"\$(?:\{([0-9]+|[@*])\}|([0-9@*]))")
+_POSITIONAL = re.compile(r'"\$(?:\{([@*])\}|([@*]))"|\$(?:\{([0-9]+|[@*])\}|([0-9@*]))')
 _NAMES = set()                                            # the current pass's `ctx.read_names`
 _GROUPS = None                                            # the groups made while `_segments_orphans` lexes
 _LENIENT_USED = [False]
@@ -1404,10 +1417,75 @@ def _uses_name(text, any_read, is_read):
     return False
 
 
+def _function_body(run):
+    """collect.rs `function_body`: the commands of the `{ ... }` body of the function defined by `run[0]`."""
+    out = []
+    if not run:
+        return out
+    head, rest = run[0].raw, run[1:]
+    if len(head) == 1:
+        if not rest:
+            return out
+        words, tail = rest[0].raw, rest[1:]
+    elif len(head) >= 2 and head[0] == "function":
+        if len(head) == 2:
+            if not rest:
+                return out
+            words, tail = rest[0].raw, rest[1:]
+        else:
+            words, tail = head[2:], rest
+    else:
+        return out
+    if not words or words[0] != "{":
+        return out
+    depth = 0
+    while True:
+        if len(words) == 1 and words[0] == "}":
+            depth = max(depth - 1, 0)
+            if depth == 0:
+                return out
+        else:
+            opened = 0
+            while opened < len(words) and words[opened] == "{":
+                opened += 1
+            depth += opened
+            if len(words) > opened:
+                out.append(list(words[opened:]))
+        if not tail:
+            return out
+        words, tail = tail[0].raw, tail[1:]
+
+
+def _positional_words(words, params):
+    """collect.rs `positional_words`."""
+    out = []
+    for word in words:
+        if word in ("$@", "$*", "${@}", "${*}"):
+            out += params[1:]
+        else:
+            out.append(_positional_script(word, params))
+    return out
+
+
+def _positional_split(words, params):
+    """collect.rs `positional_split` (SH-F4 review I-1): a word holding a positional split on blanks, or None."""
+    out = []
+    for word in words:
+        if word in ("$@", "$*", "${@}", "${*}"):
+            out += params[1:]
+            continue
+        value = _positional_script(word, params)
+        if value == word:
+            out.append(value)
+        else:
+            out += value.split()
+    return out if out != _positional_words(words, params) else None
+
+
 def _positional_script(script, params):
     """collect.rs `positional_script`: the script with `$1`, `${10}`, `$@`, `$*` ... put in place."""
     def value(m):
-        key = m.group(1) or m.group(2)
+        key = m.group(1) or m.group(2) or m.group(3) or m.group(4)
         if key in "@*":
             return " ".join(params[1:])
         n = int(key)
