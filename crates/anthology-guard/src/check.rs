@@ -19,8 +19,8 @@ use std::sync::LazyLock;
 use anthology_pycompat::json::Value;
 use anthology_shell::{Analysis, Limits, Opaque, analyze_with};
 
-use crate::paths::{PathRegexes, Paths};
-use crate::rules::g1::g1;
+use crate::paths::Paths;
+use crate::rules::g1::g1_with;
 use crate::rules::g2::g2;
 use crate::rules::g3::{g3, g3_input};
 use crate::rules::g4::g4;
@@ -51,14 +51,12 @@ pub const TOO_COMPLEX: &str = "this command is too complex to check safely; simp
 
 /// The patterns a check compiles once per backtrack limit.
 struct Regexes {
-    paths: PathRegexes,
     secrets: Vec<Option<Secret>>,
 }
 
 impl Regexes {
     fn new(limits: &Limits) -> Regexes {
         Regexes {
-            paths: PathRegexes::new(limits),
             secrets: compile_secrets(limits.backtrack_limit),
         }
     }
@@ -74,10 +72,31 @@ pub fn check(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
 /// [`check`] with explicit limits (a test lowers `backtrack_limit`, GC-19).
 pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Limits) -> Verdict {
     if *limits == Limits::default() {
-        run(tool_name, tool_input, home, limits, &DEFAULT_REGEXES)
+        run(tool_name, tool_input, home, limits, &DEFAULT_REGEXES, true)
     } else {
-        run(tool_name, tool_input, home, limits, &Regexes::new(limits))
+        run(
+            tool_name,
+            tool_input,
+            home,
+            limits,
+            &Regexes::new(limits),
+            true,
+        )
     }
+}
+
+/// [`check`] with the owner-directed FW-I readings of G1 left out: Python's verdict where the two
+/// differ only by a D-8 reading. Not for production: the difftest's generator drops a generated
+/// case whose verdict this changes, so D-8 stays case-scoped (GC-16).
+pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
+    run(
+        tool_name,
+        tool_input,
+        home,
+        &Limits::default(),
+        &DEFAULT_REGEXES,
+        false,
+    )
 }
 
 /// Tracks the first blocking rule and whether some step could not finish.
@@ -106,6 +125,7 @@ fn run(
     home: &str,
     limits: &Limits,
     regexes: &Regexes,
+    fw: bool,
 ) -> Verdict {
     let name = tool_name.as_str().unwrap_or("");
     let empty = Value::Object(Default::default());
@@ -126,7 +146,7 @@ fn run(
         Some(c) => analyze_with(c, home, limits),
         None => Analysis::default(),
     };
-    let paths = Paths::new(home, limits, &regexes.paths);
+    let paths = Paths::new(home, limits);
     let mut out = Outcome::default();
 
     let g6 = crate::rules::either(
@@ -149,7 +169,7 @@ fn run(
         if g4(entry) {
             return Verdict::Block(Rule::G4);
         }
-        if g1(entry) {
+        if g1_with(entry, fw) {
             return Verdict::Block(Rule::G1);
         }
         if g2(entry) {

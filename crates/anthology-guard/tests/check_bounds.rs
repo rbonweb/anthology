@@ -97,6 +97,37 @@ fn deep_find_exec_nesting_fails_closed() {
     assert_ne!(verdict(&command), Verdict::Allow);
 }
 
+/// Review finding: long ordinary inputs must not hit a search-wide backtrack limit (the G6
+/// patterns go through `pycompat::re`, with a budget per start; `_ESCAPED_SPACE` is a scan).
+#[test]
+fn long_ordinary_inputs_are_allowed() {
+    let prose = "The meeting notes say we keep the cache warm and ship on Friday. ".repeat(16_000);
+    assert!(prose.len() > 1_000_000);
+    let write = obj(&[
+        ("file_path", Value::Str("~/.claude/memory/notes.md".into())),
+        ("content", Value::Str(prose.clone())),
+    ]);
+    assert_eq!(
+        check(&Value::Str("Write".into()), &write, HOME),
+        Verdict::Allow
+    );
+    let code = format!("{}cd my\\ dir", "x = compute(a, b) + 1\n".repeat(25_000));
+    let run = obj(&[("code", Value::Str(code))]);
+    assert_eq!(
+        check(&Value::Str("mcp__browseros-neo__run".into()), &run, HOME),
+        Verdict::Allow
+    );
+    // a secret at the end of the long text is still found
+    let write = obj(&[
+        ("file_path", Value::Str("~/.claude/memory/notes.md".into())),
+        ("content", Value::Str(format!("{prose}{}", gh_token()))),
+    ]);
+    assert_eq!(
+        check(&Value::Str("Write".into()), &write, HOME),
+        Verdict::Block(Rule::G6)
+    );
+}
+
 /// FW-I bash-verified installs that the Python on `rust` allows (task-FW-I-report.md, rules 12
 /// and 27). Each blocks here as G1.
 #[test]

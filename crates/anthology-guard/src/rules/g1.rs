@@ -246,13 +246,18 @@ fn pm_words(args: &[String]) -> Vec<String> {
     words
 }
 
-/// The package-manager readings: Python's `_positional(args, _PM_VALUE_FLAGS)`, then FW-I's.
-fn pm_readings(args: &[String]) -> [Vec<String>; 2] {
+/// The package-manager readings: Python's `_positional(args, _PM_VALUE_FLAGS)`, then FW-I's
+/// unless `fw` is off.
+fn pm_readings(args: &[String], fw: bool) -> Vec<Vec<String>> {
     let python = positional(args, PM_VALUE_FLAGS)
         .into_iter()
         .map(str::to_string)
         .collect();
-    [python, pm_words(args)]
+    if fw {
+        vec![python, pm_words(args)]
+    } else {
+        vec![python]
+    }
 }
 
 /// `_js_installs_puppeteer(entry)` for one reading of the words.
@@ -340,6 +345,12 @@ fn is_pip(prog: &str) -> bool {
 
 /// `_g1(entry)`, with FW-I's readings added (module docs).
 pub fn g1(entry: &Entry) -> bool {
+    g1_with(entry, true)
+}
+
+/// `_g1(entry)`; `fw` off leaves out FW-I's readings (Python's G1 exactly; the difftest generator
+/// uses it to keep D-8 shapes out of generated cases).
+pub(crate) fn g1_with(entry: &Entry, fw: bool) -> bool {
     if entry.exempt {
         return false;
     }
@@ -355,7 +366,7 @@ pub fn g1(entry: &Entry) -> bool {
         return !entry.args.iter().any(|a| a == "--no-browsers");
     }
     if JS_PACKAGE_MANAGERS.contains(&prog) {
-        return pm_readings(&entry.args)
+        return pm_readings(&entry.args, fw)
             .iter()
             .any(|words| installs_puppeteer(words) || scaffolds_playwright(words, &entry.args));
     }
@@ -364,7 +375,7 @@ pub fn g1(entry: &Entry) -> bool {
     }
     if OS_INSTALLERS.contains(&prog) {
         return os_installs_browser(entry, &[])
-            || os_installs_browser(entry, os_installer_value_flags(prog));
+            || (fw && os_installs_browser(entry, os_installer_value_flags(prog)));
     }
     false
 }

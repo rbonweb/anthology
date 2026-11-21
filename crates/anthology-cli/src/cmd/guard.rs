@@ -23,9 +23,15 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
             return Output::usage(&format!("unknown command: guard {}", first.unwrap_or("?")));
         }
     };
-    let env = Env::from_process();
-    let home = paths::home_raw(&env).to_string_lossy().into_owned();
-    let result = anthology_guard::hook(stdin, &home, shim);
+    // HOME (and the passwd fallback) is resolved under the hook's watchdog.
+    let result = anthology_guard::hook_resolving_home(
+        stdin,
+        || {
+            let env = Env::from_process();
+            paths::home_raw(&env).to_string_lossy().into_owned()
+        },
+        shim,
+    );
     Output {
         stdout: Vec::new(),
         stderr: result.stderr.into_bytes(),

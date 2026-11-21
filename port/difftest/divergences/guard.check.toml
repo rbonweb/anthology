@@ -1,36 +1,40 @@
-# Allowed divergences of the guard.check surface (GC-16; D-8 by owner direction, 2026-11-21).
+# Allowed divergences of the guard.check surface (GC-16).
+
+[[divergence]]
+class = "D-1"
+reason = 'Python raised inside _check (RecursionError on hostile nesting, for one), which check() turns into an allow; the oracle marks it. Rust may block or match.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:1"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (npm --loglevel silent i puppeteer), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --loglevel silent i puppeteer` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:2"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (npm --loglevel silent init playwright), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --loglevel silent init playwright` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:3"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (npm --foo-bar silent i puppeteer), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --foo-bar silent i puppeteer` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:4"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (npm --foo-bar silent init playwright), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 12, _pm_words). `npm --foo-bar silent init playwright` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:5"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (sudo apt-get -o Dpkg::Options::=--force-confnew install chromium), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `sudo apt-get -o Dpkg::Options::=--force-confnew install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:6"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (apt-get --option x=y install chromium), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `apt-get --option x=y install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
 
 [[divergence]]
 class = "D-8"
 case = "fw:7"
-reason = 'Rust stricter: owner direction (FW-I). G1 also reads the words as FW-I does (dnf --setopt x=y install chromium), a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'
+reason = 'Rust stricter: FW-H/FW-I G1 (FW-I rule 27, OS installer value options). `dnf --setopt x=y install chromium` is a bash-verified install the Python on rust allows; the Python reading is kept as well (union), so Rust never allows what Python blocks.'

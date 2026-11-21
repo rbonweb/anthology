@@ -94,7 +94,22 @@ def _hook(stdin, home):
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = saved[3]
-    return {"exit": code, "stdout_hex": written[0].hex(), "stderr_hex": written[1].hex()}
+    answer = {"exit": code, "stdout_hex": written[0].hex(), "stderr_hex": written[1].hex()}
+    if _raises(stdin, home):
+        answer["divergence"] = "D-1"  # guard.py allowed because Python raised; Rust may block or match
+    return answer
+
+
+def _raises(stdin, home):
+    """Whether guard.py's `decide` raises on this input (RecursionError on deep JSON, for one)."""
+    try:
+        data = json.loads(stdin.decode("utf-8", errors="replace"))
+        if isinstance(data, dict) and isinstance(data.get("tool_name"), str):
+            G._check(data["tool_name"], data.get("tool_input"),
+                     home or os.path.expanduser("~"))
+    except Exception:
+        return True
+    return False
 
 
 def run(case):

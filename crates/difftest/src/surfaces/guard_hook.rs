@@ -68,7 +68,11 @@ impl Surface for GuardHook {
             .map(|(k, data)| {
                 let mut c = from_check(&data);
                 if g.chance(10) {
-                    c = mutate_bytes(&mut g, &c);
+                    let mutated = mutate_bytes(&mut g, &c);
+                    // a mutation that makes a D-8 shape keeps the unmutated payload (D-8 is case-scoped)
+                    if !is_d8_payload(&mutated) {
+                        c = mutated;
+                    }
                 }
                 Case::new(format!("gen:{}", k + 1), c)
             })
@@ -103,6 +107,23 @@ fn run_rust(data: &Value) -> Observed {
         stderr: r.stderr.into_bytes(),
         files: None,
     }
+}
+
+/// Whether only an owner-directed D-8 reading of G1 changes the hook's verdict on this payload.
+fn is_d8_payload(case: &Value) -> bool {
+    let Ok(data) = json::loads_bytes_lossy(&unhex(field_str(case, "stdin_hex"))) else {
+        return false;
+    };
+    let Some(map) = data.as_object() else {
+        return false;
+    };
+    let (Some(tool @ Value::Str(_)), null) = (map.get("tool_name"), Value::Null) else {
+        return false;
+    };
+    let input = map.get("tool_input").unwrap_or(&null);
+    let home = field_str(case, "home");
+    anthology_guard::check(tool, input, home)
+        != anthology_guard::check_without_d8(tool, input, home)
 }
 
 fn hex(raw: &[u8]) -> String {

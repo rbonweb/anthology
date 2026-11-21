@@ -4,8 +4,8 @@
 //!
 //! `_expand` and `_normalize` are anthology-shell's (`expand_home`, `normalize_path`): one
 //! implementation for the tracked `cd` directory and the rules (lane notes). Their fancy-regex
-//! patterns (`_HOME_VAR`, `_TILDE_USER`) and this module's `_ESCAPED_SPACE` run under the
-//! check's backtrack limit; hitting it is a [`Limit`] (GC-16).
+//! patterns (`_HOME_VAR`, `_TILDE_USER`) run under the check's backtrack limit; hitting it is a
+//! [`Limit`] (GC-16). `_ESCAPED_SPACE` is a linear scan ([`unescape_spaces`]).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -33,34 +33,6 @@ const MEMORY_SEQUENCES: &[&[&str]] = &[&[".claude", "memory"], &[".claude", "age
 const CODE_PUNCTUATION: &[char] = &[
     '(', ')', '[', ']', '{', '}', '<', '>', ',', ';', '\'', '"', '`',
 ];
-
-/// The compiled patterns this module needs that are not anthology-shell's.
-pub(crate) struct PathRegexes {
-    /// `_ESCAPED_SPACE` (`(?<!\\)\\+ `), fancy-regex under the check's limit (GC-16).
-    escaped_space: Option<fancy_regex::Regex>,
-}
-
-impl PathRegexes {
-    pub(crate) fn new(limits: &Limits) -> PathRegexes {
-        PathRegexes {
-            escaped_space: fancy(r"(?<!\\)\\+ ", false, limits.backtrack_limit),
-        }
-    }
-}
-
-/// A Python pattern as a fancy-regex built with `limit` (`None` if it cannot be built, which
-/// the callers treat as a limit: fail closed).
-pub(crate) fn fancy(py: &str, ignorecase: bool, limit: usize) -> Option<fancy_regex::Regex> {
-    let flags = anthology_pycompat::re::Flags {
-        ignorecase,
-        ..Default::default()
-    };
-    let t = anthology_pycompat::re::translate_with(py, flags).ok()?;
-    fancy_regex::RegexBuilder::new(&t.pattern)
-        .backtrack_limit(limit)
-        .build()
-        .ok()
-}
 
 /// A Python pattern without look-around, compiled once (`pycompat::re`, so classes and
 /// IGNORECASE mean what they mean in Python).
@@ -100,7 +72,6 @@ static BRACE_ALTERNATIVES: std::sync::LazyLock<anthology_pycompat::re::Regex> =
 pub(crate) struct Paths<'a> {
     pub(crate) home: &'a str,
     limits: &'a Limits,
-    re: &'a PathRegexes,
     profile: Vec<(Vec<String>, bool)>,
     memory: Vec<(Vec<String>, bool)>,
     /// `[c for c in _normalize(home, home, None).split("/") if c] if home else []`.
@@ -109,7 +80,7 @@ pub(crate) struct Paths<'a> {
 }
 
 impl<'a> Paths<'a> {
-    pub(crate) fn new(home: &'a str, limits: &'a Limits, re: &'a PathRegexes) -> Paths<'a> {
+    pub(crate) fn new(home: &'a str, limits: &'a Limits) -> Paths<'a> {
         // `_PROFILE_COMPONENTS`: lowercased components, and whether the last one is matched as
         // a prefix (`google-chrome-beta`).
         let profile = PROFILE_ROOTS
@@ -138,7 +109,6 @@ impl<'a> Paths<'a> {
         Paths {
             home,
             limits,
-            re,
             profile,
             memory,
             home_comps,
@@ -279,7 +249,7 @@ impl<'a> Paths<'a> {
 
     /// `_code_candidates(text)`, added to `found`.
     fn code_candidates(&self, text: &str, found: &mut HashSet<String>) -> Result<(), Limit> {
-        let text = self.unescape_spaces(text)?;
+        let text = unescape_spaces(text);
         for groups in CODE_LITERAL.captures_iter(&text) {
             let groups = groups.map_err(|_| Limit)?;
             for (s, e) in groups.iter().skip(1).flatten() {
@@ -296,25 +266,6 @@ impl<'a> Paths<'a> {
         }
         found.remove("");
         Ok(())
-    }
-
-    /// `_ESCAPED_SPACE.sub(" ", text)`: an escaped space is a space however many backslashes
-    /// escape it.
-    fn unescape_spaces(&self, text: &str) -> Result<String, Limit> {
-        if !text.contains("\\ ") {
-            return Ok(text.to_string());
-        }
-        let re = self.re.escaped_space.as_ref().ok_or(Limit)?;
-        let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for m in re.find_iter(text) {
-            let m = m.map_err(|_| Limit)?;
-            out.push_str(&text[last..m.start()]);
-            out.push(' ');
-            last = m.end();
-        }
-        out.push_str(&text[last..]);
-        Ok(out)
     }
 
     /// `_code_hits_profile(texts, home, cwd)`: a profile path spelled inside any of the code
@@ -342,6 +293,39 @@ impl<'a> Paths<'a> {
             hit
         }
     }
+}
+
+/// `_ESCAPED_SPACE.sub(" ", text)` (`(?<!\\)\\+ `): every maximal run of backslashes followed by
+/// a space becomes one space, however many backslashes escape it. A linear scan: the pattern's
+/// look-behind only says the run is maximal, so no regex (and no backtrack limit) is needed.
+pub(crate) fn unescape_spaces(text: &str) -> String {
+    if !text.contains("\\ ") {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j] == b'\\' {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b' ') {
+            out.push_str(&text[last..i]);
+            out.push(' ');
+            last = j + 1;
+            i = j + 1;
+        } else {
+            i = j;
+        }
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 /// `(None, cwd) if cwd else (None,)`: an empty `cwd` is no `cwd`.
@@ -575,6 +559,17 @@ mod tests {
         let mut out = Vec::new();
         path_strings(&deep, &[], &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn escaped_spaces_match_the_python_pattern() {
+        assert_eq!(unescape_spaces("a\\ b"), "a b");
+        assert_eq!(unescape_spaces("a\\\\\\ b"), "a b");
+        assert_eq!(unescape_spaces("a\\b\\\\ c"), "a\\b c");
+        assert_eq!(unescape_spaces("\\\\"), "\\\\");
+        assert_eq!(unescape_spaces("x\\"), "x\\");
+        assert_eq!(unescape_spaces("\\ \\ "), "  ");
+        assert_eq!(unescape_spaces("\u{e9}\\ \u{fc}"), "\u{e9} \u{fc}");
     }
 
     #[test]

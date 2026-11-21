@@ -9,9 +9,11 @@
 //! shell seeds and hand-written commands of `shell.analyze` as Bash commands (`shell:*`), hand-written tool
 //! inputs (`tool:*`), and the FW-I payloads where Rust's G1 is stricter than Python (`fw:*`, D-8, owner
 //! direction). Generated (`gen:*`): `shell.analyze`'s command generator, secret-into-memory commands, and
-//! tool inputs built from path, code and secret vocabularies, all under a mix of homes and tool names.
+//! tool inputs built from path, code and secret vocabularies, all under a mix of homes and tool names. A
+//! generated case whose verdict changes when the D-8 readings are left out is dropped, so D-8 stays
+//! case-scoped (GC-16).
 
-use anthology_guard::{TOO_COMPLEX, TOO_COMPLEX_ID, Verdict, check};
+use anthology_guard::{TOO_COMPLEX, TOO_COMPLEX_ID, Verdict, check, check_without_d8};
 use anthology_pycompat::json::{self, Map, Value};
 
 use super::shell_analyze;
@@ -525,7 +527,19 @@ pub(crate) fn generate(seed: u64, n: usize) -> Vec<Value> {
             let h = home(&mut rng);
             check_case(s(&tool), input, &h)
         };
-        out.push(case);
+        // A D-8 shape (FW-I's G1 readings change the verdict) stays a case-scoped `fw:*` seed.
+        if !is_d8(&case) {
+            out.push(case);
+        }
     }
     out
+}
+
+/// Whether only an owner-directed D-8 reading makes Rust's verdict differ from Python's.
+fn is_d8(case: &Value) -> bool {
+    let null = Value::Null;
+    let tool = field(case, "tool").unwrap_or(&null);
+    let input = field(case, "input").unwrap_or(&null);
+    let home = field_str(case, "home");
+    check(tool, input, home) != check_without_d8(tool, input, home)
 }

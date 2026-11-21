@@ -132,10 +132,11 @@ struct Done {
 /// Starts the watchdog: after `limit`, unless `done` is set, it writes the limit line and exits 2.
 /// It holds the lock while it exits, so a hook finishing at the same moment cannot write a second line.
 fn start_watchdog(done: Arc<Done>, limit: Duration) {
+    // The deadline counts from the call, not from when the thread first runs.
+    let deadline = Instant::now() + limit;
     let spawned = std::thread::Builder::new()
         .name("anthology-guard-watchdog".into())
         .spawn(move || {
-            let deadline = Instant::now() + limit;
             let Ok(mut finished) = done.finished.lock() else {
                 return;
             };
@@ -171,15 +172,36 @@ pub fn hook_with(
     limits: &Limits,
     watchdog: Duration,
 ) -> HookResult {
+    run_hook(stdin, || home.to_string(), shim, limits, watchdog)
+}
+
+/// [`hook`] for the CLI: `home` is resolved after the watchdog has started, so a slow passwd
+/// lookup (HOME unset) is under the watchdog too.
+pub fn hook_resolving_home(
+    stdin: &mut dyn Read,
+    home: impl FnOnce() -> String,
+    shim: bool,
+) -> HookResult {
+    run_hook(stdin, home, shim, &Limits::default(), WATCHDOG)
+}
+
+fn run_hook(
+    stdin: &mut dyn Read,
+    home: impl FnOnce() -> String,
+    shim: bool,
+    limits: &Limits,
+    watchdog: Duration,
+) -> HookResult {
     let done = Arc::new(Done {
         finished: Mutex::new(false),
         wake: Condvar::new(),
     });
     start_watchdog(Arc::clone(&done), watchdog);
     std::panic::set_hook(Box::new(|_| {}));
+    let home = home();
     let mut raw = Vec::new();
     let result = match stdin.read_to_end(&mut raw) {
-        Ok(_) => decide_with(&raw, home, shim, limits),
+        Ok(_) => decide_with(&raw, &home, shim, limits),
         // Python's read raising meant "allow"; Rust cannot see the call, so it blocks (fail closed).
         Err(_) => HookResult::block(PANIC_LINE.to_string()),
     };
@@ -254,6 +276,26 @@ mod tests {
                 stderr: LIMIT_LINE.into()
             }
         );
+    }
+
+    #[test]
+    fn the_lines_are_gc_14_byte_for_byte() {
+        let tail = "; if this keeps happening, disable anthology-guardrails with /plugin";
+        assert_eq!(
+            LIMIT_LINE,
+            format!(
+                "Blocked by anthology-guardrails (internal): the guard could not finish analysing \
+                 this input (time or pattern limit); it was blocked to be safe. Rephrase the \
+                 command{tail}\n"
+            )
+        );
+        assert_eq!(
+            PANIC_LINE,
+            "Blocked by anthology-guardrails (internal): the guard failed on this input; it was \
+             blocked to be safe. Report it, and disable anthology-guardrails with /plugin until a \
+             fixed version ships if this keeps happening\n"
+        );
+        assert_eq!(ALLOW_TOKEN, "anthology-guard:allow:v1");
     }
 
     #[test]
