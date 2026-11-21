@@ -18,7 +18,7 @@ pub(crate) const MAX_UNCLOSED: usize = 8;
 fn scan_special(b: u8) -> bool {
     matches!(
         b,
-        b'\\' | b'<' | b'\n' | b'\'' | b'"' | b'$' | b'#' | b'(' | b')'
+        b'\\' | b'<' | b'\n' | b'\'' | b'"' | b'$' | b'#' | b'(' | b')' | b'`' | b'c'
     )
 }
 
@@ -183,6 +183,24 @@ fn walk<'t>(
                 // `$'a\'b )'` is one string
                 j = ansi_c_end(text, j + 2, work)?.map_or(n, |k| k + 1);
                 continue;
+            }
+            b'`' => {
+                // `$(echo `echo )`; x)`: a `)` in a backtick span does not close
+                j = backtick_end(text, j + 1, work)?.map_or(n, |k| k + 1);
+                continue;
+            }
+            b'c' if !arith_at
+                && text[j..].starts_with("case")
+                && matches!(byte_at(text, j + 4), Some(b' ' | b'\t' | b'\n'))
+                && (j == i
+                    || matches!(
+                        bytes[j - 1],
+                        b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b'(' | b')' | b'{' | b'}' | b'!'
+                    )) =>
+            {
+                // `$(case a in a) x;; esac)`: bash matches a pattern's `)` with its `case`, which this
+                // scan does not model; never guess where the substitution ends
+                return Err(TooComplex);
             }
             b'#' if !arith_at
                 && (j == i
