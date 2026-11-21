@@ -41,6 +41,10 @@ export RTK_SUPPRESS_HOOK_WARNING
 # a word, regex or escape character. That leaves out the end of a quoted regex (`'^a$'`) and a
 # later `\|` in the same line; a `$'` glued to a word (`r$'\x74k'`) is not a spelling the
 # `Bash(rtk *)` allow can match, so it gets the user's own checks.
+# Ruling: a `)` before `$'` is not a mention either (`case a in a)$'\x72tk';; esac`) — such a
+# line starts with `case`, `for` or `f()`, which `Bash(rtk *)` cannot allow, and Claude Code
+# does not decode `$'...'` for an allow match — cost if wrong: that line gets the user's own
+# checks, not rtk's ask.
 input=$(cat)
 out=$(printf '%s' "$input" | "$rtk_path" hook claude)
 rc=$?
@@ -55,7 +59,7 @@ if [ "$rc" -eq 0 ] &&
       [ -n "$cmd" ] || cmd=$input
       sq=\'
       if printf '%s' "$cmd" |
-         LC_ALL=C grep -Eq "(^|[^]A-Za-z0-9_.*+?)}\\\\\$]|\\\\[nrtbf])\\\$$sq[^$sq]*\\\\\\\\"; then
+         LC_ALL=C grep -Eq "(^|[^]A-Za-z0-9_.*+?)}^\\\\\$]|\\\\[nrtbf])\\\$$sq[^$sq]*\\\\\\\\"; then
         :
       else
         printf '%s' "$cmd" | LC_ALL=C sed 's/\\n//g' | LC_ALL=C tr -d "\\\\\"'\$" |
