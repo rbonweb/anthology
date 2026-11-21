@@ -30,9 +30,9 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use anthology_core::Env;
-use anthology_dev::memory_diff::pystr;
 use anthology_dev::upstream_watch::{self as uw, Change, Deps, Error, GitHub, Net, Refs};
 use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
+use anthology_pycompat::str::strip_ws;
 
 use super::dev_dv2::{field, normalize, obj, replace, s, strings, text};
 use crate::case::{Case, Rng, Surface};
@@ -239,7 +239,7 @@ fn run_rust(case: &Value) -> Observed {
         }),
         "without_budget" => {
             let t = text(case, "text").replace("\r\n", "\n");
-            match uw::without_budget(pystr::strip(&t)) {
+            match uw::without_budget(strip_ws(&t)) {
                 Ok(v) => ok_json(&s(&v)),
                 Err(e) => Observed::text(1, "", &format!("{}: {}\n", e.ty, e.msg)),
             }

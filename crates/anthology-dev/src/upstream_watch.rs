@@ -52,11 +52,11 @@ use sha2::{Digest, Sha256};
 
 use crate::Output;
 use crate::json_edit::{Uncaught, py_repr, universal_newlines};
-use crate::memory_diff::pystr;
-use crate::memory_diff::unicode::Class;
+use crate::memory_diff::pystr::splitlines;
 use crate::semver;
-use crate::startup_budget::pyargs::{self, Opt, Spec};
 use crate::startup_budget::{self, Root};
+use anthology_pycompat::argparse::{self, Arg};
+use anthology_pycompat::str as pystr;
 use http::{Http, Method};
 
 pub const LABEL: &str = "upstream-watch";
@@ -188,14 +188,20 @@ fn take_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// `category[0] == "C" or category in ("Zl", "Zp")`.
+fn is_dropped_category(c: char) -> bool {
+    let cat = pystr::unicode_category(c);
+    cat.starts_with('C') || cat == "Zl" || cat == "Zp"
+}
+
 /// `sanitise_path`: control and format characters (`C*`), line and paragraph separators and
 /// backticks removed, `strip()`ped, capped at [`MAX_PATH_LEN`] code points. Safe in a fence.
 pub fn sanitise_path(text: &str) -> String {
     let kept: String = text
         .chars()
-        .filter(|&c| c != '`' && !matches!(pystr::class(c), Some(Class::C | Class::Zl | Class::Zp)))
+        .filter(|&c| c != '`' && !is_dropped_category(c))
         .collect();
-    take_chars(pystr::strip(&kept), MAX_PATH_LEN)
+    take_chars(pystr::strip_ws(&kept), MAX_PATH_LEN)
 }
 
 /// `sanitise_inline`: the same as [`sanitise_path`], for an inline code span.
@@ -560,7 +566,7 @@ fn refs_insert(refs: &mut Refs, name: &str, sha: &str) {
 /// `parse_ls_remote(text)`: `git ls-remote` output as refs; malformed lines are skipped.
 pub fn parse_ls_remote(text: &str) -> Refs {
     let mut refs = Refs::new();
-    for line in pystr::splitlines(text, false) {
+    for line in splitlines(text, false) {
         if let Some((sha, name)) = line.split_once('\t')
             && SHA1_RE.is_match(sha)
             && !name.is_empty()
@@ -684,9 +690,12 @@ pub fn classify(entry: &Value) -> Result<Kind, Error> {
 pub fn parse_manifest(data: &[u8]) -> BTreeMap<String, String> {
     let text = String::from_utf8_lossy(data);
     let mut out = BTreeMap::new();
-    for line in pystr::splitlines(&text, false) {
-        if let Some(c) = MANIFEST_LINE_RE.captures(pystr::strip(line)) {
-            out.insert(pystr::strip(&c[2]).to_string(), c[1].to_ascii_lowercase());
+    for line in splitlines(&text, false) {
+        if let Some(c) = MANIFEST_LINE_RE.captures(pystr::strip_ws(line)) {
+            out.insert(
+                pystr::strip_ws(&c[2]).to_string(),
+                c[1].to_ascii_lowercase(),
+            );
         }
     }
     out
@@ -997,34 +1006,10 @@ pub fn py_int(v: &Value) -> Result<String, Error> {
                 format!("{t:.0}")
             })
         }
-        Value::Str(s) => {
-            let s = pystr::strip(s);
-            let (neg, digits) = match s.strip_prefix('-') {
-                Some(r) => (true, r),
-                None => (false, s.strip_prefix('+').unwrap_or(s)),
-            };
-            if digits.is_empty()
-                || digits.starts_with('_')
-                || digits.ends_with('_')
-                || digits.contains("__")
-            {
-                return Err(value_error());
-            }
-            let mut out = String::new();
-            for c in digits.chars() {
-                if c == '_' {
-                    continue;
-                }
-                let d = pystr::decimal_value(c).ok_or_else(value_error)?;
-                out.push(char::from(b'0' + d));
-            }
-            let trimmed = out.trim_start_matches('0');
-            Ok(match (trimmed.is_empty(), neg) {
-                (true, _) => "0".into(),
-                (false, true) => format!("-{trimmed}"),
-                (false, false) => trimmed.into(),
-            })
-        }
+        Value::Str(s) => match pystr::py_int(s).ok_or_else(value_error)? {
+            Int::Small(n) => Ok(n.to_string()),
+            Int::Big(t) => Ok(t),
+        },
         _ => Err(Error::Other("TypeError".into())),
     }
 }
@@ -1523,7 +1508,7 @@ pub fn check_all(
 /// `replace` (`AttributeError`).
 fn normal(text: Option<&Value>) -> Result<String, Error> {
     match text {
-        Some(Value::Str(s)) => Ok(pystr::strip(&s.replace("\r\n", "\n")).to_string()),
+        Some(Value::Str(s)) => Ok(pystr::strip_ws(&s.replace("\r\n", "\n")).to_string()),
         Some(v) if truthy(v) => Err(Error::Other("AttributeError".into())),
         _ => Ok(String::new()),
     }
@@ -1836,32 +1821,24 @@ impl Default for Deps<'_> {
     }
 }
 
-const PROG: &str = "upstream_watch.py";
-const USAGE: &str = "usage: upstream_watch.py [-h] [--dry-run] [--json OUT] [--root ROOT]";
-const HELP: &str = "\nCompare every upstream pin and keep one issue per change.\n\noptions:\n  -h, --help   show this help message and exit\n  --dry-run    print the issues that would be created or updated; write\n               nothing\n  --json OUT   write the changes and errors as JSON\n  --root ROOT  repository root (default: this checkout)\n";
-const SPEC: Spec<'static> = Spec {
-    prog: PROG,
-    usage: USAGE,
-    help: HELP,
-    opts: &[
-        Opt {
-            long: "--dry-run",
-            takes_value: false,
-            float: false,
-        },
-        Opt {
-            long: "--json",
-            takes_value: true,
-            float: false,
-        },
-        Opt {
-            long: "--root",
-            takes_value: true,
-            float: false,
-        },
-    ],
-    pos: &[],
-};
+/// `main`'s `ArgumentParser` (`prog` is the script's name, as `sys.argv[0]` gives it).
+/// `COLUMNS` sets the help width, as `shutil.get_terminal_size` reads it (ruling DV3-R5).
+fn spec(env: &Env) -> argparse::Spec {
+    argparse::Spec::new("upstream_watch.py")
+        .description("Compare every upstream pin and keep one issue per change.")
+        .width(argparse::help_width(env.get("COLUMNS"), None))
+        .arg(
+            Arg::option(&["--dry-run"])
+                .store_true()
+                .help("print the issues that would be created or updated; write nothing"),
+        )
+        .arg(
+            Arg::option(&["--json"])
+                .metavar("OUT")
+                .help("write the changes and errors as JSON"),
+        )
+        .arg(Arg::option(&["--root"]).help("repository root (default: this checkout)"))
+}
 
 /// Runs `anthology-dev upstream-watch …`; `args` are the arguments after `upstream-watch`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
@@ -1885,11 +1862,17 @@ fn write_failed(e: std::io::Error, shown: &str) -> Uncaught {
 
 /// `main(argv, env, net, gh)` in `cwd` (module docs).
 pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, deps: &Deps<'_>) -> Output {
-    let parsed = match pyargs::parse_or_exit(&SPEC, args) {
+    let parsed = match argparse::parse(&spec(env), args) {
         Ok(p) => p,
-        Err(out) => return out,
+        Err(e) => {
+            return Output {
+                stdout: e.stdout.into_bytes(),
+                stderr: e.stderr.into_bytes(),
+                code: e.code,
+            };
+        }
     };
-    let dry_run = parsed.flag("--dry-run");
+    let dry_run = parsed.flag("dry_run");
     let mut out = String::new();
     let token = env.get("GITHUB_TOKEN").filter(|t| !t.is_empty());
     let repo = env.get("GITHUB_REPOSITORY").filter(|r| !r.is_empty());
@@ -1914,7 +1897,7 @@ pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, deps: &Deps<'_>) -> O
             ..Output::default()
         };
     }
-    let root = match parsed.value("--root") {
+    let root = match parsed.os_str("root") {
         Some(r) => Root::new(Path::new(r), cwd),
         None => Root::new(&startup_budget::default_root(), cwd),
     };
@@ -1951,7 +1934,7 @@ pub fn main_with(args: &[OsString], env: &Env, cwd: &Path, deps: &Deps<'_>) -> O
     );
     print_report(&mut out, &changes, &actions, &errors, dry_run);
 
-    if let Some(target) = parsed.value("--json").filter(|t| !t.is_empty()) {
+    if let Some(target) = parsed.os_str("json").filter(|t| !t.is_empty()) {
         let mut doc = Map::new();
         doc.insert(
             "changes".into(),
