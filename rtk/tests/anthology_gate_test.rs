@@ -722,9 +722,8 @@ fn an_operand_that_expands_or_hides_a_path_is_not_allowed() {
     assert_eq!(sb.hook("rtk bypass dd if=secret.txt"), Said::Deny);
     // RG1: anthology_shell::analyze reads what runs: these are denied now
     // (they were asked about before).
-    for cmd in ["rtk bypass base64 $'secret.txt'"] {
-        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
-    }
+    let cmd = "rtk bypass base64 $'secret.txt'";
+    assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
 }
 
 /// The backstops must not tax ordinary commands the rules cannot reach.

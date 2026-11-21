@@ -6164,10 +6164,9 @@ mod tests {
         }
         // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
         // and the plain shape (which the hook applies to every rtk line) asks.
-        for cmd in ["rtk run -c 'FOO=$BAR true'"] {
-            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
-            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
-        }
+        let cmd = "rtk run -c 'FOO=$BAR true'";
+        assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
     }
 
     #[test]
@@ -6798,9 +6797,8 @@ mod tests {
             );
             assert_eq!(gate_in(dir, "rtk bypass dd if=$x", r), Gate::Ask);
             // RG1: anthology_shell::analyze reads what runs; stricter than before (Deny).
-            for cmd in ["rtk bypass base64 $'secret.txt'"] {
-                assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
-            }
+            let cmd = "rtk bypass base64 $'secret.txt'";
+            assert_eq!(gate_in(dir, cmd, r), Gate::Deny, "{cmd}");
         });
     }
 
@@ -7245,19 +7243,17 @@ mod tests {
         }
         // RG1: the shared parser finds an opaque entry here; the rule scan passes it,
         // and the plain shape (which the hook applies to every rtk line) asks.
-        for cmd in ["rtk uv run python script.py"] {
-            assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
-            assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
-        }
+        let cmd = "rtk uv run python script.py";
+        assert_eq!(gate(cmd, &r), Gate::Pass, "{cmd}");
+        assert_eq!(plain(cmd, &r, Some("/work/project")), Gate::Ask, "{cmd}");
     }
 
     #[test]
     fn a_script_a_launcher_runs_is_read_in_full() {
         in_sandbox(|dir, r| {
-            for cmd in ["rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'"] {
-                // What only a launcher's argument list reaches is a question.
-                assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
-            }
+            let cmd = "rtk bypass caffeinate sh -c 'f=secret; cat $f.txt'";
+            // What only a launcher's argument list reaches is a question.
+            assert_eq!(gate_in(dir, cmd, r), Gate::Ask, "{cmd}");
             // Controls the gate already read in full.
             for cmd in [
                 "rtk bypass sh -c 'cat secret.txt'",
