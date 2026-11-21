@@ -665,6 +665,21 @@ pub(crate) fn fw_cases() -> Vec<Value> {
         "ls ${HOME}/{a,b}",
     ];
     out.extend(SEQ.iter().map(|text| case(text.to_string(), "/home/tester")));
+    // paramsub: `$(...)` in `${...}`; a backtick holding `)` and a `case` inside `$(` (the oracle applies them)
+    const PARAMSUB: &[&str] = &[
+        "echo ${x:-$(npx playwright install chromium)}",
+        "echo \"${x:-'$(npx playwright install)'}\"",
+        "echo $(( ${x:-$(npx playwright install)} + 0 ))",
+        "echo ${x:-$(echo `echo )`; npx playwright install)}",
+        "echo $(case a in a) npx playwright install;; esac)",
+        "echo \"$(case a in (a) echo hi;; esac)\"",
+        "echo $(echo case)",
+    ];
+    out.extend(
+        PARAMSUB
+            .iter()
+            .map(|text| case(text.to_string(), "/home/tester")),
+    );
     out
 }
 

@@ -635,8 +635,8 @@ def _join_continuations(body):
 
 
 _BRACKET_STOP = re.compile(r"[\\\[\]]")
-_SCAN_SPECIAL = frozenset("\\<\n'\"$#()")
-_SCAN_STOP = re.compile(r"[\\<\n'\"$#()]")
+_SCAN_SPECIAL = frozenset("\\<\n'\"$#()`c")         # Rust (paramsub): backticks, `case`
+_SCAN_STOP = re.compile(r"[\\<\n'\"$#()`c]")
 _DQ_STOP = re.compile(r'["\\]')
 
 
@@ -733,6 +733,14 @@ def _scan_paren_walk(text, i, arith, memo):
             k = _ansi_c_end(text, j + 2)
             j = n if k < 0 else k + 1
             continue
+        if c == "`":                                      # `$(echo `echo )`; x)`: not a close
+            k = _backtick_end(text, j + 1)
+            j = n if k < 0 else k + 1
+            continue
+        if (c == "c" and arith_at is None and text.startswith("case", j)
+                and text[j + 4:j + 5] in (" ", "\t", "\n") and text[j + 4:j + 5] != ""
+                and (j == i or text[j - 1] in " \t\n;&|(){}!")):
+            raise _TooComplex()                           # `$(case a in a) x;; esac)`: unmodelled
         if (c == "#" and arith_at is None
                 and (j == i or text[j - 1] in " \t\n;&|()<>")):
             k = text.find("\n", j)                        # a comment: no `<<`, quote or paren

@@ -433,3 +433,66 @@ npm --prefix {1..2\} {-1..-1} i puppeteer
 npm --prefix {,} i {-1..-1} puppeteer
 #---
 echo "npm --prefix '{1..2}'" {-1..-1} i puppeteer | sh
+#---
+echo ${x:-$(npx playwright install chromium)}
+#---
+echo "${x:-$(npx playwright install chromium)}"
+#---
+echo ${x:-`npx playwright install chromium`}
+#---
+echo "${x:-'$(npx playwright install chromium)'}"
+#---
+echo $(( ${x:-$(npx playwright install chromium)} + 0 ))
+#---
+echo ${x:-${y:-$(npx playwright install chromium)}}
+#---
+x=a; echo ${x#$(npx playwright install chromium)}
+#---
+x=a; echo ${x%%$(npx playwright install chromium)}
+#---
+x=a; echo ${x/$(npx playwright install chromium)/b}
+#---
+x=a; echo ${x/a/$(npx playwright install chromium)}
+#---
+x=a; echo ${x:0:$(npx playwright install chromium)}
+#---
+x=a; echo ${x:+$(npx playwright install chromium)}
+#---
+echo ${x:=$(npx playwright install chromium)}
+#---
+echo ${x:?$(npx playwright install chromium)}
+#---
+x=(a); echo ${x[$(npx playwright install chromium)]}
+#---
+echo ${x:-"}"$(npx playwright install chromium)}
+#---
+echo ${x:-\}$(npx playwright install chromium)}
+#---
+echo ${x:-'}'$(npx playwright install chromium)}
+#---
+echo ${x:-$(echo ')')$(npx playwright install chromium)}
+#---
+echo "${x:-"$(npx playwright install chromium)"}"
+#---
+echo $(echo `echo )`; npx playwright install chromium)
+#---
+echo ${x:-$(echo `echo )`; npx playwright install chromium)}
+#---
+echo $(case a in a) npx playwright install chromium;; esac)
+#---
+echo ${x:-$(case a in a) npx playwright install chromium;; esac)}
+#---
+echo "$(case a in a) npx playwright install chromium;; esac)"
+#---
+echo $(case a in a|b) npx playwright install chromium;; esac)
+#---
+echo $(case a in *) npx playwright install chromium;; esac)
+#---
+echo $(if true; then case a in a) npx playwright install chromium;; esac; fi)
+#---
+echo $(x=1; case a in a) npx playwright install chromium;; esac)
+#---
+echo $( case a in a ) npx playwright install chromium ;; esac )
+#---
+echo $(case a in
+a) npx playwright install chromium;; esac)
