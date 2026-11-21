@@ -150,7 +150,14 @@ fn revert_unset(
     check_render_depth(&value)?;
     if chain.len() == keys.len() {
         let parent = *chain.last().expect("the chain starts at the root");
-        return Ok(append(text, doc, chain, parent, keys.last().map(String::as_str), &value));
+        return Ok(append(
+            text,
+            doc,
+            chain,
+            parent,
+            keys.last().map(String::as_str),
+            &value,
+        ));
     }
     Ok(create(text, &keys, value, keys.len() as isize - 1, Some(doc))?.0)
 }
