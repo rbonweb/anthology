@@ -5,7 +5,7 @@
 //! The pure helpers of smoke.py live in `helpers`; they are re-exported here so the one module
 //! reads like the Python file.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::fs;
 use std::io::{Read, Write};
 use std::ops::Deref;
@@ -221,6 +221,18 @@ pub type CwdFn = Box<dyn Fn() -> PathBuf>;
 pub type DefaultClaudeFn = Box<dyn Fn(&Env, Option<&Path>) -> String>;
 pub type ClaudeRunFn = Box<dyn Fn(&Ctx, &Path, &[String], &ClaudeOpts) -> Proc>;
 pub type PromptRunFn = Box<dyn Fn(&Ctx, &Path, &str, &[String], &PromptOpts) -> Res<Proc>>;
+pub type StageFn = Box<dyn Fn(&Ctx) -> Result<Staged, String>>;
+pub type SeedFn = Box<dyn Fn(&Path, &Path, &Path) -> Result<(), String>>;
+pub type DefaultAnthologyFn = Box<dyn Fn() -> Option<PathBuf>>;
+
+/// The plugin trees the smokes load: `plugins/<p>` with `port/staging/plugins/<p>` copied over
+/// it (the staged shims; after CO2 the overlay is empty), in a scratch folder kept as long as
+/// the run.
+pub struct Staged {
+    /// The folder holding `anthology`, `anthology-guardrails` and `anthology-superpowers`.
+    pub plugins: PathBuf,
+    pub keep: Option<Scratch>,
+}
 
 /// Everything the smokes reach out through, one field per `mock.patch` site of
 /// tests/test_smoke.py. [`Deps::default`] is production; a test replaces the field it needs.
@@ -243,6 +255,13 @@ pub struct Deps {
     pub prompt_run: PromptRunFn,
     /// `ctx.claude_run(...)`.
     pub claude_run: ClaudeRunFn,
+    /// The staged plugin copy (EV1b): made once per run, on first use.
+    pub stage: StageFn,
+    /// `anthology-dev seed --bin B --plugins-dir P --config-dir C` (RL1), in process.
+    pub seed: SeedFn,
+    /// The `anthology` binary when `--anthology-bin` is not given: the one beside this
+    /// `anthology-dev` (one `cargo build` makes both).
+    pub default_anthology: DefaultAnthologyFn,
 }
 
 impl Default for Deps {
@@ -257,8 +276,106 @@ impl Default for Deps {
             approved_repo: Box::new(real_approved_repo),
             prompt_run: Box::new(real_prompt_run),
             claude_run: Box::new(real_claude_run),
+            stage: Box::new(real_stage),
+            seed: Box::new(real_seed),
+            default_anthology: Box::new(real_default_anthology),
         }
     }
+}
+
+/// `plugins/` with the `port/staging/plugins/` overlay, copied to a scratch folder. The Python
+/// `scripts/` of anthology and anthology-guardrails are left out: CO2 deletes them, and the
+/// staged shims never call them, so nothing can quietly fall back to Python.
+fn real_stage(ctx: &Ctx) -> Result<Staged, String> {
+    let root = ctx.root()?;
+    let keep = scratch()?;
+    let plugins = keep.join("plugins");
+    for p in PLUGINS {
+        let dest = plugins.join(p);
+        copy_tree(&root.join("plugins").join(p), &dest)?;
+        let overlay = root.join("port/staging/plugins").join(p);
+        if overlay.is_dir() {
+            copy_tree(&overlay, &dest)?;
+        }
+        if p != "anthology-superpowers" {
+            let py = dest.join("scripts");
+            if py.is_dir() {
+                fs::remove_dir_all(&py).map_err(|e| format!("OSError: {}: {e}", py.display()))?;
+            }
+        }
+    }
+    Ok(Staged {
+        plugins,
+        keep: Some(keep),
+    })
+}
+
+fn real_seed(bin: &Path, plugins: &Path, config: &Path) -> Result<(), String> {
+    let args = crate::seed::SeedArgs {
+        bin: bin.to_path_buf(),
+        plugins_dir: plugins.to_path_buf(),
+        config_dir: config.to_path_buf(),
+        target: None,
+        repo: crate::lock::DEFAULT_REPO.to_string(),
+    };
+    crate::seed::seed(&args)
+        .map(|_| ())
+        .map_err(|e| format!("RuntimeError: anthology-dev seed failed: {e}"))
+}
+
+fn real_default_anthology() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let sibling = exe.parent()?.join("anthology");
+    is_executable(&sibling).then_some(sibling)
+}
+
+/// Copies `src` into `dest` (created), keeping modes and symlinks and replacing what is there;
+/// `__pycache__` folders are left out. testkit's `copy_tree`, returning errors.
+pub fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
+    let os = |p: &Path, e: std::io::Error| format!("OSError: {}: {e}", p.display());
+    let meta = fs::symlink_metadata(src).map_err(|e| os(src, e))?;
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf(), meta)];
+    while let Some((from, to, meta)) = stack.pop() {
+        let kind = meta.file_type();
+        let existing = fs::symlink_metadata(&to).ok();
+        let clear = |to: &Path| -> Result<(), String> {
+            match &existing {
+                Some(m) if m.is_dir() => fs::remove_dir_all(to).map_err(|e| os(to, e)),
+                Some(_) => fs::remove_file(to).map_err(|e| os(to, e)),
+                None => Ok(()),
+            }
+        };
+        if kind.is_symlink() {
+            clear(&to)?;
+            let target = fs::read_link(&from).map_err(|e| os(&from, e))?;
+            std::os::unix::fs::symlink(target, &to).map_err(|e| os(&to, e))?;
+        } else if kind.is_dir() {
+            if existing.as_ref().is_some_and(|m| !m.is_dir()) {
+                clear(&to)?;
+            }
+            fs::create_dir_all(&to).map_err(|e| os(&to, e))?;
+            fs::set_permissions(&to, meta.permissions()).map_err(|e| os(&to, e))?;
+            for entry in fs::read_dir(&from).map_err(|e| os(&from, e))? {
+                let entry = entry.map_err(|e| os(&from, e))?;
+                if entry.file_name() == "__pycache__" {
+                    continue;
+                }
+                let m = fs::symlink_metadata(entry.path()).map_err(|e| os(&entry.path(), e))?;
+                stack.push((entry.path(), to.join(entry.file_name()), m));
+            }
+        } else if kind.is_file() {
+            if existing
+                .as_ref()
+                .is_some_and(|m| m.is_dir() || m.is_symlink())
+            {
+                clear(&to)?;
+            }
+            fs::copy(&from, &to).map_err(|e| os(&to, e))?;
+            fs::set_permissions(&to, fs::Permissions::from_mode(meta.permissions().mode()))
+                .map_err(|e| os(&to, e))?;
+        }
+    }
+    Ok(())
 }
 
 /// The nearest ancestor of the process's working directory that holds
@@ -354,7 +471,8 @@ fn real_make_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
 }
 
 /// The repo of the auto-memory smokes: `make_repo`, a fake `origin`, and the memory sync's
-/// approval. Still the Python `memory_sync.approve` until CO2; EV1b swaps it for the Rust binary.
+/// approval, recorded in the run's config dir (`<tmp>/cfg`) by MS1's `approve` in process
+/// (EV1b; smoke.py ran `memory_sync.approve` under python3).
 fn real_approved_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
     let repo = ctx.make_repo(tmp)?;
     ctx.git(
@@ -367,32 +485,29 @@ fn real_approved_repo(ctx: &Ctx, tmp: &Path) -> Result<PathBuf, String> {
             "https://example.invalid/smoke/repo.git",
         ],
     )?;
-    let code = "import sys; sys.path.insert(0, sys.argv[1]); import memory_sync; \
-                from pathlib import Path; memory_sync.approve(Path(sys.argv[2]))";
-    let root = ctx.root()?;
-    let argv = [
-        "python3".to_string(),
-        "-c".to_string(),
-        code.to_string(),
-        root.join("plugins/anthology/scripts")
-            .to_string_lossy()
-            .into_owned(),
-        repo.to_string_lossy().into_owned(),
-    ];
-    let p = ctx.run(&argv, &repo, &build_env(&ctx.env, tmp, None), 60, None);
-    if p.code != 0 {
-        return Err(format!(
-            "RuntimeError: memory_sync.approve failed: {}",
-            ctx.snippet(&p.err, 160)
-        ));
-    }
+    let env = env_of(&build_env(&ctx.env, tmp, None));
+    super::approve::approve(&repo, &env, &anthology_core::git::RealGit).map_err(|e| {
+        format!(
+            "RuntimeError: approve failed: {}",
+            ctx.snippet(&format!("{}: {}", e.type_name(), e.py_str()), 160)
+        )
+    })?;
     Ok(repo)
+}
+
+/// An `Env` holding exactly `map`.
+pub fn env_of(map: &EnvMap) -> Env {
+    map.iter()
+        .fold(Env::default(), |env, (k, v)| env.with(k, v))
 }
 
 fn real_claude_run(ctx: &Ctx, tmp: &Path, args: &[String], opts: &ClaudeOpts) -> Proc {
     let mut argv = vec![ctx.claude.clone()];
     argv.extend(args.iter().cloned());
     let env = build_env(&ctx.env, tmp, opts.extra_env.as_ref());
+    if let Err(e) = ctx.seed_run(tmp, &env) {
+        return Proc::new(-1, "", &e);
+    }
     let cwd = opts.cwd.as_deref().unwrap_or(tmp);
     ctx.run(&argv, cwd, &env, opts.timeout, None)
 }
@@ -461,7 +576,13 @@ pub struct Ctx {
     pub total: f64,
     pub env: Env,
     pub deps: Deps,
+    /// The `anthology` binary the staged plugins run (`--anthology-bin`, else
+    /// `deps.default_anthology`), and whether the caller named it.
+    pub anthology: Option<String>,
+    pub anthology_explicit: bool,
     spent: Cell<f64>,
+    staged: OnceCell<Result<Staged, String>>,
+    seeded: RefCell<Vec<PathBuf>>,
 }
 
 impl Ctx {
@@ -472,8 +593,68 @@ impl Ctx {
             total,
             env,
             deps,
+            anthology: None,
+            anthology_explicit: false,
             spent: Cell::new(0.0),
+            staged: OnceCell::new(),
+            seeded: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The same `Ctx` with the `anthology` binary set.
+    pub fn with_anthology(mut self, bin: Option<String>, explicit: bool) -> Ctx {
+        self.anthology = bin;
+        self.anthology_explicit = explicit;
+        self
+    }
+
+    /// The `anthology` binary, or the error a smoke that needs it fails with.
+    pub fn anthology_bin(&self) -> Result<PathBuf, String> {
+        self.anthology.as_ref().map(PathBuf::from).ok_or_else(|| {
+            "RuntimeError: no anthology binary; pass --anthology-bin PATH".to_string()
+        })
+    }
+
+    /// The staged plugin folder (made on first use, kept for the run).
+    pub fn staged_plugins(&self) -> Result<PathBuf, String> {
+        match self.staged.get_or_init(|| (self.deps.stage)(self)) {
+            Ok(staged) => Ok(staged.plugins.clone()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Seeds the `anthology` binary into the config dir `config`: the staged plugins' locks pin
+    /// it, and `<config>/anthology/bin` holds it installed plus its offline seed (once per dir).
+    pub fn seed_config(&self, config: &Path) -> Result<(), String> {
+        if self.seeded.borrow().iter().any(|d| d == config) {
+            return Ok(());
+        }
+        let plugins = self.staged_plugins()?;
+        let bin = self.anthology_bin()?;
+        (self.deps.seed)(&bin, &plugins, config)?;
+        self.seeded.borrow_mut().push(config.to_path_buf());
+        Ok(())
+    }
+
+    /// Before a `claude` run that loads the staged plugins: the binary goes into every config
+    /// dir its hooks may use. That is `CLAUDE_CONFIG_DIR` and `$HOME/.claude`, the hooks' own
+    /// fallback when the subprocess scrub strips `CLAUDE_CONFIG_DIR`. A run that never touched
+    /// the staged plugins (a throwaway probe plugin) is left alone.
+    pub fn seed_run(&self, tmp: &Path, env: &EnvMap) -> Result<(), String> {
+        if !self.staged.get().is_some_and(Result::is_ok) || self.anthology.is_none() {
+            return Ok(());
+        }
+        let mut dirs = vec![tmp.join("cfg"), tmp.join("home").join(".claude")];
+        if let Some(cfg) = env.get("CLAUDE_CONFIG_DIR") {
+            dirs.push(PathBuf::from(cfg));
+        }
+        if let Some(home) = env.get("HOME") {
+            dirs.push(Path::new(home).join(".claude"));
+        }
+        for dir in dirs {
+            self.seed_config(&dir)?;
+        }
+        Ok(())
     }
 
     pub fn spent(&self) -> f64 {
@@ -540,15 +721,16 @@ impl Ctx {
         snippet(&self.env, text, n)
     }
 
-    /// `plugin_flags()`: `--plugin-dir <root>/plugins/<p>` for every plugin.
+    /// `plugin_flags()`: `--plugin-dir <staged>/<p>` for every plugin. The plugins are the
+    /// staged copy with the `anthology` binary seeded (EV1b), not the live `plugins/` tree.
     pub fn plugin_flags(&self) -> Result<Vec<String>, String> {
-        let root = self.root()?;
+        let plugins = self.staged_plugins()?;
         Ok(PLUGINS
             .iter()
             .flat_map(|p| {
                 [
                     "--plugin-dir".to_string(),
-                    root.join("plugins").join(p).to_string_lossy().into_owned(),
+                    plugins.join(p).to_string_lossy().into_owned(),
                 ]
             })
             .collect())
@@ -667,7 +849,7 @@ fn abort_reason(ctx: &Ctx, message: &str) -> String {
 /// characters, auth values hidden). A smoke never crashes the run.
 pub fn run_smoke(name: &str, ctx: &Ctx, explicit: bool) -> Outcome {
     let (status, reason) = match super::SMOKES.iter().find(|d| d.name == name) {
-        Some(def) => run_smoke_inner(name, def, ctx, explicit),
+        Some(def) => run_smoke_inner(def, ctx, explicit),
         None => (Status::Fail, format!("KeyError: {}", py_repr_str(name))),
     };
     let reason: String = split_ws(&redact(&ctx.env, &reason))
@@ -678,11 +860,11 @@ pub fn run_smoke(name: &str, ctx: &Ctx, explicit: bool) -> Outcome {
     (status, reason)
 }
 
-fn run_smoke_inner(name: &str, def: &super::SmokeDef, ctx: &Ctx, explicit: bool) -> Outcome {
+fn run_smoke_inner(def: &super::SmokeDef, ctx: &Ctx, explicit: bool) -> Outcome {
     if ctx.spent() >= ctx.total {
         return (Status::Fail, exhausted(ctx));
     }
-    if name != "python-missing" && !binary_exists(&ctx.env, &ctx.claude) {
+    if def.needs_claude && !binary_exists(&ctx.env, &ctx.claude) {
         // A binary the caller named (flag or $CLAUDE_BIN) must exist: a silent SKIP would hide a
         // broken install.
         return (
@@ -692,6 +874,29 @@ fn run_smoke_inner(name: &str, def: &super::SmokeDef, ctx: &Ctx, explicit: bool)
     }
     if def.needs_model && !has_auth(&ctx.env) {
         return (Status::Skip, NO_AUTH.to_string());
+    }
+    if def.needs_anthology {
+        let usable = ctx
+            .anthology
+            .as_deref()
+            .is_some_and(|b| is_executable(Path::new(b)));
+        if !usable {
+            // Like the claude binary: a binary the caller named must work; the default one may
+            // simply not be built.
+            return (
+                if ctx.anthology_explicit {
+                    Status::Fail
+                } else {
+                    Status::Skip
+                },
+                format!(
+                    "anthology binary not found: {} (pass --anthology-bin PATH)",
+                    ctx.anthology
+                        .as_deref()
+                        .unwrap_or("none beside anthology-dev")
+                ),
+            );
+        }
     }
     match (def.run)(ctx) {
         Ok(outcome) => outcome,

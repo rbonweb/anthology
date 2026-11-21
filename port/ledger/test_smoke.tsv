@@ -22,7 +22,7 @@ test_smoke.HelperTests.test_the_parser_agrees_with_the_expected_roster	ported	cr
 test_smoke.HelperTests.test_transcript_cwds_reads_the_cwd_field_only	ported	crates/anthology-dev/tests/smoke.rs::helper_tests::test_transcript_cwds_reads_the_cwd_field_only
 test_smoke.HelperTests.test_transcript_models_reads_both_layouts	ported	crates/anthology-dev/tests/smoke.rs::helper_tests::test_transcript_models_reads_both_layouts
 test_smoke.ListAndEnvTests.test_env_passes_only_the_allowed_variables	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_env_passes_only_the_allowed_variables
-test_smoke.ListAndEnvTests.test_list_prints_exactly_the_twelve_names	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_list_prints_exactly_the_twelve_names	asserts the twelve names, then guard-timeout appended last (m-8)
+test_smoke.ListAndEnvTests.test_list_prints_exactly_the_twelve_names	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_list_prints_exactly_the_twelve_names	asserts the twelve names, then guard-timeout (m-8), then the six EV1b smokes (binary-missing, live-*)
 test_smoke.ListAndEnvTests.test_no_scrub_turns_the_scrub_off_and_the_default_stays_on	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_no_scrub_turns_the_scrub_off_and_the_default_stays_on
 test_smoke.ListAndEnvTests.test_redact_hides_auth_values	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_redact_hides_auth_values
 test_smoke.ListAndEnvTests.test_unknown_name_is_a_usage_error	ported	crates/anthology-dev/tests/smoke.rs::list_and_env_tests::test_unknown_name_is_a_usage_error
@@ -43,6 +43,6 @@ test_smoke.SmokeBodyTests.test_auto_memory_dir_fails_if_the_old_note_reaches_no_
 test_smoke.SmokeBodyTests.test_auto_memory_dir_runs_all_three_sessions_unscrubbed	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_auto_memory_dir_runs_all_three_sessions_unscrubbed
 test_smoke.SmokeBodyTests.test_eval_ceiling_runs_plugin_eval_unscrubbed	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_eval_ceiling_runs_plugin_eval_unscrubbed
 test_smoke.SmokeBodyTests.test_rtk_rewrite_fails_loudly_when_the_install_fails_and_names_failed_parts	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_rtk_rewrite_fails_loudly_when_the_install_fails_and_names_failed_parts
-test_smoke.SmokeBodyTests.test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config
+test_smoke.SmokeBodyTests.test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config	EV1b: the installer is the Rust `anthology rtk-install --data-dir … --lock <staged>/anthology/rtk.lock`, not rtk_install.py; the env, scrub and flag asserts are unchanged
 test_smoke.SmokeBodyTests.test_the_other_model_smokes_keep_the_scrub	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_the_other_model_smokes_keep_the_scrub
 test_smoke.SmokeBodyTests.test_writer_memory_commit_runs_unscrubbed	ported	crates/anthology-dev/tests/smoke.rs::smoke_body_tests::test_writer_memory_commit_runs_unscrubbed
