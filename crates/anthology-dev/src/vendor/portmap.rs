@@ -13,12 +13,39 @@ use std::path::Path;
 
 use anthology_pycompat::json::{self, Value};
 
-use super::compare::{exists, is_file, os_walk, rel_posix, sort_names};
+use super::compare::{exists, is_file, os_err, os_walk, rel_posix, sort_names};
+use super::manifest::type_name;
 use super::py;
 use super::transforms::suffix;
 use super::{Entry, Result, VendorError};
 
+/// `data[k]` as Python evaluates it: the value, or the KeyError/TypeError text.
+fn subscript(data: &Value, k: &str) -> std::result::Result<Value, String> {
+    match data {
+        Value::Object(m) => m.get(k).cloned().ok_or_else(|| py::repr_str(k)),
+        Value::Array(_) => Err("list indices must be integers or slices, not str".to_string()),
+        Value::Str(_) => Err("string indices must be integers, not 'str'".to_string()),
+        other => Err(format!(
+            "'{}' object is not subscriptable",
+            type_name(other)
+        )),
+    }
+}
+
+/// `re.compile(pattern)` of a JSON value: a str compiles, a list or dict is unhashable (the
+/// cache lookup fails first), anything else is not a pattern.
+fn compile_value(pattern: &Value) -> std::result::Result<(), String> {
+    match pattern {
+        Value::Str(text) => py::compile_str(text).map(|_| ()),
+        Value::Array(_) | Value::Object(_) => {
+            Err(format!("unhashable type: '{}'", type_name(pattern)))
+        }
+        _ => Err("first argument must be string or compiled pattern".to_string()),
+    }
+}
+
 /// `load_portmap(root, entry)`: the entry's port map, checked for the keys the rules need.
+/// Every check runs in vendor.py's order, so the first failure gives Python's reason.
 pub fn load_portmap(root: &Path, entry: &Entry) -> Result<json::Map> {
     let rel = py::str_of(entry.get("portmap"));
     let name = py::str_of(entry.get("name"));
@@ -30,38 +57,25 @@ pub fn load_portmap(root: &Path, entry: &Entry) -> Result<json::Map> {
         |why: String| VendorError(format!("{name}: port map {rel} is not usable: {why}"));
     let text = py::read_text(&path).map_err(unusable)?;
     let data = json::loads(&text).map_err(|e| unusable(e.py_str(&text)))?;
-    let Some(map) = data.as_object() else {
-        return Err(unusable(
-            "list indices must be integers or slices, not str".to_string(),
-        ));
-    };
-    let key = |m: &json::Map, k: &str| m.get(k).cloned().ok_or_else(|| unusable(py::repr_str(k)));
-    let rule = key(map, "script_rule")?;
-    let Some(rule) = rule.as_object() else {
-        return Err(unusable("the script_rule is not an object".to_string()));
-    };
-    let scripts = key(map, "scripts")?;
-    let added_ok = map.get("added").is_none_or(|v| v.as_object().is_some());
-    let extensions = key(rule, "extensions")?;
-    if scripts.as_object().is_none() || !added_ok || extensions.as_array().is_none() {
-        return Err(unusable(
-            "scripts, added or extensions have the wrong type".to_string(),
-        ));
+    let rule = subscript(&data, "script_rule").map_err(unusable)?;
+    let scripts = subscript(&data, "scripts").map_err(unusable)?;
+    let wrong = || unusable("scripts, added or extensions have the wrong type".to_string());
+    // `isinstance(data["scripts"], dict) and isinstance(data.get("added", {}), dict) and
+    // isinstance(rule["extensions"], list)`, short-circuiting (`data` is a dict by now).
+    let map = data.as_object().ok_or_else(wrong)?;
+    if scripts.as_object().is_none() || map.get("added").is_some_and(|v| v.as_object().is_none()) {
+        return Err(wrong());
     }
-    let node = key(rule, "js_node_regex")?;
-    py::compile_str(node.as_str().unwrap_or("")).map_err(unusable)?;
-    if node.as_str().is_none() {
-        return Err(unusable(
-            "first argument must be string or compiled pattern".to_string(),
-        ));
+    if subscript(&rule, "extensions")
+        .map_err(unusable)?
+        .as_array()
+        .is_none()
+    {
+        return Err(wrong());
     }
-    let chrome = key(map, "chrome_regex")?;
-    let Some(chrome) = chrome.as_str() else {
-        return Err(unusable(
-            "first argument must be string or compiled pattern".to_string(),
-        ));
-    };
-    py::compile_bytes_ignorecase(chrome).map_err(unusable)?;
+    compile_value(&subscript(&rule, "js_node_regex").map_err(unusable)?).map_err(unusable)?;
+    // vendor.py compiles `chrome_regex` as a str here; `portmap_problems` compiles it as bytes.
+    compile_value(&subscript(&data, "chrome_regex").map_err(unusable)?).map_err(unusable)?;
     Ok(map.clone())
 }
 
@@ -174,8 +188,10 @@ pub fn portmap_problems(
                 if !is_file(&shipped.join(rel)) {
                     problems.push(format!("{rel}: {action} script is not shipped"));
                 } else if action == "keep" {
+                    // An unreadable file raises in Python (D-1): an error here too.
+                    let read = |p: std::path::PathBuf| fs::read(&p).map_err(|e| os_err(&e, &p));
                     let same = is_file(&pristine.join(rel))
-                        && fs::read(shipped.join(rel)).ok() == fs::read(pristine.join(rel)).ok();
+                        && read(shipped.join(rel))? == read(pristine.join(rel))?;
                     if !same {
                         problems.push(format!(
                             "{rel}: keep script is not byte-identical to upstream"

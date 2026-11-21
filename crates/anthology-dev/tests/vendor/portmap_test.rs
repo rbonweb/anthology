@@ -472,3 +472,121 @@ fn test_portmap_patterns_have_no_lookaround() {
     }
     assert!(seen >= 1, "no port map under {}", dir.display());
 }
+
+/// `load_portmap`'s reasons for wrongly typed maps, in vendor.py's evaluation order (expected
+/// texts from `python:3.12-slim`, `python3 -I`; regex error texts are P1's, not checked here).
+const LOAD_CASES: &[(&str, &str)] = &[
+    (
+        "\"abc\"",
+        "not usable: string indices must be integers, not 'str'",
+    ),
+    ("null", "not usable: 'NoneType' object is not subscriptable"),
+    ("3", "not usable: 'int' object is not subscriptable"),
+    (
+        "[]",
+        "not usable: list indices must be integers or slices, not str",
+    ),
+    ("true", "not usable: 'bool' object is not subscriptable"),
+    ("{}", "not usable: 'script_rule'"),
+    ("{\"script_rule\": []}", "not usable: 'scripts'"),
+    ("{\"script_rule\": null}", "not usable: 'scripts'"),
+    ("{\"script_rule\": \"x\"}", "not usable: 'scripts'"),
+    (
+        "{\"script_rule\": [], \"scripts\": []}",
+        "not usable: scripts, added or extensions have the wrong type",
+    ),
+    (
+        "{\"script_rule\": {}, \"scripts\": []}",
+        "not usable: scripts, added or extensions have the wrong type",
+    ),
+    (
+        "{\"script_rule\": {}, \"scripts\": {}}",
+        "not usable: 'extensions'",
+    ),
+    (
+        "{\"script_rule\": {}, \"scripts\": {}, \"added\": []}",
+        "not usable: scripts, added or extensions have the wrong type",
+    ),
+    (
+        "{\"script_rule\": {}, \"scripts\": {}, \"added\": null}",
+        "not usable: scripts, added or extensions have the wrong type",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": {}}, \"scripts\": {}}",
+        "not usable: scripts, added or extensions have the wrong type",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": []}, \"scripts\": {}}",
+        "not usable: 'js_node_regex'",
+    ),
+    (
+        "{\"script_rule\": [], \"scripts\": {}}",
+        "not usable: list indices must be integers or slices, not str",
+    ),
+    (
+        "{\"script_rule\": \"s\", \"scripts\": {}}",
+        "not usable: string indices must be integers, not 'str'",
+    ),
+    (
+        "{\"script_rule\": 3, \"scripts\": {}}",
+        "not usable: 'int' object is not subscriptable",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": 3}, \"scripts\": {}}",
+        "not usable: first argument must be string or compiled pattern",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": null}, \"scripts\": {}}",
+        "not usable: first argument must be string or compiled pattern",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": []}, \"scripts\": {}}",
+        "not usable: unhashable type: 'list'",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": {}}, \"scripts\": {}}",
+        "not usable: unhashable type: 'dict'",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}}",
+        "not usable: 'chrome_regex'",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}, \"chrome_regex\": 3}",
+        "not usable: first argument must be string or compiled pattern",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}, \"chrome_regex\": [\"x\"]}",
+        "not usable: unhashable type: 'list'",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}, \"chrome_regex\": \"x\"}",
+        "ok",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}, \"chrome_regex\": \"\\\\u0041\"}",
+        "ok",
+    ),
+    (
+        "{\"script_rule\": {\"extensions\": [], \"js_node_regex\": \"a\"}, \"scripts\": {}, \"chrome_regex\": \"caf\u{e9}\"}",
+        "ok",
+    ),
+];
+
+#[test]
+fn load_portmap_reasons_match_python_312() {
+    let f = Fixture::new();
+    let e = entry("p", &[("portmap", s("vendor/patches/p.portmap.json"))]);
+    for (text, want) in LOAD_CASES {
+        write(&f.root, "vendor/patches/p.portmap.json", text, false);
+        let got = match vendor::load_portmap(&f.root, e.as_object().unwrap()) {
+            Ok(_) => "ok".to_string(),
+            Err(err) => err
+                .0
+                .strip_prefix("p: port map vendor/patches/p.portmap.json is ")
+                .unwrap_or(&err.0)
+                .to_string(),
+        };
+        assert_eq!(&got, want, "{text}");
+    }
+}

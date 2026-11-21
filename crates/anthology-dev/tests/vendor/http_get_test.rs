@@ -90,3 +90,59 @@ fn http_get_does_not_trust_the_test_ca_by_default() {
     let e = err(vendor::http_get(&url));
     assert!(e.starts_with(&format!("cannot download {url}: ")), "{e}");
 }
+
+#[test]
+fn http_get_resolves_a_relative_redirect_like_urljoin() {
+    let server = TestServer::https();
+    server.route(
+        "/a/from",
+        Route::with_status(302, b"").header("Location", "../to?next=http://x"),
+    );
+    server.route("/to", Route::ok(b"joined"));
+    assert_eq!(
+        vendor::http_get_with(&server.url("/a/from"), &opts(&server)).unwrap(),
+        b"joined"
+    );
+    assert_eq!(server.requests()[1].path, "/to?next=http://x");
+}
+
+#[test]
+fn http_get_reports_a_redirect_without_a_location_like_urllib() {
+    let server = TestServer::https();
+    server.route("/r", Route::with_status(302, b""));
+    let url = server.url("/r");
+    assert_eq!(
+        err(vendor::http_get_with(&url, &opts(&server))),
+        format!("cannot download {url}: HTTP Error 302: Found")
+    );
+}
+
+#[test]
+fn http_get_stops_a_redirect_loop_like_urllib() {
+    let server = TestServer::https();
+    server.route("/loop", Route::redirect(&server.url("/loop")));
+    let url = server.url("/loop");
+    assert_eq!(
+        err(vendor::http_get_with(&url, &opts(&server))),
+        format!(
+            "cannot download {url}: HTTP Error 302: The HTTP server returned a redirect error \
+             that would lead to an infinite loop.\nThe last 30x error message was:\nFound"
+        )
+    );
+    // urllib follows four repeats of one URL and refuses the fifth.
+    assert_eq!(server.requests().len(), 5);
+}
+
+#[test]
+fn http_get_refuses_a_redirect_to_another_scheme_like_urllib() {
+    let server = TestServer::https();
+    server.route("/r", Route::redirect("file:///etc/passwd"));
+    let url = server.url("/r");
+    assert_eq!(
+        err(vendor::http_get_with(&url, &opts(&server))),
+        format!(
+            "cannot download {url}: HTTP Error 302: Found - Redirection to url \
+             'file:///etc/passwd' is not allowed"
+        )
+    );
+}

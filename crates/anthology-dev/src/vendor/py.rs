@@ -658,20 +658,39 @@ pub fn unlatin1(s: &str) -> Vec<u8> {
 }
 
 /// A Python regex in fancy-regex syntax (P1: `pycompat::re::translate`). `unicode` is a str
-/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern, compiled in fancy-regex's
-/// ASCII bytes mode, whose classes are already Python's. `$` (no MULTILINE) also matches before a
-/// final `\n`, `\Z` is `\z`, `{,n}` is `{0,n}`.
+/// pattern (Python's Unicode `\w` and `\s`); otherwise a bytes pattern, compiled in
+/// fancy-regex's ASCII bytes mode, whose classes are already Python's. `$` (no MULTILINE) also
+/// matches before a final `\n`, `\Z` is `\z`, `{,n}` is `{0,n}`, escaped punctuation and `\0`
+/// octal escapes become `\x{…}` literals, `\b` in a class is a backspace, and `&&`/`~~` in a
+/// class stay literal.
+///
+/// What this stand-in cannot translate faithfully is refused rather than reinterpreted: an
+/// escape Python rejects (`bad escape \X at position N`, as Python words it), `\N{…}`,
+/// backreferences and other octal escapes, `--` in a class, inline flags (`(?m)` would change
+/// `$`), `(?P=…)`, `(?<name>…)`, conditionals and comments. `\b`/`\B` keep fancy-regex's word
+/// definition, which differs from Python's `\w` only around non-ASCII marks and numbers. Regex
+/// error texts are fancy-regex's, not Python's.
 pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
     let chars: Vec<char> = py.chars().collect();
     let mut out = String::with_capacity(py.len() + 8);
     let mut in_class = false;
     let mut i = 0;
+    let hex = |from: usize, n: usize| -> Option<u32> {
+        let digits: String = chars.get(from..from + n)?.iter().collect();
+        if digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            u32::from_str_radix(&digits, 16).ok()
+        } else {
+            None
+        }
+    };
+    let literal = |out: &mut String, code: u32| out.push_str(&format!("\\x{{{code:x}}}"));
     while i < chars.len() {
         let c = chars[i];
+        let at = i;
         match c {
             '\\' => {
                 let Some(&e) = chars.get(i + 1) else {
-                    return Err("bad escape (end of pattern)".to_string());
+                    return Err(format!("bad escape (end of pattern) at position {at}"));
                 };
                 i += 1;
                 match (e, in_class, unicode) {
@@ -684,11 +703,58 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                     ('W' | 'S', true, true) => {
                         return Err(format!("\\{e} inside a class is not supported"));
                     }
+                    ('b', true, _) => out.push_str(r"\x08"),
                     ('Z', false, _) => out.push_str(r"\z"),
-                    _ => {
+                    ('A' | 'B' | 'b', false, _) | ('d' | 'D', ..) | ('w' | 'W' | 's' | 'S', ..) => {
                         out.push('\\');
                         out.push(e);
                     }
+                    ('a', ..) => out.push_str(r"\x07"),
+                    ('f', ..) => out.push_str(r"\x0c"),
+                    ('n', ..) => out.push_str(r"\n"),
+                    ('r', ..) => out.push_str(r"\r"),
+                    ('t', ..) => out.push_str(r"\t"),
+                    ('v', ..) => out.push_str(r"\x0b"),
+                    ('x', ..) => {
+                        let Some(code) = hex(i + 1, 2) else {
+                            return Err(format!("incomplete escape \\x at position {at}"));
+                        };
+                        literal(&mut out, code);
+                        i += 2;
+                    }
+                    ('u' | 'U', _, true) => {
+                        let n = if e == 'u' { 4 } else { 8 };
+                        let Some(code) = hex(i + 1, n).filter(|&c| char::from_u32(c).is_some())
+                        else {
+                            return Err(format!("incomplete or bad escape \\{e} at position {at}"));
+                        };
+                        literal(&mut out, code);
+                        i += n;
+                    }
+                    ('0', ..) => {
+                        // `\0`, `\0o`, `\0oo`: an octal escape of up to three digits.
+                        let mut code = 0;
+                        let mut n = 0;
+                        while n < 2 && chars.get(i + 1).is_some_and(|d| ('0'..='7').contains(d)) {
+                            code = code * 8 + chars[i + 1].to_digit(8).unwrap_or(0);
+                            i += 1;
+                            n += 1;
+                        }
+                        literal(&mut out, code);
+                    }
+                    ('1'..='9', ..) => {
+                        return Err(format!(
+                            "backreferences and octal escapes (\\{e} at position {at}) are not \
+                             supported"
+                        ));
+                    }
+                    ('N', _, true) => {
+                        return Err(format!("\\N{{…}} (at position {at}) is not supported"));
+                    }
+                    (e, ..) if e.is_ascii_alphabetic() => {
+                        return Err(format!("bad escape \\{e} at position {at}"));
+                    }
+                    (e, ..) => literal(&mut out, u32::from(e)),
                 }
             }
             '[' if !in_class => {
@@ -709,8 +775,35 @@ pub fn translate(py: &str, unicode: bool) -> Result<String, String> {
                 out.push(c);
             }
             '[' if in_class => out.push_str(r"\["),
+            // Set operators in fancy-regex, literals (with a FutureWarning) in Python.
+            '&' | '~' if in_class && chars.get(i + 1) == Some(&c) => {
+                out.push(c);
+                out.push('\\');
+                out.push(c);
+                i += 1;
+            }
+            // Whether `--` makes a range depends on what precedes it.
+            '-' if in_class && chars.get(i + 1) == Some(&'-') => {
+                return Err(format!(
+                    "`--` in a class (at position {at}) is not supported"
+                ));
+            }
             '$' if !in_class => out.push_str(r"(?=\n?\z)"),
             '{' if !in_class && chars.get(i + 1) == Some(&',') => out.push_str("{0"),
+            '(' if !in_class && chars.get(i + 1) == Some(&'?') => {
+                let supported = match chars.get(i + 2) {
+                    Some(':' | '=' | '!' | '>') => true,
+                    Some('<') => matches!(chars.get(i + 3), Some('=' | '!')),
+                    Some('P') => chars.get(i + 3) == Some(&'<'),
+                    _ => false,
+                };
+                if !supported {
+                    return Err(format!(
+                        "this group syntax (at position {at}) is not supported"
+                    ));
+                }
+                out.push(c);
+            }
             _ => out.push(c),
         }
         i += 1;
@@ -979,6 +1072,140 @@ pub fn stats(pairs: &[(&str, i64)]) -> json::Map {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (mode, pattern, subject, Python 3.12's `re.search` span or `none`/`error`), from
+    /// `python:3.12-slim` (`python3 -I`; bytes patterns compiled with IGNORECASE).
+    const RE_CASES: &[(&str, &str, &str, &str)] = &[
+        ("str", "\\p{L}", "a", "error"),
+        ("str", "a\\z", "a", "error"),
+        ("str", "[a--b]", "-", "error"),
+        ("str", "[!--]", "-", "0,1"),
+        ("str", "[--z]", "q", "0,1"),
+        ("str", "[a&&b]", "&", "0,1"),
+        ("str", "[a~~b]", "~", "0,1"),
+        ("str", "\\<", "<", "0,1"),
+        ("str", "\\>", ">", "0,1"),
+        ("str", "\\N{DIGIT ONE}", "1", "0,1"),
+        ("str", "\\0", "a\u{0}", "1,2"),
+        ("str", "\\012", "a\n", "1,2"),
+        ("str", "\\1", "a", "error"),
+        ("str", "(a)\\1", "aa", "0,2"),
+        ("str", "(?m)a$", "a\nb", "0,1"),
+        ("str", "(?i)A", "a", "0,1"),
+        ("str", "(?#c)a", "a", "0,1"),
+        ("str", "(?P<n>a)(?P=n)", "aa", "0,2"),
+        ("str", "(?<n>a)", "a", "error"),
+        ("str", "(?>a+)b", "aab", "0,3"),
+        ("str", "(?:a|b)+", "xab", "1,3"),
+        ("str", "(?<=x)a", "xa", "1,2"),
+        ("str", "(?<!x)a", "xa ya", "4,5"),
+        ("str", "a(?=b)", "ab", "0,1"),
+        ("str", "a(?!b)", "ab ac", "3,4"),
+        ("str", "\\x41", "A", "0,1"),
+        ("str", "\\x4", "A", "error"),
+        ("str", "\\x{41}", "A", "error"),
+        ("str", "\\u00e9", "\u{e9}", "0,1"),
+        ("str", "\\U0001F600", "\u{1f600}", "0,1"),
+        ("str", "\\.", "a.b", "1,2"),
+        ("str", "\\-", "a-b", "1,2"),
+        ("str", "[\\]]", "]", "0,1"),
+        ("str", "[]a]", "]", "0,1"),
+        ("str", "[^]a]", "b", "0,1"),
+        ("str", "[\\b]", "\u{8}", "0,1"),
+        ("str", "\\bfoo\\b", "a foo b", "2,5"),
+        ("str", "\\Bfoo", "afoo", "1,4"),
+        ("str", "a$", "a\n", "0,1"),
+        ("str", "a$", "a\nb", "none"),
+        ("str", "a\\Z", "a\n", "none"),
+        ("str", "\\Aa", "ba", "none"),
+        ("str", "x{,2}y", "xxy", "0,3"),
+        ("str", "x{,}y", "xxxy", "0,4"),
+        ("str", "\\w+", "\u{e9}_1", "0,3"),
+        ("str", "\\s+", "a\u{1c}\u{1f}b", "1,3"),
+        ("str", "\\d", "\u{661}", "0,1"),
+        ("str", "\\e", "e", "error"),
+        ("str", "\\G", "a", "error"),
+        ("str", "\\\u{e9}", "\u{e9}", "0,1"),
+        ("str", "\\ ", "a b", "1,2"),
+        ("str", "[[:alpha:]]", ":", "none"),
+        ("str", "\\a\\f\\v\\t", "\u{7}\u{c}\u{b}\t", "0,4"),
+        (
+            "str",
+            "\\brequire\\s*\\(|\\bfrom\\s*['\"](?:node:|(?:fs|path|os|http|https|net|child_process|url|zlib|crypto|util|stream|worker_threads)['\"/])|\\bimport\\s*\\(\\s*['\"]node:|\\bchild_process\\b|\\bprocess\\.(?:argv|exit|env|cwd)\\b",
+            "x = require ('fs')",
+            "4,13",
+        ),
+        (
+            "str",
+            "\\brequire\\s*\\(|\\bfrom\\s*['\"](?:node:|(?:fs|path|os|http|https|net|child_process|url|zlib|crypto|util|stream|worker_threads)['\"/])|\\bimport\\s*\\(\\s*['\"]node:|\\bchild_process\\b|\\bprocess\\.(?:argv|exit|env|cwd)\\b",
+            "const required = 1; // from 'react'",
+            "none",
+        ),
+        (
+            "bytes",
+            "remote-debugging|user-data-dir|CHROME_PATH|Google Chrome|chrome\\.exe|/usr/bin/(google-chrome|chromium)|playwright|puppeteer",
+            "launch --Remote-Debugging-Port",
+            "9,25",
+        ),
+        (
+            "bytes",
+            "remote-debugging|user-data-dir|CHROME_PATH|Google Chrome|chrome\\.exe|/usr/bin/(google-chrome|chromium)|playwright|puppeteer",
+            "HeadlessChrome/ UA",
+            "none",
+        ),
+        ("bytes", "\\w+", "\u{e9}a", "2,3"),
+        ("bytes", "\\u0041", "A", "error"),
+        ("bytes", "\\N{DIGIT ONE}", "1", "error"),
+        ("bytes", "a$", "A\n", "0,1"),
+        ("bytes", "\\x41", "a", "0,1"),
+        ("bytes", "\\bab", "xab ab", "4,6"),
+    ];
+
+    /// Patterns Python accepts that the stand-in refuses instead of reinterpreting.
+    const REFUSED: &[&str] = &[
+        "[!--]",
+        "[--z]",
+        "\\N{DIGIT ONE}",
+        "(a)\\1",
+        "(?m)a$",
+        "(?i)A",
+        "(?#c)a",
+        "(?P<n>a)(?P=n)",
+    ];
+
+    #[test]
+    fn translate_matches_python_or_refuses() {
+        for (mode, pattern, subject, want) in RE_CASES {
+            let compiled = if *mode == "str" {
+                compile_str(pattern)
+            } else {
+                compile_bytes_ignorecase(pattern)
+            };
+            let re = match compiled {
+                Err(e) => {
+                    assert!(
+                        *want == "error" || REFUSED.contains(pattern),
+                        "{pattern:?} refused ({e}) but Python gives {want}"
+                    );
+                    continue;
+                }
+                Ok(re) => re,
+            };
+            assert!(!REFUSED.contains(pattern), "{pattern:?} should be refused");
+            let found = re.find(subject).unwrap();
+            let got = match found {
+                None => "none".to_string(),
+                // Python's str spans count code points; bytes spans count bytes.
+                Some(m) if *mode == "str" => format!(
+                    "{},{}",
+                    subject[..m.start()].chars().count(),
+                    subject[..m.end()].chars().count()
+                ),
+                Some(m) => format!("{},{}", m.start(), m.end()),
+            };
+            assert_eq!(&got, want, "{mode} {pattern:?} on {subject:?}");
+        }
+    }
 
     #[test]
     fn splitlines_matches_python() {

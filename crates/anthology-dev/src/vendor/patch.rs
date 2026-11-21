@@ -10,7 +10,10 @@ use super::{Result, VendorError};
 /// `apply_patch(tree, patch, reject)`: apply a patch (-p1) to `tree`. A failure is an error;
 /// with `reject`, the rejected-hunk files (`*.rej`) are returned instead.
 pub fn apply_patch(tree: &Path, patch: &Path, reject: bool) -> Result<Vec<String>> {
-    let resolved = std::fs::canonicalize(patch).unwrap_or_else(|_| patch.to_path_buf());
+    // `Path(patch).resolve()`: always absolute, as git runs in `tree`.
+    let resolved = std::fs::canonicalize(patch)
+        .or_else(|_| std::path::absolute(patch))
+        .unwrap_or_else(|_| patch.to_path_buf());
     let resolved = resolved.to_string_lossy().into_owned();
     let mut args = vec!["apply", "-p1", "--whitespace=nowarn"];
     if reject {

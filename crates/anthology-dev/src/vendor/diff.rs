@@ -46,6 +46,17 @@ pub fn unified(rel: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Result<Stri
     Ok(out)
 }
 
+/// A snapshot entry as `(exec, data)`; a link cannot be part of a patch.
+fn file<'s>(rel: &str, s: Option<&'s Snap>) -> Result<Option<(bool, &'s [u8])>> {
+    match s {
+        None => Ok(None),
+        Some(Snap::File { exec, data }) => Ok(Some((*exec, data.as_slice()))),
+        Some(Snap::Link(_)) => Err(VendorError(format!(
+            "{rel}: links cannot be expressed as a patch"
+        ))),
+    }
+}
+
 /// `diff_text(expected, actual)`: every file that differs, as one patch.
 pub fn diff_text(expected: &Path, actual: &Path) -> Result<String> {
     let want = snapshot(expected)?;
@@ -57,15 +68,6 @@ pub fn diff_text(expected: &Path, actual: &Path) -> Result<String> {
     for key in keys {
         let rel = show(key);
         let (w, h) = (want.get(key), have.get(key));
-        fn file<'s>(rel: &str, s: Option<&'s Snap>) -> Result<Option<(bool, &'s [u8])>> {
-            match s {
-                None => Ok(None),
-                Some(Snap::File { exec, data }) => Ok(Some((*exec, data.as_slice()))),
-                Some(Snap::Link(_)) => Err(VendorError(format!(
-                    "{rel}: links cannot be expressed as a patch"
-                ))),
-            }
-        }
         let (w, h) = (file(&rel, w)?, file(&rel, h)?);
         if let (Some(w), Some(h)) = (w, h)
             && w.0 != h.0

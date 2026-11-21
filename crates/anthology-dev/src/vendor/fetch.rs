@@ -26,6 +26,7 @@ use super::manifest::{
     source_slug, validate_sources,
 };
 use super::py;
+use super::redirect;
 use super::{Entry, Fetch, Get, Result, VendorError};
 
 // ------------------------------------------------------------------------------------- git
@@ -109,38 +110,43 @@ pub fn git_fetch(cache: &Path, entry: &Entry) -> Result<PathBuf> {
     fs::create_dir_all(cache).map_err(|e| os_err(&e, cache))?;
     let tmp = cache.join(format!(".tmp-{slug}-{commit}-{}", std::process::id()));
     rmtree_quiet(&tmp);
-    let result = (|| -> Result<()> {
-        fs::create_dir(&tmp).map_err(|e| os_err(&e, &tmp))?;
-        git_ok(&["init", "-q"], Some(&tmp))?;
-        git_ok(&["remote", "add", "origin", &repo], Some(&tmp))?;
-        git_ok(
-            &["fetch", "-q", "--depth", "1", "origin", &commit],
-            Some(&tmp),
-        )?;
-        git_ok(
-            &[
-                "-c",
-                "advice.detachedHead=false",
-                "checkout",
-                "-q",
-                "--detach",
-                "FETCH_HEAD",
-            ],
-            Some(&tmp),
-        )?;
-        let head = git_ok(&["rev-parse", "HEAD"], Some(&tmp))?;
-        let head = py::strip(&head);
-        if head != commit {
-            return Err(VendorError(format!(
-                "{}: fetched {head}, expected {commit}",
-                name_of(entry)
-            )));
-        }
-        rmtree_quiet(&dest);
-        fs::rename(&tmp, &dest).map_err(|e| os_err(&e, &tmp))
-    })();
+    // vendor.py's `try: … finally: shutil.rmtree(tmp, ignore_errors=True)`.
+    let result = clone_into(entry, &repo, &commit, &tmp, &dest);
     rmtree_quiet(&tmp);
     result.map(|()| dest)
+}
+
+/// The body of `git_fetch`'s `try`: a shallow fetch of `commit` into `tmp`, checked, then
+/// moved to `dest`.
+fn clone_into(entry: &Entry, repo: &str, commit: &str, tmp: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir(tmp).map_err(|e| os_err(&e, tmp))?;
+    git_ok(&["init", "-q"], Some(tmp))?;
+    git_ok(&["remote", "add", "origin", repo], Some(tmp))?;
+    git_ok(
+        &["fetch", "-q", "--depth", "1", "origin", commit],
+        Some(tmp),
+    )?;
+    git_ok(
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "-q",
+            "--detach",
+            "FETCH_HEAD",
+        ],
+        Some(tmp),
+    )?;
+    let head = git_ok(&["rev-parse", "HEAD"], Some(tmp))?;
+    let head = py::strip(&head);
+    if head != commit {
+        return Err(VendorError(format!(
+            "{}: fetched {head}, expected {commit}",
+            name_of(entry)
+        )));
+    }
+    rmtree_quiet(dest);
+    fs::rename(tmp, dest).map_err(|e| os_err(&e, tmp))
 }
 
 /// `git_fetcher(cache)`.
@@ -298,11 +304,14 @@ pub fn snapshot_fetcher(root: &Path) -> impl Fn(&Entry) -> Result<PathBuf> + '_ 
     move |entry| snapshot_fetch(root, entry)
 }
 
-/// How [`http_get_with`] verifies TLS: the platform verifier, or (tests) these DER roots.
+/// How [`http_get_with`] verifies TLS: the platform verifier, or (tests only) these DER roots.
+/// Production code calls [`http_get`] and never sets `roots`.
+#[doc(hidden)]
 #[derive(Clone, Debug, Default)]
 pub struct HttpOpts {
     /// Extra trust roots (DER). Empty: `RootCerts::PlatformVerifier`, as production uses.
     pub roots: Vec<Vec<u8>>,
+    /// The socket timeout (urllib's `timeout=`): per connect, read and write. Default 30 s.
     pub timeout: Option<Duration>,
 }
 
@@ -312,12 +321,17 @@ pub fn http_get(url: &str) -> Result<Vec<u8>> {
     http_get_with(url, &HttpOpts::default())
 }
 
-/// The redirect statuses urllib follows.
+/// The statuses `HTTPRedirectHandler` handles.
 const REDIRECTS: [u16; 5] = [301, 302, 303, 307, 308];
-/// `HTTPRedirectHandler.max_redirections`.
-const MAX_REDIRECTIONS: usize = 10;
+
+/// A header value as http.client decodes it (ISO-8859-1).
+fn header_latin1(response: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
+    let value = response.headers().get(name)?;
+    Some(value.as_bytes().iter().map(|&b| char::from(b)).collect())
+}
 
 /// [`http_get`] with a TLS seam (tests trust the testkit CA through `opts.roots`).
+#[doc(hidden)]
 pub fn http_get_with(url: &str, opts: &HttpOpts) -> Result<Vec<u8>> {
     use ureq::tls::{Certificate, RootCerts, TlsConfig};
     if !url.starts_with("https://") {
@@ -333,56 +347,55 @@ pub fn http_get_with(url: &str, opts: &HttpOpts) -> Result<Vec<u8>> {
                 .collect(),
         ))
     };
-    let timeout = opts.timeout.unwrap_or(Duration::from_secs(30));
+    let timeout = Some(opts.timeout.unwrap_or(Duration::from_secs(30)));
     let config = ureq::Agent::config_builder()
         .tls_config(TlsConfig::builder().root_certs(roots).build())
         .https_only(true)
         .max_redirects(0)
         .http_status_as_error(false)
         .user_agent("anthology-vendor")
-        .timeout_connect(Some(timeout))
-        .timeout_recv_response(Some(timeout))
-        .timeout_recv_body(Some(timeout))
+        .timeout_connect(timeout)
+        .timeout_per_read(timeout)
+        .timeout_per_write(timeout)
         .build();
     let agent: ureq::Agent = config.into();
     let fail = |detail: String| VendorError(format!("cannot download {url}: {detail}"));
     let mut current = url.to_string();
-    let mut hops = 0;
+    // `req.redirect_dict`: absent until the first redirect.
+    let mut visited: Option<BTreeMap<String, usize>> = None;
     loop {
         let response = agent
             .get(&current)
             .call()
             .map_err(|e| fail(e.to_string()))?;
         let status = response.status().as_u16();
+        let reason = response.status().canonical_reason().unwrap_or("");
         if REDIRECTS.contains(&status) {
-            let location = response
-                .headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+            let location =
+                header_latin1(&response, "location").or_else(|| header_latin1(&response, "uri"));
             let Some(location) = location else {
-                return Err(fail(format!(
-                    "HTTP Error {status}: redirect without a Location"
-                )));
+                return Err(fail(format!("HTTP Error {status}: {reason}")));
             };
-            let next = join_url(&current, &location);
-            if !next.to_ascii_lowercase().starts_with("https://") {
-                return Err(VendorError(format!(
-                    "refusing a redirect to a non-https URL: {next}"
-                )));
-            }
-            hops += 1;
-            if hops > MAX_REDIRECTIONS {
+            let next = match redirect::next_url(&current, &location, status, reason) {
+                Ok(next) => next,
+                Err(redirect::Stop::Failed(text)) => return Err(fail(text)),
+                Err(redirect::Stop::Refused(e)) => return Err(e),
+            };
+            let seen = visited.get_or_insert_with(BTreeMap::new);
+            if !seen.is_empty()
+                && (seen.get(&next).copied().unwrap_or(0) >= redirect::MAX_REPEATS
+                    || seen.len() >= redirect::MAX_REDIRECTIONS)
+            {
                 return Err(fail(format!(
-                    "HTTP Error {status}: The HTTP server returned a redirect error that would \
-                     lead to an infinite loop."
+                    "HTTP Error {status}: {}{reason}",
+                    redirect::INF_MSG
                 )));
             }
+            *seen.entry(next.clone()).or_insert(0) += 1;
             current = next;
             continue;
         }
         if !(200..300).contains(&status) {
-            let reason = response.status().canonical_reason().unwrap_or("");
             return Err(fail(format!("HTTP Error {status}: {reason}")));
         }
         let mut data = Vec::new();
@@ -399,27 +412,6 @@ pub fn http_get_with(url: &str, opts: &HttpOpts) -> Result<Vec<u8>> {
         }
         return Ok(data);
     }
-}
-
-/// `urllib.parse.urljoin(base, location)` for the forms a `Location` header takes.
-pub fn join_url(base: &str, location: &str) -> String {
-    if location.contains("://") {
-        return location.to_string();
-    }
-    let (scheme, rest) = base.split_once("://").unwrap_or(("https", base));
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    if let Some(net) = location.strip_prefix("//") {
-        return format!("{scheme}://{net}");
-    }
-    if location.starts_with('/') {
-        return format!("{scheme}://{authority}{location}");
-    }
-    let path = path.split(['?', '#']).next().unwrap_or("/");
-    let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
-    format!("{scheme}://{authority}{dir}{location}")
 }
 
 /// `_index_files(entry, get)`: the file list the host's `index.json` gives for the skill.
@@ -491,12 +483,11 @@ pub fn download_snapshot(root: &Path, entry: &Entry, get: Option<&Get>) -> Resul
     let mut expected: BTreeSet<String> = listed.keys().cloned().collect();
     expected.insert(CHECKSUMS_NAME.to_string());
     if advertised != expected {
-        let diff: Vec<&String> = advertised.symmetric_difference(&expected).collect();
-        let diff: Vec<&str> = {
-            let mut d: Vec<&str> = diff.iter().map(|s| s.as_str()).collect();
-            d.sort();
-            d
-        };
+        // A BTreeSet's symmetric difference comes out sorted, as `sorted(a ^ b)`.
+        let diff: Vec<&str> = advertised
+            .symmetric_difference(&expected)
+            .map(String::as_str)
+            .collect();
         return Err(VendorError(format!(
             "{name}: index.json and {CHECKSUMS_NAME} disagree about: {}",
             diff.join(", ")
@@ -510,41 +501,57 @@ pub fn download_snapshot(root: &Path, entry: &Entry, get: Option<&Get>) -> Resul
     let old = parent.join(format!(".old-{name}-{pid}"));
     rmtree_quiet(&tmp);
     rmtree_quiet(&old);
-    let result = (|| -> Result<()> {
-        fs::create_dir(&tmp).map_err(|e| os_err(&e, &tmp))?;
-        let write = |path: &Path, data: &[u8]| -> Result<()> {
-            if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir).map_err(|e| os_err(&e, dir))?;
-            }
-            fs::write(path, data).map_err(|e| os_err(&e, path))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o644))
-                .map_err(|e| os_err(&e, path))
-        };
-        for (rel, digest) in &listed {
-            let data = get(&format!("{base}{}", py::quote(rel, "/")))?;
-            if &sha256_hex(&data) != digest {
-                return Err(VendorError(format!(
-                    "{name}: {rel} does not match its checksum; nothing was written"
-                )));
-            }
-            write(&tmp.join(rel), &data)?;
-        }
-        write(&tmp.join(CHECKSUMS_NAME), &raw)?;
-        verify_snapshot(entry, &tmp)?;
-        if dest.exists() {
-            fs::rename(&dest, &old).map_err(|e| os_err(&e, &dest))?;
-        }
-        if let Err(e) = fs::rename(&tmp, &dest) {
-            if old.exists() {
-                let _ = fs::rename(&old, &dest);
-            }
-            return Err(os_err(&e, &tmp));
-        }
-        Ok(())
-    })();
+    // vendor.py's `try: … finally:` removing both temporary trees.
+    let result = fill_snapshot(entry, get, &listed, &raw, &tmp, &dest, &old);
     rmtree_quiet(&tmp);
     rmtree_quiet(&old);
     result.map(|()| dest)
+}
+
+/// `path.write_bytes(data); path.chmod(0o644)`, parents created.
+fn write_file(path: &Path, data: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| os_err(&e, dir))?;
+    }
+    fs::write(path, data).map_err(|e| os_err(&e, path))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(|e| os_err(&e, path))
+}
+
+/// The body of `download_snapshot`'s `try`: download every listed file into `tmp`, verify
+/// the whole tree, then swap it in for `dest` (keeping the old tree as `old` until then).
+fn fill_snapshot(
+    entry: &Entry,
+    get: &Get,
+    listed: &BTreeMap<String, String>,
+    raw: &[u8],
+    tmp: &Path,
+    dest: &Path,
+    old: &Path,
+) -> Result<()> {
+    let name = name_of(entry);
+    let base = py::str_of(entry.get("url"));
+    fs::create_dir(tmp).map_err(|e| os_err(&e, tmp))?;
+    for (rel, digest) in listed {
+        let data = get(&format!("{base}{}", py::quote(rel, "/")))?;
+        if &sha256_hex(&data) != digest {
+            return Err(VendorError(format!(
+                "{name}: {rel} does not match its checksum; nothing was written"
+            )));
+        }
+        write_file(&tmp.join(rel), &data)?;
+    }
+    write_file(&tmp.join(CHECKSUMS_NAME), raw)?;
+    verify_snapshot(entry, tmp)?;
+    if dest.exists() {
+        fs::rename(dest, old).map_err(|e| os_err(&e, dest))?;
+    }
+    if let Err(e) = fs::rename(tmp, dest) {
+        if old.exists() {
+            let _ = fs::rename(old, dest);
+        }
+        return Err(os_err(&e, tmp));
+    }
+    Ok(())
 }
 
 /// `fetch_entry(root, entry, fetch, get)`: what `vendor fetch` does for one source — url
