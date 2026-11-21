@@ -17,6 +17,7 @@ heredocs) into entries; the per-rule predicates then run over the entries.
 from __future__ import annotations
 
 import fnmatch
+import itertools
 import posixpath
 import re
 import shlex
@@ -51,7 +52,8 @@ _MAX_CWD_DEPTH = 64     # stop tracking `cd` chains deeper than this many compon
 _MAX_WALK_DEPTH = 12    # nested dict/list values in non-shell tools
 _MAX_PATH_STRING = 4096
 
-_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish"))
+_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "mksh", "hush", "yash",
+                     "csh", "tcsh"))
 # Long shell options that take the next word as their value (bash `--rcfile x`, zsh `--emulate sh`).
 _SHELL_VALUE_OPTIONS = frozenset(("--rcfile", "--init-file", "--emulate"))
 # Programs whose arguments (and fed stdin text) are inline code: `python3 -c`, `node -e`, ...
@@ -550,6 +552,20 @@ _WRAPPERS = {
     "cross-env": frozenset(),
     "dotenv": frozenset(("-e", "-c", "-v", "-p")),
     "env-cmd": frozenset(("-f", "--file", "-e", "--environments", "-r", "--rc-file")),
+    # review round 1 (I3)
+    "systemd-run": frozenset(("-u", "--unit", "-p", "--property", "-E", "--setenv", "-M",
+                              "--machine", "-H", "--host", "--description", "--slice", "--uid",
+                              "--gid", "--nice", "--working-directory", "--on-calendar",
+                              "--on-active", "--timer-property", "--path-property",
+                              "--socket-property", "--service-type")),
+    "dbus-launch": frozenset(("--config-file",)),
+    "ssh-agent": frozenset(("-a", "-E", "-t", "-P", "-O")),
+    "ltrace": frozenset(("-o", "-e", "-p", "-s", "-u", "-n", "-a", "-A", "-D", "-F", "-l", "-x",
+                         "-w", "--output", "--align", "--indent", "--library")),
+    "valgrind": frozenset(),
+    "chpst": frozenset(("-u", "-U", "-e", "-/", "-n", "-l", "-L", "-m", "-d", "-o", "-p", "-f",
+                        "-c")),
+    "cpulimit": frozenset(("-l", "--limit", "-p", "--pid", "-e", "--exe", "-c", "--cpu")),
 }
 # Wrappers whose first word(s) after the options are operands, not the command: `timeout 5
 # cmd`, `chroot /new cmd`, `flock file cmd`, `taskset mask cmd`, `chrt prio cmd`, `setarch
@@ -564,11 +580,20 @@ _WRAPPER_SCRIPT_OPTIONS = {
     "script": ("-c", "--command"),
     "flock": ("-c", "--command"),
     "nodemon": ("-x", "--exec"),
+    "nix-shell": ("--run", "--command"),
 }
-# `<tool> <subcommand> [options] [--] <command>`: version managers and env loaders.
+# `<tool> <subcommand> [options] [--] <command>`: version managers, env loaders, profilers.
 _SUBCOMMAND_WRAPPERS = {"mise": ("exec", "x"), "rtx": ("exec", "x"), "asdf": ("exec",),
                         "direnv": ("exec",), "devbox": ("run",), "volta": ("run",),
-                        "fnm": ("exec",), "nvm": ("exec",), "pixi": ("run", "exec")}
+                        "fnm": ("exec",), "nvm": ("exec",), "pixi": ("run", "exec"),
+                        "perf": ("stat", "record", "trace")}
+# Programs whose `--` ends their own options or paths and passes the rest to something that is
+# not a command line (a test filter, a script's arguments, a pattern): no alternate reading
+# starts after their `--` (see `_alternate_trigger`).
+_DASHDASH_ARGUMENTS = frozenset((
+    "cargo", "go", "make", "gmake", "just", "task", "pytest", "jest", "vitest", "mocha", "ava",
+    "mvn", "gradle", "gradlew", "dotnet", "swift", "zig", "rustc", "helm", "terraform", "gh",
+    "ansible-playbook"))
 # Programs whose every argument is a shell command line (value flags listed are skipped).
 _SCRIPT_ARGUMENTS = {
     "concurrently": frozenset(("-n", "--names", "-c", "--prefix-colors", "-p", "--prefix", "-s",
@@ -590,6 +615,7 @@ _PARALLEL_VALUE_FLAGS = frozenset((
 _PARALLEL_INPUTS = frozenset((":::", "::::", ":::+", "::::+"))
 _MAX_FED = 64           # stdin lines (xargs, parallel) and `:::` inputs turned into commands
 _MAX_ALTERNATES = 64    # alternate readings of one command
+_MAX_ALTERNATE_WORDS = 256  # words of each (an install spells itself in its first words)
 # Flags of npm/pnpm/yarn/bun that take a value and may precede the subcommand.
 _PM_VALUE_FLAGS = frozenset(("--filter", "-F", "-C", "--dir", "--prefix", "-w", "--workspace",
                              "--cwd", "--registry", "--loglevel", "--userconfig", "--cache",
@@ -983,28 +1009,92 @@ def _option_scripts(toks, options, value_flags):
     return found
 
 
+# xargs short options that take a value (GNU and BSD); `e` and `l` take one only attached.
+_XARGS_VALUE_LETTERS = "adEeLlnPsRS"
+
+
 def _xargs_replace(options):
     """The string xargs replaces with each input line (`-I R`, `-IR`, `-i[R]`, `--replace[=R]`,
     BSD `-J R`), or None. `options` are the words between `xargs` and its command."""
     replace, k = None, 0
     while k < len(options):
         token = options[k]
-        if token in ("-I", "-J"):
-            replace = options[k + 1] if k + 1 < len(options) else replace
-            k += 1
-        elif token.startswith(("-I", "-J")):
-            replace = token[2:]
-        elif token.startswith("-i") or token == "--replace":
-            replace = token[2:] or "{}"
+        if token == "--replace":
+            replace = "{}"
         elif token.startswith("--replace="):
             replace = token[len("--replace="):] or "{}"
+        elif len(token) > 1 and token[0] == "-" and token[1] != "-":
+            for pos, letter in enumerate(token[1:], 1):   # `-tI{}`, `-tI {}`, `-0i`, `-iX`
+                attached = token[pos + 1:]
+                if letter in "IJ":
+                    if attached:
+                        replace = attached
+                    elif k + 1 < len(options):
+                        replace, k = options[k + 1], k + 1
+                    break
+                if letter == "i":
+                    replace = attached or "{}"
+                    break
+                if letter in _XARGS_VALUE_LETTERS:
+                    k += 0 if attached or letter in "el" else 1   # `-e`/`-l`: attached only
+                    break
         k += 1
     return replace
 
 
-def _fill_template(line, value):
-    """A GNU parallel command line with one input put in place of `{}`, else appended."""
-    return line.replace("{}", value) if "{}" in line else line + " " + value
+_SHELL_SYNTAX = re.compile(r"[\s'\"`$\\;&|<>()]|(?:\A|\0)#")
+_PARALLEL_POSITION = re.compile(r"\{([0-9]+)\}")
+
+
+def _needs_shell(words):
+    """True when `" ".join(words)` would lex into other words than `words` (a word holds a
+    blank, a quote or shell syntax, or starts a comment). Otherwise peeling the words sees all
+    a `sh -c` of the joined line would run, and no script is added for it. One scan."""
+    return bool(_SHELL_SYNTAX.search("\0".join(words)))
+
+
+def _parallel_replace(options):
+    """GNU parallel's replacement string: `-I R` (or `-IR`), `--replace=R`, else `{}`."""
+    replace = "{}"
+    for k, token in enumerate(options):
+        if token == "-I" and k + 1 < len(options):
+            replace = options[k + 1]
+        elif token.startswith("-I") and len(token) > 2:
+            replace = token[2:]
+        elif token.startswith("--replace="):
+            replace = token[len("--replace="):] or "{}"
+    return replace
+
+
+def _parallel_inputs(words):
+    """The input sources after GNU parallel's command: one list per `:::`-style separator."""
+    groups = []
+    for word in words:
+        if word in _PARALLEL_INPUTS:
+            groups.append([])
+        elif groups:
+            groups[-1].append(word)
+    return [group[:_MAX_FED] for group in groups if group]
+
+
+def _parallel_lines(line, replace, groups):
+    """The command lines GNU parallel runs: for each combination of one input per source (at
+    most `_MAX_FED`), `{1}`, `{2}`, ... are put in place, else the replacement string, else the
+    inputs are appended; with no command line the inputs are the command."""
+    out = []
+    for combo in itertools.islice(itertools.product(*groups), _MAX_FED) if groups else ():
+        joined = " ".join(combo)
+        if _PARALLEL_POSITION.search(line):
+            out.append(_PARALLEL_POSITION.sub(
+                lambda m: combo[int(m.group(1)) - 1] if 0 < int(m.group(1)) <= len(combo)
+                else m.group(0), line))
+        elif not line:
+            out.append(joined)
+        elif replace in line:
+            out.append(line.replace(replace, joined))
+        else:
+            out.append(line + " " + joined)
+    return out
 
 
 def _unknown_option_before(toks, i):
@@ -1043,30 +1133,47 @@ _ELSEWHERE = frozenset(("docker", "docker-compose", "podman", "nerdctl", "orb", 
                         "kubectl", "limactl", "lima", "multipass", "vagrant"))
 
 
-def _alternate_trigger(tokens):
-    """Index just past the first program word when it is a wrapper, runner or package manager
-    the peeling knows (after assignments and keywords), else None."""
+def _alternate_span(tokens, main_at):
+    """(start, end) of the words that may start an alternate reading, or None. `main_at` is
+    the index in tokens of the program the main parse found. The first program word (after
+    assignments and keywords) decides:
+    - a wrapper, runner or package manager the peeling knows: every later word. For a package
+      manager, the words after a bare `--` that follows the main program are a script's
+      arguments and are left out (`npm run e2e -- x`, `npm test -- x`, `pnpm run e2e -- x`;
+      not `npm exec -- playwright install`, where `--` comes before the program);
+    - any other program, unless it only reads or prints text, runs elsewhere, is a shell or an
+      interpreter, or passes `--` arguments on (`_DASHDASH_ARGUMENTS`): the words after its
+      first bare `--` (`doppler run -- cmd`, `lerna exec -- cmd`)."""
     for k, word in enumerate(tokens):
         if _ASSIGNMENT.match(word) or word == "!" or word in _KEYWORDS or word == "":
             continue
         name = _prog_name(word)
-        return k + 1 if name in _ALTERNATE_TRIGGERS else None
+        rest = tokens[k + 1:]
+        if name in _ALTERNATE_TRIGGERS:
+            after = tokens[main_at + 1:]
+            if name in _JS_PACKAGE_MANAGERS and "--" in after:
+                return k + 1, main_at + 1 + after.index("--")
+            return k + 1, len(tokens)
+        if (name in _QUIET_PROGRAMS or name in _ELSEWHERE or name in _SHELLS
+                or name in _DASHDASH_ARGUMENTS or _INTERPRETER.match(name) or "--" not in rest):
+            return None
+        return k + 2 + rest.index("--"), len(tokens)
     return None
 
 
-def _alternates(tokens, start):
-    """Alternate readings of a wrapped command: each word from tokens[start] on that names a
+def _alternates(tokens, start, end):
+    """Alternate readings of a wrapped command: each word in tokens[start:end] that names a
     program the peeling or G1 knows starts one (`npx --registry X playwright install` ->
     `playwright install`), up to the first word naming a program in `_ELSEWHERE`. They catch
     an option whose value the tables do not know, read by the main parse as the program."""
     out = []
-    for k in range(start, len(tokens)):
+    for k in range(start, end):
         word = _strip_version(tokens[k])
         name = _prog_name(word)
         if name in _ELSEWHERE:
             break
         if name in _ALTERNATE_STARTS or _PIP.match(name):
-            out.append([word] + tokens[k + 1:])
+            out.append([word] + tokens[k + 1:k + _MAX_ALTERNATE_WORDS])
             if len(out) >= _MAX_ALTERNATES:
                 break
     return out
@@ -1130,12 +1237,29 @@ def _git_scripts(args):
             key, eq, value = args[k + 1].partition("=")
             out.append(_git_command_value(key, value) if eq else None)
     i = _skip_flags(args, 0, _GIT_VALUE_FLAGS)
-    if args[i:i + 1] == ["config"]:
-        words = _positional(args[i + 1:], _GIT_CONFIG_VALUE_FLAGS)
+    sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+    if sub == "config":
+        words = _positional(rest, _GIT_CONFIG_VALUE_FLAGS)
         if words[:1] == ["set"]:
             words = words[1:]
         if len(words) >= 2:
             out.append(_git_command_value(words[0], words[1]))
+    elif sub == "bisect" and rest[:1] == ["run"]:
+        out.append(shlex.join(rest[1:]))                  # `git bisect run <cmd> [args]`
+    elif sub == "submodule":
+        k = _skip_flags(rest, 0, frozenset())
+        if rest[k:k + 1] == ["foreach"]:                  # `foreach [--recursive] <command>`
+            out.append(" ".join(rest[_skip_flags(rest, k + 1, frozenset()):]))
+    elif sub in ("rebase", "difftool"):                   # `rebase -x X`, `difftool -x X`
+        long = "--exec" if sub == "rebase" else "--extcmd"
+        for k, arg in enumerate(rest):
+            following = rest[k + 1] if k + 1 < len(rest) else None
+            if arg in ("-x", long):
+                out.append(following)
+            elif arg.startswith(long + "="):
+                out.append(arg[len(long) + 1:])
+            elif arg.startswith("-x") and len(arg) > 2:
+                out.append(arg[2:])
     return [script for script in out if script]
 
 
@@ -1145,17 +1269,20 @@ _TAR_COMMAND_OPTIONS = ("--to-command", "--use-compress-program", "--info-script
 
 def _tar_scripts(args):
     """Commands GNU tar runs: `--to-command`, `-I`/`--use-compress-program`, `-F`/
-    `--info-script`, `--new-volume-script`, `--rsh-command` (separate or `=` value, long names
-    shortened as getopt allows) and `--checkpoint-action=exec=`."""
+    `--info-script`, `--new-volume-script`, `--rsh-command` (separate, attached or `=` value;
+    a long name of more than four characters may be shortened, as getopt allows) and
+    `--checkpoint-action=exec=`."""
     out = []
     for k, arg in enumerate(args):
         following = args[k + 1] if k + 1 < len(args) else None
+        name, eq, value = arg.partition("=")
         if arg in ("-I", "-F"):
             out.append(following)
+        elif arg.startswith(("-I", "-F")):                # `-I'zstd -19'`: attached value
+            out.append(arg[2:])
         elif arg.startswith("--checkpoint-action=exec="):
             out.append(arg[len("--checkpoint-action=exec="):])
-        elif arg.startswith("--") and len(arg) > 4:
-            name, eq, value = arg.partition("=")
+        elif name.startswith("--") and len(name) > 4:
             if any(option.startswith(name) for option in _TAR_COMMAND_OPTIONS):
                 out.append(value if eq else following)
     return [script for script in out if script]
@@ -1176,6 +1303,37 @@ def _rsync_scripts(args):
     return [script for script in out if script]
 
 
+def _python_module(toks):
+    """For `python ... -m mod args`: [mod, args...], or None. Python's options before `-m` may
+    be clustered (`-Bm mod`, `-mmod`) and `-X`/`-W` take a value (`-X dev`, `-Wignore`); `-c`,
+    a script, `-` or `--` end the search."""
+    k, n = 1, len(toks)
+    while k < n:
+        token = toks[k]
+        if token in ("-X", "-W"):
+            k += 2
+            continue
+        if token in ("-", "--") or not token.startswith("-"):
+            return None
+        if token.startswith("--"):
+            k += 1
+            continue
+        letters = token[1:]
+        for pos, letter in enumerate(letters):
+            if letter == "m":
+                attached = letters[pos + 1:]
+                if attached:
+                    return [attached] + toks[k + 1:]
+                return toks[k + 1:] if k + 1 < n else None
+            if letter == "c":
+                return None
+            if letter in "XW":                            # the rest of the word, or the next
+                k += 0 if letters[pos + 1:] else 1
+                break
+        k += 1
+    return None
+
+
 def _trap_script(args):
     """`trap [--] <command> <signal>...`: the command (a lone word, `-` or `''` resets or
     ignores)."""
@@ -1187,7 +1345,7 @@ def _trap_script(args):
     return args[i] if len(args) - i >= 2 and args[i] != "-" else None
 
 
-def _strip_prefixes(tokens, alternates=None, stdin_runs=None):
+def _strip_prefixes(tokens, alternates=None, stdin_runs=None, layer_scripts=True):
     """Peel assignments, keywords, wrappers and package runners off a command.
 
     Returns (command tokens starting at the program, embedded scripts to analyze). When given,
@@ -1197,6 +1355,15 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None):
     toks = list(tokens)
     scripts = []
     assigned = []
+    # Each command-running construct is taken once per command: the first watch/sg/parallel
+    # line, the first xargs/parallel stdin run, one option scan per program name. Later
+    # layers are peeled only, and the words they would run are inside the first one's text,
+    # so the work stays linear in the command's length (FW-I review C1). With `layer_scripts`
+    # false (an alternate reading: a suffix of a command already parsed) no joined line is
+    # added, since each suffix's line would be a new text of the same length.
+    joined = not layer_scripts
+    fed = False
+    scanned = set()
     for _ in range(64):
         if not toks:
             break
@@ -1213,38 +1380,57 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None):
             break                                         # `busybox --list`: no applet
         elif name in _WRAPPERS:
             flags = _WRAPPERS[name]
-            if name in _WRAPPER_SCRIPT_OPTIONS:
+            if name in _WRAPPER_SCRIPT_OPTIONS and name not in scanned:
+                scanned.add(name)
                 scripts.extend(_option_scripts(toks, _WRAPPER_SCRIPT_OPTIONS[name], flags))
             i = _skip_flags(toks, 1, flags)
             if name in _WRAPPER_OPERANDS and i < len(toks):
                 i = _skip_flags(toks, i + _WRAPPER_OPERANDS[name], flags)
-            if name == "watch" and i < len(toks):
-                scripts.append(" ".join(toks[i:]))        # watch runs its words via sh -c
+            if name == "watch" and not joined:            # watch runs its words via sh -c
+                joined = True
+                if _needs_shell(toks[i:]):
+                    scripts.append(" ".join(toks[i:]))
             if name == "entr" and i < len(toks) and any(
                     t[:1] == "-" and t[1:2] != "-" and "s" in t for t in toks[1:i]):
                 scripts.append(toks[i])                   # `entr -s X` runs X via $SHELL
-            if name == "xargs" and stdin_runs is not None:
+            if name == "xargs" and stdin_runs is not None and not fed:
+                fed = True
                 stdin_runs.append(("xargs", toks[i:], _xargs_replace(toks[1:i])))
             toks = toks[i:]
         elif name == "sg":                                # `sg [-] group [-c] command`: sh -c
             rest = toks[1:]
             rest = rest[2:] if rest[:1] == ["-"] else rest[1:]
             rest = rest[1:] if rest[:1] == ["-c"] else rest
-            if rest:
-                scripts.append(" ".join(rest))
+            if not joined:
+                joined = True
+                if _needs_shell(rest):
+                    scripts.append(" ".join(rest))
             toks = rest
         elif name == "parallel":
-            rest = toks[_skip_flags(toks, 1, _PARALLEL_VALUE_FLAGS):]
+            i = _skip_flags(toks, 1, _PARALLEL_VALUE_FLAGS)
+            replace = _parallel_replace(toks[1:i])
+            rest = toks[i:]
             cut = next((k for k, t in enumerate(rest) if t in _PARALLEL_INPUTS), len(rest))
             template = rest[:cut]
-            inputs = [t for t in rest[cut:] if t not in _PARALLEL_INPUTS][:_MAX_FED]
-            line = " ".join(template)                     # parallel runs it via a shell
-            if template:
-                scripts.append(line)
-            scripts.extend(_fill_template(line, v) if template else v for v in inputs)
-            if not inputs and stdin_runs is not None:
-                stdin_runs.append(("parallel", template, None))
+            if not joined:                                # parallel runs its line via a shell
+                joined = True
+                line = " ".join(template)
+                if _needs_shell(template):
+                    scripts.append(line)
+                scripts.extend(_parallel_lines(line, replace, _parallel_inputs(rest[cut:])))
+            if cut == len(rest) and stdin_runs is not None and not fed:
+                fed = True
+                stdin_runs.append(("parallel", template, replace))
             toks = template
+        elif name == "gdb":                               # `gdb [options] --args prog args`
+            if "--args" not in toks:
+                break
+            toks = toks[toks.index("--args") + 1:]
+        elif name == "nix" and toks[1:2] in (["develop"], ["shell"]):
+            at = next((k for k, t in enumerate(toks) if t in ("-c", "--command")), -1)
+            if at < 0:
+                break
+            toks = toks[at + 1:]                          # `nix develop -c cmd args`
         elif name in _SCRIPT_ARGUMENTS:
             k, flags = 1, _SCRIPT_ARGUMENTS[name]
             while k < len(toks):
@@ -1285,12 +1471,10 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None):
         elif len(toks) > 2 and name == "pipx" and toks[1] == "run":
             toks = _runner_program(toks, 2, scripts)
         elif _PYTHON.match(name):
-            module = next((k for k, t in enumerate(toks) if t == "-m" and k + 1 < len(toks)), -1)
-            first_positional = next(
-                (k for k, t in enumerate(toks[1:], 1) if not t.startswith("-")), len(toks))
-            if module < 0 or module > first_positional:
+            module = _python_module(toks)
+            if module is None:
                 break
-            toks = toks[module + 1:]                      # `python -m pip ...` runs `pip`
+            toks = module                                 # `python -m pip ...` runs `pip`
         else:
             break
     scripts.extend(_assignment_scripts(assigned))
@@ -1308,9 +1492,11 @@ def _strip_prefixes(tokens, alternates=None, stdin_runs=None):
             scripts.extend(_tar_scripts(toks[1:]))
         elif name == "rsync":
             scripts.extend(_rsync_scripts(toks[1:]))
-    start = _alternate_trigger(tokens) if alternates is not None else None
-    if start is not None and not (toks and _prog_name(toks[0]) in _QUIET_PROGRAMS):
-        alternates.extend(_alternates(list(tokens), start))
+    main = _prog_name(toks[0]) if toks else ""
+    main_at = max(len(tokens) - len(toks), 0)   # exact when the first program is a package manager
+    span = _alternate_span(tokens, main_at) if alternates is not None else None
+    if span is not None and main not in _QUIET_PROGRAMS:
+        alternates.extend(_alternates(list(tokens), *span))
     return toks, scripts
 
 
@@ -1340,6 +1526,9 @@ class _Context:
         self.home = home
         self.cwd = None
         self.entries = []
+        # (text, exempt, cwd at the start) -> (depth, cwd at the end) for every text analyzed:
+        # the same text from the same state gives the same entries, so it is analyzed once.
+        self.seen = {}
 
 
 _CHDIR_PROGRAMS = frozenset(("tar", "git", "make"))
@@ -1359,19 +1548,24 @@ def _shell_script_file(entry):
 
 
 def _reads_stdin_as_shell(entry):
-    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`) or a docker command
-    that runs one."""
+    """True for a shell fed from stdin (`bash`, `sh -s`, `sh /dev/stdin`, `source /dev/stdin`)
+    or a docker command that runs one."""
     if entry.prog in _SHELLS:
         if _shell_parse(entry.prog, entry.args)[0] == "stdin":
             return True
         return bool(_STDIN_PATH.match(_shell_script_file(entry) or ""))
+    if entry.prog in ("source", "."):
+        return bool(_STDIN_PATH.match(_first_arg(entry.args) or ""))
     if entry.prog in _DOCKER:
         return any(mode == "stdin" for mode, _start in _embedded_shells(entry.args))
     return False
 
 
 def _reads_fd_as_shell(entry):
-    """True for a shell whose script is a file descriptor: `sh <&3`, `sh /dev/fd/3`."""
+    """True for a shell (or `source`) whose script is a file descriptor: `sh <&3`,
+    `sh /dev/fd/3`, `source /dev/fd/3`."""
+    if entry.prog in ("source", "."):
+        return bool(_FD_PATH.match(_first_arg(entry.args) or ""))
     if entry.prog not in _SHELLS:
         return False
     script = _shell_script_file(entry)
@@ -1418,7 +1612,7 @@ def _add_alternates(alternates, scripts, entry, ctx, exempt):
     first that installs browser tooling becomes an entry. The scripts an alternate gives
     (`sh -c X` after an option the tables do not know) join `scripts`, once each."""
     for alternate in alternates:
-        cmd, more = _strip_prefixes(alternate)
+        cmd, more = _strip_prefixes(alternate, layer_scripts=False)
         other = _Entry(entry.raw, [], cmd, entry.cwd, exempt, entry.group)
         other.exempt = exempt or other.prog in _DOCKER
         scripts.extend(script for script in more if script not in scripts)
@@ -1442,13 +1636,14 @@ def _collect_find_exec(entry, ctx, depth):
 
 
 def _collect_fd_exec(entry, ctx, depth):
-    """`fd ... -x|--exec|-X|--exec-batch <command> [;]`: the command runs once per match."""
+    """`fd ... -x|--exec|-X|--exec-batch <command> [;]`: the command runs once per match. fd
+    takes one such option, so only the first counts (a later `-x` is part of its command)."""
     args = entry.args
-    for k, arg in enumerate(args):
-        if arg in ("-x", "--exec", "-X", "--exec-batch"):
-            end = next((j for j in range(k + 1, len(args)) if args[j] == ";"), len(args))
-            if end > k + 1:
-                _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
+    k = next((k for k, a in enumerate(args) if a in ("-x", "--exec", "-X", "--exec-batch")), -1)
+    if k >= 0:
+        end = next((j for j in range(k + 1, len(args)) if args[j] == ";"), len(args))
+        if end > k + 1:
+            _add_command(args[k + 1:end], [], entry.group, ctx, entry.exempt, depth + 1)
 
 
 def _echo_args_text(args):
@@ -1503,15 +1698,14 @@ def _literal_output(text, depth):
 def _feed_stdin(entry, texts, ctx, depth):
     """Literal stdin text becomes commands for an xargs or parallel layer of `entry`: xargs
     appends its words to the command (or puts each line in place of its -I string); parallel
-    runs each line, or its command with the line put in place of `{}` or appended."""
+    runs each line, or its command with the line put in place of its replacement string or
+    appended. A command has at most one such layer fed (`_strip_prefixes`)."""
     lines = [line.strip() for text in texts for line in text.splitlines() if line.strip()]
     lines = lines[:_MAX_FED]
     for kind, template, replace in entry.stdin_runs if lines else ():
         if kind == "parallel":
-            line_cmd = " ".join(template)
-            for line in lines:
-                _collect(_fill_template(line_cmd, line) if template else line,
-                         ctx, entry.exempt, depth + 1)
+            for line in _parallel_lines(" ".join(template), replace, [lines]):
+                _collect(line, ctx, entry.exempt, depth + 1)
         elif replace is not None:
             for line in lines:
                 _add_command([t.replace(replace, line) for t in template], [], entry.group,
@@ -1524,6 +1718,16 @@ def _feed_stdin(entry, texts, ctx, depth):
 def _collect(text, ctx, exempt, depth):
     if depth > _MAX_DEPTH or not text:
         return
+    key = (text, exempt, ctx.cwd)
+    if key in ctx.seen and ctx.seen[key][0] <= depth:
+        ctx.cwd = ctx.seen[key][1]                        # analyzed already: same entries, same cwd
+        return
+    ctx.seen[key] = (depth, ctx.cwd)
+    _collect_once(text, ctx, exempt, depth)
+    ctx.seen[key] = (depth, ctx.cwd)
+
+
+def _collect_once(text, ctx, exempt, depth):
     new_entries = []
     for seg in _segments(text):
         new_entries.append(_add_command(seg.tokens, seg.redirs, seg.group, ctx, exempt, depth))
@@ -1555,12 +1759,14 @@ def _collect(text, ctx, exempt, depth):
             for body in _literal_output(inner, depth):
                 _collect(body, ctx, exempt, depth + 1)
     # A shell reading a file descriptor (`sh <&3`, `sh /dev/fd/3`) runs the literal text that a
-    # bare `exec` in the same text opened (`exec 3<<<'X'`, `exec 3<<EOF`).
-    if any(_reads_fd_as_shell(e) for e in new_entries):
-        for entry in new_entries:
-            if not entry.prog and entry.raw and _prog_name(entry.raw[0]) == "exec":
-                for body in entry.group.texts:
-                    _collect(body, ctx, exempt, depth + 1)
+    # bare `exec` in the same text opened (`exec 3<<<'X'`, `exec 3<<EOF`), or that a
+    # redirection on the shell itself opened (`bash /dev/fd/3 3<<<'X'`).
+    fd_shells = {id(e) for e in new_entries if _reads_fd_as_shell(e)}
+    for entry in new_entries if fd_shells else ():
+        if id(entry) in fd_shells or (
+                not entry.prog and entry.raw and _prog_name(entry.raw[0]) == "exec"):
+            for body in entry.group.texts:
+                _collect(body, ctx, exempt, depth + 1)
 
 
 def _analyze(command, home):
@@ -1827,8 +2033,18 @@ def _pip_installs_playwright(entry):
     return False
 
 
+_APT_VALUE_FLAGS = frozenset(("-o", "--option", "-c", "--config-file", "-t", "--target-release",
+                              "--default-release"))
+_DNF_VALUE_FLAGS = frozenset(("-c", "--config", "--setopt", "--releasever", "--installroot",
+                              "-x", "--exclude", "--repo", "--repoid", "--enablerepo",
+                              "--disablerepo", "-d", "--debuglevel", "-e", "--errorlevel"))
+_OS_INSTALLER_VALUE_FLAGS = {"apt": _APT_VALUE_FLAGS, "apt-get": _APT_VALUE_FLAGS,
+                             "dnf": _DNF_VALUE_FLAGS, "yum": _DNF_VALUE_FLAGS,
+                             "snap": frozenset(("--channel", "--revision"))}
+
+
 def _os_installs_browser(entry):
-    words = _positional(entry.args)
+    words = _positional(entry.args, _OS_INSTALLER_VALUE_FLAGS.get(entry.prog, frozenset()))
     if entry.prog == "pacman":
         if not any(_PACMAN_SYNC.match(a) for a in entry.args):
             return False
