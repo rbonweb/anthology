@@ -14,7 +14,9 @@
 //!   `difftool`/`mergetool.*.cmd` keys, and `ext::` URLs (C-2); a cap that would drop input (more than
 //!   `MAX_ALTERNATES` alternates, an alternate cut short before the main program, more than `MAX_FED` GNU
 //!   parallel inputs or combinations) is too complex (I-3); the wrappers `gosu`, `su-exec`, `chronic`,
-//!   `torsocks`, `nodenv exec` and `micromamba run` (M-3).
+//!   `torsocks`, `nodenv exec` and `micromamba run` (M-3);
+//! - SH-FW re-review, part A: a `-c alias.<X>=<Y>` without `!` reads `git X ...` as `git Y ...` too (C-2a);
+//!   tar reads the words of a `TAR_OPTIONS=` assignment before its arguments (C-1a).
 
 pub(crate) mod hidden;
 
@@ -1693,9 +1695,63 @@ fn git_transport_scripts(args: &[String]) -> Vec<String> {
     out
 }
 
+/// How many `-c alias.*` expansions in a row `git_scripts` follows (git chains aliases).
+const GIT_ALIAS_DEPTH: usize = 4;
+
+/// Rust-only (SH-FW re-review C-2a): `args` with its subcommand word replaced by the words of the last
+/// `-c alias.<sub>=<Y>` before it, unless Y is a `!` shell command (`git_command_value` has that one). Key and
+/// subcommand compare case-insensitively, as git's alias lookup does. A builtin name is expanded too
+/// (stricter than git, which runs the builtin).
+fn git_alias_reading(args: &[String]) -> Option<Vec<String>> {
+    let mut unused = false;
+    let i = skip_flags(args, 0, GIT_VALUE_FLAGS, &|_| true, &mut unused);
+    let sub = args.get(i)?;
+    let value = (0..i.saturating_sub(1))
+        .filter(|&k| args[k] == "-c")
+        .filter_map(|k| args[k + 1].split_once('='))
+        .rfind(|(key, _)| {
+            key.get(..6)
+                .is_some_and(|p| p.eq_ignore_ascii_case("alias."))
+                && key.get(6..).is_some_and(|n| n.eq_ignore_ascii_case(sub))
+        })?
+        .1;
+    if value.starts_with('!') {
+        return None;
+    }
+    let words = split_words(value);
+    if words.is_empty() {
+        return None;
+    }
+    let mut reading = args[..i].to_vec();
+    reading.extend(words);
+    reading.extend_from_slice(&args[i + 1..]);
+    Some(reading)
+}
+
 /// `_git_scripts`: commands a git invocation runs from its config or its command-running subcommands. Rust:
-/// also `git_transport_scripts` (SH-FW review C-2).
-fn git_scripts(args: &[String]) -> Vec<String> {
+/// also `git_transport_scripts` (SH-FW review C-2), and the same scans of the invocation read through up to
+/// `GIT_ALIAS_DEPTH` aliases (SH-FW re-review C-2a), each reading charged to `work`.
+fn git_scripts(args: &[String], work: &mut Work) -> Result<Vec<String>, TooComplex> {
+    let mut out = git_reading_scripts(args);
+    let mut seen: std::collections::HashSet<String> = out.iter().cloned().collect();
+    let mut next = git_alias_reading(args);
+    for _ in 0..GIT_ALIAS_DEPTH {
+        let Some(reading) = next else {
+            break;
+        };
+        work.charge_extra(reading.iter().map(|w| WORD + w.len()).sum())?;
+        for script in git_reading_scripts(&reading) {
+            if seen.insert(script.clone()) {
+                out.push(script);
+            }
+        }
+        next = git_alias_reading(&reading);
+    }
+    Ok(out)
+}
+
+/// `git_scripts` for one reading of the invocation.
+fn git_reading_scripts(args: &[String]) -> Vec<String> {
     const GIT_CONFIG_VALUE_FLAGS: &[&str] = &[
         "-f",
         "--file",
@@ -2170,9 +2226,22 @@ pub(crate) fn strip_prefixes(
         } else if name == "trap" {
             scripts.extend(trap_script(rest).filter(|s| !s.is_empty())); // runs at the signal or at exit
         } else if name == "git" {
-            scripts.extend(git_scripts(rest));
+            scripts.extend(git_scripts(rest, work)?);
         } else if name == "tar" || name == "gtar" || name == "bsdtar" {
-            scripts.extend(tar_scripts(rest));
+            // Rust-only (SH-FW re-review C-1a): GNU tar reads the words of `TAR_OPTIONS` before its arguments
+            match assigned
+                .iter()
+                .rev()
+                .find_map(|w| w.strip_prefix("TAR_OPTIONS="))
+            {
+                Some(options) => {
+                    let mut words = split_words(options);
+                    words.extend_from_slice(rest);
+                    work.charge_extra(words.iter().map(|w| WORD + w.len()).sum())?;
+                    scripts.extend(tar_scripts(&words));
+                }
+                None => scripts.extend(tar_scripts(rest)),
+            }
         } else if name == "rsync" {
             scripts.extend(rsync_scripts(rest));
         }
