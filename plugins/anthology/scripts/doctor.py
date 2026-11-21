@@ -41,7 +41,8 @@ SHOWN_NAME_LIMIT = 80
 SHOWN_SERVERS = 5
 DEFAULT_LOCK = Path(__file__).resolve().parent.parent / "rtk.lock"
 CHECKS = ("python3", "node", "docker", "browseros", "rtk", "platform_supported", "plugin_read_rule",
-          "browseros_tools", "plugin_data", "path_wrappers", "agent_memory_path", "subagent_model")
+          "browseros_tools", "plugin_data", "path_wrappers", "agent_memory_path", "subagent_model",
+          "rtk_savings")
 
 
 def _config_dir(env):
@@ -302,6 +303,47 @@ def _check_rtk(env, lock):
     return False, "rtk does not match rtk.lock; run /anthology:setup"
 
 
+def _thousands(n):
+    return "{:,}".format(n)
+
+
+def _per_cent(part, whole):
+    """`part` of `whole` as a percentage with one decimal, in integers (no float rounding)."""
+    tenths = (part * 1000 + whole // 2) // whole if whole > 0 else 0
+    return "%d.%d%%" % (tenths // 10, tenths % 10)
+
+
+def _check_rtk_savings(env):
+    """What rtk did, from its own history (bin/rtk and bin/rtk-hook keep it at
+    `<config>/anthology/rtk/history.db`): the commands the hook saw, the ones rtk ran, and the
+    tokens it saved on their output. It only informs: never False, None until there is history.
+    rtk keeps the file in WAL mode, which a read-only reader cannot open, so it is read as
+    immutable: no lock, no write, and what rtk last checkpointed."""
+    db = _config_dir(env) / "anthology" / "rtk" / "history.db"
+    try:
+        if not db.is_file():
+            return None, "rtk has no history yet"
+        import sqlite3
+        from urllib.parse import quote
+        con = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(str(db)), uri=True)
+        try:
+            seen = con.execute("SELECT COUNT(*) FROM hook_decisions").fetchone()[0]
+            ran, tokens, saved = con.execute(
+                "SELECT COUNT(*), CAST(TOTAL(input_tokens) AS INTEGER), CAST(TOTAL(saved_tokens) AS INTEGER) "
+                "FROM commands").fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return None, "rtk's history cannot be read"
+    if not seen and not ran:
+        return None, "rtk has no history yet"
+    tokens, saved = max(tokens, 0), max(saved, 0)
+    return True, ("rtk ran %s of the %s commands the hook saw (%s) and saved %s of their %s output tokens "
+                  "(%s), from rtk's own history" % (_thousands(ran), _thousands(seen), _per_cent(ran, seen),
+                                                    _thousands(saved), _thousands(tokens),
+                                                    _per_cent(saved, tokens)))
+
+
 def _check_platform(env):
     system = platform.system()
     if system in SUPPORTED_SYSTEMS:
@@ -388,7 +430,8 @@ def check_env(env=None, lock=None, plugin_root=None, cwd=None):
         ("plugin_data", _check_plugin_data),
         ("path_wrappers", lambda e: _check_path_wrappers(e, plugin_root)),
         ("agent_memory_path", lambda e: _check_agent_memory(e, cwd)),
-        ("subagent_model", lambda e: _check_subagent_model(e, cwd)))
+        ("subagent_model", lambda e: _check_subagent_model(e, cwd)),
+        ("rtk_savings", _check_rtk_savings))
     out = []
     for name, fn in runners:
         try:

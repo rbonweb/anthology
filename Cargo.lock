@@ -114,6 +114,7 @@ dependencies = [
  "anthology-testkit",
  "flate2",
  "proptest",
+ "rusqlite",
  "sha2",
  "tar",
  "tempfile",

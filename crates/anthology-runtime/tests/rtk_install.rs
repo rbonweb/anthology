@@ -1598,6 +1598,62 @@ mod wrapper_test {
     }
 
     #[test]
+    fn test_hook_drops_a_rewrite_into_rtk_read() {
+        // cat/head/tail become `rtk read`, which saves little and changes what Claude reads: the
+        // command runs as typed instead. With or without rtk's allow, alone or in a compound line.
+        let w = setup();
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read",
+        );
+        assert_eq!(table.len(), 22);
+        for row in table {
+            let command = json::dumps(&Value::Str(row.str("command").into()), &json::PY_DEFAULT);
+            let answer = REWRITE
+                .replace("}}}", &format!("}}{}}}}}", row.str("decision")))
+                .replace(r#""rtk git status --short""#, &command);
+            w.answer_fake(&answer, 0);
+            let res = w.run_bin("rtk-hook", &[], &hook_input("cat a.txt"));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{answer}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask() {
+        let w = setup();
+        let table: Vec<Row> = rows(
+            "test_rtk_install",
+            "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask",
+        );
+        assert_eq!(table.len(), 7);
+        for row in table {
+            let (answer, typed) = match row.params.get("command").and_then(Value::as_str) {
+                Some(command) => {
+                    let command = json::dumps(&Value::Str(command.into()), &json::PY_DEFAULT);
+                    let answer = REWRITE.replace(r#""rtk git status --short""#, &command);
+                    (answer, "x")
+                }
+                None => {
+                    let answer = row.str("answer").to_string();
+                    let typed = if answer.contains(r#""deny""#) {
+                        "cat secret.txt"
+                    } else {
+                        "rtk read a.txt"
+                    };
+                    (answer, typed)
+                }
+            };
+            w.answer_fake(&answer, 0);
+            let res = w.run_bin("rtk-hook", &[], &hook_input(typed));
+            assert_eq!((res.code, res.stdout_text()), (0, format!("{answer}\n")));
+        }
+    }
+
+    #[test]
     fn test_hook_keeps_rtk_exit_status_and_output_on_failure() {
         let w = setup();
         let table: Vec<Row> = rows(

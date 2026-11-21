@@ -27,7 +27,8 @@
 //! `%` and many server names; state.json (`setup_done`, `rtk_path`, `data_dir` of every shape);
 //! an rtk.lock that is valid, invalid or missing with an install that matches, is tampered or
 //! not executable; the plugin's `bin/` wrappers; agent-memory folders; duplicate installs with
-//! odd scopes and keys.
+//! odd scopes and keys; rtk's history.db (absent, not a database, a folder, a table missing, or
+//! built here with token values of every SQLite type and size).
 //!
 //! The generator never builds a layout the two sides cannot agree on by design: no lone
 //! surrogates (D-6), no FIFOs or devices read unbounded, no `docker` that hangs (the 10 s
@@ -1046,6 +1047,26 @@ fn seeds() -> Vec<Value> {
         r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}"#,
     );
     out.push(b.check_env(proj));
+    // RtkSavingsTest: rtk's history read, and one that is not a database
+    let mut b = base();
+    let bytes = history_bytes(
+        true,
+        "CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, decision TEXT);
+         CREATE TABLE commands (id INTEGER PRIMARY KEY, input_tokens, saved_tokens);",
+        &[
+            "INSERT INTO hook_decisions (decision) VALUES ('defer'), ('allow'), ('defer');".into(),
+            "INSERT INTO commands (input_tokens, saved_tokens) VALUES (1000, 35), (233, 0);".into(),
+        ],
+    );
+    b.file_hex(&format!("{CONFIG}/anthology/rtk/history.db"), &bytes);
+    out.push(b.check_env(proj));
+    out.push(b.main(false));
+    let mut b = base();
+    b.file(
+        &format!("{CONFIG}/anthology/rtk/history.db"),
+        "not a database",
+    );
+    out.push(b.check_env(proj));
     // platform exit code: unsupported only on another OS, so main covers the supported one
     out
 }
@@ -1566,6 +1587,81 @@ fn rand_state(rng: &mut Rng, b: &mut B) {
     }
 }
 
+/// The bytes of an rtk history.db built here (closed, so a WAL file is folded back in).
+fn history_bytes(wal: bool, tables: &str, inserts: &[String]) -> Vec<u8> {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = dir.path().join("history.db");
+    let con = rusqlite::Connection::open(&db).expect("open");
+    if wal {
+        let _: String = con
+            .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+            .expect("wal");
+    }
+    con.execute_batch(tables).expect("schema");
+    for sql in inserts {
+        con.execute_batch(sql).expect("insert");
+    }
+    drop(con);
+    std::fs::read(&db).expect("read")
+}
+
+/// rtk's history next to state.json (`rtk_savings`): none, not a database, a folder, a table
+/// missing, or rtk's two tables with token values of every SQLite type and size.
+fn rand_rtk_history(rng: &mut Rng, b: &mut B) {
+    let p = format!("{}/anthology/rtk/history.db", b.config);
+    const TABLES: &str = "CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, decision TEXT);
+         CREATE TABLE commands (id INTEGER PRIMARY KEY, input_tokens, saved_tokens);";
+    match rng.below(10) {
+        0..=3 => {}
+        4 => {
+            b.file(
+                &p,
+                rng.pick(&["", "not a database", "SQLite format 3\u{0}"]),
+            );
+        }
+        5 => {
+            b.dir(&p);
+        }
+        6 => {
+            let bytes = history_bytes(
+                rng.chance(0.5),
+                "CREATE TABLE commands (input_tokens, saved_tokens);",
+                &[],
+            );
+            b.file_hex(&p, &bytes);
+        }
+        _ => {
+            const VALUES: &[&str] = &[
+                "0",
+                "1",
+                "35",
+                "1000",
+                "123456789",
+                "-5",
+                "NULL",
+                "2.5",
+                "'12'",
+                "'abc'",
+                "9000000000000000000",
+                "X'00'",
+            ];
+            let mut inserts = Vec::new();
+            for _ in 0..rng.below(40) {
+                inserts.push("INSERT INTO hook_decisions (decision) VALUES ('defer');".into());
+            }
+            for _ in 0..rng.below(6) {
+                inserts.push(format!(
+                    "INSERT INTO commands (input_tokens, saved_tokens) VALUES ({}, {});",
+                    rng.pick(VALUES),
+                    rng.pick(VALUES)
+                ));
+            }
+            let bytes = history_bytes(rng.chance(0.5), TABLES, &inserts);
+            b.file_hex(&p, &bytes);
+        }
+    }
+}
+
 fn rand_plugin(rng: &mut Rng, b: &mut B) {
     for n in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
         let p = format!("{PLUG}/bin/{n}");
@@ -1720,6 +1816,7 @@ fn gen_case(rng: &mut Rng) -> Value {
     rand_tools(rng, &mut b);
     rand_mcp(rng, &mut b);
     rand_state(rng, &mut b);
+    rand_rtk_history(rng, &mut b);
     rand_plugin(rng, &mut b);
     if rng.chance(0.1) {
         let text = rand_installed(rng);
@@ -1800,6 +1897,8 @@ mod tests {
             "agent_memory_path:none",
             "subagent_model:ok",
             "subagent_model:fail",
+            "rtk_savings:ok",
+            "rtk_savings:none",
         ] {
             assert!(seen.contains(want), "never reached {want}: {seen:?}");
         }
