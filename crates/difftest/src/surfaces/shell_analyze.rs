@@ -2,14 +2,15 @@
 //! through `port/difftest/oracle/shell.py` (`Entry` minus `opaque`, plan SH2).
 //!
 //! Case: `{"op": "analyze", "command": C, "home": H}`. Both sides print the canonical JSON of every entry's
-//! `_Entry` fields, groups numbered by first appearance among the entries, and `incomplete` (always false
-//! in Python). Seeds: the analyze seeds of `port/difftest/seeds/shell.jsonl`, the hand-written `TRICKY`
+//! `_Entry` fields, then every alternate reading's (`Analysis.alternates`), groups numbered by first
+//! appearance among them, and `incomplete` (false in Python, which raises `_TooComplex` instead: an
+//! oracle-marked D-7). The reference is the fix-wave H+I `guard_rules_fw.py` (see the oracle). Seeds: the analyze seeds of `port/difftest/seeds/shell.jsonl`, the hand-written `TRICKY`
 //! commands, and a sweep of every code point through `lower()` (with Final_Sigma contexts) via the program
 //! name. Generated: wrapper/runner/shell/docker/find/cd compositions, mutated seeds, the segments grammar,
 //! and odd homes.
 
 use anthology_pycompat::json::Value;
-use anthology_shell::{Analysis, analyze};
+use anthology_shell::{Analysis, Entry, analyze};
 
 use super::shell_segments::{
     Gen, GenRng, Ordinals, field_str, int, load_seeds, mutate, obj, observed, s, strs, sweep_chars,
@@ -71,34 +72,42 @@ impl Surface for ShellAnalyze {
     }
 }
 
+fn render_entry(e: &Entry, ordinals: &mut Ordinals) -> Value {
+    let redirs = e
+        .redirs
+        .iter()
+        .map(|r| Value::Array(vec![s(&r.op), s(&r.target)]))
+        .collect();
+    obj(vec![
+        ("raw", strs(&e.raw)),
+        ("redirs", Value::Array(redirs)),
+        ("prog_path", s(&e.prog_path)),
+        ("prog", s(&e.prog)),
+        ("args", strs(&e.args)),
+        ("cwd", e.cwd.as_deref().map_or(Value::Null, s)),
+        ("exempt", Value::Bool(e.exempt)),
+        ("group", int(ordinals.of(e.group))),
+        ("code", strs(&e.code)),
+    ])
+}
+
 /// The oracle's `_analyze` rendering.
 pub(crate) fn render_analysis(analysis: &Analysis) -> Value {
     let mut ordinals = Ordinals::default();
     let entries = analysis
         .entries
         .iter()
-        .map(|e| {
-            let redirs = e
-                .redirs
-                .iter()
-                .map(|r| Value::Array(vec![s(&r.op), s(&r.target)]))
-                .collect();
-            obj(vec![
-                ("raw", strs(&e.raw)),
-                ("redirs", Value::Array(redirs)),
-                ("prog_path", s(&e.prog_path)),
-                ("prog", s(&e.prog)),
-                ("args", strs(&e.args)),
-                ("cwd", e.cwd.as_deref().map_or(Value::Null, s)),
-                ("exempt", Value::Bool(e.exempt)),
-                ("group", int(ordinals.of(e.group))),
-                ("code", strs(&e.code)),
-            ])
-        })
+        .map(|e| render_entry(e, &mut ordinals))
+        .collect();
+    let alternates = analysis
+        .alternates
+        .iter()
+        .map(|e| render_entry(e, &mut ordinals))
         .collect();
     obj(vec![
         ("incomplete", Value::Bool(analysis.incomplete)),
         ("entries", Value::Array(entries)),
+        ("alternates", Value::Array(alternates)),
         ("groups", ordinals.texts(&analysis.groups)),
     ])
 }

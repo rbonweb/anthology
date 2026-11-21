@@ -1,0 +1,10 @@
+# Allowed divergences of the shell.segments surface (GC-16). The oracle
+# (port/difftest/oracle/shell.py) marks each case where the reference raised.
+
+[[divergence]]
+class = "D-1"
+reason = "The reference raised (RecursionError on hostile nesting) and guard.py would allow the call. Rust lexes it, or stops at its work budget and reports incomplete (a block)."
+
+[[divergence]]
+class = "D-7"
+reason = "Over the reference's work budget (24 per character plus 200 000): it raises _TooComplex and check blocks. Rust's budget is larger (limits::work_limit, 64 per byte plus 1 000 000), so it may still finish; where it runs out it reports incomplete, which the guard blocks too."

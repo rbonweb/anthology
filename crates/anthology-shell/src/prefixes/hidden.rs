@@ -144,12 +144,6 @@ pub(crate) fn wrapper_known(name: &str, token: &str) -> bool {
             }))
 }
 
-/// An `env` option that holds its script attached (`-S'...'`, `--split-string=...`): Python does not see it
-/// and reads the next word as the program.
-pub(crate) fn env_attached_split(token: &str) -> bool {
-    token.starts_with("--split-string=") || (token.starts_with("-S") && token.len() > 2)
-}
-
 /// The only command values exempt from a mark (controller ruling): the WHOLE value, after quote removal,
 /// must be one of these. No word-wise or prefix inspection: anything else is opaque, so rtk asks.
 const HARMLESS_VALUES: &[&str] = &[

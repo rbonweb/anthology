@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use crate::lexer::pystr;
 
 /// The shells whose `-c` scripts and stdin are analyzed (`_SHELLS`).
-pub const SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "fish"];
+pub const SHELLS: &[&str] = &[
+    "bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "mksh", "hush", "yash", "csh", "tcsh",
+];
 
 /// Long shell options that take the next word as their value (`_SHELL_VALUE_OPTIONS`).
 const SHELL_VALUE_OPTIONS: &[&str] = &["--rcfile", "--init-file", "--emulate"];

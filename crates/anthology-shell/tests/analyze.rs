@@ -276,30 +276,17 @@ fn clear(command: &str) -> bool {
 
 #[test]
 fn opaque_marks_the_forms_python_misreads() {
-    // Each runs `npx playwright install` while Python's analysis misses it (FW-I fixes Python); Rust keeps
-    // the parity fields and marks the entry so rtk's gate asks.
+    // Each runs `npx playwright install` where the analysis may misread or not parse it (fix-wave I reads
+    // many of them now, and `npx --registry X` is a known value option); the entry is still marked so
+    // rtk's gate asks.
     let unknown = [
-        "env A=1 npx playwright install -S x",
-        "sudo env npx playwright install -S ls",
-        "env -S\"npx playwright install\"",
-        "npx --registry https://r.example playwright install",
-        "npm --loglevel silent exec playwright install",
         "uv --color always run playwright install",
         "rtk --frob x npx playwright install",
         "rtk proxy --frob x npx playwright install",
         "rtk err --frob x npx playwright install",
-        "builtin eval 'npx playwright install'",
-        "su -c 'npx playwright install' user",
-        "script -qc 'npx playwright install' /dev/null",
-        "flock /tmp/l npx playwright install",
-        "busybox sh -c 'npx playwright install'",
-        "chroot / npx playwright install",
-        "nsenter -t 1 npx playwright install",
         "unshare -r npx playwright install",
         "ssh host npx playwright install",
         // review round 2
-        "env --split-string='npx playwright install' ls",
-        "env -S'npx playwright install' ls",
         "trap 'npx playwright install' EXIT",
         "trap -- 'npx playwright install' EXIT",
         "fd . -x npx playwright install",
@@ -314,7 +301,6 @@ fn opaque_marks_the_forms_python_misreads() {
         "rsync --rsync-path='npx playwright install' a b:c",
         "GIT_PAGER='npx playwright install' git log",
         "BASH_ENV=./x.sh bash -c ls",
-        "stdbuf -o L npx playwright install",
         // review round 3
         "rsync -avze 'npx playwright install' a b:c",
         "rsync -e'npx playwright install' a b:c",
@@ -333,17 +319,43 @@ fn opaque_marks_the_forms_python_misreads() {
         // review round 5
         "git -c core.pager='git -c alias.x=!npx x playwright install' log",
     ];
-    for command in unknown {
-        assert!(any_has(command, Opaque::UnknownWrapperOption), "{command}");
-    }
-    for command in [
+    let missed: Vec<&str> = unknown
+        .into_iter()
+        .filter(|command| !any_has(command, Opaque::UnknownWrapperOption))
+        .collect();
+    assert!(missed.is_empty(), "{missed:#?}");
+    // fix-wave I reads these (known value options, wrapper operands and script options): the command is
+    // an entry of its own
+    let missed: Vec<&str> = [
+        "npm --loglevel silent exec playwright install",
+        "builtin eval 'npx playwright install'",
+        "su -c 'npx playwright install' user",
+        "script -qc 'npx playwright install' /dev/null",
+        "flock /tmp/l npx playwright install",
+        "busybox sh -c 'npx playwright install'",
+        "chroot / npx playwright install",
+        "nsenter -t 1 npx playwright install",
+        "stdbuf -o L npx playwright install",
+    ]
+    .into_iter()
+    .filter(|command| {
+        !analyze(command, HOME)
+            .entries
+            .iter()
+            .any(|e| e.prog == "playwright" && e.args == ["install"])
+    })
+    .collect();
+    assert!(missed.is_empty(), "{missed:#?}");
+    let missed: Vec<&str> = [
         "echo playwright install | xargs npx",
         "echo 'npx playwright install' | xargs -I{} sh -c '{}'",
         "parallel ::: 'npx playwright install'",
         "npx",
-    ] {
-        assert!(any_has(command, Opaque::DynamicCommandWord), "{command}");
-    }
+    ]
+    .into_iter()
+    .filter(|command| !any_has(command, Opaque::DynamicCommandWord))
+    .collect();
+    assert!(missed.is_empty(), "{missed:#?}");
     assert!(has(
         &analyze("bash ./install.sh", HOME),
         "bash",
@@ -504,16 +516,35 @@ fn opaque_unbalanced() {
 }
 
 #[test]
-fn opaque_regex_limit_sets_incomplete() {
-    let text = "echo $(cat <<\"EOF'\nx\n)";
+fn env_split_strings_are_read_as_env_does() {
+    // fix-wave I: only env's own options hold -S, and its words become env's arguments
+    for (command, args) in [
+        ("env A=1 npx playwright install -S x", "install -S x"),
+        ("sudo env npx playwright install -S ls", "install -S ls"),
+        ("env -S\"npx playwright install\"", "install"),
+        (
+            "env --split-string='npx playwright install' ls",
+            "install ls",
+        ),
+        ("env -S'npx playwright install' ls", "install ls"),
+        ("env -u X -S 'npx playwright install'", "install"),
+    ] {
+        let a = analyze(command, HOME);
+        assert!(
+            a.entries
+                .iter()
+                .any(|e| e.prog == "playwright" && e.args.join(" ") == args),
+            "{command}: {a:?}"
+        );
+    }
+}
+
+#[test]
+fn a_path_regex_limit_sets_incomplete() {
+    // the lexer has no regex since fix-wave H; `_TILDE_USER` and `_HOME_VAR` keep fancy-regex (GC-16)
+    let text = "cd ~other/x && ls";
     assert!(!analyze(text, HOME).incomplete);
-    let a = analyze_with(text, HOME, &Limits { backtrack_limit: 0 });
-    assert!(a.incomplete);
-    assert!(
-        a.entries
-            .iter()
-            .any(|e| e.opaque.contains(&Opaque::RegexLimit))
-    );
+    assert!(analyze_with(text, HOME, &Limits { backtrack_limit: 0 }).incomplete);
 }
 
 // ------------------------------------------------------------------ fail-closed bounds
@@ -528,14 +559,14 @@ fn assert_quick(what: &str, bound: Duration, f: impl FnOnce()) {
 #[test]
 fn deep_find_exec_is_walked_without_recursion_and_capped() {
     // Python recurses here and raises RecursionError near 500 levels (D-1); Rust walks it with a stack.
+    // Each level copies the rest, so the work is quadratic: the linear budget stops it (fail closed).
     let deep = |n: usize| format!("{}ls ;", "find . -exec ".repeat(n));
-    let a = analyze(&deep(400), HOME);
+    let a = analyze(&deep(40), HOME);
     assert!(!a.incomplete);
-    assert_eq!(a.entries.len(), 401);
-    assert_quick("find cap", Duration::from_secs(5), || {
-        let a = analyze(&deep(1500), HOME);
-        assert!(a.incomplete);
-        // the work budget or the nesting cap stops it, whichever comes first
+    assert_eq!(a.entries.len(), 41);
+    assert_quick("find cap", Duration::from_secs(1), || {
+        assert!(analyze(&deep(400), HOME).incomplete);
+        assert!(analyze(&deep(1500), HOME).incomplete);
     });
 }
 

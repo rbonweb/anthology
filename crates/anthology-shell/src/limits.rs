@@ -14,12 +14,19 @@ pub struct Limits {
     pub backtrack_limit: usize,
 }
 
-/// Work units one `segments` call may spend in the lenient fallback before it stops and sets `incomplete`:
-/// each word read by an option rescan and each word or script copied costs 1 plus its length in bytes, so
-/// the budget bounds memory as well as time. Python's quadratic-to-cubic `_script_starts` path reaches it
-/// at a few hundred `fish -c` words in one unbalanced command (a few KB of text); Rust then blocks where
-/// Python would only be slow (D-7). Below it the output is Python's exactly; past it, a correct prefix.
-pub(crate) const LEX_BUDGET: usize = 16_000_000;
+/// The work budget of one analysis (or one `segments` call): `WORK_PER_BYTE` units per byte of the command
+/// plus `WORK_BASE`. Every scan charges the bytes it visits and every stored word `WORD` plus its bytes, so the
+/// budget bounds time and memory whatever path an input takes. Python's own contract is 24 per character plus
+/// 200 000 (`_WORK_PER_CHAR`, `_WORK_BASE`); Rust allows more, so where Python stops ("too complex") Rust may
+/// still finish (an oracle-marked D-7), never the reverse for realistic commands.
+pub const WORK_PER_BYTE: usize = 64;
+/// See `WORK_PER_BYTE`.
+pub const WORK_BASE: usize = 1_000_000;
+
+/// The work budget for a command of `len` bytes.
+pub fn work_limit(len: usize) -> usize {
+    len.saturating_mul(WORK_PER_BYTE).saturating_add(WORK_BASE)
+}
 
 /// fancy-regex's own default (`RegexBuilder::backtrack_limit`), kept as GC-16 asks.
 pub(crate) const DEFAULT_BACKTRACK_LIMIT: usize = 1_000_000;

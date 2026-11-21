@@ -7,14 +7,22 @@ library's `json`. F4's driver loads this module by file path.
 
 Library surface: `run(case: dict) -> dict` (the case's `data`, or a dict holding it under "data").
 
-Case data (`plugins/anthology-guardrails/scripts/guard_rules.py` is the oracle):
+Case data. The reference is `guard_rules_fw.py` beside this file: guard_rules.py with fix-waves H and I
+merged, vendored read-only (its header names both commits; controller ruling Q1=A). The owner moved those
+fix-waves to Rust, so the plugin's own guard_rules.py is no longer the shell oracle.
 - `{"op": "segments", "text": T, "depth": D}`: `_segments(T, D)`, reported with `lenient` (the top-level
-  `_Lexer` raised `_Unbalanced`, so `_lenient_segments` produced the segments) and `incomplete` (always
-  false: Python has no backtrack limit).
+  `_Lexer` raised `_Unbalanced`, so `_lenient_segments` produced the segments) and `incomplete` (false).
 - `{"op": "shell_parse", "prog": P, "args": [..], "i": I}`: `_shell_parse(P, args, I)`.
 - `{"op": "script_starts", "words": [..]}`: `_script_starts(words)`.
-- `{"op": "analyze", "command": C, "home": H}`: `_analyze(C, H)`, every `_Entry` field (`Entry` minus
-  `opaque`).
+- `{"op": "analyze", "command": C, "home": H}`: `_analyze(C, H)` as `check` runs it: the bash 5 reading,
+  then the bash 3.2 and wide readings when a heredoc line inside `$(...)` made them matter (`_check`), every
+  pass's entries in order. Every `_Entry` field (`Entry` minus `opaque`), and `alternates`: each alternate
+  reading `_add_alternates` looks at whose command differs from its entry's, as an entry (Rust keeps them all
+  for G1, lead ruling Q3=A; the reference checks G1 as it goes, which this oracle replaces by recording).
+
+Both ops run under `check`'s work budget (`_WORK_PER_CHAR` per character plus `_WORK_BASE`); over it the
+reference raises `_TooComplex` and the result is `{"exit": 1, "stderr": "_TooComplex", "divergence": "D-7"}`
+(Rust's budget is larger, and it reports `incomplete` where it runs out: the guard blocks either way).
 
 Groups are identified by object identity in Python; a result numbers them by first appearance (segments in
 order, entries in order) and lists each group's texts in that order.
@@ -37,7 +45,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-GUARD_RULES = os.path.join(ROOT, "plugins", "anthology-guardrails", "scripts", "guard_rules.py")
+GUARD_RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard_rules_fw.py")
 
 
 def _load():
@@ -72,7 +80,14 @@ class _Groups:
         return [list(group.texts) for group in self.objects]
 
 
+def _budget(text):
+    """`check`'s work budget for a command of this length."""
+    G._STATE.reset(G._WORK_PER_CHAR * len(text) + G._WORK_BASE)
+
+
 def _segments(text, depth):
+    _budget(text)
+    G._charge(len(text) + 1)                              # as `_segments` does
     try:
         segs, lenient = G._Lexer(text, depth).run(), False
     except G._Unbalanced:
@@ -92,17 +107,46 @@ def _script_starts(words):
     return {"starts": [list(s) for s in G._script_starts(list(words))]}
 
 
+_ALTERNATES = []
+
+
+def _add_alternates(alternates, scripts, entry, ctx, exempt):
+    """`_add_alternates`, recording every alternate whose command differs from the entry's instead of
+    checking G1 (the scripts are joined as the reference joins them, from every alternate)."""
+    main = G._strip_prefixes(entry.raw)[0]
+    for alternate in alternates:
+        cmd, more = G._strip_prefixes(alternate, layer_scripts=False)
+        scripts.extend(script for script in more if script not in scripts)
+        if cmd != main:
+            other = G._Entry(entry.raw, [], cmd, entry.cwd, exempt, entry.group)
+            other.exempt = exempt or other.prog in G._DOCKER
+            _ALTERNATES.append(other)
+
+
+G._add_alternates = _add_alternates
+
+
+def _entry(e, groups):
+    return {
+        "raw": list(e.raw), "redirs": [list(r) for r in e.redirs], "prog_path": e.prog_path,
+        "prog": e.prog, "args": list(e.args), "cwd": e.cwd, "exempt": e.exempt,
+        "group": groups.ordinal(e.group), "code": list(e.code),
+    }
+
+
 def _analyze(command, home):
-    entries = G._analyze(command, home)
+    _budget(command)
+    del _ALTERNATES[:]
+    entries = G._analyze(command, home) if command else []
+    for reading in ("exact", "wide"):                     # `_check`, without its early exit on a rule
+        if not (command and G._STATE.paren_lines):
+            break
+        G._STATE.reading = reading
+        entries += G._analyze(command, home)
     groups = _Groups()
-    out = []
-    for e in entries:
-        out.append({
-            "raw": list(e.raw), "redirs": [list(r) for r in e.redirs], "prog_path": e.prog_path,
-            "prog": e.prog, "args": list(e.args), "cwd": e.cwd, "exempt": e.exempt,
-            "group": groups.ordinal(e.group), "code": list(e.code),
-        })
-    return {"incomplete": False, "entries": out, "groups": groups.texts()}
+    out = [_entry(e, groups) for e in entries]
+    alternates = [_entry(e, groups) for e in _ALTERNATES]
+    return {"incomplete": False, "entries": out, "alternates": alternates, "groups": groups.texts()}
 
 
 def _call(data):
@@ -124,8 +168,12 @@ def run(case):
     function, args = _call(data)
     try:
         result = function(*args)
+    except G._TooComplex:  # over the work budget: `check` blocks ("too complex")
+        return {"exit": 1, "stdout": "", "stderr": "_TooComplex", "divergence": "D-7"}
     except Exception as exc:  # RecursionError and anything else guard.py would turn into "allow"
         return {"exit": 1, "stdout": "", "stderr": type(exc).__name__, "divergence": "D-1"}
+    finally:
+        G._STATE.reset(None)
     return {"exit": 0, "stdout": canonical(result), "stderr": ""}
 
 
