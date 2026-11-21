@@ -61,5 +61,19 @@ if [ "$rc" -eq 0 ] &&
         LC_ALL=C grep -Eqi '(^|[^a-z_]|[nrtbf])rtk' || exit 0 ;;
   esac
 fi
+# Ruling: a rewrite into `rtk read` (what rtk makes of `cat`, `head` and `tail`) is dropped, so the
+# read runs as typed. rtk's history shows `rtk read` saving about 3% of what it reads, while it
+# changes the text Claude sees and costs the gate work. Only a deny or an ask is never dropped
+# here; dropping a rewrite leaves the typed command to the user's own rules, as without rtk. A line
+# that holds `rtk read` among other commands loses its whole rewrite. Cost if wrong: about 3% more
+# tokens on file reads.
+case $rc:$out in
+  0:*'rtk read'*)
+    if ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"' &&
+       printf '%s' "$out" | LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
+         LC_ALL=C grep -Eq '(:[[:space:]]*"|[;&|(][[:space:]]*|\\n)rtk read( |"|$)'; then
+      exit 0
+    fi ;;
+esac
 [ -z "$out" ] || printf '%s\n' "$out"
 exit "$rc"

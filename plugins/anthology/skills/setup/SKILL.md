@@ -41,6 +41,10 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
      possible problem (it may be the user's own agent). Show the `detail` as a note, never a failure.
    - Node missing: some project tooling needs it; explain, and continue.
    - rtk `null`: the rtk wiring is not part of this install yet; the rtk step is skipped.
+   - `rtk_savings`: what rtk did so far, from its own history: how many of the commands the hook
+     saw went through rtk, and how many output tokens that saved. Show the `detail` as a note, so the
+     user can judge whether rtk is worth keeping. `null` means there is no history yet (or it cannot
+     be read); it is never a failure.
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the
    separate installs conflict. Show each `command` (`claude plugin uninstall <plugin> -s <scope>`)
    and ask the user to run them. Do not run them for the user. When an item's `command` is `null`

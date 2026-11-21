@@ -845,6 +845,36 @@ class WrapperTest(Base):
                 res = self.run_bin("rtk-hook", stdin=self.hook_input("git status --short"))
                 self.assertEqual((res.returncode, res.stdout), (0, answer + "\n"))
 
+    def test_hook_drops_a_rewrite_into_rtk_read(self):
+        # cat/head/tail become `rtk read`, which saves little and changes what Claude reads: the
+        # command runs as typed instead. With or without rtk's allow, alone or in a compound line.
+        for command in ("rtk read a.txt", "rtk read -n a.txt", "rtk read a.txt --level none --head-lines 5",
+                        "cd sub && rtk read a.txt", "rtk git status && rtk read a.txt", "rtk ls; rtk read a",
+                        "rtk ls || rtk read a", "rtk ls | rtk read -", "(rtk read a)", "x\nrtk read a",
+                        "rtk read"):
+            for decision in ("", ',"permissionDecision":"allow"'):
+                with self.subTest(command=command, decision=decision):
+                    answer = self.REWRITE.replace("}}}", "}%s}}" % decision).replace(
+                        '"rtk git status --short"', json.dumps(command))
+                    self.answer_fake(answer)
+                    res = self.run_bin("rtk-hook", stdin=self.hook_input("cat a.txt"))
+                    self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+
+    def test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask(self):
+        for command in ("rtk git status", "rtk reader a", "rtk grep read a", "echo rtk read a", "rtk readx a"):
+            with self.subTest(command=command):
+                answer = self.REWRITE.replace('"rtk git status --short"', json.dumps(command))
+                self.answer_fake(answer)
+                res = self.run_bin("rtk-hook", stdin=self.hook_input("x"))
+                self.assertEqual((res.returncode, res.stdout), (0, answer + "\n"))
+        deny = self.DENY.replace("}}", ',"updatedInput":{"command":"rtk read secret.txt"}}}')
+        ask = self.ASK.replace("node --version; bun --version", "rtk read a.txt")
+        for answer, typed in ((deny, "cat secret.txt"), (ask, "rtk read a.txt")):
+            with self.subTest(answer=answer):
+                self.answer_fake(answer)
+                res = self.run_bin("rtk-hook", stdin=self.hook_input(typed))
+                self.assertEqual((res.returncode, res.stdout), (0, answer + "\n"))
+
     def test_hook_keeps_rtk_exit_status_and_output_on_failure(self):
         for answer, rc in ((self.ASK, 2), (self.REWRITE, 1), ("not json", 0), ("not json", 3)):
             with self.subTest(answer=answer, rc=rc):

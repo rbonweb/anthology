@@ -104,7 +104,7 @@ class PreviewTest(SetupCase):
         self.assertEqual({c["name"] for c in out["doctor"]["checks"]},
                          {"python3", "node", "docker", "browseros", "rtk", "platform_supported",
                           "plugin_read_rule", "browseros_tools", "plugin_data", "path_wrappers",
-                          "agent_memory_path", "subagent_model"})
+                          "agent_memory_path", "subagent_model", "rtk_savings"})
         self.assertEqual(out["duplicates"], [])
         s = out["settings"]
         self.assertEqual(s["sha256"], sha(text))
