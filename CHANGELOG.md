@@ -73,6 +73,27 @@ a new version section.
   the confirmation the notes are still copied only into personal memory, as before.
 - The routing guide says repo memory is where the lead writes its notes, because Claude's
   auto memory is off in approved repos.
+- Field fixes from an audit of a long multi-agent session:
+  - Writing agents edit files with Edit/Write only (no heredocs, `sed -i` or file-writing
+    scripts) and run one git command per Bash call, because Claude Code refuses commands it
+    cannot verify. They also never use a long `sleep`, load deferred tools such as Monitor
+    through ToolSearch before calling them, and put a timeout on every test run, reporting a
+    hang instead of waiting.
+  - Writing agents also tag Docker images and name containers per worktree, commit with
+    `git commit -m "subject" -m "body"` (never `-F`, which the attribution hook cannot see) and
+    merge with single commands.
+  - Every agent that saves notes (architect, researcher, reviewer, ui-reviewer, marketer,
+    product-planner and the four writers) saves only lasting facts, searches with
+    `anthology-mem search` first and updates an existing note instead of adding a duplicate.
+    The scout is left alone because its startup budget has 4 bytes free.
+  - Routing guide: merge conflicts go to an implementer, long checks run in the background or
+    go to an agent, plans hold no lead coding tasks, agents are briefed with a plan path and
+    task ID, a user's stop or pause beats the plan, and Docker images and containers are named
+    per worktree so parallel agents do not test each other's code.
+  - `large-builds` skill: the detail behind those rules (lead and user, waiting and hangs,
+    per-worktree Docker names, small memory).
+  - The routing guide dropped its model-to-agent list (each agent already fixes its own model)
+    to stay within its size budget.
 - rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
