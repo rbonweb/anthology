@@ -789,6 +789,92 @@ mod roster_test {
         );
     }
 
+    // Claude Code asks the user about removals it cannot prove safe, even in bypass mode, so a
+    // writer deletes literal paths only.
+    #[test]
+    fn test_writers_delete_only_literal_paths() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                for needle in [
+                    "Delete only literal paths (`rm -r build/tmp`), never `rm -rf $VAR` or a glob:",
+                    "Claude Code asks the user about removals it can't prove safe, even in bypass mode.",
+                ] {
+                    expect_in(p, needle, &rules, "Do");
+                }
+            },
+        );
+    }
+
+    // The project map is only useful when it stays true, so each writer updates it in the same
+    // commit as the change that made it stale.
+    #[test]
+    fn test_writers_update_the_project_map_in_their_final_commit() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                for needle in [
+                    "Project map: when your change adds, removes or rewires a piece, update \
+                     `.claude/memory/reference-project-map.md` in your final commit",
+                    "within its size budget",
+                ] {
+                    expect_in(p, needle, &rules, "Do");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn test_reviewer_has_the_fixed_after_work_checklist() {
+        let mut problems = Vec::new();
+        let Some((_, _, rules)) = load_section("reviewer", "Do", &mut problems) else {
+            panic!("{problems:?}");
+        };
+        for needle in [
+            "After-work check of a writer's change:",
+            "`.claude/memory/reference-project-map.md`",
+            "1. Connected pieces updated",
+            "2. Nothing left behind",
+            "3. Cleanups done",
+            "4. Map updated",
+            "`## Cleanup duties`",
+            "same writer",
+            "only pass",
+            "map is missing",
+            "anthology:architect",
+        ] {
+            assert!(rules.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn test_architect_builds_the_project_map_from_the_template() {
+        let mut problems = Vec::new();
+        let Some((_, _, rules)) = load_section("architect", "Do", &mut problems) else {
+            panic!("{problems:?}");
+        };
+        for needle in [
+            "Project map: when `.claude/memory/reference-project-map.md` is missing or stale,",
+            "`${CLAUDE_PLUGIN_ROOT}/templates/project-map.md`",
+            "cannot write files",
+        ] {
+            assert!(rules.contains(needle), "{needle}");
+        }
+        let template =
+            std::fs::read_to_string(repo::path(&format!("{PLUGIN}/templates/project-map.md")))
+                .expect("the project map template");
+        assert!(template.contains("\n## Cleanup duties\n"));
+        assert!(template.contains("Size budget: 7000 characters"));
+        assert!(template.chars().count() <= 2500, "the template is short");
+        assert!(!template.contains("/Users/"));
+    }
+
     #[test]
     fn test_docs_only_agents_limit_edits_to_markdown_in_the_main_clone() {
         each_agent(
