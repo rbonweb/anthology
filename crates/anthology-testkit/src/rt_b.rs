@@ -1,12 +1,12 @@
 //! Test helpers of lane RT-B (plan §0.2): the pieces of `tests/test_rtk_install.py` that RT2's
 //! tests share.
 //!
-//! - [`RtkFakeFetch`]: `FakeFetch`, writing the blob registered for a URL and recording every
+//! - [`AtlFakeFetch`]: `FakeFetch`, writing the blob registered for a URL and recording every
 //!   call. It implements `anthology_runtime::fetch::Fetch` through a closure the caller wraps
-//!   (testkit does not depend on the runtime), see [`RtkFakeFetch::call`].
-//! - [`raw_tar_gz`]: a `.tar.gz` with member names written as given (`../rtk`, `/rtk`), which
+//!   (testkit does not depend on the runtime), see [`AtlFakeFetch::call`].
+//! - [`raw_tar_gz`]: a `.tar.gz` with member names written as given (`../atl`, `/atl`), which
 //!   the `tar` builder refuses to write.
-//! - [`rtk_lock`] / [`rtk_lock_value`]: `make_lock(version, blob, repo)`.
+//! - [`atl_lock`] / [`atl_lock_value`]: `make_lock(version, blob, repo)`.
 //! - [`ConnectProxy`]: a minimal HTTP `CONNECT` proxy that records each tunnel's target.
 #![forbid(unsafe_code)]
 
@@ -27,9 +27,9 @@ use flate2::write::GzEncoder;
 use crate::release::{ALL_TARGETS, sha256_hex};
 
 /// `HOST` of the Python tests.
-pub const RTK_HOST: &str = "x86_64-unknown-linux-musl";
-/// `RTK_BODY` of the Python tests.
-pub const RTK_TEST_BODY: &[u8] = b"#!/bin/sh\necho fake-rtk\n";
+pub const ATL_HOST: &str = "x86_64-unknown-linux-musl";
+/// `ATL_BODY` of the Python tests.
+pub const ATL_TEST_BODY: &[u8] = b"#!/bin/sh\necho fake-atl\n";
 
 /// What a raw tar member is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,20 +98,20 @@ pub fn raw_tar_gz(members: &[(&str, RawKind)]) -> Vec<u8> {
     gz.finish().expect("gzip")
 }
 
-/// `tarball()` of the Python tests: `rtk` ([`RTK_TEST_BODY`]) then `LICENSE`.
-pub fn rtk_tarball() -> Vec<u8> {
+/// `tarball()` of the Python tests: `atl` ([`ATL_TEST_BODY`]) then `LICENSE`.
+pub fn atl_tarball() -> Vec<u8> {
     raw_tar_gz(&[
-        ("rtk", RawKind::File(RTK_TEST_BODY.to_vec())),
+        ("atl", RawKind::File(ATL_TEST_BODY.to_vec())),
         ("LICENSE", RawKind::File(b"license text\n".to_vec())),
     ])
 }
 
 /// `make_lock(version, blob, repo)` as JSON: every target hashes its own name, except
-/// [`RTK_HOST`], which hashes `blob`.
-pub fn rtk_lock_value(version: &str, blob: &[u8], repo: &str) -> Value {
+/// [`ATL_HOST`], which hashes `blob`.
+pub fn atl_lock_value(version: &str, blob: &[u8], repo: &str) -> Value {
     let mut digests = Map::new();
     for t in ALL_TARGETS {
-        let d = if t == RTK_HOST {
+        let d = if t == ATL_HOST {
             sha256_hex(blob)
         } else {
             sha256_hex(t.as_bytes())
@@ -120,17 +120,17 @@ pub fn rtk_lock_value(version: &str, blob: &[u8], repo: &str) -> Value {
     }
     let mut m = Map::new();
     m.insert("version".into(), Value::Str(version.into()));
-    m.insert("tag".into(), Value::Str(format!("rtk--v{version}")));
+    m.insert("tag".into(), Value::Str(format!("atl--v{version}")));
     m.insert("repo".into(), Value::Str(repo.into()));
     m.insert("sha256".into(), Value::Object(digests));
     Value::Object(m)
 }
 
-/// [`rtk_lock_value`] as a [`Lock`].
-pub fn rtk_lock(version: &str, blob: &[u8], repo: &str) -> Lock {
+/// [`atl_lock_value`] as a [`Lock`].
+pub fn atl_lock(version: &str, blob: &[u8], repo: &str) -> Lock {
     let mut sha256 = BTreeMap::new();
     for t in ALL_TARGETS {
-        let d = if t == RTK_HOST {
+        let d = if t == ATL_HOST {
             sha256_hex(blob)
         } else {
             sha256_hex(t.as_bytes())
@@ -139,23 +139,23 @@ pub fn rtk_lock(version: &str, blob: &[u8], repo: &str) -> Lock {
     }
     Lock {
         version: version.into(),
-        tag: format!("rtk--v{version}"),
+        tag: format!("atl--v{version}"),
         repo: repo.into(),
         sha256,
     }
 }
 
 /// `url_for(lock, target)`.
-pub fn rtk_url_for(lock: &Lock, target: &str) -> String {
+pub fn atl_url_for(lock: &Lock, target: &str) -> String {
     format!(
-        "https://github.com/{}/releases/download/{}/rtk-{target}.tar.gz",
+        "https://github.com/{}/releases/download/{}/atl-{target}.tar.gz",
         lock.repo, lock.tag
     )
 }
 
 /// `FakeFetch(blobs, error)`: the state behind a fake fetch (module docs).
 #[derive(Default)]
-pub struct RtkFakeFetch {
+pub struct AtlFakeFetch {
     pub blobs: HashMap<String, Vec<u8>>,
     /// `(type name, message)` of the error every call raises, if any.
     pub error: Option<(&'static str, String)>,
@@ -168,19 +168,19 @@ pub enum FakeAnswer<'a> {
     Raise(&'static str, String),
 }
 
-impl RtkFakeFetch {
+impl AtlFakeFetch {
     /// A fetch that serves `blob` at `url`.
-    pub fn serving(url: &str, blob: &[u8]) -> RtkFakeFetch {
-        let mut f = RtkFakeFetch::default();
+    pub fn serving(url: &str, blob: &[u8]) -> AtlFakeFetch {
+        let mut f = AtlFakeFetch::default();
         f.blobs.insert(url.to_string(), blob.to_vec());
         f
     }
 
     /// A fetch whose every call raises `type_name: message`.
-    pub fn failing(type_name: &'static str, message: &str) -> RtkFakeFetch {
-        RtkFakeFetch {
+    pub fn failing(type_name: &'static str, message: &str) -> AtlFakeFetch {
+        AtlFakeFetch {
             error: Some((type_name, message.to_string())),
-            ..RtkFakeFetch::default()
+            ..AtlFakeFetch::default()
         }
     }
 

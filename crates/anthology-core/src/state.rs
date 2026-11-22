@@ -8,8 +8,8 @@
 //!   (`.state.XXXXXXXX.tmp`, mode 0600) renamed onto `state.json`; the temp file is unlinked
 //!   on failure. No fsync, no lock. Python's `ensure_ascii=True` fallback only ever applied to
 //!   lone surrogates, which Rust never holds (they are U+FFFD, D-6).
-//! - Each key is on its own line, so `"rtk_path"` is `  "rtk_path": "<path>",` (or without the
-//!   comma) for the `sed` in `bin/rtk`.
+//! - Each key is on its own line, so `"atl_path"` is `  "atl_path": "<path>",` (or without the
+//!   comma) for the `sed` in `bin/atl`.
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
@@ -24,11 +24,17 @@ pub fn path(env: &Env) -> PathBuf {
     paths::anthology_home(env).join("state.json")
 }
 
-/// rtk's history, recall store and tee spool: `<state.json's folder>/rtk`
-/// (`state.rtk_data_dir()`). `bin/rtk` and `bin/rtk-hook` point rtk there, and
+/// atl's history, recall store and tee spool: `<state.json's folder>/atl`
+/// (`state.atl_data_dir()`). `bin/atl` and `bin/atl-hook` point atl there, and
 /// `anthology setup remove` deletes it.
-pub fn rtk_data_dir(env: &Env) -> PathBuf {
-    paths::anthology_home(env).join("rtk")
+pub fn atl_data_dir(env: &Env) -> PathBuf {
+    paths::anthology_home(env).join("atl")
+}
+
+/// The history folder of the legacy rtk install: `<state.json's folder>/rtk`. Nothing writes
+/// there any more; setup deletes it, and nothing else ever touches it.
+pub fn legacy_rtk_data_dir(env: &Env) -> PathBuf {
+    paths::anthology_home(env).join("rtk") // legacy folder name
 }
 
 /// The state, or an empty object when it cannot be read (`state.read()`).
@@ -79,10 +85,10 @@ mod tests {
     }
 
     #[test]
-    fn write_creates_merges_and_keeps_rtk_path_on_its_own_line() {
+    fn write_creates_merges_and_keeps_atl_path_on_its_own_line() {
         let (_d, env) = sandbox();
         assert!(read(&env).is_empty());
-        write(&env, vec![("rtk_path".into(), s("/p/rtk"))]).expect("write");
+        write(&env, vec![("atl_path".into(), s("/p/atl"))]).expect("write");
         write(
             &env,
             vec![
@@ -95,9 +101,9 @@ mod tests {
         let text = std::fs::read_to_string(path(&env)).expect("read");
         assert_eq!(
             text,
-            "{\n  \"data_dir\": \"/d\",\n  \"n\": 1,\n  \"rtk_path\": \"/p/rtk\",\n  \"settings_created\": true\n}\n"
+            "{\n  \"atl_path\": \"/p/atl\",\n  \"data_dir\": \"/d\",\n  \"n\": 1,\n  \"settings_created\": true\n}\n"
         );
-        assert!(text.lines().any(|l| l == "  \"rtk_path\": \"/p/rtk\","));
+        assert!(text.lines().any(|l| l == "  \"atl_path\": \"/p/atl\","));
         let meta = std::fs::metadata(path(&env)).expect("stat");
         assert_eq!(meta.mode() & 0o777, 0o600);
         let names: Vec<_> = std::fs::read_dir(path(&env).parent().expect("dir"))
@@ -109,6 +115,14 @@ mod tests {
             read(&env).get("data_dir").and_then(Value::as_str),
             Some("/d")
         );
+    }
+
+    #[test]
+    fn the_atl_and_legacy_rtk_data_dirs_sit_beside_state_json() {
+        let (_d, env) = sandbox();
+        let home = path(&env).parent().expect("dir").to_path_buf();
+        assert_eq!(atl_data_dir(&env), home.join("atl"));
+        assert_eq!(legacy_rtk_data_dir(&env), home.join("rtk"));
     }
 
     #[test]

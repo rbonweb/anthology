@@ -1,14 +1,14 @@
-//! Port of `tests/_rtk.py` (F4, m-13): fake release tarballs and locks for the tests that drive
+//! Port of `tests/_atl.py` (F4, m-13): fake release tarballs and locks for the tests that drive
 //! the real installers.
 //!
-//! | `_rtk.py` | here |
+//! | `_atl.py` | here |
 //! |---|---|
-//! | `LINUX`, `TARGET`, `ALL_TARGETS`, `VERSION`, `RTK_BODY` | the same constants |
+//! | `LINUX`, `TARGET`, `ALL_TARGETS`, `VERSION`, `ATL_BODY` | the same constants |
 //! | `tarball(body)` | [`tarball`]; [`fake_release`] for another member name, with its sha256 |
 //! | `write_lock(path, blob, version)` | [`write_lock`] (returns the [`Lock`]) |
-//! | `FakeFetch` | not here: it implements RT2's `Fetch` trait (GC-19 `rtk_install` deps), so RT2 adds it next to that trait |
+//! | `FakeFetch` | not here: it implements RT2's `Fetch` trait (GC-19 `atl_install` deps), so RT2 adds it next to that trait |
 //!
-//! A release tarball holds the member (`rtk`, or `anthology` for the binary release) and then
+//! A release tarball holds the member (`atl`, or `anthology` for the binary release) and then
 //! `LICENSE` (`license\n`), each a regular file with mode `0644`, uid and gid 0 and mtime 0, in
 //! the ustar layout Python's `tarfile` writes for such names, gzip-compressed. [`tar_gz`] builds
 //! any other layout (symlink members, folders, extra or missing members) for the failure tests.
@@ -36,10 +36,10 @@ pub const ALL_TARGETS: [&str; 4] = [
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
 ];
-/// The rtk version of the fake locks.
+/// The atl version of the fake locks.
 pub const VERSION: &str = "1.2.1-anthology.1";
-/// The fake `rtk` binary.
-pub const RTK_BODY: &[u8] = b"#!/bin/sh\necho fake-rtk\n";
+/// The fake `atl` binary.
+pub const ATL_BODY: &[u8] = b"#!/bin/sh\necho fake-atl\n";
 /// The `LICENSE` member's content.
 pub const LICENSE_BODY: &[u8] = b"license\n";
 
@@ -130,7 +130,7 @@ fn set_raw(field: &mut [u8], b: &[u8], what: &str) {
     field[..b.len()].copy_from_slice(b);
 }
 
-/// Writes a member name as given (`../rtk`, `/rtk` included: the `tar` crate's `set_path`
+/// Writes a member name as given (`../atl`, `/atl` included: the `tar` crate's `set_path`
 /// refuses those). A name over 100 bytes is split at a `/` into the ustar prefix (155 bytes)
 /// and name (100 bytes), as Python's `tarfile` does for the ustar format.
 fn set_name(h: &mut tar::Header, name: &[u8]) {
@@ -152,15 +152,15 @@ fn set_name(h: &mut tar::Header, name: &[u8]) {
     set_raw(&mut ustar.name, &name[split + 1..], "member name");
 }
 
-/// `tarball(body)`: an rtk release tarball, `rtk` then `LICENSE`.
+/// `tarball(body)`: an atl release tarball, `atl` then `LICENSE`.
 pub fn tarball(body: &[u8]) -> Vec<u8> {
     tar_gz(&[
-        TarEntry::file("rtk", body),
+        TarEntry::file("atl", body),
         TarEntry::file("LICENSE", LICENSE_BODY),
     ])
 }
 
-/// A release tarball for `target` holding `member` (`rtk` or `anthology`) with `bytes`, then
+/// A release tarball for `target` holding `member` (`atl` or `anthology`) with `bytes`, then
 /// `LICENSE`; and its sha256 (lowercase hex), as a lock records it. The bytes are the same for
 /// every target, as Python's `tarball()` is; [`asset_name`] gives the file name.
 pub fn fake_release(target: Target, member: &str, bytes: &[u8]) -> (Vec<u8>, String) {
@@ -173,7 +173,7 @@ pub fn fake_release(target: Target, member: &str, bytes: &[u8]) -> (Vec<u8>, Str
     (blob, digest)
 }
 
-/// The release asset name: `<member>-<triple>.tar.gz` (`rtk_install.asset_url`).
+/// The release asset name: `<member>-<triple>.tar.gz` (`atl_install.asset_url`).
 pub fn asset_name(member: &str, target: Target) -> String {
     format!("{member}-{}.tar.gz", target.triple())
 }
@@ -186,7 +186,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// `write_lock(path, blob, version)`: a valid `rtk.lock` whose [`TARGET`] digest is `blob`'s
+/// `write_lock(path, blob, version)`: a valid `atl.lock` whose [`TARGET`] digest is `blob`'s
 /// and whose other digests are the sha256 of each target's name; repo `example/anthology`.
 /// Written as `json.dumps(lock, indent=2) + "\n"` (parent folders created); returns the lock.
 pub fn write_lock(path: &Path, blob: &[u8], version: &str) -> Lock {
@@ -201,7 +201,7 @@ pub fn write_lock(path: &Path, blob: &[u8], version: &str) -> Lock {
         digests.insert(t.to_string(), Value::Str(d.clone()));
         sha256.insert(Target::from_triple(t).expect("a release target"), d);
     }
-    let tag = format!("rtk--v{version}");
+    let tag = format!("atl--v{version}");
     let repo = "example/anthology";
     let mut lock = Map::new();
     lock.insert("version".into(), Value::Str(version.into()));
@@ -248,18 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn tarball_holds_rtk_then_license() {
-        let got = members(&tarball(RTK_BODY));
+    fn tarball_holds_atl_then_license() {
+        let got = members(&tarball(ATL_BODY));
         assert_eq!(
             got,
             [
                 (
-                    "rtk".into(),
+                    "atl".into(),
                     tar::EntryType::Regular,
                     0o644,
                     0,
                     0,
-                    RTK_BODY.to_vec()
+                    ATL_BODY.to_vec()
                 ),
                 (
                     "LICENSE".into(),
@@ -288,8 +288,8 @@ mod tests {
             blob
         );
         assert_eq!(
-            asset_name("rtk", Target::LinuxX86_64Musl),
-            "rtk-x86_64-unknown-linux-musl.tar.gz"
+            asset_name("atl", Target::LinuxX86_64Musl),
+            "atl-x86_64-unknown-linux-musl.tar.gz"
         );
     }
 
@@ -301,12 +301,12 @@ mod tests {
                 mode: 0o755,
             },
             TarEntry::Symlink {
-                name: "rtk".into(),
+                name: "atl".into(),
                 target: "/etc/passwd".into(),
             },
             TarEntry::Hardlink {
                 name: "h".into(),
-                target: "rtk".into(),
+                target: "atl".into(),
             },
         ]);
         let got = members(&blob);
@@ -319,10 +319,10 @@ mod tests {
     fn tar_gz_writes_hostile_and_long_names_as_given() {
         let long = format!("{}/{}", "d".repeat(120), "f".repeat(90));
         let blob = tar_gz(&[
-            TarEntry::file("../rtk", b"up"),
-            TarEntry::file("/rtk", b"abs"),
-            TarEntry::file("bin/rtk", b"nested"),
-            TarEntry::file("./rtk", b"dot"),
+            TarEntry::file("../atl", b"up"),
+            TarEntry::file("/atl", b"abs"),
+            TarEntry::file("bin/atl", b"nested"),
+            TarEntry::file("./atl", b"dot"),
             TarEntry::file(&long, b"long"),
             TarEntry::Symlink {
                 name: "l".into(),
@@ -343,7 +343,7 @@ mod tests {
         }
         assert_eq!(
             names,
-            ["../rtk", "/rtk", "bin/rtk", "./rtk", long.as_str(), "l"]
+            ["../atl", "/atl", "bin/atl", "./atl", long.as_str(), "l"]
         );
         let too_long =
             std::panic::catch_unwind(|| tar_gz(&[TarEntry::file(&"x".repeat(101), b"")]));
@@ -359,15 +359,15 @@ mod tests {
     }
 
     #[test]
-    fn write_lock_writes_a_valid_rtk_lock() {
+    fn write_lock_writes_a_valid_atl_lock() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("plugin/rtk.lock");
-        let blob = tarball(RTK_BODY);
+        let path = dir.path().join("plugin/atl.lock");
+        let blob = tarball(ATL_BODY);
         let lock = write_lock(&path, &blob, VERSION);
         let text = std::fs::read_to_string(&path).expect("read");
-        assert!(text.starts_with("{\n  \"version\": \"1.2.1-anthology.1\",\n  \"tag\": \"rtk--v1.2.1-anthology.1\",\n  \"repo\": \"example/anthology\",\n  \"sha256\": {\n    \"aarch64-apple-darwin\": \""));
+        assert!(text.starts_with("{\n  \"version\": \"1.2.1-anthology.1\",\n  \"tag\": \"atl--v1.2.1-anthology.1\",\n  \"repo\": \"example/anthology\",\n  \"sha256\": {\n    \"aarch64-apple-darwin\": \""));
         assert!(text.ends_with("}\n}\n"));
-        let parsed = anthology_core::lock::parse(&text, "rtk--v").expect("valid");
+        let parsed = anthology_core::lock::parse(&text, "atl--v").expect("valid");
         assert_eq!(parsed, lock);
         assert_eq!(lock.sha256[&Target::LinuxX86_64Musl], sha256_hex(&blob));
         assert_eq!(

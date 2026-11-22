@@ -1,16 +1,16 @@
-//! `rtk.lock` and `anthology.lock` (plan §3.3, GC-9, GC-17, design §8.2).
+//! `atl.lock` and `anthology.lock` (plan §3.3, GC-9, GC-17, design §8.2).
 //!
-//! [`parse`] with [`RTK_TAG_PREFIX`] is `rtk_install.load_lock`'s JSON step plus
+//! [`parse`] with [`ATL_TAG_PREFIX`] is `atl_install.load_lock`'s JSON step plus
 //! `validate_lock`, message for message: `%r` is Python's `repr()` of the JSON value (str
 //! quoting and escapes, `None`/`True`, float `repr`, list and dict forms), and `\d` in
 //! `VERSION_RE` is Unicode `Nd`, as in a Python str pattern. The JSON step's message is
 //! `"<path> is not valid JSON"` in Python; `parse` has no path and names the file
-//! (`rtk.lock is not valid JSON`), which is what `load_lock("rtk.lock")` prints. A caller that
+//! (`atl.lock is not valid JSON`), which is what `load_lock("atl.lock")` prints. A caller that
 //! has the path runs `pycompat::json::loads` itself and then [`validate`] (and, for
 //! `anthology.lock`, [`check_anthology_layout`]).
 //!
 //! With [`ANTHOLOGY_TAG_PREFIX`] the same checks and messages apply with `anthology.lock` in
-//! place of `rtk.lock` and GC-17's rules: the version is
+//! place of `atl.lock` and GC-17's rules: the version is
 //! `^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$` (ASCII digits) and the tag is
 //! `anthology-bin--v<version>`. `parse` also requires the exact design §8.2 layout
 //! ([`render_anthology`], with or without its final newline), because `bootstrap.sh` reads the
@@ -31,8 +31,8 @@ use anthology_pycompat::str as pystr;
 
 use crate::platform::Target;
 
-/// rtk's release tag prefix (`rtk--v<version>`).
-pub const RTK_TAG_PREFIX: &str = "rtk--v";
+/// atl's release tag prefix (`atl--v<version>`).
+pub const ATL_TAG_PREFIX: &str = "atl--v";
 /// The anthology binary's release tag prefix (`anthology-bin--v<version>`, GC-17).
 pub const ANTHOLOGY_TAG_PREFIX: &str = "anthology-bin--v";
 
@@ -47,17 +47,17 @@ pub struct Lock {
 
 #[derive(Clone, Copy)]
 enum Kind {
-    Rtk,
+    Atl,
     Anthology,
 }
 
 impl Kind {
     fn of(tag_prefix: &str) -> Result<Kind, String> {
         match tag_prefix {
-            RTK_TAG_PREFIX => Ok(Kind::Rtk),
+            ATL_TAG_PREFIX => Ok(Kind::Atl),
             ANTHOLOGY_TAG_PREFIX => Ok(Kind::Anthology),
             other => Err(format!(
-                "unknown lock tag prefix {}; use {RTK_TAG_PREFIX} or {ANTHOLOGY_TAG_PREFIX}",
+                "unknown lock tag prefix {}; use {ATL_TAG_PREFIX} or {ANTHOLOGY_TAG_PREFIX}",
                 py_repr_str(other)
             )),
         }
@@ -65,14 +65,14 @@ impl Kind {
 
     fn file(self) -> &'static str {
         match self {
-            Kind::Rtk => "rtk.lock",
+            Kind::Atl => "atl.lock",
             Kind::Anthology => "anthology.lock",
         }
     }
 
     fn version_ok(self, v: &str) -> bool {
         match self {
-            Kind::Rtk => rtk_version_ok(v),
+            Kind::Atl => atl_version_ok(v),
             Kind::Anthology => anthology_version_ok(v),
         }
     }
@@ -179,7 +179,7 @@ pub fn render_anthology(lock: &Lock) -> String {
 }
 
 /// `VERSION_RE.fullmatch(v)`: `\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`.
-fn rtk_version_ok(v: &str) -> bool {
+fn atl_version_ok(v: &str) -> bool {
     let Some(rest) = three_numbers(v, pystr::is_decimal) else {
         return false;
     };

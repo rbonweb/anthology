@@ -40,7 +40,7 @@ use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX};
 use anthology_core::platform;
 use anthology_core::{Env, paths};
 
-use crate::rtk_install::{ct_eq, is_executable_file, sha256_file};
+use crate::atl_install::{ct_eq, is_executable_file, sha256_file};
 
 /// Seconds allowed after the budget for the hash, extract and `--version` probe.
 pub const GRACE_SECS: u64 = 5;

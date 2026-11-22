@@ -13,14 +13,14 @@ fn the_wrappers_exec_the_installed_binary_and_follow_symlinks() {
         let run = sb.run(sh, WRAP, &["setup", "apply", "a b"], b"");
         assert_eq!(
             (run.code, run.out()),
-            (Some(0), "args:setup apply a b|rtk=1\n".into()),
+            (Some(0), "args:setup apply a b|atl=1\n".into()),
             "{sh:?}: {}",
             run.err()
         );
         let run = sb.run(sh, WRAP_MEM, &["search", "x"], b"");
         assert_eq!(
             (run.code, run.out()),
-            (Some(0), "args:mem search x|rtk=1\n".into()),
+            (Some(0), "args:mem search x|atl=1\n".into()),
             "{sh:?}"
         );
         // Through an absolute symlink, then a relative symlink to that symlink.
@@ -33,7 +33,7 @@ fn the_wrappers_exec_the_installed_binary_and_follow_symlinks() {
             let run = sb.run(sh, via, &["stale"], b"");
             assert_eq!(
                 (run.code, run.out()),
-                (Some(0), "args:mem stale|rtk=1\n".into()),
+                (Some(0), "args:mem stale|atl=1\n".into()),
                 "{sh:?} {via}: {}",
                 run.err()
             );
@@ -42,7 +42,7 @@ fn the_wrappers_exec_the_installed_binary_and_follow_symlinks() {
         let mut spec = sb.spec(sh, "links/deeper/mem", &["x"], b"");
         spec.env.push(("CDPATH".into(), sb.root.clone().into()));
         let run = sb.run_spec(spec);
-        assert_eq!(run.out(), "args:mem x|rtk=1\n", "{sh:?} CDPATH");
+        assert_eq!(run.out(), "args:mem x|atl=1\n", "{sh:?} CDPATH");
     });
 }
 
@@ -54,7 +54,7 @@ fn the_wrappers_install_when_missing_and_exit_127_when_they_cannot() {
         let run = sb.run(sh, WRAP, &["doctor"], b"");
         assert_eq!(
             (run.code, run.out()),
-            (Some(0), "args:doctor|rtk=1\n".into()),
+            (Some(0), "args:doctor|atl=1\n".into()),
             "{sh:?}: {}",
             run.err()
         );

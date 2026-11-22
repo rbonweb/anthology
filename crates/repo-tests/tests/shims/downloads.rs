@@ -318,7 +318,7 @@ fn the_wrapper_and_session_start_download_too() {
         let run = sb.run_spec(spec);
         assert_eq!(
             (run.code, run.out()),
-            (Some(0), "args:mem search q|rtk=1\n".into()),
+            (Some(0), "args:mem search q|atl=1\n".into()),
             "{d:?}"
         );
     }

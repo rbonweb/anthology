@@ -14,7 +14,7 @@
 //!   folder is "anthology-guardrails not found; nothing to check".
 //! - There is no script folder to fall back on, so the plugin root is the `plugin_root`
 //!   argument, else `$CLAUDE_PLUGIN_ROOT`. When neither is set, the checks that need it
-//!   (`anthology_binary`, `rtk` without an explicit lock, `plugin_read_rule`, `path_wrappers`)
+//!   (`anthology_binary`, `atl` without an explicit lock, `plugin_read_rule`, `path_wrappers`)
 //!   say so with `ok = None` ([`UNKNOWN_ROOT`]); nothing is looked up relative to the working
 //!   folder.
 //! - Files a cloned repo controls are read bounded (2 MiB, regular files only) but parsed to
@@ -51,7 +51,7 @@ use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
 
 use crate::compat::{self, Opened, pathlib_child, pathlib_parent, pathlib_str, realpath};
-use crate::{bootstrap, guardrails_loc, rtk_install};
+use crate::{atl_install, bootstrap, guardrails_loc};
 
 /// `SYSTEM_APPLICATIONS` (a [`DoctorLimits`] field in tests).
 pub const SYSTEM_APPLICATIONS: &str = "/Applications";
@@ -82,7 +82,7 @@ pub const CHECKS: [&str; 13] = [
     "node",
     "docker",
     "browseros",
-    "rtk",
+    "atl",
     "platform_supported",
     "plugin_read_rule",
     "browseros_tools",
@@ -90,7 +90,7 @@ pub const CHECKS: [&str; 13] = [
     "path_wrappers",
     "agent_memory_path",
     "subagent_model",
-    "rtk_savings",
+    "atl_savings",
 ];
 /// The detail of a check that needs the plugin folder when none is known (module docs).
 pub const UNKNOWN_ROOT: &str =
@@ -138,8 +138,8 @@ pub type WhichFn = dyn Fn(&str, &Env) -> Option<PathBuf>;
 pub type RunFn = dyn Fn(&[&OsStr], &Env, Duration) -> RunResult;
 /// `(platform.system(), platform.machine())`.
 pub type UnameFn = dyn Fn() -> (String, String);
-/// `rtk_install.check_installed(data_dir, lock, target)`.
-pub type RtkInstalledFn = dyn Fn(&Path, &Lock, Target) -> bool;
+/// `atl_install.check_installed(data_dir, lock, target)`.
+pub type AtlInstalledFn = dyn Fn(&Path, &Lock, Target) -> bool;
 
 /// The constants tests patch (GC-19).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,9 +170,9 @@ pub struct DoctorDeps {
     pub which: Box<WhichFn>,
     pub run: Box<RunFn>,
     pub uname: Box<UnameFn>,
-    pub rtk_installed: Box<RtkInstalledFn>,
-    /// `check_env(lock=…)`: the rtk.lock to check against; `None` is `<plugin root>/rtk.lock`.
-    pub rtk_lock: Option<PathBuf>,
+    pub atl_installed: Box<AtlInstalledFn>,
+    /// `check_env(lock=…)`: the atl.lock to check against; `None` is `<plugin root>/atl.lock`.
+    pub atl_lock: Option<PathBuf>,
     pub limits: DoctorLimits,
 }
 
@@ -182,10 +182,10 @@ impl Default for DoctorDeps {
             which: Box::new(which),
             run: Box::new(run_command),
             uname: Box::new(platform::uname),
-            rtk_installed: Box::new(|data_dir, lock, target| {
-                rtk_install::check_installed_for(data_dir, lock, target).is_ok()
+            atl_installed: Box::new(|data_dir, lock, target| {
+                atl_install::check_installed_for(data_dir, lock, target).is_ok()
             }),
-            rtk_lock: None,
+            atl_lock: None,
             limits: DoctorLimits::default(),
         }
     }
@@ -979,20 +979,74 @@ fn check_browseros_tools(env: &Env, cwd: &Path, deps: &DoctorDeps) -> CheckResul
     )
 }
 
-/// `_check_rtk(env, lock)`: state.json's `rtk_path` is `<data>/rtk/<lock version>/rtk`, and
-/// that version folder holds an executable rtk whose recorded tarball hash is the lock's hash
-/// for this platform (`rtk_install.check_installed`).
-fn check_rtk(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
-    let lock_path = match (&deps.rtk_lock, root) {
+/// What the old install left behind, in the legacy name's words.
+const LEGACY_STATE_KEY: &str = "the rtk_path key in state.json"; // legacy
+const LEGACY_DOWNLOAD: &str = "the old rtk download folder"; // legacy
+const LEGACY_HISTORY: &str = "the old rtk history folder"; // legacy
+
+/// Whether anything, a symlink included, is at `path`.
+fn lexists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// The legacy rtk install's leftovers: the `rtk_path` key in state.json, `<data>/rtk` and
+/// `<config>/anthology/rtk` (legacy names). Session start never removes them; setup does.
+fn legacy_rtk_leftovers(env: &Env) -> Vec<&'static str> {
+    let state = state(env);
+    let state = obj(state.as_ref());
+    let mut found = Vec::new();
+    let legacy_key = state.is_some_and(|s| s.get("rtk_path").is_some()); // legacy key
+    if legacy_key {
+        found.push(LEGACY_STATE_KEY);
+    }
+    let recorded = state
+        .and_then(|s| s.get("data_dir"))
+        .and_then(Value::as_str)
+        .filter(|d| !d.is_empty())
+        .map(|d| d.as_bytes().to_vec());
+    let legacy_download = env_bytes(env, "CLAUDE_PLUGIN_DATA")
+        .or(recorded)
+        .map(|data| path_of(&data).join("rtk")); // legacy folder
+    if legacy_download.is_some_and(|dir| lexists(&dir)) {
+        found.push(LEGACY_DOWNLOAD);
+    }
+    let history = compat::config_dir(env).join("anthology").join("rtk"); // legacy folder
+    if lexists(&history) {
+        found.push(LEGACY_HISTORY);
+    }
+    found
+}
+
+/// `_check_atl(env, lock)` plus the legacy rtk leftovers, which only add a note to the detail.
+fn check_atl(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
+    let (verdict, detail) = check_atl_install(env, root, deps)?;
+    let left = legacy_rtk_leftovers(env);
+    if left.is_empty() {
+        return ok(verdict, detail);
+    }
+    ok(
+        verdict,
+        format!(
+            "{detail}; legacy rtk leftovers: {} (run /anthology:setup to remove them)", // legacy
+            left.join(", ")
+        ),
+    )
+}
+
+/// `_check_atl(env, lock)`: state.json's `atl_path` is `<data>/atl/<lock version>/atl`, and
+/// that version folder holds an executable atl whose recorded tarball hash is the lock's hash
+/// for this platform (`atl_install.check_installed`).
+fn check_atl_install(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
+    let lock_path = match (&deps.atl_lock, root) {
         (Some(lock), _) => lock.clone(),
-        (None, Some(root)) => root.join("rtk.lock"),
+        (None, Some(root)) => root.join("atl.lock"),
         (None, None) => return ok(None, UNKNOWN_ROOT),
     };
-    let Ok(lock) = rtk_install::load_lock(&lock_path) else {
-        return ok(None, "rtk is not wired yet (no rtk.lock)");
+    let Ok(lock) = atl_install::load_lock(&lock_path) else {
+        return ok(None, "atl is not wired yet (no atl.lock)");
     };
     let (system, machine) = (deps.uname)();
-    let target = match rtk_install::target(&system, &machine) {
+    let target = match atl_install::target(&system, &machine) {
         Ok(t) => t,
         Err(e) => {
             let text = e.py_str();
@@ -1008,12 +1062,12 @@ fn check_rtk(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
     };
     let state = state(env);
     let state = obj(state.as_ref());
-    let path = state.and_then(|s| s.get("rtk_path"));
+    let path = state.and_then(|s| s.get("atl_path"));
     let Some(path) = path.filter(|p| truthy(p)).map(py_str) else {
-        return ok(Some(false), "rtk is not installed; run /anthology:setup");
+        return ok(Some(false), "atl is not installed; run /anthology:setup");
     };
     if !py_exists(path.as_bytes()) {
-        return ok(Some(false), "rtk is not installed; run /anthology:setup");
+        return ok(Some(false), "atl is not installed; run /anthology:setup");
     }
     // session start records data_dir; failing that, the folder three levels above the binary.
     // `path_like`: `Path(data_dir)` works (a str or a Path); for another JSON type it raises
@@ -1030,18 +1084,18 @@ fn check_rtk(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
         (Vec::new(), true)
     };
     let mut expected = pathlib_str(&data_dir);
-    for part in [b"rtk".as_slice(), lock.version.as_bytes(), b"rtk"] {
+    for part in [b"atl".as_slice(), lock.version.as_bytes(), b"atl"] {
         expected = pathlib_child(&expected, part);
     }
     if pathlib_str(path.as_bytes()) == expected
         && path_like
-        && (deps.rtk_installed)(&path_of(&data_dir), &lock, target)
+        && (deps.atl_installed)(&path_of(&data_dir), &lock, target)
     {
-        return ok(Some(true), "rtk matches rtk.lock");
+        return ok(Some(true), "atl matches atl.lock");
     }
     ok(
         Some(false),
-        "rtk does not match rtk.lock; run /anthology:setup",
+        "atl does not match atl.lock; run /anthology:setup",
     )
 }
 
@@ -1081,12 +1135,12 @@ fn url_quote(s: &str) -> String {
         .collect()
 }
 
-/// rtk's history as `[seen, ran, tokens, saved]`; `Ok(None)` when there is no file, `Err` for
+/// atl's history as `[seen, ran, tokens, saved]`; `Ok(None)` when there is no file, `Err` for
 /// anything Python's `except Exception` catches.
-fn rtk_history(env: &Env) -> Result<Option<[i64; 4]>, ()> {
+fn atl_history(env: &Env) -> Result<Option<[i64; 4]>, ()> {
     let db = compat::config_dir(env)
         .join("anthology")
-        .join("rtk")
+        .join("atl")
         .join("history.db");
     let db = pathlib_str(db.as_os_str().as_bytes());
     match fs::metadata(OsStr::from_bytes(&db)) {
@@ -1114,24 +1168,24 @@ fn rtk_history(env: &Env) -> Result<Option<[i64; 4]>, ()> {
     Ok(Some([seen, ran, tokens, saved]))
 }
 
-/// `_check_rtk_savings(env)`: what rtk did, from its own history (`bin/rtk` and `bin/rtk-hook`
-/// keep it at `<config>/anthology/rtk/history.db`): the commands the hook saw, the ones rtk ran,
+/// `_check_atl_savings(env)`: what atl did, from its own history (`bin/atl` and `bin/atl-hook`
+/// keep it at `<config>/anthology/atl/history.db`): the commands the hook saw, the ones atl ran,
 /// and the tokens it saved on their output. It only informs: never `Some(false)`, `None` until
-/// there is history. rtk keeps the file in WAL mode, which a read-only reader cannot open, so it
-/// is read as immutable: no lock, no write, and what rtk last checkpointed.
-fn check_rtk_savings(env: &Env) -> CheckResult {
-    const NO_HISTORY: &str = "rtk has no history yet";
-    let [seen, ran, tokens, saved] = match rtk_history(env) {
+/// there is history. atl keeps the file in WAL mode, which a read-only reader cannot open, so it
+/// is read as immutable: no lock, no write, and what atl last checkpointed.
+fn check_atl_savings(env: &Env) -> CheckResult {
+    const NO_HISTORY: &str = "atl has no history yet";
+    let [seen, ran, tokens, saved] = match atl_history(env) {
         Ok(Some([0, 0, ..]) | None) => return ok(None, NO_HISTORY),
         Ok(Some(counts)) => counts,
-        Err(()) => return ok(None, "rtk's history cannot be read"),
+        Err(()) => return ok(None, "atl's history cannot be read"),
     };
     let (tokens, saved) = (tokens.max(0), saved.max(0));
     ok(
         Some(true),
         format!(
-            "rtk ran {} of the {} commands the hook saw ({}) and saved {} of their {} output \
-             tokens ({}), from rtk's own history",
+            "atl ran {} of the {} commands the hook saw ({}) and saved {} of their {} output \
+             tokens ({}), from atl's own history",
             thousands(ran),
             thousands(seen),
             per_cent(ran, seen),
@@ -1220,18 +1274,26 @@ fn check_path_wrappers(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> Che
         );
     }
     if env_bytes(env, "CLAUDECODE").is_some() {
-        let ours = (deps.which)("anthology-mem", env).is_some_and(|found| {
+        let in_bin = |found: PathBuf| {
             let dir = py_dirname(found.as_os_str().as_bytes());
             let dir = if dir.is_empty() { b".".to_vec() } else { dir };
             match (realpath(&path_of(&dir)), realpath(&root.join("bin"))) {
                 (Ok(a), Ok(b)) => a == b,
                 _ => false,
             }
-        });
-        if !ours {
+        };
+        if !(deps.which)("anthology-mem", env).is_some_and(in_bin) {
             return ok(
                 Some(false),
                 "the plugin's bin/ is not on PATH; agents cannot run anthology-mem",
+            );
+        }
+        // Another `atl` found first on PATH would run instead of the plugin's shim.
+        if (deps.which)("atl", env).is_some_and(|found| !in_bin(found)) {
+            return ok(
+                Some(false),
+                "the atl on PATH is not the plugin's bin/atl shim; atl commands would run another \
+                 program (put the plugin's bin/ first on PATH)",
             );
         }
         return ok(
@@ -1331,7 +1393,7 @@ pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -
         ("node", &|| check_node(env, deps)),
         ("docker", &|| check_docker(env, deps)),
         ("browseros", &|| check_browseros(env, cwd, deps)),
-        ("rtk", &|| check_rtk(env, root, deps)),
+        ("atl", &|| check_atl(env, root, deps)),
         ("platform_supported", &|| check_platform(deps)),
         ("plugin_read_rule", &|| check_plugin_rule(env, root)),
         ("browseros_tools", &|| check_browseros_tools(env, cwd, deps)),
@@ -1341,7 +1403,7 @@ pub fn check_env(env: &Env, plugin_root: &Path, cwd: &Path, deps: &DoctorDeps) -
         ("subagent_model", &|| {
             check_subagent_model(env, cwd, &deps.limits)
         }),
-        ("rtk_savings", &|| check_rtk_savings(env)),
+        ("atl_savings", &|| check_atl_savings(env)),
     ];
     runners
         .iter()

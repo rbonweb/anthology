@@ -56,7 +56,7 @@ pub fn owner(surface: &str) -> &'static str {
         "guard" => "anthology-guard",
         "settings" => "anthology-settings",
         "privacy" | "notes" | "memory" | "mem" => "anthology-memory",
-        "rtk_install" | "doctor" | "hook" | "setup" | "runtime" => "anthology-runtime",
+        "atl_install" | "doctor" | "hook" | "setup" | "runtime" => "anthology-runtime",
         "dev" => "anthology-dev",
         _ => "difftest",
     }

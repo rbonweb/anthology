@@ -1,5 +1,6 @@
 //! Every difftest surface (plan §1.4). Each surface lives in its own module; its lane fills it.
 
+pub mod atl_install_reconcile;
 pub mod core_lock;
 pub mod core_state;
 pub mod dev_dv2;
@@ -33,7 +34,6 @@ pub mod pycompat_quote;
 pub mod pycompat_re;
 pub mod pycompat_shlex;
 pub mod pycompat_str;
-pub mod rtk_install_reconcile;
 pub mod runtime_guardrails_loc;
 pub mod settings;
 pub mod setup;
@@ -65,7 +65,7 @@ pub const ALL: &[&str] = &[
     memory_sync::NAME,
     mem::NAME,
     memory_portable::NAME,
-    rtk_install_reconcile::NAME,
+    atl_install_reconcile::NAME,
     doctor::NAME,
     hook_session_start::NAME,
     setup::NAME,
@@ -110,7 +110,7 @@ const IMPLS: &[MakeSurface] = &[
     memory_sync::surface,
     mem::surface,
     memory_portable::surface,
-    rtk_install_reconcile::surface,
+    atl_install_reconcile::surface,
     doctor::surface,
     hook_session_start::surface,
     setup::surface,
@@ -151,7 +151,7 @@ const ON_MACOS: &[bool] = &[
     memory_sync::ON_MACOS,
     mem::ON_MACOS,
     memory_portable::ON_MACOS,
-    rtk_install_reconcile::ON_MACOS,
+    atl_install_reconcile::ON_MACOS,
     doctor::ON_MACOS,
     hook_session_start::ON_MACOS,
     setup::ON_MACOS,

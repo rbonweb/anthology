@@ -1,10 +1,10 @@
-//! The `rtk_install.reconcile` difftest surface (RT2; oracle
-//! `port/difftest/oracle/rtk_install.py`).
+//! The `atl_install.reconcile` difftest surface (RT2; oracle
+//! `port/difftest/oracle/atl_install.py`).
 //!
-//! A case is one `anthology rtk-install`-style run with an injected fetch:
+//! A case is one `anthology atl-install`-style run with an injected fetch:
 //!
 //! ```text
-//! {"lock": <rtk.lock JSON value>, "uname": [SYSTEM, MACHINE],
+//! {"lock": <atl.lock JSON value>, "uname": [SYSTEM, MACHINE],
 //!  "blob": HEX, "serve": "lock" | "elsewhere" | "error", "error": [TYPE, MESSAGE],
 //!  "pre": [{"path": REL, "kind": "file" | "dir" | "symlink", "data": HEX, "mode": N,
 //!           "age": DAYS | null, "target": TEXT}],
@@ -12,15 +12,15 @@
 //! ```
 //!
 //! Both sides build `<tmp>/data` from `pre` (in order; a symlink target may start with `<tmp>`),
-//! write the prior state's `rtk_path`, validate the lock (an invalid lock is exit 2 with
-//! `rtk_install: <msg>`, as the CLI prints it), then run `reconcile(data, lock, fetch, 5)` for
+//! write the prior state's `atl_path`, validate the lock (an invalid lock is exit 2 with
+//! `atl_install: <msg>`, as the CLI prints it), then run `reconcile(data, lock, fetch, 5)` for
 //! the given platform. The fake fetch serves `blob` at the lock's release URL (`lock`), at no
 //! URL (`elsewhere`: Python's `KeyError`), or raises `TYPE(MESSAGE)` (`error`). The result is
 //! printed as text: the three result fields, each fetch call, every entry under `data/`
-//! (kind, mode, a sha256 prefix or a link target), and state.json's `rtk_path`, with the
+//! (kind, mode, a sha256 prefix or a link target), and state.json's `atl_path`, with the
 //! temporary folder written as `<tmp>`.
 //!
-//! D-2: the rest of the line after `cannot read the rtk tarball: ` (Python's `tarfile`/`gzip`
+//! D-2: the rest of the line after `cannot read the atl tarball: ` (Python's `tarfile`/`gzip`
 //! versus the `tar`/`flate2` crates). The OS text of `[Errno N] <text>` is compared as is
 //! (`pycompat`'s errno tables).
 
@@ -34,8 +34,8 @@ use anthology_core::Env;
 use anthology_core::platform::Target;
 use anthology_pycompat::json::{Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::{self, AtlDeps, AtlLimits};
 use anthology_runtime::fetch::Fetch;
-use anthology_runtime::rtk_install::{self, RtkDeps, RtkLimits};
 use anthology_testkit::release::sha256_hex;
 use anthology_testkit::rt_b::{RawKind, raw_tar_gz};
 
@@ -45,7 +45,7 @@ use crate::observe::{Observed, from_oracle};
 use crate::oracle::Oracle;
 
 /// The surface name (plan §1.4).
-pub const NAME: &str = "rtk_install.reconcile";
+pub const NAME: &str = "atl_install.reconcile";
 
 /// Whether `difftest --all` runs this surface on macOS too (`ci/jobs/difftest-macos.sh`): it
 /// does; nothing here is Linux-only.
@@ -59,7 +59,7 @@ pub fn surface() -> Option<Box<dyn Surface>> {
 struct Reconcile;
 
 /// The D-2 prefix whose rest of line is library text (module docs).
-const D2_TARBALL: &str = "cannot read the rtk tarball: ";
+const D2_TARBALL: &str = "cannot read the atl tarball: ";
 
 fn normalizer() -> Normalizer {
     Normalizer::new().d2_prefix(D2_TARBALL)
@@ -117,7 +117,7 @@ impl Surface for Reconcile {
     }
 
     fn run_python(&self, c: &Case, oracle: &mut Oracle) -> Observed {
-        let mut o = from_oracle(&oracle.call("rtk_install", &c.data));
+        let mut o = from_oracle(&oracle.call("atl_install", &c.data));
         if apply_d2(&mut o) {
             oracle.mark("D-2");
         }
@@ -221,7 +221,7 @@ fn build_pre(tmp: &Path, data: &Path, pre: &[Value]) {
                 std::os::unix::fs::symlink(target, &path).expect("symlink");
                 continue;
             }
-            other => panic!("rtk_install.reconcile: kind {other:?}"),
+            other => panic!("atl_install.reconcile: kind {other:?}"),
         }
         if let Some(m) = int(field(item, "mode")) {
             fs::set_permissions(&path, fs::Permissions::from_mode(m as u32)).expect("chmod");
@@ -301,13 +301,13 @@ fn run(case: &Value) -> Observed {
     let shown = |s: &str| s.replace(&*tmp.to_string_lossy(), "<tmp>");
     if let Some(prior) = field(case, "state").as_str() {
         let value = prior.replace("<tmp>", &tmp.to_string_lossy());
-        anthology_core::state::write(&env, vec![("rtk_path".into(), Value::Str(value))])
+        anthology_core::state::write(&env, vec![("atl_path".into(), Value::Str(value))])
             .expect("prior state");
     }
-    let lock = match rtk_install::validate_lock(field(case, "lock")) {
+    let lock = match atl_install::validate_lock(field(case, "lock")) {
         Ok(l) => l,
         Err(e) => {
-            return Observed::text(2, "", &format!("rtk_install: {}\n", e.py_str()));
+            return Observed::text(2, "", &format!("atl_install: {}\n", e.py_str()));
         }
     };
     let uname = field(case, "uname").as_array().expect("uname");
@@ -315,8 +315,8 @@ fn run(case: &Value) -> Observed {
         uname[0].as_str().unwrap_or("").to_string(),
         uname[1].as_str().unwrap_or("").to_string(),
     );
-    let url = rtk_install::target(&system, &machine)
-        .map(|t| rtk_install::release_url(&lock, t))
+    let url = atl_install::target(&system, &machine)
+        .map(|t| atl_install::release_url(&lock, t))
         .unwrap_or_default();
     let error = field(case, "error").as_array().map(|e| {
         (
@@ -331,7 +331,7 @@ fn run(case: &Value) -> Observed {
         error,
         calls: Default::default(),
     };
-    let mut limits = RtkLimits::default();
+    let mut limits = AtlLimits::default();
     if let Some(n) = int(field(case, "max_binary_bytes")) {
         limits.max_binary_bytes = n as u64;
     }
@@ -339,16 +339,16 @@ fn run(case: &Value) -> Observed {
         limits.max_tar_members = n as usize;
     }
     UNAME.with(|u| *u.borrow_mut() = (system, machine));
-    let mut deps = RtkDeps::new(&fetch);
+    let mut deps = AtlDeps::new(&fetch);
     deps.uname = case_uname;
     deps.limits = limits;
-    let res = rtk_install::reconcile(&env, &data, &lock, 5.0, &deps);
+    let res = atl_install::reconcile(&env, &data, &lock, 5.0, &deps);
 
     let mut out = String::new();
     let none = || "None".to_string();
     out.push_str(&format!(
-        "rtk_path: {}\ninstalled: {}\nwarning: {}\ncalls: {}\n",
-        res.rtk_path
+        "atl_path: {}\ninstalled: {}\nwarning: {}\ncalls: {}\n",
+        res.atl_path
             .as_ref()
             .map_or_else(none, |p| shown(&p.to_string_lossy())),
         if res.installed { "True" } else { "False" },
@@ -366,7 +366,7 @@ fn run(case: &Value) -> Observed {
     let st = anthology_core::state::read(&env);
     out.push_str(&format!(
         "state: {}\n",
-        st.get("rtk_path")
+        st.get("atl_path")
             .and_then(Value::as_str)
             .map_or_else(none, shown)
     ));
@@ -423,21 +423,21 @@ fn lock_value(version: &str, repo: &str, host: Option<&str>, blob: &[u8], wrong:
     }
     obj(vec![
         ("version", s(version)),
-        ("tag", s(&format!("rtk--v{version}"))),
+        ("tag", s(&format!("atl--v{version}"))),
         ("repo", s(repo)),
         ("sha256", Value::Object(digests)),
     ])
 }
 
 fn host_of(uname: (&str, &str)) -> Option<&'static str> {
-    rtk_install::target(uname.0, uname.1)
+    atl_install::target(uname.0, uname.1)
         .ok()
         .map(Target::triple)
 }
 
 fn good_blob() -> Vec<u8> {
     raw_tar_gz(&[
-        ("rtk", RawKind::File(b"#!/bin/sh\necho fake-rtk\n".to_vec())),
+        ("atl", RawKind::File(b"#!/bin/sh\necho fake-atl\n".to_vec())),
         ("LICENSE", RawKind::File(b"license text\n".to_vec())),
     ])
 }
@@ -504,13 +504,13 @@ const REPO: &str = "rbonweb/anthology";
 fn installed(v: &str, blob: &[u8]) -> Vec<Value> {
     vec![
         pre_file(
-            &format!("rtk/{v}/rtk"),
-            b"#!/bin/sh\necho fake-rtk\n",
+            &format!("atl/{v}/atl"),
+            b"#!/bin/sh\necho fake-atl\n",
             0o755,
             None,
         ),
         pre_file(
-            &format!("rtk/{v}/.sha256"),
+            &format!("atl/{v}/.sha256"),
             format!("{}\n", sha256_hex(blob)).as_bytes(),
             0o644,
             None,
@@ -533,7 +533,7 @@ fn seed_cases() -> Vec<Value> {
             "lock",
             None,
             installed(V, &blob),
-            Some(&format!("<tmp>/data/rtk/{V}/rtk")),
+            Some(&format!("<tmp>/data/atl/{V}/atl")),
             none,
         ),
         // Already installed, stale state.
@@ -544,7 +544,7 @@ fn seed_cases() -> Vec<Value> {
             "lock",
             None,
             installed(V, &blob),
-            Some("/previous/rtk"),
+            Some("/previous/atl"),
             none,
         ),
         // A wrong hash.
@@ -555,7 +555,7 @@ fn seed_cases() -> Vec<Value> {
             "lock",
             None,
             vec![],
-            Some("/previous/rtk"),
+            Some("/previous/atl"),
             none,
         ),
         // Fetch errors.
@@ -622,7 +622,7 @@ fn seed_cases() -> Vec<Value> {
             None,
             vec![
                 pre_dir("elsewhere-target", None),
-                pre_link(&format!("rtk/{V}"), "<tmp>/data/elsewhere-target"),
+                pre_link(&format!("atl/{V}"), "<tmp>/data/elsewhere-target"),
             ],
             None,
             none,
@@ -635,20 +635,20 @@ fn seed_cases() -> Vec<Value> {
             "lock",
             None,
             vec![
-                pre_file("rtk/0.9.0/rtk", b"x", 0o755, None),
-                pre_file("rtk/0.9.0/.last-used", b"", 0o644, Some(45.0)),
-                pre_file("rtk/1.0.0/rtk", b"x", 0o755, None),
-                pre_file("rtk/1.0.0/.last-used", b"", 0o644, Some(5.0)),
-                pre_file("rtk/0.8.0/rtk", b"x", 0o755, Some(90.0)),
-                pre_dir("rtk/0.8.0", Some(90.0)),
-                pre_dir("rtk/notes", Some(400.0)),
-                pre_dir("rtk/.tmp-stale", Some(2.0)),
-                pre_dir("rtk/.tmp-fresh", Some(0.01)),
+                pre_file("atl/0.9.0/atl", b"x", 0o755, None),
+                pre_file("atl/0.9.0/.last-used", b"", 0o644, Some(45.0)),
+                pre_file("atl/1.0.0/atl", b"x", 0o755, None),
+                pre_file("atl/1.0.0/.last-used", b"", 0o644, Some(5.0)),
+                pre_file("atl/0.8.0/atl", b"x", 0o755, Some(90.0)),
+                pre_dir("atl/0.8.0", Some(90.0)),
+                pre_dir("atl/notes", Some(400.0)),
+                pre_dir("atl/.tmp-stale", Some(2.0)),
+                pre_dir("atl/.tmp-fresh", Some(0.01)),
             ],
             None,
             none,
         ),
-        // OSError paths: `.last-used` is a folder (touch), `rtk` is a non-empty folder (the
+        // OSError paths: `.last-used` is a folder (touch), `atl` is a non-empty folder (the
         // rename), the version folder is a file (mkdir).
         case(
             lock(),
@@ -658,7 +658,7 @@ fn seed_cases() -> Vec<Value> {
             None,
             {
                 let mut p = installed(V, &blob);
-                p.push(pre_dir(&format!("rtk/{V}/.last-used"), None));
+                p.push(pre_dir(&format!("atl/{V}/.last-used"), None));
                 p
             },
             None,
@@ -670,7 +670,7 @@ fn seed_cases() -> Vec<Value> {
             &blob,
             "lock",
             None,
-            vec![pre_file(&format!("rtk/{V}/rtk/keep"), b"x", 0o644, None)],
+            vec![pre_file(&format!("atl/{V}/atl/keep"), b"x", 0o644, None)],
             None,
             none,
         ),
@@ -680,7 +680,7 @@ fn seed_cases() -> Vec<Value> {
             &blob,
             "lock",
             None,
-            vec![pre_file(&format!("rtk/{V}"), b"a file", 0o644, None)],
+            vec![pre_file(&format!("atl/{V}"), b"a file", 0o644, None)],
             None,
             none,
         ),
@@ -741,38 +741,38 @@ fn seed_cases() -> Vec<Value> {
 }
 
 fn rejected_members() -> Vec<(&'static str, Vec<(&'static str, RawKind)>)> {
-    let body = || RawKind::File(b"#!/bin/sh\necho fake-rtk\n".to_vec());
+    let body = || RawKind::File(b"#!/bin/sh\necho fake-atl\n".to_vec());
     let x = || RawKind::File(b"x".to_vec());
     vec![
         (
-            "symlink rtk",
-            vec![("rtk", RawKind::Symlink("/bin/sh".into()))],
+            "symlink atl",
+            vec![("atl", RawKind::Symlink("/bin/sh".into()))],
         ),
         (
-            "hardlink rtk",
+            "hardlink atl",
             vec![
-                ("rtk", RawKind::Hardlink("LICENSE".into())),
+                ("atl", RawKind::Hardlink("LICENSE".into())),
                 ("LICENSE", x()),
             ],
         ),
-        ("dotdot member", vec![("../rtk", body()), ("LICENSE", x())]),
-        ("nested member", vec![("bin/rtk", body())]),
-        ("absolute member", vec![("/rtk", body())]),
-        ("no rtk member", vec![("LICENSE", x())]),
+        ("dotdot member", vec![("../atl", body()), ("LICENSE", x())]),
+        ("nested member", vec![("bin/atl", body())]),
+        ("absolute member", vec![("/atl", body())]),
+        ("no atl member", vec![("LICENSE", x())]),
         (
-            "duplicate rtk",
-            vec![("rtk", body()), ("rtk", RawKind::File(b"other".to_vec()))],
+            "duplicate atl",
+            vec![("atl", body()), ("atl", RawKind::File(b"other".to_vec()))],
         ),
-        ("dir rtk", vec![("rtk", RawKind::Dir)]),
-        ("dot rtk", vec![("./rtk", body())]),
-        // tarfile reads an old-style `rtk/` as the folder `rtk`.
+        ("dir atl", vec![("atl", RawKind::Dir)]),
+        ("dot atl", vec![("./atl", body())]),
+        // tarfile reads an old-style `atl/` as the folder `atl`.
         (
             "old-style folder",
-            vec![("rtk/", RawKind::OldFile(Vec::new())), ("rtk", body())],
+            vec![("atl/", RawKind::OldFile(Vec::new())), ("atl", body())],
         ),
         (
-            "old-style regular rtk",
-            vec![("rtk", RawKind::OldFile(b"old".to_vec()))],
+            "old-style regular atl",
+            vec![("atl", RawKind::OldFile(b"old".to_vec()))],
         ),
     ]
 }
@@ -784,7 +784,7 @@ fn gzip(b: &[u8]) -> Vec<u8> {
 }
 
 const MEMBER_NAMES: [&str; 10] = [
-    "rtk", "rtk", "rtk", "LICENSE", "./rtk", "bin/rtk", "../rtk", "/rtk", "README", "rtk/",
+    "atl", "atl", "atl", "LICENSE", "./atl", "bin/atl", "../atl", "/atl", "README", "atl/",
 ];
 
 fn rand_bytes(rng: &mut Rng, max: usize) -> Vec<u8> {
@@ -806,9 +806,9 @@ fn rand_blob(rng: &mut Rng) -> Vec<u8> {
         return gzip(&junk);
     }
     if k < 0.5 {
-        // A well-formed release: rtk (any bytes) and LICENSE.
+        // A well-formed release: atl (any bytes) and LICENSE.
         return raw_tar_gz(&[
-            ("rtk", RawKind::File(rand_bytes(rng, 64))),
+            ("atl", RawKind::File(rand_bytes(rng, 64))),
             ("LICENSE", RawKind::File(b"license text\n".to_vec())),
         ]);
     }
@@ -873,20 +873,20 @@ fn rand_pre(rng: &mut Rng, version: &str, blob: &[u8]) -> Vec<Value> {
         0 | 1 => pre.extend(installed(version, blob)),
         2 => {
             pre.extend(installed(version, blob));
-            pre[1] = pre_file(&format!("rtk/{version}/.sha256"), b"ffff\n", 0o644, None);
+            pre[1] = pre_file(&format!("atl/{version}/.sha256"), b"ffff\n", 0o644, None);
         }
         3 => {
             pre.extend(installed(version, blob));
-            pre[0] = pre_file(&format!("rtk/{version}/rtk"), b"x", 0o644, None);
+            pre[0] = pre_file(&format!("atl/{version}/atl"), b"x", 0o644, None);
         }
-        4 => pre.push(pre_file(&format!("rtk/{version}"), b"a file", 0o644, None)),
+        4 => pre.push(pre_file(&format!("atl/{version}"), b"a file", 0o644, None)),
         5 => {
             pre.push(pre_dir("target-dir", None));
-            pre.push(pre_link(&format!("rtk/{version}"), "<tmp>/data/target-dir"));
+            pre.push(pre_link(&format!("atl/{version}"), "<tmp>/data/target-dir"));
         }
         6 => {
             pre.extend(installed(version, blob));
-            pre.push(pre_dir(&format!("rtk/{version}/.last-used"), None));
+            pre.push(pre_dir(&format!("atl/{version}/.last-used"), None));
         }
         _ => {}
     }
@@ -903,12 +903,12 @@ fn rand_pre(rng: &mut Rng, version: &str, blob: &[u8]) -> Vec<Value> {
             continue;
         }
         let age = *rng.pick(&[0.01, 1.0, 10.0, 45.0, 90.0]);
-        let base = format!("rtk/{other}");
+        let base = format!("atl/{other}");
         if pre.iter().any(|p| field(p, "path").as_str() == Some(&base)) {
             continue;
         }
         if rng.chance(0.5) {
-            pre.push(pre_file(&format!("{base}/rtk"), b"x", 0o755, None));
+            pre.push(pre_file(&format!("{base}/atl"), b"x", 0o755, None));
             pre.push(pre_file(
                 &format!("{base}/.last-used"),
                 b"",
@@ -946,8 +946,8 @@ pub fn gen_case(rng: &mut Rng) -> Value {
     };
     let pre = rand_pre(rng, version, &blob);
     let state = match rng.below(4) {
-        0 => Some("/previous/rtk".to_string()),
-        1 => Some(format!("<tmp>/data/rtk/{version}/rtk")),
+        0 => Some("/previous/atl".to_string()),
+        1 => Some(format!("<tmp>/data/atl/{version}/atl")),
         _ => None,
     };
     let limits = match rng.below(12) {
@@ -980,8 +980,8 @@ mod tests {
             .collect();
         assert!(outs[0].contains("installed: True"), "{}", outs[0]);
         assert!(outs[1].contains("calls: 0"), "{}", outs[1]);
-        assert!(outs.iter().any(|o| o.contains("does not match rtk.lock")));
-        assert!(outs.iter().any(|o| o.contains("tarball has no rtk member")));
+        assert!(outs.iter().any(|o| o.contains("does not match atl.lock")));
+        assert!(outs.iter().any(|o| o.contains("tarball has no atl member")));
         assert!(outs.iter().any(|o| o.contains("is a symlink")));
     }
 

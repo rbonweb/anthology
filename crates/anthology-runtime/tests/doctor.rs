@@ -4,8 +4,8 @@
 //! (`tests/compat.rs`); `CliTest` runs the binary (`crates/anthology-cli/tests/doctor.rs`).
 //!
 //! Seams (GC-19): `shutil.which` → `DoctorDeps.which`, `subprocess.run` → `run`,
-//! `platform.system`/`machine` → `uname`, the `rtk_install` module the Python tests swap →
-//! `rtk_installed` (with a real rtk.lock), `SYSTEM_APPLICATIONS` / `MANAGED_MCP_PATHS` →
+//! `platform.system`/`machine` → `uname`, the `atl_install` module the Python tests swap →
+//! `atl_installed` (with a real atl.lock), `SYSTEM_APPLICATIONS` / `MANAGED_MCP_PATHS` →
 //! `DoctorLimits`. F-5: the first check is `anthology_binary`, not `python3`.
 #![forbid(unsafe_code)]
 
@@ -22,12 +22,12 @@ use anthology_core::lock::Lock;
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str::is_printable;
+use anthology_runtime::atl_install::{self, AtlDeps};
 use anthology_runtime::compat;
 use anthology_runtime::doctor::{self, Check, DoctorDeps, DoctorLimits, Report, RunResult};
 use anthology_runtime::fetch::Fetch;
-use anthology_runtime::rtk_install::{self, RtkDeps};
 use anthology_testkit::release;
-use anthology_testkit::rt_b::{FakeAnswer, RTK_HOST, RtkFakeFetch, rtk_url_for};
+use anthology_testkit::rt_b::{ATL_HOST, AtlFakeFetch, FakeAnswer, atl_url_for};
 use anthology_testkit::{Plugin, Sandbox, repo_root};
 
 /// `PLUGIN`: the repository's anthology plugin.
@@ -335,7 +335,7 @@ mod check_env_test {
                 "node",
                 "docker",
                 "browseros",
-                "rtk",
+                "atl",
                 "platform_supported",
                 "plugin_read_rule",
                 "browseros_tools",
@@ -343,7 +343,7 @@ mod check_env_test {
                 "path_wrappers",
                 "agent_memory_path",
                 "subagent_model",
-                "rtk_savings"
+                "atl_savings"
             ]
         );
         assert_eq!(names, doctor::CHECKS);
@@ -454,38 +454,38 @@ mod check_env_test {
         assert!(x.detail.contains("macOS and Linux"));
     }
 
-    /// A valid rtk.lock at `path` for `version` (its digests are of `blob`).
+    /// A valid atl.lock at `path` for `version` (its digests are of `blob`).
     fn lock_file(path: &Path, version: &str, blob: &[u8]) -> Lock {
         release::write_lock(path, blob, version)
     }
 
-    fn rtk_check(c: &EnvCase, lock: &Path, deps: DoctorDeps) -> Check {
+    fn atl_check(c: &EnvCase, lock: &Path, deps: DoctorDeps) -> Check {
         let deps = DoctorDeps {
-            rtk_lock: Some(lock.to_path_buf()),
+            atl_lock: Some(lock.to_path_buf()),
             ..deps
         };
-        c.check_deps("rtk", &c.env, &plugin(), &deps)
+        c.check_deps("atl", &c.env, &plugin(), &deps)
     }
 
     #[test]
     fn test_rtk_is_checked_through_the_lock_and_the_installed_marker() {
         let c = EnvCase::new();
         let data = c.tmp.join("data");
-        let binary = data.join("rtk").join("1.0.0").join("rtk");
+        let binary = data.join("atl").join("1.0.0").join("atl");
         write(&binary, "x");
         c.write_state(&format!(
-            r#"{{"rtk_path": {}, "data_dir": {}}}"#,
+            r#"{{"atl_path": {}, "data_dir": {}}}"#,
             js(&binary),
             js(&data)
         ));
-        let lock_path = c.tmp.join("rtk.lock");
+        let lock_path = c.tmp.join("atl.lock");
         let parsed = lock_file(&lock_path, "1.0.0", b"blob");
         let calls: Rc<RefCell<Vec<(PathBuf, Lock, String)>>> = Rc::default();
         let answer = Rc::new(Cell::new(true));
         let deps = |calls: &Rc<RefCell<Vec<_>>>, answer: &Rc<Cell<bool>>| {
             let (calls, answer) = (Rc::clone(calls), Rc::clone(answer));
             DoctorDeps {
-                rtk_installed: Box::new(move |d, l, t| {
+                atl_installed: Box::new(move |d, l, t| {
                     calls
                         .borrow_mut()
                         .push((d.to_path_buf(), l.clone(), t.triple().to_string()));
@@ -494,7 +494,7 @@ mod check_env_test {
                 ..c.deps()
             }
         };
-        let x = rtk_check(&c, &lock_path, deps(&calls, &answer));
+        let x = atl_check(&c, &lock_path, deps(&calls, &answer));
         assert_eq!(x.ok, Some(true), "{x:?}");
         assert_eq!(
             *calls.borrow(),
@@ -505,50 +505,103 @@ mod check_env_test {
             )]
         );
         answer.set(false);
-        let x = rtk_check(&c, &lock_path, deps(&calls, &answer));
+        let x = atl_check(&c, &lock_path, deps(&calls, &answer));
         assert_eq!(x.ok, Some(false));
         assert!(x.detail.contains("setup"));
     }
 
     fn always_installed(c: &EnvCase) -> DoctorDeps {
         DoctorDeps {
-            rtk_installed: Box::new(|_, _, _| true),
+            atl_installed: Box::new(|_, _, _| true),
             ..c.deps()
         }
+    }
+
+    #[test]
+    fn doctor_reports_legacy_rtk_leftovers() {
+        let c = EnvCase::new();
+        let data = c.tmp.join("data");
+        let binary = data.join("atl").join("1.0.0").join("atl");
+        write(&binary, "x");
+        let lock_path = c.tmp.join("atl.lock");
+        lock_file(&lock_path, "1.0.0", b"blob");
+        c.write_state(&format!(
+            r#"{{"atl_path": {}, "data_dir": {}}}"#,
+            js(&binary),
+            js(&data)
+        ));
+        // A clean install says nothing about the old one.
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(
+            (x.ok, x.detail.as_str()),
+            (Some(true), "atl matches atl.lock")
+        );
+        // The old install's state key, downloaded versions and history folder.
+        c.write_state(&format!(
+            r#"{{"atl_path": {}, "data_dir": {}, "rtk_path": "/old/rtk"}}"#, // legacy key
+            js(&binary),
+            js(&data)
+        ));
+        write(&data.join("rtk/1.2.1-anthology.1/rtk"), "x"); // legacy download
+        write(&c.config.join("anthology/rtk/history.db"), "x"); // legacy history
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(x.ok, Some(true), "{x:?}"); // the install itself is fine
+        assert!(
+            x.detail
+                .starts_with("atl matches atl.lock; legacy rtk leftovers: ")
+        );
+        for part in [
+            "the rtk_path key in state.json", // legacy
+            "the old rtk download folder",    // legacy
+            "the old rtk history folder",     // legacy
+            "/anthology:setup",
+        ] {
+            assert!(x.detail.contains(part), "{part}: {x:?}");
+        }
+        // Each leftover is reported on its own.
+        fs::remove_dir_all(data.join("rtk")).expect("rm download"); // legacy
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert!(!x.detail.contains("download folder"), "{x:?}");
+        assert!(x.detail.contains("history folder"), "{x:?}");
+        // A leftover is reported even when atl itself is not installed.
+        c.write_state(r#"{"rtk_path": "/old/rtk"}"#); // legacy key
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(x.ok, Some(false), "{x:?}");
+        assert!(x.detail.contains("legacy rtk leftovers"), "{x:?}");
     }
 
     #[test]
     fn test_rtk_outside_the_locked_version_dir_is_not_ok() {
         let c = EnvCase::new();
         let data = c.tmp.join("data");
-        let binary = data.join("rtk").join("0.9.0").join("rtk"); // older than the lock's
+        let binary = data.join("atl").join("0.9.0").join("atl"); // older than the lock's
         write(&binary, "x");
         c.write_state(&format!(
-            r#"{{"rtk_path": {}, "data_dir": {}}}"#,
+            r#"{{"atl_path": {}, "data_dir": {}}}"#,
             js(&binary),
             js(&data)
         ));
-        let lock_path = c.tmp.join("rtk.lock");
+        let lock_path = c.tmp.join("atl.lock");
         lock_file(&lock_path, "1.0.0", b"blob");
-        let x = rtk_check(&c, &lock_path, always_installed(&c));
+        let x = atl_check(&c, &lock_path, always_installed(&c));
         assert_eq!(x.ok, Some(false));
     }
 
     #[test]
     fn test_rtk_missing_binary_is_not_ok() {
         let c = EnvCase::new();
-        let lock_path = c.tmp.join("rtk.lock");
+        let lock_path = c.tmp.join("atl.lock");
         lock_file(&lock_path, "1.0.0", b"blob");
         assert_eq!(
-            rtk_check(&c, &lock_path, always_installed(&c)).ok,
+            atl_check(&c, &lock_path, always_installed(&c)).ok,
             Some(false)
         );
         c.write_state(&format!(
-            r#"{{"rtk_path": {}}}"#,
-            js(&c.tmp.join("gone").join("rtk"))
+            r#"{{"atl_path": {}}}"#,
+            js(&c.tmp.join("gone").join("atl"))
         ));
         assert_eq!(
-            rtk_check(&c, &lock_path, always_installed(&c)).ok,
+            atl_check(&c, &lock_path, always_installed(&c)).ok,
             Some(false)
         );
     }
@@ -557,19 +610,19 @@ mod check_env_test {
     fn test_rtk_unreadable_lock_is_not_wired_yet() {
         // load_lock raising: a lock that cannot be read (a folder) or does not validate
         let c = EnvCase::new();
-        let lock_path = c.tmp.join("rtk.lock");
+        let lock_path = c.tmp.join("atl.lock");
         fs::create_dir(&lock_path).expect("a folder");
-        let x = rtk_check(&c, &lock_path, always_installed(&c));
+        let x = atl_check(&c, &lock_path, always_installed(&c));
         assert_eq!(x.ok, None);
         assert!(x.detail.contains("not wired yet"));
         fs::remove_dir(&lock_path).expect("rmdir");
         write(&lock_path, "{}");
-        let x = rtk_check(&c, &lock_path, always_installed(&c));
+        let x = atl_check(&c, &lock_path, always_installed(&c));
         assert_eq!(x.ok, None);
         assert!(x.detail.contains("not wired yet"));
     }
 
-    struct Fake(RtkFakeFetch);
+    struct Fake(AtlFakeFetch);
 
     impl Fetch for Fake {
         fn fetch(&self, url: &str, dest: &mut dyn Write, timeout: f64) -> Result<(), PyExc> {
@@ -588,23 +641,23 @@ mod check_env_test {
     }
 
     #[test]
-    fn test_real_rtk_install_installed_binary_passes_and_tampering_fails() {
+    fn test_real_atl_install_installed_binary_passes_and_tampering_fails() {
         let c = EnvCase::new();
         *c.system.borrow_mut() = linux();
-        let blob = release::tarball(release::RTK_BODY);
-        let lock_path = c.tmp.join("rtk.lock");
+        let blob = release::tarball(release::ATL_BODY);
+        let lock_path = c.tmp.join("atl.lock");
         let lock = lock_file(&lock_path, release::VERSION, &blob);
         let data = c.tmp.join("plugin-data");
-        let real = |c: &EnvCase| rtk_check(c, &lock_path, c.deps());
+        let real = |c: &EnvCase| atl_check(c, &lock_path, c.deps());
         assert_eq!(real(&c).ok, Some(false)); // nothing installed yet
-        let fetch = Fake(RtkFakeFetch::serving(&rtk_url_for(&lock, RTK_HOST), &blob));
-        let mut rdeps = RtkDeps::new(&fetch);
+        let fetch = Fake(AtlFakeFetch::serving(&atl_url_for(&lock, ATL_HOST), &blob));
+        let mut rdeps = AtlDeps::new(&fetch);
         rdeps.uname = linux;
-        let result = rtk_install::reconcile(&c.env, &data, &lock, 5.0, &rdeps);
+        let result = atl_install::reconcile(&c.env, &data, &lock, 5.0, &rdeps);
         assert_eq!(result.warning, None, "{result:?}");
         let x = real(&c);
         assert_eq!(x.ok, Some(true), "{x:?}");
-        let binary = result.rtk_path.expect("rtk_path");
+        let binary = result.atl_path.expect("atl_path");
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o600)).expect("chmod");
         assert_eq!(real(&c).ok, Some(false)); // no longer executable
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -615,9 +668,9 @@ mod check_env_test {
     }
 
     #[test]
-    fn test_real_rtk_install_missing_lock_is_not_wired_yet() {
+    fn test_real_atl_install_missing_lock_is_not_wired_yet() {
         let c = EnvCase::new();
-        let x = rtk_check(&c, &c.tmp.join("absent.lock"), c.deps());
+        let x = atl_check(&c, &c.tmp.join("absent.lock"), c.deps());
         assert_eq!(x.ok, None);
     }
 
@@ -673,22 +726,22 @@ mod check_env_test {
     }
 }
 
-/// `RtkSavingsTest`: what rtk did, from its own history next to state.json.
-mod rtk_savings_test {
+/// `AtlSavingsTest`: what atl did, from its own history next to state.json.
+mod atl_savings_test {
     use super::*;
 
-    /// `history(decisions, commands, wal)`: a history.db with the rtk columns the check reads.
+    /// `history(decisions, commands, wal)`: a history.db with the atl columns the check reads.
     fn history(
         c: &EnvCase,
         decisions: &[(&str, &str)],
         commands: &[(&str, i64, i64)],
         wal: bool,
     ) -> PathBuf {
-        let db = c.config.join("anthology").join("rtk").join("history.db");
+        let db = c.config.join("anthology").join("atl").join("history.db");
         fs::create_dir_all(db.parent().expect("parent")).expect("mkdir");
         let con = rusqlite::Connection::open(&db).expect("open");
         if wal {
-            // as rtk keeps it
+            // as atl keeps it
             let mode: String = con
                 .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
                 .expect("wal");
@@ -696,7 +749,7 @@ mod rtk_savings_test {
         }
         con.execute_batch(
             "CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, raw_cmd TEXT, decision TEXT);
-             CREATE TABLE commands (id INTEGER PRIMARY KEY, rtk_cmd TEXT, input_tokens INTEGER,
+             CREATE TABLE commands (id INTEGER PRIMARY KEY, atl_cmd TEXT, input_tokens INTEGER,
                                     saved_tokens INTEGER);",
         )
         .expect("schema");
@@ -709,7 +762,7 @@ mod rtk_savings_test {
         }
         for (cmd, input, saved) in commands {
             con.execute(
-                "INSERT INTO commands (rtk_cmd, input_tokens, saved_tokens) VALUES (?1, ?2, ?3)",
+                "INSERT INTO commands (atl_cmd, input_tokens, saved_tokens) VALUES (?1, ?2, ?3)",
                 (cmd, input, saved),
             )
             .expect("insert");
@@ -719,7 +772,7 @@ mod rtk_savings_test {
     }
 
     fn savings(c: &EnvCase) -> Check {
-        c.checks().remove("rtk_savings").expect("rtk_savings")
+        c.checks().remove("atl_savings").expect("atl_savings")
     }
 
     fn listing(dir: &Path) -> Vec<String> {
@@ -735,13 +788,13 @@ mod rtk_savings_test {
     fn test_no_history_yet_is_none() {
         let c = EnvCase::new();
         let none = Check {
-            name: "rtk_savings",
+            name: "atl_savings",
             ok: None,
-            detail: "rtk has no history yet".into(),
+            detail: "atl has no history yet".into(),
         };
         assert_eq!(savings(&c), none);
         history(&c, &[], &[], true);
-        assert_eq!(savings(&c).detail, "rtk has no history yet");
+        assert_eq!(savings(&c).detail, "atl has no history yet");
     }
 
     #[test]
@@ -752,7 +805,7 @@ mod rtk_savings_test {
         let db = history(
             &c,
             &decisions,
-            &[("rtk read a", 1000, 35), ("rtk grep x", 233, 0)],
+            &[("atl read a", 1000, 35), ("atl grep x", 233, 0)],
             true,
         );
         let dir = db.parent().expect("parent");
@@ -761,8 +814,8 @@ mod rtk_savings_test {
         assert_eq!(got.ok, Some(true));
         assert_eq!(
             got.detail,
-            "rtk ran 2 of the 3,000 commands the hook saw (0.1%) and saved 35 of their 1,233 \
-             output tokens (2.8%), from rtk's own history"
+            "atl ran 2 of the 3,000 commands the hook saw (0.1%) and saved 35 of their 1,233 \
+             output tokens (2.8%), from atl's own history"
         );
         // read only
         assert_eq!((listing(dir), fs::read(&db).expect("read")), before);
@@ -772,11 +825,11 @@ mod rtk_savings_test {
     fn test_percentages_round_half_up_and_never_divide_by_zero() {
         let c = EnvCase::new();
         // 6.25%; a negative saving counts as 0
-        history(&c, &[("x", "defer"); 16], &[("rtk ls", 0, -5)], true);
+        history(&c, &[("x", "defer"); 16], &[("atl ls", 0, -5)], true);
         assert_eq!(
             savings(&c).detail,
-            "rtk ran 1 of the 16 commands the hook saw (6.3%) and saved 0 of their 0 output \
-             tokens (0.0%), from rtk's own history"
+            "atl ran 1 of the 16 commands the hook saw (6.3%) and saved 0 of their 0 output \
+             tokens (0.0%), from atl's own history"
         );
     }
 
@@ -786,9 +839,9 @@ mod rtk_savings_test {
         let db = history(&c, &[("x", "defer")], &[], false);
         fs::write(&db, b"not a database".repeat(100)).expect("write");
         let unreadable = Check {
-            name: "rtk_savings",
+            name: "atl_savings",
             ok: None,
-            detail: "rtk's history cannot be read".into(),
+            detail: "atl's history cannot be read".into(),
         };
         assert_eq!(savings(&c), unreadable);
         fs::remove_file(&db).expect("rm");
@@ -797,7 +850,7 @@ mod rtk_savings_test {
             .expect("schema");
         drop(con);
         // no hook_decisions table
-        assert_eq!(savings(&c).detail, "rtk's history cannot be read");
+        assert_eq!(savings(&c).detail, "atl's history cannot be read");
     }
 }
 
@@ -1925,7 +1978,7 @@ mod path_wrappers_test {
     /// `fake_plugin()`: executable `bin/` wrappers (F-9: `anthology` too).
     fn fake_plugin(c: &EnvCase) -> PathBuf {
         let root = c.tmp.join("plug");
-        for name in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+        for name in ["anthology", "anthology-mem", "atl", "atl-hook"] {
             let p = write(&root.join("bin").join(name), "#!/bin/sh\n");
             fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
@@ -1958,6 +2011,32 @@ mod path_wrappers_test {
         assert_eq!(
             c.check_deps("path_wrappers", &env, &root, &deps).ok,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn doctor_warns_when_atl_on_path_is_not_the_plugin_shim() {
+        // Another `atl` earlier on PATH would run instead of the plugin's bin/atl.
+        let c = EnvCase::new();
+        let root = fake_plugin(&c);
+        let bin = root.join("bin");
+        let other = write(&c.tmp.join("other").join("atl"), "x");
+        let deps = DoctorDeps {
+            which: Box::new(move |n, _| {
+                Some(if n == "atl" {
+                    other.clone()
+                } else {
+                    bin.join(n)
+                })
+            }),
+            ..c.deps()
+        };
+        let env = c.env.clone().with("CLAUDECODE", "1");
+        let x = c.check_deps("path_wrappers", &env, &root, &deps);
+        assert_eq!(x.ok, Some(false), "{x:?}");
+        assert!(
+            x.detail.contains("atl on PATH is not the plugin's"),
+            "{x:?}"
         );
     }
 
@@ -2154,7 +2233,7 @@ mod review_test {
         write(&fake.join("hooks").join("guard.sh"), "#!/bin/sh\n");
         write(&fake.join("anthology.lock"), "{}");
         let all = c.checks_with(&c.env, Path::new(""), &c.cwd, &c.deps());
-        for name in ["anthology_binary", "rtk", "path_wrappers"] {
+        for name in ["anthology_binary", "atl", "path_wrappers"] {
             let got = (all[name].ok, all[name].detail.as_str());
             assert_eq!(got, (None, doctor::UNKNOWN_ROOT), "{name}");
         }
