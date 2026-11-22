@@ -2223,6 +2223,14 @@ mod guide_test {
         ] {
             assert!(text.contains(want), "{want}");
         }
+        // Before each merge or pull the lead commits any uncommitted agent memory.
+        assert!(
+            text.contains(
+                "Before each merge or pull, and at task end, commit any uncommitted \
+                 `.claude/agent-memory/` changes, whichever agent wrote them"
+            ),
+            "merge/pull memory rule"
+        );
     }
 
     #[test]
