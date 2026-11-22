@@ -802,6 +802,237 @@ fn promote_error(
     ))
 }
 
+// --- the repo's own auto memory switch ------------------------------------------------------
+
+/// The one key setup adds to an approved repo's `.claude/settings.json`: with the repo's memory
+/// (`.claude/memory/`) in force, Claude Code's built-in auto memory must not run beside it. The
+/// user-wide settings.json is never used for this.
+pub const AUTO_MEMORY_KEY: &str = "autoMemoryEnabled";
+/// state.json's record of these edits, so `remove` can undo them:
+/// `{<repo root>: {"ops": [<settings record>, ...], "created": <bool>}}`.
+const REPO_SETTINGS_STATE: &str = "repo_settings";
+
+fn auto_memory_op() -> settings::Op {
+    settings::Op::Set {
+        path: vec![AUTO_MEMORY_KEY.to_string()],
+        value: Value::Bool(false),
+        tag: None,
+    }
+}
+
+fn repo_settings_path(root: &Path) -> PathBuf {
+    root.join(".claude").join("settings.json")
+}
+
+/// What setup would write into one repo's `.claude/settings.json`.
+struct RepoPlan {
+    path: PathBuf,
+    text: String,
+    new_text: String,
+    diff: String,
+    stored: Vec<Value>,
+}
+
+/// The repo edits state.json holds, by repo root.
+fn recorded_repo_settings(env: &Env) -> Map {
+    state::read(env)
+        .get(REPO_SETTINGS_STATE)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The records of the ops earlier runs made in `root`'s settings.json.
+fn recorded_ops(recorded: &Map, root: &Path) -> Result<Vec<Value>, String> {
+    let ops = recorded
+        .get(&pstr(root))
+        .and_then(Value::as_object)
+        .and_then(|entry| entry.get("ops"));
+    settings::stored_ops(ops).map_err(raise_text)
+}
+
+/// Why a repo's settings.json is not touched, or `None` when it may be: `.claude` or the file
+/// itself must not be a symlink (a repo could point it anywhere), and the file must be a plain
+/// file.
+fn repo_settings_unsafe(root: &Path) -> Option<String> {
+    let claude = root.join(".claude");
+    if unsafe_dir(&claude) {
+        return Some(".claude is a symlink or not a folder; left untouched".into());
+    }
+    let path = repo_settings_path(root);
+    if is_symlink(&path) {
+        return Some(".claude/settings.json is a symlink; left untouched".into());
+    }
+    if lexists(&path) && !path.is_file() {
+        return Some(".claude/settings.json is not a file; left untouched".into());
+    }
+    None
+}
+
+/// `_settings_plan` for a repo: the key merged into what the file holds. `Err` is the reason the
+/// file is left alone (an unreadable or non-JSON file is never overwritten).
+fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
+    if let Some(why) = repo_settings_unsafe(root) {
+        return Err(why);
+    }
+    let path = repo_settings_path(root);
+    let text = settings::read_text(&path)
+        .map(Option::unwrap_or_default)
+        .map_err(|e| format!("{}; left untouched", exc_text(&e)))?;
+    let previous = recorded_ops(&recorded_repo_settings(env), root)?;
+    let (new_text, diff, stored) = settings::reconcile(&text, &[auto_memory_op()], &previous)
+        .map_err(|m| match classify(m) {
+            Refusal::Caught(t) | Refusal::Raised(t) => format!("{t}; left untouched"),
+        })?;
+    Ok(RepoPlan {
+        path,
+        text,
+        new_text,
+        diff,
+        stored,
+    })
+}
+
+fn repo_settings_skipped(root: &Path, why: &str) -> Value {
+    obj(vec![
+        ("path", s(&pstr(&repo_settings_path(root)))),
+        ("skipped", s(why)),
+    ])
+}
+
+/// The preview's `memory.repo.auto_memory`: what setup would change in the repo's settings.json.
+fn repo_settings_preview(root: &Path, env: &Env) -> Value {
+    match repo_settings_plan(root, env) {
+        Ok(plan) => obj(vec![
+            ("path", s(&pstr(&plan.path))),
+            ("changed", Value::Bool(plan.new_text != plan.text)),
+            ("diff", Value::Str(plan.diff)),
+        ]),
+        Err(why) => repo_settings_skipped(root, &why),
+    }
+}
+
+/// Apply's step for an approved repo: record the edit in state.json first (so `remove` can always
+/// undo it), then write the merged file.
+fn apply_repo_settings(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Result<Value, String> {
+    let plan = match repo_settings_plan(root, env) {
+        Ok(p) => p,
+        Err(why) => return Ok(repo_settings_skipped(root, &why)),
+    };
+    let changed = plan.new_text != plan.text;
+    if !plan.stored.is_empty() {
+        let mut recorded = recorded_repo_settings(env);
+        let key = pstr(root);
+        let was_created = recorded
+            .get(&key)
+            .and_then(Value::as_object)
+            .and_then(|entry| entry.get("created"))
+            .is_some_and(truthy);
+        let created = was_created || !lexists(&plan.path);
+        recorded.insert(
+            key,
+            obj(vec![
+                ("ops", Value::Array(plan.stored.clone())),
+                ("created", Value::Bool(created)),
+            ]),
+        );
+        (deps.state_write)(
+            env,
+            vec![(REPO_SETTINGS_STATE.into(), Value::Object(recorded))],
+        )
+        .map_err(raised)?;
+    }
+    if changed {
+        (deps.settings_write)(&plan.path, &plan.new_text).map_err(raised)?;
+    }
+    Ok(obj(vec![
+        ("path", s(&pstr(&plan.path))),
+        ("changed", Value::Bool(changed)),
+        ("diff", Value::Str(plan.diff)),
+    ]))
+}
+
+/// What `remove` does to one repo's settings.json.
+struct RepoRevert {
+    root: String,
+    path: PathBuf,
+    new_text: String,
+    diff: String,
+    /// Take the file away: setup created it and nothing else is left in it.
+    delete: bool,
+    /// Why the file is left alone (or has nothing to revert).
+    note: Option<String>,
+    changed: bool,
+}
+
+/// `remove`'s plan for every repo setup edited, from state.json. A repo whose file is gone has
+/// nothing to revert; one that cannot be reverted is left alone and reported, and never stops
+/// the rest of the removal.
+fn repo_settings_reverts(env: &Env) -> Vec<RepoRevert> {
+    let mut out = Vec::new();
+    for (root, entry) in recorded_repo_settings(env).iter() {
+        let path = repo_settings_path(Path::new(root));
+        let mut revert = RepoRevert {
+            root: root.to_string(),
+            path: path.clone(),
+            new_text: String::new(),
+            diff: String::new(),
+            delete: false,
+            note: None,
+            changed: false,
+        };
+        let plan = || -> Result<Option<(String, String, String)>, String> {
+            if let Some(why) = repo_settings_unsafe(Path::new(root)) {
+                return Err(why);
+            }
+            let Some(text) = settings::read_text(&path).map_err(|e| exc_text(&e))? else {
+                return Ok(None);
+            };
+            let ops = settings::stored_ops(entry.as_object().and_then(|e| e.get("ops")))
+                .map_err(raise_text)?;
+            let (new_text, diff) = settings::revert_with_diff(&text, &ops).map_err(raise_text)?;
+            Ok(Some((text, new_text, diff)))
+        };
+        match plan() {
+            Ok(None) => revert.note = Some("nothing to revert: the file is gone".into()),
+            Ok(Some((text, new_text, diff))) => {
+                revert.changed = new_text != text;
+                revert.delete = revert.changed
+                    && settings::is_blank(&new_text)
+                    && entry
+                        .as_object()
+                        .and_then(|e| e.get("created"))
+                        .is_some_and(truthy);
+                revert.new_text = new_text;
+                revert.diff = diff;
+            }
+            Err(why) => revert.note = Some(format!("left in place: {why}")),
+        }
+        out.push(revert);
+    }
+    out
+}
+
+fn repo_reverts_value(reverts: &[RepoRevert]) -> Value {
+    Value::Array(
+        reverts
+            .iter()
+            .map(|r| {
+                let mut m = vec![
+                    ("root", s(&r.root)),
+                    ("path", s(&pstr(&r.path))),
+                    ("changed", Value::Bool(r.changed)),
+                    ("diff", s(&r.diff)),
+                ];
+                if let Some(n) = &r.note {
+                    m.push(("note", s(n)));
+                }
+                obj(m)
+            })
+            .collect(),
+    )
+}
+
 // --- commands -------------------------------------------------------------------------------
 
 /// The result for an exception that reached the top: what `main` prints.
@@ -858,6 +1089,7 @@ fn try_preview(
                 "approved",
                 Value::Bool(memory_approve::is_approved(key, env)),
             ),
+            ("auto_memory", repo_settings_preview(root, env)),
         ]),
     };
     let legacy = info
@@ -1064,6 +1296,7 @@ fn try_apply(
     }
     let (mut approved_key, mut approve_error) = (Value::Null, Value::Null);
     let (mut migrated, mut blocked) = (Value::Null, Value::Array(Vec::new()));
+    let mut auto_memory = Value::Null;
     if let Some((repo_root, key)) = info {
         approved_key = Value::Str(key);
         match (deps.memory.approve)(&repo_root, env) {
@@ -1075,11 +1308,22 @@ fn try_apply(
             }
             Err(e) => return Err(raised(e)),
         }
+        // Claude Code's own auto memory is switched off only where the repo's memory works.
+        auto_memory = if approve_error.is_null() {
+            apply_repo_settings(&repo_root, env, deps)?
+        } else {
+            repo_settings_skipped(
+                &repo_root,
+                "repo memory could not be set up (see approve_error), so Claude Code's auto \
+                 memory stays on",
+            )
+        };
         (migrated, blocked) = migrate_legacy(&repo_root, env, &personal, promote, deps)?;
     }
     let memory = obj(vec![
         ("approved_key", approved_key),
         ("approve_error", approve_error),
+        ("auto_memory", auto_memory),
         ("migrated", migrated),
         ("blocked", blocked),
         ("personal_dir", s(&pstr(&personal))),
@@ -1281,7 +1525,18 @@ fn try_remove(
     let (history_real, mut history_status, history_warn) = rtk_history_target(env);
 
     let changed = new_text != text;
-    let warnings: Vec<String> = rtk_warn.into_iter().chain(history_warn).collect();
+    let repo_reverts = repo_settings_reverts(env);
+    let repo_warnings = repo_reverts.iter().filter_map(|r| {
+        r.note
+            .as_ref()
+            .filter(|n| n.starts_with("left in place"))
+            .map(|n| format!("{}: {n}", pstr(&r.path)))
+    });
+    let warnings: Vec<String> = rtk_warn
+        .into_iter()
+        .chain(history_warn)
+        .chain(repo_warnings)
+        .collect();
     let approved: Vec<String> = {
         let mut keys: Vec<String> = match memory_approve::load_approved(env).get("repos") {
             Some(Value::Object(repos)) => repos.iter().map(|(k, _)| k.to_string()).collect(),
@@ -1328,6 +1583,7 @@ fn try_remove(
                 "memory",
                 obj(vec![
                     ("notes", s(NOTES_KEPT)),
+                    ("repo_settings", repo_reverts_value(&repo_reverts)),
                     ("this_repo_approved", opt_str(this_repo.clone())),
                     (
                         "approved_total",
@@ -1365,6 +1621,13 @@ fn try_remove(
             fs::remove_file(&path).map_err(|e| os_err(e, &path))?;
         } else {
             (deps.settings_write)(&path, &new_text).map_err(raised)?;
+        }
+    }
+    for r in repo_reverts.iter().filter(|r| r.changed) {
+        if r.delete {
+            fs::remove_file(&r.path).map_err(|e| os_err(e, &r.path))?;
+        } else {
+            (deps.settings_write)(&r.path, &r.new_text).map_err(raised)?;
         }
     }
     // state.json goes first: without its rtk_path, bin/rtk-hook exits before running rtk, so
@@ -1414,6 +1677,7 @@ fn try_remove(
             obj(vec![
                 ("unapproved", strs(&unapproved)),
                 ("notes", s(NOTES_KEPT)),
+                ("repo_settings", repo_reverts_value(&repo_reverts)),
             ]),
         ),
         ("warnings", strs(&warnings)),

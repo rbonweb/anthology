@@ -2580,3 +2580,273 @@ mod cli_test {
         );
     }
 }
+
+mod repo_auto_memory_test {
+    //! A repo approved for Anthology memory gets `"autoMemoryEnabled": false` in its committed
+    //! `.claude/settings.json`, so Claude Code's own auto memory does not run beside the repo's
+    //! `.claude/memory/`. Setup never touches the user-wide settings for this, and `remove` puts
+    //! the repo file back as it was.
+    use super::*;
+
+    const REMOTE: &str = "https://example.invalid/acme/app.git";
+    const REPO_SETTINGS: &str = "{\n  \"model\": \"sonnet\",\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls)\"\n    ]\n  }\n}\n";
+
+    /// A fixture with user settings written and an approvable repo; `None` without git.
+    fn repo_fx() -> Option<(Fx, PathBuf)> {
+        if !mem::needs_git() {
+            return None;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        Some((f, repo))
+    }
+
+    fn repo_settings(repo: &Path) -> PathBuf {
+        repo.join(".claude/settings.json")
+    }
+
+    fn auto_memory_value(repo: &Path) -> Option<Value> {
+        let text = fs::read_to_string(repo_settings(repo)).ok()?;
+        json::loads(&text)
+            .ok()?
+            .as_object()?
+            .get("autoMemoryEnabled")
+            .cloned()
+    }
+
+    #[test]
+    fn the_setting_is_written_for_an_approved_repo() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(f.approved(FAKE_REPO_KEY));
+        assert_eq!(auto_memory_value(&repo), Some(Value::Bool(false)));
+        let result = at(&res, &["memory", "auto_memory"]);
+        assert_eq!(text_at(result, &["path"]), p(&repo_settings(&repo)));
+        assert_eq!(at(result, &["changed"]), &Value::Bool(true));
+        assert!(text_at(result, &["diff"]).contains("autoMemoryEnabled"));
+    }
+
+    #[test]
+    fn the_setting_is_not_written_unless_the_repo_is_approved() {
+        let Some((f, repo)) = repo_fx() else { return };
+        // --skip-approve: the repo is not approved, so its settings stay untouched
+        let res = f.apply_in(&repo, true, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(!f.approved(FAKE_REPO_KEY));
+        assert!(!repo.join(".claude").exists());
+        assert_eq!(at(&res, &["memory", "auto_memory"]), &Value::Null);
+        // not a git repo: there is nothing to approve
+        let res = f.apply_in(f.tmp(), false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(!f.tmp().join(".claude").exists());
+        assert_eq!(at(&res, &["memory", "auto_memory"]), &Value::Null);
+    }
+
+    #[test]
+    fn the_setting_is_not_written_when_repo_memory_is_unusable() {
+        let Some((f, repo)) = repo_fx() else { return };
+        fs::write(repo.join("elsewhere"), "x").unwrap();
+        symlink(repo.join("elsewhere"), repo.join(".gitattributes")).unwrap();
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(f.approved(FAKE_REPO_KEY));
+        assert!(text_at(&res, &["memory", "approve_error"]).contains(".gitattributes"));
+        assert!(!repo_settings(&repo).exists());
+        assert!(text_at(&res, &["memory", "auto_memory", "skipped"]).contains("repo memory"));
+    }
+
+    #[test]
+    fn preview_shows_the_change_and_writes_nothing() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(Some(&repo));
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let auto = at(&out, &["memory", "repo", "auto_memory"]);
+        assert_eq!(text_at(auto, &["path"]), p(&repo_settings(&repo)));
+        assert_eq!(at(auto, &["changed"]), &Value::Bool(true));
+        let diff = text_at(auto, &["diff"]);
+        assert!(diff.contains("autoMemoryEnabled"), "{diff}");
+        // the value is redacted like every value outside the shown paths
+        assert!(!diff.contains("false"), "{diff}");
+        // once applied, the preview has nothing more to show
+        f.apply_in(&repo, false, &[], &f.deps());
+        let out = f.preview(Some(&repo));
+        let auto = at(&out, &["memory", "repo", "auto_memory"]);
+        assert_eq!(at(auto, &["changed"]), &Value::Bool(false));
+        assert_eq!(text_at(auto, &["diff"]), "");
+    }
+
+    #[test]
+    fn preview_outside_a_repo_has_no_repo_setting() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let out = f.preview(None);
+        assert_eq!(
+            text_at(&out, &["memory", "repo", "skipped"]),
+            "not a git repo"
+        );
+    }
+
+    #[test]
+    fn an_existing_settings_json_is_merged_not_overwritten() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let text = fs::read_to_string(repo_settings(&repo)).unwrap();
+        let v = json::loads(&text).unwrap();
+        assert_eq!(text_at(&v, &["model"]), "sonnet");
+        assert_eq!(
+            at(&v, &["permissions", "allow"]).as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+        let diff = text_at(at(&res, &["memory", "auto_memory"]), &["diff"]);
+        assert!(!diff.contains("sonnet"), "{diff}");
+    }
+
+    #[test]
+    fn apply_leaves_the_user_wide_settings_alone() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        let user = f.read_settings();
+        assert!(!user.contains("autoMemoryEnabled"), "{user}");
+    }
+
+    #[test]
+    fn remove_deletes_a_file_setup_created() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        assert!(repo_settings(&repo).is_file());
+        let res = f.remove_in(&repo, false, false, false);
+        assert!(ok(&res), "{res:?}");
+        assert!(!repo_settings(&repo).exists());
+        let entries = at(&res, &["memory", "repo_settings"]).as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(at(&entries[0], &["changed"]), &Value::Bool(true));
+        assert!(f.approved(FAKE_REPO_KEY)); // remove keeps approvals unless asked
+    }
+
+    #[test]
+    fn remove_restores_an_existing_file_byte_for_byte() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        assert_ne!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            REPO_SETTINGS
+        );
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            REPO_SETTINGS
+        );
+    }
+
+    #[test]
+    fn remove_preview_shows_the_diff_and_writes_nothing() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        let before = mem::snapshot(f.tmp());
+        let res = f.remove_in(&repo, false, false, true);
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let entries = at(&res, &["memory", "repo_settings"]).as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(text_at(&entries[0], &["path"]), p(&repo_settings(&repo)));
+        assert_eq!(at(&entries[0], &["changed"]), &Value::Bool(true));
+        assert!(text_at(&entries[0], &["diff"]).contains("autoMemoryEnabled"));
+    }
+
+    #[test]
+    fn remove_puts_back_a_value_the_user_had() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"autoMemoryEnabled\": true\n}\n";
+        write(&repo_settings(&repo), before, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        assert_eq!(auto_memory_value(&repo), Some(Value::Bool(false)));
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_setting_the_user_already_had_is_not_ours_to_remove() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"autoMemoryEnabled\": false\n}\n";
+        write(&repo_settings(&repo), before, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert_eq!(
+            at(at(&res, &["memory", "auto_memory"]), &["changed"]),
+            &Value::Bool(false)
+        );
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), before);
+    }
+
+    #[test]
+    fn applying_twice_then_removing_still_restores_the_file() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        f.apply_in(&repo, false, &[], &f.deps());
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            REPO_SETTINGS
+        );
+    }
+
+    #[test]
+    fn remove_keeps_what_the_user_added_to_the_file_since() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        let text = fs::read_to_string(repo_settings(&repo)).unwrap();
+        let edited = text.replace("{\n", "{\n  \"model\": \"haiku\",\n");
+        write(&repo_settings(&repo), &edited, None);
+        f.remove_in(&repo, false, false, false);
+        let v = json::loads(&fs::read_to_string(repo_settings(&repo)).unwrap()).unwrap();
+        assert_eq!(text_at(&v, &["model"]), "haiku");
+        assert!(!v.as_object().unwrap().contains_key("autoMemoryEnabled"));
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_json_is_left_untouched_and_reported() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), "{not json", None);
+        let preview = f.preview(Some(&repo));
+        assert!(!text_at(&preview, &["memory", "repo", "auto_memory", "skipped"]).is_empty());
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(f.approved(FAKE_REPO_KEY));
+        assert!(!text_at(&res, &["memory", "auto_memory", "skipped"]).is_empty());
+        assert_eq!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            "{not json"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_settings_file_is_never_written_through() {
+        let Some((f, repo)) = repo_fx() else { return };
+        fs::create_dir_all(repo.join(".claude")).unwrap();
+        let target = f.tmp().join("outside.json");
+        fs::write(&target, "{}\n").unwrap();
+        symlink(&target, repo_settings(&repo)).unwrap();
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(text_at(&res, &["memory", "auto_memory", "skipped"]).contains("symlink"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn remove_skips_a_repo_that_is_gone() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        fs::remove_dir_all(repo.join(".claude")).unwrap();
+        let res = f.remove_in(f.tmp(), false, false, false);
+        assert!(ok(&res), "{res:?}");
+        assert!(!f.state_exists());
+    }
+}
