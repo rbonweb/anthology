@@ -3613,7 +3613,12 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
             // A `#` opening a word starts a comment.
             '#' if at_start => return None,
             '~' | '^' | '#' => word.revish = true,
-            '=' if at_start || prev == Some('=') => return None,
+            // zsh expands a word that opens with `=` to the path of that command, also after an empty quote
+            // (`''=ls`: `prev` is then the quote, so the word's own text is what is read), and with
+            // MAGIC_EQUAL_SUBST an `=` after `=` or `:`
+            '=' if at_start || word.text.is_empty() || word.text.ends_with(['=', ':']) => {
+                return None;
+            }
             c if c.is_ascii_alphanumeric() || "-_./:,=+%@".contains(c) => {}
             _ => return None,
         }
@@ -3627,6 +3632,10 @@ fn plain_words(text: &str) -> Option<Vec<PlainWord>> {
         return None;
     }
     words.extend(current.take());
+    // a quoted `=` that opens the word (`'='ls`) is still an `=` once the quotes are gone
+    if words.iter().any(|w| w.text.starts_with('=')) {
+        return None;
+    }
     Some(words)
 }
 
@@ -4108,6 +4117,12 @@ fn plain_args(spec: &PlainSub, args: &[PlainWord], checks: &mut Vec<Check>) -> b
         i += 1;
         let text = word.text.as_str();
         if word.revish && !git {
+            return false;
+        }
+        // Options come first. The tools rtk runs are the macOS BSD ones, whose getopt stops at the first
+        // operand and reads a later `-l` as a file (`wc a -l`), where GNU reads it as an option: neither
+        // reading is proven. git parses options anywhere, the same on every platform.
+        if !git && !operands.is_empty() && text.len() > 1 && text.starts_with('-') {
             return false;
         }
         if text == "--" {
@@ -7986,6 +8001,17 @@ mod tests {
             "rtk ls a~b",
             "rtk ls '~/x' ~x",
             "rtk ls =ls",
+            // an empty or quoted opening still leaves an `=` that opens the word once the quotes are gone
+            "rtk ls ''=ls",
+            "rtk ls \"\"=ls",
+            "rtk ls '='ls",
+            "rtk ls a==ls",
+            "rtk ls a:=ls",
+            // an option after an operand is a file on BSD
+            "rtk wc a -l",
+            "rtk ls src -la",
+            "rtk grep foo a.txt -n",
+            "rtk ls src -- -x",
             "rtk ls # x",
             "rtk ls !x",
             "rtk ls a\\ b",
