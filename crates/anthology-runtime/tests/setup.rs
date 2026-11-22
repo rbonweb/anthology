@@ -151,6 +151,12 @@ fn text_at<'a>(v: &'a Value, path: &[&str]) -> &'a str {
         .unwrap_or_else(|| panic!("{path:?} is not a str"))
 }
 
+/// The version in `<plugin>/.claude-plugin/plugin.json`, which setup records as `setup_done`.
+fn manifest_version(plugin: &Path) -> String {
+    let text = fs::read_to_string(plugin.join(".claude-plugin").join("plugin.json")).unwrap();
+    text_at(&json::loads(&text).unwrap(), &["version"]).to_string()
+}
+
 fn ok(v: &Value) -> bool {
     at(v, &["ok"]).as_bool().expect("ok is a bool")
 }
@@ -754,7 +760,10 @@ mod apply_remove_test {
         assert_eq!(text_at(&data, &["worktree", "baseRef"]), "head");
         assert_eq!(text_at(&data, &["model"]), "opus");
         let st = f.state();
-        assert_eq!(st.get("setup_done").and_then(Value::as_str), Some("0.1.0"));
+        assert_eq!(
+            st.get("setup_done").and_then(Value::as_str),
+            Some(manifest_version(&f.c.plugin).as_str())
+        );
         assert!(
             st.get("settings_ops")
                 .and_then(Value::as_array)
@@ -861,7 +870,7 @@ mod apply_remove_test {
         assert!(ok(&res));
         assert_eq!(
             f.state().get("setup_done").and_then(Value::as_str),
-            Some("0.1.0")
+            Some(manifest_version(&f.c.plugin).as_str())
         );
     }
 
@@ -1069,7 +1078,10 @@ mod apply_remove_test {
         assert!(ok(&res), "{res:?}");
         assert!(text_at(&res, &["memory", "approve_error"]).contains(".gitattributes"));
         assert!(f.approved(FAKE_REPO_KEY)); // approval is already recorded
-        assert_eq!(text_at(&Value::Object(f.state()), &["setup_done"]), "0.1.0");
+        assert_eq!(
+            text_at(&Value::Object(f.state()), &["setup_done"]),
+            manifest_version(&f.c.plugin)
+        );
         assert!(f.anth().join("personal-memory").is_dir());
         assert_eq!(fs::read_to_string(repo.join("elsewhere")).unwrap(), "x");
     }
