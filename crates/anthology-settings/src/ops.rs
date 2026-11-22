@@ -12,7 +12,7 @@ use crate::scanner::py;
 use crate::validate::validate_plugin_root;
 
 /// `BYPASS_NOTE` (GC-8).
-pub const BYPASS_NOTE: &str = "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. ATL's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
+pub const BYPASS_NOTE: &str = "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. atl's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
 /// `ALLOW_ATL`: the allow rule for ATL (Anthology Token Layer).
 pub const ALLOW_ATL: &str = "Bash(atl *)";
 /// `LEGACY_ALLOW_RTK`: the allow rule earlier releases added, before the tool was renamed. Setup
