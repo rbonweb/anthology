@@ -36,15 +36,18 @@
 //!   `runs_git_config` (see [`ReadOnly::Proven`]). `find` takes no `-exec`, `-execdir`, `-ok`, `-okdir`,
 //!   `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`, `-L`, `-H` or `-follow`. `sort` takes no `-o`,
 //!   `--output`, `--compress-program` or `-T`; `tail` no `-f`, `-F` or `--follow`; `uniq` one operand at
-//!   most; `rg` no `--pre` or `-z`; `grep` no `-R`; `diff` no `-r`; `file` no `-p`; `jq` no `-f`, `--arg`
-//!   or `-L`, and no filter that names `env`, `$ENV`, `import` or `include`.
+//!   most; `rg` no `--pre` or `-z`; `grep` no `-R`, no `-NUM` and a `-d` or `-D` action of exactly `read`,
+//!   `skip` or (for `-d`) `recurse`; `diff` no `-r`; `file` no `-p`; `jq` no `-f`, `--arg` or `-L`, and no
+//!   filter that names `env`, `$ENV`, `import` or `include`. No `git` word holds `%G` (a signature
+//!   placeholder: it runs gpg).
 //! - A leading `cd TARGET` (or several) joined by `&&`, with a target [`literal_cd_target`] accepts. `cd`
 //!   anywhere else, `cd`, `cd -`, `cd ~…`, `cd $X`, `cd ..` and a bare `cd src` (which `CDPATH` may point
 //!   elsewhere) are refused. Every path of the rest is relative to the working directory the `cd` targets
 //!   lead to, each target relative to the one before it.
 //! - No path of an obvious secret ([`SECRET_PATTERNS`]: `.ssh`, `.env`, `*.pem`, `id_*`, `.aws/credentials`
-//!   and so on), alone or under the `cd` targets, whatever the command. This is defence in depth: the path
-//!   check owns the decision.
+//!   and so on, in any ASCII case), alone or under the `cd` targets, whatever the command; a recursive path
+//!   is refused too when it is a directory such a secret lies in (`.aws`). This is defence in depth: the
+//!   path check owns the decision.
 //!
 //! The programs that run are not only the GNU and BSD ones: the shell snapshot the commands run under puts
 //! `bfs` in place of `find` and `ugrep` in place of `grep`, and `rg` may be its own build, on a macOS
@@ -86,13 +89,20 @@ const MAX_LEN: usize = 4096;
 /// `cd` is folded in) is not proven, whatever the command: this is defence in depth under the path check
 /// (P4), which owns the real decision, including the user's `Read()` deny rules, symlinks and containment.
 ///
-/// A pattern is one or more `/`-separated components. `*` stands for any run of characters inside a
-/// component. A pattern matches when its components equal consecutive components of the path, anywhere in
-/// it, so `.ssh` matches `/srv/app/.ssh`, `a/.ssh/id_rsa` and `.ssh`, and `.aws/credentials` matches
-/// `/srv/app/.aws/credentials`. A glob in the path (`.en*`, `*.pem`) is checked against the names these
-/// patterns stand for ([`GLOB_SAMPLES`] and each pattern with its `*` read as a character no literal
-/// equals); a glob with fewer than two literal characters (`*`, `?`, `i*`) is not, or no `cat ./*` could be
-/// proven.
+/// A pattern is one or more `/`-separated components, in lower case. `*` stands for any run of characters
+/// inside a component. A pattern matches when its components equal consecutive components of the path,
+/// anywhere in it and whatever the ASCII case (the default macOS volume ignores it), so `.ssh` matches
+/// `/srv/app/.ssh`, `a/.SSH/id_rsa` and `.ssh`, and `.aws/credentials` matches `/srv/app/.AWS/credentials`.
+///
+/// A glob in the path (`.en*`, `*.pem`) is checked against the names these patterns stand for
+/// ([`GLOB_SAMPLES`] and each pattern with its `*` read as a character no literal equals). The check cannot
+/// see the user's `dotglob` or `GLOB_DOTS`, so a leading wildcard may match a leading `.` (`*env` is `.env`).
+/// A glob alone in its component needs two literal characters (`*`, `?`, `i*` are not held, or no `cat ./*`
+/// could be proven); in a path with a plain component beside it, as in `.kube/*`, it needs none.
+///
+/// The path check (P4) must treat a recursive path as able to reach any file under it, a secret included:
+/// [`is_secret_tree`] refuses the directories these patterns lie in, but a root above them (`/srv/app` over
+/// `/srv/app/.ssh`) is for P4 to judge.
 pub const SECRET_PATTERNS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -106,6 +116,13 @@ pub const SECRET_PATTERNS: &[&str] = &[
     ".npmrc",
     ".pypirc",
     ".git-credentials",
+    ".config/gh/hosts.yml",
+    ".docker/config.json",
+    ".kube/config",
+    ".claude/.credentials.json",
+    ".bash_history",
+    ".zsh_history",
+    ".histfile",
 ];
 
 /// Names that a glob in a path is held against, besides the patterns themselves (`*_rsa` is `id_rsa`).
@@ -123,37 +140,55 @@ pub struct ReadPath {
     /// glob characters, may not exist, and, for `git`, may be a revision.
     pub path: String,
     /// The command reads everything under the path, not just the path: `rg`, `find`, `du`, `tree`,
-    /// `grep -r`, `ls -R`, and a `git` pathspec. A name match on the path alone (`.`) cannot see a secret
-    /// below it, so the path check must treat the whole tree as read.
+    /// `grep -r`, `ls -R`, a `git` pathspec, the two directories of a `diff`, and any path with a `**` in
+    /// it. A name match on the path alone (`.`) cannot see a secret below it, so the path check must treat
+    /// the whole tree as read, and as able to reach a secret file by name.
     pub recursive: bool,
 }
 
 /// What [`classify_readonly`] proved.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadOnly {
-    /// Read-only: it runs only the programs of [`READONLY_PROGRAMS`] with the options of their tables, and
-    /// writes no file a person could name. It is not a claim that nothing on disk changes: `git status`
-    /// refreshes the stat cache in `.git/index` unless `--no-optional-locks` is given, and a program may
-    /// update access times.
+    /// Read-only: every program is one of [`READONLY_PROGRAMS`], with only the options of its table, and
+    /// no file a person could name is written. It is not a claim that nothing else runs or changes: `git`
+    /// runs the programs its configuration names (see `runs_git_config`), `git status` refreshes the stat
+    /// cache in `.git/index` unless `--no-optional-locks` is given, and a program may update access times.
     ///
-    /// `paths` are the paths it can read, in order, and `cd` the leading `cd` targets, in order.
+    /// `paths` are the paths it can read, in order, and `cd` the leading `cd` targets, in order. A path
+    /// marked `recursive` stands for every file under it: the path check must treat it as able to reach a
+    /// secret file by name, whatever its own name says.
     ///
     /// `runs_git_config` is true when any command of the line is `git`. Git then reads the whole repository
     /// at the working directory (history, index, work tree, submodules), whatever `paths` says, and it runs
     /// the programs that the repository's and the user's configuration names. The caller must not allow the
-    /// line on the strength of `paths` alone. The path check (P4) has to refuse the line, or ask, when the
-    /// configuration of any repository git can reach sets one of these, in the system, global, local
-    /// (`.git/config`, which an extracted archive can carry), `includeIf` and worktree files, in
-    /// `GIT_CONFIG_*` and in the submodules' own configuration:
+    /// line on the strength of `paths` alone.
     ///
-    /// - `core.pager`, `pager.*`, `core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.askPass`,
-    ///   `core.editor`, `core.attributesFile`, `core.excludesFile`;
+    /// The path check (P4) must decide this with an ALLOWLIST: it allows the line only when every
+    /// configuration file git can reach holds nothing but keys on a short list of safe repository-local ones
+    /// (such as `core.repositoryFormatVersion`, `core.bare`, `core.filemode`, `core.ignorecase`,
+    /// `core.logAllRefUpdates`, `user.name`, `user.email`, `remote.<name>.url`, `remote.<name>.fetch` and
+    /// `branch.<name>.remote` / `.merge`), and asks on any other key, section or include. A denylist keeps
+    /// missing vectors. These are known misses of the first denylist, as examples of what an allowlist
+    /// catches:
+    ///
+    /// - a partial clone: `remote.<name>.promisor`, `remote.<name>.partialclonefilter` and `extensions.*`
+    ///   make plain `git log -p`, `show` and `diff` fetch missing blobs on demand, and the fetch runs
+    ///   `remote.<name>.uploadpack` (or `receivepack`), and can reach `credential.helper`,
+    ///   `core.sshCommand`, `core.gitProxy` and `protocol.*`;
+    /// - `core.pager`, `pager.*`, `core.fsmonitor`, `core.hooksPath`, `core.askPass`, `core.editor`,
+    ///   `core.attributesFile`, `core.excludesFile`;
     /// - `diff.external`, `diff.<driver>.command`, `diff.<driver>.textconv`, `diff.<driver>.cachetextconv`
     ///   (a `.gitattributes` file in the work tree selects the driver), and the same for `merge.*.driver`;
     /// - `gpg.program`, `gpg.<format>.program`, with `log.showSignature` or `gpg.*` set;
     /// - `filter.<name>.smudge`, `filter.<name>.clean` and `filter.<name>.process`;
     /// - `submodule.*` (`submodule.recurse`, `submodule.<name>.update`), and `status.submoduleSummary`;
     /// - `alias.*` and `include.path` / `includeIf.*`.
+    ///
+    /// The configuration to read is that of the repository git finds the way git does: from the working
+    /// directory after the `cd` targets, up through the parents (`GIT_DIR`, `GIT_CEILING_DIRECTORIES` and
+    /// `safe.directory` apply), a bare repository reached by a `cd` included, a `.git` file that points
+    /// elsewhere, a worktree's own configuration, plus the system, global and `GIT_CONFIG_*` sources and
+    /// the submodules' repositories. `git` with `%G` in a format is not proven (it runs gpg).
     Proven {
         paths: Vec<ReadPath>,
         cd: Vec<String>,
@@ -197,12 +232,10 @@ fn tokens(component: &str) -> Vec<Tok> {
     out
 }
 
-/// Whether the glob `pattern` matches the whole of `text`. A wildcard at the front does not match a leading
-/// `.`, as in the shell. Linear in the product of the lengths: one backtrack point.
+/// Whether the glob `pattern` matches the whole of `text`. A wildcard at the front matches a leading `.`,
+/// as it does with `dotglob` (bash) or `GLOB_DOTS` (zsh): the check cannot see the user's options, so it
+/// assumes the wider reading. Linear in the product of the lengths: one backtrack point.
 fn glob_matches(pattern: &[Tok], text: &[char]) -> bool {
-    if let (Some(Tok::Star | Tok::One), Some('.')) = (pattern.first(), text.first()) {
-        return false;
-    }
     let (mut p, mut t) = (0, 0);
     let mut backtrack: Option<(usize, usize)> = None;
     while t < text.len() {
@@ -232,18 +265,20 @@ fn glob_matches(pattern: &[Tok], text: &[char]) -> bool {
     pattern[p..].iter().all(|tok| *tok == Tok::Star)
 }
 
-/// Whether one path component is the one a secret pattern's component names.
-fn component_is_secret(component: &str, pattern: &str) -> bool {
-    let name: Vec<char> = component.chars().collect();
-    if !component.contains(['*', '?', '[']) {
-        // a plain name: the pattern's only wildcard is `*`, and a leading `.` is no obstacle to it
-        return glob_matches(&tokens(pattern), &name)
-            || pattern.starts_with('*') && glob_matches(&tokens(&pattern[1..]), &name);
+fn has_glob_char(component: &str) -> bool {
+    component.contains(['*', '?', '['])
+}
+
+/// Whether one path component (already in lower case) is the one a secret pattern's component names. A
+/// glob needs `min_literals` literal characters to be held against the names the pattern stands for.
+fn component_is_secret(component: &str, pattern: &str, min_literals: usize) -> bool {
+    if !has_glob_char(component) {
+        let name: Vec<char> = component.chars().collect();
+        return glob_matches(&tokens(pattern), &name);
     }
-    // a glob in the path: it names a secret when it can expand to a name the pattern stands for. A glob of
-    // wildcards alone (`*`) is held against none.
+    // a glob in the path: it names a secret when it can expand to a name the pattern stands for
     let glob = tokens(component);
-    if glob.iter().filter(|tok| matches!(tok, Tok::Lit(_))).count() < GLOB_MIN_LITERALS {
+    if glob.iter().filter(|tok| matches!(tok, Tok::Lit(_))).count() < min_literals {
         return false;
     }
     // the pattern's own `*` becomes a character no literal of a glob equals
@@ -255,22 +290,54 @@ fn component_is_secret(component: &str, pattern: &str) -> bool {
         })
 }
 
-/// Whether `path` names, or reaches into, an obvious secret (see [`SECRET_PATTERNS`]). `.` and empty
-/// components are skipped, so `./a//.env` is read as `a/.env`.
-pub fn is_secret_path(path: &str) -> bool {
-    let components: Vec<&str> = path
-        .split('/')
-        .filter(|c| !c.is_empty() && *c != ".")
-        .collect();
+/// Whether `components` (lower case) hold a secret pattern. With `tree`, also when they end in the leading
+/// components of a pattern of several: a recursive read of `.aws` reaches `.aws/credentials`.
+fn holds_secret(components: &[String], tree: bool) -> bool {
+    // a window of one component needs literals in a glob; a window of several needs a plain component, so
+    // `./*/*` is no match for `.aws/credentials` but `.aws/*` is
+    let window_matches = |have: &[String], want: &[&str]| {
+        let min_literals = if want.len() == 1 {
+            GLOB_MIN_LITERALS
+        } else {
+            0
+        };
+        have.iter()
+            .zip(want)
+            .all(|(have, want)| component_is_secret(have, want, min_literals))
+            && (want.len() == 1 || have.iter().any(|c| !has_glob_char(c)))
+    };
     SECRET_PATTERNS.iter().any(|pattern| {
         let want: Vec<&str> = pattern.split('/').collect();
-        components.windows(want.len()).any(|window| {
-            window
-                .iter()
-                .zip(&want)
-                .all(|(have, want)| component_is_secret(have, want))
-        })
+        components
+            .windows(want.len())
+            .any(|window| window_matches(window, &want))
+            || tree
+                && (1..want.len()).any(|k| {
+                    components.len() >= k
+                        && window_matches(&components[components.len() - k..], &want[..k])
+                })
     })
+}
+
+/// The path's components in ASCII lower case, without `.` and empty ones: `./a//.ENV` is `a/.env`. The
+/// default macOS volume ignores case, so `.ENV` is `.env`.
+fn lower_components(path: &str) -> Vec<String> {
+    path.split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Whether `path` names an obvious secret (see [`SECRET_PATTERNS`]), ignoring ASCII case. `.` and empty
+/// components are skipped, so `./a//.env` is read as `a/.env`.
+pub fn is_secret_path(path: &str) -> bool {
+    holds_secret(&lower_components(path), false)
+}
+
+/// Whether a read of everything under `path` reaches an obvious secret: [`is_secret_path`], or `path` is a
+/// directory a secret pattern lies in (`.aws`, `.config/gh`).
+pub fn is_secret_tree(path: &str) -> bool {
+    holds_secret(&lower_components(path), true)
 }
 
 /// `word` when it is a `cd` target that is safe to follow without the shell: an absolute path or a `./…`
@@ -380,13 +447,21 @@ fn prove_with(
     }
     // The paths are read after the `cd` targets, which are folded in order, so a secret is judged on the
     // joined path as well (`cd ./.aws && cat credentials`); an absolute path only adds components.
+    // A recursive path also reaches what lies under it, so the directory a secret lies in counts.
     let prefix = cd.join("/");
-    for path in cd
+    let judged = cd
         .iter()
-        .map(String::as_str)
-        .chain(paths.iter().map(|p| p.path.as_str()))
-    {
-        if is_secret_path(path) || is_secret_path(&format!("{prefix}/{path}")) {
+        .map(|target| (target.as_str(), false))
+        .chain(paths.iter().map(|p| (p.path.as_str(), p.recursive)));
+    for (path, recursive) in judged {
+        let secret = |path: &str| {
+            if recursive {
+                is_secret_tree(path)
+            } else {
+                is_secret_path(path)
+            }
+        };
+        if secret(path) || secret(&format!("{prefix}/{path}")) {
             return Err("path of a secret");
         }
     }
@@ -706,11 +781,12 @@ fn agrees_with_analyze(command: &str, home: &str, stages: &[Stage]) -> Result<()
 
 // --- redirects -----------------------------------------------------------------------------------------------
 
-/// A path the command reads, as written. `recursive`: everything under it.
+/// A path the command reads, as written. `recursive`: everything under it. A `**` in the path is a
+/// recursive glob (`src/**/x`, `**`, `***`): the shell walks the tree under it, whatever the program.
 fn read_path(paths: &mut Vec<ReadPath>, path: &str, recursive: bool) {
     paths.push(ReadPath {
         path: path.to_string(),
-        recursive,
+        recursive: recursive || path.contains("**"),
     });
 }
 
@@ -782,7 +858,8 @@ struct Spec {
     /// Flags that make it walk (`-r`, `-R`), and `--recursive`.
     recursive_short: &'static str,
     recursive_long: &'static [&'static str],
-    /// `-d ACTION` and `--directories=ACTION` exist, and `recurse` walks (`grep`).
+    /// `-d ACTION`, `--directories=ACTION`, `-D ACTION` and `--devices=ACTION` exist (`grep`): the action is
+    /// exactly `read` or `skip`, and `recurse` for directories, which walks ([`grep_action`]).
     directories: bool,
 }
 
@@ -886,7 +963,7 @@ const GREP: Spec = Spec {
     short: "EFGHILPTUabchilnoqrsuvwxy",
     value: "emABCdDf",
     path_short: "f",
-    digits: true,
+    // no `-NUM`: in the grep that runs (ugrep) it is a recursion depth that turns on `-r`; GNU reads context
     long: &[
         "--extended-regexp",
         "--fixed-strings",
@@ -1278,6 +1355,18 @@ fn take_value<'a>(args: &'a [Arg], at: &mut usize) -> Result<&'a Arg, Why> {
     Ok(value)
 }
 
+/// The action of grep's `-d`/`--directories` (`dirs`) or `-D`/`--devices` (`devices`): exactly `read` or
+/// `skip`, and for directories `recurse`, which walks (the result). GNU accepts abbreviations (`-d rec`) and
+/// ugrep adds `dereference-recurse`, which also follows symlinks: any other value is refused, not guessed.
+fn grep_action(dirs: bool, devices: bool, value: &str) -> Result<bool, Why> {
+    match value {
+        "recurse" if dirs => Ok(true),
+        "read" | "skip" => Ok(false),
+        _ if dirs || devices => Err("grep action other than read, skip or recurse"),
+        _ => Ok(false),
+    }
+}
+
 /// Walk `args` by `spec`: every option must be listed. Paths named by options go to `paths`.
 ///
 /// Options come first. A word that starts with `-` after the first operand, and before any `--`, is not
@@ -1327,8 +1416,10 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<ReadPath>) -> Result<W
                     read_path(paths, value, false);
                 }
                 walked.pattern_given |= spec.pattern_long.contains(&name);
-                walked.recursive |=
-                    spec.directories && name == "--directories" && value == "recurse";
+                if spec.directories {
+                    walked.recursive |=
+                        grep_action(name == "--directories", name == "--devices", value)?;
+                }
             } else {
                 return Err("option not in the table");
             }
@@ -1357,7 +1448,9 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<ReadPath>) -> Result<W
                         read_path(paths, value, false);
                     }
                     walked.pattern_given |= spec.pattern_short.contains(c);
-                    walked.recursive |= spec.directories && c == 'd' && value == "recurse";
+                    if spec.directories {
+                        walked.recursive |= grep_action(c == 'd', c == 'D', value)?;
+                    }
                 } else if !spec.glued.contains(c) {
                     return Err("option not in the table");
                 }
@@ -1483,8 +1576,9 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<ReadPath>) -> Resu
             if rest.len() < 2 {
                 return Err("diff needs two paths");
             }
+            // two directories are compared file by file: every file they share is read
             for (arg, dashes) in rest {
-                path_operand(arg, dashes, recursive, paths)?;
+                path_operand(arg, dashes, true, paths)?;
             }
         }
         Operands::Filter => {
@@ -1949,6 +2043,11 @@ const GIT_REMOTE: Spec = Spec {
 /// directory pathspec, so each is reported as read recursively. `Proven.runs_git_config` tells the caller
 /// that git ran at all.
 fn git_paths(args: &[Arg], paths: &mut Vec<ReadPath>) -> Result<(), Why> {
+    // `%G?`, `%GS`, `%GK` and the other `%G` placeholders of a format verify the signature of a commit, which
+    // runs gpg or ssh-keygen: no word of a proven git line holds one
+    if args.iter().any(|arg| arg.text.contains("%G")) {
+        return Err("git format that verifies a signature");
+    }
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.text.as_str() {

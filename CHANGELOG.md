@@ -51,7 +51,13 @@ a new version section.
   once its quotes are gone. A path that names an obvious secret (`.ssh`, `.env`, `*.pem`,
   `id_*`, `.aws/credentials` and so on) is never proven. A proof says, for each path,
   whether everything under it is read, and whether `git` is in the line, so the later path
-  check can look at git's configuration.
+  check can look at git's configuration. The `grep` there is the snapshot's ugrep, so `grep
+  -5` and any `-d` value other than `read`, `skip` or `recurse` are not proven; `diff` of two
+  directories, a `**` glob and a `find`, `rg`, `du` or `tree` read everything under their
+  path, and a directory that holds a secret by name is not proven for them. Secret names are
+  matched in any case and now include `.config/gh/hosts.yml`, `.docker/config.json`,
+  `.kube/config`, `.claude/.credentials.json` and the shell history files. A `git` format
+  with `%G` (it runs gpg) is not proven.
 
 ### [0.2.0] - 2026-11-22
 

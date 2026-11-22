@@ -1807,7 +1807,14 @@ fn each_path_says_whether_the_command_reads_everything_under_it() {
         // plain file readers
         ("cat a.txt", &[("a.txt", false)]),
         ("cat < a.txt", &[("a.txt", false)]),
-        ("diff a b", &[("a", false), ("b", false)]),
+        // two directories are compared file by file: every file they share is read
+        ("diff a b", &[("a", true), ("b", true)]),
+        ("diff -u ./a ./b", &[("./a", true), ("./b", true)]),
+        // a `**` glob walks the tree under it, whatever the program
+        ("cat src/**/x.rs", &[("src/**/x.rs", true)]),
+        ("ls src/**", &[("src/**", true)]),
+        ("grep foo src/***/x", &[("src/***/x", true)]),
+        ("cat src/*/x.rs", &[("src/*/x.rs", false)]),
         ("jq . a.json", &[("a.json", false)]),
         ("wc -l a b", &[("a", false), ("b", false)]),
         // a git path names a directory pathspec as often as a file
@@ -1932,7 +1939,7 @@ fn a_read_of_an_obvious_secret_path_is_not_proven() {
 
 #[test]
 fn the_secret_pattern_const_and_its_matcher_agree() {
-    assert!(SECRET_PATTERNS.len() >= 12, "the list is kept whole");
+    assert!(SECRET_PATTERNS.len() >= 19, "the list is kept whole");
     for pattern in SECRET_PATTERNS {
         // every pattern is itself a secret, as a name and as a sub path
         let name = pattern.replace('*', "x");
@@ -1960,6 +1967,13 @@ fn the_secret_pattern_const_and_its_matcher_agree() {
         ".npmrc",
         ".pypirc",
         ".git-credentials",
+        ".config/gh/hosts.yml",
+        ".docker/config.json",
+        ".kube/config",
+        ".claude/.credentials.json",
+        ".bash_history",
+        ".zsh_history",
+        ".histfile",
     ] {
         assert!(SECRET_PATTERNS.contains(&named), "{named} is on the list");
     }
@@ -2075,6 +2089,281 @@ fn the_tables_are_written_for_the_programs_that_really_run() {
         "find . -name x -type f",
         "file -b a.png",
         "stat -c %s a",
+    ] {
+        proven(command);
+    }
+}
+
+// --- review round 2 --------------------------------------------------------------------------------------------
+
+#[test]
+fn grep_options_the_snapshot_grep_reads_differently_are_not_proven() {
+    // The grep that runs is ugrep: there `-NUM` is a recursion depth that turns on `-r`, where GNU reads it
+    // as context lines, and `-d` takes `dereference-recurse`. GNU takes abbreviations of the `-d` values.
+    assert_none_proven(&[
+        "grep -5 KEY src",
+        "grep -1 KEY src",
+        "grep -n -2 KEY src",
+        "egrep -5 KEY src",
+        "fgrep -5 KEY src",
+        "grep -d dereference-recurse KEY src",
+        "grep -ddereference-recurse KEY src",
+        "grep --directories=dereference-recurse KEY src",
+        "grep -d rec KEY src",
+        "grep -drec KEY src",
+        "grep -d r KEY src",
+        "grep -d re KEY src",
+        "grep -d s KEY src",
+        "grep --directories=recu KEY src",
+        "grep --directories=rec KEY src",
+        "grep --directories rec KEY src",
+        "grep --directories=sk KEY src",
+        "grep -d Recurse KEY src",
+        "grep -d recurse2 KEY src",
+        "grep -d '' KEY src",
+        "grep -d KEY src",
+        "grep --directories= KEY src",
+        // the same rule for the devices action
+        "grep -D rec KEY src",
+        "grep -D foo KEY src",
+        "grep --devices=sk KEY src",
+    ]);
+    // exactly `read`, `skip` and `recurse`; `recurse` walks
+    for command in [
+        "grep -d read KEY src",
+        "grep -d skip KEY src",
+        "grep -dskip KEY src",
+        "grep --directories=read KEY src",
+        "grep --directories skip KEY src",
+        "grep -D read KEY src",
+        "grep --devices=skip KEY src",
+        "grep -C 5 KEY src",
+        "grep -A5 KEY src",
+        "grep --context=5 KEY src",
+    ] {
+        assert!(!proven_full(command).0[0].1, "{command}");
+    }
+    for command in [
+        "grep -d recurse KEY src",
+        "grep -drecurse KEY src",
+        "grep --directories=recurse KEY src",
+        "grep --directories recurse KEY src",
+    ] {
+        assert!(proven_full(command).0[0].1, "{command}");
+    }
+    // `-NUM` stays an option of head, tail and git log
+    proven("head -5 a.txt");
+    proven("tail -20 a.txt");
+    proven("git log -5");
+}
+
+#[test]
+fn two_directories_given_to_diff_are_read_in_full() {
+    // `diff ./a ./b` reads every file the two folders share, a `.env` included
+    assert_eq!(
+        proven_full("diff ./a ./b").0,
+        [("./a".to_string(), true), ("./b".to_string(), true)]
+    );
+    // the secret check sees what a recursive read reaches: a directory that holds a secret by name
+    assert_none_proven(&[
+        "diff .aws other",
+        "diff other .aws",
+        "diff ./.docker ./b",
+        "diff /srv/app/.kube /srv/app/x",
+        "diff -u .config/gh x",
+        "diff .claude x",
+    ]);
+    proven("diff -u a.txt b.txt");
+    proven("diff .config/other x");
+}
+
+#[test]
+fn a_recursive_read_that_starts_above_a_secret_is_not_proven() {
+    // a pattern of several components is reached from the directory that holds it
+    assert_none_proven(&[
+        "rg KEY .aws",
+        "rg KEY ./.aws",
+        "rg KEY /srv/app/.aws",
+        "rg KEY .config",
+        "rg KEY .config/gh",
+        "rg KEY .config/gh/",
+        "rg KEY .docker",
+        "rg KEY .kube",
+        "rg KEY .claude",
+        "grep -r KEY .claude",
+        "find .kube -type f",
+        "find ./.docker -name x",
+        "du -sh .claude",
+        "tree .config",
+        "ls -R .aws",
+        "git log -- .kube",
+        "cd ./.aws && rg KEY",
+        "cd ./.config && cd ./gh && rg KEY",
+        "cd /srv/app/.docker && find . -type f",
+        "cd ./.kube && tree",
+    ]);
+    // the same directory read without walking it holds no secret by name
+    for command in [
+        "ls .aws",
+        "ls -la .kube",
+        "ls .config",
+        "cd ./.aws && ls",
+        "cd ./.config && ls gh",
+        "cat .config/other",
+        "ls .claude",
+        "rg KEY .claude/agent-memory",
+        "rg KEY .config/other",
+        "rg KEY .aws-extra",
+        "find .claude/agent-memory -type f",
+    ] {
+        proven(command);
+    }
+}
+
+#[test]
+fn the_secret_names_are_matched_without_regard_to_ascii_case() {
+    // APFS and the default macOS volume ignore case: `.ENV` is `.env`
+    assert_none_proven(&[
+        "cat .ENV",
+        "cat .Env",
+        "cat .ENV.LOCAL",
+        "cat .AWS/CREDENTIALS",
+        "cat .Aws/Credentials",
+        "cat ID_RSA",
+        "cat Id_Ed25519",
+        "cat SERVER.PEM",
+        "cat Server.Key",
+        "cat .NETRC",
+        "cat .NPMRC",
+        "cat .PYPIRC",
+        "cat .GIT-CREDENTIALS",
+        "cat .SSH/config",
+        "ls /srv/app/.Ssh",
+        "cat .GNUPG/x",
+        "cat .En*",
+        "cat .EN?",
+        "cat ./ID*",
+        "cat ./.SS[H]/x",
+        "cat ./*_RSA",
+        "cat ./*.PEM",
+        "cat '.ENV'",
+        "cd ./.SSH && cat config",
+        "cd ./.AWS && cat CREDENTIALS",
+        "cat .Config/Gh/Hosts.Yml",
+        "cat .DOCKER/CONFIG.JSON",
+        "cat .KUBE/CONFIG",
+        "cat .CLAUDE/.CREDENTIALS.JSON",
+        "cat .BASH_HISTORY",
+        "cat .ZSH_HISTORY",
+        "cat .HISTFILE",
+        "rg KEY .AWS",
+        "rg KEY .Config/GH",
+    ]);
+    for command in ["cat .ENVIRONMENT", "cat ENV.RS", "cat Video_ID.TXT"] {
+        proven(command);
+    }
+    assert!(is_secret_path(".ENV"));
+    assert!(is_secret_path("A/B/.Env.Local"));
+    assert!(is_secret_path(".Aws/Credentials"));
+    assert!(!is_secret_path(".ENVIRONMENT"));
+}
+
+#[test]
+fn more_credential_and_history_files_are_not_proven() {
+    assert_none_proven(&[
+        "cat .config/gh/hosts.yml",
+        "cat /srv/app/.config/gh/hosts.yml",
+        "cat .docker/config.json",
+        "cat .kube/config",
+        "cat .claude/.credentials.json",
+        "cat .bash_history",
+        "cat .zsh_history",
+        "cat .histfile",
+        "tail -n 5 /srv/app/.zsh_history",
+        "grep ssh .bash_history",
+        "head -n 3 .histfile",
+        "jq . .claude/.credentials.json",
+        "git log -- .docker/config.json",
+        "cd ./.kube && cat config",
+        "cd /srv/app/.config/gh && cat hosts.yml",
+    ]);
+    for command in [
+        "cat .config/gh/other.yml",
+        "cat .docker/other.json",
+        "cat .kube/cache",
+        "cat .claude/settings.json",
+        "cat .claude/agent-memory/x.md",
+        "cat bash_history",
+        "cat history.md",
+        "cat .zsh_history.md",
+    ] {
+        proven(command);
+    }
+}
+
+#[test]
+fn a_glob_that_could_match_a_dotfile_under_dotglob_is_not_proven() {
+    // The glob check holds a glob against secret names as if `*` could match a leading `.` (zsh with
+    // GLOB_DOTS, bash with dotglob): `*env` is `.env` there.
+    assert_none_proven(&[
+        "cat ./*env",
+        "cat ./?env",
+        "cat ./*rc",
+        "cat ./*_history",
+        "cat ./*history",
+        "cat ./*.local",
+        "cat ./*ssh",
+        // a glob under a directory that holds a secret by name
+        "cat .kube/*",
+        "cat .kube/c*",
+        "cat .aws/*",
+        "cat .config/gh/*",
+        "cat .claude/*",
+        "cat ./.docker/*",
+        "cat /srv/app/.kube/?onfig",
+    ]);
+    // a glob with nothing literal in a path with nothing secret stays plain
+    for command in [
+        "cat ./*",
+        "cat src/*",
+        "cat src/*/x.rs",
+        "cat ./*/*.md",
+        "cat ./*/*",
+        "cat s*",
+        "cat ./*.rs",
+        "cat ./*.json",
+        "cat .config/other/*",
+        "cat .claude/agent-memory/*",
+    ] {
+        proven(command);
+    }
+}
+
+#[test]
+fn a_git_format_that_runs_gpg_or_ssh_keygen_is_not_proven() {
+    // `%G?`, `%GS`, `%GK` and the rest of the `%G` placeholders verify a signature: gpg or ssh-keygen runs
+    assert_none_proven(&[
+        "git log --pretty='%GS %G?'",
+        "git log --pretty=format:%G?",
+        "git log --pretty=format:'%h %G?'",
+        "git log --format=%GK",
+        "git log --format='%GS'",
+        "git log --pretty=tformat:%GG",
+        "git show --pretty=format:%GF HEAD",
+        "git show --format=%GP HEAD",
+        "git log -3 --format='%h %GT'",
+        "git log --pretty=\"%G?\"",
+        "git branch --format=%GS",
+        "git log --pretty=%%G",
+    ]);
+    // the neighbours: `%g` (reflog) and every other placeholder
+    for command in [
+        "git log --pretty=format:%h",
+        "git log --pretty='%h %s %an'",
+        "git log --format=%gD",
+        "git log --format=%gs",
+        "git log --pretty=format:%H%n%b",
+        "git show --format=%cd HEAD",
     ] {
         proven(command);
     }
