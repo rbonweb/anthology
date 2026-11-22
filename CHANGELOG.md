@@ -28,7 +28,8 @@ a new version section.
   or AI. A new `PreToolUse` hook (`hooks/no-attribution.sh`) enforces it: it denies a `git commit`
   (amend included) or a `gh pr create|edit` command whose text carries a `Co-Authored-By:` trailer
   that names the assistant or its maker, or a "Generated with" line that names the assistant.
-  Every other command is allowed.
+  Every other command is allowed. The check catches the usual habit and is not a guarantee:
+  `--trailer`, `-F` and `--body-file` are not checked.
 
 #### Fixed
 

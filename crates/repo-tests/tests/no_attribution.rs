@@ -256,6 +256,17 @@ fn only_the_command_value_is_searched_not_the_description_or_other_fields() {
 }
 
 #[test]
+fn invalid_utf8_in_the_input_does_not_hide_a_trailer() {
+    // A raw \xff\xfe byte pair must not make the extraction fail (BSD tr aborts on it without
+    // LC_ALL=C), which would let the commit through.
+    let mut stdin = br#"{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x "#.to_vec();
+    stdin.extend_from_slice(&[0xff, 0xfe]);
+    stdin.extend_from_slice(br#"\n\nCo-Authored-By: Claude <a@b.c>\""}}"#);
+    let out = run_raw(&stdin, &std::env::temp_dir());
+    deny_reason(&out, "invalid UTF-8 before the trailer");
+}
+
+#[test]
 fn odd_input_is_allowed_with_no_output() {
     let work = std::env::temp_dir();
     for stdin in [

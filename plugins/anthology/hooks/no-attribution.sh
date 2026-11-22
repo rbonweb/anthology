@@ -17,7 +17,7 @@
 # the command is the two characters `\n`: a trailer is matched up to the next `\n`, `\r` or the end
 # of the string, so the name has to sit on the trailer's own line.
 input=$(cat)
-cmd=$(printf '%s' "$input" | tr -d '\n\r' |
+cmd=$(printf '%s' "$input" | LC_ALL=C tr -d '\n\r' |
   LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
 [ -n "$cmd" ] || exit 0
 
