@@ -50,6 +50,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "shell_readonly"
+path = "fuzz_targets/shell_readonly.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "guard_hook"
 path = "fuzz_targets/guard_hook.rs"
 test = false
