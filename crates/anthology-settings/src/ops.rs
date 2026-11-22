@@ -12,18 +12,24 @@ use crate::scanner::py;
 use crate::validate::validate_plugin_root;
 
 /// `BYPASS_NOTE` (GC-8).
-pub const BYPASS_NOTE: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
-/// `ALLOW_RTK`.
-pub const ALLOW_RTK: &str = "Bash(rtk *)";
+pub const BYPASS_NOTE: &str = "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. ATL's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile.";
+/// `ALLOW_ATL`: the allow rule for ATL (Anthology Token Layer).
+pub const ALLOW_ATL: &str = "Bash(atl *)";
+/// `LEGACY_ALLOW_RTK`: the allow rule earlier releases added, before the tool was renamed. Setup
+/// no longer adds it; a re-run removes it only when an earlier run recorded adding it.
+pub const LEGACY_ALLOW_RTK: &str = "Bash(rtk *)";
 /// `ALLOW_MEM_SAVE`: lets read-only agents save memory notes.
 pub const ALLOW_MEM_SAVE: &str = "Bash(anthology-mem save *)";
 /// `TAG_PLUGIN_READ`.
 pub const TAG_PLUGIN_READ: &str = "plugin-read";
 /// `TAG_MEM_SAVE`.
 pub const TAG_MEM_SAVE: &str = "mem-save";
+/// `TAG_TOKEN_LAYER`: the ATL allow rule. A stored untagged [`LEGACY_ALLOW_RTK`] add counts as
+/// this tag, so a re-run replaces it.
+pub const TAG_TOKEN_LAYER: &str = "token-layer";
 /// `_REPLACEABLE_TAGS`: ops whose value may change between runs; a re-run replaces the value
 /// it added earlier for the same tag.
-pub const REPLACEABLE_TAGS: [&str; 2] = [TAG_PLUGIN_READ, TAG_MEM_SAVE];
+pub const REPLACEABLE_TAGS: [&str; 3] = [TAG_PLUGIN_READ, TAG_MEM_SAVE, TAG_TOKEN_LAYER];
 /// `OPS_VERSION`, the default of [`SettingsLimits::ops_version`].
 pub const OPS_VERSION: i64 = 1;
 /// `SUBAGENT_MODEL_PATH`: the opt-in removal setup offers (never part of `setup_ops`, so
@@ -224,7 +230,7 @@ pub fn setup_ops_with(
         None => (&PROFILE_ROOTS, &PREFIX_VARIANTS),
     };
     let mut ops = vec![
-        Op::add(&["permissions", "allow"], ALLOW_RTK),
+        Op::add(&["permissions", "allow"], ALLOW_ATL).with_tag(TAG_TOKEN_LAYER),
         Op::add(&["permissions", "allow"], ALLOW_MEM_SAVE).with_tag(TAG_MEM_SAVE),
     ];
     for root in roots {
