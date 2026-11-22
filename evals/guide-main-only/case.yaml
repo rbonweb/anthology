@@ -1,0 +1,33 @@
+schema_version: "1.0"
+name: guide-main-only
+description: 'The routing guide reaches the main session but not subagents.'
+tags: [guide, probe-u7]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Step 1, without tools: if your context contains the anthology routing guide, write the word formed by joining MAIN and GUIDE with no space; otherwise write the word formed by joining MAIN and NONE. Step 2: run the anthology:scout agent with exactly this prompt: ''Without using tools: if your context contains a routing guide that maps jobs to anthology agents, reply with the word formed by joining SUB and GUIDE with no space; otherwise reply with the word formed by joining SUB and NONE. Reply with that one word only.'' Step 3: end your answer with two lines: your Step 1 word, then the agent''s reply verbatim.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:scout"'
+  - name: main-has-guide
+    type: regex
+    target: last_message
+    pattern: 'MAINGUIDE'
+  - name: subagent-has-no-guide
+    type: regex
+    target: trace
+    pattern: 'SUBNONE'
+  - name: subagent-not-guided
+    type: regex
+    target: trace
+    pattern: 'SUBGUIDE'
+    match: not_contains

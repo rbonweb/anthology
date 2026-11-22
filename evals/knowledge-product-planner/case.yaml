@@ -1,0 +1,104 @@
+schema_version: "1.0"
+name: knowledge-product-planner
+description: 'anthology:product-planner reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:product-planner agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:product-planner"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-write-spec
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/write-spec/SKILL\.md'
+  - name: order-write-spec
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-write-spec
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
+  - name: read-sprint-planning
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/sprint-planning/SKILL\.md'
+  - name: order-sprint-planning
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-write-spec-sprint-planning
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/write-spec/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
+  - name: read-roadmap-update
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/roadmap-update/SKILL\.md'
+  - name: order-roadmap-update
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-sprint-planning-roadmap-update
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/sprint-planning/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
+  - name: read-product-brainstorming
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/product-brainstorming/SKILL\.md'
+  - name: order-product-brainstorming
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-roadmap-update-product-brainstorming
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/roadmap-update/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
+  - name: read-ds-ux-strategy
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'
+  - name: order-ds-ux-strategy
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-product-brainstorming-ds-ux-strategy
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/product-brainstorming/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
+  - name: read-ds-design-ops
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'
+  - name: order-ds-design-ops
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-ux-strategy-ds-design-ops
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}

@@ -1,0 +1,6 @@
+# Allowed divergences of this DV2 surface (GC-16). The engine and the oracle mark each case they
+# adjusted (crates/difftest/src/surfaces/dev_dv2.rs, port/difftest/oracle/dev_tools.py).
+
+[[divergence]]
+class = "D-1"
+reason = "Python raised an exception the script does not catch (a traceback, exit 1). The oracle writes it as the Rust side does, 'anthology-dev <tool>: <Type>: <message>' (ruling R10), and the result is still compared byte for byte."

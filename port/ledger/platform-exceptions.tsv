@@ -1,0 +1,6 @@
+# Platform exceptions: the Python tests whose ported Rust test may run on one platform only.
+# A ledger row may say `platform:<linux|macos>` in its note only when its (python_id, platform)
+# pair is listed here (`anthology-dev ledger check`). CONTROLLER-OWNED: lanes never edit this
+# file; a lane that needs an exception asks the controller, who adds the row in a plumbing PR
+# with the reason (the Python test itself runs on that platform only). Empty: no id qualifies.
+# python_id	platform	reason

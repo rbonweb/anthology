@@ -1,0 +1,22 @@
+[package]
+name = "anthology-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The settings.json patcher (settings_patch)"
+
+[lints]
+workspace = true
+
+[dependencies]
+anthology-core.workspace = true
+anthology-pycompat.workspace = true
+anthology-guard.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+anthology-testkit.workspace = true
+proptest.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,1 @@
+/home/testeryarn workspace w playwright test | sh <(echo ls) ; exec 3<<<'ls'; sh <&3

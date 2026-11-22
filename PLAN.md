@@ -63,7 +63,6 @@ anthology/
 │   │   ├── bin/rtk, bin/anthology-mem     wrappers on the Bash PATH (resolve paths via ~/.claude/anthology/state.json)
 │   │   ├── rtk.lock                       pinned rtk version + sha256 per platform
 │   │   ├── templates/routing-guide.md     the guide text (delivered by the hook)
-│   │   ├── evals/                         behaviour eval cases (claude plugin eval)
 │   │   └── scripts/                       session_start.py, doctor.py, rtk_install.py, memory_sync.py,
 │   │                                      memory_index.py, memory_portable.py, settings_patch.py
 │   ├── anthology-guardrails/
@@ -80,6 +79,7 @@ anthology/
 ├── scripts/sync-rtk.sh, scripts/rtk-trim.sh
 ├── .github/workflows/                     ci.yml · evals.yml · upstream-watch.yml · rtk-release.yml
 ├── .github/dependabot.yml
+├── evals/                                 behaviour eval cases (claude plugin eval; repo root so all 3 plugins load — U9)
 ├── tests/                                 stdlib unittest (+ pinned test deps), run in pinned Docker images
 ├── PLAN.md · README.md · CHANGELOG.md · SECURITY.md · CONTRIBUTING.md · DECISIONS.md · LICENSE (Apache-2.0)
 ```
@@ -128,6 +128,7 @@ Every agent also reads `caveman` (the house style). `ds/x` = `knowledge/design-s
   - The agent must Read every listed file before any other work.
   - Paths inside a knowledge file are relative to that file's folder. A reference like `design-skills:<x>` means `knowledge/design-skills/skills/<x>/SKILL.md`.
   - The evals check that every agent does this (§14).
+  - Outside auto mode a plugin agent may not Read its own plugin files without permission (U1). So `/anthology:setup` adds one narrow allow rule built from the **resolved** plugin location: the parent of `${CLAUDE_PLUGIN_ROOT}` + `/**`. That covers every cached version, and a local marketplace that loads in place. `session_start.py` warns if the rule no longer matches the current root (re-run setup).
 - **Startup budget.** Each agent's startup reading (its body, the Startup files and its preloads) has a byte budget enforced by a test. Upstream growth shows up in sync PRs instead of silently raising every call's cost.
 - **ui-designer: which knowledge leads.** For websites and landing pages, `design-taste-frontend` leads. For app screens (web or iOS), `ui-taste` leads. `frontend-design` is the baseline for everything else. The rest are supporting.
 - **ui-reviewer** is split out from ui-designer so the builder and the critic are different models (Sonnet builds, Opus reviews). It uses BrowserOS Neo to look at the rendered page.
@@ -204,7 +205,8 @@ Sections:
 2. **Which agent for which job**: the roster as a lookup table, and security → `claude-security`. For UI work, ui-designer builds and then ui-reviewer checks.
 3. **Blocked agents**: subagents can't ask the user. A blocked agent stops and reports the question. The main session answers or asks the user, then resumes the same agent.
 4. **Worktrees**:
-   - Only built-in isolation; never `git worktree add`.
+   - Only built-in isolation; never `git worktree add`. Setup sets `worktree.baseRef: "head"` (U2), so agents branch from the lead's current commit rather than from origin's default branch.
+   - Agent memory written inside a worktree is untracked there (U7); writers commit it as `chore(memory): …` before finishing.
    - Writers commit before finishing.
    - Parallel writers get disjoint file areas.
    - The main session reviews and merges.
@@ -258,13 +260,13 @@ There are **two layers**:
 | G3 | Any tool touching a Chrome/Chromium profile directory **or its parent** (`…/Application Support/Google`, `…/Application Support/Chromium`, `~/.config/google-chrome`, `~/.config/chromium`), with `~`/`$HOME`/absolute paths, case-insensitive | — |
 | G4 | **Any agent-browser command**: `agent-browser …`, `npx agent-browser …`, installs (`npm i -g agent-browser`, `brew install agent-browser`) | — |
 | G5 | MCP tools whose names contain `playwright`, `puppeteer`, `chrome-devtools`, or `claude-in-chrome` | — |
-| G6 | Secret-looking content written into `.claude/memory/` or `.claude/agent-memory/`, via `Write`/`Edit` **or** Bash redirection/`tee`. Patterns: `AKIA…`, `ghp_`/`github_pat_`, `sk-…`, `xox[bp]-`, `-----BEGIN … PRIVATE KEY-----`, `password\s*[:=]`, `api[_-]?key\s*[:=]` | — |
+| G6 | Secret-looking content written into `.claude/memory/` or `.claude/agent-memory/`, via `Write`/`Edit` **or** Bash redirection/`tee`. Patterns: `AKIA…`, `ghp_`/`github_pat_`, `sk-…`, `xox[bp]-`, `-----BEGIN … PRIVATE KEY-----`, `password` and `api[_-]?key` followed by `:` or `=` (also after a JSON- or dict-quoted key, `"password": "…"`; empty, null, schema-shaped and template-placeholder values such as `<…>`, `${…}`, `***` are not flagged, ADR-021) | — |
 
-- Command parsing strips `rtk` / `rtk bypass` / `rtk proxy` prefixes the same way as `sudo`, so `rtk npx playwright install` is still G1.
+- Command parsing peels wrappers off the same way for every program: `sudo`, `env`, `nohup`, `timeout`, `xargs` and similar; package runners (`npx`, `uvx`, `uv run`, `yarn dlx`); and `rtk`, including the commands it runs (`rtk run -c`, `rtk run --shell X`, `rtk err|test|summary`, `rtk bypass`, `rtk proxy`). So `rtk npx playwright install` is still G1. Shell `-c` scripts (bash, sh, zsh, dash, ksh, and fish with its own `-c`/`--command`/`-C` options) are parsed again, and inline code run by an interpreter (`python3 -c`, `node -e`, `osascript -e`, heredocs and here-strings) is scanned for G3.
 - When the guard blocks a call, the block wins over an rtk rewrite/allow (checked as U6).
 - Rules match **commands**, not arbitrary text. `grep playwright package.json`, `grep -r agent-browser .` and `git commit -m "drop playwright"` are allowed. Every block message points to BrowserOS Neo (or Docker, for test suites).
 
-**Never silently off.** On every session start, `session_start.py` runs `guard.py` on a known-bad sample. If the guard can't run (e.g. `python3` is missing) or doesn't block, the user gets a loud `systemMessage`. The guard still fails open on malformed *input*, so it never bricks a session, but a broken guard is always visible.
+**Never silently off.** The `SessionStart` entry is a POSIX `sh` wrapper (`session-start.sh`) because a hook whose interpreter is missing fails silently (U8): if `python3` is missing it prints a JSON `systemMessage` itself; otherwise it execs `session_start.py`, which runs `guard.py` on a known-bad sample. If the guard can't run (e.g. `python3` is missing) or doesn't block, the user gets a loud `systemMessage`. The guard still fails open on malformed *input*, so it never bricks a session, but a broken guard is always visible.
 
 **Known limit:** a hook can't see a Chrome launch hidden inside a script. That's why the shipped knowledge itself must never launch Chrome (§6), and why the deny layer exists.
 
@@ -327,7 +329,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - **Tests:**
   - `test_rtk_claude_only` is an **allowlist**: the exact set of `hooks/init` modules and the permitted Cargo dependencies, so anything new fails.
   - A `--network none` runtime test proves rtk makes no network calls.
-  - **Each of the fork's 9 changes keeps one named test, permanently in CI.**
+  - **Each of the fork's 9 changes keeps one named test, permanently in CI.** (Task 9: fork change 8, the custom `[upstream.*]` headers, lived only in the BUSL engine and was dropped with it by ruling, so 8 named tests remain; see Part 3.)
 
 **Build and ship:**
 - **Tests:** Docker with a pinned Rust toolchain (`rtk/rust-toolchain.toml`).
@@ -342,9 +344,9 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - **No `rtk init`:** it isn't used, because it would add a duplicate hook. Defaults are preconfigured, and there are no user options.
 
 **Permissions — accepted risk (owner's decision):**
-- Setup adds a blanket `Bash(rtk *)` allow, so rewritten commands never prompt.
+- Setup adds a blanket `Bash(rtk *)` allow, so rewritten commands never prompt (since ADR-022: unless a deny, ask or Read rule is involved).
 - Because `rtk bypass <cmd>` runs any command, this also auto-approves `rtk bypass <anything>`.
-- The guardrails and deny rules still apply to the wrapped command.
+- rtk's hook applies the deny and ask rules of the user, project, local and managed settings files to the command and to the command an `rtk …` form wraps (explicit hook deny / hook ask), and `Read()` deny rules to the reads it would rewrite; rules given with `--settings` or `--disallowedTools`, server-managed settings and MDM profiles are invisible to a hook (ADR-022). The guardrails check the command the agent asked for.
 - The README states the risk plainly, and `/anthology:setup remove` takes the allow out again.
 
 ### 13. Memory (in the repo, survives re-clone, team-safe)
@@ -363,7 +365,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 **Approved repos only (trust boundary).**
 - Memory is active only in repos the user approved by running `/anthology:setup` inside them.
 - Approvals live in `~/.claude/anthology/approved-repos.json`, keyed by the normalized git remote URL (the repo root path if there's no remote). So **re-cloning the same repo into any folder works automatically**.
-- In an unapproved repo, nothing is written and nothing is injected. If it contains `.claude/memory/`, the user gets one line: "this repo has anthology memory; run /anthology:setup to use it". A stranger's committed notes never load on their own.
+- In an unapproved repo, anthology writes nothing and injects nothing of the repo's `.claude/memory/`. If the repo contains `.claude/memory/` or `.claude/agent-memory/`, the user gets one line saying repo notes load only after setup and that agent notes still reach their agents. A stranger's committed repo notes never load into the main session on their own. Agent memory is the exception: Claude Code loads `.claude/agent-memory/anthology-<agent>/MEMORY.md` into that agent whatever the approval state, and the agent bodies treat it as hints (ADR-019).
 
 **`memory_sync.py`** (run by `session_start.py`; stdlib; never fails a session):
 - **Skip** if the folder isn't an approved git repo, or if auto memory is off (`autoMemoryEnabled: false` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY`).
@@ -379,9 +381,9 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - These lines are added once, when the repo is approved.
   - GitHub's web merge button ignores merge drivers, so a PR may still show an index conflict there. Keeping both sides' lines, or merging locally, is always correct, since the index is regenerated anyway.
 - **Note collisions:** two people editing the same note is a genuine conflict, resolved like code. Notes are named `<type>-<topic-slug>.md`, so accidental collisions are rare.
-- **Migration:** if the old path-keyed folder `~/.claude/projects/<encoded path>/memory/` has notes, they're copied once:
-  - `type: user` notes go to personal memory;
-  - the rest go to the repo;
+- **Migration:** if the old path-keyed folder `~/.claude/projects/<encoded path>/memory/` has notes, they're copied once, all into personal memory (ADR-020, the B3 privacy ruling); nothing goes into the repo on its own:
+  - `/anthology:setup` can promote chosen notes into the repo's memory, only if they are not `type: user` and the privacy scan passes;
+  - `type: user` notes already in a repo are moved out to personal memory at each session start;
   - nothing is ever overwritten.
 
 **SQLite graph and search index (`memory_index.py`, `bin/anthology-mem`):**
@@ -396,6 +398,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
   - `anthology-mem orphans` (notes nothing links to)
   - `anthology-mem stale` (superseded or old notes)
   - `anthology-mem rebuild`
+  - `anthology-mem save --agent <name> --type <t> --slug <s> --name '…' --description '…' --body '…' [--replace]` (writes one agent note with nested `metadata:`/`type:`; setup allows `Bash(anthology-mem save *)`; ADR-018)
 - **No embeddings (§2).** If semantic search is ever wanted, vectors can be added to this same derived index without changing the notes.
 
 **Self-learning:**
@@ -438,7 +441,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - gitleaks;
 - the memory-diff listing.
 
-**Behaviour evals** (`plugins/anthology/evals/`, `claude plugin eval`; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
+**Behaviour evals** (repo-root `evals/`, `claude plugin eval` with all three plugins loaded; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
 - routing (the main session delegates to the right `anthology:*` agent);
 - knowledge-read order (each agent Reads its Startup files before any other tool);
 - G1/G4/G6 blocks;
@@ -478,6 +481,27 @@ The one-time platform probes become permanent eval or smoke cases. This is how a
 - `SECURITY.md`, with how to report a guardrail bypass, and what the `Bash(rtk *)` allow and the memory trust model mean.
 - `CONTRIBUTING.md`, including the maintainer runbook: syncs, releases, evals and the startup budget.
 - `DECISIONS.md`, where Part 3 of this plan moves at the docs task, so decisions outlive PLAN.md.
+
+
+### 15. After the first release (v0.1.0)
+
+Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this order.
+
+1. **rtk gate: `cd <dir> && …` and `… | head -n N` / `| tail -n N`.** Today the gate in the rtk fork (`rtk/src/hooks/anthology_gate.rs`) rejects these forms, so rtk never rewrites them. Across a mix of 32 everyday commands, accepting them adds 6 rewrites. This needs a fork change, a new rtk release (`1.2.1-anthology.5`) and an `rtk.lock` bump. It is security code, so it gets one security review covering:
+   - non-literal `cd` targets: `cd $X`, `cd ~user`, `cd -`, CDPATH, and symlinks into a denied directory;
+   - relative reads resolved against the new directory before the Read deny check (`cd secret && cat k.txt` must still be denied);
+   - `head -n $N` and `head -n "$(…)"`, and a second pipe after `| head -n N`;
+   - `;`, `||`, `&` and newline in place of `&&`;
+   - rtk's rewrite of the rest of the command, re-checked against the deny rules from the new directory.
+2. **Guard over-blocks left after v0.1.0.** A replay of real traffic found ordinary commands that the Rust guard refuses as "too complex" (G0) and the Python guard allowed: about 0.14% of calls. Most are long `python3 - <<EOF` edits that hit the brace or path caps, and `[…]` subscripts that contain a live `$(…)` or backticks (regexes, list literals). Each shape needs its own security ruling, and the frozen parity tables and every bypass payload must still block. Commands that write a script and then run it stay blocked on purpose.
+3. **Faster CI containers.** The test images reinstall packages on every run. Bake them into pinned images, so runs don't depend on the network inside containers (on one build machine it ran about 50x slower than the host).
+4. **Write-then-run in one command line.** The guard notices a command that writes a script and runs it in the same line only when the script is run as `sh FILE` or `source FILE`. It misses `chmod +x x && ./x`, `bash < x`, `. ./x`, `BASH_ENV=x bash …` and files written with `tee`. Extend the check to every way a shell can run a file the line just wrote, then list what is still out of reach (a file written by an earlier tool call) in the design's known limits.
+5. **Guard gap in the v0.1.0 binary (DT-4): a hidden program word inside `$((…))`.** The Rust guard blocks a command whose program word comes from a substitution (`` `echo X` args ``, `$(echo X) args`) as too complex (G0). Since that check (SH-FW final F-8) landed, it has allowed the same command when it sits inside a `$(…)` or a backtick within an arithmetic expansion, for example `` echo $(( $(`echo agent-browser` open x) )) `` or `echo $(( $($(echo open) -a "Google Chrome") ))`. It also allowed a command substitution whose text starts with `((` (a subshell or an arithmetic command first), which the lexer took for arithmetic: `$(((true)); echo agent-browser) open x` (review C-1). Bash runs those programs. The lexer dropped the program-word check for every command lexed from a `$((…))`, including the commands of a substitution inside it, when only the arithmetic text's own words run no program, and it told arithmetic from a command substitution by the text instead of by how the `$((` closes. The fix (DT-4, PR #133, `crates/anthology-shell/src/lexer.rs` and `lexer/scan.rs`) will be on `rust` once #133 merges, and it needs a v0.1.1 binary. The shipped Python guard (`guard_rules.py`) allows the same commands, because it has no such check (F-8 is Rust-only). So it is a gap in the Rust guard's own stricter rule, not a regression against the Python guard. The security checklist for v0.1.1:
+   - every probe in `crates/anthology-guard/tests/arith_holders.rs` is G0, and so is its neighbour outside `$((…))`;
+   - a `$(((…)…)` that bash reads as a `$(` keeps its program-word check, at top level and inside `$((…))`;
+   - an arithmetic expansion's own substitution words (`$(( $(date +%s) - 1 ))`) are still allowed;
+   - the difftest at 10,000 cases has 0 unexplained diffs for shell.analyze, guard.check and guard.hook.
+6. **CI coverage gap (DT-4).** Pull requests run the difftest with only 2,000 generated cases, and a push to `rust` runs no CI at all (push triggers are `main` and `build` only), so a generated case past 2,000 is first seen by a manual 10,000-case batch run. The four DT-4 differences were all past 2,000.
 
 ---
 
@@ -552,11 +576,11 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **No user-facing modes, levels or toggles.**
 - **Generated, never hand-edited:** `knowledge/**` and `plugins/anthology-superpowers/**` must equal `vendor.py` output (`vendor.py check` in CI).
 - **Models:** agent models use aliases only: `opus`, `sonnet`, `haiku`.
-- **Runtime scripts:** Python 3 **stdlib only**. Test-only deps are pinned with hashes in `tests/requirements.txt`.
+- **Runtime scripts:** **Rust**, one static `anthology` binary (`crates/anthology-cli`) built with the toolchain pinned in `rust-toolchain.toml`, released as `anthology-bin--v<version>` and pinned per plugin by `anthology.lock` (DECISIONS ADR-027 to ADR-029). The plugin side is POSIX `sh` shims only. CI runs `cargo test --workspace --locked` in the pinned Rust image and on macOS; dependencies are pinned in `Cargo.lock` and gated by `cargo deny`.
 - **`$TEST`**, the canonical test command (image pinned by digest, recorded in Task 1):
   `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:<digest> sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
 - **`$RTK_TEST`**:
-  `docker run --rm -v "$PWD/rtk":/w -v anthology-cargo:/usr/local/cargo/registry -w /w rust:<pinned>@sha256:<digest> cargo test --locked`
+  `scripts/rtk-test.sh` (the pinned image from `ci/images/rust.Dockerfile`; see Part 3, Task 8)
 - **No host installs** of Playwright, Puppeteer, Chrome, Chromium, agent-browser or Rust. macOS rtk binaries come from GitHub Actions.
 - **BrowserOS Neo is the only browser.** Nothing shipped recommends another browser or launches Chrome.
 - **rtk:** Claude Code only, no telemetry.
@@ -585,7 +609,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
     - import never overwrites.
 
     Tasks 12 and 16.
-12. **Memory trust boundary:** an unapproved repo is never modified and its notes are never injected. Task 12.
+12. **Memory trust boundary:** an unapproved repo is never modified and its repo notes are never injected into the main session (agent memory loads into its own agent regardless; ADR-019). Task 12.
 13. **Upgrade path:** with an older installed version of each plugin, a new release reaches the user: the guide updates, rtk reconciles, the memory index rebuilds, and `remove` leaves nothing behind. Tasks 13, 14 and 16.
 
 ---
@@ -665,7 +689,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
   - `sync NAME --ref REF`: re-pins, rebuilds, reports patch rejects for review, and never commits.
   - `diff NAME`: pristine vs shipped, used to regenerate a patch after an intentional change.
 - Named transforms:
-  - `rename-plugin(old,new)`: rewrites the `plugin.json` name and every `old:<skill>` reference.
+  - `rename-plugin(old,new)`: rewrites the `plugin.json` name and every `old:<skill>` reference, and sets the plugin's **own** version from `sources.json` (`plugin_version`, starting `0.1.0`). The upstream version stays recorded as `upstream_version`. anthology-superpowers is versioned independently, so the `~0.1` dependency range resolves and any transform or sync change gets its own bump. Its `license` stays the upstream one (MIT).
   - `strip-connectors` (Task 3).
 
 - [ ] **Step 1: Failing tests:**
@@ -825,8 +849,8 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - [ ] **Step 2: Implement `check`.**
   - **Normalize:** expand `~`/`$HOME`/`${HOME}`, convert `\` → `/`, and lowercase for path matching.
   - **Split** on `;`, `&&`, `||`, `|`, `&` and newlines, respecting quotes (`shlex`).
-  - **Strip prefixes:** `VAR=val`, `sudo`, `env`, `command`, `exec`, `time`, `nohup`, `rtk`, `rtk bypass`, `rtk proxy`.
-  - **Recurse** into `bash|sh|zsh -c`.
+  - **Strip prefixes:** `VAR=val`, the wrapper programs (`sudo`, `env`, `command`, `exec`, `time`, `nohup`, `timeout`, `xargs` and the like), package runners (`npx`, `uvx`, `uv run`), and `rtk` with the commands it runs (`rtk run`, `err`, `test`, `summary`, `bypass`, `proxy`).
+  - **Recurse** into `bash|sh|zsh|dash|ksh|fish -c` (fish has its own option parser), and scan inline interpreter code and the `script`/`code`/`expression`/`func`/`fn` fields of tool inputs for G3.
   - **Docker exemption:** only G1 and G2.
   - **G4:** scan every token.
   - **G3 roots:** the profile dirs and their parents.
@@ -973,7 +997,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
   - **Team merge:**
     - two branches each add a note: the merge succeeds with the union attributes and conflicts without them (the control);
     - after `regenerate_index`, both notes are listed exactly once.
-  - **Migrate:** `type: user` notes go to personal memory and others to the repo; nothing is ever overwritten.
+  - **Migrate:** every old note goes to personal memory and none into the repo on its own (B3, ADR-020); a note named for promotion goes to the repo only if it is not `type: user` and the privacy scan passes; nothing is ever overwritten.
   - **Index:**
     - `search` finds a term in a note body;
     - `related` follows links and typed relations to depth 2;
@@ -997,14 +1021,14 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 #### Task 13: Session start, routing guide, setup and remove
 
 **Files:**
-- Create: `plugins/anthology/templates/routing-guide.md`, `plugins/anthology/scripts/{session_start,doctor,settings_patch}.py`, `plugins/anthology/skills/setup/SKILL.md`
+- Create: `plugins/anthology/templates/routing-guide.md`, `plugins/anthology/scripts/session-start.sh`, `plugins/anthology/scripts/{session_start,doctor,settings_patch}.py`, `plugins/anthology/skills/setup/SKILL.md`
 - Modify: `plugins/anthology/hooks/hooks.json` (add `SessionStart`, exec form)
 - Test: `tests/test_session_start.py`, `tests/test_doctor.py`, `tests/test_settings_patch.py`
 
 **Interfaces:**
 - **`session_start.run(env, stdin) -> stdout_json`.** In order:
   1. **Platform check:** on Windows, return one `systemMessage` and stop.
-  2. **Guard self-test:** run `guard.py` on `SELF_TEST_SAMPLE`. If it doesn't block, or the interpreter is missing, show a loud `systemMessage`.
+  2. **Guard self-test:** run `guard.py` on `SELF_TEST_SAMPLE`. If it doesn't block, or the interpreter is missing, show a loud `systemMessage`. Also warn if the U1 plugin-read allow rule no longer matches the parent of the current `${CLAUDE_PLUGIN_ROOT}` (re-run setup).
   3. **`rtk_install.reconcile`**, and write `state.json` (`data_dir`, `rtk_path`).
   4. **`memory_sync.run`.**
   5. **`additionalContext`** = the routing guide, then the personal memory index, then the repo-memory cover (only when it repaired). It's capped at the U8 budget, and lower-priority parts are truncated with pointers.
@@ -1013,6 +1037,8 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 - **`settings_patch.apply(settings, ops) / revert(settings, ops) -> (new, diff)`.** Ops:
   - add/remove `Bash(rtk *)`;
   - add/remove the Chrome/Chromium `Read(...)` deny rules for the macOS/Linux profile roots and their parents;
+  - add/remove the `Read(<parent of CLAUDE_PLUGIN_ROOT>/**)` allow rule (U1; covers cached versions and local in-place marketplaces);
+  - set `worktree.baseRef` to `"head"`, remembering the previous value so `remove` restores it (U2);
   - always keep unrelated keys, byte-stable where possible.
 
 - [ ] **Step 1: Failing tests:**
@@ -1020,7 +1046,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
     - the output contains the guide; the total stays ≤ the budget even with a 300-note personal index (truncation pointer present);
     - no guide text is written to any `CLAUDE.md`;
     - an injected exception still exits 0.
-  - **Guard self-test:** a broken guard (an interpreter path that doesn't exist) → the `systemMessage` warns.
+  - **Guard self-test:** a broken guard (an interpreter path that doesn't exist) → the `systemMessage` warns. A stale U1 allow rule (root moved) → warning.
   - **Platform:** Windows → refusal message, nothing else.
   - **Settings:** `settings_patch` apply then revert = the original; apply twice = applied once.
   - **Doctor:** `find_duplicates` on a sample `installed_plugins.json`.
@@ -1046,17 +1072,17 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 #### Task 14: Long-term operations (releases, evals, upstream watch)
 
 **Files:**
-- Create: `CHANGELOG.md`, `scripts/release.sh`, `scripts/check_version_bump.py`, `plugins/anthology/evals/**`, `.github/workflows/{evals,upstream-watch}.yml`
+- Create: `CHANGELOG.md`, `scripts/release.sh`, `scripts/check_version_bump.py`, `evals/**`, `.github/workflows/{evals,upstream-watch}.yml`
 - Modify: `.github/workflows/ci.yml`
 - Test: `tests/test_version_bump.py`, `tests/test_evals_layout.py`
 
-- [ ] **Step 1: Version-bump check.** Failing test first: `check_version_bump.py <base> <head>` fails when files under `plugins/<p>/` changed without a `version` change in `plugins/<p>/.claude-plugin/plugin.json`, and passes otherwise. Implement it and add it to `ci.yml`, together with `claude plugin validate --strict` for each plugin, gitleaks (pinned), the memory-diff listing and the startup-budget test.
+- [ ] **Step 1: Version-bump check.** Failing test first: `check_version_bump.py <base> <head>` fails when files under `plugins/<p>/` changed without a `version` change in `plugins/<p>/.claude-plugin/plugin.json`, and passes otherwise. Implement it and add it to `ci.yml`, together with `claude plugin validate --strict` for each plugin (CI installs a pinned Claude Code ≥ 2.1.323, because older versions reject `engines` — U4), gitleaks (pinned), the memory-diff listing and the startup-budget test.
 - [ ] **Step 2: Release script.**
   - `release.sh <plugin> <version>` bumps the version, moves the `CHANGELOG.md` *Unreleased* entries, commits, and runs `claude plugin tag`.
   - It never pushes without `--push`.
   - Dry-run it.
 - [ ] **Step 3: Evals.**
-  - **The cases** (`plugins/anthology/evals/`):
+  - **The cases** (repo-root `evals/`, each `case.yaml` listing `plugins: [plugins/anthology, plugins/anthology-guardrails, plugins/anthology-superpowers]` — U9):
     - routing, one case per agent: `tool_used: Agent` with `input_match` `anthology:<name>`;
     - knowledge-read order (`tool_order`: the Startup Reads come before any other tool);
     - G1/G4/G6 blocks;
@@ -1081,7 +1107,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
 
 - [ ] **Step 1: Failing test** `test_docs`:
   - `LICENSE` starts with "Apache License";
-  - no tracked file outside `rtk/` and the generated vendored trees (`plugins/anthology-superpowers/`, `plugins/anthology/knowledge/`, `vendor/snapshots/`) contains `/Users/`, and none anywhere contains `/Users/rbonweb`;
+  - no tracked file outside `rtk/` and the generated vendored trees (`plugins/anthology-superpowers/`, `plugins/anthology/knowledge/`, `vendor/snapshots/`) contains a real home path (regex `/Users/[A-Za-z0-9._-]+/` or `/home/[A-Za-z0-9._-]+/`), and none anywhere contains the owner's home path;
   - no `.env*` files;
   - `SECURITY.md` mentions `Bash(rtk *)` and the memory trust model;
   - `CONTRIBUTING.md` links `vendor.py`, `sync-rtk.sh`, `release.sh` and the evals.
@@ -1159,122 +1185,27 @@ No repo files. This changes `~/.claude` only. The lead does this with the user.
 
 ## Part 3 — Build decisions
 
-Filled in during the build:
-- the toolchain digests (Task 1);
-- the platform checks U1–U9 (Task 1);
-- the taste-skill port map summary (Task 5);
-- the rtk conflict plan (Task 8);
-- the rtk trim decisions (Task 9);
-- the eval baseline (Task 14);
-- any fallback taken.
+The decisions made while building now live in [`DECISIONS.md`](DECISIONS.md), one ADR each (ADR-001 to ADR-017), and new decisions are added there. This part keeps only the upstream pins that Part 2 refers to as "the U5 commit"; the same table is in ADR-007.
 
-Each entry gives the date, the task, what was found, and what was decided. These entries move to `DECISIONS.md` in Task 15 and are added there from then on.
+**U5 — upstream pins** (resolved read-only with `gh api` / `git ls-remote`; SPDX from the repo license or the shipped LICENSE file):
 
-- **2026-11-20, pre-build (lead):** the owner approved the build. Their instructions: the repo is public from creation, and no further questions; the lead decides. Rulings:
-  - Personal machine details are removed from PLAN.md.
-  - Upstream license texts ship in `vendor/licenses/`.
-  - Task 17 = release readiness; 1.0.0 waits for the owner's credits.
-  - Tasks run sequentially.
-  - Work happens on branch `build`, merged to `main` after the final review; Task 1 bootstraps `main`.
-  - `settings_patch` (Task 13) is the only editor of `~/.claude/settings.json`.
-  - The `/Users/` docs check excludes the generated vendored trees.
-  - If taste-skill can't be fully ported to BrowserOS, the unportable checks are dropped and the guidance kept.
-  - If a fork change can't coexist with upstream, upstream's design wins and the fork's intent is re-implemented where feasible.
-  - The evals workflow skips with a notice while the `ANTHROPIC_API_KEY` secret is missing.
-- **2026-11-20, Task 1 (toolchain pins):** images resolved with `docker buildx imagetools inspect` to the multi-arch index digest, so one digest works on Apple Silicon and on x86_64 CI. They are recorded in `tests/images.lock`, which `ci.yml` reads.
-  - `python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b`
-  - `rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe` (Rust stable 1.100.0 at pin time)
-  - `zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
-  - `tests/requirements.txt` pins PyYAML 6.0.3 with hashes for the cp312 manylinux x86_64 and aarch64 wheels and the sdist; `pip install --require-hashes` was checked on both arm64 and (emulated) x86_64.
-  - `ci.yml` pins `actions/checkout` to `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1).
-  - `$TEST` = `docker run --rm -v "$PWD":/w -w /w python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"`
-  - `$RTK_TEST` = `docker run --rm -v "$PWD/rtk":/w -v anthology-cargo:/usr/local/cargo/registry -w /w rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe cargo test --locked`
-  - `engines.claude-code` is provisionally `>=2.1.311` in the first-party manifests; it is updated after the platform checks (U1–U9).
-  - Dependabot covers `github-actions` and `pip` (`/tests`). The docker ecosystem is omitted: there is no Dockerfile or compose file, and the digests live in `tests/images.lock`, which Dependabot does not read; bump them by hand and record the change here.
-- **2026-11-20, Task 1 (platform checks U1–U9):** all probes ran on Claude Code **2.1.311** (Homebrew's stable cask; npm `latest` was 2.1.329). They used throwaway plugins under a scratch directory, loaded with `--plugin-dir` or installed from a local marketplace into an isolated `CLAUDE_CONFIG_DIR`, and ran `claude -p` in scratch git repos. Each probe is kept as a future eval/smoke case for Task 14; the case notes are listed under each check.
-  - **U1 — knowledge loading: passes, with one required permission rule.**
-    - `${CLAUDE_PLUGIN_ROOT}` in a plugin agent's body is substituted. The agent Read `<root>/knowledge/_probe/SKILL.md` and quoted its marker.
-    - A folder under `knowledge/` is not registered: the session's skill list had `probe:hello` and `anthology-superpowers:x`, but no `_probe`.
-    - `skills: [anthology-superpowers:x]` preloads a skill from a second plugin; the agent quoted its marker without a tool call.
-    - **Finding:** Claude Code doesn't auto-approve Reads of a plugin's own files. In the default permission mode the knowledge Read is refused (in `-p`) or prompts (interactive). This held for `--plugin-dir`, for a local-path marketplace (loaded in place) and for a GitHub-marketplace plugin copied into `plugins/cache/`. Auto mode and an allow rule both let it through, and a session-level rule also covers subagents.
-    - **Decision:** `/anthology:setup` (through `settings_patch`) adds `permissions.allow` `Read(~/.claude/plugins/cache/anthology/**)`. `setup remove` takes it out, and `doctor.py` checks it. The Glob fallback isn't needed: the path is right, only the permission is missing.
-    - **Eval cases (Task 14):** the main-session skill list doesn't include `_probe`; the agent Reads its Startup file first and quotes the marker; the preload marker is present.
-  - **U2 — agent fields: all honored.**
-    - `model: haiku`: the subagent transcript records a Haiku model.
-    - `disallowedTools: Edit, Write, NotebookEdit, Agent`: those tools are absent from the agent's tool list.
-    - `skills`: see U1.
-    - `isolation: worktree`: the agent runs in `<repo>/.claude/worktrees/agent-<id>` on branch `worktree-agent-<id>`, and its commit lands on that branch.
-    - `memory: project`: see U7.
-    - **Finding — worktree base:** worktrees branch from the remote default branch (`worktree.baseRef: "fresh"`) by default, not from the session's `HEAD`. In a repo with an `origin`, an isolated agent didn't see the lead's unpushed commits on a feature branch; with `worktree.baseRef: "head"` it did.
-    - **Decision:** `/anthology:setup` also sets `worktree.baseRef: "head"` in user settings (via `settings_patch`, and removed by `setup remove`), so writers start from the lead's current work, such as branch `build`. The routing guide states that writers branch from the lead's `HEAD`. The per-call `isolation` fallback isn't needed.
-  - **U3 — hook reach: passes.**
-    - A `PreToolUse` hook with matcher `*` saw `Bash`, `Read`, `Write`, `ToolSearch` and a plugin MCP tool (`mcp__plugin_<plugin>_<server>__<tool>`), in the main session and in subagents. Inside a subagent, the hook input carries `agent_type: "<plugin>:<agent>"`.
-    - Exit 2 with stderr blocks the call, and the model sees `PreToolUse:Bash hook error: [...]: <stderr>` plus the plugin that blocked it.
-    - Exec form (`command` + `args`) works. `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` expand in `args` and are also in the hook's environment. The data dir is `<config>/plugins/data/<plugin>-<marketplace>` (`<plugin>-inline` for `--plugin-dir`).
-    - **Decision:** none needed; the guard design (§9) stands. **Eval case:** a hook log shows every tool class, and the block text reaches the model.
-  - **U4 — CLI syntax (from `--help` on 2.1.311):**
-    - `claude plugin marketplace add <owner/repo|https-url|./path> [--scope user|project|local] [--sparse <paths…>]`. A `file://` URL is rejected.
-    - `claude plugin marketplace list|remove <name>|update [name]`
-    - `claude plugin install|uninstall|update <plugin>[@marketplace] [-s user|project|local]`. `uninstall` also takes `--keep-data`, and `--prune -y` removes auto-installed dependencies.
-    - `claude plugin list [--json] [--available]`
-    - `claude plugin validate <path> [--strict] [--json] [--profile directory]`
-    - `claude plugin tag [path] [--dry-run] [-m <msg>] [--push] [--remote origin] [-f]`
-    - `claude plugin eval [target] [--case <glob>] [--tag …] [--runs n] [--model m] [--judge-model m] [--ablation none|with-without] [--threshold 0..1] [--max-cost-usd usd] [--allow-tools …] [--mocks record|off] [--trust-plugin] [--json path] [--no-publish] [-j n]`
-    - Also present: `claude plugin details|prune|enable|disable|configure|init`.
-  - **U5 — upstream pins** (resolved read-only with `gh api` / `git ls-remote`; SPDX from the repo license or the shipped LICENSE file):
+| Source | Path | Pin | SPDX |
+|---|---|---|---|
+| `obra/superpowers` | whole plugin | tag `v7.0.2` = `22f0b463e7a5e579904dd6211a520321035526f7` (as expected) | MIT |
+| `anthropics/knowledge-work-plugins` | `engineering/`, `design/`, `product-management/`, `marketing/` | `0e0fcacddcc892eb92a1b7873ff9d68159c47571` (`main` head; all four plugin.json at 1.2.0, the same commit the directory serves as 1.2.0) | Apache-2.0 |
+| `uxkin/agent` | `plugins/website-design/` | branch **`website-design`** = `07e8f5f61421c7268fddc1511878fb09945da854` (plugin 1.0.0). The folder is not on `main`. | MIT |
+| `anthropics/skills` | `skills/frontend-design/` | `e4bb5d960d87126ff3b3a8af1a104b7db67560ba` (`main` head) | Apache-2.0 (folder `LICENSE.txt`; the repo has no top-level license) |
+| `vercel-labs/agent-skills` | `skills/web-design-guidelines/` | `1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62` (`main` head) | MIT (stated in README; the repo has no LICENSE file) |
+| `leonxlnx/taste-skill` | design-taste-frontend | tag `v2.5.1` = `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
+| `juliusbrussee/caveman` | `skills/caveman/` | tag `v4.1.0` = `1e91f1306d602d4ca23618701b1185575ae1869b` | Apache-2.0 |
+| `cuellarfr/design-skills` | whole repo | `7e25e66e87f64f9d3dea22198f9e29937e7c48f5` (`main` head = 1.0.0; no tags) | MIT |
+| ui-taste (uizze.sh) | `/.well-known/skills/ui-taste/` | `CHECKSUMS.sha256` sha256 `405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612` (25 entries, manifest version `uizze-design-v14`) | Apache-2.0 (shipped LICENSE, matching its checksum line) |
+| `rbonweb/rtk` (fork) | whole repo | `develop` = `9b790c414de16f5fb688126b3945c73aa0e0218e` | Apache-2.0 |
+| `rtk-ai/rtk` (upstream) | whole repo | latest release `v1.2.1` = `d0f0399a5ff8cd1d81325a033f0b2d8864d665f6` (published 2026-11-19) | Apache-2.0 |
 
-    | Source | Path | Pin | SPDX |
-    |---|---|---|---|
-    | `obra/superpowers` | whole plugin | tag `v7.0.2` = `22f0b463e7a5e579904dd6211a520321035526f7` (as expected) | MIT |
-    | `anthropics/knowledge-work-plugins` | `engineering/`, `design/`, `product-management/`, `marketing/` | `0e0fcacddcc892eb92a1b7873ff9d68159c47571` (`main` head; all four plugin.json at 1.2.0, the same commit the directory serves as 1.2.0) | Apache-2.0 |
-    | `uxkin/agent` | `plugins/website-design/` | branch **`website-design`** = `07e8f5f61421c7268fddc1511878fb09945da854` (plugin 1.0.0). The folder is not on `main`. | MIT |
-    | `anthropics/skills` | `skills/frontend-design/` | `e4bb5d960d87126ff3b3a8af1a104b7db67560ba` (`main` head) | Apache-2.0 (folder `LICENSE.txt`; the repo has no top-level license) |
-    | `vercel-labs/agent-skills` | `skills/web-design-guidelines/` | `1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62` (`main` head) | MIT (stated in README; the repo has no LICENSE file) |
-    | `leonxlnx/taste-skill` | design-taste-frontend | tag `v2.5.1` = `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
-    | `juliusbrussee/caveman` | `skills/caveman/` | tag `v4.1.0` = `1e91f1306d602d4ca23618701b1185575ae1869b` | Apache-2.0 |
-    | `cuellarfr/design-skills` | whole repo | `7e25e66e87f64f9d3dea22198f9e29937e7c48f5` (`main` head = 1.0.0; no tags) | MIT |
-    | ui-taste (uizze.sh) | `/.well-known/skills/ui-taste/` | `CHECKSUMS.sha256` sha256 `405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612` (25 entries, manifest version `uizze-design-v14`) | Apache-2.0 (shipped LICENSE, matching its checksum line) |
-    | `rbonweb/rtk` (fork) | whole repo | `develop` = `9b790c414de16f5fb688126b3945c73aa0e0218e` | Apache-2.0 |
-    | `rtk-ai/rtk` (upstream) | whole repo | latest release `v1.2.1` = `d0f0399a5ff8cd1d81325a033f0b2d8864d665f6` (published 2026-11-19) | Apache-2.0 |
-
-    - **Decisions:**
-      - Every source is MIT or Apache-2.0, so no owner decision is needed.
-      - Because `vercel-labs/agent-skills` has no LICENSE file, `vendor/licenses/` carries a standard MIT text naming "Vercel", with a note that the license is declared in the upstream README.
-      - The upstream watcher tracks `uxkin/agent` on branch `website-design`, not `main`.
-  - **U6 — hooks and PATH: the block wins.**
-    - One plugin's `PreToolUse` hook exited 2 while another returned `permissionDecision: "allow"` with `updatedInput`. The call was blocked, with either plugin load order. This matches the documented precedence `deny > defer > ask > allow`.
-    - Both hooks receive the **original** command (they run in parallel), so the guard always checks what Claude asked for, not rtk's rewrite. Alone, the allow hook's rewrite and auto-approval worked.
-    - Plugin `bin/` is on the Bash `PATH` in the main session and in subagents.
-    - **Decision:** none needed; the `guard_rules.check` fallback isn't needed. **Eval case:** the deny + allow pair blocks the call.
-  - **U7 — memory.**
-    - `autoMemoryDirectory` in `.claude/settings.local.json` is honored when it is present at session start. A note was written to `<repo>/.claude/memory/` along with `MEMORY.md`.
-    - When a `SessionStart` hook writes the setting during startup, it applies **from the next session**. That session's notes went to the path-keyed `<config>/projects/<encoded path>/memory/`.
-    - Per the docs, the project-scope setting is honored only in a trusted workspace, and not while `permissions.blockReadsOutsideWorkingDirectories` is on.
-    - Agent memory for plugin agent `probe:writer` is `.claude/agent-memory/probe-writer/`: the `:` becomes `-`, so `anthology:<name>` maps to `.claude/agent-memory/anthology-<name>/`. With `isolation: worktree` it resolves **inside the worktree** (`<worktree>/.claude/agent-memory/…`), where it is untracked and lost with the worktree unless committed.
-    - The `SessionStart` `additionalContext` reached the main session but **not** subagents: the marker is absent from subagent transcripts, and the agent reported none.
-    - **Decisions:**
-      - `memory_sync.py` keeps the planned same-session cover: when it repairs the setting, it injects the repo memory index.
-      - The path-keyed migration runs on **every** session start, not only once, and copies (never overwrites) anything found there. This moves notes saved in a repair session into the repo on the next start.
-      - Agent memory paths in code, tests and docs use `.claude/agent-memory/anthology-<agent>/`, not `<agent>/`.
-      - Writer agents (worktree) must commit their `.claude/agent-memory/anthology-<agent>/` changes in their worktree as a separate `chore(memory): …` commit before finishing, so the memory merges with their branch. The agent bodies (Task 6) and routing guide (Task 13) say so.
-      - Read-only agents run in the main clone and write memory there; the lead commits it.
-  - **U8 — hook output and failures.**
-    - The `additionalContext` limit is **10,000 characters**, inclusive: a 10,000-char value arrived whole. At 10,001 characters, the model got `Output too large (…KB). Full output saved to: <session dir>/tool-results/hook-…-additionalContext.txt` and a preview (2,000 chars per the docs), and the tail marker was lost. The limit applies to each field separately, and no setting raises it.
-    - A missing interpreter is a **non-blocking** error and the call goes ahead. In exec form: `Executable not found in $PATH: "<cmd>"`. In shell form: exit 127. The model sees nothing; the user only gets the hook-error notice.
-    - `onFailure: "block"` exists (v2.1.295+) and works on 2.1.311: the call is blocked with `failed; blocking because onFailure is "block"`.
-    - **Decisions:**
-      - Routing guide + personal memory index + repo-memory cover stays under a test budget of **9,000 characters** (one field).
-      - The guard keeps failing open: no `onFailure: "block"` on the matcher-`*` hook, since a missing `python3` would then block every tool and brick the session.
-      - "Never silently off" can't rely on Python. If `python3` is missing, the Python `SessionStart` hook itself fails silently. So `anthology-guardrails` adds a first `SessionStart` hook in POSIX `sh` that emits the loud `systemMessage` when `command -v python3` fails.
-      - `session_start.py` still runs the known-bad-sample self-test.
-  - **U9 — eval harness: works.**
-    - `claude plugin eval` ran a case against the probe plugin with `tool_used` (Skill), `tool_order` (Skill before the MCP tool) and a `regex` grader on `mock_calls`. A mocked MCP server (`evals/mocks/<server>/<tool>.md`) answered and scored 1.00.
-    - `--max-cost-usd` works: with a tiny ceiling and `--runs 2`, one run ran and the command exited **2**, with `partial: true, partialReason: "cost_ceiling"`.
-    - **Finding:** a case's `plugins:` entries must sit under the containment root. That root is the enclosing plugin, so a suite inside `plugins/anthology/evals/` can't load `anthology-guardrails` or `anthology-superpowers`.
-    - Evals placed in a non-plugin parent directory and run against that directory loaded all listed plugins and passed. That case dispatched the plugin agent, which Read its knowledge file and showed a cross-plugin preload.
-    - **Decision:** the behaviour evals live at the repo root in `evals/`. Each case declares `plugins: ["../../plugins/anthology", "../../plugins/anthology-guardrails", "../../plugins/anthology-superpowers"]`, and `evals.yml` runs `claude plugin eval . --trust-plugin --ablation none --no-publish --max-cost-usd <ceiling> --model … --judge-model …`. BrowserOS cases mock the `browseros-neo` server under `evals/mocks/`.
-  - **`engines` and the minimum version.**
-    - `claude plugin validate` on 2.1.311 warns `Unknown field 'engines'`, so `--strict` fails. The docs say `engines` is honored from **v2.1.323**.
-    - On 2.1.329 (checked in a throwaway container), `validate --strict` passes for `plugins/anthology`.
-    - Everything above was verified on 2.1.311, and no needed feature is newer (`onFailure` 2.1.295, `plugin eval` 2.1.269). So the minimum stays **`>=2.1.311`**. Clients older than 2.1.323 ignore the field, which is harmless.
-    - **Decision:** CI's `claude plugin validate --strict` (Task 14) installs a pinned Claude Code **≥ 2.1.323**.
+- **Decisions:**
+  - Every source is MIT or Apache-2.0, so no owner decision is needed.
+  - rtk is Apache-2.0 except its BUSL-1.1 `engine/`, `plugin/` and `proxy/` directories, which the rtk trim removes before anything ships (ADR-016).
+  - Because `vercel-labs/agent-skills` has no LICENSE file, `vendor/licenses/` carries a standard MIT text naming "Vercel", with a note that the license is declared in the upstream README.
+  - The upstream watcher tracks `uxkin/agent` on branch `website-design`, not `main`.
+- **→ Task 14 case (unit test, no model):** `test_sources_pins` asserts `vendor/sources.json` matches this table: repo, path, ref/commit (40-hex), checksum for ui-taste, and SPDX in {MIT, Apache-2.0}. `vendor.py check` (CI) proves the committed trees regenerate from those pins. `upstream-watch.yml` compares the same pins: `git ls-remote` per repo/branch/tag (`website-design` branch for uxkin), the ui-taste `CHECKSUMS.sha256` sha256, and the rtk upstream latest release. Expected: no diff on a clean tree, and an issue opened when a pin moves.

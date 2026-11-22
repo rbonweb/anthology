@@ -1,0 +1,57 @@
+# Extends the default gitleaks rules; every allowlist entry says why it is a false positive.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "RFC 6455 section 4.2.2 sample handshake nonce (vendored superpowers WebSocket test)"
+regexTarget = "secret"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+[[allowlists]]
+description = "Upstream icon-credit lines naming a public git commit of gilbarbara/logos (a 40-hex sha, not a token); they appear in the design-taste-frontend patch"
+regexTarget = "line"
+regexes = ['''"source": "gilbarbara/logos@[0-9a-f]{40}"''']
+
+# rtk (subtree, Task 8). The imported upstream history keeps its original paths (no `rtk/` prefix),
+# so each path matches both. Every entry is a test fixture or a documentation example, never a real key.
+[[allowlists]]
+description = "rtk guard integration test: a fake Stripe key the guard must pass through (literally FAKE)"
+condition = "AND"
+targetRules = ["stripe-access-token"]
+paths = ['''^(rtk/)?tests/guard_integration_test\.rs$''']
+regexTarget = "secret"
+regexes = ['''^sk_live_FAKE1234567890$''']
+
+[[allowlists]]
+description = "rtk SECURITY.md: a 'do not hardcode secrets' counter-example"
+condition = "AND"
+targetRules = ["stripe-access-token"]
+paths = ['''^(rtk/)?SECURITY\.md$''']
+regexTarget = "secret"
+regexes = ['''^sk_live_1234567890abcdef$''']
+
+[[allowlists]]
+description = "rtk benchmark cloud-init: a sample .env with placeholder values"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^(rtk/)?scripts/benchmark/cloud-init\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^sk-1234567890abcdef$''']
+
+[[allowlists]]
+description = "rtk aws filter unit tests: fake CloudWatch pagination tokens and a sample Lambda env value"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^(rtk/)?src/cmds/cloud/aws_cmd\.rs$''']
+regexTarget = "secret"
+regexes = [
+  '''^[fb]/(1234567890abcdef){2}$''',
+  '''^[fb]/(abcdef1234567890){3}$''',
+  '''^secret-api-key-12345$''',
+]
+
+[[allowlists]]
+description = "Rust-port guard rule rows (extracted from test_guard_rules.py): G6 fixtures written with \\u escapes that gitleaks decodes, a sequential-letter fake AWS session key id and two bare private-key headers with no key body (gitleaks matches from one to the other)"
+condition = "AND"
+paths = ['''^crates/anthology-guard/tests/data/test_guard_rules\.jsonl$''']
+regexes = ['''^ASIAABCDEFGHIJKLMNOP$''', '''^-----BEGIN OPENSSH PRIVATE KEY-----\nEOF"[\s\S]*"new_string": "-----BEGIN OPENSSH PRIVATE KEY-----$''']

@@ -1,0 +1,80 @@
+schema_version: "1.0"
+name: knowledge-reviewer
+description: 'anthology:reviewer reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:reviewer agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:reviewer"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-code-review-checklist
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/code-review-checklist/SKILL\.md'
+  - name: order-code-review-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-code-review-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
+  - name: read-karpathy-guidelines
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/karpathy-guidelines/SKILL\.md'
+  - name: order-karpathy-guidelines
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-tech-debt
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/tech-debt/SKILL\.md'
+  - name: order-tech-debt
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-code-review-checklist-karpathy-guidelines
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
+  - name: inorder-karpathy-guidelines-tech-debt
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
+  - name: read-deploy-checklist
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/deploy-checklist/SKILL\.md'
+  - name: order-deploy-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-tech-debt-deploy-checklist
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}

@@ -8,15 +8,235 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older run (runners are shared).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  vendor-check:
+    # Needs git and network: rebuild every vendored tree from its pinned upstream and diff it
+    # against the committed tree (anthology-dev vendor check in the pinned Rust image).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Run tests in the pinned Python image
+      - name: vendor check
+        run: scripts/dev.sh vendor check
+
+  version-bump:
+    # A plugin whose files changed must carry a higher plugin.json version than at the
+    # merge base, once it has been released (a `<plugin>--v*` tag exists). Needs git history
+    # and tags (fetch-depth: 0 fetches both); scripts/dev.sh runs the check in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check plugin version bumps
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: scripts/dev.sh version-bump "$BASE" "$HEAD_SHA"
+
+  plugin-validate:
+    # Validate the marketplace manifest and each plugin with the Claude Code version pinned in
+    # ci/claude-code.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISABLE_AUTOUPDATER: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [., plugins/anthology, plugins/anthology-guardrails, plugins/anthology-superpowers]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Claude Code (postinstall links the native binary)
+        run: npm ci --prefix ci/claude-code
+      - name: Claude Code version
+        run: ci/claude-code/node_modules/.bin/claude --version
+      - name: claude plugin validate --strict
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ci/claude-code/node_modules/.bin/claude plugin validate --strict "$TARGET"
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the history reachable from the tested commit for secrets
         run: |
-          . tests/images.lock
-          docker run --rm -v "$PWD":/w -w /w "$PYTHON_IMAGE" \
-            sh -c "pip install -q --require-hashes -r tests/requirements.txt && python -m unittest discover -s tests -v"
+          GITLEAKS_IMAGE=$(awk '$1 == "FROM" {print $2}' ci/images/gitleaks.Dockerfile)
+          docker run --rm -v "$PWD":/repo:ro \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            "$GITLEAKS_IMAGE" git --redact --no-banner --config /repo/.gitleaks.toml --log-opts="HEAD" /repo
+
+  memory-diff:
+    # Lists the memory notes a pull request adds, changes, renames or deletes (.claude/memory and
+    # .claude/agent-memory) in the job summary: notes load into everyone's sessions, so reviewers
+    # read them like code. A listing, not a gate, and it comments nothing on the PR (fork-safe).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: List the memory changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/dev.sh memory-diff "$BASE" "$HEAD_SHA" >>"$GITHUB_STEP_SUMMARY"
+
+  startup-budget:
+    # The per-agent startup budget (anthology-dev startup-budget and the test_roster port
+    # `startup_budget`, PLAN section 5) and the session-start output budget (the
+    # test_session_start `budget` ports, U8's 9,000 characters), in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Startup budgets in the pinned Rust image (design §14.2, m-18)
+        run: |
+          scripts/dev.sh startup-budget
+          scripts/rust-test.sh run cargo test --locked -p repo-tests --test roster startup_budget
+          scripts/rust-test.sh run cargo test --locked -p anthology-runtime budget
+
+  cli-syntax:
+    # The Claude Code CLI surface the plugins and the evals rely on (U4): every `claude plugin`
+    # subcommand answers --help with the flags we use, `validate --strict` passes for each plugin
+    # and `tag --dry-run` names the release tag. No model is called and no credentials are needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISABLE_AUTOUPDATER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Claude Code (postinstall links the native binary)
+        run: npm ci --prefix ci/claude-code
+      - name: Claude Code version
+        run: ci/claude-code/node_modules/.bin/claude --version
+      - name: CLI syntax smoke
+        run: ci/jobs/cli-syntax.sh
+
+  rtk-test:
+    # $RTK_TEST: rtk's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the rtk tests in the pinned Rust image
+        run: scripts/rtk-test.sh
+      - name: Run the release binary with the network off
+        run: scripts/rtk-net-test.sh
+
+  # The Rust port (design §14.1). Each job runs ci/jobs/<job>.sh; the lane that owns a job edits
+  # its script, never this file (plan §0.2). Placeholder scripts echo their name until then.
+
+  rust-lint:
+    # cargo fmt --check and clippy -D warnings, in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-lint
+        run: ci/jobs/rust-lint.sh
+
+  rust-test-linux:
+    # cargo test --workspace --locked in the pinned Rust image (with git, busybox and node).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-test-linux
+        run: ci/jobs/rust-test-linux.sh
+
+  rust-test-macos:
+    # cargo test --workspace --locked on macOS.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: rust-test-macos
+        run: ci/jobs/rust-test-macos.sh
+
+  deny:
+    # cargo deny check (advisories, bans, licenses, sources) and the serde_json tree check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: deny
+        run: ci/jobs/deny.sh
+
+  shims-distros:
+    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shims-distros
+        run: ci/jobs/shims-distros.sh
+
+  shellcheck:
+    # shellcheck -s sh on every shim, in the pinned image (BS1).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: ci/jobs/shellcheck.sh
+
+  ledger:
+    # anthology-dev ledger check --report (F4a).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ledger
+        run: ci/jobs/ledger.sh
+
+  fuzz-build:
+    # Every fuzz target compiles on the pinned nightly and survives 1,000 runs (F1). The long
+    # runs are fuzz.yml's, weekly.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: fuzz-build
+        run: ci/jobs/fuzz-build.sh

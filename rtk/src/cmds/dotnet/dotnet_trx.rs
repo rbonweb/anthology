@@ -1,0 +1,658 @@
+//! Parses .trx test result files (Visual Studio XML format) into compact summaries.
+
+use crate::binlog::{FailedTest, TestSummary};
+use chrono::{DateTime, FixedOffset};
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// A reader for the XML files dotnet tooling and hand edits produce, shared with the
+/// MSBuild property scan. A bare `&` in text is read as text: ill-formed, but common enough
+/// in third-party TRX writers and edited project files that rejecting it would
+/// discard a whole file over one character.
+pub(crate) fn xml_reader(content: &str) -> Reader<&[u8]> {
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().allow_dangling_amp = true;
+    reader
+}
+
+/// Appends the character data `event` carries. Text and CDATA come with XML 1.0
+/// line endings; a reference is resolved, or kept as written when it is not a valid
+/// character (`&#0;`) or names an entity declared in a DTD, which this reader does
+/// not load. A resolved reference can be any character, controls included: text
+/// bound for the terminal goes through [`terminal_text`].
+pub(crate) fn push_content(event: &Event<'_>, out: &mut String) {
+    match event {
+        Event::Text(text) => out.push_str(&text.xml10_content()),
+        Event::CData(cdata) => out.push_str(&cdata.xml10_content()),
+        Event::GeneralRef(reference) => {
+            if let Ok(Some(ch)) = reference.resolve_char_ref() {
+                out.push(ch);
+            } else if let Some(resolved) = quick_xml::escape::resolve_predefined_entity(reference) {
+                out.push_str(resolved);
+            } else {
+                out.push('&');
+                out.push_str(reference);
+                out.push(';');
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Text from the TRX made safe to print. A CR written as `&#xD;` survives XML
+/// line-ending normalization, so every CR becomes a line break; any other control
+/// character (an `&#x1B;` escape sequence, a backspace) is dropped.
+fn terminal_text(text: &str) -> String {
+    crate::core::utils::sanitize_for_terminal(&text.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
+fn extract_attr_value(start: &BytesStart<'_>, key: &str) -> Option<String> {
+    for attr in start.attributes().flatten() {
+        if attr.key.local_name().as_ref() != key {
+            continue;
+        }
+
+        if let Ok(value) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+            return Some(value.into_owned());
+        }
+    }
+
+    None
+}
+
+fn parse_usize_attr(start: &BytesStart<'_>, key: &str) -> usize {
+    extract_attr_value(start, key)
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn parse_trx_duration(start: &str, finish: &str) -> Option<String> {
+    let start_dt = DateTime::parse_from_rfc3339(start).ok()?;
+    let finish_dt = DateTime::parse_from_rfc3339(finish).ok()?;
+    format_duration_between(start_dt, finish_dt)
+}
+
+fn format_duration_between(
+    start_dt: DateTime<FixedOffset>,
+    finish_dt: DateTime<FixedOffset>,
+) -> Option<String> {
+    let diff = finish_dt.signed_duration_since(start_dt);
+    let millis = diff.num_milliseconds();
+    if millis <= 0 {
+        return None;
+    }
+
+    if millis >= 1_000 {
+        let seconds = millis as f64 / 1_000.0;
+        return Some(format!("{seconds:.1} s"));
+    }
+
+    Some(format!("{millis} ms"))
+}
+
+fn parse_trx_time_bounds(content: &str) -> Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> {
+    let mut reader = xml_reader(content);
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() != "Times" {
+                    continue;
+                }
+
+                let start = extract_attr_value(&e, "start")?;
+                let finish = extract_attr_value(&e, "finish")?;
+                let start_dt = DateTime::parse_from_rfc3339(&start).ok()?;
+                let finish_dt = DateTime::parse_from_rfc3339(&finish).ok()?;
+                return Some((start_dt, finish_dt));
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return None,
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// Parse TRX (Visual Studio Test Results) file to extract test summary.
+/// Returns None if the file doesn't exist or isn't a valid TRX file.
+pub fn parse_trx_file(path: &Path) -> Option<TestSummary> {
+    let content = std::fs::read_to_string(path).ok()?;
+    parse_trx_content(&content)
+}
+
+pub fn parse_trx_file_since(path: &Path, since: SystemTime) -> Option<TestSummary> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    if modified < since {
+        return None;
+    }
+
+    parse_trx_file(path)
+}
+
+pub fn parse_trx_files_in_dir(dir: &Path) -> Option<TestSummary> {
+    parse_trx_files_in_dir_since(dir, None)
+}
+
+pub fn parse_trx_files_in_dir_since(dir: &Path, since: Option<SystemTime>) -> Option<TestSummary> {
+    if !dir.exists() || !dir.is_dir() {
+        return None;
+    }
+
+    let mut summaries = Vec::new();
+    let mut min_start: Option<DateTime<FixedOffset>> = None;
+    let mut max_finish: Option<DateTime<FixedOffset>> = None;
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_none_or(|e| !e.eq_ignore_ascii_case("trx"))
+        {
+            continue;
+        }
+
+        if let Some(since) = since {
+            let modified = match entry.metadata().ok().and_then(|m| m.modified().ok()) {
+                Some(modified) => modified,
+                None => continue,
+            };
+            if modified < since {
+                continue;
+            }
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        if let Some((start, finish)) = parse_trx_time_bounds(&content) {
+            min_start = Some(min_start.map_or(start, |prev| prev.min(start)));
+            max_finish = Some(max_finish.map_or(finish, |prev| prev.max(finish)));
+        }
+
+        if let Some(summary) = parse_trx_content(&content) {
+            summaries.push(summary);
+        }
+    }
+
+    if summaries.is_empty() {
+        return None;
+    }
+
+    let mut merged = TestSummary::default();
+    for summary in summaries {
+        merged.passed += summary.passed;
+        merged.failed += summary.failed;
+        merged.skipped += summary.skipped;
+        merged.total += summary.total;
+        merged.failed_tests.extend(summary.failed_tests);
+        merged.project_count += summary.project_count.max(1);
+        if merged.duration_text.is_none() {
+            merged.duration_text = summary.duration_text;
+        }
+    }
+
+    if let (Some(start), Some(finish)) = (min_start, max_finish) {
+        merged.duration_text = format_duration_between(start, finish);
+    }
+
+    Some(merged)
+}
+
+pub fn find_recent_trx_in_testresults() -> Option<PathBuf> {
+    find_recent_trx_in_dir(Path::new("./TestResults"))
+}
+
+fn find_recent_trx_in_dir(dir: &Path) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
+
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_trx = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("trx"));
+            if !is_trx {
+                return None;
+            }
+
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn parse_trx_content(content: &str) -> Option<TestSummary> {
+    #[derive(Clone, Copy)]
+    enum CaptureField {
+        Message,
+        StackTrace,
+    }
+
+    let mut reader = xml_reader(content);
+    let mut summary = TestSummary::default();
+    let mut saw_test_run = false;
+    let mut in_failed_result = false;
+    let mut in_error_info = false;
+    let mut failed_test_name = String::new();
+    let mut message_buf = String::new();
+    let mut stack_buf = String::new();
+    let mut capture_field: Option<CaptureField> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                "TestRun" => saw_test_run = true,
+                "Times" => {
+                    let start = extract_attr_value(&e, "start");
+                    let finish = extract_attr_value(&e, "finish");
+                    if let (Some(start), Some(finish)) = (start, finish) {
+                        summary.duration_text = parse_trx_duration(&start, &finish);
+                    }
+                }
+                "Counters" => {
+                    summary.total = parse_usize_attr(&e, "total");
+                    summary.passed = parse_usize_attr(&e, "passed");
+                    summary.failed = parse_usize_attr(&e, "failed");
+                }
+                "UnitTestResult" => {
+                    let outcome =
+                        extract_attr_value(&e, "outcome").unwrap_or_else(|| "Unknown".to_string());
+
+                    if outcome == "Failed" {
+                        in_failed_result = true;
+                        in_error_info = false;
+                        capture_field = None;
+                        message_buf.clear();
+                        stack_buf.clear();
+                        failed_test_name = extract_attr_value(&e, "testName")
+                            .map_or_else(|| "unknown".to_string(), |n| terminal_text(&n));
+                    }
+                }
+                "ErrorInfo" if in_failed_result => {
+                    in_error_info = true;
+                }
+                "Message" if in_failed_result && in_error_info => {
+                    capture_field = Some(CaptureField::Message);
+                    message_buf.clear();
+                }
+                "StackTrace" if in_failed_result && in_error_info => {
+                    capture_field = Some(CaptureField::StackTrace);
+                    stack_buf.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => match e.local_name().as_ref() {
+                "Times" => {
+                    let start = extract_attr_value(&e, "start");
+                    let finish = extract_attr_value(&e, "finish");
+                    if let (Some(start), Some(finish)) = (start, finish) {
+                        summary.duration_text = parse_trx_duration(&start, &finish);
+                    }
+                }
+                "Counters" => {
+                    summary.total = parse_usize_attr(&e, "total");
+                    summary.passed = parse_usize_attr(&e, "passed");
+                    summary.failed = parse_usize_attr(&e, "failed");
+                }
+                "UnitTestResult" => {
+                    let outcome =
+                        extract_attr_value(&e, "outcome").unwrap_or_else(|| "Unknown".to_string());
+                    if outcome == "Failed" {
+                        let name = extract_attr_value(&e, "testName")
+                            .map_or_else(|| "unknown".to_string(), |n| terminal_text(&n));
+                        summary.failed_tests.push(FailedTest {
+                            name,
+                            details: Vec::new(),
+                        });
+                    }
+                }
+                _ => {}
+            },
+            Ok(event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
+                match capture_field {
+                    Some(CaptureField::Message) => push_content(&event, &mut message_buf),
+                    Some(CaptureField::StackTrace) => push_content(&event, &mut stack_buf),
+                    None => {}
+                }
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                "Message" | "StackTrace" => {
+                    capture_field = None;
+                }
+                "ErrorInfo" => {
+                    in_error_info = false;
+                }
+                "UnitTestResult" if in_failed_result => {
+                    let mut details = Vec::new();
+
+                    let message = terminal_text(&message_buf);
+                    let message = message.trim();
+                    if !message.is_empty() {
+                        details.push(message.to_string());
+                    }
+
+                    let stack = terminal_text(&stack_buf);
+                    let stack = stack.trim();
+                    if !stack.is_empty() {
+                        let stack_lines: Vec<&str> = stack.lines().take(3).collect();
+                        if !stack_lines.is_empty() {
+                            details.push(stack_lines.join("\n"));
+                        }
+                    }
+
+                    summary.failed_tests.push(FailedTest {
+                        name: failed_test_name.clone(),
+                        details,
+                    });
+
+                    in_failed_result = false;
+                    in_error_info = false;
+                    capture_field = None;
+                    message_buf.clear();
+                    stack_buf.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => return None,
+            _ => {}
+        }
+    }
+
+    if !saw_test_run {
+        return None;
+    }
+
+    // Calculate skipped from counters if available
+    if summary.total > 0 {
+        summary.skipped = summary
+            .total
+            .saturating_sub(summary.passed + summary.failed);
+    }
+
+    // Set project count to at least 1 if there were any tests
+    if summary.total > 0 {
+        summary.project_count = 1;
+    }
+
+    Some(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Force a file's mtime instead of relying on write ordering: filesystem
+    /// mtime granularity (1 s on some CI filesystems, 2 s on FAT) can make two
+    /// files written microseconds apart indistinguishable.
+    fn set_mtime(path: &Path, time: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for mtime")
+            .set_modified(time)
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn test_parse_trx_content_extracts_passed_counts() {
+        let trx = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-02-21T12:57:28.3323710+01:00" queuing="2026-02-21T12:57:28.3323710+01:00" start="2026-02-21T12:57:27.7149650+01:00" finish="2026-02-21T12:57:30.2214710+01:00" />
+  <ResultSummary outcome="Completed">
+    <Counters total="42" executed="42" passed="40" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" />
+  </ResultSummary>
+</TestRun>"#;
+
+        let summary = parse_trx_content(trx).expect("valid TRX");
+        assert_eq!(summary.total, 42);
+        assert_eq!(summary.passed, 40);
+        assert_eq!(summary.failed, 2);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.duration_text.as_deref(), Some("2.5 s"));
+    }
+
+    #[test]
+    fn test_parse_trx_content_extracts_failed_tests_with_details() {
+        let trx = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Results>
+    <UnitTestResult testName="MyTests.Calculator.Add&amp;Subtract_ShouldFail" outcome="Failed">
+      <Output>
+        <ErrorInfo>
+          <Message>Expected: &lt;5&gt; &amp; got 4</Message>
+          <StackTrace>at MyTests.Calculator.Add_ShouldFail()\nat line 42</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <ResultSummary><Counters total="1" executed="1" passed="0" failed="1" /></ResultSummary>
+</TestRun>"#;
+
+        let summary = parse_trx_content(trx).expect("valid TRX");
+        assert_eq!(summary.failed_tests.len(), 1);
+        assert_eq!(
+            summary.failed_tests[0].name,
+            "MyTests.Calculator.Add&Subtract_ShouldFail"
+        );
+        assert_eq!(summary.failed_tests[0].details[0], "Expected: <5> & got 4");
+    }
+
+    #[test]
+    fn test_parse_trx_content_keeps_cdata_normalizes_crlf_and_unknown_entities() {
+        let trx = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<TestRun><Results>\r\n\
+<UnitTestResult testName=\"T\" outcome=\"Failed\"><Output><ErrorInfo>\r\n\
+<Message>Assert failed\r\n  at <![CDATA[a<b && c]]> &custom; &#x41;</Message>\r\n\
+</ErrorInfo></Output></UnitTestResult>\r\n\
+</Results></TestRun>";
+
+        let summary = parse_trx_content(trx).expect("valid TRX");
+        assert_eq!(
+            summary.failed_tests[0].details,
+            vec!["Assert failed\n  at a<b && c &custom; A".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_trx_content_reads_bare_ampersands_and_control_references() {
+        let trx = r#"<TestRun><Results>
+<UnitTestResult testName="Parse(&#x1B;[2Ja&#x8;)" outcome="Failed"><Output><ErrorInfo>
+<Message>&#x1B;[2J&#x1B;[HExpected a & b&#xD;got c&#x7; &#0;</Message>
+<StackTrace>at A()&#xD;&#xA;at B()</StackTrace>
+</ErrorInfo></Output></UnitTestResult>
+<UnitTestResult testName="Bare(&#x1B;[Hb)" outcome="Failed"/>
+</Results></TestRun>"#;
+
+        let summary = parse_trx_content(trx).expect("a bare & must not discard the file");
+        assert_eq!(summary.failed_tests[0].name, "Parse(a)");
+        assert_eq!(summary.failed_tests[1].name, "Bare(b)");
+        assert_eq!(
+            summary.failed_tests[0].details,
+            vec![
+                "Expected a & b\ngot c &#0;".to_string(),
+                "at A()\nat B()".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_trx_time_bounds_reads_past_a_bare_ampersand() {
+        let trx = r#"<TestRun name="Tom & Jerry"><Description>A & B</Description>
+<Times start="2026-01-01T10:00:00+00:00" finish="2026-01-01T10:00:02+00:00" />
+</TestRun>"#;
+
+        let (start, finish) = parse_trx_time_bounds(trx).expect("time bounds");
+        assert_eq!((finish - start).num_seconds(), 2);
+    }
+
+    #[test]
+    fn test_parse_trx_content_extracts_counters_when_attribute_order_varies() {
+        let trx = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <ResultSummary outcome="Completed">
+    <Counters failed="3" passed="7" executed="10" total="10" />
+  </ResultSummary>
+</TestRun>"#;
+
+        let summary = parse_trx_content(trx).expect("valid TRX");
+        assert_eq!(summary.total, 10);
+        assert_eq!(summary.passed, 7);
+        assert_eq!(summary.failed, 3);
+    }
+
+    #[test]
+    fn test_parse_trx_content_extracts_failed_tests_when_attribute_order_varies() {
+        let trx = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Results>
+    <UnitTestResult outcome="Failed" testName="MyTests.Ordering.ShouldStillParse">
+      <Output>
+        <ErrorInfo>
+          <Message>Boom</Message>
+          <StackTrace>at MyTests.Ordering.ShouldStillParse()</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <ResultSummary><Counters failed="1" passed="0" executed="1" total="1" /></ResultSummary>
+</TestRun>"#;
+
+        let summary = parse_trx_content(trx).expect("valid TRX");
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failed_tests.len(), 1);
+        assert_eq!(
+            summary.failed_tests[0].name,
+            "MyTests.Ordering.ShouldStillParse"
+        );
+    }
+
+    #[test]
+    fn test_parse_trx_content_returns_none_for_invalid_xml() {
+        let not_trx = "This is not a TRX file";
+        assert!(parse_trx_content(not_trx).is_none());
+    }
+
+    #[test]
+    fn test_find_recent_trx_in_dir_returns_none_when_missing() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let missing_dir = temp_dir.path().join("TestResults");
+
+        let found = find_recent_trx_in_dir(&missing_dir);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_find_recent_trx_in_dir_picks_newest_trx() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let testresults_dir = temp_dir.path().join("TestResults");
+        std::fs::create_dir_all(&testresults_dir).expect("create TestResults");
+
+        let old_trx = testresults_dir.join("old.trx");
+        let new_trx = testresults_dir.join("new.trx");
+        std::fs::write(&old_trx, "old").expect("write old");
+        set_mtime(&old_trx, SystemTime::now() - Duration::from_secs(10));
+        std::fs::write(&new_trx, "new").expect("write new");
+        set_mtime(&new_trx, SystemTime::now() + Duration::from_secs(10));
+
+        let found = find_recent_trx_in_dir(&testresults_dir).expect("should find newest trx");
+        assert_eq!(found, new_trx);
+    }
+
+    #[test]
+    fn test_find_recent_trx_in_dir_ignores_non_trx_files() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let testresults_dir = temp_dir.path().join("TestResults");
+        std::fs::create_dir_all(&testresults_dir).expect("create TestResults");
+
+        let txt = testresults_dir.join("notes.txt");
+        std::fs::write(&txt, "noop").expect("write txt");
+
+        let found = find_recent_trx_in_dir(&testresults_dir);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_parse_trx_files_in_dir_aggregates_counts_and_wall_clock_duration() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let trx_dir = temp_dir.path().join("TestResults");
+        std::fs::create_dir_all(&trx_dir).expect("create TestResults");
+
+        let trx_one = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Times start="2026-02-21T12:57:27.0000000+01:00" finish="2026-02-21T12:57:30.0000000+01:00" />
+  <ResultSummary outcome="Completed">
+    <Counters total="10" executed="10" passed="9" failed="1" />
+  </ResultSummary>
+</TestRun>"#;
+
+        let trx_two = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Times start="2026-02-21T12:57:28.0000000+01:00" finish="2026-02-21T12:57:29.0000000+01:00" />
+  <ResultSummary outcome="Completed">
+    <Counters total="20" executed="20" passed="20" failed="0" />
+  </ResultSummary>
+</TestRun>"#;
+
+        std::fs::write(trx_dir.join("a.trx"), trx_one).expect("write first trx");
+        std::fs::write(trx_dir.join("b.trx"), trx_two).expect("write second trx");
+
+        let summary = parse_trx_files_in_dir(&trx_dir).expect("merged summary");
+        assert_eq!(summary.total, 30);
+        assert_eq!(summary.passed, 29);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.duration_text.as_deref(), Some("3.0 s"));
+    }
+
+    #[test]
+    fn test_parse_trx_files_in_dir_since_ignores_older_files() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let trx_dir = temp_dir.path().join("TestResults");
+        std::fs::create_dir_all(&trx_dir).expect("create TestResults");
+
+        let trx_old = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun><ResultSummary><Counters total="2" executed="2" passed="2" failed="0" /></ResultSummary></TestRun>"#;
+        let old_path = trx_dir.join("old.trx");
+        std::fs::write(&old_path, trx_old).expect("write old trx");
+        set_mtime(&old_path, SystemTime::now() - Duration::from_secs(10));
+
+        let since = SystemTime::now();
+
+        let trx_new = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun><ResultSummary><Counters total="3" executed="3" passed="2" failed="1" /></ResultSummary></TestRun>"#;
+        let new_path = trx_dir.join("new.trx");
+        std::fs::write(&new_path, trx_new).expect("write new trx");
+        set_mtime(&new_path, SystemTime::now() + Duration::from_secs(10));
+
+        let summary = parse_trx_files_in_dir_since(&trx_dir, Some(since)).expect("merged summary");
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.failed, 1);
+    }
+
+    #[test]
+    fn test_parse_trx_files_in_dir_since_handles_uppercase_extension() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let trx_dir = temp_dir.path().join("TestResults");
+        std::fs::create_dir_all(&trx_dir).expect("create TestResults");
+
+        let trx = r#"<?xml version="1.0" encoding="utf-8"?>
+<TestRun><ResultSummary><Counters total="3" executed="3" passed="2" failed="1" /></ResultSummary></TestRun>"#;
+        std::fs::write(trx_dir.join("UPPER.TRX"), trx).expect("write trx");
+
+        let summary = parse_trx_files_in_dir_since(&trx_dir, None).expect("summary");
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.failed, 1);
+    }
+}

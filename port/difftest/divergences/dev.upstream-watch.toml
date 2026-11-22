@@ -1,0 +1,8 @@
+# Allowed divergences of the dev.upstream-watch surface (GC-16). The engine and the oracle mark
+# each case they adjusted (crates/difftest/src/surfaces/dev_upstream_watch.rs,
+# port/difftest/oracle/dev_upstream_watch.py). F-17 (the issue's scripts/dev.sh commands) is not a
+# divergence class: the oracle applies it where the Python builds the commands.
+
+[[divergence]]
+class = "D-1"
+reason = "Python raised past main (a KeyError on an issue without number, an OSError writing --json or GITHUB_OUTPUT): a traceback and exit 1. The oracle writes it as the Rust side does, 'anthology-dev upstream-watch: <Type>: <message>' (DV2 ruling R10), and the result is still compared byte for byte."

@@ -1,0 +1,477 @@
+{
+  "sources": [
+    {
+      "name": "superpowers",
+      "repo": "https://github.com/obra/superpowers",
+      "path": "",
+      "ref": "v7.0.2",
+      "commit": "22f0b463e7a5e579904dd6211a520321035526f7",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology-superpowers",
+      "transform": [
+        {
+          "name": "rename-plugin",
+          "old": "superpowers",
+          "new": "anthology-superpowers"
+        },
+        {
+          "patch": "vendor/patches/superpowers.patch"
+        }
+      ],
+      "plugin_version": "0.2.0",
+      "upstream_version": "7.0.2"
+    },
+    {
+      "name": "design-skills",
+      "repo": "https://github.com/cuellarfr/design-skills",
+      "path": "",
+      "ref": "main",
+      "commit": "7e25e66e87f64f9d3dea22198f9e29937e7c48f5",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-skills",
+      "transform": []
+    },
+    {
+      "name": "frontend-design",
+      "repo": "https://github.com/anthropics/skills",
+      "path": "skills/frontend-design",
+      "ref": "main",
+      "commit": "e4bb5d960d87126ff3b3a8af1a104b7db67560ba",
+      "license": "Apache-2.0",
+      "license_file": "skills/frontend-design/LICENSE.txt",
+      "target": "plugins/anthology/knowledge/frontend-design",
+      "transform": []
+    },
+    {
+      "name": "web-design-guidelines",
+      "repo": "https://github.com/vercel-labs/agent-skills",
+      "path": "skills/web-design-guidelines",
+      "ref": "main",
+      "commit": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62",
+      "license": "MIT",
+      "license_file": null,
+      "license_note": "README",
+      "target": "plugins/anthology/knowledge/web-design-guidelines",
+      "transform": []
+    },
+    {
+      "name": "architecture",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/architecture",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/architecture",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "system-design",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/system-design",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/system-design",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "code-review-checklist",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/code-review",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/code-review-checklist",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        },
+        {
+          "name": "rename-skill",
+          "old": "code-review",
+          "new": "code-review-checklist"
+        }
+      ]
+    },
+    {
+      "name": "testing-strategy",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/testing-strategy",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/testing-strategy",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "tech-debt",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/tech-debt",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/tech-debt",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "documentation",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/documentation",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/documentation",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "deploy-checklist",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "engineering/skills/deploy-checklist",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/deploy-checklist",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "design-handoff",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "design/skills/design-handoff",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-handoff",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "research-synthesis",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "design/skills/research-synthesis",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/research-synthesis",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "write-spec",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/write-spec",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/write-spec",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "sprint-planning",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/sprint-planning",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/sprint-planning",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "roadmap-update",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/roadmap-update",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/roadmap-update",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "competitive-brief",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/competitive-brief",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/competitive-brief",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "synthesize-research",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/synthesize-research",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/synthesize-research",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "product-brainstorming",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "product-management/skills/product-brainstorming",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/product-brainstorming",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "seo-audit",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "marketing/skills/seo-audit",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/seo-audit",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "campaign-plan",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "marketing/skills/campaign-plan",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/campaign-plan",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "content-creation",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "marketing/skills/content-creation",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/content-creation",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "email-sequence",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "marketing/skills/email-sequence",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/email-sequence",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "landing-page",
+      "repo": "https://github.com/uxkin/agent",
+      "path": "plugins/website-design/skills/landing-page",
+      "ref": "website-design",
+      "commit": "07e8f5f61421c7268fddc1511878fb09945da854",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/landing-page",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "web-review",
+      "repo": "https://github.com/uxkin/agent",
+      "path": "plugins/website-design/skills/web-review",
+      "ref": "website-design",
+      "commit": "07e8f5f61421c7268fddc1511878fb09945da854",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/web-review",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "web-design-system",
+      "repo": "https://github.com/uxkin/agent",
+      "path": "plugins/website-design/skills/web-design-system",
+      "ref": "website-design",
+      "commit": "07e8f5f61421c7268fddc1511878fb09945da854",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/web-design-system",
+      "transform": [
+        {
+          "name": "strip-connectors"
+        }
+      ]
+    },
+    {
+      "name": "ui-taste",
+      "url": "https://uizze.sh/.well-known/skills/ui-taste/",
+      "path": "",
+      "ref": "uizze-design-v14",
+      "checksum": "405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ui-taste",
+      "transform": [
+        {
+          "patch": "vendor/patches/ui-taste.patch"
+        }
+      ]
+    },
+    {
+      "name": "caveman",
+      "repo": "https://github.com/juliusbrussee/caveman",
+      "path": "skills/caveman",
+      "ref": "v4.1.0",
+      "commit": "1e91f1306d602d4ca23618701b1185575ae1869b",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE",
+        "LICENSE-MIT"
+      ],
+      "target": "plugins/anthology/knowledge/caveman",
+      "transform": [
+        {
+          "patch": "vendor/patches/caveman.patch"
+        }
+      ]
+    },
+    {
+      "name": "design-taste-frontend",
+      "repo": "https://github.com/leonxlnx/taste-skill",
+      "path": "skills/taste-skill",
+      "ref": "v2.5.1",
+      "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/design-taste-frontend",
+      "transform": [
+        {
+          "patch": "vendor/patches/design-taste-frontend.patch"
+        }
+      ],
+      "portmap": "vendor/patches/design-taste-frontend.portmap.json"
+    },
+    {
+      "name": "karpathy-guidelines",
+      "repo": "https://github.com/multica-ai/andrej-karpathy-skills",
+      "path": "skills/karpathy-guidelines",
+      "ref": "main",
+      "commit": "2c606141936f1eeef17fa3043a72095b4765b9c2",
+      "license": "MIT",
+      "license_file": null,
+      "license_note": "README",
+      "target": "plugins/anthology/knowledge/karpathy-guidelines",
+      "transform": [
+        {
+          "patch": "vendor/patches/karpathy-guidelines.patch"
+        }
+      ]
+    },
+    {
+      "name": "rtk",
+      "managed_by": "subtree",
+      "target": "rtk",
+      "license": "Apache-2.0",
+      "fork": {
+        "repo": "https://github.com/rbonweb/rtk",
+        "ref": "develop",
+        "commit": "9b790c414de16f5fb688126b3945c73aa0e0218e"
+      },
+      "upstream": {
+        "repo": "https://github.com/rtk-ai/rtk",
+        "ref": "v1.2.1",
+        "commit": "d0f0399a5ff8cd1d81325a033f0b2d8864d665f6"
+      }
+    }
+  ]
+}

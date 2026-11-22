@@ -1,0 +1,862 @@
+git -c alias.cl=clone cl -u 'npx playwright install' . ../c
+#---
+git -c alias.CL=clone Cl --upload-pack='npx playwright install' . ../c
+#---
+git -c alias.cl='clone -u "npx playwright install"' cl . ../c
+#---
+git -c alias.a=b -c alias.b=clone a -u 'npx playwright install' . ../c
+#---
+git -C /tmp -c alias.f=fetch f --upload-pack='npx playwright install' .
+#---
+X=clone git --config-env=alias.cl=X cl -u 'npx playwright install' . ../c
+#---
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.cl GIT_CONFIG_VALUE_0=clone git cl -u 'npx playwright install' . ../c
+#---
+sudo git -c alias.cl=clone cl -u 'npx playwright install' . ../c
+#---
+sh -c "git -c alias.cl=clone cl -u 'npx playwright install' . ../c"
+#---
+TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=npx\ playwright\ install' tar -cf b.tar a
+#---
+env TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec="npx playwright install"' tar -cf b.tar a
+#---
+sudo TAR_OPTIONS='--checkpoint=1 --checkpoint-act=exec=npx\ playwright\ install' tar -cf b.tar a
+#---
+TAR_OPTIONS='--to-command=npx\ playwright\ install' tar -xf b.tar
+#---
+TAR_OPTIONS='-I npx\ playwright\ install' tar -cf b.tar a
+#---
+TAR_OPTIONS='--use-compress-program=npx\ playwright\ install' tar -cf b.tar a
+#---
+TAR_OPTIONS='--info-script=npx\ playwright\ install -L1' tar -cf b.tar a
+#---
+export TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=npx\ playwright\ install'; tar -cf b.tar a
+#---
+export TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=npx\ playwright\ install'
+tar -cf b.tar a
+#---
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0='npx playwright install'; git fetch ssh://h/x
+#---
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0='npx playwright install' git fetch ssh://h/x
+#---
+X='npx playwright install' git --config-env=core.sshCommand=X fetch ssh://h/x
+#---
+X='npx playwright install' git --config-env core.sshCommand=X fetch ssh://h/x
+#---
+git -c core.sshCommand='npx playwright install' fetch ssh://h/x
+#---
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.cl GIT_CONFIG_VALUE_0='!npx playwright install' git cl
+#---
+git -c alias.cl='!npx playwright install' cl
+#---
+git -c alias.x=cl -c alias.cl=clone x -u 'npx playwright install' . ../c
+#---
+git -c alias.cl=clone cl -u'npx playwright install' . ../c
+#---
+git -c alias.cl=clone cl --upl='npx playwright install' . ../c
+#---
+git -c alias.p=push p --receive-pack='npx playwright install' . HEAD:refs/heads/z
+#---
+git -c alias.ar='archive --remote=.' ar --exec='npx playwright install' HEAD
+#---
+git -c alias.ls=ls-remote -c protocol.ext.allow=always ls 'ext::npx playwright install'
+#---
+git -c alias.dt='difftool -y --tool=z' -c difftool.z.cmd='npx playwright install' dt --cached
+#---
+git -c 'alias.cl=clone' -c alias.cl=status cl -u 'npx playwright install' . ../c
+#---
+git -c alias.cl=status -c 'alias.cl=clone' cl -u 'npx playwright install' . ../c
+#---
+{echo,'npx playwright install'} | sh
+#---
+{xargs,npx} <<< 'playwright install'
+#---
+{echo,npx\ playwright\ install}|bash
+#---
+{printf,'npx playwright install'} | sh
+#---
+{"echo","npx playwright install"} | sh
+#---
+echo {'npx playwright install',} | sh
+#---
+sudo {echo,'npx playwright install'} | sh
+#---
+env {echo,'npx playwright install'} | sh
+#---
+command {echo,'npx playwright install'} | sh
+#---
+time {echo,'npx playwright install'} | sh
+#---
+{sudo,echo,'npx playwright install'} | sh
+#---
+r{m,} -rf /tmp/x
+#---
+{rm,-rf,/tmp/x}
+#---
+{n..n}px playwright install
+#---
+{e..e}cho 'npx playwright install' | sh
+#---
+r{m..m} -rf /tmp/x
+#---
+{r..r}m -rf /tmp/x
+#---
+npx playwright {i..i}nstall
+#---
+sh -c {'npx playwright install',x}
+#---
+eval {npx,}' playwright install'
+#---
+x=1 {echo,'npx playwright install'} | sh
+#---
+echo $({echo,'npx playwright install'}) | sh
+#---
+sh -c '{echo,"npx playwright install"} | sh'
+#---
+{echo,'npx playwright install'\
+} | sh
+#---
+{ec{h,}o,'npx playwright install'} | sh
+#---
+xargs {npx,} <<< 'playwright install'
+#---
+{xargs,} npx <<< 'playwright install'
+#---
+"{"echo,'npx playwright install'} | sh
+#---
+printf -- 'npx\x20playwright install' | sh
+#---
+printf -- 'npx playwright install' | sh
+#---
+printf 'npx %s install\n' playwright | sh
+#---
+printf 'npx%splaywright install' ' ' | sh
+#---
+printf '%c%s' n 'px playwright install' | sh
+#---
+printf -- '%s\n' 'npx playwright install' | sh
+#---
+printf '%b' 'npx\040playwright install' | sh
+#---
+printf '%s %s %s' npx playwright install | bash
+#---
+printf '%.3s playwright install' npxyz | sh
+#---
+printf '%*s' 0 'npx playwright install' | sh
+#---
+printf '%c' n p x ' ' p l a y w r i g h t ' ' i n s t a l l | sh
+#---
+printf '%(npx playwright install)T' | sh
+#---
+printf $'npx\x20%s install' playwright | sh
+#---
+command printf 'npx %s install' playwright | sh
+#---
+/usr/bin/printf 'npx %s install' playwright | sh
+#---
+env printf 'npx %s install' playwright | sh
+#---
+printf 'npx %s install' playwright | xargs -I{} sh -c {}
+#---
+printf '%s\n' 'playwright install' | xargs npx
+#---
+printf 'n%sx playwright install' p | bash -s
+#---
+printf '%s\n' 'npx playwright install' | cat | sh
+#---
+printf '%s' 'npx playwright install' > /tmp/a.sh; sh /tmp/a.sh
+#---
+printf '%-3s%s' npx ' playwright install' | sh
+#---
+printf '%3s%s' x ' ; npx playwright install' | sh
+#---
+printf 'np%c playwright install' xyz | sh
+#---
+printf 'npx\x20%s\x20install' playwright | sh
+#---
+printf -v x '%s' y; printf 'npx %s install' playwright | sh
+#---
+printf '%s\n' n p x | tr -d '\n' | sh
+#---
+echo -n npx; printf ' %s install' playwright | sh
+#---
+printf "%s" "npx" " playwright install" | sh
+#---
+printf '%s%s' npx ' playwright install' | sh
+#---
+printf '%s' npx ' playwright install' | sh
+#---
+printf '%q' 'x;npx playwright install' | sh
+#---
+printf '%s\x20%s' npx 'playwright install' | sh
+#---
+printf '\156px playwright install' | sh
+#---
+printf '%b' '\0156px playwright install' | sh
+#---
+printf -v'a[$(npx playwright install)]' x
+#---
+printf -va'[$(npx playwright install)]' x
+#---
+printf -v "a[\$(npx playwright install)]" x
+#---
+a=(1); unset 'a[$(npx playwright install)]'
+#---
+unset -v 'a[$(npx playwright install)]'
+#---
+builtin unset 'a[$(npx playwright install)]'
+#---
+command unset 'a[$(npx playwright install)]'
+#---
+test -v 'a[$(npx playwright install)]'
+#---
+[ -v 'a[$(npx playwright install)]' ]
+#---
+declare -n r='a[$(npx playwright install)]'; echo $r
+#---
+getopts a 'x[$(npx playwright install)]'
+#---
+wait -p 'a[$(npx playwright install)]'
+#---
+mapfile 'a[$(npx playwright install)]' < /dev/null
+#---
+read -r 'a[$(npx playwright install)]' <<< x
+#---
+export 'a[$(npx playwright install)]=1'
+#---
+[[ 1 -eq 'a[$(npx playwright install)]' ]]
+#---
+(( 'a[$(npx playwright install)]' ))
+#---
+echo $(( 'a[$(npx playwright install)]' ))
+#---
+x='a[$(npx playwright install)]'; echo $(( x ))
+#---
+printf '%d' 'a[$(npx playwright install)]'
+#---
+test 'a[$(npx playwright install)]' -eq 1
+#---
+declare -i n; n='a[$(npx playwright install)]'
+#---
+a[$'\x24(npx playwright install)']=1
+#---
+printf -v 'a[$(npx playwright install)]' x
+#---
+let 'a[$(npx playwright install)]=1'
+#---
+shift 'a[$(npx playwright install)]'
+#---
+exit 'a[$(npx playwright install)]'
+#---
+ulimit -t 'a[$(npx playwright install)]'
+#---
+a=(1); a['$(npx playwright install)']=1
+#---
+a['$(npx playwright install)']=1 true
+#---
+declare -a a; a['$(npx playwright install)']=x
+#---
+s=abc; echo "${s:'a[$(npx playwright install)]'}"
+#---
+echo "${s:0:'a[$(npx playwright install)]'}"
+#---
+echo "${a['$(npx playwright install)']}"
+#---
+x='a[$(npx playwright install)]'; (( x ))
+#---
+x='a[$(npx playwright install)]'; echo $(( x ))
+#---
+x='a[$(npx playwright install)]'; [[ x -eq 0 ]]
+#---
+declare -i m='a[$(npx playwright install)]'
+#---
+f(){ local 'a[$(npx playwright install)]=1'; }; f
+#---
+declare -i n; n='a[$(npx playwright install)]'
+#---
+a+=(['$(npx playwright install)']=1)
+#---
+a=(['$(npx playwright install)']=1)
+#---
+( echo npx playwright install ) | sh
+#---
+{ echo npx playwright install; } | sh
+#---
+if true; then echo npx playwright install; fi | sh
+#---
+f() { echo npx playwright install; }; f | sh
+#---
+for i in 1; do echo npx playwright install; done | sh
+#---
+case x in x) echo npx playwright install;; esac | sh
+#---
+while true; do echo npx playwright install; break; done | sh
+#---
+{ echo npx playwright install; } |& sh
+#---
+( echo npx playwright install ) 2>&1 | sh
+#---
+{ echo npx playwright install; } 2>/dev/null | sh
+#---
+( ( echo npx playwright install ) ) | sh
+#---
+( echo npx playwright install ) | cat | sh
+#---
+echo npx playwright install | cat | sh
+#---
+f() ( echo npx playwright install ); f | sh
+#---
+function f { echo npx playwright install; }; f | sh
+#---
+function f() { echo npx playwright install; }; f | sh
+#---
+f(){ echo npx playwright install;}; f | sh
+#---
+f() { echo npx playwright install; }
+f | sh
+#---
+f() { echo npx playwright install; }; f | cat; f | sh
+#---
+f() { echo npx playwright install; }; ( true ) | cat; f | sh
+#---
+f() { echo npx playwright install; }; { true; } | cat; f | sh
+#---
+f() { echo npx playwright install; }; eval f | sh
+#---
+f() { echo npx playwright install; }; time f | sh
+#---
+g() { echo npx playwright install; }; f() { g; }; f | sh
+#---
+{ cat <<'X'
+npx playwright install
+X
+} | sh
+#---
+( cat <<< 'npx playwright install' ) | sh
+#---
+{ echo npx playwright install; cat; } <<< 'echo hi' | sh
+#---
+( echo npx playwright install ) <<< x | sh
+#---
+{ printf '%s\n' 'npx playwright install'; } | sh
+#---
+{ echo playwright install; } | xargs npx
+#---
+( echo 'playwright install' ) | xargs -n2 npx
+#---
+true && { echo npx playwright install; } | sh
+#---
+! { echo npx playwright install; } | sh
+#---
+{ echo -e 'npx\x20playwright install'; } | sh
+#---
+until false; do echo npx playwright install; break; done | sh
+#---
+eval 'f() { echo npx playwright install; }'; f | sh
+#---
+select x in a; do echo npx playwright install; break; done <<< 1 | sh
+#---
+[[ 1 ]] && echo npx playwright install | sh
+#---
+{ echo npx playwright install; } > >(sh)
+#---
+( echo npx playwright install ) > >(sh)
+#---
+sh < <(echo npx playwright install)
+#---
+sh < <( { echo npx playwright install; } )
+#---
+f() { echo npx playwright install; }; sh < <(f)
+#---
+f() { echo npx playwright install; }; sh <<< "$(f)"
+#---
+{ echo npx playwright install; } | sudo sh
+#---
+coproc { echo npx playwright install; }; sh <&${COPROC[0]}
+#---
+cat <<< 'npx playwright install' | sh
+#---
+echo npx playwright install > >(sh)
+#---
+sh <<< "$(echo npx playwright install)"
+#---
+{ echo npx playwright install; } <<< x | sh
+#---
+if true; then echo npx playwright install; fi <<< x | sh
+#---
+f() { echo npx playwright install; }; f <<< x | sh
+#---
+( echo npx playwright install ) >&2 | sh
+#---
+( echo npx playwright install ) </dev/null | sh
+#---
+( echo npx playwright install ) 2>/dev/null | bash
+#---
+{ echo npx playwright install; } 2>&1 | sh
+#---
+for i in 1; do echo npx playwright install; done 2>&1 | sh
+#---
+( echo playwright install ) 2>&1 | xargs npx
+#---
+echo {npx\ playwright\ install,} | sh
+#---
+printf '%s\n' {'npx playwright install',} | sh
+#---
+echo {"npx playwright install",x} | sh
+#---
+echo {npx,}' playwright install' | sh
+#---
+echo {'playwright install',} | xargs npx
+#---
+npm --prefix "{1..2}" {-1..-1} i puppeteer
+#---
+npm --prefix \{1..2} {-1..-1} i puppeteer
+#---
+npm --prefix "{1..2}" {-1..-1} add playwright
+#---
+npm --prefix '{1..2}' i {puppeteer,x}
+#---
+npm --prefix "{a,b}" {-x,} i puppeteer
+#---
+npm {-1..{1,}} i puppeteer
+#---
+npm {-1..-1} i puppeteer
+#---
+npm --prefix {1".."2} {-1..-1} i puppeteer
+#---
+npm --prefix {1".."2} i {puppeteer,x}
+#---
+npm --prefix {a","b} i {puppeteer,x}
+#---
+npm --prefix {1..2\} {-1..-1} i puppeteer
+#---
+npm --prefix {,} i {-1..-1} puppeteer
+#---
+echo "npm --prefix '{1..2}'" {-1..-1} i puppeteer | sh
+#---
+echo ${x:-$(npx playwright install chromium)}
+#---
+echo "${x:-$(npx playwright install chromium)}"
+#---
+echo ${x:-`npx playwright install chromium`}
+#---
+echo "${x:-'$(npx playwright install chromium)'}"
+#---
+echo $(( ${x:-$(npx playwright install chromium)} + 0 ))
+#---
+echo ${x:-${y:-$(npx playwright install chromium)}}
+#---
+x=a; echo ${x#$(npx playwright install chromium)}
+#---
+x=a; echo ${x%%$(npx playwright install chromium)}
+#---
+x=a; echo ${x/$(npx playwright install chromium)/b}
+#---
+x=a; echo ${x/a/$(npx playwright install chromium)}
+#---
+x=a; echo ${x:0:$(npx playwright install chromium)}
+#---
+x=a; echo ${x:+$(npx playwright install chromium)}
+#---
+echo ${x:=$(npx playwright install chromium)}
+#---
+echo ${x:?$(npx playwright install chromium)}
+#---
+x=(a); echo ${x[$(npx playwright install chromium)]}
+#---
+echo ${x:-"}"$(npx playwright install chromium)}
+#---
+echo ${x:-\}$(npx playwright install chromium)}
+#---
+echo ${x:-'}'$(npx playwright install chromium)}
+#---
+echo ${x:-$(echo ')')$(npx playwright install chromium)}
+#---
+echo "${x:-"$(npx playwright install chromium)"}"
+#---
+echo $(echo `echo )`; npx playwright install chromium)
+#---
+echo ${x:-$(echo `echo )`; npx playwright install chromium)}
+#---
+echo $(case a in a) npx playwright install chromium;; esac)
+#---
+echo ${x:-$(case a in a) npx playwright install chromium;; esac)}
+#---
+echo "$(case a in a) npx playwright install chromium;; esac)"
+#---
+echo $(case a in a|b) npx playwright install chromium;; esac)
+#---
+echo $(case a in *) npx playwright install chromium;; esac)
+#---
+echo $(if true; then case a in a) npx playwright install chromium;; esac; fi)
+#---
+echo $(x=1; case a in a) npx playwright install chromium;; esac)
+#---
+echo $( case a in a ) npx playwright install chromium ;; esac )
+#---
+echo $(case a in
+a) npx playwright install chromium;; esac)
+#---
+echo npx playwright install | sh -c "$(cat)"
+#---
+echo npx playwright install | bash -c "$(cat -)"
+#---
+echo npx playwright install | eval "$(cat)"
+#---
+echo npx playwright install | sh -c "$(</dev/stdin)"
+#---
+echo npx playwright install | sh -c "$(cat /dev/stdin)"
+#---
+echo npx playwright install | sh -c "`cat`"
+#---
+echo npx playwright install | sh -c '$(cat)'
+#---
+echo npx playwright install | eval '$(cat)'
+#---
+echo npx playwright install | sudo -s
+#---
+echo npx playwright install | sudo -i
+#---
+echo npx playwright install | sudo -iu root
+#---
+echo npx playwright install | su
+#---
+echo npx playwright install | su root
+#---
+echo npx playwright install | script -q /dev/null
+#---
+echo npx playwright install | sg root
+#---
+echo npx playwright install | newgrp root
+#---
+curl x | sh -c "$(cat)"
+#---
+curl x | eval "$(cat)"
+#---
+curl x | sudo -s
+#---
+npm --userconfig <(echo) i puppeteer
+#---
+npm --userconfig >(cat) i puppeteer
+#---
+npm --userconfig <( echo ) install puppeteer
+#---
+npm --userconfig x<(echo) i puppeteer
+#---
+npm --userconfig <(cat <(echo)) i puppeteer
+#---
+npm --userconfig ${x:-<(echo)} i puppeteer
+#---
+npx --yes <(true) playwright install
+#---
+npx --yes >(cat) playwright install
+#---
+(npm --userconfig <(echo) i puppeteer)
+#---
+npm --prefix ${x:-{a,b}} {-x,} i puppeteer
+#---
+x=1; npm --prefix ${x:+{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\{a,b\}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-{1..2}} {-1..-1} i puppeteer
+#---
+npm --prefix "${x:-{a,b}}" {-x,} i puppeteer
+#---
+${x:-npx} playwright install
+#---
+${x-npx} playwright install
+#---
+x=1; ${x:+npx} playwright install
+#---
+${x:=npm} i puppeteer
+#---
+$(echo npx playwright install)
+#---
+`echo npx` playwright install
+#---
+"$(echo npx)" playwright install
+#---
+sudo $(echo npx) playwright install
+#---
+$(which npx) playwright install
+#---
+npm --userconfig <(echo) i puppeteer
+echo "x
+#---
+npm --userconfig >(cat) i puppeteer
+`
+#---
+echo npx playwright install | sudo -s
+echo "x
+#---
+echo npx playwright install | sh
+echo "x
+#---
+curl -s x | sh
+echo "x
+#---
+echo "$(case\
+ a in a) npm i puppeteer;; esac)"
+#---
+echo $(case\
+ a in a) npx playwright install;; esac)
+#---
+echo ${x:-$(case\
+ a in a) npx playwright install;; esac)}
+#---
+npm --userconfig <(case\
+ x in x) echo;; esac) i puppeteer
+#---
+npm --userconfig <(cas\
+e x in x) echo;; esac) i puppeteer
+#---
+npm --prefix ${x:-"}"{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-\}{a,b}} {-x,} i puppeteer
+#---
+npm --prefix ${x:-'}'{a,b}} {-x,} i puppeteer
+#---
+echo npx playwright install | sh -c "$(cat) "
+#---
+echo npx playwright install | sh -c "$(cat);"
+#---
+echo npx playwright install | eval " $(cat)"
+#---
+echo npx playwright install | eval "$(cat);"
+#---
+echo npx playwright install | sh -c "`cat` "
+#---
+echo npx playwright install > >(su)
+#---
+echo npx playwright install | tee >(sudo -s)
+#---
+su < <(echo npx playwright install)
+#---
+sudo -s < <(echo npx playwright install)
+#---
+echo npx playwright install > >(eval "$(cat)")
+#---
+echo npx playwright install | bash -c sh
+#---
+echo npx playwright install | sh -c 'eval "$(cat)"'
+#---
+echo npx playwright install | su -c sh
+#---
+echo npx playwright install | script -qc sh /dev/null
+#---
+echo npx playwright install | if true; then sh; fi
+#---
+echo npx playwright install | doas -s
+#---
+echo npx playwright install | runuser -l root
+#---
+echo npx playwright install | su root -s /bin/bash
+#---
+echo npx playwright install | chroot /
+#---
+echo npx playwright install | unshare
+#---
+echo npx playwright install | nsenter -t 1
+#---
+echo npx playwright install | toybox sh
+#---
+echo npx playwright install | posh
+#---
+echo npx playwright install | rbash
+#---
+echo npx playwright install | unshare -r
+#---
+echo npx playwright install | sh -c "$(cat) " > /dev/null
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh \;
+#---
+echo npx playwright install | find . -maxdepth 0 -exec sh -c "$(cat) " \;
+#---
+echo npx playwright install | sh -c "$(cat) " 2>/dev/null
+#---
+xargs npx < <(echo playwright install)
+#---
+xargs -a <(echo playwright install) npx
+#---
+xargs --arg-file <(echo playwright install) npx
+#---
+xargs --arg-file=<(echo playwright install) npx
+#---
+xargs -a<(echo playwright install) npx
+#---
+xargs npm < <(printf 'i\npuppeteer\n')
+#---
+parallel npx < <(echo playwright install)
+#---
+echo npx playwright install | while read l; do sh -c "$l"; done
+#---
+echo npx playwright install | while read -r l; do eval "$l"; done
+#---
+echo npx playwright install | while IFS= read -r l; do bash -c "$l"; done
+#---
+echo npx playwright install | while read l; do $l; done
+#---
+echo npx playwright install | while read a b; do $a $b; done
+#---
+printf 'npx playwright install\n' | while read -r cmd; do eval "${cmd}"; done
+#---
+while read l; do sh -c "$l"; done < <(echo npx playwright install)
+#---
+while read l; do sh -c "$l"; done <<< "npx playwright install"
+#---
+while read l; do sh -c "$l"; done <<EOF
+npx playwright install
+EOF
+#---
+echo npx playwright install | for l in $(cat); do eval "$l"; done
+#---
+echo npx playwright install | for l in "$(cat)"; do eval "$l"; done
+#---
+echo "npx playwright install" | { read l; eval "$l"; }
+#---
+echo "npx playwright install" | (read l; eval "$l")
+#---
+echo "npx playwright install" | { l=$(cat); sh -c "$l"; }
+#---
+echo npx playwright install | { mapfile -t a; eval "${a[0]}"; }
+#---
+(read l; eval "$l") <<< "npx playwright install"
+#---
+( sh ) <<< "npx playwright install"
+#---
+{ sh; } <<< "npx playwright install"
+#---
+while true; do sh; break; done <<< "npx playwright install"
+#---
+npm ${x:-i} puppeteer
+#---
+npm ${x-i} puppeteer
+#---
+x=1; npm ${x:+i} puppeteer
+#---
+x=1; npm ${x+i} puppeteer
+#---
+npm ${x:=i} puppeteer
+#---
+npm ${x=i} puppeteer
+#---
+npm "${x:-i}" puppeteer
+#---
+npm ${x:-"i"} puppeteer
+#---
+npm i ${x:-puppeteer}
+#---
+npm ${x:-i puppeteer}
+#---
+npx playwright ${x:-install}
+#---
+npm ${x:-i}${y:-} puppeteer
+#---
+npm i${x:-} puppeteer
+#---
+{ xargs npx; } < <(echo playwright install)
+#---
+( xargs npx ) < <(echo playwright install)
+#---
+while true; do xargs npx; break; done < <(echo playwright install)
+#---
+f() { xargs npx; }; f < <(echo playwright install)
+#---
+cat <(echo playwright install) | xargs npx
+#---
+cat < <(echo playwright install) | xargs npx
+#---
+exec < <(echo playwright install); xargs npx
+#---
+{ xargs npx; } <<< "playwright install"
+#---
+( xargs npx ) <<< "playwright install"
+#---
+bash -c 'xargs npx' <<< "playwright install"
+#---
+exec <<< "playwright install"; xargs npx
+#---
+f() { xargs npx; }; f <<< "playwright install"
+#---
+parallel npx :::: <(echo playwright install)
+#---
+echo npx playwright install | while read l; do sh -c 'eval "$1"' _ "$l"; done
+#---
+echo npx playwright install | while read l; do sh -c '$1' _ "$l"; done
+#---
+echo npx playwright install | while read l; do bash -c '"$@"' _ $l; done
+#---
+echo npx playwright install | { read l; x=$l; eval "$x"; }
+#---
+echo npx playwright install | { read l; n=l; eval "${!n}"; }
+#---
+echo npx playwright install | { read l; declare -n r=l; eval "$r"; }
+#---
+echo npx playwright install | while :; do eval "$l"; read l || break; done
+#---
+f() { eval "$l"; }; echo npx playwright install | { read l; f; }
+#---
+f() { read l; eval "$l"; }; f <<< "npx playwright install"
+#---
+f() { read l; eval "$l"; }; echo npx playwright install | f
+#---
+echo npx playwright install | while read l; do sh <(echo "$l"); done
+#---
+echo npx playwright install | while read l; do . <(echo "$l"); done
+#---
+f() { sh; }; echo npx playwright install | f
+#---
+npm ${a[0]:-i} puppeteer
+#---
+npm ${a[@]:-i} puppeteer
+#---
+${a[0]:-npx} playwright install
+#---
+npm ${x:-$'i'} puppeteer
+#---
+npm ${x:-$'\x69'} puppeteer
+#---
+npm ${x:-$"i"} puppeteer
+#---
+( sh ) <<< "npx playwright install"
+echo "a
+#---
+{ sh; } <<< "npx playwright install"
+echo "a
+#---
+while read l; do sh -c "$l"; done <<< "npx playwright install"
+echo "a
+#---
+while read l; do sh -c "$l"; done <<EOF
+npx playwright install
+EOF
+echo "a
+#---
+f() { eval "$1"; }; echo npx playwright install | while read l; do f "$l"; done
+#---
+f() { "$@"; }; echo npx playwright install | while read l; do f $l; done
+#---
+f() { sh -c "$1"; }; echo npx playwright install | while read l; do f "$l"; done
+#---
+echo npx playwright install | xargs -I{} sh -c 'eval "$1"' _ {}
+#---
+echo npx playwright install | xargs sh -c '"$@"' _
+#---
+sh -c '"$@"' _ npx playwright install
+#---
+sh -c 'eval "$1"' _ "npx playwright install"
+#---
+bash -c '$1 $2 $3' _ npx playwright install
+#---
+sh -c 'npx "$1" install' _ playwright
+#---
+f() { npx "$@"; }; f playwright install
+#---
+f() { eval "$1"; }; f "npx playwright install"
+#---
+function f { npx "$@"; }; f playwright install
+#---
+f() { $1; }; f "npx playwright install"
+#---
+f() { npx $1; }; f "playwright install"
