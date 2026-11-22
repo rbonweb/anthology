@@ -293,6 +293,26 @@ a new version section.
 
 ### [Unreleased]
 
+#### Fixed
+
+- A read-only search is no longer blocked as "too complex" (G0) because its regex has a
+  bracket expression that holds a backtick, for example a `grep -E` pattern in double
+  quotes that has a quote and a backtick, both escaped, inside square brackets. The guard
+  treated every opening square bracket that had a backtick after it as the start of an
+  array subscript, and bash and zsh run a command in a subscript. A subscript only follows
+  a name, so a bracket at the start of a word, or after punctuation such as a space or a
+  quote, is now a plain bracket expression, but only in a command with no `$` anywhere, no
+  backtick substitution, and no shell, `eval`, `xargs` or `parallel` in it: otherwise an
+  expansion elsewhere can put a name in front of the word (`set -- '[...]'; unset "a$1"`),
+  and every bracket is read as before. In such a command everything else is read as before: a bracket
+  after a letter, digit, underscore, non-ASCII character, `]`, `}`, `)`, `$`, `*`, `?` or
+  `=`; every bracket in a command that has an array literal (`a=( [k]=v )`); and every
+  bracket in a command with a `$(...)` or backtick substitution, because the guard takes a
+  substitution out of the word and a name may have stood there. A backtick escaped inside
+  double quotes is a plain backtick and was already read that way. It still counts in a
+  subscript after a name, because bash removes the quotes before it evaluates the
+  subscript. The fix ships in the next `anthology` binary (0.1.3).
+
 ### [0.2.0] - 2026-11-22
 
 #### Added

@@ -2,3 +2,4 @@
 ## project
 - [Editing the vendored superpowers plugin](project-vendored-superpowers-hook-edits.md) — How to change plugins/anthology-superpowers files so vendor check stays clean, and how to run targeted tests
 - [Evals on Linux runners need bubblewrap and socat](project-evals-linux-sandbox-deps.md) — Why the first CI eval run failed all cases and which smokes depend on the Claude Code sandbox
+- [Guard G0 on a bracket with backticks comes from subscript_runs, not the lexer](project-guard-subscript-g0.md) — Where a G0 for brackets plus backticks is decided and what must stay conservative wh…
