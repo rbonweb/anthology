@@ -458,6 +458,34 @@ mod output_test {
     }
 
     #[test]
+    fn a_subagent_compact_input_with_every_field_claude_code_sends_takes_the_subagent_path() {
+        // The whole object Claude Code builds for a SessionStart that fires when a subagent
+        // compacts (base fields, then source, agent_type and model), not just the keys the
+        // other tests pick: the subagent path must not depend on the rest being absent.
+        let f = Fx::new();
+        f.mark_setup(None);
+        let seen: RefCell<Vec<Vec<PathBuf>>> = RefCell::new(Vec::new());
+        let spy = |spec: &RunSpec<'_>| {
+            seen.borrow_mut().push(spec.argv.clone());
+            session_start::run_with_timeout(spec)
+        };
+        let mut d = f.deps();
+        d.run = &spy;
+        let stdin = format!(
+            r#"{{"session_id": "5b0c0a2e-3f6d-4d0e-9a53-0d7c1f7e9a11", "transcript_path": "/home/u/.claude/projects/p/5b0c0a2e.jsonl", "cwd": {}, "prompt_id": "c1f0", "permission_mode": "default", "agent_id": "a0b1c2d3e4f5a6b7c", "agent_type": "anthology:implementer", "effort": "high", "hook_event_name": "SessionStart", "source": "compact", "model": "claude-sonnet-5-5", "session_title": "t"}}"#,
+            jstr(&p(f.tmp()))
+        );
+        let before = f.state();
+        let text = session_start::run(&f.env(), &stdin, &d);
+        let out = json::loads(&text).expect("JSON");
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(!context(&out).contains("# Anthology routing guide"));
+        assert!(seen.borrow().is_empty(), "no guard self-test in a subagent");
+        assert!(f.rtk.calls.borrow().is_empty());
+        assert_eq!(f.state(), before);
+    }
+
+    #[test]
     fn test_a_subagent_does_not_use_up_the_agent_memory_warning() {
         // The note is once per repo: if a subagent printed it, the lead would never see it.
         let f = Fx::new();
@@ -2777,6 +2805,57 @@ mod time_rules {
     }
 
     #[test]
+    fn with_no_time_for_the_guard_self_test_it_is_skipped_and_says_so() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let ran = RefCell::new(0u32);
+        let spy = |spec: &RunSpec<'_>| {
+            *ran.borrow_mut() += 1;
+            session_start::run_with_timeout(spec)
+        };
+        // DEADLINE 50 s, self-test limit 10 s: it still fits at 40 s, not after.
+        let fits = || 40.0;
+        let mut d = f.deps();
+        d.run = &spy;
+        d.elapsed = Some(&fits);
+        let out = f.go_d(&d, None, &f.env(), &[]);
+        assert_eq!(*ran.borrow(), 1);
+        assert_eq!(lines(&out), vec![session_start::RTK_SKIPPED.to_string()]);
+
+        let late = || 40.5;
+        d.elapsed = Some(&late);
+        let out = f.go_d(&d, None, &f.env(), &[]);
+        assert_eq!(*ran.borrow(), 1, "the self-test must not run with no time");
+        assert_eq!(
+            lines(&out),
+            vec![
+                "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command"
+                    .to_string(),
+                session_start::RTK_SKIPPED.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn with_no_time_a_missing_guardrails_plugin_is_still_named() {
+        // Where the guard is needs no process, so lateness must not hide a plugin that is gone.
+        let f = Fx::new();
+        f.mark_setup(None);
+        fs::remove_dir_all(&f.c.guard).unwrap();
+        let late = || 45.0;
+        let mut d = f.deps();
+        d.elapsed = Some(&late);
+        let out = f.go_d(&d, None, &f.env(), &[]);
+        assert_eq!(
+            lines(&out),
+            vec![
+                session_start::GUARD_NOT_FOUND.to_string(),
+                session_start::RTK_SKIPPED.to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn a_failing_ensure_step_is_named_with_the_new_label() {
         let f = Fx::new();
         f.mark_setup(None);
@@ -3141,14 +3220,91 @@ mod real_shim {
     }
 
     fn self_test(sb: &Sandbox) -> Option<String> {
+        self_test_with(sb, &SessionDeps::default())
+    }
+
+    fn self_test_with(sb: &Sandbox, deps: &SessionDeps<'_>) -> Option<String> {
         let env = Env::default()
             .with_os("HOME", &sb.home)
             .with_os("CLAUDE_CONFIG_DIR", &sb.config)
             .with_os("TMPDIR", &sb.tmpdir)
             .with("PATH", "/usr/bin:/bin");
-        let deps = SessionDeps::default();
-        session_start::guard_selftest(&env, &sb.plugin("anthology"), &sb.root, &deps)
+        session_start::guard_selftest(&env, &sb.plugin("anthology"), &sb.root, deps)
             .expect("the self-test runs")
+    }
+
+    /// What the shim answers under `ANTHOLOGY_GUARD_NO_FETCH` when its own install check found
+    /// no binary: a setup block that names no download.
+    fn not_attempted(_: &RunSpec<'_>) -> RunResult {
+        RunResult::Exited {
+            code: 2,
+            stdout: Vec::new(),
+            stderr: b"Blocked by anthology-guardrails (setup): the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin\n".to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_shim_that_did_not_attempt_while_the_binary_is_installed_makes_no_failing_closed_claim() {
+        // The shim looked, found no binary (a parallel session was still placing it, or this
+        // hook's own ensure step had been deferred), and says "not attempted". By the time
+        // session start reads that answer the binary is in <ah>/bin.
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        let deps = SessionDeps {
+            run: &not_attempted,
+            ..SessionDeps::default()
+        };
+        let m = self_test_with(&sb, &deps).expect("a line");
+        assert_eq!(
+            m,
+            "anthology: skipped the guard self-test (the guard binary was not in place when it ran, but it is installed now); the guard still runs on every command"
+        );
+        for claim in ["failing closed", "blocked", "OFF"] {
+            assert!(!m.contains(claim), "{m}");
+        }
+    }
+
+    #[test]
+    fn the_same_answer_with_no_binary_installed_is_still_the_failing_closed_warning() {
+        let sb = sandbox();
+        let deps = SessionDeps {
+            run: &not_attempted,
+            ..SessionDeps::default()
+        };
+        let m = self_test_with(&sb, &deps).expect("a line");
+        assert!(
+            m.starts_with(
+                "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked"
+            ),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn a_self_test_that_times_out_says_so_and_claims_nothing_about_the_guard() {
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        // A guard that sleeps, with a one-second limit: no real 10 s wait.
+        let guard = sb.plugin("anthology-guardrails").join("hooks/guard.sh");
+        fs::write(&guard, "#!/bin/sh\nsleep 30\n").unwrap();
+        let deps = SessionDeps {
+            limits: SessionLimits {
+                guard_timeout: Duration::from_secs(1),
+            },
+            ..SessionDeps::default()
+        };
+        let started = Instant::now();
+        let m = self_test_with(&sb, &deps).expect("a line");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            m,
+            "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command"
+        );
+        for claim in ["failing closed", "blocked", "OFF", "not installed"] {
+            assert!(!m.contains(claim), "{m}");
+        }
     }
 
     #[test]

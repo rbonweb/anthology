@@ -7,5 +7,6 @@
 - [Guard carve-outs are allowlists, not setter lists](project-guard-carve-outs-text-rule.md) — Why the three PR 159 carve-outs became character and program allowlists, and what they over-block
 - [rtk-hook tests live in anthology-runtime, run in own Docker](project-rtk-hook-tests-and-docker.md) — Where the rtk-hook shell tests are and how to run them without scripts/rust-test.sh
 ## reference
+- [Claude Code hook input fields can be read from the installed binary](reference-cc-hook-input-from-binary.md) — How to check which fields a hook input carries (agent_id on a subagent compact) from …
 - [Proving guard bypasses in bash and zsh](reference-shell-bypass-probe-container.md) — A container recipe to show whether a command runs a marker program in bash 5.2 and zsh 5.9
 - [Reading a difftest golden report](reference-golden-report-reading.md) — Where the golden check report lands and how to read its hook cases inside the rust container

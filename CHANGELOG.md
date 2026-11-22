@@ -57,6 +57,20 @@ a new version section.
   `anthology-mem search --query tokens colour output` works as well as
   `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
   usage error (exit 2) that says where the words go. The help text shows both forms.
+- Session start no longer says the guardrails are "failing closed" when they are not. The guard
+  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
+  place when the shim looked (a parallel session was still installing it, or this hook had
+  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
+  shell commands, file edits and MCP tools are blocked", although the guard installs the
+  binary on its first call and the binary was in the install folder a moment later. Session
+  start now checks the install folder itself: when the pinned binary is there it reports that the
+  self-test could not tell, and says the guard still runs on every command. It keeps the
+  failing-closed warning when the binary really is missing or the guard really refuses.
+- A guard self-test that times out is now reported as "skipped the guard self-test (it timed
+  out, the machine may be busy); the guard still runs on every command" instead of "the
+  guardrails may be OFF". When less time is left than the self-test may take, it is not run and
+  the same kind of line says session start ran out of time. A guardrails plugin that is disabled
+  or missing is still named in that case.
 
 #### Changed
 
