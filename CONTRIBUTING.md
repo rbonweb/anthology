@@ -182,12 +182,6 @@ Its edits run through `scripts/dev.sh`, so it needs Docker, or `ANTHOLOGY_DEV` n
 
 A plugin's `version` is what moves installed users to new code, so a change that is not released does not reach them. Release a dependency before the plugin that needs its new version.
 
-### Upgrading from 0.1.x
-
-After updating from 0.1.x, restart any running Claude Code sessions.
-
-A session that started on 0.1.x keeps the old session-start hook. That hook looks for the 0.1.x guardrails layout, which no longer exists, so it wrongly reports "anthology-guardrails is not installed". The new hooks also do not load until the session restarts. The warning goes away in a new session.
-
 ### Evals and the baseline
 
 The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code update that silently breaks the product. Each case is `evals/<case>/case.yaml`. They sit at the repo root, because a case can only load plugins inside its containment root. Each case lists all three plugins as `../../plugins/anthology`, `../../plugins/anthology-guardrails` and `../../plugins/anthology-superpowers`. They cover:
