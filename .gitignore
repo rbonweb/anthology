@@ -12,3 +12,5 @@ replay-corpus*
 # The replay HMAC key and the per-tool runner-4 list are local only too (m2-8).
 hmac.key
 runner4-*.tsv
+# Claude Code's own declarations for the mods (ci/jobs/mods.sh tsc writes them; never committed).
+plugins/*/.claude-plugin/types/

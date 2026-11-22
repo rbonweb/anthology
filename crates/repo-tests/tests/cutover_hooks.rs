@@ -138,6 +138,30 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
     }
 }
 
+/// The anthology plugin's `modules` entry names its Claude Code mods module, a TypeScript file
+/// beside hooks.json that ships with the plugin. Guardrails stays shell and binary only.
+#[test]
+fn only_the_anthology_plugin_names_a_shipped_mods_module() {
+    for plugin in PLUGINS {
+        let (_, v) = hooks_json(plugin);
+        let modules: Vec<&str> = get(&v, "modules")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if plugin != "anthology" {
+            assert!(modules.is_empty(), "{plugin}: no mods module");
+            continue;
+        }
+        assert_eq!(modules, ["./mods/index.ts"], "{plugin}");
+        let file = plugin_file(plugin, "hooks/mods/index.ts");
+        assert!(
+            file.is_file(),
+            "{plugin}: {} does not exist",
+            file.display()
+        );
+    }
+}
+
 /// test_guard_cli `test_only_pretooluse_is_registered`: after the cutover the guardrails plugin
 /// also bootstraps its binary at SessionStart (design §9.1); nothing else is registered. The
 /// anthology plugin adds the `Notification` attention alert (crates/repo-tests/tests/notify.rs).
