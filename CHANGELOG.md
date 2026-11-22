@@ -239,7 +239,10 @@ a new version section.
   treated every opening square bracket that had a backtick after it as the start of an
   array subscript, and bash and zsh run a command in a subscript. A subscript only follows
   a name, so a bracket at the start of a word, or after punctuation such as a space or a
-  quote, is now a plain bracket expression. Everything else is read as before: a bracket
+  quote, is now a plain bracket expression, but only in a command with no `$` anywhere, no
+  backtick substitution, and no shell, `eval`, `xargs` or `parallel` in it: otherwise an
+  expansion elsewhere can put a name in front of the word (`set -- '[...]'; unset "a$1"`),
+  and every bracket is read as before. In such a command everything else is read as before: a bracket
   after a letter, digit, underscore, non-ASCII character, `]`, `}`, `)`, `$`, `*`, `?` or
   `=`; every bracket in a command that has an array literal (`a=( [k]=v )`); and every
   bracket in a command with a `$(...)` or backtick substitution, because the guard takes a

@@ -30,7 +30,8 @@
 //!   of `collect_once`): a brace sequence `{x..y}` or a brace expression in a word holding whitespace (a
 //!   quoted item); a `[...]` subscript holding a closed `$(...)`, backtick pair or `$'...'` in any word (G0-FP:
 //!   not after a `\[`, and not a `[` that starts the word or follows punctuation, unless the command holds an
-//!   array literal `=(` or a `$(...)`/backtick: see `subscript_runs`); an assignment, export or
+//!   array literal `=(`, a `$(...)`/backtick, or any `$`, unescaped backtick or shell/`eval`/`xargs` in the
+//!   text: see `subscript_runs`); an assignment, export or
 //!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modelled prefix of `tar` / `git`, a git alias
 //!   given twice or through `GIT_CONFIG_*`, `git --config-env`; a shell reading stdin from a producer that
 //!   is not literal (`curl | sh`, `f | tr | sh`), from a compound command with a redirect or here-string, or
@@ -517,8 +518,8 @@ const COMMAND_ENV: &[&str] = &[
 
 /// Fail closed (controller ruling): words whose bash expansion the analysis does not model. `braces`: the
 /// segment had an unquoted `{`; `quoted_braces`: one of its words held a quoted or escaped `{`, `}` or `,`;
-/// `hidden_name`: the segment held a `$(...)` or a backtick, or is arithmetic text, so a `[` may follow a name
-/// the words do not show (`subscript_runs`).
+/// `hidden_name`: the segment held a `$(...)` or a backtick, or is arithmetic text, or the text is not
+/// `plain_text`, so a `[` may follow a name the words do not show (`subscript_runs`).
 fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool, hidden_name: bool) -> bool {
     if braces && mixed_braces(tokens, quoted_braces) {
         return true;
@@ -532,6 +533,48 @@ fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool, hidden_name
             && (letter_sequence(t) || brace_item_space(t) || sequence_nested_comma(t)))
             || subscript_runs(t, any_name)
     })
+}
+
+/// Programs that read text as shell words or commands, or splice their input into a command line (`xargs -I@`).
+const TEXT_CONSUMERS: &[&str] = &["busybox", "eval", "source", "xargs", "parallel"];
+
+/// G0-FP: `text` gives no word a name it does not show, so a `[` that follows no name in its own word follows
+/// none in the command (`subscript_runs`). That holds when the text has no `$` (so no parameter, arithmetic or
+/// command expansion, which can put a name in front of a word that was set aside: `set -- '[...]'; unset
+/// "a$1"`), no backtick outside single quotes that a backslash does not escape (a backtick substitution; in
+/// single quotes or escaped it is a plain character, as in a regex), and no word that names a shell, `eval`,
+/// `xargs` or `parallel`, which build commands from text (`xargs -I@`, a printf piped to `sh -s`). A `$` counts
+/// anywhere, even in single quotes, because the quote scan here is only approximate (an apostrophe in a comment
+/// opens a quote bash does not see); every doubt is "not plain", and an unclosed single quote is not plain.
+fn plain_text(text: &str, segments: &[crate::lexer::Segment]) -> bool {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for &c in text.as_bytes() {
+        if c == b'$' {
+            return false;
+        }
+        if escaped {
+            escaped = false;
+        } else if single {
+            single = c != b'\'';
+        } else {
+            match c {
+                b'\\' => escaped = true,
+                b'\'' if !double => single = true,
+                b'"' => double = !double,
+                b'`' => return false,
+                _ => {}
+            }
+        }
+    }
+    !single
+        && !segments.iter().any(|s| {
+            s.tokens.iter().any(|t| {
+                t.split_whitespace().any(|w| {
+                    SHELLS.contains(&prog_name(w).as_str())
+                        || TEXT_CONSUMERS.contains(&prog_name(w).as_str())
+                })
+            })
+        })
 }
 
 /// SH-seq review C-1: the brace reading expands every brace past quote removal, so it is bash's only when
@@ -744,9 +787,12 @@ fn int_sequence(inner: &str) -> Option<IntSequence> {
 /// character, a byte past ASCII (zsh names), or one of `] } ) ` $ * ? =` (`=`: an assignment value stays as it
 /// was), or one of `@#-!` that follows a `$`. A `[` at the start of the word or after any other character
 /// (`['"`]`, `[.!+]` in a regex) is a bracket expression: `unset '[`id`]'`, `let '1+[`id`]'` and
-/// `declare '[`id`]=1'` run nothing (tried in bash 5.2 and zsh 5.9). The reading is not used (`any_name`) where a name may not show before a `[`: a word of an array
-/// literal (`a=( [`id`]=1 )`), whose subscripts start a word or follow a space, and a segment whose lexer took
-/// a `$(...)` out of a word (`$(f)[...]` is `[...]`). Then every `[` not after a backslash counts, as before.
+/// `declare '[`id`]=1'` run nothing (tried in bash 5.2 and zsh 5.9). The reading is not used (`any_name`)
+/// where a name may not show before a `[`: a word of an array literal (`a=( [`id`]=1 )`), whose subscripts
+/// start a word or follow a space; a segment whose lexer took a `$(...)` out of a word (`$(f)[...]` is
+/// `[...]`); and a text that is not `plain_text`, where an expansion elsewhere can put a name in front of the
+/// word (`set -- '[`id`]'; unset "a$1"`). Then every `[` not after a backslash counts, as before. The reading
+/// looks at one word, so it is sound only for a plain text.
 ///
 /// The quoting is gone from `word`, so `\`` in double quotes reads as the same backtick as `'`'`. That is right:
 /// a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` runs `id` and stays too complex.
@@ -1224,6 +1270,9 @@ pub(crate) struct Ctx<'a> {
     holders: Vec<Holder>,
     /// SH-F3: the segment `add_one` is about to add holds a `$(` or a backtick (`LexOut::held`).
     subst: bool,
+    /// G0-FP: the text being collected has no `$`, no unescaped backtick and no consumer of text (`plain_text`),
+    /// so no word can be given a name by an expansion (`subscript_runs`); scoped to one `collect` call.
+    plain: bool,
     /// SH-F3: the entries whose segment held a `$(` or a backtick.
     held_entries: HashSet<usize>,
     /// SH-F3: how many stdin-reading entries have been added (`reads_stdin_as_shell`), in this pass or
@@ -1263,6 +1312,7 @@ impl<'a> Ctx<'a> {
             quoted_braces: false,
             holders: Vec::new(),
             subst: false,
+            plain: false,
             held_entries: HashSet::new(),
             readers: 0,
             script_readers: HashSet::new(),
@@ -1503,10 +1553,10 @@ impl<'a> Ctx<'a> {
             return false;
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
-        let (braces, quoted_braces) = (self.braces, self.quoted_braces);
+        let (braces, quoted_braces, plain) = (self.braces, self.quoted_braces, self.plain);
         let readers = self.readers;
         self.collect_once(text, exempt, depth);
-        (self.braces, self.quoted_braces) = (braces, quoted_braces);
+        (self.braces, self.quoted_braces, self.plain) = (braces, quoted_braces, plain);
         if self.readers > readers {
             self.reads_seen.insert(key.clone());
         }
@@ -1528,6 +1578,7 @@ impl<'a> Ctx<'a> {
             self.halt(); // Python raises `_TooComplex`
             return;
         }
+        self.plain = !(lexed.lenient || info.nested_lenient) && plain_text(text, &lexed.segments);
         let mut from_text = Vec::new();
         if lexed.lenient || info.nested_lenient {
             from_text.push(Opaque::Unbalanced);
@@ -2263,7 +2314,12 @@ impl<'a> Ctx<'a> {
         if !self.spend(1 + 2 * size) {
             return None;
         }
-        if fail_closed(&tokens, self.braces, self.quoted_braces, subst || arith) {
+        if fail_closed(
+            &tokens,
+            self.braces,
+            self.quoted_braces,
+            subst || arith || !self.plain,
+        ) {
             self.halt();
             return None;
         }

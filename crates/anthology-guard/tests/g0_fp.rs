@@ -37,6 +37,16 @@ fn assert_all(commands: &[&str], want: Verdict) {
     assert!(wrong.is_empty(), "want {want:?}:\n{}", wrong.join("\n"));
 }
 
+#[track_caller]
+fn assert_none_allowed(commands: &[&str]) {
+    let wrong: Vec<String> = commands
+        .iter()
+        .filter(|c| verdict(c) == Verdict::Allow)
+        .map(|c| format!("{c:?}"))
+        .collect();
+    assert!(wrong.is_empty(), "want no Allow:\n{}", wrong.join("\n"));
+}
+
 #[test]
 fn a_bracket_and_a_backtick_without_a_closed_subscript_are_allowed() {
     assert_all(
@@ -194,5 +204,38 @@ fn a_subscript_after_a_name_stays_too_complex_whatever_quotes_the_backtick() {
             r"declare -a x=( ['`npx playwright install`']=1 )",
         ],
         Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn an_expansion_elsewhere_in_the_command_may_put_a_name_before_a_bracket() {
+    // The word with the bracket holds no name, but an expansion later in the command can put one in front of
+    // it (`unset "a$1"` makes `a[...]`), so the "a bracket follows a name" reading is used only for a command
+    // with no expansion, no backtick substitution and no consumer of text. Each of the first lines ran its
+    // marker in bash 5.2 and zsh 5.9.
+    assert_none_allowed(&[
+        r#"set -- '[`npx playwright install`]'; unset "a$1""#,
+        r#"set -- '[$(npx playwright install)]'; (( a$1 ))"#,
+        r#"a=(1); set -- '[$(npx playwright install)]'; echo $((a$1))"#,
+        r#"for s in '[$(npx playwright install)]'; do unset "a$s"; done"#,
+        r#"s=.'[$(npx playwright install)]'; unset "a${s#.}""#,
+        r#"unset "a${s:-[\`npx playwright install\`]}""#,
+        r#"unset "a${s-[\`npx playwright install\`]}""#,
+        r#"s=1; unset "a${s:+[\`npx playwright install\`]}""#,
+        r#"s=1; unset "a${s/1/[\`npx playwright install\`]}""#,
+        // a name given without `$`: xargs puts the line in its replacement string, a shell reads the
+        // decoded text a printf wrote
+        r#"echo a | xargs -I@ unset "@[\`npx playwright install\`]""#,
+        r#"printf 'unset "a\0441"' | sh -s "[\`npx playwright install\`]""#,
+        // an unescaped backtick substitution anywhere
+        r#"echo `echo a` > /dev/null; unset "[\`npx playwright install\`]""#,
+    ]);
+    // a command with none of these keeps the new reading
+    assert_all(
+        &[
+            r#"grep -E "['\"\`]A['\"\`]" d | head -3"#,
+            r#"echo a b; grep "[\`]x[\`]" f"#,
+        ],
+        Verdict::Allow,
     );
 }
