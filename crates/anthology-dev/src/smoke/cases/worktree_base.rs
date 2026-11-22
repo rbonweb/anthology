@@ -42,10 +42,12 @@ fn worktree_run(ctx: &Ctx, base_ref_head: bool) -> Res<(Proc, bool, bool)> {
     let mut flags = sv(["--model", "sonnet"]);
     flags.extend(ctx.plugin_flags()?);
     flags.extend(["--settings".to_string(), dumps(&settings)]);
+    // Scrub off: on Linux the scrub runs Claude Code's subprocesses in bubblewrap, and then it
+    // cannot create the agent worktree at all ("Failed to resolve base branch").
     let opts = PromptOpts {
         cwd: Some(repo.clone()),
         variadic: sv(["Agent", "Read", "Bash(git log*)"]),
-        ..PromptOpts::default()
+        extra_env: Some(no_scrub()),
     };
     let p = ctx.prompt_run(&tmp, PROMPT_WORKTREE, &flags, &opts)?;
     let mut texts = Vec::new();
