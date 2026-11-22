@@ -302,8 +302,10 @@ Roster agents save their notes through one command, so a read-only agent needs n
 
 ```text
 anthology-mem save --agent <name> --type <project|feedback|reference> --slug <topic-slug> \
-  --name '<title>' --description '<one line>' --body '<text>' [--replace]
+  --name '<title>' --description '<one line>' (--body '<text>' | --body-file <path>) [--replace]
 ```
+
+`--body-file` reads the text from a file instead (`-` reads standard input) and applies the same checks as `--body`. Use it when the text is long or contains shell-looking lines such as `rm -rf`: Claude Code's safety check reads the command line, so a note that merely mentions a delete command can be refused as one. Saving warns, without failing, when the agent already has a note with a very similar name or description, so a repeat can update that note with `--replace` instead. Each generated `MEMORY.md` is capped at about 8 KB: past that it lists the newest notes of each type and ends each cut type with `N more — use anthology-mem search`.
 
 It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) or that the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths) is refused, with the kind and line named. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
 

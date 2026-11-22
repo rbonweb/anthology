@@ -1191,11 +1191,21 @@ pub fn parser(env: &Env) -> Spec {
             .help("machine-readable output")
     };
     let mut save = Spec::command().allow_abbrev(false);
-    for flag in ["agent", "type", "slug", "name", "description", "body"] {
+    for flag in ["agent", "type", "slug", "name", "description"] {
         let option = format!("--{flag}");
         save = save.arg(Arg::option(&[option.as_str()]).required());
     }
     save = save
+        .mutex(
+            true,
+            vec![
+                Arg::option(&["--body"]).help("the note text, as one argument"),
+                Arg::option(&["--body-file"]).metavar("PATH").help(
+                    "read the note text from PATH ('-' reads stdin); use it for long text or \
+                     lines a command check may misread; same checks as --body",
+                ),
+            ],
+        )
         .arg(
             Arg::option(&["--replace"])
                 .store_true()
@@ -1352,6 +1362,16 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         out.err("anthology-mem: not inside a git work tree; memory notes live in the repo");
         return out.done(1);
     };
+    let body = match p.os_str("body_file") {
+        Some(arg) => match read_body_file(arg, &cwd) {
+            Ok(text) => text,
+            Err(m) => {
+                out.err(&format!("anthology-mem: {m}"));
+                return out.done(1);
+            }
+        },
+        None => arg_str(p, "body"),
+    };
     let saved: Result<Saved, SaveError> = save::save_note(
         &root,
         &arg_str(p, "agent"),
@@ -1359,7 +1379,7 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         &arg_str(p, "slug"),
         &arg_str(p, "name"),
         &arg_str(p, "description"),
-        &arg_str(p, "body"),
+        &body,
         p.flag("replace"),
         None,
         env,
@@ -1390,7 +1410,52 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
             "anthology-mem: note saved, but MEMORY.md was not regenerated: {w}"
         ));
     }
+    if !saved.similar.is_empty() {
+        out.err(&format!(
+            "anthology-mem: warning: similar note(s) already exist: {}; if this repeats one of \
+             them, update it (same --type and --slug, with --replace) instead of adding another",
+            saved.similar.join(", ")
+        ));
+    }
     out.done(0)
+}
+
+/// `--body-file`: the text of the file `arg` names (relative to `cwd`), or of standard input
+/// when `arg` is `-`. At most one byte more than the body limit is read, so `save`'s own check
+/// refuses an oversized body without reading a huge file. The text is not checked here: `save`
+/// applies the checks of an inline body.
+fn read_body_file(arg: &OsStr, cwd: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let cap = save::MAX_BODY_BYTES as u64 + 1;
+    let shown = arg.to_string_lossy().into_owned();
+    let cannot = |e: std::io::Error| {
+        format!(
+            "cannot read the body file {shown}: {}",
+            crate::sync::strerror(&PyExc::from(e))
+        )
+    };
+    let mut bytes = Vec::new();
+    if arg == "-" {
+        // Not `std::io::stdin()`: the binary's `main` already holds that lock for the whole run,
+        // so locking it again here would wait forever.
+        fs::File::open("/dev/stdin")
+            .and_then(|f| f.take(cap).read_to_end(&mut bytes))
+            .map_err(cannot)?;
+    } else {
+        let file = fs::File::open(cwd.join(arg)).map_err(cannot)?;
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err(format!("the body file {shown} is not a regular file"));
+        }
+        file.take(cap).read_to_end(&mut bytes).map_err(cannot)?;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        // A cut inside a character at the cap: the body is too long either way.
+        Err(e) if e.as_bytes().len() as u64 >= cap => {
+            Ok(String::from_utf8_lossy(e.as_bytes()).into_owned())
+        }
+        Err(_) => Err(format!("the body file {shown} is not valid UTF-8")),
+    }
 }
 
 /// Python's truthiness of a JSON value.

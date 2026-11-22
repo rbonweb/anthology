@@ -610,7 +610,7 @@ mod regenerate_index_test {
         let raw = fs::read(d.join("MEMORY.md")).expect("index");
         let text = String::from_utf8(raw.clone()).expect("utf-8");
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!((DEFAULT_BUDGET.lines, DEFAULT_BUDGET.bytes), (150, 20000));
+        assert_eq!((DEFAULT_BUDGET.lines, DEFAULT_BUDGET.bytes), (150, 8000));
         assert!(lines.len() <= DEFAULT_BUDGET.lines);
         assert!(raw.len() <= DEFAULT_BUDGET.bytes);
         let pointers = lines

@@ -30,6 +30,12 @@ a new version section.
   that names the assistant or its maker, or a "Generated with" line that names the assistant.
   Every other command is allowed. The check catches the usual habit and is not a guarantee:
   `--trailer`, `-F` and `--body-file` are not checked.
+- `anthology-mem save --body-file <path>` takes the note body from a file (`-` for stdin) and
+  applies the same checks as `--body`. Claude Code's delete safety check reads the command line,
+  so a note that merely mentioned a delete command was refused when passed inline. Exactly one of
+  `--body` and `--body-file` is required.
+- `anthology-mem save` warns on stderr, and still saves, when the agent already has a note with
+  a very similar name or description, and suggests updating it with `--replace`.
 
 #### Fixed
 
@@ -48,6 +54,9 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
+- Memory indexes are capped at 8 KB (was 20 KB). Agents' `MEMORY.md` files had grown to 17-20 KB
+  with 88-138 notes, many of them per-task logs. Past the cap an index keeps the newest notes of
+  each type and ends each cut type with "N more — use `anthology-mem search`".
 
 ### [0.2.0] - 2026-11-22
 
