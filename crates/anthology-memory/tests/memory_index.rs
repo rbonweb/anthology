@@ -1443,4 +1443,336 @@ mod save_cli_test {
         let header = fs::read_to_string(staged_wrapper()).expect("read");
         assert!(header.lines().nth(1).expect("line 2").contains("save"));
     }
+
+    /// The `save` flags but the body, so a test chooses how the body arrives.
+    fn bodyless<'a>(slug: &'a str, name: &'a str, description: &'a str) -> Vec<&'a str> {
+        vec![
+            "save",
+            "--agent",
+            "scout",
+            "--type",
+            "project",
+            "--slug",
+            slug,
+            "--name",
+            name,
+            "--description",
+            description,
+        ]
+    }
+
+    /// `save ... --body-file <path>` from the repo. `TMPDIR` names the folder the test's temp
+    /// dir lives in, so the path policy sees the sandbox as the system temp folder.
+    fn save_from_file(s: &SaveCase, path: &Path) -> Output {
+        let path = path.to_string_lossy().into_owned();
+        let mut argv = vec!["mem"];
+        argv.extend(bodyless("eval-probe", "Eval probe", "How the probe works"));
+        argv.extend(["--body-file", &path]);
+        let env = s
+            .case
+            .env
+            .clone()
+            .with_os("TMPDIR", s.case.tmp.parent().expect("parent"));
+        anthology_testkit::run_bin(&argv, b"", &env, &s.repo)
+    }
+
+    #[test]
+    fn test_the_body_can_come_from_a_file() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let body_file = s.case.tmp.join("body.txt");
+        let body = "First line.\nrm -rf the cache; $(not run) > not-a-redirect\n";
+        fs::write(&body_file, body).expect("write");
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 0, "{}", p.stderr_text());
+        let text = fs::read_to_string(s.repo.join(REL)).expect("read");
+        assert!(text.ends_with(&format!("---\n\n{body}")), "{text}");
+    }
+
+    #[test]
+    fn test_a_body_file_in_the_repo_is_accepted() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let body_file = s.repo.join("body.txt");
+        fs::write(&body_file, "In the repo.\n").expect("write");
+        // A relative path is read from the working folder.
+        let p = s.run(&[
+            "save",
+            "--agent",
+            "scout",
+            "--type",
+            "project",
+            "--slug",
+            "eval-probe",
+            "--name",
+            "Eval probe",
+            "--description",
+            "How the probe works",
+            "--body-file",
+            "body.txt",
+        ]);
+        assert_eq!(p.code, 0, "{}", p.stderr_text());
+        assert!(
+            fs::read_to_string(s.repo.join(REL))
+                .expect("read")
+                .ends_with("\n\nIn the repo.\n")
+        );
+    }
+
+    #[test]
+    fn test_a_body_file_gets_the_checks_of_an_inline_body() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let body_file = s.case.tmp.join("body.txt");
+        // Assembled at run time: the repository holds no token-shaped literal.
+        let token = format!("{}_{}", "ghp", "abc123");
+        fs::write(&body_file, format!("see {token}\n")).expect("write");
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains("secret"));
+        assert!(!p.stderr_text().contains(&token));
+        fs::write(&body_file, "  \n\n").expect("write");
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains("body must not be empty"));
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_a_body_file_larger_than_the_limit_is_refused_never_cut() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let body_file = s.case.tmp.join("body.txt");
+        fs::write(&body_file, "x".repeat(16385)).expect("write");
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains("too long"), "{}", p.stderr_text());
+        // CRLF: normalised it would fit, but the raw file is over the limit, so it is refused
+        // rather than read in part.
+        let line = format!("{}\r\n", "y".repeat(78));
+        fs::write(&body_file, line.repeat(206)).expect("write");
+        assert!(fs::metadata(&body_file).expect("stat").len() > 16384);
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains("too long"), "{}", p.stderr_text());
+        assert!(!s.repo.join(".claude").exists());
+        // A file of exactly the limit is accepted whole.
+        let exact = format!("{}\n", "z".repeat(16383));
+        fs::write(&body_file, &exact).expect("write");
+        let p = save_from_file(&s, &body_file);
+        assert_eq!(p.code, 0, "{}", p.stderr_text());
+        let text = fs::read_to_string(s.repo.join(REL)).expect("read");
+        assert!(text.ends_with(&format!("---\n\n{exact}")));
+    }
+
+    #[test]
+    fn test_a_fifo_as_the_body_file_is_refused_not_waited_on() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let fifo = s.case.tmp.join("body.fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let path = fifo.to_string_lossy().into_owned();
+        let mut argv = bodyless("eval-probe", "Eval probe", "How the probe works");
+        argv.extend(["--body-file", &path]);
+        let mut argv_all = vec!["mem"];
+        argv_all.extend(argv);
+        let env = s
+            .case
+            .env
+            .clone()
+            .with_os("TMPDIR", s.case.tmp.parent().expect("parent"));
+        let p = anthology_testkit::run::run_program_timeout(
+            &anthology_testkit::run::anthology_bin(),
+            &argv_all,
+            b"",
+            &env,
+            &s.repo,
+            Some(Duration::from_secs(20)),
+        );
+        assert_eq!(p.code, 1, "{}", p.stderr_text());
+        assert!(
+            p.stderr_text().contains("not a regular file"),
+            "{}",
+            p.stderr_text()
+        );
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_a_body_file_outside_the_repo_and_the_temp_folder_is_refused() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let p = save_from_file(&s, Path::new("/etc/hosts"));
+        assert_eq!(p.code, 1);
+        assert!(
+            p.stderr_text().contains("/etc/hosts"),
+            "{}",
+            p.stderr_text()
+        );
+        assert!(
+            p.stderr_text().contains("repo or the temp folder"),
+            "{}",
+            p.stderr_text()
+        );
+        // A symlink in the repo is resolved first: what it points at decides.
+        let link = s.repo.join("passwd-link");
+        std::os::unix::fs::symlink("/etc/passwd", &link).expect("symlink");
+        let p = save_from_file(&s, &link);
+        assert_eq!(p.code, 1);
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_a_body_file_at_a_secret_location_is_refused_even_in_the_repo() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        fs::create_dir(s.repo.join(".ssh")).expect("mkdir");
+        for name in [".env", ".ssh/config", "server.PEM", ".ssh/id_ed25519"] {
+            let file = s.repo.join(name);
+            fs::write(&file, "plain text\n").expect("write");
+            let p = save_from_file(&s, &file);
+            assert_eq!(p.code, 1, "{name}");
+            assert!(
+                p.stderr_text().contains("secret location"),
+                "{name}: {}",
+                p.stderr_text()
+            );
+        }
+        // A harmless-looking link to a secret is refused by where it leads.
+        fs::write(s.repo.join("notes.txt"), "plain\n").expect("write");
+        let link = s.repo.join("innocent.txt");
+        std::os::unix::fs::symlink(s.repo.join(".env"), &link).expect("symlink");
+        let p = save_from_file(&s, &link);
+        assert_eq!(p.code, 1);
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_a_body_file_of_dash_reads_standard_input() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let mut argv = vec!["mem"];
+        argv.extend(bodyless("eval-probe", "Eval probe", "How the probe works"));
+        argv.extend(["--body-file", "-"]);
+        let p = anthology_testkit::run_bin(&argv, b"From stdin.\n", &s.case.env, &s.repo);
+        assert_eq!(p.code, 0, "{}", p.stderr_text());
+        assert!(
+            fs::read_to_string(s.repo.join(REL))
+                .expect("read")
+                .ends_with("---\n\nFrom stdin.\n")
+        );
+    }
+
+    #[test]
+    fn test_a_body_file_that_cannot_be_read_is_refused_with_its_path() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let missing = s.case.tmp.join("no-such-body.txt");
+        let path = missing.to_string_lossy().into_owned();
+        let p = save_from_file(&s, &missing);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains(&path), "{}", p.stderr_text());
+        let bad = s.case.tmp.join("binary.bin");
+        fs::write(&bad, [0xff, 0xfe, 0x00]).expect("write");
+        let p = save_from_file(&s, &bad);
+        assert_eq!(p.code, 1);
+        assert!(p.stderr_text().contains("UTF-8"), "{}", p.stderr_text());
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_a_body_and_a_body_file_together_or_neither_exit_2() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let mut both = bodyless("eval-probe", "Eval probe", "How the probe works");
+        both.extend(["--body", "b", "--body-file", "-"]);
+        let p = s.run(&both);
+        assert_eq!(p.code, 2);
+        assert!(p.stderr_text().contains("not allowed with"));
+        let p = s.run(&bodyless("eval-probe", "Eval probe", "How the probe works"));
+        assert_eq!(p.code, 2);
+        assert!(p.stderr_text().contains("--body-file"));
+        assert!(!s.repo.join(".claude").exists());
+    }
+
+    #[test]
+    fn test_the_save_help_tells_agents_about_the_body_file() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let p = s.run(&["save", "-h"]);
+        assert_eq!(p.code, 0);
+        let text = p.stdout_text();
+        assert!(text.contains("--body-file"), "{text}");
+        assert!(text.contains("stdin"), "{text}");
+    }
+
+    #[test]
+    fn test_a_similar_note_gets_a_warning_and_still_saves() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        assert_eq!(s.save(&[], &[]).code, 0);
+        let p = s.save(
+            &[],
+            &[("slug", "eval-probe-again"), ("name", "Eval probe notes")],
+        );
+        assert_eq!(p.code, 0, "{}", p.stderr_text());
+        assert!(p.stdout_text().starts_with("created "));
+        let err = p.stderr_text();
+        assert!(err.contains("warning"), "{err}");
+        assert!(err.contains("project-eval-probe.md"), "{err}");
+        assert!(err.contains("--replace"), "{err}");
+        assert!(
+            s.repo
+                .join(REL.replace("eval-probe", "eval-probe-again"))
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn test_an_unrelated_note_or_a_replaced_one_gets_no_warning() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        assert_eq!(s.save(&[], &[]).code, 0);
+        let p = s.save(
+            &[],
+            &[
+                ("slug", "release-checklist"),
+                ("name", "Release checklist"),
+                ("description", "Steps before a tag is pushed"),
+            ],
+        );
+        assert_eq!((p.code, p.stderr_text()), (0, String::new()));
+        let p = s.save(&["--replace"], &[("body", "Newer body.")]);
+        assert_eq!((p.code, p.stderr_text()), (0, String::new()));
+    }
 }

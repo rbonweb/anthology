@@ -1191,11 +1191,22 @@ pub fn parser(env: &Env) -> Spec {
             .help("machine-readable output")
     };
     let mut save = Spec::command().allow_abbrev(false);
-    for flag in ["agent", "type", "slug", "name", "description", "body"] {
+    for flag in ["agent", "type", "slug", "name", "description"] {
         let option = format!("--{flag}");
         save = save.arg(Arg::option(&[option.as_str()]).required());
     }
     save = save
+        .mutex(
+            true,
+            vec![
+                Arg::option(&["--body"]).help("the note text, as one argument"),
+                Arg::option(&["--body-file"]).metavar("PATH").help(
+                    "read the note text from PATH, a file in the repo or the temp folder ('-' \
+                     reads stdin); use it for long text or lines a command check may \
+                     misread; same checks as --body",
+                ),
+            ],
+        )
         .arg(
             Arg::option(&["--replace"])
                 .store_true()
@@ -1352,6 +1363,16 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         out.err("anthology-mem: not inside a git work tree; memory notes live in the repo");
         return out.done(1);
     };
+    let body = match p.os_str("body_file") {
+        Some(arg) => match read_body_file(arg, &cwd, &root, env) {
+            Ok(text) => text,
+            Err(m) => {
+                out.err(&format!("anthology-mem: {m}"));
+                return out.done(1);
+            }
+        },
+        None => arg_str(p, "body"),
+    };
     let saved: Result<Saved, SaveError> = save::save_note(
         &root,
         &arg_str(p, "agent"),
@@ -1359,7 +1380,7 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         &arg_str(p, "slug"),
         &arg_str(p, "name"),
         &arg_str(p, "description"),
-        &arg_str(p, "body"),
+        &body,
         p.flag("replace"),
         None,
         env,
@@ -1390,7 +1411,112 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
             "anthology-mem: note saved, but MEMORY.md was not regenerated: {w}"
         ));
     }
+    if !saved.similar.is_empty() {
+        out.err(&format!(
+            "anthology-mem: warning: similar note(s) already exist: {}; if this repeats one of \
+             them, update it (same --type and --slug, with --replace) instead of adding another",
+            saved.similar.join(", ")
+        ));
+    }
     out.done(0)
+}
+
+/// The system temp folders a `--body-file` may be in besides the repo (`$TMPDIR` is added).
+const TEMP_ROOTS: [&str; 4] = [
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+];
+
+/// The path policy of `--body-file`, on the file's real path (symlinks resolved): inside the
+/// repo or a temp folder, and at no obvious secret location. `shown` is the path as given.
+/// The secret names are the guard's own (`anthology_shell::is_secret_path`, case-insensitive),
+/// checked on the path as written too, so a `.env` is refused whatever it links to.
+fn check_body_file_path(
+    given: &Path,
+    real: &Path,
+    root: &Path,
+    env: &Env,
+    shown: &str,
+) -> Result<(), String> {
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    if anthology_shell::is_secret_path(&text(given)) || anthology_shell::is_secret_path(&text(real))
+    {
+        return Err(format!(
+            "refusing to read the body file {shown}: it is at a secret location (a key, \
+             credentials, .env or shell history file); copy the note text to a plain file"
+        ));
+    }
+    let real_of = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let inside = std::iter::once(real_of(root))
+        .chain(TEMP_ROOTS.iter().map(|t| real_of(Path::new(t))))
+        .chain(
+            env.get_os("TMPDIR")
+                .filter(|t| !t.is_empty())
+                .map(|t| real_of(Path::new(t))),
+        )
+        .any(|r| real.starts_with(r));
+    if !inside {
+        return Err(format!(
+            "refusing to read the body file {shown}: it must be inside the repo or the temp folder"
+        ));
+    }
+    Ok(())
+}
+
+/// `--body-file`: the text of the file `arg` names (relative to `cwd`), or of standard input
+/// when `arg` is `-`. A file must pass [`check_body_file_path`] and be a regular file (checked
+/// before it is opened, so a FIFO is never waited on). A body over the limit is refused, never
+/// cut: the file's size is checked, and the read is bounded in case it grows. The text is not
+/// checked further here: `save` applies the checks of an inline body.
+fn read_body_file(arg: &OsStr, cwd: &Path, root: &Path, env: &Env) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::fd::AsFd;
+    let max = save::MAX_BODY_BYTES as u64;
+    let shown = arg.to_string_lossy().into_owned();
+    let cannot = |e: std::io::Error| {
+        format!(
+            "cannot read the body file {shown}: {}",
+            crate::sync::strerror(&PyExc::from(e))
+        )
+    };
+    let too_long = || format!("the body file {shown} is too long (at most {max} bytes)");
+    let not_regular = || format!("the body file {shown} is not a regular file");
+    let mut bytes = Vec::new();
+    if arg == "-" {
+        // A duplicate of fd 0, not `std::io::stdin()`: the binary's `main` holds that lock for
+        // the whole run, so locking it again here would wait forever. Only the bound limits
+        // what stdin can give.
+        let fd = std::io::stdin()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(cannot)?;
+        fs::File::from(fd)
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(cannot)?;
+    } else {
+        let given = cwd.join(arg);
+        let real = fs::canonicalize(&given).map_err(cannot)?;
+        check_body_file_path(&given, &real, root, env, &shown)?;
+        if !fs::metadata(&real).is_ok_and(|m| m.is_file()) {
+            return Err(not_regular());
+        }
+        let file = fs::File::open(&real).map_err(cannot)?;
+        let meta = file.metadata().map_err(cannot)?;
+        if !meta.is_file() {
+            return Err(not_regular());
+        }
+        if meta.len() > max {
+            return Err(too_long());
+        }
+        file.take(max + 1).read_to_end(&mut bytes).map_err(cannot)?;
+    }
+    if bytes.len() as u64 > max {
+        return Err(too_long());
+    }
+    String::from_utf8(bytes).map_err(|_| format!("the body file {shown} is not valid UTF-8"))
 }
 
 /// Python's truthiness of a JSON value.

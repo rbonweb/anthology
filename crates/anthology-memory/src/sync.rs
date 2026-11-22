@@ -1163,10 +1163,10 @@ fn section(title: &str, directory: &Path, text: &str) -> String {
 }
 
 /// `_context_index`: the index of `directory` within the context budget, with "N more"
-/// pointers that name the full on-disk `MEMORY.md`.
+/// pointers to `anthology-mem search`. They name no file: the on-disk `MEMORY.md` is capped too,
+/// so it does not hold every note either.
 fn context_index(directory: &Path, exclude: &[&str]) -> Result<String, PyExc> {
-    let suffix = format!(" (full index: {})", s(&directory.join("MEMORY.md")));
-    if let Some(text) = render_index(directory, CONTEXT_SECTION_BUDGET, &suffix, exclude)? {
+    if let Some(text) = render_index(directory, CONTEXT_SECTION_BUDGET, "", exclude)? {
         return Ok(if pystr::strip_ws(&text) == GENERATED {
             String::new()
         } else {

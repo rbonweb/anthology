@@ -19,6 +19,22 @@ case "$0" in
 esac
 PLUGIN_ROOT="${SCRIPT_DIR}/.."
 
+# Subagents and teammates get no introduction. When one compacts, Claude Code runs this hook
+# inside it and puts a non-empty "agent_id" in the JSON on stdin; the intro is for the main
+# session, and a subagent that gets it starts hunting for skills instead of doing its task.
+# Only Claude Code is asked (the other harnesses below pass no such field), the one-line read is
+# bounded so a stdin that never closes cannot hang the hook, and no external command runs, as
+# with every other line here.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] &&
+   [ -z "${COPILOT_CLI:-}" ] && [ -z "${MUSE_PLUGIN_ROOT:-}" ]; then
+  hook_input=""
+  IFS= read -r -t 2 hook_input || true
+  agent_id_re='"agent_id"[[:space:]]*:[[:space:]]*"[^"]'
+  if [[ $hook_input =~ $agent_id_re ]]; then
+    exit 0
+  fi
+fi
+
 # Read using-superpowers content with the read builtin (no cat, for the same
 # PATH-independence reason, and no $(< file) subshell). read returns 1 at end
 # of file, hence || true; the loop drops trailing newlines as $(< file) did.
