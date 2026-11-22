@@ -9,10 +9,13 @@ use regex::{Regex, bytes};
 use repo_tests::repo;
 
 /// Directories the walk fallback never enters (not repo content). It covers every directory
-/// pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`):
-/// git never lists them, so the walk must not either. `target` is the cargo build directory
-/// (`/target` in .gitignore); the Python list had no such directory.
-const PRUNED: [&str; 9] = [
+/// pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`,
+/// `plugins/*/.claude-plugin/types`): git never lists them, so the walk must not either.
+/// `target` is the cargo build directory (`/target` in .gitignore); the Python list had no such
+/// directory. The `plugins/*/.claude-plugin/types` row is the gitignore text itself (the mods'
+/// generated declarations, never committed); the walk matches names and exact paths only, so it
+/// does not prune them, but the declarations are never in a checkout the walk reads.
+const PRUNED: [&str; 10] = [
     ".git",
     ".claude/worktrees",
     ".superpowers",
@@ -22,6 +25,7 @@ const PRUNED: [&str; 9] = [
     "evals/results",
     "port/replay",
     "target",
+    "plugins/*/.claude-plugin/types",
 ];
 
 /// The home-path check skips the upstream rtk tree and the generated vendored trees.

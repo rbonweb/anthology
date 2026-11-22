@@ -361,7 +361,7 @@ test('a prompt that waits for a subagent names the agent', async ($, on) => {
 
 test('a prompt never shows what the call does: no command, path or URL, on any surface', async ($, on) => {
   const { seen } = engine(on)
-  const secrets = ['hunter2-token', '/home/me/secret.txt', 'https://example.test/private']
+  const secrets = ['hunter2-token', '/home/user/secret.txt', 'https://example.test/private']
   await ask($, `curl -H "Authorization: ${secrets[0]}" x`)
   await $.classic.PermissionRequest({ tool_name: 'Edit', tool_input: { file_path: secrets[1] } })
   await $.classic.PermissionRequest({ tool_name: 'Read', tool_input: { path: secrets[1] } })
