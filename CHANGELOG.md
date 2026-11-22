@@ -39,6 +39,18 @@ a new version section.
   `bypassPermissions`, and the command runs as typed. Auto, default, acceptEdits and plan modes
   behave as before (auto keeps the ask, so `Bash(rtk *)` cannot skip auto mode's classifier),
   and a deny is never dropped.
+- Session start no longer injects the lead's rules into subagents. When a subagent compacts,
+  Claude Code runs SessionStart inside it, and it used to get every lead-only warning too: the
+  setup nag, the guardrails self-test and its "anthology-guardrails is not installed" warning
+  (false when guardrails is installed for the project, because the subagent's folder can be
+  outside it), the rtk and data-folder checks, and the once-per-repo agent-memory note, which a
+  subagent could use up before the lead saw it. A subagent now gets its memory index and nothing
+  else: no guide, no warnings, no state writes.
+- Session start warns when Claude Code was started in a folder that is not a git repo but holds
+  git repos directly below it. Anthology's agents need worktrees, so every dispatch of a writing
+  agent failed there and the lead fell back to agents without Anthology's rules. The warning
+  says to start Claude Code inside the repo you are working on. It looks one level down and at
+  no more than 200 entries, and it is not shown in subagents.
 
 #### Changed
 
@@ -253,6 +265,14 @@ a new version section.
 ## anthology-superpowers
 
 ### [Unreleased]
+
+#### Fixed
+
+- The SessionStart hook prints nothing inside a subagent. When a subagent compacts, Claude
+  Code runs the hook there too, and it injected the `using-superpowers` introduction into the
+  subagent. The hook now reads the first line of its input and exits quietly when Claude Code
+  has set a non-empty `agent_id`. The read waits at most two seconds, so an input that never
+  closes cannot hang the hook, and other harnesses are not asked.
 
 ### [0.2.0] - 2026-11-22
 

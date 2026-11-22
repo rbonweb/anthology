@@ -391,6 +391,87 @@ mod output_test {
         }
     }
 
+    /// A hook input the way Claude Code sends it when a subagent compacts.
+    const SUBAGENT_COMPACT: [(&str, &str); 3] = [
+        ("source", "compact"),
+        ("agent_id", "a0b1c2d3e4f5a6b7c"),
+        ("agent_type", "anthology:implementer"),
+    ];
+
+    /// Everything the lead would be told at session start, and a subagent must not be: setup
+    /// never ran, no data folder, and guardrails installed for another project only.
+    fn lead_warnings_setup(f: &Fx) -> (PathBuf, Env) {
+        let (other, mine) = (f.tmp().join("other-proj"), f.tmp().join("my-proj"));
+        fs::create_dir(&other).unwrap();
+        fs::create_dir(&mine).unwrap();
+        write(
+            &f.config().join("plugins/installed_plugins.json"),
+            &format!(
+                r#"{{"version": 2, "plugins": {{"anthology@anthology": [{{"scope": "user", "installPath": {}}}],
+                "anthology-guardrails@anthology": [{{"scope": "project", "projectPath": {}, "installPath": {}}}]}}}}"#,
+                jstr(&p(f.plugin())),
+                jstr(&p(&other)),
+                jstr(&p(&guard_plugin(&f.tmp().join("installs/g"), BLOCKS)))
+            ),
+            None,
+        );
+        (mine, f.env().without("CLAUDE_PLUGIN_DATA"))
+    }
+
+    #[test]
+    fn test_a_subagent_on_compact_gets_none_of_the_lead_warnings() {
+        let f = Fx::new();
+        let (mine, env) = lead_warnings_setup(&f);
+        // The same session as the lead gets the warnings, so the subagent's silence is real.
+        let lead = f.go_d(&f.deps(), Some(&mine), &env, &[("source", "compact")]);
+        let lead_lines = lines(&lead);
+        assert!(lead_lines.contains(&NAG.to_string()), "{lead_lines:?}");
+        assert!(lead_lines.iter().any(|l| l.contains("not installed")));
+        assert!(context(&lead).contains("# Anthology routing guide"));
+
+        let out = f.go_d(&f.deps(), Some(&mine), &env, &SUBAGENT_COMPACT);
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(!context(&out).contains("# Anthology routing guide"));
+        assert!(!context(&out).contains("EXTREMELY"), "{}", context(&out));
+    }
+
+    #[test]
+    fn test_a_subagent_runs_no_session_checks_and_writes_no_state() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let seen: RefCell<Vec<Vec<PathBuf>>> = RefCell::new(Vec::new());
+        let spy = |spec: &RunSpec<'_>| {
+            seen.borrow_mut().push(spec.argv.clone());
+            session_start::run_with_timeout(spec)
+        };
+        let mut d = f.deps();
+        d.run = &spy;
+        let before = f.state();
+        let out = f.go_d(&d, None, &f.env(), &SUBAGENT_COMPACT);
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(seen.borrow().is_empty(), "no guard self-test in a subagent");
+        assert!(
+            f.rtk.calls.borrow().is_empty(),
+            "no rtk check in a subagent"
+        );
+        assert_eq!(f.state(), before, "a subagent never writes state.json");
+    }
+
+    #[test]
+    fn test_a_subagent_does_not_use_up_the_agent_memory_warning() {
+        // The note is once per repo: if a subagent printed it, the lead would never see it.
+        let f = Fx::new();
+        f.mark_setup(None);
+        let repo = f.tmp().join("w");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join(".claude/agent-memory/implementer")).unwrap();
+        let out = f.go_d(&f.deps(), Some(&repo), &f.env(), &SUBAGENT_COMPACT);
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(f.state().get("agent_memory_warned").is_none());
+        let lead = f.go_cwd(&repo);
+        assert!(sys(&lead).contains("agent-memory"), "{lead:?}");
+    }
+
     #[test]
     fn test_setup_not_run_shows_the_one_line_nag() {
         let f = Fx::new();
@@ -2480,6 +2561,136 @@ mod self_test_follows_test {
         l.f.mark_setup(None);
         let out = l.f.go();
         assert!(!has_msg(&out), "{out:?}");
+    }
+}
+
+// --- Rust-only: a session folder that is not a git repo -----------------------------------
+
+mod not_a_repo {
+    use super::*;
+
+    fn repo(dir: &Path) {
+        fs::create_dir_all(dir.join(".git")).unwrap();
+    }
+
+    /// `<tmp>/<name>` with the given children: a name ending `.git` is a repo (a folder, or a
+    /// file for `file.git`, as a linked worktree has), any other name a plain folder.
+    fn parent(f: &Fx, name: &str, children: &[&str]) -> PathBuf {
+        let dir = f.tmp().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        for child in children {
+            let path = dir.join(child.trim_end_matches(".git"));
+            match *child {
+                "file.git" => {
+                    fs::create_dir_all(&path).unwrap();
+                    fs::write(path.join(".git"), "gitdir: /elsewhere\n").unwrap();
+                }
+                c if c.ends_with(".git") => repo(&path),
+                _ => fs::create_dir_all(&path).unwrap(),
+            }
+        }
+        dir
+    }
+
+    fn warned(f: &Fx, cwd: &Path) -> bool {
+        let out = f.go_cwd(cwd);
+        assert!(
+            lines(&out).iter().all(|l| l == session_start::NOT_A_REPO),
+            "{out:?}"
+        );
+        lines(&out).contains(&session_start::NOT_A_REPO.to_string())
+    }
+
+    #[test]
+    fn a_folder_that_holds_repos_gets_one_short_warning() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "projects", &["a.git", "notes", "b.git"]);
+        let out = f.go_cwd(&dir);
+        assert_eq!(lines(&out), vec![session_start::NOT_A_REPO.to_string()]);
+        assert!(session_start::NOT_A_REPO.contains("worktrees"));
+        assert!(session_start::NOT_A_REPO.contains("inside the repo"));
+        assert!(
+            session_start::NOT_A_REPO.chars().count() < 200,
+            "keep it short"
+        );
+        // The guide still arrives.
+        assert!(context(&out).contains("# Anthology routing guide"));
+    }
+
+    #[test]
+    fn a_linked_worktree_below_counts_as_a_repo() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "projects", &["file.git"]);
+        assert!(warned(&f, &dir));
+    }
+
+    #[test]
+    fn inside_a_repo_there_is_no_warning() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "work", &["inner.git"]);
+        repo(&dir);
+        assert!(!warned(&f, &dir));
+        fs::create_dir_all(dir.join("src/deep")).unwrap();
+        assert!(!warned(&f, &dir.join("src/deep")));
+    }
+
+    #[test]
+    fn a_folder_with_no_repos_below_it_gets_no_warning() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "plain", &["one", "two"]);
+        fs::write(dir.join("file.txt"), "x").unwrap();
+        assert!(!warned(&f, &dir));
+    }
+
+    #[test]
+    fn only_one_level_down_is_looked_at() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = f.tmp().join("group");
+        repo(&dir.join("team/service"));
+        assert!(!warned(&f, &dir));
+    }
+
+    #[test]
+    fn a_missing_folder_gets_no_warning() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        assert!(!warned(&f, &f.tmp().join("gone")));
+    }
+
+    #[test]
+    fn a_subagent_never_gets_it() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "projects", &["a.git"]);
+        assert!(warned(&f, &dir));
+        let out = f.go_d(
+            &f.deps(),
+            Some(&dir),
+            &f.env(),
+            &[("source", "compact"), ("agent_id", "a0b1c2d3e4f5a6b7c")],
+        );
+        assert!(!has_msg(&out), "{out:?}");
+    }
+
+    #[test]
+    fn the_step_is_isolated() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = parent(&f, "projects", &["a.git"]);
+        let fail = |n: &str| (n == "_not_a_repo_warning").then(|| exc("RuntimeError", "boom"));
+        let mut d = f.deps();
+        d.fail = &fail;
+        let out = f.go_d(&d, Some(&dir), &f.env(), &[]);
+        assert!(context(&out).contains("# Anthology routing guide"));
+        assert_eq!(
+            lines(&out),
+            vec!["anthology: the git folder check failed (RuntimeError)".to_string()]
+        );
     }
 }
 
