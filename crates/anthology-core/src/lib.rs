@@ -14,6 +14,7 @@ pub mod git;
 pub mod lock;
 pub mod paths;
 pub mod platform;
+pub mod repos;
 pub mod roster;
 pub mod state;
 #[allow(unsafe_code)]

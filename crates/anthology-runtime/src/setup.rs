@@ -915,9 +915,9 @@ fn promote_error(
 
 // --- the repo's own auto memory switch ------------------------------------------------------
 
-/// The one key setup adds to an approved repo's `.claude/settings.json`: with the repo's memory
-/// (`.claude/memory/`) in force, Claude Code's built-in auto memory must not run beside it. The
-/// user-wide settings.json is never used for this.
+/// The key setup adds to an approved repo's `.claude/settings.json` (with `attribution`, below):
+/// with the repo's memory (`.claude/memory/`) in force, Claude Code's built-in auto memory must
+/// not run beside it. The user-wide settings.json is never used for this.
 pub const AUTO_MEMORY_KEY: &str = "autoMemoryEnabled";
 /// state.json's record of these edits, so `remove` can undo them:
 /// `{<repo root>: {"ops": [<settings record>, ...], "created": <bool>}}`.
@@ -931,6 +931,71 @@ fn auto_memory_op() -> settings::Op {
     }
 }
 
+/// Claude Code's own setting for the trailer and line it adds to commits and PRs (an empty string
+/// hides that part). Setup writes it next to `autoMemoryEnabled`: without it, Claude Code's
+/// instructions make the model add an attribution the no-attribution hook then has to deny.
+pub const ATTRIBUTION_KEY: &str = "attribution";
+/// The two parts of `attribution` setup turns off.
+const ATTRIBUTION_PARTS: [&str; 2] = ["commit", "pr"];
+/// The preview's and apply's `user_scope`: setup leaves the user-wide settings alone for this.
+pub const ATTRIBUTION_USER_SCOPE: &str = "Attribution is turned off for this repo only. To turn it off in every repo, add {\"attribution\": {\"commit\": \"\", \"pr\": \"\"}} to ~/.claude/settings.json by hand; setup does not change your user-wide settings for this.";
+
+fn attribution_op(part: &str) -> settings::Op {
+    settings::Op::Set {
+        path: vec![ATTRIBUTION_KEY.to_string(), part.to_string()],
+        value: s(""),
+        tag: None,
+    }
+}
+
+/// The attribution ops setup may add to a repo's settings `text`, and a note for each key it
+/// leaves alone: a value the user set (anything but an empty string) is never overwritten, and
+/// neither is an `attribution` that is not an object. Text that does not parse gives every op; the
+/// reconcile that follows reports the parse error.
+fn attribution_ops(text: &str) -> (Vec<settings::Op>, Vec<String>) {
+    let doc = json::loads(text).ok();
+    let existing = doc
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|m| m.get(ATTRIBUTION_KEY));
+    let mut ops = Vec::new();
+    let mut notes = Vec::new();
+    match existing {
+        None => ops.extend(ATTRIBUTION_PARTS.iter().map(|p| attribution_op(p))),
+        Some(Value::Object(parts)) if parts.is_empty() => notes.push(format!(
+            "{ATTRIBUTION_KEY} is already set in this file (an empty object); left as it is"
+        )),
+        Some(Value::Object(parts)) => {
+            for part in ATTRIBUTION_PARTS {
+                match parts.get(part) {
+                    None => ops.push(attribution_op(part)),
+                    Some(Value::Str(v)) if v.is_empty() => ops.push(attribution_op(part)),
+                    Some(_) => notes.push(format!(
+                        "{ATTRIBUTION_KEY}.{part} is already set in this file; left as it is"
+                    )),
+                }
+            }
+        }
+        Some(_) => notes.push(format!(
+            "{ATTRIBUTION_KEY} is already set in this file and is not an object; left as it is"
+        )),
+    }
+    (ops, notes)
+}
+
+/// A note when the user-wide settings.json sets `attribution` too: the repo's own value wins in
+/// that repo (project settings rank above user settings). The file is only read, never written;
+/// one that cannot be read or parsed gives no note.
+fn user_attribution_note(env: &Env) -> Option<String> {
+    let text = read_repo_settings(&settings::settings_path(env))
+        .ok()
+        .flatten()?;
+    json::loads(&text).ok()?.as_object()?.get(ATTRIBUTION_KEY)?;
+    Some(format!(
+        "{ATTRIBUTION_KEY} is also set in your user-wide settings.json; in this repo the repo's value takes precedence. That file is only read, never changed"
+    ))
+}
+
 fn repo_settings_path(root: &Path) -> PathBuf {
     root.join(".claude").join("settings.json")
 }
@@ -942,6 +1007,26 @@ struct RepoPlan {
     new_text: String,
     diff: String,
     stored: Vec<Value>,
+    /// The keys it leaves as the user set them, and the user-wide `attribution` it reads.
+    notes: Vec<String>,
+}
+
+/// The preview's and apply's report on a repo's settings file: what the plan does, the
+/// `user_scope` note, and `notes` when a user's value was left alone.
+fn repo_plan_report(plan: &RepoPlan, changed: bool) -> Value {
+    let mut fields = vec![
+        ("path", s(&pstr(&plan.path))),
+        ("changed", Value::Bool(changed)),
+        ("diff", s(&plan.diff)),
+        ("user_scope", s(ATTRIBUTION_USER_SCOPE)),
+    ];
+    if !plan.notes.is_empty() {
+        fields.push((
+            "notes",
+            Value::Array(plan.notes.iter().map(|n| s(n)).collect()),
+        ));
+    }
+    obj(fields)
 }
 
 /// The repo edits state.json holds, by repo root.
@@ -1018,8 +1103,12 @@ fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
         .map(Option::unwrap_or_default)
         .map_err(|e| format!(".claude/settings.json {e}; left untouched"))?;
     let previous = recorded_ops(&recorded_repo_settings(env), root)?;
-    let (new_text, diff, stored) = settings::reconcile(&text, &[auto_memory_op()], &previous)
-        .map_err(|m| match classify(m) {
+    let (attribution, mut notes) = attribution_ops(&text);
+    notes.extend(user_attribution_note(env));
+    let mut desired = vec![auto_memory_op()];
+    desired.extend(attribution);
+    let (new_text, diff, stored) =
+        settings::reconcile(&text, &desired, &previous).map_err(|m| match classify(m) {
             Refusal::Caught(t) | Refusal::Raised(t) => format!("{t}; left untouched"),
         })?;
     Ok(RepoPlan {
@@ -1028,6 +1117,7 @@ fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
         new_text,
         diff,
         stored,
+        notes,
     })
 }
 
@@ -1041,11 +1131,7 @@ fn repo_settings_skipped(root: &Path, why: &str) -> Value {
 /// The preview's `memory.repo.auto_memory`: what setup would change in the repo's settings.json.
 fn repo_settings_preview(root: &Path, env: &Env) -> Value {
     match repo_settings_plan(root, env) {
-        Ok(plan) => obj(vec![
-            ("path", s(&pstr(&plan.path))),
-            ("changed", Value::Bool(plan.new_text != plan.text)),
-            ("diff", Value::Str(plan.diff)),
-        ]),
+        Ok(plan) => repo_plan_report(&plan, plan.new_text != plan.text),
         Err(why) => repo_settings_skipped(root, &why),
     }
 }
@@ -1083,11 +1169,7 @@ fn apply_repo_settings(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Result<V
     if changed {
         (deps.settings_write)(&plan.path, &plan.new_text).map_err(raised)?;
     }
-    Ok(obj(vec![
-        ("path", s(&pstr(&plan.path))),
-        ("changed", Value::Bool(changed)),
-        ("diff", Value::Str(plan.diff)),
-    ]))
+    Ok(repo_plan_report(&plan, changed))
 }
 
 /// What `remove` does to one repo's settings.json.

@@ -29,10 +29,24 @@ use crate::rtk_forms::rtk_command;
 use crate::shell_args::WORD;
 use crate::shell_args::{SHELLS, prog_name, shell_parse};
 
-/// Shell grammar words peeled off a command (`_KEYWORDS`).
+/// Shell grammar words peeled off a command (`_KEYWORDS`). Rust-only (PE-1): zsh's precommand modifiers
+/// `noglob` and `nocorrect`, which run the words after them.
 const KEYWORDS: &[&str] = &[
-    "if", "then", "else", "elif", "do", "while", "until", "{", "coproc",
+    "if",
+    "then",
+    "else",
+    "elif",
+    "do",
+    "while",
+    "until",
+    "{",
+    "coproc",
+    "noglob",
+    "nocorrect",
 ];
+
+/// The compound commands `coproc NAME` may run besides a `{` group (`coproc c while ...`).
+const COMPOUND_STARTS: &[&str] = &["for", "select", "case", "[[", "(("];
 
 const SU_VALUE_FLAGS: &[&str] = &[
     "-c",
@@ -2294,6 +2308,15 @@ pub(crate) fn strip_prefixes(
         }
         let name = prog_name(&toks[0]);
         let word = toks[0].as_str();
+        if word == "coproc"
+            && toks.get(2).is_some_and(|w| {
+                w == "{" || has(KEYWORDS, w) || COMPOUND_STARTS.contains(&w.as_str())
+            })
+        {
+            // Rust-only (PE-1): `coproc NAME { cmd; }` names the coprocess; the body is the command
+            toks.drain(..2);
+            continue;
+        }
         if is_assignment(word) || word == "!" || has(KEYWORDS, word) || word.is_empty() {
             // `""` is a `$(...)` placeholder
             peeled.placeholder |= word.is_empty();

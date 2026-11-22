@@ -10,8 +10,47 @@ a new version section.
 
 ### [Unreleased]
 
+#### Added
+
+- Attribution off at the source. Claude Code's own instructions tell the model to add a
+  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
+  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
+  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
+  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
+  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
+  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
+  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
+
 #### Fixed
 
+- `rtk-hook` no longer rewrites a command into an rtk call that cannot run. Claude Code's shell
+  snapshot defines `rg`, `grep` and `find` as shell functions, so a typed `rg -n word a b` can
+  work with no `rg` file on PATH. rtk rewrote it to `rtk rg ...`, which execs a real `rg`, and
+  the user saw `rtk: search failed: Failed to execute command: No such file or directory` and
+  exit 1. After rtk answers with a plain rewrite, the hook now drops it, and the command runs as
+  typed, in two cases. First, the typed command's first word (after leading `NAME=value`
+  assignments) is `rg`, `grep`, `ag`, `find` or `fd` and is not a real executable on the hook's
+  PATH (`command -v` in the hook's own `sh`, which has no snapshot functions). Second, the rewrite
+  holds an `rtk rg|grep|ag|find|fd` call for a program that is not on PATH, even when the first
+  word cannot be read (quoted, expanded, escaped, a path) or is a builtin such as `cd`. Other
+  programs (cargo, npm, docker, git) always keep their rewrite, because they are never snapshot
+  functions and a hook PATH poorer than the Bash tool's must not cost them it. A deny and a kept
+  ask are never dropped.
+- `anthology-mem save` run in a folder that is not a git repo now names the repos below it.
+  When Claude Code is started in a parent folder that holds several repos, every save used to
+  stop at "not inside a git work tree" with no way forward. The message now adds a line that
+  lists up to five of the repos directly below the folder (sorted, then "and N more") and says
+  to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
+  start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
+  the session-start warning, and the exit code is unchanged. With no repo below, or a folder
+  that cannot be listed, the message is the old single line. Folder names are untrusted text:
+  each is shown in quotes, cut at 60 characters, with control characters, quotes and
+  backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
+  or needed escaping or cutting.
+- `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
+  `anthology-mem search --query tokens colour output` works as well as
+  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
+  usage error (exit 2) that says where the words go. The help text shows both forms.
 - Session start no longer says the guardrails are "failing closed" when they are not. The guard
   self-test runs the guard shim with fetching switched off, so a binary that was not yet in
   place when the shim looked (a parallel session was still installing it, or this hook had
@@ -20,12 +59,21 @@ a new version section.
   binary on its first call and the binary was in the install folder a moment later. Session
   start now checks the install folder itself: when the pinned binary is there it reports that the
   self-test could not tell, and says the guard still runs on every command. It keeps the
-  failing-closed warning when the binary really is missing or the guard really refuses.
-- A guard self-test that times out is now reported as "skipped the guard self-test (it timed
-  out, the machine may be busy); the guard still runs on every command" instead of "the
-  guardrails may be OFF". When less time is left than the self-test may take, it is not run and
-  the same kind of line says session start ran out of time. A guardrails plugin that is disabled
-  or missing is still named in that case.
+  failing-closed warning when the binary really is missing, unusable (empty marker, symlinked or
+  another version's folder) or the guard really refuses.
+- A guard self-test that times out with the binary installed is now reported as "skipped the
+  guard self-test (it timed out, the machine may be busy); the guard still runs on every
+  command; if commands hang or are blocked, run /anthology:setup" instead of "the guardrails
+  may be OFF". When less time is left than the self-test may take, it is not run: the install
+  folder is checked instead, and the line says session start ran out of time only when the
+  binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
+  disabled or missing is still named in that case.
+
+#### Changed
+
+- The closing pointer that session start adds when it cuts the memory index now reads
+  `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
+  length is the same, so the session budget is unchanged.
 
 ### [0.2.7] - 2026-11-22
 
@@ -333,6 +381,46 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+#### Security
+
+- The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
+  program in bash or zsh and was allowed; each is now blocked as too complex to check (G0):
+  - a program or a script that comes from a variable or an array element, also behind
+    `env`, `command`, `exec`, `nice`, `time`, `xargs`, zsh's `noglob` and `nocorrect`,
+    `find -exec` and the like, and through `eval`, `bash -c` or `env -S`;
+  - a positional parameter as a program or in a script, unless the guard filled it in with
+    a literal value itself (a `sh -c '…' _ args` script, or a function only called directly):
+    a shell reading its script from stdin with arguments, `find -exec sh -c … {}`, a function
+    run from `trap` or `eval`, zsh's anonymous functions, `shift`, and a
+    `command_not_found_handle(r)` definition;
+  - a zsh glob qualifier, which runs code (`*(e:…:)`, `file(+cmd)`, after a group, in a
+    `${x:-…}` default), and a program word with a glob character or from `find -exec {}`;
+  - an expansion that runs code held in a value: bash's `${x@P}`, zsh's `(e)` flag and
+    `${~x}` (in heredoc bodies too), the zsh options `GLOB_SUBST` and `PROMPT_SUBST` (also
+    named by a variable), a prompt variable or `BASH_ENV`/`ENV` that holds a substitution,
+    and a nameref or a variable name that could point at one;
+  - a value from `read`, `mapfile`, `readarray` or `select`, or text that holds a
+    substitution, with anything the shell evaluates (a subscript, arithmetic, an `-i`
+    variable);
+  - a subscript with nested brackets or quotes around a substitution;
+  - an alias, a hashed command path, a zsh function defined from text, and bash's alias and
+    command tables or an exported `BASH_FUNC_` named in any word.
+- zsh's `=npx` and bash's `coproc NAME { … }` are read as the program they run, so their
+  rules apply.
+- Commands whose program word is a variable (`$EDITOR file`) are now blocked as too complex;
+  spell the program out. A program under a standard directory stays allowed and is checked
+  as written (`"$HOME/.cargo/bin/cargo" build`, also `TMPDIR`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`) when the command is plain: no other expansion, and
+  only letters, digits, `_ . / : = , + @ % -`, blanks, quotes and `; & | < >` elsewhere. The
+  name may not appear anywhere else in the command. `${HOME}/…`, `$PWD` and a `$HOME` inside
+  a double-quoted `sh -c` script are not read through. So do function wrappers such as
+  `run() { "$@"; }; run make test` whose call words are plain. Accepted over-blocks: a read
+  loop that counts (`while read -r l; do n=$((n+1)); done < f`) is too complex, since any
+  arithmetic in a command that reads input is, and so is a `retry` wrapper whose body holds
+  a number (`for i in 1 2 3`). The too-complex message suggests single
+  quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
+  blocked. These ship in the next `anthology` binary (0.1.4).
 
 ### [0.2.2] - 2026-11-22
 
