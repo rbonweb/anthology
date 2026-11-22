@@ -29,7 +29,8 @@
 //! - Fail-closed families (controller ruling after the narrow verification; `fail_closed` and the group loop
 //!   of `collect_once`): a brace sequence `{x..y}` or a brace expression in a word holding whitespace (a
 //!   quoted item); a `[...]` subscript holding a closed `$(...)`, backtick pair or `$'...'` in any word (G0-FP:
-//!   not after a `\[`); an assignment, export or
+//!   not after a `\[`, and not a `[` that starts the word or follows punctuation, unless the command holds an
+//!   array literal `=(` or a `$(...)`/backtick: see `subscript_runs`); an assignment, export or
 //!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modelled prefix of `tar` / `git`, a git alias
 //!   given twice or through `GIT_CONFIG_*`, `git --config-env`; a shell reading stdin from a producer that
 //!   is not literal (`curl | sh`, `f | tr | sh`), from a compound command with a redirect or here-string, or
@@ -515,16 +516,21 @@ const COMMAND_ENV: &[&str] = &[
 ];
 
 /// Fail closed (controller ruling): words whose bash expansion the analysis does not model. `braces`: the
-/// segment had an unquoted `{`; `quoted_braces`: one of its words held a quoted or escaped `{`, `}` or `,`.
-fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool) -> bool {
+/// segment had an unquoted `{`; `quoted_braces`: one of its words held a quoted or escaped `{`, `}` or `,`;
+/// `hidden_name`: the segment held a `$(...)` or a backtick, or is arithmetic text, so a `[` may follow a name
+/// the words do not show (`subscript_runs`).
+fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool, hidden_name: bool) -> bool {
     if braces && mixed_braces(tokens, quoted_braces) {
         return true;
     }
+    // an array literal, `a=( [k]=v )`, has subscripts whatever precedes the `[`; so has a word that held a
+    // substitution, which the lexer took out of the word (`$(f)[...]` is `[...]`)
+    let any_name = hidden_name || tokens.iter().any(|t| t.contains("=("));
     tokens.iter().any(|t| {
         (braces
             && t.contains('{')
             && (letter_sequence(t) || brace_item_space(t) || sequence_nested_comma(t)))
-            || subscript_runs(t)
+            || subscript_runs(t, any_name)
     })
 }
 
@@ -731,7 +737,20 @@ fn int_sequence(inner: &str) -> Option<IntSequence> {
 /// G0-FP: bash runs nothing for an unclosed substitution or subscript, and no name ends in a backslash, so the
 /// substitution start counts only with its closer (`` ` ``, `)`, `'`) and then a `]` after it, and a `[` right
 /// after a backslash opens nothing (`echo '[`'`, `grep '\[`x`\]'`, a regex `` [`] `` stay complete).
-fn subscript_runs(word: &str) -> bool {
+///
+/// G0-FP (a bracket expression): bash and zsh evaluate a subscript only after a name, `name[...]` (`unset`,
+/// `declare`, `let`, `read`, `printf -v`, `[[ -v`, an assignment), after an expansion or glob that may give the
+/// name (`${x}[`, `$x[`, `$-[`, `a?[`) or as `$[...]`. So a `[` counts as an opener only after a name
+/// character, a byte past ASCII (zsh names), or one of `] } ) ` $ * ? =` (`=`: an assignment value stays as it
+/// was), or one of `@#-!` that follows a `$`. A `[` at the start of the word or after any other character
+/// (`['"`]`, `[.!+]` in a regex) is a bracket expression: `unset '[`id`]'`, `let '1+[`id`]'` and
+/// `declare '[`id`]=1'` run nothing (tried in bash 5.2 and zsh 5.9). The reading is not used (`any_name`) where a name may not show before a `[`: a word of an array
+/// literal (`a=( [`id`]=1 )`), whose subscripts start a word or follow a space, and a segment whose lexer took
+/// a `$(...)` out of a word (`$(f)[...]` is `[...]`). Then every `[` not after a backslash counts, as before.
+///
+/// The quoting is gone from `word`, so `\`` in double quotes reads as the same backtick as `'`'`. That is right:
+/// a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` runs `id` and stays too complex.
+fn subscript_runs(word: &str, any_name: bool) -> bool {
     let b = word.as_bytes();
     let Some(close) = word.rfind(']') else {
         return false;
@@ -743,7 +762,7 @@ fn subscript_runs(word: &str) -> bool {
     let mut open = false;
     for (j, &c) in b[..close].iter().enumerate() {
         match c {
-            b'[' if j == 0 || b[j - 1] != b'\\' => open = true,
+            b'[' if subscript_opens(b, j, any_name) => open = true,
             b']' => open = false,
             b'`' if open && tick.is_some_and(|k| k > j) => return true,
             b'$' if open => match b.get(j + 1) {
@@ -755,6 +774,23 @@ fn subscript_runs(word: &str) -> bool {
         }
     }
     false
+}
+
+/// `subscript_runs`: the `[` at `b[j]` may open a subscript bash or zsh evaluates.
+fn subscript_opens(b: &[u8], j: usize, any_name: bool) -> bool {
+    let Some(&p) = b[..j].last() else {
+        return any_name;
+    };
+    if any_name {
+        return p != b'\\';
+    }
+    p.is_ascii_alphanumeric()
+        || p >= 0x80
+        || matches!(
+            p,
+            b'_' | b']' | b'}' | b')' | b'`' | b'$' | b'*' | b'?' | b'='
+        )
+        || (matches!(p, b'@' | b'#' | b'-' | b'!') && j >= 2 && b[j - 2] == b'$')
 }
 
 /// `runs_written_file`: `r` writes a file named by its target. `>&N`, `>&N-` and `>&-` (`2>&1`) duplicate or
@@ -2227,7 +2263,7 @@ impl<'a> Ctx<'a> {
         if !self.spend(1 + 2 * size) {
             return None;
         }
-        if fail_closed(&tokens, self.braces, self.quoted_braces) {
+        if fail_closed(&tokens, self.braces, self.quoted_braces, subst || arith) {
             self.halt();
             return None;
         }
