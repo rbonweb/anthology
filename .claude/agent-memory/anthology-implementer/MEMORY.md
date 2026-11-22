@@ -2,7 +2,9 @@
 ## feedback
 - [Prove a security fix is pinned by deleting it](feedback-test-security-fixes-by-mutation.md) — After a fix round, mutate each guard (delete the check) and confirm a test goes red; a passing run alo…
 ## project
+- [Guide budget and targeted test runs](project-guide-budget-and-test-runs.md) — Routing guide is capped at 3800 chars; how to run the roster, budget and guide tests in Docker
 - [Routing guide size budget](project-routing-guide-size-budget.md) — routing-guide.md has a 3800-char test cap and is near it; how to make room
+- [Where the attention-alert hook and its pinned tests live](project-notify-hook-layout.md) — notify.sh sits in plugins/anthology/hooks, tests are Rust in crates/repo-tests, three places pin the hook…
 - [classify_readonly: two readers, test each layer alone](project-readonly-classifier-layers.md) — How the read-only classifier and the rtk cd/head gate are built, the review rulings behind their ref…
 ## reference
 - [Running cargo for this repo in a container](reference-rust-container-runs.md) — Pinned-image docker recipe for shell, guard and rtk tests, fmt and clippy, and the traps in it

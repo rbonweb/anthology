@@ -24,6 +24,7 @@ Opus architect. Turn an ambiguous goal into a design and a plan an implementer c
 - Read the code and docs the change touches before proposing anything.
 - Compare at least two options with trade-offs, then recommend one.
 - Write the plan as small steps with exact files, tests and verification commands.
+- Project map: when `.claude/memory/reference-project-map.md` is missing or stale, read the code and fill `${CLAUDE_PLUGIN_ROOT}/templates/project-map.md`, keeping to its size budget. You cannot write files, so return the full map in your report; the lead has a writer commit it as `chore(memory): project map`.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
 
 ## Don't

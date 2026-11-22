@@ -2269,6 +2269,41 @@ mod guide_test {
         );
     }
 
+    // The text of one `## n. ` section of the guide, up to the next heading.
+    fn section_of(text: &str, n: u32) -> String {
+        let head = format!("## {n}. ");
+        let mut lines = text.lines().skip_while(|l| !l.starts_with(&head));
+        let mut out = vec![lines.next().expect("section heading")];
+        out.extend(lines.take_while(|l| !l.starts_with("## ")));
+        out.join("\n")
+    }
+
+    #[test]
+    fn test_deletes_are_literal_paths_only() {
+        let text = guide();
+        let docker = section_of(&text, 5);
+        assert!(
+            docker.contains(
+                "- Delete literal paths only, never `rm -rf $VAR`: Claude Code asks on \
+                 removals it can't prove safe."
+            ),
+            "{docker}"
+        );
+    }
+
+    #[test]
+    fn test_lead_reads_the_project_map_before_planning() {
+        let text = guide();
+        let roles = section_of(&text, 1);
+        assert!(
+            roles.contains(
+                "- Before planning, read `.claude/memory/reference-project-map.md`; \
+                 missing: dispatch anthology:architect."
+            ),
+            "{roles}"
+        );
+    }
+
     #[test]
     fn test_personal_index_is_below_the_guide() {
         let text = guide();
