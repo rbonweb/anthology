@@ -29,6 +29,11 @@ command . "$anth_root/hooks/lib.sh"
 if anth_resolve "$anth_root" && anth_installed; then
     exec "$ANTH_BIN" mem "$@"
 fi
+# A caller inside a short hook (the permission mod) sets ANTHOLOGY_NO_INSTALL: never download
+# or install there, exit 127 at once. Any non-empty value counts.
+if [ -n "${ANTHOLOGY_NO_INSTALL-}" ]; then
+    anth_fail 'ANTHOLOGY_NO_INSTALL is set'
+fi
 anth_paths "$anth_root"
 anth_st=$(anth_bootstrap_main wrapper --plugin anthology --quiet </dev/null 2>/dev/null)
 case $anth_st in

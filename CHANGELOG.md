@@ -26,6 +26,20 @@ a new version section.
   open PR, including integration branches, and sends each red job back to its owner the same
   hour. When an integration branch merges part PRs, the lead closes those part PRs with a
   comment pointing to the integration PR.
+- `anthology perm classify` (nothing calls it yet): reads a Bash command, its working
+  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
+  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
+  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  no tracked file is a secret or `Read()`-denied, and the git form prints no history
+  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
+  decision, never a deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
 
 #### Fixed
 
