@@ -647,7 +647,7 @@ pub fn compose(guide: &str, memory: &str) -> String {
         return head + memory;
     }
     let pointer =
-        "(memory index truncated to fit the session budget; use `anthology-mem search <query>`)"
+        "(memory index truncated to fit the session budget; use `anthology-mem search <words>`)"
             .to_string();
     let allowed = room - char_len(&pointer) as i64 - 1;
     if allowed <= 0 {

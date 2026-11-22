@@ -44,7 +44,7 @@ a new version section.
   `anthology-mem save --body-file <path>` (a file inside the repo or temp folder) or
   `--body-file -`.
 - When session start has to cut the memory index to fit its budget, the closing pointer now
-  says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
+  says only to use `anthology-mem search <words>`; it no longer lists the full `MEMORY.md`
   paths, because the index is capped and those files are not the way to read every note.
 - Attribution off at the source. Claude Code's own instructions tell the model to add a
   `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
