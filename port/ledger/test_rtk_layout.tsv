@@ -1,0 +1,19 @@
+# python_id	status	rust_test	note
+test_rtk_layout.RtkSourceEntryTest.test_entry_is_a_subtree_with_its_target_and_license	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_source_entry_test::test_entry_is_a_subtree_with_its_target_and_license
+test_rtk_layout.RtkSourceEntryTest.test_fork_pin	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_source_entry_test::test_fork_pin
+test_rtk_layout.RtkSourceEntryTest.test_pins_have_the_shape_a_sync_writes	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_source_entry_test::test_pins_have_the_shape_a_sync_writes
+test_rtk_layout.RtkSourceEntryTest.test_upstream_pin	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_source_entry_test::test_upstream_pin
+test_rtk_layout.RtkTestScriptTest.test_ci_and_sync_use_it	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_test_script_test::test_ci_and_sync_use_it
+test_rtk_layout.RtkTestScriptTest.test_is_executable_with_strict_mode	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_test_script_test::test_is_executable_with_strict_mode
+test_rtk_layout.RtkTestScriptTest.test_reads_the_image_from_the_rust_dockerfile	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_test_script_test::test_reads_the_image_from_the_rust_dockerfile
+test_rtk_layout.RtkTestScriptTest.test_runs_locked_cargo_test_as_a_non_root_user	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_test_script_test::test_runs_locked_cargo_test_as_a_non_root_user
+test_rtk_layout.RtkTreeTest.test_cargo_manifest_exists	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_tree_test::test_cargo_manifest_exists
+test_rtk_layout.RtkTreeTest.test_every_fork_change_has_its_named_test	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_tree_test::test_every_fork_change_has_its_named_test
+test_rtk_layout.RtkTreeTest.test_license_is_apache_2	ported	crates/repo-tests/tests/rtk_layout.rs::rtk_tree_test::test_license_is_apache_2
+test_rtk_layout.SyncScriptTest.test_a_failed_trim_still_reaches_the_summary	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_a_failed_trim_still_reaches_the_summary
+test_rtk_layout.SyncScriptTest.test_is_executable_with_strict_mode	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_is_executable_with_strict_mode
+test_rtk_layout.SyncScriptTest.test_never_pushes_or_merges	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_never_pushes_or_merges
+test_rtk_layout.SyncScriptTest.test_pulls_upstream_into_the_subtree_on_a_review_branch	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_pulls_upstream_into_the_subtree_on_a_review_branch
+test_rtk_layout.SyncScriptTest.test_records_the_merged_upstream_pin	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_records_the_merged_upstream_pin	omitted: the embedded python that rewrites the pin (Path("vendor/sources.json"), json.dumps(data, indent=2, ensure_ascii=False)) -> CO2 replacement: crates/repo-tests/tests/cutover_ci.rs::sync_rtk_records_the_pin_through_dev_sh asserts sync-rtk.sh records the pin through scripts/dev.sh and embeds no python3
+test_rtk_layout.SyncScriptTest.test_rejects_a_bad_tag_before_touching_the_repo	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_rejects_a_bad_tag_before_touching_the_repo
+test_rtk_layout.SyncScriptTest.test_validates_the_tag	ported	crates/repo-tests/tests/rtk_layout.rs::sync_script_test::test_validates_the_tag

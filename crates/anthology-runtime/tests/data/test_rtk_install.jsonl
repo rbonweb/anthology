@@ -1,0 +1,128 @@
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 0, "params": {"$msg": "symlink rtk"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 1, "params": {"$msg": "hardlink rtk"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 2, "params": {"$msg": "dotdot member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 3, "params": {"$msg": "nested member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 4, "params": {"$msg": "absolute member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 5, "params": {"$msg": "no rtk member"}}
+{"py": "test_rtk_install.InstallTest.test_rejected_tarballs_leave_nothing_behind", "row": 6, "params": {"$msg": "duplicate rtk"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 0, "params": {"$msg": "uppercase hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 1, "params": {"$msg": "short hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 2, "params": {"$msg": "non-hex"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 3, "params": {"$msg": "trailing newline"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 4, "params": {"$msg": "wrong tag"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 5, "params": {"$msg": "no tag prefix"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 6, "params": {"$msg": "extra target"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 7, "params": {"$msg": "missing target"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 8, "params": {"$msg": "bad version"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 9, "params": {"$msg": "path version"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 10, "params": {"$msg": "unsafe repo"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 11, "params": {"$msg": "repo with space"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 12, "params": {"$msg": "repo with query"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 13, "params": {"$msg": "repo no slash"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 14, "params": {"$msg": "unknown key"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 15, "params": {"$msg": "missing key"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 16, "params": {"$msg": "sha not a map"}}
+{"py": "test_rtk_install.LoadLockTest.test_rejects_invalid_locks", "row": 17, "params": {"$msg": "not an object"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 0, "params": {"value": "<tmp>/gone"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 1, "params": {"value": "<tmp>/notexec"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 2, "params": {"value": "<tmp>"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 3, "params": {"value": "relative/rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 4, "params": {"value": ""}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 5, "params": {"value": "<tmp>/fake-rtk\"; touch /tmp/pwned; \""}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 6, "params": {"value": "C:\\rtk.exe"}}
+{"py": "test_rtk_install.WrapperTest.test_rtk_unusable_paths_exit_127", "row": 7, "params": {"value": "<tmp>/fake-rtk\\"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_both_wrappers_keep_rtk_history_next_to_state_json", "row": 1, "params": {"name": "rtk-hook"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 0, "params": {"name": "rtk"}}
+{"py": "test_rtk_install.WrapperTest.test_wrappers_history_follows_home_when_config_dir_is_unset", "row": 1, "params": {"name": "rtk-hook"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 0, "params": {"command": "rtk run -c 'kubectl apply'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 1, "params": {"command": "RTK bypass x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 2, "params": {"command": "r''tk run -c x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 3, "params": {"command": "r\"t\"k x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 4, "params": {"command": "r\\tk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 5, "params": {"command": "r\\\ntk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 6, "params": {"command": "rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 7, "params": {"command": "x; rtk git push"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 8, "params": {"command": "r$'tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 9, "params": {"command": "\"r\"tk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 10, "params": {"command": "rtk --version"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 11, "params": {"command": "RTK x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 12, "params": {"command": "\\rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 13, "params": {"command": "x\nrtk y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 14, "params": {"command": "x\trtk y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 15, "params": {"command": ";rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 16, "params": {"command": "|rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 17, "params": {"command": "/opt/bin/rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 18, "params": {"command": "${a}rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 19, "params": {"command": "$1rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 20, "params": {"command": "(rtk y)"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 21, "params": {"command": "`rtk y`"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 22, "params": {"command": "$(rtk y)"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 23, "params": {"command": "echo a\\\\\nrtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 24, "params": {"command": "ls # a\\\nrtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 25, "params": {"command": "node -v\rrtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 26, "params": {"command": "x\brtk y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_an_ask_on_a_line_that_mentions_rtk", "row": 27, "params": {"command": "x\frtk y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 0, "params": {"command": "$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 1, "params": {"command": "$'\\162tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 2, "params": {"command": "grep 'a$' f; $'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 3, "params": {"command": "ls\n$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 4, "params": {"command": "ls;\t$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 5, "params": {"command": "x=$'\\x72tk'; $x y"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 6, "params": {"command": "ls|$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 7, "params": {"command": "ls&&$'\\x72tk' x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 8, "params": {"command": "($'\\x72tk' x)"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 9, "params": {"command": "`$'\\x72tk' x`"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 10, "params": {"command": "cat > f <<'EOF'\n\"$'\\x41'\"\nEOF"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 11, "params": {"command": "ls | grep -v '^a$'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 12, "params": {"command": "sed -n '/a$/p' f"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 13, "params": {"command": "grep -c '^$' f"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 14, "params": {"command": "echo $'a b'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 15, "params": {"command": "grep 'a$' f | grep -v 'b\\|c'"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 16, "params": {"command": "grep -E 'a$' f | grep -v \"b\\|c\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 17, "params": {"command": "grep -c '^$' f | grep \"a\\|b\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 18, "params": {"command": "ls | grep -E '(a|b)$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 19, "params": {"command": "ls | grep -E '[0-9]$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 20, "params": {"command": "ls | grep -E 'x{2}$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk", "row": 21, "params": {"command": "ls | grep -E 'a1$' | grep \"c\\.d\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word", "row": 0, "params": {"command": "grep -n 'insertKey\\|KEY_RE' a.ts; node -v"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word", "row": 1, "params": {"command": "grep ALERTKIT x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word", "row": 2, "params": {"command": "echo shortkey; node --version"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word", "row": 3, "params": {"command": "node -v; _rtk x"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_passes_rewrites_and_denies_through", "row": 0, "params": {"answer": "rewrite"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_passes_rewrites_and_denies_through", "row": 1, "params": {"answer": "deny"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 0, "params": {"answer": "ask", "rc": 2}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 1, "params": {"answer": "rewrite", "rc": 1}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 2, "params": {"answer": "not json", "rc": 0}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_rtk_exit_status_and_output_on_failure", "row": 3, "params": {"answer": "not json", "rc": 3}}
+{"py": "test_rtk_install.WrapperTest.test_hook_looks_for_rtk_in_the_command_only", "row": 0, "params": {"stdin": "{\"cwd\": \"/w\", \"tool_input\": {\"command\" :\n \"rtk x\"}}"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_looks_for_rtk_in_the_command_only", "row": 1, "params": {"stdin": "{\"cwd\": \"/x/rtk\"}"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 0, "params": {"command": "rtk read a.txt", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 1, "params": {"command": "rtk read a.txt", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 2, "params": {"command": "rtk read -n a.txt", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 3, "params": {"command": "rtk read -n a.txt", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 4, "params": {"command": "rtk read a.txt --level none --head-lines 5", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 5, "params": {"command": "rtk read a.txt --level none --head-lines 5", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 6, "params": {"command": "cd sub && rtk read a.txt", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 7, "params": {"command": "cd sub && rtk read a.txt", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 8, "params": {"command": "rtk git status && rtk read a.txt", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 9, "params": {"command": "rtk git status && rtk read a.txt", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 10, "params": {"command": "rtk ls; rtk read a", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 11, "params": {"command": "rtk ls; rtk read a", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 12, "params": {"command": "rtk ls || rtk read a", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 13, "params": {"command": "rtk ls || rtk read a", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 14, "params": {"command": "rtk ls | rtk read -", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 15, "params": {"command": "rtk ls | rtk read -", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 16, "params": {"command": "(rtk read a)", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 17, "params": {"command": "(rtk read a)", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 18, "params": {"command": "x\u000artk read a", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 19, "params": {"command": "x\u000artk read a", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 20, "params": {"command": "rtk read", "decision": ""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_drops_a_rewrite_into_rtk_read", "row": 21, "params": {"command": "rtk read", "decision": ",\"permissionDecision\":\"allow\""}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 0, "params": {"command": "rtk git status"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 1, "params": {"command": "rtk reader a"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 2, "params": {"command": "rtk grep read a"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 3, "params": {"command": "echo rtk read a"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 4, "params": {"command": "rtk readx a"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 5, "params": {"answer": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"RTK: a deny rule matches\",\"updatedInput\":{\"command\":\"rtk read \u0073ecret.txt\"}}}"}}
+{"py": "test_rtk_install.WrapperTest.test_hook_keeps_other_rewrites_and_every_deny_or_kept_ask", "row": 6, "params": {"answer": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecisionReason\":\"RTK auto-rewrite\",\"updatedInput\":{\"command\":\"rtk read a.txt\"},\"permissionDecision\":\"ask\"}}"}}

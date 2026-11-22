@@ -1,0 +1,258 @@
+name: anthology-release
+
+# Builds the `anthology` binary (crates/anthology-cli) for four targets, tests the shipped
+# crates first, attests the tarballs and publishes them, with checksums.txt, to the release for
+# the tag `anthology-bin--v<version>` (<version> is the root Cargo.toml [workspace.package]
+# version). Design §10; modelled on rtk-release.yml.
+#
+#   - push of a tag `anthology-bin--v*`: deny, build, test, attest, publish.
+#   - workflow_dispatch with `tag`: the same, from that existing tag.
+#   - pull_request touching this file, the toolchain pin or deny.toml: a dry run (deny, then
+#     build and test the whole matrix; no attestation, no release).
+#
+# After a release, `anthology-dev lock write --tag <tag> --checksums checksums.txt
+# --release-json <file>` pins it in both plugins' anthology.lock, in a reviewed commit (make
+# the file with `gh release view <tag> --json assets > <file>`). Users verify a tarball with
+# `gh attestation verify <file> --repo rbonweb/anthology`.
+on:
+  push:
+    tags: ['anthology-bin--v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (anthology-bin--v<version>)'
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/anthology-release.yml'
+      - 'rust-toolchain.toml'
+      - 'deny.toml'
+
+permissions: {}
+
+concurrency:
+  group: anthology-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  meta:
+    # Resolve and validate the tag; the other jobs take it from here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+      publish: ${{ steps.tag.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve and validate the tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -eu
+          case "$EVENT_NAME" in
+            pull_request)
+              printf 'tag=\nref=\npublish=false\n' >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            workflow_dispatch) tag=$INPUT_TAG ;;
+            *) tag=$REF_NAME ;;
+          esac
+          if ! [[ $tag =~ ^anthology-bin--v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag is not of the form anthology-bin--v<major>.<minor>.<patch>[-<pre>]"
+            exit 1
+          fi
+          printf 'tag=%s\nref=refs/tags/%s\npublish=true\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          persist-credentials: false
+      - name: The tag must name the [workspace.package] version of Cargo.toml
+        id: version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -eu
+          # The version line of the [workspace.package] table, and no other table's.
+          version=$(awk -F'"' '
+            /^\[/ { in_pkg = ($0 == "[workspace.package]"); next }
+            in_pkg && /^version = "/ { print $2; exit }
+          ' Cargo.toml)
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Cargo.toml [workspace.package] version is not of the form <major>.<minor>.<patch>[-<pre>]"
+            exit 1
+          fi
+          echo "Cargo.toml [workspace.package] version: $version"
+          # A pull request has no tag: the version format is all there is to check.
+          if [ -n "$TAG" ] && [ "$TAG" != "anthology-bin--v$version" ]; then
+            echo "::error::tag $TAG does not equal anthology-bin--v$version (Cargo.toml)"
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  deny:
+    # cargo deny check (advisories, bans, licenses, sources) and the serde_json tree check, once,
+    # since neither depends on the target. ci/jobs/deny.sh runs a pinned, sha256-checked
+    # cargo-deny in the pinned Rust image.
+    needs: meta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - name: cargo deny check
+        run: ci/jobs/deny.sh
+
+  build:
+    needs: [meta, deny]
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Intel macOS is built and tested natively on macos-15-intel, as are both Linux targets.
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - name: Install musl-tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y musl-tools
+          # Bundled SQLite is C code: it builds with musl's gcc wrapper.
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install the pinned toolchain (rust-toolchain.toml) and the target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
+          cargo --version
+      - name: Test the shipped crates
+        # The shipped graph only (design §10, m-16); shims, difftest and meta tests run in ci.yml.
+        run: >-
+          cargo test --locked --target "$TARGET"
+          -p anthology-pycompat -p anthology-shell -p anthology-guard -p anthology-core
+          -p anthology-settings -p anthology-memory -p anthology-runtime -p anthology-cli
+      - name: Build
+        run: cargo build --release --locked -p anthology-cli --target "$TARGET"
+      - name: Check the binary is static (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          bin="target/$TARGET/release/anthology"
+          # readelf writes to files first, so a readelf failure fails the step.
+          readelf -lW "$bin" > "$RUNNER_TEMP/program-headers.txt"
+          readelf -dW "$bin" > "$RUNNER_TEMP/dynamic.txt"
+          if grep INTERP "$RUNNER_TEMP/program-headers.txt"; then
+            echo "::error::$bin has a program interpreter (not static)"
+            exit 1
+          fi
+          if grep NEEDED "$RUNNER_TEMP/dynamic.txt"; then
+            echo "::error::$bin has shared-library dependencies (not static)"
+            exit 1
+          fi
+      - name: Check --version
+        run: |
+          set -eu
+          got=$("target/$TARGET/release/anthology" --version)
+          want="anthology $VERSION ($TARGET)"
+          if [ "$got" != "$want" ]; then
+            echo "::error::anthology --version printed '$got', expected '$want'"
+            exit 1
+          fi
+          echo "$got"
+      - name: Package
+        run: |
+          set -eu
+          stage=$(mktemp -d)
+          cp "target/$TARGET/release/anthology" LICENSE "$stage/"
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -czf "dist/anthology-$TARGET.tar.gz" -C "$stage" anthology LICENSE
+          tar -tzf "dist/anthology-$TARGET.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: anthology-${{ matrix.target }}
+          path: dist/anthology-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # Not on pull requests (the dry run stops after the build jobs).
+    if: needs.meta.outputs.publish == 'true'
+    needs: [meta, deny, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: anthology-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -eu
+          ls -l
+          count=$(find . -maxdepth 1 -name 'anthology-*.tar.gz' | wc -l | tr -d ' ')
+          if [ "$count" != 4 ]; then
+            echo "::error::expected 4 tarballs, found $count"
+            exit 1
+          fi
+          sha256sum anthology-*.tar.gz | LC_ALL=C sort -k2 > checksums.txt
+          cat checksums.txt
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/anthology-*.tar.gz
+      - name: Create the release (fails if it already exists)
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release for $TAG already exists; not overwriting it"
+            exit 1
+          fi
+          gh release create "$TAG" \
+            dist/anthology-aarch64-apple-darwin.tar.gz \
+            dist/anthology-x86_64-apple-darwin.tar.gz \
+            dist/anthology-x86_64-unknown-linux-musl.tar.gz \
+            dist/anthology-aarch64-unknown-linux-musl.tar.gz \
+            dist/checksums.txt \
+            --title "$TAG" \
+            --notes "The anthology binary, built from crates/anthology-cli at this tag, with build-provenance attestations. Verify a tarball with: gh attestation verify <file> --repo rbonweb/anthology" \
+            --verify-tag

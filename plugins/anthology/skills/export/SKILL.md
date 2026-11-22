@@ -12,7 +12,7 @@ Pack the memory notes into one archive you can move to another machine. Nothing 
    (`<anthology home>/exports/`, private to the user), never into the current folder or a repo:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/memory_portable.py" export --json
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" memory export --json
    ```
 
    The user may pass `--out <folder>` to choose another place, but the exporter refuses any

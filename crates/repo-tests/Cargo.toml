@@ -1,0 +1,27 @@
+[package]
+name = "repo-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Repository meta tests, shim tests and cutover tests"
+
+[lints]
+workspace = true
+
+[dependencies]
+anthology-core.workspace = true
+anthology-pycompat.workspace = true
+# MT1: test_roster's startup_budget and `mem` parser ports, test_taste_bridge's gzip bodies.
+anthology-dev.workspace = true
+anthology-memory.workspace = true
+flate2.workspace = true
+regex.workspace = true
+yaml-rust2.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+anthology-testkit.workspace = true
+proptest.workspace = true
+tempfile.workspace = true

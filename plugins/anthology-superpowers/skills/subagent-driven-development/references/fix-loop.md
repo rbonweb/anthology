@@ -4,6 +4,10 @@ Part of anthology-superpowers:subagent-driven-development. The task review repor
 spec ❌, a Critical or Important finding, or a ⚠️ item you confirmed as a real
 gap.
 
+In a large build, the review budget in [large-builds.md](large-builds.md)
+replaces this loop: fix Critical and Important findings once, with no
+re-review except after a Critical in security code.
+
 Before the loop starts, two routes leave it immediately:
 
 - Record Minor findings in the progress ledger as you go

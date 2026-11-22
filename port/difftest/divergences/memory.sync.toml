@@ -1,0 +1,6 @@
+# Allowed divergences for the memory.sync surface (GC-16).
+
+[[divergence]]
+class = "D-8"
+case = "seed:symlinked-hand-made-index"
+reason = "Controller ruling after MS2 acceptance (Rust stricter): _context_index never follows a symlinked hand-made MEMORY.md. Python reads the link target into the session context; the port treats the link as an unreadable file (the section says '(no notes yet)'), so a link cannot pull a file from outside the memory folder into the context."

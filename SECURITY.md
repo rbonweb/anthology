@@ -8,7 +8,8 @@ Useful things to report:
 
 - A way to run something a guardrail is meant to block (G1 to G6 in the [README](README.md#guardrails)) that the guard lets through. Include the exact tool call or command.
 - A way to make `/anthology:setup`, `/anthology:setup remove`, `/anthology:import` or `/anthology:export` read or write outside the places they are documented to use.
-- A way to get an rtk binary installed that does not match the hash pinned in `plugins/anthology/rtk.lock`.
+- A way to get an rtk binary installed that does not match the hash pinned in `plugins/anthology/rtk.lock`, or an `anthology` binary installed or run that does not match the hash pinned in `anthology.lock`.
+- A way to get a tool call other than a read-only one (see [Fail closed](#fail-closed)) through while the guard's binary is missing, broken or cannot run.
 - A way to get a note from a repo you did not approve into your main session, or a repo-memory note into a session by a route other than the ones documented (agent memory in a cloned repo already reaches its own agent; see [the memory trust model](#the-memory-trust-model) and ADR-019).
 - A secret or personal data committed to this repository.
 
@@ -25,7 +26,8 @@ Anthology configures Claude Code and the agents that run inside it. The risks it
 | An agent uses a browser other than BrowserOS Neo | Guardrails G4 and G5 |
 | A secret ends up in a note committed to a repo | Guardrail G6 |
 | A stranger's committed notes steer your agents | Repo auto-memory: the approved-repos rule. Agent memory: not blocked, only mitigated by the hints-not-instructions rule in the agent bodies; review `.claude/agent-memory/` in repos you do not trust (see [The memory trust model](#the-memory-trust-model)) |
-| A tampered rtk binary | A pinned sha256 per target and build-provenance attestations |
+| A tampered rtk or `anthology` binary | A pinned sha256 per target (`rtk.lock`, `anthology.lock`) checked before anything is unpacked, and build-provenance attestations |
+| The guard's binary is missing, broken or cannot run | The guard fails closed: only read-only tools are allowed (see [Fail closed](#fail-closed)) |
 | Vendored upstream content changes silently | Every pin is exact, and CI regenerates all vendored content and fails on a difference |
 
 The assumed cause is a mistake, or an agent misled by content it read (a web page, a file in a repo). It is **not** a defence against a determined attacker, a malicious plugin, or code you choose to run yourself. The guardrails are not a sandbox.
@@ -35,12 +37,13 @@ What Anthology changes outside the plugin, by who writes it:
 **`/anthology:setup`, after it shows the changes and you confirm once:**
 
 - `~/.claude/settings.json`: the `Bash(rtk *)` allow, the `Bash(anthology-mem save *)` allow, the Chrome and Chromium `Read(...)` deny rules, one `Read(...)` allow for the folder that holds the plugin's files, and `worktree.baseRef`.
-- The rtk download.
+- The rtk download, and the `anthology` binary install if it is missing (below).
 - Approving the current repo for memory. You can decline this step. It adds the two `merge=union` lines to the repo's `.gitattributes`.
 - Creating the personal-memory folder, and copying the repo's notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder into it. A note goes into the repo's `.claude/memory/` instead only if you pick it, one by one, after seeing its diff, and the privacy scan finds nothing in it.
 
 **Session start, automatically:**
 
+- Each plugin's `sh` hook installs the `anthology` binary its `anthology.lock` pins into `~/.claude/anthology/bin/<version>/` (under `$CLAUDE_CONFIG_DIR` when set) if it is missing or does not match the lock, and deletes versions no lock pins after 30 days unused. The guard does the same, at most once a minute, when a tool call finds the binary missing.
 - It runs the guardrails on a known-bad sample, reconciles the rtk binary with `rtk.lock` (a download into the plugin's data folder) and writes `~/.claude/anthology/state.json`.
 - In approved repos only: it writes `autoMemoryDirectory` into `.claude/settings.local.json` and a git exclude entry for that file, regenerates the `MEMORY.md` indexes, copies notes from the old path-keyed `~/.claude/projects/<encoded path>/memory/` folder into personal memory (never into the repo), and moves `type: user` notes out of `.claude/memory/` and `.claude/agent-memory/` into personal memory. Nothing is overwritten; a repo file is deleted only after its personal copy is verified.
 - If a release changed the `settings.json` entries that setup makes and one of them is missing, it prints one line, "anthology settings changed in this release — run /anthology:setup to review". It never edits `settings.json` itself. If you removed one of those entries on purpose, the line comes back at each session start after every release that changes setup's entries, until you run setup again.
@@ -51,6 +54,7 @@ What Anthology changes outside the plugin, by who writes it:
 
 - the settings entries Anthology added (rules you added yourself are never touched, and `worktree.baseRef` goes back to its previous value);
 - the downloaded rtk and `state.json`;
+- `~/.claude/anthology/bin/` (the `anthology` binaries), only when `anthology-guardrails` is no longer installed; otherwise it is kept for the guard;
 - optionally, the repo approvals.
 
 It never deletes memory notes, the `.gitattributes` lines, the personal-memory folder or exports. Uninstalling the plugin without `--keep-data` removes its data folder (the rtk binaries and the search index).
@@ -61,7 +65,7 @@ Nothing is written to `~/.claude/CLAUDE.md`.
 
 Read these before relying on the guardrails. The guard is built to stop accidental browser installs and launches by cooperative agents. It is not a sandbox, and it does not defend against deliberate obfuscation.
 
-- **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognises. The hook, `guard.py`, sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
+- **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognises. The hook, `hooks/guard.sh` and the `anthology` binary it runs (`anthology guard hook`), sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
 - **A hook sees commands, not what a script does.** A script that launches Chrome internally is invisible to it. That is why the knowledge Anthology ships must never launch Chrome, and why the deny layer exists.
 - **Rules match commands, not text.** `grep playwright package.json` is allowed on purpose.
 - **Indirection hides commands.** Commands built inside variables or arrays and then run are not seen for what they are. Neither is a command whose text comes from another command's output and is fed to a shell: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`. Unusual nested shell syntax, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`, can also get past the parser.
@@ -69,10 +73,26 @@ Read these before relying on the guardrails. The guard is built to stop accident
 - **Profile coverage is bounded.** The guard and the deny rules cover the known Chrome and Chromium profile folders and their parents. Grandparent folders, such as `find ~ -name Cookies`, and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - **Docker is exempt from G1 and G2.** Commands whose program is `docker` or `docker-compose` are not checked against those two rules, because running browser tests in a container is the sanctioned way. G3 to G6 still apply to them.
 - **G6 checks content, not files.** It looks for common key and token formats (AWS access keys, GitHub tokens, `sk-` API keys, Slack tokens, private-key blocks) and `password` or `api key` assignments in what `Write` or `Edit` puts into a memory folder, and in command text that writes there. **Copying a secret file into memory is not caught.** Neither is a secret in a format it does not know.
-- **It fails open on malformed input.** The guard exits 0 when its input is not valid JSON, so a bad payload can never block your whole session.
-- **It cannot be silently off, but it can be off.** At session start Anthology runs the guard copy the hook actually executes (the marketplace folder for a local-folder marketplace, the plugin cache otherwise) on a known-bad sample and shows a loud message if the guard cannot run or does not block. If `python3` is missing, the guard cannot run: tool calls go ahead and you see only that message.
+- **It allows malformed input.** The guard exits 0 when its input is not valid JSON, is not an object or has no string `tool_name`, so a bad payload can never block your whole session. An error inside the check is different: a crash, a pattern limit or a check that runs longer than 8 seconds blocks the call with an `(internal)` message.
+- **It cannot be silently off, but it can be off.** At session start Anthology runs the guard copy the hook actually executes (the marketplace folder for a local-folder marketplace, the plugin cache otherwise) on a known-bad sample and shows a loud message if the guard cannot run or does not block. If its binary cannot run, the guard fails closed (next section). Disabling `anthology-guardrails` with `/plugin` turns every guardrail off.
+- **A hook that fails or times out blocks.** The guard and rtk's hook set `onFailure: "block"` with a 60-second timeout (ADR-024). A crash, a kill or a stall blocks the tool call; it never lets the call through to your normal permissions.
 - **A block wins over rtk.** The guard checks the command Claude asked for, not rtk's rewrite of it, and a block takes precedence over an rtk allow. `rtk`, `rtk bypass`, `rtk proxy`, `rtk run`, `rtk err`, `rtk test` and `rtk summary` prefixes are stripped before the rules run, and an `rtk run -c` or `--shell` script is checked like `sh -c`, so `rtk npx playwright install` and `rtk run -c 'npx playwright install'` are still G1.
-- **macOS and Linux only.** Setup refuses on Windows, and there are no PowerShell-aware rules.
+- **macOS and Linux only.** Setup refuses on Windows, and there are no PowerShell-aware rules. On a platform with no guard binary, the guard allows only read-only tools.
+
+## Fail closed
+
+The guard is a small POSIX `sh` shim, `hooks/guard.sh`, that runs the `anthology` binary pinned by `anthology.lock` (installed as described in the [README](README.md#the-anthology-binary)). When that binary is missing, broken or cannot run here, the guard blocks instead of allowing.
+
+- **What is allowed.** Exactly two paths let a call through: the binary's own allow answer (exit 0 with the exact token `anthology-guard:allow:v1` on stderr, so an empty, garbled or wrong file can never allow), and, when the binary cannot run, a fixed list of read-only tools: `Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, `TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `Task`, `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `BashOutput`, `KillShell`, `ListAgents`, `CronList` and `SubagentHandback`. `Skill` lets `/anthology:setup` load; subagent calls are guarded too.
+- **What is blocked.** Everything else, with exit 2 and a `Blocked by anthology-guardrails (setup): …` message that names the cause and the fix: shell commands, file writes and edits, every `mcp__*` tool, and any tool that is not on the list, including tools Claude Code adds later.
+- **Recovery.** A blocked call tries to install the binary, at most once a minute, so a session heals once the network is back. An installed binary that answers with anything but the allow token or a well-formed block is set aside (`~/.claude/anthology/bin/.broken-…`) and reinstalled on a later call. After three failures in 24 hours tool calls stop reinstalling it, and a new session tries once more, at most once an hour. `/anthology:setup` and a new session while online also install it.
+- **The `/plugin` escape.** `/plugin` never goes through `PreToolUse`, so disabling `anthology-guardrails` there always works, even when every tool call is blocked. Every `(setup)` and `(internal)` message names it.
+- **Residual risk while the binary is missing.** The read-only tools above are let through unchecked, so guardrail G3 (Chrome profiles) is not enforced for `Read`, `Grep`, `Glob`, `LS`, `NotebookRead` or `WebFetch` (a `file:` URL) until the binary is installed. The native `Read(…)` deny rules that setup adds still apply.
+- **A stopped guard.** The binary starts its own 8-second watchdog before it reads its input. Only a process that cannot run at all (stopped with SIGSTOP, a kernel stall) reaches the 60-second hook timeout. Claude Code then blocks the call with its generic `onFailure` message, which names neither the cause nor `/plugin`.
+- **Integrity is checked at session start, not per call.** Each session start re-hashes the installed binary against `anthology.lock` and its install record, and sets it aside on a mismatch. A binary changed in the middle of a session runs until it fails, and is then set aside.
+- **Downloads.** The archive URL is fixed by the lock (`https://github.com/<repo>/releases/download/anthology-bin--v<version>/anthology-<target>.tar.gz`), and nothing is unpacked until its sha256 matches the lock. `curl` and GNU `wget` are limited to HTTPS; BusyBox `wget` has no such switch, so there the HTTPS URL and the pin decide which bytes are accepted. `node`, the last resort, honours `HTTPS_PROXY` only on node 24 or newer; on older node behind a proxy the download fails.
+- **Air-gapped installs.** Copy the release's `anthology-<target>.tar.gz` into `~/.claude/anthology/bin/` and start a new session. That file is tried first and is used only if its sha256 matches the pin; a file that does not match is neither used nor deleted, and the message names it. Maintainers build the same layout for tests with `anthology-dev seed`, which writes a seed archive, an installed binary and matching locks into a scratch copy of the plugins.
+- **Checking a release yourself.** Download an archive and run `gh attestation verify anthology-<target>.tar.gz --repo rbonweb/anthology`, then compare its sha256 with `anthology.lock`.
 
 ## The `Bash(rtk *)` allow
 
@@ -119,11 +139,11 @@ Notes are Markdown that is loaded into a session's context. A note can therefore
 - **Old notes stay personal.** Notes from Claude Code's old path-keyed memory folder are copied into personal memory, never into the repo on their own. Moving one into the repo is a per-note choice in `/anthology:setup`, and only for notes the privacy scan passes.
 - **The privacy scan guards anthology's writes into repo memory, not every write.** Setup's moves, `/anthology:import` and `anthology-mem save` scan each note before it goes into the repo. A note with a home path (`/Users/<name>`, `/home/<name>`), an email address, a private or public IP address, a private host name (such as `*.local`, `*.lan`, `*.internal`) or this machine's name, an `ssh user@host` target, an `.ssh/` key path or a secret-looking token is blocked: setup and import send it to personal memory instead, and `anthology-mem save` refuses it. The findings name a kind and a line, never the text. It also looks for `secret_access_key = …`-style assignments and `scheme://user:password@host` URLs. It does not scan Claude Code's own auto-memory writes, or an agent's own Write or Edit into its agent folder (that is guardrail G6's narrower job). It is an accident guard, not a guarantee: it knows common formats only, so read what you commit.
 - **Exports hold personal notes.** An export refuses to write into a git work tree. Keep the archive private.
-- **Imports are checked.** Import shows a dry run first, never overwrites, extracts with Python's `data` filter (no absolute paths, `..`, links or devices), writes only the three memory locations, refuses archives over 50 MB, reports secret-looking content, and sends repo notes the privacy scan blocks to personal memory. Import archives only from people you trust: their notes become yours.
+- **Imports are checked.** Import shows a dry run first, never overwrites, reads the archive in memory instead of extracting it, accepts only regular files and folders at the archive's fixed memory paths (no absolute paths, `..`, links or devices), writes only the three memory locations, refuses archives over 50 MB, reports secret-looking content, and sends repo notes the privacy scan blocks to personal memory. Import archives only from people you trust: their notes become yours.
 - **Claude Code's own rules apply.** A project-level `autoMemoryDirectory` is honored only in a trusted workspace.
 
 ## Other things to know
 
 - **Content fetched at run time.** The `web-design-guidelines` knowledge downloads its rulebook with `WebFetch` when an agent uses it. Treat that as external content.
-- **Vendored content.** Every folder under `plugins/anthology/knowledge/` and `plugins/anthology-superpowers/` is generated from an exact upstream commit by `scripts/vendor.py`. Nothing is edited by hand, and `vendor.py check` runs in CI on every PR.
-- **Supply chain.** CI images are pinned by digest, test dependencies by hash and GitHub Actions by commit SHA, and Dependabot proposes the bumps. Secrets are scanned with gitleaks on every PR.
+- **Vendored content.** Every folder under `plugins/anthology/knowledge/` and `plugins/anthology-superpowers/` is generated from an exact upstream commit by `anthology-dev vendor` (run as `scripts/dev.sh vendor`). Nothing is edited by hand, and `vendor check` runs in CI on every PR.
+- **Supply chain.** CI images are pinned by digest, Rust crates by `Cargo.lock` (checked by `cargo deny` on every PR) and GitHub Actions by commit SHA, and Dependabot proposes the bumps. The `anthology` binary is built only from the crates in `crates/` and their locked dependencies. Secrets are scanned with gitleaks on every PR.

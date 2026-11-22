@@ -1,0 +1,15 @@
+# python_id	status	rust_test	note
+test_repo_layout.AnthologySuperpowersTest.test_manifest_name	ported	crates/repo-tests/tests/repo_layout.rs::anthology_superpowers_test::test_manifest_name	
+test_repo_layout.AnthologySuperpowersTest.test_no_unprefixed_skill_references	ported	crates/repo-tests/tests/repo_layout.rs::anthology_superpowers_test::test_no_unprefixed_skill_references	
+test_repo_layout.AnthologySuperpowersTest.test_prefixed_references_exist	ported	crates/repo-tests/tests/repo_layout.rs::anthology_superpowers_test::test_prefixed_references_exist	
+test_repo_layout.AnthologySuperpowersTest.test_preloads_resolve	ported	crates/repo-tests/tests/repo_layout.rs::anthology_superpowers_test::test_preloads_resolve	
+test_repo_layout.AnthologySuperpowersTest.test_session_hook_is_executable_and_wired	ported	crates/repo-tests/tests/repo_layout.rs::anthology_superpowers_test::test_session_hook_is_executable_and_wired	
+test_repo_layout.MarketplaceTest.test_anthology_manifest	ported	crates/repo-tests/tests/repo_layout.rs::marketplace_test::test_anthology_manifest	
+test_repo_layout.MarketplaceTest.test_guardrails_manifest	ported	crates/repo-tests/tests/repo_layout.rs::marketplace_test::test_guardrails_manifest	
+test_repo_layout.MarketplaceTest.test_marketplace_name_and_plugins	ported	crates/repo-tests/tests/repo_layout.rs::marketplace_test::test_marketplace_name_and_plugins	
+test_repo_layout.MarketplaceTest.test_superpowers_manifest	ported	crates/repo-tests/tests/repo_layout.rs::marketplace_test::test_superpowers_manifest	
+test_repo_layout.PinnedImagesTest.test_dockerfiles_pinned_by_digest	ported	crates/repo-tests/tests/repo_layout.rs::pinned_images_test::test_dockerfiles_pinned_by_digest	omitted: python.Dockerfile and python39.Dockerfile in the exact file set (F-16 removes them) -> CO2 replacement: crates/repo-tests/tests/cutover_ci.rs::after_the_cutover_ci_images_holds_no_python_image asserts ci/images holds exactly the Dockerfiles rust, gitleaks, shellcheck, alpine, debian-slim and ubuntu and no python*.Dockerfile
+test_repo_layout.UnchangedCopiesTest.test_copies_exist_with_their_skill_files	ported	crates/repo-tests/tests/repo_layout.rs::unchanged_copies_test::test_copies_exist_with_their_skill_files	
+test_repo_layout.UnchangedCopiesTest.test_design_skills_resolve	ported	crates/repo-tests/tests/repo_layout.rs::unchanged_copies_test::test_design_skills_resolve	
+test_repo_layout.UnchangedCopiesTest.test_every_source_has_a_target_and_a_license	ported	crates/repo-tests/tests/repo_layout.rs::unchanged_copies_test::test_every_source_has_a_target_and_a_license	
+test_repo_layout.UnchangedCopiesTest.test_vercel_license_is_the_fixed_mit_text	ported	crates/repo-tests/tests/repo_layout.rs::unchanged_copies_test::test_vercel_license_is_the_fixed_mit_text	

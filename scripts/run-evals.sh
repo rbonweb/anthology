@@ -7,6 +7,10 @@
 # file `--ci` writes when no baseline exists) as evals/baseline.json with the `candidate` key
 # removed. That way the baseline and every later comparison come from the same environment (same
 # runner, same installed tools, e.g. rtk). `--record` is for local experiments.
+#
+# The plugins run from a scratch copy with a seeded `anthology` binary (design §14.2): the
+# evals from the workspace `anthology-dev smoke --prepare-evals` builds, the smokes from the
+# copy `anthology-dev smoke --anthology-bin` stages itself. No Python runs.
 set -eu
 
 usage() {
@@ -21,12 +25,12 @@ Usage: scripts/run-evals.sh [--max-cost-usd USD] [--record] [--ci] [--case GLOB]
   --ci                also write $OUT/candidate-baseline.json when no baseline exists
   --case GLOB         run only the cases whose name matches GLOB (passed through)
   --tag TAG           run only the cases carrying TAG (passed through)
-  --no-smoke          skip the smoke cases (evals/smoke/smoke.py) that run after the evals
+  --no-smoke          skip the smoke cases (`anthology-dev smoke`) that run after the evals
   --smoke-budget-usd USD
                       --max-budget-usd for each `claude -p` the smokes run (default 1.00)
   --smoke-total-budget-usd USD
-                      ceiling for all smokes together (default 10): smoke.py sums the cost each
-                      `claude -p` reports and, once it is spent, fails the remaining smokes with
+                      ceiling for all smokes together (default 10): the smokes sum the cost each
+                      `claude -p` reports and, once it is spent, fail the remaining smokes with
                       "smoke budget exhausted"
   -h, --help          this text
 
@@ -36,6 +40,10 @@ the baseline and the weekly comparison share one environment.
 With --case or --tag only part of the suite runs, so the comparison uses --allow-missing and
 --record is refused. The Claude binary is $CLAUDE_BIN, else ci/claude-code/node_modules/.bin/claude
 when it is executable, else `claude` on PATH. Results go to evals/results/<UTC timestamp>/.
+The plugins under test are a scratch copy of plugins/ with the anthology binary seeded:
+$ANTHOLOGY_BIN and $ANTHOLOGY_DEV name the `anthology` and `anthology-dev` binaries to use;
+when either is unset, both are built first with `cargo build --release --locked` (static musl
+on Linux, so the binary matches anthology.lock's target), into $CARGO_TARGET_DIR or target/.
 The smoke cases run after the comparison, with the same Claude binary and results in
 $OUT/smoke.json. They are skipped with --no-smoke and (with a message) with --case or --tag.
 Total spend is at most the eval ceiling (--max-cost-usd) plus the smoke ceiling
@@ -119,8 +127,8 @@ fi
 # holds those tools in agent-fields: the scout's own tool list is then what its max-0 checks
 # really test. `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a
 # host-browser launch attempt must be recorded (and denied) rather than hidden.
-# (The rtk-rewrite and agent-memory-path checks are smokes, evals/smoke/smoke.py: rtk and
-# `anthology-mem` are not available inside `claude plugin eval`.)
+# (The rtk-rewrite and agent-memory-path checks are smokes, `anthology-dev smoke`: they need
+# rtk installed and a scratch repo, which `claude plugin eval` cannot set up.)
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)
@@ -129,13 +137,15 @@ Write(.claude/memory/**)
 Edit(.claude/memory/**)
 NotebookEdit(.claude/memory/**)'
 
+# This file is written for scripts/; before the cutover it lives in port/staging/scripts/.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+case $ROOT in
+  */port/staging) ROOT=${ROOT%/port/staging} ;;
+esac
 cd "$ROOT"
-export PYTHONDONTWRITEBYTECODE=1
 # If a guard regresses, a granted npx command (npx playwright ...) must not be able to fetch
 # packages from the registry.
 export NPM_CONFIG_OFFLINE=true
-PYTHON=${PYTHON:-python3}
 BASELINE=evals/baseline.json
 
 if [ -n "${CLAUDE_BIN:-}" ]; then
@@ -145,12 +155,69 @@ elif [ -x ci/claude-code/node_modules/.bin/claude ]; then
 else
   CLAUDE=claude
 fi
+# The evals run in another folder, so a path to claude must be absolute.
+case $CLAUDE in
+  /*) ;;
+  */*) CLAUDE=$ROOT/$CLAUDE ;;
+esac
 echo "run-evals: using $CLAUDE"
 "$CLAUDE" --version
 
-OUT=evals/results/$(date -u +%Y%m%dT%H%M%SZ)
+# The anthology binary under test and the dev tool: given, or built here.
+BIN=${ANTHOLOGY_BIN:-}
+DEV=${ANTHOLOGY_DEV:-}
+if [ -z "$BIN" ] || [ -z "$DEV" ]; then
+  TRIPLE=
+  command -v cargo >/dev/null 2>&1 ||
+    die "cargo is needed to build the anthology binaries; or set ANTHOLOGY_BIN and ANTHOLOGY_DEV"
+  TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+  case $(uname -s) in
+    Linux)
+      case $(uname -m) in
+        x86_64 | amd64) TRIPLE=x86_64-unknown-linux-musl ;;
+        aarch64 | arm64) TRIPLE=aarch64-unknown-linux-musl ;;
+        *) die "no anthology build for $(uname -m)" ;;
+      esac
+      # The bundled SQLite is C code: it builds with musl's gcc wrapper (Debian: musl-tools).
+      command -v musl-gcc >/dev/null 2>&1 ||
+        die "musl-gcc is needed for the static Linux build (install musl-tools); or set ANTHOLOGY_BIN and ANTHOLOGY_DEV"
+      CC_VAR=CC_$(printf '%s' "$TRIPLE" | tr '-' '_')
+      set -- --target "$TRIPLE"
+      BUILT=$TARGET_DIR/$TRIPLE/release
+      ;;
+    *)
+      CC_VAR=
+      set --
+      BUILT=$TARGET_DIR/release
+      ;;
+  esac
+  echo "run-evals: building anthology and anthology-dev${TRIPLE:+ ($TRIPLE)}"
+  # Build scripts of third-party crates run here: they never see the API credentials.
+  (
+    unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
+    if [ -n "$CC_VAR" ]; then export "$CC_VAR=musl-gcc"; fi
+    cargo build --release --locked -p anthology-cli -p anthology-dev "$@" >&2
+  ) || die "the build of anthology and anthology-dev failed"
+  BIN=${BIN:-$BUILT/anthology}
+  DEV=${DEV:-$BUILT/anthology-dev}
+fi
+for b in "$BIN" "$DEV"; do
+  [ -x "$b" ] || die "not an executable: $b"
+done
+echo "run-evals: anthology $("$BIN" --version)"
+
+OUT=$ROOT/evals/results/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$OUT"
-echo "run-evals: results in $OUT"
+echo "run-evals: results in ${OUT#"$ROOT"/}"
+
+# The seeded eval workspace (marketplace, evals/, staged plugins), removed on exit.
+SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/anthology-evals.XXXXXX")
+trap 'rm -rf "$SCRATCH"' EXIT
+# dash runs no EXIT trap on a signal: exit through it.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+WS=$("$DEV" smoke --anthology-bin "$BIN" --prepare-evals "$SCRATCH/ws") ||
+  die "could not prepare the eval workspace"
 
 # NOTE: the plugin subcommand is quoted below so it is never read as the sh builtin of that name.
 set -- plugin "eval" . --trust-plugin --ablation none --no-publish --threshold 0 --runs 1 \
@@ -170,7 +237,7 @@ set +f
 IFS=$OLD_IFS
 
 set +e
-"$CLAUDE" "$@"
+(cd "$WS" && "$CLAUDE" "$@")
 EVAL_STATUS=$?
 set -e
 if [ "$EVAL_STATUS" = 2 ]; then
@@ -182,7 +249,7 @@ fi
 if [ "$RECORD" = 1 ]; then
   [ "$EVAL_STATUS" = 0 ] || die "the plugin run exited with status $EVAL_STATUS; not recording a baseline from it"
   set +e
-  "$PYTHON" scripts/eval_baseline.py record "$OUT/result.json" "$BASELINE"
+  "$DEV" eval-baseline record "$OUT/result.json" "$BASELINE"
   CODE=$?
   set -e
 else
@@ -190,15 +257,15 @@ else
   if [ "$FILTERED" = 1 ]; then set -- "$@" --allow-missing; fi
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then set -- "$@" --summary "$GITHUB_STEP_SUMMARY"; fi
   set +e
-  "$PYTHON" scripts/eval_baseline.py "$@"
+  "$DEV" eval-baseline "$@"
   CODE=$?
   set -e
   if [ "$CI" = 1 ] && [ ! -f "$BASELINE" ] && [ -f "$OUT/result.json" ]; then
-    "$PYTHON" scripts/eval_baseline.py candidate "$OUT/result.json" "$OUT/candidate-baseline.json" || true
+    "$DEV" eval-baseline candidate "$OUT/result.json" "$OUT/candidate-baseline.json" || true
   fi
 fi
 
-# The U1-U9 smoke cases (no-model and multi-session checks the eval harness cannot express).
+# The smoke cases (no-model and multi-session checks the eval harness cannot express).
 SMOKE_FAILED=0
 if [ "$SMOKE" = 0 ]; then
   echo "run-evals: smoke cases skipped (--no-smoke)"
@@ -206,13 +273,13 @@ elif [ "$FILTERED" = 1 ]; then
   echo "run-evals: smoke cases skipped: --case/--tag runs only part of the suite"
 else
   set +e
-  "$PYTHON" evals/smoke/smoke.py --claude "$CLAUDE" --budget-usd "$SMOKE_BUDGET" \
+  "$DEV" smoke --claude "$CLAUDE" --anthology-bin "$BIN" --budget-usd "$SMOKE_BUDGET" \
     --total-budget-usd "$SMOKE_TOTAL" --out "$OUT/smoke.json"
   SMOKE_STATUS=$?
   set -e
   if [ "$SMOKE_STATUS" != 0 ]; then
     SMOKE_FAILED=1
-    echo "run-evals: a smoke case failed (status $SMOKE_STATUS); see $OUT/smoke.json" >&2
+    echo "run-evals: a smoke case failed (status $SMOKE_STATUS); see ${OUT#"$ROOT"/}/smoke.json" >&2
   fi
 fi
 

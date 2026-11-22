@@ -1,0 +1,37 @@
+[package]
+name = "anthology-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The anthology binary: argv dispatch and the only std::env reader"
+build = "build.rs"
+
+[[bin]]
+name = "anthology"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+# Test builds of the binary (m-R10): each forwards the library feature of the same name.
+# GD2: the guard hook panics on a marker input (m-5).
+panic-on-marker = ["anthology-guard/panic-on-marker"]
+# GD2: the 8 s hook watchdog made short.
+test-watchdog = ["anthology-guard/test-watchdog"]
+# F3 and the lanes: `fsx::fault` reachable from the binary's tests.
+test-faults = ["anthology-core/test-faults"]
+
+[dependencies]
+anthology-core.workspace = true
+anthology-pycompat.workspace = true
+anthology-guard.workspace = true
+anthology-memory.workspace = true
+anthology-runtime.workspace = true
+lexopt.workspace = true
+
+[dev-dependencies]
+anthology-testkit.workspace = true
+tempfile.workspace = true

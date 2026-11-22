@@ -84,6 +84,11 @@ When agents return:
 - Run full test suite once, at the end (agents ran only targeted tests)
 - Integrate all changes
 
+In a long multi-agent build, follow
+anthology-superpowers:subagent-driven-development's `references/large-builds.md`
+instead: disjoint slices in separate worktrees, and one integration run per
+merged batch.
+
 ## Agent Prompt Structure
 
 Good agent prompts are:

@@ -49,3 +49,9 @@ regexes = [
   '''^[fb]/(abcdef1234567890){3}$''',
   '''^secret-api-key-12345$''',
 ]
+
+[[allowlists]]
+description = "Rust-port guard rule rows (extracted from test_guard_rules.py): G6 fixtures written with \\u escapes that gitleaks decodes, a sequential-letter fake AWS session key id and two bare private-key headers with no key body (gitleaks matches from one to the other)"
+condition = "AND"
+paths = ['''^crates/anthology-guard/tests/data/test_guard_rules\.jsonl$''']
+regexes = ['''^ASIAABCDEFGHIJKLMNOP$''', '''^-----BEGIN OPENSSH PRIVATE KEY-----\nEOF"[\s\S]*"new_string": "-----BEGIN OPENSSH PRIVATE KEY-----$''']
