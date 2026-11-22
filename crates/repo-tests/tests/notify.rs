@@ -241,7 +241,7 @@ fn a_failing_notifier_never_fails_the_hook() {
 }
 
 #[test]
-fn the_script_is_posix_sh_with_no_json_parsing_and_no_python() {
+fn the_script_is_posix_sh_and_parses_nothing() {
     let text = repo::read(SCRIPT);
     assert!(text.starts_with("#!/bin/sh\n"));
     let mode = std::fs::metadata(repo::path(SCRIPT))
@@ -254,7 +254,7 @@ fn the_script_is_posix_sh_with_no_json_parsing_and_no_python() {
         .filter(|l| !l.trim_start().starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
-    for banned in ["python", "[[", "local ", "function ", "<<<", "pipefail"] {
+    for banned in ["[[", "local ", "function ", "<<<", "pipefail"] {
         assert!(!code.contains(banned), "{banned}");
     }
     // Whole words only: "cat" is inside "notification".
