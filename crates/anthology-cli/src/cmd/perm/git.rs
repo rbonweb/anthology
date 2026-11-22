@@ -7,15 +7,16 @@
 //! the way git reads it (system, global, repository and worktree files, `include` and `includeIf`).
 //! Only `rev-parse` and `config --list` run, and neither runs a configured program. Then:
 //!
-//! - Every `GIT_*` environment variable but [`SAFE_ENV`] refuses (`GIT_DIR`, `GIT_CONFIG_*`,
-//!   `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, ...).
+//! - Every `GIT_*` environment variable refuses (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`,
+//!   `GIT_PAGER`, ...), whatever its value.
 //! - Every configuration key must be on the allowlist in [`safe_key`]; any other key refuses, so
 //!   a partial clone (`remote.*.promisor`, `extensions.*`), `core.fsmonitor`, `core.pager`,
 //!   `core.hooksPath`, `diff.external`, `diff.*.textconv`, `filter.*`, `alias.*`,
 //!   `credential.helper`, `core.gitProxy`, `protocol.*` and every key not yet known refuse. A
 //!   `.gitattributes` file only names drivers; with no driver in the configuration it runs nothing.
 //! - The git dir, the common dir and the work tree must lie under a root and match no `Read()`
-//!   rule (an anchored rule below the git dir counts) or secret pattern.
+//!   rule (an anchored rule that could match below one of them counts) or secret pattern. Each is
+//!   one of the paths the answer lists.
 //! - No hook may be installed (any file in the hooks folder but `*.sample`): writing the index,
 //!   as `git status` does, runs `post-index-change`.
 //! - No `objects/info/alternates` (objects read from elsewhere), no submodule (`.gitmodules`, a
@@ -36,13 +37,6 @@ use anthology_shell::is_secret_path;
 use super::paths::Checker;
 use super::shown;
 
-/// The `GIT_*` variables that may be set: each only turns something off.
-pub const SAFE_ENV: &[&str] = &[
-    "GIT_CONFIG_NOSYSTEM",
-    "GIT_TERMINAL_PROMPT",
-    "GIT_OPTIONAL_LOCKS",
-];
-
 /// How long one git call may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// The most output one git call may print.
@@ -53,19 +47,23 @@ const MAX_INDEX_ENTRIES: u32 = 100_000;
 
 /// Checks the repository git finds from `cwd` (resolved). `env` is the environment the command
 /// runs with, as far as this process can see it.
-pub fn check(ck: &Checker, cwd: &Path, env: &Env) -> Result<(), String> {
+pub fn check(ck: &mut Checker, cwd: &Path, env: &Env) -> Result<(), String> {
     for (key, _) in env.iter() {
         let key = key.to_string_lossy();
-        if key.starts_with("GIT_") && !SAFE_ENV.contains(&key.as_ref()) {
+        if key.starts_with("GIT_") {
             return Err(format!("git environment variable {}", shown(&key)));
         }
     }
     let git = find_git(env).ok_or("no git on PATH")?;
-    let out = run_git(
-        &git,
-        cwd,
-        env,
-        &[
+    // Both git calls only read, so they run side by side: one spawn less on the wait.
+    let (out, listing) = std::thread::scope(|scope| {
+        let listing =
+            scope.spawn(|| run_git(&git, cwd, env, &["config", "--list", "--includes", "-z"]));
+        let out = run_git(
+            &git,
+            cwd,
+            env,
+            &[
             "rev-parse",
             "--path-format=absolute",
             "--is-bare-repository",
@@ -79,15 +77,19 @@ pub fn check(ck: &Checker, cwd: &Path, env: &Env) -> Result<(), String> {
             "--git-path",
             "objects/info/alternates",
             "--show-cdup",
-        ],
-    )
-    .map_err(|why| format!("git rev-parse: {why}"))?;
+            ],
+        );
+        let listing = listing
+            .join()
+            .unwrap_or_else(|_| Err("the git config call failed".into()));
+        (out, listing)
+    });
+    let out = out.map_err(|why| format!("git rev-parse: {why}"))?;
     let text = String::from_utf8(out).map_err(|_| "git rev-parse: not UTF-8".to_string())?;
     let lines: Vec<&str> = text.lines().collect();
     let repo = Repo::from_lines(&lines, cwd)?;
 
-    let listing = run_git(&git, cwd, env, &["config", "--list", "--includes", "-z"])
-        .map_err(|why| format!("git config: {why}"))?;
+    let listing = listing.map_err(|why| format!("git config: {why}"))?;
     for entry in listing.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
         let key = String::from_utf8_lossy(key);
@@ -108,15 +110,17 @@ pub fn check(ck: &Checker, cwd: &Path, env: &Env) -> Result<(), String> {
         if !ck.inside(&real) {
             return Err(format!("outside every root: git repository {name}"));
         }
-        let below = Some(dir) != repo.top.as_ref();
+        // Git reads the whole repository, and `show`, `diff`, `log -p` and `blame` print it: an
+        // anchored rule that could match anything below refuses.
         for path in [dir.as_path(), real.as_path()] {
-            if ck.rules.denied(path) || below && ck.rules.anchored_reaches(path) {
+            if ck.rules.denied(path) || ck.rules.anchored_reaches(path) {
                 return Err(format!("Read rule matches: git repository {name}"));
             }
             if is_secret_path(&path.to_string_lossy()) {
                 return Err(format!("path of a secret: git repository {name}"));
             }
         }
+        ck.record(&real);
     }
     hooks(&repo.hooks)?;
     if std::fs::symlink_metadata(&repo.alternates).is_ok() {

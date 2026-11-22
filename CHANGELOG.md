@@ -46,6 +46,18 @@ a new version section.
 - When session start has to cut the memory index to fit its budget, the closing pointer now
   says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
   paths, because the index is capped and those files are not the way to read every note.
+- `anthology perm classify` (binary 0.1.4; nothing calls it yet): reads a Bash command, its
+  working directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file or a directory, and match no `Read()` rule or secret pattern; recursive trees are walked,
+  and globs, non-ASCII text and relative paths without a leading absolute `cd` give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  and no tracked file is a secret or `Read()`-denied. Anything else gives no decision, never a
+  deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
 
 #### Fixed
 

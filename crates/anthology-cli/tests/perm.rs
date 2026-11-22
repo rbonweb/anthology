@@ -1,6 +1,7 @@
 //! `anthology perm classify` (post-release plan P4, design §2): the read-only path check behind the
 //! permission mod. The binary reads `{"command","cwd","roots","read_rules"}` on stdin and prints the
-//! allow token, or exits 1 with one reason line and no decision.
+//! allow token and the resolved paths the command reads, or exits 1 with one reason line and no
+//! decision.
 //!
 //! Every refusal class has a test here, and each git configuration trap first shows, with the real
 //! `git` on `PATH`, that the trap runs a marker program on the very subcommand the classifier proves.
@@ -52,13 +53,62 @@ impl Fx {
         fx
     }
 
-    /// The environment of the binary and of every git the test runs: no system config, so the
-    /// machine's own `/etc/gitconfig` cannot decide a test.
+    /// The environment of the binary: `PATH` and a home of the fixture's own. Any `GIT_*`
+    /// variable refuses, so the machine's system git config is read (see [`Fx::platform_keys`]).
     fn env(&self) -> Env {
         Env::default()
             .with("PATH", &std::env::var("PATH").unwrap_or_default())
             .with("HOME", self.home.to_str().unwrap())
-            .with("GIT_CONFIG_NOSYSTEM", "1")
+    }
+
+    /// The environment of the git the fixtures run: without the system config, so the machine's
+    /// own `/etc/gitconfig` cannot change a fixture or a trap's demonstration.
+    fn git_env(&self) -> Env {
+        self.env().with("GIT_CONFIG_NOSYSTEM", "1")
+    }
+
+    /// The config keys git reads on this machine outside the fixture (the system file; Apple's
+    /// git carries `credential.helper` in its own). With any, every git line gets no decision, so
+    /// the git tests can then only check that it is refused; Linux CI has none.
+    fn platform_keys(&self) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["config", "--list", "--show-scope", "--name-only"])
+            .current_dir(&self.base)
+            .env_clear()
+            .envs(self.env().iter())
+            .output()
+            .unwrap();
+        // The fixture's own global file holds only allowlisted keys; the rest is the machine's.
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| !line.starts_with("global\t"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A git line expected to be allowed: allowed, or on a machine with its own git config keys,
+    /// refused for one of them.
+    #[track_caller]
+    fn assert_git_allow(&self, out: &Output, ctx: &str) -> Vec<String> {
+        let platform = self.platform_keys();
+        if platform.is_empty() {
+            return assert_allow(out, ctx);
+        }
+        eprintln!("{ctx}: this machine's git config has {platform:?}; the allow is not checked");
+        assert_refused(out, "git config key not on the allowlist", ctx);
+        Vec::new()
+    }
+
+    /// A git line refused for `key`, or, on a machine with its own git config keys, for one of
+    /// those (they are listed first).
+    #[track_caller]
+    fn assert_key_refused(&self, out: &Output, key: &str, ctx: &str) {
+        let why = if self.platform_keys().is_empty() {
+            format!("git config key not on the allowlist: {key}")
+        } else {
+            "git config key not on the allowlist: ".to_string()
+        };
+        assert_refused(out, &why, ctx);
     }
 
     fn write(&self, rel: &str, text: &str) -> PathBuf {
@@ -66,6 +116,10 @@ impl Fx {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, text).unwrap();
         path
+    }
+
+    fn path(&self, rel: &str) -> String {
+        self.root.join(rel).to_str().unwrap().to_string()
     }
 
     fn command(&self, program: &str, dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
@@ -76,7 +130,7 @@ impl Fx {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (k, v) in self.env().iter() {
+        for (k, v) in self.git_env().iter() {
             cmd.env(k, v);
         }
         for (k, v) in extra {
@@ -146,6 +200,8 @@ impl Fx {
         dir
     }
 
+    /// `command` run in `cwd`: the line is sent as `cd CWD && COMMAND`, since only a leading
+    /// absolute `cd` tells the check where the shell is.
     fn classify(&self, cwd: &Path, command: &str, rules: &[&str]) -> Output {
         self.classify_env(cwd, command, rules, &[])
     }
@@ -157,11 +213,17 @@ impl Fx {
         rules: &[&str],
         extra: &[(&str, &str)],
     ) -> Output {
+        let line = format!("cd {} && {command}", cwd.display());
+        self.classify_raw(cwd, &line, rules, extra)
+    }
+
+    /// `line` sent as it is, with the fixture's root as the one root.
+    fn classify_raw(&self, cwd: &Path, line: &str, rules: &[&str], extra: &[(&str, &str)]) -> Output {
         let mut env = self.env();
         for (k, v) in extra {
             env = env.with(k, v);
         }
-        let input = request(command, cwd, &[&self.root], rules);
+        let input = request(line, cwd, &[&self.root], rules);
         run(&input, &env)
     }
 }
@@ -200,17 +262,30 @@ fn run_args(args: &[&str], stdin: &[u8], env: &Env) -> Output {
     )
 }
 
+/// Allowed: exit 0, no stderr, the token line, then the paths read, one per line, each absolute
+/// and resolved. Returns the paths.
 #[track_caller]
-fn assert_allow(out: &Output, ctx: &str) {
+fn assert_allow(out: &Output, ctx: &str) -> Vec<String> {
+    let text = out.stdout_text();
     assert_eq!(
-        (
-            out.code,
-            out.stdout_text().as_str(),
-            out.stderr_text().as_str()
-        ),
-        (0, TOKEN, ""),
-        "{ctx}"
+        (out.code, out.stderr_text().as_str()),
+        (0, ""),
+        "{ctx}: {text}"
     );
+    let rest = text
+        .strip_prefix(TOKEN)
+        .unwrap_or_else(|| panic!("{ctx}: {text:?}"));
+    let paths: Vec<String> = rest.lines().map(str::to_string).collect();
+    assert!(rest.is_empty() || rest.ends_with('\n'), "{ctx}: {text:?}");
+    for path in &paths {
+        assert!(path.starts_with('/'), "{ctx}: {path}");
+        assert_eq!(
+            std::fs::canonicalize(path).unwrap(),
+            PathBuf::from(path),
+            "{ctx}: resolved"
+        );
+    }
+    paths
 }
 
 /// No decision: exit 1, nothing on stdout, one reason line on stderr that holds `why`.
@@ -234,14 +309,45 @@ fn assert_refused(out: &Output, why: &str, ctx: &str) {
 // --- the protocol -------------------------------------------------------------------------------------------
 
 #[test]
-fn a_proven_read_inside_the_root_prints_the_token_and_nothing_else() {
+fn a_proof_prints_the_token_then_every_resolved_path_read() {
     let fx = Fx::new();
     fx.write("a.txt", "a\n");
-    assert_allow(&fx.classify(&fx.root, "cat ./a.txt", &[]), "cat");
-    assert_allow(&fx.classify(&fx.root, "ls -la", &[]), "ls");
-    assert_allow(
-        &fx.classify(&fx.root, "cat ./a.txt | head -n 3", &[]),
-        "pipe",
+    fx.write("b.txt", "b\n");
+    fx.write("src/x.rs", "x\n");
+    let root = fx.path("");
+    let root = root.trim_end_matches('/').to_string();
+    assert_eq!(
+        assert_allow(&fx.classify(&fx.root, "cat ./a.txt ./b.txt", &[]), "cat"),
+        [root.clone(), fx.path("a.txt"), fx.path("b.txt")]
+    );
+    assert_eq!(
+        assert_allow(&fx.classify(&fx.root, "ls -la", &[]), "ls"),
+        [root.clone()],
+        "the cd target and the implicit `.` are one path"
+    );
+    assert_eq!(
+        assert_allow(&fx.classify(&fx.root, "rg x ./src", &[]), "rg"),
+        [root.clone(), fx.path("src")],
+        "a recursive reader lists its start"
+    );
+    assert_eq!(
+        assert_allow(
+            &fx.classify(&fx.root, "cat ./a.txt | head -n 3", &[]),
+            "pipe"
+        ),
+        [root.clone(), fx.path("a.txt")]
+    );
+    symlink(fx.root.join("b.txt"), fx.root.join("link")).unwrap();
+    assert_eq!(
+        assert_allow(&fx.classify(&fx.root, "cat ./link", &[]), "link"),
+        [root.clone(), fx.path("b.txt")],
+        "a link is listed as its target"
+    );
+    let absolute = format!("cat {}", fx.path("a.txt"));
+    assert_eq!(
+        assert_allow(&fx.classify_raw(&fx.root, &absolute, &[], &[]), "absolute"),
+        [fx.path("a.txt")],
+        "an absolute path needs no cd"
     );
 }
 
@@ -315,6 +421,25 @@ fn a_command_the_classifier_does_not_prove_gives_no_decision() {
 }
 
 #[test]
+fn a_command_with_invisible_or_non_ascii_characters_gives_no_decision() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    for command in [
+        "cat './a\u{200b}.txt'",
+        "cat './caf\u{e9}.txt'",
+        "cat './a.txt\u{202e}'",
+        "cat './a\u{feff}.txt'",
+        "cat ./a.txt\u{0}",
+    ] {
+        assert_refused(
+            &fx.classify(&fx.root, command, &[]),
+            "not printable ASCII",
+            command,
+        );
+    }
+}
+
+#[test]
 fn a_relative_path_entry_gives_no_decision() {
     // `PATH=.:…` would let a file called `ls` or `git` in the working directory run instead.
     let fx = Fx::new();
@@ -333,6 +458,29 @@ fn a_relative_path_entry_gives_no_decision() {
     }
 }
 
+// --- the working directory ----------------------------------------------------------------------------------
+
+#[test]
+fn without_a_leading_absolute_cd_only_absolute_paths_are_allowed() {
+    // The request's cwd is not trusted to be the shell's (subagents, worktrees).
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    fx.write("sub/b.txt", "b\n");
+    let repo = fx.repo("r");
+    for (cwd, line, why) in [
+        (&fx.root, "cat ./a.txt", "a relative path"),
+        (&fx.root, "cat a.txt", "a relative path"),
+        (&fx.root, "ls", "a relative path"),
+        (&fx.root, "rg x", "a relative path"),
+        (&fx.root, "cd ./sub && cat ./b.txt", "a relative cd target"),
+        (&repo, "git status", "git, and the shell's working directory"),
+    ] {
+        assert_refused(&fx.classify_raw(cwd, line, &[], &[]), why, line);
+    }
+    let line = format!("cd {} && cd ./sub && cat ./b.txt", fx.root.display());
+    assert_allow(&fx.classify_raw(&fx.root, &line, &[], &[]), "anchored chain");
+}
+
 // --- roots and containment ----------------------------------------------------------------------------------
 
 #[test]
@@ -340,19 +488,30 @@ fn roots_and_the_cwd_must_be_real_absolute_directories() {
     let fx = Fx::new();
     fx.write("a.txt", "a\n");
     let cwd = fx.root.to_str().unwrap();
+    // The binary runs in `/`, so this relative path names the root: only the absolute rule refuses.
+    let relative = cwd.trim_start_matches('/');
+    let command = format!("cat {cwd}/a.txt");
     for (ctx, roots, why) in [
         ("no root", vec![], "root"),
-        ("relative root", vec!["proj"], "root"),
+        (
+            "relative root",
+            vec![relative],
+            "root is not an absolute path",
+        ),
         ("missing root", vec!["/nonexistent-anthology-root"], "root"),
     ] {
         let input = format!(
-            r#"{{"command":"cat ./a.txt","cwd":"{cwd}","roots":{},"read_rules":[]}}"#,
+            r#"{{"command":"{command}","cwd":"{cwd}","roots":{},"read_rules":[]}}"#,
             json::dumps(&strings(&roots), &PY_DEFAULT)
         );
         assert_refused(&run(input.as_bytes(), &fx.env()), why, ctx);
     }
-    let input = request("cat ./a.txt", Path::new("proj"), &[&fx.root], &[]);
-    assert_refused(&run(&input, &fx.env()), "cwd", "relative cwd");
+    let input = request(&command, Path::new(relative), &[&fx.root], &[]);
+    assert_refused(
+        &run(&input, &fx.env()),
+        "cwd is not an absolute path",
+        "relative cwd",
+    );
 }
 
 #[test]
@@ -361,7 +520,11 @@ fn a_path_outside_every_root_gives_no_decision() {
     std::fs::write(fx.base.join("outside.txt"), "o\n").unwrap();
     let outside = fx.base.join("outside.txt");
     let command = format!("cat {}", outside.display());
-    assert_refused(&fx.classify(&fx.root, &command, &[]), "outside", "absolute");
+    assert_refused(
+        &fx.classify(&fx.root, &command, &[]),
+        "outside",
+        "absolute",
+    );
     // A second root that holds it makes it fine.
     let input = request(&command, &fx.root, &[&fx.root, &fx.base], &[]);
     assert_allow(&run(&input, &fx.env()), "second root");
@@ -383,21 +546,42 @@ fn a_symlink_out_of_the_root_is_followed_before_the_check() {
         "outside",
         "directory link",
     );
-    assert_refused(
-        &fx.classify(&fx.root, "ls ./u*", &[]),
-        "outside",
-        "glob to a link",
-    );
 }
 
 #[test]
-fn a_dangling_symlink_gives_no_decision() {
+fn a_glob_gives_no_decision() {
+    // What the shell expands a glob to (dotglob, nullglob, files made meanwhile) is not known here.
     let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    assert_refused(
+        &fx.classify(&fx.root, "cat ./*.txt", &[]),
+        "a glob",
+        "star",
+    );
+    // The classifier may refuse some of these shapes first; either way there is no decision.
+    for command in ["ls ./a?txt", "cat ./[a].txt", "ls ./**/a.txt"] {
+        assert_refused(&fx.classify(&fx.root, command, &[]), "", command);
+    }
+}
+
+#[test]
+fn a_missing_path_or_a_dangling_symlink_gives_no_decision() {
+    let fx = Fx::new();
+    assert_refused(
+        &fx.classify(&fx.root, "cat ./missing.txt", &[]),
+        "does not exist",
+        "missing",
+    );
     symlink(fx.base.join("not-there"), fx.root.join("dangling")).unwrap();
     assert_refused(
         &fx.classify(&fx.root, "cat ./dangling", &[]),
         "dangling",
         "dangling",
+    );
+    assert_refused(
+        &fx.classify(&fx.root, "cat ./dangling/x.txt", &[]),
+        "does not exist",
+        "dangling on the way",
     );
 }
 
@@ -418,21 +602,6 @@ fn a_special_file_gives_no_decision() {
         &fx.classify(&fx.root, "rg x ./d", &[]),
         "special file",
         "fifo in a tree",
-    );
-}
-
-#[test]
-fn a_missing_file_under_the_root_is_fine_and_one_outside_is_not() {
-    let fx = Fx::new();
-    assert_allow(
-        &fx.classify(&fx.root, "cat ./missing.txt", &[]),
-        "missing inside",
-    );
-    let command = format!("cat {}", fx.base.join("missing.txt").display());
-    assert_refused(
-        &fx.classify(&fx.root, &command, &[]),
-        "outside",
-        "missing outside",
     );
 }
 
@@ -461,6 +630,28 @@ fn cd_targets_are_followed_and_checked() {
         "outside",
         "cd via a link",
     );
+    // The target is checked itself, not only through the paths read after it.
+    assert_refused(
+        &fx.classify(&fx.root, "cd ./out && pwd", &[]),
+        "outside",
+        "cd, no path",
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn containment_ignores_case_on_macos() {
+    // The default APFS volume ignores case, so a root given in another case still holds the path.
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    let upper = PathBuf::from(fx.root.to_str().unwrap().to_uppercase());
+    if !upper.is_dir() {
+        eprintln!("a case-sensitive volume: nothing to check");
+        return;
+    }
+    let command = format!("cat {}", fx.path("a.txt"));
+    let input = request(&command, &fx.root, &[&upper], &[]);
+    assert_allow(&run(&input, &fx.env()), "root in upper case");
 }
 
 // --- secrets ------------------------------------------------------------------------------------------------
@@ -530,19 +721,9 @@ fn a_read_rule_on_the_path_gives_no_decision() {
         "other file",
     );
     assert_refused(
-        &fx.classify(&fx.root, "cat ./*.txt", rule),
-        "Read rule",
-        "glob",
-    );
-    assert_refused(
         &fx.classify(&fx.root, "cat < ./secret.txt", rule),
         "Read rule",
         "input redirect",
-    );
-    assert_refused(
-        &fx.classify(&fx.root, "cat ./SECRET.txt", &["Read(./secret.txt)"]),
-        "Read rule",
-        "case",
     );
     assert_refused(
         &fx.classify(&fx.root, "cat ./secret.txt", &["Read(./Secret.TXT)"]),
@@ -623,7 +804,13 @@ fn a_recursive_read_that_could_reach_a_denied_path_gives_no_decision() {
         );
         assert_refused(&fx.classify(&fx.root, "ls -R", &[rule]), "Read rule", rule);
     }
-    // The rule names nothing that exists under the tree.
+    // An anchored rule below the tree refuses even when nothing it names exists yet.
+    assert_refused(
+        &fx.classify(&fx.root, "rg x ./src", &["Read(./src/later/**)"]),
+        "could match below",
+        "nothing there yet",
+    );
+    // The rule names nothing under the tree.
     assert_allow(
         &fx.classify(&fx.root, "rg x ./src", &["Read(./elsewhere/**)"]),
         "nothing under the tree",
@@ -674,14 +861,20 @@ fn git_in_a_repository_with_only_safe_keys_is_allowed() {
         "git branch -a",
         "git remote -v",
     ] {
-        assert_allow(&fx.classify(&repo, command, &[]), command);
+        fx.assert_git_allow(&fx.classify(&repo, command, &[]), command);
+    }
+    let paths = fx.assert_git_allow(&fx.classify(&repo, "git status", &[]), "paths");
+    if !paths.is_empty() {
+        let top = repo.to_str().unwrap().to_string();
+        let git_dir = repo.join(".git").to_str().unwrap().to_string();
+        assert_eq!(paths, [top, git_dir], "the work tree and the git dir");
     }
     std::fs::create_dir_all(repo.join("sub")).unwrap();
-    assert_allow(
+    fx.assert_git_allow(
         &fx.classify(&repo.join("sub"), "git status", &[]),
         "a subdirectory",
     );
-    assert_allow(
+    fx.assert_git_allow(
         &fx.classify(&fx.root, "cd ./r && git status", &[]),
         "after a cd",
     );
@@ -703,7 +896,7 @@ fn gitattributes_without_a_driver_in_the_config_runs_nothing_and_is_allowed() {
     fx.git_try(&repo, &["diff"], &[]);
     fx.git_try(&repo, &["log", "-p"], &[]);
     assert_eq!(std::fs::read_dir(&fx.marks).unwrap().count(), 0);
-    assert_allow(&fx.classify(&repo, "git diff", &[]), "attributes alone");
+    fx.assert_git_allow(&fx.classify(&repo, "git diff", &[]), "attributes alone");
 }
 
 // --- git: the traps -----------------------------------------------------------------------------------------
@@ -715,12 +908,9 @@ fn config_trap(fx: &Fx, repo: &Path, key: &str, demo: &[&str], command: &str) {
     fx.git(repo, &["config", key, &fx.marker(&name)]);
     fx.git_try(repo, demo, &[]);
     assert!(fx.ran(&name), "{key}: the trap did not run on git {demo:?}");
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(repo, command, &[]),
-        &format!(
-            "git config key not on the allowlist: {}",
-            key.to_ascii_lowercase()
-        ),
+        &key.to_ascii_lowercase(),
         key,
     );
 }
@@ -761,6 +951,19 @@ fn trap_filter_clean_runs_on_git_diff() {
 }
 
 #[test]
+fn trap_core_ssh_command_runs_on_a_fetch() {
+    let fx = Fx::new();
+    let repo = fx.repo("r");
+    config_trap(
+        &fx,
+        &repo,
+        "core.sshCommand",
+        &["ls-remote", "ssh://example.invalid/x"],
+        "git log",
+    );
+}
+
+#[test]
 fn trap_alias_runs_a_program() {
     // An alias never replaces a builtin (`alias.status` is ignored), so this shows `!` aliases run
     // programs at all; the key is refused whatever it names.
@@ -772,11 +975,7 @@ fn trap_alias_runs_a_program() {
     );
     fx.git_try(&repo, &["zz"], &[]);
     assert!(fx.ran("alias"));
-    assert_refused(
-        &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: alias.zz",
-        "alias",
-    );
+    fx.assert_key_refused(&fx.classify(&repo, "git status", &[]), "alias.zz", "alias");
 }
 
 #[test]
@@ -791,9 +990,9 @@ fn trap_credential_helper_runs_a_program() {
         &[("GIT_TERMINAL_PROMPT", "0")],
     );
     assert!(fx.ran("cred"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git log", &[]),
-        "git config key not on the allowlist: credential.helper",
+        "credential.helper",
         "credential.helper",
     );
 }
@@ -819,9 +1018,9 @@ fn trap_protocol_ext_allow_runs_a_program() {
     let url = format!("ext::sh -c touch% {}", fx.marks.join("ext").display());
     fx.git_try(&repo, &["ls-remote", &url], &[]);
     assert!(fx.ran("ext"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git log", &[]),
-        "git config key not on the allowlist: protocol.ext.allow",
+        "protocol.ext.allow",
         "protocol",
     );
 }
@@ -841,9 +1040,9 @@ fn trap_core_hooks_path_runs_a_hook_on_git_status() {
     touch_later(&repo.join("a.txt"));
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("hookspath"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: core.hookspath",
+        "core.hookspath",
         "core.hooksPath",
     );
 }
@@ -859,7 +1058,9 @@ fn trap_a_hook_in_the_default_folder_runs_on_git_status() {
     touch_later(&repo.join("a.txt"));
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("pic"));
-    assert_refused(&fx.classify(&repo, "git status", &[]), "git hook", "hook");
+    if fx.platform_keys().is_empty() {
+        assert_refused(&fx.classify(&repo, "git status", &[]), "git hook", "hook");
+    }
 }
 
 /// Sets the file's modification time a few seconds ahead, so git sees a changed stat and writes
@@ -903,18 +1104,13 @@ fn trap_a_partial_clone_fetches_with_upload_pack_on_git_log_p() {
     chmod_x(&wrapper);
     fx.git(
         &clone,
-        &[
-            "config",
-            "remote.origin.uploadpack",
-            wrapper.to_str().unwrap(),
-        ],
+        &["config", "remote.origin.uploadpack", wrapper.to_str().unwrap()],
     );
     fx.git_try(&clone, &["log", "-p"], &[]);
     assert!(fx.ran("uploadpack"), "the lazy fetch ran upload-pack");
-    let out = fx.classify(&clone, "git log -p", &[]);
-    assert_refused(
-        &out,
-        "git config key not on the allowlist: remote.origin.",
+    fx.assert_key_refused(
+        &fx.classify(&clone, "git log -p", &[]),
+        "remote.origin.",
         "partial clone",
     );
     // The partial clone alone is refused, without the upload-pack override. Depending on the git
@@ -923,10 +1119,12 @@ fn trap_a_partial_clone_fetches_with_upload_pack_on_git_log_p() {
     let out = fx.classify(&clone, "git log -p", &[]);
     assert_refused(&out, "git config key not on the allowlist: ", "promisor");
     let err = out.stderr_text();
-    assert!(
-        err.contains("promisor") || err.contains("partialclone"),
-        "{err}"
-    );
+    if fx.platform_keys().is_empty() {
+        assert!(
+            err.contains("promisor") || err.contains("partialclone"),
+            "{err}"
+        );
+    }
 }
 
 #[test]
@@ -942,9 +1140,9 @@ fn trap_an_include_brings_in_a_program_key() {
     fx.git(&repo, &["config", "include.path", inc.to_str().unwrap()]);
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("incl"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: core.fsmonitor",
+        "core.fsmonitor",
         "include",
     );
 }
@@ -964,9 +1162,9 @@ fn trap_an_include_if_brings_in_a_program_key() {
     fx.git(&repo, &["config", "--global", &key, inc.to_str().unwrap()]);
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("inclif"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: core.fsmonitor",
+        "core.fsmonitor",
         "includeIf",
     );
 }
@@ -981,9 +1179,9 @@ fn trap_a_program_key_in_the_global_config() {
     );
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("global"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: core.fsmonitor",
+        "core.fsmonitor",
         "global",
     );
 }
@@ -999,9 +1197,9 @@ fn trap_the_worktree_config() {
     );
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("wt"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&repo, "git status", &[]),
-        "git config key not on the allowlist: extensions.worktreeconfig",
+        "extensions.worktreeconfig",
         "worktree config",
     );
 }
@@ -1028,9 +1226,9 @@ fn trap_a_signed_commit_in_a_bare_repository_reached_by_cd() {
     fx.git(&bare, &["config", "gpg.program", &fx.marker("gpg")]);
     fx.git_try(&bare, &["log"], &[]);
     assert!(fx.ran("gpg"));
-    assert_refused(
+    fx.assert_key_refused(
         &fx.classify(&fx.root, "cd ./sb.git && git log", &[]),
-        "git config key not on the allowlist: log.showsignature",
+        "log.showsignature",
         "bare repository",
     );
 }
@@ -1049,11 +1247,7 @@ fn trap_core_pager_runs_under_a_terminal() {
     };
     let _ = fx.command("script", &repo, &args, &[]).output().unwrap();
     assert!(fx.ran("pager"));
-    assert_refused(
-        &fx.classify(&repo, "git log", &[]),
-        "git config key not on the allowlist: core.pager",
-        "pager",
-    );
+    fx.assert_key_refused(&fx.classify(&repo, "git log", &[]), "core.pager", "pager");
 }
 
 #[test]
@@ -1069,16 +1263,21 @@ fn trap_a_populated_submodule_without_gitmodules_runs_its_own_config() {
     touch_later(&sub.join("a.txt"));
     fx.git_try(&repo, &["status"], &[]);
     assert!(fx.ran("subfs"));
-    assert_refused(
-        &fx.classify(&repo, "git status", &[]),
-        "submodule",
-        "gitlink",
-    );
+    if fx.platform_keys().is_empty() {
+        assert_refused(
+            &fx.classify(&repo, "git status", &[]),
+            "submodule",
+            "gitlink",
+        );
+    }
 }
 
 #[test]
 fn a_gitmodules_file_or_a_modules_folder_gives_no_decision() {
     let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
     let repo = fx.repo("r");
     std::fs::write(repo.join(".gitmodules"), "").unwrap();
     assert_refused(
@@ -1113,21 +1312,24 @@ fn trap_a_git_file_pointing_out_of_the_root() {
     std::fs::write(work.join("a"), "a\n").unwrap();
     fx.git(&work, &["add", "a"]);
     fx.git(&work, &["commit", "-qm", "a"]);
-    assert_refused(
-        &fx.classify(&work, "git status", &[]),
-        "outside",
-        "git dir outside",
-    );
+    if fx.platform_keys().is_empty() {
+        assert_refused(
+            &fx.classify(&work, "git status", &[]),
+            "outside",
+            "git dir outside",
+        );
+    }
     fx.git(&work, &["config", "core.fsmonitor", &fx.marker("gitfile")]);
     fx.git_try(&work, &["status"], &[]);
     assert!(
         fx.ran("gitfile"),
         "the config of the git dir it points to applies"
     );
-    let input = request("git status", &work, &[&fx.root, &fx.base], &[]);
-    assert_refused(
+    let line = format!("cd {} && git status", work.display());
+    let input = request(&line, &work, &[&fx.root, &fx.base], &[]);
+    fx.assert_key_refused(
         &run(&input, &fx.env()),
-        "git config key not on the allowlist: core.fsmonitor",
+        "core.fsmonitor",
         "git dir inside a second root",
     );
 }
@@ -1156,6 +1358,8 @@ fn trap_git_environment_variables() {
         ("GIT_WORK_TREE", "/tmp"),
         ("GIT_CONFIG_GLOBAL", "/tmp/x"),
         ("GIT_PAGER", "x"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_TERMINAL_PROMPT", "0"),
     ] {
         assert_refused(
             &fx.classify_env(&repo, "git diff", &[], &[(k, v)]),
@@ -1191,16 +1395,31 @@ fn git_outside_a_repository_or_without_git_gives_no_decision() {
 }
 
 #[test]
-fn a_tracked_secret_or_a_tracked_denied_path_gives_no_decision_for_git() {
+fn a_tracked_secret_or_a_rule_below_the_repository_gives_no_decision_for_git() {
     let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
     let repo = fx.repo("r");
     std::fs::write(repo.join("notes.txt"), "n\n").unwrap();
     fx.git(&repo, &["add", "notes.txt"]);
     fx.git(&repo, &["commit", "-qm", "notes"]);
+    for rule in ["Read(./notes.txt)", "Read(./later/**)", "Read(./.git/**)", "Read(./.git/config)"] {
+        assert_refused(
+            &fx.classify(&repo, "git log -p", &[rule]),
+            "Read rule",
+            rule,
+        );
+    }
+    // A name rule is held against the tracked paths, not git's own files.
     assert_refused(
-        &fx.classify(&repo, "git log -p", &["Read(./notes.txt)"]),
-        "Read rule",
-        "tracked denied file",
+        &fx.classify(&repo, "git log -p", &["Read(notes.txt)"]),
+        "Read rule matches: tracked",
+        "name rule on a tracked file",
+    );
+    fx.assert_git_allow(
+        &fx.classify(&repo, "git status", &["Read(config)"]),
+        "name rule on git's files",
     );
     std::fs::write(repo.join(".env.example"), "K=\n").unwrap();
     fx.git(&repo, &["add", ".env.example"]);
@@ -1212,19 +1431,11 @@ fn a_tracked_secret_or_a_tracked_denied_path_gives_no_decision_for_git() {
 }
 
 #[test]
-fn a_read_rule_on_the_repository_itself_gives_no_decision() {
-    let fx = Fx::new();
-    let repo = fx.repo("r");
-    assert_refused(
-        &fx.classify(&repo, "git status", &["Read(./.git/**)"]),
-        "Read rule",
-        "rule on .git",
-    );
-}
-
-#[test]
 fn alternates_or_an_unreadable_index_give_no_decision() {
     let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
     let repo = fx.repo("r");
     let other = fx.repo("o");
     let alternates = repo.join(".git/objects/info/alternates");
@@ -1241,19 +1452,30 @@ fn alternates_or_an_unreadable_index_give_no_decision() {
     );
     std::fs::remove_file(&alternates).unwrap();
     assert_allow(&fx.classify(&repo, "git log", &[]), "back to normal");
-    std::fs::write(repo.join(".git/index"), b"DIRC\0\0\0\x02\0\0\0\x05short").unwrap();
+    std::fs::write(
+        repo.join(".git/index"),
+        b"DIRC\0\0\0\x02\0\0\0\x05short",
+    )
+    .unwrap();
     assert_refused(
         &fx.classify(&repo, "git log", &[]),
         "index",
         "corrupt index",
     );
     std::fs::write(repo.join(".git/index"), b"nope").unwrap();
-    assert_refused(&fx.classify(&repo, "git log", &[]), "index", "not an index");
+    assert_refused(
+        &fx.classify(&repo, "git log", &[]),
+        "index",
+        "not an index",
+    );
 }
 
 #[test]
 fn every_index_version_is_read() {
     let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
     let repo = fx.repo("r");
     std::fs::write(repo.join(".env"), "K=v\n").unwrap();
     fx.git(&repo, &["add", "-f", ".env"]);
@@ -1284,13 +1506,19 @@ fn classify_latency() {
     let fx = Fx::new();
     fx.write("a.txt", "a\n");
     let repo = fx.repo("r");
+    let git_allowed = fx.platform_keys().is_empty();
     for (cwd, command) in [(&fx.root, "cat ./a.txt"), (&repo, "git status")] {
-        let input = request(command, cwd, &[&fx.root], &[]);
+        let line = format!("cd {} && {command}", cwd.display());
+        let input = request(&line, cwd, &[&fx.root], &[]);
         let mut times: Vec<Duration> = (0..60)
             .map(|_| {
                 let start = Instant::now();
-                assert_allow(&run(&input, &fx.env()), command);
-                start.elapsed()
+                let out = run(&input, &fx.env());
+                let elapsed = start.elapsed();
+                if git_allowed || !command.starts_with("git") {
+                    assert_allow(&out, command);
+                }
+                elapsed
             })
             .collect();
         times.sort();

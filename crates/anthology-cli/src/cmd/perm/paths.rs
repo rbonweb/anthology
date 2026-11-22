@@ -1,28 +1,30 @@
 //! `readonly_paths`: every path a proven command reads, checked on the file system.
 //!
 //! A path is resolved against the working directory the `cd` targets lead to, with its symlinks
-//! followed (a path that does not exist yet is resolved through its longest existing ancestor). The
-//! resolved path must lie under a root, must not be a special file (a FIFO, socket or device), and
-//! must not match a `Read()` rule or a secret pattern, as written or as resolved. A glob is
-//! expanded here, each match checked the same way. A recursive path stands for every entry under
-//! it: the tree is walked, without following symlinks (no program of the table follows one below
-//! its start), and every entry is held against the rules and the secret patterns. A tree that holds
-//! more than [`MAX_ENTRIES`] entries is not walked to the end: no decision.
+//! followed. It must exist, lie under a root (compared without case on macOS, whose default volume
+//! ignores it), be a regular file or a directory, and match no `Read()` rule or secret pattern, as
+//! written or as resolved. A glob is not proven: what the shell expands it to is not known here. A
+//! recursive path stands for every entry under it: an anchored rule that could match below it
+//! refuses, and the tree is walked, without following symlinks (no program of the table follows
+//! one below its start), with every entry held against the rules and the secret patterns. A tree of
+//! more than [`MAX_ENTRIES`] entries refuses. Every resolved path is recorded for the answer.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anthology_shell::{ReadPath, is_secret_path, is_secret_tree};
 
 use super::rules::Matcher;
 use super::shown;
 
-/// The most directory entries one request may list, over every glob and walk.
+/// The most directory entries one request may list, over every walk.
 pub const MAX_ENTRIES: usize = 20_000;
 
-/// What the path check works with: the real roots, the rules and the entry budget.
+/// What the path check works with: the real roots, the rules, the entry budget, and the resolved
+/// paths the command reads, in order.
 pub struct Checker {
     pub roots: Vec<PathBuf>,
     pub rules: Matcher,
+    pub reads: Vec<PathBuf>,
     left: usize,
 }
 
@@ -38,13 +40,21 @@ impl Checker {
         Checker {
             roots,
             rules,
+            reads: Vec::new(),
             left: MAX_ENTRIES,
         }
     }
 
     /// Whether `real` (resolved) lies under a root.
     pub fn inside(&self, real: &Path) -> bool {
-        self.roots.iter().any(|root| real.starts_with(root))
+        self.roots.iter().any(|root| under(real, root))
+    }
+
+    /// Records a resolved path the command reads, once.
+    pub fn record(&mut self, real: &Path) {
+        if !self.reads.iter().any(|p| p == real) {
+            self.reads.push(real.to_path_buf());
+        }
     }
 
     fn spend(&mut self) -> Result<(), String> {
@@ -65,6 +75,7 @@ impl Checker {
                 .filter(|p| p.is_dir())
                 .ok_or_else(|| format!("cd target is not a directory: {}", shown(target)))?;
             self.judge(&lex, &real, false)?;
+            self.record(&real);
             at = Place { lex, real };
         }
         Ok(at)
@@ -73,11 +84,22 @@ impl Checker {
     /// Checks one path of the command, relative to `at`.
     pub fn check(&mut self, at: &Place, path: &ReadPath) -> Result<(), String> {
         if path.path.contains(['*', '?', '[']) {
-            return self.expand(at, &path.path, path.recursive);
+            return Err(format!("a glob: {}", shown(&path.path)));
         }
         let lex = join_clean(&at.lex, &path.path);
         let real = resolve(&join_clean(&at.real, &path.path))?;
-        self.literal(&lex, &real, path.recursive)
+        self.judge(&lex, &real, path.recursive)?;
+        let meta = std::fs::metadata(&real)
+            .map_err(|_| format!("cannot read: {}", shown(&lex.to_string_lossy())))?;
+        if meta.is_dir() {
+            if path.recursive {
+                self.below(&lex, &real)?;
+            }
+        } else if !meta.is_file() {
+            return Err(format!("special file: {}", shown(&lex.to_string_lossy())));
+        }
+        self.record(&real);
+        Ok(())
     }
 
     /// The containment, rule and secret checks of one resolved path.
@@ -111,24 +133,15 @@ impl Checker {
         Ok(())
     }
 
-    fn literal(&mut self, lex: &Path, real: &Path, recursive: bool) -> Result<(), String> {
-        self.judge(lex, real, recursive)?;
-        match std::fs::metadata(real) {
-            Ok(meta) if meta.is_dir() => {
-                if recursive {
-                    self.walk(lex, real)?;
-                }
-                Ok(())
-            }
-            Ok(meta) if meta.is_file() => Ok(()),
-            Ok(_) => Err(format!("special file: {}", shown(&lex.to_string_lossy()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(format!("cannot read: {}", shown(&lex.to_string_lossy()))),
+    /// What lies below a directory read recursively: no anchored rule may reach into it, and no
+    /// entry (walked without following symlinks) may match a rule or a secret pattern.
+    pub fn below(&mut self, lex: &Path, real: &Path) -> Result<(), String> {
+        if self.rules.anchored_reaches(lex) || self.rules.anchored_reaches(real) {
+            return Err(format!(
+                "Read rule could match below: {}",
+                shown(&lex.to_string_lossy())
+            ));
         }
-    }
-
-    /// Every entry under `real`, without following symlinks, against the rules and the secrets.
-    fn walk(&mut self, lex: &Path, real: &Path) -> Result<(), String> {
         let mut stack = vec![(lex.to_path_buf(), real.to_path_buf(), String::new())];
         while let Some((lex, real, rel)) = stack.pop() {
             let entries = std::fs::read_dir(&real)
@@ -162,76 +175,20 @@ impl Checker {
         }
         Ok(())
     }
+}
 
-    /// Expands a glob the way the shell could (read wide: `*` and `?` match a leading `.`, a class
-    /// matches any one character, case is ignored) and checks every match. A `**` component makes
-    /// the directory before it a recursive read.
-    fn expand(&mut self, at: &Place, text: &str, recursive: bool) -> Result<(), String> {
-        let start = if text.starts_with('/') {
-            Place {
-                lex: PathBuf::from("/"),
-                real: PathBuf::from("/"),
-            }
-        } else {
-            at.clone()
-        };
-        let mut frontier = vec![start];
-        for comp in text.split('/').filter(|c| !c.is_empty() && *c != ".") {
-            if comp == "**" {
-                for place in &frontier {
-                    let real = resolve(&place.real)?;
-                    self.literal(&place.lex, &real, true)?;
-                }
-                return Ok(());
-            }
-            if !comp.contains(['*', '?', '[']) {
-                for place in &mut frontier {
-                    place.lex.push(comp);
-                    place.real.push(comp);
-                }
-                continue;
-            }
-            let glob = glob_tokens(comp);
-            let mut next = Vec::new();
-            for place in &frontier {
-                let entries = match std::fs::read_dir(&place.real) {
-                    Ok(entries) => entries,
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                        ) =>
-                    {
-                        continue;
-                    }
-                    Err(_) => {
-                        return Err(format!(
-                            "cannot list: {}",
-                            shown(&place.lex.to_string_lossy())
-                        ));
-                    }
-                };
-                for entry in entries {
-                    let entry = entry.map_err(|_| "cannot list a directory".to_string())?;
-                    self.spend()?;
-                    let name = entry.file_name();
-                    let folded: Vec<char> = name.to_string_lossy().to_lowercase().chars().collect();
-                    if glob_matches(&glob, &folded) {
-                        next.push(Place {
-                            lex: place.lex.join(&name),
-                            real: place.real.join(&name),
-                        });
-                    }
-                }
-            }
-            frontier = next;
-        }
-        for place in frontier {
-            let real = resolve(&place.real)?;
-            self.literal(&place.lex, &real, recursive)?;
-        }
-        Ok(())
+/// Whether `path` lies under `root`, component by component; without case on macOS.
+fn under(path: &Path, root: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return path.starts_with(root);
     }
+    let fold = |p: &Path| -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    let (path, root) = (fold(path), fold(root));
+    path.len() >= root.len() && path[..root.len()] == root[..]
 }
 
 /// `base` joined with `text` (an absolute `text` replaces it), without `.` or empty components.
@@ -248,138 +205,20 @@ pub fn join_clean(base: &Path, text: &str) -> PathBuf {
     out
 }
 
-/// `path` with its symlinks resolved. A path that does not exist is resolved through its longest
-/// existing ancestor; a symlink that points nowhere (on the way or at the end) is refused, since
-/// what it names can be created after the check.
+/// `path` with its symlinks resolved; it must exist.
 pub fn resolve(path: &Path) -> Result<PathBuf, String> {
-    let dangling = || format!("dangling symlink: {}", shown(&path.to_string_lossy()));
-    match std::fs::canonicalize(path) {
-        Ok(real) => return Ok(real),
-        Err(e)
-            if !matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Err(format!(
-                "cannot resolve: {}",
-                shown(&path.to_string_lossy())
-            ));
+    std::fs::canonicalize(path).map_err(|_| {
+        if std::fs::symlink_metadata(path).is_ok() {
+            format!("dangling symlink: {}", shown(&path.to_string_lossy()))
+        } else {
+            format!("does not exist: {}", shown(&path.to_string_lossy()))
         }
-        Err(_) => {}
-    }
-    if std::fs::symlink_metadata(path).is_ok() {
-        return Err(dangling());
-    }
-    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
-    let mut at = path;
-    loop {
-        let Some(Component::Normal(name)) = at.components().next_back() else {
-            return Err(format!(
-                "cannot resolve: {}",
-                shown(&path.to_string_lossy())
-            ));
-        };
-        rest.push(name);
-        let parent = at
-            .parent()
-            .ok_or_else(|| format!("cannot resolve: {}", shown(&path.to_string_lossy())))?;
-        if let Ok(mut real) = std::fs::canonicalize(parent) {
-            if !real.is_dir() {
-                return Err(format!(
-                    "cannot resolve: {}",
-                    shown(&path.to_string_lossy())
-                ));
-            }
-            for name in rest.iter().rev() {
-                real.push(name);
-            }
-            return Ok(real);
-        }
-        if std::fs::symlink_metadata(parent).is_ok() {
-            return Err(dangling());
-        }
-        at = parent;
-    }
-}
-
-/// A glob component tokenised wide: `*` any run, `?` and a bracket class any one character.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Tok {
-    Star,
-    One,
-    Lit(char),
-}
-
-fn glob_tokens(component: &str) -> Vec<Tok> {
-    let chars: Vec<char> = component.to_lowercase().chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '*' => out.push(Tok::Star),
-            '?' => out.push(Tok::One),
-            '[' => match chars[i + 1..].iter().position(|&c| c == ']') {
-                Some(end) => {
-                    out.push(Tok::One);
-                    i += 1 + end;
-                }
-                None => out.push(Tok::Lit('[')),
-            },
-            c => out.push(Tok::Lit(c)),
-        }
-        i += 1;
-    }
-    out
-}
-
-fn glob_matches(pattern: &[Tok], text: &[char]) -> bool {
-    let (mut p, mut t) = (0, 0);
-    let mut backtrack: Option<(usize, usize)> = None;
-    while t < text.len() {
-        match pattern.get(p) {
-            Some(Tok::Star) => {
-                backtrack = Some((p, t));
-                p += 1;
-            }
-            Some(Tok::One) => {
-                p += 1;
-                t += 1;
-            }
-            Some(Tok::Lit(c)) if *c == text[t] => {
-                p += 1;
-                t += 1;
-            }
-            _ => match backtrack {
-                Some((star, at)) => {
-                    backtrack = Some((star, at + 1));
-                    p = star + 1;
-                    t = at + 1;
-                }
-                None => return false,
-            },
-        }
-    }
-    pattern[p..].iter().all(|tok| *tok == Tok::Star)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_wide_glob_matches_dots_classes_and_any_case() {
-        let m = |glob: &str, name: &str| {
-            glob_matches(
-                &glob_tokens(glob),
-                &name.to_lowercase().chars().collect::<Vec<_>>(),
-            )
-        };
-        assert!(m("*env", ".env"));
-        assert!(m("[xyz].TXT", "q.txt"), "a class is any one character");
-        assert!(m("a*b*c", "aXXbYYc"));
-        assert!(!m("a*b", "ac"));
-    }
 
     #[test]
     fn join_clean_drops_dots_and_lets_an_absolute_path_replace() {
@@ -388,5 +227,15 @@ mod tests {
             PathBuf::from("/w/a/b")
         );
         assert_eq!(join_clean(Path::new("/w"), "/x/./y"), PathBuf::from("/x/y"));
+    }
+
+    #[test]
+    fn under_compares_whole_components() {
+        assert!(under(Path::new("/a/b/c"), Path::new("/a/b")));
+        assert!(!under(Path::new("/a/bc"), Path::new("/a/b")));
+        assert_eq!(
+            under(Path::new("/A/B/c"), Path::new("/a/b")),
+            cfg!(target_os = "macos")
+        );
     }
 }

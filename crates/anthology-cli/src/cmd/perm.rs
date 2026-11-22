@@ -2,20 +2,27 @@
 //! permission mod.
 //!
 //! stdin is one JSON object, `{"command","cwd","roots":[abs],"read_rules":[rule text]}`, and
-//! nothing else. The answer is exit 0 with exactly [`TOKEN`] on stdout when the command is proven
-//! read-only and every path it reads passes the path check; anything else is exit 1 with one
-//! `anthology perm: no decision: <reason>` line on stderr and nothing on stdout, so the caller keeps
-//! the engine's verdict. There is no deny: this command only ever skips a prompt or stays out.
+//! nothing else. On a proof the answer is exit 0 and, on stdout, the [`TOKEN`] line followed by one
+//! line per path the command reads: the resolved absolute path of every `cd` target, every file and
+//! every start directory of a recursive reader, and for git the work tree, the git dir and the
+//! common dir. The caller checks each of those with its own Read permission. Anything else is
+//! exit 1 with one `anthology perm: no decision: <reason>` line on stderr and nothing on stdout, so
+//! the caller keeps the engine's verdict. There is no deny: this command only ever skips a prompt
+//! or stays out. A panic exits 101, never 0.
 //!
 //! The steps, each of which can only refuse:
 //!
-//! 1. `anthology_shell::classify_readonly` must prove the line ([`ReadOnly::Proven`]).
-//! 2. Every `PATH` entry must be absolute: a relative one would let a file in the working
-//!    directory stand in for `ls` or `git`.
-//! 3. The roots and the working directory must resolve to directories; the `Read()` rules must all
-//!    be readable and none may deny every read.
-//! 4. `paths`: the `cd` targets and every path the proof lists (`readonly_paths`).
-//! 5. `git`: for a line that runs git, the repository and its configuration.
+//! 1. The command is plain ASCII (no invisible Unicode), and `anthology_shell::classify_readonly`
+//!    proves the line ([`ReadOnly::Proven`]).
+//! 2. Every `PATH` entry is absolute: a relative one would let a file in the working directory
+//!    stand in for `ls` or `git`.
+//! 3. The working directory the command runs in is known only from a leading absolute `cd`: the
+//!    `cwd` of the request is not trusted to be the shell's (subagents, worktrees), so without
+//!    such a `cd` every relative path, every implicit `.` and every git line refuses.
+//! 4. The roots and `cwd` resolve to directories; the `Read()` rules are all readable and none
+//!    denies every read.
+//! 5. `paths`: the `cd` targets and every path the proof lists (`readonly_paths`).
+//! 6. `git`: for a line that runs git, the repository and its configuration.
 //!
 //! What this cannot see: the command runs in the user's shell, which may have its own aliases,
 //! functions or environment (the shell snapshot); the check sees this process's environment.
@@ -56,10 +63,17 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
     }
     let env = Env::from_process();
     match read_request(stdin).and_then(|request| classify(&request, &env)) {
-        Ok(()) => Output {
-            stdout: TOKEN.as_bytes().to_vec(),
-            ..Output::default()
-        },
+        Ok(reads) => {
+            let mut stdout = TOKEN.to_string();
+            for path in reads {
+                stdout.push_str(&path);
+                stdout.push('\n');
+            }
+            Output {
+                stdout: stdout.into_bytes(),
+                ..Output::default()
+            }
+        }
         Err(why) => Output {
             stderr: format!("anthology perm: no decision: {}\n", shown(&why)).into_bytes(),
             code: 1,
@@ -132,7 +146,17 @@ fn read_request(stdin: &mut dyn Read) -> Result<Request, String> {
     })
 }
 
-fn classify(request: &Request, env: &Env) -> Result<(), String> {
+/// The resolved paths the command reads, in order, or why there is no decision.
+fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
+    // Invisible Unicode (zero-width, bidi controls) and NUL can make a line read one way and run
+    // another: only printable ASCII and tabs are read at all.
+    if !request
+        .command
+        .bytes()
+        .all(|b| b == b'\t' || (b' '..=b'~').contains(&b))
+    {
+        return Err("the command holds a character that is not printable ASCII".into());
+    }
     let home = env.get("HOME").unwrap_or_default();
     let (paths, cd, runs_git_config) = match classify_readonly(&request.command, home) {
         ReadOnly::Proven {
@@ -176,6 +200,26 @@ fn classify(request: &Request, env: &Env) -> Result<(), String> {
             home: home_path.as_deref(),
         },
     )?;
+    // The request's cwd is not trusted to be the shell's: only a leading absolute `cd` says where
+    // the rest runs.
+    let anchored = cd.first().is_some_and(|target| target.starts_with('/'));
+    if !anchored {
+        if let Some(target) = cd.first() {
+            return Err(format!(
+                "a relative cd target, and the shell's working directory is not known: {}",
+                shown(target)
+            ));
+        }
+        if let Some(path) = paths.iter().find(|p| !p.path.starts_with('/')) {
+            return Err(format!(
+                "a relative path, and the shell's working directory is not known: {}",
+                shown(&path.path)
+            ));
+        }
+        if runs_git_config {
+            return Err("git, and the shell's working directory is not known".into());
+        }
+    }
     let mut checker = Checker::new(roots, rules);
     let start = Place {
         lex: lex_cwd,
@@ -186,7 +230,22 @@ fn classify(request: &Request, env: &Env) -> Result<(), String> {
         checker.check(&at, path)?;
     }
     if runs_git_config {
-        git::check(&checker, &at.real, env)?;
+        git::check(&mut checker, &at.real, env)?;
     }
-    Ok(())
+    // One path per line: a path that cannot be written so refuses.
+    checker
+        .reads
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .filter(|p| !p.chars().any(char::is_control))
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    format!(
+                        "a path that cannot be listed: {}",
+                        shown(&path.to_string_lossy())
+                    )
+                })
+        })
+        .collect()
 }
