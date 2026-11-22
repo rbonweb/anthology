@@ -106,7 +106,11 @@ a new version section.
     per-worktree Docker names, small memory).
   - The routing guide dropped its model-to-agent list (each agent already fixes its own model)
     to stay within its size budget.
-- rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
+- The plugin now pins rtk `1.2.1-anthology.5` (tag `rtk--v1.2.1-anthology.5`) in `rtk.lock`,
+  and the session-start reconcile installs it. It is built on the shared `anthology-shell`
+  parser with the `$((` lexer fix, so a program word hidden inside `$((…))` is no longer let
+  through, and its gate has the change below.
+- rtk fork, in rtk `1.2.1-anthology.5`: with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
   absolute or `./` path that exists (no `..`, `~`, `-`, variable or bare `src`, which
