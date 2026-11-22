@@ -30,6 +30,22 @@ a new version section.
   that names the assistant or its maker, or a "Generated with" line that names the assistant.
   Every other command is allowed. The check catches the usual habit and is not a guarantee:
   `--trailer`, `-F` and `--body-file` are not checked.
+- `anthology-mem save --body-file <path>` takes the note body from a file (`-` for stdin) and
+  applies the same checks as `--body`. Claude Code's delete safety check reads the command line,
+  so a note that merely mentioned a delete command was refused when passed inline. Exactly one of
+  `--body` and `--body-file` is required. The file must be a regular file of at most 16 KB (a
+  larger one is refused, never cut), inside the repo or the system temp folder, and not at an
+  obvious secret location (the guard's own list: `.ssh`, `.env`, keys, credentials, shell
+  history); symlinks are resolved before the check.
+- `anthology-mem save` warns on stderr, and still saves, when the agent already has a note with
+  a very similar name or description, and suggests updating it with `--replace`.
+- Every agent that saves notes except the scout (its startup budget has 4 bytes free) is told
+  to pass a long note body, or one holding `$(`, backticks or delete-like words, through
+  `anthology-mem save --body-file <path>` (a file inside the repo or temp folder) or
+  `--body-file -`.
+- When session start has to cut the memory index to fit its budget, the closing pointer now
+  says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
+  paths, because the index is capped and those files are not the way to read every note.
 
 #### Fixed
 
@@ -39,6 +55,18 @@ a new version section.
   `bypassPermissions`, and the command runs as typed. Auto, default, acceptEdits and plan modes
   behave as before (auto keeps the ask, so `Bash(rtk *)` cannot skip auto mode's classifier),
   and a deny is never dropped.
+- Session start no longer injects the lead's rules into subagents. When a subagent compacts,
+  Claude Code runs SessionStart inside it, and it used to get every lead-only warning too: the
+  setup nag, the guardrails self-test and its "anthology-guardrails is not installed" warning
+  (false when guardrails is installed for the project, because the subagent's folder can be
+  outside it), the rtk and data-folder checks, and the once-per-repo agent-memory note, which a
+  subagent could use up before the lead saw it. A subagent now gets its memory index and nothing
+  else: no guide, no warnings, no state writes.
+- Session start warns when Claude Code was started in a folder that is not a git repo but holds
+  git repos directly below it. Anthology's agents need worktrees, so every dispatch of a writing
+  agent failed there and the lead fell back to agents without Anthology's rules. The warning
+  says to start Claude Code inside the repo you are working on. It looks one level down and at
+  no more than 200 entries, and it is not shown in subagents.
 
 #### Changed
 
@@ -48,6 +76,11 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
+- Every generated memory index (personal, repo, agent, imported) is capped at 8 KB (was 20 KB).
+  Agents' `MEMORY.md` files had grown to 17-20 KB with 88-138 notes, many of them per-task
+  logs. Past the cap an index keeps the newest notes of each type and ends each cut type with
+  "N more — use `anthology-mem search`". The session-start pointers no longer name the
+  `MEMORY.md` file, since it is capped too.
 - A repo that uses Anthology memory has one memory: the repo's committed `.claude/memory/`
   plus personal memory. When `/anthology:setup` approves a repo, it merges
   `"autoMemoryEnabled": false` into that repo's committed `.claude/settings.json`, so Claude
@@ -73,7 +106,32 @@ a new version section.
   the confirmation the notes are still copied only into personal memory, as before.
 - The routing guide says repo memory is where the lead writes its notes, because Claude's
   auto memory is off in approved repos.
-- rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
+- Field fixes from an audit of a long multi-agent session:
+  - Writing agents edit files with Edit/Write only (no heredocs, `sed -i` or file-writing
+    scripts) and run one git command per Bash call, because Claude Code refuses commands it
+    cannot verify. They also never use a long `sleep`, load deferred tools such as Monitor
+    through ToolSearch before calling them, and put a timeout on every test run, reporting a
+    hang instead of waiting.
+  - Writing agents also tag Docker images and name containers per worktree, commit with
+    `git commit -m "subject" -m "body"` (never `-F`, which the attribution hook cannot see) and
+    merge with single commands.
+  - Every agent that saves notes (architect, researcher, reviewer, ui-reviewer, marketer,
+    product-planner and the four writers) saves only lasting facts, searches with
+    `anthology-mem search` first and updates an existing note instead of adding a duplicate.
+    The scout is left alone because its startup budget has 4 bytes free.
+  - Routing guide: merge conflicts go to an implementer, long checks run in the background or
+    go to an agent, plans hold no lead coding tasks, agents are briefed with a plan path and
+    task ID, a user's stop or pause beats the plan, and Docker images and containers are named
+    per worktree so parallel agents do not test each other's code.
+  - `large-builds` skill: the detail behind those rules (lead and user, waiting and hangs,
+    per-worktree Docker names, small memory).
+  - The routing guide dropped its model-to-agent list (each agent already fixes its own model)
+    to stay within its size budget.
+- The plugin now pins rtk `1.2.1-anthology.5` (tag `rtk--v1.2.1-anthology.5`) in `rtk.lock`,
+  and the session-start reconcile installs it. It is built on the shared `anthology-shell`
+  parser with the `$((` lexer fix, so a program word hidden inside `$((…))` is no longer let
+  through, and its gate has the change below.
+- rtk fork, in rtk `1.2.1-anthology.5`: with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
   absolute or `./` path that exists (no `..`, `~`, `-`, variable or bare `src`, which
@@ -288,7 +346,27 @@ a new version section.
   changes that variable. So do read loops that only count (`n=$((n+1))`) and function
   wrappers such as `run() { "$@"; }; run make test`. The too-complex message suggests single
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
-  blocked.
+  blocked. These ship in the next `anthology` binary (0.1.4).
+
+#### Fixed
+
+- A read-only search is no longer blocked as "too complex" (G0) because its regex has a
+  bracket expression that holds a backtick, for example a `grep -E` pattern in double
+  quotes that has a quote and a backtick, both escaped, inside square brackets. The guard
+  treated every opening square bracket that had a backtick after it as the start of an
+  array subscript, and bash and zsh run a command in a subscript. A subscript only follows
+  a name, so a bracket at the start of a word, or after punctuation such as a space or a
+  quote, is now a plain bracket expression, but only in a command with no `$` anywhere, no
+  backtick substitution, and no shell, `eval`, `xargs` or `parallel` in it: otherwise an
+  expansion elsewhere can put a name in front of the word (`set -- '[...]'; unset "a$1"`),
+  and every bracket is read as before. In such a command everything else is read as before: a bracket
+  after a letter, digit, underscore, non-ASCII character, `]`, `}`, `)`, `$`, `*`, `?` or
+  `=`; every bracket in a command that has an array literal (`a=( [k]=v )`); and every
+  bracket in a command with a `$(...)` or backtick substitution, because the guard takes a
+  substitution out of the word and a name may have stood there. A backtick escaped inside
+  double quotes is a plain backtick and was already read that way. It still counts in a
+  subscript after a name, because bash removes the quotes before it evaluates the
+  subscript. The fix ships in the next `anthology` binary (0.1.3).
 
 ### [0.2.0] - 2026-11-22
 
@@ -339,6 +417,14 @@ a new version section.
 ## anthology-superpowers
 
 ### [Unreleased]
+
+#### Fixed
+
+- The SessionStart hook prints nothing inside a subagent. When a subagent compacts, Claude
+  Code runs the hook there too, and it injected the `using-superpowers` introduction into the
+  subagent. The hook now reads the first line of its input and exits quietly when Claude Code
+  has set a non-empty `agent_id`. The read waits at most two seconds, so an input that never
+  closes cannot hang the hook, and other harnesses are not asked.
 
 ### [0.2.0] - 2026-11-22
 

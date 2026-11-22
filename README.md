@@ -180,7 +180,7 @@ If the guard cannot run (its binary is missing, broken or cannot be installed), 
 
 The guard is built to stop accidental browser installs and launches by cooperative agents. It is a hook plus deny rules, not a sandbox or a jail, and it does not defend against deliberate obfuscation. Known limits:
 
-- Commands built inside variables or arrays and then run are not seen for what they are.
+- A command whose program or script comes from a variable, an array, a positional parameter, an alias or a value read from input is blocked as too complex to check, except a program under a standard directory such as `"$HOME/.cargo/bin/cargo"`. [SECURITY.md](SECURITY.md#values-the-guard-cannot-see) lists exactly what is blocked and what still gets through.
 - A command whose text comes from another command's output and is fed to a shell is not looked into: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`.
 - Unusual nested shell syntax can hide a command, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`.
 - Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for profile paths. Inside interpreter code (`python3 -c`, `node -e`, a heredoc fed to `python3`, a BrowserOS Neo `run` script) only profile paths spelled out in one string are seen: a path assembled piecewise (`Path.home() / "Library" / …`, variables) is not, and neither is a command run from inside the code (`os.system(…)`).
@@ -302,8 +302,10 @@ Roster agents save their notes through one command, so a read-only agent needs n
 
 ```text
 anthology-mem save --agent <name> --type <project|feedback|reference> --slug <topic-slug> \
-  --name '<title>' --description '<one line>' --body '<text>' [--replace]
+  --name '<title>' --description '<one line>' (--body '<text>' | --body-file <path>) [--replace]
 ```
+
+`--body-file` reads the text from a file instead (`-` reads standard input) and applies the same checks as `--body`. The file must be a regular file of at most 16 KB, inside the repo or the system temp folder (`$TMPDIR`, `/tmp`), and not at a secret location (`.ssh`, `.env`, keys, credentials, shell history); symlinks are resolved first, and a file that is too large is refused, never cut. Use it when the text is long or contains shell-looking lines such as `rm -rf`: Claude Code's safety check reads the command line, so a note that merely mentions a delete command can be refused as one. Saving warns, without failing, when the agent already has a note with a very similar name or description, so a repeat can update that note with `--replace` instead. Every generated `MEMORY.md` (personal, repo, agent and imported) is capped at about 8 KB: past that it lists the newest notes of each type and ends each cut type with `N more — use anthology-mem search`.
 
 It writes `<repo>/.claude/agent-memory/anthology-<name>/<type>-<topic-slug>.md` with the frontmatter the indexes read, then regenerates that folder's `MEMORY.md`. It writes nowhere else: the agent must be on the roster, the type and slug are checked, symlinked folders or files are refused, an existing note is only overwritten with `--replace`, and a note that looks like it holds a secret (or the value of a `*TOKEN*`/`*KEY*`/`*SECRET*`/`*PASSWORD*` environment variable) or that the privacy scan flags (home paths, emails, IP addresses, private host names, ssh targets and key paths) is refused, with the kind and line named. Setup allows exactly `Bash(anthology-mem save *)`; Claude Code still asks before a command that adds anything to it (`&&`, a redirect, `$(...)`). A body line that starts with `#` also makes Claude Code ask, so notes use **bold** lines instead of `#` headings.
 

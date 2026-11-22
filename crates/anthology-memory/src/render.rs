@@ -36,10 +36,13 @@ pub struct Budget {
     pub bytes: usize,
 }
 
-/// Under Claude Code's 200-line / 25 KB load limit for a `MEMORY.md`.
+/// The cap on a generated `MEMORY.md`, well under Claude Code's 200-line / 25 KB load limit.
+/// The index is loaded into an agent's context in full, so it stays small: indexes of 17-20 KB
+/// (88-138 notes, many of them per-task logs) were a real cost. About 55 entries fit; past that
+/// the newest notes of each type stay and each cut type ends with an "N more" pointer.
 pub const DEFAULT_BUDGET: Budget = Budget {
     lines: 150,
-    bytes: 20000,
+    bytes: 8000,
 };
 
 /// The index text injected into a session, per section.

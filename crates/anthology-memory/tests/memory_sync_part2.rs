@@ -1617,6 +1617,8 @@ mod context_budget_test {
         out.into_iter().filter(|p| p.starts_with("## ")).collect()
     }
 
+    /// Keeps the Python method's name (the ledger requires it). Since the index cap, the on-disk
+    /// index is capped too: the test asserts that, and that the pointer names the search.
     #[test]
     fn test_personal_section_is_capped_but_on_disk_index_is_not() {
         let c = MemCase::new();
@@ -1631,10 +1633,11 @@ mod context_budget_test {
         assert!(body.len() <= 2500);
         assert!(body.lines().count() <= 40);
         let disk = c.anth.join("personal-memory/MEMORY.md");
-        assert!(body.contains("more — use `anthology-mem search` (full index: "));
-        assert!(body.contains(&*disk.to_string_lossy()));
+        // The on-disk index is capped too, so the pointer names the search, not that file.
+        assert!(body.contains("more — use `anthology-mem search`"));
+        assert!(!body.contains("full index"));
         assert!(read(&disk).lines().count() > 100);
-        assert!(fs::read(&disk).unwrap().len() <= 20000);
+        assert!(fs::read(&disk).unwrap().len() <= 8000);
     }
 
     #[test]

@@ -8,6 +8,10 @@
 //! 3. The same with a file the text writes as an argument (`... > work/p.hex && sh cmp.sh work/p.hex`).
 //! 4. Two pipelines that each end in `head` (`a | head; b | grep x | head`): a one-word command ended by
 //!    no `(` defines no function, so the second `head` is not a function call fed by its pipe.
+//! 5. A regex bracket expression holding a backtick, written in double quotes with `\"` and `\``
+//!    (`grep -E "['\"\`]A['\"\`]" d`): a `[` at the start of a word or after punctuation follows no name, so
+//!    it opens no subscript. bash 5.2 and zsh 5.9 agree on that and on `\`` being a literal backtick in
+//!    double quotes; a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` still runs `id`.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -31,6 +35,16 @@ fn assert_all(commands: &[&str], want: Verdict) {
         })
         .collect();
     assert!(wrong.is_empty(), "want {want:?}:\n{}", wrong.join("\n"));
+}
+
+#[track_caller]
+fn assert_none_allowed(commands: &[&str]) {
+    let wrong: Vec<String> = commands
+        .iter()
+        .filter(|c| verdict(c) == Verdict::Allow)
+        .map(|c| format!("{c:?}"))
+        .collect();
+    assert!(wrong.is_empty(), "want no Allow:\n{}", wrong.join("\n"));
 }
 
 #[test]
@@ -109,5 +123,121 @@ fn a_one_word_command_ended_by_no_paren_defines_no_function() {
     assert_eq!(
         verdict(r#"f() { npx "$@"; }; f playwright install"#),
         Verdict::Block(Rule::G1)
+    );
+}
+
+#[test]
+fn a_regex_bracket_with_escaped_quotes_and_backticks_is_allowed() {
+    assert_all(
+        &[
+            // the field command: `\"`, `\``, `{1,}`, non-ASCII text, and a pipe into `grep -v` and `head`
+            r#"grep -rnE "['\"\`][A-Z][a-z]+( [a-zA-Z’']+){1,}[.!?…]?['\"\`]" dir1 dir2 --include='*.ts' | grep -v "a/\|b\|c('" | head -40"#,
+            r#"grep -rnE "['\"\`][A-Z][a-z]+( [a-zA-Z’']+){1,}[.!?…]?['\"\`]" dir1 dir2 --include='*.ts'"#,
+            // the bracket shape that was too complex, with each other feature taken away
+            r#"grep -E "['\"\`]A['\"\`]" d"#,
+            r#"grep -E "[\`]A[\`]" d"#,
+            r"grep -E '[`]A[`]' d",
+            r#"grep -E "[A-Z]+ [\`]A?[\`]" d"#,
+            // each feature alone
+            r#"grep "a\`" f"#,
+            r#"grep "\`a\`" f"#,
+            r#"grep "a\"b" f"#,
+            r#"grep "'\"\`" f"#,
+            r#"grep -E "(a){1,}" f"#,
+            r#"grep -E "[a-zA-Z’']+[.!?…]?" f"#,
+            r#"grep "a’b…" f"#,
+            r#"grep a f | grep -v "a/\|b\|c('" | head -40"#,
+            // an escaped backtick is a literal one, not a substitution
+            r#"grep "a\`npx playwright install\`" f"#,
+            r#"echo "\`npx playwright install\`""#,
+            // an unescaped backtick or `$(` in double quotes keeps its reading (`id` runs nothing risky)
+            r#"grep "a`id`" f"#,
+            r#"echo "$(id)""#,
+        ],
+        Verdict::Allow,
+    );
+    // an unescaped substitution or an unterminated string keeps its verdict: the inner command is checked
+    assert_all(
+        &[
+            r#"grep "a`npx playwright install`" f"#,
+            r#"echo "$(npx playwright install)""#,
+            r#"echo "\`npx playwright install"#,
+            // a bracket with no name before it: the substitution in it is read as a command (`unset` etc.)
+            r#"unset "[\`npx playwright install\`]""#,
+            r"unset '[`npx playwright install`]'",
+        ],
+        Verdict::Block(Rule::G1),
+    );
+}
+
+#[test]
+fn a_subscript_after_a_name_stays_too_complex_whatever_quotes_the_backtick() {
+    // bash and zsh evaluate `name[...]` after quote removal, so `\`` in double quotes runs just as `'`'` does
+    assert_all(
+        &[
+            r#"unset "a[\`npx playwright install\`]""#,
+            r"unset 'a[`npx playwright install`]'",
+            r#"let "a[\`npx playwright install\`]=1""#,
+            r#"[[ -v "a[\`npx playwright install\`]" ]]"#,
+            r#"printf -v "a[\`npx playwright install\`]" x"#,
+            r#"read "a[\`npx playwright install\`]" <<< x"#,
+            r#"declare "a_1[\`npx playwright install\`]=1""#,
+            r#"unset "é[\`npx playwright install\`]""#,
+            r#"unset "a[0][\`npx playwright install\`]""#,
+            r#"unset "a[[\`npx playwright install\`]]""#,
+            r#"unset "a?[\`npx playwright install\`]""#,
+            // a name an expansion gives
+            r#"unset "${x}[\`npx playwright install\`]""#,
+            r#"unset "$x[\`npx playwright install\`]""#,
+            r#"unset "$-[\`npx playwright install\`]""#,
+            r#"unset "$@[\`npx playwright install\`]""#,
+            r#"unset "$[\`npx playwright install\`]""#,
+            // a name a substitution gives: the lexer takes the substitution out of the word
+            r#"unset "$(echo a)[\`npx playwright install\`]""#,
+            r#"unset "`echo a`[\`npx playwright install\`]""#,
+            // an array literal: its elements are subscripts, so any `[` counts
+            r"a=( ['`npx playwright install`']=1 )",
+            r#"a=( ["\`npx playwright install\`"]=1 )"#,
+            r"a=(['$(npx playwright install)']=1)",
+            r"x+=( ['`npx playwright install`']=1 )",
+            r"declare -a x='([`npx playwright install`]=1)'",
+            r"declare -a x=( ['`npx playwright install`']=1 )",
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn an_expansion_elsewhere_in_the_command_may_put_a_name_before_a_bracket() {
+    // The word with the bracket holds no name, but an expansion later in the command can put one in front of
+    // it (`unset "a$1"` makes `a[...]`), so the "a bracket follows a name" reading is used only for a command
+    // with no expansion, no backtick substitution and no consumer of text. Each of the first lines ran its
+    // marker in bash 5.2 and zsh 5.9.
+    assert_none_allowed(&[
+        r#"set -- '[`npx playwright install`]'; unset "a$1""#,
+        r#"set -- '[$(npx playwright install)]'; (( a$1 ))"#,
+        r#"a=(1); set -- '[$(npx playwright install)]'; echo $((a$1))"#,
+        r#"for s in '[$(npx playwright install)]'; do unset "a$s"; done"#,
+        r#"s=.'[$(npx playwright install)]'; unset "a${s#.}""#,
+        r#"unset "a${s:-[\`npx playwright install\`]}""#,
+        r#"unset "a${s-[\`npx playwright install\`]}""#,
+        r#"s=1; unset "a${s:+[\`npx playwright install\`]}""#,
+        r#"s=1; unset "a${s/1/[\`npx playwright install\`]}""#,
+        // a name given without `$`: xargs puts the line in its replacement string, a shell reads the
+        // decoded text a printf wrote
+        r#"echo a | xargs -I@ unset "@[\`npx playwright install\`]""#,
+        r#"printf 'unset "a\0441"' | sh -s "[\`npx playwright install\`]""#,
+        // an alias holds text a later word runs, so the name and the bracket meet there
+        r#"shopt -s expand_aliases; alias u='a[0]=1; unset "a"[\`"npx playwright install"\`]'; u"#,
+        // an unescaped backtick substitution anywhere
+        r#"echo `echo a` > /dev/null; unset "[\`npx playwright install\`]""#,
+    ]);
+    // a command with none of these keeps the new reading
+    assert_all(
+        &[
+            r#"grep -E "['\"\`]A['\"\`]" d | head -3"#,
+            r#"echo a b; grep "[\`]x[\`]" f"#,
+        ],
+        Verdict::Allow,
     );
 }
