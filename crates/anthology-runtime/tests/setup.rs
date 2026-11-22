@@ -2840,6 +2840,47 @@ mod repo_auto_memory_test {
         assert_eq!(fs::read_to_string(&target).unwrap(), "{}\n");
     }
 
+    /// A valid settings file bigger than the cap.
+    fn oversized() -> String {
+        format!("{{\"padding\": \"{}\"}}\n", "x".repeat(2 * 1024 * 1024))
+    }
+
+    #[test]
+    fn an_oversized_settings_file_is_refused_in_preview_and_apply() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let big = oversized();
+        write(&repo_settings(&repo), &big, None);
+        let preview = f.preview(Some(&repo));
+        let skipped = text_at(&preview, &["memory", "repo", "auto_memory", "skipped"]);
+        assert!(skipped.contains("too large"), "{skipped}");
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert!(f.approved(FAKE_REPO_KEY));
+        assert!(text_at(&res, &["memory", "auto_memory", "skipped"]).contains("too large"));
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), big);
+    }
+
+    #[test]
+    fn remove_leaves_a_file_that_grew_past_the_cap_and_says_so() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        let big = oversized();
+        write(&repo_settings(&repo), &big, None);
+        let res = f.remove_in(&repo, false, false, false);
+        assert!(ok(&res), "{res:?}");
+        let entries = at(&res, &["memory", "repo_settings"]).as_array().unwrap();
+        assert!(text_at(&entries[0], &["note"]).contains("too large"));
+        assert_eq!(at(&entries[0], &["changed"]), &Value::Bool(false));
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), big);
+        assert!(
+            at(&res, &["warnings"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("too large"))
+        );
+    }
+
     #[test]
     fn remove_skips_a_repo_that_is_gone() {
         let Some((f, repo)) = repo_fx() else { return };
@@ -3143,6 +3184,81 @@ mod old_notes_by_type_test {
         }
         assert!(n.old.join("leaky.md").is_file());
         assert!(n.old.join("untyped.md").is_file());
+    }
+
+    #[test]
+    fn preview_status_is_for_the_file_the_move_would_write() {
+        let Some(n) = N::new() else { return };
+        write(
+            &n.repo_mem.join("project-release.md"),
+            "the repo's own note\n",
+            None,
+        );
+        write(
+            &n.repo_mem.join("feedback-testing.md"),
+            &fs::read_to_string(n.old.join("feedback_testing.md")).unwrap(),
+            None,
+        );
+        let notes = n.notes();
+        let get = |file: &str| &notes.iter().find(|(f, _)| f == file).unwrap().1;
+        let release = get("project_release.md");
+        assert_eq!(text_at(release, &["target_status"]), "conflict");
+        let would = text_at(release, &["target_would_create"]);
+        assert!(would.starts_with("project-release.migrated-"), "{would}");
+        assert_eq!(
+            text_at(get("feedback_testing.md"), &["target_status"]),
+            "identical"
+        );
+        assert_eq!(
+            text_at(get("reference_dashboards.md"), &["target_status"]),
+            "new"
+        );
+        assert_eq!(text_at(get("user_role.md"), &["target_status"]), "new");
+        assert_eq!(at(get("leaky.md"), &["target_status"]), &Value::Null);
+    }
+
+    #[test]
+    fn a_note_holding_a_secret_env_value_is_listed_and_not_moved() {
+        let Some(n) = N::new() else { return };
+        let value = "k3j9x0q8w7e6r5t4";
+        write(
+            &n.old.join("reference_ci.md"),
+            &note_text(
+                &Note::new("reference_ci")
+                    .type_("reference")
+                    .desc("CI login")
+                    .body(&format!("The runner logs in with {value}.\n")),
+            ),
+            None,
+        );
+        let env = n.f.env().clone().with("CI_TOKEN", value);
+        let deps = n.deps();
+        let preview = setup::preview(&n.f.c.plugin, Some(&n.root), &env, &deps);
+        let digest = text_at(&preview, &["settings", "sha256"]).to_string();
+        let notes = at(&preview, &["memory", "legacy_notes"])
+            .as_array()
+            .unwrap();
+        let ci = notes
+            .iter()
+            .find(|v| text_at(v, &["file"]) == "reference_ci.md")
+            .unwrap();
+        assert_eq!(text_at(ci, &["destination"]), "none");
+        assert!(text_at(ci, &["reason"]).contains("$CI_TOKEN"));
+        let res = setup::apply_full(
+            &n.f.c.plugin,
+            &digest,
+            Some(&n.root),
+            false,
+            &env,
+            &[],
+            false,
+            true,
+            &deps,
+        );
+        assert!(ok(&res), "{res:?}");
+        assert!(blocked_files(&res).contains(&"reference_ci.md".to_string()));
+        assert!(!files(&n.repo_mem).iter().any(|f| f.contains("-ci")));
+        assert!(!dumped(&res).contains(value));
     }
 
     #[test]

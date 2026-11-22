@@ -27,7 +27,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -654,9 +654,28 @@ fn legacy_notes(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Vec<Value> {
             note.insert("source".into(), s(&pstr(&old)));
             note.insert("default".into(), s("personal"));
             // Where `--move-old-notes` would put it (the confirmed, by-type move).
-            let plan = sync::plan_auto_memory_note(&name, &data, m.is_some(), home, &sd);
+            let plan = sync::plan_auto_memory_note(&name, &data, m.is_some(), home, env, &sd);
             note.insert("destination".into(), s(plan.destination.label()));
             note.insert("target".into(), opt_str(plan.target.clone()));
+            // What the move would find under the target name, in the folder it writes to.
+            let dest_dir = match plan.destination {
+                sync::Destination::Repo => m.clone(),
+                sync::Destination::Personal => Some(personal_dir(env)),
+                sync::Destination::Nowhere => None,
+            };
+            let (target_status, target_would) = match (&plan.target, &dest_dir) {
+                (Some(t), Some(dir)) => match sync::placement_status(dir, t, &data) {
+                    Placement::New => (s("new"), Value::Null),
+                    Placement::Identical => (s("identical"), Value::Null),
+                    Placement::Conflict => (
+                        s("conflict"),
+                        s(&sync::side_by_side_name(dir, t, &clock::today_local())),
+                    ),
+                },
+                _ => (Value::Null, Value::Null),
+            };
+            note.insert("target_status".into(), target_status);
+            note.insert("target_would_create".into(), target_would);
             note.insert("findings".into(), findings_value(&findings));
             note.insert("movable".into(), Value::Bool(reason.is_none()));
             if let Some(r) = reason.or(plan.reason).filter(|r| !r.is_empty()) {
@@ -789,6 +808,7 @@ fn move_old_notes(
             Some(&ledger),
             None,
             env.get("HOME"),
+            env,
             &sd,
         )
         .map_err(raised)?;
@@ -960,16 +980,43 @@ fn repo_settings_unsafe(root: &Path) -> Option<String> {
     None
 }
 
+/// The most a repo's `.claude/settings.json` may hold: the file comes from the repo, so a clone
+/// controls it, and setup would read all of it into memory and parse it.
+pub const MAX_REPO_SETTINGS_BYTES: u64 = 1024 * 1024;
+
+/// The repo's settings.json text, read with a cap: `None` when it does not exist, `Err` (a
+/// reason) when it is too large, not UTF-8 or unreadable.
+fn read_repo_settings(path: &Path) -> Result<Option<String>, String> {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot be read ({e})")),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_REPO_SETTINGS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot be read ({e})"))?;
+    if bytes.len() as u64 > MAX_REPO_SETTINGS_BYTES {
+        return Err(format!(
+            "is too large (over {} KiB)",
+            MAX_REPO_SETTINGS_BYTES / 1024
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "is not valid UTF-8".into())
+}
+
 /// `_settings_plan` for a repo: the key merged into what the file holds. `Err` is the reason the
-/// file is left alone (an unreadable or non-JSON file is never overwritten).
+/// file is left alone (an unreadable, oversized or non-JSON file is never overwritten).
 fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
     if let Some(why) = repo_settings_unsafe(root) {
         return Err(why);
     }
     let path = repo_settings_path(root);
-    let text = settings::read_text(&path)
+    let text = read_repo_settings(&path)
         .map(Option::unwrap_or_default)
-        .map_err(|e| format!("{}; left untouched", exc_text(&e)))?;
+        .map_err(|e| format!(".claude/settings.json {e}; left untouched"))?;
     let previous = recorded_ops(&recorded_repo_settings(env), root)?;
     let (new_text, diff, stored) = settings::reconcile(&text, &[auto_memory_op()], &previous)
         .map_err(|m| match classify(m) {
@@ -1076,7 +1123,9 @@ fn repo_settings_reverts(env: &Env) -> Vec<RepoRevert> {
             if let Some(why) = repo_settings_unsafe(Path::new(root)) {
                 return Err(why);
             }
-            let Some(text) = settings::read_text(&path).map_err(|e| exc_text(&e))? else {
+            let Some(text) =
+                read_repo_settings(&path).map_err(|e| format!(".claude/settings.json {e}"))?
+            else {
                 return Ok(None);
             };
             let ops = settings::stored_ops(entry.as_object().and_then(|e| e.get("ops")))

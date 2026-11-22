@@ -11,6 +11,7 @@ mod ms2_support;
 use std::fs;
 use std::path::Path;
 
+use anthology_core::Env;
 use anthology_memory::sync::{self, Destination, SyncDeps};
 use anthology_testkit::mem::{MemCase, Note, needs_git, write};
 
@@ -28,7 +29,14 @@ fn note(name: &str, type_: &str) -> Vec<u8> {
 }
 
 fn plan(file: &str, data: &[u8]) -> sync::AutoMemoryPlan {
-    sync::plan_auto_memory_note(file, data, true, None, &SyncDeps::default())
+    sync::plan_auto_memory_note(
+        file,
+        data,
+        true,
+        None,
+        &Env::default(),
+        &SyncDeps::default(),
+    )
 }
 
 mod plan_test {
@@ -78,13 +86,17 @@ mod plan_test {
     fn a_name_that_is_only_the_type_falls_back_to_the_notes_name_then_to_note() {
         let p = plan("project.md", &note("Release plan", "project"));
         assert_eq!(p.target.as_deref(), Some("project-release-plan.md"));
+        let p = plan("project.md", &note("project", "project"));
+        assert_eq!(p.target.as_deref(), Some("project-note.md"));
+        let p = plan("\u{e9}\u{e9}.md", &note("\u{e9}", "project"));
+        assert_eq!(p.target.as_deref(), Some("project-note.md"));
+    }
+
+    #[test]
+    fn a_note_without_a_name_is_refused_like_save_refuses_it() {
         let p = plan("project.md", b"---\ntype: project\n---\nBody\n");
-        assert_eq!(p.target.as_deref(), Some("project-note.md"));
-        let p = plan(
-            "\u{e9}\u{e9}.md",
-            b"---\nname: \xc3\xa9\ntype: project\n---\nBody\n",
-        );
-        assert_eq!(p.target.as_deref(), Some("project-note.md"));
+        assert_eq!(p.destination, Destination::Nowhere);
+        assert!(p.target.is_none());
     }
 
     #[test]
@@ -114,7 +126,15 @@ mod plan_test {
             .into_bytes();
         let mut deps = SyncDeps::default();
         deps.privacy.hostname = || None;
-        let p = sync::plan_auto_memory_note("dirty.md", &dirty, true, Some("/Users/alice"), &deps);
+        let env = Env::default();
+        let p = sync::plan_auto_memory_note(
+            "dirty.md",
+            &dirty,
+            true,
+            Some("/Users/alice"),
+            &env,
+            &deps,
+        );
         assert_eq!(p.destination, Destination::Nowhere);
         assert!(p.target.is_none());
         assert!(p.reason.unwrap().contains("home path"));
@@ -124,8 +144,100 @@ mod plan_test {
             .body(&body)
             .text()
             .into_bytes();
-        let p = sync::plan_auto_memory_note("me.md", &user, true, Some("/Users/alice"), &deps);
+        let p =
+            sync::plan_auto_memory_note("me.md", &user, true, Some("/Users/alice"), &env, &deps);
         assert_eq!(p.destination, Destination::Personal);
+    }
+
+    /// A value no secret pattern knows, held by a secret-named environment variable.
+    const TOKEN_VALUE: &str = "k3j9x0q8w7e6r5t4";
+
+    #[test]
+    fn a_note_holding_a_secret_env_value_is_refused_as_save_would() {
+        let leaky = Note::new("ci")
+            .type_("reference")
+            .body(&format!("The runner uses {TOKEN_VALUE} to log in.\n"))
+            .text()
+            .into_bytes();
+        let env = Env::default().with("CI_TOKEN", TOKEN_VALUE);
+        let p =
+            sync::plan_auto_memory_note("ci.md", &leaky, true, None, &env, &SyncDeps::default());
+        assert_eq!(p.destination, Destination::Nowhere);
+        assert!(p.target.is_none());
+        let reason = p.reason.unwrap();
+        assert!(reason.contains("$CI_TOKEN"), "{reason}");
+        assert!(!reason.contains(TOKEN_VALUE), "{reason}");
+        // without that variable in the environment the same note is fine
+        assert_eq!(plan("ci.md", &leaky).destination, Destination::Repo);
+        // a value of a name that is not secret-looking, or a short one, does not count
+        let other = Env::default().with("CI_NAME", TOKEN_VALUE);
+        let p =
+            sync::plan_auto_memory_note("ci.md", &leaky, true, None, &other, &SyncDeps::default());
+        assert_eq!(p.destination, Destination::Repo);
+    }
+
+    #[test]
+    fn hidden_and_control_characters_are_refused_as_save_would() {
+        let desc = Note::new("a")
+            .desc("Looks fine\u{200b}but hides a zero-width space")
+            .text()
+            .into_bytes();
+        let p = plan("a.md", &desc);
+        assert_eq!(p.destination, Destination::Nowhere);
+        assert!(p.reason.unwrap().contains("invisible"));
+        let ctl = Note::new("a")
+            .body("Bell \u{7} in the body\n")
+            .text()
+            .into_bytes();
+        let p = plan("a.md", &ctl);
+        assert_eq!(p.destination, Destination::Nowhere);
+        assert!(p.reason.unwrap().contains("control characters"));
+        // a user note goes to private personal memory and needs none of these checks
+        let user = Note::new("a")
+            .type_("user")
+            .desc("Looks fine\u{200b}")
+            .text()
+            .into_bytes();
+        assert_eq!(plan("a.md", &user).destination, Destination::Personal);
+    }
+
+    #[test]
+    fn an_oversized_body_or_description_is_refused_as_save_would() {
+        let big = Note::new("a")
+            .body(&"word ".repeat(anthology_memory::save::MAX_BODY_BYTES))
+            .text()
+            .into_bytes();
+        assert_eq!(plan("a.md", &big).destination, Destination::Nowhere);
+        let long = Note::new("a")
+            .desc(&"d".repeat(anthology_memory::save::MAX_DESCRIPTION + 1))
+            .text()
+            .into_bytes();
+        assert_eq!(plan("a.md", &long).destination, Destination::Nowhere);
+    }
+
+    #[test]
+    fn a_scanner_that_crashes_is_a_clean_refusal() {
+        fn boom(
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: &anthology_memory::privacy::PrivacyDeps,
+        ) -> Vec<anthology_memory::privacy::Finding> {
+            panic!("boom")
+        }
+        let deps = SyncDeps {
+            privacy_findings: boom,
+            ..SyncDeps::default()
+        };
+        let p = sync::plan_auto_memory_note(
+            "a.md",
+            &note("a", "project"),
+            true,
+            None,
+            &Env::default(),
+            &deps,
+        );
+        assert_eq!(p.destination, Destination::Nowhere);
     }
 
     #[test]
@@ -135,6 +247,7 @@ mod plan_test {
             &note("a", "project"),
             false,
             None,
+            &Env::default(),
             &SyncDeps::default(),
         );
         assert_eq!(p.destination, Destination::Nowhere);
@@ -169,6 +282,7 @@ mod move_test {
             Some(&c.anth.join("migrated.json")),
             None,
             None,
+            &c.env,
             &SyncDeps::default(),
         )
         .unwrap();
@@ -195,12 +309,44 @@ mod move_test {
             None,
             None,
             None,
+            &c.env,
             &SyncDeps::default(),
         )
         .unwrap();
         assert!(res.repo.is_empty() && res.personal.is_empty());
         assert_eq!(res.blocked.len(), 1);
         assert!(!personal.exists());
+    }
+
+    #[test]
+    fn a_symlinked_personal_folder_lists_the_user_notes_instead_of_dropping_them() {
+        let c = MemCase::new();
+        let old = c.tmp.join("old");
+        write(
+            &old.join("user_b.md"),
+            &String::from_utf8(note("b", "user")).unwrap(),
+            None,
+        );
+        let real = c.tmp.join("elsewhere");
+        fs::create_dir(&real).unwrap();
+        let personal = c.anth.join("personal-memory");
+        fs::create_dir_all(&c.anth).unwrap();
+        std::os::unix::fs::symlink(&real, &personal).unwrap();
+        let res = sync::try_move_auto_memory(
+            &old,
+            None,
+            &personal,
+            None,
+            None,
+            None,
+            &c.env,
+            &SyncDeps::default(),
+        )
+        .unwrap();
+        assert!(res.personal.is_empty());
+        assert_eq!(res.blocked.len(), 1);
+        assert!(res.blocked[0].1.contains("personal memory is a symlink"));
+        assert!(fs::read_dir(&real).unwrap().next().is_none());
     }
 }
 
@@ -301,7 +447,7 @@ mod run_with_the_switch_test {
     }
 
     #[test]
-    fn a_clone_that_has_not_approved_the_repo_still_gets_the_hint() {
+    fn a_committed_false_in_an_unapproved_repo_still_stops_the_memory_step() {
         if !needs_git() {
             return;
         }
@@ -317,10 +463,37 @@ mod run_with_the_switch_test {
             &Note::new("a").text(),
             None,
         );
-        let (ctx, msgs) = run(&c, &root);
-        assert!(msgs.iter().any(|m| m == HINT), "{msgs:?}");
-        assert!(ctx.contains("## Personal memory"));
-        assert!(!ctx.contains("## Repo memory"));
+        write(
+            &c.anth.join("personal-memory/user-me.md"),
+            &Note::new("user-me").type_("user").text(),
+            None,
+        );
+        // as before: a team that committed false gets no Anthology memory here, personal
+        // memory included, and nothing is written
+        let before = anthology_testkit::mem::snapshot(&root);
+        assert_eq!(run(&c, &root), (String::new(), vec![]));
+        assert_eq!(anthology_testkit::mem::snapshot(&root), before);
         assert!(!Path::new(&root.join(".claude/settings.local.json")).exists());
+        // approving the repo makes the committed false Anthology's own switch
+        approve(&c, &root);
+        let (ctx, _) = run(&c, &root);
+        assert!(ctx.contains("## Personal memory"));
+        assert!(ctx.contains("## Repo memory"));
+    }
+
+    #[test]
+    fn the_hint_still_shows_for_an_unapproved_repo_without_the_switch() {
+        if !needs_git() {
+            return;
+        }
+        let c = MemCase::new();
+        let root = c.make_repo("repo", None);
+        write(
+            &root.join(".claude/memory/project-a.md"),
+            &Note::new("a").text(),
+            None,
+        );
+        let (_, msgs) = run(&c, &root);
+        assert!(msgs.iter().any(|m| m == HINT), "{msgs:?}");
     }
 }

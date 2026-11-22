@@ -834,9 +834,9 @@ fn slugify(text: &str) -> String {
     out
 }
 
-/// `<type>-<slug>.md`: the slug is the file's stem (else the note's name) without a leading
+/// The slug of `<type>-<slug>.md`: the file's stem (else the note's name) without a leading
 /// `<type>-`, so `feedback_testing.md` becomes `feedback-testing.md`.
-fn auto_memory_target(kind: &str, file: &str, info: &NoteInfo) -> String {
+fn auto_memory_slug(kind: &str, file: &str, info: &NoteInfo) -> String {
     let own = |text: &str| {
         let slug = slugify(text);
         match slug.strip_prefix(&format!("{kind}-")) {
@@ -853,18 +853,28 @@ fn auto_memory_target(kind: &str, file: &str, info: &NoteInfo) -> String {
         slug = "note".to_string();
     }
     let slug: String = slug.chars().take(crate::save::MAX_SLUG).collect();
-    format!("{kind}-{}.md", slug.trim_end_matches('-'))
+    slug.trim_end_matches('-').to_string()
+}
+
+/// `<type>-<slug>.md`.
+fn auto_memory_target(kind: &str, file: &str, info: &NoteInfo) -> String {
+    format!("{kind}-{}.md", auto_memory_slug(kind, file, info))
 }
 
 /// Where an old auto-memory note goes, and under what name: `project`, `feedback` and
 /// `reference` notes into the repo's memory, `user` notes into personal memory. A repo-bound
-/// note goes through the privacy scan (`promotion_check`, the scan `save` runs); one it refuses,
-/// or one without a type, goes nowhere. `repo_ok` is whether the repo's memory folder can take it.
+/// note goes through the privacy scan of the whole file (`promotion_check`) and then every check
+/// `anthology-mem save` runs on a note's text (`save::check_note_text`: the secret and env-value
+/// checks, control and hidden characters, the size limits and the scanner-crash guard); one it
+/// refuses, or one without a type, goes nowhere. A `user` note goes to personal memory, which is
+/// private and not in git, so it needs no repo check. `repo_ok` is whether the repo's memory
+/// folder can take the note.
 pub fn plan_auto_memory_note(
     file: &str,
     data: &[u8],
     repo_ok: bool,
     home: Option<&str>,
+    env: &Env,
     deps: &SyncDeps<'_>,
 ) -> AutoMemoryPlan {
     let info = note_info(file, data);
@@ -883,10 +893,37 @@ pub fn plan_auto_memory_note(
             reason: None,
         },
         "project" | "feedback" | "reference" => {
-            let (findings, reason) = promotion_check(&info, data, home, None, deps);
+            // A scanner bug is a clean refusal, never a crash or a move.
+            let Ok((findings, reason)) = catch_unwind(AssertUnwindSafe(|| {
+                promotion_check(&info, data, home, None, deps)
+            })) else {
+                return nowhere(
+                    Vec::new(),
+                    "the privacy scan failed (panic); nothing was moved",
+                );
+            };
+            let save_deps = crate::save::SaveDeps {
+                privacy_findings: deps.privacy_findings,
+                ..crate::save::SaveDeps::default()
+            };
+            let save_check = crate::save::check_note_text(
+                &auto_memory_slug(&kind, file, &info),
+                &info.name,
+                &info.description,
+                &info.body,
+                env,
+                &save_deps,
+            );
             match reason {
                 Some(r) => nowhere(findings, &r),
                 None if !repo_ok => nowhere(findings, REPO_UNSAFE_REASON),
+                None if save_check.is_err() => {
+                    let why = save_check.err().map(|e| e.to_string()).unwrap_or_default();
+                    nowhere(
+                        findings,
+                        &format!("it fails the checks anthology-mem save runs: {why}"),
+                    )
+                }
                 None => AutoMemoryPlan {
                     destination: Destination::Repo,
                     target: Some(auto_memory_target(&kind, file, &info)),
@@ -916,6 +953,10 @@ pub struct MoveResult {
 /// Personal notes already in the ledger are skipped; a repo note is placed whatever the ledger
 /// says (the user chose to move it), and every note placed is added to the ledger, so session
 /// start does not copy it into personal memory.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the folders, ledger, date and the checks' inputs are all separate"
+)]
 pub fn try_move_auto_memory(
     old_dir: &Path,
     repo_mem: Option<&Path>,
@@ -923,6 +964,7 @@ pub fn try_move_auto_memory(
     ledger: Option<&Path>,
     today: Option<Date>,
     home: Option<&str>,
+    env: &Env,
     deps: &SyncDeps<'_>,
 ) -> Result<MoveResult, PyExc> {
     let mut result = MoveResult::default();
@@ -940,7 +982,7 @@ pub fn try_move_auto_memory(
         unsafe_dir(r).is_none() && unsafe_dir(r.parent().unwrap_or(Path::new(""))).is_none()
     });
     for (name, data) in entries {
-        let plan = plan_auto_memory_note(&name, &data, repo_ok, home, deps);
+        let plan = plan_auto_memory_note(&name, &data, repo_ok, home, env, deps);
         let (Some(target), Some(dest)) = (
             plan.target.as_deref(),
             match plan.destination {
@@ -962,7 +1004,17 @@ pub fn try_move_auto_memory(
             continue;
         }
         if unsafe_dir(dest).is_some() {
-            continue; // never write through a symlinked or non-folder destination
+            // never write through a symlinked or non-folder destination; say so
+            let which = if to_repo {
+                "repo memory"
+            } else {
+                "personal memory"
+            };
+            result
+                .blocked
+                .push((name, format!("{which} is a symlink or not a folder")));
+            result.blocked_findings.push(Vec::new());
+            continue;
         }
         if to_repo {
             fs::create_dir_all(dest).map_err(|e| os_err(e, dest))?;
@@ -1062,7 +1114,9 @@ pub fn sweep_user_notes(
 // The SessionStart entry point
 // ---------------------------------------------------------------------------------------------
 
-fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env) -> bool {
+/// Whether the user turned auto memory off. `approved`: the repo is approved for Anthology
+/// memory, which is where a committed `autoMemoryEnabled: false` is Anthology's own switch.
+fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env, approved: bool) -> bool {
     if let Some(v) = env.get_os("CLAUDE_CODE_DISABLE_AUTO_MEMORY") {
         let v = pystr::lower(pystr::strip_ws(&v.to_string_lossy()));
         if !["", "0", "false", "no"].contains(&v.as_str()) {
@@ -1079,10 +1133,11 @@ fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env) -> bool {
         if let Some(data) = load_settings(&p)
             && let Some(v) = data.get("autoMemoryEnabled")
         {
-            // `false` in a repo's committed settings.json is what `/anthology:setup` writes to
-            // switch Claude Code's own auto memory off in favour of this memory; it is not an
-            // opt-out of Anthology memory. A user's, the local or the environment's opt-out is.
-            if committed && matches!(v, Value::Bool(false)) {
+            // In an approved repo, `false` in the committed settings.json is what
+            // `/anthology:setup` writes to switch Claude Code's own auto memory off in favour of
+            // this memory; it is not an opt-out of Anthology memory. In any other repo it is the
+            // team's opt-out, as before. A user's, the local or the environment's opt-out always is.
+            if approved && committed && matches!(v, Value::Bool(false)) {
                 continue;
             }
             return matches!(v, Value::Bool(false));
@@ -1293,7 +1348,10 @@ fn run_inner(cwd: &Path, env: &Env, deps: &SyncDeps<'_>) -> Result<(String, Vec<
     let config = crate::repo::config_dir(env);
     let home = config.join("anthology");
     let root = (deps.repo_root)(cwd, env, deps.git);
-    if auto_memory_off(root.as_deref(), &config, env) {
+    let approved = root
+        .as_ref()
+        .is_some_and(|r| is_approved(&repo_key(r, env, deps.git), env));
+    if auto_memory_off(root.as_deref(), &config, env, approved) {
         return Ok((String::new(), Vec::new()));
     }
     let mut messages = Vec::new();
