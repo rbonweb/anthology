@@ -80,9 +80,12 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    - **Claude Code's own auto memory:** `memory.repo.auto_memory` is the one memory change to the repo's
      committed `.claude/settings.json`: it adds `"autoMemoryEnabled": false`, so Claude Code's built-in
      auto memory does not run beside the repo's `.claude/memory/` and the personal memory. Show its `path`
-     and `diff` as a diff (the value reads `"<redacted>"`; say it is `false`) and say that the file is
-     committed, so the change shows up in the repo. Other keys in that file are kept. Your user-wide
-     settings are not touched for this, and other repos keep Claude Code's auto memory.
+     and `diff` as a diff (the value reads `"<redacted>"`; say it is `false`). Say plainly that the file
+     is committed: once pushed, auto memory is off for everyone who uses the repo, including teammates who
+     do not use Anthology. Auto memory also covers Claude Code's subagent memory, so in this repo roster
+     agents no longer get their `MEMORY.md` preloaded (each agent's prompt tells it to read its own).
+     Other keys in that file are kept. Your user-wide settings are not touched for this, and other repos
+     keep Claude Code's auto memory.
      `/anthology:setup remove` puts the file back. If it has `skipped`, show the reason: the file is left
      alone and Claude Code's auto memory stays on.
    - **personal memory:** the folder `memory.personal_dir` is created (private to the user).
@@ -92,7 +95,10 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      `.claude/memory/` under the file name `target`, where everyone who can see the repo can read it;
      `personal` (user notes) goes into personal memory. A note with `destination` `none` is not moved:
      show its `reason` (privacy findings name a kind and a line, never the text; a note without a
-     type is also listed). Show each note's `name`, `description` and `destination`. The originals stay
+     type is also listed; so is a note whose target is not a safe place to write). Show each note's `name`,
+     `description` and `destination`. `target_status` says what is already under the name `target` in that
+     folder: `new`, `identical` (nothing is written) or `conflict` (the note is saved beside it as
+     `target_would_create`). Notes the move itself refuses at write time come back in `memory.blocked`. The originals stay
      where they are, and Claude Code no longer loads them. Without the yes, nothing goes into the repo.
 5. Once confirmed, apply, passing the digest from the preview so a changed settings file is never overwritten:
 
@@ -138,7 +144,8 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - `memory.repo_settings`: each repo whose `.claude/settings.json` setup edited. Show its `path` and `diff`
      (the `autoMemoryEnabled` line setup added comes out, or goes back to the value it had; the file is deleted
-     only if setup created it and nothing else is in it). Claude Code's auto memory runs again there. A `note`
+     only if setup created it and nothing else is in it). Claude Code's auto memory runs again there. These
+     files are committed, so tell the user to review and commit the change. A `note`
      says why a file is left alone (a `left in place` one is also in `warnings`).
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
      and `memory.unapprove_all` list the repo approvals that the optional flags would drop.
