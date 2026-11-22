@@ -315,6 +315,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.2] - 2026-11-22
+
 #### Fixed
 
 - A read-only search is no longer blocked as "too complex" (G0) because its regex has a
