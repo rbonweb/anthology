@@ -1,13 +1,13 @@
 {
   "name": "anthology",
-  "version": "0.3.0",
+  "version": "0.2.7",
   "description": "Anthology: curated agents, knowledge and workflows for Claude Code.",
   "author": { "name": "rbonweb" },
   "license": "Apache-2.0",
   "repository": "https://github.com/rbonweb/anthology",
   "engines": { "claude-code": ">=2.1.311" },
   "dependencies": [
-    { "name": "anthology-guardrails", "version": "~0.2.2" },
+    { "name": "anthology-guardrails", "version": "~0.2.4" },
     { "name": "anthology-superpowers", "version": "~0.2" }
   ]
 }
