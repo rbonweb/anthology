@@ -505,6 +505,11 @@ fn odd_url(rng: &mut Rng) -> String {
 const MANIFEST: &str = r#"{"name": "anthology", "version": "0.1.0"}"#;
 /// `plugin_read_rule` of the plugin root (the root starts with `/`).
 const RULE: &str = "Read(/@ROOT@/p/**)";
+/// What a pre-rename install used (legacy): its folder under the plugin data folder and its
+/// history folder under `<ah>`, both relative to the config folder, and the allow rule it added.
+const LEGACY_DATA: &str = "plugins/data/anthology/rtk"; // legacy
+const LEGACY_HISTORY: &str = "anthology/rtk"; // legacy
+const LEGACY_ALLOW: &str = "Bash(rtk *)"; // legacy
 const GUARD_ENTRY: &str = r#"{"version": 2, "plugins": {"anthology-guardrails@m": [{"scope": "user", "installPath": "@ROOT@/p/anthology-guardrails", "lastUpdated": "2026-01-01"}]}}"#;
 const ANTHOLOGY_ONLY: &str = r#"{"version": 2, "plugins": {"anthology@m": [{"scope": "user", "installPath": "@ROOT@/p/anthology"}]}}"#;
 
@@ -545,6 +550,8 @@ struct B {
     atl: Value,
     guard_binary: String,
     steps: Vec<Vec<String>>,
+    /// Paths (relative to the root) shown after the default ones; only the cases that need them.
+    show_more: Vec<String>,
 }
 
 impl B {
@@ -594,6 +601,7 @@ impl B {
             ]),
             guard_binary: "present".into(),
             steps: Vec::new(),
+            show_more: Vec::new(),
         }
     }
 
@@ -729,6 +737,12 @@ impl B {
         self
     }
 
+    /// Also shows `rel` (relative to the root) in the final state.
+    fn show(mut self, rel: &str) -> B {
+        self.show_more.push(rel.to_string());
+        self
+    }
+
     fn write(self, rel: &str, text: &str) -> B {
         self.step(args(&[WRITE, rel, text]))
     }
@@ -761,6 +775,7 @@ impl B {
             ]
         }))
         .chain([s("w/.claude/memory"), s("w/.claude"), s("w/.gitattributes")])
+        .chain(self.show_more.iter().map(|r| s(r)))
         .collect();
         obj(vec![
             ("tree", Value::Array(self.tree)),
@@ -1175,6 +1190,74 @@ fn seeds() -> Vec<Value> {
             .step(remove_cmd(&["--preview"]))
             .step(remove_cmd(&[])));
     }
+    // what a pre-rename install left (legacy): its folder, its history, its state key and the
+    // allow rule it recorded; apply shows it in the preview and deletes it, remove deletes it
+    let old_dir = B::new().at(LEGACY_DATA);
+    let old_history = B::new().at(LEGACY_HISTORY);
+    let old_state = format!(
+        "{{\"rtk_path\": \"@ROOT@/{old_dir}/9.9.9/rtk\", \"kept\": 1}}\n" // legacy
+    );
+    let leftovers = || {
+        B::new()
+            .put(file(&format!("{old_dir}/9.9.9/rtk"), "bin")) // legacy
+            .put(file(&format!("{old_history}/history.db"), "commands"))
+            .put(file(&format!("{old_history}/tee/1_x.log"), "out"))
+            .state(&old_state)
+            .show(&old_dir)
+            .show(&old_history)
+    };
+    add(leftovers()
+        .step(preview_cmd())
+        .step(apply_cmd(&[]))
+        .step(preview_cmd()));
+    add(leftovers()
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&[])));
+    add(leftovers()
+        .step(remove_cmd(&["--preview"]))
+        .step(remove_cmd(&[])));
+    let recorded = format!(
+        "{{\"rtk_path\": \"x\", \"settings_ops\": [{{\"op\": \"add\", \"path\": [\"permissions\", \"allow\"], \"value\": \"{LEGACY_ALLOW}\", \"created\": []}}]}}\n" // legacy
+    );
+    let with_rule = format!(
+        "{{\n  \"permissions\": {{\n    \"allow\": [\n      \"Bash(ls)\",\n      \"{LEGACY_ALLOW}\"\n    ]\n  }}\n}}\n"
+    );
+    add(leftovers()
+        .state(&recorded)
+        .settings(&with_rule)
+        .step(preview_cmd())
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&[])));
+    add(B::new()
+        .settings(&with_rule)
+        .step(preview_cmd())
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&[])));
+    add(B::new()
+        .put(dir("elsewhere/dir"))
+        .put(link(&old_dir, "@ROOT@/elsewhere/dir"))
+        .put(file("elsewhere/history/history.db", "keep"))
+        .put(link(&old_history, "@ROOT@/elsewhere/history"))
+        .state(&old_state)
+        .show("elsewhere/dir")
+        .show("elsewhere/history/history.db")
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&[])));
+    add(B::new()
+        .put(file(&old_history, "not a folder"))
+        .state(&old_state)
+        .show(&old_history)
+        .step(preview_cmd())
+        .step(apply_cmd(&[])));
+    add(B::new()
+        .env("CLAUDE_PLUGIN_DATA", Some("@ROOT@/data"))
+        .put(file("data/rtk/9.9.9/rtk", "bin")) // legacy
+        .state(&old_state)
+        .show("data/rtk") // legacy
+        .step(preview_cmd())
+        .step(apply_cmd(&[]))
+        .step(remove_cmd(&[])));
     out
 }
 

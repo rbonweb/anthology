@@ -3363,3 +3363,250 @@ mod old_notes_by_type_test {
         assert!(n.repo_mem.join("project-release.md").is_file());
     }
 }
+
+/// The rename from the legacy rtk to ATL: what setup does about an install made before it (the plan's
+/// upgrade path, item 4). Every old name below is a legacy one.
+mod legacy_cleanup_test {
+    use super::*;
+
+    const LEGACY_DIR: &str = "rtk"; // legacy
+    const LEGACY_KEY: &str = "rtk_path"; // legacy
+
+    /// What a pre-rename install left: the downloaded folder, its history and the state key.
+    struct Legacy {
+        dir: PathBuf,
+        history: PathBuf,
+    }
+
+    fn leave_legacy(f: &Fx) -> Legacy {
+        let dir = f.c.data_dir.join(LEGACY_DIR);
+        let binary = dir.join("1.2.1").join(LEGACY_DIR);
+        write(&binary, "binary", None);
+        let history = state::legacy_rtk_data_dir(f.env());
+        write(&history.join("history.db"), "commands", None);
+        write(&history.join("tee").join("1_x.log"), "out", None);
+        state::write(
+            f.env(),
+            vec![
+                (LEGACY_KEY.into(), Value::Str(p(&binary))),
+                ("kept".into(), Value::Str("yes".into())),
+            ],
+        )
+        .unwrap();
+        Legacy { dir, history }
+    }
+
+    fn has_legacy_key(f: &Fx) -> bool {
+        f.state().get(LEGACY_KEY).is_some()
+    }
+
+    fn statuses(kv: &[(&str, &str)]) -> Value {
+        let mut m = Map::new();
+        for (k, v) in kv {
+            m.insert((*k).into(), Value::Str((*v).into()));
+        }
+        Value::Object(m)
+    }
+
+    /// The preview names all three leftovers, and writes nothing; apply writes settings.json
+    /// first (everything is still there when it does), then drops the state key, then deletes
+    /// the folder, then the history.
+    #[test]
+    fn setup_apply_removes_legacy_in_order() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let old = leave_legacy(&f);
+        let before = mem::snapshot(f.tmp());
+        let preview = f.preview(None);
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let shown = at(&preview, &["legacy_rtk"]);
+        assert_eq!(at(shown, &["state", "present"]), &Value::Bool(true));
+        assert_eq!(text_at(shown, &["state", "key"]), LEGACY_KEY);
+        assert_eq!(text_at(shown, &["dir", "dir"]), p(&old.dir));
+        assert_eq!(text_at(shown, &["dir", "status"]), "delete");
+        assert_eq!(text_at(shown, &["history", "dir"]), p(&old.history));
+        assert_eq!(text_at(shown, &["history", "status"]), "delete");
+
+        let seen: RefCell<Vec<(bool, bool, bool)>> = RefCell::new(Vec::new());
+        let spy = |path: &Path, text: &str| {
+            seen.borrow_mut()
+                .push((has_legacy_key(&f), old.dir.exists(), old.history.exists()));
+            settings::write_text(path, text)
+        };
+        let deps = SetupDeps {
+            settings_write: &spy,
+            ..f.deps()
+        };
+        let res = f.apply_d(&deps);
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(*seen.borrow(), [(true, true, true)]);
+        assert!(f.read_settings().contains("Bash(atl *)"));
+        assert!(!has_legacy_key(&f));
+        assert!(!old.dir.exists());
+        assert!(!old.history.exists());
+        assert_eq!(f.state().get("kept"), Some(&Value::Str("yes".into())));
+        assert!(f.state().get("setup_done").is_some());
+        assert_eq!(
+            at(&res, &["legacy_rtk"]),
+            &statuses(&[
+                ("state", "dropped"),
+                ("dir", "deleted"),
+                ("history", "deleted")
+            ])
+        );
+        // A second run finds nothing left.
+        let again = f.apply();
+        assert!(ok(&again), "{again:?}");
+        assert_eq!(
+            at(&again, &["legacy_rtk"]),
+            &statuses(&[
+                ("state", "nothing to drop"),
+                ("dir", "nothing to delete"),
+                ("history", "nothing to delete")
+            ])
+        );
+    }
+
+    /// Step 1 failing stops everything: nothing old is touched, so a retry still finds it.
+    #[test]
+    fn setup_apply_leaves_legacy_alone_when_the_settings_write_fails() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let old = leave_legacy(&f);
+        let disk_full = |_: &Path, _: &str| Err(PyExc::Other("OSError", "disk full".into()));
+        let deps = SetupDeps {
+            settings_write: &disk_full,
+            ..f.deps()
+        };
+        let res = f.apply_d(&deps);
+        assert!(!ok(&res));
+        assert!(has_legacy_key(&f));
+        assert!(old.dir.exists());
+        assert!(old.history.exists());
+    }
+
+    /// The same guards as remove: a symlinked folder or history is never followed or deleted.
+    #[test]
+    fn setup_apply_keeps_a_symlinked_legacy_folder_and_history() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let elsewhere = f.c.mem.config.join("elsewhere");
+        write(&elsewhere.join("dir/precious.txt"), "keep", None);
+        write(&elsewhere.join("history/precious.txt"), "keep", None);
+        fs::create_dir_all(&f.c.data_dir).unwrap();
+        let dir = f.c.data_dir.join(LEGACY_DIR);
+        symlink(elsewhere.join("dir"), &dir).unwrap();
+        let history = state::legacy_rtk_data_dir(f.env());
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        symlink(elsewhere.join("history"), &history).unwrap();
+        let res = f.apply();
+        assert!(ok(&res), "{res:?}");
+        assert!(elsewhere.join("dir/precious.txt").exists());
+        assert!(elsewhere.join("history/precious.txt").exists());
+        assert!(fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&history)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let shown = at(&res, &["legacy_rtk"]);
+        assert_eq!(text_at(shown, &["dir"]), "left in place");
+        assert_eq!(text_at(shown, &["history"]), "left in place");
+        let warnings = dumped(at(&res, &["warnings"]));
+        assert!(warnings.contains("legacy"), "{warnings}");
+    }
+
+    /// A data folder that is the config folder or above plugins/data never loses a folder.
+    #[test]
+    fn setup_apply_never_deletes_a_legacy_folder_outside_the_plugin_data_folder() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let config = f.c.mem.config.clone();
+        for data in [config.clone(), config.join("plugins"), f.c.mem.home.clone()] {
+            write(&data.join(LEGACY_DIR).join("precious.txt"), "keep", None);
+            let env = f.env_without_data();
+            state::write(&env, vec![("data_dir".into(), Value::Str(p(&data)))]).unwrap();
+            let digest =
+                text_at(&f.preview_d(None, &f.deps()), &["settings", "sha256"]).to_string();
+            let res = setup::apply(
+                &f.c.plugin,
+                &digest,
+                Some(f.tmp()),
+                false,
+                &env,
+                &[],
+                &f.deps(),
+            );
+            assert!(ok(&res), "{data:?}: {res:?}");
+            assert!(
+                data.join(LEGACY_DIR).join("precious.txt").exists(),
+                "{data:?}"
+            );
+        }
+    }
+
+    /// Remove deletes the ATL folder and history and the legacy ones, shown in its preview.
+    #[test]
+    fn setup_remove_covers_atl_and_legacy() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let atl_dir = f.c.data_dir.join("atl");
+        write(&atl_dir.join("1.0/atl"), "bin", None);
+        let atl_history = state::atl_data_dir(f.env());
+        write(&atl_history.join("history.db"), "commands", None);
+        let old = leave_legacy(&f);
+        let all = [
+            ("atl", &atl_dir),
+            ("atl_history", &atl_history),
+            ("legacy_rtk", &old.dir),
+            ("legacy_rtk_history", &old.history),
+        ];
+        let preview = f.remove(false, false, true);
+        assert!(ok(&preview), "{preview:?}");
+        for (key, dir) in all {
+            assert_eq!(text_at(&preview, &[key, "dir"]), p(dir), "{key}");
+            assert_eq!(text_at(&preview, &[key, "status"]), "delete", "{key}");
+            assert!(dir.exists(), "{key}");
+        }
+        let res = f.remove(false, false, false);
+        assert!(ok(&res), "{res:?}");
+        for (key, dir) in all {
+            assert_eq!(
+                at(&res, &[key]),
+                &statuses(&[("status", "deleted")]),
+                "{key}"
+            );
+            assert!(!dir.exists(), "{key}");
+        }
+        assert!(!f.state_exists());
+    }
+
+    /// Remove applies the same guards to the legacy folder as to the ATL one.
+    #[test]
+    fn setup_remove_never_deletes_a_legacy_folder_outside_the_plugin_data_folder() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let config = f.c.mem.config.clone();
+        for data in [
+            config.clone(),
+            config.join("plugins/data"),
+            f.c.mem.home.clone(),
+        ] {
+            write(&data.join(LEGACY_DIR).join("precious.txt"), "keep", None);
+            state::write(f.env(), vec![("data_dir".into(), Value::Str(p(&data)))]).unwrap();
+            let res = f.remove_env(&f.env_without_data(), false, false, false);
+            assert!(
+                data.join(LEGACY_DIR).join("precious.txt").exists(),
+                "{data:?}"
+            );
+            assert!(
+                dumped(at(&res, &["warnings"])).contains("legacy"),
+                "{data:?}: {res:?}"
+            );
+            f.apply();
+        }
+    }
+}
