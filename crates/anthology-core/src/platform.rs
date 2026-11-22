@@ -1,9 +1,9 @@
-//! `Target`, `detect_with`, `uname` (plan §3.3, GC-9): `rtk_install.target()` and `TARGETS`.
+//! `Target`, `detect_with`, `uname` (plan §3.3, GC-9): `atl_install.target()` and `TARGETS`.
 #![forbid(unsafe_code)]
 
 use crate::sys;
 
-/// A release target, in `rtk_install.TARGETS` order (the derived `Ord` follows it).
+/// A release target, in `atl_install.TARGETS` order (the derived `Ord` follows it).
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub enum Target {
     AppleArm64,
@@ -42,7 +42,7 @@ fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
-/// `rtk_install.target(system, machine)`: `system` and `machine` are stripped and lowercased
+/// `atl_install.target(system, machine)`: `system` and `machine` are stripped and lowercased
 /// (the keys are ASCII, and no non-ASCII character lowercases into one of their letters), then
 /// mapped. The errors are GC-9's texts, naming the values as given.
 pub fn detect_with(uname: (&str, &str)) -> Result<Target, String> {
@@ -53,7 +53,7 @@ pub fn detect_with(uname: (&str, &str)) -> Result<Target, String> {
         .iter()
         .any(|p| s.starts_with(p))
     {
-        return Err("Windows isn't supported: rtk is installed on macOS and Linux only".into());
+        return Err("Windows isn't supported: atl is installed on macOS and Linux only".into());
     }
     match (s.as_str(), m.as_str()) {
         ("darwin", "arm64" | "aarch64") => Ok(Target::AppleArm64),
@@ -61,7 +61,7 @@ pub fn detect_with(uname: (&str, &str)) -> Result<Target, String> {
         ("linux", "x86_64" | "amd64") => Ok(Target::LinuxX86_64Musl),
         ("linux", "aarch64" | "arm64") => Ok(Target::LinuxArm64Musl),
         _ => Err(format!(
-            "unsupported platform {system}/{machine}: rtk is installed on macOS and Linux \
+            "unsupported platform {system}/{machine}: atl is installed on macOS and Linux \
              (x86_64, arm64) only"
         )),
     }
@@ -130,13 +130,13 @@ mod tests {
         ] {
             assert_eq!(
                 detect_with((s, "x86_64")),
-                Err("Windows isn't supported: rtk is installed on macOS and Linux only".into())
+                Err("Windows isn't supported: atl is installed on macOS and Linux only".into())
             );
         }
         assert_eq!(
             detect_with(("FreeBSD", "amd64")),
             Err(
-                "unsupported platform FreeBSD/amd64: rtk is installed on macOS and Linux \
+                "unsupported platform FreeBSD/amd64: atl is installed on macOS and Linux \
                  (x86_64, arm64) only"
                     .into()
             )
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(
             detect_with((" Linux ", "riscv64")),
             Err(
-                "unsupported platform  Linux /riscv64: rtk is installed on macOS and Linux \
+                "unsupported platform  Linux /riscv64: atl is installed on macOS and Linux \
                  (x86_64, arm64) only"
                     .into()
             )

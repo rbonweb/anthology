@@ -368,7 +368,7 @@ impl Release {
 
 /// A fake `anthology` binary: a `#!/bin/sh` script answering `--version` with `version_line`,
 /// `guard …` with `guard_body`, and `hook …` with `hook_body`; anything else prints its
-/// arguments and the RTK variable (for the wrappers).
+/// arguments and the ATL variable (for the wrappers).
 pub fn fake_binary(version_line: &str, guard_body: &str, hook_body: &str) -> Vec<u8> {
     format!(
         "#!/bin/sh\n\
@@ -376,7 +376,7 @@ pub fn fake_binary(version_line: &str, guard_body: &str, hook_body: &str) -> Vec
          --version) printf '%s\\n' '{version_line}'; exit 0 ;;\n\
          guard)\n{guard_body}\n;;\n\
          hook)\n{hook_body}\n;;\n\
-         *) printf 'args:%s|rtk=%s\\n' \"$*\" \"${{RTK_SUPPRESS_HOOK_WARNING:-}}\"; exit 0 ;;\n\
+         *) printf 'args:%s|atl=%s\\n' \"$*\" \"${{ATL_SUPPRESS_HOOK_WARNING:-}}\"; exit 0 ;;\n\
          esac\n\
          exit 0\n"
     )

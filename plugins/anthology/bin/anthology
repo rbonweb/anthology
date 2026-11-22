@@ -1,8 +1,8 @@
 #!/bin/sh
 # anthology: run the anthology binary this plugin's anthology.lock pins, installing it first
 # when it is missing (design §8.4 `wrapper` mode). Exit 127 when it cannot be installed.
-RTK_SUPPRESS_HOOK_WARNING=1
-export RTK_SUPPRESS_HOOK_WARNING
+ATL_SUPPRESS_HOOK_WARNING=1
+export ATL_SUPPRESS_HOOK_WARNING
 unset CDPATH
 anth_name=anthology
 anth_self=$0

@@ -84,7 +84,7 @@ mod tests {
     fn test_main_exits_zero_even_when_run_raises() {
         let c = SessionCase::new();
         let deps = SessionDeps {
-            rtk: None,
+            atl: None,
             ensure_guard_binary: &no_ensure,
             ..SessionDeps::default()
         };
@@ -110,7 +110,7 @@ mod tests {
     fn test_main_prints_one_json_object_on_success() {
         let c = SessionCase::new();
         let deps = SessionDeps {
-            rtk: None,
+            atl: None,
             ensure_guard_binary: &no_ensure,
             ..SessionDeps::default()
         };

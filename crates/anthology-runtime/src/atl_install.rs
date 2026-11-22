@@ -1,19 +1,19 @@
-//! rtk install and reconcile (RT2): `plugins/anthology/scripts/rtk_install.py`, GC-9.
+//! atl install and reconcile (RT2): `plugins/anthology/scripts/atl_install.py`, GC-9.
 //!
-//! `rtk.lock` pins a version, the release tag, the GitHub repo and the sha256 of each release
-//! tarball (`rtk-<target>.tar.gz`). [`install`] downloads the tarball for this machine into a
-//! fresh `<data>/rtk/.tmp-XXXXXXXX/` folder, checks its sha256 against the lock **before the
-//! tar is opened**, extracts only the one regular member named exactly `rtk` (`O_EXCL`, 0700,
-//! then 0755), and places it at `<data>/rtk/<version>/rtk`: unlink `.sha256`, rename the
+//! `atl.lock` pins a version, the release tag, the GitHub repo and the sha256 of each release
+//! tarball (`atl-<target>.tar.gz`). [`install`] downloads the tarball for this machine into a
+//! fresh `<data>/atl/.tmp-XXXXXXXX/` folder, checks its sha256 against the lock **before the
+//! tar is opened**, extracts only the one regular member named exactly `atl` (`O_EXCL`, 0700,
+//! then 0755), and places it at `<data>/atl/<version>/atl`: unlink `.sha256`, rename the
 //! binary in, write `.sha256` (`<sha>\n`) last. The staging folder is removed on every path,
 //! so no partial file is ever installed. [`reconcile`] is what session start and setup call:
 //! it installs when the binary is missing or does not match the lock, records the path in
-//! state.json (which `bin/rtk` and `bin/rtk-hook` read), and turns any failure into the GC-9
+//! state.json (which `bin/atl` and `bin/atl-hook` read), and turns any failure into the GC-9
 //! warning. It never panics outward.
 //!
-//! Seams (GC-19): [`RtkDeps`] carries the fetch (`default_fetch`, `build_opener`), `uname`
+//! Seams (GC-19): [`AtlDeps`] carries the fetch (`default_fetch`, `build_opener`), `uname`
 //! (`platform.system`/`machine`), `now` (`time.time` in prune) and the `tar_open` fault;
-//! [`RtkLimits`] carries `MAX_DOWNLOAD_BYTES` (used by the production fetch),
+//! [`AtlLimits`] carries `MAX_DOWNLOAD_BYTES` (used by the production fetch),
 //! `MAX_BINARY_BYTES` and `MAX_TAR_MEMBERS`.
 //!
 //! "Executable" is "a regular file with an execute bit": `os.access(X_OK)` needs the effective
@@ -27,7 +27,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anthology_core::lock::{self, Lock, RTK_TAG_PREFIX};
+use anthology_core::lock::{self, ATL_TAG_PREFIX, Lock};
 use anthology_core::platform::{self, Target};
 use anthology_core::{Env, state};
 use anthology_pycompat::json::{self, Map, Value};
@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::{self, Fetch, install_error};
 
-/// `MAX_BINARY_BYTES`: the extracted rtk.
+/// `MAX_BINARY_BYTES`: the extracted atl.
 pub const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 /// `MAX_TAR_MEMBERS`.
 pub const MAX_TAR_MEMBERS: usize = 64;
@@ -49,15 +49,15 @@ pub const DEFAULT_TIMEOUT: f64 = 30.0;
 
 /// The constants the Python tests patch (GC-19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RtkLimits {
+pub struct AtlLimits {
     pub max_download_bytes: u64,
     pub max_binary_bytes: u64,
     pub max_tar_members: usize,
 }
 
-impl Default for RtkLimits {
-    fn default() -> RtkLimits {
-        RtkLimits {
+impl Default for AtlLimits {
+    fn default() -> AtlLimits {
+        AtlLimits {
             max_download_bytes: fetch::MAX_DOWNLOAD_BYTES,
             max_binary_bytes: MAX_BINARY_BYTES,
             max_tar_members: MAX_TAR_MEMBERS,
@@ -67,7 +67,7 @@ impl Default for RtkLimits {
 
 /// The seams of this module (GC-19, module docs).
 #[derive(Clone, Copy)]
-pub struct RtkDeps<'a> {
+pub struct AtlDeps<'a> {
     pub fetch: &'a dyn Fetch,
     /// `(platform.system(), platform.machine())`.
     pub uname: fn() -> (String, String),
@@ -75,24 +75,24 @@ pub struct RtkDeps<'a> {
     pub now: fn() -> f64,
     /// Runs where `tarfile.open` is called; an error stands for whatever it raised.
     pub tar_open: Option<fn() -> Result<(), PyExc>>,
-    pub limits: RtkLimits,
+    pub limits: AtlLimits,
 }
 
-impl<'a> RtkDeps<'a> {
+impl<'a> AtlDeps<'a> {
     /// The production seams around `fetch`.
-    pub fn new(fetch: &'a dyn Fetch) -> RtkDeps<'a> {
-        RtkDeps {
+    pub fn new(fetch: &'a dyn Fetch) -> AtlDeps<'a> {
+        AtlDeps {
             fetch,
             uname: platform::uname,
             now: now_epoch,
             tar_open: None,
-            limits: RtkLimits::default(),
+            limits: AtlLimits::default(),
         }
     }
 }
 
 /// The production fetch for `env` (`default_fetch`), with `limits`' download cap.
-pub fn default_fetch(env: &Env, limits: &RtkLimits) -> fetch::UreqFetch {
+pub fn default_fetch(env: &Env, limits: &AtlLimits) -> fetch::UreqFetch {
     fetch::UreqFetch::new(env).with_max_bytes(limits.max_download_bytes)
 }
 
@@ -111,7 +111,7 @@ pub fn target(system: &str, machine: &str) -> Result<Target, PyExc> {
 
 /// `validate_lock(value)`.
 pub fn validate_lock(value: &Value) -> Result<Lock, PyExc> {
-    lock::validate(value, RTK_TAG_PREFIX).map_err(install_error)
+    lock::validate(value, ATL_TAG_PREFIX).map_err(install_error)
 }
 
 /// `load_lock(path)`: `cannot read <path>: <error>`, `<path> is not valid JSON`, or a
@@ -136,7 +136,7 @@ pub fn load_lock(path: &Path) -> Result<Lock, PyExc> {
 /// `release_url(lock, target)`.
 pub fn release_url(lock: &Lock, tgt: Target) -> String {
     format!(
-        "https://github.com/{}/releases/download/{}/rtk-{}.tar.gz",
+        "https://github.com/{}/releases/download/{}/atl-{}.tar.gz",
         lock.repo,
         lock.tag,
         tgt.triple()
@@ -148,7 +148,7 @@ fn expected_hash(lock: &Lock, tgt: Target) -> Result<&str, PyExc> {
     lock.sha256
         .get(&tgt)
         .map(String::as_str)
-        .ok_or_else(|| install_error(format!("no rtk build for {}", tgt.triple())))
+        .ok_or_else(|| install_error(format!("no atl build for {}", tgt.triple())))
 }
 
 // --- verify -------------------------------------------------------------------------------
@@ -198,14 +198,14 @@ pub fn is_executable_file(path: &Path) -> bool {
 }
 
 /// `_is_current(vdir, expected)`: `vdir` is not a symlink and holds an executable regular-file
-/// `rtk` whose recorded tarball hash (`.sha256`, stripped) is `expected`. A marker that is not
+/// `atl` whose recorded tarball hash (`.sha256`, stripped) is `expected`. A marker that is not
 /// UTF-8 raises, as `read_text` does there (only `OSError` reads as "not current").
 fn is_current(vdir: &Path, expected: &str) -> Result<bool, PyExc> {
     match fs::symlink_metadata(vdir) {
         Ok(m) if !m.file_type().is_symlink() => {}
         _ => return Ok(false),
     }
-    if !is_executable_file(&vdir.join("rtk")) {
+    if !is_executable_file(&vdir.join("atl")) {
         return Ok(false);
     }
     let Ok(bytes) = fs::read(vdir.join(".sha256")) else {
@@ -274,7 +274,7 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Member {
     }
 }
 
-/// `cannot read the rtk tarball: <library text>`. The `tar` crate may quote raw header bytes,
+/// `cannot read the atl tarball: <library text>`. The `tar` crate may quote raw header bytes,
 /// so control characters (a newline included) become `?`: the warning stays one line.
 fn tar_error(e: impl std::fmt::Display) -> PyExc {
     let text: String = e
@@ -282,12 +282,12 @@ fn tar_error(e: impl std::fmt::Display) -> PyExc {
         .chars()
         .map(|c| if c.is_control() { '?' } else { c })
         .collect();
-    install_error(format!("cannot read the rtk tarball: {text}"))
+    install_error(format!("cannot read the atl tarball: {text}"))
 }
 
-/// `_extract_rtk(archive, dest)`: copies the one regular-file member named exactly `rtk` to
+/// `_extract_atl(archive, dest)`: copies the one regular-file member named exactly `atl` to
 /// `dest` (created `O_EXCL`, 0700); never extracts anything else.
-fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), PyExc> {
+fn extract_atl(archive: &Path, dest: &Path, deps: &AtlDeps<'_>) -> Result<(), PyExc> {
     if let Some(hook) = deps.tar_open {
         hook()?;
     }
@@ -316,17 +316,17 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
             return Err(install_error("tarball has too many members"));
         }
         let member = member_of(&entry);
-        if member.name != b"rtk" {
+        if member.name != b"atl" {
             continue;
         }
         if found {
-            return Err(install_error("tarball has more than one rtk member"));
+            return Err(install_error("tarball has more than one atl member"));
         }
         if !member.regular {
-            return Err(install_error("the rtk member is not a regular file"));
+            return Err(install_error("the atl member is not a regular file"));
         }
         if member.size > limits.max_binary_bytes {
-            return Err(install_error("the rtk member is too large"));
+            return Err(install_error("the atl member is too large"));
         }
         found = true;
         let mut out = OpenOptions::new()
@@ -344,7 +344,7 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
             }
             written += n as u64;
             if written > limits.max_binary_bytes {
-                return Err(install_error("the rtk member is too large"));
+                return Err(install_error("the atl member is too large"));
             }
             out.write_all(&buf[..n])?;
         }
@@ -355,7 +355,7 @@ fn extract_rtk(archive: &Path, dest: &Path, deps: &RtkDeps<'_>) -> Result<(), Py
         return Err(tar_error("empty file"));
     }
     if !found {
-        return Err(install_error("tarball has no rtk member"));
+        return Err(install_error("tarball has no atl member"));
     }
     Ok(())
 }
@@ -504,7 +504,7 @@ fn download_and_place(
     url: &str,
     expected: &str,
     timeout: f64,
-    deps: &RtkDeps<'_>,
+    deps: &AtlDeps<'_>,
 ) -> Result<(), PyExc> {
     mkdir_p(root)?;
     let tmp = TempDir(mkdtemp(root)?);
@@ -512,11 +512,11 @@ fn download_and_place(
     fetch::fetch_to_path(deps.fetch, url, &archive, timeout)?;
     if !verify(&archive, expected) {
         return Err(install_error(format!(
-            "sha256 of {url} does not match rtk.lock"
+            "sha256 of {url} does not match atl.lock"
         )));
     }
-    let staged = tmp.0.join("rtk");
-    extract_rtk(&archive, &staged, deps)?;
+    let staged = tmp.0.join("atl");
+    extract_atl(&archive, &staged, deps)?;
     fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
         .map_err(|e| os_error(e, &staged))?;
     if fs::symlink_metadata(vdir).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -540,7 +540,7 @@ fn download_and_place(
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(os_error(e, &vdir.join(".sha256"))),
         }
-        replace(&staged, &vdir.join("rtk"))?;
+        replace(&staged, &vdir.join("atl"))?;
         let marker = tmp.0.join("marker");
         fs::write(&marker, format!("{expected}\n")).map_err(|e| os_error(e, &marker))?;
         replace(&marker, &vdir.join(".sha256"))?;
@@ -559,9 +559,9 @@ fn is_version_name(name: &str) -> bool {
     probe.insert("tag".into(), Value::Null);
     probe.insert("repo".into(), Value::Null);
     probe.insert("sha256".into(), Value::Null);
-    match lock::validate(&Value::Object(probe), RTK_TAG_PREFIX) {
+    match lock::validate(&Value::Object(probe), ATL_TAG_PREFIX) {
         Ok(_) => true,
-        Err(e) => !e.starts_with("rtk.lock: invalid version"),
+        Err(e) => !e.starts_with("atl.lock: invalid version"),
     }
 }
 
@@ -608,7 +608,7 @@ pub fn prune(root: &Path, current: &str, now: f64) -> Vec<String> {
     removed
 }
 
-/// `install(data_dir, lock, fetch, timeout, tgt)`: makes `<data>/rtk/<version>/rtk` exist and
+/// `install(data_dir, lock, fetch, timeout, tgt)`: makes `<data>/atl/<version>/atl` exist and
 /// match `lock`, and returns its path. Fetches only when the binary is missing or its recorded
 /// tarball hash differs from the lock; on failure nothing is left behind.
 pub fn install(
@@ -616,10 +616,10 @@ pub fn install(
     lock: &Lock,
     timeout: f64,
     tgt: Target,
-    deps: &RtkDeps<'_>,
+    deps: &AtlDeps<'_>,
 ) -> Result<PathBuf, PyExc> {
     let expected = expected_hash(lock, tgt)?;
-    let root = data_dir.join("rtk");
+    let root = data_dir.join("atl");
     let vdir = root.join(&lock.version);
     if !is_current(&vdir, expected)? {
         download_and_place(
@@ -633,11 +633,11 @@ pub fn install(
     }
     touch(&vdir.join(".last-used"))?;
     prune(&root, &lock.version, (deps.now)());
-    Ok(vdir.join("rtk"))
+    Ok(vdir.join("atl"))
 }
 
 /// `check_installed(data_dir, lock)` for this machine: the binary's path when
-/// `<data>/rtk/<version>/rtk` is an executable regular file whose recorded tarball hash equals
+/// `<data>/atl/<version>/atl` is an executable regular file whose recorded tarball hash equals
 /// the lock's; otherwise why not. Read-only, never downloads (RT1b).
 pub fn check_installed(data_dir: &Path, lock: &Lock) -> Result<PathBuf, String> {
     let (system, machine) = platform::uname();
@@ -657,14 +657,14 @@ pub fn check_installed_with(
 /// [`check_installed`] for `tgt`.
 pub fn check_installed_for(data_dir: &Path, lock: &Lock, tgt: Target) -> Result<PathBuf, String> {
     let expected = expected_hash(lock, tgt).map_err(|e| e.py_str())?;
-    let vdir = data_dir.join("rtk").join(&lock.version);
+    let vdir = data_dir.join("atl").join(&lock.version);
     if is_current(&vdir, expected).unwrap_or(false) {
-        Ok(vdir.join("rtk"))
+        Ok(vdir.join("atl"))
     } else {
         Err(format!(
-            "rtk {} is not installed at {}",
+            "atl {} is not installed at {}",
             lock.version,
-            vdir.join("rtk").to_string_lossy()
+            vdir.join("atl").to_string_lossy()
         ))
     }
 }
@@ -672,7 +672,7 @@ pub fn check_installed_for(data_dir: &Path, lock: &Lock, tgt: Target) -> Result<
 /// What [`reconcile`] did (plan §3.6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reconciled {
-    pub rtk_path: Option<PathBuf>,
+    pub atl_path: Option<PathBuf>,
     pub warning: Option<String>,
     pub installed: bool,
 }
@@ -680,15 +680,15 @@ pub struct Reconciled {
 /// The GC-9 warning for a failure `exc`.
 pub fn warning_text(exc: &PyExc) -> String {
     format!(
-        "rtk is not installed or up to date ({}); commands run without it. It is retried at \
+        "atl is not installed or up to date ({}); commands run without it. It is retried at \
          the next session start.",
         exc.py_str()
     )
 }
 
 /// `reconcile(data_dir, lock, fetch, timeout)`: the session-start entry point (module docs).
-/// On success `rtk_path` is the binary and state.json's `rtk_path` is updated when it differs
-/// (`installed` is true only when something was downloaded). On any failure `rtk_path` is
+/// On success `atl_path` is the binary and state.json's `atl_path` is updated when it differs
+/// (`installed` is true only when something was downloaded). On any failure `atl_path` is
 /// `None`, `warning` explains it, and state.json and older version folders are left as they
 /// were.
 pub fn reconcile(
@@ -696,7 +696,7 @@ pub fn reconcile(
     data_dir: &Path,
     lock: &Lock,
     timeout: f64,
-    deps: &RtkDeps<'_>,
+    deps: &AtlDeps<'_>,
 ) -> Reconciled {
     let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         reconcile_inner(env, data_dir, lock, timeout, deps)
@@ -704,17 +704,17 @@ pub fn reconcile(
     let result = attempt.unwrap_or_else(|_| {
         Err(PyExc::Other(
             "RuntimeError",
-            "internal error in the rtk installer".into(),
+            "internal error in the atl installer".into(),
         ))
     });
     match result {
         Ok((path, installed)) => Reconciled {
-            rtk_path: Some(path),
+            atl_path: Some(path),
             warning: None,
             installed,
         },
         Err(exc) => Reconciled {
-            rtk_path: None,
+            atl_path: None,
             warning: Some(warning_text(&exc)),
             installed: false,
         },
@@ -726,16 +726,16 @@ fn reconcile_inner(
     data_dir: &Path,
     lock: &Lock,
     timeout: f64,
-    deps: &RtkDeps<'_>,
+    deps: &AtlDeps<'_>,
 ) -> Result<(PathBuf, bool), PyExc> {
     let (system, machine) = (deps.uname)();
     let tgt = target(&system, &machine)?;
-    let vdir = data_dir.join("rtk").join(&lock.version);
+    let vdir = data_dir.join("atl").join(&lock.version);
     let was_current = is_current(&vdir, expected_hash(lock, tgt)?)?;
     let path = install(data_dir, lock, timeout, tgt, deps)?;
     let shown = path.to_string_lossy().into_owned();
-    if state::read(env).get("rtk_path").and_then(Value::as_str) != Some(shown.as_str()) {
-        state::write(env, vec![("rtk_path".into(), Value::Str(shown))])?;
+    if state::read(env).get("atl_path").and_then(Value::as_str) != Some(shown.as_str()) {
+        state::write(env, vec![("atl_path".into(), Value::Str(shown))])?;
     }
     Ok((path, !was_current))
 }

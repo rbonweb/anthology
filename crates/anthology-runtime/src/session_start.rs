@@ -14,7 +14,7 @@
 //!
 //! Order (GC-7): Windows → refusal only; read the hook input; ensure the live guard binary
 //! (new step); the guardrails self-test (F-4); state; the NAG, or the read-rule, ops-version and
-//! rtk checks (the rtk check skipped when more than 10 s passed since `ANTHOLOGY_HOOK_T0`,
+//! atl checks (the atl check skipped when more than 10 s passed since `ANTHOLOGY_HOOK_T0`,
 //! F-20); the data-folder, wrapper, agent-memory and subagent checks; the git-folder check (a
 //! session folder that is not a repo but holds repos); memory sync; the guide; compose; prune
 //! `<ah>/bin` (design §8.5).
@@ -58,18 +58,18 @@ use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
 use anthology_settings::{self as settings, SettingsDeps, SettingsLimits, TAG_PLUGIN_READ};
 
+use crate::atl_install::{self, AtlDeps, AtlLimits, Reconciled};
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
 use crate::guardrails_loc::{self, GUARD_REL, Problem};
-use crate::rtk_install::{self, Reconciled, RtkDeps, RtkLimits};
 
 /// Windows (the only output there).
 pub const REFUSAL: &str = "Anthology supports macOS and Linux only; it is inactive on Windows.";
 /// Setup never ran.
 pub const NAG: &str =
-    "anthology: run /anthology:setup to finish installing (rtk, permissions, memory)";
+    "anthology: run /anthology:setup to finish installing (atl, permissions, memory)";
 /// No `CLAUDE_PLUGIN_DATA`.
-pub const NO_DATA: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory search index have no data folder (compatibility check)";
+pub const NO_DATA: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; atl and the memory search index have no data folder (compatibility check)";
 /// `CLAUDE_CODE_SUBAGENT_MODEL` is set somewhere.
 pub const SUBAGENT_MODEL_SET: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply; run /anthology:setup to see where it is set";
 /// The plugin-read rule names another folder.
@@ -78,11 +78,11 @@ pub const MOVED: &str =
 /// Setup's settings ops changed since setup last ran.
 pub const OPS_CHANGED: &str =
     "anthology settings changed in this release — run /anthology:setup to review";
-/// The rtk check was skipped (F-20).
-pub const RTK_SKIPPED: &str =
-    "anthology: skipped the rtk check this session (not enough time left)";
-/// No rtk.lock in the plugin.
-pub const RTK_NOT_WIRED: &str = "anthology: rtk wiring not present yet; skipped";
+/// The atl check was skipped (F-20).
+pub const ATL_SKIPPED: &str =
+    "anthology: skipped the atl check this session (not enough time left)";
+/// No atl.lock in the plugin.
+pub const ATL_NOT_WIRED: &str = "anthology: atl wiring not present yet; skipped";
 /// The session folder is not in a git repo but git repos sit directly below it.
 pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git repos sit below it. Anthology's agents need worktrees, so start Claude Code inside the repo you are working on";
 /// The most entries of the session folder looked at for [`NOT_A_REPO`].
@@ -110,12 +110,12 @@ pub const FAILING_CLOSED_MAX: usize = 300;
 
 /// Seconds for the guard self-test (GC-7).
 pub const GUARD_TIMEOUT: u64 = 10;
-/// rtk_install's per-read timeout at session start (GC-9: T = 8).
-pub const RTK_TIMEOUT: f64 = 8.0;
+/// atl_install's per-read timeout at session start (GC-9: T = 8).
+pub const ATL_TIMEOUT: f64 = 8.0;
 /// Seconds of work before the 60 s hook timeout.
 pub const DEADLINE: f64 = 50.0;
-/// The rtk check is skipped when less than this is left of [`DEADLINE`].
-pub const RTK_MIN_REMAINING: f64 = 40.0;
+/// The atl check is skipped when less than this is left of [`DEADLINE`].
+pub const ATL_MIN_REMAINING: f64 = 40.0;
 /// Code points of `additionalContext`.
 pub const CONTEXT_BUDGET: usize = 9000;
 /// Code points of `systemMessage`.
@@ -171,11 +171,11 @@ pub enum RunResult {
     Failed(PyExc),
 }
 
-/// The rtk interface session start calls (Python's `rtk_install` module).
-pub trait RtkWiring {
-    /// `rtk_install.load_lock(path)`.
+/// The atl interface session start calls (Python's `atl_install` module).
+pub trait AtlWiring {
+    /// `atl_install.load_lock(path)`.
     fn load_lock(&self, path: &Path) -> Result<Lock, PyExc>;
-    /// `rtk_install.reconcile(data_dir, lock, None, timeout)`.
+    /// `atl_install.reconcile(data_dir, lock, None, timeout)`.
     fn reconcile(
         &self,
         env: &Env,
@@ -185,12 +185,12 @@ pub trait RtkWiring {
     ) -> Result<Reconciled, PyExc>;
 }
 
-/// The real [`RtkWiring`]: RT2's `rtk_install` with the production fetch.
-pub struct RealRtk;
+/// The real [`AtlWiring`]: RT2's `atl_install` with the production fetch.
+pub struct RealAtl;
 
-impl RtkWiring for RealRtk {
+impl AtlWiring for RealAtl {
     fn load_lock(&self, path: &Path) -> Result<Lock, PyExc> {
-        rtk_install::load_lock(path)
+        atl_install::load_lock(path)
     }
 
     fn reconcile(
@@ -200,10 +200,10 @@ impl RtkWiring for RealRtk {
         lock: &Lock,
         timeout: f64,
     ) -> Result<Reconciled, PyExc> {
-        let limits = RtkLimits::default();
-        let fetch = rtk_install::default_fetch(env, &limits);
-        let deps = RtkDeps::new(&fetch);
-        Ok(rtk_install::reconcile(env, data_dir, lock, timeout, &deps))
+        let limits = AtlLimits::default();
+        let fetch = atl_install::default_fetch(env, &limits);
+        let deps = AtlDeps::new(&fetch);
+        Ok(atl_install::reconcile(env, data_dir, lock, timeout, &deps))
     }
 }
 
@@ -255,8 +255,8 @@ pub struct SessionDeps<'a> {
     pub state_write: StateWrite<'a>,
     /// `settings_patch.setup_ops`.
     pub settings: SettingsDeps,
-    /// `rtk_install`; `None` is a missing module (`rtk wiring not present yet`).
-    pub rtk: Option<&'a dyn RtkWiring>,
+    /// `atl_install`; `None` is a missing module (`atl wiring not present yet`).
+    pub atl: Option<&'a dyn AtlWiring>,
     /// `pathlib.Path.exists`.
     pub path_exists: fn(&Path) -> bool,
     /// `compat`; `None` is a broken import.
@@ -317,7 +317,7 @@ impl Default for SessionDeps<'static> {
             run: &run_with_timeout,
             state_write: &state::write,
             settings: SettingsDeps::default(),
-            rtk: Some(&RealRtk),
+            atl: Some(&RealAtl),
             path_exists,
             compat: Some(CompatDeps::default()),
             memory_run: &memory_run_default,
@@ -409,7 +409,7 @@ pub mod label {
     pub const DATA_DIR: &str = "recording the plugin data folder";
     pub const READ_RULE: &str = "the plugin-read permission check";
     pub const OPS: &str = "the settings version check";
-    pub const RTK: &str = "the rtk check";
+    pub const ATL: &str = "the atl check";
     pub const DATA_CHECK: &str = "the plugin data folder check";
     pub const WRAPPERS: &str = "the bin wrapper check";
     pub const AGENT_MEMORY: &str = "the agent-memory path check";
@@ -573,29 +573,29 @@ fn ops_warning(env: &Env, root: &Path, current: &Map, deps: &SessionDeps<'_>) ->
     }
 }
 
-/// `_reconcile_rtk(root, data_dir)`: a warning or `None`.
-pub fn reconcile_rtk(
+/// `_reconcile_atl(root, data_dir)`: a warning or `None`.
+pub fn reconcile_atl(
     env: &Env,
     root: &Path,
     data_dir: Option<&Value>,
     deps: &SessionDeps<'_>,
 ) -> Result<Option<String>, PyExc> {
-    fault(deps, "_reconcile_rtk")?;
-    let Some(rtk) = deps.rtk else {
-        return Ok(Some(RTK_NOT_WIRED.into()));
+    fault(deps, "_reconcile_atl")?;
+    let Some(atl) = deps.atl else {
+        return Ok(Some(ATL_NOT_WIRED.into()));
     };
     let Some(data_dir) = data_dir.filter(|v| truthy(v)) else {
         return Ok(None);
     };
-    let lock_path = root.join("rtk.lock");
-    let lock = match rtk.load_lock(&lock_path) {
+    let lock_path = root.join("atl.lock");
+    let lock = match atl.load_lock(&lock_path) {
         Ok(lock) => lock,
         Err(exc) => {
             if !(deps.path_exists)(&lock_path) {
-                return Ok(Some(RTK_NOT_WIRED.into()));
+                return Ok(Some(ATL_NOT_WIRED.into()));
             }
             return Ok(Some(format!(
-                "anthology: rtk.lock is not valid ({}); rtk skipped",
+                "anthology: atl.lock is not valid ({}); atl skipped",
                 cut(&exc_text(&exc), 150)
             )));
         }
@@ -603,7 +603,7 @@ pub fn reconcile_rtk(
     let Some(dir) = data_dir.as_str() else {
         // `Path(data_dir)` raises inside the try around reconcile (CPython 3.12's text).
         return Ok(Some(format!(
-            "anthology: rtk setup failed: {}",
+            "anthology: atl setup failed: {}",
             cut(
                 &format!(
                     "argument should be a str or an os.PathLike object where __fspath__ returns \
@@ -614,10 +614,10 @@ pub fn reconcile_rtk(
             )
         )));
     };
-    match rtk.reconcile(env, Path::new(dir), &lock, RTK_TIMEOUT) {
+    match atl.reconcile(env, Path::new(dir), &lock, ATL_TIMEOUT) {
         Ok(result) => Ok(result.warning.filter(|w| !w.is_empty())),
         Err(exc) => Ok(Some(format!(
-            "anthology: rtk setup failed: {}",
+            "anthology: atl setup failed: {}",
             cut(&exc_text(&exc), 150)
         ))),
     }
@@ -852,15 +852,15 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             None,
         );
         warnings.extend(w);
-        if elapsed() > DEADLINE - RTK_MIN_REMAINING {
-            warnings.push(RTK_SKIPPED.into());
+        if elapsed() > DEADLINE - ATL_MIN_REMAINING {
+            warnings.push(ATL_SKIPPED.into());
         } else {
             let from_env = data_dir.clone().map(Value::Str);
             let dir = from_env.as_ref().or_else(|| current.get("data_dir"));
             let w = step(
                 &mut warnings,
-                label::RTK,
-                |_| reconcile_rtk(env, &root, dir, deps),
+                label::ATL,
+                |_| reconcile_atl(env, &root, dir, deps),
                 None,
             );
             warnings.extend(w);
@@ -1006,7 +1006,7 @@ fn memory_step(
 
 /// What a subagent or teammate gets (a SessionStart that fires inside one after it compacts):
 /// the memory index and nothing else. The routing guide and every warning are for the lead,
-/// who got them when the session started; the checks behind them (guard self-test, rtk, state
+/// who got them when the session started; the checks behind them (guard self-test, atl, state
 /// writes, the once-per-repo agent-memory note) would only repeat them, cost time, or use up
 /// a note the lead has not seen yet. In a subagent a project-scoped guardrails install is
 /// judged against the subagent's folder, which can be outside that project, so the warning

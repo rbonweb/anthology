@@ -198,7 +198,7 @@ fn an_unsupported_platform_allows_read_only_tools_and_names_the_platform() {
                 &c,
             );
         }
-        // Every supported spelling maps (case-insensitive, rtk's table).
+        // Every supported spelling maps (case-insensitive, atl's table).
         for (os, arch) in [
             ("darwin", "ARM64"),
             ("LINUX", "amd64"),

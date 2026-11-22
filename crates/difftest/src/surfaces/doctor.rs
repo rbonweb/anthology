@@ -24,10 +24,10 @@
 //! three heights around a git root (or none), user and repo settings (approval lists, the
 //! plugin-read rule, the subagent model; UTF-16, garbage, oversized), installed plugins with
 //! their own `.mcp.json` and manifests (flat and nested forms), managed servers, hostile, long,
-//! `%` and many server names; state.json (`setup_done`, `rtk_path`, `data_dir` of every shape);
-//! an rtk.lock that is valid, invalid or missing with an install that matches, is tampered or
+//! `%` and many server names; state.json (`setup_done`, `atl_path`, `data_dir` of every shape);
+//! an atl.lock that is valid, invalid or missing with an install that matches, is tampered or
 //! not executable; the plugin's `bin/` wrappers; agent-memory folders; duplicate installs with
-//! odd scopes and keys; rtk's history.db (absent, not a database, a folder, a table missing, or
+//! odd scopes and keys; atl's history.db (absent, not a database, a folder, a table missing, or
 //! built here with token values of every SQLite type and size).
 //!
 //! The generator never builds a layout the two sides cannot agree on by design: no lone
@@ -35,7 +35,7 @@
 //! timeout is unit-tested through the `run` seam), no `PATH` entry that is empty (it would look
 //! in each process's own working folder), no file whose mode leaves its owner without access
 //! (`os.access` is approximated by "some execute bit", RT1a), no deep JSON in a container
-//! `rtk_path` or `data_dir` (Python's `str()` raises `RecursionError` there: D-1), and no repo
+//! `atl_path` or `data_dir` (Python's `str()` raises `RecursionError` there: D-1), and no repo
 //! settings file 513 to 9,997 levels deep that sets the subagent model (compat's read refuses
 //! that band on purpose, RT1a's ruling; doctor's own repo reads parse it, as Python does, and
 //! the generator does build such files with approval keys, and project `.mcp.json` files that
@@ -165,7 +165,7 @@ fn run(case: &Value) -> Observed {
         .and_then(Value::as_str)
         .map(|l| PathBuf::from(rt_a::expand(l, &root, None)));
     let deps = DoctorDeps {
-        rtk_lock: lock,
+        atl_lock: lock,
         limits: limits.clone(),
         ..DoctorDeps::default()
     };
@@ -252,9 +252,9 @@ const PROJ: &str = "w/proj";
 const SUB: &str = "w/proj/sub";
 const CONFIG: &str = "config";
 const HOME: &str = "home";
-const RTK_VERSION: &str = "1.2.1-anthology.1";
-/// What the fake rtk tarball hashes to; every target of the generated lock pins it.
-const RTK_BLOB: &[u8] = b"rtk tarball";
+const ATL_VERSION: &str = "1.2.1-anthology.1";
+/// What the fake atl tarball hashes to; every target of the generated lock pins it.
+const ATL_BLOB: &[u8] = b"atl tarball";
 const HOSTILE: &str = "browseros\x1b[31m\nFAKE  ok   forged line\r\u{202e}";
 const TOOL_EXIT: &str = "#!/bin/sh\nexit ";
 
@@ -365,7 +365,7 @@ impl B {
     }
     /// The plugin's four `bin/` wrappers, executable.
     fn wrappers(&mut self) -> &mut B {
-        for n in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+        for n in ["anthology", "anthology-mem", "atl", "atl-hook"] {
             self.exe(&format!("{PLUG}/bin/{n}"), "#!/bin/sh\n");
         }
         self
@@ -400,7 +400,7 @@ impl B {
             vec![
                 ("plugin_root", s(&format!("@ROOT@/{PLUG}"))),
                 ("cwd", s(&format!("@ROOT@/{cwd}"))),
-                ("lock", s(&format!("@ROOT@/{PLUG}/rtk.lock"))),
+                ("lock", s(&format!("@ROOT@/{PLUG}/atl.lock"))),
             ],
         )
     }
@@ -438,9 +438,9 @@ fn dup(installed: &str) -> Value {
     ])
 }
 
-/// The rtk.lock text every target of which pins [`RTK_BLOB`].
-fn rtk_lock_text(version: &str) -> String {
-    let h = sha256_hex(RTK_BLOB);
+/// The atl.lock text every target of which pins [`ATL_BLOB`].
+fn atl_lock_text(version: &str) -> String {
+    let h = sha256_hex(ATL_BLOB);
     let mut sha = Map::new();
     for t in [
         "aarch64-apple-darwin",
@@ -452,25 +452,25 @@ fn rtk_lock_text(version: &str) -> String {
     }
     let v = obj(vec![
         ("version", s(version)),
-        ("tag", s(&format!("rtk--v{version}"))),
+        ("tag", s(&format!("atl--v{version}"))),
         ("repo", s("example/anthology")),
         ("sha256", Value::Object(sha)),
     ]);
     json::dumps(&v, &json::INDENT2) + "\n"
 }
 
-/// An rtk install at `data/rtk/<version>/`: `exec` binary or not, marker matching or not.
-fn rtk_install(b: &mut B, data: &str, version: &str, exec: bool, marker_ok: bool) {
-    let bin = format!("{data}/rtk/{version}/rtk");
+/// An atl install at `data/atl/<version>/`: `exec` binary or not, marker matching or not.
+fn atl_install(b: &mut B, data: &str, version: &str, exec: bool, marker_ok: bool) {
+    let bin = format!("{data}/atl/{version}/atl");
     b.file(&bin, "#!/bin/sh\n");
     b.chmod(&bin, if exec { 0o755 } else { 0o644 });
     let marker = if marker_ok {
-        sha256_hex(RTK_BLOB)
+        sha256_hex(ATL_BLOB)
     } else {
         "0".repeat(64)
     };
     b.file(
-        &format!("{data}/rtk/{version}/.sha256"),
+        &format!("{data}/atl/{version}/.sha256"),
         &format!("{marker}\n"),
     );
 }
@@ -579,35 +579,35 @@ fn seeds() -> Vec<Value> {
     let mut b = base();
     b.claude_json("{nope");
     out.push(b.check_env(proj));
-    // rtk: through the lock and the marker
+    // atl: through the lock and the marker
     for (exec, marker_ok, version, state_ver) in [
-        (true, true, RTK_VERSION, RTK_VERSION),
-        (false, true, RTK_VERSION, RTK_VERSION),
-        (true, false, RTK_VERSION, RTK_VERSION),
-        (true, true, RTK_VERSION, "0.9.0"),
-        (true, true, "1.3.0-anthology.1", RTK_VERSION),
+        (true, true, ATL_VERSION, ATL_VERSION),
+        (false, true, ATL_VERSION, ATL_VERSION),
+        (true, false, ATL_VERSION, ATL_VERSION),
+        (true, true, ATL_VERSION, "0.9.0"),
+        (true, true, "1.3.0-anthology.1", ATL_VERSION),
     ] {
         let mut b = base();
-        b.file(&format!("{PLUG}/rtk.lock"), &rtk_lock_text(version));
-        rtk_install(&mut b, "data", state_ver, exec, marker_ok);
+        b.file(&format!("{PLUG}/atl.lock"), &atl_lock_text(version));
+        atl_install(&mut b, "data", state_ver, exec, marker_ok);
         b.state(&format!(
-            r#"{{"rtk_path": "@ROOT@/data/rtk/{state_ver}/rtk", "data_dir": "@ROOT@/data"}}"#
+            r#"{{"atl_path": "@ROOT@/data/atl/{state_ver}/atl", "data_dir": "@ROOT@/data"}}"#
         ));
         out.push(b.check_env(proj));
         b.state(&format!(
-            r#"{{"rtk_path": "@ROOT@/data/rtk/{state_ver}/rtk"}}"#
+            r#"{{"atl_path": "@ROOT@/data/atl/{state_ver}/atl"}}"#
         ));
         out.push(b.check_env(proj));
     }
     let mut b = base();
-    b.file(&format!("{PLUG}/rtk.lock"), &rtk_lock_text(RTK_VERSION))
-        .state(r#"{"rtk_path": "@ROOT@/gone/rtk"}"#);
+    b.file(&format!("{PLUG}/atl.lock"), &atl_lock_text(ATL_VERSION))
+        .state(r#"{"atl_path": "@ROOT@/gone/atl"}"#);
     out.push(b.check_env(proj));
     let mut b = base();
-    b.file(&format!("{PLUG}/rtk.lock"), "{}");
+    b.file(&format!("{PLUG}/atl.lock"), "{}");
     out.push(b.check_env(proj));
     let mut b = base();
-    b.dir(&format!("{PLUG}/rtk.lock"));
+    b.dir(&format!("{PLUG}/atl.lock"));
     out.push(b.check_env(proj));
     // plugin_read_rule
     let mut b = base();
@@ -992,9 +992,9 @@ fn seeds() -> Vec<Value> {
     out.push(b.check_env(proj));
     let mut b = base();
     b.wrappers()
-        .file(&format!("{PLUG}/bin/rtk"), "")
-        .chmod(&format!("{PLUG}/bin/rtk"), 0o644)
-        .chmod(&format!("{PLUG}/bin/rtk-hook"), 0o644);
+        .file(&format!("{PLUG}/bin/atl"), "")
+        .chmod(&format!("{PLUG}/bin/atl"), 0o644)
+        .chmod(&format!("{PLUG}/bin/atl-hook"), 0o644);
     out.push(b.check_env(proj));
     let mut b = base();
     b.wrappers().env("CLAUDECODE", "1");
@@ -1047,7 +1047,7 @@ fn seeds() -> Vec<Value> {
         r#"{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "m"}}"#,
     );
     out.push(b.check_env(proj));
-    // RtkSavingsTest: rtk's history read, and one that is not a database
+    // AtlSavingsTest: atl's history read, and one that is not a database
     let mut b = base();
     let bytes = history_bytes(
         true,
@@ -1058,12 +1058,12 @@ fn seeds() -> Vec<Value> {
             "INSERT INTO commands (input_tokens, saved_tokens) VALUES (1000, 35), (233, 0);".into(),
         ],
     );
-    b.file_hex(&format!("{CONFIG}/anthology/rtk/history.db"), &bytes);
+    b.file_hex(&format!("{CONFIG}/anthology/atl/history.db"), &bytes);
     out.push(b.check_env(proj));
     out.push(b.main(false));
     let mut b = base();
     b.file(
-        &format!("{CONFIG}/anthology/rtk/history.db"),
+        &format!("{CONFIG}/anthology/atl/history.db"),
         "not a database",
     );
     out.push(b.check_env(proj));
@@ -1497,24 +1497,24 @@ fn rand_tools(rng: &mut Rng, b: &mut B) {
 }
 
 fn rand_state(rng: &mut Rng, b: &mut B) {
-    // the plugin's rtk.lock
-    let lock_version = *rng.pick(&[RTK_VERSION, RTK_VERSION, "1.3.0-anthology.1"]);
+    // the plugin's atl.lock
+    let lock_version = *rng.pick(&[ATL_VERSION, ATL_VERSION, "1.3.0-anthology.1"]);
     match rng.below(10) {
         0 => {}
         1 => {
-            b.file(&format!("{PLUG}/rtk.lock"), "{}");
+            b.file(&format!("{PLUG}/atl.lock"), "{}");
         }
         2 => {
-            b.file(&format!("{PLUG}/rtk.lock"), "not json");
+            b.file(&format!("{PLUG}/atl.lock"), "not json");
         }
         _ => {
-            b.file(&format!("{PLUG}/rtk.lock"), &rtk_lock_text(lock_version));
+            b.file(&format!("{PLUG}/atl.lock"), &atl_lock_text(lock_version));
         }
     }
-    let installed_version = *rng.pick(&[RTK_VERSION, RTK_VERSION, "0.9.0"]);
+    let installed_version = *rng.pick(&[ATL_VERSION, ATL_VERSION, "0.9.0"]);
     let data = *rng.pick(&["data", "data", "elsewhere"]);
     if rng.chance(0.5) {
-        rtk_install(
+        atl_install(
             b,
             data,
             installed_version,
@@ -1555,13 +1555,13 @@ fn rand_state(rng: &mut Rng, b: &mut B) {
         let v = match rng.below(10) {
             0 => r#""""#.to_string(),
             1 => "0".to_string(),
-            2 => r#""@ROOT@/gone/rtk""#.to_string(),
-            3 => r#""@ROOT@/data/rtk/../rtk/1.2.1-anthology.1/rtk""#.to_string(),
-            4 => r#""@ROOT@//data/rtk/1.2.1-anthology.1/rtk/""#.to_string(),
+            2 => r#""@ROOT@/gone/atl""#.to_string(),
+            3 => r#""@ROOT@/data/atl/../atl/1.2.1-anthology.1/atl""#.to_string(),
+            4 => r#""@ROOT@//data/atl/1.2.1-anthology.1/atl/""#.to_string(),
             5 => r#"["x"]"#.to_string(),
-            _ => format!(r#""@ROOT@/{data}/rtk/{installed_version}/rtk""#),
+            _ => format!(r#""@ROOT@/{data}/atl/{installed_version}/atl""#),
         };
-        parts.push(format!(r#""rtk_path": {v}"#));
+        parts.push(format!(r#""atl_path": {v}"#));
     }
     if rng.chance(0.6) {
         let v = *rng.pick(&[
@@ -1587,7 +1587,7 @@ fn rand_state(rng: &mut Rng, b: &mut B) {
     }
 }
 
-/// The bytes of an rtk history.db built here (closed, so a WAL file is folded back in).
+/// The bytes of an atl history.db built here (closed, so a WAL file is folded back in).
 fn history_bytes(wal: bool, tables: &str, inserts: &[String]) -> Vec<u8> {
     let dir = tempfile::tempdir().expect("tmp");
     let db = dir.path().join("history.db");
@@ -1605,10 +1605,10 @@ fn history_bytes(wal: bool, tables: &str, inserts: &[String]) -> Vec<u8> {
     std::fs::read(&db).expect("read")
 }
 
-/// rtk's history next to state.json (`rtk_savings`): none, not a database, a folder, a table
-/// missing, or rtk's two tables with token values of every SQLite type and size.
-fn rand_rtk_history(rng: &mut Rng, b: &mut B) {
-    let p = format!("{}/anthology/rtk/history.db", b.config);
+/// atl's history next to state.json (`atl_savings`): none, not a database, a folder, a table
+/// missing, or atl's two tables with token values of every SQLite type and size.
+fn rand_atl_history(rng: &mut Rng, b: &mut B) {
+    let p = format!("{}/anthology/atl/history.db", b.config);
     const TABLES: &str = "CREATE TABLE hook_decisions (id INTEGER PRIMARY KEY, decision TEXT);
          CREATE TABLE commands (id INTEGER PRIMARY KEY, input_tokens, saved_tokens);";
     match rng.below(10) {
@@ -1663,7 +1663,7 @@ fn rand_rtk_history(rng: &mut Rng, b: &mut B) {
 }
 
 fn rand_plugin(rng: &mut Rng, b: &mut B) {
-    for n in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+    for n in ["anthology", "anthology-mem", "atl", "atl-hook"] {
         let p = format!("{PLUG}/bin/{n}");
         match rng.below(14) {
             0 => {}
@@ -1816,7 +1816,7 @@ fn gen_case(rng: &mut Rng) -> Value {
     rand_tools(rng, &mut b);
     rand_mcp(rng, &mut b);
     rand_state(rng, &mut b);
-    rand_rtk_history(rng, &mut b);
+    rand_atl_history(rng, &mut b);
     rand_plugin(rng, &mut b);
     if rng.chance(0.1) {
         let text = rand_installed(rng);
@@ -1879,9 +1879,9 @@ mod tests {
             "docker:fail",
             "browseros:ok",
             "browseros:fail",
-            "rtk:ok",
-            "rtk:fail",
-            "rtk:none",
+            "atl:ok",
+            "atl:fail",
+            "atl:none",
             "plugin_read_rule:ok",
             "plugin_read_rule:fail",
             "plugin_read_rule:none",
@@ -1897,8 +1897,8 @@ mod tests {
             "agent_memory_path:none",
             "subagent_model:ok",
             "subagent_model:fail",
-            "rtk_savings:ok",
-            "rtk_savings:none",
+            "atl_savings:ok",
+            "atl_savings:none",
         ] {
             assert!(seen.contains(want), "never reached {want}: {seen:?}");
         }

@@ -1,12 +1,12 @@
-//! `anthology rtk-install` (GC-5, GC-9). Owner: RT2.
+//! `anthology atl-install` (GC-5, GC-9). Owner: RT2.
 //!
-//! `anthology rtk-install --data-dir PATH [--lock PATH] [--dry-run] [--timeout S]`, as
-//! `rtk_install.py main()`: exit 0 with `installed rtk <ver> at <path>` or
-//! `already installed: rtk <ver> at <path>` (or the four dry-run lines); exit 1 with
-//! `rtk_install: <warning>`; exit 2 with `rtk_install: <msg>` for a bad lock or platform, and
+//! `anthology atl-install --data-dir PATH [--lock PATH] [--dry-run] [--timeout S]`, as
+//! `atl_install.py main()`: exit 0 with `installed atl <ver> at <path>` or
+//! `already installed: atl <ver> at <path>` (or the four dry-run lines); exit 1 with
+//! `atl_install: <warning>`; exit 2 with `atl_install: <msg>` for a bad lock or platform, and
 //! for usage errors (argparse's usage text is D-4).
 //!
-//! The default `--lock` is `$CLAUDE_PLUGIN_ROOT/rtk.lock`: the binary no longer sits next to
+//! The default `--lock` is `$CLAUDE_PLUGIN_ROOT/atl.lock`: the binary no longer sits next to
 //! the plugin's `scripts/` (lead ruling R9).
 
 use std::ffi::OsString;
@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use anthology_core::Env;
 use anthology_core::platform;
+use anthology_runtime::atl_install::{self, AtlDeps, AtlLimits};
 use anthology_runtime::fetch::Fetch;
-use anthology_runtime::rtk_install::{self, RtkDeps, RtkLimits};
 
 use super::Output;
 
@@ -27,11 +27,11 @@ pub struct Context<'a> {
     pub uname: fn() -> (String, String),
 }
 
-/// Runs `anthology rtk-install …`; `args` are the arguments after `rtk-install`.
+/// Runs `anthology atl-install …`; `args` are the arguments after `atl-install`.
 pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
     let _ = stdin;
     let env = Env::from_process();
-    let fetch = rtk_install::default_fetch(&env, &RtkLimits::default());
+    let fetch = atl_install::default_fetch(&env, &AtlLimits::default());
     run_with(
         args,
         &Context {
@@ -52,8 +52,8 @@ struct Args {
 fn usage_error(msg: &str) -> Output {
     Output {
         stderr: format!(
-            "usage: anthology rtk-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
-             [--timeout TIMEOUT]\nanthology rtk-install: error: {msg}\n"
+            "usage: anthology atl-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
+             [--timeout TIMEOUT]\nanthology atl-install: error: {msg}\n"
         )
         .into_bytes(),
         code: 2,
@@ -62,16 +62,16 @@ fn usage_error(msg: &str) -> Output {
 }
 
 const HELP: &str =
-    "usage: anthology rtk-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
+    "usage: anthology atl-install [-h] --data-dir DATA_DIR [--lock LOCK] [--dry-run] \
 [--timeout TIMEOUT]
 
-Install the rtk binary pinned by rtk.lock.
+Install the atl binary pinned by atl.lock.
 
 options:
   -h, --help         show this help message and exit
   --data-dir DATA_DIR
-                     plugin data dir; rtk goes to <dir>/rtk/<version>/
-  --lock LOCK        path to rtk.lock (default: $CLAUDE_PLUGIN_ROOT/rtk.lock)
+                     plugin data dir; atl goes to <dir>/atl/<version>/
+  --lock LOCK        path to atl.lock (default: $CLAUDE_PLUGIN_ROOT/atl.lock)
   --dry-run          print the plan and fetch nothing
   --timeout TIMEOUT  network timeout in seconds
 ";
@@ -127,7 +127,7 @@ fn parse(args: &[OsString]) -> Result<Args, Output> {
         data_dir,
         lock,
         dry_run,
-        timeout: timeout.unwrap_or(rtk_install::DEFAULT_TIMEOUT),
+        timeout: timeout.unwrap_or(atl_install::DEFAULT_TIMEOUT),
     })
 }
 
@@ -148,7 +148,7 @@ fn py_float(text: &str) -> Option<f64> {
 
 fn fail(code: i32, msg: &str) -> Output {
     Output {
-        stderr: format!("rtk_install: {msg}\n").into_bytes(),
+        stderr: format!("atl_install: {msg}\n").into_bytes(),
         code,
         ..Output::default()
     }
@@ -162,26 +162,26 @@ pub fn run_with(args: &[OsString], ctx: &Context<'_>) -> Output {
     };
     let lock_path = match (&args.lock, ctx.env.get_os("CLAUDE_PLUGIN_ROOT")) {
         (Some(p), _) => p.clone(),
-        (None, Some(root)) if !root.is_empty() => PathBuf::from(root).join("rtk.lock"),
+        (None, Some(root)) if !root.is_empty() => PathBuf::from(root).join("atl.lock"),
         (None, _) => {
             return fail(2, "--lock is required when CLAUDE_PLUGIN_ROOT is not set");
         }
     };
-    let lock = match rtk_install::load_lock(&lock_path) {
+    let lock = match atl_install::load_lock(&lock_path) {
         Ok(l) => l,
         Err(e) => return fail(2, &e.py_str()),
     };
     let (system, machine) = (ctx.uname)();
-    let tgt = match rtk_install::target(&system, &machine) {
+    let tgt = match atl_install::target(&system, &machine) {
         Ok(t) => t,
         Err(e) => return fail(2, &e.py_str()),
     };
-    let dest = args.data_dir.join("rtk").join(&lock.version).join("rtk");
+    let dest = args.data_dir.join("atl").join(&lock.version).join("atl");
     if args.dry_run {
         let text = format!(
             "target:      {}\nurl:         {}\nsha256:      {}\ndestination: {}\n",
             tgt.triple(),
-            rtk_install::release_url(&lock, tgt),
+            atl_install::release_url(&lock, tgt),
             lock.sha256.get(&tgt).map_or("", String::as_str),
             dest.to_string_lossy()
         );
@@ -190,14 +190,14 @@ pub fn run_with(args: &[OsString], ctx: &Context<'_>) -> Output {
             ..Output::default()
         };
     }
-    let mut deps = RtkDeps::new(ctx.fetch);
+    let mut deps = AtlDeps::new(ctx.fetch);
     deps.uname = ctx.uname;
-    let result = rtk_install::reconcile(&ctx.env, &args.data_dir, &lock, args.timeout, &deps);
+    let result = atl_install::reconcile(&ctx.env, &args.data_dir, &lock, args.timeout, &deps);
     if let Some(w) = result.warning {
         return fail(1, &w);
     }
     let path = result
-        .rtk_path
+        .atl_path
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let head = if result.installed {
@@ -206,13 +206,13 @@ pub fn run_with(args: &[OsString], ctx: &Context<'_>) -> Output {
         "already installed:"
     };
     Output {
-        stdout: format!("{head} rtk {} at {path}\n", lock.version).into_bytes(),
+        stdout: format!("{head} atl {} at {path}\n", lock.version).into_bytes(),
         ..Output::default()
     }
 }
 
 /// Port of `tests/test_rtk_install.py` `CliTest` (the in-process `main()` cases; the
-/// subprocess cases are `crates/anthology-cli/tests/rtk_install.rs`).
+/// subprocess cases are `crates/anthology-cli/tests/atl_install.rs`).
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -222,12 +222,12 @@ mod tests {
     use anthology_pycompat::json::{self, Value};
     use anthology_pycompat::pyerr::PyExc;
     use anthology_testkit::rt_b::{
-        FakeAnswer, RTK_HOST, RtkFakeFetch, rtk_lock, rtk_lock_value, rtk_tarball, rtk_url_for,
+        ATL_HOST, AtlFakeFetch, FakeAnswer, atl_lock, atl_lock_value, atl_tarball, atl_url_for,
     };
 
     use super::*;
 
-    struct Fake(RtkFakeFetch);
+    struct Fake(AtlFakeFetch);
 
     impl Fetch for Fake {
         fn fetch(&self, url: &str, dest: &mut dyn Write, timeout: f64) -> Result<(), PyExc> {
@@ -272,7 +272,7 @@ mod tests {
     const REPO: &str = "rbonweb/anthology";
 
     fn write_lock(path: &Path, blob: &[u8]) {
-        let v = rtk_lock_value(V, blob, REPO);
+        let v = atl_lock_value(V, blob, REPO);
         std::fs::write(path, json::dumps(&v, &json::PY_DEFAULT)).expect("lock");
     }
 
@@ -291,12 +291,12 @@ mod tests {
     #[test]
     fn test_dry_run_prints_the_plan_and_changes_nothing() {
         let b = base();
-        let blob = rtk_tarball();
-        let lock_path = b.tmp.join("rtk.lock");
+        let blob = atl_tarball();
+        let lock_path = b.tmp.join("atl.lock");
         write_lock(&lock_path, &blob);
-        let lock = rtk_lock(V, &blob, REPO);
+        let lock = atl_lock(V, &blob, REPO);
         let data = b.tmp.join("data");
-        let fetch = Fake(RtkFakeFetch::default());
+        let fetch = Fake(AtlFakeFetch::default());
         let ctx = Context {
             env: b.env.clone(),
             fetch: &fetch,
@@ -306,15 +306,15 @@ mod tests {
         let out = run_with(&args, &ctx);
         assert_eq!(out.code, 0, "{}", text(&out.stderr));
         let stdout = text(&out.stdout);
-        let dest = data.join("rtk").join(V).join("rtk");
-        assert!(stdout.contains(RTK_HOST));
-        assert!(stdout.contains(&rtk_url_for(&lock, RTK_HOST)));
+        let dest = data.join("atl").join(V).join("atl");
+        assert!(stdout.contains(ATL_HOST));
+        assert!(stdout.contains(&atl_url_for(&lock, ATL_HOST)));
         assert!(stdout.contains(s(&dest)));
         assert_eq!(
             stdout,
             format!(
-                "target:      {RTK_HOST}\nurl:         {}\nsha256:      {}\ndestination: {}\n",
-                rtk_url_for(&lock, RTK_HOST),
+                "target:      {ATL_HOST}\nurl:         {}\nsha256:      {}\ndestination: {}\n",
+                atl_url_for(&lock, ATL_HOST),
                 anthology_testkit::release::sha256_hex(&blob),
                 s(&dest)
             )
@@ -326,9 +326,9 @@ mod tests {
     #[test]
     fn test_install_failure_exits_non_zero_with_a_message() {
         let b = base();
-        let lock_path = b.tmp.join("rtk.lock");
-        write_lock(&lock_path, &rtk_tarball());
-        let fetch = Fake(RtkFakeFetch::failing("OSError", "offline"));
+        let lock_path = b.tmp.join("atl.lock");
+        write_lock(&lock_path, &atl_tarball());
+        let fetch = Fake(AtlFakeFetch::failing("OSError", "offline"));
         let ctx = Context {
             env: b.env.clone(),
             fetch: &fetch,
@@ -342,17 +342,17 @@ mod tests {
         assert_eq!(out.code, 1);
         let err = text(&out.stderr);
         assert!(err.contains("offline"), "{err}");
-        assert!(err.starts_with("rtk_install: rtk is not installed or up to date ("));
+        assert!(err.starts_with("atl_install: atl is not installed or up to date ("));
     }
 
     #[test]
     fn test_install_success_exits_zero_and_records_state() {
         let b = base();
-        let blob = rtk_tarball();
-        let lock_path = b.tmp.join("rtk.lock");
+        let blob = atl_tarball();
+        let lock_path = b.tmp.join("atl.lock");
         write_lock(&lock_path, &blob);
-        let lock = rtk_lock(V, &blob, REPO);
-        let fetch = Fake(RtkFakeFetch::serving(&rtk_url_for(&lock, RTK_HOST), &blob));
+        let lock = atl_lock(V, &blob, REPO);
+        let fetch = Fake(AtlFakeFetch::serving(&atl_url_for(&lock, ATL_HOST), &blob));
         let ctx = Context {
             env: b.env.clone(),
             fetch: &fetch,
@@ -362,19 +362,19 @@ mod tests {
         let args = os(&["--data-dir", s(&data), "--lock", s(&lock_path)]);
         let out = run_with(&args, &ctx);
         assert_eq!(out.code, 0, "{}", text(&out.stderr));
-        let want = data.join("rtk").join(V).join("rtk");
+        let want = data.join("atl").join(V).join("atl");
         assert_eq!(
-            state::read(&b.env).get("rtk_path").and_then(Value::as_str),
+            state::read(&b.env).get("atl_path").and_then(Value::as_str),
             want.to_str()
         );
         assert_eq!(
             text(&out.stdout),
-            format!("installed rtk {V} at {}\n", s(&want))
+            format!("installed atl {V} at {}\n", s(&want))
         );
         let again = run_with(&args, &ctx);
         assert_eq!(
             text(&again.stdout),
-            format!("already installed: rtk {V} at {}\n", s(&want))
+            format!("already installed: atl {V} at {}\n", s(&want))
         );
         assert_eq!(fetch.0.calls().len(), 1);
     }
@@ -384,8 +384,8 @@ mod tests {
         let b = base();
         let root = b.tmp.join("plugin");
         std::fs::create_dir_all(&root).expect("root");
-        write_lock(&root.join("rtk.lock"), &rtk_tarball());
-        let fetch = Fake(RtkFakeFetch::default());
+        write_lock(&root.join("atl.lock"), &atl_tarball());
+        let fetch = Fake(AtlFakeFetch::default());
         let data = b.tmp.join("data");
         let args = os(&["--data-dir", s(&data), "--dry-run"]);
         let with_root = Context {
@@ -403,16 +403,16 @@ mod tests {
         assert_eq!(out.code, 2);
         assert_eq!(
             text(&out.stderr),
-            "rtk_install: --lock is required when CLAUDE_PLUGIN_ROOT is not set\n"
+            "atl_install: --lock is required when CLAUDE_PLUGIN_ROOT is not set\n"
         );
     }
 
     #[test]
     fn an_unsupported_platform_exits_2() {
         let b = base();
-        let lock_path = b.tmp.join("rtk.lock");
-        write_lock(&lock_path, &rtk_tarball());
-        let fetch = Fake(RtkFakeFetch::default());
+        let lock_path = b.tmp.join("atl.lock");
+        write_lock(&lock_path, &atl_tarball());
+        let fetch = Fake(AtlFakeFetch::default());
         let ctx = Context {
             env: b.env.clone(),
             fetch: &fetch,
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(out.code, 2);
         assert_eq!(
             text(&out.stderr),
-            "rtk_install: Windows isn't supported: rtk is installed on macOS and Linux only\n"
+            "atl_install: Windows isn't supported: atl is installed on macOS and Linux only\n"
         );
     }
 
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn usage_errors_exit_2() {
         let b = base();
-        let fetch = Fake(RtkFakeFetch::default());
+        let fetch = Fake(AtlFakeFetch::default());
         let ctx = Context {
             env: b.env.clone(),
             fetch: &fetch,
@@ -461,6 +461,6 @@ mod tests {
         }
         let help = run_with(&os(&["--help"]), &ctx);
         assert_eq!(help.code, 0);
-        assert!(text(&help.stdout).starts_with("usage: anthology rtk-install"));
+        assert!(text(&help.stdout).starts_with("usage: anthology atl-install"));
     }
 }
