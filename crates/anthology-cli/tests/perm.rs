@@ -1844,6 +1844,25 @@ fn minor_git_objects_outside_the_roots_give_no_decision() {
         "objects",
         "objects",
     );
+    // The store in place, one loose-object folder of it linked out of the root.
+    std::fs::remove_file(repo.join(".git/objects")).unwrap();
+    std::fs::rename(fx.base.join("objects"), repo.join(".git/objects")).unwrap();
+    assert_allow(&fx.classify(&repo, "git log --oneline", &[]), "store back");
+    let head = fx.git(&repo, &["rev-parse", "HEAD"]);
+    let fan = &head.trim()[..2];
+    let moved = fx.base.join("fan");
+    std::fs::rename(repo.join(".git/objects").join(fan), &moved).unwrap();
+    symlink(&moved, repo.join(".git/objects").join(fan)).unwrap();
+    let out = fx
+        .command("git", &repo, &["log", "-1", "--format=%H"], &[])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git reads a loose object through it");
+    assert_refused(
+        &fx.classify(&repo, "git log --oneline", &[]),
+        "symlink in the object store",
+        "a linked fan-out folder",
+    );
 }
 
 #[test]
