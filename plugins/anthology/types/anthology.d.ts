@@ -23,13 +23,15 @@ declare module 'claude-code' {
           endedAt: number
           status: 'completed' | 'failed' | 'stopped'
         }[]
-        /** permission prompts not yet answered; `key` ties one to the tool call that ends it */
+        /**
+         * permission prompts not yet answered; `key` ties one to the tool call that ends it. Only the
+         * tool's name is kept, never what the call does (no command, path or URL).
+         */
         prompts: {
           key: string
           tool: string
-          /** the command or path the call names, cut to one short line, or '' */
-          summary: string
-          /** the agent type that asks; absent for the main conversation */
+          /** the agent that asks and its type; absent for the lead. A subagent's row ends with its report */
+          agentId?: string
           agent?: string
           at: number
         }[]

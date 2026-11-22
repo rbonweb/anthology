@@ -29,23 +29,30 @@ const RUN_COMMAND = { command: 'anthology-status', args: '', origin: { kind: 'co
 
 type Options = {
   env?: Readonly<Record<string, string>>
-  /** What `$.audio.play` does beneath the mod: plays, or refuses as a machine with no player does. */
-  isPlayable?: boolean
   /** What `$.ui.open` answers: a placed pane, or the reason it could not be. */
   openReason?: string
+  /** Leaves `$.clock.now` unanswered, so every call of it rejects. */
+  isClockBroken?: boolean
+  /** Makes `$.agent.list` reject. */
+  isListBroken?: boolean
 }
 
 /** Stands for Claude Code beneath the plugin, and records what the mod asks of it. */
-function engine(on: On, { env = {}, isPlayable = true, openReason }: Options = {}) {
-  const clock = mock.clock(on, { now: T0 })
+function engine(on: On, { env = {}, openReason, isClockBroken = false, isListBroken = false }: Options = {}) {
+  // A broken clock is one whose `now` is refused; no test of it moves the clock.
+  const clock = isClockBroken ? (on('clock.now', () => ({ deny: 'clock is down' })), undefined as never) : mock.clock(on, { now: T0 })
   mock.env(on, env)
   const seen = {
     toasts: [] as { text: string; timeoutMs?: number }[],
     sounds: [] as unknown[],
+    /** The agents the engine lists as alive: those spawned and not yet reported. */
+    alive: new Set<string>(),
     statuses: [] as (string | undefined)[],
     opened: [] as unknown[],
     commands: [] as unknown[],
     notifications: 0,
+    /** How often the engine's own agent.report ran: a hook that fails after `next` must not rerun it. */
+    reportRuns: 0,
   }
   let next = 0
   on('ui.toast', (_, e) => {
@@ -54,7 +61,7 @@ function engine(on: On, { env = {}, isPlayable = true, openReason }: Options = {
   })
   on('audio.play', (_, e) => {
     seen.sounds.push(e.clip)
-    return isPlayable ? { value: undefined } : { deny: 'no audio player' }
+    return { value: undefined }
   })
   on('ui.status', (_, e) => {
     seen.statuses.push(e.text)
@@ -80,8 +87,20 @@ function engine(on: On, { env = {}, isPlayable = true, openReason }: Options = {
   on('classic.PostToolUseFailure', () => ({}))
   on('classic.PermissionDenied', () => ({}))
   on('classic.Stop', () => ({}))
-  on('agent.spawn', (_, e) => (e.subagentType === 'denied' ? { deny: 'no' } : { model: 'm', agentId: `a${++next}` }))
-  on('agent.report', (_, e) => ({ text: e.text }))
+  on('agent.spawn', (_, e) => {
+    if (e.subagentType === 'denied') return { deny: 'no' }
+    const agentId = `a${++next}`
+    seen.alive.add(agentId)
+    return { model: 'm', agentId }
+  })
+  on('agent.report', (_, e) => {
+    seen.reportRuns += 1
+    seen.alive.delete(e.agentId)
+    return { text: e.text }
+  })
+  on('agent.list', () =>
+    isListBroken ? { deny: 'no list' } : { value: [...seen.alive].map(id => ({ id, status: 'running' })) as never },
+  )
   return { clock, seen }
 }
 
@@ -137,11 +156,12 @@ const hhmm = (ms: number) => {
 
 // ---- Alerts ---------------------------------------------------------------------------------------
 
-test('a permission prompt plays the sound and shows a toast, and the user hooks still run', async ($, on) => {
+test('a permission prompt shows a toast and plays no sound, and the user hooks still run', async ($, on) => {
   const { seen } = engine(on)
   await notify($, 'permission_prompt')
   expect(seen.toasts).toEqual([{ text: 'Claude needs your approval', timeoutMs: 8000 }])
-  expect(seen.sounds).toEqual([{ asset: 'sounds/attention.wav' }])
+  // notify.sh keeps the only sound.
+  expect(seen.sounds).toEqual([])
   expect(seen.notifications).toBe(1)
 })
 
@@ -149,14 +169,19 @@ test('an idle prompt alerts with its own line', async ($, on) => {
   const { seen } = engine(on)
   await notify($, 'idle_prompt')
   expect(seen.toasts.map(t => t.text)).toEqual(['Claude is waiting for you'])
-  expect(seen.sounds).toHaveLength(1)
+})
+
+test('two notifications that arrive together raise one alert', async ($, on) => {
+  const { seen } = engine(on)
+  await Promise.all([notify($, 'permission_prompt'), notify($, 'idle_prompt'), notify($, 'permission_prompt')])
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.notifications).toBe(3)
 })
 
 test('a notification that does not need the person raises no alert', async ($, on) => {
   const { seen } = engine(on)
   await notify($, 'auth_success')
   expect(seen.toasts).toHaveLength(0)
-  expect(seen.sounds).toHaveLength(0)
   expect(seen.notifications).toBe(1)
 })
 
@@ -166,29 +191,19 @@ test('at most one alert per 20 seconds', async ($, on) => {
   await clock.advance(19_999)
   await notify($, 'idle_prompt')
   expect(seen.toasts).toHaveLength(1)
-  expect(seen.sounds).toHaveLength(1)
   await clock.advance(1)
   await notify($, 'idle_prompt')
   expect(seen.toasts.map(t => t.text)).toEqual(['Claude needs your approval', 'Claude is waiting for you'])
-  expect(seen.sounds).toHaveLength(2)
   // An alert held back does not restart the window.
   await clock.advance(10_000)
   await notify($, 'permission_prompt')
   expect(seen.toasts).toHaveLength(2)
 })
 
-test('a sound that cannot play does not fail the alert', async ($, on) => {
-  const { seen } = engine(on, { isPlayable: false })
-  await notify($, 'permission_prompt')
-  expect(seen.toasts).toHaveLength(1)
-  expect(seen.notifications).toBe(1)
-})
-
 test('ANTHOLOGY_NOTIFY=0 turns the alert off and leaves the pane on', async ($, on) => {
   const { seen } = engine(on, { env: { ANTHOLOGY_NOTIFY: '0' } })
   await notify($, 'permission_prompt')
   expect(seen.toasts).toHaveLength(0)
-  expect(seen.sounds).toHaveLength(0)
   await spawn($, 'Build it')
   expect(seen.statuses).toEqual(['1 agent running'])
 })
@@ -319,7 +334,7 @@ test('a permission prompt shows first, in the pane and the status line, until it
   await ask($, 'git push origin p8-alerts-pane')
   expect(await pane($)).toEqual([
     'Needs your approval (1)',
-    'Bash  git push origin p8-alerts-pane',
+    'Bash',
     'Running (1)',
     `${hhmm(T0)}  implementer  Build it`,
   ])
@@ -339,7 +354,38 @@ test('a prompt another hook answered is not pending', async ($, on) => {
 test('a prompt that waits for a subagent names the agent', async ($, on) => {
   engine(on)
   await $.classic.PermissionRequest({ tool_name: 'Edit', tool_input: { file_path: '/w/a.txt' }, agent_id: 'a7', agent_type: 'anthology:implementer' })
-  expect((await pane($))[1]).toBe('Edit  /w/a.txt (implementer)')
+  expect((await pane($))[1]).toBe('Edit  from implementer')
+})
+
+test('a prompt never shows what the call does: no command, path or URL, on any surface', async ($, on) => {
+  const { seen } = engine(on)
+  const secrets = ['hunter2-token', '/home/me/secret.txt', 'https://example.test/private']
+  await ask($, `curl -H "Authorization: ${secrets[0]}" x`)
+  await $.classic.PermissionRequest({ tool_name: 'Edit', tool_input: { file_path: secrets[1] } })
+  await $.classic.PermissionRequest({ tool_name: 'Read', tool_input: { path: secrets[1] } })
+  await $.classic.PermissionRequest({ tool_name: 'WebFetch', tool_input: { url: secrets[2] } })
+  await notify($, 'permission_prompt')
+  for (const surface of SURFACES) {
+    const shown = (await pane($, surface)).join('\n')
+    for (const s of secrets) expect(shown.includes(s)).toBe(false)
+    expect(shown).toContain('Needs your approval (3)')
+  }
+  const everything = JSON.stringify([seen.toasts, seen.statuses])
+  for (const s of secrets) expect(everything.includes(s)).toBe(false)
+})
+
+test('the lead turn ending leaves a subagent prompt open until that agent reports', async ($, on) => {
+  const { seen } = engine(on)
+  const a = await spawn($, 'Build it')
+  await $.classic.PermissionRequest({ tool_name: 'Edit', tool_input: { file_path: '/w/a' }, agent_id: a, agent_type: 'anthology:implementer' })
+  await ask($, 'rm x')
+  expect(seen.statuses.at(-1)).toBe('1 agent running, 2 waiting for approval')
+  await $.classic.Stop({ stop_hook_active: false })
+  expect((await pane($)).slice(0, 2)).toEqual(['Needs your approval (1)', 'Edit  from implementer'])
+  expect(seen.statuses.at(-1)).toBe('1 agent running, 1 waiting for approval')
+  await report($, a, 'completed')
+  expect((await pane($))[0]).toBe('Running (0)')
+  expect(seen.statuses.at(-1)).toBeUndefined()
 })
 
 test('a denied call and a finished turn close the prompts', async ($, on) => {
@@ -369,14 +415,52 @@ test('a call with another input leaves the prompt open', async ($, on) => {
   expect(seen.statuses.at(-1)).toBe('1 waiting for approval')
 })
 
-test('a long command is cut to one line', async ($, on) => {
-  engine(on)
-  await ask($, `echo ${'x'.repeat(300)}\nsecond line`)
-  const row = (await pane($))[1] as string
-  expect(row.startsWith('Bash  echo xxx')).toBe(true)
-  expect(row.length).toBeLessThan(140)
-  expect(row.includes('\n')).toBe(false)
+// ---- Agents the engine no longer lists, and a tracking call that fails -------------------------------
+
+test('a run that ended without a report leaves the pane and the status line', async ($, on) => {
+  const { seen } = engine(on)
+  const a = await spawn($, 'Build it')
+  await spawn($, 'Review it')
+  seen.alive.delete(a)
+  expect(await pane($)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Review it`])
+  await ask($, 'ls')
+  expect(seen.statuses.at(-1)).toBe('1 agent running, 1 waiting for approval')
 })
+
+test('where the agent list cannot be read the pane keeps its rows', async ($, on) => {
+  const { seen } = engine(on, { isListBroken: true })
+  await spawn($, 'Build it')
+  expect(await pane($)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Build it`])
+  expect(seen.statuses.at(-1)).toBe('1 agent running')
+})
+
+test(
+  'a tracking call that fails leaves what the hooks beneath returned',
+  {
+    plugins: [
+      {
+        name: 'afterwork',
+        tier: 'append',
+        register(on) {
+          on('agent.report', async ($, e, next) => {
+            const r = await next(e)
+            return { text: `${r.text ?? ''}\n+ checklist` }
+          })
+        },
+      },
+    ],
+  },
+  async ($, on) => {
+    const { seen } = engine(on, { isClockBroken: true })
+    // The clock is down, so the mod can track nothing; the events must still go through whole.
+    const a = await spawn($, 'Build it')
+    expect(a).toBe('a1')
+    expect(await report($, a, 'completed')).toEqual({ text: 'done\n+ checklist' })
+    expect(seen.reportRuns).toBe(1)
+    await notify($, 'permission_prompt')
+    await ask($, 'ls')
+  },
+)
 
 // ---- Switched off -----------------------------------------------------------------------------------
 

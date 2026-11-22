@@ -5,7 +5,7 @@
   "author": { "name": "rbonweb" },
   "license": "Apache-2.0",
   "repository": "https://github.com/rbonweb/anthology",
-  "engines": { "claude-code": ">=2.1.329" },
+  "engines": { "claude-code": ">=2.1.330" },
   "types": "./types/anthology.d.ts",
   "dependencies": [
     { "name": "anthology-guardrails", "version": "~0.2" },

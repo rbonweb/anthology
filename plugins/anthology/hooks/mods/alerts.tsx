@@ -1,19 +1,26 @@
 // Alerts and a live status pane (post-release mods design §5, item 4).
 //
 // Alerts: when Claude Code needs the person (a permission prompt, or an idle wait for input) the
-// mod plays a short bundled sound and shows a one-line toast, at most once per 20 s. The shell
-// hook hooks/notify.sh stays: it is the alert on a Claude Code without function hooks, and on a
-// Linux machine, where `$.audio.play` has no player.
+// mod shows a one-line toast, at most once per 20 s. It makes no sound: the shell hook
+// hooks/notify.sh keeps the only one, and it is also the alert on a Claude Code without function
+// hooks.
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
 // agent.report), the last few that finished, and the permission prompts that wait for an answer.
 // A one-line status ("3 agents running") sits under the prompt. The pane draws with Box and Text
 // only, which every surface has, one row per Text so the terminal cuts a long row at its edge.
 //
+// Privacy: the pane and the toasts name a tool and an agent's type and description, never what a
+// tool call does (no command, file path or URL), because a pane may be shown on a shared screen.
+//
 // What the pane draws lives in `$.state` (`anthology.status`, declared in types/anthology.d.ts),
 // never in a module variable, so a hot reload keeps it and a write redraws the pane.
 // ANTHOLOGY_MODS=0 turns everything here off; ANTHOLOGY_NOTIFY=0 turns off the alert alone, as it
 // does for notify.sh.
+//
+// Nothing here may throw once a hook has called `next`: the hook's `.catch` would call `next`
+// again and replay a result that drops what the hooks beneath it returned. So every tracking call
+// goes through `quietly`, which swallows its failure: the pane may be stale, the event is not hurt.
 import { atom, read, update } from 'claude-code'
 import type { AgentReportInput, AgentSpawnInput, EngineInterface, On, PluginState, ShapedValue } from 'claude-code'
 import { modsOff } from './util.ts'
@@ -25,7 +32,6 @@ type AnthologyPrompt = Status['prompts'][number]
 
 const PANE = 'anthology-status'
 const COMMAND = 'anthology-status'
-const SOUND = 'sounds/attention.wav'
 const ALERT_GAP_MS = 20_000
 const TOAST_MS = 8_000
 const REASONS: Readonly<Record<string, string>> = {
@@ -81,18 +87,19 @@ export function statusLine(runningCount: number, waitingCount: number): string |
   return parts.length > 0 ? parts.join(', ') : undefined
 }
 
-/** The command or path a tool call names, as one short line; empty when it names neither. */
-function summarize(input: unknown): string {
-  if (typeof input !== 'object' || input === null) return ''
-  const fields = input as Record<string, unknown>
-  for (const name of ['command', 'file_path', 'path', 'url', 'pattern', 'description']) {
-    const value = fields[name]
-    if (typeof value === 'string' && value.trim() !== '') return oneLine(value)
+/** Runs `work` and swallows its failure; see the note at the top of this file. */
+async function quietly(work: () => Promise<unknown>): Promise<void> {
+  try {
+    await work()
+  } catch {
+    // A stale pane is better than a lost event.
   }
-  return ''
 }
 
-/** A short key for one tool call's input, to match a prompt to the call that ends it. */
+/**
+ * A short key for one tool call's input, to match a prompt to the call that ends it. Only the key
+ * is kept: the input itself is never stored or drawn.
+ */
 function promptKey(tool: string, agent: string | undefined, input: unknown): string {
   const text = `${tool}\n${agent ?? ''}\n${JSON.stringify(input) ?? ''}`
   let h = 0x811c9dc5
@@ -137,7 +144,7 @@ export function paneSections(
       title: `Needs your approval (${asks.length})`,
       rows: asks.slice(0, SHOW_PROMPTS).map(a => ({
         who: a.tool,
-        text: a.agent !== undefined ? `${a.summary} (${shortType(a.agent)})`.trim() : a.summary,
+        text: a.agent !== undefined ? `from ${shortType(a.agent)}` : '',
       })),
       more: Math.max(0, asks.length - SHOW_PROMPTS),
     })
@@ -175,10 +182,26 @@ export function paneSections(
 
 // ---- State changes (each takes `$`, so each is a top-level function) -----------------------------
 
+const ENDED = new Set<string>(['completed', 'failed', 'killed'])
+
+/**
+ * The running rows the engine still lists as alive. A run that ended without an agent.report (a
+ * workflow's, a killed one) is no longer listed or is listed as ended, and its row goes. Where the
+ * list cannot be read the rows stand as they are.
+ */
+async function liveRunning($: EngineInterface, rows: readonly AnthologyRun[]): Promise<readonly AnthologyRun[]> {
+  try {
+    const alive = new Set((await $.agent.list()).filter(a => !ENDED.has(a.status)).map(a => a.id))
+    return rows.filter(r => alive.has(r.id))
+  } catch {
+    return rows
+  }
+}
+
 /** Puts the line under the prompt in step with the state. */
 async function refreshStatus($: EngineInterface): Promise<void> {
   const { running, prompts } = await read($, status)
-  $.ui.status(statusLine(running.length, prompts.length))
+  $.ui.status(statusLine((await liveRunning($, running)).length, prompts.length))
 }
 
 async function trackSpawn($: EngineInterface, e: AgentSpawnInput, agentId: string): Promise<void> {
@@ -209,7 +232,8 @@ async function trackReport($: EngineInterface, e: AgentReportInput): Promise<voi
       status: e.status,
     }
     return {
-      ...s,
+      // The agent is done, so a prompt it still held open is over too.
+      prompts: s.prompts.filter(p => p.agentId !== e.agentId),
       running: s.running.filter(r => r.id !== e.agentId),
       finished: [row, ...s.finished.filter(d => d.id !== e.agentId)].slice(0, KEEP_FINISHED),
     }
@@ -223,8 +247,7 @@ async function addPrompt($: EngineInterface, e: ToolRef): Promise<void> {
   const row: AnthologyPrompt = {
     key: promptKey(e.tool_name, e.agent_id, e.tool_input),
     tool: e.tool_name,
-    summary: summarize(e.tool_input),
-    ...(e.agent_type !== undefined && e.agent_id !== undefined ? { agent: e.agent_type } : {}),
+    ...(e.agent_id !== undefined ? { agentId: e.agent_id, ...(e.agent_type !== undefined ? { agent: e.agent_type } : {}) } : {}),
     at: await $.clock.now(),
   }
   await update($, status, s => ({ ...s, prompts: [...s.prompts, row].slice(-KEEP_PROMPTS) }))
@@ -243,28 +266,29 @@ async function endPrompt($: EngineInterface, e: ToolRef): Promise<void> {
   if (isHit) await refreshStatus($)
 }
 
-/** A finished turn leaves no prompt open: drops any an answer never ended (a denied call). */
+/**
+ * The lead's turn ended: drops the lead's prompts that an answer never ended (a denied call). A
+ * subagent's prompt stays, since the agent may still wait on it; its agent.report closes it.
+ */
 async function clearPrompts($: EngineInterface): Promise<void> {
   let isHit = false
   await update($, status, s => {
-    isHit = s.prompts.length > 0
-    return isHit ? { ...s, prompts: [] } : s
+    isHit = s.prompts.some(p => p.agentId === undefined)
+    return isHit ? { ...s, prompts: s.prompts.filter(p => p.agentId !== undefined) } : s
   })
   if (isHit) await refreshStatus($)
 }
 
 /**
- * Plays the sound and shows the toast for `type`, unless the last alert was under 20 s ago or the
- * type is not one that needs the person. Returns when the last alert was, for the next call.
+ * Shows the toast for `type`, unless the last alert was under 20 s ago or the type is not one that
+ * needs the person. Returns when the last alert was, for the next call.
  */
 async function alertUser($: EngineInterface, type: string, lastAt: number | undefined): Promise<number | undefined> {
   const reason = REASONS[type]
-  if (reason === undefined || (await $.env.get('ANTHOLOGY_NOTIFY')) === '0') return lastAt
+  if (reason === undefined || (await modsOff($)) || (await $.env.get('ANTHOLOGY_NOTIFY')) === '0') return lastAt
   const now = await $.clock.now()
   if (lastAt !== undefined && now - lastAt < ALERT_GAP_MS) return lastAt
   $.ui.toast(reason, { timeoutMs: TOAST_MS })
-  // The clip plays on its own; a machine without a player rejects, and that is no matter here.
-  void $.audio.play({ asset: SOUND }).catch(() => {})
   return now
 }
 
@@ -274,11 +298,19 @@ export function registerAlerts(on: On): void {
   // When the last alert fired. A hot reload or a restart of the hooks worker forgets it, which at
   // worst lets one alert through early.
   let lastAlertAt: number | undefined
+  // Set before the first await, so two notifications that arrive together raise one alert.
+  let isAlerting = false
 
   // The Notification event that settings hooks hear (notify.sh among them) reaches here first;
   // `next` hands it on, so those hooks still run.
   on('classic.Notification', async ($, e, next) => {
-    if (!(await modsOff($))) lastAlertAt = await alertUser($, e.notification_type, lastAlertAt)
+    if (REASONS[e.notification_type] !== undefined && !isAlerting) {
+      isAlerting = true
+      await quietly(async () => {
+        lastAlertAt = await alertUser($, e.notification_type, lastAlertAt)
+      })
+      isAlerting = false
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -301,43 +333,63 @@ export function registerAlerts(on: On): void {
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
     // A workflow agent and a teammate send no agent.report, so a row for one would never end.
-    const isTracked = started.agentId !== undefined && e.workflow === undefined && e.isTeammate === undefined
-    if (isTracked && !(await modsOff($))) await trackSpawn($, e, started.agentId as string)
+    const agentId = started.agentId
+    if (agentId !== undefined && e.workflow === undefined && e.isTeammate === undefined) {
+      await quietly(async () => {
+        if (!(await modsOff($))) await trackSpawn($, e, agentId)
+      })
+    }
     return started
   }).catch(($, e, next) => next(e))
 
-  // The matcher names every status, so it selects every report. It is there because a second
-  // registration of one event with the same matcher throws, and afterwork.ts hooks agent.report
-  // with none: a matcher of its own keeps the two from colliding.
-  on('agent.report', { status: ['completed', 'failed', 'stopped'] }, async ($, e, next) => {
+  // The matcher matches every report, whatever its status now or in a later build. It is there
+  // because a second registration of one event with the same matcher (or with none) throws, and
+  // afterwork.ts hooks agent.report with none: a matcher of its own keeps the two apart. When the
+  // mods merge, index.ts will dispatch the events they share from one registration.
+  on('agent.report', { agentId: /(?:)/ }, async ($, e, next) => {
     const report = await next(e)
-    if (!(await modsOff($))) await trackReport($, e)
+    await quietly(async () => {
+      if (!(await modsOff($))) await trackReport($, e)
+    })
     return report
   }).catch(($, e, next) => next(e))
 
   // A prompt is pending when no hook answered the permission request: the dialog shows next.
   on('classic.PermissionRequest', async ($, e, next) => {
     const answer = await next(e)
-    if (answer.decision === undefined && !(await modsOff($))) await addPrompt($, e)
+    if (answer.decision === undefined) {
+      await quietly(async () => {
+        if (!(await modsOff($))) await addPrompt($, e)
+      })
+    }
     return answer
   }).catch(($, e, next) => next(e))
 
   // The call ends one of three ways, each of which closes its prompt.
   on('classic.PostToolUse', async ($, e, next) => {
-    if (!(await modsOff($))) await endPrompt($, e)
+    await quietly(async () => {
+      if (!(await modsOff($))) await endPrompt($, e)
+    })
     return next(e)
   }).catch(($, e, next) => next(e))
   on('classic.PostToolUseFailure', async ($, e, next) => {
-    if (!(await modsOff($))) await endPrompt($, e)
+    await quietly(async () => {
+      if (!(await modsOff($))) await endPrompt($, e)
+    })
     return next(e)
   }).catch(($, e, next) => next(e))
   on('classic.PermissionDenied', async ($, e, next) => {
-    if (!(await modsOff($))) await endPrompt($, e)
+    await quietly(async () => {
+      if (!(await modsOff($))) await endPrompt($, e)
+    })
     return next(e)
   }).catch(($, e, next) => next(e))
-  // A prompt the person turned down ends no call; the end of the turn is the last word on it.
+  // A prompt the person turned down ends no call; the end of the lead's turn is the last word on
+  // it. A subagent's prompt waits for that agent's report instead.
   on('classic.Stop', async ($, e, next) => {
-    if (!(await modsOff($))) await clearPrompts($)
+    await quietly(async () => {
+      if (!(await modsOff($))) await clearPrompts($)
+    })
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -345,10 +397,11 @@ export function registerAlerts(on: On): void {
     if (await modsOff($)) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const { running, finished, prompts } = await read($, status)
+    const alive = await liveRunning($, running)
 
     return (
       <Box flexDirection="column" paddingX={1}>
-        {paneSections(running, finished, prompts).map((section, i) => (
+        {paneSections(alive, finished, prompts).map((section, i) => (
           <Box flexDirection="column" marginTop={i === 0 ? 0 : 1}>
             <Text bold color={section.id === 'asks' ? 'permission' : undefined}>
               {section.title}
