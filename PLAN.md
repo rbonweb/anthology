@@ -102,7 +102,7 @@ anthology/
 | Sonnet | Builder | Implementing a clear plan, multi-file edits, tests, scoped refactors, reproducible bugs, docs, UI builds | Deciding *what* to build |
 | Haiku | Scout / runner | Finding code, summarizing output, running tests and reporting, renames, boilerplate | Anything needing judgment |
 
-The main session runs on Opus and orchestrates. Small tasks (a handful of steps) are done inline, not delegated. The main session talks to the user in normal prose; the terse house style applies to agents. Model aliases (`opus`, `sonnet`, `haiku`) follow new models automatically, and the behaviour evals (§14) catch regressions when they change.
+The main session runs on Opus and orchestrates: it plans, decides, briefs agents, checks results and merges, and never produces the work. Anything that makes or changes something (code, files, docs, designs, canvas or MCP tools, browser work) goes to the matching agent. The main session works inline only on reads, lookups, answering the user, and a fix of at most a few lines in one file that the user asked for. The main session talks to the user in normal prose; the terse house style applies to agents. Model aliases (`opus`, `sonnet`, `haiku`) follow new models automatically, and the behaviour evals (§14) catch regressions when they change.
 
 ### 5. Agent roster (`plugins/anthology/agents/`)
 
@@ -201,7 +201,7 @@ The **port map is machine-readable** (`vendor/patches/design-taste-frontend.port
 The total hook output, meaning the guide plus the personal memory index plus any repo-memory cover, stays under the hook-output size limit. A test enforces a budget below that limit (the exact limit is checked as U8).
 
 Sections:
-1. **Model roles**, plus the "do small tasks inline" rule.
+1. **Model roles**, plus the lead rule: the lead never produces the work, and works inline only on reads, lookups, answering the user and a small fix the user asked for.
 2. **Which agent for which job**: the roster as a lookup table, and security → `claude-security`. For UI work, ui-designer builds and then ui-reviewer checks.
 3. **Blocked agents**: subagents can't ask the user. A blocked agent stops and reports the question. The main session answers or asks the user, then resumes the same agent.
 4. **Worktrees**:
