@@ -33,7 +33,10 @@
 //! **Self-test (F-4, m-R14).** `/bin/sh <guard>/hooks/guard.sh` gets the compiled-in sample on
 //! stdin with `ANTHOLOGY_GUARD_NO_FETCH=1`. It passes only on exit 2 with stderr starting
 //! `Blocked by anthology-guardrails (G1)`. A `(setup)` block (the shim failing closed) is
-//! reported with the guard's own reason.
+//! reported with the guard's own reason, except the shim's "not installed (not attempted)" when
+//! the pinned binary is installed by the time the answer is read: that is a self-test that
+//! could not tell, and says so. A timeout, or less than the self-test's limit left of
+//! [`DEADLINE`], is reported the same way, never as a guard that is off or blocking.
 //!
 //! Seams (GC-19): [`SessionDeps`] and [`SessionLimits`]. Python's `mock.patch` of a step
 //! function with a `side_effect` maps to [`SessionDeps::fail`], keyed by the Python name.
@@ -98,9 +101,17 @@ pub const GUARD_NOT_INSTALLED: &str = "anthology: anthology-guardrails is not in
 pub const GUARD_LIVE_MISSING: &str = "anthology: the anthology-guardrails folder this session runs has no hooks/guard.sh \u{2014} the guardrails may be OFF (unchecked); reinstall or repair that folder";
 /// Nothing found.
 pub const GUARD_NOT_FOUND: &str = "anthology: the guardrails plugin was not found, so the browser and secret guardrails are NOT active; reinstall anthology-guardrails";
-/// The self-test timed out.
-pub const GUARD_TIMED_OUT: &str =
-    "anthology: the guardrails self-test timed out; the guardrails may be OFF";
+/// The self-test timed out. It says nothing about the guard: the PreToolUse hook is a separate
+/// process that runs on every command.
+pub const GUARD_TIMED_OUT: &str = "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command";
+/// Too little of the session start budget was left to run the self-test.
+pub const SELF_TEST_NO_TIME: &str = "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command";
+/// The shim found no binary and the self-test never fetches, but the install folder holds the
+/// pinned binary by the time the answer is read (a parallel session was placing it).
+pub const SELF_TEST_NOT_IN_PLACE: &str = "anthology: skipped the guard self-test (the guard binary was not in place when it ran, but it is installed now); the guard still runs on every command";
+/// What the shim's reason says when it found no binary and, under
+/// `ANTHOLOGY_GUARD_NO_FETCH`, did not try to install one (`lib.sh` `anth_guard_offline`).
+pub const NOT_ATTEMPTED: &str = "the guard binary is not installed (not attempted)";
 /// The pass prefix of the self-test (F-4).
 pub const SELF_TEST_PASS: &[u8] = b"Blocked by anthology-guardrails (G1)";
 /// The shim's fail-closed block (GC-14, m-R14).
@@ -482,6 +493,18 @@ pub fn guard_selftest(
     cwd: &Path,
     deps: &SessionDeps<'_>,
 ) -> Result<Option<String>, PyExc> {
+    self_test_in(env, root, cwd, deps, true)
+}
+
+/// [`guard_selftest`], which runs the guard only when `time_left`: without time it still names
+/// a guard that is disabled or missing, then says the self-test was skipped.
+fn self_test_in(
+    env: &Env,
+    root: &Path,
+    cwd: &Path,
+    deps: &SessionDeps<'_>,
+    time_left: bool,
+) -> Result<Option<String>, PyExc> {
     let loc = guardrails_loc::inspect(root, env, cwd);
     match loc.problem {
         Some(Problem::Disabled) => return Ok(Some(GUARD_DISABLED.into())),
@@ -492,6 +515,9 @@ pub fn guard_selftest(
     let Some(base) = loc.root else {
         return Ok(Some(GUARD_NOT_FOUND.into()));
     };
+    if !time_left {
+        return Ok(Some(SELF_TEST_NO_TIME.into()));
+    }
     let sample = json::dumps(&data::self_test_sample(), &json::PY_DEFAULT);
     let child_env = env.clone().with("ANTHOLOGY_GUARD_NO_FETCH", "1");
     let spec = RunSpec {
@@ -506,8 +532,23 @@ pub fn guard_selftest(
             "anthology: the guardrails self-test could not run ({}); the guardrails may be OFF",
             strerror(&exc)
         )),
-        RunResult::Exited { code, stderr, .. } => self_test_verdict(code, &stderr),
+        RunResult::Exited { code, stderr, .. } => {
+            // "Not installed (not attempted)" is only what the shim saw at that moment. When
+            // the pinned binary is in <ah>/bin by now, nothing is known about the guard.
+            if is_not_attempted(code, &stderr) && bootstrap::guard_binary_installed(&base, env) {
+                Some(SELF_TEST_NOT_IN_PLACE.into())
+            } else {
+                self_test_verdict(code, &stderr)
+            }
+        }
     })
+}
+
+/// The shim's setup block for a missing binary that the self-test did not try to install.
+fn is_not_attempted(code: i32, stderr: &[u8]) -> bool {
+    code == 2
+        && stderr.starts_with(SETUP_BLOCK.as_bytes())
+        && String::from_utf8_lossy(&stderr[SETUP_BLOCK.len()..]).starts_with(NOT_ATTEMPTED)
 }
 
 /// The F-4 verdict on the guard's exit code and stderr.
@@ -782,6 +823,10 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         None,
     );
 
+    // The self-test may take up to its limit; with less than that left it is not run, so the
+    // hook still ends before its own timeout. Where the guard is, and whether it is disabled,
+    // is still reported.
+    let time_left = elapsed() <= DEADLINE - deps.limits.guard_timeout.as_secs_f64();
     let self_test = step(
         &mut warnings,
         label::SELF_TEST,
@@ -789,7 +834,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             fault(deps, "_guard_selftest")?;
             match deps.self_test {
                 Some(f) => f(env, &root, &cwd),
-                None => guard_selftest(env, &root, &cwd, deps),
+                None => self_test_in(env, &root, &cwd, deps, time_left),
             }
         },
         None,
