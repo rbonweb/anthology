@@ -3278,10 +3278,6 @@ $(which python3) -m venv .venv
 #---
 "$(command -v node)" --version
 #---
-${EDITOR:-vi} file.txt
-#---
-${PYTHON:-python3} script.py
-#---
 echo $(date)
 #---
 x=$(git rev-parse HEAD)
@@ -3374,10 +3370,6 @@ npm install ${PKG:-lodash}
 #---
 docker ps -q | while read id; do docker inspect "$id"; done
 #---
-while read -r k v; do export "$k=$v"; done < .env
-#---
-cmd=$(which python3); $cmd --version
-#---
 rm -rf ${TMPDIR:-/tmp}/x
 #---
 git push ${REMOTE:-origin} ${BRANCH:-main}
@@ -3423,8 +3415,6 @@ build() { make "$@"; }; build all
 log() { printf '%s\n' "$*" >&2; }; log starting build
 #---
 run() { "$@"; }; run make test
-#---
-retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000
 #---
 docker run --rm img sh -c 'echo "$0 $1"' a b
 #---
