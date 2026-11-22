@@ -1,0 +1,8 @@
+ATL (Anthology Token Layer)
+https://github.com/rbonweb/anthology
+
+This product is a modified version of rtk (https://github.com/rtk-ai/rtk),
+Copyright 2026 RTK AI Labs, licensed under the Apache License, Version 2.0.
+
+It was renamed and trimmed by Anthology. The original copyright and license
+notices are kept, and the license text is in the file LICENSE.

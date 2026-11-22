@@ -782,7 +782,7 @@ fn gen_argv(rng: &mut Rng) -> Vec<Value> {
 /// Values a sources.json field may hold without making vendor.py raise.
 fn gen_field_value(rng: &mut Rng, key: &str) -> Value {
     let strs: &[&str] = match key {
-        "name" => &["a", "B", "a b", "", "-a", "a-1", "é", "rtk"],
+        "name" => &["a", "B", "a b", "", "-a", "a-1", "é", "atl"],
         "repo" => &[
             "https://github.com/acme/a",
             "http://github.com/acme/a",
@@ -817,7 +817,7 @@ fn gen_field_value(rng: &mut Rng, key: &str) -> Value {
             "/abs",
             ".",
             "",
-            "rtk",
+            "atl",
             "plugins/other/x",
         ],
         "path" | "license_file" => &["", "LICENSE", "skills/a", "../x", "/abs", "a//b", "a/./b"],
@@ -903,10 +903,10 @@ fn gen_entry(rng: &mut Rng, i: usize) -> Value {
     e.insert("transform".into(), Value::Array(Vec::new()));
     if rng.chance(0.1) {
         let mut sub = Map::new();
-        sub.insert("name".into(), s("rtk"));
+        sub.insert("name".into(), s("atl"));
         sub.insert("managed_by".into(), s("subtree"));
         sub.insert("license".into(), s("Apache-2.0"));
-        sub.insert("target".into(), s("rtk"));
+        sub.insert("target".into(), s("atl"));
         return Value::Object(sub);
     }
     let keys = [

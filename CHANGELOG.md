@@ -42,6 +42,15 @@ a new version section.
 
 #### Changed
 
+- The command-output tool is renamed ATL (Anthology Token Layer), and its folder `rtk/` is now
+  `atl/`. The binary, the crates, the environment variables (`ATL_*`), the project filters
+  folder (`.atl/`) and every message say ATL. ATL is still a fork of rtk by RTK AI Labs under
+  the Apache License 2.0, and now says so: `atl/NOTICE` credits upstream and ships with `atl/LICENSE`
+  in every release archive (`atl-<triple>.tar.gz`, from the tag `atl--v<version>`). The tool's
+  README, its DISCLAIMER and its manifests describe the fork. `scripts/atl-rename.sh` applies the
+  rename rule again, and `scripts/sync-atl.sh` merges a new upstream release over a renamed base
+  (it renames the upstream tree the same way before it merges). Tags already published under
+  the old name stay as they are. The binary this change is part of is `1.2.1-anthology.6`.
 - Writing agents (implementer, debugger, ui-designer, docs-writer) and the routing guide now
   delete only literal paths and never `rm -rf $VAR`, because Claude Code asks the user about
   removals it cannot prove safe, even in bypass mode.

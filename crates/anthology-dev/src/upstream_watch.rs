@@ -1163,7 +1163,7 @@ impl<'a> Checker<'a> {
     /// `_command(name, kind, new_ref)` (F-17).
     fn command(name: &str, kind: Kind, new_ref: &str) -> String {
         if kind == Kind::Subtree {
-            return format!("scripts/sync-rtk.sh {new_ref}");
+            return format!("scripts/sync-atl.sh {new_ref}");
         }
         format!("{VENDOR_COMMAND} sync {name} --ref {new_ref}")
     }

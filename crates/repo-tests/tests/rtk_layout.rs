@@ -1,5 +1,5 @@
-//! Port of `tests/test_rtk_layout.py`: the rtk subtree's sources.json pins, license, named fork
-//! tests and `scripts/sync-rtk.sh`.
+//! Port of `tests/test_rtk_layout.py`: the atl subtree's sources.json pins, license, named fork
+//! tests and `scripts/sync-atl.sh`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
@@ -8,7 +8,7 @@ use anthology_pycompat::json::{self, Value};
 use regex::Regex;
 use repo_tests::repo;
 
-// The current pins. scripts/sync-rtk.sh rewrites the upstream pin in sources.json on every sync,
+// The current pins. scripts/sync-atl.sh rewrites the upstream pin in sources.json on every sync,
 // so a merged sync bumps UPSTREAM_TAG and UPSTREAM_COMMIT here with it.
 const FORK_COMMIT: &str = "9b790c414de16f5fb688126b3945c73aa0e0218e";
 const UPSTREAM_TAG: &str = "v1.2.1";
@@ -27,8 +27,8 @@ const FORK_TESTS: [&str; 8] = [
     "fork_7_opencode_run.rs",
     "fork_9_awareness_exact.rs",
 ];
-const SYNC: &str = "scripts/sync-rtk.sh";
-const RTK_TEST: &str = "scripts/rtk-test.sh";
+const SYNC: &str = "scripts/sync-atl.sh";
+const ATL_TEST: &str = "scripts/atl-test.sh";
 
 /// `re.fullmatch`: the whole text matches (the pattern may carry its own anchors).
 fn fullmatch(pattern: &str, text: &str) -> bool {
@@ -46,8 +46,8 @@ fn matches(pattern: &str, text: &str) -> bool {
     Regex::new(pattern).unwrap().is_match(text)
 }
 
-/// The one `rtk` entry of vendor/sources.json.
-fn rtk_entry() -> Value {
+/// The one `atl` entry of vendor/sources.json.
+fn atl_entry() -> Value {
     let text = repo::read("vendor/sources.json");
     let data = json::loads(&text).unwrap_or_else(|e| panic!("sources.json: {}", e.py_str(&text)));
     let sources = data
@@ -61,12 +61,12 @@ fn rtk_entry() -> Value {
             s.as_object()
                 .and_then(|m| m.get("name"))
                 .and_then(Value::as_str)
-                == Some("rtk")
+                == Some("atl")
         })
         .collect();
     assert!(
         entries.len() == 1,
-        "expected one rtk entry in sources.json, got {} entries",
+        "expected one atl entry in sources.json, got {} entries",
         entries.len()
     );
     entries.remove(0).clone()
@@ -76,7 +76,7 @@ fn field<'a>(entry: &'a Value, key: &str) -> &'a Value {
     entry
         .as_object()
         .and_then(|m| m.get(key))
-        .unwrap_or_else(|| panic!("the rtk entry has no {key}"))
+        .unwrap_or_else(|| panic!("the atl entry has no {key}"))
 }
 
 fn str_field<'a>(entry: &'a Value, key: &str) -> &'a str {
@@ -99,20 +99,21 @@ fn object_eq(v: &Value, expected: &[(&str, &str)]) -> bool {
 }
 
 mod rtk_source_entry_test {
+    // legacy: port/ledger names this module
     use super::*;
 
     #[test]
     fn test_entry_is_a_subtree_with_its_target_and_license() {
-        let entry = rtk_entry();
+        let entry = atl_entry();
         assert_eq!(str_field(&entry, "managed_by"), "subtree");
-        assert_eq!(str_field(&entry, "target"), "rtk");
+        assert_eq!(str_field(&entry, "target"), "atl");
         assert_eq!(str_field(&entry, "license"), "Apache-2.0");
         assert!(!entry.as_object().unwrap().contains_key("repo"));
     }
 
     #[test]
     fn test_fork_pin() {
-        let entry = rtk_entry();
+        let entry = atl_entry();
         assert!(
             object_eq(
                 field(&entry, "fork"),
@@ -129,7 +130,7 @@ mod rtk_source_entry_test {
 
     #[test]
     fn test_upstream_pin() {
-        let entry = rtk_entry();
+        let entry = atl_entry();
         assert!(
             object_eq(
                 field(&entry, "upstream"),
@@ -146,7 +147,7 @@ mod rtk_source_entry_test {
 
     #[test]
     fn test_pins_have_the_shape_a_sync_writes() {
-        let entry = rtk_entry();
+        let entry = atl_entry();
         let upstream = field(&entry, "upstream");
         let tag = str_field(upstream, "ref");
         assert!(fullmatch(RELEASE_TAG, tag), "{upstream:?}");
@@ -158,30 +159,31 @@ mod rtk_source_entry_test {
 }
 
 mod rtk_tree_test {
+    // legacy: port/ledger names this module
     use super::*;
 
     #[test]
     fn test_license_is_apache_2() {
-        let text = repo::read("rtk/LICENSE");
+        let text = repo::read("atl/LICENSE");
         assert!(text.contains("Apache License"));
         assert!(text.contains("Version 2.0, January 2004"));
     }
 
     #[test]
     fn test_cargo_manifest_exists() {
-        assert!(repo::path("rtk/Cargo.toml").is_file());
+        assert!(repo::path("atl/Cargo.toml").is_file());
     }
 
     #[test]
     fn test_every_fork_change_has_its_named_test() {
-        let found: Vec<String> = repo::list_dir("rtk/tests")
+        let found: Vec<String> = repo::list_dir("atl/tests")
             .into_iter()
             .filter(|n| n.starts_with("fork_") && n.ends_with(".rs"))
             .collect();
         assert_eq!(found, FORK_TESTS);
         for name in FORK_TESTS {
             assert!(
-                repo::read(&format!("rtk/tests/{name}")).contains("#[test]"),
+                repo::read(&format!("atl/tests/{name}")).contains("#[test]"),
                 "{name}"
             );
         }
@@ -199,6 +201,8 @@ mod sync_script_test {
         assert!(matches(r"(?m)^set -eu$", &text));
     }
 
+    /// The sync merges, but only on its own review branch: nothing is pushed, and no merge or
+    /// switch happens before the branch is created or onto the integration branches.
     #[test]
     fn test_never_pushes_or_merges() {
         let text = repo::read(SYNC);
@@ -208,26 +212,39 @@ mod sync_script_test {
             .collect();
         let code = code.join("\n");
         assert!(!matches(r"\bgit\s+push\b", &code));
-        assert!(!matches(r"\bgit\s+merge\b", &code));
         assert!(!matches(
             r"\bgit\s+(checkout|switch)\s+(build|main)\b",
             &code
         ));
+        let branch_made = code
+            .find(r#"git switch -c "$branch""#)
+            .expect("a review branch");
+        let first_merge = code.find("git merge").expect("a merge");
+        assert!(
+            branch_made < first_merge,
+            "a merge runs before the review branch exists"
+        );
     }
 
     #[test]
     fn test_pulls_upstream_into_the_subtree_on_a_review_branch() {
         let text = repo::read(SYNC);
         for needle in [
-            "UPSTREAM=https://github.com/rtk-ai/rtk",
-            r#"git subtree pull --prefix="$PREFIX" "$UPSTREAM" "$tag""#,
-            r#"branch="rtk-sync/$tag""#,
+            "UPSTREAM=${ATL_SYNC_UPSTREAM:-https://github.com/rtk-ai/rtk}",
+            r#"scripts/atl-rename.sh --root "$dir""#,
+            r#"git merge -q -s ours --allow-unrelated-histories"#,
+            r#"git merge --no-edit -m "$merge_message" "$renamed_new""#,
+            r#"branch="atl-sync/$tag""#,
             "git status --porcelain",
-            "scripts/rtk-trim.sh",
-            r#""$root/scripts/rtk-test.sh""#,
+            "scripts/atl-trim.sh",
+            r#""$root/scripts/atl-test.sh""#,
         ] {
             assert!(text.contains(needle), "{needle}");
         }
+        assert!(
+            !text.contains("subtree pull"),
+            "a plain subtree pull cannot see the rename"
+        );
     }
 
     #[test]
@@ -236,7 +253,7 @@ mod sync_script_test {
         let m = Regex::new(r"(?m)^tag_pattern='([^']+)'$")
             .unwrap()
             .captures(&text)
-            .expect("sync-rtk.sh has no tag_pattern='...' line");
+            .expect("sync-atl.sh has no tag_pattern='...' line");
         assert!(text.contains("[[ $tag =~ $tag_pattern ]]"));
         // The data is compiled as given. A pattern Python's `re` accepts but the regex crate
         // cannot (lookaround, backreference) fails here with this message.
@@ -271,7 +288,7 @@ mod sync_script_test {
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert_eq!(out.status.code(), Some(2), "{bad:?}: {stderr}");
             assert!(
-                stderr.contains("usage: scripts/sync-rtk.sh <tag>"),
+                stderr.contains("usage: scripts/sync-atl.sh <tag>"),
                 "{bad:?}: {stderr}"
             );
         }
@@ -289,32 +306,33 @@ mod sync_script_test {
         }
         // omitted: the embedded python that rewrites the pin (`path = Path("vendor/sources.json")`,
         // `json.dumps(data, indent=2, ensure_ascii=False)`) -> CO2 replacement: cutover_ci.rs
-        // asserts sync-rtk.sh records the pin through scripts/dev.sh and embeds no python3
+        // asserts sync-atl.sh records the pin through scripts/dev.sh and embeds no python3
     }
 
     #[test]
     fn test_a_failed_trim_still_reaches_the_summary() {
         let text = repo::read(SYNC);
-        assert!(text.contains("if bash scripts/rtk-trim.sh; then"));
+        assert!(text.contains("if bash scripts/atl-trim.sh; then"));
         assert!(text.contains(r#"exit "$status""#));
     }
 }
 
-/// `$RTK_TEST` is scripts/rtk-test.sh, used locally, by CI and by sync-rtk.sh.
+/// `$ATL_TEST` is scripts/atl-test.sh, used locally, by CI and by sync-atl.sh.
 mod rtk_test_script_test {
+    // legacy: port/ledger names this module
     use super::*;
 
     #[test]
     fn test_is_executable_with_strict_mode() {
-        let text = repo::read(RTK_TEST);
-        assert!(is_executable(RTK_TEST));
+        let text = repo::read(ATL_TEST);
+        assert!(is_executable(ATL_TEST));
         assert!(text.starts_with("#!"));
         assert!(matches(r"(?m)^set -eu$", &text));
     }
 
     #[test]
     fn test_reads_the_image_from_the_rust_dockerfile() {
-        let text = repo::read(RTK_TEST);
+        let text = repo::read(ATL_TEST);
         assert!(
             text.contains(
                 r#"awk '$1 == "FROM" {print $NF; exit}' "$root/ci/images/rust.Dockerfile""#
@@ -325,7 +343,7 @@ mod rtk_test_script_test {
 
     #[test]
     fn test_runs_locked_cargo_test_as_a_non_root_user() {
-        let text = repo::read(RTK_TEST);
+        let text = repo::read(ATL_TEST);
         assert!(text.contains(r#"cargo test --locked "$@""#));
         assert!(text.contains("runuser -u"));
         assert!(text.contains("useradd"));
@@ -336,8 +354,8 @@ mod rtk_test_script_test {
     #[test]
     fn test_ci_and_sync_use_it() {
         let ci = repo::read(".github/workflows/ci.yml");
-        assert!(matches(r"(?m)^  rtk-test:$", &ci));
-        assert!(ci.contains("run: scripts/rtk-test.sh"));
-        assert!(repo::read(SYNC).contains(r#""$root/scripts/rtk-test.sh""#));
+        assert!(matches(r"(?m)^  atl-test:$", &ci));
+        assert!(ci.contains("run: scripts/atl-test.sh"));
+        assert!(repo::read(SYNC).contains(r#""$root/scripts/atl-test.sh""#));
     }
 }

@@ -1,15 +1,15 @@
-//! `anthology-dev rtk-trim` (DV4): the ported `tests/test_rtk_trim.py` (one `#[test]` per Python
+//! `anthology-dev atl-trim` (DV4): the ported `tests/test_rtk_trim.py` (one `#[test]` per Python
 //! method, same name, inside a module named after the Python class), and the tests of what the
 //! port adds: the Python-compatible helpers, the declaration scanner that replaces the run-time
 //! regex of `Trim.drop`, the `../crates/` lockfile allowlist, the CLI, and the fixed point of the
-//! real `rtk/` tree.
+//! real `atl/` tree.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anthology_dev::rtk_trim::{self, Op, Trim};
+use anthology_dev::atl_trim::{self, Op, Trim};
 use anthology_dev::{Output, dispatch};
 
 const RUST: &str = "use std::io;
@@ -75,7 +75,7 @@ impl Fixture {
     }
 }
 
-fn err_text<T: std::fmt::Debug>(result: Result<T, rtk_trim::TrimError>) -> String {
+fn err_text<T: std::fmt::Debug>(result: Result<T, atl_trim::TrimError>) -> String {
     result.expect_err("an error").0
 }
 
@@ -489,7 +489,7 @@ mod lock_guard_test {
     fn test_packages() {
         let f = Fixture::new();
         let path = f.write("Cargo.lock", LOCK);
-        let packages = rtk_trim::lock_packages(&path).unwrap();
+        let packages = atl_trim::lock_packages(&path).unwrap();
         assert_eq!(
             packages.into_iter().collect::<Vec<_>>(),
             [pair("a", "1.0.0"), pair("b", "2.0.0")]
@@ -505,7 +505,7 @@ mod lock_guard_test {
             "version = 4\n\n[[package]]\nname = \"a\"\nversion = \"1.0.0\"\n",
         );
         assert_eq!(
-            rtk_trim::lock_guard(&before, &after).unwrap(),
+            atl_trim::lock_guard(&before, &after).unwrap(),
             [pair("b", "2.0.0")]
         );
     }
@@ -515,7 +515,7 @@ mod lock_guard_test {
         let f = Fixture::new();
         let before = f.write("before.lock", LOCK);
         let after = f.write("after.lock", &LOCK.replace("\"2.0.0\"", "\"2.0.1\""));
-        let message = err_text(rtk_trim::lock_guard(&before, &after));
+        let message = err_text(atl_trim::lock_guard(&before, &after));
         assert!(message.contains("b 2.0.1"), "{message}");
         assert_eq!(
             message,
@@ -532,7 +532,7 @@ mod lock_guard_test {
             [[package]]\nname = \"x\" \nversion = \"3\"\nname = \"w\"\nversion = \"a\"b\"\n\
             [other]\nname = \"v\"\nversion = \"4\"\n";
         assert_eq!(
-            rtk_trim::lock_packages_text(text)
+            atl_trim::lock_packages_text(text)
                 .into_iter()
                 .collect::<Vec<_>>(),
             [pair("y", "2"), pair("z", "1")]
@@ -543,7 +543,7 @@ mod lock_guard_test {
     fn an_unreadable_lockfile_is_an_io_error_naming_the_path() {
         let f = Fixture::new();
         let missing = f.root.join("nope.lock");
-        let message = err_text(rtk_trim::lock_packages(&missing));
+        let message = err_text(atl_trim::lock_packages(&missing));
         assert!(
             message.starts_with(&missing.display().to_string()),
             "{message}"
@@ -557,24 +557,24 @@ mod trimmed_conflicts_test {
     #[test]
     fn test_only_deleted_by_us_paths_inside_removed_paths() {
         let status = [
-            "DU rtk/engine/src/lib.rs",       // upstream edited a deleted crate
-            "DU rtk/src/core/telemetry.rs",   // upstream edited a deleted file
-            "UU rtk/src/lib.rs",              // a real content conflict: never resolved here
-            "DU rtk/src/core/telemetry_x.rs", // not a removed path (prefix only)
+            "DU atl/engine/src/lib.rs",       // upstream edited a deleted crate
+            "DU atl/src/core/telemetry.rs",   // upstream edited a deleted file
+            "UU atl/src/lib.rs",              // a real content conflict: never resolved here
+            "DU atl/src/core/telemetry_x.rs", // not a removed path (prefix only)
             "DU other/engine/x.rs",           // outside the subtree
-            "DU \"rtk/engine/odd name.rs\"",  // quoted: left for a human
-            " M rtk/Cargo.toml",
+            "DU \"atl/engine/odd name.rs\"",  // quoted: left for a human
+            " M atl/Cargo.toml",
         ]
         .join("\n");
         assert_eq!(
-            rtk_trim::trimmed_conflicts(&status, &["engine", "src/core/telemetry.rs"], "rtk/"),
-            ["rtk/engine/src/lib.rs", "rtk/src/core/telemetry.rs"]
+            atl_trim::trimmed_conflicts(&status, &["engine", "src/core/telemetry.rs"], "atl/"),
+            ["atl/engine/src/lib.rs", "atl/src/core/telemetry.rs"]
         );
     }
 
     #[test]
     fn test_removed_paths_come_from_the_operations() {
-        let removed = rtk_trim::removed_paths();
+        let removed = atl_trim::removed_paths();
         for path in [
             "engine",
             "plugin",
@@ -603,10 +603,10 @@ mod operations_test {
     fn test_cli_exits_1_with_a_named_message() {
         let f = Fixture::new();
         let root = f.root.to_str().unwrap();
-        let out = run_cli(&["rtk-trim", "--root", root], "");
+        let out = run_cli(&["atl-trim", "--root", root], "");
         assert_eq!(out.code, 1, "{}", text(&out.stderr));
         assert!(
-            text(&out.stderr).starts_with("rtk-trim: Cargo.toml: file missing"),
+            text(&out.stderr).starts_with("atl-trim: Cargo.toml: file missing"),
             "{}",
             text(&out.stderr)
         );
@@ -618,7 +618,7 @@ mod operations_test {
 // The Python-compatible helpers
 
 mod pystr_test {
-    use anthology_dev::rtk_trim::pystr::*;
+    use anthology_dev::atl_trim::pystr::*;
 
     #[test]
     fn strip_uses_pythons_whitespace() {
@@ -673,7 +673,7 @@ mod pystr_test {
 }
 
 mod decl_test {
-    use anthology_dev::rtk_trim::decl::*;
+    use anthology_dev::atl_trim::decl::*;
 
     #[test]
     fn the_first_match_of_the_signature_pattern() {
@@ -770,16 +770,16 @@ mod cli_test {
     fn a_root_that_is_not_a_directory() {
         let f = Fixture::new();
         let file = f.write("file", "x");
-        let out = run_cli(&["rtk-trim", "--root", file.to_str().unwrap()], "");
+        let out = run_cli(&["atl-trim", "--root", file.to_str().unwrap()], "");
         assert_eq!(out.code, 1);
         assert_eq!(
             text(&out.stderr),
-            format!("rtk-trim: {}: not a directory: ''\n", file.display())
+            format!("atl-trim: {}: not a directory: ''\n", file.display())
         );
         assert!(out.stdout.is_empty());
-        // The default root is `rtk` of the working directory: absent here.
+        // The default root is `atl` of the working directory: absent here.
         let out = run_cli(
-            &["rtk-trim", "--root", f.root.join("nope").to_str().unwrap()],
+            &["atl-trim", "--root", f.root.join("nope").to_str().unwrap()],
             "",
         );
         assert_eq!(out.code, 1);
@@ -788,19 +788,19 @@ mod cli_test {
     #[test]
     fn usage_errors_exit_2() {
         for list in [
-            &["rtk-trim", "--bogus"][..],
-            &["rtk-trim", "stray"],
-            &["rtk-trim", "--lock-guard", "only-one"],
-            &["rtk-trim", "--removed-paths", "--trimmed-conflicts"],
-            &["rtk-trim", "--lock-guard", "a", "b", "--removed-paths"],
-            &["rtk-trim", "--root"],
+            &["atl-trim", "--bogus"][..],
+            &["atl-trim", "stray"],
+            &["atl-trim", "--lock-guard", "only-one"],
+            &["atl-trim", "--removed-paths", "--trimmed-conflicts"],
+            &["atl-trim", "--lock-guard", "a", "b", "--removed-paths"],
+            &["atl-trim", "--root"],
         ] {
             let out = run_cli(list, "");
             assert_eq!(out.code, 2, "{list:?}: {}", text(&out.stderr));
             assert!(text(&out.stderr).contains("usage:"), "{list:?}");
             assert!(out.stdout.is_empty());
         }
-        let out = run_cli(&["rtk-trim", "--help"], "");
+        let out = run_cli(&["atl-trim", "--help"], "");
         assert_eq!(out.code, 0);
         assert!(text(&out.stdout).starts_with("usage:"));
     }
@@ -887,7 +887,7 @@ tests/init_uninstall_exit_code_test.rs
 
     #[test]
     fn removed_paths_prints_exactly_the_pythons_list() {
-        let out = run_cli(&["rtk-trim", "--removed-paths"], "");
+        let out = run_cli(&["atl-trim", "--removed-paths"], "");
         assert_eq!(out.code, 0);
         assert_eq!(text(&out.stdout), PY_REMOVED);
         assert_eq!(PY_REMOVED.lines().count(), 77);
@@ -896,26 +896,26 @@ tests/init_uninstall_exit_code_test.rs
 
     #[test]
     fn removed_paths_keep_duplicates_and_order() {
-        let removed = rtk_trim::removed_paths();
+        let removed = atl_trim::removed_paths();
         let expected: Vec<&str> = PY_REMOVED.lines().collect();
         assert_eq!(removed, expected);
     }
 
     #[test]
     fn trimmed_conflicts_reads_the_status_on_stdin() {
-        let status = "DU rtk/engine/src/lib.rs\r\n M rtk/Cargo.toml\nDU rtk/src/core/telemetry.rs\n\
-            DU rtk/src/core/telemetry_x.rs\nUU rtk/engine\nDU \"rtk/engine/a b\"\nDU other/engine/x\n";
-        let out = run_cli(&["rtk-trim", "--trimmed-conflicts"], status);
+        let status = "DU atl/engine/src/lib.rs\r\n M atl/Cargo.toml\nDU atl/src/core/telemetry.rs\n\
+            DU atl/src/core/telemetry_x.rs\nUU atl/engine\nDU \"atl/engine/a b\"\nDU other/engine/x\n";
+        let out = run_cli(&["atl-trim", "--trimmed-conflicts"], status);
         assert_eq!(out.code, 0);
         assert_eq!(
             text(&out.stdout),
-            "rtk/engine/src/lib.rs\nrtk/src/core/telemetry.rs\n"
+            "atl/engine/src/lib.rs\natl/src/core/telemetry.rs\n"
         );
         // Nothing to report prints nothing at all.
-        let out = run_cli(&["rtk-trim", "--trimmed-conflicts"], " M rtk/Cargo.toml\n");
+        let out = run_cli(&["atl-trim", "--trimmed-conflicts"], " M atl/Cargo.toml\n");
         assert_eq!(out.code, 0);
         assert!(out.stdout.is_empty() && out.stderr.is_empty());
-        let out = run_cli(&["rtk-trim", "--trimmed-conflicts"], "");
+        let out = run_cli(&["atl-trim", "--trimmed-conflicts"], "");
         assert!(out.stdout.is_empty());
     }
 
@@ -925,11 +925,11 @@ tests/init_uninstall_exit_code_test.rs
         // A file that is not UTF-8: Python dies with a traceback (status 1); we name the file.
         f.write("Cargo.toml", "x");
         fs::write(f.root.join("Cargo.toml"), [0xff, 0xfe, 0x00]).unwrap();
-        let out = run_cli(&["rtk-trim", "--root", f.root.to_str().unwrap()], "");
+        let out = run_cli(&["atl-trim", "--root", f.root.to_str().unwrap()], "");
         assert_eq!(out.code, 1);
         assert!(
             text(&out.stderr).starts_with(&format!(
-                "rtk-trim: {}: ",
+                "atl-trim: {}: ",
                 f.root.join("Cargo.toml").display()
             )),
             "{}",
@@ -937,7 +937,7 @@ tests/init_uninstall_exit_code_test.rs
         );
         let out = run_cli(
             &[
-                "rtk-trim",
+                "atl-trim",
                 "--lock-guard",
                 "/nonexistent/a",
                 "/nonexistent/b",
@@ -945,7 +945,7 @@ tests/init_uninstall_exit_code_test.rs
             "",
         );
         assert_eq!(out.code, 1);
-        assert!(text(&out.stderr).starts_with("rtk-trim: /nonexistent/a: "));
+        assert!(text(&out.stderr).starts_with("atl-trim: /nonexistent/a: "));
     }
 
     #[test]
@@ -953,7 +953,7 @@ tests/init_uninstall_exit_code_test.rs
         use std::io::Write;
         use std::process::{Command, Stdio};
         let mut child = Command::new(env!("CARGO_BIN_EXE_anthology-dev"))
-            .args(["rtk-trim", "--trimmed-conflicts"])
+            .args(["atl-trim", "--trimmed-conflicts"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -963,11 +963,11 @@ tests/init_uninstall_exit_code_test.rs
             .stdin
             .take()
             .unwrap()
-            .write_all(b"DU rtk/plugin/x.rs\n")
+            .write_all(b"DU atl/plugin/x.rs\n")
             .unwrap();
         let output = child.wait_with_output().unwrap();
         assert_eq!(output.status.code(), Some(0));
-        assert_eq!(text(&output.stdout), "rtk/plugin/x.rs\n");
+        assert_eq!(text(&output.stdout), "atl/plugin/x.rs\n");
     }
 }
 
@@ -977,7 +977,7 @@ tests/init_uninstall_exit_code_test.rs
 mod allowlist_test {
     use super::*;
 
-    /// `<tmp>/rtk` (the `--root`), `<tmp>/crates/anthology-shell` (the path crate), and lockfiles.
+    /// `<tmp>/atl` (the `--root`), `<tmp>/crates/anthology-shell` (the path crate), and lockfiles.
     struct Repo {
         f: Fixture,
     }
@@ -1007,8 +1007,8 @@ mod allowlist_test {
         fn new(manifest_deps: &str) -> Repo {
             let f = Fixture::new();
             f.write(
-                "rtk/Cargo.toml",
-                &format!("[package]\nname = \"rtk\"\nversion = \"1.0.0\"\n\n{manifest_deps}"),
+                "atl/Cargo.toml",
+                &format!("[package]\nname = \"atl\"\nversion = \"1.0.0\"\n\n{manifest_deps}"),
             );
             f.write(
                 "crates/anthology-shell/Cargo.toml",
@@ -1020,10 +1020,10 @@ mod allowlist_test {
         fn guard(&self, before: &str, after: &str) -> Output {
             let b = self.f.write("before.lock", before);
             let a = self.f.write("after.lock", after);
-            let root = self.f.root.join("rtk");
+            let root = self.f.root.join("atl");
             run_cli(
                 &[
-                    "rtk-trim",
+                    "atl-trim",
                     "--lock-guard",
                     b.to_str().unwrap(),
                     a.to_str().unwrap(),
@@ -1042,7 +1042,7 @@ mod allowlist_test {
             pkg("a", "1.0.0", true, &[]),
             pkg("b", "2.0.0", true, &["a"]),
             pkg("serde", "1.0.0", true, &[]),
-            pkg("rtk", "1.0.0", false, &["a"]),
+            pkg("atl", "1.0.0", false, &["a"]),
         ])
     }
 
@@ -1050,7 +1050,7 @@ mod allowlist_test {
         lock(&[
             pkg("a", "1.0.0", true, &[]),
             pkg("serde", "1.0.0", true, &[]),
-            pkg("rtk", "1.0.0", false, &["a", "anthology-shell"]),
+            pkg("atl", "1.0.0", false, &["a", "anthology-shell"]),
             pkg(
                 "anthology-shell",
                 "0.1.0",
@@ -1075,9 +1075,9 @@ mod allowlist_test {
         assert_eq!(out.code, 0, "{}", text(&out.stderr));
         assert_eq!(
             text(&out.stdout),
-            "rtk-trim: Cargo.lock: 4 packages added by the ../crates/ allowlist: \
+            "atl-trim: Cargo.lock: 4 packages added by the ../crates/ allowlist: \
              anthology-shell 0.1.0, bit-set 0.8.0, bit-vec 0.8.0, fancy-regex 0.20.2\n\
-             rtk-trim: Cargo.lock: 1 packages pruned, none added or changed: b 2.0.0\n"
+             atl-trim: Cargo.lock: 1 packages pruned, none added or changed: b 2.0.0\n"
         );
         assert!(out.stderr.is_empty());
     }
@@ -1109,7 +1109,7 @@ mod allowlist_test {
         assert!(out.stdout.is_empty());
         assert_eq!(
             text(&out.stderr),
-            "rtk-trim: Cargo.lock: the lockfile step added or changed packages: evil 1.0.0\n"
+            "atl-trim: Cargo.lock: the lockfile step added or changed packages: evil 1.0.0\n"
         );
     }
 
@@ -1127,7 +1127,7 @@ mod allowlist_test {
         assert_eq!(out.code, 1);
         assert_eq!(
             text(&out.stderr),
-            "rtk-trim: Cargo.lock: the lockfile step added or changed packages: bit-vec 0.6.3\n"
+            "atl-trim: Cargo.lock: the lockfile step added or changed packages: bit-vec 0.6.3\n"
         );
         // A package outside the closure that changes version fails.
         let after = after_with_closure().replace(
@@ -1138,7 +1138,7 @@ mod allowlist_test {
         assert_eq!(out.code, 1);
         assert_eq!(
             text(&out.stderr),
-            "rtk-trim: Cargo.lock: the lockfile step added or changed packages: a 1.0.1\n"
+            "atl-trim: Cargo.lock: the lockfile step added or changed packages: a 1.0.1\n"
         );
     }
 
@@ -1160,7 +1160,7 @@ mod allowlist_test {
             assert_eq!(out.code, 1, "{deps}");
             assert!(
                 text(&out.stderr).starts_with(
-                    "rtk-trim: Cargo.lock: the lockfile step added or changed packages: "
+                    "atl-trim: Cargo.lock: the lockfile step added or changed packages: "
                 ),
                 "{deps}: {}",
                 text(&out.stderr)
@@ -1207,7 +1207,7 @@ mod allowlist_test {
         assert_eq!(out.code, 0);
         assert_eq!(
             text(&out.stdout),
-            "rtk-trim: Cargo.lock: 2 packages pruned, none added or changed: b 2.0.0, rtk 1.0.0\n"
+            "atl-trim: Cargo.lock: 2 packages pruned, none added or changed: atl 1.0.0, b 2.0.0\n"
         );
         // Nothing pruned: nothing printed.
         let out = repo.guard(&before_lock(), &before_lock());
@@ -1223,24 +1223,24 @@ mod allowlist_test {
         assert_eq!(out.code, 1);
         assert_eq!(
             text(&out.stderr),
-            "rtk-trim: Cargo.lock: the lockfile step added or changed packages: c 3, z 1\n"
+            "atl-trim: Cargo.lock: the lockfile step added or changed packages: c 3, z 1\n"
         );
         // No Cargo.toml under the root at all: the same.
-        fs::remove_file(repo.f.root.join("rtk/Cargo.toml")).unwrap();
+        fs::remove_file(repo.f.root.join("atl/Cargo.toml")).unwrap();
         let out = repo.guard(&before_lock(), &after);
         assert_eq!(out.code, 1);
     }
 
     #[test]
-    fn the_default_root_is_rtk_of_the_working_directory() {
-        // Without `--root` the guard reads `rtk/Cargo.toml` of the working directory: none
+    fn the_default_root_is_atl_of_the_working_directory() {
+        // Without `--root` the guard reads `atl/Cargo.toml` of the working directory: none
         // exists here, so it is the plain Python guard.
         let f = Fixture::new();
         let b = f.write("b.lock", &before_lock());
         let a = f.write("a.lock", &after_with_closure());
         let out = run_cli(
             &[
-                "rtk-trim",
+                "atl-trim",
                 "--lock-guard",
                 b.to_str().unwrap(),
                 a.to_str().unwrap(),
@@ -1298,14 +1298,14 @@ mod real_tree_test {
     use super::*;
 
     #[test]
-    fn the_checked_in_rtk_tree_is_a_fixed_point() {
+    fn the_checked_in_atl_tree_is_a_fixed_point() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let source = repo.join("rtk");
+        let source = repo.join("atl");
         assert!(source.is_dir(), "{}", source.display());
         let f = Fixture::new();
-        let copy = f.root.join("rtk");
+        let copy = f.root.join("atl");
         copy_tree(&source, &copy);
-        let out = run_cli(&["rtk-trim", "--root", copy.to_str().unwrap()], "");
+        let out = run_cli(&["atl-trim", "--root", copy.to_str().unwrap()], "");
         assert_eq!(text(&out.stdout), "no changes\n", "{}", text(&out.stderr));
         assert_eq!((out.code, out.stderr.len()), (0, 0));
         assert_eq!(snapshot(&copy), snapshot(&source));
@@ -1329,7 +1329,7 @@ fn synthetic_pristine(into: &Path) -> Vec<String> {
     let sim_dir = tempfile::tempdir().unwrap();
     let mut sim = Trim::new(sim_dir.path());
     let mut seeds: BTreeMap<String, String> = BTreeMap::new();
-    for op in rtk_trim::operations() {
+    for op in atl_trim::operations() {
         match &op {
             Op::Rm(paths) => {
                 for path in *paths {
@@ -1377,11 +1377,11 @@ mod synthetic_tree_test {
         let expected = synthetic_pristine(&f.root);
         assert!(expected.len() > 100, "{}", expected.len());
         let root = f.root.to_str().unwrap();
-        let first = run_cli(&["rtk-trim", "--root", root], "");
+        let first = run_cli(&["atl-trim", "--root", root], "");
         assert_eq!(first.code, 0, "{}", text(&first.stderr));
         assert_eq!(text(&first.stdout), format!("{}\n", expected.join("\n")));
         let after_first = snapshot(&f.root);
-        let second = run_cli(&["rtk-trim", "--root", root], "");
+        let second = run_cli(&["atl-trim", "--root", root], "");
         assert_eq!(second.code, 0, "{}", text(&second.stderr));
         assert_eq!(text(&second.stdout), "no changes\n");
         assert_eq!(snapshot(&f.root), after_first);
@@ -1454,20 +1454,20 @@ mod run_in_test {
     #[test]
     fn relative_paths_are_taken_from_the_given_folder_and_messages_show_them_as_given() {
         let dir = tempfile::tempdir().unwrap();
-        let out = rtk_trim::run_in(dir.path(), &args(&["--root", "rtk"]), &mut "".as_bytes());
+        let out = atl_trim::run_in(dir.path(), &args(&["--root", "atl"]), &mut "".as_bytes());
         assert_eq!(out.code, 1);
-        assert_eq!(text(&out.stderr), "rtk-trim: rtk: not a directory: ''\n");
-        fs::create_dir(dir.path().join("rtk")).unwrap();
-        let out = rtk_trim::run_in(dir.path(), &args(&["--root", "rtk"]), &mut "".as_bytes());
+        assert_eq!(text(&out.stderr), "atl-trim: atl: not a directory: ''\n");
+        fs::create_dir(dir.path().join("atl")).unwrap();
+        let out = atl_trim::run_in(dir.path(), &args(&["--root", "atl"]), &mut "".as_bytes());
         assert_eq!(out.code, 1);
         assert!(
-            text(&out.stderr).starts_with("rtk-trim: Cargo.toml: file missing: "),
+            text(&out.stderr).starts_with("atl-trim: Cargo.toml: file missing: "),
             "{}",
             text(&out.stderr)
         );
         fs::write(dir.path().join("a.lock"), "").unwrap();
         fs::write(dir.path().join("b.lock"), "").unwrap();
-        let out = rtk_trim::run_in(
+        let out = atl_trim::run_in(
             dir.path(),
             &args(&["--lock-guard", "a.lock", "b.lock"]),
             &mut "".as_bytes(),

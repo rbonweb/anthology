@@ -38,7 +38,7 @@ const REQUIRED_CASES: [&str; 11] = [
     "guard-g1",
     "guard-g4",
     "guard-g6",
-    "guard-beats-rtk",
+    "guard-beats-atl",
     "hook-reach-subagent",
     "browser-browseros-only",
     "harness-sanity",
@@ -47,9 +47,9 @@ const REQUIRED_CASES: [&str; 11] = [
     "skills-hidden",
     "agent-fields",
 ];
-// These two cannot pass inside `claude plugin eval` (no rtk state, no plugin bin/ on the Bash
+// These two cannot pass inside `claude plugin eval` (no atl state, no plugin bin/ on the Bash
 // PATH), so they are smokes.
-const MOVED_TO_SMOKES: [&str; 2] = ["rtk-rewrite", "agent-memory-path"];
+const MOVED_TO_SMOKES: [&str; 2] = ["atl-rewrite", "agent-memory-path"];
 // Bash is visible in this case only so that a host-browser launch attempt is recorded and denied.
 const BASH_PROMPT_EXEMPT: [&str; 1] = ["browser-browseros-only"];
 // This case holds Write (and Edit) only so that its `max: 0` checks are real.
@@ -951,7 +951,7 @@ mod required_case_tests {
         }
         // omitted: smoke.py registers `"<name>": (smoke_` for each moved case (pins
         // evals/smoke/smoke.py) -> CO2 replacement: cutover_ci.rs asserts the Rust smoke runner
-        // registers rtk-rewrite and agent-memory-path
+        // registers atl-rewrite and agent-memory-path
     }
 
     #[test]
@@ -981,10 +981,10 @@ mod required_case_tests {
     #[test]
     fn test_the_guard_cases_say_what_they_cover() {
         let cases = all_cases();
-        let desc = case(&cases, "guard-beats-rtk").unwrap()["description"]
+        let desc = case(&cases, "guard-beats-atl").unwrap()["description"]
             .as_str()
             .unwrap_or("");
-        assert!(desc.contains("rtk-rewrite smoke"), "{desc}");
+        assert!(desc.contains("atl-rewrite smoke"), "{desc}");
         let g6 = prompt("guard-g6", case(&cases, "guard-g6").unwrap());
         assert!(
             g6.contains("rule G6"),
@@ -1014,7 +1014,7 @@ mod required_case_tests {
             ("guard-g1", "G1"),
             ("guard-g4", "G4"),
             ("guard-g6", "G6"),
-            ("guard-beats-rtk", "G1"),
+            ("guard-beats-atl", "G1"),
             ("hook-reach-subagent", "G4"),
         ] {
             let c = case(&cases, name).unwrap();
@@ -1235,7 +1235,7 @@ mod grant_tests {
     #[test]
     fn test_the_grants_name_no_command_of_a_moved_case() {
         let text = run_script_grants().join("\n");
-        for bad in ["rtkrepo", "anthology-mem"] {
+        for bad in ["atlrepo", "anthology-mem"] {
             assert!(!text.contains(bad), "{bad}");
         }
     }

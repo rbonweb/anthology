@@ -1,0 +1,213 @@
+name: atl-release
+
+# Builds atl/ for four targets (tests first), attests the tarballs and publishes them
+# to the release for the tag `atl--v<version>` (<version> is atl/Cargo.toml's version).
+#
+#   - push of a tag `atl--v*`: build, test, attest, publish.
+#   - workflow_dispatch with `tag`: the same, from that existing tag.
+#   - pull_request touching this file or the toolchain pin: a dry run (build and test
+#     the whole matrix, no attestation, no release).
+on:
+  push:
+    tags: ['atl--v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (atl--v<version>)'
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/atl-release.yml'
+      - 'atl/rust-toolchain.toml'
+
+permissions: {}
+
+concurrency:
+  group: atl-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  meta:
+    # Resolve and validate the tag; the build and publish jobs take it from here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+      publish: ${{ steps.tag.outputs.publish }}
+    steps:
+      - name: Resolve and validate the tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -eu
+          case "$EVENT_NAME" in
+            pull_request)
+              printf 'tag=\nref=\npublish=false\n' >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            workflow_dispatch) tag=$INPUT_TAG ;;
+            *) tag=$REF_NAME ;;
+          esac
+          if ! [[ $tag =~ ^atl--v[0-9]+\.[0-9]+\.[0-9]+(-anthology\.[0-9]+)?$ ]]; then
+            echo "::error::tag is not of the form atl--v<major>.<minor>.<patch>[-anthology.<n>]"
+            exit 1
+          fi
+          printf 'tag=%s\nref=refs/tags/%s\npublish=true\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          persist-credentials: false
+      - name: The tag must name the version in atl/Cargo.toml
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          version=$(awk -F'"' '/^version = /{print $2; exit}' atl/Cargo.toml)
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-anthology\.[0-9]+)?$'; then
+            echo "::error::atl/Cargo.toml version is not of the form <major>.<minor>.<patch>[-anthology.<n>]"
+            exit 1
+          fi
+          echo "atl/Cargo.toml version: $version"
+          # A pull request has no tag: the version format is all there is to check.
+          if [ -n "$TAG" ] && [ "$TAG" != "atl--v$version" ]; then
+            echo "::error::tag $TAG does not equal atl--v$version (atl/Cargo.toml)"
+            exit 1
+          fi
+
+  build:
+    needs: meta
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: atl
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Intel macOS is built and tested natively on macos-15-intel, as are both Linux targets.
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - name: Install musl-tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y musl-tools
+          # C code in the dependency tree (bundled SQLite, mimalloc) builds with musl's gcc wrapper.
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install the pinned toolchain (rust-toolchain.toml) and the target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
+          cargo --version
+      - name: Test
+        run: cargo test --locked --target "$TARGET"
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Check the binary is static and runs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bin="target/$TARGET/release/atl"
+          if readelf -lW "$bin" | grep INTERP; then
+            echo "::error::$bin has a program interpreter (not static)"
+            exit 1
+          fi
+          if readelf -dW "$bin" | grep NEEDED; then
+            echo "::error::$bin has shared-library dependencies (not static)"
+            exit 1
+          fi
+          "$bin" --version
+      - name: Run the binary (macOS)
+        if: runner.os == 'macOS'
+        run: '"target/$TARGET/release/atl" --version'
+      - name: Package
+        run: |
+          set -eu
+          stage=$(mktemp -d)
+          cp "target/$TARGET/release/atl" LICENSE NOTICE "$stage/"
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -czf "dist/atl-$TARGET.tar.gz" -C "$stage" atl LICENSE NOTICE
+          tar -tzf "dist/atl-$TARGET.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: atl-${{ matrix.target }}
+          path: atl/dist/atl-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # Not on pull requests (the dry run stops after the build jobs).
+    if: needs.meta.outputs.publish == 'true'
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: atl-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -eu
+          ls -l
+          count=$(find . -maxdepth 1 -name 'atl-*.tar.gz' | wc -l | tr -d ' ')
+          if [ "$count" != 4 ]; then
+            echo "::error::expected 4 tarballs, found $count"
+            exit 1
+          fi
+          sha256sum atl-*.tar.gz | LC_ALL=C sort -k2 > checksums.txt
+          cat checksums.txt
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/atl-*.tar.gz
+      - name: Create the release (fails if it already exists)
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release for $TAG already exists; not overwriting it"
+            exit 1
+          fi
+          gh release create "$TAG" \
+            dist/atl-aarch64-apple-darwin.tar.gz \
+            dist/atl-x86_64-apple-darwin.tar.gz \
+            dist/atl-x86_64-unknown-linux-musl.tar.gz \
+            dist/atl-aarch64-unknown-linux-musl.tar.gz \
+            dist/checksums.txt \
+            --title "$TAG" \
+            --notes "ATL built from atl/ at this tag (a fork of rtk by RTK AI Labs; Claude Code only, Apache-2.0 edition; LICENSE and NOTICE in every archive), with build-provenance attestations." \
+            --verify-tag
