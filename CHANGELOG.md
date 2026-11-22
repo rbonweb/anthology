@@ -33,7 +33,10 @@ a new version section.
 - `anthology-mem save --body-file <path>` takes the note body from a file (`-` for stdin) and
   applies the same checks as `--body`. Claude Code's delete safety check reads the command line,
   so a note that merely mentioned a delete command was refused when passed inline. Exactly one of
-  `--body` and `--body-file` is required.
+  `--body` and `--body-file` is required. The file must be a regular file of at most 16 KB (a
+  larger one is refused, never cut), inside the repo or the system temp folder, and not at an
+  obvious secret location (the guard's own list: `.ssh`, `.env`, keys, credentials, shell
+  history); symlinks are resolved before the check.
 - `anthology-mem save` warns on stderr, and still saves, when the agent already has a note with
   a very similar name or description, and suggests updating it with `--replace`.
 
@@ -54,9 +57,11 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
-- Memory indexes are capped at 8 KB (was 20 KB). Agents' `MEMORY.md` files had grown to 17-20 KB
-  with 88-138 notes, many of them per-task logs. Past the cap an index keeps the newest notes of
-  each type and ends each cut type with "N more — use `anthology-mem search`".
+- Every generated memory index (personal, repo, agent, imported) is capped at 8 KB (was 20 KB).
+  Agents' `MEMORY.md` files had grown to 17-20 KB with 88-138 notes, many of them per-task
+  logs. Past the cap an index keeps the newest notes of each type and ends each cut type with
+  "N more — use `anthology-mem search`". The session-start pointers no longer name the
+  `MEMORY.md` file, since it is capped too.
 - rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
