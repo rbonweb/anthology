@@ -799,7 +799,7 @@ mod output_test {
             assert!(ctx.chars().count() <= 9000);
             assert!(ctx.contains("# Anthology routing guide"));
             assert!(ctx.contains("## Personal memory"));
-            assert!(ctx.contains("use `anthology-mem search <query>`"));
+            assert!(ctx.contains("use `anthology-mem search <words>`"));
             assert!(!ctx.contains("full indexes"));
         }
 
@@ -811,7 +811,7 @@ mod output_test {
             assert!(out.chars().count() <= 9000);
             assert!(out.starts_with(&g));
             assert!(out.ends_with(
-                "(memory index truncated to fit the session budget; use `anthology-mem search <query>`)"
+                "(memory index truncated to fit the session budget; use `anthology-mem search <words>`)"
             ));
             assert!(!out.contains("full indexes"));
             // a guide alone over the budget keeps every character, and memory is dropped

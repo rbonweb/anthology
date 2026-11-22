@@ -50,6 +50,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
+use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, paths, platform, state};
 use anthology_guard::data;
 use anthology_memory::sync::{self, SyncDeps};
@@ -85,8 +86,6 @@ pub const RTK_SKIPPED: &str =
 pub const RTK_NOT_WIRED: &str = "anthology: rtk wiring not present yet; skipped";
 /// The session folder is not in a git repo but git repos sit directly below it.
 pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git repos sit below it. Anthology's agents need worktrees, so start Claude Code inside the repo you are working on";
-/// The most entries of the session folder looked at for [`NOT_A_REPO`].
-pub const REPO_SCAN_CAP: usize = 200;
 /// The guide file is missing or unreadable.
 pub const GUIDE_MISSING: &str =
     "anthology: the routing guide is missing from the plugin (templates/routing-guide.md)";
@@ -648,7 +647,7 @@ pub fn compose(guide: &str, memory: &str) -> String {
         return head + memory;
     }
     let pointer =
-        "(memory index truncated to fit the session budget; use `anthology-mem search <query>`)"
+        "(memory index truncated to fit the session budget; use `anthology-mem search <words>`)"
             .to_string();
     let allowed = room - char_len(&pointer) as i64 - 1;
     if allowed <= 0 {
@@ -1025,19 +1024,8 @@ fn subagent_output(env: &Env, cwd: &Path, deps: &SessionDeps<'_>) -> String {
 /// [`NOT_A_REPO`] when `cwd` is not in a git repo but some folder directly below it is one (it
 /// holds a `.git` folder or file). Only the first [`REPO_SCAN_CAP`] entries are looked at.
 fn not_a_repo_warning(cwd: &Path) -> Option<String> {
-    (compat::repo_top(cwd).is_none() && repo_below(cwd, REPO_SCAN_CAP))
+    (compat::repo_top(cwd).is_none() && !repos_below(cwd, REPO_SCAN_CAP).is_empty())
         .then(|| NOT_A_REPO.to_string())
-}
-
-/// Whether one of the first `cap` entries of `dir` holds a `.git`.
-fn repo_below(dir: &Path, cap: usize) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    entries
-        .take(cap)
-        .flatten()
-        .any(|entry| entry.path().join(".git").exists())
 }
 
 /// `msg if len ≤ 2000 else msg[:1999].rstrip() + "…"`.
@@ -1354,15 +1342,6 @@ mod tests {
         assert_eq!(broken_epochs(".broken-0.1.0-5-100-7"), vec![5.0, 100.0]);
         assert!(broken_epochs(".broken-0.1.0-x-7").is_empty());
         assert!(broken_epochs(".broken-junk").is_empty());
-    }
-
-    #[test]
-    fn the_repo_scan_looks_at_no_more_than_its_cap() {
-        let tmp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(tmp.path().join("only/.git")).unwrap();
-        assert!(repo_below(tmp.path(), 1));
-        assert!(!repo_below(tmp.path(), 0));
-        assert!(!repo_below(&tmp.path().join("missing"), REPO_SCAN_CAP));
     }
 
     #[test]
