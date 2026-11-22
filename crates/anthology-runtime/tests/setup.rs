@@ -3008,6 +3008,79 @@ mod repo_attribution_test {
     }
 
     #[test]
+    fn an_empty_attribution_object_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), "{\n  \"attribution\": {}\n}\n", None);
+        let preview = f.preview(Some(&repo));
+        let notes = notes_of(at(&preview, &["memory", "repo", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert!(at(&v, &["attribution"]).as_object().unwrap().is_empty());
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+        assert_eq!(notes_of(at(&res, &["memory", "auto_memory"])).len(), 1);
+    }
+
+    #[test]
+    fn a_null_attribution_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(
+            &repo_settings(&repo),
+            "{\n  \"attribution\": null\n}\n",
+            None,
+        );
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(at(&v, &["attribution"]), &Value::Null);
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+    }
+
+    #[test]
+    fn a_null_commit_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"attribution\": {\n    \"commit\": null\n  }\n}\n";
+        write(&repo_settings(&repo), before, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(at(&v, &["attribution", "commit"]), &Value::Null);
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("attribution.commit"), "{notes:?}");
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_user_wide_attribution_is_noted_in_the_preview_and_never_written() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.c.write_settings("{\"attribution\": {\"commit\": \"Mine\"}}");
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(Some(&repo));
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let notes = notes_of(at(&out, &["memory", "repo", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("user-wide"), "{notes:?}");
+        assert!(notes[0].contains("takes precedence"), "{notes:?}");
+        // the repo still gets its own keys, and the user's value is read, never changed
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(text_at(&repo_json(&repo), &["attribution", "pr"]), "");
+        let after = json::loads(&f.read_settings()).unwrap();
+        assert_eq!(text_at(&after, &["attribution", "commit"]), "Mine");
+        assert!(
+            !at(&after, &["attribution"])
+                .as_object()
+                .unwrap()
+                .contains_key("pr")
+        );
+    }
+
+    #[test]
     fn an_empty_value_the_user_already_had_is_not_ours_to_remove() {
         let Some((f, repo)) = repo_fx() else { return };
         let before = "{\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n";

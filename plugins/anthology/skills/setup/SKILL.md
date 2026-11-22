@@ -92,7 +92,8 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      `"attribution": {"commit": "", "pr": ""}`, so Claude Code stops telling the model to add a
      co-author trailer or a "Generated with" line (the no-attribution hook stays as the backstop). Say it
      is committed too, so it applies to everyone who uses the repo. A value you already set is never
-     overwritten: each item in `notes` names a key that is left as it is; show them. Print `user_scope`
+     overwritten: each item in `notes` names a key that is left as it is, or says your user-wide settings
+     also set `attribution` (the repo's value wins in this repo; setup only reads that file); show them. Print `user_scope`
      verbatim: setup does not touch your user-wide settings for this, and you can set the same key there
      by hand.
    - **personal memory:** the folder `memory.personal_dir` is created (private to the user).
@@ -122,7 +123,7 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    was removed), any `warnings`, and `memory.approve_error` if present (the repo is
    still approved; say which file was refused). `memory.auto_memory` says whether the repo's
    `.claude/settings.json` was changed (`changed`) or why not (`skipped`); when it was, tell the user to
-   commit it, and show its `notes` (attribution keys left as the user had them). `memory.migrated` lists the old notes copied into the repo (`repo`) and into personal memory
+   commit it, and show its `notes` (attribution keys left as the user had them, and a user-wide `attribution`). `memory.migrated` lists the old notes copied into the repo (`repo`) and into personal memory
    (`personal`), by the names they now have. If `memory.blocked` is not empty, list each `file` with its
    `reason`: those notes were not moved. If `memory.originals` is set, show it: the old notes were left in
    place, never deleted, and are no longer loaded. If `CLAUDE_CODE_SUBAGENT_MODEL` was

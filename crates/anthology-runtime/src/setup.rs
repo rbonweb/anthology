@@ -962,6 +962,9 @@ fn attribution_ops(text: &str) -> (Vec<settings::Op>, Vec<String>) {
     let mut notes = Vec::new();
     match existing {
         None => ops.extend(ATTRIBUTION_PARTS.iter().map(|p| attribution_op(p))),
+        Some(Value::Object(parts)) if parts.is_empty() => notes.push(format!(
+            "{ATTRIBUTION_KEY} is already set in this file (an empty object); left as it is"
+        )),
         Some(Value::Object(parts)) => {
             for part in ATTRIBUTION_PARTS {
                 match parts.get(part) {
@@ -980,6 +983,19 @@ fn attribution_ops(text: &str) -> (Vec<settings::Op>, Vec<String>) {
     (ops, notes)
 }
 
+/// A note when the user-wide settings.json sets `attribution` too: the repo's own value wins in
+/// that repo (project settings rank above user settings). The file is only read, never written;
+/// one that cannot be read or parsed gives no note.
+fn user_attribution_note(env: &Env) -> Option<String> {
+    let text = read_repo_settings(&settings::settings_path(env))
+        .ok()
+        .flatten()?;
+    json::loads(&text).ok()?.as_object()?.get(ATTRIBUTION_KEY)?;
+    Some(format!(
+        "{ATTRIBUTION_KEY} is also set in your user-wide settings.json; in this repo the repo's value takes precedence. That file is only read, never changed"
+    ))
+}
+
 fn repo_settings_path(root: &Path) -> PathBuf {
     root.join(".claude").join("settings.json")
 }
@@ -991,7 +1007,7 @@ struct RepoPlan {
     new_text: String,
     diff: String,
     stored: Vec<Value>,
-    /// The keys it leaves as the user set them.
+    /// The keys it leaves as the user set them, and the user-wide `attribution` it reads.
     notes: Vec<String>,
 }
 
@@ -1087,7 +1103,8 @@ fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
         .map(Option::unwrap_or_default)
         .map_err(|e| format!(".claude/settings.json {e}; left untouched"))?;
     let previous = recorded_ops(&recorded_repo_settings(env), root)?;
-    let (attribution, notes) = attribution_ops(&text);
+    let (attribution, mut notes) = attribution_ops(&text);
+    notes.extend(user_attribution_note(env));
     let mut desired = vec![auto_memory_op()];
     desired.extend(attribution);
     let (new_text, diff, stored) =
