@@ -196,6 +196,18 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell) when Claude Code shows a permission prompt or waits for your input; set `ANTHOLOGY_NOTIFY=0` to turn it off.
 
+### After-work check
+
+When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.329 or later) checks the report before the lead reads it. It looks for five things:
+
+- a commit (a sha, or the word "committed");
+- what was tested;
+- leftovers removed (containers, volumes, temp files);
+- a project-map update, or a statement that none exists;
+- attribution lines (`Co-Authored-By: Claude`, "Generated with"), which must not be there.
+
+It appends a short "After-work check" block that lists only what is missing. The agent's own text is never rewritten or cut. A report that has everything is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit) and adds a line if files are uncommitted; any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
+
 ### Commits carry only your name
 
 Commits, PRs and code comments carry only the git config author. The writing agents never add a `Co-Authored-By` trailer or a "Generated with" line and never mention the assistant or AI, and a `PreToolUse` hook (`hooks/no-attribution.sh`) denies a `git commit` or `gh pr create|edit` command whose command text carries one. It only searches that text with `grep`; it parses and runs nothing. It catches the usual habit and is not a guarantee: `--trailer`, `-F` and `--body-file` are not checked.
