@@ -213,6 +213,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.0] - 2026-11-22
+
 #### Added
 
 - The upstream superpowers 7.0.2 skills library, renamed to `anthology-superpowers`, kept
