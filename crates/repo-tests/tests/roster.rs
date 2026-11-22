@@ -809,6 +809,72 @@ mod roster_test {
         );
     }
 
+    // Claude Code refuses shell commands it cannot verify: heredoc or script file edits, and
+    // git commands chained with `;`, `&&` or `$()`. Writers use Edit/Write and one git command
+    // per Bash call.
+    #[test]
+    fn test_writers_edit_with_tools_and_run_one_git_command_per_call() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                for needle in [
+                    "Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files.",
+                    "One git command per call, with no `;`, `&&` or `$()` around git.",
+                ] {
+                    expect_in(p, needle, &rules, "Do");
+                }
+            },
+        );
+    }
+
+    // A long `sleep` is blocked, a Monitor call fails when the deferred tool was never loaded,
+    // and a hung test run can sit for most of an hour.
+    #[test]
+    fn test_writers_wait_in_the_background_and_time_out_test_runs() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                for needle in [
+                    "never a long `sleep`",
+                    "in the background",
+                    "Load deferred tools such as Monitor with ToolSearch before calling them.",
+                    "`timeout 900`",
+                    "report a hang instead of waiting",
+                ] {
+                    expect_in(p, needle, &rules, "Do");
+                }
+            },
+        );
+    }
+
+    // Per-task logs, duplicates and 20 KB indexes make memory useless, so writers and the
+    // reviewer save only lasting facts and search before they save.
+    #[test]
+    fn test_saving_agents_keep_memory_small() {
+        each_agent(
+            |s| s.edits == "yes" || s.name == "reviewer",
+            |spec, p| {
+                let Some((_, _, memory)) = load_section(spec.name, "Memory", p) else {
+                    return;
+                };
+                for needle in [
+                    "save only lasting project facts",
+                    "no per-task logs",
+                    "`anthology-mem search <topic>`",
+                    "instead of adding a duplicate",
+                ] {
+                    expect_in(p, needle, &memory, "Memory");
+                }
+            },
+        );
+    }
+
     // Everyone who uses Anthology gets commits, PRs and comments that carry only their own
     // git author (hooks/no-attribution.sh enforces it for commit and PR commands).
     #[test]
@@ -894,6 +960,52 @@ mod roster_test {
         assert!(template.contains("Size budget: 7000 characters"));
         assert!(template.chars().count() <= 2500, "the template is short");
         assert!(!template.contains("/Users/"));
+    }
+
+    // The routing guide holds the lead's short rules; the detail lives in the large-builds skill.
+    #[test]
+    fn test_guide_has_the_lead_stop_and_per_worktree_rules() {
+        let guide =
+            std::fs::read_to_string(repo::path(&format!("{PLUGIN}/templates/routing-guide.md")))
+                .expect("the routing guide");
+        for needle in [
+            "Merge conflicts: implementer.",
+            "Checks over ~2 min: background or agent, never block.",
+            "No lead coding tasks in plans.",
+            "Brief by plan path and task ID; agents read the plan.",
+            "User stop or pause beats the plan: start nothing new till they say go.",
+            "Before a restart, agents commit work in progress.",
+            "tag images, name containers per worktree",
+        ] {
+            assert!(guide.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn test_large_builds_skill_holds_the_detail_behind_the_guide_rules() {
+        let skill = std::fs::read_to_string(repo::path(&format!(
+            "{PLUGIN}/skills/large-builds/SKILL.md"
+        )))
+        .expect("the large-builds skill");
+        for needle in [
+            "## The lead and the user",
+            "merge conflict",
+            "never blocks on a run of more than a minute or two",
+            "holds no task for the lead",
+            "stop or pause",
+            "commit its work in progress",
+            "## Waiting and hangs",
+            "never a long `sleep`",
+            "ToolSearch",
+            "timeout 900",
+            "report a hang",
+            "## Docker names per worktree",
+            "worktree folder name",
+            "plan path and task ID",
+            "anthology-mem search",
+        ] {
+            assert!(skill.contains(needle), "{needle}");
+        }
     }
 
     #[test]

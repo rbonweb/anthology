@@ -48,6 +48,22 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
+- Field fixes from an audit of a long multi-agent session:
+  - Writing agents edit files with Edit/Write only (no heredocs, `sed -i` or file-writing
+    scripts) and run one git command per Bash call, because Claude Code refuses commands it
+    cannot verify. They also never use a long `sleep`, load deferred tools such as Monitor
+    through ToolSearch before calling them, and put a timeout on every test run, reporting a
+    hang instead of waiting.
+  - Writing agents and the reviewer save only lasting facts to memory, search with
+    `anthology-mem search` first and update an existing note instead of adding a duplicate.
+  - Routing guide: merge conflicts go to an implementer, long checks run in the background or
+    go to an agent, plans hold no lead coding tasks, agents are briefed with a plan path and
+    task ID, a user's stop or pause beats the plan, and Docker images and containers are named
+    per worktree so parallel agents do not test each other's code.
+  - `large-builds` skill: the detail behind those rules (lead and user, waiting and hangs,
+    per-worktree Docker names, small memory).
+  - The routing guide dropped its model-to-agent list (each agent already fixes its own model)
+    to stay within its size budget.
 
 ### [0.2.0] - 2026-11-22
 

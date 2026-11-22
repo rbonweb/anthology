@@ -19,6 +19,55 @@ Read this before the first task of a large or long build (many tasks, several ag
   session. Why: a parked question or an unreadable report costs the same in
   a short session as in a long one.
 
+## The lead and the user
+
+- A merge conflict goes to an implementer, with the branches and the
+  conflicting files named; the lead does not resolve it. Why: resolving a
+  conflict is code work, and the lead's context is for decisions.
+- The lead never blocks on a run of more than a minute or two. Start it in
+  the background, or hand it to an agent, and read the result when it exits.
+  Why: a blocked lead cannot answer the user, merge or start the next task.
+- A plan holds no task for the lead that writes code, tests or docs; such a
+  task goes to the matching agent. Why: a lead-coded task is where a plan
+  quietly turns the lead into a worker.
+- A user's stop or pause beats the plan, the recurring check and any
+  scheduled start. Start nothing new until the user says go. Why: a task
+  started seconds after "do not pick up new tasks" breaks the user's trust.
+- Before a restart, tell every running agent to commit its work in progress,
+  and wait for those commits. Why: uncommitted worktree changes are lost.
+- Brief an agent with the plan path and the task ID, and let it read the task
+  itself; paste no plan text. Why: copying plan sections costs the lead a
+  read per task and drifts from the plan.
+
+## Waiting and hangs
+
+- Agents: never a long `sleep` (it is blocked). Run the slow command in the
+  background and read its output when it exits, or watch a condition with
+  Monitor. Why: sleeping wastes the turn and trips the block.
+- Load a deferred tool such as Monitor with ToolSearch
+  (`select:Monitor`) before the first call. Why: calling a tool whose schema
+  is not loaded fails.
+- Put a timeout on every test run, for example `timeout 900 <command>`.
+  When it fires, or the run shows no progress, stop and report a hang
+  instead of waiting. Why: a hung run once sat for 36 minutes unnoticed.
+
+## Docker names per worktree
+
+- Tag every image and name every container per worktree, for example
+  `myapp-test-<worktree folder name>`; read the folder name from `pwd` and
+  type it literally. Remove only your own names afterwards. Why: when every
+  worktree tags the same name, parallel agents test each other's code.
+
+## Memory stays small
+
+- Writers and reviewers save only lasting facts (a rule, a surprise, where
+  something lives, why a decision was made), never per-task logs or what a
+  diff already shows. Why: the index loads in every session, and hundreds
+  of log-style notes made it 17-20 KB.
+- Run `anthology-mem search <topic>` before saving; update a matching note
+  with `--replace` instead of adding a duplicate. Why: duplicates bury the
+  one true note.
+
 ## Long runs
 
 - Set a recurring ~10-minute check (CronCreate) at the start of a long run, and delete it (CronDelete) when the run ends.
@@ -50,8 +99,8 @@ Read this before the first task of a large or long build (many tasks, several ag
 - In a shared registry (a module list, an owners table), append your own
   line only; never reorder or edit other lines. Why: append-only edits merge
   without conflicts.
-- Put in each dispatch: the slice, the interfaces to code against, the SWAP
-  rule, the test tier below, and "no reviewers". Why: a worker cannot follow
+- Put in each dispatch: the plan path and task ID, the slice, the interfaces
+  to code against, the SWAP rule, the test tier below, and "no reviewers". Why: a worker cannot follow
   rules it was never given.
 
 ## Keep capacity busy
