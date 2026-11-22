@@ -57,6 +57,7 @@ a new version section.
 - The closing pointer that session start adds when it cuts the memory index now reads
   `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
   length is the same, so the session budget is unchanged.
+- pin anthology-bin 0.1.4.
 
 ### [0.2.7] - 2026-11-22
 
@@ -404,6 +405,10 @@ a new version section.
   a number (`for i in 1 2 3`). The too-complex message suggests single
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).
+
+#### Changed
+
+- pin anthology-bin 0.1.4.
 
 ### [0.2.2] - 2026-11-22
 
