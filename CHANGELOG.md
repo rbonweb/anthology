@@ -15,11 +15,15 @@ a new version section.
 - Strict delegation, a Claude Code mod (`hooks/mods/delegation.ts`, Claude Code 2.1.330 or later), on in interactive
   sessions only. The system prompt gets a short coordinator section when the session has the
   `Agent` tool, and the main session's `Edit`, `Write` and `NotebookEdit` calls are refused with a
-  message that names the agent to use (`implementer`, `debugger`, `docs-writer` or `ui-designer`).
-  Allowed: the lead's auto-memory, `~/.claude/plans/`, `.superpowers/` and `docs/superpowers/plans/`,
-  and a tiny fix (an `Edit` of at most 5 lines, at most 3 per turn, in one file). Subagent calls and
-  headless runs are never touched. Set `ANTHOLOGY_DELEGATION=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
-  The plugin manifest names a `types` contract (`types/anthology.d.ts`) for the mod's `$.state` value.
+  message that says why and names the agent to use (`implementer`, `debugger`, `docs-writer` or
+  `ui-designer`). Allowed: the lead's memory (auto memory, `autoMemoryDirectory`, the repo's
+  `.claude/memory/`, personal memory), `~/.claude/plans/`, `.superpowers/` and
+  `docs/superpowers/plans/`, and a tiny fix (an `Edit` of at most 5 lines and about 2 KB, at most 3
+  per turn, in one file; a failed edit does not count). Subagent calls, headless runs and sessions
+  with no `Agent` tool are never touched. Set `ANTHOLOGY_DELEGATION=0` (or `ANTHOLOGY_MODS=0`) to
+  turn it off. Not yet built: the gate on MCP tools that are not read-only and the
+  `scan_secrets` allowlist. The plugin manifest names a `types` contract (`types/anthology.d.ts`)
+  for the mod's `$.state` values.
 - Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
   shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
   plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to

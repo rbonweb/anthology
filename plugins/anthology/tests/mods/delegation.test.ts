@@ -13,18 +13,50 @@ type World = {
   surfaces?: readonly RenderSurface[]
   env?: { readonly [name: string]: string }
   sections?: readonly PromptComposeSection[]
+  /** the tool pool the session lists; the lead can dispatch only with `Agent` in it */
+  tools?: readonly string[]
+  cwd?: string
+  /** the `autoMemoryDirectory` setting */
+  autoMemoryDirectory?: string
+  /** events whose hook beneath the plugin throws, to see the mod fail open */
+  fails?: readonly ('env.get' | 'state.get' | 'state.set' | 'settings.read' | 'tool.list' | 'session.root')[]
+  /** an Edit of a path holding this text comes back from the tool as an error */
+  broken?: string
+  /** a tool.call of a path holding this text is refused beneath the plugin (another plugin's deny) */
+  denied?: string
+}
+
+const boom = (): never => {
+  throw new Error('boom')
 }
 
 /** Stands for Claude Code beneath the plugin. Returns what the tools were asked to do. */
 function engine(on: On, world: World = {}): string[] {
   const ran: string[] = []
   const env = { HOME, ...world.env } as { readonly [name: string]: string }
+  const fails = new Set<string>(world.fails)
+  const tools = world.tools ?? ['Agent', 'Read']
   on('session.surfaces', () => ({ value: world.surfaces ?? ['terminal'] }))
-  on('session.root', () => ({ value: ROOT }))
-  on('env.get', (_$, e) => ({ value: env[e.name] }))
+  on('session.root', fails.has('session.root') ? boom : () => ({ value: ROOT }))
+  on('session.cwd', () => ({ value: world.cwd ?? ROOT }))
+  on('env.get', fails.has('env.get') ? boom : (_$, e) => ({ value: env[e.name] }))
+  // the event answers the whole settings object; a read of one key is that object, projected
+  on(
+    'settings.read',
+    fails.has('settings.read')
+      ? boom
+      : () => ({ value: world.autoMemoryDirectory === undefined ? {} : { autoMemoryDirectory: world.autoMemoryDirectory } }),
+  )
+  on('tool.list', fails.has('tool.list') ? boom : () => ({ value: tools.map(name => ({ name, description: '', mcp: false })) }))
+  // the kit answers `$.state` itself, and a hook that throws is skipped; a `{ deny }` makes the call reject
+  if (fails.has('state.get')) on('state.get', () => ({ deny: 'boom' }) as never)
+  if (fails.has('state.set')) on('state.set', () => ({ deny: 'boom' }) as never)
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', (_$, e) => {
-    ran.push(`${e.tool} ${String(e.file_path ?? e.notebook_path)}`)
+    const path = String(e.file_path ?? e.notebook_path)
+    ran.push(`${e.tool} ${path}`)
+    if (world.denied !== undefined && path.includes(world.denied)) return { deny: 'blocked beneath' }
+    if (world.broken !== undefined && path.includes(world.broken)) return { result: 'boom', isError: true as const }
     return { result: 'done' }
   })
   const sections = world.sections ?? [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }]
@@ -92,10 +124,20 @@ test('a headless run (no surface) is not refused', async ($, on) => {
   expect(ran).toEqual([`Write ${SRC}`])
 })
 
-test('the desktop surface counts as interactive', async ($, on) => {
-  engine(on, { surfaces: ['desktop'] })
-  const r = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
-  expect(r.deny).toContain('anthology:implementer')
+for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+  test(`the ${surface} surface counts as interactive`, async ($, on) => {
+    engine(on, { surfaces: [surface] })
+    const r = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+    expect(r.deny).toContain('anthology:implementer')
+  })
+}
+
+test('a session whose tool pool has no Agent tool is not refused', async ($, on) => {
+  const ran = engine(on, { tools: ['Read', 'Edit'] })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toBeUndefined()
+  expect((await edit($, SRC, lines(30), lines(30))).deny).toBeUndefined()
+  expect(ran).toHaveLength(2)
 })
 
 test('a subagent call passes and is never counted', async ($, on) => {
@@ -139,6 +181,17 @@ const EXEMPT = [
   `${HOME}/.claude/plans/p.md`,
   `${ROOT}/.superpowers/sdd/ledger.md`,
   `${ROOT}/docs/superpowers/plans/p.md`,
+  // repo memory and personal memory, where auto memory is off (an Anthology-approved repo)
+  `${ROOT}/.claude/memory/project-x.md`,
+  `${ROOT}/.claude/memory/MEMORY.md`,
+  `${HOME}/.claude/anthology/personal-memory/me.md`,
+  // forms of the same paths: `~`, `..` and a relative path from the session's directory
+  '~/.claude/plans/p.md',
+  '~/.claude/anthology/personal-memory/me.md',
+  `${ROOT}/src/../.superpowers/a.md`,
+  '.superpowers/a.md',
+  './.claude/memory/a.md',
+  'docs/superpowers/plans/p.md',
 ]
 
 for (const path of EXEMPT) {
@@ -146,7 +199,7 @@ for (const path of EXEMPT) {
     const ran = engine(on)
     const w = await $.tool.call({ tool: 'Write', file_path: path, content: lines(40) })
     expect(w.deny).toBeUndefined()
-    expect(ran).toEqual([`Write ${path}`])
+    expect(ran).toHaveLength(1)
   })
 
   test(`a long Edit of ${path} passes and costs no budget`, async ($, on) => {
@@ -174,6 +227,10 @@ test('a path that climbs out of an exempt folder is refused', async ($, on) => {
     `${ROOT}/docs/superpowers/plans/../../../src/app.ts`,
     `${HOME}/.claude/plans/../settings.json`,
     `${HOME}/.claude/projects/-work-repo/memory/../../x.json`,
+    `${ROOT}/.claude/memory/../settings.json`,
+    `${HOME}/.claude/anthology/personal-memory/../state.json`,
+    '../outside.md',
+    '.superpowers/../src/app.ts',
   ]) {
     const w = await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })
     expect(w.deny).toContain('anthology:')
@@ -190,20 +247,66 @@ test('look-alike folders are refused', async ($, on) => {
     `${HOME}/.claude/settings.json`,
     `${HOME}/.claude/plansx/a.md`,
     'relative/.superpowers/a.md',
+    // look-alikes of the memory folders
+    `${ROOT}/.claude/memory-old/a.md`,
+    `${ROOT}/.claude/memoryx.md`,
+    `${ROOT}/.claude/agent-memory/a.md`,
+    `${ROOT}/.claude/settings.json`,
+    `${ROOT}/src/.claude/memory/a.md`,
+    `${HOME}/.claude/anthology/personal-memory-x/a.md`,
+    `${HOME}/.claude/anthology/personal-memory`,
+    `${HOME}/.claude/anthology/state.json`,
+    `${HOME}/.claude/anthology/rtk/x`,
+    '~root/.claude/plans/a.md',
   ]) {
     const w = await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })
     expect(w.deny).toContain('anthology:')
   }
 })
 
-test('CLAUDE_CONFIG_DIR moves the memory and plans folders', async ($, on) => {
+test('CLAUDE_CONFIG_DIR moves the memory, plans and personal-memory folders', async ($, on) => {
   engine(on, { env: { CLAUDE_CONFIG_DIR: '/cfg' } })
-  const mem = await $.tool.call({ tool: 'Write', file_path: '/cfg/projects/p/memory/a.md', content: 'x' })
-  expect(mem.deny).toBeUndefined()
-  const plan = await $.tool.call({ tool: 'Write', file_path: '/cfg/plans/a.md', content: 'x' })
-  expect(plan.deny).toBeUndefined()
-  const old = await $.tool.call({ tool: 'Write', file_path: `${HOME}/.claude/plans/a.md`, content: 'x' })
-  expect(old.deny).toContain('anthology:')
+  for (const p of ['/cfg/projects/p/memory/a.md', '/cfg/plans/a.md', '/cfg/anthology/personal-memory/a.md']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toBeUndefined()
+  }
+  for (const p of [`${HOME}/.claude/plans/a.md`, `${HOME}/.claude/anthology/personal-memory/a.md`, '/cfg/settings.json']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toContain('anthology:')
+  }
+})
+
+test('the autoMemoryDirectory setting is the lead memory folder when it is set', async ($, on) => {
+  engine(on, { autoMemoryDirectory: '/data/memo' })
+  for (const p of ['/data/memo/a.md', '/data/memo/sub/b.md']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toBeUndefined()
+  }
+  for (const p of ['/data/memo', '/data/memo-old/a.md', '/data/memo/../x.md', '/data/other/a.md']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toContain('anthology:')
+  }
+})
+
+test('the autoMemoryDirectory setting may start with ~', async ($, on) => {
+  engine(on, { autoMemoryDirectory: '~/notes/memory' })
+  expect((await $.tool.call({ tool: 'Write', file_path: `${HOME}/notes/memory/a.md`, content: 'x' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: `${HOME}/notes/a.md`, content: 'x' })).deny).toContain('anthology:')
+})
+
+test('nothing is exempt for the setting when it is not set', async ($, on) => {
+  engine(on)
+  expect((await $.tool.call({ tool: 'Write', file_path: '/data/memo/a.md', content: 'x' })).deny).toContain('anthology:')
+})
+
+test('a relative path is taken from the session directory', async ($, on) => {
+  engine(on, { cwd: `${ROOT}/pkg` })
+  // ROOT/pkg/.superpowers is not the project's .superpowers
+  expect((await $.tool.call({ tool: 'Write', file_path: '.superpowers/a.md', content: 'x' })).deny).toContain('anthology:')
+  expect((await $.tool.call({ tool: 'Write', file_path: '../.superpowers/a.md', content: 'x' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: '../.claude/memory/a.md', content: 'x' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: 'src/a.ts', content: 'x' })).deny).toContain('anthology:')
+})
+
+test('~ with no home folder is not exempt', async ($, on) => {
+  engine(on, { env: { HOME: '' } })
+  expect((await $.tool.call({ tool: 'Write', file_path: '~/.claude/plans/a.md', content: 'x' })).deny).toContain('anthology:')
 })
 
 // The tiny-fix budget: an Edit of at most 5 lines, at most 3 per turn, all in one file.
@@ -302,6 +405,128 @@ test('the turn.start hook passes the event on', async ($, on) => {
   expect(r).toEqual({ turnId: 'keep' })
 })
 
+// An Edit is also capped at about 2 KB changed (old and new text together).
+test('an Edit of 2048 characters is allowed and one of 2049 is refused', async ($, on) => {
+  const ran = engine(on)
+  expect((await edit($, SRC, 'a'.repeat(1024), 'b'.repeat(1024))).deny).toBeUndefined()
+  const big = await edit($, SRC, 'a'.repeat(1024), 'b'.repeat(1025))
+  expect(big.deny).toContain('2 KB')
+  expect(ran).toHaveLength(1)
+})
+
+test('five long lines are over the size cap even though they are only five lines', async ($, on) => {
+  engine(on)
+  const wide = Array.from({ length: 5 }, () => 'x'.repeat(500)).join('\n')
+  expect((await edit($, SRC, wide, wide)).deny).toContain('2 KB')
+  const narrow = Array.from({ length: 5 }, () => 'x'.repeat(100)).join('\n')
+  expect((await edit($, SRC, narrow, narrow)).deny).toBeUndefined()
+})
+
+// The refusal says why.
+test('the refusal gives the reason: lines, size, second file, budget, replace_all, Write, NotebookEdit', async ($, on) => {
+  engine(on)
+  expect((await edit($, SRC, lines(6), 'a')).deny).toContain('at most 5 lines and this one is 6')
+  expect((await edit($, SRC, 'x'.repeat(3000), 'a')).deny).toContain('2 KB')
+  expect((await edit($, SRC, 'a', 'b', { replace_all: true })).deny).toContain('replace_all is not an inline fix')
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('a Write is never an inline fix')
+  const nb = await $.tool.call({ tool: 'NotebookEdit', notebook_path: `${ROOT}/n.ipynb`, new_source: 'x' })
+  expect(nb.deny).toContain('a NotebookEdit is never an inline fix')
+  expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, `${ROOT}/src/other.ts`)).deny).toContain(`already in ${SRC}`)
+  expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toContain('already used its 3 inline edits')
+})
+
+// The budget is spent only by an edit that went through.
+test('an Edit the tool reports as an error does not use the budget', async ($, on) => {
+  const ran = engine(on, { broken: 'broken' })
+  const bad = `${ROOT}/src/broken.ts`
+  for (let i = 0; i < 4; i++) {
+    const r = await edit($, bad)
+    expect(r.deny).toBeUndefined()
+    expect(r.isError).toBe(true)
+  }
+  // nothing was spent: three edits to another file still fit, a fourth does not
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toContain('anthology:')
+  expect(ran).toHaveLength(7)
+})
+
+test('an Edit that a hook beneath refuses does not use the budget', async ($, on) => {
+  engine(on, { denied: 'blocked' })
+  for (let i = 0; i < 4; i++) {
+    expect((await edit($, `${ROOT}/src/blocked.ts`)).deny).toBe('blocked beneath')
+  }
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toContain('already used')
+})
+
+test('a failed Edit leaves no file lock behind', async ($, on) => {
+  engine(on, { broken: 'app' })
+  // the only edit of the turn failed and went back, so another file may go first
+  expect((await edit($, SRC)).isError).toBe(true)
+  expect((await edit($, `${ROOT}/src/other.ts`)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toContain('already in')
+})
+
+// Every hook fails open: when something it reads throws, the edit runs.
+for (const failing of ['env.get', 'settings.read', 'tool.list', 'session.root'] as const) {
+  test(`the Write and the Edit run when ${failing} throws`, async ($, on) => {
+    const ran = engine(on, { fails: [failing] })
+    const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+    expect(w.deny).toBeUndefined()
+    const e = await edit($, SRC, lines(30), lines(30))
+    expect(e.deny).toBeUndefined()
+    expect(ran).toHaveLength(2)
+  })
+}
+
+// The budget lives in `$.state`; only a tiny Edit reads it, so only that one has a state failure to survive.
+for (const failing of ['state.get', 'state.set'] as const) {
+  test(`a tiny Edit runs, every time, when ${failing} throws`, async ($, on) => {
+    const ran = engine(on, { fails: [failing] })
+    for (let i = 0; i < 5; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+    expect(ran).toHaveLength(5)
+  })
+}
+
+test('the turn still starts when the budget cannot be reset', async ($, on) => {
+  engine(on, { fails: ['state.set'] })
+  expect(await $.turn.start({ text: 'go', turnId: 'kept' })).toEqual({ turnId: 'kept' })
+})
+
+test('compose returns the engine sections when env.get throws', async ($, on) => {
+  engine(on, { fails: ['env.get'] })
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('compose still adds the section when the state cannot be written', async ($, on) => {
+  engine(on, { fails: ['state.set'] })
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro', 'anthology:coordinator'])
+})
+
+// The refusal carries the short rule itself unless prompt.compose put the section in the prompt.
+test('a refusal carries the rule when no section was composed', async ($, on) => {
+  engine(on)
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('Coordinator: you lead')
+})
+
+test('a refusal carries the rule after a bare or teammate prompt', async ($, on) => {
+  engine(on)
+  await compose($)
+  await compose($, { traits: ['bare'] })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('Coordinator: you lead')
+})
+
+test('a refusal leaves the rule out when the section is in the prompt', async ($, on) => {
+  engine(on)
+  await compose($)
+  const r = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(r.deny).toContain('anthology:implementer')
+  expect(r.deny).not.toContain('Coordinator: you lead')
+})
+
 // The coordinator section.
 const compose = ($: Eng, args: { tools?: readonly string[]; surfaces?: readonly RenderSurface[]; traits?: readonly PromptComposeTrait[] } = {}) =>
   $.prompt.compose({
@@ -322,7 +547,17 @@ test('compose adds one session-scoped coordinator section when the lead has the 
   if (!s) throw new Error('no coordinator section')
   expect(s.scope).toBe('session')
   expect(s.text.length).toBeLessThanOrEqual(400)
-  for (const word of ['plan', 'merge', 'anthology:implementer', 'anthology:debugger', 'anthology:docs-writer', 'anthology:ui-designer', '5 lines', '3 edits']) {
+  for (const word of [
+    'Plan, brief agents, check their work and merge',
+    'you do not make',
+    'anthology:implementer',
+    'anthology:debugger',
+    'anthology:docs-writer',
+    'anthology:ui-designer',
+    'a fix of at most a few lines in one file that the user asked for',
+    '5 lines',
+    '3 edits',
+  ]) {
     expect(s.text).toContain(word)
   }
 })
