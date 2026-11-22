@@ -8,11 +8,13 @@
 // the shell hooks in hooks.json still run there, so nothing gets looser without the mods.
 import type { Register } from 'claude-code'
 import { registerAfterwork } from './afterwork.ts'
+import { registerAlerts } from './alerts.tsx'
 import { registerDelegation } from './delegation.ts'
 import { registerPermissions } from './permissions.ts'
 
 export const register: Register = on => {
   registerPermissions(on)
   registerAfterwork(on)
+  registerAlerts(on)
   registerDelegation(on)
 }

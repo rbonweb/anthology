@@ -146,6 +146,7 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 | `/anthology:setup remove` | Takes out the settings entries and the rtk download that setup added; never deletes your notes (see [Updating and removing](#updating-and-removing)) |
 | `/anthology:export` | Exports your memory notes to a portable archive |
 | `/anthology:import <file>` | Imports an archive after a dry run |
+| `/anthology-status` | Opens a pane with the agents that run, the last few that finished and the permission prompts that wait for you (see [Alerts and the status pane](#alerts-and-the-status-pane)) |
 
 These run only when you ask for them.
 
@@ -222,6 +223,35 @@ When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) r
 Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one: the project map, when the report names a new, removed or renamed piece and does not say the map was updated, is missing or is not needed; and leftovers, when the report starts containers, volumes or temp files and does not say they were removed (never asked of the docs-writer).
 
 The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out); any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
+
+### Alerts and the status pane
+
+Where Claude Code 2.1.330 or later loads plugin mods, the plugin adds two things on top of the alert above. Both come from `hooks/mods/alerts.tsx`.
+
+- **In-session alert.** When Claude Code needs you (a permission prompt, or an idle wait for input) the mod shows a one-line toast in the session, at most once every 20 seconds. It makes no sound: the shell hook above keeps the only sound and the desktop alert, so where both run you get the toast and the desktop alert together. The shell hook is also the whole alert on a Claude Code without plugin mods.
+- **Status pane.** `/anthology-status` opens a pane called Anthology. It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a line under the prompt keeps the count (`2 agents running, 1 waiting for approval`). Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
+
+The pane and the toast name a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
+
+```
+Needs your approval (2)
+Bash
+Edit  from implementer
+
+Running (2)
+14:02  implementer  Build the alerts mod
+14:05  scout  Find the notify hooks
+
+Finished
+ok       3m 12s  reviewer  Review the scaffold
+failed   1m 04s  implementer  Fix the CI job
+```
+
+Approvals come first because nothing moves until you answer them. A subagent's approval stays listed when the lead's turn ends, until that agent reports. A run that ended without reporting drops off the list when Claude Code no longer lists it as alive. With nothing to show the pane says so. A long row is cut at the pane's edge, and a list past 20 running agents ends with `and N more`.
+
+Not yet: the design's block of open pull requests and their CI status (it needs `gh`) is deferred; the pane does not show it.
+
+Switches: `ANTHOLOGY_NOTIFY=0` turns off the alert (the shell hook's switch too), and `ANTHOLOGY_MODS=0` turns off every anthology mod, this pane and its status line included. Set either in the `env` block of `~/.claude/settings.json`.
 
 ### Commits carry only your name
 
