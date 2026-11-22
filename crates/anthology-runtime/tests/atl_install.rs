@@ -693,6 +693,30 @@ mod prune_test {
         assert_eq!(atl_install::prune(&root, V1, now), [".tmp-old"]);
         assert!(root.join(".tmp-new").exists());
     }
+
+    #[test]
+    fn install_and_prune_never_touch_the_legacy_rtk_folder() {
+        // Session start prunes only under <data>/atl: a legacy <data>/rtk keeps even its ancient
+        // version folders and stale staging folders, until setup deletes the whole folder.
+        let b = Base::new();
+        let legacy = b.data.join("rtk"); // legacy folder of the old install
+        let ancient = legacy.join("1.2.1-anthology.1"); // legacy
+        let stale_tmp = legacy.join(".tmp-stale"); // legacy
+        fs::create_dir_all(&ancient).expect("ancient");
+        fs::create_dir_all(&stale_tmp).expect("stale tmp");
+        fs::write(ancient.join("rtk"), b"x").expect("binary"); // legacy
+        fs::write(ancient.join(".last-used"), b"").expect("marker");
+        set_epoch_mtime(&ancient.join(".last-used"), 1);
+        set_epoch_mtime(&ancient, 1);
+        set_epoch_mtime(&stale_tmp, 1);
+        let blob = atl_tarball();
+        let lock = make_lock(V1, &blob);
+        let path = install(&b, &lock, &Fake::for_lock(&lock, &blob)).expect("install");
+        assert_eq!(path, b.data.join("atl").join(V1).join("atl"));
+        assert!(ancient.join("rtk").exists()); // legacy
+        assert!(ancient.join(".last-used").exists());
+        assert!(stale_tmp.exists());
+    }
 }
 
 mod reconcile_test {
@@ -1513,9 +1537,65 @@ mod wrapper_test {
         assert_eq!(seen, stdin, "atl still read the call");
     }
 
+    /// Every way a line can spell `atl` that the shell still runs as atl: quoting, a backslash,
+    /// a joined continuation, a separator or a JSON control escape glued before it.
+    const MENTIONS_ATL: [&str; 28] = [
+        "atl run -c 'kubectl apply'",
+        "ATL bypass x",
+        "a''tl run -c x",
+        "a\"t\"l x",
+        "a\\tl x",
+        "a\\\ntl x",
+        "atl x",
+        "x; atl git push",
+        "a$'tl' x",
+        "\"a\"tl x",
+        "atl --version",
+        "ATL x",
+        "\\atl x",
+        "x\natl y",
+        "x\tatl y",
+        ";atl x",
+        "|atl x",
+        "/opt/bin/atl x",
+        "${a}atl x",
+        "$1atl x",
+        "(atl y)",
+        "`atl y`",
+        "$(atl y)",
+        "echo a\\\\\natl x",
+        "ls # a\\\natl x",
+        "node -v\ratl x",
+        "x\u{8}atl y",
+        "x\u{c}atl y",
+    ];
+
     #[test]
     fn test_hook_keeps_an_ask_on_a_line_that_mentions_atl() {
         // `Bash(atl *)` would allow these as typed, so the ask stands.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        for command in MENTIONS_ATL {
+            let res = w.run_bin("atl-hook", &[], &hook_input(command));
+            assert_eq!(
+                (res.code, res.stdout_text()),
+                (0, format!("{ASK}\n")),
+                "{command:?}"
+            );
+        }
+        let escaped = hook_input("atl x").replace("atl", "\\u0061tl");
+        let res = w.run_bin("atl-hook", &[], &escaped);
+        assert_eq!(
+            (res.code, res.stdout_text()),
+            (0, format!("{ASK}\n")),
+            "a JSON escape counts"
+        );
+    }
+
+    #[test]
+    fn test_hook_keeps_an_ask_on_a_line_that_mentions_legacy_rtk() {
+        // The legacy name still counts: a user's own `Bash(rtk *)` rule would allow these as
+        // typed, and setup never removes a rule it did not add.
         let w = setup();
         w.answer_fake(ASK, 0);
         let table: Vec<Row> = rows(
@@ -1532,7 +1612,14 @@ mod wrapper_test {
                 "{command:?}"
             );
         }
-        let escaped = hook_input("atl x").replace("atl", "\\u0072tk");
+        let escaped = hook_input("rtk x"); // legacy
+        let res = w.run_bin("atl-hook", &[], &escaped);
+        assert_eq!(
+            (res.code, res.stdout_text()),
+            (0, format!("{ASK}\n")),
+            "a plain legacy line counts"
+        );
+        let escaped = hook_input("atl x").replace("atl", "\\u0072tk"); // legacy spelling
         let res = w.run_bin("atl-hook", &[], &escaped);
         assert_eq!(
             (res.code, res.stdout_text()),
@@ -1637,19 +1724,9 @@ mod wrapper_test {
         }
     }
 
-    #[test]
-    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_atl() {
-        // An ANSI-C `$'...'` is never a mention: `Bash(atl *)` never auto-allows one, and a `$'` in a
-        // heredoc body is not decoded by the shell. So the ask is dropped and the command runs as typed.
-        let w = setup();
-        w.answer_fake(ASK, 0);
-        let table: Vec<Row> = rows(
-            "test_rtk_install",
-            "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk",
-        );
-        assert_eq!(table.len(), 22);
-        for row in table {
-            let command = row.str("command");
+    /// Asserts the hook drops the ask (no output, exit 0) for every command.
+    fn assert_ask_dropped(w: &W, commands: &[String]) {
+        for command in commands {
             let res = w.run_bin("atl-hook", &[], &hook_input(command));
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
@@ -1659,25 +1736,70 @@ mod wrapper_test {
         }
     }
 
+    fn commands_of(py: &str, want: usize) -> Vec<String> {
+        let table: Vec<Row> = rows("test_rtk_install", py);
+        assert_eq!(table.len(), want);
+        table.iter().map(|r| r.str("command").to_string()).collect()
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_atl() {
+        // An ANSI-C `$'...'` is never a mention: `Bash(atl *)` never auto-allows one, and a `$'` in a
+        // heredoc body is not decoded by the shell. So the ask is dropped and the command runs as typed.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        // The legacy table with the hex and octal spellings of `a`, `t`, `l` in place of the old name's.
+        let commands: Vec<String> = commands_of(
+            "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk",
+            22,
+        )
+        .iter()
+        .map(|c| c.replace("\\x72tk", "\\x61tl").replace("\\162tk", "\\141tl"))
+        .collect();
+        assert!(commands.iter().any(|c| c.contains("\\x61tl")));
+        assert!(commands.iter().any(|c| c.contains("\\141tl")));
+        assert_ask_dropped(&w, &commands);
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_legacy_rtk() {
+        // The legacy spellings (`$'\x72tk'`) are no mention either.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let commands = commands_of(
+            "test_rtk_install.WrapperTest.test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk",
+            22,
+        );
+        assert_ask_dropped(&w, &commands);
+    }
+
     #[test]
     fn test_hook_drops_an_ask_when_atl_is_only_inside_a_longer_word() {
         // `atl` glued after a letter or underscore cannot invoke atl, so the ask is dropped.
         let w = setup();
         w.answer_fake(ASK, 0);
-        let table: Vec<Row> = rows(
-            "test_rtk_install",
+        let commands: Vec<String> = [
+            "grep -n 'chatlog\\|KEY_RE' a.ts; node -v",
+            "grep SEATLE x",
+            "echo catlike; node --version",
+            "node -v; _atl x",
+        ]
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+        assert_ask_dropped(&w, &commands);
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_when_legacy_rtk_is_only_inside_a_longer_word() {
+        // A letter or underscore glued before the legacy name cannot invoke it either.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let commands = commands_of(
             "test_rtk_install.WrapperTest.test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word",
+            4,
         );
-        assert_eq!(table.len(), 4);
-        for row in table {
-            let command = row.str("command");
-            let res = w.run_bin("atl-hook", &[], &hook_input(command));
-            assert_eq!(
-                (res.code, res.stdout_text(), res.stderr_text()),
-                (0, String::new(), String::new()),
-                "{command:?}"
-            );
-        }
+        assert_ask_dropped(&w, &commands);
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub fn atl_data_dir(env: &Env) -> PathBuf {
 /// The history folder of the legacy rtk install: `<state.json's folder>/rtk`. Nothing writes
 /// there any more; setup deletes it, and nothing else ever touches it.
 pub fn legacy_rtk_data_dir(env: &Env) -> PathBuf {
-    paths::anthology_home(env).join("rtk")
+    paths::anthology_home(env).join("rtk") // legacy folder name
 }
 
 /// The state, or an empty object when it cannot be read (`state.read()`).

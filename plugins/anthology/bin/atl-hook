@@ -38,7 +38,7 @@ export ATL_SUPPRESS_HOOK_WARNING
 # literal command text and Claude Code never auto-allows a `$'...'` spelling, so keeping the ask
 # only caused false prompts (a `$'` in a heredoc body is not decoded by the shell). Cost if wrong:
 # a disguised-atl line gets the user's own checks, not atl's ask.
-# Ruling: atl counts only when no letter or underscore comes right before it (`insertKey` is not a
+# Ruling: atl counts only when no letter or underscore comes right before it (`chatlog` is not a
 # mention). n, r, t, b and f still count as a boundary: they are what a JSON `\n`, `\r`, `\t`, `\b`
 # or `\f` leaves once the backslashes are gone. Only a `\`+newline (`\\\n` in the JSON) is joined.
 # Cost if wrong: a real atl call with a letter glued in front gets the user's own checks, not the ask.

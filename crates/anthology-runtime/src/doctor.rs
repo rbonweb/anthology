@@ -979,10 +979,64 @@ fn check_browseros_tools(env: &Env, cwd: &Path, deps: &DoctorDeps) -> CheckResul
     )
 }
 
+/// What the old install left behind, in the legacy name's words.
+const LEGACY_STATE_KEY: &str = "the rtk_path key in state.json"; // legacy
+const LEGACY_DOWNLOAD: &str = "the old rtk download folder"; // legacy
+const LEGACY_HISTORY: &str = "the old rtk history folder"; // legacy
+
+/// Whether anything, a symlink included, is at `path`.
+fn lexists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// The legacy rtk install's leftovers: the `rtk_path` key in state.json, `<data>/rtk` and
+/// `<config>/anthology/rtk` (legacy names). Session start never removes them; setup does.
+fn legacy_rtk_leftovers(env: &Env) -> Vec<&'static str> {
+    let state = state(env);
+    let state = obj(state.as_ref());
+    let mut found = Vec::new();
+    let legacy_key = state.is_some_and(|s| s.get("rtk_path").is_some()); // legacy key
+    if legacy_key {
+        found.push(LEGACY_STATE_KEY);
+    }
+    let recorded = state
+        .and_then(|s| s.get("data_dir"))
+        .and_then(Value::as_str)
+        .filter(|d| !d.is_empty())
+        .map(|d| d.as_bytes().to_vec());
+    let legacy_download = env_bytes(env, "CLAUDE_PLUGIN_DATA")
+        .or(recorded)
+        .map(|data| path_of(&data).join("rtk")); // legacy folder
+    if legacy_download.is_some_and(|dir| lexists(&dir)) {
+        found.push(LEGACY_DOWNLOAD);
+    }
+    let history = compat::config_dir(env).join("anthology").join("rtk"); // legacy folder
+    if lexists(&history) {
+        found.push(LEGACY_HISTORY);
+    }
+    found
+}
+
+/// `_check_atl(env, lock)` plus the legacy rtk leftovers, which only add a note to the detail.
+fn check_atl(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
+    let (verdict, detail) = check_atl_install(env, root, deps)?;
+    let left = legacy_rtk_leftovers(env);
+    if left.is_empty() {
+        return ok(verdict, detail);
+    }
+    ok(
+        verdict,
+        format!(
+            "{detail}; legacy rtk leftovers: {} (run /anthology:setup to remove them)", // legacy
+            left.join(", ")
+        ),
+    )
+}
+
 /// `_check_atl(env, lock)`: state.json's `atl_path` is `<data>/atl/<lock version>/atl`, and
 /// that version folder holds an executable atl whose recorded tarball hash is the lock's hash
 /// for this platform (`atl_install.check_installed`).
-fn check_atl(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
+fn check_atl_install(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> CheckResult {
     let lock_path = match (&deps.atl_lock, root) {
         (Some(lock), _) => lock.clone(),
         (None, Some(root)) => root.join("atl.lock"),
@@ -1220,18 +1274,26 @@ fn check_path_wrappers(env: &Env, root: Option<&Path>, deps: &DoctorDeps) -> Che
         );
     }
     if env_bytes(env, "CLAUDECODE").is_some() {
-        let ours = (deps.which)("anthology-mem", env).is_some_and(|found| {
+        let in_bin = |found: PathBuf| {
             let dir = py_dirname(found.as_os_str().as_bytes());
             let dir = if dir.is_empty() { b".".to_vec() } else { dir };
             match (realpath(&path_of(&dir)), realpath(&root.join("bin"))) {
                 (Ok(a), Ok(b)) => a == b,
                 _ => false,
             }
-        });
-        if !ours {
+        };
+        if !(deps.which)("anthology-mem", env).is_some_and(in_bin) {
             return ok(
                 Some(false),
                 "the plugin's bin/ is not on PATH; agents cannot run anthology-mem",
+            );
+        }
+        // Another `atl` found first on PATH would run instead of the plugin's shim.
+        if (deps.which)("atl", env).is_some_and(|found| !in_bin(found)) {
+            return ok(
+                Some(false),
+                "the atl on PATH is not the plugin's bin/atl shim; atl commands would run another \
+                 program (put the plugin's bin/ first on PATH)",
             );
         }
         return ok(

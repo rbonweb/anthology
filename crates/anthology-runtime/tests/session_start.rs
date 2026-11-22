@@ -1768,6 +1768,40 @@ mod real_atl_test {
     }
 
     #[test]
+    fn session_start_leaves_rtk_path_and_legacy_folder() {
+        // The old install stays exactly as it was until setup removes it: its state key, its
+        // downloaded versions (an ancient one included) and its history folder.
+        let m = MemCase::new();
+        let blob = release::tarball(ATL_BODY);
+        let root = m.tmp.join("plugin");
+        let lock = release::write_lock(&root.join("atl.lock"), &blob, VERSION);
+        let fetch = Fake(AtlFakeFetch::serving(&atl_url_for(&lock, TARGET), &blob));
+        let real = Real(&fetch);
+        let data = Value::Str(p(&m.data));
+        let old_bin = m.data.join("rtk/1.2.1-anthology.1/rtk"); // legacy binary
+        fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
+        fs::write(&old_bin, "old").unwrap();
+        let old_state = Value::Str(p(&old_bin));
+        state::write(&m.env, vec![("rtk_path".into(), old_state.clone())]).unwrap(); // legacy key
+        let history = state::legacy_rtk_data_dir(&m.env).join("history.db");
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        fs::write(&history, "old history").unwrap();
+        assert_eq!(
+            session_start::reconcile_atl(&m.env, &root, Some(&data), &deps(&real)).unwrap(),
+            None
+        );
+        let st = state::read(&m.env);
+        let want = m.data.join("atl").join(VERSION).join("atl");
+        assert_eq!(
+            st.get("atl_path").and_then(Value::as_str),
+            Some(p(&want).as_str())
+        );
+        assert_eq!(st.get("rtk_path"), Some(&old_state)); // legacy key kept
+        assert_eq!(fs::read_to_string(&old_bin).unwrap(), "old");
+        assert_eq!(fs::read_to_string(&history).unwrap(), "old history");
+    }
+
+    #[test]
     fn test_a_failed_download_is_a_warning_and_state_is_untouched() {
         let m = MemCase::new();
         let blob = release::tarball(ATL_BODY);

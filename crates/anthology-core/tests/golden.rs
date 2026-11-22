@@ -2,9 +2,13 @@
 //!
 //! `golden/state.jsonl` is written by `port/difftest/oracle/core_state.py --golden` and
 //! `golden/lock.jsonl` by `port/difftest/oracle/core_lock.py --golden`, in the pinned CPython
-//! 3.12 image (CI regenerates both and compares them byte for byte). The `atl--v` lock lines
-//! and every state line are CPython's output; the `anthology-bin--v` lock lines come from the
-//! oracle's hand-written GC-17 reference (there is no Python for anthology.lock) and say so.
+//! 3.12 image. The `atl--v` lock lines and every state line are CPython's output; the
+//! `anthology-bin--v` lock lines come from the oracle's hand-written GC-17 reference (there is
+//! no Python for anthology.lock) and say so.
+//!
+//! The ATL rename rewrote both files in place: every name in every case and result is renamed
+//! (the legacy `rtk--v` is `atl--v`, the legacy `rtk_path` is `atl_path`), and a state result's
+//! keys are sorted again, because `atl_path` sorts before `data_dir`, as the legacy key did not.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;

@@ -518,6 +518,59 @@ mod check_env_test {
     }
 
     #[test]
+    fn doctor_reports_legacy_rtk_leftovers() {
+        let c = EnvCase::new();
+        let data = c.tmp.join("data");
+        let binary = data.join("atl").join("1.0.0").join("atl");
+        write(&binary, "x");
+        let lock_path = c.tmp.join("atl.lock");
+        lock_file(&lock_path, "1.0.0", b"blob");
+        c.write_state(&format!(
+            r#"{{"atl_path": {}, "data_dir": {}}}"#,
+            js(&binary),
+            js(&data)
+        ));
+        // A clean install says nothing about the old one.
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(
+            (x.ok, x.detail.as_str()),
+            (Some(true), "atl matches atl.lock")
+        );
+        // The old install's state key, downloaded versions and history folder.
+        c.write_state(&format!(
+            r#"{{"atl_path": {}, "data_dir": {}, "rtk_path": "/old/rtk"}}"#, // legacy key
+            js(&binary),
+            js(&data)
+        ));
+        write(&data.join("rtk/1.2.1-anthology.1/rtk"), "x"); // legacy download
+        write(&c.config.join("anthology/rtk/history.db"), "x"); // legacy history
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(x.ok, Some(true), "{x:?}"); // the install itself is fine
+        assert!(
+            x.detail
+                .starts_with("atl matches atl.lock; legacy rtk leftovers: ")
+        );
+        for part in [
+            "the rtk_path key in state.json", // legacy
+            "the old rtk download folder",    // legacy
+            "the old rtk history folder",     // legacy
+            "/anthology:setup",
+        ] {
+            assert!(x.detail.contains(part), "{part}: {x:?}");
+        }
+        // Each leftover is reported on its own.
+        fs::remove_dir_all(data.join("rtk")).expect("rm download"); // legacy
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert!(!x.detail.contains("download folder"), "{x:?}");
+        assert!(x.detail.contains("history folder"), "{x:?}");
+        // A leftover is reported even when atl itself is not installed.
+        c.write_state(r#"{"rtk_path": "/old/rtk"}"#); // legacy key
+        let x = atl_check(&c, &lock_path, always_installed(&c));
+        assert_eq!(x.ok, Some(false), "{x:?}");
+        assert!(x.detail.contains("legacy rtk leftovers"), "{x:?}");
+    }
+
+    #[test]
     fn test_rtk_outside_the_locked_version_dir_is_not_ok() {
         let c = EnvCase::new();
         let data = c.tmp.join("data");
@@ -1958,6 +2011,32 @@ mod path_wrappers_test {
         assert_eq!(
             c.check_deps("path_wrappers", &env, &root, &deps).ok,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn doctor_warns_when_atl_on_path_is_not_the_plugin_shim() {
+        // Another `atl` earlier on PATH would run instead of the plugin's bin/atl.
+        let c = EnvCase::new();
+        let root = fake_plugin(&c);
+        let bin = root.join("bin");
+        let other = write(&c.tmp.join("other").join("atl"), "x");
+        let deps = DoctorDeps {
+            which: Box::new(move |n, _| {
+                Some(if n == "atl" {
+                    other.clone()
+                } else {
+                    bin.join(n)
+                })
+            }),
+            ..c.deps()
+        };
+        let env = c.env.clone().with("CLAUDECODE", "1");
+        let x = c.check_deps("path_wrappers", &env, &root, &deps);
+        assert_eq!(x.ok, Some(false), "{x:?}");
+        assert!(
+            x.detail.contains("atl on PATH is not the plugin's"),
+            "{x:?}"
         );
     }
 
