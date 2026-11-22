@@ -653,9 +653,13 @@ fn legacy_notes(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Vec<Value> {
             note.insert("type".into(), opt_str(info.kind));
             note.insert("source".into(), s(&pstr(&old)));
             note.insert("default".into(), s("personal"));
+            // Where `--move-old-notes` would put it (the confirmed, by-type move).
+            let plan = sync::plan_auto_memory_note(&name, &data, m.is_some(), home, &sd);
+            note.insert("destination".into(), s(plan.destination.label()));
+            note.insert("target".into(), opt_str(plan.target.clone()));
             note.insert("findings".into(), findings_value(&findings));
             note.insert("movable".into(), Value::Bool(reason.is_none()));
-            if let Some(r) = reason.filter(|r| !r.is_empty()) {
+            if let Some(r) = reason.or(plan.reason).filter(|r| !r.is_empty()) {
                 note.insert("reason".into(), Value::Str(r));
             }
             let status = match &m {
@@ -756,6 +760,93 @@ fn migrate_legacy(
         ("skipped", strs(&skipped)),
     ]);
     Ok((migrated, Value::Array(blocked)))
+}
+
+/// What apply says about the old auto-memory folders after `--move-old-notes`.
+pub const ORIGINALS_KEPT: &str = "the old notes were left in place and never deleted; Claude \
+                                  Code's auto memory is off for this repo, so they are no \
+                                  longer loaded";
+
+/// `--move-old-notes`, after the user's confirmation: `(migrated, blocked)` as [`migrate_legacy`]
+/// reports them, but by type: project, feedback and reference notes go into the repo's memory as
+/// `<type>-<slug>.md`, user notes into personal memory. A note the privacy scan refuses, or one
+/// without a type, is listed in `blocked` and moved nowhere.
+fn move_old_notes(
+    root: &Path,
+    env: &Env,
+    personal: &Path,
+    deps: &SetupDeps<'_>,
+) -> Result<(Value, Value), String> {
+    let m = repo_mem(root);
+    let ledger = memory_repo::anthology_home(env).join("migrated.json");
+    let sd = sync_deps(env, deps);
+    let (mut repo, mut pers, mut skipped, mut blocked) = (vec![], vec![], vec![], vec![]);
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
+        let res = sync::try_move_auto_memory(
+            &old,
+            m.as_deref(),
+            personal,
+            Some(&ledger),
+            None,
+            env.get("HOME"),
+            &sd,
+        )
+        .map_err(raised)?;
+        for (i, (file, reason)) in res.blocked.iter().enumerate() {
+            let findings = res.blocked_findings.get(i).map_or(&[][..], Vec::as_slice);
+            blocked.push(obj(vec![
+                ("file", s(file)),
+                ("findings", findings_value(findings)),
+                ("reason", s(reason)),
+            ]));
+        }
+        repo.extend(res.repo);
+        pers.extend(res.personal);
+        skipped.extend(res.skipped);
+    }
+    if !repo.is_empty()
+        && let Some(dir) = &m
+    {
+        render::regenerate_index(dir, render::DEFAULT_BUDGET, notes::REPO_EXCLUDE)
+            .map_err(raised)?;
+    }
+    let migrated = obj(vec![
+        ("repo", strs(&repo)),
+        ("personal", strs(&pers)),
+        ("skipped", strs(&skipped)),
+    ]);
+    Ok((migrated, Value::Array(blocked)))
+}
+
+/// Why `--move-old-notes` cannot be honoured (checked before anything is written).
+fn move_notes_error(
+    promote: &[String],
+    skip_approve: bool,
+    cwd: &Path,
+    env: &Env,
+    deps: &SetupDeps<'_>,
+) -> Option<String> {
+    if skip_approve {
+        return Some(
+            "--move-old-notes moves notes into this repo's memory, which needs the repo approved; \
+             it cannot be combined with --skip-approve. Nothing was written."
+                .into(),
+        );
+    }
+    if !promote.is_empty() {
+        return Some(
+            "--move-old-notes already chooses where each note goes, by type; it cannot be \
+             combined with --promote. Nothing was written."
+                .into(),
+        );
+    }
+    if repo_info(cwd, env, deps).is_none() {
+        return Some(
+            "--move-old-notes needs a git repo (this folder is not one). Nothing was written."
+                .into(),
+        );
+    }
+    None
 }
 
 /// `_promote_error(promote, skip_approve, cwd, env)`: why `--promote` cannot be honoured
@@ -1169,6 +1260,34 @@ pub fn apply_with(
     remove_subagent_model: bool,
     deps: &SetupDeps,
 ) -> Value {
+    apply_full(
+        plugin_root,
+        expect_sha256,
+        cwd,
+        skip_approve,
+        env,
+        promote,
+        remove_subagent_model,
+        false,
+        deps,
+    )
+}
+
+/// [`apply_with`] with `move_old_notes` (only when the user said yes): move the notes Claude
+/// Code's auto memory saved for this repo by type, instead of copying them all into personal
+/// memory. It cannot be combined with `promote` or `skip_approve`.
+#[allow(clippy::too_many_arguments)] // Python's keyword arguments
+pub fn apply_full(
+    plugin_root: &Path,
+    expect_sha256: &str,
+    cwd: Option<&Path>,
+    skip_approve: bool,
+    env: &Env,
+    promote: &[String],
+    remove_subagent_model: bool,
+    move_old_notes: bool,
+    deps: &SetupDeps,
+) -> Value {
     result_or_error(try_apply(
         plugin_root,
         expect_sha256,
@@ -1177,6 +1296,7 @@ pub fn apply_with(
         env,
         promote,
         remove_subagent_model,
+        move_old_notes,
         deps,
     ))
 }
@@ -1190,6 +1310,7 @@ fn try_apply(
     env: &Env,
     promote: &[String],
     remove_model: bool,
+    move_notes: bool,
     deps: &SetupDeps<'_>,
 ) -> Result<Value, String> {
     if unsupported(deps) {
@@ -1200,6 +1321,9 @@ fn try_apply(
         ]));
     }
     let cwd = effective_cwd(cwd)?;
+    if move_notes && let Some(r) = move_notes_error(promote, skip_approve, &cwd, env, deps) {
+        return Ok(refused(&r));
+    }
     if let Some(r) = promote_error(promote, skip_approve, &cwd, env, deps) {
         return Ok(refused(&r));
     }
@@ -1318,7 +1442,11 @@ fn try_apply(
                  memory stays on",
             )
         };
-        (migrated, blocked) = migrate_legacy(&repo_root, env, &personal, promote, deps)?;
+        (migrated, blocked) = if move_notes {
+            move_old_notes(&repo_root, env, &personal, deps)?
+        } else {
+            migrate_legacy(&repo_root, env, &personal, promote, deps)?
+        };
     }
     let memory = obj(vec![
         ("approved_key", approved_key),
@@ -1326,6 +1454,14 @@ fn try_apply(
         ("auto_memory", auto_memory),
         ("migrated", migrated),
         ("blocked", blocked),
+        (
+            "originals",
+            if move_notes {
+                s(ORIGINALS_KEPT)
+            } else {
+                Value::Null
+            },
+        ),
         ("personal_dir", s(&pstr(&personal))),
     ]);
 
@@ -1712,7 +1848,12 @@ fn parser() -> Spec {
             Arg::option(&["--remove-subagent-model"])
                 .store_true()
                 .help("also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json"),
-        );
+        )
+        .arg(Arg::option(&["--move-old-notes"]).store_true().help(
+            "move the notes Claude Code's auto memory saved for this repo by type: \
+                 project, feedback and reference notes into the repo's memory, user notes \
+                 into personal memory",
+        ));
     let remove = common(Spec::command())
         .arg(Arg::option(&["--unapprove"]).store_true())
         .arg(Arg::option(&["--unapprove-all"]).store_true())
@@ -1770,7 +1911,7 @@ pub fn main(argv: &[String], env: &Env, deps: &SetupDeps) -> (i32, String, Strin
                 .iter()
                 .filter_map(|v| v.as_os_str().map(|o| o.to_string_lossy().into_owned()))
                 .collect();
-            apply_with(
+            apply_full(
                 &root,
                 &expect,
                 cwd.as_deref(),
@@ -1778,6 +1919,7 @@ pub fn main(argv: &[String], env: &Env, deps: &SetupDeps) -> (i32, String, Strin
                 env,
                 &promote,
                 parsed.flag("remove_subagent_model"),
+                parsed.flag("move_old_notes"),
                 deps,
             )
         }

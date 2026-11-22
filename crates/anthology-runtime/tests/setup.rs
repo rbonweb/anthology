@@ -2850,3 +2850,400 @@ mod repo_auto_memory_test {
         assert!(!f.state_exists());
     }
 }
+
+mod old_notes_by_type_test {
+    //! The notes Claude Code's auto memory saved for a repo before Anthology are moved, after the
+    //! user confirms (`--move-old-notes`): project, feedback and reference notes into the repo's
+    //! `.claude/memory/` as `<type>-<slug>.md`, user notes into personal memory. The privacy scan
+    //! decides what may go into the repo; a refused note is listed and moved nowhere. The
+    //! originals stay where they are.
+    use super::*;
+
+    fn alice_laptop() -> Option<String> {
+        Some("alice-laptop".into())
+    }
+
+    struct N {
+        f: Fx,
+        root: PathBuf,
+        old: PathBuf,
+        repo_mem: PathBuf,
+        personal: PathBuf,
+    }
+
+    impl N {
+        /// `None` without git.
+        fn new() -> Option<N> {
+            if !mem::needs_git() {
+                return None;
+            }
+            let f = Fx::new();
+            f.c.write_settings(SETTINGS);
+            let root =
+                f.c.mem
+                    .make_repo("repo", Some("https://example.invalid/acme/app.git"));
+            let encoded: String = p(&root)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let old = f.c.mem.config.join("projects").join(encoded).join("memory");
+            let note = |n: Note| note_text(&n);
+            write(
+                &old.join("project_release.md"),
+                &note(Note::new("project_release").desc("Release plan")),
+                None,
+            );
+            write(
+                &old.join("feedback_testing.md"),
+                &note(
+                    Note::new("feedback_testing")
+                        .type_("feedback")
+                        .desc("How to test"),
+                ),
+                None,
+            );
+            write(
+                &old.join("reference_dashboards.md"),
+                &note(
+                    Note::new("reference_dashboards")
+                        .type_("reference")
+                        .desc("Where the dashboards are"),
+                ),
+                None,
+            );
+            write(
+                &old.join("topics.md"),
+                &note(Note::new("topics").desc("No type prefix in the file name")),
+                None,
+            );
+            write(
+                &old.join("user_role.md"),
+                &note(Note::new("user_role").type_("user").desc("About me")),
+                None,
+            );
+            write(
+                &old.join("leaky.md"),
+                &note(
+                    Note::new("leaky")
+                        .type_("feedback")
+                        .desc("Has a home path")
+                        .body(&("Checkout in /".to_string() + "Users/alice/src\n")),
+                ),
+                None,
+            );
+            write(
+                &old.join("untyped.md"),
+                "Just some text with no frontmatter.\n",
+                None,
+            );
+            write(&old.join("MEMORY.md"), "- index\n", None);
+            Some(N {
+                repo_mem: root.join(".claude/memory"),
+                personal: f.anth().join("personal-memory"),
+                f,
+                root,
+                old,
+            })
+        }
+
+        fn deps(&self) -> SetupDeps<'_> {
+            SetupDeps {
+                memory: MemoryDeps {
+                    hostname: Some(alice_laptop),
+                    ..MemoryDeps::default()
+                },
+                ..self.f.deps()
+            }
+        }
+
+        fn digest(&self) -> String {
+            let out = setup::preview(
+                &self.f.c.plugin,
+                Some(&self.root),
+                self.f.env(),
+                &self.deps(),
+            );
+            text_at(&out, &["settings", "sha256"]).to_string()
+        }
+
+        fn apply_with(&self, cwd: &Path, skip: bool, promote: &[String], mv: bool) -> Value {
+            setup::apply_full(
+                &self.f.c.plugin,
+                &self.digest(),
+                Some(cwd),
+                skip,
+                self.f.env(),
+                promote,
+                false,
+                mv,
+                &self.deps(),
+            )
+        }
+
+        /// `apply` with `--move-old-notes`.
+        fn apply(&self) -> Value {
+            self.apply_with(&self.root, false, &[], true)
+        }
+
+        fn notes(&self) -> Vec<(String, Value)> {
+            let out = setup::preview(
+                &self.f.c.plugin,
+                Some(&self.root),
+                self.f.env(),
+                &self.deps(),
+            );
+            at(&out, &["memory", "legacy_notes"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| (text_at(n, &["file"]).to_string(), n.clone()))
+                .collect()
+        }
+    }
+
+    fn files(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn strs_at(res: &Value, path: &[&str]) -> Vec<String> {
+        at(res, path)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn blocked_files(res: &Value) -> Vec<String> {
+        at(res, &["memory", "blocked"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| text_at(b, &["file"]).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn preview_names_where_each_note_would_go() {
+        let Some(n) = N::new() else { return };
+        let before = mem::snapshot(n.f.tmp());
+        let notes = n.notes();
+        assert_eq!(mem::snapshot(n.f.tmp()), before);
+        let get = |file: &str| &notes.iter().find(|(f, _)| f == file).unwrap().1;
+        for (file, destination, target) in [
+            ("project_release.md", "repo", Some("project-release.md")),
+            ("feedback_testing.md", "repo", Some("feedback-testing.md")),
+            (
+                "reference_dashboards.md",
+                "repo",
+                Some("reference-dashboards.md"),
+            ),
+            ("topics.md", "repo", Some("project-topics.md")),
+            ("user_role.md", "personal", Some("user-role.md")),
+            ("leaky.md", "none", None),
+            ("untyped.md", "none", None),
+        ] {
+            assert_eq!(text_at(get(file), &["destination"]), destination, "{file}");
+            match target {
+                Some(t) => assert_eq!(text_at(get(file), &["target"]), t, "{file}"),
+                None => assert_eq!(at(get(file), &["target"]), &Value::Null, "{file}"),
+            }
+        }
+        assert!(text_at(get("leaky.md"), &["reason"]).contains("home path"));
+        assert!(text_at(get("untyped.md"), &["reason"]).contains("type"));
+        // what happens without the confirmation is unchanged
+        assert_eq!(text_at(get("project_release.md"), &["default"]), "personal");
+    }
+
+    #[test]
+    fn each_type_goes_to_the_right_place_and_the_originals_stay() {
+        let Some(n) = N::new() else { return };
+        let before = mem::snapshot(&n.old);
+        let res = n.apply();
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(
+            files(&n.repo_mem),
+            [
+                "MEMORY.md",
+                "feedback-testing.md",
+                "project-release.md",
+                "project-topics.md",
+                "reference-dashboards.md"
+            ]
+        );
+        for (old, new) in [
+            ("project_release.md", "project-release.md"),
+            ("feedback_testing.md", "feedback-testing.md"),
+            ("reference_dashboards.md", "reference-dashboards.md"),
+            ("topics.md", "project-topics.md"),
+        ] {
+            assert_eq!(
+                fs::read(n.repo_mem.join(new)).unwrap(),
+                fs::read(n.old.join(old)).unwrap(),
+                "{new}"
+            );
+        }
+        assert_eq!(
+            fs::read(n.personal.join("user-role.md")).unwrap(),
+            fs::read(n.old.join("user_role.md")).unwrap()
+        );
+        let mut personal = files(&n.personal);
+        personal.retain(|f| f != "MEMORY.md");
+        assert_eq!(personal, ["user-role.md"]);
+        assert!(
+            fs::read_to_string(n.repo_mem.join("MEMORY.md"))
+                .unwrap()
+                .contains("project-release.md")
+        );
+        // in the order of the old file names
+        assert_eq!(
+            strs_at(&res, &["memory", "migrated", "repo"]),
+            [
+                "feedback-testing.md",
+                "project-release.md",
+                "reference-dashboards.md",
+                "project-topics.md"
+            ]
+        );
+        assert_eq!(
+            strs_at(&res, &["memory", "migrated", "personal"]),
+            ["user-role.md"]
+        );
+        // nothing is deleted or changed in the old folder
+        assert_eq!(mem::snapshot(&n.old), before);
+        let originals = text_at(&res, &["memory", "originals"]);
+        assert!(originals.contains("left in place"), "{originals}");
+        assert!(originals.contains("no longer loaded"), "{originals}");
+    }
+
+    #[test]
+    fn a_note_the_privacy_scan_refuses_is_listed_and_not_moved() {
+        let Some(n) = N::new() else { return };
+        let res = n.apply();
+        let mut blocked = blocked_files(&res);
+        blocked.sort();
+        assert_eq!(blocked, ["leaky.md", "untyped.md"]);
+        let leaky = &at(&res, &["memory", "blocked"]).as_array().unwrap()[0];
+        assert_eq!(text_at(leaky, &["file"]), "leaky.md");
+        assert!(text_at(leaky, &["reason"]).contains("home path"));
+        assert!(!dumped(at(&res, &["memory", "blocked"])).contains("alice"));
+        for dir in [&n.repo_mem, &n.personal] {
+            let names = files(dir);
+            assert!(
+                !names
+                    .iter()
+                    .any(|f| f.contains("leaky") || f.contains("untyped")),
+                "{names:?}"
+            );
+        }
+        assert!(n.old.join("leaky.md").is_file());
+        assert!(n.old.join("untyped.md").is_file());
+    }
+
+    #[test]
+    fn an_existing_repo_note_is_never_overwritten() {
+        let Some(n) = N::new() else { return };
+        write(
+            &n.repo_mem.join("project-release.md"),
+            "the repo's own note\n",
+            None,
+        );
+        let res = n.apply();
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(
+            fs::read_to_string(n.repo_mem.join("project-release.md")).unwrap(),
+            "the repo's own note\n"
+        );
+        let side: Vec<String> = files(&n.repo_mem)
+            .into_iter()
+            .filter(|f| f.starts_with("project-release.migrated-"))
+            .collect();
+        assert_eq!(side.len(), 1, "{side:?}");
+        assert_eq!(
+            fs::read(n.repo_mem.join(&side[0])).unwrap(),
+            fs::read(n.old.join("project_release.md")).unwrap()
+        );
+    }
+
+    #[test]
+    fn moving_twice_adds_nothing_the_second_time() {
+        let Some(n) = N::new() else { return };
+        n.apply();
+        let repo_before = mem::snapshot(&n.repo_mem);
+        let personal_before = mem::snapshot(&n.personal);
+        let res = n.apply();
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(mem::snapshot(&n.repo_mem), repo_before);
+        assert_eq!(mem::snapshot(&n.personal), personal_before);
+    }
+
+    #[test]
+    fn session_start_does_not_copy_moved_notes_into_personal_memory() {
+        let Some(n) = N::new() else { return };
+        n.apply();
+        let mut sd = SyncDeps::from_env(n.f.env());
+        sd.privacy.hostname = alice_laptop;
+        sync::run(&n.root, n.f.env(), &sd);
+        let personal = files(&n.personal);
+        assert!(
+            !personal
+                .iter()
+                .any(|f| f.contains("release") || f.contains("testing")),
+            "{personal:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_moves_without_the_confirmation() {
+        let Some(n) = N::new() else { return };
+        let res = n.apply_with(&n.root, false, &[], false);
+        assert!(ok(&res), "{res:?}");
+        assert!(!n.repo_mem.exists());
+    }
+
+    #[test]
+    fn the_move_is_refused_where_it_cannot_be_honoured_and_writes_nothing() {
+        let Some(n) = N::new() else { return };
+        let before = mem::snapshot(n.f.tmp());
+        let one = vec!["topics.md".to_string()];
+        for (cwd, skip, promote, needle) in [
+            (n.root.clone(), true, vec![], "--skip-approve"),
+            (n.root.clone(), false, one, "--promote"),
+            (n.f.tmp().to_path_buf(), false, vec![], "git repo"),
+        ] {
+            let res = n.apply_with(&cwd, skip, &promote, true);
+            assert!(!ok(&res), "{needle}: {res:?}");
+            let error = text_at(&res, &["error"]);
+            assert!(error.contains(needle), "{error}");
+            assert!(error.contains("Nothing was written"), "{error}");
+        }
+        assert_eq!(mem::snapshot(n.f.tmp()), before);
+        assert_eq!(n.f.rtk_calls(), 0);
+    }
+
+    #[test]
+    fn the_cli_flag_reaches_apply() {
+        let Some(n) = N::new() else { return };
+        let argv: Vec<String> = [
+            "apply",
+            "--plugin-root",
+            &p(&n.f.c.plugin),
+            "--expect-sha256",
+            &n.digest(),
+            "--cwd",
+            &p(&n.root),
+            "--move-old-notes",
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+        let (code, out, _) = setup::main(&argv, n.f.env(), &n.deps());
+        assert_eq!(code, 0, "{out}");
+        assert!(n.repo_mem.join("project-release.md").is_file());
+    }
+}
