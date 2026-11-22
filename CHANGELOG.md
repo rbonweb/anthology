@@ -13,6 +13,18 @@ a new version section.
 #### Added
 
 - Automatic after-work check (a Claude Code mod, `hooks/mods/afterwork.ts`): when an implementer, debugger, docs-writer or ui-designer reports to the main session, the report is checked for a commit, test evidence, stray attribution lines and uncommitted files in the agent's worktree, and a short "After-work check" block naming each gap is appended. The project map and leftovers are reminders only: they ride in a block a gap raised and never raise one. The agent's text is never changed, and a report with no gap gets no block. Set `ANTHOLOGY_AFTERWORK=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
+- Strict delegation, a Claude Code mod (`hooks/mods/delegation.ts`, Claude Code 2.1.330 or later), on in interactive
+  sessions only. The system prompt gets a short coordinator section when the session has the
+  `Agent` tool, and the main session's `Edit`, `Write` and `NotebookEdit` calls are refused with a
+  message that says why and names the agent to use (`implementer`, `debugger`, `docs-writer` or
+  `ui-designer`). Allowed: the lead's memory (auto memory, `autoMemoryDirectory`, the repo's
+  `.claude/memory/`, personal memory), `~/.claude/plans/`, `.superpowers/` and
+  `docs/superpowers/plans/`, and a tiny fix (an `Edit` of at most 5 lines and about 2 KB, at most 3
+  per turn, in one file; a failed edit does not count). Subagent calls, headless runs and sessions
+  with no `Agent` tool are never touched. Set `ANTHOLOGY_DELEGATION=0` (or `ANTHOLOGY_MODS=0`) to
+  turn it off. Not yet built: the gate on MCP tools that are not read-only and the
+  `scan_secrets` allowlist. The plugin manifest names a `types` contract (`types/anthology.d.ts`)
+  for the mod's `$.state` values.
 - Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
   shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
   plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to
