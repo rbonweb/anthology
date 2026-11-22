@@ -103,14 +103,14 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         let data = match json::loads_bytes_lossy(raw) {
             Ok(data) => data,
             // `ValueError`: a number past the integer-digit limit
-            Err(e) if e.type_name() == "ValueError" => return Verdict::TooComplex,
-            Err(_) => return Verdict::Allow,
+            Err(e) if e.type_name() == "ValueError" => return (Verdict::TooComplex, false),
+            Err(_) => return (Verdict::Allow, false),
         };
         let Some(map) = data.as_object() else {
-            return Verdict::Allow;
+            return (Verdict::Allow, false);
         };
         let Some(tool_name @ Value::Str(_)) = map.get("tool_name") else {
-            return Verdict::Allow;
+            return (Verdict::Allow, false);
         };
         #[cfg(feature = "panic-on-marker")]
         if String::from_utf8_lossy(raw).contains(PANIC_MARKER) {
@@ -118,15 +118,78 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         }
         let null = Value::Null;
         let tool_input = map.get("tool_input").unwrap_or(&null);
-        check_with(tool_name, tool_input, home, limits)
+        let verdict = check_with(tool_name, tool_input, home, limits);
+        let hint = verdict == Verdict::TooComplex
+            && tool_input
+                .as_object()
+                .and_then(|o| o.get("command"))
+                .and_then(Value::as_str)
+                .is_some_and(quoted_script_expansion);
+        (verdict, hint)
     }));
     match verdict {
-        Ok(v) => match block_line(v) {
+        Ok((v, hint)) => match block_line(v) {
             None => HookResult::allow(shim),
+            Some(line) if hint => {
+                HookResult::block(format!("{}{QUOTED_SCRIPT_HINT}\n", line.trim_end()))
+            }
             Some(line) => HookResult::block(line),
         },
         Err(_) => HookResult::block(PANIC_LINE.to_string()),
     }
+}
+
+/// Carve-out (c): added to the `(G0)` line when the command holds a double-quoted script with an expansion
+/// in it, which the outer shell fills in before the script runs, so the guard cannot read it.
+pub const QUOTED_SCRIPT_HINT: &str = ". A `$` inside a double-quoted script (`sh -c \"...\"`, `eval \
+     \"...\"`, `trap \"...\"`) is filled in before the guard can read the script: put the script in single \
+     quotes and pass values as arguments (`sh -c '... \"$1\" ...' _ \"$x\"`)";
+
+/// Carve-out (c): `command` holds, outside quotes, `-c "`, `eval "` or `trap "` whose double-quoted text holds
+/// an unescaped `$` followed by a name, a digit, `{`, `(`, `@` or `*`. A hint only: it changes no verdict.
+fn quoted_script_expansion(command: &str) -> bool {
+    const OPENERS: [&[u8]; 3] = [b"-c \"", b"eval \"", b"trap \""];
+    let b = command.as_bytes();
+    // the index after the double-quoted text starting at `from`, and whether it holds an expansion
+    let quoted = |from: usize| {
+        let mut j = from;
+        let mut expands = false;
+        while j < b.len() && b[j] != b'"' {
+            if b[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            expands |= b[j] == b'$'
+                && b.get(j + 1).is_some_and(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'{' | b'(' | b'@' | b'*')
+                });
+            j += 1;
+        }
+        (j + 1, expands)
+    };
+    let mut k = 0;
+    while k < b.len() {
+        match b[k] {
+            b'\\' => k += 2,
+            b'\'' => {
+                k = (k + 1..b.len())
+                    .find(|&j| b[j] == b'\'')
+                    .map_or(b.len(), |j| j + 1);
+            }
+            b'"' => k = quoted(k + 1).0,
+            _ => match OPENERS.iter().find(|o| b[k..].starts_with(o)) {
+                Some(opener) => {
+                    let (end, expands) = quoted(k + opener.len());
+                    if expands {
+                        return true;
+                    }
+                    k = end;
+                }
+                None => k += 1,
+            },
+        }
+    }
+    false
 }
 
 /// Shared between the hook and its watchdog: set once the hook's result is final.

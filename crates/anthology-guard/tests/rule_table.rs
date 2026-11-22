@@ -32,6 +32,14 @@ mod rule_table_test {
         format!("test_guard_rules.RuleTableTest.{method}")
     }
 
+    /// Rows the Rust guard blocks where the Python test allowed them, by owner direction (D-8, Rust
+    /// stricter): (method, row, rule). PE-1: an array element as the program word is only known at run
+    /// time (`"${tools[0]}" open x`), so it is too complex.
+    const STRICTER: &[(&str, usize, &str)] = &[
+        ("test_allowed_round_1_neighbours", 40, "G0"),
+        ("test_allowed_round_1_neighbours", 41, "G0"),
+    ];
+
     /// `assert_table` over every row of `method`: each row's case gives its rule (or none).
     fn table(method: &str) {
         let rows: Vec<Row> = rows(FILE, &id(method));
@@ -39,7 +47,11 @@ mod rule_table_test {
         let mut failures = Vec::new();
         for row in &rows {
             let case = row.param("case");
-            let expected = row.param("rule").as_str().map(str::to_string);
+            let stricter = STRICTER
+                .iter()
+                .find(|(m, r, _)| *m == method && *r == row.row)
+                .map(|(_, _, rule)| (*rule).to_string());
+            let expected = stricter.or_else(|| row.param("rule").as_str().map(str::to_string));
             let got = rule_of(case);
             if got != expected {
                 failures.push(format!(

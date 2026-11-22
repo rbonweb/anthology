@@ -1,9 +1,10 @@
-//! The ATL rename's final check (ADR-033): the old name `rtk` is gone from the repository.
+//! The ATL rename's final check (ADR-034): the old name `rtk` is gone from the repository.
 //!
 //! Over `git ls-files` (the text files, and every `.gz` file decompressed, which is how the
 //! difftest goldens are stored), every case-insensitive `rtk` must be under an allowed path or on
 //! an allowed line. The allowed paths are history and upstream records (the upstream license and
-//! changelog, the past changelog, ADRs and plan, the port records, the dated 2026-11-20 designs)
+//! changelog, the past changelog, ADRs and plan, the port records, the dated 2026-11-20 designs,
+//! the dated agent and repo memory notes)
 //! and the shell and guard test data and goldens, which keep rtk rows on purpose (the guard still
 //! recognises the old name). The allowed lines are the upstream names (`rtk-ai/rtk`,
 //! `rtk-ai.app`, `rbonweb/rtk`, `RTK AI Labs`, `RTK Pro`), the five release tags of the old
@@ -24,13 +25,16 @@ use regex::Regex;
 use repo_tests::repo;
 
 /// Paths (a folder prefix ending in `/`, or a whole file) whose content is history or upstream's.
-const ALLOWED_PATHS: [&str; 9] = [
+const ALLOWED_PATHS: [&str; 11] = [
     "atl/LICENSE",
     "atl/CHANGELOG.md",
     "CHANGELOG.md",
     "DECISIONS.md",
     "PLAN.md",
     "port/",
+    // Dated agent notes are history, like the other dated records (ruling Q3).
+    ".claude/agent-memory/",
+    ".claude/memory/",
     "crates/anthology-guard/tests/data/",
     "crates/anthology-guard/tests/golden/",
     "crates/anthology-shell/tests/golden/",
@@ -53,7 +57,7 @@ const PINNED_PATHS: [&str; 5] = [
 /// Single lines that keep the old name and cannot say `legacy` on the same line: (file, a
 /// substring of the line, why): golden lines, which are recorded output. Test names the port
 /// ledger pins are taken out of each line by [`ledger_pins`] instead.
-const PINNED_LINES: [(&str, &str, &str); 3] = [
+const PINNED_LINES: [(&str, &str, &str); 4] = [
     (
         "crates/anthology-dev/tests/golden/dev.rtk-trim.jsonl.gz",
         "\"surface\": \"dev.rtk-trim\"",
@@ -67,6 +71,11 @@ const PINNED_LINES: [(&str, &str, &str); 3] = [
     (
         "crates/anthology-runtime/tests/golden/setup.jsonl.gz",
         "{\"id\": \"seed:127\", ",
+        "a seed of a legacy install whose result is kept as a digest, so no line says legacy",
+    ),
+    (
+        "crates/anthology-runtime/tests/golden/setup.jsonl.gz",
+        "{\"id\": \"seed:133\", ",
         "a seed of a legacy install whose result is kept as a digest, so no line says legacy",
     ),
 ];
@@ -208,6 +217,8 @@ fn the_rules_say_what_they_allow() {
         "DECISIONS.md",
         "PLAN.md",
         "port/difftest/divergences/guard.check.toml",
+        ".claude/agent-memory/anthology-implementer/project-x.md",
+        ".claude/memory/reference-project-map.md",
         "docs/superpowers/plans/2026-11-20-rust-port.md",
         "docs/superpowers/specs/2026-11-20-rust-port-design.md",
         "crates/anthology-guard/tests/data/test_guard_rules.jsonl",

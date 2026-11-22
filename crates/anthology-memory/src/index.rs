@@ -26,9 +26,11 @@ use std::path::{Path, PathBuf};
 use anthology_core::Env;
 use anthology_core::clock::{Date, today_local};
 use anthology_core::git::{Git, RealGit};
+use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_pycompat::argparse::{self, Arg, Nargs, Spec, Subcommands, Type};
 use anthology_pycompat::json::{self, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_pycompat::shlex;
 use anthology_pycompat::str::{char_slice, lower, split_ws, strip_ws};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -1183,6 +1185,47 @@ impl Default for MemDeps<'_> {
     }
 }
 
+/// The arguments of `search` on `spec`. The words come as positional arguments or after
+/// `--query`, never both; [`check_search_words`] enforces that after parsing, so the message
+/// can say where the words go.
+fn search_spec(spec: Spec) -> Spec {
+    spec.arg(
+        Arg::positional("terms")
+            .nargs(Nargs::ZeroOrMore)
+            .help("the words to search for (or give them after --query, not both)"),
+    )
+    .arg(
+        Arg::option(&["--query"])
+            .nargs(Nargs::OneOrMore)
+            .metavar("TERM")
+            .help("the words to search for, as an alternative to the positional words (not both)"),
+    )
+    .arg(
+        Arg::option(&["--json"])
+            .store_true()
+            .help("machine-readable output"),
+    )
+}
+
+/// The usage error for a `search` that got its words both ways or neither way, else `None`.
+fn check_search_words(p: &argparse::Parsed, env: &Env) -> Option<Output> {
+    let message = match (p.list("terms").is_empty(), p.list("query").is_empty()) {
+        (false, false) => "give the search words either as arguments or after --query, not both",
+        (true, true) => "give the search words as arguments or after --query",
+        _ => return None,
+    };
+    let width = argparse::help_width(env.get("COLUMNS"), None);
+    let e = argparse::error(
+        &search_spec(Spec::new("anthology-mem search")).width(width),
+        message,
+    );
+    Some(Output {
+        stdout: e.stdout.into_bytes(),
+        stderr: e.stderr.into_bytes(),
+        code: e.code,
+    })
+}
+
 /// The `anthology-mem` argument parser (`memory_index._parser`).
 pub fn parser(env: &Env) -> Spec {
     let json = || {
@@ -1219,9 +1262,7 @@ pub fn parser(env: &Env) -> Spec {
         .parser(
             "search",
             Some("full-text search over note bodies"),
-            Spec::command()
-                .arg(Arg::positional("terms").nargs(Nargs::OneOrMore))
-                .arg(json()),
+            search_spec(Spec::command()),
         )
         .parser(
             "related",
@@ -1347,6 +1388,68 @@ fn uncaught(out: &mut Out, ty: &str, msg: &str) {
     out.err(&format!("anthology-mem: {ty}: {msg}"));
 }
 
+/// The most repo names the refusal lists.
+const HINT_NAMES: usize = 5;
+
+/// The most characters of one repo name the refusal shows.
+const HINT_NAME_CHARS: usize = 60;
+
+/// `name` as the refusal prints it, and the name itself when it is safe to use in a command.
+/// A folder name is attacker-controlled text that a person or a model reads from stderr, so the
+/// printed form is in double quotes, cut after [`HINT_NAME_CHARS`] characters with `…`, and has
+/// every control character (a newline, ESC, a C1 code), `"` and `\` written in its
+/// `escape_default` form. A name that is not UTF-8 is shown with U+FFFD, which names no folder.
+/// The second value is `Some` only when the printed form is the name unchanged: valid UTF-8,
+/// nothing cut or escaped, and not starting with `-`, which `cd` would read as an option.
+fn shown_name(name: &OsStr) -> (String, Option<&str>) {
+    let mut exact = name.to_str().filter(|s| !s.starts_with('-'));
+    let mut shown = String::from('"');
+    for (i, c) in name.to_string_lossy().chars().enumerate() {
+        if i == HINT_NAME_CHARS {
+            shown.push('…');
+            exact = None;
+            break;
+        }
+        if c.is_control() || c == '"' || c == '\\' {
+            shown.extend(c.escape_default());
+            exact = None;
+        } else {
+            shown.push(c);
+        }
+    }
+    shown.push('"');
+    (shown, exact)
+}
+
+/// The second line of the "not inside a git work tree" refusal: the git repos one level below
+/// `cwd` (a session started in a folder that holds several repos), or `None` when there are
+/// none or the folder cannot be listed. The `cd` example names the first repo only when
+/// [`shown_name`] says the printed name is the real one.
+fn repos_below_hint(cwd: &Path) -> Option<String> {
+    let repos = repos_below(cwd, REPO_SCAN_CAP);
+    let first = repos.first()?;
+    let shown: Vec<String> = repos
+        .iter()
+        .take(HINT_NAMES)
+        .map(|name| shown_name(name).0)
+        .collect();
+    let mut list = shown.join(", ");
+    if repos.len() > HINT_NAMES {
+        list.push_str(&format!(" and {} more", repos.len() - HINT_NAMES));
+    }
+    let way = match shown_name(first).1 {
+        Some(exact) => format!(
+            "Run the command from inside one, for example `cd {} && anthology-mem save ...`, or \
+             start Claude Code inside the repo.",
+            shlex::quote(exact)
+        ),
+        None => "Run the command from inside one, or start Claude Code inside the repo.".into(),
+    };
+    Some(format!(
+        "anthology-mem: git repos sit below this folder: {list}. {way}"
+    ))
+}
+
 fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     let mut out = Out {
         stdout: String::new(),
@@ -1361,6 +1464,9 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     };
     let Some(root) = repo::repo_root(&cwd, env, deps.git) else {
         out.err("anthology-mem: not inside a git work tree; memory notes live in the repo");
+        if let Some(hint) = repos_below_hint(&cwd) {
+            out.err(&hint);
+        }
         return out.done(1);
     };
     let body = match p.os_str("body_file") {
@@ -1561,6 +1667,11 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
     if command == "save" {
         return run_save(&parsed, env, deps);
     }
+    if command == "search"
+        && let Some(refused) = check_search_words(&parsed, env)
+    {
+        return refused;
+    }
     let mut out = Out {
         stdout: String::new(),
         stderr: String::new(),
@@ -1662,8 +1773,12 @@ fn run_query(
             }
         }
         "search" => {
-            let terms: Vec<String> = p
-                .list("terms")
+            let words = if p.list("query").is_empty() {
+                p.list("terms")
+            } else {
+                p.list("query")
+            };
+            let terms: Vec<String> = words
                 .iter()
                 .filter_map(|v| v.as_os_str().map(|s| s.to_string_lossy().into_owned()))
                 .collect();
