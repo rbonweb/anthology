@@ -472,7 +472,7 @@ mod output_test {
         let mut d = f.deps();
         d.run = &spy;
         let stdin = format!(
-            r#"{{"session_id": "5b0c0a2e-3f6d-4d0e-9a53-0d7c1f7e9a11", "transcript_path": "/home/u/.claude/projects/p/5b0c0a2e.jsonl", "cwd": {}, "prompt_id": "c1f0", "permission_mode": "default", "agent_id": "a0b1c2d3e4f5a6b7c", "agent_type": "anthology:implementer", "effort": "high", "hook_event_name": "SessionStart", "source": "compact", "model": "claude-sonnet-5-5", "session_title": "t"}}"#,
+            r#"{{"session_id": "5b0c0a2e-3f6d-4d0e-9a53-0d7c1f7e9a11", "transcript_path": "/var/projects/p/5b0c0a2e.jsonl", "cwd": {}, "prompt_id": "c1f0", "permission_mode": "default", "agent_id": "a0b1c2d3e4f5a6b7c", "agent_type": "anthology:implementer", "effort": "high", "hook_event_name": "SessionStart", "source": "compact", "model": "claude-sonnet-5-5", "session_title": "t"}}"#,
             jstr(&p(f.tmp()))
         );
         let before = f.state();
@@ -2805,7 +2805,7 @@ mod time_rules {
     }
 
     #[test]
-    fn with_no_time_for_the_guard_self_test_it_is_skipped_and_says_so() {
+    fn with_no_time_the_guard_self_test_is_not_run_and_a_missing_binary_still_fails_closed() {
         let f = Fx::new();
         f.mark_setup(None);
         let ran = RefCell::new(0u32);
@@ -2829,8 +2829,10 @@ mod time_rules {
         assert_eq!(
             lines(&out),
             vec![
-                "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command"
-                    .to_string(),
+                format!(
+                    "anthology: the guardrails are failing closed: {}",
+                    session_start::BINARY_MISSING_REASON
+                ),
                 session_start::RTK_SKIPPED.to_string()
             ]
         );
@@ -3300,11 +3302,105 @@ mod real_shim {
         assert!(started.elapsed() < Duration::from_secs(10));
         assert_eq!(
             m,
-            "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command"
+            "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command; if commands hang or are blocked, run /anthology:setup"
         );
-        for claim in ["failing closed", "blocked", "OFF", "not installed"] {
+        for claim in ["failing closed", "OFF", "not installed"] {
             assert!(!m.contains(claim), "{m}");
         }
+    }
+
+    const FAILING_CLOSED: &str = "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted)";
+
+    fn stale_answer(sb: &Sandbox) -> String {
+        let deps = SessionDeps {
+            run: &not_attempted,
+            ..SessionDeps::default()
+        };
+        self_test_with(sb, &deps).expect("a line")
+    }
+
+    #[test]
+    fn a_not_attempted_answer_with_an_empty_marker_is_failing_closed() {
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        fs::write(sb.vdir().join(".sha256"), "").unwrap();
+        let m = stale_answer(&sb);
+        assert!(m.starts_with(FAILING_CLOSED), "{m}");
+    }
+
+    #[test]
+    fn a_not_attempted_answer_with_a_symlinked_version_dir_is_failing_closed() {
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        let real = sb.bindir().join("real");
+        fs::rename(sb.vdir(), &real).unwrap();
+        symlink(&real, sb.vdir()).unwrap();
+        let m = stale_answer(&sb);
+        assert!(m.starts_with(FAILING_CLOSED), "{m}");
+    }
+
+    #[test]
+    fn a_not_attempted_answer_with_only_another_version_installed_is_failing_closed() {
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        fs::rename(sb.vdir(), sb.bindir().join("9.9.9")).unwrap();
+        let m = stale_answer(&sb);
+        assert!(m.starts_with(FAILING_CLOSED), "{m}");
+    }
+
+    /// The self-test lines of a whole session start run `elapsed` seconds in, with a guard
+    /// that must not be run.
+    fn lines_with_elapsed(sb: &Sandbox, elapsed: f64) -> Vec<String> {
+        let tripwire = |_: &RunSpec<'_>| -> RunResult { panic!("the guard must not run") };
+        let late = move || elapsed;
+        let deps = SessionDeps {
+            run: &tripwire,
+            elapsed: Some(&late),
+            ..SessionDeps::default()
+        };
+        let env = Env::default()
+            .with_os("HOME", &sb.home)
+            .with_os("CLAUDE_CONFIG_DIR", &sb.config)
+            .with_os("TMPDIR", &sb.tmpdir)
+            .with_os("CLAUDE_PLUGIN_ROOT", sb.plugin("anthology"))
+            .with("PATH", "/usr/bin:/bin");
+        let stdin = format!(
+            r#"{{"hook_event_name": "SessionStart", "source": "startup", "cwd": {}}}"#,
+            jstr(&p(&sb.root))
+        );
+        let out = json::loads(&session_start::run(&env, &stdin, &deps)).expect("JSON");
+        lines(&out)
+            .into_iter()
+            .filter(|l| {
+                l.starts_with("anthology: skipped the guard") || l.contains("failing closed")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn with_no_time_and_no_binary_session_start_says_failing_closed() {
+        let sb = sandbox();
+        assert_eq!(
+            lines_with_elapsed(&sb, 45.0),
+            vec![format!(
+                "anthology: the guardrails are failing closed: {}",
+                session_start::BINARY_MISSING_REASON
+            )]
+        );
+    }
+
+    #[test]
+    fn with_no_time_and_the_binary_installed_the_self_test_is_skipped() {
+        let sb = sandbox();
+        let line = sb.release.version_line();
+        sb.install(&bs::fake_binary(&line, BLOCK_G1, "exit 0"), 0o755);
+        assert_eq!(
+            lines_with_elapsed(&sb, 45.0),
+            vec![session_start::SELF_TEST_NO_TIME.to_string()]
+        );
     }
 
     #[test]

@@ -43,12 +43,15 @@ a new version section.
   binary on its first call and the binary was in the install folder a moment later. Session
   start now checks the install folder itself: when the pinned binary is there it reports that the
   self-test could not tell, and says the guard still runs on every command. It keeps the
-  failing-closed warning when the binary really is missing or the guard really refuses.
-- A guard self-test that times out is now reported as "skipped the guard self-test (it timed
-  out, the machine may be busy); the guard still runs on every command" instead of "the
-  guardrails may be OFF". When less time is left than the self-test may take, it is not run and
-  the same kind of line says session start ran out of time. A guardrails plugin that is disabled
-  or missing is still named in that case.
+  failing-closed warning when the binary really is missing, unusable (empty marker, symlinked or
+  another version's folder) or the guard really refuses.
+- A guard self-test that times out with the binary installed is now reported as "skipped the
+  guard self-test (it timed out, the machine may be busy); the guard still runs on every
+  command; if commands hang or are blocked, run /anthology:setup" instead of "the guardrails
+  may be OFF". When less time is left than the self-test may take, it is not run: the install
+  folder is checked instead, and the line says session start ran out of time only when the
+  binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
+  disabled or missing is still named in that case.
 
 ### [0.2.9] - 2026-11-22
 
