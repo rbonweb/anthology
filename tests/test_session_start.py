@@ -1018,8 +1018,9 @@ class HooksJsonTest(unittest.TestCase):
     def test_hooks_json_has_the_session_start_entry_and_the_rtk_pretooluse_entry(self):
         data = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data), {"hooks"})
-        # SessionStart is this plugin's; PreToolUse is the rtk rewrite hook (tests/test_rtk_install.py).
-        self.assertEqual(set(data["hooks"]), {"SessionStart", "PreToolUse"})
+        # SessionStart is this plugin's; PreToolUse is the rtk rewrite hook (tests/test_rtk_install.py);
+        # Notification is the desktop alert (tests/test_notify.py).
+        self.assertEqual(set(data["hooks"]), {"SessionStart", "PreToolUse", "Notification"})
         entries = data["hooks"]["SessionStart"]
         self.assertEqual(len(entries), 1)
         self.assertNotIn("matcher", entries[0])

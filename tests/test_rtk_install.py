@@ -648,7 +648,7 @@ class FilesTest(unittest.TestCase):
     def test_hooks_json_shape(self):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         self.assertEqual(set(hooks), {"hooks"})
-        self.assertEqual(set(hooks["hooks"]), {"SessionStart", "PreToolUse"})
+        self.assertEqual(set(hooks["hooks"]), {"SessionStart", "PreToolUse", "Notification"})
         self.assertEqual(hooks["hooks"]["PreToolUse"], [{"matcher": "Bash", "hooks": [
             {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"]}]}])
 
