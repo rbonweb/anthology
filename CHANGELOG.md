@@ -163,6 +163,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.0] - 2026-11-22
+
 #### Added
 
 - Plugin manifest and marketplace entry.
