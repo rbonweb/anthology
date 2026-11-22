@@ -1617,8 +1617,10 @@ mod context_budget_test {
         out.into_iter().filter(|p| p.starts_with("## ")).collect()
     }
 
+    /// Keeps the Python method's name (the ledger requires it). Since the index cap, the on-disk
+    /// index is capped too: the test asserts that, and that the pointer names the search.
     #[test]
-    fn test_personal_section_is_capped_below_the_capped_on_disk_index() {
+    fn test_personal_section_is_capped_but_on_disk_index_is_not() {
         let c = MemCase::new();
         seed(&c);
         let folder = c.tmp.join("plain");
