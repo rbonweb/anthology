@@ -1079,6 +1079,20 @@ class GuideTest(unittest.TestCase):
         self.assertIn("claude-security", self.text)
         self.assertRegex(self.text, r"ui-designer builds, then ui-reviewer checks")
 
+    def test_lead_hands_off_all_making_and_changing(self):
+        self.assertNotIn("do it inline", self.text)
+        lead = next(l for l in self.text.splitlines() if l.startswith("- Lead:"))
+        self.assertRegex(lead, r"plan, decide, brief agents, check results, merge\. Never produce the work")
+        hand = next(l for l in self.text.splitlines() if "matching agent" in l)
+        for word in ("code", "files", "docs", "designs", "canvas", "MCP", "browser"):
+            self.assertIn(word, hand)
+        inline = next(l for l in self.text.splitlines() if l.startswith("- Inline only:"))
+        for part in ("reads", "lookups", "answering the user",
+                     "at most a few lines in one file the user asked for"):
+            self.assertIn(part, inline)
+        ui = next(l for l in self.text.splitlines() if "ui-designer builds, then ui-reviewer checks" in l)
+        self.assertIn("canvas", ui)
+
     def test_browser_rules(self):
         self.assertIn("BrowserOS Neo", self.text)
         self.assertRegex(self.text, r"BrowserOS Neo \(MCP\), the only browser")
