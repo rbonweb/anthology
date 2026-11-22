@@ -477,9 +477,10 @@ test('kit: a deny beneath stands', async ($, on) => {
   expect(runs).toHaveLength(0)
 })
 
-// Nothing answers env.get here, so the mod's first call on `$` throws; its .catch replays the
-// verdict beneath instead of the engine failing the check closed.
-test('kit: a failing hook replays the verdict beneath (the .catch)', async ($, on) => {
+// Nothing answers env.get here, so the mod's first call on `$` throws and the verdict beneath
+// stands. The kit shows a skipped hook and one whose .catch replays `next(e)` alike, so
+// ci/jobs/mods.sh holds the hook to its .catch through validate's `gating hook` lines.
+test('kit: a failing hook leaves the verdict beneath', async ($, on) => {
   let calls = 0
   on('tool.check', () => {
     calls++
