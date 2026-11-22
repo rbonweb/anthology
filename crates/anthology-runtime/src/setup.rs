@@ -10,8 +10,13 @@
 //! D§8.8) and reports `guard_binary: {status}`. The preview's `subagent_model` says where
 //! `CLAUDE_CODE_SUBAGENT_MODEL` is set; when that is the user settings.json it shows the
 //! separate, opt-in removal, which `apply --remove-subagent-model` makes (recorded, so `remove`
-//! puts the old value back). `remove` undoes the settings edits, deletes
-//! state.json, the downloaded atl, atl's history folder (`state::atl_data_dir`), `<ah>/bin`
+//! puts the old value back). The preview's `legacy_rtk` shows what a pre-rename install left (the
+//! legacy `rtk_path` key, the legacy `<data>/rtk` folder and the old history folder); once
+//! settings.json is written, apply deletes it, in that order, with the same guards as `remove`
+//! (a failed write deletes nothing).
+//! `remove` undoes the settings edits, deletes
+//! state.json, the downloaded atl, atl's history folder (`state::atl_data_dir`), the same two for
+//! the legacy install, `<ah>/bin`
 //! (only when `installed_plugins.json` has no `anthology-guardrails@*` entry, D§8.8), and
 //! optionally drops approvals.
 //!
@@ -73,6 +78,10 @@ pub const CHANGED_DURING_SETUP: &str =
 pub const NOTES_KEPT: &str = "kept (memory notes are never deleted)";
 /// remove keeps `<ah>/bin` while the guardrails plugin is installed (GC-14).
 pub const BIN_KEPT: &str = "kept (anthology-guardrails still uses it)";
+/// The folder name under the plugin data folder, and the state.json key, that releases before
+/// the rename to ATL used. Setup deletes what is left of them.
+const LEGACY_RTK_DIR: &str = "rtk"; // legacy
+const LEGACY_RTK_STATE_KEY: &str = "rtk_path"; // legacy
 
 /// The memory functions Python's tests patch (`memory_sync.repo_root`, `repo_key`, `approve`,
 /// and the privacy scan's `socket.gethostname`). `Default` is production.
@@ -1254,6 +1263,7 @@ fn try_preview(
         ),
         ("installed_plugins", s(installed_state)),
         ("atl", atl_preview(plugin_root, data_dir.as_deref(), deps)),
+        ("legacy_rtk", legacy_preview(env)),
         ("settings", Value::Object(st)),
         ("subagent_model", model),
         (
@@ -1454,6 +1464,9 @@ fn try_apply(
         }
         (deps.settings_write)(&plan.path, &plan.new_text).map_err(raised)?;
     }
+    // Only now, with settings.json written (a failed write returned above and touched nothing
+    // else), delete what a pre-rename install left. The preview showed it.
+    let legacy = clean_legacy(env, &mut warnings);
 
     let info = if skip_approve {
         None
@@ -1534,6 +1547,7 @@ fn try_apply(
             ]),
         ),
         ("atl", obj(vec![("status", s(&atl_status))])),
+        ("legacy_rtk", legacy),
         (
             "subagent_model",
             obj(vec![("removed", Value::Bool(model_removed))]),
@@ -1545,21 +1559,26 @@ fn try_apply(
 }
 
 /// `_atl_target(env)`: `(real path to delete or None, status, warning or None)` for the
-/// downloaded atl folder. Only `realpath(data_dir)/atl` is ever deleted, and only when
-/// data_dir sits under `<config>/plugins/data/` and the folder is not a symlink.
-fn atl_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
+/// folder `name` under the plugin data folder (the downloaded binary; `label` names it in the
+/// warnings). Only `realpath(data_dir)/<name>` is ever deleted, and only when data_dir sits
+/// under `<config>/plugins/data/` and the folder is not a symlink.
+fn data_folder_target(
+    env: &Env,
+    name: &str,
+    label: &str,
+) -> (Option<String>, &'static str, Option<String>) {
     let Some(d) = data_dir(env) else {
         return (None, "no plugin data folder recorded", None);
     };
-    let atl_dir = Path::new(&d).join("atl");
-    if !lexists(&atl_dir) {
+    let folder = Path::new(&d).join(name);
+    if !lexists(&folder) {
         return (None, "nothing to delete", None);
     }
-    if is_symlink(&atl_dir) {
+    if is_symlink(&folder) {
         return (
             None,
             "left in place",
-            Some("the atl folder is a symlink; left in place".into()),
+            Some(format!("the {label} folder is a symlink; left in place")),
         );
     }
     let text = |p: PathBuf| p.to_string_lossy().into_owned();
@@ -1568,15 +1587,27 @@ fn atl_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
         &pypath::join(&text(pypath::realpath(&paths::config_dir(env))), "plugins"),
         "data",
     );
-    let real = text(pypath::realpath(Path::new(&pstr(&atl_dir))));
-    if !data_real.starts_with(&format!("{data_root}/")) || real != pypath::join(&data_real, "atl") {
+    let real = text(pypath::realpath(Path::new(&pstr(&folder))));
+    if !data_real.starts_with(&format!("{data_root}/")) || real != pypath::join(&data_real, name) {
         return (
             None,
             "left in place",
-            Some("the atl folder is not under the plugin data folder; left in place".into()),
+            Some(format!(
+                "the {label} folder is not under the plugin data folder; left in place"
+            )),
         );
     }
     (Some(real), "delete", None)
+}
+
+/// The downloaded ATL folder, `<data>/atl`.
+fn atl_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
+    data_folder_target(env, "atl", "atl")
+}
+
+/// The legacy folder a pre-rename install downloaded, `<data>/rtk`: same guards as [`atl_target`].
+fn legacy_rtk_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
+    data_folder_target(env, LEGACY_RTK_DIR, "legacy rtk")
 }
 
 /// `shutil.rmtree(path, onerror=_ignore_vanished)`: a file that disappears mid-delete (a
@@ -1589,22 +1620,123 @@ fn rmtree_ignoring_vanished(path: &Path) -> Result<(), String> {
     }
 }
 
-/// `_atl_history_target()`: `(path to delete or None, status, warning or None)` for atl's
-/// history folder, [`state::atl_data_dir`]. Deleted only when it is a real folder, not a
+/// `_atl_history_target()`: `(path to delete or None, status, warning or None)` for a history
+/// folder (`label` names it in the warning). Deleted only when it is a real folder, not a
 /// symlink.
-fn atl_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
-    let path = state::atl_data_dir(env);
+fn history_target(path: PathBuf, label: &str) -> (Option<PathBuf>, &'static str, Option<String>) {
     if !lexists(&path) {
         return (None, "nothing to delete", None);
     }
     if is_symlink(&path) || !path.is_dir() {
         let warn = format!(
-            "the atl history folder {} is not a plain folder; left in place",
+            "the {label} history folder {} is not a plain folder; left in place",
             pstr(&path)
         );
         return (None, "left in place", Some(warn));
     }
     (Some(path), "delete", None)
+}
+
+/// ATL's history folder, [`state::atl_data_dir`].
+fn atl_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
+    history_target(state::atl_data_dir(env), "atl")
+}
+
+/// The history folder of a pre-rename install, [`state::legacy_rtk_data_dir`].
+fn legacy_rtk_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
+    history_target(state::legacy_rtk_data_dir(env), "legacy rtk")
+}
+
+/// A pre-rename install's `state.json` key, dropped by apply. `true` when it was there.
+fn drop_legacy_state_key(env: &Env) -> Result<bool, String> {
+    state::remove_keys(env, &[LEGACY_RTK_STATE_KEY]).map_err(raised)
+}
+
+/// What setup apply deletes of a pre-rename install, after settings.json is written and in this
+/// order: the `state.json` key, the legacy `<data>/rtk`, the history folder. Each step is a warning when it
+/// fails (settings.json is already written, so a retry finds what is left); a failed first step
+/// stops the others, because a hook in another session that still has the key could recreate the
+/// history while it is deleted. Returns `{state, dir, history}`, the status of each.
+fn clean_legacy(env: &Env, warnings: &mut Vec<String>) -> Value {
+    let (dir_real, mut dir_status, dir_warn) = legacy_rtk_target(env);
+    let (history_real, mut history_status, history_warn) = legacy_rtk_history_target(env);
+    warnings.extend(dir_warn);
+    warnings.extend(history_warn);
+    let state_status = match drop_legacy_state_key(env) {
+        Ok(true) => "dropped",
+        Ok(false) => "nothing to drop",
+        Err(e) => {
+            warnings.push(format!(
+                "the legacy rtk entry in state.json could not be dropped, so the legacy rtk folders \
+                 were left in place: {e}"
+            ));
+            return obj(vec![
+                ("state", s("failed")),
+                ("dir", s("left in place")),
+                ("history", s("left in place")),
+            ]);
+        }
+    };
+    if let Some(real) = dir_real {
+        match rmtree_ignoring_vanished(Path::new(&real)) {
+            Ok(()) => dir_status = "deleted",
+            Err(e) => {
+                dir_status = "failed";
+                warnings.push(format!("the legacy rtk folder could not be deleted: {e}"));
+            }
+        }
+    }
+    if let Some(history) = history_real {
+        match rmtree_ignoring_vanished(&history) {
+            Ok(()) => history_status = "deleted",
+            Err(e) => {
+                history_status = "failed";
+                warnings.push(format!(
+                    "the legacy rtk history folder could not be deleted: {e}"
+                ));
+            }
+        }
+    }
+    obj(vec![
+        ("state", s(state_status)),
+        ("dir", s(dir_status)),
+        ("history", s(history_status)),
+    ])
+}
+
+/// The preview of [`clean_legacy`]: what apply would delete.
+fn legacy_preview(env: &Env) -> Value {
+    let (dir_real, dir_status, dir_warn) = legacy_rtk_target(env);
+    let (_, history_status, history_warn) = legacy_rtk_history_target(env);
+    let item = |dir: Value, status: &str, note: Option<String>| {
+        let mut m = vec![("dir", dir), ("status", s(status))];
+        if let Some(n) = note {
+            m.push(("note", Value::Str(n)));
+        }
+        obj(m)
+    };
+    obj(vec![
+        (
+            "state",
+            obj(vec![
+                ("path", s(&pstr(&state::path(env)))),
+                ("key", s(LEGACY_RTK_STATE_KEY)),
+                (
+                    "present",
+                    Value::Bool(state::read(env).get(LEGACY_RTK_STATE_KEY).is_some()),
+                ),
+            ]),
+        ),
+        ("dir", item(opt_str(dir_real), dir_status, dir_warn)),
+        (
+            "history",
+            item(
+                s(&pstr(&state::legacy_rtk_data_dir(env))),
+                history_status,
+                history_warn,
+            ),
+        ),
+    ])
 }
 
 /// Whether `installed_plugins.json` has an `anthology-guardrails@*` entry; a file that exists
@@ -1708,6 +1840,9 @@ fn try_remove(
     }
     let (atl_real, mut atl_status, atl_warn) = atl_target(env);
     let (history_real, mut history_status, history_warn) = atl_history_target(env);
+    let (old_real, mut old_status, old_warn) = legacy_rtk_target(env);
+    let (old_history_real, mut old_history_status, old_history_warn) =
+        legacy_rtk_history_target(env);
 
     let changed = new_text != text;
     let repo_reverts = repo_settings_reverts(env);
@@ -1720,6 +1855,8 @@ fn try_remove(
     let warnings: Vec<String> = atl_warn
         .into_iter()
         .chain(history_warn)
+        .chain(old_warn)
+        .chain(old_history_warn)
         .chain(repo_warnings)
         .collect();
     let approved: Vec<String> = {
@@ -1755,6 +1892,17 @@ fn try_remove(
                 obj(vec![
                     ("dir", s(&pstr(&state::atl_data_dir(env)))),
                     ("status", s(history_status)),
+                ]),
+            ),
+            (
+                "legacy_rtk",
+                obj(vec![("dir", opt_str(old_real)), ("status", s(old_status))]),
+            ),
+            (
+                "legacy_rtk_history",
+                obj(vec![
+                    ("dir", s(&pstr(&state::legacy_rtk_data_dir(env)))),
+                    ("status", s(old_history_status)),
                 ]),
             ),
             (
@@ -1815,8 +1963,9 @@ fn try_remove(
             (deps.settings_write)(&r.path, &r.new_text).map_err(raised)?;
         }
     }
-    // state.json goes first: without its atl_path, bin/atl-hook exits before running atl, so
-    // no hook in another session recreates atl's history while it is being deleted.
+    // state.json goes first: without its atl_path (or the legacy rtk_path), the hook exits before
+    // running the tool, so no hook in another session recreates the history while it is being
+    // deleted.
     let state_path = state::path(env);
     match fs::remove_file(&state_path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(os_err(e, &state_path)),
@@ -1829,6 +1978,14 @@ fn try_remove(
     if let Some(history) = history_real {
         rmtree_ignoring_vanished(&history)?;
         history_status = "deleted";
+    }
+    if let Some(real) = old_real {
+        rmtree_ignoring_vanished(Path::new(&real))?;
+        old_status = "deleted";
+    }
+    if let Some(history) = old_history_real {
+        rmtree_ignoring_vanished(&history)?;
+        old_history_status = "deleted";
     }
     if let Some(bin) = bin {
         // A symlinked `<ah>/bin` loses only the link, never what it points to.
@@ -1857,6 +2014,11 @@ fn try_remove(
         ("settings", settings_value),
         ("atl", obj(vec![("status", s(atl_status))])),
         ("atl_history", obj(vec![("status", s(history_status))])),
+        ("legacy_rtk", obj(vec![("status", s(old_status))])),
+        (
+            "legacy_rtk_history",
+            obj(vec![("status", s(old_history_status))]),
+        ),
         (
             "memory",
             obj(vec![

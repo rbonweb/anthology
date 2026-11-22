@@ -66,6 +66,24 @@ pub fn write(env: &Env, kv: Vec<(String, Value)>) -> Result<(), PyExc> {
     fsx::replace_via_temp(&path, text.as_bytes(), ".state.", ".tmp", None)
 }
 
+/// Removes `keys` from the state, which [`write`] cannot (it only merges). `true` when any of
+/// them was there; the file is rewritten (as [`write`] does) only then, so an unreadable or
+/// missing state is left as it is.
+pub fn remove_keys(env: &Env, keys: &[&str]) -> Result<bool, PyExc> {
+    let mut data = read(env);
+    let mut removed = false;
+    for key in keys {
+        removed |= data.remove(key).is_some();
+    }
+    if !removed {
+        return Ok(false);
+    }
+    let mut text = json::dumps(&Value::Object(data), &json::STATE);
+    text.push('\n');
+    fsx::replace_via_temp(&path(env), text.as_bytes(), ".state.", ".tmp", None)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +133,24 @@ mod tests {
             read(&env).get("data_dir").and_then(Value::as_str),
             Some("/d")
         );
+    }
+
+    #[test]
+    fn remove_keys_drops_only_the_named_keys_and_reports_whether_any_was_there() {
+        let (_d, env) = sandbox();
+        assert!(!remove_keys(&env, &["a"]).expect("remove"), "no file yet");
+        assert!(
+            !path(&env).exists(),
+            "nothing is created for nothing to drop"
+        );
+        write(&env, vec![("a".into(), s("1")), ("b".into(), s("2"))]).expect("write");
+        assert!(!remove_keys(&env, &["zz"]).expect("remove"));
+        assert!(remove_keys(&env, &["a", "zz"]).expect("remove"));
+        assert_eq!(
+            std::fs::read_to_string(path(&env)).expect("read"),
+            "{\n  \"b\": \"2\"\n}\n"
+        );
+        assert!(!remove_keys(&env, &["a"]).expect("remove"));
     }
 
     #[test]

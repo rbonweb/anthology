@@ -24,9 +24,9 @@ const PRUNED: [&str; 9] = [
     "target",
 ];
 
-/// The home-path check skips the upstream rtk tree and the generated vendored trees.
+/// The home-path check skips the upstream ATL tree and the generated vendored trees.
 const HOME_PATH_SKIPS: [&str; 4] = [
-    "rtk/",
+    "atl/",
     "plugins/anthology-superpowers/",
     "plugins/anthology/knowledge/",
     "vendor/snapshots/",
@@ -265,8 +265,8 @@ mod security_doc_test {
     }
 
     #[test]
-    fn test_names_the_rtk_allow() {
-        assert!(text().contains("Bash(rtk *)"));
+    fn test_names_the_atl_allow() {
+        assert!(text().contains("Bash(atl *)"));
     }
 
     #[test]
@@ -309,7 +309,7 @@ mod contributing_doc_test {
     fn test_links_the_maintainer_tools() {
         let cleaned: Vec<String> = targets().iter().map(|t| clean(t)).collect();
         let mut failures = Vec::new();
-        for want in ["scripts/sync-rtk.sh", "scripts/release.sh"] {
+        for want in ["scripts/sync-atl.sh", "scripts/release.sh"] {
             if !cleaned.iter().any(|c| c == want) {
                 failures.push(format!("{want} is not linked from CONTRIBUTING.md"));
             }
@@ -356,7 +356,7 @@ mod readme_test {
             text.to_lowercase()
                 .contains("repo memory is visible to everyone who can see the repo")
         );
-        assert!(text.contains("Bash(rtk *)"));
+        assert!(text.contains("Bash(atl *)"));
     }
 
     /// One row per public document.

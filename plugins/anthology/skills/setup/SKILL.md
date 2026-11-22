@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up Anthology (rtk, permissions, repo memory) or remove it again with `/anthology:setup remove`. Shows every change first and applies it only after you confirm. Run only when you ask for it.
+description: Set up Anthology (ATL, permissions, repo memory) or remove it again with `/anthology:setup remove`. Shows every change first and applies it only after you confirm. Run only when you ask for it.
 disable-model-invocation: true
 ---
 
@@ -42,10 +42,11 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    - `agent_memory_path` `null` with a `detail` naming a `.claude/agent-memory/<name>/` folder: only a
      possible problem (it may be the user's own agent). Show the `detail` as a note, never a failure.
    - Node missing: some project tooling needs it; explain, and continue.
-   - rtk `null`: the rtk wiring is not part of this install yet; the rtk step is skipped.
-   - `rtk_savings`: what rtk did so far, from its own history: how many of the commands the hook
-     saw went through rtk, and how many output tokens that saved. Show the `detail` as a note, so the
-     user can judge whether rtk is worth keeping. `null` means there is no history yet (or it cannot
+   - `atl` `null`: the ATL (Anthology Token Layer) wiring is not part of this install yet; the ATL
+     step is skipped.
+   - `atl_savings`: what ATL did so far, from its own history: how many of the commands the hook
+     saw went through ATL, and how many output tokens that saved. Show the `detail` as a note, so the
+     user can judge whether ATL is worth keeping. `null` means there is no history yet (or it cannot
      be read); it is never a failure.
 3. If `duplicates` is not empty, Anthology already bundles superpowers and design-skills, so the
    separate installs conflict. Show each `command` (`claude plugin uninstall <plugin> -s <scope>`)
@@ -61,13 +62,22 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    `/anthology:setup remove` puts it back). If `subagent_model.elsewhere` is empty, say this lets the
    roster's model tiers apply; otherwise say it stays set in each `where`, so the tiers apply only once
    it is removed there too:
-   - **rtk:** `rtk` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
+   - **ATL:** `atl` (`version`, `target`, `dest`) is downloaded, hash-checked and installed. If it
      says skipped, say so.
+   - **old tool leftovers:** ATL replaces the tool earlier releases installed under its old name.
+     `legacy_rtk` lists what apply deletes once settings.json is written, in this order: the
+     entry `legacy_rtk.state` names (`present` says whether it is there), the downloaded folder
+     `legacy_rtk.dir` and the old tool's local history `legacy_rtk.history` (the command lines it
+     saw, its recall store and tee spool). Say plainly that the old history is deleted for good and
+     ATL starts with an empty one. Each item's `status` says `delete`, `nothing to delete` or why
+     it is left in place. If nothing is there to delete, say nothing about it. The user's own
+     allow rules for the old tool are never touched (a legacy `Bash(rtk *)` rule that an earlier
+     setup added is replaced by `Bash(atl *)`).
    - **settings.json:** show `settings.diff` as a diff. Values outside
      `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`. Every value under
      those three is shown as it is, including your own rules, so a token written inside one of your allow or
      deny rules would reach the conversation. Then print this note verbatim:
-     `settings.bypass_note`, which reads: "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any command. rtk's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
+     `settings.bypass_note`, which reads: "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. atl's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **CLAUDE_CODE_SUBAGENT_MODEL:** `subagent_model.set_in` lists where it is set (never its value).
      If `removable` is true, show `subagent_model.diff` as a diff (the value reads `"<redacted>"`): this is
@@ -121,7 +131,8 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    place, never deleted, and are no longer loaded. If `CLAUDE_CODE_SUBAGENT_MODEL` was
    removed, say that if session start still warns about it after the restart, it is also set somewhere
    else (often the shell profile), and `/anthology:setup` shows where. Tell the user to restart the
-   session so the new permissions and the rtk hook take effect.
+   session so the new permissions and the ATL hook take effect. `legacy_rtk` says what was deleted
+   of the old tool's leftovers (a `warnings` entry names anything that could not be deleted).
 
 ## Remove (`/anthology:setup remove`)
 
@@ -138,9 +149,11 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      removed it (unless the user has set it again since). Rules the user added themselves are never touched.
      Values outside `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`;
      those three are shown as they are, including your own rules.
-   - `rtk.dir`: the downloaded rtk folder that would be deleted (or why it is left in place).
-   - `rtk_history.dir`: rtk's local history (the command lines it saw, its recall store and tee spool),
+   - `atl.dir`: the downloaded ATL folder that would be deleted (or why it is left in place).
+   - `atl_history.dir`: ATL's local history (the command lines it saw, its recall store and tee spool),
      which would be deleted (`status` says `delete`, `nothing to delete` or why it is left in place).
+   - `legacy_rtk.dir` and `legacy_rtk_history.dir`: the same two for the old tool that earlier
+     releases installed, which would be deleted as well (same `status` values).
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - `memory.repo_settings`: each repo whose `.claude/settings.json` setup edited. Show its `path` and `diff`
      (the `autoMemoryEnabled` line setup added comes out, or goes back to the value it had; the file is deleted
