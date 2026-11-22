@@ -402,6 +402,57 @@ too_complex! {
     carve_c_a_numeric_assignment_sets_a_parameter: r#"f() { 1=npx; "$@"; }; f ls playwright install"#;
 }
 
+/// One test per input of the second carve-out re-review of #159: each ran a marker `npx` in bash 5.2 or zsh
+/// 5.9 and was allowed before the fix. Each must be too complex (G0) or blocked by G1.
+macro_rules! g0_or_g1 {
+    ($($name:ident: $command:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let got = verdict($command);
+                assert!(
+                    matches!(got, Verdict::TooComplex | Verdict::Block(anthology_guard::Rule::G1)),
+                    "{}: {got:?}",
+                    $command
+                );
+            }
+        )*
+    };
+}
+
+g0_or_g1! {
+    // (a) a prefix name built by brace expansion or matched by a zsh pattern
+    round3_a_read_into_a_brace_built_name:
+        r#"IFS= read -r HO{M,}E < f; sh -c "ls $HOME/x""#;
+    round3_a_export_of_a_brace_built_name:
+        r#"export HO{M,}E='/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    round3_a_printf_v_of_a_brace_built_name:
+        r#"printf -v HO{ME,'%s'} '/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    round3_a_zsh_print_v_of_a_brace_built_name:
+        r#"print -v HO{ME,} '/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    round3_a_zsh_typeset_m_pattern:
+        r#"typeset -m 'HO?E=/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    round3_a_brace_built_name_before_a_program_prefix:
+        r#"export HO{M,}E=/tmp/x; "$HOME/npx" playwright install"#;
+    round3_a_pattern_named_prefix_before_a_program_prefix:
+        r#"typeset -m 'HO?E=/tmp/x'; "$HOME/npx" playwright install"#;
+    // (b) a read value reached through a name set without an assignment word
+    round3_b_a_default_value_expansion_in_a_read_loop:
+        "while read -r line; do : ${n:=line}; echo $(( n )); done <<< 'a[$(npx playwright install)]'";
+    round3_b_a_for_name_in_a_read_loop:
+        "while read -r line; do for n in line; do echo $(( n )); done; done <<< 'a[$(npx playwright install)]'";
+    // (c) zsh positional setters, and zsh extendedglob characters in a direct call word
+    round3_c_zsh_append_to_a_positional: r#"f() { 1+=px; "$@"; }; f n playwright install"#;
+    round3_c_zsh_print_v_a_positional: r#"f() { print -v 1 npx; "$@"; }; f ls playwright install"#;
+    round3_c_read_into_a_positional: r#"f() { read -r 1 <<< npx; "$@"; }; f ls playwright install"#;
+    round3_c_extendedglob_hash_in_a_call_word:
+        r#"setopt extendedglob; f() { "$@"; }; f /usr/local/bin/np#x playwright install"#;
+    round3_c_extendedglob_caret_in_a_call_word:
+        r#"setopt extendedglob; f() { "$@"; }; f /usr/local/bin/np^y playwright install"#;
+    round3_c_a_shell_script_argument_outside_the_charset:
+        r#"sh -c '"$1" playwright install' _ /usr/local/bin/np#x"#;
+}
+
 #[test]
 fn a_standard_directory_prefix_is_read_through() {
     // the program is read with the prefix in place, so its rules still apply
@@ -444,23 +495,48 @@ fn a_standard_directory_prefix_is_read_through() {
             // the name anywhere else, or another expansion, turns the carve-out off
             r#"echo $HOME; "$HOME/x""#,
             r#""$HOME/x" "$y""#,
+            // review of #159 round 3: outside the allowlist, so no read-through (accepted over-blocks)
+            r#""${HOME}/.cargo/bin/cargo" build"#,
+            r#"sh -c "cd $HOME/proj && make""#,
+            r#"bash -c "$HOME/.cargo/bin/cargo build""#,
+            r#""$HOME/.cargo/bin/cargo" build --features 'a b'~"#,
+            r#""$HOME/.cargo/bin/cargo" build # note"#,
+            r#""$HOME/.cargo/bin/cargo" build <<< x"#,
+            r#""$HOME/.cargo/bin/cargo" build \
+                --release"#,
         ],
         Verdict::TooComplex,
     );
 }
 
 #[test]
-fn a_counted_read_loop_is_allowed_and_a_read_value_evaluated_is_not() {
+fn a_positional_program_outside_the_allowlist_is_too_complex() {
+    // review of #159 round 3: a body with a number word or a program that may set a parameter, or a call
+    // word outside `[A-Za-z0-9_./:=,+@%-]`, is too complex (accepted over-blocks)
+    assert_all(
+        &[
+            r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000"#,
+            r#"f() { echo 1; "$@"; }; f make test"#,
+            r#"f() { local x; "$@"; }; f make test"#,
+            r#"f() { command "$@"; }; f make test"#,
+            r#"f() { "$@"; }; f make 'a b'"#,
+            r#"f() { "$@"; }; f make ~/x"#,
+            r#"sh -c '"$1" test' _ 'm a'"#,
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn a_read_loop_with_any_arithmetic_is_too_complex() {
+    // review of #159 round 3: no tracking of what a read value reached, so a read loop that only counts is
+    // too complex as well (an accepted over-block)
     assert_all(
         &[
             "while read -r l; do n=$((n+1)); done < f; echo $n",
             "i=0; while read -r l; do i=$((i + 1)); a[i]=1; done < f",
             "while read -r l; do (( n++ )); done < f",
-        ],
-        Verdict::Allow,
-    );
-    assert_all(
-        &[
+            "while read -r l; do n=$((n+1)); done < f",
             "while read -r l; do n=$((n+l)); done < f",
             "while read -r l; do m=$l; n=$((m+1)); done < f",
             "while read -r l; do n=$((n+$1)); done < f",
@@ -489,7 +565,6 @@ fn ordinary_commands_stay_allowed() {
             // functions and positional parameters the analysis puts in place
             "f() { echo hi; }; f",
             r#"run() { "$@"; }; run make test"#,
-            r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000"#,
             r#"sh -c 'echo "$1"' _ hello"#,
             r#"find . -name '*.md' -exec sh -c 'wc -l "$1"' _ {} \;"#,
             // arithmetic and patterns, where a parenthesis follows a word
@@ -517,16 +592,13 @@ fn ordinary_commands_stay_allowed() {
             "n=$(wc -l < f); echo $((n * 2))",
             // a program under a standard directory, read with the prefix in place
             r#""$HOME/.cargo/bin/cargo" build"#,
-            r#""${HOME}/.cargo/bin/cargo" build"#,
+            r#""$HOME"/.cargo/bin/cargo build"#,
             r#""$CLAUDE_PLUGIN_ROOT/bin/x" --help"#,
             r#""$CLAUDE_PROJECT_DIR/scripts/test.sh""#,
             r#""$VIRTUAL_ENV/bin/python" -m pytest"#,
             r#""$TMPDIR/x/run""#,
             r#"cd src && "$HOME/.cargo/bin/cargo" build"#,
-            r#"sh -c "cd $HOME/proj && make""#,
-            r#"bash -c "$HOME/.cargo/bin/cargo build""#,
-            // a counted read loop
-            "while read -r l; do n=$((n+1)); done < f",
+            r#""$HOME/.cargo/bin/cargo" test -p anthology-guard --features 'a,b' 2>&1 | tail -n 5"#,
             // everyday commands
             "cargo test -p anthology-guard",
             "git status && git diff --stat",

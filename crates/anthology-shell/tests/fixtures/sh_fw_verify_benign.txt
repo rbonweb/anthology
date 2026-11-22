@@ -3416,8 +3416,6 @@ log() { printf '%s\n' "$*" >&2; }; log starting build
 #---
 run() { "$@"; }; run make test
 #---
-retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000
-#---
 docker run --rm img sh -c 'echo "$0 $1"' a b
 #---
 bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt

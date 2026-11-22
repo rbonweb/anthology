@@ -332,8 +332,9 @@ a new version section.
     `${~x}` (in heredoc bodies too), the zsh options `GLOB_SUBST` and `PROMPT_SUBST` (also
     named by a variable), a prompt variable or `BASH_ENV`/`ENV` that holds a substitution,
     and a nameref or a variable name that could point at one;
-  - a value from `read`, `mapfile` or `readarray`, or text that holds a substitution, used
-    where the shell evaluates it (a subscript, arithmetic, an `-i` variable);
+  - a value from `read`, `mapfile`, `readarray` or `select`, or text that holds a
+    substitution, with anything the shell evaluates (a subscript, arithmetic, an `-i`
+    variable);
   - a subscript with nested brackets or quotes around a substitution;
   - an alias, a hashed command path, a zsh function defined from text, and bash's alias and
     command tables or an exported `BASH_FUNC_` named in any word.
@@ -342,9 +343,14 @@ a new version section.
 - Commands whose program word is a variable (`$EDITOR file`) are now blocked as too complex;
   spell the program out. A program under a standard directory stays allowed and is checked
   as written (`"$HOME/.cargo/bin/cargo" build`, also `TMPDIR`, `CLAUDE_PLUGIN_ROOT`,
-  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`), unless the name appears anywhere else in the command
-  or the command holds another `$`. `$PWD` is not read through. So do read loops that only count (`n=$((n+1))`) and function
-  wrappers such as `run() { "$@"; }; run make test`. The too-complex message suggests single
+  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`) when the command is plain: no other expansion, and
+  only letters, digits, `_ . / : = , + @ % -`, blanks, quotes and `; & | < >` elsewhere. The
+  name may not appear anywhere else in the command. `${HOME}/…`, `$PWD` and a `$HOME` inside
+  a double-quoted `sh -c` script are not read through. So do function wrappers such as
+  `run() { "$@"; }; run make test` whose call words are plain. Accepted over-blocks: a read
+  loop that counts (`while read -r l; do n=$((n+1)); done < f`) is too complex, since any
+  arithmetic in a command that reads input is, and so is a `retry` wrapper whose body holds
+  a number (`for i in 1 2 3`). The too-complex message suggests single
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).
 

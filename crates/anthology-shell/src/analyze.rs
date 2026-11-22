@@ -9,7 +9,7 @@
 //! rule blocks; the union is what each rule sees across the passes). All passes share one work budget.
 
 use crate::collect::{
-    Ctx, calls_only_direct, changes_prefixes, evaluates_values, sets_positionals, unseen_values,
+    Ctx, calls_only_direct, evaluates_values, prefixes_allowed, sets_positionals, unseen_values,
     with_path_regexes,
 };
 use crate::lexer::{Group, GroupId, Reading, Redirect, Work};
@@ -68,15 +68,15 @@ pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
         }
         // PE-1 to PE-6: a command it cannot prove; PE-1: positional parameters read in place but set some
         // other way, or a function so read run some other way; carve-out (a): a directory prefix read through
-        // but changed; PE-4: a value the analysis cannot see, evaluated as an expression or subscript, may run
-        // a command
+        // in a command outside the allowlist; PE-4: a value the analysis cannot see, with anything evaluated as
+        // an expression or subscript
         let unproven = ctx.unproven
             || (ctx.positional && sets_positionals(&ctx.entries))
             || !calls_only_direct(&ctx.entries, &ctx.alternates, &ctx.function_calls)
             || (!ctx.prefix_names.is_empty()
-                && changes_prefixes(command, &ctx.entries, &ctx.prefix_names))
+                && !prefixes_allowed(command, &ctx.entries, &ctx.prefix_names))
             || (unseen_values(&ctx.entries)
-                && evaluates_values(&ctx.entries, &ctx.arith_texts, ctx.held_entries()));
+                && evaluates_values(&ctx.entries, !ctx.arith_texts.is_empty()));
         Analysis {
             entries: ctx.entries,
             groups: ctx.groups,

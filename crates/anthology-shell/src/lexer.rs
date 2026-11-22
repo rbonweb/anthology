@@ -298,7 +298,7 @@ fn default_qualifier(part: &str) -> bool {
     })
 }
 
-/// Carve-out (a): the directories a program word may start with, as `"$NAME/..."` or `"${NAME}/..."`. Not
+/// Carve-out (a): the directories a program word may start with, as `"$NAME/..."` or `"$NAME"/...`. Not
 /// `PWD`: the working directory carries over from an earlier call, and its name can hold anything.
 pub(crate) const PREFIX_NAMES: &[&str] = &[
     "HOME",
@@ -309,19 +309,14 @@ pub(crate) const PREFIX_NAMES: &[&str] = &[
 ];
 
 /// Carve-out (a): the `$` at `j`, inside double quotes, is the standard form of a `PREFIX_NAMES` variable
-/// (`$NAME` or `${NAME}`, no modifier, no subscript) directly followed by a `/`, inside the quotes or right
+/// (`$NAME`, no braces, no modifier, no subscript) directly followed by a `/`, inside the quotes or right
 /// after the closing one. `Some(NAME)`.
 fn standard_prefix(text: &str, j: usize) -> Option<&'static str> {
     let b = text.as_bytes();
-    let (name, after) = if b.get(j + 1) == Some(&b'{') {
-        let close = (j + 2..b.len()).find(|&k| b[k] == b'}')?;
-        (&text[j + 2..close], close + 1)
-    } else {
-        let end = (j + 1..b.len())
-            .find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_'))
-            .unwrap_or(b.len());
-        (&text[j + 1..end], end)
-    };
+    let after = (j + 1..b.len())
+        .find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_'))
+        .unwrap_or(b.len());
+    let name = &text[j + 1..after];
     let slash = match b.get(after) {
         Some(b'/') => true,
         Some(b'"') => b.get(after + 1) == Some(&b'/'),
@@ -356,8 +351,7 @@ type Pending = (Vec<String>, GroupId, bool, bool);
 ///
 /// `glob`: the word holds an unquoted `*`, `?` or `[` (a holder with only `glob` is for the program word).
 /// `prefix` (carve-out a): the word's one expansion is a standard directory prefix at its start, and the rest
-/// is literal (`"$HOME/.cargo/bin/cargo"`, `"$CLAUDE_PROJECT_DIR"/bin/x`). `paths`: every expansion in the
-/// word is `$HOME/` in that form (for a double-quoted script); the names.
+/// is literal (`"$HOME/.cargo/bin/cargo"`, `"$CLAUDE_PROJECT_DIR"/bin/x`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Holder {
     pub(crate) index: usize,
@@ -367,7 +361,6 @@ pub(crate) struct Holder {
     pub(crate) param: bool,
     pub(crate) glob: bool,
     pub(crate) prefix: Option<&'static str>,
-    pub(crate) paths: Option<Vec<&'static str>>,
 }
 
 struct Lexer<'t, 'a> {
@@ -437,7 +430,7 @@ struct Lexer<'t, 'a> {
     holders: Vec<Holder>,
     /// PE-1: the word being built holds an unquoted or double-quoted parameter expansion (`Holder::param`).
     param: bool,
-    /// The parameter expansions in the word being built (`Holder::prefix`, `Holder::paths`).
+    /// The parameter expansions in the word being built (`Holder::prefix`).
     expansions: usize,
     /// The standard directory prefixes among them, each with whether it starts the word.
     prefixes: Vec<(&'static str, bool)>,
@@ -543,11 +536,6 @@ impl<'t, 'a> Lexer<'t, 'a> {
             }
             _ => None,
         };
-        let paths = (subs.is_empty()
-            && expansions > 0
-            && expansions == prefixes.len()
-            && prefixes.iter().all(|(n, _)| *n == "HOME"))
-        .then(|| prefixes.iter().map(|(n, _)| *n).collect());
         let word = std::mem::take(&mut self.cur);
         self.has_word = false;
         self.quoted = false;
@@ -573,7 +561,6 @@ impl<'t, 'a> Lexer<'t, 'a> {
                         param,
                         glob,
                         prefix: None,
-                        paths: None,
                     });
                 } else if param || glob {
                     self.holders.push(Holder {
@@ -584,7 +571,6 @@ impl<'t, 'a> Lexer<'t, 'a> {
                         param,
                         glob,
                         prefix,
-                        paths,
                     });
                 }
                 self.tokens.push(word)
