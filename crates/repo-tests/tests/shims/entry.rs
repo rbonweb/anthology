@@ -128,10 +128,13 @@ fn anthology_no_install_stops_every_install_path_in_the_wrappers() {
                 !sb.bindir().join(".attempt").exists(),
                 "{sh:?} {value}: an install was attempted"
             );
-            assert_eq!(
-                anthology_testkit::bs::server().hits(&sb.release.url_path()),
-                0
-            );
+            // The test server runs only where the network cases do (it binds port 443).
+            if anthology_testkit::bs::net_enabled() {
+                assert_eq!(
+                    anthology_testkit::bs::server().hits(&sb.release.url_path()),
+                    0
+                );
+            }
             sb.install(&fake(V, ALLOW), 0o755);
             let mut spec = sb.spec(sh, WRAP, &["perm", "classify"], b"");
             spec.env.push(("ANTHOLOGY_NO_INSTALL".into(), value.into()));
