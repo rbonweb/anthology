@@ -10,8 +10,6 @@ a new version section.
 
 ### [Unreleased]
 
-### [0.2.9] - 2026-11-22
-
 #### Added
 
 - Automatic after-work check (a Claude Code mod, `hooks/mods/afterwork.ts`): when an implementer, debugger, docs-writer or ui-designer reports to the main session, the report is checked for a commit, test evidence, stray attribution lines and uncommitted files in the agent's worktree, and a short "After-work check" block naming each gap is appended. The project map and leftovers are reminders only: they ride in a block a gap raised and never raise one. The agent's text is never changed, and a report with no gap gets no block. Set `ANTHOLOGY_AFTERWORK=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
@@ -42,6 +40,18 @@ a new version section.
   asks, headless, background and `dontAsk` sessions, SDK hosts, auto mode's classifier and
   sessions with `allowManagedPermissionRulesOnly` stay exactly as Claude Code decides them. It
   never downloads the binary. Set `ANTHOLOGY_MODS=0` to turn it off.
+
+#### Changed
+
+- The plugin requires Claude Code 2.1.330 or later (`engines`), because of its Claude Code mods.
+  The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
+  `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
+  part runs on its own, so a failure in one never drops the other's result.
+
+### [0.2.9] - 2026-11-22
+
+#### Added
+
 - Attribution off at the source. Claude Code's own instructions tell the model to add a
   `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
   attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
@@ -84,10 +94,6 @@ a new version section.
 
 #### Changed
 
-- The plugin requires Claude Code 2.1.330 or later (`engines`), because of its Claude Code mods.
-  The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
-  `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
-  part runs on its own, so a failure in one never drops the other's result.
 - The closing pointer that session start adds when it cuts the memory index now reads
   `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
   length is the same, so the session budget is unchanged.
