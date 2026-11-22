@@ -13,6 +13,12 @@
 //
 // Claude Code before 2.1.330 refuses a module that hooks an event it lacks, silently and whole;
 // the shell hooks in hooks.json still run there, so nothing gets looser without the mods.
+// `tool.check` is the exception: it loads from 2.1.311, and `engines` (>=2.1.330) is not enforced,
+// so permissions.ts checks `$.session.version()` itself and keeps Claude Code's verdict below
+// 2.1.330.
+//
+// `tool.check` is hooked by the permissions feature alone, so it is registered in
+// `registerPermissions` like any single-owner event; only `agent.report` is shared (below).
 import type { Register } from 'claude-code'
 import { afterworkReport } from './afterwork.ts'
 import { alertsReport, registerAlerts } from './alerts.tsx'

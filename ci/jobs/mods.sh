@@ -46,7 +46,14 @@ claude=/tmp/cc/node_modules/.bin/claude
 
 plugin=plugins/anthology
 if [ "$mode" = check ]; then
-    "$claude" plugin validate --strict "$plugin"
+    report=$("$claude" plugin validate --strict "$plugin")
+    printf '%s\n' "$report"
+    # A hook that fails without a .catch is skipped, which the kit cannot tell from the .catch
+    # replaying the verdict; validate names each gating hook either way, so hold it to the .catch.
+    if printf '%s\n' "$report" | grep -q 'gating hook without \.catch'; then
+        echo "mods: a gating hook has no .catch; give it .catch((\$, e, next) => next(e))" >&2
+        exit 1
+    fi
     "$claude" plugin test "$plugin"
     exit 0
 fi
@@ -56,5 +63,5 @@ fi
 version=$(node -p 'require("/tmp/cc/node_modules/@anthropic-ai/claude-code/package.json").version')
 native=$(find /tmp/cc/node_modules/@anthropic-ai -path '*claude-code-linux-*/claude' -type f | head -n 1)
 node scripts/mods-types.mjs "$native" "$version" "$plugin/.claude-plugin/types/claude-code/index.d.ts"
-npx -y -p typescript@5.9 tsc -p "$plugin"
+npx -y -p typescript@5.9.3 tsc -p "$plugin"
 echo "mods: tsc clean"
