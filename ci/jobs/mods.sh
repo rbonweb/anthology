@@ -56,5 +56,5 @@ fi
 version=$(node -p 'require("/tmp/cc/node_modules/@anthropic-ai/claude-code/package.json").version')
 native=$(find /tmp/cc/node_modules/@anthropic-ai -path '*claude-code-linux-*/claude' -type f | head -n 1)
 node scripts/mods-types.mjs "$native" "$version" "$plugin/.claude-plugin/types/claude-code/index.d.ts"
-npx -y -p typescript@5.9 tsc -p "$plugin"
+npx -y -p typescript@5.9.3 tsc -p "$plugin"
 echo "mods: tsc clean"

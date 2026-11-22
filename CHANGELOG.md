@@ -16,6 +16,13 @@ a new version section.
   shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
   plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to
   turn it off.
+- Permission levels: a Claude Code mod (`hooks/mods/`, Claude Code 2.1.330 or later) lets a
+  shell command run without a prompt when the installed `anthology perm classify` proves it
+  only reads and Claude Code allows a `Read` of every path it reads. It changes only a plain
+  ask that a person answers in the dialog. Denies, rule, hook, mod, setting and organization
+  asks, headless, background and `dontAsk` sessions, SDK hosts, auto mode's classifier and
+  sessions with `allowManagedPermissionRulesOnly` stay exactly as Claude Code decides them. It
+  never downloads the binary. Set `ANTHOLOGY_MODS=0` to turn it off.
 - Project map and after-work check. The architect builds `.claude/memory/reference-project-map.md`
   from a new template (`templates/project-map.md`, with a size budget and a `## Cleanup duties`
   section), and the routing guide tells the lead to read it before planning. Writing agents

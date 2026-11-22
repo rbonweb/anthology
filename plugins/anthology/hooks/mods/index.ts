@@ -4,8 +4,10 @@
 // Every hook carries `.catch(($, e, next) => next(e))`, so a failing mod leaves Claude Code's own
 // verdict and the shell hooks in charge. `ANTHOLOGY_MODS=0` turns them all off (util.ts).
 //
-// Claude Code before 2.1.329 refuses a module that hooks an event it lacks, silently and whole;
-// the shell hooks in hooks.json still run there, so nothing gets looser without the mods.
+// `tool.check` loads from Claude Code 2.1.311, and `engines` (>=2.1.330) is not enforced there,
+// so a build older than the one these mods are verified on still runs them: permissions.ts
+// checks `$.session.version()` itself and keeps Claude Code's verdict below 2.1.330.
+// The shell hooks in hooks.json run on every build, so nothing gets looser without the mods.
 import type { Register } from 'claude-code'
 import { registerPermissions } from './permissions.ts'
 
