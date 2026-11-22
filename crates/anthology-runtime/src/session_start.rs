@@ -15,8 +15,13 @@
 //! Order (GC-7): Windows → refusal only; read the hook input; ensure the live guard binary
 //! (new step); the guardrails self-test (F-4); state; the NAG, or the read-rule, ops-version and
 //! rtk checks (the rtk check skipped when more than 10 s passed since `ANTHOLOGY_HOOK_T0`,
-//! F-20); the data-folder, wrapper, agent-memory and subagent checks; memory sync; the guide;
-//! compose; prune `<ah>/bin` (design §8.5).
+//! F-20); the data-folder, wrapper, agent-memory and subagent checks; the git-folder check (a
+//! session folder that is not a repo but holds repos); memory sync; the guide; compose; prune
+//! `<ah>/bin` (design §8.5).
+//!
+//! **Subagents.** When the hook input has a non-empty `agent_id` (a SessionStart inside a
+//! subagent that compacted), only memory sync runs, and the output has no guide and no
+//! `systemMessage` ([`subagent_output`]). Everything else is for the lead.
 //!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
@@ -78,6 +83,10 @@ pub const RTK_SKIPPED: &str =
     "anthology: skipped the rtk check this session (not enough time left)";
 /// No rtk.lock in the plugin.
 pub const RTK_NOT_WIRED: &str = "anthology: rtk wiring not present yet; skipped";
+/// The session folder is not in a git repo but git repos sit directly below it.
+pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git repos sit below it. Anthology's agents need worktrees, so start Claude Code inside the repo you are working on";
+/// The most entries of the session folder looked at for [`NOT_A_REPO`].
+pub const REPO_SCAN_CAP: usize = 200;
 /// The guide file is missing or unreadable.
 pub const GUIDE_MISSING: &str =
     "anthology: the routing guide is missing from the plugin (templates/routing-guide.md)";
@@ -405,6 +414,7 @@ pub mod label {
     pub const WRAPPERS: &str = "the bin wrapper check";
     pub const AGENT_MEMORY: &str = "the agent-memory path check";
     pub const SUBAGENT: &str = "the subagent model check";
+    pub const GIT_FOLDER: &str = "the git folder check";
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
     pub const COMPOSE: &str = "assembling the session context";
@@ -750,6 +760,9 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         Some(c) if !c.is_empty() => PathBuf::from(c),
         _ => (deps.cwd)().map_err(PyExc::from)?,
     };
+    if is_subagent(&hook) {
+        return Ok(subagent_output(env, &cwd, deps));
+    }
     let root = (deps.plugin_root)(env)?;
 
     let guard_root = step(
@@ -909,20 +922,18 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     );
     warnings.extend(w);
 
-    let (memory, messages) = step(
+    let w = step(
         &mut warnings,
-        label::MEMORY,
+        label::GIT_FOLDER,
         |_| {
-            Ok(match (deps.memory_run)(&cwd, env) {
-                Ok(v) => v,
-                Err(exc) => (
-                    String::new(),
-                    vec![format!("anthology memory: {}", cut(&exc_text(&exc), 120))],
-                ),
-            })
+            fault(deps, "_not_a_repo_warning")?;
+            Ok(not_a_repo_warning(&cwd))
         },
-        (String::new(), Vec::new()),
+        None,
     );
+    warnings.extend(w);
+
+    let (memory, messages) = memory_step(&mut warnings, &cwd, env, deps);
     // A compact that runs in a git worktree the session moved into (or an agent's worktree)
     // really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
     let mut messages = messages;
@@ -930,24 +941,19 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         messages.retain(|m| m != anthology_memory::sync::DIR_SET);
     }
 
-    // The routing guide is for the lead only.
-    let guide_text = if is_subagent(&hook) {
-        String::new()
-    } else {
-        let guide = step(
-            &mut warnings,
-            label::GUIDE,
-            |_| {
-                fault(deps, "_read_guide")?;
-                Ok(read_guide(&root))
-            },
-            None,
-        );
-        if guide.is_none() {
-            warnings.push(GUIDE_MISSING.into());
-        }
-        guide.unwrap_or_default()
-    };
+    let guide = step(
+        &mut warnings,
+        label::GUIDE,
+        |_| {
+            fault(deps, "_read_guide")?;
+            Ok(read_guide(&root))
+        },
+        None,
+    );
+    if guide.is_none() {
+        warnings.push(GUIDE_MISSING.into());
+    }
+    let guide_text = guide.unwrap_or_default();
     let context = step(
         &mut warnings,
         label::COMPOSE,
@@ -979,6 +985,65 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         out.insert("systemMessage".into(), Value::Str(cap_message(&message)));
     }
     Ok(json::dumps(&Value::Object(out), &json::PY_DEFAULT))
+}
+
+/// The memory sync step: `(context text, messages)`; a failure becomes a message.
+fn memory_step(
+    warnings: &mut Vec<String>,
+    cwd: &Path,
+    env: &Env,
+    deps: &SessionDeps<'_>,
+) -> (String, Vec<String>) {
+    step(
+        warnings,
+        label::MEMORY,
+        |_| {
+            Ok(match (deps.memory_run)(cwd, env) {
+                Ok(v) => v,
+                Err(exc) => (
+                    String::new(),
+                    vec![format!("anthology memory: {}", cut(&exc_text(&exc), 120))],
+                ),
+            })
+        },
+        (String::new(), Vec::new()),
+    )
+}
+
+/// What a subagent or teammate gets (a SessionStart that fires inside one after it compacts):
+/// the memory index and nothing else. The routing guide and every warning are for the lead,
+/// who got them when the session started; the checks behind them (guard self-test, rtk, state
+/// writes, the once-per-repo agent-memory note) would only repeat them, cost time, or use up
+/// a note the lead has not seen yet. In a subagent a project-scoped guardrails install is
+/// judged against the subagent's folder, which can be outside that project, so the warning
+/// that guardrails is "not installed" would also be false.
+fn subagent_output(env: &Env, cwd: &Path, deps: &SessionDeps<'_>) -> String {
+    let (memory, _messages) = memory_step(&mut Vec::new(), cwd, env, deps);
+    let context = compose("", &memory, &anthology_memory::repo::anthology_home(env));
+    let mut hook_out = Map::new();
+    hook_out.insert("hookEventName".into(), Value::Str("SessionStart".into()));
+    hook_out.insert("additionalContext".into(), Value::Str(context));
+    let mut out = Map::new();
+    out.insert("hookSpecificOutput".into(), Value::Object(hook_out));
+    json::dumps(&Value::Object(out), &json::PY_DEFAULT)
+}
+
+/// [`NOT_A_REPO`] when `cwd` is not in a git repo but some folder directly below it is one (it
+/// holds a `.git` folder or file). Only the first [`REPO_SCAN_CAP`] entries are looked at.
+fn not_a_repo_warning(cwd: &Path) -> Option<String> {
+    (compat::repo_top(cwd).is_none() && repo_below(cwd, REPO_SCAN_CAP))
+        .then(|| NOT_A_REPO.to_string())
+}
+
+/// Whether one of the first `cap` entries of `dir` holds a `.git`.
+fn repo_below(dir: &Path, cap: usize) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .take(cap)
+        .flatten()
+        .any(|entry| entry.path().join(".git").exists())
 }
 
 /// `msg if len ≤ 2000 else msg[:1999].rstrip() + "…"`.
@@ -1295,6 +1360,15 @@ mod tests {
         assert_eq!(broken_epochs(".broken-0.1.0-5-100-7"), vec![5.0, 100.0]);
         assert!(broken_epochs(".broken-0.1.0-x-7").is_empty());
         assert!(broken_epochs(".broken-junk").is_empty());
+    }
+
+    #[test]
+    fn the_repo_scan_looks_at_no_more_than_its_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("only/.git")).unwrap();
+        assert!(repo_below(tmp.path(), 1));
+        assert!(!repo_below(tmp.path(), 0));
+        assert!(!repo_below(&tmp.path().join("missing"), REPO_SCAN_CAP));
     }
 
     #[test]
