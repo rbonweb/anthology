@@ -10,6 +10,29 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- A repo that uses Anthology memory has one memory: the repo's committed `.claude/memory/`
+  plus personal memory. When `/anthology:setup` approves a repo, it merges
+  `"autoMemoryEnabled": false` into that repo's committed `.claude/settings.json`, so Claude
+  Code's built-in auto memory does not run beside it. The user-wide settings are not touched
+  for this, and repos that do not use Anthology keep auto memory. The preview shows the
+  diff, apply records the edit before writing it, and `/anthology:setup remove` puts the file
+  back (deleting it only if setup created it and nothing else is in it). A symlinked or
+  non-JSON file is left alone.
+- With that setting in a repo's committed settings, session start keeps the memory step
+  working: it no longer reads the committed `false` as an opt-out (a user, local or
+  environment opt-out still is) and injects the repo's memory index every session, because
+  Claude Code no longer loads it.
+- `/anthology:setup` moves the old notes of Claude Code's auto memory by type, after you
+  confirm (`apply --move-old-notes`): project, feedback and reference notes go into
+  `.claude/memory/` as `<type>-<slug>.md`, user notes into personal memory. The privacy scan
+  decides what may enter the repo; a refused note, or one without a type, is listed and not
+  moved. The originals are left in place and never deleted. Without the confirmation the
+  notes are still copied only into personal memory, as before.
+- The routing guide says repo memory is where the lead writes its notes, because Claude's
+  auto memory is off in approved repos.
+
 ### [0.2.0] - 2026-11-22
 
 #### Added
