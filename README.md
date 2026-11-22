@@ -253,6 +253,16 @@ Not yet: the design's block of open pull requests and their CI status (it needs 
 
 Switches: `ANTHOLOGY_NOTIFY=0` turns off the alert (the shell hook's switch too), and `ANTHOLOGY_MODS=0` turns off every anthology mod, this pane and its status line included. Set either in the `env` block of `~/.claude/settings.json`.
 
+### Read-only commands without a prompt
+
+On Claude Code 2.1.330 or later, a Claude Code mod in the `anthology` plugin lets a shell command run without a permission prompt when `anthology perm classify` proves it only reads, and Claude Code itself would allow a `Read` of every file it reads. It only changes a plain ask that you would answer in the permission dialog. Everything else stays exactly as Claude Code decides it:
+
+- a deny, and any ask from your own allow, ask or deny rules, a `PreToolUse` hook such as the guardrails, another mod, the outside-directory read block or your organization;
+- headless (`claude -p`), background and `dontAsk` sessions, SDK hosts and auto mode's classifier: their denies and answers are not lifted;
+- sessions whose managed settings set `allowManagedPermissionRulesOnly`, and Claude Code builds before 2.1.330.
+
+If the `anthology` binary is not installed, the mod changes nothing and never downloads it. Set `ANTHOLOGY_MODS=0` to turn it off.
+
 ### Commits carry only your name
 
 Commits, PRs and code comments carry only the git config author. The writing agents never add a `Co-Authored-By` trailer or a "Generated with" line and never mention the assistant or AI, and a `PreToolUse` hook (`hooks/no-attribution.sh`) denies a `git commit` or `gh pr create|edit` command whose command text carries one. It only searches that text with `grep`; it parses and runs nothing. It catches the usual habit and is not a guarantee: `--trailer`, `-F` and `--body-file` are not checked.
