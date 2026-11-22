@@ -1,17 +1,43 @@
 #!/bin/sh
-# anthology-mem: search, explore and save Anthology memory notes (search, related, orphans, stale,
-# rebuild, save). A thin POSIX wrapper around scripts/memory_index.py.
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "anthology-mem: python3 not found" >&2
-  exit 127
-fi
-self=$0
-while [ -h "$self" ]; do
-  target=$(readlink "$self")
-  case $target in
-    /*) self=$target ;;
-    *) self=$(dirname "$self")/$target ;;
-  esac
+# anthology-mem: search, explore and save Anthology memory notes (search, related, orphans,
+# stale, rebuild, save). Runs `anthology mem` with the binary this plugin's anthology.lock pins,
+# installing it first when it is missing (design §8.4 `wrapper` mode). Exit 127 when it cannot
+# be installed.
+RTK_SUPPRESS_HOOK_WARNING=1
+export RTK_SUPPRESS_HOOK_WARNING
+unset CDPATH
+anth_name=anthology-mem
+anth_self=$0
+while [ -h "$anth_self" ]; do
+    anth_link=$(readlink "$anth_self")
+    case $anth_link in
+        /*) anth_self=$anth_link ;;
+        *) anth_self=$(dirname "$anth_self")/$anth_link ;;
+    esac
 done
-here=$(cd "$(dirname "$self")" && pwd)
-exec python3 "$here/../scripts/memory_index.py" "$@"
+anth_root=$(cd "$(dirname "$anth_self")/.." && pwd)
+anth_fail() {
+    printf '%s: the anthology binary is not installed (%s); start a new session while online, or run /anthology:setup\n' "$anth_name" "$1" >&2
+    exit 127
+}
+if [ -z "$anth_root" ] || [ ! -f "$anth_root/hooks/lib.sh" ] ||
+    ! (command . "$anth_root/hooks/lib.sh") >/dev/null 2>&1; then
+    anth_fail 'hooks/lib.sh did not load'
+fi
+# shellcheck source=../hooks/lib.sh
+command . "$anth_root/hooks/lib.sh"
+if anth_resolve "$anth_root" && anth_installed; then
+    exec "$ANTH_BIN" mem "$@"
+fi
+anth_paths "$anth_root"
+anth_st=$(anth_bootstrap_main wrapper --plugin anthology --quiet </dev/null 2>/dev/null)
+case $anth_st in
+    status=present | status=installed)
+        if anth_resolve "$anth_root" && anth_installed; then
+            exec "$ANTH_BIN" mem "$@"
+        fi
+        anth_fail 'the binary is missing after the install'
+        ;;
+    status=failed:?*) anth_fail "${anth_st#status=failed:}" ;;
+esac
+anth_fail 'the bootstrap gave no status'
