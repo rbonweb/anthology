@@ -12,14 +12,6 @@ a new version section.
 
 #### Added
 
-- Attribution off at the source. Claude Code's own instructions tell the model to add a
-  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
-  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
-  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
-  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
-  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
-  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
-  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
 - `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
   its PR is green, or the report names the exact failing job (the lead says so in the brief and
   checks `gh pr checks` before accepting). At every status check the lead reads CI for every
@@ -40,6 +32,36 @@ a new version section.
   decision, never a deny.
 - `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
   when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
+
+#### Fixed
+
+- Session start no longer says the guardrails are "failing closed" when they are not. The guard
+  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
+  place when the shim looked (a parallel session was still installing it, or this hook had
+  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
+  shell commands, file edits and MCP tools are blocked", although the guard installs the
+  binary on its first call and the binary was in the install folder a moment later. Session
+  start now checks the install folder itself: when the pinned binary is there it reports that the
+  self-test could not tell, and says the guard still runs on every command. It keeps the
+  failing-closed warning when the binary really is missing or the guard really refuses.
+- A guard self-test that times out is now reported as "skipped the guard self-test (it timed
+  out, the machine may be busy); the guard still runs on every command" instead of "the
+  guardrails may be OFF". When less time is left than the self-test may take, it is not run and
+  the same kind of line says session start ran out of time. A guardrails plugin that is disabled
+  or missing is still named in that case.
+
+### [0.2.9] - 2026-11-22
+
+#### Added
+
+- Attribution off at the source. Claude Code's own instructions tell the model to add a
+  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
+  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
+  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
+  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
+  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
+  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
+  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
 
 #### Fixed
 
@@ -71,26 +93,13 @@ a new version section.
   `anthology-mem search --query tokens colour output` works as well as
   `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
   usage error (exit 2) that says where the words go. The help text shows both forms.
-- Session start no longer says the guardrails are "failing closed" when they are not. The guard
-  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
-  place when the shim looked (a parallel session was still installing it, or this hook had
-  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
-  shell commands, file edits and MCP tools are blocked", although the guard installs the
-  binary on its first call and the binary was in the install folder a moment later. Session
-  start now checks the install folder itself: when the pinned binary is there it reports that the
-  self-test could not tell, and says the guard still runs on every command. It keeps the
-  failing-closed warning when the binary really is missing or the guard really refuses.
-- A guard self-test that times out is now reported as "skipped the guard self-test (it timed
-  out, the machine may be busy); the guard still runs on every command" instead of "the
-  guardrails may be OFF". When less time is left than the self-test may take, it is not run and
-  the same kind of line says session start ran out of time. A guardrails plugin that is disabled
-  or missing is still named in that case.
 
 #### Changed
 
 - The closing pointer that session start adds when it cuts the memory index now reads
   `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
   length is the same, so the session budget is unchanged.
+- pin anthology-bin 0.1.4.
 
 ### [0.2.7] - 2026-11-22
 
@@ -399,6 +408,17 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
+  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
+  a backtick starts a command substitution, here one that never ends, so the block is right but
+  agents retried the same command. The message adds: "A backtick inside double quotes runs a
+  command; put the pattern in single quotes". The verdict does not change, and a pattern in
+  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+
+### [0.2.4] - 2026-11-22
+
 #### Security
 
 - The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
@@ -441,12 +461,7 @@ a new version section.
 
 #### Changed
 
-- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
-  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
-  a backtick starts a command substitution, here one that never ends, so the block is right but
-  agents retried the same command. The message adds: "A backtick inside double quotes runs a
-  command; put the pattern in single quotes". The verdict does not change, and a pattern in
-  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+- pin anthology-bin 0.1.4.
 
 ### [0.2.2] - 2026-11-22
 
