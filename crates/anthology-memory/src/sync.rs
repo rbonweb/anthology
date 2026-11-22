@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use crate::privacy::{self, Finding, PrivacyDeps};
 
 use crate::approve::is_approved;
-use crate::notes::{NoteInfo, REPO_EXCLUDE, USER_REASON, is_user_note, note_info};
+use crate::notes::{NoteInfo, REPO_EXCLUDE, USER_REASON, is_user_note, normalize_type, note_info};
 use crate::render::{
     Budget, CONTEXT_SECTION_BUDGET, DEFAULT_BUDGET, GENERATED, regenerate_index, render_index,
     try_list_notes,
@@ -717,19 +717,29 @@ pub fn try_migrate(
         }
         handled.insert(sha);
     }
-    if let Some(l) = ledger
-        && handled != done
-    {
-        let mut m = Map::new();
-        m.insert("version".into(), Value::Int(Int::Small(1)));
-        m.insert(
-            "done".into(),
-            Value::Array(handled.into_iter().map(Value::Str).collect()),
-        );
-        let text = json::dumps(&Value::Object(m), &json::INDENT2) + "\n";
-        fsx::atomic_write(l, text.as_bytes(), 0o644, ".tmp-", ".part")?;
+    if let Some(l) = ledger {
+        save_ledger(l, &done, handled)?;
     }
     Ok(result)
+}
+
+/// Write the ledger when `handled` holds a hash `done` did not.
+fn save_ledger(
+    path: &Path,
+    done: &BTreeSet<String>,
+    handled: BTreeSet<String>,
+) -> Result<(), PyExc> {
+    if &handled == done {
+        return Ok(());
+    }
+    let mut m = Map::new();
+    m.insert("version".into(), Value::Int(Int::Small(1)));
+    m.insert(
+        "done".into(),
+        Value::Array(handled.into_iter().map(Value::Str).collect()),
+    );
+    let text = json::dumps(&Value::Object(m), &json::INDENT2) + "\n";
+    fsx::atomic_write(path, text.as_bytes(), 0o644, ".tmp-", ".part")
 }
 
 /// `migrate`: copy the notes of an old path-keyed memory folder into personal memory; only a
@@ -762,6 +772,271 @@ pub fn migrate(
         deps,
     )
     .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Moving the notes of Claude Code's own auto memory, by type
+// ---------------------------------------------------------------------------------------------
+
+/// The reason for a note without one of the four note types.
+pub const NO_TYPE_REASON: &str =
+    "the note has no type (project, feedback, reference or user), so it is not moved";
+/// The reason when repo memory cannot take a note.
+pub const REPO_UNSAFE_REASON: &str = "repo memory (or .claude) is a symlink or not a folder";
+
+/// Where [`plan_auto_memory_note`] sends a note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    /// The repo's `.claude/memory/`: `project`, `feedback` and `reference` notes.
+    Repo,
+    /// Personal memory: `user` notes.
+    Personal,
+    /// Nowhere: the privacy scan refused it, or it has no type.
+    Nowhere,
+}
+
+impl Destination {
+    pub fn label(self) -> &'static str {
+        match self {
+            Destination::Repo => "repo",
+            Destination::Personal => "personal",
+            Destination::Nowhere => "none",
+        }
+    }
+}
+
+/// What moving one old note would do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoMemoryPlan {
+    pub destination: Destination,
+    /// The file name it gets there, `<type>-<slug>.md`; `None` when it goes nowhere.
+    pub target: Option<String>,
+    pub findings: Vec<Finding>,
+    /// Why it goes nowhere.
+    pub reason: Option<String>,
+}
+
+/// `[a-z0-9]+(-[a-z0-9]+)*` from any text: runs of other characters become one `-`.
+fn slugify(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(c.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    out
+}
+
+/// The slug of `<type>-<slug>.md`: the file's stem (else the note's name) without a leading
+/// `<type>-`, so `feedback_testing.md` becomes `feedback-testing.md`.
+fn auto_memory_slug(kind: &str, file: &str, info: &NoteInfo) -> String {
+    let own = |text: &str| {
+        let slug = slugify(text);
+        match slug.strip_prefix(&format!("{kind}-")) {
+            Some(rest) => rest.to_string(),
+            None if slug == kind => String::new(),
+            None => slug,
+        }
+    };
+    let mut slug = own(file.strip_suffix(".md").unwrap_or(file));
+    if slug.is_empty() {
+        slug = own(&info.name);
+    }
+    if slug.is_empty() {
+        slug = "note".to_string();
+    }
+    let slug: String = slug.chars().take(crate::save::MAX_SLUG).collect();
+    slug.trim_end_matches('-').to_string()
+}
+
+/// `<type>-<slug>.md`.
+fn auto_memory_target(kind: &str, file: &str, info: &NoteInfo) -> String {
+    format!("{kind}-{}.md", auto_memory_slug(kind, file, info))
+}
+
+/// Where an old auto-memory note goes, and under what name: `project`, `feedback` and
+/// `reference` notes into the repo's memory, `user` notes into personal memory. A repo-bound
+/// note goes through the privacy scan of the whole file (`promotion_check`) and then every check
+/// `anthology-mem save` runs on a note's text (`save::check_note_text`: the secret and env-value
+/// checks, control and hidden characters, the size limits and the scanner-crash guard); one it
+/// refuses, or one without a type, goes nowhere. A `user` note goes to personal memory, which is
+/// private and not in git, so it needs no repo check. `repo_ok` is whether the repo's memory
+/// folder can take the note.
+pub fn plan_auto_memory_note(
+    file: &str,
+    data: &[u8],
+    repo_ok: bool,
+    home: Option<&str>,
+    env: &Env,
+    deps: &SyncDeps<'_>,
+) -> AutoMemoryPlan {
+    let info = note_info(file, data);
+    let kind = normalize_type(info.kind.as_deref());
+    let nowhere = |findings, reason: &str| AutoMemoryPlan {
+        destination: Destination::Nowhere,
+        target: None,
+        findings,
+        reason: Some(reason.to_string()),
+    };
+    match kind.as_str() {
+        "user" => AutoMemoryPlan {
+            destination: Destination::Personal,
+            target: Some(auto_memory_target("user", file, &info)),
+            findings: Vec::new(),
+            reason: None,
+        },
+        "project" | "feedback" | "reference" => {
+            // A scanner bug is a clean refusal, never a crash or a move.
+            let Ok((findings, reason)) = catch_unwind(AssertUnwindSafe(|| {
+                promotion_check(&info, data, home, None, deps)
+            })) else {
+                return nowhere(
+                    Vec::new(),
+                    "the privacy scan failed (panic); nothing was moved",
+                );
+            };
+            let save_deps = crate::save::SaveDeps {
+                privacy_findings: deps.privacy_findings,
+                ..crate::save::SaveDeps::default()
+            };
+            let save_check = crate::save::check_note_text(
+                &auto_memory_slug(&kind, file, &info),
+                &info.name,
+                &info.description,
+                &info.body,
+                env,
+                &save_deps,
+            );
+            match reason {
+                Some(r) => nowhere(findings, &r),
+                None if !repo_ok => nowhere(findings, REPO_UNSAFE_REASON),
+                None if save_check.is_err() => {
+                    let why = save_check.err().map(|e| e.to_string()).unwrap_or_default();
+                    nowhere(
+                        findings,
+                        &format!("it fails the checks anthology-mem save runs: {why}"),
+                    )
+                }
+                None => AutoMemoryPlan {
+                    destination: Destination::Repo,
+                    target: Some(auto_memory_target(&kind, file, &info)),
+                    findings,
+                    reason: None,
+                },
+            }
+        }
+        _ => nowhere(Vec::new(), NO_TYPE_REASON),
+    }
+}
+
+/// What [`try_move_auto_memory`] did: the names the notes were placed under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MoveResult {
+    pub repo: Vec<String>,
+    pub personal: Vec<String>,
+    pub skipped: Vec<String>,
+    /// `(old file, reason)`, with the findings of each in `blocked_findings`.
+    pub blocked: Vec<(String, String)>,
+    pub blocked_findings: Vec<Vec<Finding>>,
+}
+
+/// Move the notes of one old auto-memory folder (`legacy_dirs`) by type: see
+/// [`plan_auto_memory_note`]. The old folder is only read. A note never overwrites one that
+/// exists (a `<stem>.migrated-<date>.md` copy instead), and one already placed is skipped.
+/// Personal notes already in the ledger are skipped; a repo note is placed whatever the ledger
+/// says (the user chose to move it), and every note placed is added to the ledger, so session
+/// start does not copy it into personal memory.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the folders, ledger, date and the checks' inputs are all separate"
+)]
+pub fn try_move_auto_memory(
+    old_dir: &Path,
+    repo_mem: Option<&Path>,
+    personal_mem: &Path,
+    ledger: Option<&Path>,
+    today: Option<Date>,
+    home: Option<&str>,
+    env: &Env,
+    deps: &SyncDeps<'_>,
+) -> Result<MoveResult, PyExc> {
+    let mut result = MoveResult::default();
+    let entries = try_legacy_entries(old_dir)?;
+    if entries.is_empty() {
+        return Ok(result);
+    }
+    let date = today.unwrap_or_else(deps.today).iso();
+    let done = match ledger {
+        Some(l) => load_ledger(l)?,
+        None => BTreeSet::new(),
+    };
+    let mut handled = done.clone();
+    let repo_ok = repo_mem.is_some_and(|r| {
+        unsafe_dir(r).is_none() && unsafe_dir(r.parent().unwrap_or(Path::new(""))).is_none()
+    });
+    for (name, data) in entries {
+        let plan = plan_auto_memory_note(&name, &data, repo_ok, home, env, deps);
+        let (Some(target), Some(dest)) = (
+            plan.target.as_deref(),
+            match plan.destination {
+                Destination::Repo => repo_mem,
+                _ => Some(personal_mem),
+            },
+        ) else {
+            result.blocked.push((name, plan.reason.unwrap_or_default()));
+            result.blocked_findings.push(plan.findings);
+            continue;
+        };
+        let sha: String = Sha256::digest(&data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let to_repo = plan.destination == Destination::Repo;
+        if !to_repo && done.contains(&sha) {
+            result.skipped.push(target.to_string());
+            continue;
+        }
+        if unsafe_dir(dest).is_some() {
+            // never write through a symlinked or non-folder destination; say so
+            let which = if to_repo {
+                "repo memory"
+            } else {
+                "personal memory"
+            };
+            result
+                .blocked
+                .push((name, format!("{which} is a symlink or not a folder")));
+            result.blocked_findings.push(Vec::new());
+            continue;
+        }
+        if to_repo {
+            fs::create_dir_all(dest).map_err(|e| os_err(e, dest))?;
+        } else {
+            ensure_private_dir(dest)?;
+        }
+        let (status, placed) = place(dest, target, &data, &date)?;
+        let placed_name = placed
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target.to_string());
+        match status {
+            Placed::Identical => result.skipped.push(placed_name),
+            _ if to_repo => result.repo.push(placed_name),
+            _ => result.personal.push(placed_name),
+        }
+        handled.insert(sha);
+    }
+    if let Some(l) = ledger {
+        save_ledger(l, &done, handled)?;
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -839,7 +1114,9 @@ pub fn sweep_user_notes(
 // The SessionStart entry point
 // ---------------------------------------------------------------------------------------------
 
-fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env) -> bool {
+/// Whether the user turned auto memory off. `approved`: the repo is approved for Anthology
+/// memory, which is where a committed `autoMemoryEnabled: false` is Anthology's own switch.
+fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env, approved: bool) -> bool {
     if let Some(v) = env.get_os("CLAUDE_CODE_DISABLE_AUTO_MEMORY") {
         let v = pystr::lower(pystr::strip_ws(&v.to_string_lossy()));
         if !["", "0", "false", "no"].contains(&v.as_str()) {
@@ -848,18 +1125,36 @@ fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env) -> bool {
     }
     let mut paths = Vec::new();
     if let Some(r) = root {
-        paths.push(r.join(".claude").join("settings.local.json"));
-        paths.push(r.join(".claude").join("settings.json"));
+        paths.push((r.join(".claude").join("settings.local.json"), false));
+        paths.push((r.join(".claude").join("settings.json"), true));
     }
-    paths.push(config.join("settings.json"));
-    for p in paths {
+    paths.push((config.join("settings.json"), false));
+    for (p, committed) in paths {
         if let Some(data) = load_settings(&p)
             && let Some(v) = data.get("autoMemoryEnabled")
         {
+            // In an approved repo, `false` in the committed settings.json is what
+            // `/anthology:setup` writes to switch Claude Code's own auto memory off in favour of
+            // this memory; it is not an opt-out of Anthology memory. In any other repo it is the
+            // team's opt-out, as before. A user's, the local or the environment's opt-out always is.
+            if approved && committed && matches!(v, Value::Bool(false)) {
+                continue;
+            }
             return matches!(v, Value::Bool(false));
         }
     }
     false
+}
+
+/// Whether the repo's committed settings.json switches Claude Code's own auto memory off (as
+/// `/anthology:setup` writes it) and settings.local.json does not switch it back on. Claude Code
+/// then does not load the repo's memory index, so the SessionStart hook injects it every session.
+fn auto_memory_off_by_repo(claude: &Path) -> bool {
+    let flag = |name: &str| {
+        load_settings(&claude.join(name)).and_then(|d| d.get("autoMemoryEnabled").cloned())
+    };
+    flag("settings.local.json").is_none()
+        && matches!(flag("settings.json"), Some(Value::Bool(false)))
 }
 
 fn section(title: &str, directory: &Path, text: &str) -> String {
@@ -1034,10 +1329,12 @@ fn sync_repo(
     for d in &agents {
         (deps.regenerate_index)(d, DEFAULT_BUDGET, REPO_EXCLUDE)?;
     }
-    if !changed {
+    if !changed && !auto_memory_off_by_repo(&claude) {
         return Ok(None);
     }
-    messages.push(DIR_SET.into());
+    if changed {
+        messages.push(DIR_SET.into());
+    }
     let text = context_index(&repo_mem, REPO_EXCLUDE)?;
     let text = if pystr::strip_ws(&text).is_empty() {
         "(no notes yet)\n".to_string()
@@ -1051,7 +1348,10 @@ fn run_inner(cwd: &Path, env: &Env, deps: &SyncDeps<'_>) -> Result<(String, Vec<
     let config = crate::repo::config_dir(env);
     let home = config.join("anthology");
     let root = (deps.repo_root)(cwd, env, deps.git);
-    if auto_memory_off(root.as_deref(), &config, env) {
+    let approved = root
+        .as_ref()
+        .is_some_and(|r| is_approved(&repo_key(r, env, deps.git), env));
+    if auto_memory_off(root.as_deref(), &config, env, approved) {
         return Ok((String::new(), Vec::new()));
     }
     let mut messages = Vec::new();

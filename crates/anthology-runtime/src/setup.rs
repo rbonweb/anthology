@@ -27,7 +27,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -653,9 +653,32 @@ fn legacy_notes(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Vec<Value> {
             note.insert("type".into(), opt_str(info.kind));
             note.insert("source".into(), s(&pstr(&old)));
             note.insert("default".into(), s("personal"));
+            // Where `--move-old-notes` would put it (the confirmed, by-type move).
+            let plan = sync::plan_auto_memory_note(&name, &data, m.is_some(), home, env, &sd);
+            note.insert("destination".into(), s(plan.destination.label()));
+            note.insert("target".into(), opt_str(plan.target.clone()));
+            // What the move would find under the target name, in the folder it writes to.
+            let dest_dir = match plan.destination {
+                sync::Destination::Repo => m.clone(),
+                sync::Destination::Personal => Some(personal_dir(env)),
+                sync::Destination::Nowhere => None,
+            };
+            let (target_status, target_would) = match (&plan.target, &dest_dir) {
+                (Some(t), Some(dir)) => match sync::placement_status(dir, t, &data) {
+                    Placement::New => (s("new"), Value::Null),
+                    Placement::Identical => (s("identical"), Value::Null),
+                    Placement::Conflict => (
+                        s("conflict"),
+                        s(&sync::side_by_side_name(dir, t, &clock::today_local())),
+                    ),
+                },
+                _ => (Value::Null, Value::Null),
+            };
+            note.insert("target_status".into(), target_status);
+            note.insert("target_would_create".into(), target_would);
             note.insert("findings".into(), findings_value(&findings));
             note.insert("movable".into(), Value::Bool(reason.is_none()));
-            if let Some(r) = reason.filter(|r| !r.is_empty()) {
+            if let Some(r) = reason.or(plan.reason).filter(|r| !r.is_empty()) {
                 note.insert("reason".into(), Value::Str(r));
             }
             let status = match &m {
@@ -758,6 +781,94 @@ fn migrate_legacy(
     Ok((migrated, Value::Array(blocked)))
 }
 
+/// What apply says about the old auto-memory folders after `--move-old-notes`.
+pub const ORIGINALS_KEPT: &str = "the old notes were left in place and never deleted; Claude \
+                                  Code's auto memory is off for this repo, so they are no \
+                                  longer loaded";
+
+/// `--move-old-notes`, after the user's confirmation: `(migrated, blocked)` as [`migrate_legacy`]
+/// reports them, but by type: project, feedback and reference notes go into the repo's memory as
+/// `<type>-<slug>.md`, user notes into personal memory. A note the privacy scan refuses, or one
+/// without a type, is listed in `blocked` and moved nowhere.
+fn move_old_notes(
+    root: &Path,
+    env: &Env,
+    personal: &Path,
+    deps: &SetupDeps<'_>,
+) -> Result<(Value, Value), String> {
+    let m = repo_mem(root);
+    let ledger = memory_repo::anthology_home(env).join("migrated.json");
+    let sd = sync_deps(env, deps);
+    let (mut repo, mut pers, mut skipped, mut blocked) = (vec![], vec![], vec![], vec![]);
+    for old in memory_repo::legacy_dirs(root, &memory_repo::config_dir(env), env, &RealGit) {
+        let res = sync::try_move_auto_memory(
+            &old,
+            m.as_deref(),
+            personal,
+            Some(&ledger),
+            None,
+            env.get("HOME"),
+            env,
+            &sd,
+        )
+        .map_err(raised)?;
+        for (i, (file, reason)) in res.blocked.iter().enumerate() {
+            let findings = res.blocked_findings.get(i).map_or(&[][..], Vec::as_slice);
+            blocked.push(obj(vec![
+                ("file", s(file)),
+                ("findings", findings_value(findings)),
+                ("reason", s(reason)),
+            ]));
+        }
+        repo.extend(res.repo);
+        pers.extend(res.personal);
+        skipped.extend(res.skipped);
+    }
+    if !repo.is_empty()
+        && let Some(dir) = &m
+    {
+        render::regenerate_index(dir, render::DEFAULT_BUDGET, notes::REPO_EXCLUDE)
+            .map_err(raised)?;
+    }
+    let migrated = obj(vec![
+        ("repo", strs(&repo)),
+        ("personal", strs(&pers)),
+        ("skipped", strs(&skipped)),
+    ]);
+    Ok((migrated, Value::Array(blocked)))
+}
+
+/// Why `--move-old-notes` cannot be honoured (checked before anything is written).
+fn move_notes_error(
+    promote: &[String],
+    skip_approve: bool,
+    cwd: &Path,
+    env: &Env,
+    deps: &SetupDeps<'_>,
+) -> Option<String> {
+    if skip_approve {
+        return Some(
+            "--move-old-notes moves notes into this repo's memory, which needs the repo approved; \
+             it cannot be combined with --skip-approve. Nothing was written."
+                .into(),
+        );
+    }
+    if !promote.is_empty() {
+        return Some(
+            "--move-old-notes already chooses where each note goes, by type; it cannot be \
+             combined with --promote. Nothing was written."
+                .into(),
+        );
+    }
+    if repo_info(cwd, env, deps).is_none() {
+        return Some(
+            "--move-old-notes needs a git repo (this folder is not one). Nothing was written."
+                .into(),
+        );
+    }
+    None
+}
+
 /// `_promote_error(promote, skip_approve, cwd, env)`: why `--promote` cannot be honoured
 /// (checked before anything is written).
 fn promote_error(
@@ -800,6 +911,266 @@ fn promote_error(
          (memory.legacy_notes in the preview); not one: {}. Nothing was written.",
         names.join(", ")
     ))
+}
+
+// --- the repo's own auto memory switch ------------------------------------------------------
+
+/// The one key setup adds to an approved repo's `.claude/settings.json`: with the repo's memory
+/// (`.claude/memory/`) in force, Claude Code's built-in auto memory must not run beside it. The
+/// user-wide settings.json is never used for this.
+pub const AUTO_MEMORY_KEY: &str = "autoMemoryEnabled";
+/// state.json's record of these edits, so `remove` can undo them:
+/// `{<repo root>: {"ops": [<settings record>, ...], "created": <bool>}}`.
+const REPO_SETTINGS_STATE: &str = "repo_settings";
+
+fn auto_memory_op() -> settings::Op {
+    settings::Op::Set {
+        path: vec![AUTO_MEMORY_KEY.to_string()],
+        value: Value::Bool(false),
+        tag: None,
+    }
+}
+
+fn repo_settings_path(root: &Path) -> PathBuf {
+    root.join(".claude").join("settings.json")
+}
+
+/// What setup would write into one repo's `.claude/settings.json`.
+struct RepoPlan {
+    path: PathBuf,
+    text: String,
+    new_text: String,
+    diff: String,
+    stored: Vec<Value>,
+}
+
+/// The repo edits state.json holds, by repo root.
+fn recorded_repo_settings(env: &Env) -> Map {
+    state::read(env)
+        .get(REPO_SETTINGS_STATE)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The records of the ops earlier runs made in `root`'s settings.json.
+fn recorded_ops(recorded: &Map, root: &Path) -> Result<Vec<Value>, String> {
+    let ops = recorded
+        .get(&pstr(root))
+        .and_then(Value::as_object)
+        .and_then(|entry| entry.get("ops"));
+    settings::stored_ops(ops).map_err(raise_text)
+}
+
+/// Why a repo's settings.json is not touched, or `None` when it may be: `.claude` or the file
+/// itself must not be a symlink (a repo could point it anywhere), and the file must be a plain
+/// file.
+fn repo_settings_unsafe(root: &Path) -> Option<String> {
+    let claude = root.join(".claude");
+    if unsafe_dir(&claude) {
+        return Some(".claude is a symlink or not a folder; left untouched".into());
+    }
+    let path = repo_settings_path(root);
+    if is_symlink(&path) {
+        return Some(".claude/settings.json is a symlink; left untouched".into());
+    }
+    if lexists(&path) && !path.is_file() {
+        return Some(".claude/settings.json is not a file; left untouched".into());
+    }
+    None
+}
+
+/// The most a repo's `.claude/settings.json` may hold: the file comes from the repo, so a clone
+/// controls it, and setup would read all of it into memory and parse it.
+pub const MAX_REPO_SETTINGS_BYTES: u64 = 1024 * 1024;
+
+/// The repo's settings.json text, read with a cap: `None` when it does not exist, `Err` (a
+/// reason) when it is too large, not UTF-8 or unreadable.
+fn read_repo_settings(path: &Path) -> Result<Option<String>, String> {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot be read ({e})")),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_REPO_SETTINGS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot be read ({e})"))?;
+    if bytes.len() as u64 > MAX_REPO_SETTINGS_BYTES {
+        return Err(format!(
+            "is too large (over {} KiB)",
+            MAX_REPO_SETTINGS_BYTES / 1024
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "is not valid UTF-8".into())
+}
+
+/// `_settings_plan` for a repo: the key merged into what the file holds. `Err` is the reason the
+/// file is left alone (an unreadable, oversized or non-JSON file is never overwritten).
+fn repo_settings_plan(root: &Path, env: &Env) -> Result<RepoPlan, String> {
+    if let Some(why) = repo_settings_unsafe(root) {
+        return Err(why);
+    }
+    let path = repo_settings_path(root);
+    let text = read_repo_settings(&path)
+        .map(Option::unwrap_or_default)
+        .map_err(|e| format!(".claude/settings.json {e}; left untouched"))?;
+    let previous = recorded_ops(&recorded_repo_settings(env), root)?;
+    let (new_text, diff, stored) = settings::reconcile(&text, &[auto_memory_op()], &previous)
+        .map_err(|m| match classify(m) {
+            Refusal::Caught(t) | Refusal::Raised(t) => format!("{t}; left untouched"),
+        })?;
+    Ok(RepoPlan {
+        path,
+        text,
+        new_text,
+        diff,
+        stored,
+    })
+}
+
+fn repo_settings_skipped(root: &Path, why: &str) -> Value {
+    obj(vec![
+        ("path", s(&pstr(&repo_settings_path(root)))),
+        ("skipped", s(why)),
+    ])
+}
+
+/// The preview's `memory.repo.auto_memory`: what setup would change in the repo's settings.json.
+fn repo_settings_preview(root: &Path, env: &Env) -> Value {
+    match repo_settings_plan(root, env) {
+        Ok(plan) => obj(vec![
+            ("path", s(&pstr(&plan.path))),
+            ("changed", Value::Bool(plan.new_text != plan.text)),
+            ("diff", Value::Str(plan.diff)),
+        ]),
+        Err(why) => repo_settings_skipped(root, &why),
+    }
+}
+
+/// Apply's step for an approved repo: record the edit in state.json first (so `remove` can always
+/// undo it), then write the merged file.
+fn apply_repo_settings(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Result<Value, String> {
+    let plan = match repo_settings_plan(root, env) {
+        Ok(p) => p,
+        Err(why) => return Ok(repo_settings_skipped(root, &why)),
+    };
+    let changed = plan.new_text != plan.text;
+    if !plan.stored.is_empty() {
+        let mut recorded = recorded_repo_settings(env);
+        let key = pstr(root);
+        let was_created = recorded
+            .get(&key)
+            .and_then(Value::as_object)
+            .and_then(|entry| entry.get("created"))
+            .is_some_and(truthy);
+        let created = was_created || !lexists(&plan.path);
+        recorded.insert(
+            key,
+            obj(vec![
+                ("ops", Value::Array(plan.stored.clone())),
+                ("created", Value::Bool(created)),
+            ]),
+        );
+        (deps.state_write)(
+            env,
+            vec![(REPO_SETTINGS_STATE.into(), Value::Object(recorded))],
+        )
+        .map_err(raised)?;
+    }
+    if changed {
+        (deps.settings_write)(&plan.path, &plan.new_text).map_err(raised)?;
+    }
+    Ok(obj(vec![
+        ("path", s(&pstr(&plan.path))),
+        ("changed", Value::Bool(changed)),
+        ("diff", Value::Str(plan.diff)),
+    ]))
+}
+
+/// What `remove` does to one repo's settings.json.
+struct RepoRevert {
+    root: String,
+    path: PathBuf,
+    new_text: String,
+    diff: String,
+    /// Take the file away: setup created it and nothing else is left in it.
+    delete: bool,
+    /// Why the file is left alone (or has nothing to revert).
+    note: Option<String>,
+    changed: bool,
+}
+
+/// `remove`'s plan for every repo setup edited, from state.json. A repo whose file is gone has
+/// nothing to revert; one that cannot be reverted is left alone and reported, and never stops
+/// the rest of the removal.
+fn repo_settings_reverts(env: &Env) -> Vec<RepoRevert> {
+    let mut out = Vec::new();
+    for (root, entry) in recorded_repo_settings(env).iter() {
+        let path = repo_settings_path(Path::new(root));
+        let mut revert = RepoRevert {
+            root: root.to_string(),
+            path: path.clone(),
+            new_text: String::new(),
+            diff: String::new(),
+            delete: false,
+            note: None,
+            changed: false,
+        };
+        let plan = || -> Result<Option<(String, String, String)>, String> {
+            if let Some(why) = repo_settings_unsafe(Path::new(root)) {
+                return Err(why);
+            }
+            let Some(text) =
+                read_repo_settings(&path).map_err(|e| format!(".claude/settings.json {e}"))?
+            else {
+                return Ok(None);
+            };
+            let ops = settings::stored_ops(entry.as_object().and_then(|e| e.get("ops")))
+                .map_err(raise_text)?;
+            let (new_text, diff) = settings::revert_with_diff(&text, &ops).map_err(raise_text)?;
+            Ok(Some((text, new_text, diff)))
+        };
+        match plan() {
+            Ok(None) => revert.note = Some("nothing to revert: the file is gone".into()),
+            Ok(Some((text, new_text, diff))) => {
+                revert.changed = new_text != text;
+                revert.delete = revert.changed
+                    && settings::is_blank(&new_text)
+                    && entry
+                        .as_object()
+                        .and_then(|e| e.get("created"))
+                        .is_some_and(truthy);
+                revert.new_text = new_text;
+                revert.diff = diff;
+            }
+            Err(why) => revert.note = Some(format!("left in place: {why}")),
+        }
+        out.push(revert);
+    }
+    out
+}
+
+fn repo_reverts_value(reverts: &[RepoRevert]) -> Value {
+    Value::Array(
+        reverts
+            .iter()
+            .map(|r| {
+                let mut m = vec![
+                    ("root", s(&r.root)),
+                    ("path", s(&pstr(&r.path))),
+                    ("changed", Value::Bool(r.changed)),
+                    ("diff", s(&r.diff)),
+                ];
+                if let Some(n) = &r.note {
+                    m.push(("note", s(n)));
+                }
+                obj(m)
+            })
+            .collect(),
+    )
 }
 
 // --- commands -------------------------------------------------------------------------------
@@ -858,6 +1229,7 @@ fn try_preview(
                 "approved",
                 Value::Bool(memory_approve::is_approved(key, env)),
             ),
+            ("auto_memory", repo_settings_preview(root, env)),
         ]),
     };
     let legacy = info
@@ -937,6 +1309,34 @@ pub fn apply_with(
     remove_subagent_model: bool,
     deps: &SetupDeps,
 ) -> Value {
+    apply_full(
+        plugin_root,
+        expect_sha256,
+        cwd,
+        skip_approve,
+        env,
+        promote,
+        remove_subagent_model,
+        false,
+        deps,
+    )
+}
+
+/// [`apply_with`] with `move_old_notes` (only when the user said yes): move the notes Claude
+/// Code's auto memory saved for this repo by type, instead of copying them all into personal
+/// memory. It cannot be combined with `promote` or `skip_approve`.
+#[allow(clippy::too_many_arguments)] // Python's keyword arguments
+pub fn apply_full(
+    plugin_root: &Path,
+    expect_sha256: &str,
+    cwd: Option<&Path>,
+    skip_approve: bool,
+    env: &Env,
+    promote: &[String],
+    remove_subagent_model: bool,
+    move_old_notes: bool,
+    deps: &SetupDeps,
+) -> Value {
     result_or_error(try_apply(
         plugin_root,
         expect_sha256,
@@ -945,6 +1345,7 @@ pub fn apply_with(
         env,
         promote,
         remove_subagent_model,
+        move_old_notes,
         deps,
     ))
 }
@@ -958,6 +1359,7 @@ fn try_apply(
     env: &Env,
     promote: &[String],
     remove_model: bool,
+    move_notes: bool,
     deps: &SetupDeps<'_>,
 ) -> Result<Value, String> {
     if unsupported(deps) {
@@ -968,6 +1370,9 @@ fn try_apply(
         ]));
     }
     let cwd = effective_cwd(cwd)?;
+    if move_notes && let Some(r) = move_notes_error(promote, skip_approve, &cwd, env, deps) {
+        return Ok(refused(&r));
+    }
     if let Some(r) = promote_error(promote, skip_approve, &cwd, env, deps) {
         return Ok(refused(&r));
     }
@@ -1064,6 +1469,7 @@ fn try_apply(
     }
     let (mut approved_key, mut approve_error) = (Value::Null, Value::Null);
     let (mut migrated, mut blocked) = (Value::Null, Value::Array(Vec::new()));
+    let mut auto_memory = Value::Null;
     if let Some((repo_root, key)) = info {
         approved_key = Value::Str(key);
         match (deps.memory.approve)(&repo_root, env) {
@@ -1075,13 +1481,36 @@ fn try_apply(
             }
             Err(e) => return Err(raised(e)),
         }
-        (migrated, blocked) = migrate_legacy(&repo_root, env, &personal, promote, deps)?;
+        // Claude Code's own auto memory is switched off only where the repo's memory works.
+        auto_memory = if approve_error.is_null() {
+            apply_repo_settings(&repo_root, env, deps)?
+        } else {
+            repo_settings_skipped(
+                &repo_root,
+                "repo memory could not be set up (see approve_error), so Claude Code's auto \
+                 memory stays on",
+            )
+        };
+        (migrated, blocked) = if move_notes {
+            move_old_notes(&repo_root, env, &personal, deps)?
+        } else {
+            migrate_legacy(&repo_root, env, &personal, promote, deps)?
+        };
     }
     let memory = obj(vec![
         ("approved_key", approved_key),
         ("approve_error", approve_error),
+        ("auto_memory", auto_memory),
         ("migrated", migrated),
         ("blocked", blocked),
+        (
+            "originals",
+            if move_notes {
+                s(ORIGINALS_KEPT)
+            } else {
+                Value::Null
+            },
+        ),
         ("personal_dir", s(&pstr(&personal))),
     ]);
 
@@ -1281,7 +1710,18 @@ fn try_remove(
     let (history_real, mut history_status, history_warn) = rtk_history_target(env);
 
     let changed = new_text != text;
-    let warnings: Vec<String> = rtk_warn.into_iter().chain(history_warn).collect();
+    let repo_reverts = repo_settings_reverts(env);
+    let repo_warnings = repo_reverts.iter().filter_map(|r| {
+        r.note
+            .as_ref()
+            .filter(|n| n.starts_with("left in place"))
+            .map(|n| format!("{}: {n}", pstr(&r.path)))
+    });
+    let warnings: Vec<String> = rtk_warn
+        .into_iter()
+        .chain(history_warn)
+        .chain(repo_warnings)
+        .collect();
     let approved: Vec<String> = {
         let mut keys: Vec<String> = match memory_approve::load_approved(env).get("repos") {
             Some(Value::Object(repos)) => repos.iter().map(|(k, _)| k.to_string()).collect(),
@@ -1328,6 +1768,7 @@ fn try_remove(
                 "memory",
                 obj(vec![
                     ("notes", s(NOTES_KEPT)),
+                    ("repo_settings", repo_reverts_value(&repo_reverts)),
                     ("this_repo_approved", opt_str(this_repo.clone())),
                     (
                         "approved_total",
@@ -1365,6 +1806,13 @@ fn try_remove(
             fs::remove_file(&path).map_err(|e| os_err(e, &path))?;
         } else {
             (deps.settings_write)(&path, &new_text).map_err(raised)?;
+        }
+    }
+    for r in repo_reverts.iter().filter(|r| r.changed) {
+        if r.delete {
+            fs::remove_file(&r.path).map_err(|e| os_err(e, &r.path))?;
+        } else {
+            (deps.settings_write)(&r.path, &r.new_text).map_err(raised)?;
         }
     }
     // state.json goes first: without its rtk_path, bin/rtk-hook exits before running rtk, so
@@ -1414,6 +1862,7 @@ fn try_remove(
             obj(vec![
                 ("unapproved", strs(&unapproved)),
                 ("notes", s(NOTES_KEPT)),
+                ("repo_settings", repo_reverts_value(&repo_reverts)),
             ]),
         ),
         ("warnings", strs(&warnings)),
@@ -1448,7 +1897,12 @@ fn parser() -> Spec {
             Arg::option(&["--remove-subagent-model"])
                 .store_true()
                 .help("also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json"),
-        );
+        )
+        .arg(Arg::option(&["--move-old-notes"]).store_true().help(
+            "move the notes Claude Code's auto memory saved for this repo by type: \
+                 project, feedback and reference notes into the repo's memory, user notes \
+                 into personal memory",
+        ));
     let remove = common(Spec::command())
         .arg(Arg::option(&["--unapprove"]).store_true())
         .arg(Arg::option(&["--unapprove-all"]).store_true())
@@ -1506,7 +1960,7 @@ pub fn main(argv: &[String], env: &Env, deps: &SetupDeps) -> (i32, String, Strin
                 .iter()
                 .filter_map(|v| v.as_os_str().map(|o| o.to_string_lossy().into_owned()))
                 .collect();
-            apply_with(
+            apply_full(
                 &root,
                 &expect,
                 cwd.as_deref(),
@@ -1514,6 +1968,7 @@ pub fn main(argv: &[String], env: &Env, deps: &SetupDeps) -> (i32, String, Strin
                 env,
                 &promote,
                 parsed.flag("remove_subagent_model"),
+                parsed.flag("move_old_notes"),
                 deps,
             )
         }

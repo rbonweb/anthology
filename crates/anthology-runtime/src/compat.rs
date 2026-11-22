@@ -627,9 +627,10 @@ fn dir_names(folder: &Path) -> Option<Vec<String>> {
 /// The soft warning for a bare roster-name folder (shared by doctor and session start).
 pub fn agent_memory_hint(name: &str) -> String {
     format!(
-        "`.claude/agent-memory/{name}/` exists but no `anthology-{name}/` does: either Claude \
-         Code changed the agent-memory path or this is an agent of your own named {name}; if \
-         anthology agents have run here, report it"
+        "`.claude/agent-memory/{name}/` exists but no `anthology-{name}/` does: either this is \
+         an agent of your own named {name} or the agent-memory path changed (anthology agents \
+         save to `anthology-<agent>/` with anthology-mem save); if anthology agents have run \
+         here, report it"
     )
 }
 
