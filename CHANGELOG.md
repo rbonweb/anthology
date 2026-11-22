@@ -231,6 +231,25 @@ a new version section.
 
 ### [Unreleased]
 
+#### Security
+
+- The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
+  program in bash or zsh and was allowed; each is now blocked as too complex to check (G0):
+  - a program or a script that comes from a variable, an array element or a positional
+    parameter the command sets, also behind `env`, `command`, `exec`, `nice`, `time`,
+    `xargs`, `find -exec` and the like, and through `eval`, `bash -c` or `env -S`;
+  - a zsh glob qualifier, which runs code (`*(e:…:)`, `file(+cmd)`);
+  - an expansion that runs code held in a value: bash's `${x@P}`, zsh's `(e)` flag and
+    `${~x}`, the zsh options `GLOB_SUBST` and `PROMPT_SUBST`, and a prompt variable that
+    holds a substitution;
+  - a value from `read`, `mapfile` or `readarray`, or text that holds a substitution, used
+    where the shell evaluates it (a subscript, arithmetic, an `-i` variable);
+  - a subscript with nested brackets or quotes around a substitution;
+  - an alias, a hashed command path or a zsh function defined from text.
+- Commands whose program word is a variable (`$EDITOR file`, `"$HOME/bin/tool"`) are now
+  blocked as too complex; spell the program out. A read loop that also does arithmetic is
+  blocked too. Function wrappers such as `run() { "$@"; }; run make test` stay allowed.
+
 ### [0.2.0] - 2026-11-22
 
 #### Added

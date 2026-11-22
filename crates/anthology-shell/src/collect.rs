@@ -1205,6 +1205,18 @@ pub(crate) struct Ctx<'a> {
     feeders: usize,
     /// SH-F2 review I-1: the entries whose scripts or payloads added one.
     script_feeders: HashSet<usize>,
+    /// PE-1: the words of the segment `add_one` last added that held a parameter expansion, for the
+    /// `find -exec` / `fd -x` payloads `exec_walk` adds from them.
+    param_words: Vec<String>,
+    /// PE-4: an arithmetic context was lexed in the command (`LexInfo::arith`).
+    pub(crate) arith_seen: bool,
+    /// PE-1, PE-3, PE-5, PE-6: a command the analysis cannot prove was read (a program or script from a
+    /// parameter expansion, code from a value, a nested subscript, a renamed program). The analysis goes on,
+    /// and is too complex at its end (`Analysis.incomplete`).
+    pub(crate) unproven: bool,
+    /// PE-1: a positional parameter was a program or in a script (`positional`); too complex only where the
+    /// command sets the positional parameters (`sets_positionals`).
+    pub(crate) positional: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -1235,6 +1247,10 @@ impl<'a> Ctx<'a> {
             setters: HashSet::new(),
             feeders: 0,
             script_feeders: HashSet::new(),
+            param_words: Vec::new(),
+            arith_seen: false,
+            unproven: false,
+            positional: false,
         }
     }
 
@@ -1431,12 +1447,14 @@ impl<'a> Ctx<'a> {
                         return false;
                     }
                     (self.braces, self.quoted_braces) = (false, false);
-                    if self
-                        .add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
-                        .is_none()
-                    {
+                    let Some(added) =
+                        self.add_command(tokens, Vec::new(), group, exempt, depth + 1, &[])
+                    else {
                         return false;
-                    }
+                    };
+                    // PE-1: a call's argument that held a parameter expansion became the program
+                    // (`f() { "$@"; }; f "$x"`); these words carry no holders
+                    self.unproven |= self.entries[added].prog_path.contains('$');
                 }
             }
         }
@@ -1492,6 +1510,8 @@ impl<'a> Ctx<'a> {
             self.halt(); // Python raises `_TooComplex`
             return;
         }
+        self.arith_seen |= info.arith;
+        self.unproven |= info.unproven;
         let mut from_text = Vec::new();
         if lexed.lenient || info.nested_lenient {
             from_text.push(Opaque::Unbalanced);
@@ -2163,6 +2183,8 @@ impl<'a> Ctx<'a> {
 
     /// `_collect_find_exec` and `_collect_fd_exec`, depth-first in Python's order, without recursion.
     fn exec_walk(&mut self, e: usize, depth: usize) {
+        // PE-1: the words of `e`'s segment that held a parameter expansion; every payload comes from them
+        let params = std::mem::take(&mut self.param_words);
         let entry = &self.entries[e];
         let mut stack = vec![ExecFrame {
             payloads: exec_payloads(&entry.prog, &entry.args),
@@ -2193,6 +2215,10 @@ impl<'a> Ctx<'a> {
             let Some(child) = self.add_one(payload, Vec::new(), group, exempt, depth, &[]) else {
                 return;
             };
+            // PE-1: a payload's program or script from a parameter expansion (`find . -exec $x ... \;`,
+            // `-exec sh -c "$x" \;`); its words carry no holders, so any `$` in the program word counts
+            self.unproven |= self.entries[child].prog_path.contains('$')
+                || param_script(&params, &entry_scripts(&self.entries[child]));
             if self.reads_stdin_as_shell(child) == Some(true) {
                 self.launchers.insert(e);
             }
@@ -2262,6 +2288,16 @@ impl<'a> Ctx<'a> {
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
+        // PE-1, PE-3, PE-5, PE-6: a program from a parameter expansion, code from a value, a nested
+        // subscript, a renamed program. The analysis goes on and is too complex at its end (`unproven`), so
+        // a rule that blocks a reading still names itself (`${x:-npx} playwright install` is G1)
+        let result = param_program(words, &holders, &mut self.work);
+        let program = self.take(result)?;
+        self.positional |= program.as_deref().is_some_and(positional);
+        let unproven = program.is_some_and(|w| !positional(&w))
+            || value_code_words(&prog, &args, &tokens)
+            || renames_program(&prog, &args, &tokens)
+            || tokens.iter().any(|t| nested_subscript_runs(t));
         let prefix = &words[..words.len().saturating_sub(cmd.len())];
         // an integer sequence is allowed after the program word only: before it, or as it, it could form one
         if self.braces
@@ -2449,6 +2485,14 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
+        // PE-1: and a script from a parameter expansion (`eval "$x"`, `bash -c "$x"`); not the reading with a
+        // shell's positional parameters put in place below, which holds their values as the script's data
+        let params = param_words(&tokens, &holders);
+        let (shown, other): (Vec<String>, Vec<String>) =
+            params.iter().cloned().partition(|w| positional(w));
+        self.positional |= param_script(&shown, &scripts);
+        self.unproven |= unproven || param_script(&other, &scripts);
+        self.param_words = params;
         let entry_exempt = exempt || DOCKER.contains(&prog.as_str());
         // M-1: a kept entry is charged before it is stored (out of budget: incomplete, nothing dropped)
         if !self.spend(ENTRY_COST) {
@@ -2591,20 +2635,13 @@ fn resolve_holders(
     holders: &[Holder],
     work: &mut Work,
 ) -> Result<Option<Vec<String>>, TooComplex> {
-    if holders.is_empty() {
+    // a word with only a parameter expansion is `param_program`'s
+    if !holders.iter().any(|h| h.subst) {
         return Ok(None);
     }
-    // a stand-in marker that no word of the segment contains
-    let mut n = 0;
-    let mark = loop {
-        let mark = format!("\u{1}{n}\u{1}");
-        if !tokens.iter().any(|t| t.contains(&mark)) {
-            break mark;
-        }
-        n += 1;
-    };
+    let mark = stand_in(tokens);
     let mut words: Option<Vec<String>> = None;
-    let mut open: Vec<&Holder> = holders.iter().collect();
+    let mut open: Vec<&Holder> = holders.iter().filter(|h| h.subst).collect();
     while !open.is_empty() {
         let current = words.as_deref().unwrap_or(tokens);
         let probe: Vec<String> = current
@@ -2633,6 +2670,325 @@ fn resolve_holders(
         words.get_or_insert_with(|| tokens.to_vec())[k] = program;
     }
     Ok(words)
+}
+
+/// A stand-in marker that no word of `tokens` contains.
+fn stand_in(tokens: &[String]) -> String {
+    let mut n = 0;
+    loop {
+        let mark = format!("\u{1}{n}\u{1}");
+        if !tokens.iter().any(|t| t.contains(&mark)) {
+            return mark;
+        }
+        n += 1;
+    }
+}
+
+/// PE-1: the program word `strip_prefixes` reads from `words` (past assignments, keywords, wrappers such as
+/// `env`, `command`, `exec`, `nice`, `time`, `sudo`, `xargs`) is a word that held a parameter expansion
+/// (`$x`, `"${x}"`, `$1`, `"$@"`), so the program is only known at run time. Found as `resolve_holders` finds
+/// a substitution: each such word is replaced by a stand-in in a probe copy. `Some(word)`: that word.
+fn param_program(
+    words: &[String],
+    holders: &[Holder],
+    work: &mut Work,
+) -> Result<Option<String>, TooComplex> {
+    if !holders.iter().any(|h| h.param) {
+        return Ok(None);
+    }
+    let mark = stand_in(words);
+    let probe: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(k, w)| {
+            if holders.iter().any(|h| h.param && h.index == k) && !is_assignment(w) {
+                format!("{mark}{k}")
+            } else {
+                w.clone()
+            }
+        })
+        .collect();
+    let stripped = strip_prefixes(&probe, None, None, true, work)?;
+    Ok(stripped
+        .cmd
+        .first()
+        .and_then(|w| w.strip_prefix(mark.as_str()))
+        .and_then(|k| k.parse::<usize>().ok())
+        .and_then(|k| words.get(k).cloned())
+        .or_else(|| {
+            // a stand-in inside a longer word (`env -S`'s split words): the program is from it anyway
+            stripped.cmd.first().filter(|w| w.contains(&mark)).cloned()
+        }))
+}
+
+/// PE-1: `word` is only a positional parameter (`$1`, `${2}`, `$@`, `$*`, `${@}`): the analysis puts a
+/// shell's (`sh -c S _ a b`) and a function call's arguments in place of these, so they are read; they are
+/// unknown only where the command sets them some other way (`sets_positionals`).
+fn positional(word: &str) -> bool {
+    let inner = word
+        .strip_prefix("${")
+        .and_then(|w| w.strip_suffix('}'))
+        .filter(|w| {
+            !w.is_empty() && (w.bytes().all(|c| c.is_ascii_digit()) || *w == "@" || *w == "*")
+        });
+    inner.is_some()
+        || word.strip_prefix('$').is_some_and(|w| {
+            w.len() == 1 && (w.as_bytes()[0].is_ascii_digit() || w == "@" || w == "*")
+        })
+}
+
+/// PE-1: a command sets the positional parameters (`set a b`, `set -- a`, zsh's `argv=(a b)`), so a
+/// positional parameter can hold a program the analysis did not put in place.
+pub(crate) fn sets_positionals(entries: &[Entry]) -> bool {
+    entries.iter().any(|e| {
+        let operand = e.prog == "set" && {
+            let mut skip = false;
+            e.args.iter().any(|a| {
+                if std::mem::take(&mut skip) {
+                    return false;
+                }
+                if a == "--" || !a.starts_with(['-', '+']) {
+                    return true;
+                }
+                skip = a.ends_with('o'); // `set -o pipefail`, `-euo pipefail`: the option name
+                false
+            })
+        };
+        operand
+            || e.raw.iter().any(|w| {
+                w.strip_prefix("argv")
+                    .is_some_and(|r| r.starts_with(['=', '[', '+']))
+            })
+    })
+}
+
+/// PE-1: a script the command runs (`eval`'s words, a shell's `-c` script, `watch`'s or `trap`'s command, a
+/// command variable) holds a word that held a parameter expansion: the outer shell puts the value in before
+/// the script is read (`eval "$x"`, `bash -c "echo; $x"`), so the script is only known at run time. A
+/// single-quoted script (`sh -c 'echo "$1"' _ x`) holds no such word. `params`: those words (`param_words`).
+fn param_script(params: &[String], scripts: &[String]) -> bool {
+    params
+        .iter()
+        .any(|w| scripts.iter().any(|s| s.contains(w.as_str())))
+}
+
+/// PE-1: the words of `tokens` that held a parameter expansion (`Holder::param`), non-empty.
+fn param_words(tokens: &[String], holders: &[Holder]) -> Vec<String> {
+    holders
+        .iter()
+        .filter(|h| h.param)
+        .filter_map(|h| tokens.get(h.index))
+        .filter(|w| !w.is_empty())
+        .cloned()
+        .collect()
+}
+
+/// The scripts a shell's `-c` or `eval` of `entry` runs (for `param_script`).
+fn entry_scripts(entry: &Entry) -> Vec<String> {
+    let prog = entry.prog.as_str();
+    if SHELLS.contains(&prog) {
+        shell_parse(prog, &entry.args, 0)
+            .scripts
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect()
+    } else if prog == "eval" {
+        vec![entry.args.join(" ")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// PE-6: a command that makes a name run something other than the program of that name: an alias
+/// definition (`alias u='npx ...'`, zsh `alias -g`/`-s`), a hashed path (`hash -p /path/npx u`, zsh
+/// `hash u=/path/npx`), or an assignment to the tables behind them (bash `BASH_ALIASES`, `BASH_CMDS`; zsh
+/// `aliases`, `galiases`, `saliases`, `commands`, and `functions`, which defines a function from text). The
+/// analysis does not follow them, so a later word could be any command.
+fn renames_program(prog: &str, args: &[String], tokens: &[String]) -> bool {
+    const TABLES: &[&str] = &[
+        "BASH_ALIASES",
+        "BASH_CMDS",
+        "aliases",
+        "galiases",
+        "saliases",
+        "dis_aliases",
+        "dis_galiases",
+        "dis_saliases",
+        "commands",
+        "functions",
+        "dis_functions",
+    ];
+    if (prog == "alias" || prog == "hash") && args.iter().any(|a| a.contains('=')) {
+        return true;
+    }
+    if prog == "hash" && args.iter().any(|a| a.starts_with('-') && a.contains('p')) {
+        return true;
+    }
+    tokens.iter().any(|t| {
+        let name = t.split(['[', '=', '+']).next().unwrap_or("");
+        t.contains('=') && TABLES.contains(&name)
+    })
+}
+
+/// PE-3: words that turn on code from values: zsh's `GLOB_SUBST` (a value's glob qualifiers run) and
+/// `PROMPT_SUBST` (`print -P`, prompts and `${(%)x}` run a value's `$(...)`), spelled any way zsh accepts
+/// (`setopt glob_subst`, `set -o GLOBSUBST`, `zsh -o globsubst`, `options[promptsubst]=on`); and a prompt
+/// variable set or read in from a value that can hold a substitution (`PS4='$(cmd)'` with `set -x` runs it in
+/// bash; `read PS4`).
+fn value_code_words(prog: &str, args: &[String], tokens: &[String]) -> bool {
+    const PROMPTS: &[&str] = &[
+        "PS1",
+        "PS2",
+        "PS3",
+        "PS4",
+        "PROMPT",
+        "PROMPT2",
+        "PROMPT3",
+        "PROMPT4",
+        "RPROMPT",
+        "RPROMPT2",
+        "RPS1",
+        "RPS2",
+        "PROMPT_COMMAND",
+    ];
+    const NAMERS: &[&str] = &[
+        "read",
+        "mapfile",
+        "readarray",
+        "printf",
+        "declare",
+        "typeset",
+        "local",
+        "export",
+        "readonly",
+    ];
+    let options = tokens.iter().any(|t| {
+        let flat: String = t
+            .chars()
+            .filter(|c| *c != '_')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        flat.contains("globsubst") || flat.contains("promptsubst")
+    });
+    let prompt = tokens.iter().any(|t| {
+        t.split_once('=').is_some_and(|(name, value)| {
+            PROMPTS.contains(&name.trim_end_matches('+')) && value.contains(['$', '`'])
+        })
+    });
+    let named = NAMERS.contains(&prog) && args.iter().any(|a| PROMPTS.contains(&a.as_str()));
+    options || prompt || named
+}
+
+/// PE-5: a subscript `name[...]` whose text before its first `]` holds another `[` or a quote, with a closed
+/// `$(...)`, backtick pair or `$'...'` after its `[`. bash and zsh count nested brackets and quotes when they
+/// find the subscript's end (`a[[]$(cmd)]`, `a["]"$(cmd)]` run `cmd`), where `subscript_runs` closes it at the
+/// first `]`. Too complex.
+fn nested_subscript_runs(word: &str) -> bool {
+    let b = word.as_bytes();
+    let Some(close) = word.rfind(']') else {
+        return false;
+    };
+    let last = |closer: u8| b[..close].iter().rposition(|&c| c == closer);
+    let (tick, paren, quote) = (last(b'`'), last(b')'), last(b'\''));
+    let runs_from = |from: usize| {
+        (from..close).any(|k| match b[k] {
+            b'`' => tick.is_some_and(|t| t > k),
+            b'$' => match b.get(k + 1) {
+                Some(b'(') => paren.is_some_and(|p| p > k + 1),
+                Some(b'\'') => quote.is_some_and(|q| q > k + 1),
+                _ => false,
+            },
+            _ => false,
+        })
+    };
+    (1..close).any(|j| {
+        b[j] == b'['
+            && (b[j - 1].is_ascii_alphanumeric() || b[j - 1] == b'_')
+            && b[j + 1..]
+                .iter()
+                .take_while(|&&c| c != b']')
+                .any(|c| matches!(c, b'[' | b'"' | b'\''))
+            && runs_from(j + 1)
+    })
+}
+
+/// PE-4: what the shell evaluates as an expression or a subscript, where a value it cannot see could run a
+/// command (`read s <<< '[$(cmd)]'; unset "a$s"`, `echo $(( s ))` with `s='a[$(cmd)]'`): an arithmetic context
+/// (`arith`), `let`, an `-i` declaration, `[[` with an arithmetic operator or `-v`, an argument holding a `$`
+/// of `unset`, `declare`, `printf -v`, `test -v`, `read` and the like, and any word holding a subscript after a
+/// name (`a[$s]=1`), an indirect `${!s}` or an offset `${x:$s}`.
+pub(crate) fn evaluates_values(entries: &[Entry], arith: bool) -> bool {
+    const ARITH_TESTS: &[&str] = &["-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-v"];
+    if arith {
+        return true;
+    }
+    entries.iter().any(|e| {
+        let (prog, args) = (e.prog.as_str(), e.args.as_slice());
+        // a `$` in a name the program evaluates (`unset "a$s"`, `export "$k=$v"`), not in a value (`x=$v`)
+        let dollar = || {
+            args.iter()
+                .any(|a| a.split('=').next().is_some_and(|name| name.contains('$')))
+        };
+        let program = match prog {
+            "let" => true,
+            "[[" => args.iter().any(|a| ARITH_TESTS.contains(&a.as_str())),
+            "declare" | "typeset" | "local" | "readonly" | "export" => {
+                dollar()
+                    || args
+                        .iter()
+                        .any(|a| a.len() > 1 && a.starts_with(['-', '+']) && a.contains('i'))
+            }
+            _ if SUBSCRIPT_PROGRAMS.contains(&prog) => dollar(),
+            _ if SUBSCRIPT_V_PROGRAMS.contains(&prog) => {
+                args.iter().any(|a| a.starts_with("-v")) && dollar()
+            }
+            _ => false,
+        };
+        program || e.raw.iter().any(|w| evaluating_word(w))
+    })
+}
+
+/// PE-4: `word` holds a subscript after a name character that names a variable (`a[$s]`, `${a[s]}`; not
+/// `${a[@]}` or `a[0]`), an indirect `${!x}` or a `${x:...}` offset that names one (`${x:$s}`, `${x:s}`; not
+/// `${x:-y}` or `${x:0:3}`).
+fn evaluating_word(word: &str) -> bool {
+    let b = word.as_bytes();
+    let names = |c: &u8| *c == b'$' || *c == b'`' || *c == b'_' || c.is_ascii_alphabetic();
+    let subscript = (1..b.len()).any(|j| {
+        b[j] == b'['
+            && (b[j - 1].is_ascii_alphanumeric() || b[j - 1] == b'_')
+            && b[j + 1..].iter().take_while(|&&c| c != b']').any(names)
+    });
+    subscript
+        || word.contains("${!")
+        || (0..b.len()).any(|k| {
+            b[k] == b'$'
+                && b.get(k + 1) == Some(&b'{')
+                && param_close(b, k).is_some_and(|end| {
+                    let body = &word[k + 2..end];
+                    body.split_once(':').is_some_and(|(_, rest)| {
+                        !rest.starts_with(['-', '=', '+', '?']) && rest.as_bytes().iter().any(names)
+                    })
+                })
+        })
+}
+
+/// PE-4: the command sets a value the analysis cannot see: a `read`, `mapfile` or `readarray` (from a
+/// here-string, a heredoc, a pipe or a file), or a value holding a closed `$(...)` or backtick pair as text,
+/// which runs when the shell evaluates the value: an assignment (`x='$(cmd)'`, `declare x='$(cmd)'`) or an
+/// argument of `set` or `printf` (`set -- '$(cmd)'`, `printf -v x %s '$(cmd)'`).
+pub(crate) fn unseen_values(entries: &[Entry]) -> bool {
+    // a `$(` that is not a `$((`, with a `)` after it
+    let code = |w: &String| {
+        w.match_indices("$(")
+            .any(|(k, _)| !w[k + 2..].starts_with('(') && w[k + 2..].contains(')'))
+            || w.matches('`').count() >= 2
+    };
+    entries.iter().any(|e| {
+        matches!(e.prog.as_str(), "read" | "mapfile" | "readarray")
+            || e.raw.iter().any(|w| is_assignment(w) && code(w))
+            || (matches!(e.prog.as_str(), "set" | "printf") && e.args.iter().any(code))
+    })
 }
 
 /// `_feed_stdin`'s lines: every non-blank line of `texts`, stripped, all of them (the reference reads the
