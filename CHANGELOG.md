@@ -70,6 +70,23 @@ a new version section.
 
 #### Changed
 
+- rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
+  carried the old name is renamed: the `atl` command and its `atl-hook`, `atl.lock`, the
+  `atl--v<version>` release tags and `atl-<target>.tar.gz` archives (which also ship the
+  license and one `NOTICE` file), the `ATL_*` environment variables, the `atl_path` key in
+  `state.json`, the install under `<plugin data>/atl/`, the history under
+  `~/.claude/anthology/atl/`, project filters in `.atl/filters.toml` (they need `atl trust`
+  again), `anthology atl-install`, and the allow rule `Bash(atl *)`. There is no `rtk` alias.
+  The guard and the hook still recognise the old `rtk` name, so a command typed with it is
+  checked as before. Routing guide section 7 is now "Command output: ATL (Anthology Token
+  Layer)". `anthology` now needs `anthology-guardrails` `~0.2.2`. See ADR-033.
+- Upgrading: session start installs ATL beside the old files and removes nothing. Until you
+  run `/anthology:setup`, `atl` commands prompt, and session start asks you to run it. Setup
+  replaces the `Bash(rtk *)` allow it added earlier with `Bash(atl *)` (an `rtk` allow you
+  wrote yourself is never touched), and shows, then deletes after you confirm, what the old
+  install left: the `rtk_path` entry in `state.json`, `<plugin data>/rtk/` and the old
+  history in `~/.claude/anthology/rtk/`. The old history is deleted, not migrated. Remove
+  covers both the ATL and the old files. Upstream rtk's own folders are never touched.
 - Writing agents (implementer, debugger, ui-designer, docs-writer) and the routing guide now
   delete only literal paths and never `rm -rf $VAR`, because Claude Code asks the user about
   removals it cannot prove safe, even in bypass mode.
