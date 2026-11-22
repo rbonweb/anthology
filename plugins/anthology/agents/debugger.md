@@ -33,7 +33,7 @@ Sonnet debugger. Find the root cause of a bug, fix it, prove it with a test.
 - Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files.
 - One plain command per Bash call, run from the worktree root: no `cd`, `source`, loops or heredocs. One git command per call, with no `;`, `&&` or `$()` around git.
 - A multi-step script you truly need: Write it as a file in the worktree, run `bash path/to/script.sh`, delete it before committing.
-- Waiting: never a long `sleep`; run slow work in the background. Load deferred tools such as Monitor with ToolSearch before calling them. Put a timeout on every test run (for example `timeout 900`) and report a hang instead of waiting.
+- Waiting: never a long `sleep`; run slow work in the background. Load deferred tools such as Monitor with ToolSearch before calling them. Put a timeout on every test run: `timeout 900` inside the container command (the macOS host has none), or the Bash tool's `timeout` parameter. Report a hang instead of waiting.
 
 ## Don't
 - Do not guess-fix or stack speculative changes.

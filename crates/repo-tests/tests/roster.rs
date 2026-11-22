@@ -845,7 +845,7 @@ mod roster_test {
                     "in the background",
                     "Load deferred tools such as Monitor with ToolSearch before calling them.",
                     "`timeout 900`",
-                    "report a hang instead of waiting",
+                    "Report a hang instead of waiting.",
                 ] {
                     expect_in(p, needle, &rules, "Do");
                 }

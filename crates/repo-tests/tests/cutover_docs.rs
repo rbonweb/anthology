@@ -79,7 +79,7 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
 ];
 
 /// Single lines elsewhere that mention Python on purpose: (file, a substring of the line, why).
-const ALLOWED_LINES: [(&str, &str, &str); 11] = [
+const ALLOWED_LINES: [(&str, &str, &str); 7] = [
     (
         "README.md",
         "`python3 -c`",
@@ -114,26 +114,6 @@ const ALLOWED_LINES: [(&str, &str, &str); 11] = [
         "ci/jobs/ledger.sh",
         "CO2 deleted the Python",
         "why the ledger extracts nothing",
-    ),
-    (
-        "plugins/anthology/agents/debugger.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/docs-writer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/implementer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/ui-designer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
     ),
 ];
 

@@ -47,9 +47,11 @@ Read this before the first task of a large or long build (many tasks, several ag
 - Load a deferred tool such as Monitor with ToolSearch
   (`select:Monitor`) before the first call. Why: calling a tool whose schema
   is not loaded fails.
-- Put a timeout on every test run, for example `timeout 900 <command>`.
-  When it fires, or the run shows no progress, stop and report a hang
-  instead of waiting. Why: a hung run once sat for 36 minutes unnoticed.
+- Put a timeout on every test run: `timeout 900 <command>` inside the
+  container command (Linux images have `timeout`; the macOS host has none),
+  or the Bash tool's own `timeout` parameter. Never rely on a host
+  `timeout`. When it fires, or the run shows no progress, stop and
+  report a hang instead of waiting. Why: a hung run once sat for 36 minutes unnoticed.
 
 ## Docker names per worktree
 
