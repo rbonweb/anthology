@@ -218,7 +218,13 @@ impl Fx {
     }
 
     /// `line` sent as it is, with the fixture's root as the one root.
-    fn classify_raw(&self, cwd: &Path, line: &str, rules: &[&str], extra: &[(&str, &str)]) -> Output {
+    fn classify_raw(
+        &self,
+        cwd: &Path,
+        line: &str,
+        rules: &[&str],
+        extra: &[(&str, &str)],
+    ) -> Output {
         let mut env = self.env();
         for (k, v) in extra {
             env = env.with(k, v);
@@ -322,7 +328,7 @@ fn a_proof_prints_the_token_then_every_resolved_path_read() {
     );
     assert_eq!(
         assert_allow(&fx.classify(&fx.root, "ls -la", &[]), "ls"),
-        [root.clone()],
+        vec![root.clone()],
         "the cd target and the implicit `.` are one path"
     );
     assert_eq!(
@@ -473,12 +479,19 @@ fn without_a_leading_absolute_cd_only_absolute_paths_are_allowed() {
         (&fx.root, "ls", "a relative path"),
         (&fx.root, "rg x", "a relative path"),
         (&fx.root, "cd ./sub && cat ./b.txt", "a relative cd target"),
-        (&repo, "git status", "git, and the shell's working directory"),
+        (
+            &repo,
+            "git status",
+            "git, and the shell's working directory",
+        ),
     ] {
         assert_refused(&fx.classify_raw(cwd, line, &[], &[]), why, line);
     }
     let line = format!("cd {} && cd ./sub && cat ./b.txt", fx.root.display());
-    assert_allow(&fx.classify_raw(&fx.root, &line, &[], &[]), "anchored chain");
+    assert_allow(
+        &fx.classify_raw(&fx.root, &line, &[], &[]),
+        "anchored chain",
+    );
 }
 
 // --- roots and containment ----------------------------------------------------------------------------------
@@ -520,11 +533,7 @@ fn a_path_outside_every_root_gives_no_decision() {
     std::fs::write(fx.base.join("outside.txt"), "o\n").unwrap();
     let outside = fx.base.join("outside.txt");
     let command = format!("cat {}", outside.display());
-    assert_refused(
-        &fx.classify(&fx.root, &command, &[]),
-        "outside",
-        "absolute",
-    );
+    assert_refused(&fx.classify(&fx.root, &command, &[]), "outside", "absolute");
     // A second root that holds it makes it fine.
     let input = request(&command, &fx.root, &[&fx.root, &fx.base], &[]);
     assert_allow(&run(&input, &fx.env()), "second root");
@@ -553,11 +562,7 @@ fn a_glob_gives_no_decision() {
     // What the shell expands a glob to (dotglob, nullglob, files made meanwhile) is not known here.
     let fx = Fx::new();
     fx.write("a.txt", "a\n");
-    assert_refused(
-        &fx.classify(&fx.root, "cat ./*.txt", &[]),
-        "a glob",
-        "star",
-    );
+    assert_refused(&fx.classify(&fx.root, "cat ./*.txt", &[]), "a glob", "star");
     // The classifier may refuse some of these shapes first; either way there is no decision.
     for command in ["ls ./a?txt", "cat ./[a].txt", "ls ./**/a.txt"] {
         assert_refused(&fx.classify(&fx.root, command, &[]), "", command);
@@ -1104,7 +1109,11 @@ fn trap_a_partial_clone_fetches_with_upload_pack_on_git_log_p() {
     chmod_x(&wrapper);
     fx.git(
         &clone,
-        &["config", "remote.origin.uploadpack", wrapper.to_str().unwrap()],
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            wrapper.to_str().unwrap(),
+        ],
     );
     fx.git_try(&clone, &["log", "-p"], &[]);
     assert!(fx.ran("uploadpack"), "the lazy fetch ran upload-pack");
@@ -1404,7 +1413,12 @@ fn a_tracked_secret_or_a_rule_below_the_repository_gives_no_decision_for_git() {
     std::fs::write(repo.join("notes.txt"), "n\n").unwrap();
     fx.git(&repo, &["add", "notes.txt"]);
     fx.git(&repo, &["commit", "-qm", "notes"]);
-    for rule in ["Read(./notes.txt)", "Read(./later/**)", "Read(./.git/**)", "Read(./.git/config)"] {
+    for rule in [
+        "Read(./notes.txt)",
+        "Read(./later/**)",
+        "Read(./.git/**)",
+        "Read(./.git/config)",
+    ] {
         assert_refused(
             &fx.classify(&repo, "git log -p", &[rule]),
             "Read rule",
@@ -1452,22 +1466,14 @@ fn alternates_or_an_unreadable_index_give_no_decision() {
     );
     std::fs::remove_file(&alternates).unwrap();
     assert_allow(&fx.classify(&repo, "git log", &[]), "back to normal");
-    std::fs::write(
-        repo.join(".git/index"),
-        b"DIRC\0\0\0\x02\0\0\0\x05short",
-    )
-    .unwrap();
+    std::fs::write(repo.join(".git/index"), b"DIRC\0\0\0\x02\0\0\0\x05short").unwrap();
     assert_refused(
         &fx.classify(&repo, "git log", &[]),
         "index",
         "corrupt index",
     );
     std::fs::write(repo.join(".git/index"), b"nope").unwrap();
-    assert_refused(
-        &fx.classify(&repo, "git log", &[]),
-        "index",
-        "not an index",
-    );
+    assert_refused(&fx.classify(&repo, "git log", &[]), "index", "not an index");
 }
 
 #[test]
