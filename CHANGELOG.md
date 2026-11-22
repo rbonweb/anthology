@@ -351,6 +351,46 @@ a new version section.
 
 ### [Unreleased]
 
+#### Security
+
+- The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
+  program in bash or zsh and was allowed; each is now blocked as too complex to check (G0):
+  - a program or a script that comes from a variable or an array element, also behind
+    `env`, `command`, `exec`, `nice`, `time`, `xargs`, zsh's `noglob` and `nocorrect`,
+    `find -exec` and the like, and through `eval`, `bash -c` or `env -S`;
+  - a positional parameter as a program or in a script, unless the guard filled it in with
+    a literal value itself (a `sh -c '…' _ args` script, or a function only called directly):
+    a shell reading its script from stdin with arguments, `find -exec sh -c … {}`, a function
+    run from `trap` or `eval`, zsh's anonymous functions, `shift`, and a
+    `command_not_found_handle(r)` definition;
+  - a zsh glob qualifier, which runs code (`*(e:…:)`, `file(+cmd)`, after a group, in a
+    `${x:-…}` default), and a program word with a glob character or from `find -exec {}`;
+  - an expansion that runs code held in a value: bash's `${x@P}`, zsh's `(e)` flag and
+    `${~x}` (in heredoc bodies too), the zsh options `GLOB_SUBST` and `PROMPT_SUBST` (also
+    named by a variable), a prompt variable or `BASH_ENV`/`ENV` that holds a substitution,
+    and a nameref or a variable name that could point at one;
+  - a value from `read`, `mapfile`, `readarray` or `select`, or text that holds a
+    substitution, with anything the shell evaluates (a subscript, arithmetic, an `-i`
+    variable);
+  - a subscript with nested brackets or quotes around a substitution;
+  - an alias, a hashed command path, a zsh function defined from text, and bash's alias and
+    command tables or an exported `BASH_FUNC_` named in any word.
+- zsh's `=npx` and bash's `coproc NAME { … }` are read as the program they run, so their
+  rules apply.
+- Commands whose program word is a variable (`$EDITOR file`) are now blocked as too complex;
+  spell the program out. A program under a standard directory stays allowed and is checked
+  as written (`"$HOME/.cargo/bin/cargo" build`, also `TMPDIR`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`) when the command is plain: no other expansion, and
+  only letters, digits, `_ . / : = , + @ % -`, blanks, quotes and `; & | < >` elsewhere. The
+  name may not appear anywhere else in the command. `${HOME}/…`, `$PWD` and a `$HOME` inside
+  a double-quoted `sh -c` script are not read through. So do function wrappers such as
+  `run() { "$@"; }; run make test` whose call words are plain. Accepted over-blocks: a read
+  loop that counts (`while read -r l; do n=$((n+1)); done < f`) is too complex, since any
+  arithmetic in a command that reads input is, and so is a `retry` wrapper whose body holds
+  a number (`for i in 1 2 3`). The too-complex message suggests single
+  quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
+  blocked. These ship in the next `anthology` binary (0.1.4).
+
 #### Fixed
 
 - A read-only search is no longer blocked as "too complex" (G0) because its regex has a

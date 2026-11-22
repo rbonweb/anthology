@@ -180,7 +180,7 @@ If the guard cannot run (its binary is missing, broken or cannot be installed), 
 
 The guard is built to stop accidental browser installs and launches by cooperative agents. It is a hook plus deny rules, not a sandbox or a jail, and it does not defend against deliberate obfuscation. Known limits:
 
-- Commands built inside variables or arrays and then run are not seen for what they are.
+- A command whose program or script comes from a variable, an array, a positional parameter, an alias or a value read from input is blocked as too complex to check, except a program under a standard directory such as `"$HOME/.cargo/bin/cargo"`. [SECURITY.md](SECURITY.md#values-the-guard-cannot-see) lists exactly what is blocked and what still gets through.
 - A command whose text comes from another command's output and is fed to a shell is not looked into: `bash -c "$(…)"`, `eval`, `<(…)`, `source <(…)`.
 - Unusual nested shell syntax can hide a command, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`.
 - Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for profile paths. Inside interpreter code (`python3 -c`, `node -e`, a heredoc fed to `python3`, a BrowserOS Neo `run` script) only profile paths spelled out in one string are seen: a path assembled piecewise (`Path.home() / "Library" / …`, variables) is not, and neither is a command run from inside the code (`os.system(…)`).
