@@ -10,6 +10,20 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
+  without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
+  plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
+  absolute or `./` path that exists (no `..`, `~`, `-`, variable or bare `src`, which
+  `CDPATH` could redirect), and the command's relative paths are resolved against it before
+  your `Read()` rules, so `cd ./secret && cat k.txt` is still denied. The count must be digits
+  only (no variable, substitution, file or `-f`). A second pipe, `;`, `||`, `&`, a newline, a
+  second `cd` or a redirect still asks. Everything else about the plain shape is unchanged.
+- New in `anthology-shell` (used by the guard, rtk and the later permission levels):
+  `classify_readonly`, which proves that a Bash command only reads, and is conservative by
+  default: anything it does not prove is not read-only. It is not wired into a hook yet.
+
 ### [0.2.0] - 2026-11-22
 
 #### Added

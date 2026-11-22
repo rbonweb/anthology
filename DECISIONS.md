@@ -919,3 +919,28 @@ The difftest proves parity on seeds and generated inputs, but real tool calls ca
 **Consequences**
 
 The binary that ships was checked against every real tool call on record, deeper than verdicts, with no calendar wait. The replay proves parity on real traffic, not bypass resistance: the generators and the monotonicity properties cover that. Runner 1 now needs a checkout from before CO2 (`--repo`), since the Python is gone from `HEAD`. Cost if wrong: less diagnostic detail in the committed report; the full detail stays on the owner's machine.
+
+## ADR-032: a read-only classifier on the shared parser, and the rtk gate's `cd` and `head` wrappers
+
+- **Date:** 2026-11-22
+- **Task:** post-release plan P3 (PLAN §15 item 1; the permission-levels design, item 1)
+- **Status:** Accepted
+
+**Context**
+
+An allow is the one answer that skips the person, so a command may only be called read-only when that is proven. Two later pieces need the same proof: a permission mod that allows read-only commands the engine would ask about, and rtk's gate, which today asks about every line that is not one bare `rtk` command, so `cd src && git status` and `git log | head -n 5` are never rewritten once a deny, ask or `Read()` rule exists. A second shell reading in each place is how the guard's bypass findings arose (design G-2).
+
+**Decision**
+
+- `anthology-shell::readonly` holds `classify_readonly(command, home)`, which returns `Proven { paths, cd }` or `NotProven(reason)`. It proves, and never guesses. A line is proven only when the module's own small scanner and `analyze` read the same simple commands, words and redirects, with nothing opaque, no alternate reading and no `incomplete`; every program is in a fixed table and has only options that table lists. Stages join with `&&` or `|` only; the only redirects are `2>&1`, `>&2`, `>/dev/null` and `< PATH`; a `cd` may only lead, with a target `literal_cd_target` accepts. Anything unlisted is not proven: that includes every program, every option and every git subcommand not named.
+- Ruling: a `cd` target must be absolute or start with `./`. A bare `cd src` is refused because `CDPATH` (set in a shell snapshot a hook cannot see) can send it elsewhere. Cost if wrong: `cd src && …` is not read-only-proven and not rewritten under rules; the normal prompt stands.
+- Ruling: an unquoted `~`, `^`, `#`, brace, `$`, backquote, `<(`, backslash, `!` or `;` is refused anywhere, so `git diff HEAD~1` is not proven unless the revision is quoted. Commands run in the user's own shell, often zsh with `EXTENDED_GLOB`, where `~`, `^` and `#` are glob operators. Cost if wrong: fewer commands proven.
+- Ruling: a glob that could expand to a name starting with `-` (`*.rs`, `*`) is refused outside `--`, and no glob stands in an option value, a pattern or any word that is not a path, so a file called `--output=x` cannot become an option. Cost if wrong: `ls *.rs` is not proven; `ls ./*.rs` is.
+- Ruling: a `jq` filter that names `env`, `$ENV`, `import`, `include` or `modulemeta` is refused, since `jq -n env` prints every environment secret without writing anything. Cost if wrong: a field called `.env` is not proven.
+- Ruling: `Proven.paths` are the paths as written; a git operand is reported as a possible path, since git decides between a revision and a path. The classifier never reads the file system: containment, symlinks, secrets, `Read()` rules and git's repository config are the path check's job (P4).
+- rtk's gate takes two wrappers around the plain `rtk` command, once each and in this order: `cd TARGET &&` in front and `| head -n N` or `| tail -n N` behind. They use the shared helpers `literal_cd_target` and `head_tail_count`. The line is cut at its unquoted `&&` and `|`; each part must be plain; the shared parser must read the same stages. The target must exist and be a directory (symlinks resolved); the command's relative paths are resolved against that real directory before the `Read()` check, the target is read like an operand, and the `Read()` rules stay anchored to the directory the hook was called in, as the rule scan's are.
+- rtk builds `anthology-shell` as a path dependency, so a build from this tree already has the DT-4 lexer fix. `rtk/Cargo.lock` lists the path package at `0.1.0`, which is only the package version, so no lock change is needed.
+
+**Consequences**
+
+`classify_readonly` is not wired into any hook in this change. The rtk change needs a new rtk release and an `rtk.lock` bump before users get it; until then the shipped rtk behaves as before. Cost if wrong: a classifier bug is a silent allow, so the table errs toward refusing; the first release of the permission mod should log what it proves for a while before it allows.
