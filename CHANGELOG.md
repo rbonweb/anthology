@@ -10,6 +10,15 @@ a new version section.
 
 ### [Unreleased]
 
+#### Added
+
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
+
 ### [0.2.7] - 2026-11-22
 
 #### Added
