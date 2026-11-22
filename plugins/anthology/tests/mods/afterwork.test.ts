@@ -1,8 +1,10 @@
 // afterwork.ts (post-release mods design §4): on `agent.report` of a writing anthology agent, the
-// mod appends an "After-work check" block naming what the report lacks, and nothing else. The
-// test's own hooks sit beneath the plugin and stand for Claude Code: `agent.report` is the engine's
-// delivery of the text, `env.get` the environment, `agent.list` and `session.cwd` where the agent
-// worked, and `process.run` the one git call.
+// mod appends an "After-work check" block naming what the report lacks, and nothing else. A block
+// is raised only by a real gap (no commit, no test evidence, attribution lines, uncommitted files
+// in the agent's worktree); the project-map and leftover items are reminders that ride in a block
+// a gap raised. The test's own hooks sit beneath the plugin and stand for Claude Code:
+// `agent.report` is the engine's delivery of the text, `env.get` the environment, `agent.list`,
+// `session.*` and `fs.stat` where the agent worked, and `process.run` the one git call.
 import type { AgentInfo, AgentReportInput, On, ProcessRunResult } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
@@ -15,7 +17,12 @@ type World = {
   env?: Record<string, string>
   agents?: () => AgentInfo[]
   cwd?: string
+  root?: string
+  /** Where a path really lands, for a link; any other path lands on itself. */
+  real?: Record<string, string>
   git?: (run: Run) => ProcessRunResult | Promise<ProcessRunResult>
+  /** What core says of the report, beside its text. */
+  review?: { review: 'flagged'; warning: string }
 }
 
 const CLEAN: ProcessRunResult = {
@@ -29,10 +36,14 @@ const CLEAN: ProcessRunResult = {
 /** Stands for Claude Code beneath the plugin: it delivers the text it was given, as core does. */
 function engine(on: On, w: World = {}) {
   const runs: Run[] = []
-  on('agent.report', (_$, e) => ({ text: e.text, review: 'cleared' }))
+  on('agent.report', (_$, e) => ({ text: e.text, review: 'cleared', ...w.review }))
   on('env.get', (_$, e) => ({ value: w.env?.[e.name] }))
   on('agent.list', () => ({ value: w.agents?.() ?? [] }))
   on('session.cwd', () => ({ value: w.cwd ?? '/work/repo' }))
+  on('session.root', () => ({ value: w.root ?? '/work/repo' }))
+  on('fs.stat', (_$, e) => ({
+    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path },
+  }))
   on('process.run', async (_$, e) => {
     runs.push(e)
     return { value: await (w.git ?? (() => CLEAN))(e) }
@@ -61,6 +72,8 @@ function report(text: string, over: Partial<AgentReportInput> = {}): AgentReport
 }
 
 const CHECK = 'After-work check'
+const withVerification = (line: string) => FULL.replace('claude plugin test passed (9 tests); tsc clean.', line)
+const withChanges = (line: string) => FULL.replace('committed 3f9a2c1 on branch p7-afterwork.', line)
 
 test('a full report from a writer is delivered as written, with no block', async ($, on) => {
   engine(on)
@@ -68,16 +81,13 @@ test('a full report from a writer is delivered as written, with no block', async
   expect(r.text).toBe(FULL)
 })
 
-test('each missing item is flagged by name, and only that item', async ($, on) => {
+test('each real gap is flagged by name, and only that gap', async ($, on) => {
   engine(on)
-  const cases: { drop: string; flag: string }[] = [
-    { drop: 'committed 3f9a2c1', flag: 'no commit' },
-    { drop: 'claude plugin test passed (9 tests); tsc clean.', flag: 'nothing about what was tested' },
-    { drop: 'removed my container and its volume; no temp files left.', flag: 'leftovers removed' },
-    { drop: 'Project map: updated in the same commit.', flag: 'the project map' },
+  const cases: { text: string; flag: string }[] = [
+    { text: withChanges('x'), flag: 'no commit' },
+    { text: withVerification('x'), flag: 'what was tested' },
   ]
-  for (const { drop, flag } of cases) {
-    const text = FULL.replace(drop, 'x')
+  for (const { text, flag } of cases) {
     const r = await $.agent.report(report(text))
     expect(r.text).toContain(`${text}\n\n`)
     expect(r.text?.slice(text.length)).toContain(CHECK)
@@ -86,22 +96,54 @@ test('each missing item is flagged by name, and only that item', async ($, on) =
   }
 })
 
-test('the commit check takes a sha or the word, and not "not committed"', async ($, on) => {
+test('a report short of everything gets one block with the two real gaps and no reminder', async ($, on) => {
   engine(on)
-  const word = await $.agent.report(report(FULL.replace('committed 3f9a2c1', 'committed')))
-  expect(word.text).toBe(FULL.replace('committed 3f9a2c1', 'committed'))
-  const sha = await $.agent.report(report(FULL.replace('committed 3f9a2c1', 'HEAD is 3f9a2c1')))
-  expect(sha.text).toBe(FULL.replace('committed 3f9a2c1', 'HEAD is 3f9a2c1'))
-  const not = await $.agent.report(report(FULL.replace('committed 3f9a2c1', 'not committed')))
-  expect(not.text).toContain('no commit')
-  const un = await $.agent.report(report(FULL.replace('committed 3f9a2c1', 'uncommitted changes remain')))
-  expect(un.text).toContain('no commit')
+  const r = await $.agent.report(report('Did the thing.'))
+  const block = r.text?.slice('Did the thing.'.length) ?? ''
+  expect(r.text?.startsWith('Did the thing.\n\n')).toBe(true)
+  expect(block.match(/^- /gm)).toHaveLength(2)
+  expect(block).not.toContain('Reminder')
 })
 
-test('a map that does not exist, said so, counts as mentioned', async ($, on) => {
+test('a report with a commit and test evidence but no map or cleanup line gets no block', async ($, on) => {
   engine(on)
-  const text = FULL.replace('Project map: updated in the same commit.', 'No project map exists in this repo.')
+  const text = FULL.replace('Cleanup: removed my container and its volume; no temp files left.\n', '').replace(
+    'Project map: updated in the same commit.\n',
+    '',
+  )
   expect((await $.agent.report(report(text))).text).toBe(text)
+  const rewired = `${text}\nAdded hooks/mods/x.ts and ran the tests in a container.`
+  expect((await $.agent.report(report(rewired))).text).toBe(rewired)
+})
+
+test('the commit check takes a sha or the word, and not "not committed"', async ($, on) => {
+  engine(on)
+  for (const ok of ['committed', 'HEAD is 3f9a2c1', 'commit 1234567', 'HEAD at 12345678901234567890']) {
+    expect((await $.agent.report(report(withChanges(ok)))).text).toBe(withChanges(ok))
+  }
+  for (const bad of ['not committed', 'uncommitted changes remain', 'nothing committed', 'ticket 1234567', 'x']) {
+    expect((await $.agent.report(report(withChanges(bad)))).text).toContain('no commit')
+  }
+})
+
+test('test evidence is a test word, and "not run" or "skipped" in any order is none', async ($, on) => {
+  engine(on)
+  for (const ok of ['cargo test passed', 'tsc clean', 'ran clippy', 'tests passed (9)']) {
+    expect((await $.agent.report(report(withVerification(ok)))).text).toBe(withVerification(ok))
+  }
+  for (const bad of [
+    'tests were not run',
+    'Tests: not run',
+    'tests skipped',
+    'not tested',
+    'the tests were skipped',
+    'no tests',
+    'Tests: none',
+    'I did not run the tests',
+  ]) {
+    const text = withVerification(bad)
+    expect((await $.agent.report(report(text))).text).toContain('what was tested')
+  }
 })
 
 test('attribution lines in the report are flagged, in either spelling', async ($, on) => {
@@ -122,12 +164,32 @@ test('a report that only says it added none is not flagged for attribution', asy
   expect((await $.agent.report(report(text))).text).toBe(text)
 })
 
-test('a report missing everything gets one block with every item', async ($, on) => {
+test('the map reminder shows only for a named new, removed or renamed piece, and not when the map is dealt with', async ($, on) => {
   engine(on)
-  const r = await $.agent.report(report('Did the thing.'))
-  const block = r.text?.slice('Did the thing.'.length) ?? ''
-  expect(r.text?.startsWith('Did the thing.\n\n')).toBe(true)
-  expect(block.match(/^- /gm)).toHaveLength(4)
+  const base = 'Changes: Added hooks/mods/x.ts, renamed the build command.'
+  const r = await $.agent.report(report(base))
+  expect(r.text).toContain('Reminder: ')
+  expect(r.text).toContain('project map')
+  expect((await $.agent.report(report('Did the thing.'))).text).not.toContain('Reminder')
+  for (const said of ['No project map exists.', 'map not needed', 'There is no map.', 'The map is missing.', 'Updated the project map.']) {
+    const t = await $.agent.report(report(`${base}\n${said}`))
+    expect(t.text).toContain(CHECK)
+    expect(t.text).not.toContain('Reminder')
+  }
+})
+
+test('the leftover reminder needs a started container, volume or temp file with no removal said', async ($, on) => {
+  engine(on)
+  const ran = 'Ran the tests in a container.'
+  expect((await $.agent.report(report(ran))).text).toContain('Reminder: ')
+  for (const said of ['Removed the container.', 'Nothing to clean up.', 'No leftovers.', 'Volumes were deleted.']) {
+    const r = await $.agent.report(report(`${ran}\n${said}`))
+    expect(r.text).toContain(CHECK)
+    expect(r.text).not.toContain('Reminder')
+  }
+  const docs = await $.agent.report(report(ran, { subagentType: 'anthology:docs-writer' }))
+  expect(docs.text).toContain(CHECK)
+  expect(docs.text).not.toContain('Reminder')
 })
 
 test('every writing agent is checked, and the reviewer, scout and others are skipped', async ($, on) => {
@@ -142,7 +204,7 @@ test('every writing agent is checked, and the reviewer, scout and others are ski
   }
 })
 
-test('a nested, failed, stopped, empty or consumed report is left as it is', async ($, on) => {
+test('a nested, failed, stopped or empty report is left as it is', async ($, on) => {
   engine(on)
   expect((await $.agent.report(report('Done.', { parentAgentId: 'p1' }))).text).toBe('Done.')
   expect((await $.agent.report(report('Done.', { status: 'failed' }))).text).toBe('Done.')
@@ -163,6 +225,13 @@ test('the agent text stays verbatim ahead of the block, odd spacing and all', as
   expect(r.text?.startsWith(text)).toBe(true)
 })
 
+test('the review and warning core gave the report stay with the rewritten text', async ($, on) => {
+  engine(on, { review: { review: 'flagged', warning: 'W' } })
+  const r = await $.agent.report(report('Done.'))
+  expect(r.text).toContain(CHECK)
+  expect(r).toMatchObject({ review: 'flagged', warning: 'W' })
+})
+
 test('ANTHOLOGY_AFTERWORK=0 and ANTHOLOGY_MODS=0 each turn the check off', async ($, on) => {
   const w: World = { env: { ANTHOLOGY_AFTERWORK: '0' } }
   engine(on, w)
@@ -178,7 +247,7 @@ test('ANTHOLOGY_AFTERWORK=0 and ANTHOLOGY_MODS=0 each turn the check off', async
 const WORKTREE = '/work/repo/.claude/worktrees/agent-1'
 const IN_WORKTREE = (): World => ({ agents: () => [{ id: 'a1', cwd: WORKTREE } as AgentInfo] })
 
-test('dirty files in the agent worktree add one line, from one git call with a timeout', async ($, on) => {
+test('dirty files in the agent worktree add one gap, from one git call with a timeout', async ($, on) => {
   const runs = engine(on, {
     ...IN_WORKTREE(),
     git: () => ({ ...CLEAN, stdout: ' M src/a.ts\n?? notes.md\n' }),
@@ -192,6 +261,21 @@ test('dirty files in the agent worktree add one line, from one git call with a t
   expect(runs[0]?.init?.cwd).toBe(WORKTREE)
   expect(runs[0]?.init?.timeoutMs).toBeGreaterThan(0)
   expect(runs[0]?.init?.timeoutMs).toBeLessThanOrEqual(3000)
+})
+
+test('the git call leaves the agents own memory notes out, from the repo top', async ($, on) => {
+  const runs = engine(on, IN_WORKTREE())
+  await $.agent.report(report(FULL))
+  const argv = runs[0]?.argv ?? []
+  const at = argv.indexOf('--')
+  expect(at).toBeGreaterThan(0)
+  expect(argv.slice(at + 1)).toEqual([':(top)', ':(top,exclude).claude/agent-memory'])
+})
+
+test('output cut at the cap reads as many uncommitted changes', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), git: () => ({ ...CLEAN, stdout: ' M a\n', isStdoutTruncated: true }) })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text?.slice(FULL.length)).toContain('many uncommitted')
 })
 
 test('a clean agent worktree adds nothing', async ($, on) => {
@@ -209,6 +293,19 @@ test('git is not run when the agent works in the session folder itself', async (
   const runs = engine(on, { cwd: '/work/repo', agents: () => [{ id: 'a1', cwd: '/work/repo' } as AgentInfo] })
   await $.agent.report(report(FULL))
   expect(runs).toHaveLength(0)
+})
+
+test('the session folder is told by real path: a trailing slash, a link, the session root', async ($, on) => {
+  const w: World = { cwd: '/work/repo/sub', root: '/work/repo', agents: () => [{ id: 'a1', cwd: '/work/repo/' } as AgentInfo] }
+  const runs = engine(on, w)
+  await $.agent.report(report(FULL)) // the folder is the session root with a trailing slash
+  w.agents = () => [{ id: 'a1', cwd: '/link/sub' } as AgentInfo]
+  w.real = { '/link/sub': '/work/repo/sub' } // a link onto the session cwd
+  await $.agent.report(report(FULL))
+  expect(runs).toHaveLength(0)
+  w.real = {}
+  await $.agent.report(report(FULL)) // an unrelated folder is checked
+  expect(runs).toHaveLength(1)
 })
 
 test('a git timeout, a git failure or a lookup failure leaves the text-only check', async ($, on) => {

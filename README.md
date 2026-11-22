@@ -198,15 +198,16 @@ A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linu
 
 ### After-work check
 
-When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.329 or later) checks the report before the lead reads it. It looks for five things:
+When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.329 or later) checks the report before the lead reads it. A short "After-work check" block is appended only when there is a real gap:
 
-- a commit (a sha, or the word "committed");
-- what was tested;
-- leftovers removed (containers, volumes, temp files);
-- a project-map update, or a statement that none exists;
-- attribution lines (`Co-Authored-By: Claude`, "Generated with"), which must not be there.
+- no commit (a sha, or the word "committed");
+- no test evidence (a test word; "tests not run" or "skipped" counts as none);
+- attribution lines (`Co-Authored-By: Claude`, "Generated with") in the report, which must not be there;
+- uncommitted files in the agent's own worktree.
 
-It appends a short "After-work check" block that lists only what is missing. The agent's own text is never rewritten or cut. A report that has everything is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit) and adds a line if files are uncommitted; any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
+Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one: the project map, when the report names a new, removed or renamed piece and does not say the map was updated, is missing or is not needed; and leftovers, when the report starts containers, volumes or temp files and does not say they were removed (never asked of the docs-writer).
+
+The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out); any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
 
 ### Commits carry only your name
 
