@@ -1167,6 +1167,8 @@ mod files_test {
         let want = json::loads(
             r#"[{"matcher": "Bash", "hooks": [
                 {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],
+                 "timeout": 60, "onFailure": "block"},
+                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"],
                  "timeout": 60, "onFailure": "block"}]}]"#,
         )
         .expect("want");
@@ -1537,6 +1539,69 @@ mod wrapper_test {
             (0, format!("{ASK}\n")),
             "a JSON escape counts"
         );
+    }
+
+    /// A Bash hook input that mentions rtk, with `permission_mode` set (or left out for `None`),
+    /// in the compact JSON spacing and in the spaced one.
+    fn mode_inputs(mode: Option<&str>) -> [String; 2] {
+        let tail = r#""tool_name":"Bash","tool_input":{"command":"rtk git status"}"#;
+        match mode {
+            Some(m) => [
+                format!(r#"{{"permission_mode":"{m}",{tail}}}"#),
+                format!(r#"{{"permission_mode": "{m}", {tail}}}"#),
+            ],
+            None => [format!("{{{tail}}}"), format!("{{ {tail} }}")],
+        }
+    }
+
+    #[test]
+    fn test_hook_drops_an_ask_in_bypass_and_auto_mode() {
+        // The user chose no prompts, so even an ask on a line that mentions rtk is dropped.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        for mode in ["bypassPermissions", "auto"] {
+            for stdin in mode_inputs(Some(mode)) {
+                let res = w.run_bin("rtk-hook", &[], &stdin);
+                assert_eq!(
+                    (res.code, res.stdout_text(), res.stderr_text()),
+                    (0, String::new(), String::new()),
+                    "{stdin}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_an_ask_in_the_other_modes_and_without_a_mode() {
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        let modes = [Some("default"), Some("acceptEdits"), Some("plan"), None];
+        for mode in modes {
+            for stdin in mode_inputs(mode) {
+                let res = w.run_bin("rtk-hook", &[], &stdin);
+                assert_eq!(
+                    (res.code, res.stdout_text()),
+                    (0, format!("{ASK}\n")),
+                    "{stdin}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hook_never_drops_a_deny_in_bypass_or_auto_mode() {
+        let w = setup();
+        w.answer_fake(DENY, 0);
+        for mode in ["bypassPermissions", "auto"] {
+            for stdin in mode_inputs(Some(mode)) {
+                let res = w.run_bin("rtk-hook", &[], &stdin);
+                assert_eq!(
+                    (res.code, res.stdout_text()),
+                    (0, format!("{DENY}\n")),
+                    "{stdin}"
+                );
+            }
+        }
     }
 
     #[test]

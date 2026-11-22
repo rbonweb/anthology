@@ -48,6 +48,13 @@ rc=$?
 if [ "$rc" -eq 0 ] &&
    printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"ask"' &&
    ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+  # A hook ask prompts even in bypass and auto mode, where the user chose not to be asked, so
+  # rtk's ask is dropped there and the command runs as typed. Claude Code sets permission_mode in
+  # the hook input; the model cannot. Default, acceptEdits and plan modes keep the ask below.
+  case $input in
+    *'"permission_mode":"bypassPermissions"'*|*'"permission_mode": "bypassPermissions"'*|\
+    *'"permission_mode":"auto"'*|*'"permission_mode": "auto"'*) exit 0 ;;
+  esac
   case $input in
     *'\u'*) ;;
     *)

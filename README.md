@@ -196,6 +196,10 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell) when Claude Code shows a permission prompt or waits for your input; set `ANTHOLOGY_NOTIFY=0` to turn it off.
 
+### Commits carry only your name
+
+Commits, PRs and code comments carry only the git config author. The writing agents never add a `Co-Authored-By` trailer or a "Generated with" line and never mention the assistant or AI, and a `PreToolUse` hook (`hooks/no-attribution.sh`) denies a `git commit` or `gh pr create|edit` command whose text carries one. It only searches the command text with `grep`; it parses and runs nothing.
+
 ### BrowserOS Neo is the only browser
 
 All real-browser work goes through BrowserOS Neo, over its MCP tools (`mcp__browseros-neo__*`): signed-in work, forms, dashboards, local dev-server checks, UI review. Agents share the browser and each uses its own tab. You install BrowserOS Neo; agents never do. If it is unavailable, the agent stops and asks.
