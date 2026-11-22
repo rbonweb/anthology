@@ -20,6 +20,12 @@ use anthology_testkit::run::{Output, run_program_timeout};
 const BIN: &str = env!("CARGO_BIN_EXE_anthology");
 const TOKEN: &str = "anthology-perm:read-only:v1\n";
 
+/// Apple's own git-core gitconfig files, as `git config --show-origin` names them.
+const APPLE_GITCONFIGS: &[&str] = &[
+    "/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig",
+    "/Applications/Xcode.app/Contents/Developer/usr/share/git-core/gitconfig",
+];
+
 /// A scratch tree: `home` (the global git config lives there), `proj` (the one root), `marks` (where
 /// marker programs record that they ran) and room beside them for things outside the root.
 struct Fx {
@@ -72,16 +78,25 @@ impl Fx {
     /// the git tests can then only check that it is refused; Linux CI has none.
     fn platform_keys(&self) -> Vec<String> {
         let out = Command::new("git")
-            .args(["config", "--list", "--show-scope", "--name-only"])
+            .args(["config", "--list", "--show-scope", "--show-origin"])
             .current_dir(&self.base)
             .env_clear()
             .envs(self.env().iter())
             .output()
             .unwrap();
-        // The fixture's own global file holds only allowlisted keys; the rest is the machine's.
+        // The fixture's own global file holds only allowlisted keys; the rest is the machine's,
+        // bar what Apple's own git-core gitconfig may hold (`credential.helper=osxkeychain`).
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|line| !line.starts_with("global\t"))
+            .filter(|line| {
+                let apple = APPLE_GITCONFIGS
+                    .iter()
+                    .any(|file| line.contains(&format!("\tfile:{file}\t")));
+                !(apple
+                    && (line.ends_with("\tcredential.helper=osxkeychain")
+                        || line.contains("\tinit.defaultbranch=")))
+            })
             .map(str::to_string)
             .collect()
     }
@@ -861,8 +876,7 @@ fn git_in_a_repository_with_only_safe_keys_is_allowed() {
         "git status",
         "git log --oneline",
         "git diff",
-        "git log -p",
-        "git --no-pager show",
+        "git --no-pager log -n 1",
         "git branch -a",
         "git remote -v",
     ] {
@@ -936,14 +950,15 @@ fn trap_diff_external_runs_on_git_diff() {
 }
 
 #[test]
-fn trap_textconv_runs_on_git_log_p() {
+fn trap_textconv_runs_on_git_diff() {
+    // `git log -p` runs it too, and refuses on its own (it prints history).
     let fx = Fx::new();
     let repo = fx.repo("r");
     std::fs::write(repo.join(".gitattributes"), "*.txt diff=c\n").unwrap();
-    std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
     fx.git(&repo, &["add", "."]);
-    fx.git(&repo, &["commit", "-qm", "two"]);
-    config_trap(&fx, &repo, "diff.c.textconv", &["log", "-p"], "git log -p");
+    fx.git(&repo, &["commit", "-qm", "attributes"]);
+    std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
+    config_trap(&fx, &repo, "diff.c.textconv", &["diff"], "git diff");
 }
 
 #[test]
@@ -1117,15 +1132,17 @@ fn trap_a_partial_clone_fetches_with_upload_pack_on_git_log_p() {
     );
     fx.git_try(&clone, &["log", "-p"], &[]);
     assert!(fx.ran("uploadpack"), "the lazy fetch ran upload-pack");
+    assert_refused(&fx.classify(&clone, "git log -p", &[]), "", "log -p");
+    // The configuration refuses every git line, not only the one that fetched.
     fx.assert_key_refused(
-        &fx.classify(&clone, "git log -p", &[]),
+        &fx.classify(&clone, "git status", &[]),
         "remote.origin.",
         "partial clone",
     );
     // The partial clone alone is refused, without the upload-pack override. Depending on the git
     // version, the clone records `remote.origin.promisor` or `extensions.partialclone` first.
     fx.git(&clone, &["config", "--unset", "remote.origin.uploadpack"]);
-    let out = fx.classify(&clone, "git log -p", &[]);
+    let out = fx.classify(&clone, "git status", &[]);
     assert_refused(&out, "git config key not on the allowlist: ", "promisor");
     let err = out.stderr_text();
     if fx.platform_keys().is_empty() {
@@ -1419,15 +1436,11 @@ fn a_tracked_secret_or_a_rule_below_the_repository_gives_no_decision_for_git() {
         "Read(./.git/**)",
         "Read(./.git/config)",
     ] {
-        assert_refused(
-            &fx.classify(&repo, "git log -p", &[rule]),
-            "Read rule",
-            rule,
-        );
+        assert_refused(&fx.classify(&repo, "git diff", &[rule]), "Read rule", rule);
     }
     // A name rule is held against the tracked paths, not git's own files.
     assert_refused(
-        &fx.classify(&repo, "git log -p", &["Read(notes.txt)"]),
+        &fx.classify(&repo, "git diff", &["Read(notes.txt)"]),
         "Read rule matches: tracked",
         "name rule on a tracked file",
     );
@@ -1532,4 +1545,386 @@ fn classify_latency() {
         eprintln!("classify latency {command:?}: p50 {p50:?} p95 {p95:?}");
         assert!(p95 < Duration::from_millis(500), "{command}: p95 {p95:?}");
     }
+}
+
+// --- review round 2 (#172) ----------------------------------------------------------------------------------
+
+/// A program called `name` in `dir` that records `mark` and then runs the real one.
+fn fake_program(fx: &Fx, dir: &Path, name: &str, mark: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n: > '{}'\nexit 1\n",
+            fx.marks.join(mark).display()
+        ),
+    )
+    .unwrap();
+    chmod_x(&path);
+    path
+}
+
+/// Points `main` of `repo` at a commit that carries a (fake) signature.
+fn sign_head(fx: &Fx, repo: &Path) {
+    let tree = fx.git(repo, &["write-tree"]);
+    let commit = format!(
+        "tree {}\nauthor t <t@e> 0 +0000\ncommitter t <t@e> 0 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n x\n -----END PGP SIGNATURE-----\n\nsigned\n",
+        tree.trim()
+    );
+    let body = fx.base.join("signed-commit.txt");
+    std::fs::write(&body, commit).unwrap();
+    let id = fx.git(
+        repo,
+        &["hash-object", "-t", "commit", "-w", body.to_str().unwrap()],
+    );
+    fx.git(repo, &["update-ref", "refs/heads/main", id.trim()]);
+}
+
+fn path_with(dir: &Path) -> String {
+    format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+#[test]
+fn c1_a_symlink_below_a_recursive_start_gives_no_decision() {
+    // GNU and Apple diff follow a symlink they find inside the two directories they compare.
+    let fx = Fx::new();
+    std::fs::write(fx.base.join("outside.txt"), "OUTSIDE-SECRET\n").unwrap();
+    fx.write("a/x", "a\n");
+    std::fs::create_dir_all(fx.root.join("b")).unwrap();
+    symlink(fx.base.join("outside.txt"), fx.root.join("b/x")).unwrap();
+    let shown = Command::new("diff")
+        .args(["./a", "./b"])
+        .current_dir(&fx.root)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("OUTSIDE-SECRET"),
+        "diff followed the link"
+    );
+    assert_refused(
+        &fx.classify(&fx.root, "diff ./a ./b", &[]),
+        "symlink below",
+        "diff",
+    );
+    for command in [
+        "rg x ./b",
+        "grep -r x ./b",
+        "find ./b",
+        "du ./b",
+        "ls -R ./b",
+    ] {
+        assert_refused(
+            &fx.classify(&fx.root, command, &[]),
+            "symlink below",
+            command,
+        );
+    }
+}
+
+#[test]
+fn c2_a_path_entry_inside_a_root_gives_no_decision_and_nothing_there_runs() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    let bin = fx.root.join("bin");
+    fake_program(&fx, &bin, "cat", "fake-cat");
+    let _ = Command::new("sh")
+        .args(["-c", "cat ./a.txt"])
+        .current_dir(&fx.root)
+        .env("PATH", path_with(&bin))
+        .output()
+        .unwrap();
+    assert!(fx.ran("fake-cat"), "the repo's cat ran in place of cat");
+    assert_refused(
+        &fx.classify_env(&fx.root, "cat ./a.txt", &[], &[("PATH", &path_with(&bin))]),
+        "PATH entry inside",
+        "cat",
+    );
+    // A git in a root is never run by the check itself.
+    let repo = fx.repo("r");
+    fake_program(&fx, &bin, "git", "fake-git");
+    assert_refused(
+        &fx.classify_env(&repo, "git status", &[], &[("PATH", &path_with(&bin))]),
+        "PATH entry inside",
+        "git",
+    );
+    assert!(!fx.ran("fake-git"), "the check ran the repo's git");
+    // A PATH entry outside the roots whose git is a link into a root.
+    let tools = fx.base.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    symlink(bin.join("git"), tools.join("git")).unwrap();
+    assert_refused(
+        &fx.classify_env(&repo, "git status", &[], &[("PATH", &path_with(&tools))]),
+        "git",
+        "git linked into a root",
+    );
+    assert!(!fx.ran("fake-git"), "the check ran the linked git");
+    // A PATH entry that is the cwd of the request, outside the roots.
+    let elsewhere = fx.base.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let line = format!("cat {}", fx.path("a.txt"));
+    let input = request(&line, &elsewhere, &[&fx.root], &[]);
+    let env = fx.env().with("PATH", &path_with(&elsewhere));
+    assert_refused(&run(&input, &env), "PATH entry inside", "the cwd");
+}
+
+#[test]
+fn i1_a_signature_atom_in_a_git_format_or_sort_gives_no_decision() {
+    let fx = Fx::new();
+    let repo = fx.repo("r");
+    sign_head(&fx, &repo);
+    let tools = fx.base.join("tools");
+    fake_program(&fx, &tools, "gpg", "gpg-ran");
+    let path = path_with(&tools);
+    fx.git_try(
+        &repo,
+        &["branch", "--format=%(signature)"],
+        &[("PATH", &path)],
+    );
+    assert!(
+        fx.ran("gpg-ran"),
+        "git branch --format=%(signature) ran gpg"
+    );
+    for command in [
+        "git branch '--format=%(signature)'",
+        "git branch '--format=%(signature:grade)'",
+        "git branch --sort=signature",
+        "git log --format=%GS",
+        "git log '--pretty=format:%G?'",
+    ] {
+        assert_refused(
+            &fx.classify_env(&repo, command, &[], &[("PATH", &path)]),
+            "",
+            command,
+        );
+        let err = fx
+            .classify_env(&repo, command, &[], &[("PATH", &path)])
+            .stderr_text();
+        assert!(
+            err.contains("signature") || err.contains("not proven"),
+            "{command}: {err}"
+        );
+    }
+    assert_refused(
+        &fx.classify_env(
+            &repo,
+            "git branch --sort=signature",
+            &[],
+            &[("PATH", &path)],
+        ),
+        "signature",
+        "sort",
+    );
+}
+
+/// A repository whose `secret.txt` was committed and then removed from the index and the work
+/// tree: the index scan cannot see it, git can still print it.
+fn removed_secret(fx: &Fx) -> PathBuf {
+    let repo = fx.repo("r");
+    std::fs::write(repo.join("secret.txt"), "TOPSECRET\n").unwrap();
+    fx.git(&repo, &["add", "secret.txt"]);
+    fx.git(&repo, &["commit", "-qm", "secret"]);
+    fx.git(&repo, &["rm", "-q", "--cached", "secret.txt"]);
+    std::fs::remove_file(repo.join("secret.txt")).unwrap();
+    repo
+}
+
+#[test]
+fn i2_git_forms_that_print_history_give_no_decision() {
+    let fx = Fx::new();
+    let repo = removed_secret(&fx);
+    let rule = &["Read(secret.txt)"];
+    for (demo, command) in [
+        (&["status", "-v"][..], "git status -v"),
+        (&["status", "--verbose"], "git status --verbose"),
+        (&["diff", "--cached"], "git diff --cached"),
+        (&["diff", "--staged"], "git diff --staged"),
+        (&["log", "-p"], "git log -p"),
+        (&["log", "-u"], "git log -u"),
+        (&["log", "--patch"], "git log --patch"),
+        (&["log", "-W", "-p"], "git log -W"),
+        (&["log", "--word-diff", "-p"], "git log --word-diff"),
+        (&["log", "--color-words", "-p"], "git log --color-words"),
+        (&["log", "--binary", "-p"], "git log --binary"),
+        (&["show"], "git show"),
+    ] {
+        // The demonstration of `-W`, `--word-diff`, `--color-words` and `--binary` adds `-p`, which
+        // they shape (newer git implies it for some); the line checked is the one without it.
+        let out = fx.command("git", &repo, demo, &[]).output().unwrap();
+        let shown = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            shown.contains("TOPSECRET"),
+            "git {demo:?} printed it: {shown}"
+        );
+        assert_refused(&fx.classify(&repo, command, rule), "", command);
+    }
+    // `--stat` prints the names of history, and `diff` with a revision prints it too.
+    let stat = fx
+        .command("git", &repo, &["log", "--stat"], &[])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&stat.stdout).contains("secret.txt"));
+    assert_refused(&fx.classify(&repo, "git log --stat", rule), "", "--stat");
+    std::fs::write(repo.join("main"), "m\n").unwrap();
+    assert_refused(&fx.classify(&repo, "git diff main", rule), "", "a revision");
+    // What stays: plain status, log and diff, and blame.
+    for command in [
+        "git status",
+        "git log --oneline",
+        "git diff",
+        "git blame ./a.txt",
+    ] {
+        fx.assert_git_allow(&fx.classify(&repo, command, rule), command);
+    }
+}
+
+#[test]
+fn i2_the_history_refusals_name_their_reason() {
+    let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
+    let repo = removed_secret(&fx);
+    for command in [
+        "git status -v",
+        "git status -sv",
+        "git diff --staged",
+        "git log -p",
+        "git log -pu",
+        "git log --stat=80",
+        "git show",
+        "git diff main",
+    ] {
+        assert_refused(&fx.classify(&repo, command, &[]), "git history", command);
+    }
+}
+
+#[test]
+fn minor_a_hard_link_gives_no_decision() {
+    let fx = Fx::new();
+    std::fs::write(fx.base.join("outside.txt"), "OUTSIDE\n").unwrap();
+    std::fs::hard_link(fx.base.join("outside.txt"), fx.root.join("hl")).unwrap();
+    let shown = Command::new("cat")
+        .arg("./hl")
+        .current_dir(&fx.root)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown.stdout), "OUTSIDE\n");
+    assert_refused(&fx.classify(&fx.root, "cat ./hl", &[]), "hard link", "cat");
+    std::fs::create_dir_all(fx.root.join("d")).unwrap();
+    std::fs::rename(fx.root.join("hl"), fx.root.join("d/hl")).unwrap();
+    assert_refused(&fx.classify(&fx.root, "rg x ./d", &[]), "hard link", "walk");
+}
+
+#[test]
+fn minor_git_objects_outside_the_roots_give_no_decision() {
+    let fx = Fx::new();
+    if !fx.platform_keys().is_empty() {
+        return;
+    }
+    let repo = fx.repo("r");
+    std::fs::write(repo.join("a.txt"), "OBJECT-SECRET\n").unwrap();
+    fx.git(&repo, &["commit", "-qam", "two"]);
+    std::fs::rename(repo.join(".git/objects"), fx.base.join("objects")).unwrap();
+    symlink(fx.base.join("objects"), repo.join(".git/objects")).unwrap();
+    let out = fx
+        .command("git", &repo, &["log", "-1", "--format=%H"], &[])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git reads its objects through the link"
+    );
+    assert_refused(
+        &fx.classify(&repo, "git log --oneline", &[]),
+        "objects",
+        "objects",
+    );
+}
+
+#[test]
+fn minor_grep_options_and_ripgrep_config_give_no_decision() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    if cfg!(target_os = "macos") {
+        // BSD grep (egrep and fgrep too) honours GREP_OPTIONS.
+        let out = Command::new("grep")
+            .args(["a", "./a.txt"])
+            .current_dir(&fx.root)
+            .env("GREP_OPTIONS", "-c")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    }
+    for command in ["grep a ./a.txt", "egrep a ./a.txt", "fgrep a ./a.txt"] {
+        assert_refused(
+            &fx.classify_env(&fx.root, command, &[], &[("GREP_OPTIONS", "-c")]),
+            "GREP_OPTIONS",
+            command,
+        );
+    }
+    assert_refused(
+        &fx.classify_env(
+            &fx.root,
+            "rg a ./a.txt",
+            &[],
+            &[("RIPGREP_CONFIG_PATH", "/tmp/rgrc")],
+        ),
+        "RIPGREP_CONFIG_PATH",
+        "rg",
+    );
+    assert_allow(
+        &fx.classify_env(&fx.root, "cat ./a.txt", &[], &[("GREP_OPTIONS", "-c")]),
+        "no grep",
+    );
+}
+
+#[test]
+fn minor_a_rule_with_braces_or_a_bang_is_not_read() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    for rule in ["Read(./{a,b}.txt)", "Read(./a.txt})", "Read(!./b.txt)"] {
+        assert_refused(
+            &fx.classify(&fx.root, "cat ./a.txt", &[rule]),
+            "does not read",
+            rule,
+        );
+    }
+}
+
+#[test]
+fn gap5_duplicate_keys_give_no_decision() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    let root = fx.root.to_str().unwrap();
+    let line = format!("cat {root}/a.txt");
+    for input in [
+        format!(
+            r#"{{"command":"rm -rf /","command":"{line}","cwd":"{root}","roots":["{root}"],"read_rules":[]}}"#
+        ),
+        format!(
+            r#"{{"command":"{line}","cwd":"{root}","roots":["{root}"],"read_rules":["Read(./a.txt)"],"read_rules":[]}}"#
+        ),
+        format!(
+            r#"{{"command":"{line}","cwd":"{root}","roots":["{root}"],"read_rules":[],"roots":["/"]}}"#
+        ),
+    ] {
+        assert_refused(&run(input.as_bytes(), &fx.env()), "duplicate", &input);
+    }
+}
+
+#[test]
+fn gap4_osxkeychain_from_anywhere_but_apples_own_file_gives_no_decision() {
+    let fx = Fx::new();
+    let repo = fx.repo("r");
+    fx.git(&repo, &["config", "credential.helper", "osxkeychain"]);
+    fx.assert_key_refused(
+        &fx.classify(&repo, "git status", &[]),
+        "credential.helper",
+        "local osxkeychain",
+    );
 }

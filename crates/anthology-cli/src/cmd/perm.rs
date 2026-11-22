@@ -12,17 +12,23 @@
 //!
 //! The steps, each of which can only refuse:
 //!
-//! 1. The command is plain ASCII (no invisible Unicode), and `anthology_shell::classify_readonly`
+//! 1. The request is one JSON object with exactly the four keys, none twice.
+//! 2. The command is plain ASCII (no invisible Unicode), and `anthology_shell::classify_readonly`
 //!    proves the line ([`ReadOnly::Proven`]).
-//! 2. Every `PATH` entry is absolute: a relative one would let a file in the working directory
-//!    stand in for `ls` or `git`.
-//! 3. The working directory the command runs in is known only from a leading absolute `cd`: the
+//! 3. `words`: what the table allows but a word or the environment changes (`GREP_OPTIONS`,
+//!    `RIPGREP_CONFIG_PATH`, git signature atoms, the git forms that print history).
+//! 4. The working directory the command runs in is known only from a leading absolute `cd`: the
 //!    `cwd` of the request is not trusted to be the shell's (subagents, worktrees), so without
 //!    such a `cd` every relative path, every implicit `.` and every git line refuses.
-//! 4. The roots and `cwd` resolve to directories; the `Read()` rules are all readable and none
+//! 5. The roots and `cwd` resolve to directories; the `Read()` rules are all readable and none
 //!    denies every read.
-//! 5. `paths`: the `cd` targets and every path the proof lists (`readonly_paths`).
-//! 6. `git`: for a line that runs git, the repository and its configuration.
+//! 6. `paths`: the `cd` targets and every path the proof lists (`readonly_paths`).
+//! 7. `PATH` (read from this process's environment, which the hook shares with the shell that
+//!    runs the command): every entry is absolute, and none lies, as written or resolved, under a
+//!    root, the request's `cwd` or a `cd` target, since a file there could stand in for `cat` or
+//!    `git`. Nothing found under those places is ever run by this check.
+//! 8. `git`: for a line that runs git, the git `PATH` finds, resolved, must also lie outside those
+//!    places; it is asked about the repository and its configuration.
 //!
 //! What this cannot see: the command runs in the user's shell, which may have its own aliases,
 //! functions or environment (the shell snapshot); the check sees this process's environment.
@@ -31,6 +37,7 @@
 mod git;
 mod paths;
 mod rules;
+mod words;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -113,6 +120,13 @@ fn read_request(stdin: &mut dyn Read) -> Result<Request, String> {
     }
     let text = std::str::from_utf8(&buf).map_err(|_| "input: not UTF-8".to_string())?;
     let value = json::loads(text).map_err(|_| "input: not JSON".to_string())?;
+    // The parser keeps the last of two equal keys; a reader that keeps the first would see
+    // another request, so a repeated key refuses.
+    let mut written = top_keys(text)?;
+    written.sort_unstable();
+    if written.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("input: a duplicate key".into());
+    }
     let map = value
         .into_object()
         .ok_or_else(|| "input: not a JSON object".to_string())?;
@@ -146,6 +160,44 @@ fn read_request(stdin: &mut dyn Read) -> Result<Request, String> {
     })
 }
 
+/// The keys of the outermost object of `text` (valid JSON), decoded, in the order written.
+fn top_keys(text: &str) -> Result<Vec<String>, String> {
+    let bytes = text.as_bytes();
+    let mut keys = Vec::new();
+    let mut depth = 0usize;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'"' => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                let token = text
+                    .get(start..=at)
+                    .ok_or_else(|| "input: not JSON".to_string())?;
+                let mut next = at + 1;
+                while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
+                    next += 1;
+                }
+                if depth == 1 && bytes.get(next) == Some(&b':') {
+                    let key = json::loads(token)
+                        .ok()
+                        .and_then(Value::into_string)
+                        .ok_or_else(|| "input: not JSON".to_string())?;
+                    keys.push(key);
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    Ok(keys)
+}
+
 /// The resolved paths the command reads, in order, or why there is no decision.
 fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
     // Invisible Unicode (zero-width, bidi controls) and NUL can make a line read one way and run
@@ -166,9 +218,12 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
         } => (paths, cd, runs_git_config),
         ReadOnly::NotProven(why) => return Err(format!("not proven: {why}")),
     };
-    if let Some(path) = env.get_os("PATH")
-        && std::env::split_paths(path).any(|dir| !dir.is_absolute())
-    {
+    words::check(&request.command, home, env)?;
+    let path_dirs: Vec<PathBuf> = env
+        .get_os("PATH")
+        .map(|path| std::env::split_paths(path).collect())
+        .unwrap_or_default();
+    if path_dirs.iter().any(|dir| !dir.is_absolute()) {
         return Err("PATH holds a relative entry".into());
     }
 
@@ -225,12 +280,42 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
         lex: lex_cwd,
         real: cwd_real,
     };
+    // The places a file of the project could sit in: each root, the request's cwd and every cd
+    // target, as written and resolved.
+    let mut places: Vec<PathBuf> = checker.roots.clone();
+    places.extend(request.roots.iter().cloned());
+    places.extend([start.lex.clone(), start.real.clone()]);
+    let mut lex = start.lex.clone();
+    for target in &cd {
+        lex = paths::join_clean(&lex, target);
+        places.push(lex.clone());
+    }
     let at = checker.follow_cd(start, &cd)?;
+    // `follow_cd` records the resolved cd targets and nothing else yet.
+    places.extend(checker.reads.iter().cloned());
+    let in_place = |p: &Path| places.iter().any(|place| paths::under(p, place));
+    for dir in &path_dirs {
+        let real = std::fs::canonicalize(dir).ok();
+        if in_place(dir) || real.as_deref().is_some_and(in_place) {
+            return Err(format!(
+                "a PATH entry inside a root, the cwd or a cd target: {}",
+                shown(&dir.to_string_lossy())
+            ));
+        }
+    }
     for path in &paths {
         checker.check(&at, path)?;
     }
     if runs_git_config {
-        git::check(&mut checker, &at.real, env)?;
+        let git = git::find_git(env).ok_or("no git on PATH")?;
+        let git = std::fs::canonicalize(&git).map_err(|_| "git cannot be resolved")?;
+        if in_place(&git) {
+            return Err(format!(
+                "git resolves inside a root, the cwd or a cd target: {}",
+                shown(&git.to_string_lossy())
+            ));
+        }
+        git::check(&mut checker, &git, &at.real, env)?;
     }
     // One path per line: a path that cannot be written so refuses.
     checker

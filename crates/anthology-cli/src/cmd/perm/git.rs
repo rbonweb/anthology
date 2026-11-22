@@ -5,15 +5,20 @@
 //! working directory and with the same environment, so the repository is found the way git finds
 //! it (`.git` files, bare repositories, worktrees, `safe.directory`) and the configuration is read
 //! the way git reads it (system, global, repository and worktree files, `include` and `includeIf`).
-//! Only `rev-parse` and `config --list` run, and neither runs a configured program. Then:
+//! Only `rev-parse` and `config --list` run, and neither runs a configured program. The git that
+//! runs is the one `PATH` finds, resolved, and it must lie outside every root, the working
+//! directory and every `cd` target (the caller checks that). Then:
 //!
 //! - Every `GIT_*` environment variable refuses (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`,
 //!   `GIT_PAGER`, ...), whatever its value.
 //! - Every configuration key must be on the allowlist in [`safe_key`]; any other key refuses, so
 //!   a partial clone (`remote.*.promisor`, `extensions.*`), `core.fsmonitor`, `core.pager`,
 //!   `core.hooksPath`, `diff.external`, `diff.*.textconv`, `filter.*`, `alias.*`,
-//!   `credential.helper`, `core.gitProxy`, `protocol.*` and every key not yet known refuse. A
-//!   `.gitattributes` file only names drivers; with no driver in the configuration it runs nothing.
+//!   `credential.helper`, `core.gitProxy`, `protocol.*` and every key not yet known refuse. One
+//!   exception: `credential.helper=osxkeychain` from Apple's own system file, told apart by the
+//!   file's path ([`APPLE_GITCONFIGS`]). A `.gitattributes` file only names drivers; with no driver
+//!   in the configuration it runs nothing.
+//! - The object store must resolve under a root, with no symlink in it or its `pack` folder.
 //! - The git dir, the common dir and the work tree must lie under a root and match no `Read()`
 //!   rule (an anchored rule that could match below one of them counts) or secret pattern. Each is
 //!   one of the paths the answer lists.
@@ -23,8 +28,9 @@
 //!   `modules` folder, or a gitlink in the index: git runs `status` inside a populated submodule
 //!   with that repository's configuration).
 //! - The index is read: every tracked path is held against the `Read()` rules and the secret
-//!   patterns, since `git show`, `diff` and `log -p` print tracked content. A split or sparse index
-//!   refuses. History is not searched: a secret that was committed and deleted is not seen.
+//!   patterns, since `git diff` and `blame` print tracked content. A split or sparse index
+//!   refuses. History is not searched: a secret that was committed and deleted is not seen, which
+//!   is why every form that prints history refuses before this (`words`).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -45,22 +51,35 @@ const MAX_OUTPUT: usize = 4 << 20;
 const MAX_INDEX_BYTES: u64 = 64 << 20;
 const MAX_INDEX_ENTRIES: u32 = 100_000;
 
-/// Checks the repository git finds from `cwd` (resolved). `env` is the environment the command
-/// runs with, as far as this process can see it.
-pub fn check(ck: &mut Checker, cwd: &Path, env: &Env) -> Result<(), String> {
+/// The system configuration files of Apple's own git (Command Line Tools and Xcode). Each sets
+/// `credential.helper=osxkeychain`, which is allowed from these files and from no other.
+pub const APPLE_GITCONFIGS: &[&str] = &[
+    "/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig",
+    "/Applications/Xcode.app/Contents/Developer/usr/share/git-core/gitconfig",
+];
+
+/// Checks the repository git finds from `cwd` (resolved). `git` is the resolved git program, which
+/// lies outside every root; `env` is the environment the command runs with, as far as this process
+/// can see it.
+pub fn check(ck: &mut Checker, git: &Path, cwd: &Path, env: &Env) -> Result<(), String> {
     for (key, _) in env.iter() {
         let key = key.to_string_lossy();
         if key.starts_with("GIT_") {
             return Err(format!("git environment variable {}", shown(&key)));
         }
     }
-    let git = find_git(env).ok_or("no git on PATH")?;
     // Both git calls only read, so they run side by side: one spawn less on the wait.
     let (out, listing) = std::thread::scope(|scope| {
-        let listing =
-            scope.spawn(|| run_git(&git, cwd, env, &["config", "--list", "--includes", "-z"]));
+        let listing = scope.spawn(|| {
+            run_git(
+                git,
+                cwd,
+                env,
+                &["config", "--list", "--includes", "--show-origin", "-z"],
+            )
+        });
         let out = run_git(
-            &git,
+            git,
             cwd,
             env,
             &[
@@ -76,6 +95,8 @@ pub fn check(ck: &mut Checker, cwd: &Path, env: &Env) -> Result<(), String> {
                 "hooks",
                 "--git-path",
                 "objects/info/alternates",
+                "--git-path",
+                "objects",
                 "--show-cdup",
             ],
         );
@@ -90,16 +111,7 @@ pub fn check(ck: &mut Checker, cwd: &Path, env: &Env) -> Result<(), String> {
     let repo = Repo::from_lines(&lines, cwd)?;
 
     let listing = listing.map_err(|why| format!("git config: {why}"))?;
-    for entry in listing.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-        let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
-        let key = String::from_utf8_lossy(key);
-        if !safe_key(&key) {
-            return Err(format!(
-                "git config key not on the allowlist: {}",
-                shown(&key)
-            ));
-        }
-    }
+    config(&listing)?;
 
     let mut dirs = vec![&repo.git_dir, &repo.common_dir];
     dirs.extend(repo.top.as_ref());
@@ -126,6 +138,7 @@ pub fn check(ck: &mut Checker, cwd: &Path, env: &Env) -> Result<(), String> {
     if std::fs::symlink_metadata(&repo.alternates).is_ok() {
         return Err("git alternates: objects are read from another repository".into());
     }
+    objects(ck, &repo.objects)?;
     for modules in [
         repo.git_dir.join("modules"),
         repo.common_dir.join("modules"),
@@ -149,8 +162,80 @@ struct Repo {
     index: PathBuf,
     hooks: PathBuf,
     alternates: PathBuf,
+    objects: PathBuf,
     /// The work tree, or `None` for a bare repository.
     top: Option<PathBuf>,
+}
+
+/// Holds every entry of `config --list --includes --show-origin -z` (`origin NUL key LF value NUL`,
+/// or `origin NUL key NUL` for a key with no value) against the allowlist.
+fn config(listing: &[u8]) -> Result<(), String> {
+    let mut fields = listing.split(|b| *b == 0);
+    while let Some(origin) = fields.next() {
+        if origin.is_empty() {
+            // The listing ends with a NUL, which leaves one empty field.
+            if fields.next().is_none() {
+                return Ok(());
+            }
+            return Err("git config: an entry with no origin".into());
+        }
+        let entry = fields.next().ok_or("git config: an origin with no entry")?;
+        let (key, value) = match entry.iter().position(|b| *b == b'\n') {
+            Some(at) => (&entry[..at], Some(&entry[at + 1..])),
+            None => (entry, None),
+        };
+        let origin = String::from_utf8_lossy(origin);
+        let key = String::from_utf8_lossy(key);
+        if !safe_key(&key) && !apple_keychain(&origin, &key, value) {
+            return Err(format!(
+                "git config key not on the allowlist: {}",
+                shown(&key)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Apple's git sets `credential.helper=osxkeychain` in its own system file. It is told apart by
+/// the path of the file it comes from, never by scope: a repository, global or included file
+/// setting the same key and value refuses like any other helper.
+fn apple_keychain(origin: &str, key: &str, value: Option<&[u8]>) -> bool {
+    key == "credential.helper"
+        && value == Some(b"osxkeychain".as_slice())
+        && origin
+            .strip_prefix("file:")
+            .is_some_and(|path| APPLE_GITCONFIGS.contains(&path))
+}
+
+/// The object store must resolve under a root, and no entry of it or of its `pack` folder may be
+/// a symlink: git reads objects through one as readily as through `alternates`.
+fn objects(ck: &Checker, objects: &Path) -> Result<(), String> {
+    let real = std::fs::canonicalize(objects)
+        .map_err(|_| "git objects: the object store cannot be resolved".to_string())?;
+    if !ck.inside(&real) {
+        return Err(format!(
+            "git objects outside every root: {}",
+            shown(&objects.to_string_lossy())
+        ));
+    }
+    let unlisted = || "git objects: the object store cannot be listed".to_string();
+    for dir in [real.clone(), real.join("pack")] {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir != real => continue,
+            Err(_) => return Err(unlisted()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|_| unlisted())?;
+            if entry.file_type().map_err(|_| unlisted())?.is_symlink() {
+                return Err(format!(
+                    "git objects: a symlink in the object store: {}",
+                    shown(&entry.file_name().to_string_lossy())
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Repo {
@@ -164,10 +249,10 @@ impl Repo {
             }
         };
         let fixed = |i: usize| absolute(lines.get(i).copied().unwrap_or(""));
-        // Seven answers, then `--show-cdup`, which a bare repository leaves out or empty.
-        let top = match (lines.first().copied(), lines.get(1).copied(), lines.get(7)) {
-            (Some("true"), Some("false"), None | Some(&"")) if lines.len() <= 8 => None,
-            (Some("false"), Some("true"), Some(cdup)) if lines.len() == 8 => Some(
+        // Eight answers, then `--show-cdup`, which a bare repository leaves out or empty.
+        let top = match (lines.first().copied(), lines.get(1).copied(), lines.get(8)) {
+            (Some("true"), Some("false"), None | Some(&"")) if lines.len() <= 9 => None,
+            (Some("false"), Some("true"), Some(cdup)) if lines.len() == 9 => Some(
                 std::fs::canonicalize(cwd.join(cdup))
                     .map_err(|_| "git rev-parse: the work tree cannot be resolved".to_string())?,
             ),
@@ -179,6 +264,7 @@ impl Repo {
             index: fixed(4)?,
             hooks: fixed(5)?,
             alternates: fixed(6)?,
+            objects: fixed(7)?,
             top,
         })
     }
@@ -382,8 +468,8 @@ fn varint(data: &[u8]) -> Option<(usize, usize)> {
     Some((value, used))
 }
 
-/// The first `git` on `PATH` that is an executable file.
-fn find_git(env: &Env) -> Option<PathBuf> {
+/// The first `git` on `PATH` that is an executable file, as found (not resolved).
+pub fn find_git(env: &Env) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = env.get_os("PATH")?;
     std::env::split_paths(path)
@@ -502,6 +588,35 @@ mod tests {
         ] {
             assert!(!safe_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn osxkeychain_is_allowed_only_from_apples_own_file() {
+        let apple = "file:/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig";
+        let xcode = "file:/Applications/Xcode.app/Contents/Developer/usr/share/git-core/gitconfig";
+        let listing = |origin: &str, entry: &str| format!("{origin}\0{entry}\0").into_bytes();
+        for origin in [apple, xcode] {
+            assert!(config(&listing(origin, "credential.helper\nosxkeychain")).is_ok());
+            assert!(config(&listing(origin, "credential.helper\nstore")).is_err());
+            assert!(config(&listing(origin, "credential.helper")).is_err());
+            assert!(config(&listing(origin, "credential.x.helper\nosxkeychain")).is_err());
+        }
+        for origin in [
+            "file:.git/config",
+            "file:/etc/gitconfig",
+            "file:/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig.d/x",
+            "command line:",
+            "/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig",
+        ] {
+            assert!(
+                config(&listing(origin, "credential.helper\nosxkeychain")).is_err(),
+                "{origin}"
+            );
+        }
+        assert!(config(b"").is_ok());
+        assert!(config(&listing("file:x", "core.bare\nfalse")).is_ok());
+        assert!(config(b"file:x\0core.bare\nfalse").is_ok(), "no final NUL");
+        assert!(config(b"file:x\0core.bare\nfalse\0\0core.pager\0").is_err());
     }
 
     fn index_bytes(version: u32, names: &[(&str, u32)]) -> Vec<u8> {

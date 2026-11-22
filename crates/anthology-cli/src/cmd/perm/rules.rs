@@ -76,7 +76,8 @@ impl Matcher {
     pub fn new(texts: &[String], bases: &Bases) -> Result<Matcher, String> {
         let mut rules = Vec::new();
         for text in texts {
-            let Some(pattern) = rule_pattern(text) else {
+            // Braces and `!` have a meaning in Claude Code's matcher this one does not model.
+            let Some(pattern) = rule_pattern(text).filter(|p| !p.contains(['{', '}', '!'])) else {
                 return Err(format!(
                     "a permission rule this check does not read: {}",
                     super::shown(text)

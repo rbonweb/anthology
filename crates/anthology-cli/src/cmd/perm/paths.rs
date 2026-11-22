@@ -2,13 +2,16 @@
 //!
 //! A path is resolved against the working directory the `cd` targets lead to, with its symlinks
 //! followed. It must exist, lie under a root (compared without case on macOS, whose default volume
-//! ignores it), be a regular file or a directory, and match no `Read()` rule or secret pattern, as
-//! written or as resolved. A glob is not proven: what the shell expands it to is not known here. A
-//! recursive path stands for every entry under it: an anchored rule that could match below it
-//! refuses, and the tree is walked, without following symlinks (no program of the table follows
-//! one below its start), with every entry held against the rules and the secret patterns. A tree of
+//! ignores it), be a regular file with one link or a directory, and match no `Read()` rule or
+//! secret pattern, as written or as resolved. A glob is not proven: what the shell expands it to is
+//! not known here. A recursive path stands for every entry under it: an anchored rule that could
+//! match below it refuses, and the tree is walked with every entry held against the rules and the
+//! secret patterns. Some programs of the table follow a symlink they find below their start (GNU
+//! and Apple `diff` comparing two directories do), so any symlink in a walked tree refuses, and so
+//! does a regular file with more than one hard link (another name for a file elsewhere). A tree of
 //! more than [`MAX_ENTRIES`] entries refuses. Every resolved path is recorded for the answer.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anthology_shell::{ReadPath, is_secret_path, is_secret_tree};
@@ -97,6 +100,8 @@ impl Checker {
             }
         } else if !meta.is_file() {
             return Err(format!("special file: {}", shown(&lex.to_string_lossy())));
+        } else if meta.nlink() > 1 {
+            return Err(format!("hard link: {}", shown(&lex.to_string_lossy())));
         }
         self.record(&real);
         Ok(())
@@ -134,7 +139,8 @@ impl Checker {
     }
 
     /// What lies below a directory read recursively: no anchored rule may reach into it, and no
-    /// entry (walked without following symlinks) may match a rule or a secret pattern.
+    /// entry may match a rule or a secret pattern, be a symlink (some readers follow it), a file
+    /// with more than one hard link, or a special file.
     pub fn below(&mut self, lex: &Path, real: &Path) -> Result<(), String> {
         if self.rules.anchored_reaches(lex) || self.rules.anchored_reaches(real) {
             return Err(format!(
@@ -163,13 +169,19 @@ impl Checker {
                 if is_secret_path(&rel) {
                     return Err(format!("path of a secret: {}", shown_rel()));
                 }
-                let kind = entry
-                    .file_type()
+                // `DirEntry::metadata` does not follow a symlink.
+                let meta = entry
+                    .metadata()
                     .map_err(|_| format!("cannot read: {}", shown_rel()))?;
-                if kind.is_dir() {
+                let kind = meta.file_type();
+                if kind.is_symlink() {
+                    return Err(format!("symlink below a recursive start: {}", shown_rel()));
+                } else if kind.is_dir() {
                     stack.push((lex, real, rel));
-                } else if !kind.is_file() && !kind.is_symlink() {
+                } else if !kind.is_file() {
                     return Err(format!("special file: {}", shown_rel()));
+                } else if meta.nlink() > 1 {
+                    return Err(format!("hard link: {}", shown_rel()));
                 }
             }
         }
@@ -178,7 +190,7 @@ impl Checker {
 }
 
 /// Whether `path` lies under `root`, component by component; without case on macOS.
-fn under(path: &Path, root: &Path) -> bool {
+pub fn under(path: &Path, root: &Path) -> bool {
     if !cfg!(target_os = "macos") {
         return path.starts_with(root);
     }
