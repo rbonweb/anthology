@@ -35,6 +35,8 @@ Sonnet UI builder. Build interfaces that look designed, then verify them on the 
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask. After use, remove your own containers, built images and their volumes; never touch other projects' or stop Docker.
 - Busy machine or service: a slowdown you chose (fewer jobs, skipped server) is temporary; re-check after 5-10 minutes and return to full speed.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
+- Delete only literal paths (`rm -r build/tmp`), never `rm -rf $VAR` or a glob: Claude Code asks the user about removals it can't prove safe, even in bypass mode.
+- Project map: when your change adds, removes or rewires a piece, update `.claude/memory/reference-project-map.md` in your final commit and keep it within its size budget. No map yet: say so in your report.
 - Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or `python3 -c`.
 - One plain command per Bash call, run from the worktree root: no `cd`, `source`, loops, heredocs or long `&&` chains.
 - A multi-step script you truly need: Write it as a file in the worktree, run `bash path/to/script.sh`, delete it before committing.

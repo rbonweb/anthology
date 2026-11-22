@@ -192,6 +192,10 @@ The guard is built to stop accidental browser installs and launches by cooperati
 
 See [SECURITY.md](SECURITY.md) for the full threat model.
 
+### Attention alert
+
+A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell) when Claude Code shows a permission prompt or waits for your input; set `ANTHOLOGY_NOTIFY=0` to turn it off.
+
 ### BrowserOS Neo is the only browser
 
 All real-browser work goes through BrowserOS Neo, over its MCP tools (`mcp__browseros-neo__*`): signed-in work, forms, dashboards, local dev-server checks, UI review. Agents share the browser and each uses its own tab. You install BrowserOS Neo; agents never do. If it is unavailable, the agent stops and asks.
