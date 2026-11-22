@@ -1752,6 +1752,157 @@ mod wrapper_test {
         }
     }
 
+    // Rust-only tests (no Python twin): Claude Code's shell snapshot defines `rg`, `grep` and
+    // `find` as shell functions, so a typed `rg` can work with no `rg` file on PATH. rtk then execs
+    // the real program and fails. The hook has no snapshot, so `command -v` there sees real files.
+
+    impl W {
+        /// A folder of links to the tools the hook and the fake rtk call (`sed`, `head`, `grep`,
+        /// `tr`, `cat`), plus an executable stub for each name in `extra`. It is the whole PATH of
+        /// the run: a program is on it only when it is listed here.
+        fn tools_dir(&self, name: &str, extra: &[&str]) -> String {
+            let dir = self.b.tmp.join(name);
+            fs::create_dir_all(&dir).expect("mkdir");
+            for tool in ["sed", "head", "grep", "tr", "cat"] {
+                let real = path_var()
+                    .split(':')
+                    .map(|d| Path::new(d).join(tool))
+                    .find(|p| p.is_file())
+                    .unwrap_or_else(|| panic!("no {tool} on PATH"));
+                std::os::unix::fs::symlink(real, dir.join(tool)).expect("link");
+            }
+            for tool in extra {
+                let stub = dir.join(tool);
+                fs::write(&stub, "#!/bin/sh\n").expect("stub");
+                set_mode(&stub, 0o755);
+            }
+            dir.to_str().expect("utf-8 tmp").to_string()
+        }
+
+        /// The hook on exactly `path`.
+        fn run_hook_on(&self, path: &str, stdin: &str) -> anthology_testkit::Output {
+            let env = Env::default()
+                .with("PATH", path)
+                .with_os("HOME", self.b.tmp.join("home"))
+                .with_os("CLAUDE_CONFIG_DIR", &self.b.cfg);
+            run_program(
+                &wrapper("rtk-hook"),
+                &[],
+                stdin.as_bytes(),
+                &env,
+                &self.b.tmp,
+            )
+        }
+    }
+
+    /// A plain rewrite answer, as rtk prints it, that runs `rewritten`.
+    fn rewrite_to(rewritten: &str) -> String {
+        let command = json::dumps(&Value::Str(rewritten.into()), &json::PY_DEFAULT);
+        REWRITE.replace(r#""rtk git status --short""#, &command)
+    }
+
+    /// Typed command and what rtk rewrites it to, for the hook's three outcomes below.
+    const RG_REWRITES: [(&str, &str); 7] = [
+        ("rg -n -i word a.txt b.txt", "rtk rg -n -i word a.txt b.txt"),
+        // A non-ASCII argument is a `\u` escape in the JSON; only the first word is read.
+        ("rg -n \u{e9}t\u{e9} a.txt", "rtk rg -n \u{e9}t\u{e9} a.txt"),
+        ("  rg word a.txt", "rtk rg word a.txt"),
+        ("FOO=1 BAR=x rg word a.txt", "FOO=1 BAR=x rtk rg word a.txt"),
+        // The first word is a builtin; the program the rewrite execs is the one that must exist.
+        ("cd sub && rg word a.txt", "cd sub && rtk rg word a.txt"),
+        ("cd sub\nrg word a.txt", "cd sub\nrtk rg word a.txt"),
+        ("find . -name x | head", "rtk find . -name x | head"),
+    ];
+
+    #[test]
+    fn test_hook_drops_a_rewrite_when_the_program_is_not_on_path() {
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for (typed, rewritten) in RG_REWRITES.into_iter().chain([
+            // The typed program itself is not a real file.
+            ("nosuchprog a", "rtk nosuchprog a"),
+            ("git status --short", "rtk git status --short"),
+        ]) {
+            w.answer_fake(&rewrite_to(rewritten), 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_when_the_program_is_on_path() {
+        let w = setup();
+        let full = w.tools_dir("full", &["rg", "find", "git"]);
+        for (typed, rewritten) in RG_REWRITES.into_iter().chain([
+            ("git status --short", "rtk git status --short"),
+            // rtk grep falls back to grep, so a real grep is enough, with no rg at all.
+            ("grep -rn foo .", "rtk grep -rn foo ."),
+        ]) {
+            let answer = rewrite_to(rewritten);
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&full, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_it_cannot_judge() {
+        // The first word is quoted, expanded, escaped or a path: the hook cannot tell what runs,
+        // so the rewrite stands as before.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for typed in [
+            "\"rg\" word a.txt",
+            "'rg' word a.txt",
+            "$grep word a.txt",
+            "./rg word a.txt",
+            "/opt/bin/rg word a.txt",
+            "FOO=\"a b\" rg word a.txt",
+            "FOO=$(date) rg word a.txt",
+            "r\\g word a.txt",
+            "(rg word a.txt)",
+        ] {
+            let answer = rewrite_to("rtk ls");
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_never_drops_a_deny_or_a_kept_ask_for_a_missing_program() {
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        let deny_with_rewrite = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"RTK: a deny rule matches","updatedInput":{"command":"rtk rg secret"}}}"#;
+        let ask_with_rewrite = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk rg secret"},"permissionDecision":"ask"}}"#;
+        for (answer, typed) in [
+            (DENY, "rg secret"),
+            (deny_with_rewrite, "rg secret"),
+            // An ask on a line that mentions rtk is kept (`Bash(rtk *)` would allow it).
+            (ask_with_rewrite, "rtk rg secret"),
+        ] {
+            w.answer_fake(answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_hook_keeps_rtk_exit_status_and_output_on_failure() {
         let w = setup();
