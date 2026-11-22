@@ -32,11 +32,12 @@ a new version section.
 
 #### Fixed
 
-- `rtk-hook` no longer asks in bypass or auto mode. A hook "ask" prompts in every permission
-  mode, so a command whose text mentioned `rtk` still prompted users who had chosen no
-  prompts. The hook now drops rtk's ask when the hook input's `permission_mode` is
-  `bypassPermissions` or `auto`, and the command runs as typed under that mode. Default,
-  acceptEdits and plan modes behave as before, and a deny is never dropped.
+- `rtk-hook` no longer asks in bypass mode. A hook "ask" prompts in every permission mode, so
+  a command whose text mentioned `rtk` still prompted users who had chosen no prompts. The
+  hook now drops rtk's ask when the top-level `permission_mode` of the hook input is
+  `bypassPermissions`, and the command runs as typed. Auto, default, acceptEdits and plan modes
+  behave as before (auto keeps the ask, so `Bash(rtk *)` cannot skip auto mode's classifier),
+  and a deny is never dropped.
 
 #### Changed
 

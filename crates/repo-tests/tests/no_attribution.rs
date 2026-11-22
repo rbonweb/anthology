@@ -14,8 +14,16 @@ const SCRIPT: &str = "plugins/anthology/hooks/no-attribution.sh";
 
 /// A Bash PreToolUse input for `command`, spelled as Claude Code sends it.
 fn hook_input(command: &str) -> String {
+    hook_input_described(command, None)
+}
+
+/// The same, with a `description` next to the command in tool_input.
+fn hook_input_described(command: &str, description: Option<&str>) -> String {
     let mut tool_input = json::Map::new();
     tool_input.insert("command".into(), Value::Str(command.into()));
+    if let Some(d) = description {
+        tool_input.insert("description".into(), Value::Str(d.into()));
+    }
     let mut m = json::Map::new();
     m.insert("session_id".into(), Value::Str("s".into()));
     m.insert("permission_mode".into(), Value::Str("default".into()));
@@ -193,6 +201,58 @@ fn other_commands_that_only_mention_the_text_are_allowed() {
     ] {
         assert_allowed(command);
     }
+}
+
+#[test]
+fn the_hook_catches_the_usual_habit_and_is_not_a_guarantee() {
+    // Documented gaps: the text must sit in the command itself, in the `Name: value` spelling.
+    for command in [
+        "git commit --trailer 'Co-authored-by=Claude <noreply@anthropic.com>' -m x",
+        "git commit -F msg.txt",
+        "gh pr create --title t --body-file body.md",
+    ] {
+        assert_allowed(command);
+    }
+}
+
+#[test]
+fn only_the_command_value_is_searched_not_the_description_or_other_fields() {
+    let work = std::env::temp_dir();
+    let allowed = |command: &str, description: &str| {
+        let out = run_raw(
+            hook_input_described(command, Some(description)).as_bytes(),
+            &work,
+        );
+        assert_eq!(out.status.code(), Some(0), "{command:?} / {description:?}");
+        assert_eq!(
+            (&out.stdout[..], &out.stderr[..]),
+            (&b""[..], &b""[..]),
+            "{command:?} / {description:?}"
+        );
+    };
+    // A human trailer last in the message, then a description that names the assistant.
+    allowed(
+        "git commit -m \"x\n\nCo-Authored-By: Alex <alex@example.com>\"",
+        "Commit the Claude Code hook fix",
+    );
+    // A command that is not a commit, with a description that says "git commit".
+    allowed(
+        "echo \"Co-Authored-By: Claude\"",
+        "show what git commit adds",
+    );
+    // The trailer is outside the command, so it is not searched.
+    allowed("git commit -m \"x\"", "Co-Authored-By: Claude <a@b.c>");
+    allowed("ls", "git commit with Generated with Claude");
+    // The same trailer inside the command is still denied, whatever the description says.
+    let out = run_raw(
+        hook_input_described(
+            "git commit -m \"x\n\nCo-Authored-By: Claude <a@b.c>\"",
+            Some("A neutral description"),
+        )
+        .as_bytes(),
+        &work,
+    );
+    deny_reason(&out, "trailer in the command");
 }
 
 #[test]

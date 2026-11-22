@@ -1555,16 +1555,41 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_an_ask_in_bypass_and_auto_mode() {
+    fn test_hook_drops_an_ask_in_bypass_mode() {
         // The user chose no prompts, so even an ask on a line that mentions rtk is dropped.
         let w = setup();
         w.answer_fake(ASK, 0);
-        for mode in ["bypassPermissions", "auto"] {
-            for stdin in mode_inputs(Some(mode)) {
+        for stdin in mode_inputs(Some("bypassPermissions")) {
+            let res = w.run_bin("rtk-hook", &[], &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{stdin}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_reads_the_mode_only_at_the_top_level() {
+        // A `permission_mode` key nested in tool_input, or after it, is not the real mode.
+        let w = setup();
+        w.answer_fake(ASK, 0);
+        for nested in ["bypassPermissions", "auto"] {
+            for stdin in [
+                format!(
+                    r#"{{"permission_mode":"default","tool_name":"Bash","tool_input":{{"command":"rtk git push","permission_mode":"{nested}"}}}}"#
+                ),
+                format!(
+                    r#"{{"permission_mode": "default", "tool_name": "Bash", "tool_input": {{"command": "rtk git push", "permission_mode": "{nested}"}}}}"#
+                ),
+                format!(
+                    r#"{{"tool_name":"Bash","tool_input":{{"command":"rtk git push"}},"permission_mode":"{nested}"}}"#
+                ),
+            ] {
                 let res = w.run_bin("rtk-hook", &[], &stdin);
                 assert_eq!(
-                    (res.code, res.stdout_text(), res.stderr_text()),
-                    (0, String::new(), String::new()),
+                    (res.code, res.stdout_text()),
+                    (0, format!("{ASK}\n")),
                     "{stdin}"
                 );
             }
@@ -1572,10 +1597,18 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_keeps_an_ask_in_the_other_modes_and_without_a_mode() {
+    fn test_hook_keeps_an_ask_in_every_mode_but_bypass() {
+        // Auto mode keeps the ask on a line that mentions rtk: dropping it would let
+        // `Bash(rtk *)` skip the classifier.
         let w = setup();
         w.answer_fake(ASK, 0);
-        let modes = [Some("default"), Some("acceptEdits"), Some("plan"), None];
+        let modes = [
+            Some("default"),
+            Some("acceptEdits"),
+            Some("plan"),
+            Some("auto"),
+            None,
+        ];
         for mode in modes {
             for stdin in mode_inputs(mode) {
                 let res = w.run_bin("rtk-hook", &[], &stdin);
