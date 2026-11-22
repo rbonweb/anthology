@@ -78,6 +78,10 @@ a new version section.
   each is shown in quotes, cut at 60 characters, with control characters, quotes and
   backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
   or needed escaping or cutting.
+- `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
+  `anthology-mem search --query tokens colour output` works as well as
+  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
+  usage error (exit 2) that says where the words go. The help text shows both forms.
 
 #### Changed
 

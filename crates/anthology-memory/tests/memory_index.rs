@@ -850,6 +850,80 @@ mod cli_test {
     }
 
     #[test]
+    fn test_search_accepts_query_as_an_alias_of_the_positional_words() {
+        let c = CliCase::new();
+        let positional = c.run(&["search", "Likes", "quokka", "--json"]);
+        assert_eq!(json_names(&positional), ["user-me"]);
+        for argv in [
+            ["search", "--query", "Likes", "quokka", "--json"],
+            ["search", "--json", "--query", "Likes", "quokka"],
+        ] {
+            let aliased = c.run(&argv);
+            assert_eq!(aliased.stdout_text(), positional.stdout_text(), "{argv:?}");
+        }
+        let text = c.run(&["search", "--query=quokka"]);
+        assert!(text.stdout_text().contains("user-me"));
+    }
+
+    #[test]
+    fn test_search_refuses_positional_words_and_query_together() {
+        let c = CliCase::new();
+        let p = run_mem(
+            &c.case.env,
+            &c.cwd,
+            &["search", "quokka", "--query", "wombat"],
+        );
+        assert_eq!(p.code, 2);
+        assert!(p.stdout.is_empty());
+        let err = p.stderr_text();
+        assert!(err.starts_with("usage: anthology-mem search"), "{err}");
+        assert!(
+            err.ends_with(
+                "anthology-mem search: error: give the search words either as arguments or \
+                 after --query, not both\n"
+            ),
+            "{err}"
+        );
+        assert!(
+            !c.index_dir().exists(),
+            "no index is built for a bad command"
+        );
+    }
+
+    #[test]
+    fn test_search_without_any_words_says_where_they_go() {
+        let c = CliCase::new();
+        let p = run_mem(&c.case.env, &c.cwd, &["search", "--json"]);
+        assert_eq!(p.code, 2);
+        assert!(
+            p.stderr_text().ends_with(
+                "anthology-mem search: error: give the search words as arguments or after \
+                 --query\n"
+            ),
+            "{}",
+            p.stderr_text()
+        );
+        let p = run_mem(&c.case.env, &c.cwd, &["search", "--query"]);
+        assert_eq!(p.code, 2);
+        assert!(
+            p.stderr_text()
+                .contains("argument --query: expected at least one argument"),
+            "{}",
+            p.stderr_text()
+        );
+    }
+
+    #[test]
+    fn test_search_help_shows_both_forms() {
+        let c = CliCase::new();
+        let p = c.run(&["search", "-h"]);
+        let help = p.stdout_text();
+        assert!(help.contains("--query"), "{help}");
+        assert!(help.contains("terms"), "{help}");
+        assert!(help.contains("not both"), "{help}");
+    }
+
+    #[test]
     fn test_related_orphans_stale_rebuild() {
         let c = CliCase::new();
         let rel = c.run(&["related", "user-me", "--depth", "1", "--json"]);

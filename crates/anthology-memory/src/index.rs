@@ -1185,6 +1185,47 @@ impl Default for MemDeps<'_> {
     }
 }
 
+/// The arguments of `search` on `spec`. The words come as positional arguments or after
+/// `--query`, never both; [`check_search_words`] enforces that after parsing, so the message
+/// can say where the words go.
+fn search_spec(spec: Spec) -> Spec {
+    spec.arg(
+        Arg::positional("terms")
+            .nargs(Nargs::ZeroOrMore)
+            .help("the words to search for (or give them after --query, not both)"),
+    )
+    .arg(
+        Arg::option(&["--query"])
+            .nargs(Nargs::OneOrMore)
+            .metavar("TERM")
+            .help("the words to search for, as an alternative to the positional words (not both)"),
+    )
+    .arg(
+        Arg::option(&["--json"])
+            .store_true()
+            .help("machine-readable output"),
+    )
+}
+
+/// The usage error for a `search` that got its words both ways or neither way, else `None`.
+fn check_search_words(p: &argparse::Parsed, env: &Env) -> Option<Output> {
+    let message = match (p.list("terms").is_empty(), p.list("query").is_empty()) {
+        (false, false) => "give the search words either as arguments or after --query, not both",
+        (true, true) => "give the search words as arguments or after --query",
+        _ => return None,
+    };
+    let width = argparse::help_width(env.get("COLUMNS"), None);
+    let e = argparse::error(
+        &search_spec(Spec::new("anthology-mem search")).width(width),
+        message,
+    );
+    Some(Output {
+        stdout: e.stdout.into_bytes(),
+        stderr: e.stderr.into_bytes(),
+        code: e.code,
+    })
+}
+
 /// The `anthology-mem` argument parser (`memory_index._parser`).
 pub fn parser(env: &Env) -> Spec {
     let json = || {
@@ -1221,9 +1262,7 @@ pub fn parser(env: &Env) -> Spec {
         .parser(
             "search",
             Some("full-text search over note bodies"),
-            Spec::command()
-                .arg(Arg::positional("terms").nargs(Nargs::OneOrMore))
-                .arg(json()),
+            search_spec(Spec::command()),
         )
         .parser(
             "related",
@@ -1628,6 +1667,11 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
     if command == "save" {
         return run_save(&parsed, env, deps);
     }
+    if command == "search"
+        && let Some(refused) = check_search_words(&parsed, env)
+    {
+        return refused;
+    }
     let mut out = Out {
         stdout: String::new(),
         stderr: String::new(),
@@ -1729,8 +1773,12 @@ fn run_query(
             }
         }
         "search" => {
-            let terms: Vec<String> = p
-                .list("terms")
+            let words = if p.list("query").is_empty() {
+                p.list("terms")
+            } else {
+                p.list("query")
+            };
+            let terms: Vec<String> = words
                 .iter()
                 .filter_map(|v| v.as_os_str().map(|s| s.to_string_lossy().into_owned()))
                 .collect();
