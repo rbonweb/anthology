@@ -27,7 +27,8 @@ set -- \
     "$staging/anthology-guardrails/hooks/bootstrap.sh" \
     "$staging/anthology-guardrails/hooks/guard.sh" \
     ci/jobs/shellcheck.sh \
-    ci/jobs/shims-distros.sh
+    ci/jobs/shims-distros.sh \
+    ci/jobs/mods.sh
 
 for f in "$@"; do
     if [ ! -f "$root/$f" ]; then

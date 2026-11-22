@@ -235,7 +235,8 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_rtk_hook() {
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "approval"], "timeout": 5}]},
             {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"], "timeout": 5}]}]
-        }}"#,
+        },
+        "modules": ["./mods/index.ts"]}"#,
     )
     .unwrap();
     assert_eq!(hooks("anthology"), want);

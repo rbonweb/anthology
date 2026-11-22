@@ -12,6 +12,7 @@ a new version section.
 
 #### Added
 
+- Automatic after-work check (a Claude Code mod, `hooks/mods/afterwork.ts`): when an implementer, debugger, docs-writer or ui-designer reports to the main session, the report is checked for a commit, test evidence, stray attribution lines and uncommitted files in the agent's worktree, and a short "After-work check" block naming each gap is appended. The project map and leftovers are reminders only: they ride in a block a gap raised and never raise one. The agent's text is never changed, and a report with no gap gets no block. Set `ANTHOLOGY_AFTERWORK=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
 - Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
   shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
   plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to

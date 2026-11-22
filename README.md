@@ -196,6 +196,19 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell) when Claude Code shows a permission prompt or waits for your input; set `ANTHOLOGY_NOTIFY=0` to turn it off.
 
+### After-work check
+
+When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.329 or later) checks the report before the lead reads it. A short "After-work check" block is appended only when there is a real gap:
+
+- no commit (a sha, or the word "committed");
+- no test evidence (a test word; "tests not run" or "skipped" counts as none);
+- attribution lines (`Co-Authored-By: Claude`, "Generated with") in the report, which must not be there;
+- uncommitted files in the agent's own worktree.
+
+Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one: the project map, when the report names a new, removed or renamed piece and does not say the map was updated, is missing or is not needed; and leftovers, when the report starts containers, volumes or temp files and does not say they were removed (never asked of the docs-writer).
+
+The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out); any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
+
 ### Commits carry only your name
 
 Commits, PRs and code comments carry only the git config author. The writing agents never add a `Co-Authored-By` trailer or a "Generated with" line and never mention the assistant or AI, and a `PreToolUse` hook (`hooks/no-attribution.sh`) denies a `git commit` or `gh pr create|edit` command whose command text carries one. It only searches that text with `grep`; it parses and runs nothing. It catches the usual habit and is not a guarantee: `--trailer`, `-F` and `--body-file` are not checked.
