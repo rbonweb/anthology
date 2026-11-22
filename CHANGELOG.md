@@ -49,6 +49,19 @@ a new version section.
 
 #### Fixed
 
+- `rtk-hook` no longer rewrites a command into an rtk call that cannot run. Claude Code's shell
+  snapshot defines `rg`, `grep` and `find` as shell functions, so a typed `rg -n word a b` can
+  work with no `rg` file on PATH. rtk rewrote it to `rtk rg ...`, which execs a real `rg`, and
+  the user saw `rtk: search failed: Failed to execute command: No such file or directory` and
+  exit 1. After rtk answers with a plain rewrite, the hook now drops it, and the command runs as
+  typed, in two cases. First, the typed command's first word (after leading `NAME=value`
+  assignments) is `rg`, `grep`, `ag`, `find` or `fd` and is not a real executable on the hook's
+  PATH (`command -v` in the hook's own `sh`, which has no snapshot functions). Second, the rewrite
+  holds an `rtk rg|grep|ag|find|fd` call for a program that is not on PATH, even when the first
+  word cannot be read (quoted, expanded, escaped, a path) or is a builtin such as `cd`. Other
+  programs (cargo, npm, docker, git) always keep their rewrite, because they are never snapshot
+  functions and a hook PATH poorer than the Bash tool's must not cost them it. A deny and a kept
+  ask are never dropped.
 - `rtk-hook` no longer asks in bypass mode. A hook "ask" prompts in every permission mode, so
   a command whose text mentioned `rtk` still prompted users who had chosen no prompts. The
   hook now drops rtk's ask when the top-level `permission_mode` of the hook input is
