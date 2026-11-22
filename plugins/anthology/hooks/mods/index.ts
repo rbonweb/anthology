@@ -7,8 +7,10 @@
 // Claude Code before 2.1.329 refuses a module that hooks an event it lacks, silently and whole;
 // the shell hooks in hooks.json still run there, so nothing gets looser without the mods.
 import type { Register } from 'claude-code'
+import { registerAlerts } from './alerts.tsx'
 import { registerPermissions } from './permissions.ts'
 
 export const register: Register = on => {
   registerPermissions(on)
+  registerAlerts(on)
 }
