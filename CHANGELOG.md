@@ -393,6 +393,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.1] - 2026-11-22
+
 #### Fixed
 
 - The SessionStart hook prints nothing inside a subagent. When a subagent compacts, Claude
