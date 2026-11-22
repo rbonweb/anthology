@@ -1887,6 +1887,47 @@ fn r3_every_program_is_resolved_and_one_linked_into_a_root_gives_no_decision() {
 }
 
 #[test]
+fn r3_an_assignment_or_a_quoted_program_gives_no_decision() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    let bin = fx.root.join("bin");
+    fake_program(&fx, &bin, "cat", "assigned-cat");
+    let line = format!("PATH={} cat ./a.txt", bin.display());
+    let _ = Command::new("sh")
+        .args(["-c", &line])
+        .current_dir(&fx.root)
+        .output()
+        .unwrap();
+    assert!(fx.ran("assigned-cat"), "the PATH in the line chose the cat");
+    std::fs::remove_file(fx.marks.join("assigned-cat")).unwrap();
+    for command in [line.as_str(), "FOO=1 cat ./a.txt"] {
+        assert_refused(&fx.classify(&fx.root, command, &[]), "", command);
+    }
+    // `\cat` finds cat on PATH like `cat`: a cat linked into the root refuses either way.
+    let evil = fake_program(&fx, &fx.root, "evil", "quoted-cat");
+    let tools = fx.base.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    symlink(&evil, tools.join("cat")).unwrap();
+    let path = path_with(&tools);
+    for command in ["\\cat ./a.txt", "'cat' ./a.txt"] {
+        let _ = Command::new("sh")
+            .args(["-c", command])
+            .current_dir(&fx.root)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(fx.ran("quoted-cat"), "{command} ran the linked cat");
+        std::fs::remove_file(fx.marks.join("quoted-cat")).unwrap();
+        assert_refused(
+            &fx.classify_env(&fx.root, command, &[], &[("PATH", &path)]),
+            "",
+            command,
+        );
+    }
+    assert!(!fx.ran("assigned-cat") && !fx.ran("quoted-cat"));
+}
+
+#[test]
 fn minor_a_hard_link_gives_no_decision() {
     let fx = Fx::new();
     std::fs::write(fx.base.join("outside.txt"), "OUTSIDE\n").unwrap();

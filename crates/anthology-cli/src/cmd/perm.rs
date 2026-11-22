@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 
 use anthology_core::Env;
 use anthology_pycompat::json::{self, Value};
-use anthology_shell::{ReadOnly, analyze, classify_readonly};
+use anthology_shell::{Entry, ReadOnly, analyze, classify_readonly};
 
 use super::Output;
 use paths::{Checker, Place};
@@ -160,6 +160,72 @@ fn read_request(stdin: &mut dyn Read) -> Result<Request, String> {
         cwd: PathBuf::from(string("cwd")?),
         roots: strings("roots")?.into_iter().map(PathBuf::from).collect(),
         read_rules: strings("read_rules")?,
+    })
+}
+
+/// The program words of `entries` to find on `PATH` (`cd` left out): each must be the program the
+/// shell runs, written plainly. A `NAME=value` assignment or any other word before it (a wrapper
+/// such as `command` or `env`), a program named by a path, and a program word that is quoted or
+/// holds a backslash (`\cat`, `'cat'`; it no longer appears bare in `command`) give no decision.
+fn programs<'a>(command: &str, entries: &'a [Entry]) -> Result<Vec<&'a str>, String> {
+    let mut out = Vec::new();
+    for entry in entries {
+        if entry.raw.is_empty() {
+            continue;
+        }
+        let at = entry
+            .raw
+            .len()
+            .checked_sub(entry.args.len() + 1)
+            .ok_or("a command this check cannot read")?;
+        let word = entry.raw[at].as_str();
+        if let Some(assignment) = entry.raw[..at].iter().find(|w| is_assignment(w)) {
+            return Err(format!(
+                "an assignment before a command: {}",
+                shown(assignment)
+            ));
+        }
+        if at > 0 {
+            return Err(format!(
+                "a word before the program: {}",
+                shown(&entry.raw[0])
+            ));
+        }
+        if is_assignment(word) {
+            return Err(format!("an assignment before a command: {}", shown(word)));
+        }
+        if word.contains('/') {
+            return Err(format!("a program named by its path: {}", shown(word)));
+        }
+        if word != entry.prog || !written_bare(command, word) {
+            return Err(format!("a program word that is not plain: {}", shown(word)));
+        }
+        if word == "cd" {
+            continue;
+        }
+        out.push(word);
+    }
+    Ok(out)
+}
+
+/// `NAME=value`, a shell assignment.
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `word` appears in `command` as a whole word, with no quote or backslash around it.
+fn written_bare(command: &str, word: &str) -> bool {
+    let bytes = command.as_bytes();
+    let edge = |b: Option<&u8>| b.is_none_or(|b| b.is_ascii_whitespace() || b"|&;()".contains(b));
+    command.match_indices(word).any(|(at, _)| {
+        edge(at.checked_sub(1).and_then(|i| bytes.get(i))) && edge(bytes.get(at + word.len()))
     })
 }
 
@@ -319,16 +385,7 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
     // Every program the line runs, found on PATH the way the shell finds it and resolved: the real
     // file must lie outside those places too. Nothing is run here but git, from that resolved path.
     let mut git_path = None;
-    for entry in &entries {
-        let Some(word) = entry.raw.first() else {
-            continue;
-        };
-        if word == "cd" {
-            continue;
-        }
-        if word.contains('/') {
-            return Err(format!("a program named by its path: {}", shown(word)));
-        }
+    for word in programs(&request.command, &entries)? {
         // A program not on PATH does not run: the shell reports it missing (`pwd` is a builtin).
         let Some(found) = which(&path_dirs, word) else {
             continue;
@@ -369,4 +426,39 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progs(command: &str) -> Result<Vec<String>, String> {
+        let entries = analyze(command, "/home/t").entries;
+        programs(command, &entries).map(|words| words.into_iter().map(str::to_string).collect())
+    }
+
+    #[test]
+    fn the_program_resolved_is_the_one_the_shell_runs() {
+        for refused in [
+            "PATH=/w/bin cat ./x.txt",
+            "FOO=1 cat ./x.txt",
+            "FOO=1 BAR=2 cat ./x.txt | head",
+            "cat ./x.txt | PATH=/w/bin head",
+            "\\cat ./x.txt",
+            "'cat' ./x.txt",
+            "\"cat\" ./x.txt",
+            "c\\at ./x.txt",
+            "command cat ./x.txt",
+            "env cat ./x.txt",
+            "/bin/cat ./x.txt",
+        ] {
+            assert!(progs(refused).is_err(), "{refused}: {:?}", progs(refused));
+        }
+        assert_eq!(
+            progs("cat ./x.txt | head -n 1").unwrap(),
+            ["cat", "head"],
+            "a pipe"
+        );
+        assert_eq!(progs("cd /w && git status").unwrap(), ["git"], "cd");
+    }
 }
