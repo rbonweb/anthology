@@ -25,7 +25,7 @@ Sonnet builder. Turn a clear plan into working, tested, committed code.
 - Keep changes inside the files the plan names.
 - Time: backend and database store timestamps in UTC. The frontend shows times in the user's time zone; date and time input is taken in the user's time zone and converted to UTC before it is sent or stored.
 - While developing, run only the tests (and linter) for what you changed; never the full suite repeatedly. Run it once at the final go, usually CI on the PR.
-- Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask. After use, remove your own containers, built images and their volumes; never touch other projects' or stop Docker.
+- Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask. After use, remove your own containers, built images and their volumes; never touch other projects' or stop Docker. Tag images and name containers per worktree, e.g. `<app>-test-<worktree folder>`, typed literally.
 - Busy machine or service: a slowdown you chose (fewer jobs, skipped server) is temporary; re-check after 5-10 minutes and return to full speed.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
 - Commits, PRs and code comments carry only the git config author: never add Co-Authored-By or "Generated with" lines, never mention Claude or AI.
@@ -33,8 +33,9 @@ Sonnet builder. Turn a clear plan into working, tested, committed code.
 - Project map: when your change adds, removes or rewires a piece, update `.claude/memory/reference-project-map.md` in your final commit and keep it within its size budget. No map yet: say so in your report.
 - Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files.
 - One plain command per Bash call, run from the worktree root: no `cd`, `source`, loops or heredocs. One git command per call, with no `;`, `&&` or `$()` around git.
+- Commit with `git commit -m "subject" -m "body"` in plain quotes, never `-F file` (the no-attribution hook cannot see it). Merge in single commands: `git merge --no-edit <ref>`, resolve with Edit, `git add <file>`, `git commit --no-edit`.
 - A multi-step script you truly need: Write it as a file in the worktree, run `bash path/to/script.sh`, delete it before committing.
-- Waiting: never a long `sleep`; run slow work in the background. Load deferred tools such as Monitor with ToolSearch before calling them. Put a timeout on every test run: `timeout 900` inside the container command (the macOS host has none), or the Bash tool's `timeout` parameter. Report a hang instead of waiting.
+- Waiting: never a long `sleep`; run slow work in the background. Load deferred tools such as Monitor with ToolSearch before calling them. Put a timeout on every test run and start it in the background (a foreground Bash call caps at 600 s): `timeout 900` inside the container command (the macOS host has none), or the Bash tool's `timeout` parameter. Report a hang instead of waiting.
 
 ## Don't
 - Do not widen scope or redesign the plan.

@@ -823,9 +823,30 @@ mod roster_test {
                 for needle in [
                     "Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files.",
                     "One git command per call, with no `;`, `&&` or `$()` around git.",
+                    "`git commit -m \"subject\" -m \"body\"` in plain quotes, never `-F file`",
+                    "`git merge --no-edit <ref>`, resolve with Edit, `git add <file>`, `git commit --no-edit`",
                 ] {
                     expect_in(p, needle, &rules, "Do");
                 }
+            },
+        );
+    }
+
+    // Writers never see the routing guide, so the per-worktree Docker names are in their prompts.
+    #[test]
+    fn test_writers_name_docker_images_and_containers_per_worktree() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                expect_in(
+                    p,
+                    "Tag images and name containers per worktree, e.g. `<app>-test-<worktree folder>`, typed literally.",
+                    &rules,
+                    "Do",
+                );
             },
         );
     }
@@ -853,12 +874,13 @@ mod roster_test {
         );
     }
 
-    // Per-task logs, duplicates and 20 KB indexes make memory useless, so writers and the
-    // reviewer save only lasting facts and search before they save.
+    // Per-task logs, duplicates and 20 KB indexes make memory useless, so every agent that saves
+    // notes saves only lasting facts and searches before it saves. The scout has 4 bytes of
+    // startup budget left, so it is the one exception.
     #[test]
     fn test_saving_agents_keep_memory_small() {
         each_agent(
-            |s| s.edits == "yes" || s.name == "reviewer",
+            |s| s.name != "scout",
             |spec, p| {
                 let Some((_, _, memory)) = load_section(spec.name, "Memory", p) else {
                     return;
@@ -1002,6 +1024,9 @@ mod roster_test {
             "## Docker names per worktree",
             "worktree folder name",
             "plan path and task ID",
+            "task-brief file",
+            "capped at 600 s",
+            "project `npm install` is fine",
             "anthology-mem search",
         ] {
             assert!(skill.contains(needle), "{needle}");

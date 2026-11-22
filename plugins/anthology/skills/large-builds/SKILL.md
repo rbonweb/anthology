@@ -47,11 +47,13 @@ Read this before the first task of a large or long build (many tasks, several ag
 - Load a deferred tool such as Monitor with ToolSearch
   (`select:Monitor`) before the first call. Why: calling a tool whose schema
   is not loaded fails.
-- Put a timeout on every test run: `timeout 900 <command>` inside the
-  container command (Linux images have `timeout`; the macOS host has none),
-  or the Bash tool's own `timeout` parameter. Never rely on a host
-  `timeout`. When it fires, or the run shows no progress, stop and
-  report a hang instead of waiting. Why: a hung run once sat for 36 minutes unnoticed.
+- Put a timeout on every test run, and start the run in the background
+  (a foreground Bash call is capped at 600 s): `timeout 900 <command>`
+  inside the container command (Linux images have `timeout`; the macOS host
+  has none), or the Bash tool's own `timeout` parameter. Never rely on a
+  host `timeout`. When it fires, or the run shows no progress, stop and
+  report a hang instead of waiting. Why: a hung run once sat for 36
+  minutes unnoticed.
 
 ## Docker names per worktree
 
@@ -59,10 +61,13 @@ Read this before the first task of a large or long build (many tasks, several ag
   `myapp-test-<worktree folder name>`; read the folder name from `pwd` and
   type it literally. Remove only your own names afterwards. Why: when every
   worktree tags the same name, parallel agents test each other's code.
+- No host installs (`brew`, `npm -g`, global `pip`, browser downloads); a
+  project `npm install` is fine. Why: host installs change the owner's
+  machine, while a project install stays in the project folder.
 
 ## Memory stays small
 
-- Writers and reviewers save only lasting facts (a rule, a surprise, where
+- Every agent that saves notes (the scout excepted) saves only lasting facts (a rule, a surprise, where
   something lives, why a decision was made), never per-task logs or what a
   diff already shows. Why: the index loads in every session, and hundreds
   of log-style notes made it 17-20 KB.
@@ -94,16 +99,19 @@ Read this before the first task of a large or long build (many tasks, several ag
 
 - Give each parallel implementer a disjoint file slice and its own worktree
   or sub-branch, and merge the results yourself. Why: separate trees cannot
-  clobber each other. This is the exception to anthology-superpowers:subagent-driven-development's "never in
-  parallel": one working tree still gets one writer.
+  clobber each other. This is the exception to
+  anthology-superpowers:subagent-driven-development's "never in parallel":
+  one working tree still gets one writer.
 - Nested subagents are fine on the same terms: disjoint slice, own worktree,
   the parent merges. Why: a big task often splits cleanly by module.
 - In a shared registry (a module list, an owners table), append your own
   line only; never reorder or edit other lines. Why: append-only edits merge
   without conflicts.
-- Put in each dispatch: the plan path and task ID, the slice, the interfaces
-  to code against, the SWAP rule, the test tier below, and "no reviewers". Why: a worker cannot follow
-  rules it was never given.
+- Put in each dispatch: the plan path and task ID (or the task-brief file),
+  which is the brief itself; the slice as one line, not plan text; the
+  interfaces to code against; the SWAP rule; the test tier below; and "no
+  reviewers". Why: a worker cannot follow rules it was never given, and
+  pasted plan text costs the lead a read per task.
 
 ## Keep capacity busy
 
@@ -111,8 +119,8 @@ Read this before the first task of a large or long build (many tasks, several ag
   swaps for dependencies that just merged, plumbing, docs, early reviews of
   finished tasks, release prep. Start it. Why: agents idling on a test queue
   are the costliest waste in a long run.
-- Use each bounded wait (anthology-superpowers:subagent-driven-development, "Waiting on dispatched subagents") for
-  this check. Why: the wait is already a check-in, so the scan costs nothing.
+- Use each bounded wait (anthology-superpowers:subagent-driven-development,
+  "Waiting on dispatched subagents") for this check. Why: the wait is already a check-in, so the scan costs nothing.
 - Never park an agent on a shared queue (a build server, a slow job) while
   other work exists. Why: queue time is wall-clock time the whole build pays.
 - Treat machine or server load as temporary. If you throttle (fewer jobs,

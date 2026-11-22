@@ -54,8 +54,13 @@ a new version section.
     cannot verify. They also never use a long `sleep`, load deferred tools such as Monitor
     through ToolSearch before calling them, and put a timeout on every test run, reporting a
     hang instead of waiting.
-  - Writing agents and the reviewer save only lasting facts to memory, search with
-    `anthology-mem search` first and update an existing note instead of adding a duplicate.
+  - Writing agents also tag Docker images and name containers per worktree, commit with
+    `git commit -m "subject" -m "body"` (never `-F`, which the attribution hook cannot see) and
+    merge with single commands.
+  - Every agent that saves notes (architect, researcher, reviewer, ui-reviewer, marketer,
+    product-planner and the four writers) saves only lasting facts, searches with
+    `anthology-mem search` first and updates an existing note instead of adding a duplicate.
+    The scout is left alone because its startup budget has 4 bytes free.
   - Routing guide: merge conflicts go to an implementer, long checks run in the background or
     go to an agent, plans hold no lead coding tasks, agents are briefed with a plan path and
     task ID, a user's stop or pause beats the plan, and Docker images and containers are named
