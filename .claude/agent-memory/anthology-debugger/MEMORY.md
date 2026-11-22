@@ -3,6 +3,7 @@
 - [Editing the vendored superpowers plugin](project-vendored-superpowers-hook-edits.md) — How to change plugins/anthology-superpowers files so vendor check stays clean, and how to run targeted tests
 - [Evals on Linux runners need bubblewrap and socat](project-evals-linux-sandbox-deps.md) — Why the first CI eval run failed all cases and which smokes depend on the Claude Code sandbox
 - [Guard G0 changes need a golden bless](project-guard-g0-changes-need-golden-bless.md) — How a deliberate stricter guard or parser change gets past the frozen goldens, and where G0 must be signalled
+- [Guard G0 hints are text scans in hook.rs](project-guard-g0-hints-are-text-scans.md) — Where a G0 message hint is added, why it is a scan of the command text, and which backtick shapes are G0
 - [Guard G0 on a bracket with backticks comes from subscript_runs, not the lexer](project-guard-subscript-g0.md) — Where a G0 for brackets plus backticks is decided and what must stay conservative wh…
 - [Guard carve-outs are allowlists, not setter lists](project-guard-carve-outs-text-rule.md) — Why the three PR 159 carve-outs became character and program allowlists, and what they over-block
 - [rtk-hook tests live in anthology-runtime, run in own Docker](project-rtk-hook-tests-and-docker.md) — Where the rtk-hook shell tests are and how to run them without scripts/rust-test.sh

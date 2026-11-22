@@ -405,6 +405,15 @@ a new version section.
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).
 
+#### Changed
+
+- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
+  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
+  a backtick starts a command substitution, here one that never ends, so the block is right but
+  agents retried the same command. The message adds: "A backtick inside double quotes runs a
+  command; put the pattern in single quotes". The verdict does not change, and a pattern in
+  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+
 ### [0.2.2] - 2026-11-22
 
 #### Fixed

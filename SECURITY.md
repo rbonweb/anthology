@@ -99,7 +99,7 @@ The guard reads a command the way bash 5.2 and zsh 5.9 do (zsh is the shell Clau
 - `$PWD` is never read through: the working directory carries over between calls, so its name can hold a `$(…)`. `"$PWD"/node_modules/.bin/vitest` is blocked; `./node_modules/.bin/vitest` works.
 - `run() { "$@"; }; run make test` and `sh -c '"$1" --version' _ git`.
 
-When the block comes from a `$` inside a double-quoted `sh -c`, `eval` or `trap` script, the message says so: put the script in single quotes and pass values as arguments (`sh -c '… "$1" …' _ "$x"`).
+When the block comes from a `$` inside a double-quoted `sh -c`, `eval` or `trap` script, the message says so: put the script in single quotes and pass values as arguments (`sh -c '… "$1" …' _ "$x"`). A search pattern in double quotes that holds one backtick (`grep -n "x = <backtick>" file`) is blocked as well, because the backtick starts a command substitution; the message says to put the pattern in single quotes.
 
 **Also blocked, though harmless** (accepted, so the rules stay simple): `${EDITOR:-vi} file` and other defaults as the program, `"${cmd[@]}"`, `$SHELL -c …`, `"${HOME}/…"` and `sh -c "cd $HOME/proj && make"`, a read loop that counts (`while read -r l; do n=$((n+1)); done < f`), a `retry` wrapper whose body holds a number (`for i in 1 2 3`), the `.env` loader `while read -r k v; do export "$k=$v"; done < .env` (`set -a; source .env; set +a` loads the same file and is allowed), and zsh-like text such as `echo foo(bar)`.
 
