@@ -20,6 +20,12 @@ a new version section.
   either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
   are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
   hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
 
 #### Fixed
 
