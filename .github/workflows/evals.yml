@@ -63,17 +63,12 @@ jobs:
           NPM_CONFIG_OFFLINE: "true"
           # `plugin eval` needs the credential in its children: with scrubbing every case fails
           # "Not logged in". It already hides the key from their tools itself. The smokes build
-          # their own environment per run (evals/smoke/smoke.py).
+          # their own environment per run (anthology-dev smoke).
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0"
         run: |
           if [ -n "$ANTHROPIC_BASE_URL_SECRET" ]; then export ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL_SECRET"; fi
           unset ANTHROPIC_BASE_URL_SECRET
-          status=0
-          scripts/run-evals.sh --ci --max-cost-usd "$MAX_COST_USD" || status=$?
-          if [ "$status" = 3 ]; then
-            echo "::error::No evals/baseline.json is committed; the results and a candidate baseline are in the evals-results artifact"
-          fi
-          exit "$status"
+          ci/jobs/evals.sh --ci --max-cost-usd "$MAX_COST_USD"
       - name: Upload the results
         if: always() && steps.key.outputs.present == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

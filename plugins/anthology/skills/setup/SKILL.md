@@ -11,12 +11,14 @@ command below prints one JSON object. Run them from the user's current folder.
 
 Anthology supports macOS and Linux only. If a command exits with code 2, show its message and stop.
 
+If a Bash call is blocked with "(setup)", wait a minute and run the same command once more: the guard reinstalls its binary. If it is still blocked, tell the user to start a new session while online, or to disable anthology-guardrails with /plugin.
+
 ## Setup (`/anthology:setup`)
 
 1. Preview. This writes nothing:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" preview --plugin-root "${CLAUDE_PLUGIN_ROOT}" --json
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup preview --plugin-root "${CLAUDE_PLUGIN_ROOT}" --json
    ```
 
 2. Report the environment from `doctor.checks`:
@@ -87,7 +89,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 5. Once confirmed, apply, passing the digest from the preview so a changed settings file is never overwritten:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>
    ```
 
    Add `--promote <file>` once for each legacy note the user chose to move into the repo (the bare
@@ -109,7 +111,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 1. Preview the removal. This writes nothing:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" remove --preview --plugin-root "${CLAUDE_PLUGIN_ROOT}"
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup remove --preview --plugin-root "${CLAUDE_PLUGIN_ROOT}"
    ```
 
    If it reports an error (for example settings.json is not valid JSON), show the message and stop.
@@ -131,7 +133,7 @@ Anthology supports macOS and Linux only. If a command exits with code 2, show it
 4. After the confirmation, run it, adding `--unapprove` (this repo) or `--unapprove-all` only if the user said yes:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/anthology_setup.py" remove --plugin-root "${CLAUDE_PLUGIN_ROOT}"
+   "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup remove --plugin-root "${CLAUDE_PLUGIN_ROOT}"
    ```
 
 5. Report the result and any `warnings`. If it says settings.json is not valid JSON, show the message:

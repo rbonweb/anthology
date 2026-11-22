@@ -6,25 +6,12 @@ updates:
       interval: weekly
   - package-ecosystem: cargo
     directory: /
-    # The workspace lives on the port's integration branch until cutover; CO2 drops this line.
-    target-branch: rust
-    schedule:
-      interval: weekly
-  - package-ecosystem: pip
-    directory: /tests
     schedule:
       interval: weekly
   - package-ecosystem: docker
     directory: /ci/images
     schedule:
       interval: weekly
-    ignore:
-      # The images are pinned to python:3.9 (macOS system python) and python:3.12;
-      # a major/minor bump would silently change what CI covers. Digest and patch bumps flow.
-      - dependency-name: python
-        update-types:
-          - version-update:semver-major
-          - version-update:semver-minor
   - package-ecosystem: npm
     directory: /ci/claude-code
     schedule:
