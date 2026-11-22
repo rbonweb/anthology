@@ -194,6 +194,7 @@ a new version section.
   matched in any case and now include `.config/gh/hosts.yml`, `.docker/config.json`,
   `.kube/config`, `.claude/.credentials.json` and the shell history files. A `git` format
   with `%G` (it runs gpg) is not proven.
+- pin anthology-bin 0.1.3.
 
 ### [0.2.0] - 2026-11-22
 
@@ -369,6 +370,10 @@ a new version section.
   double quotes is a plain backtick and was already read that way. It still counts in a
   subscript after a name, because bash removes the quotes before it evaluates the
   subscript. The fix ships in the next `anthology` binary (0.1.3).
+
+#### Changed
+
+- pin anthology-bin 0.1.3.
 
 ### [0.2.0] - 2026-11-22
 
