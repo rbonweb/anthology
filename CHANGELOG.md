@@ -12,6 +12,56 @@ a new version section.
 
 #### Added
 
+- Attribution off at the source. Claude Code's own instructions tell the model to add a
+  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
+  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
+  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
+  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
+  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
+  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
+  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
+
+#### Fixed
+
+- `rtk-hook` no longer rewrites a command into an rtk call that cannot run. Claude Code's shell
+  snapshot defines `rg`, `grep` and `find` as shell functions, so a typed `rg -n word a b` can
+  work with no `rg` file on PATH. rtk rewrote it to `rtk rg ...`, which execs a real `rg`, and
+  the user saw `rtk: search failed: Failed to execute command: No such file or directory` and
+  exit 1. After rtk answers with a plain rewrite, the hook now drops it, and the command runs as
+  typed, in two cases. First, the typed command's first word (after leading `NAME=value`
+  assignments) is `rg`, `grep`, `ag`, `find` or `fd` and is not a real executable on the hook's
+  PATH (`command -v` in the hook's own `sh`, which has no snapshot functions). Second, the rewrite
+  holds an `rtk rg|grep|ag|find|fd` call for a program that is not on PATH, even when the first
+  word cannot be read (quoted, expanded, escaped, a path) or is a builtin such as `cd`. Other
+  programs (cargo, npm, docker, git) always keep their rewrite, because they are never snapshot
+  functions and a hook PATH poorer than the Bash tool's must not cost them it. A deny and a kept
+  ask are never dropped.
+- `anthology-mem save` run in a folder that is not a git repo now names the repos below it.
+  When Claude Code is started in a parent folder that holds several repos, every save used to
+  stop at "not inside a git work tree" with no way forward. The message now adds a line that
+  lists up to five of the repos directly below the folder (sorted, then "and N more") and says
+  to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
+  start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
+  the session-start warning, and the exit code is unchanged. With no repo below, or a folder
+  that cannot be listed, the message is the old single line. Folder names are untrusted text:
+  each is shown in quotes, cut at 60 characters, with control characters, quotes and
+  backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
+  or needed escaping or cutting.
+- `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
+  `anthology-mem search --query tokens colour output` works as well as
+  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
+  usage error (exit 2) that says where the words go. The help text shows both forms.
+
+#### Changed
+
+- The closing pointer that session start adds when it cuts the memory index now reads
+  `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
+  length is the same, so the session budget is unchanged.
+
+### [0.2.7] - 2026-11-22
+
+#### Added
+
 - Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
   shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
   plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to
@@ -44,32 +94,11 @@ a new version section.
   `anthology-mem save --body-file <path>` (a file inside the repo or temp folder) or
   `--body-file -`.
 - When session start has to cut the memory index to fit its budget, the closing pointer now
-  says only to use `anthology-mem search <words>`; it no longer lists the full `MEMORY.md`
+  says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
   paths, because the index is capped and those files are not the way to read every note.
-- Attribution off at the source. Claude Code's own instructions tell the model to add a
-  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
-  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
-  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
-  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
-  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
-  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
-  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
 
 #### Fixed
 
-- `rtk-hook` no longer rewrites a command into an rtk call that cannot run. Claude Code's shell
-  snapshot defines `rg`, `grep` and `find` as shell functions, so a typed `rg -n word a b` can
-  work with no `rg` file on PATH. rtk rewrote it to `rtk rg ...`, which execs a real `rg`, and
-  the user saw `rtk: search failed: Failed to execute command: No such file or directory` and
-  exit 1. After rtk answers with a plain rewrite, the hook now drops it, and the command runs as
-  typed, in two cases. First, the typed command's first word (after leading `NAME=value`
-  assignments) is `rg`, `grep`, `ag`, `find` or `fd` and is not a real executable on the hook's
-  PATH (`command -v` in the hook's own `sh`, which has no snapshot functions). Second, the rewrite
-  holds an `rtk rg|grep|ag|find|fd` call for a program that is not on PATH, even when the first
-  word cannot be read (quoted, expanded, escaped, a path) or is a builtin such as `cd`. Other
-  programs (cargo, npm, docker, git) always keep their rewrite, because they are never snapshot
-  functions and a hook PATH poorer than the Bash tool's must not cost them it. A deny and a kept
-  ask are never dropped.
 - `rtk-hook` no longer asks in bypass mode. A hook "ask" prompts in every permission mode, so
   a command whose text mentioned `rtk` still prompted users who had chosen no prompts. The
   hook now drops rtk's ask when the top-level `permission_mode` of the hook input is
@@ -88,21 +117,6 @@ a new version section.
   agent failed there and the lead fell back to agents without Anthology's rules. The warning
   says to start Claude Code inside the repo you are working on. It looks one level down and at
   no more than 200 entries, and it is not shown in subagents.
-- `anthology-mem save` run in a folder that is not a git repo now names the repos below it.
-  When Claude Code is started in a parent folder that holds several repos, every save used to
-  stop at "not inside a git work tree" with no way forward. The message now adds a line that
-  lists up to five of the repos directly below the folder (sorted, then "and N more") and says
-  to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
-  start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
-  the session-start warning, and the exit code is unchanged. With no repo below, or a folder
-  that cannot be listed, the message is the old single line. Folder names are untrusted text:
-  each is shown in quotes, cut at 60 characters, with control characters, quotes and
-  backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
-  or needed escaping or cutting.
-- `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
-  `anthology-mem search --query tokens colour output` works as well as
-  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
-  usage error (exit 2) that says where the words go. The help text shows both forms.
 
 #### Changed
 
@@ -391,6 +405,8 @@ a new version section.
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).
 
+### [0.2.2] - 2026-11-22
+
 #### Fixed
 
 - A read-only search is no longer blocked as "too complex" (G0) because its regex has a
@@ -464,6 +480,8 @@ a new version section.
 ## anthology-superpowers
 
 ### [Unreleased]
+
+### [0.2.1] - 2026-11-22
 
 #### Fixed
 
