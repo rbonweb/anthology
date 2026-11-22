@@ -6,7 +6,8 @@
 //! is only probably read-only belongs in the first table.
 
 use anthology_shell::{
-    READONLY_PROGRAMS, ReadOnly, analyze, classify_readonly, head_tail_count, literal_cd_target,
+    READONLY_PROGRAMS, ReadOnly, SECRET_PATTERNS, analyze, classify_readonly, head_tail_count,
+    is_secret_path, literal_cd_target,
 };
 use proptest::prelude::*;
 
@@ -16,10 +17,26 @@ fn classify(command: &str) -> ReadOnly {
     classify_readonly(command, HOME)
 }
 
+/// The paths (as written) and the `cd` targets of a proven command.
 #[track_caller]
 fn proven(command: &str) -> (Vec<String>, Vec<String>) {
+    let (paths, cd, _) = proven_full(command);
+    (paths.into_iter().map(|p| p.0).collect(), cd)
+}
+
+/// Every field of a proven command: each path with its `recursive` flag, the `cd` targets, `runs_git_config`.
+#[track_caller]
+fn proven_full(command: &str) -> (Vec<(String, bool)>, Vec<String>, bool) {
     match classify(command) {
-        ReadOnly::Proven { paths, cd } => (paths, cd),
+        ReadOnly::Proven {
+            paths,
+            cd,
+            runs_git_config,
+        } => (
+            paths.into_iter().map(|p| (p.path, p.recursive)).collect(),
+            cd,
+            runs_git_config,
+        ),
         ReadOnly::NotProven(why) => panic!("{command:?} should be proven, got NotProven({why})"),
     }
 }
@@ -38,7 +55,9 @@ fn assert_none_proven(commands: &[&str]) {
     let wrong: Vec<String> = commands
         .iter()
         .filter_map(|c| match classify(c) {
-            ReadOnly::Proven { paths, cd } => Some(format!("{c:?}: Proven {paths:?} cd {cd:?}")),
+            ReadOnly::Proven { paths, cd, .. } => {
+                Some(format!("{c:?}: Proven {paths:?} cd {cd:?}"))
+            }
             ReadOnly::NotProven(_) => None,
         })
         .collect();
@@ -121,7 +140,8 @@ fn git_read_commands_are_proven() {
         "git diff",
         "git diff --stat",
         "git diff --cached --name-only",
-        "git diff main -- src",
+        "git diff main src",
+        "git diff -- src",
         "git show --stat HEAD",
         "git show --no-patch --format=%H HEAD",
         "git blame -L 1,10 src/lib.rs",
@@ -142,7 +162,7 @@ fn git_read_commands_are_proven() {
         "git remote -v",
         "git --no-pager log -3",
         "git --no-optional-locks status",
-        "git diff HEAD -- src/lib.rs | head -n 20",
+        "git diff -- src/lib.rs | head -n 20",
     ] {
         proven(command);
     }
@@ -189,8 +209,12 @@ fn the_paths_a_command_names_are_reported_as_written() {
     // git: every operand may be a path, a word after `--` always is
     assert_eq!(paths_of("git status"), Vec::<String>::new());
     assert_eq!(
-        paths_of("git log --oneline -5 main -- src a.rs"),
-        strs(&["main", "src", "a.rs"])
+        paths_of("git log --oneline -5 main src"),
+        strs(&["main", "src"])
+    );
+    assert_eq!(
+        paths_of("git log --oneline -5 -- src a.rs"),
+        strs(&["src", "a.rs"])
     );
     assert_eq!(paths_of("git diff --stat"), Vec::<String>::new());
 }
@@ -1577,6 +1601,485 @@ fn every_proven_command_is_read_by_analyze_as_plain_simple_commands() {
     }
 }
 
+// --- the runtime is macOS BSD tools under zsh (review round 1) ----------------------------------------------
+
+#[test]
+fn a_word_with_a_dash_after_the_first_operand_is_not_proven() {
+    // BSD getopt stops at the first operand, GNU getopt_long permutes: the word is an option on one and a
+    // file name on the other, so neither reading is proven. `uniq a -c` writes the file `-c` on macOS.
+    assert_none_proven(&[
+        "uniq payload.txt -c",
+        "head notes.md -n 5",
+        "cat notes.md -n",
+        "tail log.txt -n 5",
+        "wc a.txt -l",
+        "ls dir -l",
+        "ls src -la",
+        "du . -h",
+        "stat f -c %s",
+        "realpath p -e",
+        "file a.png -b",
+        "sort a.txt -r",
+        "cut a.csv -d, -f1",
+        "diff a b -u",
+        "grep foo a.txt -n",
+        "grep foo -r src",
+        "grep -e foo a.txt -n",
+        "rg foo src -n",
+        "rg foo -n",
+        "jq . a.json -c",
+        "jq . -c a.json",
+        "git log main -n 5",
+        // git reads `--` the same on every platform, but the rule is one for every program
+        "git diff main -- src",
+        "git log main -- a.rs",
+        "git diff a.rs --stat",
+        "git show HEAD -s",
+        "git ls-files src -o",
+        // `--` after an operand is a file name on BSD and the end of the options on GNU
+        "cat a -- b",
+        "ls a -- b",
+        "cat a --",
+        // behind a pipe, behind a cd, after a redirect: the rule is per command
+        "ls | head a.txt -n 5",
+        "cd /w && cat notes.md -n",
+        "cat a.txt -n < b.txt",
+    ]);
+    // options first, operands after, and everything after `--`, still pass
+    for command in [
+        "cat -n a.txt",
+        "cat -n -- a.txt",
+        "cat -- -n",
+        "cat -- a -b",
+        "cat a.txt b.txt",
+        "head -n 5 notes.md",
+        "uniq -c payload.txt",
+        "grep -rn foo src",
+        "grep -e foo -r src",
+        "grep -n -- foo -x",
+        "rg -n foo src",
+        "git log -n 5 -- src -x",
+        "git diff --stat a.rs b.rs",
+        "diff -u a b",
+        "ls -la src tests",
+        "find . -name '*.rs' -type f",
+    ] {
+        proven(command);
+    }
+    // an option value may start with `-`: it is the value, not a word after an operand
+    proven("head -n -5 notes.md");
+    proven("grep -e -foo a.txt");
+}
+
+#[test]
+fn a_zsh_numeric_glob_is_not_a_pair_of_redirects() {
+    // zsh reads `<1-5>`, `<-9>` and `<->` as one glob word; bash reads two redirects. Either way the line is
+    // not one the classifier can describe.
+    assert_none_proven(&[
+        "cat <1-5>/dev/null",
+        "cat <1-5>&2 x",
+        "cat <-9>/dev/null",
+        "cat <->/dev/null",
+        "cat <0-9>&2",
+        "cat <1->/dev/null",
+        "cat <-5>x",
+        "cat a<1-5>b",
+        "cat 'a'<1-5>",
+        "cat 2<1-5>",
+        "ls <1-5>",
+    ]);
+    // a `<` and a `>` that are no numeric glob are plain redirects
+    proven("cat <a.txt");
+    proven("cat < a.txt");
+    proven("cat <a.txt >/dev/null");
+    // a quoted `<1-5>` is text
+    proven("grep '<1-5>' a.txt");
+}
+
+#[test]
+fn a_word_that_zsh_expands_as_a_command_path_is_not_proven() {
+    // EQUALS: a word that opens with `=` is the path of that command, however the `=` is spelled
+    assert_none_proven(&[
+        "cat =ls",
+        "cat ''=ls",
+        "cat \"\"=ls",
+        "cat '='ls",
+        "cat \"=\"ls",
+        "cat ''''=ls",
+        "cat ''=",
+        "ls -- ''=ls",
+        // MAGIC_EQUAL_SUBST: `name=` and `:` open a position where `=cmd` is expanded again
+        "cat a==ls",
+        "cat a:=ls",
+        "cat --x==ls",
+        "grep --color==ls x",
+    ]);
+    // an `=` inside a word is text
+    proven("grep --color=auto foo a.txt");
+    proven("cat a=b");
+    proven("cat 'a'=b");
+    proven("git log --pretty=format:%h");
+    proven("git log --since=2.weeks");
+}
+
+#[test]
+fn git_commands_say_that_git_runs() {
+    for command in [
+        "git status",
+        "git log -p",
+        "git diff",
+        "git show HEAD",
+        "git blame -L 1,10 a.rs",
+        "git ls-files",
+        "git rev-parse HEAD",
+        "git describe --tags",
+        "git branch",
+        "git remote -v",
+        "cd ./sub && git status",
+        "ls | git log",
+        "git --no-pager log -3 | head -n 5",
+    ] {
+        assert!(proven_full(command).2, "{command}");
+    }
+    for command in [
+        "ls",
+        "cat a.txt",
+        "cd /w && rg foo",
+        "pwd",
+        "grep git a.txt",
+    ] {
+        assert!(!proven_full(command).2, "{command}");
+    }
+}
+
+#[test]
+fn git_options_that_refresh_the_index_are_not_proven() {
+    // `describe --dirty` and `--broken` refresh `.git/index`: a write, and a config-driven run
+    assert_none_proven(&[
+        "git describe --dirty",
+        "git describe --dirty=-x",
+        "git describe --broken",
+        "git describe --tags --dirty",
+    ]);
+    proven("git describe --tags --abbrev=0");
+}
+
+#[test]
+fn each_path_says_whether_the_command_reads_everything_under_it() {
+    let table: &[(&str, &[(&str, bool)])] = &[
+        // rg always walks directories
+        ("rg foo", &[(".", true)]),
+        ("rg foo src", &[("src", true)]),
+        ("rg --files", &[(".", true)]),
+        ("rg -n foo a.txt b.txt", &[("a.txt", true), ("b.txt", true)]),
+        // grep only with -r, --recursive or -d recurse
+        ("grep foo a.txt", &[("a.txt", false)]),
+        ("grep -rn foo src", &[("src", true)]),
+        ("grep -r foo", &[(".", true)]),
+        ("grep --recursive foo src", &[("src", true)]),
+        ("grep -nr foo src", &[("src", true)]),
+        ("grep -d recurse foo src", &[("src", true)]),
+        ("grep -drecurse foo src", &[("src", true)]),
+        ("grep --directories=recurse foo src", &[("src", true)]),
+        ("grep -d skip foo src", &[("src", false)]),
+        ("egrep -r a src", &[("src", true)]),
+        ("fgrep -r a src", &[("src", true)]),
+        ("grep foo", &[(".", false)]),
+        ("grep -f pats.txt a", &[("pats.txt", false), ("a", false)]),
+        // find, du, tree always walk
+        ("find . -name x", &[(".", true)]),
+        ("find src tests -type f", &[("src", true), ("tests", true)]),
+        ("find -name x", &[(".", true)]),
+        (
+            "find src -newer Cargo.lock",
+            &[("src", true), ("Cargo.lock", false)],
+        ),
+        ("du -sh .", &[(".", true)]),
+        ("du -sh", &[(".", true)]),
+        ("tree -L 2 src", &[("src", true)]),
+        ("tree", &[(".", true)]),
+        // ls lists a directory unless -R
+        ("ls", &[(".", false)]),
+        ("ls -la src", &[("src", false)]),
+        ("ls -R", &[(".", true)]),
+        ("ls -lR src", &[("src", true)]),
+        ("ls --recursive src", &[("src", true)]),
+        // plain file readers
+        ("cat a.txt", &[("a.txt", false)]),
+        ("cat < a.txt", &[("a.txt", false)]),
+        ("diff a b", &[("a", false), ("b", false)]),
+        ("jq . a.json", &[("a.json", false)]),
+        ("wc -l a b", &[("a", false), ("b", false)]),
+        // a git path names a directory pathspec as often as a file
+        ("git log -- src", &[("src", true)]),
+        ("git diff -- a.rs", &[("a.rs", true)]),
+        ("git diff main", &[("main", true)]),
+        // the recursive flag belongs to the command, not the line
+        ("ls -R | head -n 3", &[(".", true)]),
+        (
+            "cat a.txt | grep -r foo src",
+            &[("a.txt", false), ("src", true)],
+        ),
+    ];
+    for (command, expected) in table {
+        let (paths, _, _) = proven_full(command);
+        let expected: Vec<(String, bool)> =
+            expected.iter().map(|(p, r)| (p.to_string(), *r)).collect();
+        assert_eq!(paths, expected, "{command}");
+    }
+}
+
+#[test]
+fn a_read_of_an_obvious_secret_path_is_not_proven() {
+    assert_none_proven(&[
+        // ssh and gnupg, as an operand, an absolute path, a directory, a sub path
+        "cat /home/tester/.ssh/id_ed25519",
+        "cat .ssh/config",
+        "ls /home/tester/.ssh",
+        "ls /home/tester/.ssh/",
+        "cat ./sub/.ssh/known_hosts",
+        "ls .gnupg",
+        "cat /home/tester/.gnupg/pubring.kbx",
+        // env files
+        "cat .env",
+        "cat ./.env",
+        "cat sub/.env",
+        "cat .env.local",
+        "cat .env.production",
+        "head -n 3 .env",
+        "grep KEY .env",
+        // key and certificate files
+        "cat server.pem",
+        "cat certs/server.key",
+        "cat id_rsa",
+        "cat sub/id_ed25519",
+        "cat id_ecdsa.pub",
+        // cloud and package credentials
+        "cat /home/tester/.aws/credentials",
+        "jq . /home/tester/.aws/credentials",
+        "cat .aws/credentials",
+        "cat .netrc",
+        "cat /home/tester/.npmrc",
+        "cat .pypirc",
+        "cat .git-credentials",
+        // every way a path is named
+        "cat < .env",
+        "cat -- .env",
+        "grep -f .env foo",
+        "grep -e x .env",
+        "git log -- .env",
+        "git diff HEAD -- .ssh/config",
+        "find . -newer .env",
+        "diff .env other",
+        "realpath --relative-to=.env a",
+        "cd /home/tester/.ssh && ls",
+        "cd ./.aws && cat credentials",
+        // a recursive walk that starts at a secret directory
+        "rg KEY /home/tester/.ssh",
+        "find /home/tester/.ssh -type f",
+        "grep -r x .aws/credentials",
+        // quoted: the name is the same
+        "cat '.env'",
+        "cat \".ssh/id_rsa\"",
+        // a glob that can expand to one
+        "cat .en*",
+        "cat .e?v",
+        "cat .env*",
+        "cat ./*.pem",
+        "cat src/*.key",
+        "cat id_*",
+        "cat .ss[h]/id_rsa",
+        "ls .ssh*",
+        "cat ./*_rsa",
+        "cat ./*.pem*",
+        "cat ./id*",
+        "cat ./.e*",
+        "cat .net*",
+    ]);
+    // the neighbours are plain
+    for command in [
+        "cat env.rs",
+        "cat .environment",
+        "cat .envrc.md",
+        "cat envfile",
+        "cat monkey.rs",
+        "cat keys.rs",
+        "cat key.rs",
+        "cat pem.txt",
+        "cat id.rs",
+        "cat video_id.txt",
+        "cat identity",
+        "cat credentials.md",
+        "cat .aws/config",
+        "cat aws/credentials",
+        "cat ssh/config",
+        "cat src/*.rs",
+        "cat ./*",
+        "cat src/*",
+        "cat s*",
+        "cat x*",
+        "ls /tmp/x*",
+        "ls src/*.md",
+        "ls src/*.p*y",
+        "cat .git/HEAD",
+        "git log -- src",
+        "ls /home/tester/projects",
+        "cd /home/tester/projects && ls",
+    ] {
+        proven(command);
+    }
+}
+
+#[test]
+fn the_secret_pattern_const_and_its_matcher_agree() {
+    assert!(SECRET_PATTERNS.len() >= 12, "the list is kept whole");
+    for pattern in SECRET_PATTERNS {
+        // every pattern is itself a secret, as a name and as a sub path
+        let name = pattern.replace('*', "x");
+        assert!(is_secret_path(&name), "{pattern}: {name}");
+        assert!(is_secret_path(&format!("a/b/{name}")), "{pattern}");
+        assert!(is_secret_path(&format!("/abs/{name}/more")), "{pattern}");
+        assert!(is_secret_path(&format!("./{name}")), "{pattern}");
+        assert!(is_secret_path(&format!("{name}/")), "{pattern}");
+        // and no pattern is empty or rooted
+        assert!(
+            !pattern.is_empty() && !pattern.starts_with('/'),
+            "{pattern}"
+        );
+    }
+    for named in [
+        ".ssh",
+        ".gnupg",
+        ".aws/credentials",
+        ".env",
+        ".env.*",
+        "*.pem",
+        "*.key",
+        "id_*",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+    ] {
+        assert!(SECRET_PATTERNS.contains(&named), "{named} is on the list");
+    }
+    for plain in [
+        "",
+        ".",
+        "src/lib.rs",
+        "README.md",
+        ".environment",
+        "pem",
+        "key",
+        "monkey",
+        "id",
+        "aws/credentials",
+        ".aws/config",
+        "credentials",
+        "/etc/hosts",
+        "*",
+        "src/*",
+        "?",
+        "[a-z]*.rs",
+    ] {
+        assert!(!is_secret_path(plain), "{plain:?}");
+    }
+    // the dot segments and a doubled slash do not hide a name
+    assert!(is_secret_path("./././.env"));
+    assert!(is_secret_path("a//.env"));
+    assert!(is_secret_path("a/./.ssh/./id"));
+}
+
+#[test]
+fn the_secret_matcher_never_panics_and_never_refuses_a_plain_name() {
+    // a very long glob is read in linear time
+    let stars = "*a".repeat(2000);
+    assert!(!is_secret_path(&stars));
+    assert!(!is_secret_path(&"a/".repeat(2000)));
+    assert!(!is_secret_path("["));
+    assert!(!is_secret_path("a["));
+    assert!(!is_secret_path(".env["));
+}
+
+#[test]
+fn the_tables_are_written_for_the_programs_that_really_run() {
+    // The shell snapshot the commands run under puts bfs in place of find and ugrep in place of grep, and rg
+    // may be its own build; the system tools are the macOS BSD ones. An option the tables list means the same on every
+    // one of them. These are the options of those programs that run or write, or that read another file, and
+    // none of them is listed.
+    assert_none_proven(&[
+        // ugrep: an interactive query UI, a pager, a filter command, a decompressor, config files
+        "grep -Q foo",
+        "grep --query foo",
+        "grep --pager foo a.txt",
+        "grep --filter=x foo a.txt",
+        "grep -z foo a.txt",
+        "grep -Z foo a.txt",
+        "grep --decompress foo a.txt",
+        "grep --config=x foo a.txt",
+        "grep --save-config foo",
+        "grep --tag foo a.txt",
+        "grep --hexdump foo a.txt",
+        "grep --stats foo a.txt",
+        "grep -X foo a.txt",
+        "grep --index foo a.txt",
+        "grep --ignore-files=x foo a.txt",
+        "grep --exclude-from=x foo a.txt",
+        "grep -R foo src",
+        "grep -S foo src",
+        // bfs: the actions and the options that change how it walks
+        "find . -exec echo {} ;",
+        "find . -fprint out.txt",
+        "find . -fprint0 out.txt",
+        "find . -fls out.txt",
+        "find . -delete",
+        "find . -rm",
+        "find . -nohidden",
+        "find . -unique",
+        "find . -sort",
+        "find -L .",
+        "find -H .",
+        "find -S dfs .",
+        "find . -files0-from x",
+        "find . -newer-x a",
+        // ripgrep: a preprocessor, a config file, decompression, a hyperlink command
+        "rg --pre cat foo",
+        "rg --pre=cat foo",
+        "rg -z foo",
+        "rg --search-zip foo",
+        "rg --hostname-bin x foo",
+        "rg --config-path x foo",
+        "rg --engine=x foo",
+        // BSD file and stat: reading from a list, following links
+        "file -f list",
+        "file -p a.png",
+        "file --preserve-date a.png",
+        "file -z a.gz",
+        "stat -f %N a",
+    ]);
+    // the programs themselves are the bare names; bfs and ugrep are no table program
+    assert_none_proven(&[
+        "bfs . -name x",
+        "ugrep foo a.txt",
+        "ug foo a.txt",
+        "gfind . -name x",
+    ]);
+    for program in ["bfs", "ugrep", "ug", "gfind", "ggrep"] {
+        assert!(!READONLY_PROGRAMS.contains(&program), "{program}");
+    }
+    // the options the tables do list
+    for command in [
+        "grep -rn foo src",
+        "grep -c foo a.txt",
+        "rg -n foo src",
+        "find . -name x -type f",
+        "file -b a.png",
+        "stat -c %s a",
+    ] {
+        proven(command);
+    }
+}
+
 // --- the bypass corpus and the guard's payloads -------------------------------------------------------------
 
 const SEP: &str = "\n#---\n";
@@ -1675,7 +2178,8 @@ proptest! {
         ),
     ) {
         let command = words.join(" ");
-        if let ReadOnly::Proven { paths, cd } = classify(&command) {
+        if let ReadOnly::Proven { paths, cd, .. } = classify(&command) {
+            let paths: Vec<String> = paths.into_iter().map(|p| p.path).collect();
             let analysis = analyze(&command, HOME);
             prop_assert!(!analysis.incomplete, "{command:?}");
             prop_assert!(analysis.alternates.is_empty(), "{command:?}");
@@ -1688,6 +2192,7 @@ proptest! {
             }
             for path in paths.iter().chain(&cd) {
                 prop_assert!(!path.split('/').any(|c| c == ".."), "{command:?}: {path}");
+                prop_assert!(!is_secret_path(path), "{command:?}: {path}");
             }
             for target in &cd {
                 prop_assert_eq!(literal_cd_target(target), Some(target.as_str()), "{}", command);

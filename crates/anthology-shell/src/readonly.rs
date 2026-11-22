@@ -11,7 +11,9 @@
 //!   a backslash and every compound command are refused.
 //! - Words made of letters, digits, `-_./:,+%@=` and quoted text. Outside single quotes there is no `$`,
 //!   backquote, backslash or `!`; outside quotes there is no `~`, `^`, `#`, brace, parenthesis, `;`, `<(`,
-//!   `>(`, nor a word that opens with `=`. A word that is, or holds, a `..` component is refused, and so is
+//!   `>(`, nor `<` that opens a zsh numeric glob (`<1-5>`, `<->`). No word opens with `=` once its quotes
+//!   are removed (`=ls`, `''=ls`, `'='ls`: zsh turns it into the path of that command), and no `=` follows
+//!   `=` or `:` (MAGIC_EQUAL_SUBST). A word that is, or holds, a `..` component is refused, and so is
 //!   a glob that can match `..` (`.*`, `.?`, `.[x]`, `..*`, `[.]*`). A glob whose expansion could start with
 //!   `-` (`*.rs`) stands only after `--` or, as a path operand, when it opens with a literal character other
 //!   than `-`: a file called `--output=x` must not turn into an option. A glob is never an option value, a
@@ -21,19 +23,33 @@
 //!   heredoc and here-string is refused.
 //! - Every program is in [`READONLY_PROGRAMS`], spelled bare (`ls`, never `/bin/ls`), with only the options
 //!   its table row lists. An option the row does not list is refused, so are an abbreviated long option and
-//!   an option the row lists as a flag when it is given a value. `git` takes only the subcommands `status
+//!   an option the row lists as a flag when it is given a value. Options come first: a word that starts
+//!   with `-` after the first operand and before any `--` (and `--` itself after an operand) is refused for
+//!   every program, because GNU permutes the options and BSD (the macOS tools) reads the word as a file
+//!   (`uniq payload.txt -c` writes the file `-c`). `find` is exempt: its expression is its own grammar and
+//!   every word of it must be in the table. `git` takes only the subcommands `status
 //!   log diff show blame ls-files rev-parse describe branch remote`, `branch` and `remote` with list flags
 //!   only, and no global option but `--no-pager` and `--no-optional-locks` (no `-c`, `-C`, `--git-dir`,
 //!   `--work-tree`, `--exec-path`, `--config-env`), no option that writes (`--output`) or runs a program
-//!   (`--ext-diff`, `--textconv`), and no word with a `:` in it (`HEAD:file` reads a blob; `:(top)` is
-//!   pathspec magic). `find` takes no `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`,
-//!   `-fprint0`, `-fprintf`, `-fls`, `-L`, `-H` or `-follow`. `sort` takes no `-o`, `--output`,
-//!   `--compress-program` or `-T`; `tail` no `-f`, `-F` or `--follow`; `uniq` one operand at most; `rg` no
-//!   `--pre` or `-z`; `grep` no `-R`; `diff` no `-r`; `jq` no `-f`, `--arg` or `-L`, and no filter that
-//!   names `env`, `$ENV`, `import` or `include`.
+//!   (`--ext-diff`, `--textconv`), no `describe --dirty` or `--broken` (they refresh the index), and no
+//!   word with a `:` in it (`HEAD:file` reads a blob; `:(top)` is pathspec magic). A `git` line is marked
+//!   `runs_git_config` (see [`ReadOnly::Proven`]). `find` takes no `-exec`, `-execdir`, `-ok`, `-okdir`,
+//!   `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`, `-L`, `-H` or `-follow`. `sort` takes no `-o`,
+//!   `--output`, `--compress-program` or `-T`; `tail` no `-f`, `-F` or `--follow`; `uniq` one operand at
+//!   most; `rg` no `--pre` or `-z`; `grep` no `-R`; `diff` no `-r`; `file` no `-p`; `jq` no `-f`, `--arg`
+//!   or `-L`, and no filter that names `env`, `$ENV`, `import` or `include`.
 //! - A leading `cd TARGET` (or several) joined by `&&`, with a target [`literal_cd_target`] accepts. `cd`
 //!   anywhere else, `cd`, `cd -`, `cd ~…`, `cd $X`, `cd ..` and a bare `cd src` (which `CDPATH` may point
-//!   elsewhere) are refused. Every path of the rest is relative to the last `cd` target.
+//!   elsewhere) are refused. Every path of the rest is relative to the working directory the `cd` targets
+//!   lead to, each target relative to the one before it.
+//! - No path of an obvious secret ([`SECRET_PATTERNS`]: `.ssh`, `.env`, `*.pem`, `id_*`, `.aws/credentials`
+//!   and so on), alone or under the `cd` targets, whatever the command. This is defence in depth: the path
+//!   check owns the decision.
+//!
+//! The programs that run are not only the GNU and BSD ones: the shell snapshot the commands run under puts
+//! `bfs` in place of `find` and `ugrep` in place of `grep`, and `rg` may be its own build, on a macOS
+//! userland under zsh. A table row lists an option only when it means the same on all of them, and a test pins the options
+//! of those programs that run, write or read another file as refused.
 //! - No environment assignment before a command (`GIT_PAGER=x git log`, `BASH_ENV=x ls`): it makes the
 //!   first word `NAME=value`, which is no table program.
 //!
@@ -42,12 +58,16 @@
 //! same simple commands, the same words and the same redirects, with nothing `opaque`, no `alternates` and
 //! no `incomplete`. Two readers that differ on a line are a reason to refuse it (design G-2).
 //!
-//! `Proven.paths` lists every path the command can read, as written (relative paths are relative to the last
-//! `cd` target, or to the working directory with no `cd`). A path may hold glob characters, may not exist,
+//! `Proven.paths` lists every path the command can read, as written (relative paths are relative to the
+//! working directory the `cd` targets lead to, folded in order, or to the working directory with no `cd`),
+//! each with whether the command reads everything under it. A path may hold glob characters, may not exist,
 //! and, for `git`, may be a revision: git decides, so each operand is reported as a possible path. A command
 //! with an implicit path (`ls`, `rg`, `grep PATTERN`, `find`, `du`, `tree`) reports `.`. `Proven.cd` lists the
 //! `cd` targets in order. The path check (`anthology-guard`'s `readonly_paths`) decides whether the paths lie
 //! under a root, match a secret or a deny rule; `classify_readonly` does not look at the file system.
+//!
+//! Nothing wires `Proven` to an allow yet. Until the path check (P4) takes `paths`, `recursive`, `cd` and
+//! `runs_git_config`, a caller must not skip the person on a `Proven`.
 
 use crate::analyze::analyze;
 
@@ -62,18 +82,196 @@ pub const READONLY_PROGRAMS: &[&str] = &[
 /// The longest command that is read.
 const MAX_LEN: usize = 4096;
 
+/// Names that must never be read on a proof. A path with a component that matches one of these (after any
+/// `cd` is folded in) is not proven, whatever the command: this is defence in depth under the path check
+/// (P4), which owns the real decision, including the user's `Read()` deny rules, symlinks and containment.
+///
+/// A pattern is one or more `/`-separated components. `*` stands for any run of characters inside a
+/// component. A pattern matches when its components equal consecutive components of the path, anywhere in
+/// it, so `.ssh` matches `/home/u/.ssh`, `a/.ssh/id_rsa` and `.ssh`, and `.aws/credentials` matches
+/// `/home/u/.aws/credentials`. A glob in the path (`.en*`, `*.pem`) is checked against the names these
+/// patterns stand for ([`GLOB_SAMPLES`] and each pattern with its `*` read as a character no literal
+/// equals); a glob with fewer than two literal characters (`*`, `?`, `i*`) is not, or no `cat ./*` could be
+/// proven.
+pub const SECRET_PATTERNS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws/credentials",
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_*",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+];
+
+/// Names that a glob in a path is held against, besides the patterns themselves (`*_rsa` is `id_rsa`).
+const GLOB_SAMPLES: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".env.local"];
+
+/// A glob needs this many literal characters to be held against the names above: with fewer (`i*`) nearly
+/// every name could match, and the check would refuse `ls i*` for a file that is not there.
+const GLOB_MIN_LITERALS: usize = 2;
+
+/// One path a proven command can read, as written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadPath {
+    /// The path as the user typed it, quotes removed: relative to the working directory after the `cd`
+    /// targets, which are folded in order (`cd ./a && cd ./b` leaves `./b` relative to `./a`). It may hold
+    /// glob characters, may not exist, and, for `git`, may be a revision.
+    pub path: String,
+    /// The command reads everything under the path, not just the path: `rg`, `find`, `du`, `tree`,
+    /// `grep -r`, `ls -R`, and a `git` pathspec. A name match on the path alone (`.`) cannot see a secret
+    /// below it, so the path check must treat the whole tree as read.
+    pub recursive: bool,
+}
+
 /// What [`classify_readonly`] proved.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadOnly {
-    /// Read-only: it writes nothing and runs nothing the table does not list. `paths` are the paths it can
-    /// read, as written, relative to the last of `cd` (see the module doc); `cd` are the leading `cd`
-    /// targets, in order.
-    Proven { paths: Vec<String>, cd: Vec<String> },
+    /// Read-only: it runs only the programs of [`READONLY_PROGRAMS`] with the options of their tables, and
+    /// writes no file a person could name. It is not a claim that nothing on disk changes: `git status`
+    /// refreshes the stat cache in `.git/index` unless `--no-optional-locks` is given, and a program may
+    /// update access times.
+    ///
+    /// `paths` are the paths it can read, in order, and `cd` the leading `cd` targets, in order.
+    ///
+    /// `runs_git_config` is true when any command of the line is `git`. Git then reads the whole repository
+    /// at the working directory (history, index, work tree, submodules), whatever `paths` says, and it runs
+    /// the programs that the repository's and the user's configuration names. The caller must not allow the
+    /// line on the strength of `paths` alone. The path check (P4) has to refuse the line, or ask, when the
+    /// configuration of any repository git can reach sets one of these, in the system, global, local
+    /// (`.git/config`, which an extracted archive can carry), `includeIf` and worktree files, in
+    /// `GIT_CONFIG_*` and in the submodules' own configuration:
+    ///
+    /// - `core.pager`, `pager.*`, `core.fsmonitor`, `core.hooksPath`, `core.sshCommand`, `core.askPass`,
+    ///   `core.editor`, `core.attributesFile`, `core.excludesFile`;
+    /// - `diff.external`, `diff.<driver>.command`, `diff.<driver>.textconv`, `diff.<driver>.cachetextconv`
+    ///   (a `.gitattributes` file in the work tree selects the driver), and the same for `merge.*.driver`;
+    /// - `gpg.program`, `gpg.<format>.program`, with `log.showSignature` or `gpg.*` set;
+    /// - `filter.<name>.smudge`, `filter.<name>.clean` and `filter.<name>.process`;
+    /// - `submodule.*` (`submodule.recurse`, `submodule.<name>.update`), and `status.submoduleSummary`;
+    /// - `alias.*` and `include.path` / `includeIf.*`.
+    Proven {
+        paths: Vec<ReadPath>,
+        cd: Vec<String>,
+        runs_git_config: bool,
+    },
     /// Not proven: the reason is for a log line, never for a decision.
     NotProven(&'static str),
 }
 
 type Why = &'static str;
+
+/// The characters of one path component, tokenised for a glob match: `*` is any run, `?` and a bracket
+/// class (read as any one character: it can only widen the match) are one character.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Tok {
+    Star,
+    One,
+    Lit(char),
+}
+
+fn tokens(component: &str) -> Vec<Tok> {
+    let chars: Vec<char> = component.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => out.push(Tok::Star),
+            '?' => out.push(Tok::One),
+            '[' => match chars[i + 1..].iter().position(|&c| c == ']') {
+                // the first `]` closes the class; read as one character it can only widen the match
+                Some(end) => {
+                    out.push(Tok::One);
+                    i += 1 + end;
+                }
+                None => out.push(Tok::Lit('[')),
+            },
+            c => out.push(Tok::Lit(c)),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Whether the glob `pattern` matches the whole of `text`. A wildcard at the front does not match a leading
+/// `.`, as in the shell. Linear in the product of the lengths: one backtrack point.
+fn glob_matches(pattern: &[Tok], text: &[char]) -> bool {
+    if let (Some(Tok::Star | Tok::One), Some('.')) = (pattern.first(), text.first()) {
+        return false;
+    }
+    let (mut p, mut t) = (0, 0);
+    let mut backtrack: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some(Tok::Star) => {
+                backtrack = Some((p, t));
+                p += 1;
+            }
+            Some(Tok::One) => {
+                p += 1;
+                t += 1;
+            }
+            Some(Tok::Lit(c)) if *c == text[t] => {
+                p += 1;
+                t += 1;
+            }
+            _ => match backtrack {
+                Some((star, at)) => {
+                    backtrack = Some((star, at + 1));
+                    p = star + 1;
+                    t = at + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|tok| *tok == Tok::Star)
+}
+
+/// Whether one path component is the one a secret pattern's component names.
+fn component_is_secret(component: &str, pattern: &str) -> bool {
+    let name: Vec<char> = component.chars().collect();
+    if !component.contains(['*', '?', '[']) {
+        // a plain name: the pattern's only wildcard is `*`, and a leading `.` is no obstacle to it
+        return glob_matches(&tokens(pattern), &name)
+            || pattern.starts_with('*') && glob_matches(&tokens(&pattern[1..]), &name);
+    }
+    // a glob in the path: it names a secret when it can expand to a name the pattern stands for. A glob of
+    // wildcards alone (`*`) is held against none.
+    let glob = tokens(component);
+    if glob.iter().filter(|tok| matches!(tok, Tok::Lit(_))).count() < GLOB_MIN_LITERALS {
+        return false;
+    }
+    // the pattern's own `*` becomes a character no literal of a glob equals
+    let sample: Vec<char> = pattern.replace('*', "\u{1}").chars().collect();
+    glob_matches(&glob, &sample)
+        || GLOB_SAMPLES.iter().any(|name| {
+            let name: Vec<char> = name.chars().collect();
+            glob_matches(&tokens(pattern), &name) && glob_matches(&glob, &name)
+        })
+}
+
+/// Whether `path` names, or reaches into, an obvious secret (see [`SECRET_PATTERNS`]). `.` and empty
+/// components are skipped, so `./a//.env` is read as `a/.env`.
+pub fn is_secret_path(path: &str) -> bool {
+    let components: Vec<&str> = path
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    SECRET_PATTERNS.iter().any(|pattern| {
+        let want: Vec<&str> = pattern.split('/').collect();
+        components.windows(want.len()).any(|window| {
+            window
+                .iter()
+                .zip(&want)
+                .all(|(have, want)| component_is_secret(have, want))
+        })
+    })
+}
 
 /// `word` when it is a `cd` target that is safe to follow without the shell: an absolute path or a `./…`
 /// path, from letters, digits and `/._+,:@%=-`, with no `..` component, at most 4096 bytes.
@@ -110,12 +308,34 @@ pub fn head_tail_count(args: &[String]) -> Option<u64> {
 /// with (no `~` is ever proven, so it only has to be the one the caller's `analyze` would use).
 pub fn classify_readonly(command: &str, home: &str) -> ReadOnly {
     match prove(command, home) {
-        Ok((paths, cd)) => ReadOnly::Proven { paths, cd },
+        Ok(proof) => ReadOnly::Proven {
+            paths: proof.paths,
+            cd: proof.cd,
+            runs_git_config: proof.runs_git_config,
+        },
         Err(why) => ReadOnly::NotProven(why),
     }
 }
 
-fn prove(command: &str, home: &str) -> Result<(Vec<String>, Vec<String>), Why> {
+/// What `prove` collected.
+#[derive(Debug, Eq, PartialEq)]
+struct Proof {
+    paths: Vec<ReadPath>,
+    cd: Vec<String>,
+    runs_git_config: bool,
+}
+
+fn prove(command: &str, home: &str) -> Result<Proof, Why> {
+    prove_with(command, home, scan)
+}
+
+/// `prove`, with the scanner given: a test hands it a scanner that is wrong, to show that the cross-check
+/// with `analyze` is what refuses the line.
+fn prove_with(
+    command: &str,
+    home: &str,
+    scanner: fn(&str) -> Result<Vec<Stage>, Why>,
+) -> Result<Proof, Why> {
     if command.len() > MAX_LEN {
         return Err("command too long");
     }
@@ -125,13 +345,15 @@ fn prove(command: &str, home: &str) -> Result<(Vec<String>, Vec<String>), Why> {
     {
         return Err("control character");
     }
-    let stages = scan(command)?;
+    let stages = scanner(command)?;
     agrees_with_analyze(command, home, &stages)?;
     let mut paths = Vec::new();
     let mut cd = Vec::new();
+    let mut runs_git_config = false;
     let mut leading = true;
     for (index, stage) in stages.iter().enumerate() {
         let program = stage.args[0].text.as_str();
+        runs_git_config |= program == "git";
         if program == "cd" {
             if !leading {
                 return Err("cd after a command");
@@ -156,7 +378,23 @@ fn prove(command: &str, home: &str) -> Result<(Vec<String>, Vec<String>), Why> {
         redirects(stage, &mut paths)?;
         command_paths(program, &stage.args[1..], &mut paths)?;
     }
-    Ok((paths, cd))
+    // The paths are read after the `cd` targets, which are folded in order, so a secret is judged on the
+    // joined path as well (`cd ./.aws && cat credentials`); an absolute path only adds components.
+    let prefix = cd.join("/");
+    for path in cd
+        .iter()
+        .map(String::as_str)
+        .chain(paths.iter().map(|p| p.path.as_str()))
+    {
+        if is_secret_path(path) || is_secret_path(&format!("{prefix}/{path}")) {
+            return Err("path of a secret");
+        }
+    }
+    Ok(Proof {
+        paths,
+        cd,
+        runs_git_config,
+    })
 }
 
 // --- the scanner ---------------------------------------------------------------------------------------------
@@ -336,6 +574,7 @@ fn scan(command: &str) -> Result<Vec<Stage>, Why> {
                 }
                 _ => s.redirect(">", true)?,
             },
+            '<' if numeric_glob(&chars, i) => return Err("numeric glob"),
             '<' => match next {
                 Some('<' | '&' | '>' | '(') => {
                     return Err("here-document, fd, read-write or process substitution");
@@ -345,7 +584,15 @@ fn scan(command: &str) -> Result<Vec<Stage>, Why> {
             ';' | '(' | ')' | '{' | '}' | '`' | '$' | '\\' | '!' | '~' | '^' | '#' => {
                 return Err("shell metacharacter");
             }
-            '=' if s.word.is_none() => return Err("word opens with ="),
+            // zsh expands a word that opens with `=` to the path of that command (EQUALS), also when the word
+            // opened with an empty quote (`''=ls`), and, with MAGIC_EQUAL_SUBST, an `=` after `=` or `:`
+            '=' if s
+                .word
+                .as_ref()
+                .is_none_or(|w| w.text.is_empty() || w.text.ends_with(['=', ':'])) =>
+            {
+                return Err("word opens with =");
+            }
             '*' | '?' | '[' => s.word.get_or_insert_with(Building::default).push(c, true),
             c if c.is_ascii_alphanumeric() || "-_./:,+%@=]".contains(c) => {
                 s.word.get_or_insert_with(Building::default).push(c, false);
@@ -361,12 +608,30 @@ fn scan(command: &str) -> Result<Vec<Stage>, Why> {
     Ok(s.stages)
 }
 
+/// zsh reads `<N-M>` (digits, a dash, digits, `>`; either number may be missing, so `<->` too) as one glob
+/// word, not as a `<` redirect: `cat <1-5>/dev/null` reads the files `1` to `5`, and `<1-5>&2` is a word and
+/// a background job. A `<` that starts that shape is refused, wherever it stands in the word.
+fn numeric_glob(chars: &[char], at: usize) -> bool {
+    let digits = |mut i: usize| {
+        while chars.get(i).is_some_and(char::is_ascii_digit) {
+            i += 1;
+        }
+        i
+    };
+    let dash = digits(at + 1);
+    chars.get(dash) == Some(&'-') && chars.get(digits(dash + 1)) == Some(&'>')
+}
+
 fn has_parent_component(text: &str) -> bool {
     text.split('/').any(|component| component == "..")
 }
 
-/// A word that is, or reaches, a parent directory, or a glob that can match `..`.
+/// A word that is, or reaches, a parent directory, or a glob that can match `..`, or that opens with `=`
+/// once its quotes are removed.
 fn check_word(word: &Building) -> Result<(), Why> {
+    if word.text.starts_with('=') {
+        return Err("word opens with =");
+    }
     if has_parent_component(&word.text) {
         return Err("parent directory component");
     }
@@ -441,12 +706,20 @@ fn agrees_with_analyze(command: &str, home: &str, stages: &[Stage]) -> Result<()
 
 // --- redirects -----------------------------------------------------------------------------------------------
 
-fn redirects(stage: &Stage, paths: &mut Vec<String>) -> Result<(), Why> {
+/// A path the command reads, as written. `recursive`: everything under it.
+fn read_path(paths: &mut Vec<ReadPath>, path: &str, recursive: bool) {
+    paths.push(ReadPath {
+        path: path.to_string(),
+        recursive,
+    });
+}
+
+fn redirects(stage: &Stage, paths: &mut Vec<ReadPath>) -> Result<(), Why> {
     for (op, target) in &stage.redirs {
         match *op {
             ">&" if target == "1" || target == "2" => {}
             ">" | "&>" if target == "/dev/null" => {}
-            "<" if !target.is_empty() && target != "-" => paths.push(target.clone()),
+            "<" if !target.is_empty() && target != "-" => read_path(paths, target, false),
             _ => return Err("redirect that can write or reads a descriptor"),
         }
     }
@@ -504,6 +777,13 @@ struct Spec {
     operands: Operands,
     /// With no path operand, `.` is the path.
     default_dot: bool,
+    /// The program always walks the directories it is given (`rg`, `du`, `tree`).
+    walks: bool,
+    /// Flags that make it walk (`-r`, `-R`), and `--recursive`.
+    recursive_short: &'static str,
+    recursive_long: &'static [&'static str],
+    /// `-d ACTION` and `--directories=ACTION` exist, and `recurse` walks (`grep`).
+    directories: bool,
 }
 
 const NONE: Spec = Spec {
@@ -521,10 +801,16 @@ const NONE: Spec = Spec {
     no_pattern_long: &[],
     operands: Operands::Paths,
     default_dot: false,
+    walks: false,
+    recursive_short: "",
+    recursive_long: &[],
+    directories: false,
 };
 
 const LS: Spec = Spec {
     short: "1ABCFGHPRSUXabcdfghiklmnopqrstuvx",
+    recursive_short: "R",
+    recursive_long: &["--recursive"],
     long: &[
         "--all",
         "--almost-all",
@@ -651,13 +937,15 @@ const GREP: Spec = Spec {
     pattern_long: &["--regexp", "--file"],
     operands: Operands::Pattern,
     default_dot: true,
+    recursive_short: "r",
+    recursive_long: &["--recursive"],
+    directories: true,
     ..NONE
 };
 
 const RG: Spec = Spec {
     short: "FHINPSUaclinopqsuvwx",
     value: "egtTABCmjdErM",
-    path_short: "f",
     long: &[
         "--files",
         "--type-list",
@@ -731,6 +1019,7 @@ const RG: Spec = Spec {
     no_pattern_long: &["--files", "--type-list"],
     operands: Operands::Pattern,
     default_dot: true,
+    walks: true,
     ..NONE
 };
 
@@ -741,8 +1030,9 @@ const STAT: Spec = Spec {
     ..NONE
 };
 
+// no `-p`/`--preserve-date`: it sets the access time back with `utimes(2)`, a write to the file's metadata
 const FILE: Spec = Spec {
-    short: "bhiInNpr",
+    short: "bhiInNr",
     long: &[
         "--brief",
         "--mime",
@@ -751,7 +1041,6 @@ const FILE: Spec = Spec {
         "--no-pad",
         "--keep-going",
         "--raw",
-        "--preserve-date",
     ],
     ..NONE
 };
@@ -774,6 +1063,7 @@ const DU: Spec = Spec {
     ],
     long_value: &["--max-depth", "--threshold", "--block-size", "--exclude"],
     default_dot: true,
+    walks: true,
     ..NONE
 };
 
@@ -839,6 +1129,7 @@ const TREE: Spec = Spec {
     ],
     long_value: &["--filelimit", "--charset", "--sort", "--timefmt"],
     default_dot: true,
+    walks: true,
     ..NONE
 };
 
@@ -973,6 +1264,8 @@ struct Walked<'a> {
     operands: Vec<(&'a Arg, bool)>,
     pattern_given: bool,
     no_pattern: bool,
+    /// An option made the command walk the directories it reads (`-r`, `-R`, `-d recurse`).
+    recursive: bool,
 }
 
 /// An option value: the next word, which no glob may stand for.
@@ -986,11 +1279,17 @@ fn take_value<'a>(args: &'a [Arg], at: &mut usize) -> Result<&'a Arg, Why> {
 }
 
 /// Walk `args` by `spec`: every option must be listed. Paths named by options go to `paths`.
-fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Walked<'a>, Why> {
+///
+/// Options come first. A word that starts with `-` after the first operand, and before any `--`, is not
+/// proven for any program: GNU `getopt_long` permutes and reads it as an option, BSD `getopt` (macOS `cat`,
+/// `head`, `uniq`, ...) stops at the first operand and reads it as a file, and the two differ in what is
+/// read and, for `uniq a -c`, in what is written. The same goes for a `--` after an operand.
+fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<ReadPath>) -> Result<Walked<'a>, Why> {
     let mut walked = Walked {
         operands: Vec::new(),
         pattern_given: false,
         no_pattern: false,
+        recursive: false,
     };
     let mut after_dashes = false;
     let mut at = 0;
@@ -999,6 +1298,8 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Wal
         let text = arg.text.as_str();
         if after_dashes {
             walked.operands.push((arg, true));
+        } else if text.starts_with('-') && !walked.operands.is_empty() {
+            return Err("option after an operand");
         } else if text == "--" {
             after_dashes = true;
         } else if let Some(long) = text.strip_prefix("--") {
@@ -1012,9 +1313,10 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Wal
             let name = name.as_str();
             if spec.long.contains(&name) && glued.is_none() {
                 walked.no_pattern |= spec.no_pattern_long.contains(&name);
+                walked.recursive |= spec.recursive_long.contains(&name);
             } else if spec.long_eq.contains(&name) {
                 if let Some(value) = glued.filter(|_| spec.path_long.contains(&name)) {
-                    paths.push(value.to_string());
+                    read_path(paths, value, false);
                 }
             } else if spec.long_value.contains(&name) {
                 let value = match glued {
@@ -1022,9 +1324,11 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Wal
                     None => &take_value(args, &mut at)?.text,
                 };
                 if spec.path_long.contains(&name) {
-                    paths.push(value.to_string());
+                    read_path(paths, value, false);
                 }
                 walked.pattern_given |= spec.pattern_long.contains(&name);
+                walked.recursive |=
+                    spec.directories && name == "--directories" && value == "recurse";
             } else {
                 return Err("option not in the table");
             }
@@ -1039,6 +1343,7 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Wal
             }
             for (k, c) in body.char_indices() {
                 if spec.short.contains(c) {
+                    walked.recursive |= spec.recursive_short.contains(c);
                     continue;
                 }
                 let rest = &body[k + c.len_utf8()..];
@@ -1049,9 +1354,10 @@ fn walk<'a>(spec: &Spec, args: &'a [Arg], paths: &mut Vec<String>) -> Result<Wal
                         rest
                     };
                     if spec.path_short.contains(c) {
-                        paths.push(value.to_string());
+                        read_path(paths, value, false);
                     }
                     walked.pattern_given |= spec.pattern_short.contains(c);
+                    walked.recursive |= spec.directories && c == 'd' && value == "recurse";
                 } else if !spec.glued.contains(c) {
                     return Err("option not in the table");
                 }
@@ -1087,11 +1393,16 @@ fn names_a_risky_jq_builtin(filter: &str) -> bool {
 }
 
 /// A path operand: a glob in it may not start with `-` unless it follows `--`.
-fn path_operand(arg: &Arg, after_dashes: bool, paths: &mut Vec<String>) -> Result<(), Why> {
+fn path_operand(
+    arg: &Arg,
+    after_dashes: bool,
+    recursive: bool,
+    paths: &mut Vec<ReadPath>,
+) -> Result<(), Why> {
     if arg.risky && !after_dashes {
         return Err("glob that can expand to an option");
     }
-    paths.push(arg.text.clone());
+    read_path(paths, &arg.text, recursive);
     Ok(())
 }
 
@@ -1104,7 +1415,7 @@ fn plain_operand(arg: &Arg) -> Result<&str, Why> {
 }
 
 /// The paths of one simple command, or why it is not proven read-only.
-fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
+fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<ReadPath>) -> Result<(), Why> {
     let spec = match program {
         "git" => return git_paths(args, paths),
         "find" => return find_paths(args, paths),
@@ -1132,6 +1443,7 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result
         _ => return Err("program not in the table"),
     };
     let walked = walk(spec, args, paths)?;
+    let recursive = spec.walks || walked.recursive;
     let mut operands = walked.operands.into_iter();
     match spec.operands {
         Operands::NoneAllowed => {
@@ -1163,7 +1475,7 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result
                 return Err("second operand is an output file");
             }
             for (arg, dashes) in rest {
-                path_operand(arg, dashes, paths)?;
+                path_operand(arg, dashes, recursive, paths)?;
             }
         }
         Operands::Two => {
@@ -1172,7 +1484,7 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result
                 return Err("diff needs two paths");
             }
             for (arg, dashes) in rest {
-                path_operand(arg, dashes, paths)?;
+                path_operand(arg, dashes, recursive, paths)?;
             }
         }
         Operands::Filter => {
@@ -1181,7 +1493,7 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result
                 return Err("jq filter reads the environment or loads a module");
             }
             for (arg, dashes) in operands {
-                path_operand(arg, dashes, paths)?;
+                path_operand(arg, dashes, recursive, paths)?;
             }
         }
         Operands::Pattern => {
@@ -1192,20 +1504,20 @@ fn command_paths(program: &str, args: &[Arg], paths: &mut Vec<String>) -> Result
             let mut any = false;
             for (arg, dashes) in operands {
                 any = true;
-                path_operand(arg, dashes, paths)?;
+                path_operand(arg, dashes, recursive, paths)?;
             }
             if !any && spec.default_dot {
-                paths.push(".".to_string());
+                read_path(paths, ".", recursive);
             }
         }
         Operands::Paths => {
             let mut any = false;
             for (arg, dashes) in operands {
                 any = true;
-                path_operand(arg, dashes, paths)?;
+                path_operand(arg, dashes, recursive, paths)?;
             }
             if !any && spec.default_dot {
-                paths.push(".".to_string());
+                read_path(paths, ".", recursive);
             }
         }
     }
@@ -1278,8 +1590,10 @@ const FIND_PATH_VALUES: &[&str] = &["-newer", "-anewer", "-cnewer", "-samefile"]
 
 /// `find`: start points, then an expression made only of the predicates above. `-exec`, `-execdir`, `-ok`,
 /// `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`, `-L`, `-H`, `-follow`, `-files0-from` and
-/// every other predicate are refused because they are not listed.
-fn find_paths(args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
+/// every other predicate are refused because they are not listed. Every start point is read recursively. The
+/// option-after-an-operand rule of [`walk`] has nothing to add here: the expression is `find`'s own grammar,
+/// and a word of it that the table does not list is refused.
+fn find_paths(args: &[Arg], paths: &mut Vec<ReadPath>) -> Result<(), Why> {
     let mut at = 0;
     if args.first().is_some_and(|a| a.text == "-P") {
         at = 1;
@@ -1289,11 +1603,11 @@ fn find_paths(args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
         if arg.text.starts_with('-') || matches!(arg.text.as_str(), "(" | ")" | "!") {
             break;
         }
-        path_operand(arg, false, paths)?;
+        path_operand(arg, false, true, paths)?;
         at += 1;
     }
     if at == starts {
-        paths.push(".".to_string());
+        read_path(paths, ".", true);
     }
     while let Some(arg) = args.get(at) {
         let name = arg.text.as_str();
@@ -1307,7 +1621,7 @@ fn find_paths(args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
             at += 1;
         } else if FIND_PATH_VALUES.contains(&name) {
             let value = take_value(args, &mut at)?;
-            paths.push(value.text.clone());
+            read_path(paths, &value.text, false);
             at += 1;
         } else {
             return Err("find predicate not in the table");
@@ -1588,7 +1902,8 @@ const GIT_DESCRIBE: Spec = Spec {
         "--first-parent",
         "--contains",
     ],
-    long_eq: &["--abbrev", "--dirty", "--broken", "--candidates"],
+    // no `--dirty` or `--broken`: both refresh the index, a write, and run the configured fsmonitor
+    long_eq: &["--abbrev", "--candidates"],
     long_value: &["--match", "--exclude"],
     ..NONE
 };
@@ -1630,8 +1945,10 @@ const GIT_REMOTE: Spec = Spec {
 
 /// `git`: no global option but two, and only the subcommands above, each with its own options. Every
 /// operand may name a path (git decides between a revision and a path), so each is reported, except that a
-/// word holding `:` is refused (`REV:path` reads a blob, `:(top)` is pathspec magic).
-fn git_paths(args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
+/// word holding `:` is refused (`REV:path` reads a blob, `:(top)` is pathspec magic). An operand may be a
+/// directory pathspec, so each is reported as read recursively. `Proven.runs_git_config` tells the caller
+/// that git ran at all.
+fn git_paths(args: &[Arg], paths: &mut Vec<ReadPath>) -> Result<(), Why> {
     let mut at = 0;
     while let Some(arg) = args.get(at) {
         match arg.text.as_str() {
@@ -1661,7 +1978,7 @@ fn git_paths(args: &[Arg], paths: &mut Vec<String>) -> Result<(), Why> {
         if arg.text.contains(':') {
             return Err("git word with a colon");
         }
-        path_operand(arg, after_dashes, paths)?;
+        path_operand(arg, after_dashes, true, paths)?;
     }
     Ok(())
 }
@@ -1685,6 +2002,16 @@ mod tests {
             ("ls 'abc", "unterminated quote"),
             ("ls \"abc", "unterminated quote"),
             ("ls =ls", "word opens with ="),
+            ("ls ''=ls", "word opens with ="),
+            ("ls \"\"=ls", "word opens with ="),
+            ("ls '='ls", "word opens with ="),
+            ("ls a==ls", "word opens with ="),
+            ("ls a:=ls", "word opens with ="),
+            ("cat <1-5>/dev/null", "numeric glob"),
+            ("cat <1-5>&2 x", "numeric glob"),
+            ("cat <-9>x", "numeric glob"),
+            ("cat <->x", "numeric glob"),
+            ("cat a<10-20>b", "numeric glob"),
             ("ls > > x", "two redirect operators in a row"),
             ("ls < < x", "two redirect operators in a row"),
             ("ls >> x", "append, clobber or process substitution"),
@@ -1797,6 +2124,36 @@ mod tests {
         // the work budget ran out
         let long = "ls;".repeat(1_000_000);
         assert_eq!(agree("ls", &long), Err("analysis incomplete"));
+    }
+
+    /// A scanner that is wrong on purpose: whatever line it is given, it reports `ls a`.
+    fn scanner_that_always_reads_ls_a(_: &str) -> Result<Vec<Stage>, Why> {
+        scan("ls a")
+    }
+
+    #[test]
+    fn prove_refuses_what_the_scanner_read_and_analyze_did_not() {
+        // The table accepts every line below as the scanner reports it (`ls a`), so only the cross-check
+        // against `analyze` stands between a scanner bug and a proof. Remove the call to
+        // `agrees_with_analyze` from `prove_with` and each of these is proven.
+        assert!(prove_with("ls a", HOME, scanner_that_always_reads_ls_a).is_ok());
+        for (line, why) in [
+            ("ls b", "analyze reads other words"),
+            ("ls a b", "analyze reads other words"),
+            ("ls a > /dev/null", "analyze reads other words"),
+            ("ls a; ls a", "analyze reads other commands"),
+            ("ls a | ls a", "analyze reads other commands"),
+            ("ls a $(pwd)", "analyze reads other commands"),
+            ("${x:-ls} a", "analysis has alternate readings"),
+        ] {
+            assert_eq!(
+                prove_with(line, HOME, scanner_that_always_reads_ls_a).err(),
+                Some(why),
+                "{line}"
+            );
+        }
+        // and `prove` itself is `prove_with` the real scanner
+        assert_eq!(prove("ls b", HOME), prove_with("ls b", HOME, scan));
     }
 
     #[test]
