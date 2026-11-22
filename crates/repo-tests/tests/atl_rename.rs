@@ -57,7 +57,7 @@ const PINNED_PATHS: [&str; 5] = [
 /// Single lines that keep the old name and cannot say `legacy` on the same line: (file, a
 /// substring of the line, why): golden lines, which are recorded output. Test names the port
 /// ledger pins are taken out of each line by [`ledger_pins`] instead.
-const PINNED_LINES: [(&str, &str, &str); 3] = [
+const PINNED_LINES: [(&str, &str, &str); 4] = [
     (
         "crates/anthology-dev/tests/golden/dev.rtk-trim.jsonl.gz",
         "\"surface\": \"dev.rtk-trim\"",
@@ -71,6 +71,11 @@ const PINNED_LINES: [(&str, &str, &str); 3] = [
     (
         "crates/anthology-runtime/tests/golden/setup.jsonl.gz",
         "{\"id\": \"seed:127\", ",
+        "a seed of a legacy install whose result is kept as a digest, so no line says legacy",
+    ),
+    (
+        "crates/anthology-runtime/tests/golden/setup.jsonl.gz",
+        "{\"id\": \"seed:133\", ",
         "a seed of a legacy install whose result is kept as a digest, so no line says legacy",
     ),
 ];
