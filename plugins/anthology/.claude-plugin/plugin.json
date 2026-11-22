@@ -6,6 +6,7 @@
   "license": "Apache-2.0",
   "repository": "https://github.com/rbonweb/anthology",
   "engines": { "claude-code": ">=2.1.329" },
+  "types": "./types/anthology.d.ts",
   "dependencies": [
     { "name": "anthology-guardrails", "version": "~0.2" },
     { "name": "anthology-superpowers", "version": "~0.2" }

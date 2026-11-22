@@ -156,6 +156,19 @@ These run only when you ask for them.
 - **Blocked agents.** A subagent cannot ask you a question. It stops and reports it, and the main session answers or asks you, then resumes it.
 - **Coding and long builds.** Code follows the Karpathy guidelines (think first, simplest fit, surgical diffs, verify); the implementer, debugger and reviewer read them at startup. For long or multi-agent builds, status reports and decisions made while you are away, the main session loads `anthology:large-builds`: plain feature-based status reports (done, running, blocked, an honest estimate), and each decision recorded as `Ruling: what — why — cost if wrong`, while still stopping for irreversible, security-sensitive or outward-facing actions.
 
+### Strict delegation (a Claude Code mod)
+
+The routing guide says the main session plans, briefs agents, checks and merges, and never produces the work itself. On Claude Code 2.1.330 or later, a mod (`hooks/mods/delegation.ts`) makes that rule hold in **interactive** sessions. It does nothing in a headless run (`claude -p`, CI) or in a subagent.
+
+- **Coordinator text.** When the session has the `Agent` tool, the system prompt gets one short section: the lead plans, briefs, checks and merges, hands the making to agents, and may fix only a few lines itself.
+- **Refusals.** The main session's `Edit`, `Write` and `NotebookEdit` calls are refused. The message names the agent to hand the change to: `anthology:docs-writer` for `.md`, `.mdx`, `.markdown`, `.rst` and `.txt` files, `anthology:ui-designer` for `.tsx`, `.jsx`, `.css`, `.html` and `.svg`, and `anthology:implementer` (or `anthology:debugger` for a bug fix) for anything else.
+- **Allowed without a refusal.**
+  - Notes the lead keeps: the auto-memory folder (`~/.claude/projects/<project>/memory/`), `~/.claude/plans/` (both under `CLAUDE_CONFIG_DIR` when it is set), and the project's `.superpowers/` and `docs/superpowers/plans/`.
+  - A tiny fix: an `Edit` with `old_string` and `new_string` of at most 5 lines each and no `replace_all`, at most 3 of them per turn, all in one file. The count starts again at each turn. A `Write` or `NotebookEdit` is never a tiny fix.
+- **Limits.** Bash writes (`sed -i`, a redirect) are not seen; the routing guide covers them. This is a workflow rule, not a safety boundary: if the mod fails, Claude Code's own verdict stands.
+
+To turn it off, set `ANTHOLOGY_DELEGATION=0` in the environment (for example under `env` in your Claude Code settings) and restart the session. `ANTHOLOGY_MODS=0` turns off every anthology mod, this one included.
+
 ### Guardrails
 
 Two layers keep agents from installing browser tooling on your machine, touching your Chrome, using any browser other than BrowserOS Neo, or writing secrets into memory.
