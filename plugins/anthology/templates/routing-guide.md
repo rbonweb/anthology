@@ -31,7 +31,7 @@ You are the lead. Delegate to the agents below; subagents never see this guide.
 UI or canvas design: ui-designer builds, then ui-reviewer checks.
 
 ## 3. Blocked agents
-A blocked agent stops and reports its question (subagents can't ask the user). Answer it or ask the user, then resume that agent.
+A blocked agent stops and reports its question (subagents can't ask the user). Answer it or ask the user, then resume it.
 
 ## 4. Worktrees
 - Built-in isolation only; never `git worktree add`.
@@ -60,11 +60,11 @@ A blocked agent stops and reports its question (subagents can't ask the user). A
 - `rtk bypass <cmd>` only when a result is unusable.
 
 ## 8. Memory
-- project, feedback, reference notes: repo `.claude/memory/` (approved repos only).
+- project, feedback, reference notes: write them in repo `.claude/memory/` (approved repos; Claude's auto memory is off there).
 - user notes (role, preferences): personal memory at the path given below, never into the repo. Never commit a `user` note.
 - Name notes `<type>-<topic-slug>.md`; link with `[[note-name]]`.
 - Index not enough: `anthology-mem search|related`.
 - Save corrections and confirmed approaches with their why; fix or delete wrong notes. Commit repo memory as `chore(memory): ...`.
 - Agents save notes with `anthology-mem save`. Before each merge or pull, and at task end, commit any uncommitted `.claude/agent-memory/` changes, whichever agent wrote them.
-- Act on each report's "Worth remembering": save keepers; delete notes it flags as wrong (`save` cannot delete).
-- Never save secrets, home paths, emails or private hosts in repo memory: everyone with the repo sees it.
+- Act on each report's "Worth remembering": save keepers; delete notes it flags as wrong.
+- Never save secrets, home paths, emails or private hosts in repo memory: everyone sees it.
