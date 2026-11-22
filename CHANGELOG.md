@@ -366,6 +366,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.4] - 2026-11-22
+
 #### Security
 
 - The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
