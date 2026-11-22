@@ -1803,7 +1803,9 @@ mod wrapper_test {
     }
 
     /// Typed command and what rtk rewrites it to, for the hook's three outcomes below.
-    const RG_REWRITES: [(&str, &str); 7] = [
+    const RG_REWRITES: [(&str, &str); 9] = [
+        ("ag word a.txt", "rtk ag word a.txt"),
+        ("fd word", "rtk fd word"),
         ("rg -n -i word a.txt b.txt", "rtk rg -n -i word a.txt b.txt"),
         // A non-ASCII argument is a `\u` escape in the JSON; only the first word is read.
         ("rg -n \u{e9}t\u{e9} a.txt", "rtk rg -n \u{e9}t\u{e9} a.txt"),
@@ -1819,11 +1821,7 @@ mod wrapper_test {
     fn test_hook_drops_a_rewrite_when_the_program_is_not_on_path() {
         let w = setup();
         let bare = w.tools_dir("bare", &[]);
-        for (typed, rewritten) in RG_REWRITES.into_iter().chain([
-            // The typed program itself is not a real file.
-            ("nosuchprog a", "rtk nosuchprog a"),
-            ("git status --short", "rtk git status --short"),
-        ]) {
+        for (typed, rewritten) in RG_REWRITES {
             w.answer_fake(&rewrite_to(rewritten), 0);
             let res = w.run_hook_on(&bare, &hook_input(typed));
             assert_eq!(
@@ -1835,9 +1833,52 @@ mod wrapper_test {
     }
 
     #[test]
+    fn test_hook_reads_a_huge_leading_whitespace_run_in_linear_time() {
+        // 200 KB of spaces, and of space + tab pairs, before `rg`: still dropped, well under a second.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        w.answer_fake(&rewrite_to("rtk rg word a.txt"), 0);
+        for lead in [" ".repeat(200_000), " \t".repeat(100_000)] {
+            let started = std::time::Instant::now();
+            let res = w.run_hook_on(&bare, &hook_input(&format!("{lead}rg word a.txt")));
+            let took = started.elapsed();
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new())
+            );
+            assert!(took < Duration::from_secs(1), "{took:?}");
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_for_a_program_outside_the_search_family() {
+        // A hook PATH poorer than the Bash tool's must not cost cargo, npm or docker their rewrite:
+        // only rg, grep, ag, find and fd can be snapshot functions.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for (typed, rewritten) in [
+            ("cargo test -p x", "rtk cargo test -p x"),
+            ("npm run build", "rtk npm run build"),
+            ("docker ps", "rtk docker ps"),
+            ("git status --short", "rtk git status --short"),
+            ("FOO=1 cargo build", "FOO=1 rtk cargo build"),
+            ("nosuchprog a", "rtk nosuchprog a"),
+        ] {
+            let answer = rewrite_to(rewritten);
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_hook_keeps_a_rewrite_when_the_program_is_on_path() {
         let w = setup();
-        let full = w.tools_dir("full", &["rg", "find", "git"]);
+        let full = w.tools_dir("full", &["rg", "find", "git", "ag", "fd"]);
         for (typed, rewritten) in RG_REWRITES.into_iter().chain([
             ("git status --short", "rtk git status --short"),
             // rtk grep falls back to grep, so a real grep is enough, with no rg at all.
@@ -1880,6 +1921,13 @@ mod wrapper_test {
                 "{typed:?}"
             );
         }
+        // But a rewrite that execs a missing search program is dropped even then.
+        w.answer_fake(&rewrite_to("rtk rg word a.txt"), 0);
+        let res = w.run_hook_on(&bare, &hook_input("\"rg\" word a.txt"));
+        assert_eq!(
+            (res.code, res.stdout_text(), res.stderr_text()),
+            (0, String::new(), String::new())
+        );
     }
 
     #[test]
@@ -1900,6 +1948,34 @@ mod wrapper_test {
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, format!("{answer}\n"), String::new()),
                 "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_missing_program_in_bypass_mode_keeps_a_deny_and_drops_an_ask() {
+        // Bypass mode with no rg: a deny is still printed, an ask is dropped as it always was.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        let deny = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"RTK: a deny rule matches","updatedInput":{"command":"rtk rg secret"}}}"#;
+        let ask = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk rg secret"},"permissionDecision":"ask"}}"#;
+        for typed in ["rg secret", "rtk rg secret"] {
+            let stdin = format!(
+                r#"{{"permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{{"command":"{typed}"}}}}"#
+            );
+            w.answer_fake(deny, 0);
+            let res = w.run_hook_on(&bare, &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{deny}\n"), String::new()),
+                "deny {typed:?}"
+            );
+            w.answer_fake(ask, 0);
+            let res = w.run_hook_on(&bare, &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "ask {typed:?}"
             );
         }
     }
