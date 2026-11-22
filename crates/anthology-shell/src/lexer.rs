@@ -82,7 +82,7 @@ pub struct Lexed {
 }
 
 /// What the lexer could not see into, for SH2's `Opaque` reasons.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LexInfo {
     /// A nested construct, or a heredoc body's substitution, was skipped at `MAX_DEPTH`.
     pub(crate) depth_capped: bool,
@@ -91,9 +91,9 @@ pub(crate) struct LexInfo {
     /// SH-F2: a here-string or heredoc went to a pipeline no segment belongs to (`( sh ) <<< X`: the text
     /// after the `)`). Only for a text lexed without the lenient split.
     pub(crate) orphan_texts: bool,
-    /// PE-4: an arithmetic context was lexed (`$((...))`, a `((...))` command, `$[...]`), where bash evaluates
-    /// a variable's value as an expression.
-    pub(crate) arith: bool,
+    /// PE-4: the text of each arithmetic context lexed (`$((...))`, a `((...))` command, `$[...]`), where bash
+    /// evaluates a variable's value as an expression, for the names it evaluates (`evaluates_values`).
+    pub(crate) arith_texts: Vec<String>,
     /// PE-2, PE-3: a word runs code the lexer does not model (a zsh glob qualifier, `${x@P}`, `${(e)x}`,
     /// `${~x}`, `$~x`). Lexing goes on; the analysis is too complex at its end.
     pub(crate) unproven: bool,
@@ -276,6 +276,64 @@ fn runs_value(part: &str) -> bool {
         })
 }
 
+/// PE-3: an unquoted heredoc body expands its `${...}` as a double-quoted word does, so `runs_value` holds
+/// for each of them (`${(e)x}`, `${x@P}` in the body run the value's code).
+fn body_runs_value(body: &str) -> bool {
+    let b = body.as_bytes();
+    body.match_indices("${").any(|(k, _)| {
+        let end = crate::collect::param_close(b, k).map_or(b.len(), |e| e + 1);
+        runs_value(&body[k..end])
+    })
+}
+
+/// PE-2: an unquoted `${...}` (`part`) whose words hold a `(` right after a word character, a quote or a `)`
+/// (`${x:-a.rs(e:'cmd':)}`): zsh globs the default word, so that is a glob qualifier. Not the flags of `${(e)x}`,
+/// not a `$(` and not a subscript flag `[(i)x]`.
+fn default_qualifier(part: &str) -> bool {
+    let b = part.as_bytes();
+    (3..b.len()).any(|k| {
+        b[k] == b'('
+            && (b[k - 1].is_ascii_alphanumeric()
+                || matches!(b[k - 1], b'_' | b'.' | b'\'' | b'"' | b')'))
+    })
+}
+
+/// Carve-out (a): the directories a program word may start with, as `"$NAME/..."` or `"${NAME}/..."`.
+const PREFIX_NAMES: &[&str] = &[
+    "HOME",
+    "PWD",
+    "TMPDIR",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PROJECT_DIR",
+    "VIRTUAL_ENV",
+];
+
+/// Carve-out (a): the `$` at `j`, inside double quotes, is the standard form of a `PREFIX_NAMES` variable
+/// (`$NAME` or `${NAME}`, no modifier, no subscript) directly followed by a `/`, inside the quotes or right
+/// after the closing one. `Some(NAME)`.
+fn standard_prefix(text: &str, j: usize) -> Option<&'static str> {
+    let b = text.as_bytes();
+    let (name, after) = if b.get(j + 1) == Some(&b'{') {
+        let close = (j + 2..b.len()).find(|&k| b[k] == b'}')?;
+        (&text[j + 2..close], close + 1)
+    } else {
+        let end = (j + 1..b.len())
+            .find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_'))
+            .unwrap_or(b.len());
+        (&text[j + 1..end], end)
+    };
+    let slash = match b.get(after) {
+        Some(b'/') => true,
+        Some(b'"') => b.get(after + 1) == Some(&b'/'),
+        _ => false,
+    };
+    PREFIX_NAMES
+        .iter()
+        .find(|n| **n == name)
+        .copied()
+        .filter(|_| slash)
+}
+
 /// `_find_backtick`: the closing backtick at or after `i`, skipping escapes.
 pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usize, LexError> {
     backtick_end(text, i, work)?.ok_or(LexError::Unbalanced)
@@ -295,6 +353,11 @@ type Pending = (Vec<String>, GroupId, bool, bool);
 /// A word that held an unquoted or double-quoted parameter expansion (`$x`, `${x}`, `"$1"`, `$@`) is a
 /// holder too, with `param` set (PE-1): its value is only known at run time. `subst`: the word held a
 /// `$(...)` or a backtick (`body` is then that text); a holder with only `param` has an empty body.
+///
+/// `glob`: the word holds an unquoted `*`, `?` or `[` (a holder with only `glob` is for the program word).
+/// `prefix` (carve-out a): the word's one expansion is a standard directory prefix at its start, and the rest
+/// is literal (`"$HOME/.cargo/bin/cargo"`, `"$PWD"/node_modules/.bin/x`). `paths`: every expansion in the word
+/// is `$HOME/` or `$PWD/` in that form (for a double-quoted script); the names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Holder {
     pub(crate) index: usize,
@@ -302,6 +365,9 @@ pub(crate) struct Holder {
     pub(crate) sole: bool,
     pub(crate) subst: bool,
     pub(crate) param: bool,
+    pub(crate) glob: bool,
+    pub(crate) prefix: Option<&'static str>,
+    pub(crate) paths: Option<Vec<&'static str>>,
 }
 
 struct Lexer<'t, 'a> {
@@ -371,6 +437,14 @@ struct Lexer<'t, 'a> {
     holders: Vec<Holder>,
     /// PE-1: the word being built holds an unquoted or double-quoted parameter expansion (`Holder::param`).
     param: bool,
+    /// The parameter expansions in the word being built (`Holder::prefix`, `Holder::paths`).
+    expansions: usize,
+    /// The standard directory prefixes among them, each with whether it starts the word.
+    prefixes: Vec<(&'static str, bool)>,
+    /// The word being built holds an unquoted `*`, `?` or `[` (`Holder::glob`).
+    glob: bool,
+    /// The word being built holds an unquoted `{`, `}` or `,` (no `Holder::prefix` then).
+    bare_braces: bool,
     /// The text of a `$((...))`: its own segments are arithmetic and run no program word
     /// (`Segment::arith`, no `Holder`). The commands of a substitution inside it are lexed by
     /// their own lexer, so they keep their program words.
@@ -425,6 +499,10 @@ impl<'t, 'a> Lexer<'t, 'a> {
             subs: Vec::new(),
             holders: Vec::new(),
             param: false,
+            expansions: 0,
+            prefixes: Vec::new(),
+            glob: false,
+            bare_braces: false,
             arith_text: false,
         }
     }
@@ -448,12 +526,28 @@ impl<'t, 'a> Lexer<'t, 'a> {
     fn end_word(&mut self) {
         let subs = std::mem::take(&mut self.subs);
         let param = std::mem::take(&mut self.param);
+        let expansions = std::mem::take(&mut self.expansions);
+        let prefixes = std::mem::take(&mut self.prefixes);
+        let glob = std::mem::take(&mut self.glob);
+        let bare_braces = std::mem::take(&mut self.bare_braces);
         // SH-F3 `held`: a word of the segment holds a `$(` or a backtick, whatever its role (a token, a redirect
         // target, a here-string, an array element)
         self.held |= !subs.is_empty();
         if !self.has_word {
             return;
         }
+        // carve-out (a): one standard prefix starting a word that is otherwise literal (no glob, no brace)
+        let prefix = match prefixes.as_slice() {
+            [(name, true)] if expansions == 1 && subs.is_empty() && !glob && !bare_braces => {
+                Some(*name)
+            }
+            _ => None,
+        };
+        let paths = (subs.is_empty()
+            && expansions > 0
+            && expansions == prefixes.len()
+            && prefixes.iter().all(|(n, _)| matches!(*n, "HOME" | "PWD")))
+        .then(|| prefixes.iter().map(|(n, _)| *n).collect());
         let word = std::mem::take(&mut self.cur);
         self.has_word = false;
         self.quoted = false;
@@ -477,14 +571,20 @@ impl<'t, 'a> Lexer<'t, 'a> {
                         sole,
                         subst: true,
                         param,
+                        glob,
+                        prefix: None,
+                        paths: None,
                     });
-                } else if param {
+                } else if param || glob {
                     self.holders.push(Holder {
                         index: self.tokens.len(),
                         body: String::new(),
                         sole: false,
                         subst: false,
                         param,
+                        glob,
+                        prefix,
+                        paths,
                     });
                 }
                 self.tokens.push(word)
@@ -612,6 +712,13 @@ impl<'t, 'a> Lexer<'t, 'a> {
         self.add(&word);
     }
 
+    /// PE-4: an arithmetic context with this text was lexed (`LexInfo::arith_texts`).
+    fn note_arith(&mut self, text: &str) -> Result<(), TooComplex> {
+        self.sh.work.charge_extra(text.len() + 1)?;
+        self.sh.info.arith_texts.push(text.to_string());
+        Ok(())
+    }
+
     /// Lex a substitution's text. `pos` is where it starts in this text (for the unclosed-body bookkeeping);
     /// `comsub`: it is the text of a `$(...)` / `<(...)`.
     fn nested(&mut self, inner: &str, pos: Option<usize>, comsub: bool) -> Result<(), TooComplex> {
@@ -627,7 +734,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
         arith: bool,
     ) -> Result<(), TooComplex> {
         self.has_word = true;
-        self.sh.info.arith |= arith;
+        if arith {
+            self.note_arith(inner)?;
+        }
         if self.depth >= MAX_DEPTH {
             if !inner.is_empty() {
                 self.sh.info.depth_capped = true;
@@ -747,8 +856,21 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     i = self.open_array(i);
                 }
                 b';' | b'(' | b')' => {
-                    // PE-2: read on as before, and the analysis is too complex at its end
-                    self.sh.info.unproven |= c == b'(' && self.has_word && self.glob_qualifier(i);
+                    // PE-2: read on as before, and the analysis is too complex at its end; also after a
+                    // group (`(a|b)(e:'cmd':)`). PE-1: a zsh anonymous function `() { ... } args` gets
+                    // positional parameters the analysis does not put in place
+                    let after_group = i > 0 && bytes[i - 1] == b')';
+                    self.sh.info.unproven |=
+                        c == b'(' && (self.has_word || after_group) && self.glob_qualifier(i);
+                    self.sh.info.unproven |= c == b'('
+                        && !self.has_word
+                        && self.tokens.is_empty()
+                        && self.array.is_none()
+                        && self.arith.is_none()
+                        && !self.arith_text
+                        && text[i + 1..]
+                            .trim_start_matches([' ', '\t'])
+                            .starts_with(')');
                     self.paren(c, i)?;
                     let before = self.out.len();
                     self.end_seg(true);
@@ -776,6 +898,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     let ch = char_at(text, i).unwrap_or('\u{fffd}');
                     self.braces |= ch == '{';
                     self.marks += usize::from(matches!(ch, '{' | '}' | ','));
+                    self.bare_braces |= matches!(ch, '{' | '}' | ',');
+                    self.glob |= matches!(ch, '*' | '?' | '[');
                     let mut buf = [0u8; 4];
                     self.add(ch.encode_utf8(&mut buf));
                     i += ch.len_utf8();
@@ -818,9 +942,11 @@ impl<'t, 'a> Lexer<'t, 'a> {
             {
                 let s = scan_paren_ex(self.text, i + 1, true, &mut self.memo, &mut self.sh.work)?;
                 if s.closes {
-                    self.sh.info.arith = true;
                     self.arith = Some(self.parens);
                     let end = s.end.unwrap_or(self.text.len());
+                    let text = self.text;
+                    let inner = text.get(i + 2..end.saturating_sub(2)).unwrap_or("");
+                    self.note_arith(inner)?;
                     self.scan_expanded(i + 2, end.saturating_sub(2), false, true)?;
                 } else {
                     self.arith_unclosed = s.end.is_some_and(|e| e >= self.text.len());
@@ -842,6 +968,17 @@ impl<'t, 'a> Lexer<'t, 'a> {
             }
         }
         Ok(())
+    }
+
+    /// A parameter expansion at `j`, inside double quotes: the word holds one (`Holder::param`), and a
+    /// standard directory prefix is noted with whether nothing came before it (`Holder::prefix`).
+    fn note_expansion(&mut self, j: usize) {
+        if let Some(name) = standard_prefix(self.text, j) {
+            let first = self.cur.is_empty() && self.expansions == 0 && self.subs.is_empty();
+            self.prefixes.push((name, first));
+        }
+        self.param = true;
+        self.expansions += 1;
     }
 
     fn double_quoted(&mut self, i: usize) -> Result<usize, LexError> {
@@ -885,7 +1022,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     let after = after_char(text, k);
                     let part = text.get(j..after).unwrap_or("");
                     self.sh.info.unproven |= runs_value(part); // PE-3
-                    self.param = true;
+                    self.note_expansion(j);
                     // as unquoted: `${...}` is never brace-expanded (re-review over-block fix)
                     self.marks += part
                         .bytes()
@@ -895,15 +1032,16 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     j = after;
                 }
                 b'$' if byte_at(text, j + 1) == Some(b'[') => {
-                    self.sh.info.arith = true;
-                    if let Some(k) = self.bracket_end(j)? {
+                    let close = self.bracket_end(j)?;
+                    self.note_arith(text.get(j + 2..close.unwrap_or(n)).unwrap_or(""))?;
+                    if let Some(k) = close {
                         self.scan_expanded(j + 2, k, true, true)?;
                     }
                     self.cur.push('$');
                     j += 1;
                 }
                 b'$' if byte_at(text, j + 1).is_some_and(param_start) => {
-                    self.param = true;
+                    self.note_expansion(j);
                     self.cur.push('$');
                     j += 1;
                 }
@@ -966,7 +1104,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
                 self.scan_expanded(i + 2, k, false, false)?;
                 let after = after_char(text, k);
                 let part = text.get(i..after).unwrap_or("");
-                self.sh.info.unproven |= runs_value(part); // PE-3
+                // PE-3, and PE-2: a glob qualifier in its unquoted default word
+                self.sh.info.unproven |= runs_value(part) || default_qualifier(part);
                 // `${...}` is not brace-expanded, and not quoted either
                 self.marks += part
                     .bytes()
@@ -974,18 +1113,23 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     .count();
                 self.add(part);
                 self.param = true;
+                self.expansions += 1;
                 return Ok(after);
             }
             Some(b'[') => {
                 // `$[...]`: old arithmetic syntax
-                self.sh.info.arith = true;
-                if let Some(k) = self.bracket_end(i)? {
+                let close = self.bracket_end(i)?;
+                self.note_arith(text.get(i + 2..close.unwrap_or(text.len())).unwrap_or(""))?;
+                if let Some(k) = close {
                     self.scan_expanded(i + 2, k, false, true)?;
                 }
             }
             // PE-3: zsh's `$~x` turns on GLOB_SUBST, so the value's glob qualifiers run code
             Some(b'~') => self.sh.info.unproven = true,
-            Some(c) if param_start(c) => self.param = true,
+            Some(c) if param_start(c) => {
+                self.param = true;
+                self.expansions += 1;
+            }
             Some(b'\'') => {
                 self.quoted = true;
                 let (decoded, end) =
@@ -1116,6 +1260,8 @@ impl<'t, 'a> Lexer<'t, 'a> {
             };
             self.sh.push_text(group, body.clone());
             if !quoted {
+                // PE-3: the body's `${...}` expand as a double-quoted word's do
+                self.sh.info.unproven |= body_runs_value(&body);
                 if self.depth < MAX_DEPTH && !self.shallow {
                     // bash runs these
                     for (pos, end, inner, comsub) in
@@ -1123,7 +1269,9 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     {
                         // a `$(` that is not a command substitution is a `$((...))` (PE-2)
                         let arith = !comsub && body[pos..].starts_with("$(");
-                        self.sh.info.arith |= arith;
+                        if arith {
+                            self.note_arith(&inner)?;
+                        }
                         let segments = segments_in(
                             &inner,
                             self.depth + 1,

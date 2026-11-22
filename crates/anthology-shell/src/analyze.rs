@@ -8,7 +8,10 @@
 //! reading, as Python's `_check` does, and the entries of every pass are kept (Python stops at the first pass a
 //! rule blocks; the union is what each rule sees across the passes). All passes share one work budget.
 
-use crate::collect::{Ctx, evaluates_values, sets_positionals, unseen_values, with_path_regexes};
+use crate::collect::{
+    Ctx, calls_only_direct, changes_prefixes, evaluates_values, sets_positionals, unseen_values,
+    with_path_regexes,
+};
 use crate::lexer::{Group, GroupId, Reading, Redirect, Work};
 use crate::limits::{Limits, extra_limit, work_limit};
 use crate::opaque::Opaque;
@@ -63,11 +66,17 @@ pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
             ctx.next_pass(reading);
             ctx.collect(command, false, 0);
         }
-        // PE-1 to PE-6: a command it cannot prove; PE-4: a value the analysis cannot see, evaluated as an
-        // expression or subscript, may run a command
+        // PE-1 to PE-6: a command it cannot prove; PE-1: positional parameters read in place but set some
+        // other way, or a function so read run some other way; carve-out (a): a directory prefix read through
+        // but changed; PE-4: a value the analysis cannot see, evaluated as an expression or subscript, may run
+        // a command
         let unproven = ctx.unproven
             || (ctx.positional && sets_positionals(&ctx.entries))
-            || (unseen_values(&ctx.entries) && evaluates_values(&ctx.entries, ctx.arith_seen));
+            || !calls_only_direct(&ctx.entries, &ctx.alternates, &ctx.function_calls)
+            || (!ctx.prefix_names.is_empty()
+                && changes_prefixes(&ctx.entries, &ctx.arith_texts, &ctx.prefix_names))
+            || (unseen_values(&ctx.entries)
+                && evaluates_values(&ctx.entries, &ctx.arith_texts, ctx.held_entries()));
         Analysis {
             entries: ctx.entries,
             groups: ctx.groups,

@@ -68,7 +68,7 @@ Read these before relying on the guardrails. The guard is built to stop accident
 - **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognises. The hook, `hooks/guard.sh` and the `anthology` binary it runs (`anthology guard hook`), sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
 - **A hook sees commands, not what a script does.** A script that launches Chrome internally is invisible to it. That is why the knowledge Anthology ships must never launch Chrome, and why the deny layer exists.
 - **Rules match commands, not text.** `grep playwright package.json` is allowed on purpose.
-- **Indirection hides commands.** A command whose program or script comes from a variable, an array element, an alias or a value read from input is blocked as too complex to check (ADR-033), but a command whose text comes from another command's output and is fed to a shell is not seen for what it is: `bash -c "$(…)"`, `eval "$(…)"`, `<(…)`, `source <(…)`, or such output kept in a variable and then evaluated in arithmetic. Unusual nested shell syntax, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`, can also get past the parser.
+- **Indirection is blocked, with known limits.** A command whose program, script or evaluated text comes from a value the guard cannot see is blocked as too complex to check (G0). The next section lists exactly what that covers and what still gets through.
 - **Some inputs are not path-checked.** Free-text tool fields (an agent prompt, todo text) and most MCP tool arguments are not checked for browser profile paths. Inside interpreter code (`python3 -c`, `node -e`, a heredoc fed to `python3`, a BrowserOS Neo `run` script) only profile paths spelled out in one string are seen: a path assembled piecewise (`Path.home() / "Library" / …`, variables) is not, and neither is a command run from inside the code (`os.system(…)`).
 - **Profile coverage is bounded.** The guard and the deny rules cover the known Chrome and Chromium profile folders and their parents. Grandparent folders, such as `find ~ -name Cookies`, and the profile folders of snap and flatpak browsers are not covered. The native `Read` deny rules that setup adds are the second layer for browser profiles.
 - **Docker is exempt from G1 and G2.** Commands whose program is `docker` or `docker-compose` are not checked against those two rules, because running browser tests in a container is the sanctioned way. G3 to G6 still apply to them.
@@ -78,6 +78,38 @@ Read these before relying on the guardrails. The guard is built to stop accident
 - **A hook that fails or times out blocks.** The guard and rtk's hook set `onFailure: "block"` with a 60-second timeout (ADR-024). A crash, a kill or a stall blocks the tool call; it never lets the call through to your normal permissions.
 - **A block wins over rtk.** The guard checks the command Claude asked for, not rtk's rewrite of it, and a block takes precedence over an rtk allow. `rtk`, `rtk bypass`, `rtk proxy`, `rtk run`, `rtk err`, `rtk test` and `rtk summary` prefixes are stripped before the rules run, and an `rtk run -c` or `--shell` script is checked like `sh -c`, so `rtk npx playwright install` and `rtk run -c 'npx playwright install'` are still G1.
 - **macOS and Linux only.** Setup refuses on Windows, and there are no PowerShell-aware rules. On a platform with no guard binary, the guard allows only read-only tools.
+
+## Values the guard cannot see
+
+The guard reads a command the way bash 5.2 and zsh 5.9 do (zsh is the shell Claude Code uses on macOS), as far as it can, and blocks what it cannot read as too complex (G0). When another reading of the same command breaks a rule, that rule's message is shown instead. The reasons are recorded in ADR-033.
+
+**Blocked as too complex:**
+
+- **A program or script from a variable.** `$x`, `"$x"`, `${x}`, an array element, zsh's `$=x`, `=$x` and `$x[1,3]`, as the program (also after `env`, `command`, `exec`, `nice`, `time`, `sudo`, `xargs`, zsh's `noglob` and `nocorrect`, keywords and groups), as a `find -exec` or `fd -x` program, or inside a script the command runs (`eval "$x"`, `bash -c "…$x…"`, `env -S`, `trap`, `watch`). A program from the found file name (`find … -exec {} …`) and a program word with an unquoted `*`, `?` or `[` (`/usr/local/bin/np?`) are blocked too.
+- **A positional parameter the guard did not fill in.** `$1`, `"$@"` and the like as a program or in a script, except in the two places the guard puts literal values there itself: a `sh -c '…' _ a b` script with literal arguments, and the `{ … }` body of a function the command defines once and only calls directly, with literal arguments. Blocked: the top level of the command, a shell reading its script from stdin (`bash -s x <<< …`, `bash /dev/stdin …`, `source /dev/stdin …`), arguments the guard cannot see (`find -exec sh -c '"$1"' _ {} \;`, `xargs sh -c …`), a function also run from `trap`, `eval`, a wrapper or another shell, `f() ( … )`, zsh's `f() cmd` and anonymous functions, a command that sets or moves the parameters (`set --`, `shift`, `argv`), and defining `command_not_found_handle` or `command_not_found_handler`.
+- **A renamed program.** Defining an alias, hashing a path (`hash -p`, zsh `hash u=…`), and naming bash's `BASH_ALIASES`, `BASH_CMDS` or an exported function (`BASH_FUNC_…`) in any word, or zsh's `aliases`, `commands` and `functions` tables with a subscript, a value or as a name `set -A`, `typeset` or `read` set.
+- **Code from a value.** bash's `${x@P}`, zsh's `(e)` flag and `${~x}`, `GLOB_SUBST` and `PROMPT_SUBST` in any spelling, an option name from a variable (`setopt $o`, `set -o $o`), a prompt variable or `BASH_ENV`/`ENV` set to a value holding `$` or a backquote or read in, a nameref to one of those or to a table (or one the guard cannot follow), and a variable name from a variable (`declare "$x=…"`). Heredoc bodies are checked the same way.
+- **zsh glob qualifiers.** A `(` right after a word, after a `)` (`(a|b)(e:'…':)`) or in an unquoted `${x:-…}` default (`*(e:'cmd':)`, `a.rs(+cmd)`), outside arithmetic, `[[ … ]]` and `f()`.
+- **A value read in and then evaluated.** When the command reads input (`read`, `mapfile`, `readarray`) or holds a `$(…)` as text in a value, a subscript or arithmetic that evaluates a name set from that input or from any expansion (`read s; echo $(( s ))`, `unset "a$s"`), or a name the guard cannot follow (`${!s}`, `declare -i`, a positional parameter in arithmetic).
+- **Nested subscripts** that hold another `[` or a quote before a `$(…)` (`a[[]$(cmd)]`).
+
+**Read through, so still allowed (each rule still applies to what is read):**
+
+- A program under a standard directory: `"$HOME/…"`, `"$PWD/…"`, `"$TMPDIR/…"`, `"$CLAUDE_PLUGIN_ROOT/…"`, `"$CLAUDE_PROJECT_DIR/…"` or `"$VIRTUAL_ENV/…"` (or `${NAME}`), in double quotes, directly followed by `/`, with the rest of the word literal. `$HOME` is read as your home directory. The command must not change the variable (an assignment, `export`, `read`, `unset`, `for`, a nameref, `source`, `eval`, `set -a`, and for `PWD` `cd`, `pushd` or `popd`), or it is blocked. `"$HOME/x/npx" playwright install` is G1.
+- `$HOME/` and `$PWD/` in a double-quoted `sh -c`, `bash -c`, `eval` or `trap` script whose only expansions are those (`sh -c "cd $HOME/proj && make"`).
+- A read loop whose arithmetic only uses names it set itself (`while read -r l; do n=$((n+1)); done < f`).
+- `run() { "$@"; }; run make test`, `retry`-style wrappers and `sh -c '"$1" --version' _ git`.
+
+When the block comes from a `$` inside a double-quoted `sh -c`, `eval` or `trap` script, the message says so: put the script in single quotes and pass values as arguments (`sh -c '… "$1" …' _ "$x"`).
+
+**Also blocked, though harmless** (accepted, so the rules stay simple): `${EDITOR:-vi} file` and other defaults as the program, `"${cmd[@]}"`, `$SHELL -c …`, the `.env` loader `while read -r k v; do export "$k=$v"; done < .env` (`set -a; source .env; set +a` loads the same file and is allowed), and zsh-like text such as `echo foo(bar)`.
+
+**Known limits, not blocked:**
+
+- Text from another command's output fed to a shell is not seen for what it is: `bash -c "$(…)"`, `eval "$(…)"`, `<(…)`, `source <(…)`.
+- A command's output kept in a variable and then evaluated in arithmetic (`s=$(…); echo $((s))`), and a `$(…)` assembled from pieces in a value (`p='$'; p+='(cmd)'`) and then evaluated.
+- A file's content: a script run with `bash ./x.sh`, a file sourced, a line read from a file and only printed.
+- zsh option changes other than those named above (`emulate`, for one), and unusual nested syntax, such as a comment or a `case` inside `$(…)`, or a quoted `}` inside `${…}`, which can get past the parser.
 
 ## Fail closed
 
