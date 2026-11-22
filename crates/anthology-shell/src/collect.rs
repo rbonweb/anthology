@@ -1634,7 +1634,7 @@ impl<'a> Ctx<'a> {
                             && entry.prog == *name
                             && entry.raw.iter().find(|w| !is_assignment(w)) == Some(name)
                             && !self.held_entries.contains(&k)
-                            && !entry.raw.iter().any(|w| w.contains(['$', '`'])))
+                            && entry.raw.iter().all(|w| literal_call_word(w)))
                 })
                 .collect();
             self.function_calls.push((name.clone(), calls));
@@ -2733,8 +2733,8 @@ impl<'a> Ctx<'a> {
         // PE-1: and a script from a parameter expansion (`eval "$x"`, `bash -c "$x"`); not the reading with a
         // shell's positional parameters put in place below, which holds their values as the script's data
         let params = param_words(&tokens, &holders);
-        // carve-out (a): a double-quoted script whose only expansions are `$HOME/` and `$PWD/` (`sh -c "cd
-        // $HOME/x && make"`), read with HOME in place as the outer shell puts it there
+        // carve-out (a): a double-quoted script whose only expansions are `$HOME/` (`sh -c "cd $HOME/x &&
+        // make"`), read with HOME in place as the outer shell puts it there
         let paths: Vec<(&String, &Vec<&'static str>)> = holders
             .iter()
             .filter(|h| h.param)
@@ -3024,6 +3024,12 @@ fn held_program(
         }))
 }
 
+/// PE-1: a word of a direct function call that the shell passes as written: no expansion, no unquoted glob
+/// or brace character, no `~` and no leading `=` (the quotes are gone, so a quoted one counts too).
+fn literal_call_word(word: &str) -> bool {
+    !word.contains(['$', '`', '*', '?', '[', '{', '}', '~']) && !word.starts_with('=')
+}
+
 /// zsh's `=cmd` (EQUALS): the word is the path of `cmd`. Not `==`, not `=(...)`.
 fn equals_program(word: &str) -> bool {
     word.len() > 1 && word.starts_with('=') && !word.starts_with("==") && !word.starts_with("=(")
@@ -3055,10 +3061,20 @@ fn positional(word: &str) -> bool {
 
 /// PE-1: a command sets or moves the positional parameters (`set a b`, `set -- a`, `shift`, zsh's `argv=(a
 /// b)`, `read -A argv`, any word naming `argv`), so a positional parameter can hold a program the analysis
-/// did not put in place.
+/// did not put in place. Review of #159 round 2: also zsh's `zparseopts` (whose `-D` removes the options it
+/// parsed) and `1=value`, which sets `$1`, and a bare `set`.
 pub(crate) fn sets_positionals(entries: &[Entry]) -> bool {
+    let numbered = |w: &String| {
+        w.split_once('=')
+            .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+    };
     entries.iter().any(|e| {
-        if e.prog == "shift" || e.raw.iter().any(|w| w.contains("argv")) {
+        if e.prog == "shift"
+            || (e.prog == "set" && e.args.is_empty())
+            || e.raw
+                .iter()
+                .any(|w| w.contains("argv") || w.contains("zparseopts") || numbered(w))
+        {
             return true;
         }
         let operand = e.prog == "set" && {
@@ -3106,79 +3122,59 @@ pub(crate) fn calls_only_direct(
     })
 }
 
-/// Carve-out (a): a command that may change a standard directory prefix read through (`names`): an
-/// assignment to it (`HOME=/tmp`, `export HOME=/tmp`, `for HOME in ...`), a name `read`, `mapfile`,
-/// `declare`, `unset`, `printf -v` and the like set, an arithmetic assignment (`(( HOME = 1 ))`), a default
-/// assigned (`${TMPDIR:=/x}`), any nameref, `source`, `.`, `eval`, `set -a`; for `PWD` also `cd`, `pushd`,
-/// `popd`.
+/// Carve-out (a), review of #159 round 2: the command may change a directory prefix it read through
+/// (`names`), so the carve-out is off. No list of setters: it is off when the command text, or any word of
+/// the analysis (quotes removed, so `HO""ME` counts), holds a read-through name anywhere outside the forms
+/// `$NAME/`, `${NAME}/`, `$NAME"/` and `${NAME}"/`, or holds any other `$` at all (a name built from pieces
+/// reaches `printf -v "$x"`, `${(P)x::=v}` and the like), or when it sources a file or runs `eval`.
 pub(crate) fn changes_prefixes(
+    command: &str,
     entries: &[Entry],
-    arith_texts: &[String],
     names: &HashSet<&'static str>,
 ) -> bool {
-    let mut evaluated = HashSet::new();
-    for text in arith_texts {
-        // a text that cannot be followed may assign any name
-        if expression_names(text, &mut evaluated).is_none() {
-            return true;
-        }
-    }
-    if names.iter().any(|n| evaluated.contains(*n)) {
-        return true;
-    }
-    let defaults = |w: &String| {
-        names.iter().any(|n| {
-            [":=", "="]
-                .iter()
-                .any(|op| w.contains(&format!("{{{n}{op}")))
-        })
-    };
-    if entries.iter().any(|e| e.raw.iter().any(defaults)) {
-        return true;
-    }
-    const SETTERS: &[&str] = &[
-        "export",
-        "declare",
-        "typeset",
-        "local",
-        "readonly",
-        "read",
-        "mapfile",
-        "readarray",
-        "unset",
-        "printf",
-        "vared",
-        "getopts",
-        "let",
-        "integer",
-        "float",
-        "for",
-        "select",
-    ];
-    let name_of = |w: &str| w.split(['=', '[', '+']).next().unwrap_or("").to_string();
-    entries.iter().any(|e| {
-        // `builtin cd`, `command eval`: the word after them
+    let runs_text = entries.iter().any(|e| {
         let prog = match e.prog.as_str() {
             "builtin" | "command" => e.args.first().map_or("", String::as_str),
             prog => prog,
         };
         matches!(prog, "source" | "." | "eval")
-            || (names.contains("PWD") && matches!(prog, "cd" | "pushd" | "popd" | "chdir"))
-            || e.raw
-                .iter()
-                .any(|w| is_assignment(w) && names.contains(name_of(w).as_str()))
-            || (SETTERS.contains(&prog)
-                && e.args.iter().any(|a| names.contains(name_of(a).as_str())))
-            || (matches!(prog, "declare" | "typeset" | "local" | "readonly")
-                && e.args
-                    .iter()
-                    .any(|a| a.len() > 1 && a.starts_with('-') && a[1..].contains('n')))
-            || (prog == "set"
-                && e.args.iter().any(|a| {
-                    a == "allexport"
-                        || (a.starts_with('-') && !a.starts_with("--") && a.contains('a'))
-                }))
-    })
+    });
+    runs_text
+        || outside_prefix_forms(command, names)
+        || entries
+            .iter()
+            .flat_map(|e| &e.raw)
+            .any(|w| outside_prefix_forms(w, names))
+}
+
+/// `changes_prefixes` for one text: a `$` that does not start a read-through form of `names`, or a name of
+/// `names` outside one.
+fn outside_prefix_forms(text: &str, names: &HashSet<&'static str>) -> bool {
+    let b = text.as_bytes();
+    let mut covered = vec![false; b.len()];
+    let mut k = 0;
+    while k < b.len() {
+        if b[k] != b'$' {
+            k += 1;
+            continue;
+        }
+        let rest = &text[k + 1..];
+        let end = names.iter().find_map(|n| {
+            let after = match rest.strip_prefix('{') {
+                Some(braced) => braced.strip_prefix(n)?.strip_prefix('}')?,
+                None => rest.strip_prefix(n)?,
+            };
+            (after.starts_with('/') || after.starts_with("\"/")).then(|| text.len() - after.len())
+        });
+        let Some(end) = end else {
+            return true;
+        };
+        covered[k..end].iter_mut().for_each(|c| *c = true);
+        k = end;
+    }
+    names
+        .iter()
+        .any(|n| text.match_indices(n).any(|(i, _)| !covered[i]))
 }
 
 /// PE-1: a script the command runs (`eval`'s words, a shell's `-c` script, `watch`'s or `trap`'s command, a
@@ -3533,10 +3529,16 @@ fn word_evaluates(word: &str, out: &mut HashSet<String>) -> Option<()> {
 /// PE-4: the names the command sets from what it reads or from an expansion: the names `read`, `mapfile`,
 /// `readarray`, `getopts` and `printf -v` set (and `REPLY`, `MAPFILE`, `OPTARG`), a `for`/`select` name over
 /// words holding an expansion, and every assignment whose value holds a `$` or a backtick, or whose segment
-/// held a substitution (`held`). An arithmetic `n=$((n+1))` keeps no text, so it is not one. `None` with a
-/// nameref, which may set any name.
+/// held a substitution (`held`). An arithmetic `n=$((n+1))` keeps no text, so it is not one. `select` sets
+/// `REPLY` and its name from what it reads. Review of #159 round 2: once the command reads anything (`read`,
+/// `mapfile`, `readarray`, `select`), an assignment whose value names a variable (`n=line`, `n='line[0]'`)
+/// is one too, since evaluating it evaluates that variable. `None` with a nameref, which may set any name.
 fn tainted_names(entries: &[Entry], held: &HashSet<usize>) -> Option<HashSet<String>> {
     let mut out = HashSet::new();
+    let reads = entries
+        .iter()
+        .any(|e| matches!(e.prog.as_str(), "read" | "mapfile" | "readarray" | "select"));
+    let names_one = |value: &str| value.bytes().any(|c| c.is_ascii_alphabetic() || c == b'_');
     for (k, e) in entries.iter().enumerate() {
         let (prog, args) = (e.prog.as_str(), e.args.as_slice());
         let names = args.iter().filter(|a| is_name(a)).cloned();
@@ -3558,7 +3560,11 @@ fn tainted_names(entries: &[Entry], held: &HashSet<usize>) -> Option<HashSet<Str
                     out.extend(args.get(at + 1).cloned());
                 }
             }
-            "for" | "select" => {
+            "select" => {
+                out.insert("REPLY".to_string());
+                out.extend(args.first().cloned());
+            }
+            "for" => {
                 let expanded =
                     held.contains(&k) || args.iter().skip(1).any(|a| a.contains(['$', '`']));
                 if expanded && let Some(name) = args.first() {
@@ -3578,7 +3584,7 @@ fn tainted_names(entries: &[Entry], held: &HashSet<usize>) -> Option<HashSet<Str
             let Some((name, value)) = word.split_once('=') else {
                 continue;
             };
-            if held.contains(&k) || value.contains(['$', '`']) {
+            if held.contains(&k) || value.contains(['$', '`']) || (reads && names_one(value)) {
                 let name = name.split(['[', '+']).next().unwrap_or(name);
                 out.insert(name.to_string());
             }
@@ -3599,7 +3605,7 @@ pub(crate) fn unseen_values(entries: &[Entry]) -> bool {
             || w.matches('`').count() >= 2
     };
     entries.iter().any(|e| {
-        matches!(e.prog.as_str(), "read" | "mapfile" | "readarray")
+        matches!(e.prog.as_str(), "read" | "mapfile" | "readarray" | "select")
             || e.raw.iter().any(|w| is_assignment(w) && code(w))
             || (matches!(e.prog.as_str(), "set" | "printf") && e.args.iter().any(code))
     })

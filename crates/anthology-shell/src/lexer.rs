@@ -298,10 +298,10 @@ fn default_qualifier(part: &str) -> bool {
     })
 }
 
-/// Carve-out (a): the directories a program word may start with, as `"$NAME/..."` or `"${NAME}/..."`.
-const PREFIX_NAMES: &[&str] = &[
+/// Carve-out (a): the directories a program word may start with, as `"$NAME/..."` or `"${NAME}/..."`. Not
+/// `PWD`: the working directory carries over from an earlier call, and its name can hold anything.
+pub(crate) const PREFIX_NAMES: &[&str] = &[
     "HOME",
-    "PWD",
     "TMPDIR",
     "CLAUDE_PLUGIN_ROOT",
     "CLAUDE_PROJECT_DIR",
@@ -356,8 +356,8 @@ type Pending = (Vec<String>, GroupId, bool, bool);
 ///
 /// `glob`: the word holds an unquoted `*`, `?` or `[` (a holder with only `glob` is for the program word).
 /// `prefix` (carve-out a): the word's one expansion is a standard directory prefix at its start, and the rest
-/// is literal (`"$HOME/.cargo/bin/cargo"`, `"$PWD"/node_modules/.bin/x`). `paths`: every expansion in the word
-/// is `$HOME/` or `$PWD/` in that form (for a double-quoted script); the names.
+/// is literal (`"$HOME/.cargo/bin/cargo"`, `"$CLAUDE_PROJECT_DIR"/bin/x`). `paths`: every expansion in the
+/// word is `$HOME/` in that form (for a double-quoted script); the names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Holder {
     pub(crate) index: usize,
@@ -546,7 +546,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
         let paths = (subs.is_empty()
             && expansions > 0
             && expansions == prefixes.len()
-            && prefixes.iter().all(|(n, _)| matches!(*n, "HOME" | "PWD")))
+            && prefixes.iter().all(|(n, _)| *n == "HOME"))
         .then(|| prefixes.iter().map(|(n, _)| *n).collect());
         let word = std::mem::take(&mut self.cur);
         self.has_word = false;

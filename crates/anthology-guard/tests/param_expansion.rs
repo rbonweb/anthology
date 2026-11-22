@@ -358,6 +358,50 @@ fn zsh_precommand_words_coproc_globbed_and_placeholder_programs_are_read() {
     );
 }
 
+/// One test per input of the carve-out re-review of #159: each ran a marker `npx` in bash 5.2 or zsh 5.9
+/// and was allowed before the fix.
+macro_rules! too_complex {
+    ($($name:ident: $command:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                assert_eq!(verdict($command), Verdict::TooComplex, "{}", $command);
+            }
+        )*
+    };
+}
+
+too_complex! {
+    // (a) a prefix name set where the analysis does not look, or PWD, which an earlier call set
+    carve_a_zsh_default_assignment_to_home:
+        r#": ${HOME::='/tmp;npx playwright install;:'}; sh -c "ls $HOME/x""#;
+    carve_a_zsh_print_v_home:
+        r#"print -v HOME '/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    carve_a_bash_printf_v_attached_home:
+        r#"printf -vHOME %s '/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    carve_a_pwd_in_a_double_quoted_script: r#"sh -c "ls $PWD/z""#;
+    carve_a_home_set_through_a_name_built_from_pieces:
+        r#"x=HO; x+=ME; printf -v "$x" %s '/tmp;npx playwright install;:'; sh -c "ls $HOME/x""#;
+    // (b) a read value reached through a plain name, or read by select
+    carve_b_a_plain_name_copy_in_arithmetic:
+        "while read -r line; do n=line; echo $(( n )); done <<< 'a[$(npx playwright install)]'";
+    carve_b_a_plain_name_copy_in_a_subscript:
+        r#"a=(1); while read -r line; do n=line; echo "${a[n]}"; done <<< 'b[$(npx playwright install)]'"#;
+    carve_b_a_plain_name_copy_in_an_arithmetic_test:
+        "while read -r line; do n=line; [[ n -eq 1 ]]; done <<< 'a[$(npx playwright install)]'";
+    carve_b_select_sets_reply:
+        "select x in a; do echo $(( REPLY )); break; done <<< 'a[$(npx playwright install)]'";
+    carve_b_a_plain_name_copy_of_a_mapfile_array:
+        "mapfile -t m <<< 'a[$(npx playwright install)]'; n=m; echo $(( n ))";
+    carve_b_a_subscripted_name_copy:
+        "while read -r line; do n='line[0]'; echo $(( n )); done <<< 'a[$(npx playwright install)]'";
+    // (c) a direct call whose words are not literal, or positional parameters moved by zsh
+    carve_c_a_glob_in_a_direct_call: r#"f() { "$@"; }; f /usr/local/bin/np? playwright install"#;
+    carve_c_zparseopts_moves_the_parameters:
+        r#"f() { zparseopts -D a=o; "$@"; }; f -a npx playwright install"#;
+    carve_c_a_numeric_assignment_sets_a_parameter: r#"f() { 1=npx; "$@"; }; f ls playwright install"#;
+}
+
 #[test]
 fn a_standard_directory_prefix_is_read_through() {
     // the program is read with the prefix in place, so its rules still apply
@@ -393,6 +437,13 @@ fn a_standard_directory_prefix_is_read_through() {
             r#"set -a; . ./.env; "$HOME/x""#,
             r#"HOME=/tmp sh -c "$HOME/x""#,
             r#"sh -c "echo $x""#,
+            // PWD is not read through (the cwd can hold anything an earlier call made)
+            r#""$PWD"/node_modules/.bin/vitest run"#,
+            r#""$PWD/x""#,
+            r#"trap "rm -f $PWD/out.tmp" EXIT"#,
+            // the name anywhere else, or another expansion, turns the carve-out off
+            r#"echo $HOME; "$HOME/x""#,
+            r#""$HOME/x" "$y""#,
         ],
         Verdict::TooComplex,
     );
@@ -467,7 +518,6 @@ fn ordinary_commands_stay_allowed() {
             // a program under a standard directory, read with the prefix in place
             r#""$HOME/.cargo/bin/cargo" build"#,
             r#""${HOME}/.cargo/bin/cargo" build"#,
-            r#""$PWD"/node_modules/.bin/vitest run"#,
             r#""$CLAUDE_PLUGIN_ROOT/bin/x" --help"#,
             r#""$CLAUDE_PROJECT_DIR/scripts/test.sh""#,
             r#""$VIRTUAL_ENV/bin/python" -m pytest"#,
@@ -475,7 +525,6 @@ fn ordinary_commands_stay_allowed() {
             r#"cd src && "$HOME/.cargo/bin/cargo" build"#,
             r#"sh -c "cd $HOME/proj && make""#,
             r#"bash -c "$HOME/.cargo/bin/cargo build""#,
-            r#"trap "rm -f $PWD/out.tmp" EXIT"#,
             // a counted read loop
             "while read -r l; do n=$((n+1)); done < f",
             // everyday commands

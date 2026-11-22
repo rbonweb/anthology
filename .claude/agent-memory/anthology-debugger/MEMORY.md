@@ -4,6 +4,7 @@
 - [Evals on Linux runners need bubblewrap and socat](project-evals-linux-sandbox-deps.md) — Why the first CI eval run failed all cases and which smokes depend on the Claude Code sandbox
 - [Guard G0 changes need a golden bless](project-guard-g0-changes-need-golden-bless.md) — How a deliberate stricter guard or parser change gets past the frozen goldens, and where G0 must be signalled
 - [Guard G0 on a bracket with backticks comes from subscript_runs, not the lexer](project-guard-subscript-g0.md) — Where a G0 for brackets plus backticks is decided and what must stay conservative wh…
+- [Guard carve-outs must not rely on setter lists](project-guard-carve-outs-text-rule.md) — Why the prefix carve-out checks the whole command text and refuses any other dollar, and why PWD is excluded
 ## reference
 - [Proving guard bypasses in bash and zsh](reference-shell-bypass-probe-container.md) — A container recipe to show whether a command runs a marker program in bash 5.2 and zsh 5.9
 - [Reading a difftest golden report](reference-golden-report-reading.md) — Where the golden check report lands and how to read its hook cases inside the rust container

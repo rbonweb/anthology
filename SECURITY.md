@@ -95,8 +95,9 @@ The guard reads a command the way bash 5.2 and zsh 5.9 do (zsh is the shell Clau
 
 **Read through, so still allowed (each rule still applies to what is read):**
 
-- A program under a standard directory: `"$HOME/…"`, `"$PWD/…"`, `"$TMPDIR/…"`, `"$CLAUDE_PLUGIN_ROOT/…"`, `"$CLAUDE_PROJECT_DIR/…"` or `"$VIRTUAL_ENV/…"` (or `${NAME}`), in double quotes, directly followed by `/`, with the rest of the word literal. `$HOME` is read as your home directory. The command must not change the variable (an assignment, `export`, `read`, `unset`, `for`, a nameref, `source`, `eval`, `set -a`, and for `PWD` `cd`, `pushd` or `popd`), or it is blocked. `"$HOME/x/npx" playwright install` is G1.
-- `$HOME/` and `$PWD/` in a double-quoted `sh -c`, `bash -c`, `eval` or `trap` script whose only expansions are those (`sh -c "cd $HOME/proj && make"`).
+- A program under a standard directory: `"$HOME/…"`, `"$TMPDIR/…"`, `"$CLAUDE_PLUGIN_ROOT/…"`, `"$CLAUDE_PROJECT_DIR/…"` or `"$VIRTUAL_ENV/…"` (or `${NAME}`), in double quotes, directly followed by `/`, with the rest of the word literal. `$HOME` is read as your home directory. `"$HOME/x/npx" playwright install` is G1. It is blocked instead when the name appears anywhere else in the command, when the command holds any other `$`, or when it sources a file or runs `eval`.
+- `$HOME/` in a double-quoted `sh -c`, `bash -c`, `eval` or `trap` script whose only expansions are that one (`sh -c "cd $HOME/proj && make"`), under the same conditions.
+- `$PWD` is never read through: the working directory carries over between calls, so its name can hold a `$(…)`. `"$PWD"/node_modules/.bin/vitest` is blocked; `./node_modules/.bin/vitest` works.
 - A read loop whose arithmetic only uses names it set itself (`while read -r l; do n=$((n+1)); done < f`).
 - `run() { "$@"; }; run make test`, `retry`-style wrappers and `sh -c '"$1" --version' _ git`.
 

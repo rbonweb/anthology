@@ -341,9 +341,9 @@ a new version section.
   rules apply.
 - Commands whose program word is a variable (`$EDITOR file`) are now blocked as too complex;
   spell the program out. A program under a standard directory stays allowed and is checked
-  as written (`"$HOME/.cargo/bin/cargo" build`, `"$PWD"/node_modules/.bin/vitest`, also
-  `TMPDIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`), unless the command
-  changes that variable. So do read loops that only count (`n=$((n+1))`) and function
+  as written (`"$HOME/.cargo/bin/cargo" build`, also `TMPDIR`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`), unless the name appears anywhere else in the command
+  or the command holds another `$`. `$PWD` is not read through. So do read loops that only count (`n=$((n+1))`) and function
   wrappers such as `run() { "$@"; }; run make test`. The too-complex message suggests single
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).

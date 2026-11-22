@@ -74,7 +74,7 @@ pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
             || (ctx.positional && sets_positionals(&ctx.entries))
             || !calls_only_direct(&ctx.entries, &ctx.alternates, &ctx.function_calls)
             || (!ctx.prefix_names.is_empty()
-                && changes_prefixes(&ctx.entries, &ctx.arith_texts, &ctx.prefix_names))
+                && changes_prefixes(command, &ctx.entries, &ctx.prefix_names))
             || (unseen_values(&ctx.entries)
                 && evaluates_values(&ctx.entries, &ctx.arith_texts, ctx.held_entries()));
         Analysis {
