@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.7] - 2026-11-22
+
 #### Added
 
 - Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
