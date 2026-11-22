@@ -57,7 +57,7 @@ fn test_real_pins_match_the_plan() {
         Some("22f0b463e7a5e579904dd6211a520321035526f7")
     );
     assert_eq!(field(sp, "ref"), Some("v7.0.2"));
-    assert_eq!(field(sp, "plugin_version"), Some("0.1.0"));
+    assert_eq!(field(sp, "plugin_version"), Some("0.2.0"));
     assert_eq!(field(sp, "upstream_version"), Some("7.0.2"));
     assert_eq!(
         field(get(&p, "design-skills"), "commit"),
