@@ -50,6 +50,24 @@ jobs:
         run: |
           npm ci --prefix ci/claude-code
           ci/claude-code/node_modules/.bin/claude --version
+      - name: Install the Claude Code sandbox dependencies (bubblewrap, socat)
+        if: steps.key.outputs.present == 'true'
+        # On Linux the sandbox needs bubblewrap and socat (docs: code.claude.com/docs/en/sandboxing).
+        # Without them `plugin eval` refuses every case that grants a shell tool and every smoke
+        # that runs Bash outside bypassPermissions fails with "Sandbox is required but failed to
+        # initialize". Ripgrep is bundled with the native binary.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap socat
+          # bubblewrap needs unprivileged user namespaces. Ubuntu's AppArmor can restrict them
+          # (kernel.apparmor_restrict_unprivileged_userns=1); the runner is a throwaway VM, so lift
+          # it here when it is on.
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # Fail here, before any model call is paid for, if the sandbox still cannot start.
+          bwrap --unshare-user --unshare-net --ro-bind / / true
+          command -v socat
       - name: Run the behaviour evals
         if: steps.key.outputs.present == 'true'
         env:

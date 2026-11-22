@@ -809,6 +809,27 @@ mod roster_test {
         );
     }
 
+    // Everyone who uses Anthology gets commits, PRs and comments that carry only their own
+    // git author (hooks/no-attribution.sh enforces it for commit and PR commands).
+    #[test]
+    fn test_writers_add_no_attribution() {
+        each_agent(
+            |s| s.edits == "yes",
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                expect_in(
+                    p,
+                    "- Commits, PRs and code comments carry only the git config author: never add \
+                     Co-Authored-By or \"Generated with\" lines, never mention Claude or AI.",
+                    &rules,
+                    "Do",
+                );
+            },
+        );
+    }
+
     // The project map is only useful when it stays true, so each writer updates it in the same
     // commit as the change that made it stale.
     #[test]

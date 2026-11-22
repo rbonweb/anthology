@@ -46,7 +46,15 @@ fn the_plan_runtime_line_is_rust() {
 }
 
 /// Areas where a Python mention is history or someone else's text: (path or folder prefix, why).
-const ALLOWED_AREAS: [(&str, &str); 12] = [
+const ALLOWED_AREAS: [(&str, &str); 14] = [
+    (
+        ".claude/agent-memory/",
+        "agent memory notes are history, not shipped docs",
+    ),
+    (
+        ".claude/memory/",
+        "repo memory notes are history, not shipped docs",
+    ),
     (
         "crates/",
         "the port's sources cite the Python behaviour they reproduce",
