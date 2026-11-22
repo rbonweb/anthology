@@ -26,7 +26,7 @@ enum Form {
 use Form::{Fixed, Passthrough, Runner};
 
 /// Every subcommand `rtk --help` lists, plus the hidden alias `proxy`, as of
-/// rtk 1.2.1-anthology.4. Keep it sorted.
+/// rtk 1.2.1-anthology.5. Keep it sorted.
 const PINNED: &[(&str, Form)] = &[
     ("ast-grep", Fixed),
     ("aws", Fixed),

@@ -55,8 +55,8 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    `installed_plugins` is `unreadable`, say that Claude Code's `installed_plugins.json` could not be
    read, so duplicates were not checked; setup can continue.
 4. Show every change listed below, then ask for one confirmation: apply these changes and, if
-   `memory.legacy_notes` is not empty, which of those notes (if any) to move into the repo's memory
-   (recommend none). If `subagent_model.removable` is true, ask a separate yes/no question in the same
+   `memory.legacy_notes` is not empty, whether to move those old notes into Anthology memory
+   (recommend **yes**). If `subagent_model.removable` is true, ask a separate yes/no question in the same
    message: remove `CLAUDE_CODE_SUBAGENT_MODEL` from your user settings.json (recommend **yes**;
    `/anthology:setup remove` puts it back). If `subagent_model.elsewhere` is empty, say this lets the
    roster's model tiers apply; otherwise say it stays set in each `where`, so the tiers apply only once
@@ -77,31 +77,48 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
      is skipped.
+   - **Claude Code's own auto memory:** `memory.repo.auto_memory` is the one memory change to the repo's
+     committed `.claude/settings.json`: it adds `"autoMemoryEnabled": false`, so Claude Code's built-in
+     auto memory does not run beside the repo's `.claude/memory/` and the personal memory. Show its `path`
+     and `diff` as a diff (the value reads `"<redacted>"`; say it is `false`). Say plainly that the file
+     is committed: once pushed, auto memory is off for everyone who uses the repo, including teammates who
+     do not use Anthology. Auto memory also covers Claude Code's subagent memory, so in this repo roster
+     agents no longer get their `MEMORY.md` preloaded (each agent's prompt tells it to read its own).
+     Other keys in that file are kept. Your user-wide settings are not touched for this, and other repos
+     keep Claude Code's auto memory.
+     `/anthology:setup remove` puts the file back. If it has `skipped`, show the reason: the file is left
+     alone and Claude Code's auto memory stays on.
    - **personal memory:** the folder `memory.personal_dir` is created (private to the user).
-   - **old memory notes:** if `memory.legacy_notes` is not empty, these are notes Claude Code saved for
-     this folder before Anthology. By default they **all go to personal memory**, never into the repo.
-     For each note show its `name`, `description` and `diff` (what moving it would add to
-     `.claude/memory/`; for a `conflict` the existing note stays and `would_create` is the new file).
-     A note with `movable` false cannot be moved: mark it blocked and show its `reason` (privacy
-     findings name a kind and a line, never the text; `type: user` notes are always personal).
-     That confirmation asks which notes, if any, to move into the repo's memory, where everyone who
-     can see the repo can read them. Recommend **none**.
+   - **old memory notes:** if `memory.legacy_notes` is not empty, these are notes Claude Code's auto memory
+     saved for this folder before Anthology. With the user's yes, each note is **copied** (never moved
+     or deleted) by its `destination`: `repo` (project, feedback and reference notes) goes into
+     `.claude/memory/` under the file name `target`, where everyone who can see the repo can read it;
+     `personal` (user notes) goes into personal memory. A note with `destination` `none` is not moved:
+     show its `reason` (privacy findings name a kind and a line, never the text; a note without a
+     type is also listed; so is a note whose target is not a safe place to write). Show each note's `name`,
+     `description` and `destination`. `target_status` says what is already under the name `target` in that
+     folder: `new`, `identical` (nothing is written) or `conflict` (the note is saved beside it as
+     `target_would_create`). Notes the move itself refuses at write time come back in `memory.blocked`. The originals stay
+     where they are, and Claude Code no longer loads them. Without the yes, nothing goes into the repo.
 5. Once confirmed, apply, passing the digest from the preview so a changed settings file is never overwritten:
 
    ```
    "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>
    ```
 
-   Add `--promote <file>` once for each legacy note the user chose to move into the repo (the bare
-   `file` name from `memory.legacy_notes`); add nothing if they chose none. Add `--skip-approve` if the
-   user does not want this repo approved (it cannot be combined with `--promote`). Add
+   Add `--move-old-notes` if the user said yes to moving the old notes (it cannot be combined with
+   `--skip-approve`); add nothing if they said no. Add `--skip-approve` if the user does not want this repo
+   approved: then the repo's settings are not changed either. Add
    `--remove-subagent-model` only if the user said yes to removing `CLAUDE_CODE_SUBAGENT_MODEL`. If it reports that
    settings.json changed since the preview, run the preview again and ask again.
 6. Report the result: what changed (`subagent_model.removed` says whether `CLAUDE_CODE_SUBAGENT_MODEL`
    was removed), any `warnings`, and `memory.approve_error` if present (the repo is
-   still approved; say which file was refused). `memory.migrated` lists the legacy notes copied into the
-   repo (`repo`) and into personal memory (`personal`). If `memory.blocked` is not empty, list each
-   `file` with its `reason`: those notes stayed in personal memory. If `CLAUDE_CODE_SUBAGENT_MODEL` was
+   still approved; say which file was refused). `memory.auto_memory` says whether the repo's
+   `.claude/settings.json` was changed (`changed`) or why not (`skipped`); when it was, tell the user to
+   commit it. `memory.migrated` lists the old notes copied into the repo (`repo`) and into personal memory
+   (`personal`), by the names they now have. If `memory.blocked` is not empty, list each `file` with its
+   `reason`: those notes were not moved. If `memory.originals` is set, show it: the old notes were left in
+   place, never deleted, and are no longer loaded. If `CLAUDE_CODE_SUBAGENT_MODEL` was
    removed, say that if session start still warns about it after the restart, it is also set somewhere
    else (often the shell profile), and `/anthology:setup` shows where. Tell the user to restart the
    session so the new permissions and the rtk hook take effect.
@@ -125,6 +142,11 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    - `rtk_history.dir`: rtk's local history (the command lines it saw, its recall store and tee spool),
      which would be deleted (`status` says `delete`, `nothing to delete` or why it is left in place).
    - `state.path`: Anthology's `state.json`, which would be deleted.
+   - `memory.repo_settings`: each repo whose `.claude/settings.json` setup edited. Show its `path` and `diff`
+     (the `autoMemoryEnabled` line setup added comes out, or goes back to the value it had; the file is deleted
+     only if setup created it and nothing else is in it). Claude Code's auto memory runs again there. These
+     files are committed, so tell the user to review and commit the change. A `note`
+     says why a file is left alone (a `left in place` one is also in `warnings`).
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
      and `memory.unapprove_all` list the repo approvals that the optional flags would drop.
 3. Ask the user to confirm (yes/no) before anything is removed. If there are approvals listed, in the same

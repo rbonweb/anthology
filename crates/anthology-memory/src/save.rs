@@ -24,7 +24,7 @@ use anthology_pycompat::str as pystr;
 
 use crate::notes::REPO_EXCLUDE;
 use crate::privacy::{self, Finding, PrivacyDeps};
-use crate::render::{Budget, DEFAULT_BUDGET};
+use crate::render::{Budget, DEFAULT_BUDGET, try_list_notes};
 use crate::sync::strerror;
 
 /// `SAVE_TYPES`: `TYPE_ORDER` minus `user` (personal memory).
@@ -36,6 +36,27 @@ pub const MAX_DESCRIPTION: usize = 300;
 pub const MAX_BODY_BYTES: usize = 16384;
 /// `_SECRET_ENV_NAME` (`(?i)` as the IGNORECASE flag).
 const SECRET_ENV_NAME: &str = "(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)";
+
+/// The share of words two texts must have in common (Jaccard, in percent) to count as similar.
+const SIMILAR_PERCENT: usize = 60;
+/// At most this many similar notes are named in a warning.
+const MAX_SIMILAR: usize = 3;
+
+/// The lowercase alphanumeric words of `text`.
+fn words(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Do two names or descriptions share at least `SIMILAR_PERCENT` of their words?
+fn similar(a: &str, b: &str) -> bool {
+    let (a, b) = (words(a), words(b));
+    let shared = a.intersection(&b).count();
+    let all = a.union(&b).count();
+    all > 0 && shared * 100 >= all * SIMILAR_PERCENT
+}
 
 /// `SaveError`: a save that was refused; the message is `str(exc)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,13 +71,16 @@ impl std::fmt::Display for SaveError {
 impl std::error::Error for SaveError {}
 
 /// What `save_note` did: `action` is `created` or `replaced`; `relative` is the note's path
-/// below `root` (POSIX form); `root` is the realpath of the root given.
+/// below `root` (POSIX form); `root` is the realpath of the root given; `similar` holds the
+/// file names of the agent's other notes whose name or description is very similar (at most
+/// `MAX_SIMILAR`; a warning, never a refusal).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Saved {
     pub action: String,
     pub relative: String,
     pub root: PathBuf,
     pub index_warning: Option<String>,
+    pub similar: Vec<String>,
 }
 
 impl Saved {
@@ -323,6 +347,28 @@ fn ensure_real_dir(path: &Path, root: &Path) -> Result<(), SaveError> {
     Ok(())
 }
 
+/// Every check `save_note` runs on the text of a note bound for repo memory, in its order: the
+/// name and description are one line within their limits without control or invisible characters,
+/// the body has no control characters and is within `MAX_BODY_BYTES`, nothing looks like a secret
+/// or holds the value of a secret-named environment variable, and the privacy scan finds nothing
+/// (a scanner panic is a clean refusal). Returns the cleaned `(name, description, body)`. Anything
+/// that moves a note into a repo's memory must call this, so it never lets in what `save` refuses.
+pub fn check_note_text(
+    slug: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+    env: &Env,
+    deps: &SaveDeps,
+) -> Result<(String, String, String), SaveError> {
+    let name = check_line("name", name, MAX_NAME)?;
+    let description = check_line("description", description, MAX_DESCRIPTION)?;
+    let body = check_body(body)?;
+    refuse_secrets(&[slug, &name, &description, &body], env)?;
+    privacy_check(&[slug, &name, &description, &body], env, deps)?;
+    Ok((name, description, body))
+}
+
 /// `save_note`, with the GC-19 seams (an MS2 addition beyond plan §3.6).
 #[allow(
     clippy::too_many_arguments,
@@ -353,11 +399,7 @@ pub fn save_note_with(
              characters"
         ));
     }
-    let name = check_line("name", name, MAX_NAME)?;
-    let description = check_line("description", description, MAX_DESCRIPTION)?;
-    let body = check_body(body)?;
-    refuse_secrets(&[slug, &name, &description, &body], env)?;
-    privacy_check(&[slug, &name, &description, &body], env, deps)?;
+    let (name, description, body) = check_note_text(slug, name, description, body, env, deps)?;
     let mut slug = slug;
     if let Some(rest) = slug.strip_prefix(kind).and_then(|r| r.strip_prefix('-'))
         && !rest.is_empty()
@@ -387,7 +429,17 @@ pub fn save_note_with(
         ));
     }
 
-    let path = agent_dir.join(format!("{kind}-{slug}.md"));
+    let file = format!("{kind}-{slug}.md");
+    let similar_notes: Vec<String> = try_list_notes(&agent_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(f, n)| {
+            *f != file && (similar(&name, &n.name) || similar(&description, &n.description))
+        })
+        .map(|(f, _)| f)
+        .take(MAX_SIMILAR)
+        .collect();
+    let path = agent_dir.join(&file);
     let relative = rel(&path, &root);
     let modified = today.unwrap_or_else(clock::today_local).iso();
     let text = format!(
@@ -436,6 +488,7 @@ pub fn save_note_with(
         relative,
         root,
         index_warning,
+        similar: similar_notes,
     })
 }
 
@@ -483,6 +536,17 @@ mod tests {
         for bad in ["", "-a", "a-", "a--b", "A", "a_b", "a.b", "é", "x\n"] {
             assert!(!slug_ok(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn similar_texts_share_most_of_their_words() {
+        assert!(similar("Eval probe", "Eval probe notes"));
+        assert!(similar("Eval-Probe!", "eval probe"));
+        assert!(similar("How the probe works", "how the probe works"));
+        assert!(!similar("Eval probe", "Release checklist"));
+        assert!(!similar("Eval probe", "Eval probe results and more"));
+        assert!(!similar("", ""));
+        assert!(!similar("!!", "??"));
     }
 
     #[test]

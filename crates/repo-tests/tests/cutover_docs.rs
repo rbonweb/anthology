@@ -46,7 +46,15 @@ fn the_plan_runtime_line_is_rust() {
 }
 
 /// Areas where a Python mention is history or someone else's text: (path or folder prefix, why).
-const ALLOWED_AREAS: [(&str, &str); 12] = [
+const ALLOWED_AREAS: [(&str, &str); 14] = [
+    (
+        ".claude/agent-memory/",
+        "agent memory notes are history, not shipped docs",
+    ),
+    (
+        ".claude/memory/",
+        "repo memory notes are history, not shipped docs",
+    ),
     (
         "crates/",
         "the port's sources cite the Python behaviour they reproduce",
@@ -71,7 +79,7 @@ const ALLOWED_AREAS: [(&str, &str); 12] = [
 ];
 
 /// Single lines elsewhere that mention Python on purpose: (file, a substring of the line, why).
-const ALLOWED_LINES: [(&str, &str, &str); 11] = [
+const ALLOWED_LINES: [(&str, &str, &str); 7] = [
     (
         "README.md",
         "`python3 -c`",
@@ -106,26 +114,6 @@ const ALLOWED_LINES: [(&str, &str, &str); 11] = [
         "ci/jobs/ledger.sh",
         "CO2 deleted the Python",
         "why the ledger extracts nothing",
-    ),
-    (
-        "plugins/anthology/agents/debugger.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/docs-writer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/implementer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
-    ),
-    (
-        "plugins/anthology/agents/ui-designer.md",
-        "`sed -i` or `python3 -c`",
-        "commands the agent must not use to edit files",
     ),
 ];
 

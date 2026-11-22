@@ -1592,3 +1592,209 @@ fn the_shared_parser_never_loosens_a_verdict() {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
 }
+
+// --- P3: `cd <literal dir> && ...` and `... | head -n N` / `| tail -n N` ---
+
+/// The command the hook hands back, when it rewrites.
+fn rewrite_of(said: Said) -> Option<String> {
+    match said {
+        Said::Allow(command) | Said::Rewrite(command) => Some(command),
+        _ => None,
+    }
+}
+
+/// A sandbox with the plugin's allow, a deny, and `Read()` rules, and a link to a directory that holds a
+/// denied file.
+fn cd_sandbox() -> Sandbox {
+    let sb = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["rtk *"],
+        read_deny: &["./secret.txt", "**/.env"],
+        ..Rules::default()
+    });
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(sb.project.join("config"), sb.project.join("cfglink"))
+        .expect("symlink to a directory");
+    sb
+}
+
+/// With rules, a rewrite is kept for a literal `cd` in front and a counted `head` or `tail` behind.
+#[test]
+fn a_literal_cd_and_a_counted_head_keep_their_rewrite_under_rules() {
+    let sb = cd_sandbox();
+    let abs = sb.project.display().to_string();
+    for cmd in [
+        "cd ./sub && git status".to_string(),
+        "cd ./sub && git log --oneline -5".to_string(),
+        format!("cd {abs}/sub && git status"),
+        "git log --oneline | head -n 5".to_string(),
+        "git log --oneline | tail -n 20".to_string(),
+        "git status | head -n5".to_string(),
+        "cd ./sub && git log --oneline | head -n 5".to_string(),
+        format!("cd {abs}/sub && git log --oneline | tail -n 3"),
+    ] {
+        let rewritten = rewrite_of(sb.hook(&cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
+        assert!(rewritten.contains("rtk git"), "{cmd}: {rewritten}");
+    }
+    // typed with `rtk` already: the plain shape passes with no prompt and nothing to rewrite
+    for cmd in [
+        "cd ./sub && rtk git status".to_string(),
+        "rtk git log --oneline | head -n 5".to_string(),
+        "cd ./sub && rtk ls -la | tail -n 3".to_string(),
+        format!("cd {abs}/sub && rtk ls"),
+    ] {
+        assert_eq!(sb.hook(&cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// Relative reads resolve against the new directory before the deny check, through a link too.
+#[test]
+fn a_read_after_a_cd_still_meets_the_deny_rules() {
+    let sb = cd_sandbox();
+    let abs = sb.project.display().to_string();
+    for cmd in [
+        "cd ./config && rtk read .env",
+        "cd ./config && rtk read .env | head -n 5",
+        "cd ./sub && rtk read ../secret.txt",
+        "cd ./sub && rtk read ../config/.env",
+        "cd ./cfglink && rtk read .env",
+        "cd ./cfglink && rtk read ../secret.txt",
+        "cd ./config && cat .env",
+        "cd ./config && cat .env | head -n 5",
+        "cd ./cfglink && cat .env",
+        "cd ./sub && cat ../secret.txt",
+        "cd config && cat .env",
+        "cd config && rtk read .env",
+        &format!("cd {abs}/config && rtk read .env"),
+        &format!("cd {abs}/config && cat .env"),
+        &format!("cd {abs}/cfglink && cat .env"),
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+    // a path that is not the denied one is left alone
+    for cmd in [
+        "cd ./sub && rtk read note.txt",
+        "cd ./config && rtk read ../ok.txt",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
+
+/// A `cd` the gate cannot follow, a join other than `&&` and a count that is not literal are not made
+/// plain: the original goes to the host unrewritten, or the hook asks when `rtk` is typed.
+#[test]
+fn a_cd_or_a_count_the_gate_cannot_follow_is_not_rewritten() {
+    let sb = cd_sandbox();
+    // not rewritten: the host judges what was typed
+    for cmd in [
+        "cd sub && git status",
+        "cd .. && git status",
+        "cd ./.. && git status",
+        "cd - && git status",
+        "cd ~ && git status",
+        "cd ~root && git status",
+        "cd $X && git status",
+        "cd \"$X\" && git status",
+        "cd $(pwd) && git status",
+        "cd ./nope && git status",
+        "cd ./ok.txt && git status",
+        "cd ./sub; git status",
+        "cd ./sub || git status",
+        "cd ./sub & git status",
+        "cd ./sub && git status && git log",
+        "cd ./sub && cd ./config && git status",
+        "git log | head -n 5 | cat",
+        "git log | head -n 5 | head -n 2",
+        "git log | head -n 5; ls",
+        "git log | head -n 5 && ls",
+        "git log | head",
+        "git log | head -n -5",
+        "git log | head -c 5",
+        "git log | tail -f",
+        "git log | cat",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+    // a count that expands: the rule scan asks about the expanding operand of `head` (a read command)
+    // whether or not rtk is typed, and the hook hands the original back
+    for cmd in [
+        "git log | head -n $N",
+        "git log | head -n \"$N\"",
+        "git log | head -n \"$(echo 5)\"",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Ask(cmd.to_string()), "{cmd}");
+    }
+    // typed with `rtk`: the hook asks
+    asked(
+        &sb,
+        &[
+            "cd sub && rtk git status",
+            "cd .. && rtk git status",
+            "cd - && rtk git status",
+            "cd $X && rtk git status",
+            "cd ./nope && rtk git status",
+            "cd ./sub; rtk git status",
+            "cd ./sub || rtk git status",
+            "cd ./sub && rtk git status && rtk git log",
+            "cd ./sub && cd ./config && rtk git status",
+            "rtk git log | head -n $N",
+            "rtk git log | head -n \"$(echo 5)\"",
+            "rtk git log | head -n 5 | cat",
+            "rtk git log | head -n 5; rtk ls",
+            "rtk git log | head -n 5 && rtk ls",
+            "rtk git log |& head -n 5",
+            "rtk git log || head -n 5",
+            "rtk git log | tail -f",
+            "rtk git log | tail -F",
+            "rtk git log | head -n 5 > out",
+            "rtk git log | tee out",
+            "cd ./sub && rtk npm test",
+            "cd ./sub && rtk bypass git status",
+            "cd ./sub && rtk git log | head -n 5 | head -n 2",
+        ],
+    );
+}
+
+/// A ruled command anywhere on such a line is still denied.
+#[test]
+fn a_ruled_command_after_a_cd_or_before_a_count_is_still_denied() {
+    let sb = cd_sandbox();
+    for cmd in [
+        "cd ./sub && git push",
+        "cd ./sub && rtk git push",
+        "cd ./sub && rtk bypass git push",
+        "git push | head -n 5",
+        "rtk git push | head -n 5",
+        "git log | head -n 5; git push",
+        "cd ./sub && git log | head -n 5 && git push",
+        "cd /tmp && git push",
+        // a file after the count is a read of that file, and the count is no longer literal
+        "git log | head -n 5 secret.txt",
+        "rtk git log | head -n 5 secret.txt",
+        "cd ./sub && git log | head -n 5 ../secret.txt",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Deny, "{cmd}");
+    }
+}
+
+/// No rule anywhere: the gate is inert and nothing about these shapes changes.
+#[test]
+fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
+    let sb = Sandbox::bare();
+    for cmd in [
+        "cd ./sub && git status",
+        "cd sub && git status",
+        "git log | head -n 5",
+    ] {
+        let rewritten = rewrite_of(sb.hook(cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
+        assert!(rewritten.contains("rtk git"), "{cmd}: {rewritten}");
+    }
+    for cmd in [
+        "cd $X && rtk git status",
+        "cd - && rtk git status",
+        "rtk git log | head -n $N",
+        "rtk git log | tail -f",
+    ] {
+        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+    }
+}
