@@ -79,8 +79,6 @@ const PAYLOADS: &[&str] = &[
 const CONTROLS: &[&str] = &[
     "$(which python3) -m venv .venv",
     "\"$(command -v node)\" --version",
-    "${EDITOR:-vi} file.txt",
-    "${PYTHON:-python3} script.py",
     "echo $(date)",
     "x=$(git rev-parse HEAD)",
 ];
@@ -99,7 +97,9 @@ fn every_f8_payload_is_blocked() {
 
 #[test]
 fn a_default_or_alternate_program_also_reads_its_default() {
-    // (a): the main entry stays, and the alternate is the command with W as the program word
+    // (a): the main entry stays, and the alternate is the command with W as the program word. PE-1: the
+    // program word is still only known at run time (the variable may be set), so the analysis is too
+    // complex; the guard reports G1 from the alternate first.
     for command in [
         "${x:-npx} playwright install",
         "${x-npx} playwright install",
@@ -111,7 +111,7 @@ fn a_default_or_alternate_program_also_reads_its_default() {
         "${x:-\"npx\"} playwright install",
     ] {
         let a = analyze(command, HOME);
-        assert!(!a.incomplete, "{command}: {}", summary(&a));
+        assert!(a.incomplete, "{command}: {}", summary(&a));
         assert!(a.alternates.iter().any(g1), "{command}: {}", summary(&a));
         // the main entry is the command as it stands: its program word is the expansion
         assert!(
@@ -229,6 +229,11 @@ fn the_controls_stay_complete_and_install_nothing() {
     for command in CONTROLS {
         let a = analyze(command, HOME);
         assert!(!a.incomplete && !installs(&a), "{command}: {}", summary(&a));
+    }
+    // PE-1: a default value as the program word was a control; the variable may hold any program
+    for command in ["${EDITOR:-vi} file.txt", "${PYTHON:-python3} script.py"] {
+        let a = analyze(command, HOME);
+        assert!(a.incomplete && !installs(&a), "{command}: {}", summary(&a));
     }
     // the program words the controls read
     let a = analyze("$(which python3) -m venv .venv", HOME);

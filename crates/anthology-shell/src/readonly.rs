@@ -2217,7 +2217,7 @@ mod tests {
         );
         // another reading of a wrapped command
         assert_eq!(
-            agree("ls a", "${x:-ls} a"),
+            agree("ls a", "ls ${x:-a}"),
             Err("analysis has alternate readings")
         );
         // the work budget ran out
@@ -2243,7 +2243,7 @@ mod tests {
             ("ls a; ls a", "analyze reads other commands"),
             ("ls a | ls a", "analyze reads other commands"),
             ("ls a $(pwd)", "analyze reads other commands"),
-            ("${x:-ls} a", "analysis has alternate readings"),
+            ("ls ${x:-a}", "analysis has alternate readings"),
         ] {
             assert_eq!(
                 prove_with(line, HOME, scanner_that_always_reads_ls_a).err(),

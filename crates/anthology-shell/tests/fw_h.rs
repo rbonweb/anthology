@@ -321,7 +321,6 @@ const R1_C1: &[&str] = &[
 
 // review-fw-h R1-C1 (test diff ROUND2_BASH32_RUNS): bash 3.2 runs these, bash 5.2 keeps them data
 const R1_C1_BASH32: &[&str] = &[
-    "cat <<${a:-'x'}\nx\n${a:-x}\nnpx playwright install\n${a:-'x'}",
     "cat <<$(echo \"x\")\nit's\n$(echo x)\nnpx playwright install\n'",
     "cat <<$(echo \\x)\nit's\n$(echo x)\nnpx playwright install\n'",
     "x=$(cat <<EOF\nEOF # )\n'$(npx playwright install)'\nEOF\n)",
@@ -473,6 +472,13 @@ fn review_round_0_findings_are_closed() {
 fn review_r1_c1_paren_lines_are_read_every_way() {
     assert_blocked(R1_C1);
     assert_blocked(R1_C1_BASH32);
+    // PE-1: the reading that ends the body early also runs its last line, `${a:-'x'}`, a program from a
+    // parameter expansion; the install is still read, and the analysis is too complex
+    let a = analyze(
+        "cat <<${a:-'x'}\nx\n${a:-x}\nnpx playwright install\n${a:-'x'}",
+        HOME,
+    );
+    assert!(a.incomplete && installs(&a), "{}", summary(&a));
     // F-8(b): the backticked line is a command at program position in the reading that ends the body early
     assert_too_complex(R1_M2);
 }
