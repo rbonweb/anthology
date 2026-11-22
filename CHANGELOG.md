@@ -91,6 +91,10 @@ a new version section.
 
 #### Changed
 
+- The plugin requires Claude Code 2.1.330 or later (`engines`), because of its Claude Code mods.
+  The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
+  `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
+  part runs on its own, so a failure in one never drops the other's result.
 - Writing agents (implementer, debugger, ui-designer, docs-writer) and the routing guide now
   delete only literal paths and never `rm -rf $VAR`, because Claude Code asks the user about
   removals it cannot prove safe, even in bypass mode.

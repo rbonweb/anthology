@@ -16,7 +16,7 @@
 // A report with no gap is delivered as written, with no block.
 //
 // Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off.
-import type { EngineInterface, On } from 'claude-code'
+import type { AgentReportInput, AgentReportResult, EngineInterface } from 'claude-code'
 import { modsOff } from './util.ts'
 
 /** The agent types that write, as `agent.report` names them. Reviewer and scout only read. */
@@ -133,23 +133,25 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
   }
 }
 
-export function registerAfterwork(on: On): void {
-  on('agent.report', async ($, e, next) => {
-    const r = await next(e)
-    if (r.consumed !== undefined) return r
-    if (e.parentAgentId !== undefined || e.status !== 'completed' || !WRITERS.has(e.subagentType)) return r
-    if (r.text.trim() === '') return r
-    if ((await modsOff($)) || (await $.env.get('ANTHOLOGY_AFTERWORK')) === '0') return r
-    const { gaps, reminders } = check(r.text, e.subagentType)
-    const dirty = await dirtyFiles($, e.agentId)
-    if (dirty !== undefined) gaps.push(dirty)
-    if (gaps.length === 0) return r
-    const block = [
-      'After-work check (anthology; string checks on the report above, which is unchanged):',
-      ...gaps.map(g => `- ${g}`),
-      ...reminders.map(m => `Reminder: ${m}`),
-    ].join('\n')
-    // Keep core's review and warning: they describe the report as the agent wrote it.
-    return { ...r, text: `${r.text}\n\n${block}` }
-  }).catch(($, e, next) => next(e))
+/**
+ * This feature's part of the one `agent.report` hook (index.ts registers the event once, calls
+ * `next` once and hands `r`, what it resolved to, to each feature). Returns `r` as it is, or `r`
+ * with the block appended. It may throw: index.ts then keeps `r`.
+ */
+export async function afterworkReport($: EngineInterface, e: AgentReportInput, r: AgentReportResult): Promise<AgentReportResult> {
+  if (r.consumed !== undefined) return r
+  if (e.parentAgentId !== undefined || e.status !== 'completed' || !WRITERS.has(e.subagentType)) return r
+  if (r.text.trim() === '') return r
+  if ((await modsOff($)) || (await $.env.get('ANTHOLOGY_AFTERWORK')) === '0') return r
+  const { gaps, reminders } = check(r.text, e.subagentType)
+  const dirty = await dirtyFiles($, e.agentId)
+  if (dirty !== undefined) gaps.push(dirty)
+  if (gaps.length === 0) return r
+  const block = [
+    'After-work check (anthology; string checks on the report above, which is unchanged):',
+    ...gaps.map(g => `- ${g}`),
+    ...reminders.map(m => `Reminder: ${m}`),
+  ].join('\n')
+  // Keep core's review and warning: they describe the report as the agent wrote it.
+  return { ...r, text: `${r.text}\n\n${block}` }
 }

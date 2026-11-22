@@ -213,7 +213,7 @@ A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linu
 
 ### After-work check
 
-When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.329 or later) checks the report before the lead reads it. A short "After-work check" block is appended only when there is a real gap:
+When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.330 or later) checks the report before the lead reads it. A short "After-work check" block is appended only when there is a real gap:
 
 - no commit (a sha, or the word "committed");
 - no test evidence (a test word; "tests not run" or "skipped" counts as none);
@@ -388,7 +388,7 @@ Remove keeps the `anthology` binaries in `~/.claude/anthology/bin/` while `antho
 ## Requirements
 
 - macOS or Linux, on arm64 or x86_64. Setup refuses on Windows.
-- Claude Code `2.1.311` or newer.
+- Claude Code `2.1.330` or newer.
 - For the one-time download of the `anthology` binary: network access to GitHub, one of `curl`, `wget` or `node`, one of `sha256sum`, `shasum` or `openssl`, and `tar`. macOS and most Linux systems have these. `node` is the last resort, and behind a proxy it works only on node 24 or newer. Offline, copy the archive in by hand (see [The `anthology` binary](#the-anthology-binary)).
 - Node 22 or newer.
 - Docker, for tests, builds and end-to-end suites.

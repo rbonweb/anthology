@@ -6,7 +6,7 @@
 // hooks.
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
-// agent.report), the last few that finished, and the permission prompts that wait for an answer.
+// agent.report, the latter hooked by index.ts), the last few that finished, and the permission prompts that wait for an answer.
 // A one-line status ("3 agents running") sits under the prompt. The pane draws with Box and Text
 // only, which every surface has, one row per Text so the terminal cuts a long row at its edge.
 //
@@ -21,6 +21,8 @@
 // Nothing here may throw once a hook has called `next`: the hook's `.catch` would call `next`
 // again and replay a result that drops what the hooks beneath it returned. So every tracking call
 // goes through `quietly`, which swallows its failure: the pane may be stale, the event is not hurt.
+// The one exception is `alertsReport`, the part of the shared `agent.report` hook: index.ts calls
+// it inside its own try/catch (`isolated`), which is the wrapper there.
 import { atom, read, update } from 'claude-code'
 import type { AgentReportInput, AgentSpawnInput, EngineInterface, On, PluginState, ShapedValue } from 'claude-code'
 import { modsOff } from './util.ts'
@@ -294,6 +296,15 @@ async function alertUser($: EngineInterface, type: string, lastAt: number | unde
 
 // ---- Registration -------------------------------------------------------------------------------
 
+/**
+ * This feature's part of the one `agent.report` hook (index.ts registers the event once, calls
+ * `next` once and hands each feature `e`): moves the agent from running to finished. It may throw:
+ * index.ts isolates it, so a failure here never drops what the other features made of the report.
+ */
+export async function alertsReport($: EngineInterface, e: AgentReportInput): Promise<void> {
+  if (!(await modsOff($))) await trackReport($, e)
+}
+
 export function registerAlerts(on: On): void {
   // When the last alert fired. A hot reload or a restart of the hooks worker forgets it, which at
   // worst lets one alert through early.
@@ -342,17 +353,8 @@ export function registerAlerts(on: On): void {
     return started
   }).catch(($, e, next) => next(e))
 
-  // The matcher matches every report, whatever its status now or in a later build. It is there
-  // because a second registration of one event with the same matcher (or with none) throws, and
-  // afterwork.ts hooks agent.report with none: a matcher of its own keeps the two apart. When the
-  // mods merge, index.ts will dispatch the events they share from one registration.
-  on('agent.report', { agentId: /(?:)/ }, async ($, e, next) => {
-    const report = await next(e)
-    await quietly(async () => {
-      if (!(await modsOff($))) await trackReport($, e)
-    })
-    return report
-  }).catch(($, e, next) => next(e))
+  // `agent.report` is not registered here: afterwork.ts hooks it too, and a second registration of
+  // one event throws and unloads the module. index.ts registers it once and calls `alertsReport`.
 
   // A prompt is pending when no hook answered the permission request: the dialog shows next.
   on('classic.PermissionRequest', async ($, e, next) => {

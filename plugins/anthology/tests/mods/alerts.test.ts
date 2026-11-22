@@ -41,7 +41,9 @@ type Options = {
 function engine(on: On, { env = {}, openReason, isClockBroken = false, isListBroken = false }: Options = {}) {
   // A broken clock is one whose `now` is refused; no test of it moves the clock.
   const clock = isClockBroken ? (on('clock.now', () => ({ deny: 'clock is down' })), undefined as never) : mock.clock(on, { now: T0 })
-  mock.env(on, env)
+  // These tests are about alerts and the pane. The after-work check, which the merged module also
+  // runs on a writer's report, is off here and has its own tests (afterwork.test.ts, integration.test.ts).
+  mock.env(on, { ANTHOLOGY_AFTERWORK: '0', ...env })
   const seen = {
     toasts: [] as { text: string; timeoutMs?: number }[],
     sounds: [] as unknown[],

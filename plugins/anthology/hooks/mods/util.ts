@@ -9,6 +9,19 @@ export async function modsOff($: EngineInterface): Promise<boolean> {
 }
 
 /**
+ * Runs one feature's part of a hook that index.ts shares between features. A failure leaves
+ * `fallback` (what the part's input already was), so it never drops another feature's result and
+ * never reaches the hook's `.catch`, which would call `next` a second time.
+ */
+export async function isolated<T>(part: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await part()
+  } catch {
+    return fallback
+  }
+}
+
+/**
  * Runs `bin/anthology <args>` from this plugin, never through a shell line. ANTHOLOGY_NO_INSTALL
  * makes the shim exit 127 instead of downloading the binary inside a hook; SessionStart installs.
  * Rejects when the child outlives `timeoutMs` (the engine kills it) or cannot start.
