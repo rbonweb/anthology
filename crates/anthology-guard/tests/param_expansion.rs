@@ -451,6 +451,13 @@ g0_or_g1! {
         r#"setopt extendedglob; f() { "$@"; }; f /usr/local/bin/np^y playwright install"#;
     round3_c_a_shell_script_argument_outside_the_charset:
         r#"sh -c '"$1" playwright install' _ /usr/local/bin/np#x"#;
+    // the lead's diff check: zsh assigns a positional parameter in a `${1::=…}` or `${1:=…}` expansion
+    round3_c_zsh_assigning_expansion_of_a_positional:
+        r#"f() { : ${1::=npx}; "$@"; }; f a playwright install"#;
+    round3_c_zsh_default_assignment_to_an_empty_positional:
+        r#"f() { : ${1:=npx}; "$@"; }; f "" playwright"#;
+    round3_c_zsh_assigning_expansion_of_all_positionals:
+        r#"f() { : ${@::=npx}; "$@"; }; f a playwright install"#;
 }
 
 #[test]

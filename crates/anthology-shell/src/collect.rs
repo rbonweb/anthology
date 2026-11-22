@@ -3041,10 +3041,23 @@ fn body_keeps_positionals(entries: &[Entry], span: &[usize]) -> bool {
     span.iter().all(|&e| {
         let entry = &entries[e];
         !SETTERS.contains(&entry.prog.as_str())
-            && entry
-                .raw
-                .iter()
-                .all(|w| !numbered(w) && !SETTERS.contains(&w.as_str()))
+            && entry.raw.iter().all(|w| {
+                !numbered(w) && !SETTERS.contains(&w.as_str()) && !positional_expansion_sets(w)
+            })
+    })
+}
+
+/// PE-1, the lead's check of #159 round 3: `word` holds `${` and a positional parameter (digits, `@`, `*`
+/// or `#`) followed by `:` or `=`. zsh assigns the parameter in `${1::=x}`, `${1:=x}` and `${1=x}` (bash
+/// refuses them); a `${1:-x}` default is refused too, which keeps the test simple.
+fn positional_expansion_sets(word: &str) -> bool {
+    word.match_indices("${").any(|(k, _)| {
+        let rest = &word.as_bytes()[k + 2..];
+        let name = match rest.first() {
+            Some(b'@' | b'*' | b'#') => 1,
+            _ => rest.iter().take_while(|c| c.is_ascii_digit()).count(),
+        };
+        name > 0 && matches!(rest.get(name), Some(b':' | b'='))
     })
 }
 
@@ -3080,7 +3093,8 @@ fn positional(word: &str) -> bool {
 /// PE-1: a command sets or moves the positional parameters (`set a b`, `set -- a`, `shift`, zsh's `argv=(a
 /// b)`, `read -A argv`, any word naming `argv`), so a positional parameter can hold a program the analysis
 /// did not put in place. Review of #159 round 2: also zsh's `zparseopts` (whose `-D` removes the options it
-/// parsed) and `1=value`, which sets `$1`, and a bare `set`.
+/// parsed) and `1=value`, which sets `$1`, and a bare `set`; round 3: zsh's `${1::=value}` and the like
+/// (`positional_expansion_sets`).
 pub(crate) fn sets_positionals(entries: &[Entry]) -> bool {
     let numbered = |w: &String| {
         w.split_once('=')
@@ -3089,9 +3103,12 @@ pub(crate) fn sets_positionals(entries: &[Entry]) -> bool {
     entries.iter().any(|e| {
         if e.prog == "shift"
             || (e.prog == "set" && e.args.is_empty())
-            || e.raw
-                .iter()
-                .any(|w| w.contains("argv") || w.contains("zparseopts") || numbered(w))
+            || e.raw.iter().any(|w| {
+                w.contains("argv")
+                    || w.contains("zparseopts")
+                    || numbered(w)
+                    || positional_expansion_sets(w)
+            })
         {
             return true;
         }
