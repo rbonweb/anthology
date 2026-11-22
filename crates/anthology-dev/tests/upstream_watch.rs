@@ -511,11 +511,11 @@ mod subtree_tests {
             ("refs/tags/v1.4.0-rc.1", &s('a')),
             ("refs/heads/develop", &s('b')),
         ]);
-        let net = FakeNet::new().refs(RTK_REPO, r).http(
-            &compare_url(RTK_REPO, &s('3'), &s('9')),
+        let net = FakeNet::new().refs(ATL_REPO, r).http(
+            &compare_url(ATL_REPO, &s('3'), &s('9')),
             compare_json(&["src/main.rs"], 1),
         );
-        let change = check(&rtk_entry("v1.2.1", &s('3')), &net, None)
+        let change = check(&atl_entry("v1.2.1", &s('3')), &net, None)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -524,17 +524,17 @@ mod subtree_tests {
                 change.old.as_str(),
                 change.new.as_str()
             ),
-            ("rtk", "v1.2.1", "v1.3.0")
+            ("atl", "v1.2.1", "v1.3.0")
         );
-        assert_eq!(change.command, "scripts/sync-rtk.sh v1.3.0");
-        assert_eq!(*net.ls_calls.borrow(), [RTK_REPO]); // the fork is ours: never queried
+        assert_eq!(change.command, "scripts/sync-atl.sh v1.3.0");
+        assert_eq!(*net.ls_calls.borrow(), [ATL_REPO]); // the fork is ours: never queried
         assert_eq!(change.files, ["src/main.rs"]);
     }
 
     #[test]
     fn test_up_to_date() {
-        let net = FakeNet::new().refs(RTK_REPO, refs(&[("refs/tags/v1.2.1", &s('3'))]));
-        assert_eq!(check(&rtk_entry("v1.2.1", &s('3')), &net, None), Ok(None));
+        let net = FakeNet::new().refs(ATL_REPO, refs(&[("refs/tags/v1.2.1", &s('3'))]));
+        assert_eq!(check(&atl_entry("v1.2.1", &s('3')), &net, None), Ok(None));
     }
 }
 
@@ -639,7 +639,7 @@ mod check_all_tests {
         let net = FakeNet::new()
             .refs(SP_REPO, refs_of("ls_remote_tags.txt"))
             .refs(SKILLS_REPO, refs(&[("refs/heads/main", &pinned)]))
-            .refs(RTK_REPO, refs(&[("refs/tags/v1.2.1", &s('3'))]))
+            .refs(ATL_REPO, refs(&[("refs/tags/v1.2.1", &s('3'))]))
             .http(
                 &compare_url(SP_REPO, &s('5'), &s('a')),
                 compare_json(&["x.md"], 1),
@@ -1723,9 +1723,9 @@ mod startup_budget_section_tests {
                     ("target", st("plugins/anthology/knowledge/unread")),
                 ]),
                 obj(vec![
-                    ("name", st("rtk")),
-                    ("target", st("rtk")),
-                    ("upstream", obj(vec![("repo", st(RTK_REPO))])),
+                    ("name", st("atl")),
+                    ("target", st("atl")),
+                    ("upstream", obj(vec![("repo", st(ATL_REPO))])),
                 ]),
             ]);
             let tmp = make_root(Some(sources), "2.1.329", true);
@@ -1804,7 +1804,7 @@ mod startup_budget_section_tests {
     fn test_sources_no_agent_reads_get_no_section() {
         let w = World::new();
         assert_eq!(w.section("unread"), None);
-        assert_eq!(w.section_with("rtk", "subtree", &BUDGETS), None);
+        assert_eq!(w.section_with("atl", "subtree", &BUDGETS), None);
         assert_eq!(w.section_with("claude-code", "claude-code", &BUDGETS), None);
         assert!(
             uw::startup_budget_sections(&w.root(), &[], &BUDGETS)

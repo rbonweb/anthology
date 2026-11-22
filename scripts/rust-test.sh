@@ -8,7 +8,7 @@
 #                                        #   with --all-features (the test-only features, m-R10)
 #   scripts/rust-test.sh run CMD [ARGS]  # any command in the same container (dev.sh uses it)
 #
-# The image is the FROM line of ci/images/rust.Dockerfile. As in rtk-test.sh, the container
+# The image is the FROM line of ci/images/rust.Dockerfile. As in atl-test.sh, the container
 # installs test-only tools from the image's own Debian release (never shipped) and runs the
 # command as a non-root user. Named volumes keep the cargo registry, the toolchain components
 # from rust-toolchain.toml (per image digest) and a target directory per checkout, so parallel

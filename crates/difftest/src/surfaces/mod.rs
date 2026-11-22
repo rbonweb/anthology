@@ -3,11 +3,11 @@
 pub mod atl_install_reconcile;
 pub mod core_lock;
 pub mod core_state;
+pub mod dev_atl_trim;
 pub mod dev_dv2;
 pub mod dev_eval_baseline;
 pub mod dev_memory_diff;
 pub mod dev_release_edit;
-pub mod dev_rtk_trim;
 pub mod dev_smoke;
 pub mod dev_startup_budget;
 pub mod dev_upstream_watch;
@@ -76,7 +76,7 @@ pub const ALL: &[&str] = &[
     dev_startup_budget::NAME,
     dev_eval_baseline::NAME,
     dev_upstream_watch::NAME,
-    dev_rtk_trim::NAME,
+    dev_atl_trim::NAME,
     dev_smoke::NAME,
     // Added by RT1a (controller-approved registration, after plan §1.4's list).
     runtime_guardrails_loc::NAME,
@@ -121,7 +121,7 @@ const IMPLS: &[MakeSurface] = &[
     dev_startup_budget::surface,
     dev_eval_baseline::surface,
     dev_upstream_watch::surface,
-    dev_rtk_trim::surface,
+    dev_atl_trim::surface,
     dev_smoke::surface,
     runtime_guardrails_loc::surface,
 ];
@@ -162,7 +162,7 @@ const ON_MACOS: &[bool] = &[
     dev_startup_budget::ON_MACOS,
     dev_eval_baseline::ON_MACOS,
     dev_upstream_watch::ON_MACOS,
-    dev_rtk_trim::ON_MACOS,
+    dev_atl_trim::ON_MACOS,
     dev_smoke::ON_MACOS,
     runtime_guardrails_loc::ON_MACOS,
 ];

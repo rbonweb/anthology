@@ -2,6 +2,7 @@
 //! or an EV1b smoke (`binary_missing`, `live_*`).
 
 pub mod agent_memory_path;
+pub mod atl_rewrite;
 pub mod auto_memory_dir;
 pub mod binary_missing;
 pub mod cli_syntax;
@@ -17,6 +18,5 @@ pub mod live_setup;
 pub mod missing_interpreter;
 pub mod model_check;
 pub mod python_missing;
-pub mod rtk_rewrite;
 pub mod worktree_base;
 pub mod writer_memory_commit;

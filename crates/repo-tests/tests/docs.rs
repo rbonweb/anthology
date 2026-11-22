@@ -24,7 +24,7 @@ const PRUNED: [&str; 9] = [
     "target",
 ];
 
-/// The home-path check skips the upstream ATL tree and the generated vendored trees.
+/// The home-path check skips the atl tree (a fork of rtk) and the generated vendored trees.
 const HOME_PATH_SKIPS: [&str; 4] = [
     "atl/",
     "plugins/anthology-superpowers/",

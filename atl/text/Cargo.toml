@@ -1,0 +1,18 @@
+[package]
+name = "atl-text"
+version = "1.2.1"
+edition = "2024"
+rust-version = "1.91"
+authors = ["RTK AI Labs"]
+description = "Text primitives shared by the atl CLI (a fork of rtk by RTK AI Labs)"
+license = "Apache-2.0"
+homepage = "https://github.com/rbonweb/anthology"
+repository = "https://github.com/rbonweb/anthology"
+publish = false
+
+[dependencies]
+regex = "1"
+
+[lints.rust]
+unsafe_code = "deny"
+warnings = "deny"

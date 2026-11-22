@@ -20,7 +20,7 @@ pub mod patch;
 pub mod portmap;
 pub mod py;
 pub mod redirect;
-pub mod set_rtk_upstream;
+pub mod set_atl_upstream;
 pub mod sync;
 pub mod transforms;
 

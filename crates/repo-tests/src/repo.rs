@@ -318,9 +318,9 @@ mod tests {
     }
 
     #[test]
-    fn the_root_holds_the_workspace_and_rtk() {
+    fn the_root_holds_the_workspace_and_atl() {
         assert!(path("Cargo.toml").is_file());
-        assert!(path("rtk/Cargo.toml").is_file());
+        assert!(path("atl/Cargo.toml").is_file());
         assert!(read("rust-toolchain.toml").contains("[toolchain]"));
     }
 }
