@@ -85,5 +85,54 @@ case $rc:$out in
       exit 0
     fi ;;
 esac
+# Ruling: a plain rewrite (no ask, no deny) is kept only if what it runs exists. Claude Code's
+# shell snapshot defines `rg`, `grep` and `find` as shell FUNCTIONS, so a typed `rg` can work with
+# no `rg` file on PATH, while `rtk rg` execs a real `rg` and fails ("search failed ... os error 2").
+# This hook is plain POSIX sh with no snapshot, so `command -v` finds real files (and builtins)
+# only. Two tests, either one drops the rewrite and the command runs as typed:
+#   1. the first word of the typed command (after leading `NAME=value` words), when it is one of
+#      rg, grep, ag, find, fd, must resolve;
+#   2. every `rtk rg|grep|ag|find|fd` in the rewrite needs that program too (this catches
+#      `cd d && rg x`, whose first word is a builtin, and a first word that cannot be read).
+# Ruling: test 1 covers only the search family, the names Claude Code may define as shell
+# functions. Any other first word keeps its rewrite: a hook PATH poorer than the Bash tool's (an
+# app started from a GUI) would otherwise drop the rewrites for cargo, npm and docker, which are
+# never snapshot functions. For the same reason `rtk <other program>` inside the rewrite is not
+# checked (nor is any later command of a compound line). Cost if wrong: a snapshot function
+# for some other program still fails through rtk; the command then reports it, as it did before.
+# The typed first word is read from the raw JSON text of the first `"command"` key at or after
+# `"tool_input"`, and only when it is a plain name: a quoted, expanded, escaped or path-like word
+# (or anything else the pattern below does not match) is not judged, so test 1 keeps the rewrite.
+# Only the head of the command is read (at most 16 leading `NAME=value` words, whitespace stripped
+# in one pass each), so a `\u` escape later in it does not matter and a huge command stays fast.
+# A deny or an ask is never dropped here (the guard above skips them). Cost if wrong: where the
+# hook's PATH is poorer than the Bash tool's, a search program only the Bash tool can see loses its
+# rewrite, a few percent of tokens; the command still runs.
+if [ "$rc" -eq 0 ] &&
+   printf '%s' "$out" | grep -Eq '"updatedInput"' &&
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"'; then
+  rest=$(printf '%s' "${input#*'"tool_input"'}" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -n 1 |
+    LC_ALL=C sed -E 's/^"command"[[:space:]]*:[[:space:]]*"//; s/"$//')
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    rest=$(printf '%s' "$rest" | LC_ALL=C sed -E 's/^( |\\[nt])*//')
+    next=$(printf '%s' "$rest" |
+      LC_ALL=C sed -nE 's#^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.,:/+@%-]*( |\\[nt])(.*)$#\2#p')
+    [ -n "$next" ] || break
+    rest=$next
+  done
+  word=$(printf '%s' "$rest" |
+    LC_ALL=C sed -nE 's/^(rg|grep|ag|find|fd)([ ;&|<>]|\\[nt]|$).*/\1/p')
+  if [ -n "$word" ] && ! command -v "$word" >/dev/null 2>&1; then
+    exit 0
+  fi
+  progs=$(printf '%s' "$out" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
+    LC_ALL=C grep -Eo '(:[[:space:]]*"|[ ;&|(]|\\n)rtk (rg|grep|ag|find|fd)( |"|\\|$)' |
+    LC_ALL=C sed -E 's/^.*rtk ([a-z]+).*$/\1/')
+  for prog in $progs; do
+    command -v "$prog" >/dev/null 2>&1 || exit 0
+  done
+fi
 [ -z "$out" ] || printf '%s\n' "$out"
 exit "$rc"

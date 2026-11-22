@@ -6858,9 +6858,11 @@ mod tests {
             assert!(matches!(gate(cmd, &r), Gate::Ask | Gate::Deny), "{cmd}");
         }
         // At top level the host judges the original: no rewrite.
-        for cmd in ["git $x", "git pu*h", "git {push,}", "$g push", "kubectl $a"] {
+        for cmd in ["git $x", "git pu*h", "git {push,}", "kubectl $a"] {
             assert_eq!(gate(cmd, &r), Gate::Defer, "{cmd}");
         }
+        // ADR-033: a program from a variable leaves the analysis incomplete, and the gate asks
+        assert_eq!(gate("$g push", &r), Gate::Ask);
         // Wildcard rules make any expansion extendable.
         let wild = rules(&["* --force"], &[], &[]);
         assert_eq!(gate("ls $x", &wild), Gate::Defer);

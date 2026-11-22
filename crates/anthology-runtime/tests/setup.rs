@@ -2774,7 +2774,8 @@ mod repo_auto_memory_test {
     #[test]
     fn a_setting_the_user_already_had_is_not_ours_to_remove() {
         let Some((f, repo)) = repo_fx() else { return };
-        let before = "{\n  \"autoMemoryEnabled\": false\n}\n";
+        // the attribution keys are already off too, so setup has nothing to add
+        let before = "{\n  \"autoMemoryEnabled\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n";
         write(&repo_settings(&repo), before, None);
         let res = f.apply_in(&repo, false, &[], &f.deps());
         assert_eq!(
@@ -2889,6 +2890,273 @@ mod repo_auto_memory_test {
         let res = f.remove_in(f.tmp(), false, false, false);
         assert!(ok(&res), "{res:?}");
         assert!(!f.state_exists());
+    }
+}
+
+mod repo_attribution_test {
+    //! A repo approved for Anthology memory also gets `"attribution": {"commit": "", "pr": ""}`
+    //! in its committed `.claude/settings.json`, so Claude Code stops telling the model to add a
+    //! co-author trailer or a "Generated with" line (the no-attribution hook stays as the
+    //! backstop). A value the user set is never overwritten, and `remove` takes out only what
+    //! setup added.
+    use super::*;
+
+    const REMOTE: &str = "https://example.invalid/acme/app.git";
+    const REPO_SETTINGS: &str = "{\n  \"model\": \"sonnet\"\n}\n";
+    const CUSTOM_COMMIT: &str =
+        "{\n  \"attribution\": {\n    \"commit\": \"Made by hand\"\n  }\n}\n";
+
+    /// A fixture with user settings written and an approvable repo; `None` without git.
+    fn repo_fx() -> Option<(Fx, PathBuf)> {
+        if !mem::needs_git() {
+            return None;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        Some((f, repo))
+    }
+
+    fn repo_settings(repo: &Path) -> PathBuf {
+        repo.join(".claude/settings.json")
+    }
+
+    fn repo_json(repo: &Path) -> Value {
+        json::loads(&fs::read_to_string(repo_settings(repo)).unwrap()).unwrap()
+    }
+
+    fn notes_of(v: &Value) -> Vec<String> {
+        match v.as_object().and_then(|m| m.get("notes")) {
+            Some(n) => n
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn apply_turns_attribution_off_in_the_repo_settings() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(text_at(&v, &["model"]), "sonnet");
+        assert_eq!(text_at(&v, &["attribution", "commit"]), "");
+        assert_eq!(text_at(&v, &["attribution", "pr"]), "");
+        let result = at(&res, &["memory", "auto_memory"]);
+        assert!(text_at(result, &["diff"]).contains("attribution"));
+        assert!(notes_of(result).is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn apply_leaves_the_user_wide_settings_without_attribution() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        let user = f.read_settings();
+        assert!(!user.contains("attribution"), "{user}");
+    }
+
+    #[test]
+    fn preview_lists_the_attribution_change_and_the_user_scope_note() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(Some(&repo));
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let auto = at(&out, &["memory", "repo", "auto_memory"]);
+        let diff = text_at(auto, &["diff"]);
+        assert!(diff.contains("attribution"), "{diff}");
+        assert!(diff.contains("commit") && diff.contains("pr"), "{diff}");
+        assert!(text_at(auto, &["user_scope"]).contains("~/.claude/settings.json"));
+        assert!(notes_of(auto).is_empty(), "{auto:?}");
+    }
+
+    #[test]
+    fn a_commit_text_the_user_set_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), CUSTOM_COMMIT, None);
+        let preview = f.preview(Some(&repo));
+        let notes = notes_of(at(&preview, &["memory", "repo", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("attribution.commit"), "{notes:?}");
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(text_at(&v, &["attribution", "commit"]), "Made by hand");
+        // the key the user did not set is still turned off
+        assert_eq!(text_at(&v, &["attribution", "pr"]), "");
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+    }
+
+    #[test]
+    fn an_attribution_value_that_is_not_an_object_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"attribution\": false\n}\n";
+        write(&repo_settings(&repo), before, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(at(&v, &["attribution"]), &Value::Bool(false));
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert!(notes.iter().any(|n| n.contains("attribution")), "{notes:?}");
+        // the memory switch is still written
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+    }
+
+    #[test]
+    fn an_empty_attribution_object_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), "{\n  \"attribution\": {}\n}\n", None);
+        let preview = f.preview(Some(&repo));
+        let notes = notes_of(at(&preview, &["memory", "repo", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert!(at(&v, &["attribution"]).as_object().unwrap().is_empty());
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+        assert_eq!(notes_of(at(&res, &["memory", "auto_memory"])).len(), 1);
+    }
+
+    #[test]
+    fn a_null_attribution_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(
+            &repo_settings(&repo),
+            "{\n  \"attribution\": null\n}\n",
+            None,
+        );
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(at(&v, &["attribution"]), &Value::Null);
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(at(&v, &["autoMemoryEnabled"]), &Value::Bool(false));
+    }
+
+    #[test]
+    fn a_null_commit_is_left_alone_and_noted() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"attribution\": {\n    \"commit\": null\n  }\n}\n";
+        write(&repo_settings(&repo), before, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let v = repo_json(&repo);
+        assert_eq!(at(&v, &["attribution", "commit"]), &Value::Null);
+        let notes = notes_of(at(&res, &["memory", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("attribution.commit"), "{notes:?}");
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(fs::read_to_string(repo_settings(&repo)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_user_wide_attribution_is_noted_in_the_preview_and_never_written() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.c.write_settings("{\"attribution\": {\"commit\": \"Mine\"}}");
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(Some(&repo));
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let notes = notes_of(at(&out, &["memory", "repo", "auto_memory"]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("user-wide"), "{notes:?}");
+        assert!(notes[0].contains("takes precedence"), "{notes:?}");
+        // the repo still gets its own keys, and the user's value is read, never changed
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(text_at(&repo_json(&repo), &["attribution", "pr"]), "");
+        let after = json::loads(&f.read_settings()).unwrap();
+        assert_eq!(text_at(&after, &["attribution", "commit"]), "Mine");
+        assert!(
+            !at(&after, &["attribution"])
+                .as_object()
+                .unwrap()
+                .contains_key("pr")
+        );
+    }
+
+    #[test]
+    fn an_empty_value_the_user_already_had_is_not_ours_to_remove() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = "{\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n";
+        write(&repo_settings(&repo), before, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(notes_of(at(&res, &["memory", "auto_memory"])).is_empty());
+        f.remove_in(&repo, false, false, false);
+        let v = repo_json(&repo);
+        assert_eq!(text_at(&v, &["attribution", "commit"]), "");
+        assert_eq!(text_at(&v, &["attribution", "pr"]), "");
+        assert!(!v.as_object().unwrap().contains_key("autoMemoryEnabled"));
+    }
+
+    #[test]
+    fn remove_takes_out_only_what_setup_added() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), CUSTOM_COMMIT, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        assert_eq!(text_at(&repo_json(&repo), &["attribution", "pr"]), "");
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            CUSTOM_COMMIT
+        );
+    }
+
+    #[test]
+    fn remove_restores_a_file_that_had_no_attribution_byte_for_byte() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        f.remove_in(&repo, false, false, false);
+        assert_eq!(
+            fs::read_to_string(repo_settings(&repo)).unwrap(),
+            REPO_SETTINGS
+        );
+    }
+
+    #[test]
+    fn remove_deletes_a_file_setup_created() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, false, &[], &f.deps());
+        assert!(repo_settings(&repo).is_file());
+        f.remove_in(&repo, false, false, false);
+        assert!(!repo_settings(&repo).exists());
+    }
+
+    #[test]
+    fn a_value_the_user_changed_after_setup_is_never_overwritten_or_removed() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo_settings(&repo), REPO_SETTINGS, None);
+        f.apply_in(&repo, false, &[], &f.deps());
+        let text = fs::read_to_string(repo_settings(&repo)).unwrap();
+        let edited = text.replacen("\"commit\": \"\"", "\"commit\": \"Mine\"", 1);
+        assert_ne!(edited, text);
+        write(&repo_settings(&repo), &edited, None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert_eq!(
+            notes_of(at(&res, &["memory", "auto_memory"])).len(),
+            1,
+            "{res:?}"
+        );
+        assert_eq!(
+            text_at(&repo_json(&repo), &["attribution", "commit"]),
+            "Mine"
+        );
+        f.remove_in(&repo, false, false, false);
+        let v = repo_json(&repo);
+        assert_eq!(text_at(&v, &["attribution", "commit"]), "Mine");
+        assert!(!v.as_object().unwrap().contains_key("autoMemoryEnabled"));
+        assert!(
+            !at(&v, &["attribution"])
+                .as_object()
+                .unwrap()
+                .contains_key("pr")
+        );
     }
 }
 
