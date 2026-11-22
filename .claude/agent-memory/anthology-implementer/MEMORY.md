@@ -7,5 +7,6 @@
 - [Routing guide size budget](project-routing-guide-size-budget.md) — routing-guide.md has a 3800-char test cap and is near it; how to make room
 - [Where the attention-alert hook and its pinned tests live](project-notify-hook-layout.md) — notify.sh sits in plugins/anthology/hooks, tests are Rust in crates/repo-tests, three places pin the hook…
 - [classify_readonly: two readers, test each layer alone](project-readonly-classifier-layers.md) — How the read-only classifier and the rtk cd/head gate are built, the review rulings behind their ref…
+- [rtk release prep: Cargo bump vs rtk.lock test](project-rtk-release-prep-order.md) — Bumping rtk/Cargo.toml alone turns repo-tests rtk_lock red; anthology-shell in rtk/Cargo.lock is a path dep
 ## reference
 - [Running cargo for this repo in a container](reference-rust-container-runs.md) — Pinned-image docker recipe for shell, guard and rtk tests, fmt and clippy, and the traps in it

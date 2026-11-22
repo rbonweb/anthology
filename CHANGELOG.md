@@ -48,7 +48,10 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
-- rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
+- rtk fork, in rtk `1.2.1-anthology.5` (tag `rtk--v1.2.1-anthology.5`; the plugin's `rtk.lock`
+  moves to it once the release is built; the release is built on the shared `anthology-shell`
+  parser with the `$((` lexer fix, so a program word hidden inside `$((…))` is no longer let
+  through): with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
   absolute or `./` path that exists (no `..`, `~`, `-`, variable or bare `src`, which
