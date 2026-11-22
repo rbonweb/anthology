@@ -1556,7 +1556,7 @@ pub fn is_ours(issue: &Value) -> bool {
 }
 
 /// A sort key of `sorted(..., key=lambda i: i.get("number", 0))`.
-enum SortKey<'a> {
+enum NumberKey<'a> {
     Num(&'a Value),
     Str(&'a str),
     Other,
@@ -1603,27 +1603,27 @@ fn num_cmp(a: &Value, b: &Value) -> Ordering {
 pub fn index_issues(issues: &[Value]) -> Result<HashMap<String, Value>, Error> {
     static ZERO: Value = Value::Int(Int::Small(0));
     let ours: Vec<&Value> = issues.iter().filter(|i| is_ours(i)).collect();
-    let keyed: Vec<(SortKey<'_>, &Value)> = ours
+    let keyed: Vec<(NumberKey<'_>, &Value)> = ours
         .iter()
         .map(|i| {
             let n = i.as_object().and_then(|m| m.get("number")).unwrap_or(&ZERO);
             let k = match n {
-                Value::Int(_) | Value::Bool(_) | Value::Float(_) => SortKey::Num(n),
-                Value::Str(s) => SortKey::Str(s),
-                _ => SortKey::Other,
+                Value::Int(_) | Value::Bool(_) | Value::Float(_) => NumberKey::Num(n),
+                Value::Str(s) => NumberKey::Str(s),
+                _ => NumberKey::Other,
             };
             (k, *i)
         })
         .collect();
-    let all_num = keyed.iter().all(|(k, _)| matches!(k, SortKey::Num(_)));
-    let all_str = keyed.iter().all(|(k, _)| matches!(k, SortKey::Str(_)));
+    let all_num = keyed.iter().all(|(k, _)| matches!(k, NumberKey::Num(_)));
+    let all_str = keyed.iter().all(|(k, _)| matches!(k, NumberKey::Str(_)));
     if keyed.len() > 1 && !all_num && !all_str {
         return Err(Error::Other("TypeError".into()));
     }
     let mut keyed = keyed;
     keyed.sort_by(|(a, _), (b, _)| match (a, b) {
-        (SortKey::Num(x), SortKey::Num(y)) => num_cmp(x, y),
-        (SortKey::Str(x), SortKey::Str(y)) => x.cmp(y),
+        (NumberKey::Num(x), NumberKey::Num(y)) => num_cmp(x, y),
+        (NumberKey::Str(x), NumberKey::Str(y)) => x.cmp(y),
         _ => Ordering::Equal,
     });
     let mut index = HashMap::new();

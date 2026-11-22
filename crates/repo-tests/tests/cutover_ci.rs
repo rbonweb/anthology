@@ -36,7 +36,7 @@ fn runs_no_python(rel: &str, text: &str) {
 /// test_evals_layout `test_moved_cases_are_smokes_not_cases`: the Rust smoke runner (not
 /// smoke.py) registers the two smokes that moved out of the eval cases.
 #[test]
-fn the_smoke_runner_registers_rtk_rewrite_and_agent_memory_path() {
+fn the_smoke_runner_registers_rtk_rewrite_and_agent_memory_path(/* legacy */) {
     // legacy: port/ledger names this test
     let names = anthology_dev::smoke::names();
     for want in ["atl-rewrite", "agent-memory-path"] {
@@ -47,7 +47,7 @@ fn the_smoke_runner_registers_rtk_rewrite_and_agent_memory_path() {
 /// test_rtk_layout `test_records_the_merged_upstream_pin`: sync-atl.sh records the new pin with
 /// `scripts/dev.sh vendor set-atl-upstream` and embeds no python3.
 #[test]
-fn sync_rtk_records_the_pin_through_dev_sh() {
+fn sync_rtk_records_the_pin_through_dev_sh(/* legacy */) {
     // legacy: port/ledger names this test
     let rel = "scripts/sync-atl.sh";
     let text = staged(rel);
@@ -61,7 +61,7 @@ fn sync_rtk_records_the_pin_through_dev_sh() {
 /// test_rtk_claude_only `test_trim_entry_is_executable_strict_and_runs_the_python_trim`: the trim
 /// runs as `scripts/dev.sh atl-trim`; after the cutover `scripts/atl_trim.py` is gone.
 #[test]
-fn rtk_trim_runs_the_trim_through_dev_sh() {
+fn rtk_trim_runs_the_trim_through_dev_sh(/* legacy */) {
     // legacy: port/ledger names this test
     let rel = "scripts/atl-trim.sh";
     let text = staged(rel);

@@ -358,6 +358,14 @@ a new version section.
   subscript after a name, because bash removes the quotes before it evaluates the
   subscript. The fix ships in the next `anthology` binary (0.1.3).
 
+#### Changed
+
+- The guard reads `atl`, the new name of the command-output tool (ATL, Anthology Token Layer),
+  the way it read `rtk`: it looks through `atl run -c '…'`, `atl err …` and the other ATL
+  runners and checks the command inside. The old `rtk` name is still read the same way, so a
+  command typed with it cannot hide what it runs. Messages name ATL. `anthology` 0.3.0 needs
+  this release (`~0.2.2`). The change ships in the next `anthology` binary (0.2.0).
+
 ### [0.2.0] - 2026-11-22
 
 #### Added

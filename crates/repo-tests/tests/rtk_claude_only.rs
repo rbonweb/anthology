@@ -732,7 +732,7 @@ mod trim_scripts_test {
     }
 
     #[test]
-    fn test_ci_runs_the_network_test_after_the_rtk_tests() {
+    fn test_ci_runs_the_network_test_after_the_rtk_tests(/* legacy */) {
         // legacy: port/ledger names this test
         let ci = yaml::load_file(".github/workflows/ci.yml");
         let runs: Vec<&str> = yaml::items(&ci["jobs"]["atl-test"]["steps"])

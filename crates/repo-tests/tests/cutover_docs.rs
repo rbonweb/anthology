@@ -98,7 +98,7 @@ const ALLOWED_LINES: [(&str, &str, &str); 8] = [
     (
         "SECURITY.md",
         "`python -c`",
-        "the user's programs rtk cannot read inside",
+        "the user's programs atl cannot read inside",
     ),
     (
         "scripts/atl-trim.sh",
