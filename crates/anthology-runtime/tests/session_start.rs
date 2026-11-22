@@ -754,7 +754,7 @@ mod output_test {
             let all: Vec<&str> = ctx.lines().collect();
             let last = all.last().unwrap();
             assert!(last.contains("anthology-mem search"), "{last}");
-            assert!(last.contains("MEMORY.md"));
+            assert!(!last.contains("MEMORY.md"), "{last}");
             let body = &all[..all.len() - 1];
             let end = body.last().unwrap();
             assert!(end.starts_with("- note line "), "{end}");
@@ -799,25 +799,26 @@ mod output_test {
             assert!(ctx.chars().count() <= 9000);
             assert!(ctx.contains("# Anthology routing guide"));
             assert!(ctx.contains("## Personal memory"));
-            assert!(ctx.contains(&p(&personal.join("MEMORY.md"))));
+            assert!(ctx.contains("use `anthology-mem search <query>`"));
+            assert!(!ctx.contains("full indexes"));
         }
 
         #[test]
         fn budget_compose_counts_code_points_and_never_cuts_the_guide() {
-            let home = Path::new("/h/.claude/anthology");
             let g = "é".repeat(100);
             let memory = "ü\n".repeat(6000);
-            let out = session_start::compose(&g, &memory, home);
+            let out = session_start::compose(&g, &memory);
             assert!(out.chars().count() <= 9000);
             assert!(out.starts_with(&g));
             assert!(out.ends_with(
-                "full indexes: /h/.claude/anthology/personal-memory/MEMORY.md, and .claude/memory/MEMORY.md in the repo)"
+                "(memory index truncated to fit the session budget; use `anthology-mem search <query>`)"
             ));
+            assert!(!out.contains("full indexes"));
             // a guide alone over the budget keeps every character, and memory is dropped
             let big = "x".repeat(9500);
-            assert_eq!(session_start::compose(&big, "m\n", home), big);
+            assert_eq!(session_start::compose(&big, "m\n"), big);
             // no memory: the guide without its trailing newlines
-            assert_eq!(session_start::compose("g\n\n", "\n\n", home), "g");
+            assert_eq!(session_start::compose("g\n\n", "\n\n"), "g");
         }
     }
 }

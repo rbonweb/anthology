@@ -632,8 +632,8 @@ fn read_guide(root: &Path) -> Option<String> {
     Some(format!("{}\n", text.trim_end_matches('\n')))
 }
 
-/// `_compose(guide, memory, home)`: the guide, then memory cut to fit [`CONTEXT_BUDGET`].
-pub fn compose(guide: &str, memory: &str, home: &Path) -> String {
+/// `_compose(guide, memory)`: the guide, then memory cut to fit [`CONTEXT_BUDGET`].
+pub fn compose(guide: &str, memory: &str) -> String {
     let memory = memory.trim_end_matches('\n');
     if memory.is_empty() {
         return guide.trim_end_matches('\n').to_string();
@@ -647,11 +647,9 @@ pub fn compose(guide: &str, memory: &str, home: &Path) -> String {
     if char_len(memory) as i64 <= room {
         return head + memory;
     }
-    let pointer = format!(
-        "(memory index truncated to fit the session budget; use `anthology-mem search <query>`; \
-         full indexes: {}, and .claude/memory/MEMORY.md in the repo)",
-        path_str(&home.join("personal-memory").join("MEMORY.md"))
-    );
+    let pointer =
+        "(memory index truncated to fit the session budget; use `anthology-mem search <query>`)"
+            .to_string();
     let allowed = room - char_len(&pointer) as i64 - 1;
     if allowed <= 0 {
         return head.trim_end_matches('\n').to_string();
@@ -959,11 +957,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         label::COMPOSE,
         |_| {
             fault(deps, "_compose")?;
-            Ok(compose(
-                &guide_text,
-                &memory,
-                &anthology_memory::repo::anthology_home(env),
-            ))
+            Ok(compose(&guide_text, &memory))
         },
         guide_text.clone(),
     );
@@ -1019,7 +1013,7 @@ fn memory_step(
 /// that guardrails is "not installed" would also be false.
 fn subagent_output(env: &Env, cwd: &Path, deps: &SessionDeps<'_>) -> String {
     let (memory, _messages) = memory_step(&mut Vec::new(), cwd, env, deps);
-    let context = compose("", &memory, &anthology_memory::repo::anthology_home(env));
+    let context = compose("", &memory);
     let mut hook_out = Map::new();
     hook_out.insert("hookEventName".into(), Value::Str("SessionStart".into()));
     hook_out.insert("additionalContext".into(), Value::Str(context));

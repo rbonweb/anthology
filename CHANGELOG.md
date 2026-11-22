@@ -39,6 +39,13 @@ a new version section.
   history); symlinks are resolved before the check.
 - `anthology-mem save` warns on stderr, and still saves, when the agent already has a note with
   a very similar name or description, and suggests updating it with `--replace`.
+- Every agent that saves notes except the scout (its startup budget has 4 bytes free) is told
+  to pass a long note body, or one holding `$(`, backticks or delete-like words, through
+  `anthology-mem save --body-file <path>` (a file inside the repo or temp folder) or
+  `--body-file -`.
+- When session start has to cut the memory index to fit its budget, the closing pointer now
+  says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
+  paths, because the index is capped and those files are not the way to read every note.
 
 #### Fixed
 
