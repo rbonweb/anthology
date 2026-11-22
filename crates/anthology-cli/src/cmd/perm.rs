@@ -16,7 +16,8 @@
 //! 2. The command is plain ASCII (no invisible Unicode), and `anthology_shell::classify_readonly`
 //!    proves the line ([`ReadOnly::Proven`]).
 //! 3. `words`: what the table allows but a word or the environment changes (`GREP_OPTIONS`,
-//!    `RIPGREP_CONFIG_PATH`, git signature atoms, the git forms that print history).
+//!    `RIPGREP_CONFIG_PATH`, git signature atoms), and an option allowlist per git subcommand that
+//!    leaves out every form printing history.
 //! 4. The working directory the command runs in is known only from a leading absolute `cd`: the
 //!    `cwd` of the request is not trusted to be the shell's (subagents, worktrees), so without
 //!    such a `cd` every relative path, every implicit `.` and every git line refuses.
@@ -26,9 +27,11 @@
 //! 7. `PATH` (read from this process's environment, which the hook shares with the shell that
 //!    runs the command): every entry is absolute, and none lies, as written or resolved, under a
 //!    root, the request's `cwd` or a `cd` target, since a file there could stand in for `cat` or
-//!    `git`. Nothing found under those places is ever run by this check.
-//! 8. `git`: for a line that runs git, the git `PATH` finds, resolved, must also lie outside those
-//!    places; it is asked about the repository and its configuration.
+//!    `git`. Every program the line runs is found on `PATH` as the shell finds it and resolved
+//!    with its symlinks followed; the real file must lie outside those places too. A program not on
+//!    `PATH` does not run. Nothing found under those places is ever run by this check.
+//! 8. `git`: for a line that runs git, the git so resolved is asked about the repository and its
+//!    configuration.
 //!
 //! What this cannot see: the command runs in the user's shell, which may have its own aliases,
 //! functions or environment (the shell snapshot); the check sees this process's environment.
@@ -45,7 +48,7 @@ use std::path::{Path, PathBuf};
 
 use anthology_core::Env;
 use anthology_pycompat::json::{self, Value};
-use anthology_shell::{ReadOnly, classify_readonly};
+use anthology_shell::{ReadOnly, analyze, classify_readonly};
 
 use super::Output;
 use paths::{Checker, Place};
@@ -160,6 +163,15 @@ fn read_request(stdin: &mut dyn Read) -> Result<Request, String> {
     })
 }
 
+/// The first `name` on `PATH` that is an executable file, as found (not resolved).
+fn which(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    dirs.iter().map(|dir| dir.join(name)).find(|candidate| {
+        std::fs::metadata(candidate)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
 /// The keys of the outermost object of `text` (valid JSON), decoded, in the order written.
 fn top_keys(text: &str) -> Result<Vec<String>, String> {
     let bytes = text.as_bytes();
@@ -218,7 +230,8 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
         } => (paths, cd, runs_git_config),
         ReadOnly::NotProven(why) => return Err(format!("not proven: {why}")),
     };
-    words::check(&request.command, home, env)?;
+    let entries = analyze(&request.command, home).entries;
+    words::check(&entries, env)?;
     let path_dirs: Vec<PathBuf> = env
         .get_os("PATH")
         .map(|path| std::env::split_paths(path).collect())
@@ -303,18 +316,41 @@ fn classify(request: &Request, env: &Env) -> Result<Vec<String>, String> {
             ));
         }
     }
+    // Every program the line runs, found on PATH the way the shell finds it and resolved: the real
+    // file must lie outside those places too. Nothing is run here but git, from that resolved path.
+    let mut git_path = None;
+    for entry in &entries {
+        let Some(word) = entry.raw.first() else {
+            continue;
+        };
+        if word == "cd" {
+            continue;
+        }
+        if word.contains('/') {
+            return Err(format!("a program named by its path: {}", shown(word)));
+        }
+        // A program not on PATH does not run: the shell reports it missing (`pwd` is a builtin).
+        let Some(found) = which(&path_dirs, word) else {
+            continue;
+        };
+        let real = std::fs::canonicalize(&found)
+            .map_err(|_| format!("{} cannot be resolved", shown(word)))?;
+        if in_place(&real) {
+            return Err(format!(
+                "{} resolves inside a root, the cwd or a cd target: {}",
+                shown(word),
+                shown(&real.to_string_lossy())
+            ));
+        }
+        if word == "git" {
+            git_path = Some(real);
+        }
+    }
     for path in &paths {
         checker.check(&at, path)?;
     }
     if runs_git_config {
-        let git = git::find_git(env).ok_or("no git on PATH")?;
-        let git = std::fs::canonicalize(&git).map_err(|_| "git cannot be resolved")?;
-        if in_place(&git) {
-            return Err(format!(
-                "git resolves inside a root, the cwd or a cd target: {}",
-                shown(&git.to_string_lossy())
-            ));
-        }
+        let git = git_path.ok_or("no git on PATH")?;
         git::check(&mut checker, &git, &at.real, env)?;
     }
     // One path per line: a path that cannot be written so refuses.

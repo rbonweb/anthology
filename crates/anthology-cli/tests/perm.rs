@@ -1804,6 +1804,89 @@ fn i2_the_history_refusals_name_their_reason() {
 }
 
 #[test]
+fn r3_git_log_reads_only_its_allowlist() {
+    let fx = Fx::new();
+    let repo = removed_secret(&fx);
+    for (demo, command) in [
+        (&["log", "-U3"][..], "git log -U3"),
+        (&["log", "-U0"], "git log -U0"),
+        (&["log", "-U1"], "git log -U1"),
+    ] {
+        let out = fx.command("git", &repo, demo, &[]).output().unwrap();
+        let shown = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            shown.contains("TOPSECRET"),
+            "git {demo:?} printed it: {shown}"
+        );
+        assert_refused(&fx.classify(&repo, command, &[]), "", command);
+    }
+    // `--check` prints every added line that has a whitespace error.
+    std::fs::write(repo.join("ws.txt"), "WS-SECRET \n").unwrap();
+    fx.git(&repo, &["add", "ws.txt"]);
+    fx.git(&repo, &["commit", "-qm", "ws"]);
+    fx.git(&repo, &["rm", "-q", "--cached", "ws.txt"]);
+    std::fs::remove_file(repo.join("ws.txt")).unwrap();
+    let out = fx
+        .command("git", &repo, &["log", "--check"], &[])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("WS-SECRET"));
+    assert_refused(&fx.classify(&repo, "git log --check", &[]), "", "--check");
+    assert_refused(
+        &fx.classify(&repo, "git log --no-merges", &[]),
+        "",
+        "an option off the list",
+    );
+    fx.assert_git_allow(
+        &fx.classify(&repo, "git log --oneline -n 5", &[]),
+        "the allowlist",
+    );
+}
+
+#[test]
+fn r3_every_program_is_resolved_and_one_linked_into_a_root_gives_no_decision() {
+    let fx = Fx::new();
+    fx.write("a.txt", "a\n");
+    let evil = fake_program(&fx, &fx.root, "evil", "evil-cat");
+    let tools = fx.base.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    symlink(&evil, tools.join("cat")).unwrap();
+    let path = path_with(&tools);
+    let _ = Command::new("sh")
+        .args(["-c", "cat ./a.txt"])
+        .current_dir(&fx.root)
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        fx.ran("evil-cat"),
+        "the linked cat ran the file in the root"
+    );
+    std::fs::remove_file(fx.marks.join("evil-cat")).unwrap();
+    assert_refused(
+        &fx.classify_env(&fx.root, "cat ./a.txt", &[], &[("PATH", &path)]),
+        "resolves inside",
+        "cat",
+    );
+    assert_refused(
+        &fx.classify_env(&fx.root, "ls ./a.txt | cat", &[], &[("PATH", &path)]),
+        "resolves inside",
+        "cat in a pipe",
+    );
+    assert!(!fx.ran("evil-cat"), "the check ran it");
+    // The same link to a file outside every root is fine.
+    let tool = fake_program(&fx, &fx.base.join("real"), "cat", "outside-cat");
+    let fine = fx.base.join("fine");
+    std::fs::create_dir_all(&fine).unwrap();
+    symlink(&tool, fine.join("cat")).unwrap();
+    assert_allow(
+        &fx.classify_env(&fx.root, "cat ./a.txt", &[], &[("PATH", &path_with(&fine))]),
+        "a cat outside the roots",
+    );
+    assert!(!fx.ran("outside-cat"), "the check ran it");
+}
+
+#[test]
 fn minor_a_hard_link_gives_no_decision() {
     let fx = Fx::new();
     std::fs::write(fx.base.join("outside.txt"), "OUTSIDE\n").unwrap();

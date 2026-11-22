@@ -468,18 +468,6 @@ fn varint(data: &[u8]) -> Option<(usize, usize)> {
     Some((value, used))
 }
 
-/// The first `git` on `PATH` that is an executable file, as found (not resolved).
-pub fn find_git(env: &Env) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = env.get_os("PATH")?;
-    std::env::split_paths(path)
-        .map(|dir| dir.join("git"))
-        .find(|candidate| {
-            std::fs::metadata(candidate)
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-}
-
 /// Runs `git args` in `cwd` with exactly `env`, no stdin and a time limit. Its stdout, or why
 /// not: a failed exit, any stderr (a warning such as an ignored repository), a timeout.
 fn run_git(git: &Path, cwd: &Path, env: &Env, args: &[&str]) -> Result<Vec<u8>, String> {
