@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.9] - 2026-11-22
+
 #### Added
 
 - Attribution off at the source. Claude Code's own instructions tell the model to add a
