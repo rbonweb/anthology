@@ -472,7 +472,7 @@ mod output_test {
         let mut d = f.deps();
         d.run = &spy;
         let stdin = format!(
-            r#"{{"session_id": "5b0c0a2e-3f6d-4d0e-9a53-0d7c1f7e9a11", "transcript_path": "/home/u/.claude/projects/p/5b0c0a2e.jsonl", "cwd": {}, "prompt_id": "c1f0", "permission_mode": "default", "agent_id": "a0b1c2d3e4f5a6b7c", "agent_type": "anthology:implementer", "effort": "high", "hook_event_name": "SessionStart", "source": "compact", "model": "claude-sonnet-5-5", "session_title": "t"}}"#,
+            r#"{{"session_id": "5b0c0a2e-3f6d-4d0e-9a53-0d7c1f7e9a11", "transcript_path": "/var/projects/p/5b0c0a2e.jsonl", "cwd": {}, "prompt_id": "c1f0", "permission_mode": "default", "agent_id": "a0b1c2d3e4f5a6b7c", "agent_type": "anthology:implementer", "effort": "high", "hook_event_name": "SessionStart", "source": "compact", "model": "claude-sonnet-5-5", "session_title": "t"}}"#,
             jstr(&p(f.tmp()))
         );
         let before = f.state();
