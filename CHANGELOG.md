@@ -10,6 +10,28 @@ a new version section.
 
 ### [Unreleased]
 
+#### Added
+
+- Attention alert: a `Notification` hook pops a desktop alert with a sound when Claude Code
+  shows a permission prompt or waits for your input (macOS `osascript`, Linux `notify-send`
+  plus `paplay` or `canberra-gtk-play`, else a terminal bell). Set `ANTHOLOGY_NOTIFY=0` to
+  turn it off.
+- Project map and after-work check. The architect builds `.claude/memory/reference-project-map.md`
+  from a new template (`templates/project-map.md`, with a size budget and a `## Cleanup duties`
+  section), and the routing guide tells the lead to read it before planning. Writing agents
+  update the map in their final commit when a change adds, removes or rewires a piece. The
+  reviewer gets a fixed after-work checklist: connected pieces updated, nothing left behind,
+  cleanups done, map updated.
+
+#### Changed
+
+- Writing agents (implementer, debugger, ui-designer, docs-writer) and the routing guide now
+  delete only literal paths and never `rm -rf $VAR`, because Claude Code asks the user about
+  removals it cannot prove safe, even in bypass mode.
+- Routing guide: the lead hands off all making and changing to the matching agent and keeps
+  only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
+  already in 0.2.0 but was not listed in its changelog.
+
 ### [0.2.0] - 2026-11-22
 
 #### Added
