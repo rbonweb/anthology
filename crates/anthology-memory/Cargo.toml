@@ -14,6 +14,7 @@ workspace = true
 anthology-core.workspace = true
 anthology-pycompat.workspace = true
 anthology-guard.workspace = true
+anthology-shell.workspace = true
 regex.workspace = true
 fancy-regex.workspace = true
 rusqlite.workspace = true

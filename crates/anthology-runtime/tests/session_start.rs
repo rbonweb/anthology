@@ -665,7 +665,9 @@ mod output_test {
             })
         });
         assert!(more, "{ctx}");
-        assert!(ctx.contains(&p(&personal.join("MEMORY.md"))));
+        // The pointers name no file (the on-disk index is capped too); the heading names the folder.
+        assert!(!ctx.contains("full index: "));
+        assert!(ctx.contains(&p(&personal)));
     }
 
     #[test]

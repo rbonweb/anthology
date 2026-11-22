@@ -82,6 +82,7 @@ dependencies = [
  "anthology-core",
  "anthology-guard",
  "anthology-pycompat",
+ "anthology-shell",
  "anthology-testkit",
  "fancy-regex",
  "flate2",
