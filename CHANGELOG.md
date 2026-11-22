@@ -60,6 +60,33 @@ a new version section.
 - Routing guide: the lead hands off all making and changing to the matching agent and keeps
   only reads, lookups, answering the user and a fix of a few lines in one file. This rule was
   already in 0.2.0 but was not listed in its changelog.
+- rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
+  without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
+  plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an
+  absolute or `./` path that exists (no `..`, `~`, `-`, variable or bare `src`, which
+  `CDPATH` could redirect), and the command's relative paths are resolved against it before
+  your `Read()` rules, so `cd ./secret && cat k.txt` is still denied. The count must be digits
+  only (no variable, substitution, file or `-f`). A second pipe, `;`, `||`, `&`, a newline, a
+  second `cd` or a redirect still asks. Everything else about the plain shape is unchanged.
+  The plain shape also refuses a word that opens with `=` once its quotes are gone (`''=ls`,
+  which zsh turns into a command path), and a word that starts with `-` after the first
+  operand (`rtk wc a -l`), which the macOS tools read as a file.
+- New in `anthology-shell` (used by the guard, rtk and the later permission levels):
+  `classify_readonly`, which proves that a Bash command only reads, and is conservative by
+  default: anything it does not prove is not read-only. It is not wired into a hook yet.
+  It is written for the macOS tools under zsh: a word that starts with `-` after the first
+  operand is not proven for any program (BSD tools read it as a file, and `uniq a -c` writes
+  one), a zsh numeric glob such as `<1-5>` is not proven, nor is a word that opens with `=`
+  once its quotes are gone. A path that names an obvious secret (`.ssh`, `.env`, `*.pem`,
+  `id_*`, `.aws/credentials` and so on) is never proven. A proof says, for each path,
+  whether everything under it is read, and whether `git` is in the line, so the later path
+  check can look at git's configuration. The `grep` there is the snapshot's ugrep, so `grep
+  -5` and any `-d` value other than `read`, `skip` or `recurse` are not proven; `diff` of two
+  directories, a `**` glob and a `find`, `rg`, `du` or `tree` read everything under their
+  path, and a directory that holds a secret by name is not proven for them. Secret names are
+  matched in any case and now include `.config/gh/hosts.yml`, `.docker/config.json`,
+  `.kube/config`, `.claude/.credentials.json` and the shell history files. A `git` format
+  with `%G` (it runs gpg) is not proven.
 
 ### [0.2.0] - 2026-11-22
 
