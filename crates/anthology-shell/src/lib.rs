@@ -16,6 +16,7 @@ pub mod lexer;
 pub mod limits;
 pub mod opaque;
 pub mod prefixes;
+pub mod readonly;
 pub mod rtk_forms;
 pub mod shell_args;
 
@@ -35,6 +36,8 @@ pub use limits::*;
 pub use opaque::*;
 #[allow(unused_imports)] // until the module has items
 pub use prefixes::*;
+#[allow(unused_imports)] // until the module has items
+pub use readonly::*;
 #[allow(unused_imports)] // until the module has items
 pub use rtk_forms::*;
 #[allow(unused_imports)] // until the module has items
