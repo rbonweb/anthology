@@ -1162,7 +1162,8 @@ mod files_test {
         let inner = top.get("hooks").and_then(Value::as_object).expect("hooks");
         let mut names: Vec<&str> = inner.iter().map(|(k, _)| k).collect();
         names.sort_unstable();
-        assert_eq!(names, ["PreToolUse", "SessionStart"]);
+        // Notification is the attention alert (crates/repo-tests/tests/notify.rs).
+        assert_eq!(names, ["Notification", "PreToolUse", "SessionStart"]);
         let want = json::loads(
             r#"[{"matcher": "Bash", "hooks": [
                 {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],

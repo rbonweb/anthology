@@ -124,9 +124,11 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
                 .unwrap_or_else(|| panic!("{at}: {script} is not under the plugin root"));
             let file = plugin_file(plugin, rel);
             assert!(file.is_file(), "{at}: {} does not exist", file.display());
+            // The attention alert (crates/repo-tests/tests/notify.rs) is capped at 5 s.
+            let timeout = if event == "Notification" { 5 } else { 60 };
             assert_eq!(
                 get(hook, "timeout").and_then(Value::as_i64),
-                Some(60),
+                Some(timeout),
                 "{at}"
             );
             if event == "PreToolUse" {
@@ -137,13 +139,19 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
 }
 
 /// test_guard_cli `test_only_pretooluse_is_registered`: after the cutover the guardrails plugin
-/// also bootstraps its binary at SessionStart (design §9.1); nothing else is registered.
+/// also bootstraps its binary at SessionStart (design §9.1); nothing else is registered. The
+/// anthology plugin adds the `Notification` attention alert (crates/repo-tests/tests/notify.rs).
 #[test]
 fn the_hook_events_are_session_start_and_pre_tool_use() {
     for plugin in PLUGINS {
         let (_, v) = hooks_json(plugin);
         let names: Vec<&str> = events(&v).iter().map(|(k, _)| k).collect();
-        assert_eq!(names, ["SessionStart", "PreToolUse"], "{plugin}");
+        let want: &[&str] = if plugin == "anthology" {
+            &["SessionStart", "PreToolUse", "Notification"]
+        } else {
+            &["SessionStart", "PreToolUse"]
+        };
+        assert_eq!(names, want, "{plugin}");
     }
 }
 
