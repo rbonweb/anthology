@@ -1,0 +1,27 @@
+[package]
+name = "anthology-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Anthology memory: privacy, notes, sync, save, index, portable"
+
+[lints]
+workspace = true
+
+[dependencies]
+anthology-core.workspace = true
+anthology-pycompat.workspace = true
+anthology-guard.workspace = true
+regex.workspace = true
+fancy-regex.workspace = true
+rusqlite.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+anthology-testkit.workspace = true
+proptest.workspace = true
+tempfile.workspace = true

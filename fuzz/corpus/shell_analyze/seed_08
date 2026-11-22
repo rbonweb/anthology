@@ -1,0 +1,1 @@
+/home/testerwatch -n 1 'npx playwright install'; command -v npx; su -c 'ls' u; ssh h ls

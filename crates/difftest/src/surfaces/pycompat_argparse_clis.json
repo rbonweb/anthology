@@ -1,0 +1,834 @@
+{
+ "memory_portable": {
+  "prog": "memory_portable.py",
+  "description": "Export or import Anthology memory notes.",
+  "args": [
+   {
+    "sub": {
+     "dest": "command",
+     "required": true,
+     "parsers": [
+      {
+       "name": "export",
+       "help": "write anthology-memory-<date>.tar.gz",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--out"
+          ],
+          "help": "folder for the archive, outside any git repo (default: <anthology home>/exports)"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true"
+         }
+        ]
+       }
+      },
+      {
+       "name": "import",
+       "help": "import an archive (prints the plan unless --yes)",
+       "spec": {
+        "args": [
+         {
+          "name": "file"
+         },
+         {
+          "flags": [
+           "--dry-run"
+          ],
+          "action": "store_true",
+          "help": "only print the plan"
+         },
+         {
+          "flags": [
+           "--yes"
+          ],
+          "action": "store_true",
+          "help": "apply the plan"
+         },
+         {
+          "flags": [
+           "--sha256"
+          ],
+          "help": "only apply if the archive has this sha256 (as printed by the dry run)"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "rtk_install": {
+  "prog": "rtk_install.py",
+  "description": "Install the rtk binary pinned by rtk.lock.",
+  "args": [
+   {
+    "flags": [
+     "--data-dir"
+    ],
+    "required": true,
+    "help": "plugin data dir; rtk goes to <dir>/rtk/<version>/"
+   },
+   {
+    "flags": [
+     "--lock"
+    ],
+    "default": "<REPO>/plugins/anthology/rtk.lock",
+    "help": "path to rtk.lock (default: next to scripts/)"
+   },
+   {
+    "flags": [
+     "--dry-run"
+    ],
+    "action": "store_true",
+    "help": "print the plan and fetch nothing"
+   },
+   {
+    "flags": [
+     "--timeout"
+    ],
+    "default": 30,
+    "type": "float",
+    "help": "network timeout in seconds"
+   }
+  ]
+ },
+ "memory_index": {
+  "prog": "anthology-mem",
+  "description": "Search and explore Anthology memory notes.",
+  "args": [
+   {
+    "sub": {
+     "dest": "command",
+     "required": true,
+     "parsers": [
+      {
+       "name": "search",
+       "help": "full-text search over note bodies",
+       "spec": {
+        "args": [
+         {
+          "name": "terms",
+          "nargs": "+"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      },
+      {
+       "name": "related",
+       "help": "notes linked to a note, to a depth",
+       "spec": {
+        "args": [
+         {
+          "name": "note"
+         },
+         {
+          "flags": [
+           "--depth"
+          ],
+          "default": 2,
+          "type": "int"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      },
+      {
+       "name": "orphans",
+       "help": "notes nothing links to",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      },
+      {
+       "name": "stale",
+       "help": "superseded or old notes",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--days"
+          ],
+          "default": 180,
+          "type": "int"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      },
+      {
+       "name": "rebuild",
+       "help": "delete and rebuild the index",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      },
+      {
+       "name": "save",
+       "help": "save an agent memory note (no heredoc needed)",
+       "spec": {
+        "allow_abbrev": false,
+        "args": [
+         {
+          "flags": [
+           "--agent"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--type"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--slug"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--name"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--description"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--body"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--replace"
+          ],
+          "action": "store_true",
+          "help": "overwrite an existing note"
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "machine-readable output"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "anthology_setup": {
+  "prog": "anthology_setup.py",
+  "description": "/anthology:setup: preview, apply and remove",
+  "args": [
+   {
+    "sub": {
+     "dest": "command",
+     "required": true,
+     "parsers": [
+      {
+       "name": "preview",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--plugin-root"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--cwd"
+          ]
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "accepted for clarity; output is always JSON"
+         }
+        ]
+       }
+      },
+      {
+       "name": "apply",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--plugin-root"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--cwd"
+          ]
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "accepted for clarity; output is always JSON"
+         },
+         {
+          "flags": [
+           "--expect-sha256"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--skip-approve"
+          ],
+          "action": "store_true"
+         },
+         {
+          "flags": [
+           "--promote"
+          ],
+          "action": "append",
+          "default": [],
+          "help": "move this legacy note into the repo's memory (repeatable)",
+          "metavar": "FILE"
+         },
+         {
+          "flags": [
+           "--remove-subagent-model"
+          ],
+          "action": "store_true",
+          "help": "also remove env.CLAUDE_CODE_SUBAGENT_MODEL from settings.json"
+         }
+        ]
+       }
+      },
+      {
+       "name": "remove",
+       "spec": {
+        "args": [
+         {
+          "flags": [
+           "--plugin-root"
+          ],
+          "required": true
+         },
+         {
+          "flags": [
+           "--cwd"
+          ]
+         },
+         {
+          "flags": [
+           "--json"
+          ],
+          "action": "store_true",
+          "help": "accepted for clarity; output is always JSON"
+         },
+         {
+          "flags": [
+           "--unapprove"
+          ],
+          "action": "store_true"
+         },
+         {
+          "flags": [
+           "--unapprove-all"
+          ],
+          "action": "store_true"
+         },
+         {
+          "flags": [
+           "--preview"
+          ],
+          "action": "store_true",
+          "help": "write nothing; show what remove would change"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "doctor": {
+  "prog": "doctor.py",
+  "description": "Anthology environment checks",
+  "args": [
+   {
+    "flags": [
+     "--json"
+    ],
+    "action": "store_true",
+    "help": "print the result as JSON"
+   }
+  ]
+ },
+ "release_edit": {
+  "prog": "release_edit.py",
+  "description": "Text and JSON helpers for scripts/release.sh (the shell orchestrates git and claude).",
+  "args": [
+   {
+    "sub": {
+     "dest": "cmd",
+     "required": true,
+     "parsers": [
+      {
+       "name": "plugin-version",
+       "spec": {
+        "args": [
+         {
+          "name": "path"
+         }
+        ]
+       }
+      },
+      {
+       "name": "check-version",
+       "spec": {
+        "args": [
+         {
+          "name": "current"
+         },
+         {
+          "name": "new"
+         },
+         {
+          "name": "tag_exists",
+          "choices": [
+           "0",
+           "1"
+          ]
+         }
+        ]
+       }
+      },
+      {
+       "name": "check-dependents",
+       "spec": {
+        "args": [
+         {
+          "name": "root"
+         },
+         {
+          "name": "plugin"
+         },
+         {
+          "name": "version"
+         }
+        ]
+       }
+      },
+      {
+       "name": "changelog-check",
+       "spec": {
+        "args": [
+         {
+          "name": "path"
+         },
+         {
+          "name": "plugin"
+         }
+        ]
+       }
+      },
+      {
+       "name": "changelog-move",
+       "spec": {
+        "args": [
+         {
+          "name": "path"
+         },
+         {
+          "name": "plugin"
+         },
+         {
+          "name": "version"
+         },
+         {
+          "flags": [
+           "--date"
+          ],
+          "default": ""
+         }
+        ]
+       }
+      },
+      {
+       "name": "set-version",
+       "spec": {
+        "args": [
+         {
+          "name": "path"
+         },
+         {
+          "name": "version"
+         }
+        ]
+       }
+      },
+      {
+       "name": "set-source-version",
+       "spec": {
+        "args": [
+         {
+          "name": "path"
+         },
+         {
+          "name": "target"
+         },
+         {
+          "name": "version"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "rtk_trim": {
+  "prog": "rtk_trim.py",
+  "description": "Trim rtk/ to the Apache-2.0, Claude-only edition.",
+  "args": [
+   {
+    "flags": [
+     "--root"
+    ],
+    "default": "<REPO>/rtk",
+    "help": "the rtk/ directory (default: %(default)s)"
+   },
+   {
+    "mutex": {
+     "required": false,
+     "args": [
+      {
+       "flags": [
+        "--lock-guard"
+       ],
+       "nargs": 2,
+       "metavar": [
+        "BEFORE",
+        "AFTER"
+       ]
+      },
+      {
+       "flags": [
+        "--trimmed-conflicts"
+       ],
+       "action": "store_true"
+      },
+      {
+       "flags": [
+        "--removed-paths"
+       ],
+       "action": "store_true"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "vendor": {
+  "prog": "vendor.py",
+  "description": "Reproducible vendoring: every vendored tree is generated from a pinned upstream.",
+  "args": [
+   {
+    "flags": [
+     "--root"
+    ],
+    "default": "<REPO>",
+    "type": "path",
+    "help_suppress": true
+   },
+   {
+    "flags": [
+     "--cache"
+    ],
+    "type": "path",
+    "help": "pristine cache (default: <root>/.vendor-cache)"
+   },
+   {
+    "sub": {
+     "dest": "command",
+     "required": true,
+     "parsers": [
+      {
+       "name": "fetch",
+       "help": "fetch pinned upstreams and copy their license files",
+       "spec": {
+        "args": [
+         {
+          "name": "names",
+          "nargs": "*"
+         }
+        ]
+       }
+      },
+      {
+       "name": "build",
+       "help": "pristine -> transforms -> patch -> target",
+       "spec": {
+        "args": [
+         {
+          "name": "name",
+          "nargs": "?",
+          "help": "default: every source"
+         },
+         {
+          "flags": [
+           "--out"
+          ],
+          "type": "path",
+          "help": "write <out>/<target> instead of the repo"
+         }
+        ]
+       }
+      },
+      {
+       "name": "check",
+       "help": "rebuild all into a temp dir and diff against the repo",
+       "spec": {
+        "args": []
+       }
+      },
+      {
+       "name": "sync",
+       "help": "re-pin to REF and rebuild; never commits",
+       "spec": {
+        "args": [
+         {
+          "name": "name"
+         },
+         {
+          "flags": [
+           "--ref"
+          ],
+          "required": true
+         }
+        ]
+       }
+      },
+      {
+       "name": "diff",
+       "help": "pristine+transforms vs shipped, as a patch",
+       "spec": {
+        "args": [
+         {
+          "name": "name"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "upstream_watch": {
+  "prog": "upstream_watch.py",
+  "description": "Compare every upstream pin and keep one issue per change.",
+  "args": [
+   {
+    "flags": [
+     "--dry-run"
+    ],
+    "action": "store_true",
+    "help": "print the issues that would be created or updated; write nothing"
+   },
+   {
+    "flags": [
+     "--json"
+    ],
+    "help": "write the changes and errors as JSON",
+    "metavar": "OUT"
+   },
+   {
+    "flags": [
+     "--root"
+    ],
+    "default": "<REPO>",
+    "help": "repository root (default: this checkout)"
+   }
+  ]
+ },
+ "eval_baseline": {
+  "prog": "eval_baseline.py",
+  "description": "Baseline gate for the behaviour evals: record scores, then fail on a regression.",
+  "args": [
+   {
+    "sub": {
+     "dest": "command",
+     "required": true,
+     "parsers": [
+      {
+       "name": "record",
+       "help": "write the baseline from a full run",
+       "spec": {
+        "args": [
+         {
+          "name": "result"
+         },
+         {
+          "name": "out",
+          "metavar": "baseline"
+         }
+        ]
+       }
+      },
+      {
+       "name": "candidate",
+       "help": "write a candidate baseline, partial runs allowed",
+       "spec": {
+        "args": [
+         {
+          "name": "result"
+         },
+         {
+          "name": "out"
+         }
+        ]
+       }
+      },
+      {
+       "name": "compare",
+       "help": "compare a run with the baseline",
+       "spec": {
+        "args": [
+         {
+          "name": "result"
+         },
+         {
+          "name": "baseline"
+         },
+         {
+          "flags": [
+           "--tolerance"
+          ],
+          "default": {
+           "float": "0.0"
+          },
+          "type": "float"
+         },
+         {
+          "flags": [
+           "--allow-missing"
+          ],
+          "action": "store_true",
+          "help": "a baseline case absent from the result is not a regression"
+         },
+         {
+          "flags": [
+           "--summary"
+          ],
+          "help": "append a Markdown table to PATH",
+          "metavar": "PATH"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "check_version_bump": {
+  "prog": "check_version_bump.py",
+  "description": "Version-bump gate: a plugin whose files changed must carry a higher version.",
+  "args": [
+   {
+    "name": "base",
+    "help": "base commit (all zeros = new branch, no-op)"
+   },
+   {
+    "name": "head",
+    "help": "head commit"
+   },
+   {
+    "flags": [
+     "--repo"
+    ],
+    "default": ".",
+    "help": "repository root (default: current directory)"
+   }
+  ]
+ },
+ "startup_budget": {
+  "prog": "startup_budget.py",
+  "description": "Print each agent's startup size against its budget.",
+  "args": [
+   {
+    "name": "agents",
+    "nargs": "*",
+    "help": "agent names (default: all)"
+   },
+   {
+    "flags": [
+     "--root"
+    ],
+    "default": "<REPO>",
+    "help": "repository root (default: this checkout)"
+   }
+  ]
+ }
+}

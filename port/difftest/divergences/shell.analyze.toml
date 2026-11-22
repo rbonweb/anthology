@@ -1,0 +1,161 @@
+# Allowed divergences of the shell.analyze surface (GC-16). The oracle
+# (port/difftest/oracle/shell.py) marks each case where the reference raised; every D-8 entry
+# names its case (a reviewer's bash-verified payload that needs more than the reference does).
+
+[[divergence]]
+class = "D-1"
+reason = "The reference raised (RecursionError on hostile nesting) and guard.py would allow the call. Rust analyzes it, or stops at its work budget and reports incomplete (a block); the oracle expects the incomplete result."
+
+[[divergence]]
+class = "D-7"
+reason = "Over the reference's work budget (24 per character plus 200 000): it raises _TooComplex and check blocks. Rust spends the same budget where _charge does (limits::work_limit), so it stops too and reports incomplete, which the guard blocks; the oracle expects exactly that result."
+
+# Rust stricter than the reference where a reviewer showed bash runs the payload (owner direction,
+# controller rulings Q1=A and Q2=A). The oracle applies the grammar-wide ones itself (FW-H R1-M1, FW-I
+# R1-I1; see port/difftest/oracle/shell.py); these are the narrow ones, one entry per case.
+
+[[divergence]]
+class = "D-8"
+case = "fw:1"
+reason = "Rust stricter: FW-I R1-M2, every fd -x group (the reference takes only the first; fd 10.2 runs each)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:2"
+reason = "Rust stricter: FW-I R1-M2, every fd --exec group (the reference takes only the first; fd 10.2 runs each)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:3"
+reason = "Rust stricter: FW-I R1-M3, doppler run --command runs its shell line (the reference reads doppler as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:4"
+reason = "Rust stricter: FW-I R1-M3, doppler run -- runs its command (the reference reads doppler as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:5"
+reason = "Rust stricter: FW-I R1-M3, op run -- runs its command (the reference reads op as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:6"
+reason = "Rust stricter: FW-I R1-M3, dotenvx run -- runs its command (the reference reads dotenvx as a plain program)."
+
+[[divergence]]
+class = "D-8"
+case = "fw:7"
+reason = "Rust stricter: FW-I R1-M3, infisical run --command runs its shell line (the reference reads infisical as a plain program)."
+
+# The one Opus review of the hardening (SH-FW review): inherited bypasses, fixed in Rust only.
+
+[[divergence]]
+class = "D-8"
+case = "fw:14"
+reason = "Rust stricter: SH-FW review C-1, tar --checkpoint-action as a separate word runs its exec= command (GNU tar 1.35); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:15"
+reason = "Rust stricter: SH-FW review C-1, tar --checkpoint-act= (a getopt abbreviation) runs its exec= command (GNU tar 1.35); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:16"
+reason = "Rust stricter: SH-FW review C-2, git clone -u runs its upload-pack command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:17"
+reason = "Rust stricter: SH-FW review C-2, git push --receive-pack runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:18"
+reason = "Rust stricter: SH-FW review C-2, git archive --exec runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:19"
+reason = "Rust stricter: SH-FW review C-2, the config key remote.*.uploadpack runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:20"
+reason = "Rust stricter: SH-FW review C-2, the config key difftool.*.cmd runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:21"
+reason = "Rust stricter: SH-FW review C-2, an ext:: URL runs its command; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:22"
+reason = "Rust stricter: SH-FW review M-3, gosu <user> runs the command after it; a wrapper there would run it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:23"
+reason = "Rust stricter: SH-FW review M-3, micromamba run -n <env> runs the command after it; bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:24"
+reason = "Rust stricter: SH-FW review I-1, an fd cluster ending in x (-Hx) runs its command (fdfind 10.2); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:25"
+reason = "Rust stricter: SH-FW review I-1, an fd cluster ending in x (-HIx) runs its command (fdfind 10.2); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:37"
+reason = "Rust stricter: SH-FW re-review F-2, every fed stdin line is read (the reference drops the 65th on); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:38"
+reason = "Rust stricter: SH-FW re-review F-2, every GNU parallel input is read (the reference drops the 65th on); GNU parallel runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:39"
+reason = "Rust stricter: SH-FW review I-3, more than 64 alternate readings are too complex (the reference drops the 65th); a wrapper there would run it, the reference allows it."
+
+# The one scoped re-review of the hardening (SH-FW re-review): the narrow, Rust-only fixes. The oracle
+# applies the grammar-wide ones itself (F-1, C-3a, C-4a, I-2a, and the fail-closed families, which also
+# cover the C-5 / C-5a subscripts; see port/difftest/oracle/shell.py).
+
+[[divergence]]
+class = "D-8"
+case = "fw:40"
+reason = "Rust stricter: SH-FW re-review C-2a, a git alias without ! is read as its expansion (git -c alias.cl=clone cl -u X runs X); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:41"
+reason = "Rust stricter: SH-FW re-review C-1a, GNU tar reads TAR_OPTIONS before its arguments, so --checkpoint-action there runs its exec= command (GNU tar 1.35); the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:52"
+reason = "Rust stricter: SH-FW re-review I-2a, function f { cmd; } has cmd as a command (the reference reads the whole line as the program function); bash runs it, the reference allows it."
+
+[[divergence]]
+class = "D-8"
+case = "fw:57"
+reason = "Rust stricter: SH-FW re-review F-2 control, all 70 GNU parallel inputs are read (the reference reads 64), no install either way."
+
+[[divergence]]
+class = "D-8"
+case = "fw:58"
+reason = "Rust stricter: SH-FW re-review F-2 control, all 70 fed lines are read (the reference reads 64), no install either way."
+
+[[divergence]]
+class = "D-8"
+case = "fw:261"
+reason = "Rust stricter: the SH-FW re-review I-2a reading of function f { cmd; } (as fw:52) on the SH-F4 seed; both block the call f playwright install, only the entries differ."

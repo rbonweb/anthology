@@ -1,0 +1,1 @@
+/home/testeruv --color always run python3 -m pip install x; pnpm -r --filter w dlx y

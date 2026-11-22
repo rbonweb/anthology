@@ -1,0 +1,23 @@
+# Self-contained: no workspace inheritance, because rtk builds this crate too (GC-18, m-15).
+# Caret requirements (not `=`) so rtk's own lock can unify them; the root Cargo.lock pins the
+# exact versions, equal to the root [workspace.dependencies].
+[package]
+name = "anthology-shell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "Apache-2.0"
+publish = false
+description = "Structural shell lexer and analyze(), shared by the anthology guard and rtk"
+
+[lints.cargo]
+# Declared ahead of the code that uses them (plan §0.2); as the root workspace.
+unused_dependencies = "allow"
+
+[dependencies]
+# "1.12", not the root's 1.13.2: rtk's own lock (regex 1.12.x) keeps its version (RG1).
+regex = "1.12"
+fancy-regex = "0.20.2"
+
+[dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std", "fork", "timeout"] }

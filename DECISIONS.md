@@ -242,6 +242,7 @@ Pins were resolved read-only with `gh api` and `git ls-remote`. SPDX ids come fr
 | `anthropics/skills` | `skills/frontend-design/` | `e4bb5d960d87126ff3b3a8af1a104b7db67560ba` (`main` head) | Apache-2.0 (folder `LICENSE.txt`; the repo has no top-level license) |
 | `vercel-labs/agent-skills` | `skills/web-design-guidelines/` | `1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62` (`main` head) | MIT (stated in README; the repo has no LICENSE file) |
 | `leonxlnx/taste-skill` | design-taste-frontend | tag `v2.5.1` = `f6b76575f949707b4e3c37cd86cb44b0b98643e8` | MIT |
+| `multica-ai/andrej-karpathy-skills` | `skills/karpathy-guidelines/` | `2c606141936f1eeef17fa3043a72095b4765b9c2` (`main` head, pinned 2026-11-21) | MIT (declared in README, SKILL.md frontmatter and plugin.json, author forrestchang; the repo has no LICENSE file) |
 | `juliusbrussee/caveman` | `skills/caveman/` | tag `v4.1.0` = `1e91f1306d602d4ca23618701b1185575ae1869b` | Apache-2.0 |
 | `cuellarfr/design-skills` | whole repo | `7e25e66e87f64f9d3dea22198f9e29937e7c48f5` (`main` head = 1.0.0; no tags) | MIT |
 | ui-taste (uizze.sh) | `/.well-known/skills/ui-taste/` | `CHECKSUMS.sha256` sha256 `405765de761bfaeed98407e75bb6fe67cf9b6f0179562453554f2e9ddacd1612` (25 entries, manifest version `uizze-design-v14`) | Apache-2.0 (shipped LICENSE, matching its checksum line) |
@@ -708,6 +709,64 @@ Setup adds the owner's blanket `Bash(rtk *)` allow (ADR-017, PLAN §12), and Cla
 
 Users with deny, ask or Read rules get them enforced behind rtk, at the cost of an occasional prompt where a wrapped command cannot be read, and an unreadable settings file now prompts for every command. A later upstream sync must keep the three `// anthology fork:` call sites wired to the gate. Cost if wrong: a rule source Claude Code adds later is invisible to the hook until the gate reads it.
 
+## ADR-023: rtk's gate also reads every line with the shared shell parser (`anthology-shell`)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane RG1 (design §7.2, plan RG1)
+- **Status:** Accepted; ships with the next rtk release, which the release owner cuts
+
+**Context**
+
+The guard and rtk's Anthology gate (ADR-022) each had their own shell reading. Disagreement between two parsers was the main source of guard bypass findings (design G-2), and the gate's recursion (rtk forms, `sh -c`, `find -exec`, `xargs`, `env`, launchers, depth 4) was a third partial model. `anthology-shell` (lane SH) ports the guard's lexer and expansion (`analyze`): heredocs and here-strings fed to a shell, `echo … | sh`, `eval`, substitutions, wrappers, package runners, rtk runner and passthrough forms, docker shells, `cd` tracking, nested to depth 12, under one byte-weighted work budget that marks the result `incomplete`, and `opaque` reasons for what it cannot see into. The acceptance is that verdicts only get stricter: over the gate's tests plus the guard corpus, deny > ask > defer/allow, new ≥ old.
+
+**Decision**
+
+- `rtk/Cargo.toml` gains one dependency under `# anthology fork: shared shell parser`: `anthology-shell = { path = "../crates/anthology-shell" }`. rtk keeps its own `[workspace]` and `Cargo.lock`; the lock gains the path package, `fancy-regex` 0.20.2 and `bit-set`/`bit-vec` 0.8, the versions the root lock pins. `rtk-test.sh`, `rtk-net-test.sh` and `rtk-trim.sh` mount the repository root, since the path dependency lives outside `rtk/`.
+- With any deny, ask or `Read()` rule, `anthology_gate::evaluate` runs `anthology_shell::analyze` on the line (and on rtk's own rewrite of it) after the existing rule scan, and each entry (program and arguments, as the guard reads them) meets the rules. This pass can only add a deny or an ask:
+  - a Bash deny rule matching an entry denies, an ask rule asks (`bash <<EOF` / `git push`, `eval 'git push'`, `rtk bypass caffeinate git push`, `rtk git $'push'` are now denied);
+  - a `Read()`-denied path denies when a command rtk rewrites into a read, or any program rtk runs (`rtk bypass base64 secret.txt`), names it or reads it through `<`; an unresolvable path asks for those, and so does a `Read()` ask path behind rtk;
+  - `incomplete` (a regex backtrack limit or the work budget) asks.
+- The plain shape (ADR-022, rounds 7-9) also requires the shared parser to read the line as the same one command: one entry, nothing `opaque`, no redirect, the same words. So an opaque entry behind rtk always asks (a line whose text holds `rtk` passes only in the plain shape, and rtk rewrites only into it), and two lexers that disagree on a line that would pass is a reason to ask. The "holds `rtk`" test now drops a backslash-newline first, as the shell does (`r\` + newline + `tk` is `rtk`).
+- The pass adds no defer and no ask for what only the rule scan's own reading needs (an expansion a rule's head can extend, a relative path after a `cd`): the rule scan keeps deciding those, and a hook defer would stop the decision before rtk's own rewrite is judged, which is looser (found by the old/new corpus run).
+- **The rule scan stays.** Replacing its recursion outright loses denies the ≥ acceptance forbids: shells the guard does not model as shells (`mksh`, `tcsh`, `csh`, `ash -c`), a deny reached through a quoted script after a launcher, and word-suffix readings of launchers the guard does not peel. Running both and keeping the stricter answer is the only shape that meets the acceptance by construction; disagreement between the two readers can only ask or deny. Cost if wrong: two readers stay in the gate until a later change deletes the rule scan's recursion, once a corpus shows the shared parser covers it.
+- `rtk/tests/anthology_shell_rtk_forms_test.rs` pins rtk's clap subcommand list and each subcommand's form (passthrough, runner, fixed tool) against `anthology_shell::RTK_PASSTHROUGH` and `RTK_RUNNERS`, so an upstream subcommand that runs a command cannot arrive unclassified. It is not a `fork_*` test.
+- With no deny, ask or `Read()` rule, the hook output is byte-identical to `1.2.1-anthology.4` (the gate is inert, and `analyze` is not called).
+
+**Consequences**
+
+More lines are denied where they used to be asked about, and some lines behind `rtk` that the plain shape never passed now ask for a second reason; no line that used to be asked about or denied passes. Measured on 3,814 commands (the gate's tests, the F1 review kits, the guard's corpus and the shell seeds) under five rule sets: no verdict got looser, and with no rules every output is byte-identical. An upstream sync now carries one more `# anthology fork:` line in `rtk/Cargo.toml`; `rtk_trim`'s lock guard allows path packages under `../crates/` and their dependency closure (DV4). Cost if wrong: an `anthology-shell` bug that over-reads a command adds a prompt or a deny; one that under-reads is still covered by the rule scan.
+
+**Addendum (RG2, 2026-11-21): the gate's work bound on huge lines**
+
+- A 1 MB `rtk ls a a a ...` took about 41 s with any rule: the plain shape and the `Read()` checks made several `canonicalize` calls per path word, and the work budget did not charge them. A `PreToolUse` hook that outlives its timeout is no decision (Claude Code continues through the normal permission flow unless `onFailure` is `block`), so `Bash(rtk *)` would allow the line.
+- Disk lookups now have their own budget (`PROBE_COST` per path, working directory and matcher). When it runs out, symlinks are no longer resolved for the rest of the command, every path is still matched as written, the text is still read in full within the scan's own budget, and the command asks at the end. **Unverified paths ask:** past the lookup budget, a `Read()` deny that only a symlink lookup would find is an ask, not a deny; a path denied as written (lexical `..` included) still denies, and so does a Bash deny rule later in the line.
+- A line whose bytes alone would spend the scan's budget (`LINE_BYTE_COST`, 125 KB) never passes: the budgeted scan still runs and its deny stands, otherwise the hook asks on the line as written, with no plain-shape check and no rewrite. With no rules the gate stays inert.
+- Consequences: a 1 MB line answers in well under a second (release build, 0.05-0.42 s measured); lines with about a thousand or more literal paths, and any line over 125 KB, now prompt when any rule exists. RG1's old/new corpus is byte-identical.
+
+## ADR-024: safety hooks fail closed on a timeout or crash (`onFailure: "block"`; supersedes part of ADR-010)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane HK1 (from the RG2 finding)
+- **Status:** Accepted
+
+**Context**
+
+- Neither safety `PreToolUse` hook set `timeout` or `onFailure`: the guardrails guard (matcher `*`) and rtk's hook (matcher `Bash`, which runs the ADR-022/023 gate behind `Bash(rtk *)`).
+- The Claude Code hooks reference says a command hook's `timeout` defaults to 600 s, and "On `PreToolUse`, a timed-out `command`, `http`, or `mcp_tool` hook doesn't block the tool call, except for hooks whose failure blocks the action. The call continues through the normal permission flow". A hook that can't start, or exits with anything but 0 or 2, is also a non-blocking error. So a stalled, killed or crashed rtk hook let an `rtk …` line through on `Bash(rtk *)` alone. The same applied to the guard.
+- `"onFailure": "block"` makes each of those failures (can't start, exit other than 0 or 2, timeout, invalid JSON output) do what exit 2 does: on `PreToolUse`, it blocks the call. It needs v2.1.295 for command hooks (ADR-010, ADR-012); the plugins already declare `>=2.1.311`. The smoke `guard-timeout` checks it on a real client.
+- ADR-010 kept the guard fail-open, because a missing `python3` would then block every tool. The owner's later fail-mode answer for the Rust port is fail closed, and the staged guardrails `hooks.json` (design §9.1) already has `"timeout": 60, "onFailure": "block"`.
+
+**Decision**
+
+- Every safety `PreToolUse` hook sets `"timeout": 60` and `"onFailure": "block"`. That is the live guard (`python3 scripts/guard.py`), the live rtk hook (`sh bin/rtk-hook`), and the staged rtk hook in `port/staging/plugins/anthology/hooks/hooks.json`, so the cutover keeps it. The staged guard already had both.
+- Ruling: one timeout, 60 s, the design §9.1 value for both hooks. Why: the guard decides in about 10 ms and rtk's gate is bounded (RG2: a 1 MB line in under 0.5 s; the history write after the answer waits at most 5 s), so 60 s only bounds a stall. With `block`, a shorter timeout can only add blocks, never allow a call. Cost if wrong: a pathological stall holds a tool call for up to 60 s before it is blocked.
+- Ruling: this supersedes ADR-010's "the guard keeps failing open" for the Python build. Why: a stalled or killed guard must not turn into an allow, and the release ships the Rust shim with the same setting anyway. Cost if wrong: until the cutover, a machine without a working `python3` gets every tool call blocked, with a `failed; blocking because onFailure is "block"` error, until `python3` is installed or the guardrails plugin is disabled (`/plugin`).
+- Unchanged: both hooks still exit 0 on malformed input. `guard.py` catches every exception and allows, and rtk's hook answers `ask` on unreadable input and exits 0 when rtk is not installed. So `block` only fires when the process itself fails or stalls.
+
+**Consequences**
+
+A timeout or crash of either safety hook now blocks the call, and the error names the hook. rtk exiting 1 or panicking blocks that Bash call, instead of letting it fall through to `Bash(rtk *)`. No minimum-version change.
+
 ## ADR-025: setup offers to remove `CLAUDE_CODE_SUBAGENT_MODEL`
 
 - **Date:** 2026-11-21
@@ -749,3 +808,114 @@ Every working rule belongs in Anthology, never in a user's global Claude config.
 **Consequences**
 
 Ruling: the detail lives in `anthology:large-builds`, with one pointer in the guide — the guide was 5 characters under its ceiling — cost if wrong: the main session reads an 8 KB skill before coding or reporting. Ruling: karpathy-guidelines is knowledge, not a main-session skill — `vendor.py` writes only to knowledge folders, and the coding agents are where code is written — cost if wrong: the main session reaches the full text only through the skill's pointer when it codes inline.
+
+## ADR-027: the Rust port (one language; the difftest frozen into goldens; the test ledger)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port, cutover CO2 (design `docs/superpowers/specs/2026-11-20-rust-port-design.md` §1 and §4.5, plan CO2)
+- **Status:** Accepted
+
+**Context**
+
+Anthology was two languages. About 12k lines of first-party Python (the 14 plugin modules in `plugins/anthology/scripts/`, the guard in `plugins/anthology-guardrails/scripts/`, 8 maintainer tools in `scripts/`, the smoke runner `evals/smoke/smoke.py`) and about 19k lines of Python tests ran next to rtk's Rust. Users needed a working `python3` (3.9 or newer), the guard could not run without it (ADR-010), and the guard and rtk's gate each had their own shell parser. The owner decided on 2026-11-20 to maintain Anthology in Rust only, with no Python at runtime.
+
+**Decision**
+
+- All first-party Python is ported to the cargo workspace in `crates/`. `anthology-cli` builds the one shipped program, `anthology`, from `anthology-core`, `anthology-guard`, `anthology-shell`, `anthology-memory`, `anthology-runtime`, `anthology-settings` and `anthology-pycompat`. `anthology-dev` (the maintainer tools), `difftest`, `anthology-testkit` and `repo-tests` never ship. The vendored superpowers files are untouched.
+- Behaviour parity: every hook, command, file write, exit code and message matches the Python at the baseline, except the forced changes the plan lists (GC-15, F-1 to F-20): no Python, fail closed (ADR-028), and the messages and commands that named Python. `anthology-pycompat` re-implements what the outputs depend on (`json.loads` and `json.dumps`, `\s` and `\w`, `str.lower`, strerror texts), so parity is byte for byte.
+- Proof during the port: a live differential test ran every ported surface against the Python as the oracle, on seeds and generated cases. At cutover the oracle's answers were frozen into gzip golden files (`crates/<crate>/tests/golden/`), which `cargo test` replays. A golden changes only through `anthology-dev golden bless`, so every behaviour change is a visible diff. The oracle (`port/difftest/oracle`) and the extraction scripts were then deleted; `crates/difftest` stays as the replayer.
+- Proof that nothing was dropped: every Python test id (`port/python-test-ids.txt`) has a row in `port/ledger/<module>.tsv` naming the Rust test that ports it or a reviewed drop reason. `anthology-dev ledger check` (the `ledger` job) fails on an id without a row and on a row whose Rust test cargo does not run.
+- The glue around docker, git and `claude` stays shell, with no Python calls: `release.sh`, `run-evals.sh`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `rtk-net-test.sh`. Maintainer tools run as `scripts/dev.sh <command>` in the pinned Rust image, so contributors need no host Rust.
+- CO2 deleted `plugins/anthology/scripts/`, `plugins/anthology-guardrails/scripts/`, `scripts/*.py`, `evals/smoke/smoke.py`, `tests/`, the Python CI images and the Python CI jobs (design §14.2).
+
+**Consequences**
+
+Users no longer need Python; the runtime is one static binary per platform, downloaded and pinned (ADR-029). No CI job uses Python. A deliberate behaviour change now needs a blessed golden and, for a removed test, a ledger row with its reason. Cost if wrong: the goldens cover only the frozen cases, so a behaviour no seed or generator reached can drift without a diff; the fuzz targets and the property tests cover the parsers.
+
+## ADR-028: the guard fails closed when its binary is missing or broken (supersedes ADR-010's fail-open guard)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port, cutover CO2 (design §1.2 decision 4, §9; plan GC-14)
+- **Status:** Accepted
+
+**Context**
+
+- ADR-010 kept the guard fail-open, because a missing `python3` would otherwise block every tool, and added a POSIX `sh` sentinel hook that said loudly when `python3` was missing.
+- ADR-024 already superseded part of that: a guard hook that crashes, stalls or cannot start blocks the call (`"onFailure": "block"`, 60 s timeout).
+- After the port the guard is a downloaded binary. A missing binary must not mean no guardrails, and the owner's binding decision for the port is fail closed.
+
+**Decision**
+
+- `hooks/guard.sh` (POSIX `sh`) has exactly two allow paths: the binary's positive allow token (exit 0 with exactly `anthology-guard:allow:v1` on stderr), and, when the binary cannot run, a read-only allowlist (`Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, the `Task*` tools, `Task`, `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, the plan-mode tools, `BashOutput`, `KillShell`). Every other path blocks with exit 2: shell commands, file writes and edits, `mcp__*` and any tool not on the list.
+- An installed binary that answers with anything but the token or a well-formed block is quarantined and reinstalled on a later call, at most once a minute. Three failures in 24 hours stop the reinstalls from tool calls; a new session tries once an hour.
+- Inside the binary, a panic, a regex limit or the 8 s watchdog blocks with an `(internal)` message. Malformed input still exits 0, as before.
+- Every `(setup)` and `(internal)` message names the fix and the escape that always works: disabling `anthology-guardrails` with `/plugin`, which never passes through `PreToolUse`.
+- On a platform with no guard binary (Windows included), read-only tools are allowed and everything else is blocked with a message naming `/plugin`.
+- This supersedes the rest of ADR-010's guard decision: the fail-open choice and the `python3` sentinel hook. ADR-024's `"onFailure": "block"` and 60 s timeout stay as the backstop under the shim. ADR-010's hook-output budget (9,000 characters) still stands.
+
+**Consequences**
+
+An offline first session can read but not run, write or call MCP tools until the binary installs, and it heals by itself once the network is back. While the binary is missing, G3 is not enforced for the read-only tools that are let through; the native `Read(…)` deny rules still apply (SECURITY.md). A guard stopped by SIGSTOP reaches the hook timeout and gets Claude Code's generic `onFailure` message, which names neither the cause nor `/plugin`. Cost if wrong: a harmless tool that is not on the allowlist is blocked until the binary installs. Evidence: the shim tests (`crates/repo-tests/tests/shims/`) and the `binary-missing` smoke.
+
+## ADR-029: the `anthology` binary: release, pin and install
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lanes RL1 and BS1, cutover CO1 and CO2 (design §8, §10)
+- **Status:** Accepted
+
+**Context**
+
+The `anthology` binary has to reach users the way rtk does (ADR-017): built in this repo, verifiable, pinned in a reviewed commit, and installed without Python. Both plugins need it, and `anthology-guardrails` must work when it is installed alone.
+
+**Decision**
+
+- **Release.** `.github/workflows/anthology-release.yml` runs on a tag `anthology-bin--v<version>`, which must equal `[workspace.package].version`. On four native runners it runs `cargo deny check` and the tests of the shipped crates, builds `anthology-cli` with `--release --locked` (static musl on Linux, with no interpreter or shared-library dependency), checks `anthology --version`, packs `anthology-<target>.tar.gz` (the binary and `LICENSE`), attests the archives with build provenance and publishes them with `checksums.txt`. It fails if the release exists. A pull request touching the workflow, `rust-toolchain.toml` or `deny.toml` runs a dry run. No Apple codesigning, as for rtk.
+- **Pin.** Each plugin ships `anthology.lock`, byte-identical in both: `version`, `tag`, `repo` and one sha256 per target archive, in rtk.lock's layout, one key per line so `sh` can read it. Only `anthology-dev lock write` writes it, from `checksums.txt`, and it refuses a hash that differs from GitHub's own digest of the asset. The `anthology-bin--v` prefix cannot collide with plugin tags or `rtk--v`.
+- **Install.** `hooks/bootstrap.sh` and `hooks/lib.sh` (POSIX `sh`, identical in both plugins) install into `${CLAUDE_CONFIG_DIR:-~/.claude}/anthology/bin/<version>/`, shared by both plugins. A user-placed seed `anthology-<target>.tar.gz` in that folder is tried first, then `curl`, GNU or BusyBox `wget`, then `node`, within a 20 s budget. The archive's sha256 must match the lock before anything is unpacked, the binary must print exactly `anthology <version> (<target>)`, and the install marker is written last. Each session start re-checks the install against the lock.
+- **Freshness.** `release.sh` runs `anthology-dev lock check-fresh` before releasing a plugin that ships `anthology.lock`. It compares the shipped set (the `src/` and `Cargo.toml` of every crate in `anthology-cli`'s build graph, their `Cargo.lock` entries, `rust-toolchain.toml`, the release profile and the workspace keys that graph uses) between the lock's tag commit and `HEAD`, and fails when it changed. Tests, `anthology-dev`, the difftest and the goldens are outside it.
+- **Lifecycle.** A plugin update installs the new version beside the old one; session start deletes versions no lock pins after 30 days unused. `/anthology:setup remove` deletes the folder only when `anthology-guardrails` is no longer installed.
+
+**Consequences**
+
+A change to the shipped crates reaches users only after a new binary tag and a `lock write` commit, then a release of both plugins. CO2 changed nothing in the shipped set, so the binary the replay validated (ADR-031) is the one that ships. Cost if wrong: about 6 MB per version stays behind after an uninstall that skips `remove`, until the user deletes it.
+
+## ADR-030: one shell parser for the guard and rtk's gate (`anthology-shell`)
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lanes SH1, SH2, GD1 and RG1 (design §4.1, §7)
+- **Status:** Accepted
+
+**Context**
+
+The Python guard read shell commands with its own lexer and expansion. rtk's Anthology gate (ADR-022) had a flat lexer plus its own partial recursion. Disagreement between the readers was the main source of guard bypass findings. rtk's lexer cannot see into substitutions, heredocs or `sh -c`, which the guard must open.
+
+**Decision**
+
+- `crates/anthology-shell` is a direct port of the guard's lexer and expansion (`analyze(command, home)`), proven against the Python by the difftest. It depends only on `regex` and `fancy-regex` (for the patterns with lookaround or backreferences), forbids unsafe code and has a self-contained `Cargo.toml`, because rtk's own workspace builds it too.
+- `analyze` returns the entries that actually run (program, arguments, redirects, working folder, docker exemption), plus what it could not see into (`opaque`) and whether a regex or work limit cut it short (`incomplete`).
+- The guard (`anthology-guard`) decides from the entries, ignores `opaque` to keep parity with the Python, and blocks on `incomplete`. rtk's gate asks on either, and depends on the crate through one `# anthology fork:` path dependency (ADR-023).
+
+**Consequences**
+
+A parser fix reaches both the guard and the gate. They ship separately (the guard in the `anthology` binary, the gate in rtk's releases), so between releases the two can run different versions of the parser. Cost if wrong: if an upstream rtk restructure makes the path dependency painful, fall back to a shared conformance corpus, with the guard keeping `anthology-shell`.
+
+## ADR-031: replay of local transcripts before the cutover
+
+- **Date:** 2026-11-21
+- **Task:** Rust port lane RP1, cutover CO1 and CO2 (design §4.6, §13.7; architect's calls A18 and A29)
+- **Status:** Accepted
+
+**Context**
+
+The difftest proves parity on seeds and generated inputs, but real tool calls carry encodings, subagent payloads and MCP inputs no generator writes. Revision 1 of the design planned a 7-day live shadow run, which costs calendar time, sees only new calls and compares verdicts only. The repo is public, so nothing from real transcripts may be committed.
+
+**Decision**
+
+- `anthology-dev replay collect|run|report` replays every `tool_use` in the owner's local transcripts (`~/.claude/projects/**/*.jsonl`, subagent transcripts included), deduplicated, as Claude Code's `PreToolUse` envelope with the raw input bytes. This replaces the shadow run (A18).
+- Four runners per call: the Python guard (the authority), `anthology guard hook`, the shim with the binary seeded, and the shim with the binary missing. Runners 1 to 3 must agree byte for byte on exit code and stderr. It also compares `analyze` entries on every Bash command and the privacy findings on every text field. Runner 4 counts what fail closed would block, by tool, which checks the read-only allowlist (ADR-028).
+- It runs at CO1 on the tagged binary, after every merge that touches the guard, the parser or the privacy scan, and at CO2. The gate is zero unexplained differences.
+- The corpus and the full details stay local, under `~/.claude/anthology/replay/`. `.gitignore` and `no_replay_tracked.rs` keep them out of the repo. The committed report `port/replay-reports/<date>.md` holds only aggregate counts, tools bucketed as `builtin`, `mcp` or `other`, and case ids that are HMAC-SHA256 values under a key that never leaves the machine. A test checks the report for every corpus string before it is written (A29).
+
+**Consequences**
+
+The binary that ships was checked against every real tool call on record, deeper than verdicts, with no calendar wait. The replay proves parity on real traffic, not bypass resistance: the generators and the monotonicity properties cover that. Runner 1 now needs a checkout from before CO2 (`--repo`), since the Python is gone from `HEAD`. Cost if wrong: less diagnostic detail in the committed report; the full detail stays on the owner's machine.

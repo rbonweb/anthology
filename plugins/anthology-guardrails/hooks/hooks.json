@@ -1,13 +1,27 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh", "session", "--plugin", "guardrails"],
+            "timeout": 60
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/guard.py"]
+            "command": "sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh"],
+            "timeout": 60,
+            "onFailure": "block"
           }
         ]
       }

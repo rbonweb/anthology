@@ -162,15 +162,44 @@
  **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
 --- a/skills/dispatching-parallel-agents/SKILL.md
 +++ b/skills/dispatching-parallel-agents/SKILL.md
-@@ -81,7 +81,7 @@
+@@ -81,8 +81,13 @@
  When agents return:
  - Read each summary
  - Verify fixes don't conflict
 -- Run full test suite
 +- Run full test suite once, at the end (agents ran only targeted tests)
  - Integrate all changes
++
++In a long multi-agent build, follow
++anthology-superpowers:subagent-driven-development's `references/large-builds.md`
++instead: disjoint slices in separate worktrees, and one integration run per
++merged batch.
  
  ## Agent Prompt Structure
+ 
+--- a/skills/subagent-driven-development/SKILL.md
++++ b/skills/subagent-driven-development/SKILL.md
+@@ -135,7 +135,9 @@
+ 
+ Before dispatching Task 1, read [references/preflight.md](references/preflight.md)
+ and run the conflict scan it describes. Its table and rulings go in the
+-ledger.
++ledger. For a large or long build, also read
++[references/large-builds.md](references/large-builds.md); it wins where
++they differ.
+ 
+ ## Model Selection
+ 
+@@ -232,7 +234,8 @@
+   a pointer to that ledger entry in the dispatch.
+ - Record the implementer's agent identity from the dispatch result —
+   fix-loop rounds 1-3 resume this agent.
+-- Never dispatch multiple implementation subagents in parallel (conflicts).
++- Never dispatch multiple implementation subagents in parallel on one
++  working tree (conflicts).
+ 
+ Template: [implementer-prompt.md](implementer-prompt.md)
+ 
 --- a/skills/subagent-driven-development/implementer-prompt.md
 +++ b/skills/subagent-driven-development/implementer-prompt.md
 @@ -44,8 +44,14 @@
@@ -190,6 +219,29 @@
  
      ## You Do Not Dispatch Subagents
  
+--- a/skills/subagent-driven-development/references/fix-loop.md
++++ b/skills/subagent-driven-development/references/fix-loop.md
+@@ -3,6 +3,10 @@
+ Part of anthology-superpowers:subagent-driven-development. The task review reported
+ spec ❌, a Critical or Important finding, or a ⚠️ item you confirmed as a real
+ gap.
++
++In a large build, the review budget in [large-builds.md](large-builds.md)
++replaces this loop: fix Critical and Important findings once, with no
++re-review except after a Critical in security code.
+ 
+ Before the loop starts, two routes leave it immediately:
+ 
+--- /dev/null
++++ b/skills/subagent-driven-development/references/large-builds.md
+@@ -0,0 +1,7 @@
++# Large Builds
++
++Part of anthology-superpowers:subagent-driven-development. The rules for
++large builds (many tasks, several agents working at once, or a run measured
++in hours) live in the `anthology:large-builds` skill. Invoke that skill
++before Task 1; where it differs from SKILL.md or [fix-loop.md](fix-loop.md),
++it wins for that run.
 --- a/tests/brainstorm-server/browser-launcher.test.js
 +++ /dev/null
 @@ -1,66 +0,0 @@

@@ -1,0 +1,78 @@
+# cargo-fuzz targets (design §13.5), a workspace of their own on a pinned nightly
+# (fuzz/rust-toolchain.toml). Each target is a stub until its lane fills it.
+[package]
+name = "anthology-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[lints.cargo]
+# Declared ahead of the code that uses them (plan §0.2); as the root workspace.
+unused_dependencies = "allow"
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+anthology-pycompat = { path = "../crates/anthology-pycompat" }
+anthology-shell = { path = "../crates/anthology-shell" }
+anthology-guard = { path = "../crates/anthology-guard" }
+anthology-settings = { path = "../crates/anthology-settings" }
+anthology-memory = { path = "../crates/anthology-memory" }
+# portable_import: `Env` and a scratch tree to check that no write leaves the allowed set.
+anthology-core = { path = "../crates/anthology-core" }
+tempfile = "=3.27.0"
+
+[[bin]]
+name = "json_loads"
+path = "fuzz_targets/json_loads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_segments"
+path = "fuzz_targets/shell_segments.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_analyze"
+path = "fuzz_targets/shell_analyze.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guard_hook"
+path = "fuzz_targets/guard_hook.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "privacy_findings"
+path = "fuzz_targets/privacy_findings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_apply"
+path = "fuzz_targets/settings_apply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portable_import"
+path = "fuzz_targets/portable_import.rs"
+test = false
+doc = false
+bench = false

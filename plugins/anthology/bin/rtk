@@ -1,8 +1,9 @@
 #!/bin/sh
-# rtk: run the rtk binary that session start installed (see scripts/rtk_install.py).
-# The path is read from ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json without
-# python. state.py writes one `  "rtk_path": "<path>",` line (indent=2, sort_keys); a path
-# that carries a backslash or quote is refused rather than mis-parsed.
+# rtk: run the rtk binary that session start installed (see crates/anthology-runtime/src/rtk_install.rs).
+# The path is read from ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json with sed.
+# The state writer (crates/anthology-core/src/state.rs) puts `  "rtk_path": "<path>",` on a line
+# of its own (indent=2, sort_keys); a path that carries a backslash or quote is refused rather
+# than mis-parsed.
 state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
 rtk_path=
 if [ -f "$state" ] && [ -r "$state" ]; then

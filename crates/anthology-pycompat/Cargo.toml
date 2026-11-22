@@ -1,0 +1,18 @@
+[package]
+name = "anthology-pycompat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Python-semantics parity layer: json, str, re, difflib, fnmatch, quote, path, pyerr, ipaddress, shlex, argparse"
+
+[lints]
+workspace = true
+
+[dependencies]
+regex.workspace = true
+fancy-regex.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

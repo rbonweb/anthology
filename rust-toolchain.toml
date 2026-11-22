@@ -1,0 +1,7 @@
+# The channel must equal rtk/rust-toolchain.toml's (crates/repo-tests/tests/toolchain.rs).
+# The targets may differ: the release builds static musl binaries for Linux.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]

@@ -1,0 +1,38 @@
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 0, "params": {"tool": "Bash", "tool_input": {"command": "git status"}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 1, "params": {"tool": "Bash", "tool_input": {"command": "docker compose run e2e npx playwright test"}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 2, "params": {"tool": "Read", "tool_input": {"file_path": "src/chrome-extension/manifest.json"}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 3, "params": {"tool": "mcp__browseros-neo__navigate", "tool_input": {"url": "https://x.dev"}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 4, "params": {"tool": "WebFetch", "tool_input": {"url": "https://x.dev"}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 5, "params": {"tool": "Bash", "tool_input": {}}}
+{"py": "test_guard_cli.GuardCliTest.test_allowed_payloads_exit_0_silently", "row": 6, "params": {"tool": "Bash", "tool_input": null}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 0, "params": {"rule": "G1"}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 1, "params": {"rule": "G2"}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 2, "params": {"rule": "G3"}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 3, "params": {"rule": "G4"}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 4, "params": {"rule": "G5"}}
+{"py": "test_guard_cli.GuardCliTest.test_blocked_payloads_exit_2_with_the_message_on_stderr", "row": 5, "params": {"rule": "G6"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 0, "params": {"stdin": "'not json'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 1, "params": {"stdin": "''"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 2, "params": {"stdin": "'   '"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 3, "params": {"stdin": "'{'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 4, "params": {"stdin": "'['"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 5, "params": {"stdin": "'null'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 6, "params": {"stdin": "'[]'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 7, "params": {"stdin": "'[1, 2]'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 8, "params": {"stdin": "'42'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 9, "params": {"stdin": "'\"str\"'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 10, "params": {"stdin": "'true'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 11, "params": {"stdin": "'{}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 12, "params": {"stdin": "'{\"tool_name\": 5}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 13, "params": {"stdin": "'{\"tool_name\": null}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 14, "params": {"stdin": "'{\"tool_name\": [\"Bash\"]}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 15, "params": {"stdin": "'{\"tool_input\": {\"command\": \"npx playwright instal"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 16, "params": {"stdin": "'{\"tool_name\": \"Bash\"}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 17, "params": {"stdin": "'{\"tool_name\": \"Bash\", \"tool_input\": \"npx playwrig"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 18, "params": {"stdin": "'{\"tool_name\": \"Bash\", \"tool_input\": null}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 19, "params": {"stdin": "'{\"tool_name\": \"Bash\", \"tool_input\": []}'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 20, "params": {"stdin": "'{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": 5"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 21, "params": {"stdin": "'{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": n"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 22, "params": {"stdin": "'[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 23, "params": {"stdin": "b'\\xff\\xfe\\x00 not utf-8'"}}
+{"py": "test_guard_cli.GuardCliTest.test_malformed_input_exits_0", "row": 24, "params": {"stdin": "b'{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": "}}

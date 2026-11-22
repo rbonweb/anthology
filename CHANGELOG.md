@@ -19,7 +19,7 @@ a new version section.
   - Sonnet: `implementer`, `debugger`, `docs-writer`, `ui-designer`, `marketer`.
   - Haiku: `scout`.
 - Knowledge library: 29 folders (design, engineering, product, marketing, UI and house
-  style), generated from pinned upstream sources by `scripts/vendor.py`. Agents read them
+  style), generated from pinned upstream sources by `anthology-dev vendor`. Agents read them
   from their own startup lists; the main session does not see them. Each folder ships its
   upstream license text inside the plugin, and `caveman` also ships its `NOTICE` and
   `LICENSE-MIT`.
@@ -75,8 +75,8 @@ a new version section.
 - Memory export and import: `/anthology:export` writes a `tar.gz` archive of personal and
   current-repo notes; `/anthology:import` shows a dry run first and never overwrites a
   note.
-- Doctor, run by setup: checks `python3`, `node`, Docker, BrowserOS Neo, the rtk binary and
-  the platform, and finds installed copies of the official `superpowers` and
+- Doctor, run by setup: checks the guardrails' `anthology` binary, `node`, Docker, BrowserOS
+  Neo, the rtk binary and the platform, and finds installed copies of the official `superpowers` and
   `design-skills` plugins that Anthology replaces. It also checks the plugin-read
   permission, that BrowserOS tool names in your MCP configuration match what the plugin
   expects (`browseros_tools`, read from configuration files only), the plugin data folder,
@@ -110,6 +110,27 @@ a new version section.
 - Notices marking the Apache-2.0 files Anthology modified (the connector stripping on the
   knowledge-work folders, and the `caveman` and `ui-taste` patches) come with the owner's
   credits pass, before 1.0.0.
+
+#### Changed
+
+- The plugin's code is one static `anthology` binary written in Rust, in place of the Python
+  scripts. The SessionStart hook, setup, doctor, export and import, `anthology-mem` and
+  `bin/anthology` run it through small POSIX `sh` shims in `hooks/` and `bin/`. Behaviour,
+  files and messages are unchanged except where they named Python.
+- The binary is downloaded on first use from this repo's `anthology-bin--v<version>` release,
+  checked against the sha256 for your platform in `anthology.lock` before it is unpacked, and
+  installed in `~/.claude/anthology/bin/<version>/`, shared with `anthology-guardrails`.
+  Offline, copy the release archive into `~/.claude/anthology/bin/`. If it cannot be
+  installed, session start says why in one line, and the routing guide, memory and rtk stay
+  off until it is. `/anthology:setup remove` keeps the binaries while `anthology-guardrails`
+  is installed.
+- New requirements, for the first download only: network access to GitHub, one of `curl`,
+  `wget` or `node`, one of `sha256sum`, `shasum` or `openssl`, and `tar`.
+
+#### Removed
+
+- The Python requirement: Anthology no longer needs `python3`, and
+  `plugins/anthology/scripts/` is gone.
 
 #### Security
 
@@ -146,7 +167,7 @@ a new version section.
 
 - Plugin manifest and marketplace entry.
 - A `PreToolUse` hook on every tool call that blocks, with a message naming the
-  alternative, and fails open: malformed input or an internal error never blocks a call.
+  alternative. Malformed input never blocks a call.
   - G1: host browser-automation installs and runs (Playwright, Puppeteer, and browser
     installs through `brew`).
   - G2: launching Chrome or Chromium on the host, and any `--remote-debugging-port`.
@@ -161,6 +182,31 @@ a new version section.
   loudly if it cannot run.
 - The plugin's own Apache-2.0 `LICENSE`.
 
+#### Changed
+
+- The guard is part of the `anthology` binary (Rust), run by the POSIX `sh` shim
+  `hooks/guard.sh`. Rules and block messages are unchanged. The plugin ships the same
+  `anthology.lock` as `anthology` and installs the pinned binary itself at session start, so
+  it also works on its own.
+- New requirements, for the first download only: network access to GitHub, one of `curl`,
+  `wget` or `node`, one of `sha256sum`, `shasum` or `openssl`, and `tar`.
+
+#### Removed
+
+- The Python guard (`scripts/guard.py`, `scripts/guard_rules.py`) and the `python3`
+  requirement.
+
+#### Security
+
+- The guard fails closed. While its binary is missing, broken or cannot run on this
+  machine, only read-only tools (`Read`, `Grep`, `Glob`, `WebFetch`, `Skill`, `Task` and the
+  like) are allowed; shell commands, file edits and MCP tools are blocked with a message that
+  names the fix and the way out, disabling `anthology-guardrails` with `/plugin`. A blocked
+  call retries the install at most once a minute, a binary that does not work is set aside
+  and reinstalled, and after three failures in 24 hours only a new session retries.
+- An error inside the guard (a crash, a pattern limit, a check that runs longer than 8
+  seconds) now blocks the call instead of allowing it.
+
 ## anthology-superpowers
 
 ### [Unreleased]
@@ -168,7 +214,7 @@ a new version section.
 #### Added
 
 - The upstream superpowers 7.0.2 skills library, renamed to `anthology-superpowers`, kept
-  reproducible by `scripts/vendor.py` and versioned independently of upstream. It ships
+  reproducible by `anthology-dev vendor` and versioned independently of upstream. It ships
   upstream's MIT `LICENSE` unchanged.
 
 #### Changed
@@ -177,3 +223,9 @@ a new version section.
   browser: `start-server.sh` has no `--open`, the server prints its URL, and the skill
   tells Claude to open it in BrowserOS Neo.
 - The README carries the `/plugin install anthology-superpowers@anthology` line.
+- subagent-driven-development gains `references/large-builds.md`, read on demand for
+  large or long multi-agent builds: start tasks against published interfaces with marked
+  stand-ins, keep idle agents busy, test at the cheapest level once, one review per task,
+  batch merges, rulings instead of questions, no working around a refused action, and
+  status reports in feature terms. SKILL.md, `references/fix-loop.md` and
+  dispatching-parallel-agents point to it.
