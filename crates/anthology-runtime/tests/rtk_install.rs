@@ -1734,7 +1734,8 @@ mod wrapper_test {
                 Some(command) => {
                     let command = json::dumps(&Value::Str(command.into()), &json::PY_DEFAULT);
                     let answer = REWRITE.replace(r#""rtk git status --short""#, &command);
-                    (answer, "x")
+                    // A real program: a rewrite for one that is not on PATH is dropped.
+                    (answer, "ls")
                 }
                 None => {
                     let answer = row.str("answer").to_string();

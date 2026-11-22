@@ -85,5 +85,49 @@ case $rc:$out in
       exit 0
     fi ;;
 esac
+# Ruling: a plain rewrite (no ask, no deny) is kept only if what it runs exists. Claude Code's
+# shell snapshot defines `rg`, `grep` and `find` as shell FUNCTIONS, so a typed `rg` can work with
+# no `rg` file on PATH, while `rtk rg` execs a real `rg` and fails ("search failed ... os error 2").
+# This hook is plain POSIX sh with no snapshot, so `command -v` finds real files (and builtins)
+# only. Two tests, either one drops the rewrite and the command runs as typed:
+#   1. the first word of the typed command (after leading `NAME=value` words) must resolve;
+#   2. every `rtk rg|grep|ag|find|fd` in the rewrite needs that program too (this catches
+#      `cd d && rg x`, whose first word is a builtin).
+# The typed first word is read from the raw JSON text of the first `"command"` key at or after
+# `"tool_input"`, and only when it is a plain name: a quoted, expanded, escaped or path-like word
+# (or anything else the pattern below does not match) is not judged, so the rewrite stays as it
+# was. Only the head of the command is read, so a `\u` escape later in it does not matter. A deny
+# or an ask is never dropped here (the guard above skips them). Cost if wrong: the hook's PATH
+# differs from the Bash tool's (the snapshot exports its own), so a program only the Bash tool can
+# see loses its rewrite, a few percent of tokens; the command still runs.
+if [ "$rc" -eq 0 ] &&
+   printf '%s' "$out" | grep -Eq '"updatedInput"' &&
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"'; then
+  rest=$(printf '%s' "${input#*'"tool_input"'}" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -n 1 |
+    LC_ALL=C sed -E 's/^"command"[[:space:]]*:[[:space:]]*"//; s/"$//')
+  while :; do
+    case $rest in
+      ' '*) rest=${rest# }; continue ;;
+      '\t'*|'\n'*) rest=${rest#??}; continue ;;
+    esac
+    next=$(printf '%s' "$rest" |
+      LC_ALL=C sed -nE 's#^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.,:/+@%-]*( |\\[nt])(.*)$#\2#p')
+    [ -n "$next" ] || break
+    rest=$next
+  done
+  word=$(printf '%s' "$rest" |
+    LC_ALL=C sed -nE 's/^([A-Za-z0-9_][A-Za-z0-9_.+-]*)([ ;&|<>]|\\[nt]|$).*/\1/p')
+  if [ -n "$word" ] && ! command -v "$word" >/dev/null 2>&1; then
+    exit 0
+  fi
+  progs=$(printf '%s' "$out" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
+    LC_ALL=C grep -Eo '(:[[:space:]]*"|[ ;&|(]|\\n)rtk (rg|grep|ag|find|fd)( |"|\\|$)' |
+    LC_ALL=C sed -E 's/^.*rtk ([a-z]+).*$/\1/')
+  for prog in $progs; do
+    command -v "$prog" >/dev/null 2>&1 || exit 0
+  done
+fi
 [ -z "$out" ] || printf '%s\n' "$out"
 exit "$rc"
