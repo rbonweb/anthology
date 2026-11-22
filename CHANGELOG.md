@@ -74,7 +74,10 @@ a new version section.
   to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
   start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
   the session-start warning, and the exit code is unchanged. With no repo below, or a folder
-  that cannot be listed, the message is the old single line.
+  that cannot be listed, the message is the old single line. Folder names are untrusted text:
+  each is shown in quotes, cut at 60 characters, with control characters, quotes and
+  backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
+  or needed escaping or cutting.
 
 #### Changed
 

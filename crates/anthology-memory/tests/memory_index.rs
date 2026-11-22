@@ -1310,7 +1310,7 @@ mod save_cli_test {
         assert_eq!(
             p.stderr_text(),
             format!(
-                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: shop. Run the \
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: \"shop\". Run the \
                  command from inside one, for example `cd shop && anthology-mem save ...`, or \
                  start Claude Code inside the repo.\n"
             )
@@ -1332,9 +1332,10 @@ mod save_cli_test {
         assert_eq!(
             p.stderr_text(),
             format!(
-                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: alpha, beta, \
-                 delta, gamma, mid and 2 more. Run the command from inside one, for example \
-                 `cd alpha && anthology-mem save ...`, or start Claude Code inside the repo.\n"
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: \"alpha\", \
+                 \"beta\", \"delta\", \"gamma\", \"mid\" and 2 more. Run the command from \
+                 inside one, for example `cd alpha && anthology-mem save ...`, or start \
+                 Claude Code inside the repo.\n"
             )
         );
     }
@@ -1354,9 +1355,120 @@ mod save_cli_test {
         assert_eq!(p.code, 1);
         assert!(
             p.stderr_text()
-                .contains("git repos sit below this folder: linked."),
+                .contains("git repos sit below this folder: \"linked\"."),
             "{}",
             p.stderr_text()
+        );
+    }
+
+    /// The second stderr line of a refusal that named repos below the folder.
+    fn hint_line(p: &Output) -> String {
+        let text = p.stderr_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one refusal line and one hint line: {text:?}"
+        );
+        assert!(!text.contains('\u{1b}'), "no raw escape in {text:?}");
+        lines[1].to_string()
+    }
+
+    const NO_EXAMPLE: &str =
+        "Run the command from inside one, or start Claude Code inside the repo.";
+
+    #[test]
+    fn test_outside_a_repo_control_characters_in_a_name_are_escaped() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "a\nb\u{1b}[31m\u{9b}");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \
+                 \"a\\nb\\u{{1b}}[31m\\u{{9b}}\". {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_separator_inside_a_name_stays_inside_its_quotes() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "a\", \"b");
+        fake_repo(&plain, "z\\");
+        let p = save_outside(&s, &plain);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"a\\\", \\\"b\", \"z\\\\\". \
+                 {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_name_that_is_not_utf8_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        let bad = plain.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        if fs::create_dir_all(bad.join(".git")).is_err() {
+            eprintln!("skipped: this file system refuses names that are not UTF-8");
+            return;
+        }
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"bad\u{fffd}\". {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_long_name_is_cut_and_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, &"x".repeat(200));
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"{}\u{2026}\". {NO_EXAMPLE}",
+                "x".repeat(60)
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_name_that_starts_with_a_dash_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "-odd");
+        let p = save_outside(&s, &plain);
+        assert_eq!(
+            hint_line(&p),
+            format!("anthology-mem: git repos sit below this folder: \"-odd\". {NO_EXAMPLE}")
         );
     }
 

@@ -1352,21 +1352,62 @@ fn uncaught(out: &mut Out, ty: &str, msg: &str) {
 /// The most repo names the refusal lists.
 const HINT_NAMES: usize = 5;
 
+/// The most characters of one repo name the refusal shows.
+const HINT_NAME_CHARS: usize = 60;
+
+/// `name` as the refusal prints it, and the name itself when it is safe to use in a command.
+/// A folder name is attacker-controlled text that a person or a model reads from stderr, so the
+/// printed form is in double quotes, cut after [`HINT_NAME_CHARS`] characters with `…`, and has
+/// every control character (a newline, ESC, a C1 code), `"` and `\` written in its
+/// `escape_default` form. A name that is not UTF-8 is shown with U+FFFD, which names no folder.
+/// The second value is `Some` only when the printed form is the name unchanged: valid UTF-8,
+/// nothing cut or escaped, and not starting with `-`, which `cd` would read as an option.
+fn shown_name(name: &OsStr) -> (String, Option<&str>) {
+    let mut exact = name.to_str().filter(|s| !s.starts_with('-'));
+    let mut shown = String::from('"');
+    for (i, c) in name.to_string_lossy().chars().enumerate() {
+        if i == HINT_NAME_CHARS {
+            shown.push('…');
+            exact = None;
+            break;
+        }
+        if c.is_control() || c == '"' || c == '\\' {
+            shown.extend(c.escape_default());
+            exact = None;
+        } else {
+            shown.push(c);
+        }
+    }
+    shown.push('"');
+    (shown, exact)
+}
+
 /// The second line of the "not inside a git work tree" refusal: the git repos one level below
 /// `cwd` (a session started in a folder that holds several repos), or `None` when there are
-/// none or the folder cannot be listed.
+/// none or the folder cannot be listed. The `cd` example names the first repo only when
+/// [`shown_name`] says the printed name is the real one.
 fn repos_below_hint(cwd: &Path) -> Option<String> {
     let repos = repos_below(cwd, REPO_SCAN_CAP);
     let first = repos.first()?;
-    let mut list = repos[..repos.len().min(HINT_NAMES)].join(", ");
+    let shown: Vec<String> = repos
+        .iter()
+        .take(HINT_NAMES)
+        .map(|name| shown_name(name).0)
+        .collect();
+    let mut list = shown.join(", ");
     if repos.len() > HINT_NAMES {
         list.push_str(&format!(" and {} more", repos.len() - HINT_NAMES));
     }
+    let way = match shown_name(first).1 {
+        Some(exact) => format!(
+            "Run the command from inside one, for example `cd {} && anthology-mem save ...`, or \
+             start Claude Code inside the repo.",
+            shlex::quote(exact)
+        ),
+        None => "Run the command from inside one, or start Claude Code inside the repo.".into(),
+    };
     Some(format!(
-        "anthology-mem: git repos sit below this folder: {list}. Run the command from inside \
-         one, for example `cd {} && anthology-mem save ...`, or start Claude Code inside the \
-         repo.",
-        shlex::quote(first)
+        "anthology-mem: git repos sit below this folder: {list}. {way}"
     ))
 }
 

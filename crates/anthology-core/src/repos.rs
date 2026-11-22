@@ -2,6 +2,7 @@
 //! session-start warning and the `anthology-mem` refusal, so both name the same repos.
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
@@ -10,16 +11,18 @@ pub const REPO_SCAN_CAP: usize = 200;
 
 /// The names, sorted, of the folders directly below `dir` that hold a `.git` (a folder or a
 /// file, and a symlinked folder counts). Only the first `cap` entries of `dir` are looked at,
-/// in the order the file system lists them. A folder that cannot be read has none.
-pub fn repos_below(dir: &Path, cap: usize) -> Vec<String> {
+/// in the order the file system lists them. A folder that cannot be read has none. The names
+/// are exactly as the file system holds them: they may not be UTF-8 and may hold control
+/// characters, so a caller that prints one must escape it.
+pub fn repos_below(dir: &Path, cap: usize) -> Vec<OsString> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = entries
+    let mut names: Vec<OsString> = entries
         .take(cap)
         .flatten()
         .filter(|entry| entry.path().join(".git").exists())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .map(|entry| entry.file_name())
         .collect();
     names.sort();
     names
@@ -41,6 +44,19 @@ mod tests {
         fs::create_dir_all(t.path().join("plain")).unwrap();
         fs::write(t.path().join("file.txt"), "x").unwrap();
         assert_eq!(repos_below(t.path(), REPO_SCAN_CAP), ["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_comes_back_unchanged() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let t = tmp();
+        let bad = OsString::from_vec(b"bad\xff".to_vec());
+        if fs::create_dir_all(t.path().join(&bad).join(".git")).is_err() {
+            return; // this file system refuses names that are not UTF-8
+        }
+        let found = repos_below(t.path(), REPO_SCAN_CAP);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].as_bytes(), b"bad\xff");
     }
 
     #[test]
