@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.9] - 2026-11-22
+
 #### Added
 
 - Automatic after-work check (a Claude Code mod, `hooks/mods/afterwork.ts`): when an implementer, debugger, docs-writer or ui-designer reports to the main session, the report is checked for a commit, test evidence, stray attribution lines and uncommitted files in the agent's worktree, and a short "After-work check" block naming each gap is appended. The project map and leftovers are reminders only: they ride in a block a gap raised and never raise one. The agent's text is never changed, and a report with no gap gets no block. Set `ANTHOLOGY_AFTERWORK=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
@@ -89,6 +91,7 @@ a new version section.
 - The closing pointer that session start adds when it cuts the memory index now reads
   `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
   length is the same, so the session budget is unchanged.
+- pin anthology-bin 0.1.4.
 
 ### [0.2.7] - 2026-11-22
 
@@ -397,6 +400,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.4] - 2026-11-22
+
 #### Security
 
 - The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
@@ -436,6 +441,10 @@ a new version section.
   a number (`for i in 1 2 3`). The too-complex message suggests single
   quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
   blocked. These ship in the next `anthology` binary (0.1.4).
+
+#### Changed
+
+- pin anthology-bin 0.1.4.
 
 ### [0.2.2] - 2026-11-22
 
