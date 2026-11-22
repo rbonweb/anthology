@@ -1432,7 +1432,7 @@ fn print_efficiency_meter(pct: f64) {
 
 const VERDICT_MIN_ELISIONS: i64 = 5;
 const VERDICT_WIDTH: usize = 14;
-const ISSUES_URL: &str = "https://github.com/rtk-ai/rtk/issues";
+const ISSUES_URL: &str = "https://github.com/rbonweb/anthology/issues";
 
 /// Bands match `colorize_recall_rate` so the colour and the wording never disagree.
 fn recall_verdict(elisions: i64, recalls: i64) -> &'static str {

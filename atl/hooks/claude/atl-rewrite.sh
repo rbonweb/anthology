@@ -19,7 +19,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 if ! command -v atl &>/dev/null; then
-  echo "[atl] WARNING: atl is not installed or not in PATH. Hook cannot rewrite commands. Install: https://github.com/rtk-ai/rtk#installation" >&2
+  echo "[atl] WARNING: atl is not installed or not in PATH. Hook cannot rewrite commands. Run /anthology:setup to install it." >&2
   exit 0
 fi
 

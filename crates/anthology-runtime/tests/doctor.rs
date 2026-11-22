@@ -641,7 +641,7 @@ mod check_env_test {
     }
 
     #[test]
-    fn test_real_atl_install_installed_binary_passes_and_tampering_fails() {
+    fn test_real_rtk_install_installed_binary_passes_and_tampering_fails() {
         let c = EnvCase::new();
         *c.system.borrow_mut() = linux();
         let blob = release::tarball(release::ATL_BODY);
@@ -668,7 +668,7 @@ mod check_env_test {
     }
 
     #[test]
-    fn test_real_atl_install_missing_lock_is_not_wired_yet() {
+    fn test_real_rtk_install_missing_lock_is_not_wired_yet() {
         let c = EnvCase::new();
         let x = atl_check(&c, &c.tmp.join("absent.lock"), c.deps());
         assert_eq!(x.ok, None);
@@ -727,7 +727,7 @@ mod check_env_test {
 }
 
 /// `AtlSavingsTest`: what atl did, from its own history next to state.json.
-mod atl_savings_test {
+mod rtk_savings_test {
     use super::*;
 
     /// `history(decisions, commands, wal)`: a history.db with the atl columns the check reads.

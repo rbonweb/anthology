@@ -33,7 +33,9 @@
 //! **Self-test (F-4, m-R14).** `/bin/sh <guard>/hooks/guard.sh` gets the compiled-in sample on
 //! stdin with `ANTHOLOGY_GUARD_NO_FETCH=1`. It passes only on exit 2 with stderr starting
 //! `Blocked by anthology-guardrails (G1)`. A `(setup)` block (the shim failing closed) is
-//! reported with the guard's own reason.
+//! reported with the guard's own reason. A second run sends the same command through an ATL
+//! runner ([`SELF_TEST_ATL_COMMAND`]) within the same timeout: a guard binary too old to look
+//! inside `atl` commands lets it through, and that is [`GUARD_TOO_OLD_FOR_ATL`].
 //!
 //! Seams (GC-19): [`SessionDeps`] and [`SessionLimits`]. Python's `mock.patch` of a step
 //! function with a `side_effect` maps to [`SessionDeps::fail`], keyed by the Python name.
@@ -103,6 +105,11 @@ pub const GUARD_TIMED_OUT: &str =
     "anthology: the guardrails self-test timed out; the guardrails may be OFF";
 /// The pass prefix of the self-test (F-4).
 pub const SELF_TEST_PASS: &[u8] = b"Blocked by anthology-guardrails (G1)";
+/// The self-test's second command: the known-bad one run through an ATL runner, which only a
+/// guard binary that looks inside `atl` commands blocks.
+pub const SELF_TEST_ATL_COMMAND: &str = "atl run -c 'npx playwright install'";
+/// The guard blocked the plain sample but not the one run through ATL.
+pub const GUARD_TOO_OLD_FOR_ATL: &str = "anthology: the guardrails self-test did NOT block a known-bad command run through atl; the guard binary is too old to look inside atl commands, so the guardrails may be OFF for them (update anthology-guardrails, then start a new session)";
 /// The shim's fail-closed block (GC-14, m-R14).
 pub const SETUP_BLOCK: &str = "Blocked by anthology-guardrails (setup): ";
 /// The most characters of a fail-closed reason shown.
@@ -492,22 +499,48 @@ pub fn guard_selftest(
     let Some(base) = loc.root else {
         return Ok(Some(GUARD_NOT_FOUND.into()));
     };
-    let sample = json::dumps(&data::self_test_sample(), &json::PY_DEFAULT);
+    let plain = data::self_test_sample();
+    let mut through_atl = plain.clone();
+    if let Some(input) = through_atl
+        .as_object_mut()
+        .and_then(|m| m.get_mut("tool_input"))
+        .and_then(Value::as_object_mut)
+    {
+        input.insert("command".into(), Value::Str(SELF_TEST_ATL_COMMAND.into()));
+    }
     let child_env = env.clone().with("ANTHOLOGY_GUARD_NO_FETCH", "1");
-    let spec = RunSpec {
-        argv: vec![PathBuf::from("/bin/sh"), base.join(GUARD_REL)],
-        stdin: sample.as_bytes(),
-        env: &child_env,
-        timeout: deps.limits.guard_timeout,
-    };
-    Ok(match (deps.run)(&spec) {
-        RunResult::TimedOut => Some(GUARD_TIMED_OUT.into()),
-        RunResult::Failed(exc) => Some(format!(
-            "anthology: the guardrails self-test could not run ({}); the guardrails may be OFF",
-            strerror(&exc)
-        )),
-        RunResult::Exited { code, stderr, .. } => self_test_verdict(code, &stderr),
-    })
+    // Both runs share the one timeout, so the session-start budget is unchanged.
+    let started = Instant::now();
+    for (i, sample) in [plain, through_atl].iter().enumerate() {
+        let timeout = deps.limits.guard_timeout.saturating_sub(started.elapsed());
+        if timeout.is_zero() {
+            return Ok(Some(GUARD_TIMED_OUT.into()));
+        }
+        let stdin = json::dumps(sample, &json::PY_DEFAULT);
+        let spec = RunSpec {
+            argv: vec![PathBuf::from("/bin/sh"), base.join(GUARD_REL)],
+            stdin: stdin.as_bytes(),
+            env: &child_env,
+            timeout,
+        };
+        let warning = match (deps.run)(&spec) {
+            RunResult::TimedOut => Some(GUARD_TIMED_OUT.into()),
+            RunResult::Failed(exc) => Some(format!(
+                "anthology: the guardrails self-test could not run ({}); the guardrails may be OFF",
+                strerror(&exc)
+            )),
+            RunResult::Exited { code, stderr, .. } => match self_test_verdict(code, &stderr) {
+                Some(_) if i == 1 && !stderr.starts_with(SETUP_BLOCK.as_bytes()) => {
+                    Some(GUARD_TOO_OLD_FOR_ATL.into())
+                }
+                v => v,
+            },
+        };
+        if warning.is_some() {
+            return Ok(warning);
+        }
+    }
+    Ok(None)
 }
 
 /// The F-4 verdict on the guard's exit code and stderr.

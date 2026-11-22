@@ -576,7 +576,7 @@ mod preview_test {
     }
 }
 
-mod real_atl_test {
+mod real_rtk_test {
     use super::*;
     use anthology_runtime::atl_install::{self, AtlDeps};
     use anthology_runtime::fetch::Fetch;
@@ -843,7 +843,7 @@ mod apply_remove_test {
     }
 
     #[test]
-    fn test_apply_runs_the_atl_reconcile_and_surfaces_its_warning() {
+    fn test_apply_runs_the_rtk_reconcile_and_surfaces_its_warning() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         *f.atl.result.borrow_mut() = Reconciled {
@@ -918,7 +918,7 @@ mod apply_remove_test {
     }
 
     #[test]
-    fn test_absent_atl_wiring_is_skipped() {
+    fn test_absent_rtk_wiring_is_skipped() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         let deps = SetupDeps {
@@ -1526,7 +1526,7 @@ mod fix_round1_test {
     }
 
     #[test]
-    fn test_edit_during_the_atl_download_is_never_overwritten() {
+    fn test_edit_during_the_rtk_download_is_never_overwritten() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         let digest = f.digest();
@@ -1886,7 +1886,7 @@ mod remove_test {
     }
 
     #[test]
-    fn test_remove_deletes_only_the_atl_folder_under_the_data_dir() {
+    fn test_remove_deletes_only_the_rtk_folder_under_the_data_dir() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
@@ -1907,7 +1907,7 @@ mod remove_test {
     }
 
     #[test]
-    fn test_remove_deletes_the_atl_history_folder() {
+    fn test_remove_deletes_the_rtk_history_folder() {
         // I4: the folder bin/atl and bin/atl-hook point ATL_DB_PATH, ATL_RECALL_DB and
         // ATL_TEE_DIR at.
         let f = Fx::new();
@@ -1929,7 +1929,7 @@ mod remove_test {
     }
 
     #[test]
-    fn test_remove_without_atl_history_reports_nothing_to_delete() {
+    fn test_remove_without_rtk_history_reports_nothing_to_delete() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
@@ -1945,7 +1945,7 @@ mod remove_test {
     }
 
     #[test]
-    fn test_remove_does_not_follow_a_symlinked_atl_history_folder() {
+    fn test_remove_does_not_follow_a_symlinked_rtk_history_folder() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
@@ -1978,7 +1978,7 @@ mod remove_test {
     }
 
     #[test]
-    fn test_remove_does_not_follow_a_symlinked_atl_folder() {
+    fn test_remove_does_not_follow_a_symlinked_rtk_folder() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();

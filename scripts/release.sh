@@ -94,6 +94,17 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 if [ -f "$LOCK_REL" ]; then
+  # The binary that anthology.lock pins must not be older than the workspace: a plugin must not
+  # ship with a guard binary that predates the crates it was tested with (for example one that
+  # cannot look inside `atl` commands).
+  version_key() { printf '%s\n' "${1%%[-+]*}" | awk -F. '{ printf "%09d%09d%09d\n", $1, $2, $3 }'; }
+  LOCK_BIN=$(sed -n 's/^  "version": "\([^"]*\)",*$/\1/p' "$LOCK_REL" | head -n 1)
+  WS_VERSION=$(awk '/^\[/ { p = ($0 == "[workspace.package]") } p && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
+  [ -n "$LOCK_BIN" ] || die "cannot read the anthology-bin version from $LOCK_REL"
+  [ -n "$WS_VERSION" ] || die "cannot read the workspace version from Cargo.toml"
+  if [[ "$(version_key "$LOCK_BIN")" < "$(version_key "$WS_VERSION")" ]]; then
+    die "$LOCK_REL pins anthology-bin $LOCK_BIN, older than the workspace version $WS_VERSION: release anthology-bin--v$WS_VERSION and run 'scripts/dev.sh lock write' first"
+  fi
   # The binary that anthology.lock pins must match the shipped crates at HEAD (design §8.5).
   dev lock check-fresh >&2 || die "the anthology binary is stale: release a new one (tag anthology-bin--v<next>) and run 'scripts/dev.sh lock write', or see the lines above"
 fi

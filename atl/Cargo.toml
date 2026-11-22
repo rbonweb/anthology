@@ -110,7 +110,7 @@ strip = true
 
 # cargo-deb configuration
 [package.metadata.deb]
-maintainer = "RTK AI Labs <contact@rtk-ai.app>"
+maintainer = "Anthology <https://github.com/rbonweb/anthology>"
 copyright = "2026 RTK AI Labs"
 license-file = ["LICENSE", "0"]
 extended-description = "atl filters and compresses command outputs before they reach your LLM context, cutting the bash output your agent reads."

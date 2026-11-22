@@ -1393,7 +1393,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_both_wrappers_keep_atl_history_next_to_state_json() {
+    fn test_both_wrappers_keep_rtk_history_next_to_state_json() {
         // I4: atl's tracking db (command lines), recall store and tee spool live under
         // state.atl_data_dir(), which remove deletes, never in atl's default data folder.
         let w = setup();
@@ -1466,7 +1466,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_runs_atl_hook_claude_with_stdin_passed_through() {
+    fn test_hook_runs_rtk_hook_claude_with_stdin_passed_through() {
         let w = setup();
         w.b.state_write(&[("atl_path", w.fake_str())]);
         let res = w.run_bin("atl-hook", &[], r#"{"tool_name":"Bash"}"#);
@@ -1593,7 +1593,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_keeps_an_ask_on_a_line_that_mentions_legacy_rtk() {
+    fn test_hook_keeps_an_ask_on_a_line_that_mentions_rtk() {
         // The legacy name still counts: a user's own `Bash(rtk *)` rule would allow these as
         // typed, and setup never removes a rule it did not add.
         let w = setup();
@@ -1762,7 +1762,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_legacy_rtk() {
+    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk() {
         // The legacy spellings (`$'\x72tk'`) are no mention either.
         let w = setup();
         w.answer_fake(ASK, 0);
@@ -1791,7 +1791,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_an_ask_when_legacy_rtk_is_only_inside_a_longer_word() {
+    fn test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word() {
         // A letter or underscore glued before the legacy name cannot invoke it either.
         let w = setup();
         w.answer_fake(ASK, 0);
@@ -1819,7 +1819,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_a_rewrite_into_atl_read() {
+    fn test_hook_drops_a_rewrite_into_rtk_read() {
         // cat/head/tail become `atl read`, which saves little and changes what Claude reads: the
         // command runs as typed instead. With or without atl's allow, alone or in a compound line.
         let w = setup();
@@ -1875,7 +1875,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_keeps_atl_exit_status_and_output_on_failure() {
+    fn test_hook_keeps_rtk_exit_status_and_output_on_failure() {
         let w = setup();
         let table: Vec<Row> = rows(
             "test_rtk_install",
@@ -1895,7 +1895,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_silent_atl_stays_silent() {
+    fn test_hook_silent_rtk_stays_silent() {
         let w = setup();
         w.answer_fake("", 0);
         let res = w.run_bin("atl-hook", &[], &hook_input("ls; pwd"));
@@ -1918,7 +1918,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_looks_for_atl_in_the_command_only() {
+    fn test_hook_looks_for_rtk_in_the_command_only() {
         // A working folder, transcript or description that says atl does not bring the prompt back.
         let w = setup();
         w.answer_fake(ASK, 0);
@@ -1971,7 +1971,7 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_unreadable_state_is_quiet_for_the_hook_and_missing_for_atl() {
+    fn test_unreadable_state_is_quiet_for_the_hook_and_missing_for_rtk() {
         let w = setup();
         if is_root(&w.b.tmp) {
             // Python: skipIf(geteuid() == 0, "root can read any file").

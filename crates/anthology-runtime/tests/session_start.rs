@@ -1538,7 +1538,7 @@ mod state_test {
 
 // --- AtlTest ------------------------------------------------------------------------------
 
-mod atl_test {
+mod rtk_test {
     use super::*;
 
     #[test]
@@ -1682,7 +1682,7 @@ mod atl_test {
 
 // --- RealAtlTest --------------------------------------------------------------------------
 
-mod real_atl_test {
+mod real_rtk_test {
     use super::*;
     use anthology_runtime::fetch::Fetch;
     use anthology_testkit::mem::MemCase;
@@ -2362,7 +2362,7 @@ mod guide_test {
     }
 
     #[test]
-    fn test_worktree_docker_atl_and_memory_rules() {
+    fn test_worktree_docker_rtk_and_memory_rules() {
         let text = guide();
         for want in [
             "worktree.baseRef: \"head\"",
@@ -2943,18 +2943,39 @@ mod f4_self_test {
         f.mark_setup(None);
         let seen = f.tmp().join("seen");
         let body = format!(
-            "#!/bin/sh\ncat > {0}.in\nprintf '%s' \"$ANTHOLOGY_GUARD_NO_FETCH\" > {0}.env\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
+            "#!/bin/sh\ncat >> {0}.in\necho >> {0}.in\nprintf '%s' \"$ANTHOLOGY_GUARD_NO_FETCH\" > {0}.env\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
             p(&seen)
         );
         let root = f.c.fake_plugins(&body);
         f.mark_setup(Some(&root));
         let out = f.go_root(&root);
         assert!(!has_msg(&out), "{out:?}");
+        // the plain sample, then the same command run through an ATL runner
         assert_eq!(
             fs::read_to_string(seen.with_extension("in")).unwrap(),
-            r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright install chromium"}}"#
+            concat!(
+                r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright install chromium"}}"#,
+                "\n",
+                r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "atl run -c 'npx playwright install'"}}"#,
+                "\n"
+            )
         );
         assert_eq!(fs::read_to_string(seen.with_extension("env")).unwrap(), "1");
+    }
+
+    #[test]
+    fn a_guard_too_old_to_look_inside_atl_warns() {
+        // A guard binary from before the rename (bin 0.1.1) blocks the plain sample but lets
+        // `atl run -c '…'` through: the self-test must not pass quietly.
+        let f = Fx::new();
+        let root = f.c.fake_plugins(
+            "#!/bin/sh\nin=$(cat)\ncase $in in *'atl run'*) printf 'anthology-guard:allow:v1\\n' >&2; exit 0 ;; esac\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
+        );
+        f.mark_setup(Some(&root));
+        let got = lines(&f.go_root(&root));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].contains("atl"), "{got:?}");
+        assert!(got[0].contains("the guardrails may be OFF"), "{got:?}");
     }
 
     #[test]

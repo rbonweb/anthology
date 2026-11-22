@@ -265,7 +265,7 @@ mod security_doc_test {
     }
 
     #[test]
-    fn test_names_the_atl_allow() {
+    fn test_names_the_rtk_allow() {
         assert!(text().contains("Bash(atl *)"));
     }
 

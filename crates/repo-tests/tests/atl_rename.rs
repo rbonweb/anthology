@@ -16,6 +16,7 @@
 //! It covers every part of the rename (the binary and CI, the shell and guard, install, hook and
 //! doctor, settings, setup and docs).
 
+use std::collections::HashMap;
 use std::io::Read;
 
 use flate2::read::GzDecoder;
@@ -50,29 +51,9 @@ const PINNED_PATHS: [&str; 5] = [
 ];
 
 /// Single lines that keep the old name and cannot say `legacy` on the same line: (file, a
-/// substring of the line, why). A module line cannot carry a comment (rustfmt moves it off the
-/// line or drops it), and a golden line is recorded output.
-const PINNED_LINES: [(&str, &str, &str); 7] = [
-    (
-        "crates/repo-tests/tests/rtk_layout.rs",
-        "mod rtk_source_entry_test {",
-        "port/ledger names this module",
-    ),
-    (
-        "crates/repo-tests/tests/rtk_layout.rs",
-        "mod rtk_tree_test {",
-        "port/ledger names this module",
-    ),
-    (
-        "crates/repo-tests/tests/rtk_layout.rs",
-        "mod rtk_test_script_test {",
-        "port/ledger names this module",
-    ),
-    (
-        "crates/repo-tests/tests/rtk_release_workflow.rs",
-        "mod rtk_release_workflow_test {",
-        "port/ledger names this module",
-    ),
+/// substring of the line, why): golden lines, which are recorded output. Test names the port
+/// ledger pins are taken out of each line by [`ledger_pins`] instead.
+const PINNED_LINES: [(&str, &str, &str); 3] = [
     (
         "crates/anthology-dev/tests/golden/dev.rtk-trim.jsonl.gz",
         "\"surface\": \"dev.rtk-trim\"",
@@ -110,6 +91,50 @@ fn allowed_path(path: &str) -> bool {
             path == *a
         }
     })
+}
+
+/// Port ledger pin: every module and fn name in the `rust_test` column of `port/ledger/*.tsv`
+/// (`<file>::<module>::<fn>`) keeps its Python name, old tool name included, so the ledger can
+/// tie it to the Python test. Per Rust file, the pinned names that hold the old name.
+fn ledger_pins() -> HashMap<String, Vec<String>> {
+    let old = old_name();
+    let mut pins: HashMap<String, Vec<String>> = HashMap::new();
+    let dir = repo::path("port/ledger");
+    for entry in std::fs::read_dir(&dir).expect("port/ledger") {
+        let path = entry.expect("an entry").path();
+        if path.extension().is_none_or(|e| e != "tsv") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a ledger file");
+        for row in text.lines().filter(|l| !l.starts_with('#')) {
+            let Some(rust_test) = row.split('\t').nth(2) else {
+                continue;
+            };
+            let mut parts = rust_test.split("::");
+            let Some(file) = parts.next() else { continue };
+            for name in parts.filter(|n| old.is_match(n)) {
+                let names = pins.entry(file.to_string()).or_default();
+                if !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    // Longest first, so a name that contains a shorter pinned name is taken out whole.
+    for names in pins.values_mut() {
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    }
+    pins
+}
+
+/// `line` with every whole-word occurrence of `names` taken out.
+fn without_names(line: &str, names: &[String]) -> String {
+    let mut out = line.to_string();
+    for name in names {
+        let word = Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
+        out = word.replace_all(&out, "").into_owned();
+    }
+    out
 }
 
 fn old_name() -> Regex {
@@ -162,6 +187,20 @@ fn the_rules_say_what_they_allow() {
     ] {
         assert!(old.is_match(bad) && !line.is_match(bad), "{bad}");
     }
+    // port ledger pin: a pinned test name is taken out whole, and nothing else is
+    let names = vec!["test_rtk_x_y".to_string(), "rtk_x".to_string()];
+    assert_eq!(
+        without_names("    fn test_rtk_x_y() { rtk_x(); }", &names),
+        "    fn () { (); }"
+    );
+    assert_eq!(without_names("run rtk_xy", &names), "run rtk_xy");
+    let pins = ledger_pins();
+    assert!(
+        pins["crates/repo-tests/tests/rtk_layout.rs"]
+            .iter()
+            .any(|n| n == "rtk_source_entry_test"),
+        "{pins:?}"
+    );
     for path in [
         "atl/LICENSE",
         "atl/CHANGELOG.md",
@@ -195,6 +234,7 @@ fn the_rules_say_what_they_allow() {
 fn no_rtk_outside_the_allowed_paths_and_lines() {
     let files = repo::tracked_files().expect("git lists the tracked files here");
     let (old, line) = (old_name(), allowed_line());
+    let pins = ledger_pins();
     let mut found: Vec<String> = Vec::new();
     let mut used = [false; PINNED_LINES.len()];
     for path in files {
@@ -205,6 +245,7 @@ fn no_rtk_outside_the_allowed_paths_and_lines() {
             found.push(format!("{path}: the path itself"));
         }
         let Some(text) = text_of(&path) else { continue };
+        let names = pins.get(&path);
         for (n, l) in text.lines().enumerate() {
             let pinned = PINNED_LINES
                 .iter()
@@ -213,6 +254,12 @@ fn no_rtk_outside_the_allowed_paths_and_lines() {
                 used[i] = true;
                 continue;
             }
+            // A test name the port ledger pins (port ledger pin) is not an old-name mention.
+            let l = match names {
+                Some(names) => without_names(l, names),
+                None => l.to_string(),
+            };
+            let l = l.as_str();
             if old.is_match(l) && !line.is_match(l) {
                 let shown: String = l.chars().take(160).collect();
                 found.push(format!("{path}:{}: {shown}", n + 1));

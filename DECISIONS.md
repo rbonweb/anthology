@@ -991,7 +991,7 @@ The tool this repo ships as `rtk` is a fork of rtk by RTK AI Labs (github.com/rt
 - **Never touched:** upstream rtk's own folders (`~/.local/share/rtk`, `~/Library/Application Support/rtk`, a project's `.rtk/`), the first release's default history folder, and any `rtk` the user installed on their own.
 - **Security strings.** The guard and the hook keep recognising `rtk` as a legacy name next to `atl`: the hook's mention check, the shell peel (`TOKEN_LAYER_NAMES`), the gate's own-name check. A command typed with the old name is still checked.
 - **Fail-closed windows.** Plugin updated before setup: `atl` rewrites prompt. Download fails: `atl-hook` exits 0. An old session after setup: the old hook exits 0 and `rtk` is not found. The guard keeps running in all three.
-- **Guard pin.** The ATL peel needs a new `anthology` binary release, so `anthology` pins `anthology-guardrails` at `~0.2.2`.
+- **Guard pin.** The ATL peel needs a new `anthology` binary release, so `anthology` pins `anthology-guardrails` at `~0.2.4` (0.2.2 and 0.2.3 shipped on the old binary).
 
 **Consequences**
 
