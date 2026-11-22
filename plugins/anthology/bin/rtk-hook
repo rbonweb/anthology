@@ -48,6 +48,16 @@ rc=$?
 if [ "$rc" -eq 0 ] &&
    printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"ask"' &&
    ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+  # A hook ask prompts even in bypass mode, where the user chose not to be asked, so rtk's ask is
+  # dropped there and the command runs as typed. Claude Code sets permission_mode in the hook
+  # input, before tool_input; the model cannot. Only the part before the first `"tool_input"` is
+  # read, so a key of that name inside the tool input is ignored. Every other mode keeps the ask
+  # below, auto included: an ask on a line that mentions rtk is what `Bash(rtk *)` would allow, and
+  # dropping it would let that rule skip auto mode's classifier.
+  top=${input%%'"tool_input"'*}
+  case $top in
+    *'"permission_mode":"bypassPermissions"'*|*'"permission_mode": "bypassPermissions"'*) exit 0 ;;
+  esac
   case $input in
     *'\u'*) ;;
     *)

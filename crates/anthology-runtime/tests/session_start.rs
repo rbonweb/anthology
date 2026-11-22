@@ -2292,6 +2292,19 @@ mod guide_test {
     }
 
     #[test]
+    fn test_commits_and_prs_carry_only_the_git_author() {
+        let text = guide();
+        let worktrees = section_of(&text, 4);
+        assert!(
+            worktrees.contains(
+                "- Commits, PRs and code comments carry only the git config author: never add \
+                 Co-Authored-By or \"Generated with\" lines, never mention Claude or AI."
+            ),
+            "{worktrees}"
+        );
+    }
+
+    #[test]
     fn test_lead_reads_the_project_map_before_planning() {
         let text = guide();
         let roles = section_of(&text, 1);
