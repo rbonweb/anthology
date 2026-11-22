@@ -227,6 +227,8 @@ fn an_expansion_elsewhere_in_the_command_may_put_a_name_before_a_bracket() {
         // decoded text a printf wrote
         r#"echo a | xargs -I@ unset "@[\`npx playwright install\`]""#,
         r#"printf 'unset "a\0441"' | sh -s "[\`npx playwright install\`]""#,
+        // an alias holds text a later word runs, so the name and the bracket meet there
+        r#"shopt -s expand_aliases; alias u='a[0]=1; unset "a"[\`"npx playwright install"\`]'; u"#,
         // an unescaped backtick substitution anywhere
         r#"echo `echo a` > /dev/null; unset "[\`npx playwright install\`]""#,
     ]);

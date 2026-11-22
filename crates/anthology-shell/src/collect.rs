@@ -536,14 +536,15 @@ fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool, hidden_name
 }
 
 /// Programs that read text as shell words or commands, or splice their input into a command line (`xargs -I@`).
-const TEXT_CONSUMERS: &[&str] = &["busybox", "eval", "source", "xargs", "parallel"];
+const TEXT_CONSUMERS: &[&str] = &["alias", "busybox", "eval", "source", "xargs", "parallel"];
 
 /// G0-FP: `text` gives no word a name it does not show, so a `[` that follows no name in its own word follows
 /// none in the command (`subscript_runs`). That holds when the text has no `$` (so no parameter, arithmetic or
 /// command expansion, which can put a name in front of a word that was set aside: `set -- '[...]'; unset
 /// "a$1"`), no backtick outside single quotes that a backslash does not escape (a backtick substitution; in
 /// single quotes or escaped it is a plain character, as in a regex), and no word that names a shell, `eval`,
-/// `xargs` or `parallel`, which build commands from text (`xargs -I@`, a printf piped to `sh -s`). A `$` counts
+/// `xargs`, `parallel` or `alias`, which build commands from text (`xargs -I@`, a printf piped to `sh -s`, an
+/// alias that a later word expands to a name and a bracket). A `$` counts
 /// anywhere, even in single quotes, because the quote scan here is only approximate (an apostrophe in a comment
 /// opens a quote bash does not see); every doubt is "not plain", and an unclosed single quote is not plain.
 fn plain_text(text: &str, segments: &[crate::lexer::Segment]) -> bool {
