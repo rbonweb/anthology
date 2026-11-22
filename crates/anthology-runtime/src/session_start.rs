@@ -35,8 +35,10 @@
 //! `Blocked by anthology-guardrails (G1)`. A `(setup)` block (the shim failing closed) is
 //! reported with the guard's own reason, except the shim's "not installed (not attempted)" when
 //! the pinned binary is installed by the time the answer is read: that is a self-test that
-//! could not tell, and says so. A timeout, or less than the self-test's limit left of
-//! [`DEADLINE`], is reported the same way, never as a guard that is off or blocking.
+//! could not tell, and says so. A timeout is reported the same way. With less than the
+//! self-test's limit left of [`DEADLINE`] the guard is not run: the install folder is checked
+//! instead, and the self-test is called skipped only when the pinned binary is there; a missing
+//! one gets the failing-closed warning.
 //!
 //! Seams (GC-19): [`SessionDeps`] and [`SessionLimits`]. Python's `mock.patch` of a step
 //! function with a `side_effect` maps to [`SessionDeps::fail`], keyed by the Python name.
@@ -104,6 +106,10 @@ pub const GUARD_NOT_FOUND: &str = "anthology: the guardrails plugin was not foun
 /// The self-test timed out. It says nothing about the guard: the PreToolUse hook is a separate
 /// process that runs on every command.
 pub const GUARD_TIMED_OUT: &str = "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command";
+/// Added to [`GUARD_TIMED_OUT`] when the binary is installed.
+pub const TIMED_OUT_HINT: &str = "; if commands hang or are blocked, run /anthology:setup";
+/// The shim's reason for a missing binary, as the self-test would have seen it (no fetch).
+pub const BINARY_MISSING_REASON: &str = "the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin";
 /// Too little of the session start budget was left to run the self-test.
 pub const SELF_TEST_NO_TIME: &str = "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command";
 /// The shim found no binary and the self-test never fetches, but the install folder holds the
@@ -516,7 +522,12 @@ fn self_test_in(
         return Ok(Some(GUARD_NOT_FOUND.into()));
     };
     if !time_left {
-        return Ok(Some(SELF_TEST_NO_TIME.into()));
+        // No process is needed to see whether the binary is there: skip only when it is.
+        return Ok(Some(if bootstrap::guard_binary_installed(&base, env) {
+            SELF_TEST_NO_TIME.into()
+        } else {
+            format!("anthology: the guardrails are failing closed: {BINARY_MISSING_REASON}")
+        }));
     }
     let sample = json::dumps(&data::self_test_sample(), &json::PY_DEFAULT);
     let child_env = env.clone().with("ANTHOLOGY_GUARD_NO_FETCH", "1");
@@ -527,6 +538,9 @@ fn self_test_in(
         timeout: deps.limits.guard_timeout,
     };
     Ok(match (deps.run)(&spec) {
+        RunResult::TimedOut if bootstrap::guard_binary_installed(&base, env) => {
+            Some(format!("{GUARD_TIMED_OUT}{TIMED_OUT_HINT}"))
+        }
         RunResult::TimedOut => Some(GUARD_TIMED_OUT.into()),
         RunResult::Failed(exc) => Some(format!(
             "anthology: the guardrails self-test could not run ({}); the guardrails may be OFF",
