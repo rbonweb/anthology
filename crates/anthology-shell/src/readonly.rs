@@ -88,8 +88,8 @@ const MAX_LEN: usize = 4096;
 ///
 /// A pattern is one or more `/`-separated components. `*` stands for any run of characters inside a
 /// component. A pattern matches when its components equal consecutive components of the path, anywhere in
-/// it, so `.ssh` matches `/home/u/.ssh`, `a/.ssh/id_rsa` and `.ssh`, and `.aws/credentials` matches
-/// `/home/u/.aws/credentials`. A glob in the path (`.en*`, `*.pem`) is checked against the names these
+/// it, so `.ssh` matches `/srv/app/.ssh`, `a/.ssh/id_rsa` and `.ssh`, and `.aws/credentials` matches
+/// `/srv/app/.aws/credentials`. A glob in the path (`.en*`, `*.pem`) is checked against the names these
 /// patterns stand for ([`GLOB_SAMPLES`] and each pattern with its `*` read as a character no literal
 /// equals); a glob with fewer than two literal characters (`*`, `?`, `i*`) is not, or no `cat ./*` could be
 /// proven.

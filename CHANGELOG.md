@@ -20,9 +20,19 @@ a new version section.
   your `Read()` rules, so `cd ./secret && cat k.txt` is still denied. The count must be digits
   only (no variable, substitution, file or `-f`). A second pipe, `;`, `||`, `&`, a newline, a
   second `cd` or a redirect still asks. Everything else about the plain shape is unchanged.
+  The plain shape also refuses a word that opens with `=` once its quotes are gone (`''=ls`,
+  which zsh turns into a command path), and a word that starts with `-` after the first
+  operand (`rtk wc a -l`), which the macOS tools read as a file.
 - New in `anthology-shell` (used by the guard, rtk and the later permission levels):
   `classify_readonly`, which proves that a Bash command only reads, and is conservative by
   default: anything it does not prove is not read-only. It is not wired into a hook yet.
+  It is written for the macOS tools under zsh: a word that starts with `-` after the first
+  operand is not proven for any program (BSD tools read it as a file, and `uniq a -c` writes
+  one), a zsh numeric glob such as `<1-5>` is not proven, nor is a word that opens with `=`
+  once its quotes are gone. A path that names an obvious secret (`.ssh`, `.env`, `*.pem`,
+  `id_*`, `.aws/credentials` and so on) is never proven. A proof says, for each path,
+  whether everything under it is read, and whether `git` is in the line, so the later path
+  check can look at git's configuration.
 
 ### [0.2.0] - 2026-11-22
 
