@@ -1856,7 +1856,8 @@ mod wrapper_test {
                 Some(command) => {
                     let command = json::dumps(&Value::Str(command.into()), &json::PY_DEFAULT);
                     let answer = REWRITE.replace(r#""atl git status --short""#, &command);
-                    (answer, "x")
+                    // A real program: a rewrite for one that is not on PATH is dropped.
+                    (answer, "ls")
                 }
                 None => {
                     let answer = row.str("answer").to_string();
@@ -1871,6 +1872,233 @@ mod wrapper_test {
             w.answer_fake(&answer, 0);
             let res = w.run_bin("atl-hook", &[], &hook_input(typed));
             assert_eq!((res.code, res.stdout_text()), (0, format!("{answer}\n")));
+        }
+    }
+
+    // Rust-only tests (no Python twin): Claude Code's shell snapshot defines `rg`, `grep` and
+    // `find` as shell functions, so a typed `rg` can work with no `rg` file on PATH. atl then execs
+    // the real program and fails. The hook has no snapshot, so `command -v` there sees real files.
+
+    impl W {
+        /// A folder of links to the tools the hook and the fake atl call (`sed`, `head`, `grep`,
+        /// `tr`, `cat`), plus an executable stub for each name in `extra`. It is the whole PATH of
+        /// the run: a program is on it only when it is listed here.
+        fn tools_dir(&self, name: &str, extra: &[&str]) -> String {
+            let dir = self.b.tmp.join(name);
+            fs::create_dir_all(&dir).expect("mkdir");
+            for tool in ["sed", "head", "grep", "tr", "cat"] {
+                let real = path_var()
+                    .split(':')
+                    .map(|d| Path::new(d).join(tool))
+                    .find(|p| p.is_file())
+                    .unwrap_or_else(|| panic!("no {tool} on PATH"));
+                std::os::unix::fs::symlink(real, dir.join(tool)).expect("link");
+            }
+            for tool in extra {
+                let stub = dir.join(tool);
+                fs::write(&stub, "#!/bin/sh\n").expect("stub");
+                set_mode(&stub, 0o755);
+            }
+            dir.to_str().expect("utf-8 tmp").to_string()
+        }
+
+        /// The hook on exactly `path`.
+        fn run_hook_on(&self, path: &str, stdin: &str) -> anthology_testkit::Output {
+            let env = Env::default()
+                .with("PATH", path)
+                .with_os("HOME", self.b.tmp.join("home"))
+                .with_os("CLAUDE_CONFIG_DIR", &self.b.cfg);
+            run_program(
+                &wrapper("atl-hook"),
+                &[],
+                stdin.as_bytes(),
+                &env,
+                &self.b.tmp,
+            )
+        }
+    }
+
+    /// A plain rewrite answer, as atl prints it, that runs `rewritten`.
+    fn rewrite_to(rewritten: &str) -> String {
+        let command = json::dumps(&Value::Str(rewritten.into()), &json::PY_DEFAULT);
+        REWRITE.replace(r#""atl git status --short""#, &command)
+    }
+
+    /// Typed command and what atl rewrites it to, for the hook's three outcomes below.
+    const RG_REWRITES: [(&str, &str); 9] = [
+        ("ag word a.txt", "atl ag word a.txt"),
+        ("fd word", "atl fd word"),
+        ("rg -n -i word a.txt b.txt", "atl rg -n -i word a.txt b.txt"),
+        // A non-ASCII argument is a `\u` escape in the JSON; only the first word is read.
+        ("rg -n \u{e9}t\u{e9} a.txt", "atl rg -n \u{e9}t\u{e9} a.txt"),
+        ("  rg word a.txt", "atl rg word a.txt"),
+        ("FOO=1 BAR=x rg word a.txt", "FOO=1 BAR=x atl rg word a.txt"),
+        // The first word is a builtin; the program the rewrite execs is the one that must exist.
+        ("cd sub && rg word a.txt", "cd sub && atl rg word a.txt"),
+        ("cd sub\nrg word a.txt", "cd sub\natl rg word a.txt"),
+        ("find . -name x | head", "atl find . -name x | head"),
+    ];
+
+    #[test]
+    fn test_hook_drops_a_rewrite_when_the_program_is_not_on_path() {
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for (typed, rewritten) in RG_REWRITES {
+            w.answer_fake(&rewrite_to(rewritten), 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_reads_a_huge_leading_whitespace_run_in_linear_time() {
+        // 200 KB of spaces, and of space + tab pairs, before `rg`: still dropped, well under a second.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        w.answer_fake(&rewrite_to("atl rg word a.txt"), 0);
+        for lead in [" ".repeat(200_000), " \t".repeat(100_000)] {
+            let started = std::time::Instant::now();
+            let res = w.run_hook_on(&bare, &hook_input(&format!("{lead}rg word a.txt")));
+            let took = started.elapsed();
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new())
+            );
+            assert!(took < Duration::from_secs(1), "{took:?}");
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_for_a_program_outside_the_search_family() {
+        // A hook PATH poorer than the Bash tool's must not cost cargo, npm or docker their rewrite:
+        // only rg, grep, ag, find and fd can be snapshot functions.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for (typed, rewritten) in [
+            ("cargo test -p x", "atl cargo test -p x"),
+            ("npm run build", "atl npm run build"),
+            ("docker ps", "atl docker ps"),
+            ("git status --short", "atl git status --short"),
+            ("FOO=1 cargo build", "FOO=1 atl cargo build"),
+            ("nosuchprog a", "atl nosuchprog a"),
+        ] {
+            let answer = rewrite_to(rewritten);
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_when_the_program_is_on_path() {
+        let w = setup();
+        let full = w.tools_dir("full", &["rg", "find", "git", "ag", "fd"]);
+        for (typed, rewritten) in RG_REWRITES.into_iter().chain([
+            ("git status --short", "atl git status --short"),
+            // atl grep falls back to grep, so a real grep is enough, with no rg at all.
+            ("grep -rn foo .", "atl grep -rn foo ."),
+        ]) {
+            let answer = rewrite_to(rewritten);
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&full, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_it_cannot_judge() {
+        // The first word is quoted, expanded, escaped or a path: the hook cannot tell what runs,
+        // so the rewrite stands as before.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        for typed in [
+            "\"rg\" word a.txt",
+            "'rg' word a.txt",
+            "$grep word a.txt",
+            "./rg word a.txt",
+            "/opt/bin/rg word a.txt",
+            "FOO=\"a b\" rg word a.txt",
+            "FOO=$(date) rg word a.txt",
+            "r\\g word a.txt",
+            "(rg word a.txt)",
+        ] {
+            let answer = rewrite_to("atl ls");
+            w.answer_fake(&answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+        // But a rewrite that execs a missing search program is dropped even then.
+        w.answer_fake(&rewrite_to("atl rg word a.txt"), 0);
+        let res = w.run_hook_on(&bare, &hook_input("\"rg\" word a.txt"));
+        assert_eq!(
+            (res.code, res.stdout_text(), res.stderr_text()),
+            (0, String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn test_hook_never_drops_a_deny_or_a_kept_ask_for_a_missing_program() {
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        let deny_with_rewrite = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ATL: a deny rule matches","updatedInput":{"command":"atl rg secret"}}}"#;
+        let ask_with_rewrite = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl rg secret"},"permissionDecision":"ask"}}"#;
+        for (answer, typed) in [
+            (DENY, "rg secret"),
+            (deny_with_rewrite, "rg secret"),
+            // An ask on a line that mentions atl is kept (`Bash(atl *)` would allow it).
+            (ask_with_rewrite, "atl rg secret"),
+        ] {
+            w.answer_fake(answer, 0);
+            let res = w.run_hook_on(&bare, &hook_input(typed));
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{answer}\n"), String::new()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_missing_program_in_bypass_mode_keeps_a_deny_and_drops_an_ask() {
+        // Bypass mode with no rg: a deny is still printed, an ask is dropped as it always was.
+        let w = setup();
+        let bare = w.tools_dir("bare", &[]);
+        let deny = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ATL: a deny rule matches","updatedInput":{"command":"atl rg secret"}}}"#;
+        let ask = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl rg secret"},"permissionDecision":"ask"}}"#;
+        for typed in ["rg secret", "atl rg secret"] {
+            let stdin = format!(
+                r#"{{"permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{{"command":"{typed}"}}}}"#
+            );
+            w.answer_fake(deny, 0);
+            let res = w.run_hook_on(&bare, &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, format!("{deny}\n"), String::new()),
+                "deny {typed:?}"
+            );
+            w.answer_fake(ask, 0);
+            let res = w.run_hook_on(&bare, &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "ask {typed:?}"
+            );
         }
     }
 
