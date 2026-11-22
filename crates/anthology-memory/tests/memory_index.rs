@@ -1255,6 +1255,132 @@ mod save_cli_test {
         assert_eq!(fs::read_dir(&plain).expect("ls").count(), 0);
     }
 
+    const NOT_IN_REPO: &str =
+        "anthology-mem: not inside a git work tree; memory notes live in the repo\n";
+
+    /// `save` run in `cwd`, which is not inside a git repo.
+    fn save_outside(s: &SaveCase, cwd: &Path) -> Output {
+        s.run_in(
+            cwd,
+            &[
+                "save",
+                "--agent",
+                "scout",
+                "--type",
+                "project",
+                "--slug",
+                "x",
+                "--name",
+                "n",
+                "--description",
+                "d",
+                "--body",
+                "b",
+            ],
+        )
+    }
+
+    fn fake_repo(parent: &Path, name: &str) {
+        fs::create_dir_all(parent.join(name).join(".git")).expect("mkdir");
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_no_repo_below_keeps_the_short_message() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fs::create_dir_all(plain.join("not-a-repo")).expect("mkdir");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(p.stderr_text(), NOT_IN_REPO);
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_one_repo_below_names_it() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "shop");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            p.stderr_text(),
+            format!(
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: shop. Run the \
+                 command from inside one, for example `cd shop && anthology-mem save ...`, or \
+                 start Claude Code inside the repo.\n"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_seven_repos_below_names_five_sorted() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        for name in ["zeta", "alpha", "mid", "beta", "omega", "delta", "gamma"] {
+            fake_repo(&plain, name);
+        }
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            p.stderr_text(),
+            format!(
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: alpha, beta, \
+                 delta, gamma, mid and 2 more. Run the command from inside one, for example \
+                 `cd alpha && anthology-mem save ...`, or start Claude Code inside the repo.\n"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_symlinked_repo_below_is_named() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let real = s.case.tmp.join("real");
+        fake_repo(&real, "shop");
+        let plain = s.case.tmp.join("plain");
+        fs::create_dir(&plain).expect("mkdir");
+        std::os::unix::fs::symlink(real.join("shop"), plain.join("linked")).expect("symlink");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert!(
+            p.stderr_text()
+                .contains("git repos sit below this folder: linked."),
+            "{}",
+            p.stderr_text()
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_an_unreadable_folder_keeps_the_short_message() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "shop");
+        // Searchable but not listable: the command can start here, the scan cannot read it.
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o300)).expect("chmod");
+        let listable = fs::read_dir(&plain).is_ok();
+        let p = save_outside(&s, &plain);
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o755)).expect("chmod");
+        if listable {
+            eprintln!("skipped: running as a user that ignores directory modes");
+            return;
+        }
+        assert_eq!(p.code, 1);
+        assert_eq!(p.stderr_text(), NOT_IN_REPO);
+    }
+
     #[test]
     fn test_abbreviated_flags_are_rejected() {
         if !needs_git() {

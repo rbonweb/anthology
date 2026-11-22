@@ -67,6 +67,14 @@ a new version section.
   agent failed there and the lead fell back to agents without Anthology's rules. The warning
   says to start Claude Code inside the repo you are working on. It looks one level down and at
   no more than 200 entries, and it is not shown in subagents.
+- `anthology-mem save` run in a folder that is not a git repo now names the repos below it.
+  When Claude Code is started in a parent folder that holds several repos, every save used to
+  stop at "not inside a git work tree" with no way forward. The message now adds a line that
+  lists up to five of the repos directly below the folder (sorted, then "and N more") and says
+  to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
+  start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
+  the session-start warning, and the exit code is unchanged. With no repo below, or a folder
+  that cannot be listed, the message is the old single line.
 
 #### Changed
 

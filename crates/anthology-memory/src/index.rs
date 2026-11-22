@@ -26,9 +26,11 @@ use std::path::{Path, PathBuf};
 use anthology_core::Env;
 use anthology_core::clock::{Date, today_local};
 use anthology_core::git::{Git, RealGit};
+use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_pycompat::argparse::{self, Arg, Nargs, Spec, Subcommands, Type};
 use anthology_pycompat::json::{self, Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_pycompat::shlex;
 use anthology_pycompat::str::{char_slice, lower, split_ws, strip_ws};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -1347,6 +1349,27 @@ fn uncaught(out: &mut Out, ty: &str, msg: &str) {
     out.err(&format!("anthology-mem: {ty}: {msg}"));
 }
 
+/// The most repo names the refusal lists.
+const HINT_NAMES: usize = 5;
+
+/// The second line of the "not inside a git work tree" refusal: the git repos one level below
+/// `cwd` (a session started in a folder that holds several repos), or `None` when there are
+/// none or the folder cannot be listed.
+fn repos_below_hint(cwd: &Path) -> Option<String> {
+    let repos = repos_below(cwd, REPO_SCAN_CAP);
+    let first = repos.first()?;
+    let mut list = repos[..repos.len().min(HINT_NAMES)].join(", ");
+    if repos.len() > HINT_NAMES {
+        list.push_str(&format!(" and {} more", repos.len() - HINT_NAMES));
+    }
+    Some(format!(
+        "anthology-mem: git repos sit below this folder: {list}. Run the command from inside \
+         one, for example `cd {} && anthology-mem save ...`, or start Claude Code inside the \
+         repo.",
+        shlex::quote(first)
+    ))
+}
+
 fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     let mut out = Out {
         stdout: String::new(),
@@ -1361,6 +1384,9 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     };
     let Some(root) = repo::repo_root(&cwd, env, deps.git) else {
         out.err("anthology-mem: not inside a git work tree; memory notes live in the repo");
+        if let Some(hint) = repos_below_hint(&cwd) {
+            out.err(&hint);
+        }
         return out.done(1);
     };
     let body = match p.os_str("body_file") {
