@@ -1253,7 +1253,8 @@ fn check_agent_memory(cwd: &Path) -> CheckResult {
     if !good.is_empty() {
         return ok(
             Some(true),
-            "agent memory is under .claude/agent-memory/anthology-<agent>/",
+            "agent notes are under .claude/agent-memory/anthology-<agent>/ (agents save them with \
+             anthology-mem save; Claude Code preloads them only while its auto memory is on)",
         );
     }
     ok(None, "no agent memory folders yet")

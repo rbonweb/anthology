@@ -62,6 +62,31 @@ a new version section.
   logs. Past the cap an index keeps the newest notes of each type and ends each cut type with
   "N more — use `anthology-mem search`". The session-start pointers no longer name the
   `MEMORY.md` file, since it is capped too.
+- A repo that uses Anthology memory has one memory: the repo's committed `.claude/memory/`
+  plus personal memory. When `/anthology:setup` approves a repo, it merges
+  `"autoMemoryEnabled": false` into that repo's committed `.claude/settings.json`, so Claude
+  Code's built-in auto memory does not run beside it. The file is committed, so the switch
+  applies to everyone who uses the repo. The user-wide settings are not touched for this, and
+  repos that do not use Anthology keep auto memory. The preview shows the diff, apply records
+  the edit before writing it, and `/anthology:setup remove` puts the file back (deleting it
+  only if setup created it and nothing else is in it). A symlinked, non-JSON or oversized
+  file is left alone.
+- Claude Code's subagent memory (`memory: project`) is part of auto memory, so in such a repo
+  it stops preloading each agent's `.claude/agent-memory/anthology-<agent>/MEMORY.md`. Every
+  agent's prompt tells it to read that file before starting, and `anthology-mem save` still
+  writes the notes. Injecting each agent's memory at spawn is planned as a follow-up.
+- With that setting in a repo's committed settings, session start keeps the memory step
+  working in approved repos: it no longer reads the committed `false` as an opt-out there (a
+  user, local or environment opt-out still is) and injects the repo's memory index every
+  session, because Claude Code no longer loads it.
+- `/anthology:setup` moves the old notes of Claude Code's auto memory by type, after you
+  confirm (`apply --move-old-notes`): project, feedback and reference notes go into
+  `.claude/memory/` as `<type>-<slug>.md`, user notes into personal memory. Notes bound for
+  the repo go through every check `anthology-mem save` runs; a refused note, or one without a
+  type, is listed and not moved. The originals are left in place and never deleted. Without
+  the confirmation the notes are still copied only into personal memory, as before.
+- The routing guide says repo memory is where the lead writes its notes, because Claude's
+  auto memory is off in approved repos.
 - rtk fork, for the next rtk release: with any deny, ask or `Read()` rule, a line still passes
   without a prompt, and is still rewritten, when it has a `cd TARGET &&` in front of the one
   plain `rtk` command or a `| head -n N` or `| tail -n N` behind it. `TARGET` must be an

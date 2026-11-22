@@ -347,6 +347,28 @@ fn ensure_real_dir(path: &Path, root: &Path) -> Result<(), SaveError> {
     Ok(())
 }
 
+/// Every check `save_note` runs on the text of a note bound for repo memory, in its order: the
+/// name and description are one line within their limits without control or invisible characters,
+/// the body has no control characters and is within `MAX_BODY_BYTES`, nothing looks like a secret
+/// or holds the value of a secret-named environment variable, and the privacy scan finds nothing
+/// (a scanner panic is a clean refusal). Returns the cleaned `(name, description, body)`. Anything
+/// that moves a note into a repo's memory must call this, so it never lets in what `save` refuses.
+pub fn check_note_text(
+    slug: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+    env: &Env,
+    deps: &SaveDeps,
+) -> Result<(String, String, String), SaveError> {
+    let name = check_line("name", name, MAX_NAME)?;
+    let description = check_line("description", description, MAX_DESCRIPTION)?;
+    let body = check_body(body)?;
+    refuse_secrets(&[slug, &name, &description, &body], env)?;
+    privacy_check(&[slug, &name, &description, &body], env, deps)?;
+    Ok((name, description, body))
+}
+
 /// `save_note`, with the GC-19 seams (an MS2 addition beyond plan §3.6).
 #[allow(
     clippy::too_many_arguments,
@@ -377,11 +399,7 @@ pub fn save_note_with(
              characters"
         ));
     }
-    let name = check_line("name", name, MAX_NAME)?;
-    let description = check_line("description", description, MAX_DESCRIPTION)?;
-    let body = check_body(body)?;
-    refuse_secrets(&[slug, &name, &description, &body], env)?;
-    privacy_check(&[slug, &name, &description, &body], env, deps)?;
+    let (name, description, body) = check_note_text(slug, name, description, body, env, deps)?;
     let mut slug = slug;
     if let Some(rest) = slug.strip_prefix(kind).and_then(|r| r.strip_prefix('-'))
         && !rest.is_empty()
