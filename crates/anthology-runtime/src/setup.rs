@@ -1,7 +1,7 @@
 //! `anthology setup preview|apply|remove` (RT4; port of
 //! `plugins/anthology/scripts/anthology_setup.py`, GC-10).
 //!
-//! `preview` writes nothing: the environment checks, duplicate plugins, the rtk step, the
+//! `preview` writes nothing: the environment checks, duplicate plugins, the atl step, the
 //! settings.json diff (with the sha256 of the text it came from), the memory steps and, new
 //! (F-15), the located guardrails folder whose binary apply ensures. `apply` checks
 //! `--expect-sha256` three times (before anything, after the downloads, right before the
@@ -11,7 +11,7 @@
 //! `CLAUDE_CODE_SUBAGENT_MODEL` is set; when that is the user settings.json it shows the
 //! separate, opt-in removal, which `apply --remove-subagent-model` makes (recorded, so `remove`
 //! puts the old value back). `remove` undoes the settings edits, deletes
-//! state.json, the downloaded rtk, rtk's history folder (`state::rtk_data_dir`), `<ah>/bin`
+//! state.json, the downloaded atl, atl's history folder (`state::atl_data_dir`), `<ah>/bin`
 //! (only when `installed_plugins.json` has no `anthology-guardrails@*` entry, D§8.8), and
 //! optionally drops approvals.
 //!
@@ -45,18 +45,18 @@ use anthology_pycompat::str as pystr;
 use anthology_settings::{self as settings, SettingsLimits};
 use sha2::{Digest, Sha256};
 
+use crate::atl_install;
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
 use crate::doctor;
 use crate::guardrails_loc::{self, GUARDRAILS_PREFIX};
-use crate::rtk_install;
-use crate::session_start::{RealRtk, RtkWiring, StateWrite};
+use crate::session_start::{AtlWiring, RealAtl, StateWrite};
 
 /// Windows (setup refuses everything there).
 pub const REFUSAL: &str = "Anthology supports macOS and Linux only; it is inactive on Windows.";
-/// Seconds per read for the rtk download (overall about 4×): setup is where the first download
+/// Seconds per read for the atl download (overall about 4×): setup is where the first download
 /// happens (GC-9: T = 60).
-pub const RTK_TIMEOUT: f64 = 60.0;
+pub const ATL_TIMEOUT: f64 = 60.0;
 /// Seconds the guardrails-pinned binary may take to install (D§8.8).
 pub const GUARD_BUDGET: u64 = 60;
 /// `_settings_error(FileNotFoundError)` (F-6: `hooks/guard.sh`).
@@ -90,7 +90,7 @@ pub struct MemoryDeps<'a> {
 
 /// doctor's functions setup reports (RT1b). Values are the JSON setup prints.
 pub struct SetupDoctor<'a> {
-    /// `doctor.check_env(env, lock=<plugin root>/rtk.lock, plugin_root, cwd)`, as the JSON list
+    /// `doctor.check_env(env, lock=<plugin root>/atl.lock, plugin_root, cwd)`, as the JSON list
     /// of `{"name", "ok", "detail"}` (args: env, plugin root, cwd).
     pub checks: &'a dyn Fn(&Env, &Path, &Path) -> Value,
     /// `doctor.installed_plugins_state(env)`: the parsed `installed_plugins.json` and `"ok"`,
@@ -110,8 +110,8 @@ pub struct SetupDeps<'a> {
     pub settings_write: &'a dyn Fn(&Path, &str) -> Result<(), PyExc>,
     pub memory: MemoryDeps<'a>,
     pub doctor: SetupDoctor<'a>,
-    /// `rtk_install`; `None` is a missing module (`rtk wiring not present`).
-    pub rtk: Option<&'a dyn RtkWiring>,
+    /// `atl_install`; `None` is a missing module (`atl wiring not present`).
+    pub atl: Option<&'a dyn AtlWiring>,
     /// `ensure_live_guard_binary(guard_root, budget, env)` (RT2, D§8.8).
     pub ensure_guard_binary: &'a dyn Fn(&Path, u64, &Env) -> GuardBinaryStatus,
 }
@@ -131,7 +131,7 @@ fn approve_default(root: &Path, env: &Env) -> Result<String, PyExc> {
 /// `doctor.check_env(env, lock=_lock_path(root), plugin_root=root, cwd=cwd)`.
 fn checks_default(env: &Env, root: &Path, cwd: &Path) -> Value {
     let deps = doctor::DoctorDeps {
-        rtk_lock: Some(root.join("rtk.lock")),
+        atl_lock: Some(root.join("atl.lock")),
         ..Default::default()
     };
     Value::Array(
@@ -188,7 +188,7 @@ impl Default for SetupDeps<'static> {
             settings_write: &settings_write_default,
             memory: MemoryDeps::default(),
             doctor: SetupDoctor::default(),
-            rtk: Some(&RealRtk),
+            atl: Some(&RealAtl),
             ensure_guard_binary: &bootstrap::ensure_live_guard_binary,
         }
     }
@@ -334,7 +334,7 @@ fn raise_text(msg: String) -> String {
     }
 }
 
-// --- plugin, data folder, rtk ---------------------------------------------------------------
+// --- plugin, data folder, atl ---------------------------------------------------------------
 
 fn unsupported(deps: &SetupDeps<'_>) -> bool {
     (deps.uname)().0 == "Windows"
@@ -376,23 +376,23 @@ fn guardrails_root(root: &Path, env: &Env) -> Option<PathBuf> {
     guardrails_loc::inspect(root, env, Path::new("")).root
 }
 
-/// `_rtk_preview(root, data_dir)`: the rtk step setup would take. The target is
-/// `rtk_install.target` for `deps.uname`.
-pub fn rtk_preview(root: &Path, data_dir: Option<&str>, deps: &SetupDeps<'_>) -> Value {
-    let Some(rtk) = deps.rtk else {
-        return obj(vec![("skipped", s("rtk wiring not present"))]);
+/// `_atl_preview(root, data_dir)`: the atl step setup would take. The target is
+/// `atl_install.target` for `deps.uname`.
+pub fn atl_preview(root: &Path, data_dir: Option<&str>, deps: &SetupDeps<'_>) -> Value {
+    let Some(atl) = deps.atl else {
+        return obj(vec![("skipped", s("atl wiring not present"))]);
     };
-    let Ok(lock) = rtk.load_lock(&root.join("rtk.lock")) else {
-        return obj(vec![("skipped", s("rtk wiring not present (no rtk.lock)"))]);
+    let Ok(lock) = atl.load_lock(&root.join("atl.lock")) else {
+        return obj(vec![("skipped", s("atl wiring not present (no atl.lock)"))]);
     };
     let (system, machine) = (deps.uname)();
-    let target = match rtk_install::target(&system, &machine) {
+    let target = match atl_install::target(&system, &machine) {
         Ok(t) => t,
         Err(e) => return obj(vec![("error", s(&exc_text(&e)))]),
     };
     let dest = data_dir
         .filter(|d| !d.is_empty())
-        .map(|d| pstr(&Path::new(d).join("rtk").join(&lock.version).join("rtk")));
+        .map(|d| pstr(&Path::new(d).join("atl").join(&lock.version).join("atl")));
     obj(vec![
         ("version", s(&lock.version)),
         ("target", s(target.triple())),
@@ -400,22 +400,22 @@ pub fn rtk_preview(root: &Path, data_dir: Option<&str>, deps: &SetupDeps<'_>) ->
     ])
 }
 
-/// `_rtk_apply(root, data_dir)`: `(status, warning)` after the reconcile (download and verify
+/// `_atl_apply(root, data_dir)`: `(status, warning)` after the reconcile (download and verify
 /// when missing or stale).
-pub fn rtk_apply(
+pub fn atl_apply(
     root: &Path,
     data_dir: Option<&str>,
     env: &Env,
     deps: &SetupDeps<'_>,
 ) -> (String, Option<String>) {
-    let Some(rtk) = deps.rtk else {
-        return ("skipped: rtk wiring not present".into(), None);
+    let Some(atl) = deps.atl else {
+        return ("skipped: atl wiring not present".into(), None);
     };
     let Some(dir) = data_dir.filter(|d| !d.is_empty()) else {
         return (
             "skipped: plugin data folder unknown".into(),
             Some(
-                "rtk was not installed: the plugin data folder is not known yet; it is installed \
+                "atl was not installed: the plugin data folder is not known yet; it is installed \
                  at the next session start"
                     .into(),
             ),
@@ -425,16 +425,16 @@ pub fn rtk_apply(
         (
             "failed".to_string(),
             Some(format!(
-                "rtk install failed: {}",
+                "atl install failed: {}",
                 pystr::char_slice(&exc_text(e), 0, 200)
             )),
         )
     };
-    let lock = match rtk.load_lock(&root.join("rtk.lock")) {
+    let lock = match atl.load_lock(&root.join("atl.lock")) {
         Ok(l) => l,
         Err(e) => return failed(&e),
     };
-    match rtk.reconcile(env, Path::new(dir), &lock, RTK_TIMEOUT) {
+    match atl.reconcile(env, Path::new(dir), &lock, ATL_TIMEOUT) {
         Err(e) => failed(&e),
         Ok(r) => match r.warning.filter(|w| !w.is_empty()) {
             Some(w) => ("warning".into(), Some(w)),
@@ -1253,7 +1253,7 @@ fn try_preview(
             (deps.doctor.find_duplicates)(installed.as_ref()),
         ),
         ("installed_plugins", s(installed_state)),
-        ("rtk", rtk_preview(plugin_root, data_dir.as_deref(), deps)),
+        ("atl", atl_preview(plugin_root, data_dir.as_deref(), deps)),
         ("settings", Value::Object(st)),
         ("subagent_model", model),
         (
@@ -1389,7 +1389,7 @@ fn try_apply(
     }
 
     let data_dir = data_dir(env);
-    let (rtk_status, warn) = rtk_apply(root, data_dir.as_deref(), env, deps);
+    let (atl_status, warn) = atl_apply(root, data_dir.as_deref(), env, deps);
     warnings.extend(warn);
     let guard = match guardrails_root(root, env) {
         Some(g) => (deps.ensure_guard_binary)(&g, GUARD_BUDGET, env),
@@ -1403,7 +1403,7 @@ fn try_apply(
     let stale = |warnings: &[String]| {
         obj(vec![
             ("ok", Value::Bool(false)),
-            ("rtk", obj(vec![("status", s(&rtk_status))])),
+            ("atl", obj(vec![("status", s(&atl_status))])),
             ("warnings", strs(warnings)),
             ("error", s(CHANGED_DURING_SETUP)),
             ("guard_binary", guard_value.clone()),
@@ -1533,7 +1533,7 @@ fn try_apply(
                 ("diff", Value::Str(plan.diff)),
             ]),
         ),
-        ("rtk", obj(vec![("status", s(&rtk_status))])),
+        ("atl", obj(vec![("status", s(&atl_status))])),
         (
             "subagent_model",
             obj(vec![("removed", Value::Bool(model_removed))]),
@@ -1544,22 +1544,22 @@ fn try_apply(
     ]))
 }
 
-/// `_rtk_target(env)`: `(real path to delete or None, status, warning or None)` for the
-/// downloaded rtk folder. Only `realpath(data_dir)/rtk` is ever deleted, and only when
+/// `_atl_target(env)`: `(real path to delete or None, status, warning or None)` for the
+/// downloaded atl folder. Only `realpath(data_dir)/atl` is ever deleted, and only when
 /// data_dir sits under `<config>/plugins/data/` and the folder is not a symlink.
-fn rtk_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
+fn atl_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
     let Some(d) = data_dir(env) else {
         return (None, "no plugin data folder recorded", None);
     };
-    let rtk_dir = Path::new(&d).join("rtk");
-    if !lexists(&rtk_dir) {
+    let atl_dir = Path::new(&d).join("atl");
+    if !lexists(&atl_dir) {
         return (None, "nothing to delete", None);
     }
-    if is_symlink(&rtk_dir) {
+    if is_symlink(&atl_dir) {
         return (
             None,
             "left in place",
-            Some("the rtk folder is a symlink; left in place".into()),
+            Some("the atl folder is a symlink; left in place".into()),
         );
     }
     let text = |p: PathBuf| p.to_string_lossy().into_owned();
@@ -1568,12 +1568,12 @@ fn rtk_target(env: &Env) -> (Option<String>, &'static str, Option<String>) {
         &pypath::join(&text(pypath::realpath(&paths::config_dir(env))), "plugins"),
         "data",
     );
-    let real = text(pypath::realpath(Path::new(&pstr(&rtk_dir))));
-    if !data_real.starts_with(&format!("{data_root}/")) || real != pypath::join(&data_real, "rtk") {
+    let real = text(pypath::realpath(Path::new(&pstr(&atl_dir))));
+    if !data_real.starts_with(&format!("{data_root}/")) || real != pypath::join(&data_real, "atl") {
         return (
             None,
             "left in place",
-            Some("the rtk folder is not under the plugin data folder; left in place".into()),
+            Some("the atl folder is not under the plugin data folder; left in place".into()),
         );
     }
     (Some(real), "delete", None)
@@ -1589,17 +1589,17 @@ fn rmtree_ignoring_vanished(path: &Path) -> Result<(), String> {
     }
 }
 
-/// `_rtk_history_target()`: `(path to delete or None, status, warning or None)` for rtk's
-/// history folder, [`state::rtk_data_dir`]. Deleted only when it is a real folder, not a
+/// `_atl_history_target()`: `(path to delete or None, status, warning or None)` for atl's
+/// history folder, [`state::atl_data_dir`]. Deleted only when it is a real folder, not a
 /// symlink.
-fn rtk_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
-    let path = state::rtk_data_dir(env);
+fn atl_history_target(env: &Env) -> (Option<PathBuf>, &'static str, Option<String>) {
+    let path = state::atl_data_dir(env);
     if !lexists(&path) {
         return (None, "nothing to delete", None);
     }
     if is_symlink(&path) || !path.is_dir() {
         let warn = format!(
-            "the rtk history folder {} is not a plain folder; left in place",
+            "the atl history folder {} is not a plain folder; left in place",
             pstr(&path)
         );
         return (None, "left in place", Some(warn));
@@ -1642,7 +1642,7 @@ fn bin_target(env: &Env) -> (Option<PathBuf>, &'static str) {
 }
 
 /// `remove(plugin_root, cwd, unapprove, unapprove_all, env, preview)`: undo setup. With
-/// `preview` nothing is written: it reports the settings diff, the rtk folder, `<ah>/bin` and
+/// `preview` nothing is written: it reports the settings diff, the atl folder, `<ah>/bin` and
 /// state.json that would be deleted, and what each approval flag would drop.
 pub fn remove(
     plugin_root: &Path,
@@ -1706,8 +1706,8 @@ fn try_remove(
             Err(Refusal::Raised(m)) => return Err(m),
         }
     }
-    let (rtk_real, mut rtk_status, rtk_warn) = rtk_target(env);
-    let (history_real, mut history_status, history_warn) = rtk_history_target(env);
+    let (atl_real, mut atl_status, atl_warn) = atl_target(env);
+    let (history_real, mut history_status, history_warn) = atl_history_target(env);
 
     let changed = new_text != text;
     let repo_reverts = repo_settings_reverts(env);
@@ -1717,7 +1717,7 @@ fn try_remove(
             .filter(|n| n.starts_with("left in place"))
             .map(|n| format!("{}: {n}", pstr(&r.path)))
     });
-    let warnings: Vec<String> = rtk_warn
+    let warnings: Vec<String> = atl_warn
         .into_iter()
         .chain(history_warn)
         .chain(repo_warnings)
@@ -1747,13 +1747,13 @@ fn try_remove(
             ("preview", Value::Bool(true)),
             ("settings", settings_value),
             (
-                "rtk",
-                obj(vec![("dir", opt_str(rtk_real)), ("status", s(rtk_status))]),
+                "atl",
+                obj(vec![("dir", opt_str(atl_real)), ("status", s(atl_status))]),
             ),
             (
-                "rtk_history",
+                "atl_history",
                 obj(vec![
-                    ("dir", s(&pstr(&state::rtk_data_dir(env)))),
+                    ("dir", s(&pstr(&state::atl_data_dir(env)))),
                     ("status", s(history_status)),
                 ]),
             ),
@@ -1815,16 +1815,16 @@ fn try_remove(
             (deps.settings_write)(&r.path, &r.new_text).map_err(raised)?;
         }
     }
-    // state.json goes first: without its rtk_path, bin/rtk-hook exits before running rtk, so
-    // no hook in another session recreates rtk's history while it is being deleted.
+    // state.json goes first: without its atl_path, bin/atl-hook exits before running atl, so
+    // no hook in another session recreates atl's history while it is being deleted.
     let state_path = state::path(env);
     match fs::remove_file(&state_path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(os_err(e, &state_path)),
         _ => {}
     }
-    if let Some(real) = rtk_real {
+    if let Some(real) = atl_real {
         rmtree_ignoring_vanished(Path::new(&real))?;
-        rtk_status = "deleted";
+        atl_status = "deleted";
     }
     if let Some(history) = history_real {
         rmtree_ignoring_vanished(&history)?;
@@ -1855,8 +1855,8 @@ fn try_remove(
     Ok(obj(vec![
         ("ok", Value::Bool(true)),
         ("settings", settings_value),
-        ("rtk", obj(vec![("status", s(rtk_status))])),
-        ("rtk_history", obj(vec![("status", s(history_status))])),
+        ("atl", obj(vec![("status", s(atl_status))])),
+        ("atl_history", obj(vec![("status", s(history_status))])),
         (
             "memory",
             obj(vec![

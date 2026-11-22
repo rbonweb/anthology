@@ -11,7 +11,7 @@
 //!
 //! Each side reads the same seams from the case: doctor's `check_env`,
 //! `installed_plugins_state` and `find_duplicates` (RT1b's surface tests the real doctor);
-//! the rtk module (a fake with the same interface; the real one is `rtk_install.reconcile`'s
+//! the atl module (a fake with the same interface; the real one is `atl_install.reconcile`'s
 //! surface); `platform.system()` and `machine()`; the privacy scan's host name; and, Rust
 //! only, `ensure_guard_binary` (BS1's surface tests the bootstrap).
 //!
@@ -20,9 +20,9 @@
 //! none, registry entries for it or for anthology only, an unreadable registry); settings.json
 //! (missing, objects, the rule already there, invalid JSON, not an object, odd indents, a BOM,
 //! CRLF, not UTF-8, empty); state.json's `data_dir`; `CLAUDE_PLUGIN_DATA` (under the config's
-//! `plugins/data`, outside it, unset); the rtk folder (a folder, a symlink, none), rtk's history
-//! folder `state.rtk_data_dir()` (a folder, a symlink, a file, none) and `<ah>/bin` (a folder, a
-//! symlink, none); the personal-memory folder; every fake rtk outcome and an edit
+//! `plugins/data`, outside it, unset); the atl folder (a folder, a symlink, none), atl's history
+//! folder `state.atl_data_dir()` (a folder, a symlink, a file, none) and `<ah>/bin` (a folder, a
+//! symlink, none); the personal-memory folder; every fake atl outcome and an edit
 //! during the download; doctor answers; the guard binary statuses;
 //! the platforms; and step sequences of preview, apply (the current sha or a stale one,
 //! `--skip-approve`, `--promote`), remove (`--preview`, `--unapprove`, `--unapprove-all`),
@@ -48,9 +48,9 @@ use anthology_core::Env;
 use anthology_core::lock::Lock;
 use anthology_pycompat::json::{Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::Reconciled;
 use anthology_runtime::bootstrap::GuardBinaryStatus;
-use anthology_runtime::rtk_install::Reconciled;
-use anthology_runtime::session_start::RtkWiring;
+use anthology_runtime::session_start::AtlWiring;
 use anthology_runtime::setup::{self, MemoryDeps, SetupDeps, SetupDoctor};
 use anthology_settings as settings;
 use anthology_testkit::rt_a;
@@ -116,8 +116,8 @@ fn opt_string(v: &Value, k: &str) -> Option<String> {
     str_of(v, k).map(str::to_string)
 }
 
-/// The fake rtk module of the case (the oracle's `FakeRtk`).
-struct CaseRtk {
+/// The fake atl module of the case (the oracle's `FakeAtl`).
+struct CaseAtl {
     root: PathBuf,
     lock_exc: Option<String>,
     exc: Option<String>,
@@ -126,13 +126,13 @@ struct CaseRtk {
     touch: Option<String>,
 }
 
-impl RtkWiring for CaseRtk {
+impl AtlWiring for CaseAtl {
     fn load_lock(&self, _path: &Path) -> Result<Lock, PyExc> {
         match &self.lock_exc {
             Some(m) => Err(PyExc::Other("RuntimeError", m.clone())),
             None => Ok(Lock {
                 version: "9.9.9".into(),
-                tag: "rtk--v9.9.9".into(),
+                tag: "atl--v9.9.9".into(),
                 repo: "example/x".into(),
                 sha256: Default::default(),
             }),
@@ -140,7 +140,7 @@ impl RtkWiring for CaseRtk {
     }
 
     fn reconcile(&self, _: &Env, _: &Path, _: &Lock, timeout: f64) -> Result<Reconciled, PyExc> {
-        assert!(timeout == 60.0, "setup: rtk timeout {timeout}");
+        assert!(timeout == 60.0, "setup: atl timeout {timeout}");
         if let Some(rel) = &self.touch {
             let p = self.root.join(rel);
             fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
@@ -151,7 +151,7 @@ impl RtkWiring for CaseRtk {
         match &self.exc {
             Some(m) => Err(PyExc::Other("RuntimeError", m.clone())),
             None => Ok(Reconciled {
-                rtk_path: None,
+                atl_path: None,
                 warning: self.warning.clone(),
                 installed: self.installed,
             }),
@@ -274,9 +274,9 @@ fn run(case: &Value) -> Observed {
             ),
         }
     };
-    let rtk = field(case, "rtk")
+    let atl = field(case, "atl")
         .filter(|v| !matches!(v, Value::Null))
-        .map(|v| CaseRtk {
+        .map(|v| CaseAtl {
             root: root.clone(),
             lock_exc: opt_string(v, "lock_exc"),
             exc: opt_string(v, "exc"),
@@ -300,7 +300,7 @@ fn run(case: &Value) -> Observed {
             installed_plugins_state: &installed_state,
             find_duplicates: &duplicates,
         },
-        rtk: rtk.as_ref().map(|r| r as &dyn RtkWiring),
+        atl: atl.as_ref().map(|r| r as &dyn AtlWiring),
         ensure_guard_binary: &ensure,
         ..SetupDeps::default()
     };
@@ -542,14 +542,14 @@ struct B {
     env: Map,
     uname: &'static str,
     doctor: Value,
-    rtk: Value,
+    atl: Value,
     guard_binary: String,
     steps: Vec<Vec<String>>,
 }
 
 impl B {
     /// A healthy layout: the plugin, a sibling guardrails, the config in `@ROOT@/cfg`, the data
-    /// folder under its `plugins/data`, a repo at `@ROOT@/w` whose origin gives [`KEY`], an rtk
+    /// folder under its `plugins/data`, a repo at `@ROOT@/w` whose origin gives [`KEY`], an atl
     /// that installs, and the [`fake_git`].
     fn new() -> B {
         let mut env = Map::new();
@@ -576,16 +576,16 @@ impl B {
                 (
                     "checks",
                     Value::Array(vec![obj(vec![
-                        ("name", s("rtk")),
+                        ("name", s("atl")),
                         ("ok", Value::Bool(true)),
-                        ("detail", s("rtk 9.9.9")),
+                        ("detail", s("atl 9.9.9")),
                     ])]),
                 ),
                 ("installed", Value::Null),
                 ("state", s("missing")),
                 ("duplicates", Value::Array(Vec::new())),
             ]),
-            rtk: obj(vec![
+            atl: obj(vec![
                 ("lock_exc", Value::Null),
                 ("exc", Value::Null),
                 ("warning", Value::Null),
@@ -695,8 +695,8 @@ impl B {
         v
     }
 
-    fn rtk(mut self, k: &str, v: Value) -> B {
-        self.rtk = B::set(self.rtk, k, v);
+    fn atl(mut self, k: &str, v: Value) -> B {
+        self.atl = B::set(self.atl, k, v);
         self
     }
 
@@ -739,12 +739,12 @@ impl B {
             "anthology/state.json",
             "anthology/bin",
             "anthology/personal-memory",
-            "plugins/data/anthology/rtk",
-            "anthology/rtk",
+            "plugins/data/anthology/atl",
+            "anthology/atl",
         ]
         .iter()
         .map(|r| s(&self.at(r)))
-        .chain([s("data/rtk"), s("elsewhere/history/history.db")])
+        .chain([s("data/atl"), s("elsewhere/history/history.db")])
         .chain(
             [
                 "anthology/migrated.json",
@@ -767,7 +767,7 @@ impl B {
             ("env", Value::Object(self.env)),
             ("uname", s(self.uname)),
             ("doctor", self.doctor),
-            ("rtk", self.rtk),
+            ("atl", self.atl),
             ("guard_binary", s(&self.guard_binary)),
             (
                 "steps",
@@ -810,36 +810,36 @@ fn seeds() -> Vec<Value> {
         "--expect-sha256",
         "deadbeef",
     ])));
-    // the rtk step
+    // the atl step
     let p = B::new().at("settings.json");
-    add(B::new().rtk("touch", s(&p)).step(apply_cmd(&[])));
+    add(B::new().atl("touch", s(&p)).step(apply_cmd(&[])));
     add(B::new()
         .settings("{}\n")
-        .rtk("touch", s(&p))
+        .atl("touch", s(&p))
         .step(apply_cmd(&[])));
     add(B::new()
-        .rtk("installed", Value::Bool(false))
+        .atl("installed", Value::Bool(false))
         .step(apply_cmd(&[])));
     add(B::new()
-        .rtk("warning", s("rtk 1.0 is outdated; using it anyway"))
+        .atl("warning", s("atl 1.0 is outdated; using it anyway"))
         .step(apply_cmd(&[])));
     add(B::new()
-        .rtk("warning", s(""))
-        .rtk("installed", Value::Bool(false))
+        .atl("warning", s(""))
+        .atl("installed", Value::Bool(false))
         .step(apply_cmd(&[])));
     add(B::new()
-        .rtk("exc", s("download refused"))
+        .atl("exc", s("download refused"))
         .step(apply_cmd(&[])));
-    add(B::new().rtk("exc", s("")).step(apply_cmd(&[])));
+    add(B::new().atl("exc", s("")).step(apply_cmd(&[])));
     add(B::new()
-        .rtk("exc", s(&"é".repeat(300)))
+        .atl("exc", s(&"é".repeat(300)))
         .step(apply_cmd(&[])));
     add(B::new()
-        .rtk("lock_exc", s("rtk.lock is not valid JSON"))
+        .atl("lock_exc", s("atl.lock is not valid JSON"))
         .step(preview_cmd())
         .step(apply_cmd(&[])));
     let mut b = B::new();
-    b.rtk = Value::Null;
+    b.atl = Value::Null;
     add(b.step(preview_cmd()).step(apply_cmd(&[])));
     add(B::new()
         .env("CLAUDE_PLUGIN_DATA", None)
@@ -903,26 +903,26 @@ fn seeds() -> Vec<Value> {
         .put(link(&bin, "@ROOT@/elsewhere/bin"))
         .step(remove_cmd(&["--preview"]))
         .step(remove_cmd(&[])));
-    // the rtk folder
-    let rtk = B::new().at("plugins/data/anthology/rtk");
+    // the atl folder
+    let atl = B::new().at("plugins/data/anthology/atl");
     add(B::new()
-        .put(file(&format!("{rtk}/9.9.9/rtk"), "bin"))
+        .put(file(&format!("{atl}/9.9.9/atl"), "bin"))
         .step(remove_cmd(&["--preview"]))
         .step(remove_cmd(&[])));
     add(B::new()
-        .put(dir("elsewhere/rtk"))
-        .put(link(&rtk, "@ROOT@/elsewhere/rtk"))
+        .put(dir("elsewhere/atl"))
+        .put(link(&atl, "@ROOT@/elsewhere/atl"))
         .step(remove_cmd(&[])));
     add(B::new()
         .env("CLAUDE_PLUGIN_DATA", Some("@ROOT@/data"))
-        .put(file("data/rtk/9.9.9/rtk", "bin"))
+        .put(file("data/atl/9.9.9/atl", "bin"))
         .step(remove_cmd(&["--preview"]))
         .step(remove_cmd(&[])));
     add(B::new()
         .env("CLAUDE_PLUGIN_DATA", None)
         .step(remove_cmd(&[])));
-    // rtk's history folder (state.rtk_data_dir): a folder, a symlink, a file; none is above
-    let history = B::new().at("anthology/rtk");
+    // atl's history folder (state.atl_data_dir): a folder, a symlink, a file; none is above
+    let history = B::new().at("anthology/atl");
     add(B::new()
         .put(file(&format!("{history}/history.db"), "commands"))
         .put(file(&format!("{history}/tee/1_x.log"), "out"))
@@ -939,7 +939,7 @@ fn seeds() -> Vec<Value> {
         .step(remove_cmd(&["--preview"]))
         .step(remove_cmd(&[])));
     let b = B::new().env("CLAUDE_CONFIG_DIR", None);
-    let db = b.at("anthology/rtk/history.db");
+    let db = b.at("anthology/atl/history.db");
     add(b.put(file(&db, "x")).step(remove_cmd(&[])));
     // platforms
     for cmd in [preview_cmd(), apply_cmd(&[]), remove_cmd(&["--preview"])] {
@@ -1195,7 +1195,7 @@ const SETTINGS: [&str; 19] = [
     "{\"permissions\": {\"allow\": [\"Bash(ls)\"], \"deny\": []}}",
     "{\n    \"permissions\": {\n        \"allow\": [\n            \"Read(/@ROOT@/p/**)\"\n        ]\n    }\n}\n",
     "{\n\t\"worktree\": {\"baseRef\": \"main\"}\n}",
-    "{\"worktree\": {\"baseRef\": \"head\"}, \"permissions\": {\"allow\": [\"Bash(rtk *)\"]}}",
+    "{\"worktree\": {\"baseRef\": \"head\"}, \"permissions\": {\"allow\": [\"Bash(atl *)\"]}}",
     "{",
     "[]",
     "null",
@@ -1375,19 +1375,19 @@ fn gen_case(rng: &mut Rng) -> Value {
             Some(rng.pick(&["m", "x", "  "])),
         );
     }
-    // the rtk folder and <ah>/bin
+    // the atl folder and <ah>/bin
     match rng.below(6) {
         0 => {
-            let p = b.at("plugins/data/anthology/rtk/9.9.9/rtk");
+            let p = b.at("plugins/data/anthology/atl/9.9.9/atl");
             b = b.put(file(&p, "bin"));
         }
         1 => {
-            let p = b.at("plugins/data/anthology/rtk");
+            let p = b.at("plugins/data/anthology/atl");
             b = b
-                .put(dir("elsewhere/rtk"))
-                .put(link(&p, "@ROOT@/elsewhere/rtk"));
+                .put(dir("elsewhere/atl"))
+                .put(link(&p, "@ROOT@/elsewhere/atl"));
         }
-        2 => b = b.put(file("data/rtk/9.9.9/rtk", "bin")),
+        2 => b = b.put(file("data/atl/9.9.9/atl", "bin")),
         _ => {}
     }
     match rng.below(5) {
@@ -1403,8 +1403,8 @@ fn gen_case(rng: &mut Rng) -> Value {
         }
         _ => {}
     }
-    // rtk's history folder (state.rtk_data_dir)
-    let history = b.at("anthology/rtk");
+    // atl's history folder (state.atl_data_dir)
+    let history = b.at("anthology/atl");
     match rng.below(6) {
         0 => {
             b = b
@@ -1423,26 +1423,26 @@ fn gen_case(rng: &mut Rng) -> Value {
         let p = b.at("anthology/personal-memory");
         b = b.put(dir(&p));
     }
-    // the rtk module
+    // the atl module
     b = match rng.below(10) {
         0 => {
-            b.rtk = Value::Null;
+            b.atl = Value::Null;
             b
         }
         1 => {
             let t = odd_text(rng, 80);
-            b.rtk("lock_exc", s(&t))
+            b.atl("lock_exc", s(&t))
         }
         2 => {
             let t = odd_text(rng, 260);
-            b.rtk("exc", s(&t))
+            b.atl("exc", s(&t))
         }
         3 => {
             let t = odd_text(rng, 60);
-            b.rtk("warning", s(&t))
+            b.atl("warning", s(&t))
         }
-        4 => b.rtk("installed", Value::Bool(false)),
-        5 if rng.chance(0.5) => b.rtk("touch", s(&settings_path)),
+        4 => b.atl("installed", Value::Bool(false)),
+        5 if rng.chance(0.5) => b.atl("touch", s(&settings_path)),
         _ => b,
     };
     // doctor and memory
@@ -1588,18 +1588,18 @@ mod tests {
             ("up to date", "\"status\": \"up to date\""),
             ("warning", "\"status\": \"warning\""),
             ("failed", "\"status\": \"failed\""),
-            ("no wiring", "skipped: rtk wiring not present"),
-            ("no lock", "rtk wiring not present (no rtk.lock)"),
+            ("no wiring", "skipped: atl wiring not present"),
+            ("no lock", "atl wiring not present (no atl.lock)"),
             ("no data", "skipped: plugin data folder unknown"),
-            ("rtk error", "unsupported platform"),
+            ("atl error", "unsupported platform"),
             ("remove", "\"unapproved\""),
             ("remove preview", "\"unapprove_all\""),
             ("deleted", "\"status\": \"deleted\""),
-            ("rtk symlink", "the rtk folder is a symlink"),
-            ("rtk outside", "not under the plugin data folder"),
+            ("atl symlink", "the atl folder is a symlink"),
+            ("atl outside", "not under the plugin data folder"),
             (
                 "history deleted",
-                "\"rtk_history\": {\n    \"status\": \"deleted\"",
+                "\"atl_history\": {\n    \"status\": \"deleted\"",
             ),
             ("history left", "is not a plain folder; left in place"),
             ("bin kept", "kept (anthology-guardrails still uses it)"),

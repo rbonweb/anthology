@@ -65,7 +65,7 @@ impl Case {
     /// `PathWrappersTest.fake_plugin`, with F-9's `bin/anthology` too.
     fn fake_plugin(&self) -> PathBuf {
         let root = self.tmp.join("plug");
-        for name in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+        for name in ["anthology", "anthology-mem", "atl", "atl-hook"] {
             let path = write(&root.join("bin").join(name), "#!/bin/sh\n");
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -106,10 +106,10 @@ fn test_all_present_and_executable_outside_claude_code() {
 fn test_missing_and_non_executable_are_named() {
     let c = Case::new();
     let root = c.fake_plugin();
-    fs::remove_file(root.join("bin/rtk")).unwrap();
-    fs::set_permissions(root.join("bin/rtk-hook"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::remove_file(root.join("bin/atl")).unwrap();
+    fs::set_permissions(root.join("bin/atl-hook"), fs::Permissions::from_mode(0o644)).unwrap();
     let bad = wrapper_problems(&root);
-    assert_eq!(bad, names(&["rtk", "rtk-hook"]));
+    assert_eq!(bad, names(&["atl", "atl-hook"]));
     assert!(!bad.iter().any(|n| n == "anthology-mem"));
 }
 

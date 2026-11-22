@@ -2,7 +2,7 @@
 //!
 //! `golden/state.jsonl` is written by `port/difftest/oracle/core_state.py --golden` and
 //! `golden/lock.jsonl` by `port/difftest/oracle/core_lock.py --golden`, in the pinned CPython
-//! 3.12 image (CI regenerates both and compares them byte for byte). The `rtk--v` lock lines
+//! 3.12 image (CI regenerates both and compares them byte for byte). The `atl--v` lock lines
 //! and every state line are CPython's output; the `anthology-bin--v` lock lines come from the
 //! oracle's hand-written GC-17 reference (there is no Python for anthology.lock) and say so.
 #![forbid(unsafe_code)]
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 
 use anthology_core::Env;
-use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, RTK_TAG_PREFIX};
+use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, ATL_TAG_PREFIX};
 use anthology_core::platform::Target;
 use anthology_core::state;
 use anthology_pycompat::json::{self, PY_DEFAULT, Value};
@@ -200,7 +200,7 @@ fn lock_parse_matches_validate_lock_and_gc17() {
             .and_then(|o| o.get("oracle"))
             .and_then(Value::as_str);
         match prefix {
-            RTK_TAG_PREFIX => assert_eq!(label, None),
+            ATL_TAG_PREFIX => assert_eq!(label, None),
             ANTHOLOGY_TAG_PREFIX => {
                 assert_eq!(label, Some("hand-written from GC-17 (no Python)"));
             }
@@ -211,11 +211,11 @@ fn lock_parse_matches_validate_lock_and_gc17() {
     for tag in [
         "exit 0",
         "divergence D-6",
-        "error rtk.lock is",
-        "error rtk.lock must",
-        "error rtk.lock: invalid",
-        "error rtk.lock: tag",
-        "error rtk.lock: sha256",
+        "error atl.lock is",
+        "error atl.lock must",
+        "error atl.lock: invalid",
+        "error atl.lock: tag",
+        "error atl.lock: sha256",
         "error anthology.lock is",
         "error anthology.lock must",
         "error anthology.lock: invalid",

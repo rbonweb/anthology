@@ -79,7 +79,7 @@ anth_printable() {
     printf '%s' "$1" | LC_ALL=C tr -c ' -~' '?' | cut -c "1-$2"
 }
 
-# anth_platform: ANTH_TARGET from uname (the rtk table), or status 1 with ANTH_OS/ANTH_ARCH
+# anth_platform: ANTH_TARGET from uname (the atl table), or status 1 with ANTH_OS/ANTH_ARCH
 # cleaned for the `unsupported platform <os>/<arch>` reason.
 anth_platform() {
     ANTH_TARGET=
@@ -691,7 +691,7 @@ anth_system_message() {
     if [ "$1" = guardrails ]; then
         printf '{"systemMessage":"anthology-guardrails: could not install the guard binary (%s); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online, or run /anthology:setup; if this keeps happening, disable anthology-guardrails with /plugin."}\n' "$2"
     else
-        printf '{"systemMessage":"anthology: could not install the anthology binary (%s); the routing guide, memory and rtk are off until it installs. Start a new session while online, or run /anthology:setup."}\n' "$2"
+        printf '{"systemMessage":"anthology: could not install the anthology binary (%s); the routing guide, memory and atl are off until it installs. Start a new session while online, or run /anthology:setup."}\n' "$2"
     fi
 }
 

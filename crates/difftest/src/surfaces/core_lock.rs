@@ -1,15 +1,15 @@
 //! The `core.lock` difftest surface (F3's oracle `port/difftest/oracle/core_lock.py`).
 //!
-//! Case: `{"op": "lock", "prefix": "rtk--v" | "anthology-bin--v", "text": TEXT}`:
-//! `anthology_core::lock::parse(TEXT, PREFIX)`. For `rtk--v` the oracle is
-//! `rtk_install.load_lock`; for `anthology-bin--v` it is the oracle's hand-written GC-17
+//! Case: `{"op": "lock", "prefix": "atl--v" | "anthology-bin--v", "text": TEXT}`:
+//! `anthology_core::lock::parse(TEXT, PREFIX)`. For `atl--v` the oracle is
+//! `atl_install.load_lock`; for `anthology-bin--v` it is the oracle's hand-written GC-17
 //! reference (there is no Python). Both sides print the version, tag, repo and digests, or exit
 //! 1 with `InstallError: <message>`. Seeds are the committed golden corpus; generated cases are
 //! mutated locks: valid ones in several layouts, one field replaced by a random value, edited
 //! text (a character deleted, inserted or replaced; cut short), repeated keys and lone surrogate
-//! escapes (D-6 for `rtk--v`, `port/difftest/divergences/core.lock.toml`).
+//! escapes (D-6 for `atl--v`, `port/difftest/divergences/core.lock.toml`).
 
-use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock, RTK_TAG_PREFIX};
+use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, ATL_TAG_PREFIX, Lock};
 use anthology_core::platform::Target;
 use anthology_pycompat::json::{self, DumpOpts, INDENT2, Int, Map, PY_DEFAULT, Value};
 
@@ -98,7 +98,7 @@ fn valid_lock(rng: &mut Rng, prefix: &str) -> Lock {
     let version = version(rng);
     let owner = rng.pick(&["rbonweb", "a", "A_b.c-d", "x1"]).to_string();
     let name = rng
-        .pick(&["anthology", "rtk", "x..y", "r.e-p_o"])
+        .pick(&["anthology", "atl", "x..y", "r.e-p_o"])
         .to_string();
     Lock {
         tag: format!("{prefix}{version}"),
@@ -173,7 +173,7 @@ fn edit(rng: &mut Rng, text: &str) -> String {
 /// One random case.
 pub fn gen_case(rng: &mut Rng) -> Value {
     let prefix = if rng.chance(0.5) {
-        RTK_TAG_PREFIX
+        ATL_TAG_PREFIX
     } else {
         ANTHOLOGY_TAG_PREFIX
     };
@@ -194,7 +194,7 @@ pub fn gen_case(rng: &mut Rng) -> Value {
         }
     };
     let text = match rng.below(6) {
-        // Valid, in the layout anthology-dev writes (or rtk's).
+        // Valid, in the layout anthology-dev writes (or atl's).
         0 => {
             if prefix == ANTHOLOGY_TAG_PREFIX && rng.chance(0.7) {
                 lock::render_anthology(&l)

@@ -1,9 +1,9 @@
 //! Port of `tests/test_rtk_install.py` (RT2): rtk_install (target mapping, lock validation,
 //! verified per-version install, reconcile, prune, default fetch), hooks.json, and the POSIX sh
-//! wrappers `bin/rtk` and `bin/rtk-hook`. Modules are the Python classes; every test keeps the
+//! wrappers `bin/atl` and `bin/atl-hook`. Modules are the Python classes; every test keeps the
 //! Python method name. No network: every fetch is a fake (the real ureq path is
 //! `tests/fetch_tls.rs`). The `CliTest` ports live with the command
-//! (`crates/anthology-cli/src/cmd/rtk_install.rs` and `crates/anthology-cli/tests/rtk_install.rs`).
+//! (`crates/anthology-cli/src/cmd/atl_install.rs` and `crates/anthology-cli/tests/atl_install.rs`).
 #![forbid(unsafe_code)]
 
 use std::cell::Cell;
@@ -18,11 +18,11 @@ use anthology_core::platform::Target;
 use anthology_core::{Env, state};
 use anthology_pycompat::json::{self, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::{self, AtlDeps, AtlLimits};
 use anthology_runtime::fetch::{self, Fetch, Opener, Response};
-use anthology_runtime::rtk_install::{self, RtkDeps, RtkLimits};
 use anthology_testkit::rt_b::{
-    FakeAnswer, RTK_HOST, RTK_TEST_BODY, RawKind, RtkFakeFetch, raw_tar_gz, rtk_lock,
-    rtk_lock_value, rtk_tarball, rtk_url_for,
+    ATL_HOST, ATL_TEST_BODY, AtlFakeFetch, FakeAnswer, RawKind, atl_lock, atl_lock_value,
+    atl_tarball, atl_url_for, raw_tar_gz,
 };
 use anthology_testkit::{Row, repo_root, rows, run_program};
 
@@ -35,7 +35,7 @@ fn sha(data: &[u8]) -> String {
 }
 
 fn make_lock(version: &str, blob: &[u8]) -> Lock {
-    rtk_lock(version, blob, REPO)
+    atl_lock(version, blob, REPO)
 }
 
 fn linux() -> (String, String) {
@@ -51,15 +51,15 @@ fn py_exc(type_name: &'static str, msg: String) -> PyExc {
 }
 
 /// `FakeFetch` as a [`Fetch`].
-struct Fake(RtkFakeFetch);
+struct Fake(AtlFakeFetch);
 
 impl Fake {
     fn for_lock(lock: &Lock, blob: &[u8]) -> Fake {
-        Fake(RtkFakeFetch::serving(&rtk_url_for(lock, RTK_HOST), blob))
+        Fake(AtlFakeFetch::serving(&atl_url_for(lock, ATL_HOST), blob))
     }
 
     fn failing(type_name: &'static str, msg: &str) -> Fake {
-        Fake(RtkFakeFetch::failing(type_name, msg))
+        Fake(AtlFakeFetch::failing(type_name, msg))
     }
 
     fn calls(&self) -> Vec<(String, f64)> {
@@ -135,17 +135,17 @@ impl Base {
     }
 }
 
-fn deps(fetch: &dyn Fetch) -> RtkDeps<'_> {
-    let mut d = RtkDeps::new(fetch);
+fn deps(fetch: &dyn Fetch) -> AtlDeps<'_> {
+    let mut d = AtlDeps::new(fetch);
     d.uname = linux;
     d
 }
 
 fn install(b: &Base, lock: &Lock, fetch: &dyn Fetch) -> Result<PathBuf, PyExc> {
-    rtk_install::install(
+    atl_install::install(
         &b.data,
         lock,
-        rtk_install::DEFAULT_TIMEOUT,
+        atl_install::DEFAULT_TIMEOUT,
         HOST,
         &deps(fetch),
     )
@@ -155,11 +155,11 @@ fn install_with(
     b: &Base,
     lock: &Lock,
     fetch: &dyn Fetch,
-    d: impl FnOnce(&mut RtkDeps<'_>),
+    d: impl FnOnce(&mut AtlDeps<'_>),
 ) -> Result<PathBuf, PyExc> {
     let mut deps = deps(fetch);
     d(&mut deps);
-    rtk_install::install(&b.data, lock, rtk_install::DEFAULT_TIMEOUT, HOST, &deps)
+    atl_install::install(&b.data, lock, atl_install::DEFAULT_TIMEOUT, HOST, &deps)
 }
 
 fn mode(path: &Path) -> u32 {
@@ -203,7 +203,7 @@ mod target_test {
             ("Linux", "arm64", "aarch64-unknown-linux-musl"),
         ];
         for (system, machine, want) in cases {
-            let got = rtk_install::target(system, machine).expect("supported");
+            let got = atl_install::target(system, machine).expect("supported");
             assert_eq!(got.triple(), want, "{system} {machine}");
         }
     }
@@ -211,7 +211,7 @@ mod target_test {
     #[test]
     fn test_windows_is_refused_in_any_case() {
         for system in ["Windows", "windows", "WINDOWS", "Windows_NT"] {
-            let err = rtk_install::target(system, "AMD64").unwrap_err();
+            let err = atl_install::target(system, "AMD64").unwrap_err();
             assert!(err.py_str().contains("Windows isn't supported"), "{system}");
         }
     }
@@ -224,7 +224,7 @@ mod target_test {
             ("Darwin", "ppc"),
             ("", ""),
         ] {
-            assert!(rtk_install::target(system, machine).is_err());
+            assert!(atl_install::target(system, machine).is_err());
         }
     }
 }
@@ -233,9 +233,9 @@ mod load_lock_test {
     use super::*;
 
     fn load(b: &Base, text: &str) -> Result<Lock, PyExc> {
-        let path = b.tmp.join("rtk.lock");
+        let path = b.tmp.join("atl.lock");
         fs::write(&path, text).expect("write lock");
-        rtk_install::load_lock(&path)
+        atl_install::load_lock(&path)
     }
 
     fn dumps(v: &Value) -> String {
@@ -245,21 +245,21 @@ mod load_lock_test {
     #[test]
     fn test_valid_lock_round_trips() {
         let b = Base::new();
-        let blob = rtk_tarball();
-        let lock = load(&b, &dumps(&rtk_lock_value(V1, &blob, REPO))).expect("valid");
+        let blob = atl_tarball();
+        let lock = load(&b, &dumps(&atl_lock_value(V1, &blob, REPO))).expect("valid");
         assert_eq!(lock, make_lock(V1, &blob));
     }
 
     #[test]
     fn test_release_without_prerelease_is_valid() {
         let b = Base::new();
-        let lock = load(&b, &dumps(&rtk_lock_value("2.0.0", b"x", REPO))).expect("valid");
-        assert_eq!(lock.tag, "rtk--v2.0.0");
+        let lock = load(&b, &dumps(&atl_lock_value("2.0.0", b"x", REPO))).expect("valid");
+        assert_eq!(lock.tag, "atl--v2.0.0");
     }
 
     /// `mutate(fn)` on a fresh `make_lock()` value.
     fn mutate(f: impl FnOnce(&mut json::Map)) -> Value {
-        let mut v = rtk_lock_value(V1, &rtk_tarball(), REPO);
+        let mut v = atl_lock_value(V1, &atl_tarball(), REPO);
         f(v.as_object_mut().expect("object"));
         v
     }
@@ -276,13 +276,13 @@ mod load_lock_test {
 
     fn bad_lock(name: &str) -> Value {
         match name {
-            "uppercase hex" => mutate(|l| set(sha_map(l), RTK_HOST, &"A".repeat(64))),
-            "short hex" => mutate(|l| set(sha_map(l), RTK_HOST, &"a".repeat(63))),
-            "non-hex" => mutate(|l| set(sha_map(l), RTK_HOST, &"g".repeat(64))),
+            "uppercase hex" => mutate(|l| set(sha_map(l), ATL_HOST, &"A".repeat(64))),
+            "short hex" => mutate(|l| set(sha_map(l), ATL_HOST, &"a".repeat(63))),
+            "non-hex" => mutate(|l| set(sha_map(l), ATL_HOST, &"g".repeat(64))),
             "trailing newline" => {
-                mutate(|l| set(sha_map(l), RTK_HOST, &format!("{}\n", "a".repeat(64))))
+                mutate(|l| set(sha_map(l), ATL_HOST, &format!("{}\n", "a".repeat(64))))
             }
-            "wrong tag" => mutate(|l| set(l, "tag", "rtk--v9.9.9")),
+            "wrong tag" => mutate(|l| set(l, "tag", "atl--v9.9.9")),
             "no tag prefix" => mutate(|l| set(l, "tag", "v1.2.1-anthology.1")),
             "extra target" => {
                 mutate(|l| set(sha_map(l), "x86_64-pc-windows-msvc", &"a".repeat(64)))
@@ -292,11 +292,11 @@ mod load_lock_test {
             }),
             "bad version" => mutate(|l| {
                 set(l, "version", "1.2");
-                set(l, "tag", "rtk--v1.2");
+                set(l, "tag", "atl--v1.2");
             }),
             "path version" => mutate(|l| {
                 set(l, "version", "../1.0.0");
-                set(l, "tag", "rtk--v../1.0.0");
+                set(l, "tag", "atl--v../1.0.0");
             }),
             "unsafe repo" => mutate(|l| set(l, "repo", "a/b/../../c")),
             "repo with space" => mutate(|l| set(l, "repo", "a b/c")),
@@ -349,9 +349,9 @@ mod verify_test {
         let b = Base::new();
         let path = b.tmp.join("blob");
         fs::write(&path, b"hello").expect("write");
-        assert!(rtk_install::verify(&path, &sha(b"hello")));
-        assert!(!rtk_install::verify(&path, &sha(b"other")));
-        assert!(!rtk_install::verify(&b.tmp.join("missing"), &sha(b"hello")));
+        assert!(atl_install::verify(&path, &sha(b"hello")));
+        assert!(!atl_install::verify(&path, &sha(b"other")));
+        assert!(!atl_install::verify(&b.tmp.join("missing"), &sha(b"hello")));
     }
 }
 
@@ -361,14 +361,14 @@ mod install_test {
     #[test]
     fn test_good_hash_installs_per_version() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let path = install(&b, &lock, &fetch).expect("install");
-        assert_eq!(path, b.data.join("rtk").join(V1).join("rtk"));
-        assert_eq!(fs::read(&path).expect("read"), RTK_TEST_BODY);
+        assert_eq!(path, b.data.join("atl").join(V1).join("atl"));
+        assert_eq!(fs::read(&path).expect("read"), ATL_TEST_BODY);
         assert_eq!(mode(&path), 0o755);
-        assert_eq!(fetch.calls()[0].0, rtk_url_for(&lock, RTK_HOST));
+        assert_eq!(fetch.calls()[0].0, atl_url_for(&lock, ATL_HOST));
         let vdir = path.parent().expect("vdir");
         assert_eq!(
             fs::read_to_string(vdir.join(".sha256"))
@@ -376,26 +376,26 @@ mod install_test {
                 .trim(),
             lock.sha256[&HOST]
         );
-        assert_eq!(b.entries(vdir), [".last-used", ".sha256", "rtk"]);
-        assert_eq!(b.entries(&b.data.join("rtk")), [V1]);
+        assert_eq!(b.entries(vdir), [".last-used", ".sha256", "atl"]);
+        assert_eq!(b.entries(&b.data.join("atl")), [V1]);
     }
 
     #[test]
     fn test_bad_hash_leaves_nothing_behind() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let mut lock = make_lock(V1, &blob);
         lock.sha256.insert(HOST, "0".repeat(64));
         let fetch = Fake::for_lock(&lock, &blob);
         assert!(install(&b, &lock, &fetch).is_err());
         assert_eq!(fetch.calls().len(), 1);
-        assert!(b.entries(&b.data.join("rtk")).is_empty());
+        assert!(b.entries(&b.data.join("atl")).is_empty());
     }
 
     #[test]
     fn test_second_run_does_not_fetch() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let first = install(&b, &lock, &fetch).expect("first");
@@ -407,7 +407,7 @@ mod install_test {
     #[test]
     fn test_reinstalls_when_marker_disagrees_with_lock() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let path = install(&b, &lock, &fetch).expect("install");
@@ -424,7 +424,7 @@ mod install_test {
     #[test]
     fn test_reinstalls_when_binary_is_not_executable() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let path = install(&b, &lock, &fetch).expect("install");
@@ -435,19 +435,19 @@ mod install_test {
     }
 
     fn rejected(name: &str) -> Vec<(&'static str, RawKind)> {
-        let body = || RawKind::File(RTK_TEST_BODY.to_vec());
+        let body = || RawKind::File(ATL_TEST_BODY.to_vec());
         let x = || RawKind::File(b"x".to_vec());
         match name {
-            "symlink rtk" => vec![("rtk", RawKind::Symlink("/bin/sh".into()))],
-            "hardlink rtk" => vec![
-                ("rtk", RawKind::Hardlink("LICENSE".into())),
+            "symlink atl" => vec![("atl", RawKind::Symlink("/bin/sh".into()))],
+            "hardlink atl" => vec![
+                ("atl", RawKind::Hardlink("LICENSE".into())),
                 ("LICENSE", x()),
             ],
-            "dotdot member" => vec![("../rtk", body()), ("LICENSE", x())],
-            "nested member" => vec![("bin/rtk", body())],
-            "absolute member" => vec![("/rtk", body())],
-            "no rtk member" => vec![("LICENSE", x())],
-            "duplicate rtk" => vec![("rtk", body()), ("rtk", RawKind::File(b"other".to_vec()))],
+            "dotdot member" => vec![("../atl", body()), ("LICENSE", x())],
+            "nested member" => vec![("bin/atl", body())],
+            "absolute member" => vec![("/atl", body())],
+            "no atl member" => vec![("LICENSE", x())],
+            "duplicate atl" => vec![("atl", body()), ("atl", RawKind::File(b"other".to_vec()))],
             other => panic!("no case {other:?}"),
         }
     }
@@ -466,25 +466,25 @@ mod install_test {
             let lock = make_lock(V1, &blob);
             let err = install(&b, &lock, &Fake::for_lock(&lock, &blob));
             assert!(err.is_err(), "{name}");
-            assert!(b.entries(&b.data.join("rtk")).is_empty(), "{name}");
+            assert!(b.entries(&b.data.join("atl")).is_empty(), "{name}");
         }
     }
 
     #[test]
     fn test_oversized_member_is_rejected() {
         let b = Base::new();
-        let blob = raw_tar_gz(&[("rtk", RawKind::File(vec![b'x'; 2048]))]);
+        let blob = raw_tar_gz(&[("atl", RawKind::File(vec![b'x'; 2048]))]);
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let err = install_with(&b, &lock, &fetch, |d| {
-            d.limits = RtkLimits {
+            d.limits = AtlLimits {
                 max_binary_bytes: 1024,
-                ..RtkLimits::default()
+                ..AtlLimits::default()
             }
         })
         .unwrap_err();
-        assert_eq!(err.py_str(), "the rtk member is too large");
-        assert!(b.entries(&b.data.join("rtk")).is_empty());
+        assert_eq!(err.py_str(), "the atl member is too large");
+        assert!(b.entries(&b.data.join("atl")).is_empty());
     }
 
     #[test]
@@ -494,19 +494,19 @@ mod install_test {
         let lock = make_lock(V1, blob);
         let err = install(&b, &lock, &Fake::for_lock(&lock, blob)).unwrap_err();
         assert!(
-            err.py_str().starts_with("cannot read the rtk tarball: "),
+            err.py_str().starts_with("cannot read the atl tarball: "),
             "{}",
             err.py_str()
         );
-        assert!(b.entries(&b.data.join("rtk")).is_empty());
+        assert!(b.entries(&b.data.join("atl")).is_empty());
     }
 
     #[test]
     fn test_failed_fetch_leaves_nothing_behind() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
+        let lock = make_lock(V1, &atl_tarball());
         assert!(install(&b, &lock, &Fake::failing("OSError", "boom")).is_err());
-        assert!(b.entries(&b.data.join("rtk")).is_empty());
+        assert!(b.entries(&b.data.join("atl")).is_empty());
     }
 
     fn tar_open_is_an_assertion() -> Result<(), PyExc> {
@@ -516,7 +516,7 @@ mod install_test {
     #[test]
     fn test_the_hash_is_checked_before_extraction() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let mut lock = make_lock(V1, &blob);
         lock.sha256.insert(HOST, "1".repeat(64));
         let fetch = Fake::for_lock(&lock, &blob);
@@ -525,7 +525,7 @@ mod install_test {
         })
         .unwrap_err();
         assert_ne!(err.type_name(), "AssertionError");
-        assert!(err.py_str().contains("does not match rtk.lock"));
+        assert!(err.py_str().contains("does not match atl.lock"));
     }
 }
 
@@ -533,8 +533,8 @@ mod check_installed_test {
     use super::*;
 
     fn install5(b: &Base, lock: &Lock) -> PathBuf {
-        let blob = rtk_tarball();
-        rtk_install::install(
+        let blob = atl_tarball();
+        atl_install::install(
             &b.data,
             lock,
             5.0,
@@ -547,11 +547,11 @@ mod check_installed_test {
     #[test]
     fn test_true_after_install_and_false_before() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
-        assert!(rtk_install::check_installed_for(&b.data, &lock, HOST).is_err());
+        let lock = make_lock(V1, &atl_tarball());
+        assert!(atl_install::check_installed_for(&b.data, &lock, HOST).is_err());
         let path = install5(&b, &lock);
         assert_eq!(
-            rtk_install::check_installed_for(&b.data, &lock, HOST),
+            atl_install::check_installed_for(&b.data, &lock, HOST),
             Ok(path)
         );
     }
@@ -559,48 +559,48 @@ mod check_installed_test {
     #[test]
     fn test_default_target_is_this_machine() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
+        let lock = make_lock(V1, &atl_tarball());
         install5(&b, &lock);
-        assert!(rtk_install::check_installed_with(&b.data, &lock, ("Linux", "x86_64")).is_ok());
+        assert!(atl_install::check_installed_with(&b.data, &lock, ("Linux", "x86_64")).is_ok());
     }
 
     #[test]
     fn test_false_for_a_different_lock_hash_or_version() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
+        let lock = make_lock(V1, &atl_tarball());
         install5(&b, &lock);
         let other_hash = make_lock(
             V1,
-            &raw_tar_gz(&[("rtk", RawKind::File(b"other".to_vec()))]),
+            &raw_tar_gz(&[("atl", RawKind::File(b"other".to_vec()))]),
         );
-        assert!(rtk_install::check_installed_for(&b.data, &other_hash, HOST).is_err());
-        let other_version = make_lock("1.9.0", &rtk_tarball());
-        assert!(rtk_install::check_installed_for(&b.data, &other_version, HOST).is_err());
+        assert!(atl_install::check_installed_for(&b.data, &other_hash, HOST).is_err());
+        let other_version = make_lock("1.9.0", &atl_tarball());
+        assert!(atl_install::check_installed_for(&b.data, &other_version, HOST).is_err());
     }
 
     #[test]
     fn test_false_when_the_binary_is_not_executable_or_the_marker_is_gone() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
+        let lock = make_lock(V1, &atl_tarball());
         let path = install5(&b, &lock);
         set_mode(&path, 0o600);
-        assert!(rtk_install::check_installed_for(&b.data, &lock, HOST).is_err());
+        assert!(atl_install::check_installed_for(&b.data, &lock, HOST).is_err());
         set_mode(&path, 0o755);
         fs::remove_file(path.parent().expect("vdir").join(".sha256")).expect("unlink");
-        assert!(rtk_install::check_installed_for(&b.data, &lock, HOST).is_err());
+        assert!(atl_install::check_installed_for(&b.data, &lock, HOST).is_err());
     }
 
     #[test]
     fn test_never_raises() {
         let b = Base::new();
         // An invalid lock cannot be a `Lock`: `validate_lock` refuses it, which is the "False".
-        assert!(rtk_install::validate_lock(&json::loads("{\"nope\": 1}").expect("json")).is_err());
+        assert!(atl_install::validate_lock(&json::loads("{\"nope\": 1}").expect("json")).is_err());
         // A target the lock has no hash for.
-        let mut lock = make_lock(V1, &rtk_tarball());
+        let mut lock = make_lock(V1, &atl_tarball());
         lock.sha256.remove(&HOST);
-        assert!(rtk_install::check_installed_for(&b.data, &lock, HOST).is_err());
-        let lock = make_lock(V1, &rtk_tarball());
-        let err = rtk_install::check_installed_with(&b.data, &lock, ("Windows", "AMD64"));
+        assert!(atl_install::check_installed_for(&b.data, &lock, HOST).is_err());
+        let lock = make_lock(V1, &atl_tarball());
+        let err = atl_install::check_installed_with(&b.data, &lock, ("Windows", "AMD64"));
         assert!(err.unwrap_err().contains("Windows isn't supported"));
     }
 }
@@ -609,9 +609,9 @@ mod prune_test {
     use super::*;
 
     fn make_version(b: &Base, name: &str, age_days: f64, marker: bool) -> PathBuf {
-        let vdir = b.data.join("rtk").join(name);
+        let vdir = b.data.join("atl").join(name);
         fs::create_dir_all(&vdir).expect("mkdir");
-        fs::write(vdir.join("rtk"), b"x").expect("rtk");
+        fs::write(vdir.join("atl"), b"x").expect("atl");
         let ago = age_days * 86400.0;
         if marker {
             fs::write(vdir.join(".last-used"), b"").expect("marker");
@@ -627,21 +627,21 @@ mod prune_test {
         let old = make_version(&b, "0.9.0", 45.0, true);
         let recent = make_version(&b, "1.0.0", 5.0, true);
         let no_marker_old = make_version(&b, "0.8.0", 90.0, false);
-        let stray = b.data.join("rtk").join("notes");
+        let stray = b.data.join("atl").join("notes");
         fs::create_dir(&stray).expect("stray");
         set_epoch_mtime(&stray, 1);
         let link_target = b.tmp.join("elsewhere");
         fs::create_dir(&link_target).expect("elsewhere");
         fs::write(link_target.join("keep"), b"x").expect("keep");
         set_epoch_mtime(&link_target, 1);
-        let link = b.data.join("rtk").join("0.1.0");
+        let link = b.data.join("atl").join("0.1.0");
         std::os::unix::fs::symlink(&link_target, &link).expect("symlink");
 
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
-        let current = b.data.join("rtk").join(&lock.version);
+        let current = b.data.join("atl").join(&lock.version);
         fs::create_dir(&current).expect("current");
-        fs::write(current.join("rtk"), b"x").expect("rtk");
+        fs::write(current.join("atl"), b"x").expect("atl");
         fs::write(current.join(".last-used"), b"").expect("marker");
         set_epoch_mtime(&current.join(".last-used"), 1); // ancient, but it is the current version
         set_epoch_mtime(&current, 1);
@@ -664,7 +664,7 @@ mod prune_test {
     #[test]
     fn test_install_touches_last_used_on_the_current_version() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         let path = install(&b, &lock, &fetch).expect("install");
@@ -682,7 +682,7 @@ mod prune_test {
     #[test]
     fn stale_temp_folders_are_pruned_and_fresh_ones_kept() {
         let b = Base::new();
-        let root = b.data.join("rtk");
+        let root = b.data.join("atl");
         fs::create_dir_all(root.join(".tmp-old")).expect("old");
         fs::create_dir_all(root.join(".tmp-new")).expect("new");
         set_mtime(&root.join(".tmp-old"), 25.0 * 3600.0);
@@ -690,7 +690,7 @@ mod prune_test {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("now")
             .as_secs_f64();
-        assert_eq!(rtk_install::prune(&root, V1, now), [".tmp-old"]);
+        assert_eq!(atl_install::prune(&root, V1, now), [".tmp-old"]);
         assert!(root.join(".tmp-new").exists());
     }
 }
@@ -698,27 +698,27 @@ mod prune_test {
 mod reconcile_test {
     use super::*;
 
-    fn reconcile(b: &Base, lock: &Lock, fetch: &dyn Fetch) -> rtk_install::Reconciled {
-        rtk_install::reconcile(&b.env, &b.data, lock, 5.0, &deps(fetch))
+    fn reconcile(b: &Base, lock: &Lock, fetch: &dyn Fetch) -> atl_install::Reconciled {
+        atl_install::reconcile(&b.env, &b.data, lock, 5.0, &deps(fetch))
     }
 
     #[test]
     fn test_installs_and_records_the_path() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let res = reconcile(&b, &lock, &Fake::for_lock(&lock, &blob));
-        let want = b.data.join("rtk").join(V1).join("rtk");
+        let want = b.data.join("atl").join(V1).join("atl");
         assert_eq!(
             res,
-            rtk_install::Reconciled {
-                rtk_path: Some(want.clone()),
+            atl_install::Reconciled {
+                atl_path: Some(want.clone()),
                 warning: None,
                 installed: true
             }
         );
         assert_eq!(
-            b.state_read().get("rtk_path").and_then(Value::as_str),
+            b.state_read().get("atl_path").and_then(Value::as_str),
             want.to_str()
         );
     }
@@ -726,7 +726,7 @@ mod reconcile_test {
     #[test]
     fn test_already_installed_does_not_fetch() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         reconcile(&b, &lock, &fetch);
@@ -739,69 +739,69 @@ mod reconcile_test {
     #[test]
     fn test_lock_change_installs_new_version_keeps_old_and_updates_state() {
         let b = Base::new();
-        let blob1 = rtk_tarball();
+        let blob1 = atl_tarball();
         let old_lock = make_lock(V1, &blob1);
         reconcile(&b, &old_lock, &Fake::for_lock(&old_lock, &blob1));
-        let blob2 = raw_tar_gz(&[("rtk", RawKind::File(b"#!/bin/sh\necho v2\n".to_vec()))]);
+        let blob2 = raw_tar_gz(&[("atl", RawKind::File(b"#!/bin/sh\necho v2\n".to_vec()))]);
         let new_lock = make_lock("1.3.0-anthology.1", &blob2);
         let res = reconcile(&b, &new_lock, &Fake::for_lock(&new_lock, &blob2));
         assert!(res.installed);
-        assert_eq!(b.entries(&b.data.join("rtk")), [V1, "1.3.0-anthology.1"]);
-        let want = b.data.join("rtk").join("1.3.0-anthology.1").join("rtk");
+        assert_eq!(b.entries(&b.data.join("atl")), [V1, "1.3.0-anthology.1"]);
+        let want = b.data.join("atl").join("1.3.0-anthology.1").join("atl");
         assert_eq!(
-            b.state_read().get("rtk_path").and_then(Value::as_str),
+            b.state_read().get("atl_path").and_then(Value::as_str),
             want.to_str()
         );
-        assert!(b.data.join("rtk").join(V1).join("rtk").exists());
+        assert!(b.data.join("atl").join(V1).join("atl").exists());
     }
 
     #[test]
     fn test_fetch_failure_returns_a_warning_and_keeps_state() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
-        b.state_write(&[("rtk_path", "/previous/rtk"), ("other", "kept")]);
+        let lock = make_lock(V1, &atl_tarball());
+        b.state_write(&[("atl_path", "/previous/atl"), ("other", "kept")]);
         for (t, msg) in [
             ("OSError", "offline"),
             ("URLError", "<urlopen error dns>"),
             ("RuntimeError", "weird"),
         ] {
             let res = reconcile(&b, &lock, &Fake::failing(t, msg));
-            assert_eq!(res.rtk_path, None);
+            assert_eq!(res.atl_path, None);
             assert!(!res.installed);
             let w = res.warning.expect("warning");
-            assert!(w.contains("rtk"), "{w}");
+            assert!(w.contains("atl"), "{w}");
             assert!(w.contains(msg), "{w}");
         }
         let st = b.state_read();
         assert_eq!(st.len(), 2);
         assert_eq!(
-            st.get("rtk_path").and_then(Value::as_str),
-            Some("/previous/rtk")
+            st.get("atl_path").and_then(Value::as_str),
+            Some("/previous/atl")
         );
         assert_eq!(st.get("other").and_then(Value::as_str), Some("kept"));
-        assert!(b.entries(&b.data.join("rtk")).is_empty());
+        assert!(b.entries(&b.data.join("atl")).is_empty());
     }
 
     #[test]
     fn test_bad_hash_returns_a_warning() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let mut lock = make_lock(V1, &blob);
         lock.sha256.insert(HOST, "2".repeat(64));
         let res = reconcile(&b, &lock, &Fake::for_lock(&lock, &blob));
-        assert_eq!(res.rtk_path, None);
+        assert_eq!(res.atl_path, None);
         assert!(res.warning.expect("warning").contains("sha256"));
-        assert!(b.state_read().get("rtk_path").is_none());
+        assert!(b.state_read().get("atl_path").is_none());
     }
 
     #[test]
     fn test_unsupported_platform_returns_a_warning() {
         let b = Base::new();
-        let lock = make_lock(V1, &rtk_tarball());
-        let fetch = Fake(RtkFakeFetch::default());
+        let lock = make_lock(V1, &atl_tarball());
+        let fetch = Fake(AtlFakeFetch::default());
         let mut d = deps(&fetch);
         d.uname = windows;
-        let res = rtk_install::reconcile(&b.env, &b.data, &lock, 5.0, &d);
+        let res = atl_install::reconcile(&b.env, &b.data, &lock, 5.0, &d);
         assert!(
             res.warning
                 .expect("warning")
@@ -813,14 +813,14 @@ mod reconcile_test {
     #[test]
     fn test_uses_the_running_platform_by_default() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
-        // The `platform` seam: `RtkDeps::new` reads `platform::uname`; the test pins it, as
+        // The `platform` seam: `AtlDeps::new` reads `platform::uname`; the test pins it, as
         // Python patches `platform.system`/`machine`.
-        let mut d = RtkDeps::new(&fetch);
+        let mut d = AtlDeps::new(&fetch);
         d.uname = linux;
-        let res = rtk_install::reconcile(&b.env, &b.data, &lock, 5.0, &d);
+        let res = atl_install::reconcile(&b.env, &b.data, &lock, 5.0, &d);
         assert!(res.installed, "{res:?}");
     }
 
@@ -828,8 +828,8 @@ mod reconcile_test {
     fn the_warning_names_the_error_as_python_does() {
         let exc = PyExc::Other("OSError", "offline".into());
         assert_eq!(
-            rtk_install::warning_text(&exc),
-            "rtk is not installed or up to date (offline); commands run without it. It is \
+            atl_install::warning_text(&exc),
+            "atl is not installed or up to date (offline); commands run without it. It is \
              retried at the next session start."
         );
     }
@@ -837,15 +837,15 @@ mod reconcile_test {
     #[test]
     fn a_marker_that_is_not_utf8_is_a_warning_as_in_python() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let fetch = Fake::for_lock(&lock, &blob);
         reconcile(&b, &lock, &fetch);
-        fs::write(b.data.join("rtk").join(V1).join(".sha256"), b"\xff\n").expect("marker");
+        fs::write(b.data.join("atl").join(V1).join(".sha256"), b"\xff\n").expect("marker");
         let res = reconcile(&b, &lock, &fetch);
         assert_eq!(
             res.warning.expect("warning"),
-            "rtk is not installed or up to date ('utf-8' codec can't decode byte 0xff in \
+            "atl is not installed or up to date ('utf-8' codec can't decode byte 0xff in \
              position 0: invalid start byte); commands run without it. It is retried at the next \
              session start."
         );
@@ -855,17 +855,17 @@ mod reconcile_test {
     #[test]
     fn a_version_folder_that_is_a_symlink_is_refused() {
         let b = Base::new();
-        let blob = rtk_tarball();
+        let blob = atl_tarball();
         let lock = make_lock(V1, &blob);
         let elsewhere = b.tmp.join("elsewhere");
         fs::create_dir_all(&elsewhere).expect("elsewhere");
-        fs::create_dir_all(b.data.join("rtk")).expect("rtk");
-        std::os::unix::fs::symlink(&elsewhere, b.data.join("rtk").join(V1)).expect("link");
+        fs::create_dir_all(b.data.join("atl")).expect("atl");
+        std::os::unix::fs::symlink(&elsewhere, b.data.join("atl").join(V1)).expect("link");
         let res = reconcile(&b, &lock, &Fake::for_lock(&lock, &blob));
         let w = res.warning.expect("warning");
         assert!(w.contains(" is a symlink"), "{w}");
         assert!(b.entries(&elsewhere).is_empty());
-        assert_eq!(b.entries(&b.data.join("rtk")), [V1]);
+        assert_eq!(b.entries(&b.data.join("atl")), [V1]);
     }
 }
 
@@ -903,7 +903,7 @@ mod default_fetch_test {
     fn response(body: &[u8]) -> FakeResponse {
         FakeResponse {
             body: body.to_vec(),
-            url: "https://objects.example.invalid/rtk.tar.gz".into(),
+            url: "https://objects.example.invalid/atl.tar.gz".into(),
             length: None,
             chunk: 1000,
             trickle: false,
@@ -1135,12 +1135,12 @@ mod state_write_test {
     #[test]
     fn test_non_ascii_is_written_literally() {
         let b = Base::new();
-        b.state_write(&[("rtk_path", "/h\u{e9}llo/rtk")]);
+        b.state_write(&[("atl_path", "/h\u{e9}llo/atl")]);
         let text = fs::read_to_string(state::path(&b.env)).expect("state");
-        assert!(text.contains("/h\u{e9}llo/rtk"), "{text}");
+        assert!(text.contains("/h\u{e9}llo/atl"), "{text}");
         assert_eq!(
-            b.state_read().get("rtk_path").and_then(Value::as_str),
-            Some("/h\u{e9}llo/rtk")
+            b.state_read().get("atl_path").and_then(Value::as_str),
+            Some("/h\u{e9}llo/atl")
         );
     }
 }
@@ -1166,7 +1166,7 @@ mod files_test {
         assert_eq!(names, ["Notification", "PreToolUse", "SessionStart"]);
         let want = json::loads(
             r#"[{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"],
+                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"],
                  "timeout": 60, "onFailure": "block"},
                 {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"],
                  "timeout": 60, "onFailure": "block"}]}]"#,
@@ -1177,7 +1177,7 @@ mod files_test {
 
     #[test]
     fn test_wrappers_are_executable_posix_sh() {
-        for name in ["rtk", "rtk-hook"] {
+        for name in ["atl", "atl-hook"] {
             let path = plugin().join("bin").join(name);
             assert_eq!(mode(&path) & 0o111, 0o111, "{name}");
             let text = fs::read_to_string(&path).expect("wrapper");
@@ -1196,10 +1196,10 @@ mod wrapper_test {
 
     fn setup() -> W {
         let b = Base::new();
-        let fake = b.tmp.join("fake-rtk");
+        let fake = b.tmp.join("fake-atl");
         fs::write(
             &fake,
-            "#!/bin/sh\necho \"args:$*\"\necho \"suppress:$RTK_SUPPRESS_HOOK_WARNING\"\n\
+            "#!/bin/sh\necho \"args:$*\"\necho \"suppress:$ATL_SUPPRESS_HOOK_WARNING\"\n\
              if [ \"$1\" = hook ]; then cat; fi\n",
         )
         .expect("fake");
@@ -1256,8 +1256,8 @@ mod wrapper_test {
     #[test]
     fn test_rtk_execs_the_recorded_binary() {
         let w = setup();
-        w.b.state_write(&[("rtk_path", w.fake_str())]);
-        let res = w.run_bin("rtk", &["git", "status"], "");
+        w.b.state_write(&[("atl_path", w.fake_str())]);
+        let res = w.run_bin("atl", &["git", "status"], "");
         assert_eq!(res.code, 0, "{}", res.stderr_text());
         assert_eq!(lines(&res), ["args:git status", "suppress:1"]);
     }
@@ -1268,7 +1268,7 @@ mod wrapper_test {
         let home = w.b.tmp.join("home");
         fs::create_dir_all(home.join(".claude").join("anthology")).expect("mkdir");
         let mut m = json::Map::new();
-        m.insert("rtk_path".into(), Value::Str(w.fake_str().into()));
+        m.insert("atl_path".into(), Value::Str(w.fake_str().into()));
         let text = json::dumps(&Value::Object(m), &json::STATE) + "\n";
         fs::write(
             home.join(".claude").join("anthology").join("state.json"),
@@ -1278,55 +1278,55 @@ mod wrapper_test {
         let env = Env::default()
             .with("PATH", &path_var())
             .with_os("HOME", &home);
-        let res = run_program(&wrapper("rtk"), &["x"], b"", &env, &w.b.tmp);
+        let res = run_program(&wrapper("atl"), &["x"], b"", &env, &w.b.tmp);
         assert_eq!(lines(&res)[0], "args:x");
     }
 
     #[test]
     fn test_rtk_finds_the_key_wherever_it_sits() {
         let w = setup();
-        // rtk_path mid-file.
+        // atl_path mid-file.
         w.b.state_write(&[
             ("data_dir", "/d"),
-            ("rtk_path", w.fake_str()),
+            ("atl_path", w.fake_str()),
             ("zzz", "after"),
         ]);
-        assert_eq!(lines(&w.run_bin("rtk", &["a"], ""))[0], "args:a");
+        assert_eq!(lines(&w.run_bin("atl", &["a"], ""))[0], "args:a");
         // The sole (last) key.
         let mut m = json::Map::new();
-        m.insert("rtk_path".into(), Value::Str(w.fake_str().into()));
+        m.insert("atl_path".into(), Value::Str(w.fake_str().into()));
         fs::write(
             state::path(&w.b.env),
             json::dumps(&Value::Object(m), &json::STATE) + "\n",
         )
         .expect("state");
-        assert_eq!(lines(&w.run_bin("rtk", &["b"], ""))[0], "args:b");
+        assert_eq!(lines(&w.run_bin("atl", &["b"], ""))[0], "args:b");
     }
 
     #[test]
     fn test_rtk_handles_a_path_with_spaces() {
         let w = setup();
-        let p = w.copy_fake(&w.b.tmp.join("with space").join("rtk"));
-        w.b.state_write(&[("rtk_path", p.to_str().expect("utf-8"))]);
-        assert_eq!(lines(&w.run_bin("rtk", &["ok"], ""))[0], "args:ok");
+        let p = w.copy_fake(&w.b.tmp.join("with space").join("atl"));
+        w.b.state_write(&[("atl_path", p.to_str().expect("utf-8"))]);
+        assert_eq!(lines(&w.run_bin("atl", &["ok"], ""))[0], "args:ok");
     }
 
     #[test]
     fn test_rtk_non_ascii_path_round_trips() {
         let w = setup();
-        let p = w.copy_fake(&w.b.tmp.join("h\u{e9}llo").join("rtk"));
-        w.b.state_write(&[("rtk_path", p.to_str().expect("utf-8"))]);
-        assert_eq!(lines(&w.run_bin("rtk", &["ok"], ""))[0], "args:ok");
+        let p = w.copy_fake(&w.b.tmp.join("h\u{e9}llo").join("atl"));
+        w.b.state_write(&[("atl_path", p.to_str().expect("utf-8"))]);
+        assert_eq!(lines(&w.run_bin("atl", &["ok"], ""))[0], "args:ok");
     }
 
     #[test]
     fn test_rtk_missing_state_exits_127_with_the_message() {
         let w = setup();
-        let res = w.run_bin("rtk", &["git", "status"], "");
+        let res = w.run_bin("atl", &["git", "status"], "");
         assert_eq!(res.code, 127);
         assert!(
             res.stderr_text()
-                .contains("rtk is not installed: run /anthology:setup")
+                .contains("atl is not installed: run /anthology:setup")
         );
         assert_eq!(res.stdout_text(), "");
     }
@@ -1344,8 +1344,8 @@ mod wrapper_test {
         assert_eq!(table.len(), 8);
         for row in table {
             let value = row.str("value").replace("<tmp>", tmp);
-            w.b.state_write(&[("rtk_path", &value)]);
-            let res = w.run_bin("rtk", &["x"], "");
+            w.b.state_write(&[("atl_path", &value)]);
+            let res = w.run_bin("atl", &["x"], "");
             assert_eq!(res.code, 127, "{value}");
             assert!(
                 res.stderr_text().contains("run /anthology:setup"),
@@ -1356,30 +1356,30 @@ mod wrapper_test {
 
     impl W {
         fn env_fake(&self) -> PathBuf {
-            let fake = self.b.tmp.join("env-rtk");
+            let fake = self.b.tmp.join("env-atl");
             fs::write(
                 &fake,
-                "#!/bin/sh\necho \"db:$RTK_DB_PATH\"\necho \"recall:$RTK_RECALL_DB\"\n\
-                 echo \"tee:$RTK_TEE_DIR\"\n",
+                "#!/bin/sh\necho \"db:$ATL_DB_PATH\"\necho \"recall:$ATL_RECALL_DB\"\n\
+                 echo \"tee:$ATL_TEE_DIR\"\n",
             )
-            .expect("env-rtk");
+            .expect("env-atl");
             set_mode(&fake, 0o755);
             fake
         }
     }
 
     #[test]
-    fn test_both_wrappers_keep_rtk_history_next_to_state_json() {
-        // I4: rtk's tracking db (command lines), recall store and tee spool live under
-        // state.rtk_data_dir(), which remove deletes, never in rtk's default data folder.
+    fn test_both_wrappers_keep_atl_history_next_to_state_json() {
+        // I4: atl's tracking db (command lines), recall store and tee spool live under
+        // state.atl_data_dir(), which remove deletes, never in atl's default data folder.
         let w = setup();
         let fake = w.env_fake();
-        w.b.state_write(&[("rtk_path", fake.to_str().expect("utf-8 tmp"))]);
+        w.b.state_write(&[("atl_path", fake.to_str().expect("utf-8 tmp"))]);
         let base = state::path(&w.b.env)
             .parent()
             .expect("state dir")
-            .join("rtk");
-        assert_eq!(base, w.b.cfg.join("anthology").join("rtk"));
+            .join("atl");
+        assert_eq!(base, w.b.cfg.join("anthology").join("atl"));
         let want = [
             format!("db:{}", base.join("history.db").display()),
             format!("recall:{}", base.join("recall.db").display()),
@@ -1406,7 +1406,7 @@ mod wrapper_test {
         fs::create_dir_all(home.join(".claude").join("anthology")).expect("mkdir");
         let mut m = json::Map::new();
         m.insert(
-            "rtk_path".into(),
+            "atl_path".into(),
             Value::Str(fake.to_str().expect("utf-8 tmp").into()),
         );
         let text = json::dumps(&Value::Object(m), &json::STATE) + "\n";
@@ -1432,7 +1432,7 @@ mod wrapper_test {
                     "db:{}",
                     home.join(".claude")
                         .join("anthology")
-                        .join("rtk")
+                        .join("atl")
                         .join("history.db")
                         .display()
                 ),
@@ -1442,10 +1442,10 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_runs_rtk_hook_claude_with_stdin_passed_through() {
+    fn test_hook_runs_atl_hook_claude_with_stdin_passed_through() {
         let w = setup();
-        w.b.state_write(&[("rtk_path", w.fake_str())]);
-        let res = w.run_bin("rtk-hook", &[], r#"{"tool_name":"Bash"}"#);
+        w.b.state_write(&[("atl_path", w.fake_str())]);
+        let res = w.run_bin("atl-hook", &[], r#"{"tool_name":"Bash"}"#);
         assert_eq!(res.code, 0, "{}", res.stderr_text());
         assert_eq!(
             lines(&res),
@@ -1453,9 +1453,9 @@ mod wrapper_test {
         );
     }
 
-    const ASK: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"node --version; bun --version"},"permissionDecision":"ask"}}"#;
-    const REWRITE: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk git status --short"}}}"#;
-    const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"RTK: a deny rule matches"}}"#;
+    const ASK: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"node --version; bun --version"},"permissionDecision":"ask"}}"#;
+    const REWRITE: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl git status --short"}}}"#;
+    const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ATL: a deny rule matches"}}"#;
 
     /// The answer a row names.
     fn answer(name: &str) -> &'static str {
@@ -1469,9 +1469,9 @@ mod wrapper_test {
     }
 
     impl W {
-        /// A fake rtk that saves its stdin, prints one hook answer and exits with `rc`.
+        /// A fake atl that saves its stdin, prints one hook answer and exits with `rc`.
         fn answer_fake(&self, answer: &str, rc: i64) {
-            let fake = self.b.tmp.join("answer-rtk");
+            let fake = self.b.tmp.join("answer-atl");
             let seen = self.b.tmp.join("stdin-seen");
             fs::write(
                 &fake,
@@ -1480,10 +1480,10 @@ mod wrapper_test {
                     seen.display()
                 ),
             )
-            .expect("answer-rtk");
+            .expect("answer-atl");
             set_mode(&fake, 0o755);
             self.b
-                .state_write(&[("rtk_path", fake.to_str().expect("utf-8 tmp"))]);
+                .state_write(&[("atl_path", fake.to_str().expect("utf-8 tmp"))]);
         }
     }
 
@@ -1504,18 +1504,18 @@ mod wrapper_test {
         let w = setup();
         w.answer_fake(ASK, 0);
         let stdin = hook_input("node --version; bun --version");
-        let res = w.run_bin("rtk-hook", &[], &stdin);
+        let res = w.run_bin("atl-hook", &[], &stdin);
         assert_eq!(
             (res.code, res.stdout_text(), res.stderr_text()),
             (0, String::new(), String::new())
         );
         let seen = fs::read_to_string(w.b.tmp.join("stdin-seen")).expect("stdin-seen");
-        assert_eq!(seen, stdin, "rtk still read the call");
+        assert_eq!(seen, stdin, "atl still read the call");
     }
 
     #[test]
-    fn test_hook_keeps_an_ask_on_a_line_that_mentions_rtk() {
-        // `Bash(rtk *)` would allow these as typed, so the ask stands.
+    fn test_hook_keeps_an_ask_on_a_line_that_mentions_atl() {
+        // `Bash(atl *)` would allow these as typed, so the ask stands.
         let w = setup();
         w.answer_fake(ASK, 0);
         let table: Vec<Row> = rows(
@@ -1525,15 +1525,15 @@ mod wrapper_test {
         assert_eq!(table.len(), 28);
         for row in table {
             let command = row.str("command");
-            let res = w.run_bin("rtk-hook", &[], &hook_input(command));
+            let res = w.run_bin("atl-hook", &[], &hook_input(command));
             assert_eq!(
                 (res.code, res.stdout_text()),
                 (0, format!("{ASK}\n")),
                 "{command:?}"
             );
         }
-        let escaped = hook_input("rtk x").replace("rtk", "\\u0072tk");
-        let res = w.run_bin("rtk-hook", &[], &escaped);
+        let escaped = hook_input("atl x").replace("atl", "\\u0072tk");
+        let res = w.run_bin("atl-hook", &[], &escaped);
         assert_eq!(
             (res.code, res.stdout_text()),
             (0, format!("{ASK}\n")),
@@ -1541,10 +1541,10 @@ mod wrapper_test {
         );
     }
 
-    /// A Bash hook input that mentions rtk, with `permission_mode` set (or left out for `None`),
+    /// A Bash hook input that mentions atl, with `permission_mode` set (or left out for `None`),
     /// in the compact JSON spacing and in the spaced one.
     fn mode_inputs(mode: Option<&str>) -> [String; 2] {
-        let tail = r#""tool_name":"Bash","tool_input":{"command":"rtk git status"}"#;
+        let tail = r#""tool_name":"Bash","tool_input":{"command":"atl git status"}"#;
         match mode {
             Some(m) => [
                 format!(r#"{{"permission_mode":"{m}",{tail}}}"#),
@@ -1556,11 +1556,11 @@ mod wrapper_test {
 
     #[test]
     fn test_hook_drops_an_ask_in_bypass_mode() {
-        // The user chose no prompts, so even an ask on a line that mentions rtk is dropped.
+        // The user chose no prompts, so even an ask on a line that mentions atl is dropped.
         let w = setup();
         w.answer_fake(ASK, 0);
         for stdin in mode_inputs(Some("bypassPermissions")) {
-            let res = w.run_bin("rtk-hook", &[], &stdin);
+            let res = w.run_bin("atl-hook", &[], &stdin);
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, String::new(), String::new()),
@@ -1577,16 +1577,16 @@ mod wrapper_test {
         for nested in ["bypassPermissions", "auto"] {
             for stdin in [
                 format!(
-                    r#"{{"permission_mode":"default","tool_name":"Bash","tool_input":{{"command":"rtk git push","permission_mode":"{nested}"}}}}"#
+                    r#"{{"permission_mode":"default","tool_name":"Bash","tool_input":{{"command":"atl git push","permission_mode":"{nested}"}}}}"#
                 ),
                 format!(
-                    r#"{{"permission_mode": "default", "tool_name": "Bash", "tool_input": {{"command": "rtk git push", "permission_mode": "{nested}"}}}}"#
+                    r#"{{"permission_mode": "default", "tool_name": "Bash", "tool_input": {{"command": "atl git push", "permission_mode": "{nested}"}}}}"#
                 ),
                 format!(
-                    r#"{{"tool_name":"Bash","tool_input":{{"command":"rtk git push"}},"permission_mode":"{nested}"}}"#
+                    r#"{{"tool_name":"Bash","tool_input":{{"command":"atl git push"}},"permission_mode":"{nested}"}}"#
                 ),
             ] {
-                let res = w.run_bin("rtk-hook", &[], &stdin);
+                let res = w.run_bin("atl-hook", &[], &stdin);
                 assert_eq!(
                     (res.code, res.stdout_text()),
                     (0, format!("{ASK}\n")),
@@ -1598,8 +1598,8 @@ mod wrapper_test {
 
     #[test]
     fn test_hook_keeps_an_ask_in_every_mode_but_bypass() {
-        // Auto mode keeps the ask on a line that mentions rtk: dropping it would let
-        // `Bash(rtk *)` skip the classifier.
+        // Auto mode keeps the ask on a line that mentions atl: dropping it would let
+        // `Bash(atl *)` skip the classifier.
         let w = setup();
         w.answer_fake(ASK, 0);
         let modes = [
@@ -1611,7 +1611,7 @@ mod wrapper_test {
         ];
         for mode in modes {
             for stdin in mode_inputs(mode) {
-                let res = w.run_bin("rtk-hook", &[], &stdin);
+                let res = w.run_bin("atl-hook", &[], &stdin);
                 assert_eq!(
                     (res.code, res.stdout_text()),
                     (0, format!("{ASK}\n")),
@@ -1627,7 +1627,7 @@ mod wrapper_test {
         w.answer_fake(DENY, 0);
         for mode in ["bypassPermissions", "auto"] {
             for stdin in mode_inputs(Some(mode)) {
-                let res = w.run_bin("rtk-hook", &[], &stdin);
+                let res = w.run_bin("atl-hook", &[], &stdin);
                 assert_eq!(
                     (res.code, res.stdout_text()),
                     (0, format!("{DENY}\n")),
@@ -1638,8 +1638,8 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_rtk() {
-        // An ANSI-C `$'...'` is never a mention: `Bash(rtk *)` never auto-allows one, and a `$'` in a
+    fn test_hook_drops_an_ask_on_a_dollar_quote_that_cannot_spell_atl() {
+        // An ANSI-C `$'...'` is never a mention: `Bash(atl *)` never auto-allows one, and a `$'` in a
         // heredoc body is not decoded by the shell. So the ask is dropped and the command runs as typed.
         let w = setup();
         w.answer_fake(ASK, 0);
@@ -1650,7 +1650,7 @@ mod wrapper_test {
         assert_eq!(table.len(), 22);
         for row in table {
             let command = row.str("command");
-            let res = w.run_bin("rtk-hook", &[], &hook_input(command));
+            let res = w.run_bin("atl-hook", &[], &hook_input(command));
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, String::new(), String::new()),
@@ -1660,8 +1660,8 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_drops_an_ask_when_rtk_is_only_inside_a_longer_word() {
-        // `rtk` glued after a letter or underscore cannot invoke rtk, so the ask is dropped.
+    fn test_hook_drops_an_ask_when_atl_is_only_inside_a_longer_word() {
+        // `atl` glued after a letter or underscore cannot invoke atl, so the ask is dropped.
         let w = setup();
         w.answer_fake(ASK, 0);
         let table: Vec<Row> = rows(
@@ -1671,7 +1671,7 @@ mod wrapper_test {
         assert_eq!(table.len(), 4);
         for row in table {
             let command = row.str("command");
-            let res = w.run_bin("rtk-hook", &[], &hook_input(command));
+            let res = w.run_bin("atl-hook", &[], &hook_input(command));
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, String::new(), String::new()),
@@ -1691,15 +1691,15 @@ mod wrapper_test {
         for row in table {
             let answer = answer(row.str("answer"));
             w.answer_fake(answer, 0);
-            let res = w.run_bin("rtk-hook", &[], &hook_input("git status --short"));
+            let res = w.run_bin("atl-hook", &[], &hook_input("git status --short"));
             assert_eq!((res.code, res.stdout_text()), (0, format!("{answer}\n")));
         }
     }
 
     #[test]
-    fn test_hook_drops_a_rewrite_into_rtk_read() {
-        // cat/head/tail become `rtk read`, which saves little and changes what Claude reads: the
-        // command runs as typed instead. With or without rtk's allow, alone or in a compound line.
+    fn test_hook_drops_a_rewrite_into_atl_read() {
+        // cat/head/tail become `atl read`, which saves little and changes what Claude reads: the
+        // command runs as typed instead. With or without atl's allow, alone or in a compound line.
         let w = setup();
         let table: Vec<Row> = rows(
             "test_rtk_install",
@@ -1710,9 +1710,9 @@ mod wrapper_test {
             let command = json::dumps(&Value::Str(row.str("command").into()), &json::PY_DEFAULT);
             let answer = REWRITE
                 .replace("}}}", &format!("}}{}}}}}", row.str("decision")))
-                .replace(r#""rtk git status --short""#, &command);
+                .replace(r#""atl git status --short""#, &command);
             w.answer_fake(&answer, 0);
-            let res = w.run_bin("rtk-hook", &[], &hook_input("cat a.txt"));
+            let res = w.run_bin("atl-hook", &[], &hook_input("cat a.txt"));
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, String::new(), String::new()),
@@ -1733,7 +1733,7 @@ mod wrapper_test {
             let (answer, typed) = match row.params.get("command").and_then(Value::as_str) {
                 Some(command) => {
                     let command = json::dumps(&Value::Str(command.into()), &json::PY_DEFAULT);
-                    let answer = REWRITE.replace(r#""rtk git status --short""#, &command);
+                    let answer = REWRITE.replace(r#""atl git status --short""#, &command);
                     (answer, "x")
                 }
                 None => {
@@ -1741,19 +1741,19 @@ mod wrapper_test {
                     let typed = if answer.contains(r#""deny""#) {
                         "cat secret.txt"
                     } else {
-                        "rtk read a.txt"
+                        "atl read a.txt"
                     };
                     (answer, typed)
                 }
             };
             w.answer_fake(&answer, 0);
-            let res = w.run_bin("rtk-hook", &[], &hook_input(typed));
+            let res = w.run_bin("atl-hook", &[], &hook_input(typed));
             assert_eq!((res.code, res.stdout_text()), (0, format!("{answer}\n")));
         }
     }
 
     #[test]
-    fn test_hook_keeps_rtk_exit_status_and_output_on_failure() {
+    fn test_hook_keeps_atl_exit_status_and_output_on_failure() {
         let w = setup();
         let table: Vec<Row> = rows(
             "test_rtk_install",
@@ -1764,7 +1764,7 @@ mod wrapper_test {
             let answer = answer(row.str("answer"));
             let rc: i64 = row.get("rc");
             w.answer_fake(answer, rc);
-            let res = w.run_bin("rtk-hook", &[], &hook_input("node --version"));
+            let res = w.run_bin("atl-hook", &[], &hook_input("node --version"));
             assert_eq!(
                 (i64::from(res.code), res.stdout_text()),
                 (rc, format!("{answer}\n"))
@@ -1773,22 +1773,22 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_silent_rtk_stays_silent() {
+    fn test_hook_silent_atl_stays_silent() {
         let w = setup();
         w.answer_fake("", 0);
-        let res = w.run_bin("rtk-hook", &[], &hook_input("ls; pwd"));
+        let res = w.run_bin("atl-hook", &[], &hook_input("ls; pwd"));
         assert_eq!((res.code, res.stdout_text()), (0, String::new()));
     }
 
     #[test]
     fn test_hook_drops_the_rewrite_with_the_ask() {
-        // Nothing is printed, so the rewrite rtk carried on its ask is never applied.
+        // Nothing is printed, so the rewrite atl carried on its ask is never applied.
         let w = setup();
         w.answer_fake(
-            &ASK.replace("node --version; bun --version", "rtk git status; rtk ls"),
+            &ASK.replace("node --version; bun --version", "atl git status; atl ls"),
             0,
         );
-        let res = w.run_bin("rtk-hook", &[], &hook_input("git status; ls"));
+        let res = w.run_bin("atl-hook", &[], &hook_input("git status; ls"));
         assert_eq!(
             (res.code, res.stdout_text(), res.stderr_text()),
             (0, String::new(), String::new())
@@ -1796,12 +1796,12 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_hook_looks_for_rtk_in_the_command_only() {
-        // A working folder, transcript or description that says rtk does not bring the prompt back.
+    fn test_hook_looks_for_atl_in_the_command_only() {
+        // A working folder, transcript or description that says atl does not bring the prompt back.
         let w = setup();
         w.answer_fake(ASK, 0);
-        let stdin = r#"{"session_id": "s", "transcript_path": "/x/rtk/t.jsonl", "cwd": "/x/rtk-proj", "tool_name": "Bash", "tool_input": {"command": "node --version", "description": "rtk check"}}"#;
-        let res = w.run_bin("rtk-hook", &[], stdin);
+        let stdin = r#"{"session_id": "s", "transcript_path": "/x/atl/t.jsonl", "cwd": "/x/atl-proj", "tool_name": "Bash", "tool_input": {"command": "node --version", "description": "atl check"}}"#;
+        let res = w.run_bin("atl-hook", &[], stdin);
         assert_eq!((res.code, res.stdout_text()), (0, String::new()));
         // Spacing around the key is read; an input with no "command" key is matched whole.
         let table: Vec<Row> = rows(
@@ -1811,7 +1811,7 @@ mod wrapper_test {
         assert_eq!(table.len(), 2);
         for row in table {
             let stdin = row.str("stdin");
-            let res = w.run_bin("rtk-hook", &[], stdin);
+            let res = w.run_bin("atl-hook", &[], stdin);
             assert_eq!(
                 (res.code, res.stdout_text()),
                 (0, format!("{ASK}\n")),
@@ -1823,11 +1823,11 @@ mod wrapper_test {
     #[test]
     fn test_hook_via_sh_in_exec_form() {
         let w = setup();
-        w.b.state_write(&[("rtk_path", w.fake_str())]);
+        w.b.state_write(&[("atl_path", w.fake_str())]);
         let env = Env::default()
             .with("PATH", &path_var())
             .with_os("CLAUDE_CONFIG_DIR", &w.b.cfg);
-        let script = wrapper("rtk-hook");
+        let script = wrapper("atl-hook");
         let res = run_program(
             Path::new("/bin/sh"),
             &[script.to_str().expect("utf-8")],
@@ -1849,17 +1849,17 @@ mod wrapper_test {
     }
 
     #[test]
-    fn test_unreadable_state_is_quiet_for_the_hook_and_missing_for_rtk() {
+    fn test_unreadable_state_is_quiet_for_the_hook_and_missing_for_atl() {
         let w = setup();
         if is_root(&w.b.tmp) {
             // Python: skipIf(geteuid() == 0, "root can read any file").
             return;
         }
-        w.b.state_write(&[("rtk_path", w.fake_str())]);
+        w.b.state_write(&[("atl_path", w.fake_str())]);
         let st = state::path(&w.b.env);
         set_mode(&st, 0);
-        let hook = w.run_bin("rtk-hook", &[], "{}");
-        let res = w.run_bin("rtk", &["x"], "");
+        let hook = w.run_bin("atl-hook", &[], "{}");
+        let res = w.run_bin("atl", &["x"], "");
         set_mode(&st, 0o600);
         assert_eq!(
             (hook.code, hook.stdout_text(), hook.stderr_text()),
@@ -1868,7 +1868,7 @@ mod wrapper_test {
         assert_eq!(res.code, 127);
         assert_eq!(
             res.stderr_text().trim(),
-            "rtk is not installed: run /anthology:setup"
+            "atl is not installed: run /anthology:setup"
         );
     }
 
@@ -1876,8 +1876,8 @@ mod wrapper_test {
     fn test_state_that_is_a_directory_is_missing() {
         let w = setup();
         fs::create_dir_all(state::path(&w.b.env)).expect("mkdir state.json");
-        assert_eq!(w.run_bin("rtk", &[], "").code, 127);
-        let hook = w.run_bin("rtk-hook", &[], "");
+        assert_eq!(w.run_bin("atl", &[], "").code, 127);
+        let hook = w.run_bin("atl-hook", &[], "");
         assert_eq!(
             (hook.code, hook.stdout_text(), hook.stderr_text()),
             (0, String::new(), String::new())
@@ -1887,7 +1887,7 @@ mod wrapper_test {
     #[test]
     fn test_hook_missing_exits_0_silently() {
         let w = setup();
-        let res = w.run_bin("rtk-hook", &[], r#"{"tool_name":"Bash"}"#);
+        let res = w.run_bin("atl-hook", &[], r#"{"tool_name":"Bash"}"#);
         assert_eq!(
             (res.code, res.stdout_text(), res.stderr_text()),
             (0, String::new(), String::new())
@@ -1899,8 +1899,8 @@ mod wrapper_test {
         let w = setup();
         let gone = w.b.tmp.join("gone");
         for value in [gone.to_str().expect("utf-8"), "bad\\path", ""] {
-            w.b.state_write(&[("rtk_path", value)]);
-            let res = w.run_bin("rtk-hook", &[], "{}");
+            w.b.state_write(&[("atl_path", value)]);
+            let res = w.run_bin("atl-hook", &[], "{}");
             assert_eq!(
                 (res.code, res.stdout_text(), res.stderr_text()),
                 (0, String::new(), String::new()),

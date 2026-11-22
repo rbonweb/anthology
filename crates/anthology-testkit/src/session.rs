@@ -4,7 +4,7 @@
 //! it). The Rust session start finds the guard through `hooks/guard.sh` (F-6) and checks four
 //! `bin/` wrappers (F-9), which only the staging overlay has, and the real plugin folder is
 //! large, so each case builds a small plugin instead: `<tmp>/plugins/anthology` holds
-//! `.claude-plugin/plugin.json`, `templates/routing-guide.md`, `rtk.lock` and `bin/` (the
+//! `.claude-plugin/plugin.json`, `templates/routing-guide.md`, `atl.lock` and `bin/` (the
 //! repo's wrappers with `port/staging/plugins/anthology/bin` over them), and its sibling
 //! `<tmp>/plugins/anthology-guardrails/hooks/guard.sh` is [`BLOCKS`], standing in for the real
 //! guard (which needs the installed binary). The environment is `MemCase`'s plus
@@ -59,7 +59,7 @@ pub fn copy_bin(dest: &Path) {
     }
 }
 
-/// A small anthology plugin at `root` (module docs): the manifest, the guide, `rtk.lock` and
+/// A small anthology plugin at `root` (module docs): the manifest, the guide, `atl.lock` and
 /// `bin/`.
 pub fn small_plugin(root: &Path) -> PathBuf {
     let real = real_plugin();
@@ -71,7 +71,7 @@ pub fn small_plugin(root: &Path) -> PathBuf {
     .expect("small_plugin: plugin.json");
     fs::create_dir_all(root.join("templates")).expect("small_plugin: templates");
     fs::copy(guide_path(), root.join("templates/routing-guide.md")).expect("small_plugin: guide");
-    fs::copy(real.join("rtk.lock"), root.join("rtk.lock")).expect("small_plugin: rtk.lock");
+    fs::copy(real.join("atl.lock"), root.join("atl.lock")).expect("small_plugin: atl.lock");
     copy_bin(&root.join("bin"));
     root.to_path_buf()
 }

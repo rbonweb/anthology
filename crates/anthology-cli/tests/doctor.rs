@@ -63,7 +63,7 @@ mod cli_test {
             "node",
             "docker",
             "browseros",
-            "rtk",
+            "atl",
             "platform_supported",
             "plugin_read_rule",
             "browseros_tools",
@@ -71,7 +71,7 @@ mod cli_test {
             "path_wrappers",
             "agent_memory_path",
             "subagent_model",
-            "rtk_savings",
+            "atl_savings",
         ]
         .into_iter()
         .collect();
