@@ -88,6 +88,13 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      keep Claude Code's auto memory.
      `/anthology:setup remove` puts the file back. If it has `skipped`, show the reason: the file is left
      alone and Claude Code's auto memory stays on.
+   - **Commit and PR attribution:** the same `memory.repo.auto_memory` diff also holds
+     `"attribution": {"commit": "", "pr": ""}`, so Claude Code stops telling the model to add a
+     co-author trailer or a "Generated with" line (the no-attribution hook stays as the backstop). Say it
+     is committed too, so it applies to everyone who uses the repo. A value you already set is never
+     overwritten: each item in `notes` names a key that is left as it is; show them. Print `user_scope`
+     verbatim: setup does not touch your user-wide settings for this, and you can set the same key there
+     by hand.
    - **personal memory:** the folder `memory.personal_dir` is created (private to the user).
    - **old memory notes:** if `memory.legacy_notes` is not empty, these are notes Claude Code's auto memory
      saved for this folder before Anthology. With the user's yes, each note is **copied** (never moved
@@ -115,7 +122,7 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    was removed), any `warnings`, and `memory.approve_error` if present (the repo is
    still approved; say which file was refused). `memory.auto_memory` says whether the repo's
    `.claude/settings.json` was changed (`changed`) or why not (`skipped`); when it was, tell the user to
-   commit it. `memory.migrated` lists the old notes copied into the repo (`repo`) and into personal memory
+   commit it, and show its `notes` (attribution keys left as the user had them). `memory.migrated` lists the old notes copied into the repo (`repo`) and into personal memory
    (`personal`), by the names they now have. If `memory.blocked` is not empty, list each `file` with its
    `reason`: those notes were not moved. If `memory.originals` is set, show it: the old notes were left in
    place, never deleted, and are no longer loaded. If `CLAUDE_CODE_SUBAGENT_MODEL` was
@@ -143,8 +150,9 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      which would be deleted (`status` says `delete`, `nothing to delete` or why it is left in place).
    - `state.path`: Anthology's `state.json`, which would be deleted.
    - `memory.repo_settings`: each repo whose `.claude/settings.json` setup edited. Show its `path` and `diff`
-     (the `autoMemoryEnabled` line setup added comes out, or goes back to the value it had; the file is deleted
-     only if setup created it and nothing else is in it). Claude Code's auto memory runs again there. These
+     (the `autoMemoryEnabled` and `attribution` lines setup added come out, or go back to the value they had;
+     the file is deleted only if setup created it and nothing else is in it). Claude Code's auto memory and
+     its commit and PR attribution run again there. These
      files are committed, so tell the user to review and commit the change. A `note`
      says why a file is left alone (a `left in place` one is also in `warnings`).
    - Memory notes, `.gitattributes` and the personal-memory folder are never deleted. `memory.this_repo_approved`
