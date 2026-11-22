@@ -2,7 +2,9 @@
 # no-attribution.sh: the PreToolUse (Bash) hook that enforces the attribution rule: commits, PRs
 # and code comments carry only the git config author. It denies a `git commit` (amend included) or
 # a `gh pr create|edit` whose command holds an assistant co-author trailer or a "Generated with"
-# line. Everything else is allowed: no output, exit 0.
+# line. Everything else is allowed: no output, exit 0. This hook is the backstop: the fix at the
+# source is Claude Code's `attribution` setting (`/anthology:setup` writes it into an approved
+# repo's .claude/settings.json), and the deny reason says so.
 #
 # It catches the usual habit and is not a guarantee. Only the command text is checked, in the
 # `Name: value` spelling, so `git commit --trailer`, `-F file` and `gh pr create --body-file` are
@@ -29,6 +31,6 @@ text_re='co-authored-by:([^\\"]|\\[^nr])*(claude|anthropic)|generated with[[:spa
 
 if printf '%s' "$cmd" | LC_ALL=C grep -Eiq "$command_re" &&
    printf '%s' "$cmd" | LC_ALL=C grep -Eiq "$text_re"; then
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by anthology: commits, PRs and code comments carry only the git config author. Remove the Co-Authored-By trailer or the Generated with line that names an assistant, do not mention Claude or AI, then run the command again."}}'
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by anthology: commits, PRs and code comments carry only the git config author. Remove the Co-Authored-By trailer or the Generated with line that names an assistant, do not mention Claude or AI, then run the command again. To stop Claude Code adding it at the source, set \"attribution\": {\"commit\": \"\", \"pr\": \"\"} in the repo'\''s .claude/settings.json (/anthology:setup does this for an approved repo) or in ~/.claude/settings.json."}}'
 fi
 exit 0

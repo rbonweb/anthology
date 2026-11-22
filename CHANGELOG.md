@@ -46,6 +46,14 @@ a new version section.
 - When session start has to cut the memory index to fit its budget, the closing pointer now
   says only to use `anthology-mem search <query>`; it no longer lists the full `MEMORY.md`
   paths, because the index is capped and those files are not the way to read every note.
+- Attribution off at the source. Claude Code's own instructions tell the model to add a
+  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
+  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
+  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
+  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
+  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
+  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
+  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
 
 #### Fixed
 
