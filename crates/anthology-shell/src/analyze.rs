@@ -1,6 +1,6 @@
 //! `analyze()` (SH2): guard_rules.py `_analyze` and `_Entry`. The command is lexed, prefixes are peeled off
 //! each segment, and everything that runs (nested shells, substitutions, heredocs fed to a shell, `eval`,
-//! `find -exec`, docker shells, rtk runners) is flattened into entries in execution order, with the `cd`
+//! `find -exec`, docker shells, atl runners) is flattened into entries in execution order, with the `cd`
 //! directory tracked.
 //!
 //! A heredoc body inside `$(...)` can be read three ways (bash 5, bash 3.2, and any parenthesis ending it;

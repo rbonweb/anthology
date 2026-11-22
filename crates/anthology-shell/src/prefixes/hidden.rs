@@ -145,7 +145,7 @@ pub(crate) fn wrapper_known(name: &str, token: &str) -> bool {
 }
 
 /// The only command values exempt from a mark (controller ruling): the WHOLE value, after quote removal,
-/// must be one of these. No word-wise or prefix inspection: anything else is opaque, so rtk asks.
+/// must be one of these. No word-wise or prefix inspection: anything else is opaque, so atl asks.
 const HARMLESS_VALUES: &[&str] = &[
     "",
     "true",

@@ -473,7 +473,8 @@ fn an_alternate_marks_its_entry_and_differs_from_it() {
 fn alternates_are_skipped_after_quiet_programs_and_stop_at_remote_ones() {
     assert_clear(&[
         "sudo echo playwright install",
-        "rtk grep playwright install",
+        "atl grep playwright install",
+        "rtk grep playwright install", // legacy
         "sudo rm -rf playwright install",
         "sudo ssh host npx playwright install",
         "sudo podman run img npx playwright install",

@@ -5,6 +5,10 @@
 //!
 //! Fixture secrets and home paths are escaped in the data file and assembled at run time here,
 //! so the repository never holds one literally.
+//!
+//! The Python tests know the token layer by its legacy name, `rtk`. A row whose `row` number is
+//! past its Python test's last one is an `atl` copy of a legacy `rtk` row (same rule, `atl` for
+//! the legacy `rtk`): `every_legacy_rtk_row_has_an_atl_copy` keeps every legacy row paired.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -15,11 +19,14 @@ mod rule_table_test {
     use anthology_guard::data::{PROFILE_ROOTS, self_test_sample};
     use anthology_guard::{Rule, Verdict, check};
     use anthology_pycompat::json::{Map, Value};
-    use anthology_testkit::rows::{Row, rows};
+    use anthology_testkit::rows::{FromPyJson, Row, rows};
 
     use super::gd::{HOME, bash, bash_case, bound, gh_token, obj, rule_of, verdict_id};
 
     const FILE: &str = "test_guard_rules";
+
+    /// The old name of the token layer, which the Python tests and their rows still use.
+    const LEGACY_NAME: &str = "rtk"; // legacy
 
     fn id(method: &str) -> String {
         format!("test_guard_rules.RuleTableTest.{method}")
@@ -428,8 +435,8 @@ mod rule_table_test {
             "python -m",
             "timeout",
             "xargs -I",
-            "rtk",
-            "rtk bypass",
+            "rtk",        // legacy
+            "rtk bypass", // legacy
             "docker",
             "docker run -c",
             "find -exec",
@@ -695,6 +702,52 @@ mod rule_table_test {
     #[test]
     fn test_rtk_command_runners_are_unwrapped() {
         table("test_rtk_command_runners_are_unwrapped");
+    }
+
+    /// Every `case` row that names the legacy `rtk` has an `atl` row with the same test, rule and
+    /// command (`atl` for the legacy `rtk`), so the guard looks through the new name as through the old.
+    #[test]
+    fn every_legacy_rtk_row_has_an_atl_copy() {
+        let path = anthology_testkit::rows::rows_path(FILE);
+        let text = std::fs::read_to_string(&path).expect("the rule table rows");
+        let mut seen = std::collections::HashSet::new();
+        let mut legacy = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let row = Row::from_py_json(&anthology_pycompat::json::loads(line).expect("a row"))
+                .expect("a row");
+            let Some(Value::Array(case)) = row.params.get("case") else {
+                continue;
+            };
+            let command = case
+                .get(1)
+                .and_then(Value::as_object)
+                .and_then(|input| input.get("command"))
+                .and_then(Value::as_str);
+            let Some(command) = command else { continue };
+            let rule = row.params.get("rule").and_then(Value::as_str);
+            seen.insert((
+                row.py.clone(),
+                rule.map(str::to_string),
+                command.to_string(),
+            ));
+            if command.contains(LEGACY_NAME) {
+                legacy.push((row.py, rule.map(str::to_string), command.to_string()));
+            }
+        }
+        assert!(legacy.len() >= 60, "{} legacy rows", legacy.len());
+        let missing: Vec<String> = legacy
+            .into_iter()
+            .filter(|(py, rule, command)| {
+                let copy = command.replace(LEGACY_NAME, "atl");
+                !seen.contains(&(py.clone(), rule.clone(), copy))
+            })
+            .map(|(py, rule, command)| format!("{py} {rule:?} {command:?}"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no atl copy of:\n{}",
+            missing.join("\n")
+        );
     }
 
     #[test]

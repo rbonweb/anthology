@@ -23,9 +23,9 @@ pub(crate) mod hidden;
 
 use hidden::{runs_assigned_command, wrapper_known};
 
+use crate::atl_forms::{TOKEN_LAYER_NAMES, atl_command};
 use crate::lexer::words::ansi_c;
 use crate::lexer::{TooComplex, Work, pystr};
-use crate::rtk_forms::rtk_command;
 use crate::shell_args::WORD;
 use crate::shell_args::{SHELLS, prog_name, shell_parse};
 
@@ -660,8 +660,9 @@ const ALTERNATE_EXTRA_STARTS: &[&str] = &[
     "uv",
     "eval",
 ];
-/// Triggers beyond the peeling tables (`{"command", "rtk", "parallel", "sg", "nodemon", "pipx"}`).
-const ALTERNATE_EXTRA_TRIGGERS: &[&str] = &["command", "rtk", "parallel", "sg", "nodemon", "pipx"];
+/// Triggers beyond the peeling tables (`{"command", "parallel", "sg", "nodemon", "pipx"}`, and the
+/// `TOKEN_LAYER_NAMES` the Python guard knew as `rtk`, a legacy name).
+const ALTERNATE_EXTRA_TRIGGERS: &[&str] = &["command", "parallel", "sg", "nodemon", "pipx"];
 
 fn has(set: &[&str], word: &str) -> bool {
     set.contains(&word)
@@ -680,6 +681,7 @@ fn is_trigger(name: &str) -> bool {
         || has(RUNNERS, name)
         || has(JS_PACKAGE_MANAGERS, name)
         || has(ALTERNATE_EXTRA_TRIGGERS, name)
+        || has(TOKEN_LAYER_NAMES, name)
 }
 
 /// `name in _ALTERNATE_STARTS or _PIP.match(name)`.
@@ -719,7 +721,7 @@ pub(crate) fn is_interpreter(prog: &str) -> bool {
 pub(crate) struct Peeled {
     /// A `""` word (a `$(...)` placeholder) was dropped where the program word was expected.
     pub(crate) placeholder: bool,
-    /// A wrapper's, runner's, package manager's or rtk's option was not one the analysis knows: it may have
+    /// A wrapper's, runner's, package manager's or atl's option was not one the analysis knows: it may have
     /// taken the next word as its value.
     pub(crate) unknown_option: bool,
     /// The program's arguments come from stdin at run time (`xargs`, `parallel`).
@@ -2495,8 +2497,8 @@ pub(crate) fn strip_prefixes(
             let mut unused = false;
             let i = skip_flags(&toks, 1, &[], &|_| true, &mut unused);
             drop_front(&mut toks, i);
-        } else if name == "rtk" {
-            toks = rtk_command(toks, &mut peeled.unknown_option);
+        } else if has(TOKEN_LAYER_NAMES, &name) {
+            toks = atl_command(toks, &mut peeled.unknown_option);
         } else if has(RUNNERS, &name) {
             toks = runner_program(toks, 1, &mut scripts, &mut peeled.unknown_option);
         } else if let Some(start) = PYTHON_RUNNERS
