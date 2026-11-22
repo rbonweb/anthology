@@ -109,6 +109,22 @@
 //!   and `-` with no `/` or `.` (`HEAD~1`, `main^`, `HEAD~5..HEAD`). A leading `~`
 //!   is the home only as `~` or `~/...` with no later `^`, `~` or `#` (from
 //!   `$HOME`; an unset, empty or relative `HOME` asks).
+//! - **Two wrappers, and nothing else joined (P3).** The one command may have a
+//!   `cd TARGET &&` in front and a `| head -n N` or `| tail -n N` behind, each at
+//!   most once and in that order. `TARGET` is [`anthology_shell::literal_cd_target`]:
+//!   an absolute or `./` path of letters, digits and `/._+,:@%=-`, no `..`. A bare
+//!   `cd src` (`CDPATH` may point it elsewhere), `cd`, `cd -`, `cd ~...` and `cd $X`
+//!   ask. The target must exist and be a directory (symlinks resolved), and it is
+//!   read like an operand: a `Read()` rule on it denies or asks. The command's
+//!   relative paths are resolved against that real directory before the `Read()`
+//!   check (`cd ./secret && rtk read k.txt` reads `secret/k.txt`); the rules stay
+//!   anchored to the directory the hook was called in, as the rule scan's are. The
+//!   count is [`anthology_shell::head_tail_count`]: `-n N`, `-nN` or `-N` in ASCII
+//!   digits and nothing else, so no file, `-f`, `-c`, `+N`, variable or
+//!   substitution. A second pipe, `;`, `||`, `&`, a newline, a second `cd`, a
+//!   second command after `&&` or a redirect asks. The line is cut at its unquoted
+//!   `&&` and `|` ([`split_line`]), each part must be plain on its own, and the
+//!   shared parser must read the same stages.
 //! - **`rtk <sub>` from [`PLAIN`].** The first word is `rtk` (so no assignment,
 //!   `cd`, `exec`, `eval`, `source`, launcher or rtk global flag in front), then
 //!   one of: `ls`, `tree`, `read`, `wc`, `diff`, `grep`, `rg`, `find`; `git status`,
@@ -251,6 +267,11 @@
 //!   `command` or `exec`.
 //! - `rtk <sub>` for a subcommand that runs a different program than its name
 //!   (`rtk vitest`, `rtk lint`) is matched as `<sub> <rest>`, as the brief says.
+//! - The directory a leading `cd` names is resolved when the hook runs. A link
+//!   or directory swapped before the shell's own `cd` is the same race as every
+//!   other path here (the file system is read once), and `cd` is the shell's
+//!   builtin as the user's shell defines it: a function or alias named `cd` in a
+//!   shell snapshot is not modelled.
 
 use super::constants::PRE_TOOL_USE_KEY;
 use super::decision::{AskOwner, HookDecision};
@@ -259,7 +280,7 @@ use crate::core::user_dirs;
 use crate::core::utils::strip_leading_bom;
 use crate::discover::lexer::{self, TokenKind, resolve_word_text};
 use crate::discover::registry;
-use anthology_shell::{Analysis, Entry as ShellEntry, analyze};
+use anthology_shell::{Analysis, Entry as ShellEntry, analyze, head_tail_count, literal_cd_target};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -3675,9 +3696,10 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     if rules.literal_in(cmd) {
         return Gate::Ask;
     }
-    let Some(words) = plain_words(cmd) else {
+    let Some(line) = plain_line(cmd) else {
         return Gate::Ask;
     };
+    let words = line.words;
     // `@FILE` is an argument file to rustc, rustdoc and many other parsers.
     if words.iter().any(|word| word.text.starts_with('@')) {
         return Gate::Ask;
@@ -3686,9 +3708,6 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
         return Gate::Ask;
     };
     if first.text != "rtk" || first.tilde || first.revish {
-        return Gate::Ask;
-    }
-    if !shared_parser_agrees(cmd, &words) {
         return Gate::Ask;
     }
     let mut checks = Vec::new();
@@ -3711,11 +3730,40 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
     if !found || checks.iter().any(|check| check.text.starts_with('@')) {
         return Gate::Ask;
     }
-    let cwd = cwd
+    // The directory the hook was called in: the `Read()` rules anchor to it, as the rule scan's do.
+    let anchor = cwd
         .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
         .or_else(|| user_dirs::current_dir().ok())
         .map(|dir| normalize(&dir));
+    // The directory the rtk command runs in: after a leading `cd`, the real directory of its target.
+    // Relative operands are resolved against it before the `Read()` check (`cd ./secret && rtk read
+    // k.txt` is `secret/k.txt`), and the target is read like an operand, by an absolute name. A target
+    // that does not exist, is no directory or has no base to resolve against asks.
+    let mut cwd = anchor.clone();
+    if let Some(target) = &line.cd {
+        let joined = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            match anchor.as_deref() {
+                Some(dir) => dir.join(target),
+                None => return Gate::Ask,
+            }
+        };
+        match std::fs::canonicalize(&joined) {
+            Ok(real) if real.is_dir() => cwd = Some(real),
+            _ => return Gate::Ask,
+        }
+        checks.insert(
+            0,
+            Check {
+                text: joined.to_string_lossy().into_owned(),
+                tilde: false,
+                revish: false,
+                quoted: false,
+            },
+        );
+    }
     let fold = cfg!(any(target_os = "macos", windows));
     let matcher = |patterns: &[String]| {
         (!patterns.is_empty()).then(|| {
@@ -3723,7 +3771,7 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
                 patterns,
                 user_dirs::home(),
                 &rules.project_roots,
-                cwd.as_deref(),
+                anchor.as_deref(),
                 fold,
             )
         })
@@ -3800,19 +3848,125 @@ pub(crate) fn plain(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> Gate {
 /// same words. Two lexers that disagree on a line the gate would let through is
 /// a reason to ask (design G-2).
 fn shared_parser_agrees(cmd: &str, words: &[PlainWord]) -> bool {
+    stages_agree(cmd, &[words])
+}
+
+/// [`shared_parser_agrees`] for a line of several stages (P3): one entry per stage, in order.
+fn stages_agree(cmd: &str, stages: &[&[PlainWord]]) -> bool {
     let analysis = analyze(cmd, &shell_home());
-    let [entry] = analysis.entries.as_slice() else {
-        return false;
-    };
     !analysis.incomplete
-        && entry.opaque.is_empty()
-        && entry.redirs.is_empty()
-        && entry.raw.len() == words.len()
-        && entry
-            .raw
-            .iter()
-            .zip(words)
-            .all(|(raw, word)| *raw == word.text)
+        && analysis.entries.len() == stages.len()
+        && analysis.entries.iter().zip(stages).all(|(entry, words)| {
+            entry.opaque.is_empty()
+                && entry.redirs.is_empty()
+                && entry.raw.len() == words.len()
+                && entry
+                    .raw
+                    .iter()
+                    .zip(words.iter())
+                    .all(|(raw, word)| *raw == word.text)
+        })
+}
+
+/// How a plain line's stages are joined.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineJoin {
+    And,
+    Pipe,
+}
+
+/// `text` cut at its unquoted `&&` and `|`, with the joins. Quoting is read as [`plain_words`] reads it
+/// (`'...'` and `"..."`, nothing escaped: a backslash is refused there). Any other operator character
+/// (`;`, `&`, `||`, `|&`, a newline) stays in a part, and [`plain_words`] refuses that part.
+fn split_line(text: &str) -> (Vec<&str>, Vec<LineJoin>) {
+    let bytes = text.as_bytes();
+    let mut parts = Vec::new();
+    let mut joins = Vec::new();
+    let mut quote = None;
+    let (mut start, mut at) = (0, 0);
+    while at < bytes.len() {
+        let byte = bytes[at];
+        match quote {
+            Some(open) if byte == open => quote = None,
+            Some(_) => {}
+            None if byte == b'\'' || byte == b'"' => quote = Some(byte),
+            None if byte == b'&' && bytes.get(at + 1) == Some(&b'&') => {
+                parts.push(&text[start..at]);
+                joins.push(LineJoin::And);
+                at += 1;
+                start = at + 1;
+            }
+            None if byte == b'|' && !matches!(bytes.get(at + 1), Some(b'|' | b'&')) => {
+                parts.push(&text[start..at]);
+                joins.push(LineJoin::Pipe);
+                start = at + 1;
+            }
+            None => {}
+        }
+        at += 1;
+    }
+    parts.push(&text[start..]);
+    (parts, joins)
+}
+
+/// The words of a line in the plain shape.
+struct PlainLine {
+    /// The target of the `cd TARGET &&` the line opens with ([`literal_cd_target`]), if it does.
+    cd: Option<String>,
+    /// The words of the one command in the middle: [`plain`] wants it to be an `rtk` command.
+    words: Vec<PlainWord>,
+}
+
+/// A line in the plain shape is, in this order: an optional `cd TARGET &&` (a literal, rooted target), one
+/// command made of plain words, an optional `| head -n N` or `| tail -n N` (a literal count, no file).
+/// Nothing else is joined: not `;`, `||`, `&`, a newline, a second `cd`, a second pipe or a second command
+/// after `&&`. The shared parser must read the same stages (design G-2).
+fn plain_line(cmd: &str) -> Option<PlainLine> {
+    let (parts, joins) = split_line(cmd);
+    let mut stages = Vec::with_capacity(parts.len());
+    for part in parts {
+        let words = plain_words(part)?;
+        if words.is_empty() {
+            return None;
+        }
+        stages.push(words);
+    }
+    let (leading_cd, trailing_count) = match joins.as_slice() {
+        [] => (false, false),
+        [LineJoin::And] => (true, false),
+        [LineJoin::Pipe] => (false, true),
+        [LineJoin::And, LineJoin::Pipe] => (true, true),
+        _ => return None,
+    };
+    let literal = |word: &PlainWord| !word.tilde && !word.revish;
+    let cd = if leading_cd {
+        let [cd, target] = stages[0].as_slice() else {
+            return None;
+        };
+        if cd.text != "cd" || !literal(cd) || !literal(target) {
+            return None;
+        }
+        Some(literal_cd_target(&target.text)?.to_string())
+    } else {
+        None
+    };
+    if trailing_count {
+        let (program, args) = stages.last()?.split_first()?;
+        if !matches!(program.text.as_str(), "head" | "tail")
+            || !literal(program)
+            || !args.iter().all(literal)
+        {
+            return None;
+        }
+        let args: Vec<String> = args.iter().map(|word| word.text.clone()).collect();
+        head_tail_count(&args)?;
+    }
+    let views: Vec<&[PlainWord]> = stages.iter().map(Vec::as_slice).collect();
+    if !stages_agree(cmd, &views) {
+        return None;
+    }
+    let words = stages.into_iter().nth(usize::from(leading_cd))?;
+    Some(PlainLine { cd, words })
 }
 
 /// One literal path: resolved lexically against the working directory (`..`
@@ -5734,6 +5888,31 @@ mod tests {
         assert!(!agrees("rtk ls a", "rtk ls a b"));
         assert!(!agrees("rtk ls a; rtk ls b", "rtk ls a"));
         assert!(!agrees("rtk ls a > x", "rtk ls a"));
+    }
+
+    /// P3: the shared parser must read every stage of a `cd`/`head` line, in order.
+    #[test]
+    fn the_shared_parser_must_read_every_stage_of_a_line() {
+        let words = |text: &str| plain_words(text).expect("plain");
+        let (cd, rtk, head) = (words("cd ./sub"), words("rtk ls"), words("head -n 5"));
+        let line = "cd ./sub && rtk ls | head -n 5";
+        assert!(stages_agree(line, &[&cd, &rtk, &head]));
+        assert!(stages_agree("rtk ls | head -n 5", &[&rtk, &head]));
+        // other words, a stage missing or extra, a redirect, a hidden substitution
+        for other in [
+            "cd ./sub && rtk ls | head -n 6",
+            "cd ./other && rtk ls | head -n 5",
+            "cd ./sub && rtk ls",
+            "cd ./sub && rtk ls | head -n 5 | cat",
+            "cd ./sub && rtk ls > x | head -n 5",
+            "cd ./sub && rtk ls | head -n 5 > x",
+            "cd ./sub && rtk ls | head -n 5; ls",
+            "cd ./sub && rtk ls $(pwd) | head -n 5",
+        ] {
+            assert!(!stages_agree(other, &[&cd, &rtk, &head]), "{other}");
+        }
+        // the stages in another order are other commands
+        assert!(!stages_agree(line, &[&rtk, &cd, &head]));
     }
 
     #[test]
@@ -8002,6 +8181,347 @@ mod tests {
         let dir = tmp.path().to_string_lossy().into_owned();
         assert_eq!(plain("rtk read secret.txt", &ask, Some(&dir)), Gate::Ask);
         assert_eq!(plain("rtk read ok.txt", &ask, Some(&dir)), Gate::Pass);
+    }
+
+    // --- P3: `cd <literal dir> && ...` and `... | head -n N` / `| tail -n N` -----------------------------
+
+    /// A sandbox with a denied file (`secret.txt`), a denied name at any depth (`.env`), and a link to a
+    /// directory that holds one.
+    fn cd_sandbox<R>(f: impl FnOnce(&Path, &GateRules) -> R) -> R {
+        in_sandbox(|dir, r| {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(dir.join("config"), dir.join("cfglink")).expect("symlink");
+            f(dir, r)
+        })
+    }
+
+    #[test]
+    fn a_literal_cd_before_a_plain_command_keeps_the_plain_shape() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                "cd ./sub && rtk ls",
+                "cd ./sub && rtk ls -la",
+                "cd ./sub&&rtk ls",
+                "cd ./sub &&rtk ls",
+                "cd ./ && rtk read ok.txt",
+                "cd ./sub && rtk read ../ok.txt",
+                "cd ./sub && rtk git status",
+                "cd ./sub && rtk grep -rn x .",
+                &format!("cd {d} && rtk read ok.txt"),
+                &format!("cd {d}/sub && rtk ls"),
+                &format!("cd {d}/sub && rtk git log --oneline -5"),
+                // a read of an allowed file in the new directory
+                &format!("cd {d}/config && rtk read ../ok.txt"),
+            ] {
+                assert_eq!(at(cmd), Gate::Pass, "{cmd}");
+            }
+        });
+    }
+
+    /// Relative reads are resolved against the new directory before the deny check:
+    /// `cd secret && cat k.txt` must still be denied.
+    #[test]
+    fn a_read_after_a_cd_is_resolved_against_the_new_directory() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                "cd ./config && rtk read .env",
+                "cd ./config && rtk wc -l .env",
+                "cd ./config && rtk grep -rn x .env",
+                "cd ./config && rtk git log -p -- .env",
+                "cd ./sub && rtk read ../secret.txt",
+                "cd ./sub && rtk read ../config/.env",
+                "cd ./config && rtk read ../secret.txt",
+                "cd ./ && rtk read secret.txt",
+                &format!("cd {d}/config && rtk read .env"),
+                &format!("cd {d}/sub && rtk read ../secret.txt"),
+                // a link to a directory: the new directory is the real one
+                "cd ./cfglink && rtk read .env",
+                "cd ./cfglink && rtk read ../secret.txt",
+                &format!("cd {d}/cfglink && rtk read .env"),
+                // the same through a count
+                "cd ./config && rtk read .env | head -n 5",
+            ] {
+                assert_eq!(at(cmd), Gate::Deny, "{cmd}");
+            }
+            // a path that is not the denied file stays allowed
+            for cmd in [
+                "cd ./sub && rtk read secret.txt",
+                "cd ./config && rtk read ok.txt",
+                "cd ./cfglink && rtk read ok.txt",
+            ] {
+                assert_eq!(at(cmd), Gate::Pass, "{cmd}");
+            }
+        });
+        // a rule on the directory itself: the cd target is read like `rtk ls <dir>`
+        let r = rules(&[], &[], &["./config/**"]);
+        let tmp = test_isolation::tempdir();
+        let dir = std::fs::canonicalize(tmp.path()).expect("canonical tempdir");
+        std::fs::create_dir_all(dir.join("config")).expect("mkdir config");
+        let d = dir.to_string_lossy().into_owned();
+        assert_eq!(plain("cd ./config && rtk read x", &r, Some(&d)), Gate::Deny);
+        assert_eq!(
+            plain("cd ./config && rtk ls", &r, Some(&d)),
+            plain("rtk ls config", &r, Some(&d))
+        );
+    }
+
+    #[test]
+    fn a_cd_that_is_not_literal_and_leading_asks() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                // targets the gate cannot follow
+                "cd && rtk ls",
+                "cd - && rtk ls",
+                "cd ~ && rtk ls",
+                "cd ~/sub && rtk ls",
+                "cd ~user && rtk ls",
+                "cd $X && rtk ls",
+                "cd \"$X\" && rtk ls",
+                "cd ${X} && rtk ls",
+                "cd $(pwd) && rtk ls",
+                "cd `pwd` && rtk ls",
+                "cd .. && rtk ls",
+                "cd ./.. && rtk ls",
+                "cd ./sub/.. && rtk ls",
+                "cd ../x && rtk ls",
+                "cd /x/.. && rtk ls",
+                // a bare relative target: CDPATH may point it elsewhere
+                "cd sub && rtk ls",
+                "cd config && rtk read .env",
+                "cd .hidden && rtk ls",
+                // a target that does not exist, or is no directory
+                "cd ./nope && rtk ls",
+                "cd ./ok.txt && rtk ls",
+                "cd /nonexistent-p3-dir && rtk ls",
+                // options, extra words, quotes that hide a space, redirects on the cd
+                "cd -P ./sub && rtk ls",
+                "cd -- ./sub && rtk ls",
+                "cd ./sub extra && rtk ls",
+                "cd './sub dir' && rtk ls",
+                "cd ./sub > x && rtk ls",
+                "cd ./sub 2>&1 && rtk ls",
+                "cd ./s* && rtk ls",
+                "cd ./{sub,config} && rtk ls",
+                // other joins, and more than one cd
+                "cd ./sub ; rtk ls",
+                "cd ./sub || rtk ls",
+                "cd ./sub & rtk ls",
+                "cd ./sub\nrtk ls",
+                "cd ./sub | rtk ls",
+                "cd ./sub |& rtk ls",
+                "cd ./sub && cd ./config && rtk ls",
+                "cd ./sub && rtk ls && rtk ls",
+                "cd ./sub && rtk ls; rtk ls",
+                "cd ./sub && rtk ls || rtk ls",
+                "cd ./sub && rtk ls &",
+                "cd ./sub && rtk ls & rtk ls",
+                "cd ./sub && ls && rtk ls",
+                "rtk ls && cd ./sub",
+                "rtk ls && cd ./sub && rtk ls",
+                "ls && rtk ls",
+                "(cd ./sub && rtk ls)",
+                "{ cd ./sub; rtk ls; }",
+                "pushd ./sub && rtk ls",
+                "builtin cd ./sub && rtk ls",
+                "command cd ./sub && rtk ls",
+                "CDPATH=. cd ./sub && rtk ls",
+                "x=1 cd ./sub && rtk ls",
+                "cd ./sub && FOO=1 rtk ls",
+                "cd ./sub && nice rtk ls",
+                "cd ./sub && rtk bypass ls",
+                "cd ./sub && rtk run ls",
+                "cd ./sub && rtk npm test",
+                "cd ./sub && rtk read $F",
+                "cd ./sub && rtk ls $(pwd)",
+                "cd ./sub && rtk ls > out",
+                "cd ./sub && rtk ls 2>&1",
+                "cd ./sub && rtk git status && rtk git log",
+                "cd ./sub &&",
+                "cd ./sub && ",
+                "&& rtk ls",
+                "cd ./sub && && rtk ls",
+                // a cd is no plain command on its own
+                "cd ./sub",
+                "cd ./sub && cd ./config",
+            ] {
+                assert_eq!(at(cmd), Gate::Ask, "{cmd}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_counted_head_or_tail_after_a_plain_command_keeps_the_plain_shape() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                "rtk git status | head -n 5",
+                "rtk git log --oneline | tail -n 20",
+                "rtk git log --oneline | head -n20",
+                "rtk ls -la | head -20",
+                "rtk ls|head -n 5",
+                "rtk ls |head -n 5",
+                "rtk ls| head -n 5",
+                "rtk read ok.txt | head -n 0",
+                "rtk grep -rn x . | head -n 100",
+                "rtk find . -name '*.rs' | tail -n 3",
+                "cd ./sub && rtk ls | head -n 5",
+                "cd ./sub && rtk git log --oneline | tail -n 3",
+                &format!("cd {d}/sub && rtk ls -la | head -n 5"),
+            ] {
+                assert_eq!(at(cmd), Gate::Pass, "{cmd}");
+            }
+            // the left side still meets the Read() rules
+            for cmd in [
+                "rtk read secret.txt | head -n 5",
+                "rtk wc -l secret.txt | tail -n 1",
+                "cd ./config && rtk read .env | head -n 5",
+            ] {
+                assert_eq!(at(cmd), Gate::Deny, "{cmd}");
+            }
+        });
+    }
+
+    #[test]
+    fn anything_else_after_a_plain_command_asks() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                // the count is not a literal
+                "rtk ls | head -n $N",
+                "rtk ls | head -n \"$N\"",
+                "rtk ls | head -n ${N}",
+                "rtk ls | head -n $(echo 5)",
+                "rtk ls | head -n \"$(echo 5)\"",
+                "rtk ls | head -n `echo 5`",
+                "rtk ls | head -n 5$X",
+                "rtk ls | head -n 5k",
+                "rtk ls | head -n -5",
+                "rtk ls | head -n +5",
+                "rtk ls | head -n 0x5",
+                "rtk ls | head -n 5.0",
+                "rtk ls | head -n ''",
+                "rtk ls | head -n",
+                "rtk ls | head",
+                "rtk ls | tail",
+                "rtk ls | head -n 5 extra",
+                "rtk ls | head -n 5 -q",
+                "rtk ls | head -n 5 -n 6",
+                // other options
+                "rtk ls | tail -f",
+                "rtk ls | tail -F",
+                "rtk ls | tail --follow",
+                "rtk ls | tail -n 5 -f",
+                "rtk ls | head -c 5",
+                "rtk ls | head --lines=5",
+                "rtk ls | head --lines 5",
+                "rtk ls | head -n 5 secret.txt",
+                "rtk ls | head -n 5 -- secret.txt",
+                "rtk ls | tail -n 5 ok.txt",
+                // a second stage, or another consumer
+                "rtk ls | head -n 5 | head -n 2",
+                "rtk ls | head -n 5 | cat",
+                "rtk ls | head -n 5 | tee out",
+                "rtk ls | cat",
+                "rtk ls | grep x",
+                "rtk ls | tee out",
+                "rtk ls | sort",
+                "rtk ls | sh",
+                "rtk ls | xargs rm",
+                "rtk ls | rtk ls",
+                "head -n 5 | rtk ls",
+                "rtk ls | /usr/bin/head -n 5",
+                "rtk ls | ./head -n 5",
+                "rtk ls | HEAD -n 5",
+                "rtk ls | headx -n 5",
+                // other joins, redirects, grouping
+                "rtk ls | head -n 5; ls",
+                "rtk ls | head -n 5 && ls",
+                "rtk ls | head -n 5 || ls",
+                "rtk ls | head -n 5 &",
+                "rtk ls | head -n 5 & ls",
+                "rtk ls | head -n 5\nls",
+                "rtk ls |& head -n 5",
+                "rtk ls || head -n 5",
+                "rtk ls ; head -n 5",
+                "rtk ls & head -n 5",
+                "rtk ls | head -n 5 > out",
+                "rtk ls | head -n 5 >/dev/null",
+                "rtk ls | head -n 5 2>&1",
+                "rtk ls | head -n 5 < in",
+                "rtk ls > out | head -n 5",
+                "rtk ls 2>&1 | head -n 5",
+                "rtk ls | (head -n 5)",
+                "( rtk ls ) | head -n 5",
+                "{ rtk ls; } | head -n 5",
+                "rtk ls | head -n 5 #",
+                "rtk ls | head -n 5 # x",
+                "rtk ls | env head -n 5",
+                "rtk ls | nice head -n 5",
+                "rtk ls | FOO=1 head -n 5",
+                "rtk ls |",
+                "rtk ls | ",
+                "| head -n 5",
+                "rtk ls | | head -n 5",
+                // not a plain left side
+                "rtk bypass ls | head -n 5",
+                "rtk run ls | head -n 5",
+                "rtk npm test | head -n 5",
+                "rtk cargo test 2>&1 | tail -5",
+                "ls | head -n 5",
+                "git status | head -n 5",
+            ] {
+                assert_eq!(at(cmd), Gate::Ask, "{cmd}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_rule_text_anywhere_in_a_cd_or_head_line_still_asks() {
+        let r = rules(&["git push:*"], &[], &[]);
+        let tmp = test_isolation::tempdir();
+        let dir = std::fs::canonicalize(tmp.path()).expect("canonical tempdir");
+        std::fs::create_dir_all(dir.join("sub")).expect("mkdir sub");
+        let d = dir.to_string_lossy().into_owned();
+        for cmd in [
+            "cd ./sub && rtk ls 'git push'",
+            "rtk grep -rn 'git push' . | head -n 5",
+            "rtk ls 'git push' | tail -n 5",
+        ] {
+            assert_eq!(plain(cmd, &r, Some(&d)), Gate::Ask, "{cmd}");
+        }
+        for cmd in ["cd ./sub && rtk ls", "rtk ls | head -n 5"] {
+            assert_eq!(plain(cmd, &r, Some(&d)), Gate::Pass, "{cmd}");
+        }
+    }
+
+    /// The hidden-program shapes of the DT-4 fix, after a `cd` or before a count.
+    #[test]
+    fn hidden_substitution_shapes_after_a_cd_or_before_a_count_ask() {
+        cd_sandbox(|dir, r| {
+            let d = dir.to_string_lossy().into_owned();
+            let at = |cmd: &str| plain(cmd, r, Some(&d));
+            for cmd in [
+                // a hidden substitution shape of the DT-4 fix
+                "cd ./sub && rtk ls $(( $(`echo x` y) ))",
+                "cd ./sub && rtk ls $(((true)); echo x)",
+                "rtk ls | head -n $(( $(`echo x` y) ))",
+                "rtk ls | head -n $(((1)); echo 5)",
+                "rtk ls '$((' | head -n 5 $((",
+                // a heredoc or here-string feeding the count
+                "rtk ls | head -n 5 <<< x",
+                "cd ./sub && rtk ls <<EOF\nx\nEOF",
+            ] {
+                assert_eq!(at(cmd), Gate::Ask, "{cmd}");
+            }
+        });
     }
 
     #[test]
