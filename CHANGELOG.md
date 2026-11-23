@@ -40,26 +40,6 @@ a new version section.
   asks, headless, background and `dontAsk` sessions, SDK hosts, auto mode's classifier and
   sessions with `allowManagedPermissionRulesOnly` stay exactly as Claude Code decides them. It
   never downloads the binary. Set `ANTHOLOGY_MODS=0` to turn it off.
-- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
-  its PR is green, or the report names the exact failing job (the lead says so in the brief and
-  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
-  open PR, including integration branches, and sends each red job back to its owner the same
-  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
-  comment pointing to the integration PR.
-- `anthology perm classify` (the permission levels mod above calls it): reads a Bash command, its working
-  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
-  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
-  everything the command reads, one per line. Every such path must exist under a root, be a
-  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
-  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
-  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
-  A line that runs git is allowed only when the repository's whole configuration holds nothing
-  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
-  no tracked file is a secret or `Read()`-denied, and the git form prints no history
-  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
-  decision, never a deny.
-- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
-  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
 
 #### Changed
 
@@ -67,6 +47,11 @@ a new version section.
   The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
   `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
   part runs on its own, so a failure in one never drops the other's result.
+
+### [0.3.1] - 2026-11-23
+
+#### Changed
+
 - rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
   carried the old name is renamed: the `atl/` folder, the `atl` command and its `atl-hook`,
   `atl.lock`, the `atl--v<version>` release tags and `atl-<target>.tar.gz` archives, the
@@ -102,6 +87,29 @@ a new version section.
   it leaves `<plugin data>/atl/` and the ATL history in `~/.claude/anthology/atl/` in place.
   Delete both folders by hand.
 - pin anthology-bin 0.2.0 and atl 1.2.1-anthology.6.
+
+#### Added
+
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
+- `anthology perm classify` (nothing calls it yet): reads a Bash command, its working
+  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
+  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
+  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  no tracked file is a secret or `Read()`-denied, and the git form prints no history
+  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
+  decision, never a deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
 
 #### Fixed
 
@@ -480,6 +488,8 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.8] - 2026-11-23
 
 #### Changed
 
