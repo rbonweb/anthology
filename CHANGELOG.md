@@ -46,6 +46,7 @@ a new version section.
 - Downgrading to 0.2.x: that release's `/anthology:setup remove` does not know about ATL, so
   it leaves `<plugin data>/atl/` and the ATL history in `~/.claude/anthology/atl/` in place.
   Delete both folders by hand.
+- pin anthology-bin 0.2.0 and atl 1.2.1-anthology.6.
 
 #### Added
 
@@ -461,6 +462,7 @@ a new version section.
   agents retried the same command. The message adds: "A backtick inside double quotes runs a
   command; put the pattern in single quotes". The verdict does not change, and a pattern in
   single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+- pin anthology-bin 0.2.0.
 
 ### [0.2.4] - 2026-11-22
 
