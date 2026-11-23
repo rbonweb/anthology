@@ -12,6 +12,8 @@
 #
 # Nothing is ever pushed without --push. The `claude` binary is $CLAUDE_BIN if set.
 # $RELEASE_DATE (YYYY-MM-DD) overrides today's date in the new CHANGELOG heading.
+# A plugin whose plugin.json has engines.claude-code (">=X.Y.Z") is released only if that `claude`
+# is at least that version, checked first, also with --dry-run; otherwise set CLAUDE_BIN.
 # The text and JSON edits are `anthology-dev release-edit …`, run through scripts/dev.sh (the
 # pinned Rust image, so Docker is needed) or through $ANTHOLOGY_DEV if set. A plugin that ships
 # anthology.lock is released only if `anthology-dev lock check-fresh` passes: the binary it pins
@@ -24,6 +26,11 @@ usage() {
   sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit "${1:-2}"
 }
+
+# A sortable key for X.Y.Z (any suffix after a - or + is ignored): compare keys as text.
+version_key() { printf '%s\n' "${1%%[-+]*}" | awk -F. '{ printf "%09d%09d%09d\n", $1, $2, $3 }'; }
+# The first X.Y.Z in a string ("2.1.330 (Claude Code)", ">=2.1.330"); empty when there is none.
+semver_of() { printf '%s\n' "$1" | sed -n 's/^[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*$/\1/p' | head -n 1; }
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEV=${ANTHOLOGY_DEV:-$ROOT/scripts/dev.sh}
@@ -83,6 +90,24 @@ if [ ! -x "$DEV" ] && ! command -v "$DEV" >/dev/null 2>&1; then
   die "'$DEV' not found (scripts/dev.sh needs Docker; or set ANTHOLOGY_DEV to an anthology-dev binary)"
 fi
 command -v "$CLAUDE" >/dev/null 2>&1 || die "'$CLAUDE' not found (install Claude Code, or set CLAUDE_BIN)"
+# The claude that will tag the release must be new enough for the plugin (engines.claude-code in
+# its manifest); an older one fails `claude plugin tag` validation after the release commit and
+# the push, leaving a half release. A plugin without the field is not checked.
+ENGINES=$(sed -n 's/.*"claude-code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST_REL" | head -n 1)
+if [ -n "$ENGINES" ]; then
+  case "$ENGINES" in
+    ">="*) ;;
+    *) die "$MANIFEST_REL: engines.claude-code '$ENGINES' is not of the form '>=X.Y.Z'" ;;
+  esac
+  ENGINES_MIN=$(semver_of "${ENGINES#>=}")
+  [ -n "$ENGINES_MIN" ] || die "$MANIFEST_REL: cannot read a version from engines.claude-code '$ENGINES'"
+  CLAUDE_OUT=$("$CLAUDE" --version 2>&1 | head -n 1 || true)
+  CLAUDE_VERSION=$(semver_of "$CLAUDE_OUT")
+  [ -n "$CLAUDE_VERSION" ] || die "cannot read the version of '$CLAUDE' ('$CLAUDE --version' printed '$CLAUDE_OUT'); set CLAUDE_BIN to a claude of at least $ENGINES_MIN"
+  if [[ "$(version_key "$CLAUDE_VERSION")" < "$(version_key "$ENGINES_MIN")" ]]; then
+    die "plugin $PLUGIN needs claude-code $ENGINES, but '$CLAUDE' is $CLAUDE_VERSION; set CLAUDE_BIN to a claude of at least $ENGINES_MIN (nothing was changed)"
+  fi
+fi
 if [ "$PUSH" = 1 ]; then
   git remote get-url "$REMOTE" >/dev/null 2>&1 || die "no git remote named '$REMOTE'"
   git symbolic-ref -q HEAD >/dev/null 2>&1 || die "--push needs a checked-out branch (HEAD is detached)"
@@ -97,7 +122,6 @@ if [ -f "$LOCK_REL" ]; then
   # The binary that anthology.lock pins must not be older than the workspace: a plugin must not
   # ship with a guard binary that predates the crates it was tested with (for example one that
   # cannot look inside `atl` commands).
-  version_key() { printf '%s\n' "${1%%[-+]*}" | awk -F. '{ printf "%09d%09d%09d\n", $1, $2, $3 }'; }
   LOCK_BIN=$(sed -n 's/^  "version": "\([^"]*\)",*$/\1/p' "$LOCK_REL" | head -n 1)
   WS_VERSION=$(awk '/^\[/ { p = ($0 == "[workspace.package]") } p && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
   [ -n "$LOCK_BIN" ] || die "cannot read the anthology-bin version from $LOCK_REL"
