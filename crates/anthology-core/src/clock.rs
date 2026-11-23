@@ -20,10 +20,37 @@ impl Date {
     }
 }
 
+/// The date [`pin_today`] set, packed as `y * 10_000 + m * 100 + d`; 0 is unpinned.
+#[cfg(feature = "test-clock")]
+static PINNED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Makes [`today_local`] answer `date` (or the real date again for `None`) for the whole
+/// process. Only the `test-clock` feature has it: the difftest goldens hold the output of a
+/// frozen day, so their replay has to run on that day (a later day writes its own date into
+/// `approved`, `migrated-<date>` and `modified`).
+#[cfg(feature = "test-clock")]
+pub fn pin_today(date: Option<Date>) {
+    let packed = date.map_or(0, |d| {
+        d.y as u32 * 10_000 + u32::from(d.m) * 100 + u32::from(d.d)
+    });
+    PINNED.store(packed, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// `datetime.date.today()`: the local date of the current second (`localtime_r` after
 /// `tzset`, so the process's `TZ` applies). If the C library cannot convert the time, the
 /// UTC date.
 pub fn today_local() -> Date {
+    #[cfg(feature = "test-clock")]
+    {
+        let packed = PINNED.load(std::sync::atomic::Ordering::SeqCst);
+        if packed != 0 {
+            return Date {
+                y: (packed / 10_000) as i32,
+                m: (packed / 100 % 100) as u8,
+                d: (packed % 100) as u8,
+            };
+        }
+    }
     let t = now_epoch().floor() as i64;
     match sys::local_date(t) {
         Some((y, m, d)) => Date { y, m, d },
