@@ -96,7 +96,10 @@ impl Proc {
     }
 }
 
-/// `NO_SCRUB`: three smokes need the subprocess scrub off (see the module doc of `smoke`).
+/// `NO_SCRUB`: some smokes need the subprocess scrub off (see the module doc of `smoke`): the ones
+/// that run `plugin eval`, `bypassPermissions` or the hooks' config dir, and, on Linux, the ones
+/// where Claude Code creates an agent worktree or a Bash call writes under `.claude/`. There the
+/// scrub means bubblewrap isolation, which breaks repo detection and leaves `.claude` read-only.
 pub fn no_scrub() -> EnvMap {
     EnvMap::from([(
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB".to_string(),

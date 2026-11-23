@@ -33,7 +33,12 @@
 //! **Self-test (F-4, m-R14).** `/bin/sh <guard>/hooks/guard.sh` gets the compiled-in sample on
 //! stdin with `ANTHOLOGY_GUARD_NO_FETCH=1`. It passes only on exit 2 with stderr starting
 //! `Blocked by anthology-guardrails (G1)`. A `(setup)` block (the shim failing closed) is
-//! reported with the guard's own reason. A second run sends the same command through an ATL
+//! reported with the guard's own reason, except the shim's "not installed (not attempted)" when
+//! the pinned binary is installed by the time the answer is read: that is a self-test that
+//! could not tell, and says so. A timeout is reported the same way. With less than the
+//! self-test's limit left of [`DEADLINE`] the guard is not run: the install folder is checked
+//! instead, and the self-test is called skipped only when the pinned binary is there; a missing
+//! one gets the failing-closed warning. A second run sends the same command through an ATL
 //! runner ([`SELF_TEST_ATL_COMMAND`]) within the same timeout: a guard binary too old to look
 //! inside `atl` commands lets it through, and that is [`GUARD_TOO_OLD_FOR_ATL`].
 //!
@@ -99,9 +104,21 @@ pub const GUARD_NOT_INSTALLED: &str = "anthology: anthology-guardrails is not in
 pub const GUARD_LIVE_MISSING: &str = "anthology: the anthology-guardrails folder this session runs has no hooks/guard.sh \u{2014} the guardrails may be OFF (unchecked); reinstall or repair that folder";
 /// Nothing found.
 pub const GUARD_NOT_FOUND: &str = "anthology: the guardrails plugin was not found, so the browser and secret guardrails are NOT active; reinstall anthology-guardrails";
-/// The self-test timed out.
-pub const GUARD_TIMED_OUT: &str =
-    "anthology: the guardrails self-test timed out; the guardrails may be OFF";
+/// The self-test timed out. It says nothing about the guard: the PreToolUse hook is a separate
+/// process that runs on every command.
+pub const GUARD_TIMED_OUT: &str = "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command";
+/// Added to [`GUARD_TIMED_OUT`] when the binary is installed.
+pub const TIMED_OUT_HINT: &str = "; if commands hang or are blocked, run /anthology:setup";
+/// The shim's reason for a missing binary, as the self-test would have seen it (no fetch).
+pub const BINARY_MISSING_REASON: &str = "the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin";
+/// Too little of the session start budget was left to run the self-test.
+pub const SELF_TEST_NO_TIME: &str = "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command";
+/// The shim found no binary and the self-test never fetches, but the install folder holds the
+/// pinned binary by the time the answer is read (a parallel session was placing it).
+pub const SELF_TEST_NOT_IN_PLACE: &str = "anthology: skipped the guard self-test (the guard binary was not in place when it ran, but it is installed now); the guard still runs on every command";
+/// What the shim's reason says when it found no binary and, under
+/// `ANTHOLOGY_GUARD_NO_FETCH`, did not try to install one (`lib.sh` `anth_guard_offline`).
+pub const NOT_ATTEMPTED: &str = "the guard binary is not installed (not attempted)";
 /// The pass prefix of the self-test (F-4).
 pub const SELF_TEST_PASS: &[u8] = b"Blocked by anthology-guardrails (G1)";
 /// The self-test's second command: the known-bad one run through an ATL runner, which only a
@@ -488,6 +505,18 @@ pub fn guard_selftest(
     cwd: &Path,
     deps: &SessionDeps<'_>,
 ) -> Result<Option<String>, PyExc> {
+    self_test_in(env, root, cwd, deps, true)
+}
+
+/// [`guard_selftest`], which runs the guard only when `time_left`: without time it still names
+/// a guard that is disabled or missing, then says the self-test was skipped.
+fn self_test_in(
+    env: &Env,
+    root: &Path,
+    cwd: &Path,
+    deps: &SessionDeps<'_>,
+    time_left: bool,
+) -> Result<Option<String>, PyExc> {
     let loc = guardrails_loc::inspect(root, env, cwd);
     match loc.problem {
         Some(Problem::Disabled) => return Ok(Some(GUARD_DISABLED.into())),
@@ -498,6 +527,14 @@ pub fn guard_selftest(
     let Some(base) = loc.root else {
         return Ok(Some(GUARD_NOT_FOUND.into()));
     };
+    if !time_left {
+        // No process is needed to see whether the binary is there: skip only when it is.
+        return Ok(Some(if bootstrap::guard_binary_installed(&base, env) {
+            SELF_TEST_NO_TIME.into()
+        } else {
+            format!("anthology: the guardrails are failing closed: {BINARY_MISSING_REASON}")
+        }));
+    }
     let plain = data::self_test_sample();
     let mut through_atl = plain.clone();
     if let Some(input) = through_atl
@@ -513,7 +550,7 @@ pub fn guard_selftest(
     for (i, sample) in [plain, through_atl].iter().enumerate() {
         let timeout = deps.limits.guard_timeout.saturating_sub(started.elapsed());
         if timeout.is_zero() {
-            return Ok(Some(GUARD_TIMED_OUT.into()));
+            return Ok(Some(timed_out_warning(&base, env)));
         }
         let stdin = json::dumps(sample, &json::PY_DEFAULT);
         let spec = RunSpec {
@@ -523,23 +560,51 @@ pub fn guard_selftest(
             timeout,
         };
         let warning = match (deps.run)(&spec) {
-            RunResult::TimedOut => Some(GUARD_TIMED_OUT.into()),
+            RunResult::TimedOut => Some(timed_out_warning(&base, env)),
             RunResult::Failed(exc) => Some(format!(
                 "anthology: the guardrails self-test could not run ({}); the guardrails may be OFF",
                 strerror(&exc)
             )),
-            RunResult::Exited { code, stderr, .. } => match self_test_verdict(code, &stderr) {
-                Some(_) if i == 1 && !stderr.starts_with(SETUP_BLOCK.as_bytes()) => {
-                    Some(GUARD_TOO_OLD_FOR_ATL.into())
+            RunResult::Exited { code, stderr, .. } => {
+                // "Not installed (not attempted)" is only what the shim saw at that moment. When
+                // the pinned binary is in <ah>/bin by now, nothing is known about the guard.
+                let verdict = if is_not_attempted(code, &stderr)
+                    && bootstrap::guard_binary_installed(&base, env)
+                {
+                    Some(SELF_TEST_NOT_IN_PLACE.into())
+                } else {
+                    self_test_verdict(code, &stderr)
+                };
+                match verdict {
+                    Some(_) if i == 1 && !stderr.starts_with(SETUP_BLOCK.as_bytes()) => {
+                        Some(GUARD_TOO_OLD_FOR_ATL.into())
+                    }
+                    v => v,
                 }
-                v => v,
-            },
+            }
         };
         if warning.is_some() {
             return Ok(warning);
         }
     }
     Ok(None)
+}
+
+/// The warning for a self-test run that timed out: with the pinned binary installed the guard
+/// still runs on every command, so the hint says the machine may be busy.
+fn timed_out_warning(base: &Path, env: &Env) -> String {
+    if bootstrap::guard_binary_installed(base, env) {
+        format!("{GUARD_TIMED_OUT}{TIMED_OUT_HINT}")
+    } else {
+        GUARD_TIMED_OUT.into()
+    }
+}
+
+/// The shim's setup block for a missing binary that the self-test did not try to install.
+fn is_not_attempted(code: i32, stderr: &[u8]) -> bool {
+    code == 2
+        && stderr.starts_with(SETUP_BLOCK.as_bytes())
+        && String::from_utf8_lossy(&stderr[SETUP_BLOCK.len()..]).starts_with(NOT_ATTEMPTED)
 }
 
 /// The F-4 verdict on the guard's exit code and stderr.
@@ -814,6 +879,10 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         None,
     );
 
+    // The self-test may take up to its limit; with less than that left it is not run, so the
+    // hook still ends before its own timeout. Where the guard is, and whether it is disabled,
+    // is still reported.
+    let time_left = elapsed() <= DEADLINE - deps.limits.guard_timeout.as_secs_f64();
     let self_test = step(
         &mut warnings,
         label::SELF_TEST,
@@ -821,7 +890,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             fault(deps, "_guard_selftest")?;
             match deps.self_test {
                 Some(f) => f(env, &root, &cwd),
-                None => guard_selftest(env, &root, &cwd, deps),
+                None => self_test_in(env, &root, &cwd, deps, time_left),
             }
         },
         None,

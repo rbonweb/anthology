@@ -26,6 +26,7 @@ dependencies = [
  "anthology-memory",
  "anthology-pycompat",
  "anthology-runtime",
+ "anthology-shell",
  "anthology-testkit",
  "lexopt",
  "tempfile",

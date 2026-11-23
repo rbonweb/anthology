@@ -11,6 +11,7 @@ pub mod guard;
 pub mod hook;
 pub mod mem;
 pub mod memory;
+pub mod perm;
 pub mod setup;
 
 use std::ffi::OsString;
@@ -64,6 +65,7 @@ commands:
   atl-install
   mem search|related|orphans|stale|rebuild|save
   memory export|import
+  perm classify
   --version
 ";
 
@@ -98,6 +100,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("atl-install") => atl_install::run(rest, stdin),
         Some("mem") => mem::run(rest, stdin),
         Some("memory") => memory::run(rest, stdin),
+        Some("perm") => perm::run(rest, stdin),
         _ => Output::usage(&format!("unknown command: {}", first.to_string_lossy())),
     }
 }

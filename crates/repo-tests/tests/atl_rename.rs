@@ -1,4 +1,4 @@
-//! The ATL rename's final check (ADR-034): the old name `rtk` is gone from the repository.
+//! The ATL rename's final check (ADR-035): the old name `rtk` is gone from the repository.
 //!
 //! Over `git ls-files` (the text files, and every `.gz` file decompressed, which is how the
 //! difftest goldens are stored), every case-insensitive `rtk` must be under an allowed path or on

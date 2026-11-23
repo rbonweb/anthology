@@ -51,10 +51,11 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         let mut flags = sv(["--model", "sonnet"]);
         flags.extend(ctx.plugin_flags()?);
         flags.extend(["--settings".to_string(), dumps(&ctx.read_allow()?)]);
+        // Scrub off: on Linux the scrub stops Claude Code creating the agent's worktree.
         let opts = PromptOpts {
             cwd: Some(repo),
             variadic: sv(["Agent", "Read", "Glob"]),
-            ..PromptOpts::default()
+            extra_env: Some(no_scrub()),
         };
         let p = ctx.prompt_run(&tmp, &prompt, &flags, &opts)?;
         let files = subagent_files(&tmp.join("cfg"));

@@ -102,6 +102,53 @@ fn the_wrappers_install_when_missing_and_exit_127_when_they_cannot() {
     });
 }
 
+/// Post-release P4: the permission mod calls `bin/anthology` inside a 10 s hook with
+/// `ANTHOLOGY_NO_INSTALL=1`, so a missing binary must exit 127 at once: no download, no install
+/// from the offline seed, no attempt marker. An installed binary still runs.
+#[test]
+fn anthology_no_install_stops_every_install_path_in_the_wrappers() {
+    each_shell("no install", |sh| {
+        for value in ["1", "yes"] {
+            let sb = sandbox();
+            sb.seed();
+            for (rel, name) in [(WRAP, "anthology"), (WRAP_MEM, "anthology-mem")] {
+                let mut spec = sb.spec(sh, rel, &["x"], b"");
+                spec.env.push(("ANTHOLOGY_NO_INSTALL".into(), value.into()));
+                let run = sb.run_spec(spec);
+                assert_eq!(run.code, Some(127), "{sh:?} {name} {value}: {}", run.err());
+                assert!(run.stdout.is_empty(), "{sh:?} {name}");
+                assert_eq!(
+                    run.err(),
+                    format!("{}\n", wrapper_failed(name, "ANTHOLOGY_NO_INSTALL is set")),
+                    "{sh:?} {name}"
+                );
+            }
+            assert_not_installed(&sb, &format!("{sh:?} {value}"));
+            assert!(
+                !sb.bindir().join(".attempt").exists(),
+                "{sh:?} {value}: an install was attempted"
+            );
+            // The test server runs only where the network cases do (it binds port 443).
+            if anthology_testkit::bs::net_enabled() {
+                assert_eq!(
+                    anthology_testkit::bs::server().hits(&sb.release.url_path()),
+                    0
+                );
+            }
+            sb.install(&fake(V, ALLOW), 0o755);
+            let mut spec = sb.spec(sh, WRAP, &["perm", "classify"], b"");
+            spec.env.push(("ANTHOLOGY_NO_INSTALL".into(), value.into()));
+            let run = sb.run_spec(spec);
+            assert_eq!(
+                (run.code, run.out()),
+                (Some(0), "args:perm classify|atl=1\n".into()),
+                "{sh:?} installed: {}",
+                run.err()
+            );
+        }
+    });
+}
+
 #[test]
 fn session_start_sets_the_downloaded_flag_and_prints_one_line() {
     each_shell("session start", |sh| {
