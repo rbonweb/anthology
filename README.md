@@ -146,6 +146,7 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 | `/anthology:setup remove` | Takes out the settings entries and the ATL download that setup added; never deletes your notes (see [Updating and removing](#updating-and-removing)) |
 | `/anthology:export` | Exports your memory notes to a portable archive |
 | `/anthology:import <file>` | Imports an archive after a dry run |
+| `/anthology-status` | Opens a pane with the agents that run, the last few that finished and the permission prompts that wait for you (see [Alerts and the status pane](#alerts-and-the-status-pane)) |
 
 These run only when you ask for them.
 
@@ -155,6 +156,20 @@ These run only when you ask for them.
 - **Docker.** Tests, builds and end-to-end suites run in containers that mount only the current worktree. Agents do no host-level installs (`brew`, `npm -g`, global `pip`, browser downloads). Project-level installs such as `npm install` are fine. If Docker is unavailable, the agent stops and tells you.
 - **Blocked agents.** A subagent cannot ask you a question. It stops and reports it, and the main session answers or asks you, then resumes it.
 - **Coding and long builds.** Code follows the Karpathy guidelines (think first, simplest fit, surgical diffs, verify); the implementer, debugger and reviewer read them at startup. For long or multi-agent builds, status reports and decisions made while you are away, the main session loads `anthology:large-builds`: plain feature-based status reports (done, running, blocked, an honest estimate), and each decision recorded as `Ruling: what — why — cost if wrong`, while still stopping for irreversible, security-sensitive or outward-facing actions.
+
+### Strict delegation (a Claude Code mod)
+
+The routing guide says the main session plans, briefs agents, checks and merges, and never produces the work itself. On Claude Code 2.1.330 or later, a mod (`hooks/mods/delegation.ts`) makes that rule hold in **interactive** sessions. It does nothing in a headless run (`claude -p`, CI), in a subagent, or in a session whose tool pool has no `Agent` tool (the lead could not hand the work on).
+
+- **Coordinator text.** When the session has the `Agent` tool, the system prompt gets one short section: the lead plans, briefs, checks and merges, hands the making to agents, and fixes inline only a few lines in one file that you asked for. A prompt without the section (`--bare`, a teammate's) gets the same rule inside each refusal.
+- **Refusals.** The main session's `Edit`, `Write` and `NotebookEdit` calls are refused. The message says why (the fix is too long or too large, a second file, the budget is used up, or a `Write`, `NotebookEdit` or `replace_all` is never inline) and names the agent to hand the change to: `anthology:docs-writer` for `.md`, `.mdx`, `.markdown`, `.rst` and `.txt` files, `anthology:ui-designer` for `.tsx`, `.jsx`, `.css`, `.html` and `.svg`, and `anthology:implementer` (or `anthology:debugger` for a bug fix) for anything else.
+- **Allowed without a refusal.**
+  - Notes the lead keeps. Under `CLAUDE_CONFIG_DIR` (else `~/.claude`): `projects/<project>/memory/` (Claude Code's auto memory), `plans/` and `anthology/personal-memory/`. The folder in your `autoMemoryDirectory` setting, when you set one. In the project: `.claude/memory/` (the repo memory, where setup turned auto memory off), `.superpowers/` and `docs/superpowers/plans/`. `~` and `..` are folded and a relative path is taken from the session's directory before the match.
+  - A tiny fix: an `Edit` with `old_string` and `new_string` of at most 5 lines each and about 2 KB changed in all (2048 characters), no `replace_all`, at most 3 of them per turn, all in one file. The count starts again at each turn, and an edit that failed or was refused by another hook does not count. A `Write` or `NotebookEdit` is never a tiny fix.
+- **Limits.** Bash writes (`sed -i`, a redirect) are not seen; the routing guide covers them. Paths are matched as written, with no symlinks resolved. A teammate in a pane of its own looks like a lead to a hook (nothing tells them apart), so the `Agent` tool in its pool is the rule there. This is a workflow rule, not a safety boundary: if the mod fails, Claude Code's own verdict stands and the edit runs.
+- **Not yet.** The second half of the design is not built: a gate on MCP tools that do not say they are read-only, with an allowlist for `mcp__plugin-authoring__scan_secrets`. For now only the file tools above are gated.
+
+To turn it off, set `ANTHOLOGY_DELEGATION=0` in the environment (for example under `env` in your Claude Code settings) and restart the session. `ANTHOLOGY_MODS=0` turns off every anthology mod, this one included.
 
 ### Guardrails
 
@@ -195,6 +210,58 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 ### Attention alert
 
 A `Notification` hook pops a desktop alert with a sound (macOS `osascript`, Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell) when Claude Code shows a permission prompt or waits for your input; set `ANTHOLOGY_NOTIFY=0` to turn it off.
+
+### After-work check
+
+When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) reports to the main session, a Claude Code mod (`hooks/mods/afterwork.ts`, Claude Code 2.1.330 or later) checks the report before the lead reads it. A short "After-work check" block is appended only when there is a real gap:
+
+- no commit (a sha, or the word "committed");
+- no test evidence (a test word; "tests not run" or "skipped" counts as none);
+- attribution lines (`Co-Authored-By: Claude`, "Generated with") in the report, which must not be there;
+- uncommitted files in the agent's own worktree.
+
+Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one: the project map, when the report names a new, removed or renamed piece and does not say the map was updated, is missing or is not needed; and leftovers, when the report starts containers, volumes or temp files and does not say they were removed (never asked of the docs-writer).
+
+The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run. When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out); any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are. Set `ANTHOLOGY_AFTERWORK=0` to turn this check off, or `ANTHOLOGY_MODS=0` to turn off every Anthology mod.
+
+### Alerts and the status pane
+
+Where Claude Code 2.1.330 or later loads plugin mods, the plugin adds two things on top of the alert above. Both come from `hooks/mods/alerts.tsx`.
+
+- **In-session alert.** When Claude Code needs you (a permission prompt, or an idle wait for input) the mod shows a one-line toast in the session, at most once every 20 seconds. It makes no sound: the shell hook above keeps the only sound and the desktop alert, so where both run you get the toast and the desktop alert together. The shell hook is also the whole alert on a Claude Code without plugin mods.
+- **Status pane.** `/anthology-status` opens a pane called Anthology. It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a line under the prompt keeps the count (`2 agents running, 1 waiting for approval`). Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
+
+The pane and the toast name a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
+
+```
+Needs your approval (2)
+Bash
+Edit  from implementer
+
+Running (2)
+14:02  implementer  Build the alerts mod
+14:05  scout  Find the notify hooks
+
+Finished
+ok       3m 12s  reviewer  Review the scaffold
+failed   1m 04s  implementer  Fix the CI job
+```
+
+Approvals come first because nothing moves until you answer them. A subagent's approval stays listed when the lead's turn ends, until that agent reports. A run that ended without reporting drops off the list when Claude Code no longer lists it as alive. With nothing to show the pane says so. A long row is cut at the pane's edge, and a list past 20 running agents ends with `and N more`.
+
+Not yet: the design's block of open pull requests and their CI status (it needs `gh`) is deferred; the pane does not show it.
+
+Switches: `ANTHOLOGY_NOTIFY=0` turns off the alert (the shell hook's switch too), and `ANTHOLOGY_MODS=0` turns off every anthology mod, this pane and its status line included. Set either in the `env` block of `~/.claude/settings.json`.
+
+### Read-only commands without a prompt
+
+On Claude Code 2.1.330 or later, a Claude Code mod in the `anthology` plugin lets a shell command run without a permission prompt when `anthology perm classify` proves it only reads, and Claude Code itself would allow a `Read` of every file it reads. It only changes a plain ask that you would answer in the permission dialog. Everything else stays exactly as Claude Code decides it:
+
+- a deny, and any ask from your own allow, ask or deny rules, a `PreToolUse` hook such as the guardrails, another mod, the outside-directory read block or your organization;
+- headless (`claude -p`), background and `dontAsk` sessions, SDK hosts and auto mode's classifier: their denies and answers are not lifted;
+- sessions whose managed settings set `allowManagedPermissionRulesOnly`, and Claude Code builds before 2.1.330.
+
+If the `anthology` binary is not installed, the mod changes nothing and never downloads it. Set `ANTHOLOGY_MODS=0` to turn it off.
 
 ### Commits carry only your name
 
@@ -344,7 +411,7 @@ Remove keeps the `anthology` binaries in `~/.claude/anthology/bin/` while `antho
 ## Requirements
 
 - macOS or Linux, on arm64 or x86_64. Setup refuses on Windows.
-- Claude Code `2.1.311` or newer.
+- Claude Code `2.1.330` or newer.
 - For the one-time download of the `anthology` binary: network access to GitHub, one of `curl`, `wget` or `node`, one of `sha256sum`, `shasum` or `openssl`, and `tar`. macOS and most Linux systems have these. `node` is the last resort, and behind a proxy it works only on node 24 or newer. Offline, copy the archive in by hand (see [The `anthology` binary](#the-anthology-binary)).
 - Node 22 or newer.
 - Docker, for tests, builds and end-to-end suites.

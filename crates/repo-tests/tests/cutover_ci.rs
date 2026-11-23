@@ -95,6 +95,7 @@ fn after_the_cutover_ci_images_holds_no_python_image() {
         "alpine",
         "debian-slim",
         "gitleaks",
+        "node",
         "rust",
         "shellcheck",
         "ubuntu",

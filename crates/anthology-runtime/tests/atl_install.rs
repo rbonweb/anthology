@@ -1182,7 +1182,8 @@ mod files_test {
         let hooks = json::loads(&text).expect("json");
         let top = hooks.as_object().expect("object");
         let keys: Vec<&str> = top.iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, ["hooks"]);
+        // `modules` names the Claude Code mods module (plugins/anthology/hooks/mods/).
+        assert_eq!(keys, ["hooks", "modules"]);
         let inner = top.get("hooks").and_then(Value::as_object).expect("hooks");
         let mut names: Vec<&str> = inner.iter().map(|(k, _)| k).collect();
         names.sort_unstable();
