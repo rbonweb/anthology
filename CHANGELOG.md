@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.3.1] - 2026-11-23
+
 #### Changed
 
 - rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
