@@ -150,7 +150,8 @@ fn concurrent_hung_gits_each_time_out_on_schedule() {
     // The macOS flake: a spawn on one thread blocked for as long as a long-lived grandchild of a
     // git spawned on another thread (std's pipes get FD_CLOEXEC in a second step there, so a
     // concurrent fork can inherit them). Every call must end near its timeout, however many
-    // hung gits and grandchildren are about.
+    // hung gits and grandchildren are about. This is a smoke test: it passes without the spawn
+    // lock too, and the unit tests in `src/git.rs` are what pin the lock and the hand-over.
     let (_d, bin) = fake_git("(sleep 3) & sleep 3");
     let env = env_with_path(&bin);
     let workers: Vec<_> = (0..6)
