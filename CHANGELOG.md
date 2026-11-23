@@ -53,6 +53,10 @@ a new version section.
   binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
   disabled or missing is still named in that case.
 
+#### Changed
+
+- pin anthology-bin 0.1.5.
+
 ### [0.2.9] - 2026-11-22
 
 #### Added
@@ -419,6 +423,7 @@ a new version section.
   agents retried the same command. The message adds: "A backtick inside double quotes runs a
   command; put the pattern in single quotes". The verdict does not change, and a pattern in
   single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+- pin anthology-bin 0.1.5.
 
 ### [0.2.4] - 2026-11-22
 
