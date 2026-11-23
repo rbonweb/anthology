@@ -166,7 +166,7 @@ fn every_action_is_pinned_by_sha() {
         }
     }
     assert!(count >= 5, "only {count} actions");
-    // Each pin carries its version as a comment, as in rtk-release.yml.
+    // Each pin carries its version as a comment, as in atl-release.yml.
     for line in workflow_text().lines().filter(|l| l.contains("uses: ")) {
         assert!(line.contains(" # v"), "{line}");
     }
@@ -337,7 +337,8 @@ fn the_tag_check_rejects_multi_line_input() {
         ("anthology-bin--v0.1.0-", false),
         ("anthology-bin--v0.1.0-rc_1", false),
         ("anthology--v0.1.0", false),
-        ("rtk--v1.2.1", false),
+        ("rtk--v1.2.1", false), // legacy tag prefix
+        ("atl--v1.2.1", false),
         ("", false),
     ] {
         let status = Command::new("bash")

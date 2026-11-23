@@ -10,6 +10,16 @@
 //! told to stop: each drops its pipe when its current read returns, so a grandchild that keeps
 //! writing gets `SIGPIPE`, as it does once Python's `Popen` closes the pipes (Rust closes them
 //! at the grandchild's next write rather than at once, and buffers at most one more chunk).
+//!
+//! The spawn itself is also bounded by the timeout. On macOS, `Command::spawn` creates its
+//! pipes with `pipe()` and sets `FD_CLOEXEC` in a second step, and (with `PATH` in the child's
+//! environment) forks rather than using `posix_spawn`, then reads a status pipe until every
+//! copy of its write end is closed. A fork by another thread between those two steps hands the
+//! pipe to that thread's child, and `spawn` then blocks until that child (or one of its
+//! descendants, such as a `sleep`) exits. So spawns take turns (`SPAWN`), and a spawn that
+//! still stalls is abandoned at the deadline instead of holding the caller. A stalled spawn
+//! holds `SPAWN`, so later calls in the process wait behind it and give up at their own
+//! deadlines (each returns `None`); their helpers then start no git at all.
 #![forbid(unsafe_code)]
 
 use std::ffi::OsStr;
@@ -18,7 +28,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::Env;
@@ -101,7 +111,7 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
         }
     }
     let deadline = Instant::now() + timeout;
-    let mut child = cmd.spawn().ok()?;
+    let mut child = spawn(cmd, deadline)?;
     let abandoned = Arc::new(AtomicBool::new(false));
     let stdout = reader(child.stdout.take(), &abandoned);
     let stderr = reader(child.stderr.take(), &abandoned);
@@ -131,6 +141,42 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
         stdout,
         stderr,
     })
+}
+
+/// Held while a git is being spawned, so that two spawns in this process never overlap (see the
+/// module docs). Only spawns by `RealGit` and `TimedGit` take it; the lock is released as soon
+/// as `Command::spawn` returns.
+static SPAWN: Mutex<()> = Mutex::new(());
+
+/// Spawns `cmd` on a helper thread, one spawn at a time, and waits for it only until
+/// `deadline`. `None` when the spawn fails or is not done by then. A helper that gets its turn
+/// after the deadline starts nothing. A child that is spawned after the caller has given up is
+/// killed and reaped by the helper: the channel holds no value (capacity 0), so the send fails
+/// once the caller's receiver is gone, where a buffered value would be dropped with it, unkilled
+/// and unreaped.
+fn spawn(mut cmd: Command, deadline: Instant) -> Option<Child> {
+    let (tx, rx) = mpsc::sync_channel(0);
+    std::thread::Builder::new()
+        .spawn(move || {
+            let spawned = {
+                let _one_at_a_time = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+                if Instant::now() >= deadline {
+                    return;
+                }
+                cmd.spawn()
+            };
+            #[cfg(test)]
+            tests::after_spawn(&spawned);
+            if let Err(mpsc::SendError(Ok(mut late))) = tx.send(spawned) {
+                let _ = late.kill();
+                let _ = late.wait();
+            }
+        })
+        .ok()?;
+    let got = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    #[cfg(test)]
+    tests::after_recv();
+    got.ok()?.ok()
 }
 
 /// Reads a pipe to its end on its own thread; the bytes arrive on the channel. If the thread
@@ -170,4 +216,123 @@ fn kill(mut child: Child, abandoned: &AtomicBool) -> Option<GitOut> {
     let _ = child.kill();
     let _ = child.wait();
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    /// Gits started by `spawn`; the pause (ms) between a start and the hand-over; and the pause
+    /// (ms) the caller takes after its wait ends, before it drops the receiver.
+    static SPAWNED: AtomicUsize = AtomicUsize::new(0);
+    static HOLD_MS: AtomicU64 = AtomicU64::new(0);
+    static LINGER_MS: AtomicU64 = AtomicU64::new(0);
+    /// The tests below read the statics, so they run one at a time.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// A test hook in `spawn`: counts a started git and can hold it before the hand-over.
+    pub(super) fn after_spawn(spawned: &io::Result<Child>) {
+        if spawned.is_ok() {
+            SPAWNED.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(HOLD_MS.load(Ordering::SeqCst)));
+        }
+    }
+
+    /// A test hook in `spawn`: the caller waits here with the receiver still open.
+    pub(super) fn after_recv() {
+        std::thread::sleep(Duration::from_millis(LINGER_MS.load(Ordering::SeqCst)));
+    }
+
+    /// A folder with a fake `git` running `body`, as the shell writes it (not this process, so
+    /// no writable descriptor is open when other threads fork), and an `Env` that finds it.
+    fn fake_git(body: &str) -> (tempfile::TempDir, Env) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let git = dir.path().join("git");
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf '#!/bin/sh\\n%s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"")
+            .arg("sh")
+            .arg(body)
+            .arg(&git)
+            .status()
+            .expect("sh");
+        assert!(status.success());
+        let env = Env::default().with_os("PATH", format!("{}:/usr/bin:/bin", dir.path().display()));
+        (dir, env)
+    }
+
+    /// A spawn that is stuck (here: waiting for `SPAWN`, as a spawn stalled on a leaked status
+    /// pipe would hold it) gives the caller its `None` at the timeout, not when the spawn ends,
+    /// and the helper, once it gets its turn, starts no git for the caller that left.
+    #[test]
+    fn a_stuck_spawn_is_abandoned_at_the_timeout() {
+        let _seq = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        let (_d, env) = fake_git("exit 0");
+        let before = SPAWNED.load(Ordering::SeqCst);
+        let stuck = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let git = RealGit::with_timeout(Duration::from_millis(300));
+        let start = Instant::now();
+        assert_eq!(git.run(&env, Path::new("/"), &[]), None);
+        let took = start.elapsed();
+        drop(stuck);
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(SPAWNED.load(Ordering::SeqCst), before, "a git was started");
+    }
+
+    /// The git is started and held for 200 ms before the hand-over, so the caller's wait (100 ms)
+    /// has ended, and the caller keeps its receiver for 400 ms. The helper must kill and reap
+    /// the git: with a buffered channel the send succeeds into that open receiver, the child is
+    /// dropped with it, and it keeps running.
+    #[test]
+    fn a_git_started_after_the_caller_gave_up_is_killed_and_reaped() {
+        let _seq = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        let marks = tempfile::tempdir().expect("marks");
+        let pidfile = marks.path().join("pid");
+        let (_d, env) = fake_git("echo $$ > \"$PIDFILE\"; exec sleep 30");
+        let env = env.with_os("PIDFILE", &pidfile);
+        HOLD_MS.store(200, Ordering::SeqCst);
+        LINGER_MS.store(400, Ordering::SeqCst);
+        let git = RealGit::with_timeout(Duration::from_millis(100));
+        let out = git.run(&env, Path::new("/"), &[]);
+        HOLD_MS.store(0, Ordering::SeqCst);
+        LINGER_MS.store(0, Ordering::SeqCst);
+        assert_eq!(out, None);
+        let pid = wait_for(|| {
+            std::fs::read_to_string(&pidfile)
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        })
+        .expect("the fake git wrote its pid");
+        // `ps` prints nothing once the process is gone; a zombie shows as `Z`.
+        let gone = wait_for(|| {
+            let ps = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .expect("ps");
+            String::from_utf8_lossy(&ps.stdout)
+                .trim()
+                .is_empty()
+                .then_some(())
+        });
+        assert!(gone.is_some(), "git {pid} is still there");
+    }
+
+    /// Polls `f` for up to 8 s.
+    fn wait_for<T>(f: impl Fn() -> Option<T>) -> Option<T> {
+        let end = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(v) = f() {
+                return Some(v);
+            }
+            if Instant::now() >= end {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }

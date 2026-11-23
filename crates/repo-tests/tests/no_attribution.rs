@@ -97,6 +97,17 @@ fn a_commit_with_an_assistant_co_author_trailer_is_denied_and_the_reason_names_t
 }
 
 #[test]
+fn the_reason_says_how_to_turn_attribution_off_at_the_source() {
+    let out = run(
+        "git commit -m \"feat: x\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\"",
+    );
+    let reason = deny_reason(&out, "commit");
+    assert!(reason.contains("\"attribution\""), "{reason}");
+    assert!(reason.contains(".claude/settings.json"), "{reason}");
+    assert!(reason.contains("/anthology:setup"), "{reason}");
+}
+
+#[test]
 fn every_attribution_spelling_on_a_commit_or_pr_command_is_denied() {
     let cases = [
         (

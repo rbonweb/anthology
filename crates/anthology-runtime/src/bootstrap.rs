@@ -40,7 +40,7 @@ use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX};
 use anthology_core::platform;
 use anthology_core::{Env, paths};
 
-use crate::rtk_install::{ct_eq, is_executable_file, sha256_file};
+use crate::atl_install::{ct_eq, is_executable_file, sha256_file};
 
 /// Seconds allowed after the budget for the hash, extract and `--version` probe.
 pub const GRACE_SECS: u64 = 5;
@@ -274,6 +274,33 @@ pub const CHECK_BAD_LOCK: &str =
 pub const CHECK_NO_HOME: &str = "HOME or CLAUDE_CONFIG_DIR is not an absolute path, so the guard \
      cannot find its binary; it blocks shell commands, file edits and MCP tools until it can";
 
+/// `lib.sh` `anth_installed`: `<ah>/bin` and `<version>` are real folders, `anthology` is a
+/// regular, non-empty, executable file, and `.sha256` is non-empty.
+fn is_installed(bindir: &Path, vdir: &Path) -> bool {
+    let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir());
+    let bin = vdir.join("anthology");
+    real_dir(bindir)
+        && real_dir(vdir)
+        && is_executable_file(&bin)
+        && fs::symlink_metadata(&bin).is_ok_and(|m| m.len() > 0)
+        && fs::read(vdir.join(".sha256")).is_ok_and(|b| !b.is_empty())
+}
+
+/// Whether the binary the guardrails' `anthology.lock` pins is installed right now, as the
+/// guard shim's hot path sees it (`anth_installed`: no hashing). `false` when the lock does not
+/// read or `<ah>` is not usable.
+pub fn guard_binary_installed(guard_root: &Path, env: &Env) -> bool {
+    let lock = fs::read(guard_root.join("anthology.lock"))
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|text| lock::parse(&text, ANTHOLOGY_TAG_PREFIX).ok());
+    let (Some(lock), Some(ah)) = (lock, paths::install_home(env)) else {
+        return false;
+    };
+    let bindir = ah.join("bin");
+    is_installed(&bindir, &bindir.join(&lock.version))
+}
+
 /// Doctor's `anthology_binary` check for this machine (module docs, GC-14).
 pub fn anthology_binary_check(guard_root: Option<&Path>, env: &Env) -> (Option<bool>, String) {
     let (system, machine) = platform::uname();
@@ -319,17 +346,9 @@ pub fn anthology_binary_check_with(
     let Some(ah) = paths::install_home(env) else {
         return (Some(false), CHECK_NO_HOME.into());
     };
-    let bindir = ah.join("bin");
-    let vdir = bindir.join(&lock.version);
+    let vdir = ah.join("bin").join(&lock.version);
     let bin = vdir.join("anthology");
-    // `anth_installed`: neither `<ah>/bin` nor `<version>` may be a symlink.
-    let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir());
-    let installed = real_dir(&bindir)
-        && real_dir(&vdir)
-        && is_executable_file(&bin)
-        && fs::symlink_metadata(&bin).is_ok_and(|m| m.len() > 0)
-        && fs::read(vdir.join(".sha256")).is_ok_and(|b| !b.is_empty());
-    if !installed {
+    if !is_installed(&ah.join("bin"), &vdir) {
         return not_installed();
     }
     // As `anth_first_line` reads a marker: the first line, without its `\n`.

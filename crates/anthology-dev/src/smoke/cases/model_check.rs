@@ -35,10 +35,12 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         flags.extend(ctx.plugin_flags()?);
         flags.extend(["--settings".to_string(), dumps(&ctx.read_allow()?)]);
         flags.extend(sv(["--max-turns", "4"]));
+        // Scrub off: on Linux the scrub stops Claude Code creating the worktree of an
+        // `isolation: worktree` agent.
         let opts = PromptOpts {
             cwd: Some(repo),
             variadic: sv(["Agent", "Read"]),
-            ..PromptOpts::default()
+            extra_env: Some(no_scrub()),
         };
         let p = ctx.prompt_run(&tmp, &prompt, &flags, &opts)?;
         let (models, files) = transcript_models(&tmp.join("cfg"))?;

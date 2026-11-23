@@ -12,7 +12,7 @@ mod portmap_test;
 mod rename_plugin_test;
 mod rename_skill_test;
 mod repo_api_test;
-mod set_rtk_upstream_test;
+mod set_atl_upstream_test;
 mod ship_license_test;
 mod sources_json_test;
 mod strip_connectors_test;

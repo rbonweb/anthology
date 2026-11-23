@@ -36,8 +36,8 @@ fn get(f: &UreqFetch, url: &str, timeout: f64) -> Result<Vec<u8>, PyExc> {
 fn downloads_over_tls_with_the_installer_user_agent() {
     let server = TestServer::https();
     let body: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
-    server.route("/rtk.tar.gz", Route::ok(&body));
-    let got = get(&trusting(&Env::default()), &server.url("/rtk.tar.gz"), 5.0).expect("fetch");
+    server.route("/atl.tar.gz", Route::ok(&body));
+    let got = get(&trusting(&Env::default()), &server.url("/atl.tar.gz"), 5.0).expect("fetch");
     assert_eq!(got, body);
     let reqs = server.requests();
     assert_eq!(reqs.len(), 1);

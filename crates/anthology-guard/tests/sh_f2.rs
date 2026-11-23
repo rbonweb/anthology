@@ -252,7 +252,7 @@ fn sh_f4_positional_parameters_and_function_arguments_are_put_in_place() {
         r#"bash -c 'for f in "$@"; do wc -l "$f"; done' _ a.txt b.txt"#,
         r#"greet() { echo "hello $1"; }; greet world"#,
         r#"run() { "$@"; }; run make test"#,
-        r#"retry() { for i in 1 2 3; do "$@" && return; sleep 1; done; }; retry curl -fsS localhost:3000"#,
+        // review of #159 round 3: a `retry` body with number words is too complex now (param_expansion.rs)
         r#"f() { cd "$1" && git pull; }; f repo"#,
     ] {
         assert_eq!(verdict(command), Verdict::Allow, "{command}");

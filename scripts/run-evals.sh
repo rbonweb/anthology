@@ -6,7 +6,7 @@
 # evals.yml once, download its `evals-results` artifact and commit candidate-baseline.json (the
 # file `--ci` writes when no baseline exists) as evals/baseline.json with the `candidate` key
 # removed. That way the baseline and every later comparison come from the same environment (same
-# runner, same installed tools, e.g. rtk). `--record` is for local experiments.
+# runner, same installed tools, e.g. atl). `--record` is for local experiments.
 #
 # The plugins run from a scratch copy with a seeded `anthology` binary (design §14.2): the
 # evals from the workspace `anthology-dev smoke --prepare-evals` builds, the smokes from the
@@ -127,8 +127,8 @@ fi
 # holds those tools in agent-fields: the scout's own tool list is then what its max-0 checks
 # really test. `Bash(ls *)` exists so that Bash is visible in browser-browseros-only, where a
 # host-browser launch attempt must be recorded (and denied) rather than hidden.
-# (The rtk-rewrite and agent-memory-path checks are smokes, `anthology-dev smoke`: they need
-# rtk installed and a scratch repo, which `claude plugin eval` cannot set up.)
+# (The atl-rewrite and agent-memory-path checks are smokes, `anthology-dev smoke`: they need
+# atl installed and a scratch repo, which `claude plugin eval` cannot set up.)
 GRANTS='Bash(npx playwright install --dry-run chromium)
 Bash(npx playwright test --list)
 Bash(agent-browser --help)

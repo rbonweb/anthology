@@ -1,4 +1,4 @@
-//! The structural shell parser shared by the anthology guard and rtk (design §7, plan §3.4).
+//! The structural shell parser shared by the anthology guard and atl (design §7, plan §3.4).
 //!
 //! Every module's `pub` items are re-exported at the crate root, where plan §3.4 publishes them,
 //! so a lane fills its module without editing this file. Keep `pub` names unique across modules
@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod analyze;
+pub mod atl_forms;
 pub mod collect;
 pub mod heredoc;
 pub mod lenient;
@@ -17,11 +18,12 @@ pub mod limits;
 pub mod opaque;
 pub mod prefixes;
 pub mod readonly;
-pub mod rtk_forms;
 pub mod shell_args;
 
 #[allow(unused_imports)] // until the module has items
 pub use analyze::*;
+#[allow(unused_imports)] // until the module has items
+pub use atl_forms::*;
 #[allow(unused_imports)] // until the module has items
 pub use collect::*;
 #[allow(unused_imports)] // until the module has items
@@ -38,7 +40,5 @@ pub use opaque::*;
 pub use prefixes::*;
 #[allow(unused_imports)] // until the module has items
 pub use readonly::*;
-#[allow(unused_imports)] // until the module has items
-pub use rtk_forms::*;
 #[allow(unused_imports)] // until the module has items
 pub use shell_args::*;

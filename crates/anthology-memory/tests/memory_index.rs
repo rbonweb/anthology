@@ -850,6 +850,80 @@ mod cli_test {
     }
 
     #[test]
+    fn test_search_accepts_query_as_an_alias_of_the_positional_words() {
+        let c = CliCase::new();
+        let positional = c.run(&["search", "Likes", "quokka", "--json"]);
+        assert_eq!(json_names(&positional), ["user-me"]);
+        for argv in [
+            ["search", "--query", "Likes", "quokka", "--json"],
+            ["search", "--json", "--query", "Likes", "quokka"],
+        ] {
+            let aliased = c.run(&argv);
+            assert_eq!(aliased.stdout_text(), positional.stdout_text(), "{argv:?}");
+        }
+        let text = c.run(&["search", "--query=quokka"]);
+        assert!(text.stdout_text().contains("user-me"));
+    }
+
+    #[test]
+    fn test_search_refuses_positional_words_and_query_together() {
+        let c = CliCase::new();
+        let p = run_mem(
+            &c.case.env,
+            &c.cwd,
+            &["search", "quokka", "--query", "wombat"],
+        );
+        assert_eq!(p.code, 2);
+        assert!(p.stdout.is_empty());
+        let err = p.stderr_text();
+        assert!(err.starts_with("usage: anthology-mem search"), "{err}");
+        assert!(
+            err.ends_with(
+                "anthology-mem search: error: give the search words either as arguments or \
+                 after --query, not both\n"
+            ),
+            "{err}"
+        );
+        assert!(
+            !c.index_dir().exists(),
+            "no index is built for a bad command"
+        );
+    }
+
+    #[test]
+    fn test_search_without_any_words_says_where_they_go() {
+        let c = CliCase::new();
+        let p = run_mem(&c.case.env, &c.cwd, &["search", "--json"]);
+        assert_eq!(p.code, 2);
+        assert!(
+            p.stderr_text().ends_with(
+                "anthology-mem search: error: give the search words as arguments or after \
+                 --query\n"
+            ),
+            "{}",
+            p.stderr_text()
+        );
+        let p = run_mem(&c.case.env, &c.cwd, &["search", "--query"]);
+        assert_eq!(p.code, 2);
+        assert!(
+            p.stderr_text()
+                .contains("argument --query: expected at least one argument"),
+            "{}",
+            p.stderr_text()
+        );
+    }
+
+    #[test]
+    fn test_search_help_shows_both_forms() {
+        let c = CliCase::new();
+        let p = c.run(&["search", "-h"]);
+        let help = p.stdout_text();
+        assert!(help.contains("--query"), "{help}");
+        assert!(help.contains("terms"), "{help}");
+        assert!(help.contains("not both"), "{help}");
+    }
+
+    #[test]
     fn test_related_orphans_stale_rebuild() {
         let c = CliCase::new();
         let rel = c.run(&["related", "user-me", "--depth", "1", "--json"]);
@@ -1253,6 +1327,244 @@ mod save_cli_test {
             "anthology-mem: not inside a git work tree; memory notes live in the repo\n"
         );
         assert_eq!(fs::read_dir(&plain).expect("ls").count(), 0);
+    }
+
+    const NOT_IN_REPO: &str =
+        "anthology-mem: not inside a git work tree; memory notes live in the repo\n";
+
+    /// `save` run in `cwd`, which is not inside a git repo.
+    fn save_outside(s: &SaveCase, cwd: &Path) -> Output {
+        s.run_in(
+            cwd,
+            &[
+                "save",
+                "--agent",
+                "scout",
+                "--type",
+                "project",
+                "--slug",
+                "x",
+                "--name",
+                "n",
+                "--description",
+                "d",
+                "--body",
+                "b",
+            ],
+        )
+    }
+
+    fn fake_repo(parent: &Path, name: &str) {
+        fs::create_dir_all(parent.join(name).join(".git")).expect("mkdir");
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_no_repo_below_keeps_the_short_message() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fs::create_dir_all(plain.join("not-a-repo")).expect("mkdir");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(p.stderr_text(), NOT_IN_REPO);
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_one_repo_below_names_it() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "shop");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            p.stderr_text(),
+            format!(
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: \"shop\". Run the \
+                 command from inside one, for example `cd shop && anthology-mem save ...`, or \
+                 start Claude Code inside the repo.\n"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_with_seven_repos_below_names_five_sorted() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        for name in ["zeta", "alpha", "mid", "beta", "omega", "delta", "gamma"] {
+            fake_repo(&plain, name);
+        }
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            p.stderr_text(),
+            format!(
+                "{NOT_IN_REPO}anthology-mem: git repos sit below this folder: \"alpha\", \
+                 \"beta\", \"delta\", \"gamma\", \"mid\" and 2 more. Run the command from \
+                 inside one, for example `cd alpha && anthology-mem save ...`, or start \
+                 Claude Code inside the repo.\n"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_symlinked_repo_below_is_named() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let real = s.case.tmp.join("real");
+        fake_repo(&real, "shop");
+        let plain = s.case.tmp.join("plain");
+        fs::create_dir(&plain).expect("mkdir");
+        std::os::unix::fs::symlink(real.join("shop"), plain.join("linked")).expect("symlink");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert!(
+            p.stderr_text()
+                .contains("git repos sit below this folder: \"linked\"."),
+            "{}",
+            p.stderr_text()
+        );
+    }
+
+    /// The second stderr line of a refusal that named repos below the folder.
+    fn hint_line(p: &Output) -> String {
+        let text = p.stderr_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one refusal line and one hint line: {text:?}"
+        );
+        assert!(!text.contains('\u{1b}'), "no raw escape in {text:?}");
+        lines[1].to_string()
+    }
+
+    const NO_EXAMPLE: &str =
+        "Run the command from inside one, or start Claude Code inside the repo.";
+
+    #[test]
+    fn test_outside_a_repo_control_characters_in_a_name_are_escaped() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "a\nb\u{1b}[31m\u{9b}");
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \
+                 \"a\\nb\\u{{1b}}[31m\\u{{9b}}\". {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_separator_inside_a_name_stays_inside_its_quotes() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "a\", \"b");
+        fake_repo(&plain, "z\\");
+        let p = save_outside(&s, &plain);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"a\\\", \\\"b\", \"z\\\\\". \
+                 {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_name_that_is_not_utf8_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        let bad = plain.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        if fs::create_dir_all(bad.join(".git")).is_err() {
+            eprintln!("skipped: this file system refuses names that are not UTF-8");
+            return;
+        }
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"bad\u{fffd}\". {NO_EXAMPLE}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_long_name_is_cut_and_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, &"x".repeat(200));
+        let p = save_outside(&s, &plain);
+        assert_eq!(p.code, 1);
+        assert_eq!(
+            hint_line(&p),
+            format!(
+                "anthology-mem: git repos sit below this folder: \"{}\u{2026}\". {NO_EXAMPLE}",
+                "x".repeat(60)
+            )
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_a_name_that_starts_with_a_dash_gets_no_cd_example() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "-odd");
+        let p = save_outside(&s, &plain);
+        assert_eq!(
+            hint_line(&p),
+            format!("anthology-mem: git repos sit below this folder: \"-odd\". {NO_EXAMPLE}")
+        );
+    }
+
+    #[test]
+    fn test_outside_a_repo_an_unreadable_folder_keeps_the_short_message() {
+        if !needs_git() {
+            return;
+        }
+        let s = SaveCase::new();
+        let plain = s.case.tmp.join("plain");
+        fake_repo(&plain, "shop");
+        // Searchable but not listable: the command can start here, the scan cannot read it.
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o300)).expect("chmod");
+        let listable = fs::read_dir(&plain).is_ok();
+        let p = save_outside(&s, &plain);
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o755)).expect("chmod");
+        if listable {
+            eprintln!("skipped: running as a user that ignores directory modes");
+            return;
+        }
+        assert_eq!(p.code, 1);
+        assert_eq!(p.stderr_text(), NOT_IN_REPO);
     }
 
     #[test]

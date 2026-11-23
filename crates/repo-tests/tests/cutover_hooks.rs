@@ -104,7 +104,7 @@ fn every_hooks_json_is_pretty_printed() {
 
 /// test_guard_cli `test_hooks_json_is_the_exec_form_pretooluse_hook` and
 /// `test_hooks_json_points_at_an_existing_script`, test_session_start
-/// `test_hooks_json_has_the_session_start_entry_and_the_rtk_pretooluse_entry`: every hook is the
+/// `test_hooks_json_has_the_session_start_entry_and_the_atl_pretooluse_entry`: every hook is the
 /// exec form `sh <script under the plugin root>`, the script ships, and a PreToolUse hook blocks
 /// when it fails. The exact entries are BS1's `statics.rs`.
 #[test]
@@ -135,6 +135,30 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
                 assert_eq!(str_of(hook, "onFailure"), "block", "{at}: fails closed");
             }
         }
+    }
+}
+
+/// The anthology plugin's `modules` entry names its Claude Code mods module, a TypeScript file
+/// beside hooks.json that ships with the plugin. Guardrails stays shell and binary only.
+#[test]
+fn only_the_anthology_plugin_names_a_shipped_mods_module() {
+    for plugin in PLUGINS {
+        let (_, v) = hooks_json(plugin);
+        let modules: Vec<&str> = get(&v, "modules")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if plugin != "anthology" {
+            assert!(modules.is_empty(), "{plugin}: no mods module");
+            continue;
+        }
+        assert_eq!(modules, ["./mods/index.ts"], "{plugin}");
+        let file = plugin_file(plugin, "hooks/mods/index.ts");
+        assert!(
+            file.is_file(),
+            "{plugin}: {} does not exist",
+            file.display()
+        );
     }
 }
 

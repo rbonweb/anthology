@@ -10,6 +10,191 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.4.1] - 2026-11-23
+
+#### Added
+
+- Automatic after-work check (a Claude Code mod, `hooks/mods/afterwork.ts`): when an implementer, debugger, docs-writer or ui-designer reports to the main session, the report is checked for a commit, test evidence, stray attribution lines and uncommitted files in the agent's worktree, and a short "After-work check" block naming each gap is appended. The project map and leftovers are reminders only: they ride in a block a gap raised and never raise one. The agent's text is never changed, and a report with no gap gets no block. Set `ANTHOLOGY_AFTERWORK=0` (or `ANTHOLOGY_MODS=0`) to turn it off.
+- Strict delegation, a Claude Code mod (`hooks/mods/delegation.ts`, Claude Code 2.1.330 or later), on in interactive
+  sessions only. The system prompt gets a short coordinator section when the session has the
+  `Agent` tool, and the main session's `Edit`, `Write` and `NotebookEdit` calls are refused with a
+  message that says why and names the agent to use (`implementer`, `debugger`, `docs-writer` or
+  `ui-designer`). Allowed: the lead's memory (auto memory, `autoMemoryDirectory`, the repo's
+  `.claude/memory/`, personal memory), `~/.claude/plans/`, `.superpowers/` and
+  `docs/superpowers/plans/`, and a tiny fix (an `Edit` of at most 5 lines and about 2 KB, at most 3
+  per turn, in one file; a failed edit does not count). Subagent calls, headless runs and sessions
+  with no `Agent` tool are never touched. Set `ANTHOLOGY_DELEGATION=0` (or `ANTHOLOGY_MODS=0`) to
+  turn it off. Not yet built: the gate on MCP tools that are not read-only and the
+  `scan_secrets` allowlist. The plugin manifest names a `types` contract (`types/anthology.d.ts`)
+  for the mod's `$.state` values.
+- Alerts and a live status pane, as a mod (`hooks/mods/alerts.tsx`). When Claude Code needs
+  you (a permission prompt or an idle wait) the mod shows a one-line toast, at most once every
+  20 seconds; it makes no sound, and the shell alert keeps the only sound and stays as the
+  fallback. `ANTHOLOGY_NOTIFY=0` turns the toast off. `/anthology-status` opens a pane with the
+  running agents, the last five that finished and the pending permission prompts, and a status
+  line under the prompt keeps the count. The pane and toast never show a command, file path or
+  URL. `ANTHOLOGY_MODS=0` turns it all off. Not yet: the design's open pull requests and CI
+  block (it needs `gh`). The plugin now requires Claude Code 2.1.330 or later.
+- Permission levels: a Claude Code mod (`hooks/mods/`, Claude Code 2.1.330 or later) lets a
+  shell command run without a prompt when the installed `anthology perm classify` proves it
+  only reads and Claude Code allows a `Read` of every path it reads. It changes only a plain
+  ask that a person answers in the dialog. Denies, rule, hook, mod, setting and organization
+  asks, headless, background and `dontAsk` sessions, SDK hosts, auto mode's classifier and
+  sessions with `allowManagedPermissionRulesOnly` stay exactly as Claude Code decides them. It
+  never downloads the binary. Set `ANTHOLOGY_MODS=0` to turn it off.
+
+#### Changed
+
+- The plugin requires Claude Code 2.1.330 or later (`engines`), because of its Claude Code mods.
+  The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
+  `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
+  part runs on its own, so a failure in one never drops the other's result.
+- pin anthology-bin 0.2.1.
+
+#### Fixed
+
+- The 10 s limit on `git` (memory sync and session start) now also covers starting git. On
+  macOS, when two threads of one process started a program at the same moment, one could
+  inherit the other's pipes and the first `git` start then waited for that program to end,
+  with no limit (the `a_hung_git_is_killed_at_the_timeout` test saw a 30 s wait on a CI
+  runner). Starts now take turns, and a start that is still stuck at the deadline is
+  abandoned: the call returns no result at the limit. Normal git calls are unchanged. The
+  `anthology` binary is 0.2.1.
+
+### [0.3.1] - 2026-11-23
+
+#### Changed
+
+- rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
+  carried the old name is renamed: the `atl/` folder, the `atl` command and its `atl-hook`,
+  `atl.lock`, the `atl--v<version>` release tags and `atl-<target>.tar.gz` archives, the
+  `ATL_*` environment variables, the `atl_path` key in `state.json`, the install under
+  `<plugin data>/atl/`, the history under `~/.claude/anthology/atl/`, project filters in
+  `.atl/filters.toml` (they need `atl trust` again), `anthology atl-install`, and the allow
+  rule `Bash(atl *)`. There is no `rtk` alias. ATL stays under the Apache License 2.0:
+  `atl/NOTICE` credits upstream and ships with `atl/LICENSE` in every release archive, and the
+  tool's README, DISCLAIMER and manifests describe the fork. Its bug-report link, its hook's
+  install hint and its package maintainer now point at Anthology. `scripts/atl-rename.sh`
+  applies the rename rule again, and `scripts/sync-atl.sh` merges a new upstream release over
+  the renamed base. Tags already published under the old name stay as they are. The guard and
+  the hook still recognise the old `rtk` name, so a command typed with it is checked as
+  before. Routing guide section 7 is now "Command output: ATL (Anthology Token Layer)".
+  `anthology` now needs `anthology-guardrails` `~0.2.7`. The binary is `1.2.1-anthology.6`.
+  See ADR-035.
+- The session-start guard self-test also runs an ATL runner form
+  (`atl run -c 'npx playwright install'`) and expects it blocked, so a guard binary too old
+  to look inside `atl` commands warns "guardrails may be OFF" instead of passing quietly.
+  `scripts/release.sh` refuses to tag `anthology` or `anthology-guardrails` while the
+  plugin's `anthology.lock` pins an `anthology-bin` older than the workspace version.
+- Upgrading: after updating, re-run `/anthology:setup`, then restart your sessions. Session
+  start installs ATL beside the old files and removes nothing. Until you run setup, `atl`
+  commands prompt, and session start asks you to run it. Setup replaces the `Bash(rtk *)`
+  allow it added earlier with `Bash(atl *)` (an `rtk` allow you wrote yourself is never
+  touched), and shows, then deletes after you confirm, what the old install left: the
+  `rtk_path` entry in `state.json`, `<plugin data>/rtk/` and the old history in
+  `~/.claude/anthology/rtk/`. The old history is deleted, not migrated. Remove covers both the
+  ATL and the old files. Upstream rtk's own folders are never touched. A session started
+  before setup keeps the old hook: it exits cleanly, and `rtk` commands there fail until you
+  restart the session.
+- Downgrading to 0.2.x: that release's `/anthology:setup remove` does not know about ATL, so
+  it leaves `<plugin data>/atl/` and the ATL history in `~/.claude/anthology/atl/` in place.
+  Delete both folders by hand.
+- pin anthology-bin 0.2.0 and atl 1.2.1-anthology.6.
+
+#### Added
+
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
+- `anthology perm classify` (nothing calls it yet): reads a Bash command, its working
+  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
+  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
+  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  no tracked file is a secret or `Read()`-denied, and the git form prints no history
+  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
+  decision, never a deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
+
+#### Fixed
+
+- Session start no longer says the guardrails are "failing closed" when they are not. The guard
+  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
+  place when the shim looked (a parallel session was still installing it, or this hook had
+  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
+  shell commands, file edits and MCP tools are blocked", although the guard installs the
+  binary on its first call and the binary was in the install folder a moment later. Session
+  start now checks the install folder itself: when the pinned binary is there it reports that the
+  self-test could not tell, and says the guard still runs on every command. It keeps the
+  failing-closed warning when the binary really is missing, unusable (empty marker, symlinked or
+  another version's folder) or the guard really refuses.
+- A guard self-test that times out with the binary installed is now reported as "skipped the
+  guard self-test (it timed out, the machine may be busy); the guard still runs on every
+  command; if commands hang or are blocked, run /anthology:setup" instead of "the guardrails
+  may be OFF". When less time is left than the self-test may take, it is not run: the install
+  folder is checked instead, and the line says session start ran out of time only when the
+  binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
+  disabled or missing is still named in that case.
+
+### [0.2.9] - 2026-11-22
+
+#### Added
+
+- Attribution off at the source. Claude Code's own instructions tell the model to add a
+  `Co-Authored-By` trailer to commits, so the no-attribution hook denied almost every first commit
+  attempt. `/anthology:setup` now also writes Claude Code's `"attribution": {"commit": "", "pr": ""}`
+  setting into an approved repo's committed `.claude/settings.json`, next to `autoMemoryEnabled`
+  (same state record, revert on `remove`, size cap and preview listing). A value you set yourself for
+  either key is never overwritten: the preview lists it in `notes` and leaves it. User-wide settings
+  are not touched; setup's output says the same object can be added to `~/.claude/settings.json` by
+  hand. The hook stays as the backstop, and its block message now says how to turn attribution off.
+
+#### Fixed
+
+- `rtk-hook` no longer rewrites a command into an rtk call that cannot run. Claude Code's shell
+  snapshot defines `rg`, `grep` and `find` as shell functions, so a typed `rg -n word a b` can
+  work with no `rg` file on PATH. rtk rewrote it to `rtk rg ...`, which execs a real `rg`, and
+  the user saw `rtk: search failed: Failed to execute command: No such file or directory` and
+  exit 1. After rtk answers with a plain rewrite, the hook now drops it, and the command runs as
+  typed, in two cases. First, the typed command's first word (after leading `NAME=value`
+  assignments) is `rg`, `grep`, `ag`, `find` or `fd` and is not a real executable on the hook's
+  PATH (`command -v` in the hook's own `sh`, which has no snapshot functions). Second, the rewrite
+  holds an `rtk rg|grep|ag|find|fd` call for a program that is not on PATH, even when the first
+  word cannot be read (quoted, expanded, escaped, a path) or is a builtin such as `cd`. Other
+  programs (cargo, npm, docker, git) always keep their rewrite, because they are never snapshot
+  functions and a hook PATH poorer than the Bash tool's must not cost them it. A deny and a kept
+  ask are never dropped.
+- `anthology-mem save` run in a folder that is not a git repo now names the repos below it.
+  When Claude Code is started in a parent folder that holds several repos, every save used to
+  stop at "not inside a git work tree" with no way forward. The message now adds a line that
+  lists up to five of the repos directly below the folder (sorted, then "and N more") and says
+  to run the command from inside one, for example `cd <repo> && anthology-mem save ...`, or to
+  start Claude Code inside the repo. It uses the same one-level scan, capped at 200 entries, as
+  the session-start warning, and the exit code is unchanged. With no repo below, or a folder
+  that cannot be listed, the message is the old single line. Folder names are untrusted text:
+  each is shown in quotes, cut at 60 characters, with control characters, quotes and
+  backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
+  or needed escaping or cutting.
+- `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
+  `anthology-mem search --query tokens colour output` works as well as
+  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
+  usage error (exit 2) that says where the words go. The help text shows both forms.
+
+#### Changed
+
+- The closing pointer that session start adds when it cuts the memory index now reads
+  `anthology-mem search <words>` in place of `<query>`, since the command takes words. The
+  length is the same, so the session budget is unchanged.
+- pin anthology-bin 0.1.4.
+
 ### [0.2.7] - 2026-11-22
 
 #### Added
@@ -316,6 +501,75 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.9] - 2026-11-23
+
+#### Changed
+
+- pin anthology-bin 0.2.1.
+
+### [0.2.8] - 2026-11-23
+
+#### Changed
+
+- The guard reads `atl`, the new name of the command-output tool (ATL, Anthology Token Layer),
+  the way it read `rtk`: it looks through `atl run -c '…'`, `atl err …` and the other ATL
+  runners and checks the command inside. The old `rtk` name is still read the same way, so a
+  command typed with it cannot hide what it runs. Messages name ATL. `anthology` 0.3.0 needs
+  this release (`~0.2.7`). The change ships in the next `anthology` binary (0.2.0).
+- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
+  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
+  a backtick starts a command substitution, here one that never ends, so the block is right but
+  agents retried the same command. The message adds: "A backtick inside double quotes runs a
+  command; put the pattern in single quotes". The verdict does not change, and a pattern in
+  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
+- pin anthology-bin 0.2.0.
+
+### [0.2.4] - 2026-11-22
+
+#### Security
+
+- The guard no longer trusts a value it cannot see (ADR-033). Each of these ran a blocked
+  program in bash or zsh and was allowed; each is now blocked as too complex to check (G0):
+  - a program or a script that comes from a variable or an array element, also behind
+    `env`, `command`, `exec`, `nice`, `time`, `xargs`, zsh's `noglob` and `nocorrect`,
+    `find -exec` and the like, and through `eval`, `bash -c` or `env -S`;
+  - a positional parameter as a program or in a script, unless the guard filled it in with
+    a literal value itself (a `sh -c '…' _ args` script, or a function only called directly):
+    a shell reading its script from stdin with arguments, `find -exec sh -c … {}`, a function
+    run from `trap` or `eval`, zsh's anonymous functions, `shift`, and a
+    `command_not_found_handle(r)` definition;
+  - a zsh glob qualifier, which runs code (`*(e:…:)`, `file(+cmd)`, after a group, in a
+    `${x:-…}` default), and a program word with a glob character or from `find -exec {}`;
+  - an expansion that runs code held in a value: bash's `${x@P}`, zsh's `(e)` flag and
+    `${~x}` (in heredoc bodies too), the zsh options `GLOB_SUBST` and `PROMPT_SUBST` (also
+    named by a variable), a prompt variable or `BASH_ENV`/`ENV` that holds a substitution,
+    and a nameref or a variable name that could point at one;
+  - a value from `read`, `mapfile`, `readarray` or `select`, or text that holds a
+    substitution, with anything the shell evaluates (a subscript, arithmetic, an `-i`
+    variable);
+  - a subscript with nested brackets or quotes around a substitution;
+  - an alias, a hashed command path, a zsh function defined from text, and bash's alias and
+    command tables or an exported `BASH_FUNC_` named in any word.
+- zsh's `=npx` and bash's `coproc NAME { … }` are read as the program they run, so their
+  rules apply.
+- Commands whose program word is a variable (`$EDITOR file`) are now blocked as too complex;
+  spell the program out. A program under a standard directory stays allowed and is checked
+  as written (`"$HOME/.cargo/bin/cargo" build`, also `TMPDIR`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`) when the command is plain: no other expansion, and
+  only letters, digits, `_ . / : = , + @ % -`, blanks, quotes and `; & | < >` elsewhere. The
+  name may not appear anywhere else in the command. `${HOME}/…`, `$PWD` and a `$HOME` inside
+  a double-quoted `sh -c` script are not read through. So do function wrappers such as
+  `run() { "$@"; }; run make test` whose call words are plain. Accepted over-blocks: a read
+  loop that counts (`while read -r l; do n=$((n+1)); done < f`) is too complex, since any
+  arithmetic in a command that reads input is, and so is a `retry` wrapper whose body holds
+  a number (`for i in 1 2 3`). The too-complex message suggests single
+  quotes when a double-quoted script holds a `$`. SECURITY.md lists what is and is not
+  blocked. These ship in the next `anthology` binary (0.1.4).
+
+#### Changed
+
+- pin anthology-bin 0.1.4.
 
 ### [0.2.2] - 2026-11-22
 

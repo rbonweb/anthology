@@ -1,0 +1,6 @@
+# Allowed divergences of the atl_install.reconcile surface (GC-16). The surface marks each case
+# it adjusted (crates/difftest/src/surfaces/atl_install_reconcile.rs).
+
+[[divergence]]
+class = "D-2"
+reason = "Library error text after a fixed prefix: the rest of the line after 'cannot read the atl tarball: ' is Python's tarfile/gzip wording versus the tar/flate2 crates' (the outcome, an error, is the same)."

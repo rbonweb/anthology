@@ -8,8 +8,8 @@
 //! decoding ([`decode_text`]), the bounded non-blocking read, `os.path.realpath`
 //! ([`realpath`]), `pathlib`'s string form ([`pathlib_str`]) and Python's `str.isspace`.
 //!
-//! Forced change F-9: [`WRAPPERS`] adds `anthology` to Python's `anthology-mem`, `rtk` and
-//! `rtk-hook`.
+//! Forced change F-9: [`WRAPPERS`] adds `anthology` to Python's `anthology-mem`, `atl` and
+//! `atl-hook`.
 #![forbid(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
@@ -23,7 +23,7 @@ use anthology_core::{Env, paths, roster::ROSTER};
 use anthology_pycompat::json::{self, Value};
 
 /// The PATH wrappers under `<plugin root>/bin/` (F-9 adds `anthology`).
-pub const WRAPPERS: [&str; 4] = ["anthology", "anthology-mem", "rtk", "rtk-hook"];
+pub const WRAPPERS: [&str; 4] = ["anthology", "anthology-mem", "atl", "atl-hook"];
 /// The environment variable whose source [`subagent_model_source`] reports.
 pub const SUBAGENT_MODEL: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
 /// Files a cloned repo controls are read up to Claude Code's own settings limit (m15).

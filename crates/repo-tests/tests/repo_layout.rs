@@ -297,8 +297,8 @@ mod pinned_images_test {
     use super::*;
 
     // omitted: the exact file set including python.Dockerfile and python39.Dockerfile (F-16
-    // removes them) -> CO2 replacement: cutover_ci.rs asserts ci/images holds exactly the six
-    // Dockerfiles rust, gitleaks, shellcheck, alpine, debian-slim and ubuntu. The set below
+    // removes them) -> CO2 replacement: cutover_ci.rs asserts ci/images holds exactly the seven
+    // Dockerfiles rust, gitleaks, shellcheck, alpine, debian-slim, ubuntu and node. The set below
     // holds before and after the cutover; every Dockerfile, python ones included, is still
     // held to the one pinned FROM line.
     #[test]
@@ -322,6 +322,7 @@ mod pinned_images_test {
                 "alpine.Dockerfile",
                 "debian-slim.Dockerfile",
                 "ubuntu.Dockerfile",
+                "node.Dockerfile",
             ])
         );
         for name in &names {
@@ -372,7 +373,7 @@ mod unchanged_copies_test {
             assert!(repo::path(target).is_dir(), "{target}");
             assert!(!files_under(target).is_empty(), "{target}");
         }
-        // A subtree (rtk) keeps its LICENSE in its own tree, not in vendor/licenses/.
+        // A subtree (atl) keeps its LICENSE in its own tree, not in vendor/licenses/.
         let slugs: BTreeSet<String> = sources
             .iter()
             .filter(|s| !is_subtree(s))

@@ -1015,17 +1015,17 @@ fn compat_seeds() -> Vec<Value> {
     let cwd = || vec![("cwd", s("@ROOT@/proj"))];
     // PathWrappersTest
     let mut b = doctor();
-    for name in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+    for name in ["anthology", "anthology-mem", "atl", "atl-hook"] {
         b.file(&format!("plug/bin/{name}"), "#!/bin/sh\n")
             .chmod(&format!("plug/bin/{name}"), 0o755);
     }
     out.push(b.case("wrappers", vec![("plugin_root", s("@ROOT@/plug"))]));
     let mut b = doctor();
-    for name in ["anthology", "anthology-mem", "rtk-hook"] {
+    for name in ["anthology", "anthology-mem", "atl-hook"] {
         b.file(&format!("plug/bin/{name}"), "#!/bin/sh\n")
             .chmod(&format!("plug/bin/{name}"), 0o755);
     }
-    b.chmod("plug/bin/rtk-hook", 0o644);
+    b.chmod("plug/bin/atl-hook", 0o644);
     out.push(b.case("wrappers", vec![("plugin_root", s("@ROOT@/plug"))]));
     out.push(doctor().case(
         "wrappers",

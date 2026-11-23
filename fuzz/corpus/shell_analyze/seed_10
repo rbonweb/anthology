@@ -1,0 +1,1 @@
+rtk run -c 'cd ~/x && npm --loglevel silent exec playwright test' --shell bash # legacy

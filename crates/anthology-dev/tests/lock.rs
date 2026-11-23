@@ -211,7 +211,7 @@ fn lock_write_refuses_bad_input_and_writes_nothing() {
     std::fs::write(tmp.path().join("three"), three).unwrap();
     for args in [
         &["--tag", "anthology--v0.1.0", "--checksums", "good"][..],
-        &["--tag", "rtk--v0.1.0", "--checksums", "good"],
+        &["--tag", "atl--v0.1.0", "--checksums", "good"],
         &["--tag", "anthology-bin--v0.1", "--checksums", "good"],
         &["--tag", TAG, "--checksums", "three"],
         &["--tag", TAG, "--checksums", "missing"],
@@ -371,7 +371,7 @@ fn lock_check_validates_every_field_the_layout_and_equality() {
         good.replace("\"0.1.0\"", "\"0.1.0-rc_1\""), // version
         good.replace("anthology-bin--v0.1.0", "anthology-bin--v0.1.1"), // tag
         good.replace("anthology-bin--v", "anthology--v"), // tag prefix
-        good.replace("anthology-bin--v", "rtk--v"),  // tag prefix
+        good.replace("anthology-bin--v", "atl--v"),  // tag prefix
         good.replace("rbonweb/anthology", "rbonweb/.."), // repo
         good.replace("rbonweb/anthology", "rbonweb"), // repo
         good.replace(&hex('a'), &hex('A')),          // hash

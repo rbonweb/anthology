@@ -146,6 +146,38 @@ fn a_hung_git_is_killed_at_the_timeout() {
 }
 
 #[test]
+fn concurrent_hung_gits_each_time_out_on_schedule() {
+    // The macOS flake: a spawn on one thread blocked for as long as a long-lived grandchild of a
+    // git spawned on another thread (std's pipes get FD_CLOEXEC in a second step there, so a
+    // concurrent fork can inherit them). Every call must end near its timeout, however many
+    // hung gits and grandchildren are about. This is a smoke test: it passes without the spawn
+    // lock too, and the unit tests in `src/git.rs` are what pin the lock and the hand-over.
+    let (_d, bin) = fake_git("(sleep 3) & sleep 3");
+    let env = env_with_path(&bin);
+    let workers: Vec<_> = (0..6)
+        .map(|_| {
+            let env = env.clone();
+            std::thread::spawn(move || {
+                let git = RealGit::with_timeout(Duration::from_millis(100));
+                (0..8)
+                    .map(|_| {
+                        let start = Instant::now();
+                        let out = git.run(&env, Path::new("/"), &[]);
+                        (out, start.elapsed())
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    for worker in workers {
+        for (out, took) in worker.join().expect("worker") {
+            assert_eq!(out, None);
+            assert!(took < Duration::from_millis(2500), "{took:?}");
+        }
+    }
+}
+
+#[test]
 fn a_child_that_exits_but_leaves_a_pipe_open_also_times_out() {
     // As communicate(timeout=...): git has exited, but a background child still holds stdout.
     let (_d, bin) = fake_git("(sleep 30) & echo started");

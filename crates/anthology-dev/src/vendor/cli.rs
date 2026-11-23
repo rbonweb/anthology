@@ -3,8 +3,8 @@
 //! The parser is `pycompat::argparse` (Python 3.12's argparse): the help and usage texts, the
 //! matching and the errors are its, for the grammar `spec` builds (prog `vendor.py`).
 //!
-//! `set-rtk-upstream` is the one subcommand vendor.py does not have (it replaces the inline
-//! Python in `sync-rtk.sh`). It is accepted but not listed, so the help and the invalid-choice
+//! `set-atl-upstream` is the one subcommand vendor.py does not have (it replaces the inline
+//! Python in `sync-atl.sh`). It is accepted but not listed, so the help and the invalid-choice
 //! text stay Python's.
 
 use std::ffi::{OsStr, OsString};
@@ -17,7 +17,7 @@ use super::fetch::{dispatch_fetcher, fetch_entry, git_fetcher};
 use super::licenses::fetch_licenses;
 use super::manifest::{CACHE_DIRNAME, find_entry, load_sources, vendored};
 use super::py;
-use super::set_rtk_upstream::set_rtk_upstream;
+use super::set_atl_upstream::set_atl_upstream;
 use super::sync::sync;
 use super::{Fetch, Result, VendorError};
 use crate::Output;
@@ -26,10 +26,10 @@ use anthology_pycompat::json::Value;
 
 /// The parser: vendor.py's `ArgumentParser`, built as `main` builds it (prog `vendor.py`).
 ///
-/// `set-rtk-upstream` is the one subcommand vendor.py does not have (it replaces the inline
-/// Python in `sync-rtk.sh`). `with_rtk` adds it, unlisted: it has no help line and the usage
+/// `set-atl-upstream` is the one subcommand vendor.py does not have (it replaces the inline
+/// Python in `sync-atl.sh`). `with_atl` adds it, unlisted: it has no help line and the usage
 /// keeps vendor.py's choices, so only a command line naming it ever sees it (see `parse`).
-fn spec(with_rtk: bool) -> Spec {
+fn spec(with_atl: bool) -> Spec {
     let name = || Arg::positional("name");
     let mut sub = Subcommands::new()
         .dest("command")
@@ -71,15 +71,15 @@ fn spec(with_rtk: bool) -> Spec {
             Some("pristine+transforms vs shipped, as a patch"),
             Spec::command().arg(name()),
         );
-    if with_rtk {
+    if with_atl {
         sub = sub.metavar("{fetch,build,check,sync,diff}").parser(
-            "set-rtk-upstream",
+            "set-atl-upstream",
             None,
             Spec::command()
                 .arg(
                     Arg::option(&["--ref"])
                         .required()
-                        .help("the rtk upstream tag"),
+                        .help("the atl upstream tag"),
                 )
                 .arg(
                     Arg::option(&["--commit"])
@@ -101,11 +101,11 @@ fn spec(with_rtk: bool) -> Spec {
         .subcommands(sub)
 }
 
-/// `parser.parse_args(args)`. A command line naming `set-rtk-upstream` is an invalid choice to
+/// `parser.parse_args(args)`. A command line naming `set-atl-upstream` is an invalid choice to
 /// vendor.py's own grammar, so that one failure is parsed again by the grammar that has it.
 fn parse(args: &[OsString]) -> std::result::Result<Parsed, UsageError> {
     match argparse::parse(&spec(false), args) {
-        Err(e) if e.code == 2 && e.stderr.contains("invalid choice: 'set-rtk-upstream'") => {
+        Err(e) if e.code == 2 && e.stderr.contains("invalid choice: 'set-atl-upstream'") => {
             argparse::parse(&spec(true), args)
         }
         other => other,
@@ -258,9 +258,9 @@ fn run_command(root: &Path, args: &Parsed, fetch: &Fetch, out: &mut Output) -> R
             out.stdout
                 .extend(diff_entry(root, &name, Some(fetch))?.into_bytes());
         }
-        "set-rtk-upstream" => {
+        "set-atl-upstream" => {
             let get = |d: &str| text(d).unwrap_or_default();
-            let old = set_rtk_upstream(root, &get("ref"), &get("commit"))?;
+            let old = set_atl_upstream(root, &get("ref"), &get("commit"))?;
             say(&mut out.stdout, old);
         }
         other => return Err(VendorError(format!("unknown command {other}"))),

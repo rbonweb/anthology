@@ -32,7 +32,9 @@ esac
 "#;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-# Fake `claude`: records its arguments; for `plugin tag` creates the tag with git.
+# Fake `claude`: `--version` prints $FAKE_CLAUDE_VERSION (default 9.9.9) and is not logged;
+# every other call is recorded; for `plugin tag` it creates the tag with git.
+if [ "$1" = --version ]; then echo "${FAKE_CLAUDE_VERSION:-9.9.9} (Claude Code)"; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_CLAUDE_LOG"
 [ "$1" = plugin ] && [ "$2" = tag ] || exit 0
 shift 2
@@ -80,6 +82,13 @@ fn lock_text() -> String {
 
 fn manifest(name: &str) -> String {
     format!("{{\n  \"name\": \"{name}\",\n  \"version\": \"0.1.0\"\n}}\n")
+}
+
+/// A manifest in the shape of plugins/*/.claude-plugin/plugin.json: `engines` after `version`.
+fn manifest_with_engines(name: &str, requirement: &str) -> String {
+    format!(
+        "{{\n  \"name\": \"{name}\",\n  \"version\": \"0.1.0\",\n  \"engines\": {{ \"claude-code\": \"{requirement}\" }}\n}}\n"
+    )
 }
 
 struct Repo {
@@ -223,8 +232,20 @@ impl Repo {
     }
 
     fn release_with(&self, dev: &Path, args: &[&str]) -> Output {
-        Command::new("bash")
-            .arg(self.root.join("scripts/release.sh"))
+        self.script(dev, args).output().unwrap()
+    }
+
+    /// Runs the release with a fake `claude` that reports `claude_version` for `--version`.
+    fn release_with_claude(&self, claude_version: &str, args: &[&str]) -> Output {
+        self.script(&self.base.join("fake-dev"), args)
+            .env("FAKE_CLAUDE_VERSION", claude_version)
+            .output()
+            .unwrap()
+    }
+
+    fn script(&self, dev: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new("bash");
+        cmd.arg(self.root.join("scripts/release.sh"))
             .args(args)
             .current_dir(&self.root)
             .env("ANTHOLOGY_DEV", dev)
@@ -238,9 +259,8 @@ impl Repo {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdin(Stdio::null());
+        cmd
     }
 
     fn release(&self, args: &[&str]) -> Output {
@@ -369,6 +389,39 @@ fn a_stale_lock_stops_the_release_before_any_edit() {
 }
 
 #[test]
+fn a_lock_pinning_a_binary_older_than_the_workspace_stops_the_release() {
+    // A plugin must not ship beside an older guard binary than the crates it was tested with
+    // (for example one that cannot look inside `atl` commands).
+    let Some(r) = repo() else { return };
+    let cargo = r
+        .read("Cargo.toml")
+        .replace("version = \"0.1.0\"", "version = \"0.2.0\"");
+    r.write("Cargo.toml", &cargo);
+    r.commit("bump the workspace");
+    let before = r.state();
+    for plugin in ["anthology", "anthology-guardrails"] {
+        let out = r.release(&[plugin, "0.2.0"]);
+        let all = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert_eq!(out.status.code(), Some(1), "{plugin}: {all}");
+        assert!(
+            all.contains(&format!(
+                "release: plugins/{plugin}/anthology.lock pins anthology-bin 0.1.0, older than the workspace version 0.2.0"
+            )),
+            "{plugin}: {all}"
+        );
+        assert_eq!(r.state(), before, "{plugin}");
+    }
+    assert!(r.dev_calls().is_empty(), "{:?}", r.dev_calls());
+    // A plugin without a lock is not held back by it.
+    let out = r.release(&["anthology-superpowers", "0.2.0"]);
+    assert!(
+        !text(&out.stderr).contains("older than the workspace version"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 fn a_missing_binary_tag_stops_the_release() {
     let Some(r) = repo() else { return };
     r.git(&["tag", "-d", "anthology-bin--v0.1.0"]);
@@ -440,5 +493,107 @@ fn a_missing_anthology_dev_is_refused() {
     let err = text(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(err.contains("ANTHOLOGY_DEV"), "{err}");
+    assert_eq!(r.state(), before);
+}
+
+/// A repository whose `anthology` plugin requires claude-code `>=2.1.330`.
+fn repo_with_engines() -> Option<Repo> {
+    let r = repo()?;
+    r.write(
+        "plugins/anthology/.claude-plugin/plugin.json",
+        &manifest_with_engines("anthology", ">=2.1.330"),
+    );
+    r.commit("require claude-code 2.1.330");
+    Some(r)
+}
+
+fn output_text(out: &Output) -> String {
+    format!("{}{}", text(&out.stdout), text(&out.stderr))
+}
+
+#[test]
+fn an_older_claude_than_the_engines_requirement_stops_the_release_before_any_edit() {
+    let Some(r) = repo_with_engines() else { return };
+    let before = r.state();
+    for args in [
+        &["anthology", "0.2.0"][..],
+        &["anthology", "0.2.0", "--dry-run"][..],
+    ] {
+        let out = r.release_with_claude("2.1.329", args);
+        let all = output_text(&out);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {all}");
+        assert!(
+            all.contains("release: plugin anthology needs claude-code >=2.1.330, but"),
+            "{args:?}: {all}"
+        );
+        assert!(all.contains("2.1.329"), "{args:?}: {all}");
+        assert!(all.contains("CLAUDE_BIN"), "{args:?}: {all}");
+        assert_eq!(r.state(), before, "{args:?}");
+    }
+    // Refused before the lock check, the edits, the commit, the push and the tag.
+    assert!(r.dev_calls().is_empty(), "{:?}", r.dev_calls());
+    let claude_log = std::fs::read_to_string(r.base.join("claude.log")).unwrap_or_default();
+    assert!(claude_log.is_empty(), "{claude_log}");
+}
+
+#[test]
+fn a_claude_equal_to_the_engines_requirement_lets_the_release_through() {
+    let Some(r) = repo_with_engines() else { return };
+    let out = r.release_with_claude("2.1.330", &["anthology", "0.2.0"]);
+    assert_eq!(out.status.code(), Some(0), "{}", output_text(&out));
+    assert!(r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+}
+
+#[test]
+fn a_claude_newer_than_the_engines_requirement_lets_the_release_through() {
+    let Some(r) = repo_with_engines() else { return };
+    let out = r.release_with_claude("2.2.0", &["anthology", "0.2.0"]);
+    assert_eq!(out.status.code(), Some(0), "{}", output_text(&out));
+    assert!(r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+}
+
+#[test]
+fn claude_versions_are_compared_by_number_not_by_text() {
+    let Some(r) = repo_with_engines() else { return };
+    let before = r.state();
+    // (reported version, accepted); `>=2.1.330` is the requirement. "2.1.99" is text-greater
+    // than "2.1.330" and "10.0.0" text-smaller than "2.1.330": both would pass a text compare.
+    for (version, accepted) in [
+        ("2.1.99", false),
+        ("2.0.1000", false),
+        ("1.99.999", false),
+        ("2.1.329-beta.1", false),
+        ("2.1.330", true),
+        ("2.1.330-beta.1", true),
+        ("2.1.1000", true),
+        ("2.10.0", true),
+        ("10.0.0", true),
+    ] {
+        let out = r.release_with_claude(version, &["anthology", "0.2.0", "--dry-run"]);
+        let all = output_text(&out);
+        let want = if accepted { 0 } else { 1 };
+        assert_eq!(out.status.code(), Some(want), "claude {version}: {all}");
+        assert_eq!(r.state(), before, "claude {version}");
+    }
+}
+
+#[test]
+fn a_plugin_without_engines_skips_the_claude_check() {
+    let Some(r) = repo() else { return };
+    // The manifest has no `engines`: even a very old claude is let through.
+    let out = r.release_with_claude("0.0.1", &["anthology", "0.2.0"]);
+    assert_eq!(out.status.code(), Some(0), "{}", output_text(&out));
+    assert!(r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+}
+
+#[test]
+fn a_claude_that_reports_no_version_is_refused_when_the_plugin_has_engines() {
+    let Some(r) = repo_with_engines() else { return };
+    let before = r.state();
+    let out = r.release_with_claude("unknown", &["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("cannot read the version of"), "{all}");
+    assert!(all.contains("CLAUDE_BIN"), "{all}");
     assert_eq!(r.state(), before);
 }

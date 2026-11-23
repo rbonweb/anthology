@@ -9,10 +9,13 @@ use regex::{Regex, bytes};
 use repo_tests::repo;
 
 /// Directories the walk fallback never enters (not repo content). It covers every directory
-/// pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`):
-/// git never lists them, so the walk must not either. `target` is the cargo build directory
-/// (`/target` in .gitignore); the Python list had no such directory.
-const PRUNED: [&str; 9] = [
+/// pattern in .gitignore (`.claude/worktrees`, `.vendor-cache`, `__pycache__`, `evals/results`,
+/// `plugins/*/.claude-plugin/types`): git never lists them, so the walk must not either.
+/// `target` is the cargo build directory (`/target` in .gitignore); the Python list had no such
+/// directory. The `plugins/*/.claude-plugin/types` row is the gitignore text itself (the mods'
+/// generated declarations, never committed); the walk matches names and exact paths only, so it
+/// does not prune them, but the declarations are never in a checkout the walk reads.
+const PRUNED: [&str; 10] = [
     ".git",
     ".claude/worktrees",
     ".superpowers",
@@ -22,11 +25,12 @@ const PRUNED: [&str; 9] = [
     "evals/results",
     "port/replay",
     "target",
+    "plugins/*/.claude-plugin/types",
 ];
 
-/// The home-path check skips the upstream rtk tree and the generated vendored trees.
+/// The home-path check skips the atl tree (a fork of rtk) and the generated vendored trees.
 const HOME_PATH_SKIPS: [&str; 4] = [
-    "rtk/",
+    "atl/",
     "plugins/anthology-superpowers/",
     "plugins/anthology/knowledge/",
     "vendor/snapshots/",
@@ -266,7 +270,7 @@ mod security_doc_test {
 
     #[test]
     fn test_names_the_rtk_allow() {
-        assert!(text().contains("Bash(rtk *)"));
+        assert!(text().contains("Bash(atl *)"));
     }
 
     #[test]
@@ -309,7 +313,7 @@ mod contributing_doc_test {
     fn test_links_the_maintainer_tools() {
         let cleaned: Vec<String> = targets().iter().map(|t| clean(t)).collect();
         let mut failures = Vec::new();
-        for want in ["scripts/sync-rtk.sh", "scripts/release.sh"] {
+        for want in ["scripts/sync-atl.sh", "scripts/release.sh"] {
             if !cleaned.iter().any(|c| c == want) {
                 failures.push(format!("{want} is not linked from CONTRIBUTING.md"));
             }
@@ -356,7 +360,7 @@ mod readme_test {
             text.to_lowercase()
                 .contains("repo memory is visible to everyone who can see the repo")
         );
-        assert!(text.contains("Bash(rtk *)"));
+        assert!(text.contains("Bash(atl *)"));
     }
 
     /// One row per public document.

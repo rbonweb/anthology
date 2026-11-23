@@ -36,31 +36,34 @@ fn runs_no_python(rel: &str, text: &str) {
 /// test_evals_layout `test_moved_cases_are_smokes_not_cases`: the Rust smoke runner (not
 /// smoke.py) registers the two smokes that moved out of the eval cases.
 #[test]
-fn the_smoke_runner_registers_rtk_rewrite_and_agent_memory_path() {
+fn the_smoke_runner_registers_rtk_rewrite_and_agent_memory_path(/* legacy */) {
+    // legacy: port/ledger names this test
     let names = anthology_dev::smoke::names();
-    for want in ["rtk-rewrite", "agent-memory-path"] {
+    for want in ["atl-rewrite", "agent-memory-path"] {
         assert!(names.contains(&want), "{want} in {names:?}");
     }
 }
 
-/// test_rtk_layout `test_records_the_merged_upstream_pin`: sync-rtk.sh records the new pin with
-/// `scripts/dev.sh vendor set-rtk-upstream` and embeds no python3.
+/// test_rtk_layout `test_records_the_merged_upstream_pin`: sync-atl.sh records the new pin with
+/// `scripts/dev.sh vendor set-atl-upstream` and embeds no python3.
 #[test]
-fn sync_rtk_records_the_pin_through_dev_sh() {
-    let rel = "scripts/sync-rtk.sh";
+fn sync_rtk_records_the_pin_through_dev_sh(/* legacy */) {
+    // legacy: port/ledger names this test
+    let rel = "scripts/sync-atl.sh";
     let text = staged(rel);
     assert!(
-        text.contains("scripts/dev.sh vendor set-rtk-upstream --ref \"$tag\" --commit"),
+        text.contains("scripts/dev.sh vendor set-atl-upstream --ref \"$tag\" --commit"),
         "{rel}"
     );
     runs_no_python(rel, &text);
 }
 
 /// test_rtk_claude_only `test_trim_entry_is_executable_strict_and_runs_the_python_trim`: the trim
-/// runs as `scripts/dev.sh rtk-trim`; after the cutover `scripts/rtk_trim.py` is gone.
+/// runs as `scripts/dev.sh atl-trim`; after the cutover `scripts/atl_trim.py` is gone.
 #[test]
-fn rtk_trim_runs_the_trim_through_dev_sh() {
-    let rel = "scripts/rtk-trim.sh";
+fn rtk_trim_runs_the_trim_through_dev_sh(/* legacy */) {
+    // legacy: port/ledger names this test
+    let rel = "scripts/atl-trim.sh";
     let text = staged(rel);
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(anthology_testkit::staged(rel))
@@ -70,12 +73,12 @@ fn rtk_trim_runs_the_trim_through_dev_sh() {
     assert!(mode & 0o111 != 0, "{rel} is executable");
     assert!(code_lines(&text).contains(&"set -eu"), "{rel}: set -eu");
     assert!(
-        text.contains("\"$root/scripts/dev.sh\" rtk-trim --root rtk"),
+        text.contains("\"$root/scripts/dev.sh\" atl-trim --root atl"),
         "{rel}"
     );
     runs_no_python(rel, &text);
     if cut_over() {
-        assert!(!repo::path("scripts/rtk_trim.py").exists());
+        assert!(!repo::path("scripts/atl_trim.py").exists());
     }
 }
 
@@ -92,6 +95,7 @@ fn after_the_cutover_ci_images_holds_no_python_image() {
         "alpine",
         "debian-slim",
         "gitleaks",
+        "node",
         "rust",
         "shellcheck",
         "ubuntu",
