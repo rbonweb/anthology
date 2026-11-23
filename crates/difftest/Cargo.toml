@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 anthology-pycompat.workspace = true
-anthology-core.workspace = true
+anthology-core = { workspace = true, features = ["test-clock"] }
 anthology-shell.workspace = true
 anthology-guard.workspace = true
 anthology-settings.workspace = true
