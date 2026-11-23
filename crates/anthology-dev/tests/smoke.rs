@@ -1870,7 +1870,8 @@ mod framework_extra {
     /// A file that is still open for writing cannot be executed (`ETXTBSY`). In a threaded test
     /// binary another thread's fork inherits a just-closed write fd until its own exec, so
     /// running a freshly written stub can hit this for a moment. Holding the fd here makes the
-    /// window deterministic.
+    /// window deterministic. Linux only: macOS runs a file that is open for writing.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_stub_busy_for_a_moment_is_run_not_reported_as_empty_output() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1890,6 +1891,7 @@ mod framework_extra {
         assert_eq!((p.code, p.out.as_str()), (0, "ok\n"), "{}", p.err);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_stub_that_stays_busy_is_an_error_not_empty_output() {
         let dir = tempfile::tempdir().expect("temp dir");
