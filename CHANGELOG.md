@@ -500,6 +500,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.9] - 2026-11-23
+
 #### Changed
 
 - pin anthology-bin 0.2.1.
