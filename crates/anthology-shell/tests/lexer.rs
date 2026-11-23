@@ -257,6 +257,31 @@ fn script_starts_and_program_names() {
     assert!(SHELLS.contains(&"fish"));
 }
 
+#[test]
+fn script_starts_keeps_reading_every_c_word_as_a_script_start() {
+    // `script_starts` is the frozen golden surface and the lenient lexer reads it: the docker exec psql
+    // exemption lives in the docker call site only, so a psql `-c` is still a script start here
+    let words = args(&[
+        "docker",
+        "exec",
+        "c",
+        "psql",
+        "-c",
+        "select count(*) from t",
+    ]);
+    assert_eq!(
+        script_starts(&words),
+        [(5, "select count(*) from t".to_string())]
+    );
+    let words = args(&[
+        "docker", "exec", "c", "psql", "-Atc", "select 1", "-c", "\\! x",
+    ]);
+    assert_eq!(
+        script_starts(&words),
+        [(5, "select 1".to_string()), (7, "\\! x".to_string())]
+    );
+}
+
 /// A catastrophe guard: a bound below 8 s is raised to it, because a slow runner is not a regression.
 fn assert_quick(what: &str, bound: Duration, f: impl FnOnce()) {
     let bound = bound.max(Duration::from_secs(8));

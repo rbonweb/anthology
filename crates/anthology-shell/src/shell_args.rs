@@ -342,49 +342,88 @@ fn is_shell_c_flag(word: &str) -> bool {
     }
 }
 
-/// Programs whose `-c` option takes data, not a shell script (`psql -c "select count(*) from t"`). An
-/// allowlist: only a name listed here is read as data, every other program keeps the fail-closed reading.
-const DATA_C_PROGRAMS: &[&str] = &["psql"];
-
-/// Programs that run a `-c` word through a shell, or run another program that may: a data program listed
-/// before one of them no longer owns a later `-c` (`psql su -c ...` stays a shell reading).
-const SHELL_RUNNERS: &[&str] = &[
-    "su", "runuser", "sudo", "doas", "script", "sg", "newgrp", "flock", "env", "xargs", "time",
-    "nice", "nohup", "timeout", "watch", "setsid", "exec", "command", "busybox", "docker", "ssh",
+/// `docker exec` options that take the next word as their value.
+const EXEC_VALUE_FLAGS: &[&str] = &[
+    "-e",
+    "--env",
+    "--env-file",
+    "-u",
+    "--user",
+    "-w",
+    "--workdir",
+    "--detach-keys",
 ];
+
+/// `docker exec` options that take no value.
+const EXEC_BOOL_FLAGS: &[&str] = &[
+    "-i",
+    "-t",
+    "-d",
+    "-it",
+    "--privileged",
+    "--interactive",
+    "--tty",
+    "--detach",
+];
+
+/// The index of the program word of `docker exec [options] CONTAINER PROGRAM ...`
+/// (`docker compose exec` and `docker-compose exec` too) when it is exactly `psql`, else `None`. The options
+/// are read from the lists above; an option not in them, or any other docker command (`docker run`), is
+/// `None`: nothing is known about where the program is, so the caller keeps the fail-closed reading.
+fn docker_exec_psql(prog: &str, args: &[String]) -> Option<usize> {
+    let mut i = match (prog, args.first().map(String::as_str)) {
+        ("docker", Some("exec")) | ("docker-compose", Some("exec")) => 1,
+        ("docker", Some("compose")) if args.get(1).map(String::as_str) == Some("exec") => 2,
+        _ => return None,
+    };
+    while let Some(word) = args.get(i).filter(|w| w.starts_with('-')) {
+        i += if EXEC_VALUE_FLAGS.contains(&word.as_str()) {
+            2
+        } else if EXEC_BOOL_FLAGS.contains(&word.as_str()) {
+            1
+        } else {
+            return None;
+        };
+    }
+    // `args[i]` is the container or service; the word after it is the program, `psql` and nothing else
+    // (not `PSQL`, not `/usr/bin/psql`: those keep the shell reading)
+    (args.get(i + 1).map(String::as_str) == Some("psql")).then_some(i + 1)
+}
 
 /// `_script_starts` within a budget (each start found costs one unit too): `None` when it ran out.
 pub(crate) fn script_starts_in(
     words: &[String],
     budget: &mut Budget,
 ) -> Option<Vec<(usize, String)>> {
-    script_starts_with(words, budget, false)
+    script_starts_with(words, budget, None)
 }
 
-/// `_script_starts` for the words of a command run through docker, where `psql -c` takes SQL: the same
-/// starts, less a `-c` flag word that a data program (`DATA_C_PROGRAMS`) owns. The script of a shell word
-/// (`sh -c`) is never dropped.
+/// `_script_starts` for the arguments of the docker command `prog`. For `docker exec CONTAINER psql ...` the
+/// `-c` and `-Atc` words of that psql are not script starts when their value holds no backslash: `psql -c`
+/// takes SQL and `docker exec` runs it with no shell, but a backslash command (`\!`, `\o |`) starts one. Every
+/// other command reads as `script_starts_in`, which is also what the lenient lexer uses.
 pub(crate) fn docker_script_starts_in(
+    prog: &str,
     words: &[String],
     budget: &mut Budget,
 ) -> Option<Vec<(usize, String)>> {
-    script_starts_with(words, budget, true)
+    script_starts_with(words, budget, docker_exec_psql(prog, words))
 }
 
 fn script_starts_with(
     words: &[String],
     budget: &mut Budget,
-    data_programs: bool,
+    psql_at: Option<usize>,
 ) -> Option<Vec<(usize, String)>> {
     let mut starts = Vec::new();
-    // the last program word read is a data program: its `-c` words are its own options (one pass, linear)
-    let mut data_owner = false;
+    // set from the psql word on, and cleared by a shell word: the `-c` words read there are psql's own
+    let mut psql = false;
     let (mut k, n) = (0, words.len());
     while k + 1 < n {
         let word = &words[k];
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
-            data_owner = false;
+            psql = false;
             let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
             let cost = parsed.scripts.iter().map(|(_, s)| WORD + s.len()).sum();
             if !budget.spend(cost) {
@@ -394,12 +433,10 @@ fn script_starts_with(
             k = parsed.start.max(k + 1);
             continue;
         }
-        if DATA_C_PROGRAMS.contains(&prog.as_str()) {
-            data_owner = data_programs;
-        } else if SHELL_RUNNERS.contains(&prog.as_str()) {
-            data_owner = false;
+        if psql_at == Some(k) {
+            psql = true;
         }
-        if is_shell_c_flag(word) && !data_owner {
+        if is_shell_c_flag(word) && !(psql && !words[k + 1].contains('\\')) {
             if !budget.spend(WORD + words[k + 1].len()) {
                 return None;
             }

@@ -54,11 +54,16 @@ a new version section.
   disabled or missing is still named in that case.
 - The guard no longer blocks `docker exec db psql -c "select count(*) from t"` as too complex to
   check. Inside a docker command every `-c` word was read as a shell option and the next word
-  was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` takes SQL,
-  and `docker exec` runs its arguments without a shell, so the quoted SQL is now data. Only
-  `psql` is listed: `sh -c`, `bash -c` and every other program that takes `-c` (`su`, `script`,
-  `grep`, `python`) keep the old reading, a runner after `psql` ends the exemption, and a
-  command substitution in the argument is still seen. Guard binary 0.1.6.
+  was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain
+  SQL runs no shell, and `docker exec` runs its arguments without a shell, so that SQL is now
+  data. This holds only for `docker exec`, `docker compose exec` and `docker-compose exec`, when
+  the word after the container is exactly `psql` (not `PSQL`, not a path), the options before the
+  container are all ones the guard knows (`-e`, `--env`, `--env-file`, `-u`, `--user`, `-w`,
+  `--workdir`, `--detach-keys`, `-i`, `-t`, `-d`, `-it`, `--privileged`, `--interactive`, `--tty`,
+  `--detach`), and the `-c` value holds no backslash: `\!` and `\o |` make psql start a shell, so
+  those values keep the shell reading. `sh -c`, `bash -c`, `docker run` and every other program
+  that takes `-c` (`su`, `script`, `grep`, `python`) keep the old reading, and a command
+  substitution in the argument is still seen. Guard binary 0.2.1.
 
 ### [0.2.9] - 2026-11-22
 

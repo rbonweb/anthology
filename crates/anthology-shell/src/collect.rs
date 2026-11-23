@@ -2836,7 +2836,7 @@ impl<'a> Ctx<'a> {
         }
         if DOCKER.contains(&prog.as_str()) {
             // `docker run img sh -euc "..."`; not the SQL of `docker exec db psql -c "select count(*) ..."`
-            let Some(starts) = docker_script_starts_in(&args, &mut self.work.extra) else {
+            let Some(starts) = docker_script_starts_in(&prog, &args, &mut self.work.extra) else {
                 self.halt();
                 return None;
             };
