@@ -10,6 +10,7 @@ pub mod guard;
 pub mod hook;
 pub mod mem;
 pub mod memory;
+pub mod perm;
 pub mod rtk_install;
 pub mod setup;
 
@@ -64,6 +65,7 @@ commands:
   rtk-install
   mem search|related|orphans|stale|rebuild|save
   memory export|import
+  perm classify
   --version
 ";
 
@@ -98,6 +100,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("rtk-install") => rtk_install::run(rest, stdin),
         Some("mem") => mem::run(rest, stdin),
         Some("memory") => memory::run(rest, stdin),
+        Some("perm") => perm::run(rest, stdin),
         _ => Output::usage(&format!("unknown command: {}", first.to_string_lossy())),
     }
 }

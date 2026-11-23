@@ -1,2 +1,4 @@
 * text=auto eol=lf
 vendor/snapshots/** -text
+.claude/memory/MEMORY.md merge=union
+.claude/agent-memory/*/MEMORY.md merge=union
