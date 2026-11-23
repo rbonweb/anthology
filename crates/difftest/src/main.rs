@@ -324,6 +324,8 @@ fn run(args: &Args) -> Result<bool, String> {
         div_dir.display()
     );
     let freeze = args.mode == Mode::Freeze;
+    // The oracle runs on the real clock, so a golden holds this day (`golden::Header::today`).
+    let today = anthology_core::clock::today_local().iso();
     let mut oracle = Oracle::python(&args.python, &root);
     let mut reports: Vec<Report> = Vec::new();
     let mut unfrozen = 0;
@@ -344,6 +346,7 @@ fn run(args: &Args) -> Result<bool, String> {
                     seed: args.seed,
                     generated: args.count,
                     sample: args.sample,
+                    today: Some(today.clone()),
                 };
                 golden::write(&path, &header, &r.frozen)?;
                 println!(
@@ -406,7 +409,8 @@ fn run_golden(args: &Args) -> Result<bool, String> {
                 golden::resolve(s.as_ref(), &header, &mut cases)?;
                 golden::check_shape(s.as_ref(), &header, &cases, args.golden.is_none())?;
                 let div = Divergences::load(&div_dir, s.name())?;
-                work.push((s, path, header, cases, div));
+                let day = golden::pin_day(&header)?;
+                work.push((s, path, header, day, cases, div));
             }
             None if !args.all => {
                 return Err(format!("{}: no golden at {}", s.name(), path.display()));
@@ -426,7 +430,9 @@ fn run_golden(args: &Args) -> Result<bool, String> {
         }
     );
     let mut reports: Vec<Report> = Vec::new();
-    for (s, path, header, mut cases, mut div) in work {
+    for (s, path, header, day, mut cases, mut div) in work {
+        // The golden holds the oracle's answers of its freeze day: Rust replays on that day.
+        anthology_core::clock::pin_today(Some(day));
         let inject = args.inject.as_deref() == Some(s.name());
         let mut r = run_frozen(s.as_ref(), &cases, &mut div, inject);
         if bless && !r.blessable.is_empty() {
@@ -436,6 +442,11 @@ fn run_golden(args: &Args) -> Result<bool, String> {
                 cases[i].marks.clear();
                 cases[i].rust = None;
             }
+            // The rewritten file names the day its answers belong to.
+            let header = golden::Header {
+                today: Some(day.iso()),
+                ..header
+            };
             golden::write(&path, &header, &cases)?;
             println!(
                 "bless: {}: recorded Rust's result for {n} case(s) in {}",
