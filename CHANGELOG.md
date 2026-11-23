@@ -113,6 +113,13 @@ a new version section.
 
 #### Fixed
 
+- The 10 s limit on `git` (memory sync and session start) now also covers starting git. On
+  macOS, when two threads of one process started a program at the same moment, one could
+  inherit the other's pipes and the first `git` start then waited for that program to end,
+  with no limit (the `a_hung_git_is_killed_at_the_timeout` test saw a 30 s wait on a CI
+  runner). Starts now take turns, and a start that is still stuck at the deadline is
+  abandoned: the call returns no result at the limit. Normal git calls are unchanged. The
+  `anthology` binary is 0.2.1.
 - Session start no longer says the guardrails are "failing closed" when they are not. The guard
   self-test runs the guard shim with fetching switched off, so a binary that was not yet in
   place when the shim looked (a parallel session was still installing it, or this hook had
