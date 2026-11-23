@@ -449,6 +449,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.8] - 2026-11-23
+
 #### Changed
 
 - The guard reads `atl`, the new name of the command-output tool (ATL, Anthology Token Layer),
