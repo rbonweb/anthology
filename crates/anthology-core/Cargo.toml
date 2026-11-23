@@ -13,6 +13,8 @@ workspace = true
 [features]
 # Exposes `fsx::fault` outside this crate's own tests (plan §3.3).
 test-faults = []
+# Exposes `clock::pin_today`, which the difftest golden replay uses (never in a shipped binary).
+test-clock = []
 
 [dependencies]
 anthology-pycompat.workspace = true
