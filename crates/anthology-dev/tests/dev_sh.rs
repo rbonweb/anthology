@@ -123,17 +123,17 @@ fn stdout_is_only_the_tools_output_and_the_exit_status_passes_through() {
     );
 }
 
-/// The sync-rtk.sh contract: `old_pin=$(scripts/dev.sh vendor set-rtk-upstream …)` is exactly
-/// `<old ref> <old commit>`. Until DV1's `set-rtk-upstream` lands the command exits 70 (not
+/// The sync-atl.sh contract: `old_pin=$(scripts/dev.sh vendor set-atl-upstream …)` is exactly
+/// `<old ref> <old commit>`. Until DV1's `set-atl-upstream` lands the command exits 70 (not
 /// ported), and the test checks only that dev.sh passes that through with a clean stdout.
 #[test]
-fn set_rtk_upstream_stdout_is_exactly_the_old_pin() {
+fn set_atl_upstream_stdout_is_exactly_the_old_pin() {
     let fixture = tempfile::tempdir().expect("tempdir");
     fs::create_dir(fixture.path().join("vendor")).expect("mkdir");
     let sources = fs::read_to_string(repo().join("vendor/sources.json")).expect("sources.json");
     fs::write(fixture.path().join("vendor/sources.json"), &sources).expect("copy");
     let data = anthology_pycompat::json::loads(&sources).expect("json");
-    let rtk = data
+    let atl = data
         .as_object()
         .and_then(|m| m.get("sources"))
         .and_then(|s| s.as_array())
@@ -142,20 +142,20 @@ fn set_rtk_upstream_stdout_is_exactly_the_old_pin() {
                 e.as_object()
                     .and_then(|o| o.get("name"))
                     .and_then(|n| n.as_str())
-                    == Some("rtk")
+                    == Some("atl")
             })
         })
         .and_then(|e| e.as_object())
         .and_then(|e| e.get("upstream"))
         .and_then(|u| u.as_object())
-        .expect("the rtk entry");
-    let field = |k: &str| rtk.get(k).and_then(|v| v.as_str()).expect(k).to_string();
+        .expect("the atl entry");
+    let field = |k: &str| atl.get(k).and_then(|v| v.as_str()).expect(k).to_string();
     let old_pin = format!("{} {}\n", field("ref"), field("commit"));
 
     let out = dev_sh(
         &[
             "vendor",
-            "set-rtk-upstream",
+            "set-atl-upstream",
             "--ref",
             "v9.9.9",
             "--commit",

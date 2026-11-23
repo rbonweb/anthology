@@ -1,6 +1,6 @@
 name: upstream-watch
 
-# Weekly: compare every vendored pin, the rtk upstream and the latest Claude Code release with
+# Weekly: compare every vendored pin, atl's upstream (rtk-ai/rtk) and the latest Claude Code release with
 # upstream, and keep one issue per change (anthology-dev upstream-watch). Nothing is merged here;
 # the issue names the command to run on a branch, and CI plus the evals are the gate.
 on:

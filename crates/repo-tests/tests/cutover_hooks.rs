@@ -104,7 +104,7 @@ fn every_hooks_json_is_pretty_printed() {
 
 /// test_guard_cli `test_hooks_json_is_the_exec_form_pretooluse_hook` and
 /// `test_hooks_json_points_at_an_existing_script`, test_session_start
-/// `test_hooks_json_has_the_session_start_entry_and_the_rtk_pretooluse_entry`: every hook is the
+/// `test_hooks_json_has_the_session_start_entry_and_the_atl_pretooluse_entry`: every hook is the
 /// exec form `sh <script under the plugin root>`, the script ships, and a PreToolUse hook blocks
 /// when it fails. The exact entries are BS1's `statics.rs`.
 #[test]

@@ -82,15 +82,101 @@ fn docker_shells_are_exempt_and_find_exec_runs() {
 }
 
 #[test]
-fn rtk_forms_and_eval() {
+fn atl_forms_and_eval() {
     let a = analyze(
-        "rtk run -c 'npx x' ; rtk err 'npx y'; rtk proxy -- git push",
+        "atl run -c 'npx x' ; atl err 'npx y'; atl proxy -- git push",
         HOME,
     );
     assert_eq!(progs(&a), ["sh", "x", "sh", "y", "git"]);
     assert_eq!(a.entries[2].args, strings(&["-c", "npx y"]));
     let a = analyze("eval 'npx x'; source ./env.sh", "");
     assert_eq!(progs(&a), ["eval", "x", "source"]);
+}
+
+#[test]
+fn legacy_rtk_forms_and_eval() {
+    let a = analyze(
+        "rtk run -c 'npx x' ; rtk err 'npx y'; rtk proxy -- git push", // legacy
+        HOME,
+    );
+    assert_eq!(progs(&a), ["sh", "x", "sh", "y", "git"]);
+    assert_eq!(a.entries[2].args, strings(&["-c", "npx y"]));
+}
+
+/// A command with the legacy name of the token layer where `atl` stands.
+fn legacy(command: &str) -> String {
+    command.replace("atl", "rtk") // legacy
+}
+
+/// Every form the shell knows `atl` by, as a command: the guard must read the legacy name the same way, so a
+/// leftover or upstream `rtk` (legacy) cannot hide a command.
+const TOKEN_LAYER_FORMS: &[&str] = &[
+    "atl",
+    "atl -v git status",
+    "atl -vv --skip-env npm test",
+    "atl --frob x npx playwright install",
+    "atl git status",
+    "atl npx playwright install",
+    "atl -u npx playwright install",
+    "atl run -c 'npx playwright install'",
+    "atl run -vc 'npx playwright install'",
+    "atl run --command 'npx playwright install' --shell bash",
+    "atl run --command='npx playwright install'",
+    "atl run --shell=zsh -c 'npx playwright install'",
+    "atl run -c; atl run --command",
+    "atl err 'npx playwright install'",
+    "atl err --shell bash cargo test",
+    "atl test --shell zsh npx playwright install",
+    "atl summary --shell=fish npx playwright install",
+    "atl proxy npx playwright install",
+    "atl proxy -- git push",
+    "atl proxy --frob x npx playwright install",
+    "atl proxy --skip-env ls",
+    "atl bypass -- npx playwright install",
+    "atl bypass",
+    "sudo env X=3 atl npx playwright install",
+    "FOO=1 atl proxy npx playwright install",
+    "atl proxy atl proxy npx playwright install",
+    "cd ~/x && atl run -c 'cat .config/chromium/Cookies'",
+    "echo $(atl proxy npx playwright install)",
+    "command atl proxy npx playwright install",
+    "/usr/local/bin/atl proxy npx playwright install",
+];
+
+#[test]
+fn legacy_rtk_is_read_exactly_as_atl_is() {
+    for command in TOKEN_LAYER_FORMS {
+        let old = legacy(command);
+        let new = format!("{:?}", analyze(command, HOME));
+        assert_eq!(
+            new.replace("atl", "rtk"), // legacy
+            format!("{:?}", analyze(&old, HOME)),
+            "{command:?} and {old:?} are read differently"
+        );
+    }
+}
+
+#[test]
+fn atl_runners_and_passthroughs_are_unwrapped() {
+    for (command, want) in [
+        ("atl run -c 'npx x'", vec!["sh", "x"]),
+        ("atl err npx x", vec!["x"]),
+        ("atl proxy -- git push", vec!["git"]),
+        ("atl bypass git push", vec!["git"]),
+        ("atl git status", vec!["git"]),
+        ("sudo atl proxy rm x", vec!["rm"]),
+    ] {
+        assert_eq!(progs(&analyze(command, HOME)), want, "{command}");
+    }
+    assert_eq!(anthology_shell::ATL_PASSTHROUGH, ["bypass", "proxy"]);
+    assert_eq!(
+        anthology_shell::ATL_RUNNERS,
+        ["run", "err", "test", "summary"]
+    );
+    assert_eq!(
+        anthology_shell::TOKEN_LAYER_NAMES,
+        ["atl", "rtk"] // legacy
+    );
 }
 
 #[test]
@@ -284,12 +370,15 @@ fn clear(command: &str) -> bool {
 fn opaque_marks_the_forms_python_misreads() {
     // Each runs `npx playwright install` where the analysis may misread or not parse it (fix-wave I reads
     // many of them now, and `npx --registry X` is a known value option); the entry is still marked so
-    // rtk's gate asks.
+    // atl's gate asks.
     let unknown = [
         "uv --color always run playwright install",
-        "rtk --frob x npx playwright install",
-        "rtk proxy --frob x npx playwright install",
-        "rtk err --frob x npx playwright install",
+        "atl --frob x npx playwright install",
+        "atl proxy --frob x npx playwright install",
+        "atl err --frob x npx playwright install",
+        "rtk --frob x npx playwright install",       // legacy
+        "rtk proxy --frob x npx playwright install", // legacy
+        "rtk err --frob x npx playwright install",   // legacy
         "unshare -r npx playwright install",
         "ssh host npx playwright install",
         // review round 2
@@ -422,7 +511,7 @@ fn only_exactly_listed_command_values_are_exempt() {
 
 #[test]
 fn common_forms_stay_clear() {
-    // rtk asks on any reason: the everyday forms must not get one
+    // atl asks on any reason: the everyday forms must not get one
     for command in [
         "npx -y playwright install",
         "npx --yes create-next-app@latest app",
@@ -432,11 +521,16 @@ fn common_forms_stay_clear() {
         "yarn workspace web build",
         "uv run --frozen pytest",
         "uvx --from ruff ruff check",
-        "rtk -v git status",
-        "rtk -vv --skip-env npm test",
-        "rtk proxy --skip-env ls",
-        "rtk run -c 'ls -la'",
-        "rtk err --shell bash cargo test",
+        "atl -v git status",
+        "atl -vv --skip-env npm test",
+        "atl proxy --skip-env ls",
+        "atl run -c 'ls -la'",
+        "atl err --shell bash cargo test",
+        "rtk -v git status",               // legacy
+        "rtk -vv --skip-env npm test",     // legacy
+        "rtk proxy --skip-env ls",         // legacy
+        "rtk run -c 'ls -la'",             // legacy
+        "rtk err --shell bash cargo test", // legacy
         "sudo --user=root ls",
         "env -S 'ls -la'",
         "env -u X -S 'ls -la'",
@@ -696,7 +790,8 @@ fn simple_only(wrapper: &str) -> bool {
         "xargs {}",
         "command {}",
         "FOO=1 {}",
-        "rtk proxy {}",
+        "atl proxy {}",
+        "rtk proxy {}", // legacy
         "find . -exec {} \\;",
     ];
     SIMPLE.contains(&wrapper)
@@ -724,8 +819,10 @@ const WRAPPERS: &[&str] = &[
     "cat <<EOF | sh\n{}\nEOF",
     "sh <<< '{}'",
     "echo '{}' | bash",
-    "rtk run -c '{}'",
-    "rtk proxy {}",
+    "atl run -c '{}'",
+    "atl proxy {}",
+    "rtk run -c '{}'", // legacy
+    "rtk proxy {}",    // legacy
     "docker run img sh -c '{}'",
     "find . -exec {} \\;",
     "eval '{}'",
@@ -775,7 +872,7 @@ proptest! {
 
     /// With arguments that collide with wrapper and shell options (`-S`, `-c`, `-u`, `--`, ...), Python's
     /// analysis can lose a wrapped command (`env A=1 ls -S x` reads `x` as env's script; FW-I fixes it), so
-    /// the claim is weaker: a wrapped command is still an entry, or some entry is marked opaque, so rtk's
+    /// the claim is weaker: a wrapped command is still an entry, or some entry is marked opaque, so atl's
     /// gate asks.
     #[test]
     fn wrapping_never_hides_silently(
@@ -819,7 +916,8 @@ proptest! {
         parts in prop::collection::vec(
             prop::sample::select(vec![
                 "sudo ", "env -S ", "npx ", "-c ", "'", "\"", "$(", ")", "`", "| sh", "<<EOF\n", "EOF\n",
-                "find . -exec ", ";", "\\;", "cd ", "~", "$HOME", "fish ", "--comm=", "rtk run ", "docker run i ",
+                "find . -exec ", ";", "\\;", "cd ", "~", "$HOME", "fish ", "--comm=", "atl run ", "rtk run ", // legacy
+                "docker run i ",
                 "eval ", "python3 -m ", "yarn workspace ", "\n", " ", "x", "\u{3a3}", "\u{e9}",
             ]),
             0..40,

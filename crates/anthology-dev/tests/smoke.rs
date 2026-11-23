@@ -31,7 +31,7 @@ const NAMES: [&str; 12] = [
     "knowledge-read-writers",
     "auto-memory-dir",
     "writer-memory-commit",
-    "rtk-rewrite",
+    "atl-rewrite",
     "agent-memory-path",
 ];
 /// The smokes EV1b adds after `guard-timeout`.
@@ -52,7 +52,7 @@ const MODEL_SMOKES: [&str; 10] = [
     "knowledge-read-writers",
     "auto-memory-dir",
     "writer-memory-commit",
-    "rtk-rewrite",
+    "atl-rewrite",
     "agent-memory-path",
 ];
 
@@ -812,23 +812,23 @@ mod helper_tests {
         let clean = "On branch main\n* No commits yet on main\nclean \u{2014} nothing to commit"
             .to_string();
         let g1 = "anthology-guardrails (G1): playwright";
-        assert!(rtk_problems(&[clean.clone(), "blocked".to_string()], g1).is_empty());
+        assert!(atl_problems(&[clean.clone(), "blocked".to_string()], g1).is_empty());
         // In a tool result.
         assert!(
-            rtk_problems(
+            atl_problems(
                 &[clean.clone(), "anthology-guardrails (G1)".to_string()],
                 ""
             )
             .is_empty()
         );
         assert_eq!(
-            rtk_problems(&["Clean working tree".to_string()], "x (G1)"),
+            atl_problems(&["Clean working tree".to_string()], "x (G1)"),
             [
                 "no hook event or tool result shows 'anthology-guardrails (G1)' (the guard did not fire on the playwright command)"
             ]
         );
         let raw = "nothing to commit (create/copy files and use \"git add\" to track)".to_string();
-        let problems = rtk_problems(&[raw], "");
+        let problems = atl_problems(&[raw], "");
         assert_eq!(problems.len(), 3);
         assert!(problems[0].contains("condensed"));
         assert!(problems[1].contains("raw git"));
@@ -1061,6 +1061,59 @@ mod smoke_body_tests {
         assert!(calls[0].flags.iter().any(|f| f == "bypassPermissions"));
     }
 
+    /// Every model run of a smoke must carry exactly the unscrubbed environment.
+    fn assert_all_unscrubbed(calls: &Calls, want_runs: usize) {
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), want_runs, "model runs");
+        for (i, c) in calls.iter().enumerate() {
+            assert_eq!(c.extra_env, Some(no_scrub()), "model run {i}");
+        }
+    }
+
+    /// On Linux, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` makes Claude Code run its subprocesses in
+    /// bubblewrap. It then cannot create an agent worktree ("Failed to resolve base branch ...")
+    /// and a Bash call cannot create `.claude/` in the repo. The four smokes that need either must
+    /// run with the scrub off, as `writer-memory-commit` does.
+    #[test]
+    fn test_worktree_base_runs_both_sessions_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        // Only `clone` has to leave something behind: the smoke writes into the clone.
+        deps.git = Box::new(|_ctx, tmp, _cwd, args| {
+            if args.first() == Some(&"clone") {
+                fs::create_dir_all(tmp.join("repo")).map_err(|e| e.to_string())?;
+            }
+            Ok(String::new())
+        });
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::worktree_base::run);
+        assert_eq!(status, Status::Fail); // no agent ran, so no marker
+        assert_all_unscrubbed(&calls, 2); // the baseRef=head run and the control
+    }
+
+    #[test]
+    fn test_model_check_runs_every_agent_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        fake_make_repo(&mut deps);
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::model_check::run);
+        assert_eq!(status, Status::Fail); // no transcripts
+        assert_all_unscrubbed(&calls, EXPECTED_ROSTER.len());
+    }
+
+    #[test]
+    fn test_knowledge_read_writers_runs_every_writer_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        fake_make_repo(&mut deps);
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::knowledge_read_writers::run);
+        assert_eq!(status, Status::Fail); // no transcripts
+        let writers = EXPECTED_ROSTER.iter().filter(|row| row.2).count();
+        assert_all_unscrubbed(&calls, writers);
+    }
+
     #[test]
     fn test_the_other_model_smokes_keep_the_scrub() {
         let mut deps = deps();
@@ -1076,8 +1129,8 @@ mod smoke_body_tests {
         }));
     }
 
-    /// Runs `rtk-rewrite` with a faked installer (`run`) and a faked model run answering `out`.
-    fn run_rtk(out: &str, install_code: i32) -> (Outcome, Vec<(Vec<String>, EnvMap)>, Calls) {
+    /// Runs `atl-rewrite` with a faked installer (`run`) and a faked model run answering `out`.
+    fn run_atl(out: &str, install_code: i32) -> (Outcome, Vec<(Vec<String>, EnvMap)>, Calls) {
         let installs: InstallLog = Rc::default();
         let log = Rc::clone(&installs);
         let mut deps = deps();
@@ -1088,31 +1141,32 @@ mod smoke_body_tests {
         let out = out.to_string();
         let calls = fake_prompt_run(&mut deps, move |_, _| Proc::new(0, &out, ""));
         let ctx = ctx_with(no_auth_env(), deps).with_anthology(Some(FAKE_BIN.to_string()), true);
-        let result = first_run(&ctx, cases::rtk_rewrite::run);
+        let result = first_run(&ctx, cases::atl_rewrite::run);
         let installs = installs.borrow().clone();
         (result, installs, calls)
     }
 
     #[test]
     fn test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config() {
+        // legacy: port/ledger names this test
         let out = stream(&[
-            bash_call("git -C rtkrepo status"),
+            bash_call("git -C atlrepo status"),
             tool_result("* No commits yet on main\nclean \u{2014} nothing to commit"),
             tool_result("blocked: anthology-guardrails (G1) ..."),
         ]);
-        let ((status, reason), installs, calls) = run_rtk(&out, 0);
+        let ((status, reason), installs, calls) = run_atl(&out, 0);
         assert_eq!(status, Status::Pass, "{reason}");
         let (argv, env) = &installs[0];
-        // EV1b: the Rust installer, `anthology rtk-install`, with the staged plugin's rtk.lock.
+        // EV1b: the Rust installer, `anthology atl-install`, with the staged plugin's atl.lock.
         assert_eq!(argv[0], FAKE_BIN);
-        assert_eq!(argv[1..3], ["rtk-install", "--data-dir"]);
+        assert_eq!(argv[1..3], ["atl-install", "--data-dir"]);
         assert!(argv[3].ends_with("data"));
         assert_eq!(
             argv[4..],
             [
                 "--lock".to_string(),
                 repo_root()
-                    .join("plugins/anthology/rtk.lock")
+                    .join("plugins/anthology/atl.lock")
                     .to_string_lossy()
                     .into_owned()
             ]
@@ -1139,25 +1193,25 @@ mod smoke_body_tests {
         assert_eq!(
             call.variadic,
             [
-                "Bash(git init -q rtkrepo)",
-                "Bash(git -C rtkrepo status)",
-                "Bash(rtk git -C rtkrepo status)",
+                "Bash(git init -q atlrepo)",
+                "Bash(git -C atlrepo status)",
+                "Bash(atl git -C atlrepo status)",
                 "Bash(npx playwright test --list)",
-                "Bash(rtk playwright test --list)"
+                "Bash(atl playwright test --list)"
             ]
         );
     }
 
     #[test]
     fn test_rtk_rewrite_fails_loudly_when_the_install_fails_and_names_failed_parts() {
-        let ((status, reason), _, calls) = run_rtk("", 1);
+        let ((status, reason), _, calls) = run_atl("", 1);
         assert_eq!(status, Status::Fail);
-        assert!(reason.starts_with("rtk install failed: boom"), "{reason}");
+        assert!(reason.starts_with("atl install failed: boom"), "{reason}");
         assert!(calls.borrow().is_empty());
         let out = stream(&[tool_result(
             "nothing to commit (create/copy files and use git add)",
         )]);
-        let ((status, reason), _, _) = run_rtk(&out, 0);
+        let ((status, reason), _, _) = run_atl(&out, 0);
         assert_eq!(status, Status::Fail);
         for part in ["condensed", "raw git", "(G1)"] {
             assert!(reason.contains(part), "{reason}");
@@ -1191,7 +1245,8 @@ mod smoke_body_tests {
         let ((status, reason), calls) = run(note, save, "echo main");
         assert_eq!(status, Status::Pass, "{reason}");
         let call = calls.borrow()[0].clone();
-        assert_eq!(call.extra_env, None); // the default scrub stays on
+        // The scrub is off: on Linux it runs Bash in bubblewrap with the repo's `.claude` read-only.
+        assert_eq!(call.extra_env, Some(no_scrub()));
         assert_eq!(call.flags[..2], ["--model", "sonnet"]);
         assert_eq!(flag_after(&call.flags, "--max-turns"), "12");
         assert!(call.flags.iter().any(|f| f == "stream-json"));

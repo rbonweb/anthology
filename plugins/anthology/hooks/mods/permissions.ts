@@ -1,7 +1,7 @@
 // Permission levels (post-release mods design §2): a Bash command that `anthology perm classify`
 // proves read-only runs without a prompt; everything else is decided as without the mod.
 //
-// Ordering: `tool.check` fires after `tool.call` and the PreToolUse hooks (guard.sh, rtk-hook,
+// Ordering: `tool.check` fires after `tool.call` and the PreToolUse hooks (guard.sh, atl-hook,
 // no-attribution.sh) and before the mode settles an ask. `next(e)` resolves the verdict beneath
 // this hook: core's rules, mode and the tool's own check, the PreToolUse decision, and any plugin
 // hooks below. Plugins above (an organization's `prepend` tier) still have the last word.
@@ -10,7 +10,7 @@
 // user's allow, ask or deny rule), `setting` (the outside-directory read block), `hook` (a
 // PreToolUse decision, such as the guard's), `plugin` (another mod's ask) or `ceiling` (the
 // organization's). A deny is never touched. The command classified is `e.input.command`, the
-// text that will run (spike S2: tool.check sees rtk's rewrite). Any failure keeps the verdict.
+// text that will run (spike S2: tool.check sees atl's rewrite). Any failure keeps the verdict.
 //
 // It acts only where a person answers the ask (`e.approver === 'person'`), so hooks, SDK hosts,
 // auto mode's judge and the denies of dontAsk, headless and background sessions stay exactly as

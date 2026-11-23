@@ -28,9 +28,9 @@
       "target": "plugins/anthology/knowledge/ui-taste"
     },
     {
-      "name": "rtk",
+      "name": "atl",
       "managed_by": "subtree",
-      "target": "rtk",
+      "target": "atl",
       "license": "Apache-2.0",
       "fork": {
         "repo": "https://github.com/rbonweb/rtk",

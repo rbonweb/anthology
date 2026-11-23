@@ -121,7 +121,7 @@ mod startup_budget_test {
         assert_eq!(read("plugins/anthology-superpowers"), ["skilled"]);
         assert_eq!(read("plugins/anthology/knowledge"), ["reader", "skilled"]);
         assert!(read("plugins/anthology/knowledge/alph").is_empty()); // not a prefix match
-        assert!(read("rtk").is_empty());
+        assert!(read("atl").is_empty());
         assert!(read("").is_empty());
     }
 

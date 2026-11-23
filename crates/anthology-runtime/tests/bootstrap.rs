@@ -375,7 +375,7 @@ mod anthology_binary_check {
         let compact = text.replace("\n", "").replace("  ", "");
         fs::write(&lock_path, compact).expect("compact");
         assert_eq!(check(&g), (Some(false), CHECK_BAD_LOCK.to_string()));
-        fs::write(&lock_path, text.replace("anthology-bin--v", "rtk--v")).expect("rtk tag");
+        fs::write(&lock_path, text.replace("anthology-bin--v", "atl--v")).expect("atl tag");
         assert_eq!(check(&g), (Some(false), CHECK_BAD_LOCK.to_string()));
         fs::remove_file(&lock_path).expect("unlink");
         assert_eq!(check(&g), (Some(false), CHECK_BAD_LOCK.to_string()));

@@ -190,7 +190,8 @@ const WRAPS: &[&str] = &[
     "sh -euo pipefail -c '{q}'",
     "echo '{q}' | sh",
     "cd /tmp && {c}",
-    "rtk run {c}",
+    "atl run {c}",
+    "rtk run {c}", // legacy
     "x=$({c})",
     "{c} 2>&1 | tee log",
 ];

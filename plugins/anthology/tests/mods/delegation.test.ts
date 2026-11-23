@@ -256,7 +256,7 @@ test('look-alike folders are refused', async ($, on) => {
     `${HOME}/.claude/anthology/personal-memory-x/a.md`,
     `${HOME}/.claude/anthology/personal-memory`,
     `${HOME}/.claude/anthology/state.json`,
-    `${HOME}/.claude/anthology/rtk/x`,
+    `${HOME}/.claude/anthology/atl/x`,
     '~root/.claude/plans/a.md',
   ]) {
     const w = await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })

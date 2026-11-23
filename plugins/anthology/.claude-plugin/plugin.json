@@ -8,7 +8,7 @@
   "engines": { "claude-code": ">=2.1.330" },
   "types": "./types/anthology.d.ts",
   "dependencies": [
-    { "name": "anthology-guardrails", "version": "~0.2" },
+    { "name": "anthology-guardrails", "version": "~0.2.7" },
     { "name": "anthology-superpowers", "version": "~0.2" }
   ]
 }

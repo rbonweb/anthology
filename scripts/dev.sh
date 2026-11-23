@@ -6,7 +6,7 @@
 # The container is the one scripts/rust-test.sh prepares; the repository is mounted at /w.
 #
 # Stdout carries the tool's own output and nothing else, so callers can capture it
-# (`old_pin=$(scripts/dev.sh vendor set-rtk-upstream …)`). The container's setup and the build
+# (`old_pin=$(scripts/dev.sh vendor set-atl-upstream …)`). The container's setup and the build
 # (apt-get, rustup, cargo) go to stderr: the tool writes its stdout to a file under target/,
 # which is replayed once the tool exits, with the tool's exit status. Stdin is passed through.
 # ANTHOLOGY_RUST_TEST replaces scripts/rust-test.sh (a test seam).

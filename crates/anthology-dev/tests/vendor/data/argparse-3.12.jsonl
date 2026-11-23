@@ -13,7 +13,7 @@
 [[], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: the following arguments are required: command\n"]]
 [["bogus"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: argument command: invalid choice: 'bogus' (choose from fetch, build, check, sync, diff)\n"]]
 [["che"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: argument command: invalid choice: 'che' (choose from fetch, build, check, sync, diff)\n"]]
-[["set-rtk-upstream-x"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: argument command: invalid choice: 'set-rtk-upstream-x' (choose from fetch, build, check, sync, diff)\n"]]
+[["set-atl-upstream-x"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: argument command: invalid choice: 'set-atl-upstream-x' (choose from fetch, build, check, sync, diff)\n"]]
 [["--f1-registration-probe"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: the following arguments are required: command\n"]]
 [["check", "--f1-registration-probe"], ["exit", 2, "", "usage: vendor.py [-h] [--cache CACHE] {fetch,build,check,sync,diff} ...\nvendor.py: error: unrecognized arguments: --f1-registration-probe\n"]]
 [["sync", "x"], ["exit", 2, "", "usage: vendor.py sync [-h] --ref REF name\nvendor.py sync: error: the following arguments are required: --ref\n"]]

@@ -40,6 +40,26 @@ a new version section.
   asks, headless, background and `dontAsk` sessions, SDK hosts, auto mode's classifier and
   sessions with `allowManagedPermissionRulesOnly` stay exactly as Claude Code decides them. It
   never downloads the binary. Set `ANTHOLOGY_MODS=0` to turn it off.
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
+- `anthology perm classify` (the permission levels mod above calls it): reads a Bash command, its working
+  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
+  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
+  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  no tracked file is a secret or `Read()`-denied, and the git form prints no history
+  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
+  decision, never a deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
 
 #### Changed
 
@@ -47,6 +67,60 @@ a new version section.
   The mods load as one module (`hooks/mods/index.ts`). An event that two mods hook (a writer's
   `agent.report`: the after-work check and the status pane) is registered once there, and each mod's
   part runs on its own, so a failure in one never drops the other's result.
+- rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
+  carried the old name is renamed: the `atl/` folder, the `atl` command and its `atl-hook`,
+  `atl.lock`, the `atl--v<version>` release tags and `atl-<target>.tar.gz` archives, the
+  `ATL_*` environment variables, the `atl_path` key in `state.json`, the install under
+  `<plugin data>/atl/`, the history under `~/.claude/anthology/atl/`, project filters in
+  `.atl/filters.toml` (they need `atl trust` again), `anthology atl-install`, and the allow
+  rule `Bash(atl *)`. There is no `rtk` alias. ATL stays under the Apache License 2.0:
+  `atl/NOTICE` credits upstream and ships with `atl/LICENSE` in every release archive, and the
+  tool's README, DISCLAIMER and manifests describe the fork. Its bug-report link, its hook's
+  install hint and its package maintainer now point at Anthology. `scripts/atl-rename.sh`
+  applies the rename rule again, and `scripts/sync-atl.sh` merges a new upstream release over
+  the renamed base. Tags already published under the old name stay as they are. The guard and
+  the hook still recognise the old `rtk` name, so a command typed with it is checked as
+  before. Routing guide section 7 is now "Command output: ATL (Anthology Token Layer)".
+  `anthology` now needs `anthology-guardrails` `~0.2.7`. The binary is `1.2.1-anthology.6`.
+  See ADR-035.
+- The session-start guard self-test also runs an ATL runner form
+  (`atl run -c 'npx playwright install'`) and expects it blocked, so a guard binary too old
+  to look inside `atl` commands warns "guardrails may be OFF" instead of passing quietly.
+  `scripts/release.sh` refuses to tag `anthology` or `anthology-guardrails` while the
+  plugin's `anthology.lock` pins an `anthology-bin` older than the workspace version.
+- Upgrading: after updating, re-run `/anthology:setup`, then restart your sessions. Session
+  start installs ATL beside the old files and removes nothing. Until you run setup, `atl`
+  commands prompt, and session start asks you to run it. Setup replaces the `Bash(rtk *)`
+  allow it added earlier with `Bash(atl *)` (an `rtk` allow you wrote yourself is never
+  touched), and shows, then deletes after you confirm, what the old install left: the
+  `rtk_path` entry in `state.json`, `<plugin data>/rtk/` and the old history in
+  `~/.claude/anthology/rtk/`. The old history is deleted, not migrated. Remove covers both the
+  ATL and the old files. Upstream rtk's own folders are never touched. A session started
+  before setup keeps the old hook: it exits cleanly, and `rtk` commands there fail until you
+  restart the session.
+- Downgrading to 0.2.x: that release's `/anthology:setup remove` does not know about ATL, so
+  it leaves `<plugin data>/atl/` and the ATL history in `~/.claude/anthology/atl/` in place.
+  Delete both folders by hand.
+
+#### Fixed
+
+- Session start no longer says the guardrails are "failing closed" when they are not. The guard
+  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
+  place when the shim looked (a parallel session was still installing it, or this hook had
+  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
+  shell commands, file edits and MCP tools are blocked", although the guard installs the
+  binary on its first call and the binary was in the install folder a moment later. Session
+  start now checks the install folder itself: when the pinned binary is there it reports that the
+  self-test could not tell, and says the guard still runs on every command. It keeps the
+  failing-closed warning when the binary really is missing, unusable (empty marker, symlinked or
+  another version's folder) or the guard really refuses.
+- A guard self-test that times out with the binary installed is now reported as "skipped the
+  guard self-test (it timed out, the machine may be busy); the guard still runs on every
+  command; if commands hang or are blocked, run /anthology:setup" instead of "the guardrails
+  may be OFF". When less time is left than the self-test may take, it is not run: the install
+  folder is checked instead, and the line says session start ran out of time only when the
+  binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
+  disabled or missing is still named in that case.
 
 ### [0.2.9] - 2026-11-22
 
@@ -405,6 +479,20 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+#### Changed
+
+- The guard reads `atl`, the new name of the command-output tool (ATL, Anthology Token Layer),
+  the way it read `rtk`: it looks through `atl run -c '…'`, `atl err …` and the other ATL
+  runners and checks the command inside. The old `rtk` name is still read the same way, so a
+  command typed with it cannot hide what it runs. Messages name ATL. `anthology` 0.3.0 needs
+  this release (`~0.2.7`). The change ships in the next `anthology` binary (0.2.0).
+- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
+  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
+  a backtick starts a command substitution, here one that never ends, so the block is right but
+  agents retried the same command. The message adds: "A backtick inside double quotes runs a
+  command; put the pattern in single quotes". The verdict does not change, and a pattern in
+  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
 
 ### [0.2.4] - 2026-11-22
 

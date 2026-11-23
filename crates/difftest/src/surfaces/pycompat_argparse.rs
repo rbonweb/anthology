@@ -278,7 +278,7 @@ const CLI_SEEDS: &[(&str, &[&[&str]])] = &[
         ],
     ),
     (
-        "rtk_install",
+        "atl_install",
         &[
             &[],
             &["-h"],
@@ -416,7 +416,7 @@ const CLI_SEEDS: &[(&str, &[&[&str]])] = &[
         ],
     ),
     (
-        "rtk_trim",
+        "atl_trim",
         &[
             &[],
             &["-h"],

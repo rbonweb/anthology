@@ -39,7 +39,7 @@ fn test_real_sources_validate() {
         "caveman",
         "design-taste-frontend",
         "karpathy-guidelines",
-        "rtk",
+        "atl",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -298,7 +298,7 @@ fn test_target_is_on_the_allowlist() {
 
 #[test]
 fn test_subtree_target_is_still_a_clean_relative_path() {
-    let e = jv(r#"{"name": "rtk", "managed_by": "subtree", "license": "Apache-2.0"}"#);
+    let e = jv(r#"{"name": "atl", "managed_by": "subtree", "license": "Apache-2.0"}"#);
     for bad in [".", "../x", "/x", "a/./b"] {
         assert!(
             !validate(&[with(&e, &[("target", s(bad))])]).is_empty(),
@@ -306,7 +306,7 @@ fn test_subtree_target_is_still_a_clean_relative_path() {
         );
     }
     assert_eq!(
-        validate(&[with(&e, &[("target", s("rtk"))])]),
+        validate(&[with(&e, &[("target", s("atl"))])]),
         Vec::<String>::new()
     );
 }
@@ -420,7 +420,7 @@ fn test_same_repo_entries_must_agree_on_the_license_file() {
 #[test]
 fn test_subtree_entries_are_not_checked_for_pins() {
     let e =
-        jv(r#"{"name": "rtk", "managed_by": "subtree", "license": "Apache-2.0", "target": "rtk"}"#);
+        jv(r#"{"name": "atl", "managed_by": "subtree", "license": "Apache-2.0", "target": "atl"}"#);
     assert_eq!(validate(&[e]), Vec::<String>::new());
 }
 

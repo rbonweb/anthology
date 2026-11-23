@@ -11,7 +11,9 @@
 //! The file is gzip ([`write`]: best compression, no name, mtime 0, so the same golden is the same
 //! bytes on every machine; `zcat` reads it) of JSONL, ASCII only (`json.dumps` defaults):
 //!
-//! - line 1, the header: `{"difftest_golden": 1, "surface": S, "seed": N, "gen": N, "cases": N}`;
+//! - line 1, the header: `{"difftest_golden": 1, "surface": S, "seed": N, "gen": N, "cases": N,
+//!   "today": "YYYY-MM-DD"}` (`today` is the day of the freeze: `check` and `bless` run Rust on
+//!   that day, see [`pin_day`]);
 //! - then one line per case, in run order:
 //!   `{"id": ID, "case": DATA, "expect": RESULT, "marks": [CLASS, ...]}`.
 //!
@@ -56,7 +58,7 @@ pub fn owner(surface: &str) -> &'static str {
         "guard" => "anthology-guard",
         "settings" => "anthology-settings",
         "privacy" | "notes" | "memory" | "mem" => "anthology-memory",
-        "rtk_install" | "doctor" | "hook" | "setup" | "runtime" => "anthology-runtime",
+        "atl_install" | "doctor" | "hook" | "setup" | "runtime" => "anthology-runtime",
         "dev" => "anthology-dev",
         _ => "difftest",
     }
@@ -102,6 +104,41 @@ pub struct Header {
     /// Frozen with `--sample` (fewer than [`MIN_GEN`] generated cases): a self-test or scratch
     /// golden, which `check` refuses as a repository golden.
     pub sample: bool,
+    /// The day the oracle ran (`YYYY-MM-DD`), which its answers hold wherever the program
+    /// writes the date (`approved`, `migrated-<date>`, `modified`). `check` and `bless` pin
+    /// Rust's clock to it ([`pin_day`]). `None` in a golden frozen before the header had it:
+    /// [`LEGACY_DAY`].
+    pub today: Option<String>,
+}
+
+/// The day every golden frozen before the header held `today` was recorded on (`git log` of
+/// `crates/*/tests/golden`: the first freeze and every re-record are 2026-11-22).
+pub const LEGACY_DAY: &str = "2026-11-22";
+
+/// The day to pin Rust's clock to when replaying a golden with this header.
+pub fn pin_day(header: &Header) -> Result<anthology_core::clock::Date, String> {
+    let iso = header.today.as_deref().unwrap_or(LEGACY_DAY);
+    let bad = || {
+        format!(
+            "{}: the header's today {iso:?} is not YYYY-MM-DD",
+            header.surface
+        )
+    };
+    let mut parts = iso.split('-');
+    let (Some(y), Some(m), Some(d), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad());
+    };
+    let date = anthology_core::clock::Date {
+        y: y.parse().map_err(|_| bad())?,
+        m: m.parse().map_err(|_| bad())?,
+        d: d.parse().map_err(|_| bad())?,
+    };
+    if date.iso() != iso || !(1..=12).contains(&date.m) || !(1..=31).contains(&date.d) {
+        return Err(bad());
+    }
+    Ok(date)
 }
 
 /// Checks a read golden against its surface: at least one case, exactly `generated` `gen:`
@@ -225,6 +262,9 @@ pub fn render(header: &Header, cases: &[Frozen]) -> String {
     h.insert("cases".into(), int(cases.len() as i64));
     if header.sample {
         h.insert("sample".into(), Value::Bool(true));
+    }
+    if let Some(day) = &header.today {
+        h.insert("today".into(), Value::Str(day.clone()));
     }
     out.push_str(&json::dumps(&Value::Object(h), &PY_DEFAULT));
     out.push('\n');
@@ -359,6 +399,7 @@ pub fn parse(text: &str, label: &str, surface: &str) -> Result<(Header, Vec<Froz
         seed,
         generated,
         sample: h.get("sample").and_then(Value::as_bool) == Some(true),
+        today: h.get("today").and_then(Value::as_str).map(str::to_string),
     };
     Ok((header, cases))
 }
@@ -471,6 +512,7 @@ mod tests {
             seed: 7,
             generated: 2,
             sample: true,
+            today: None,
         };
         let mut rng = Rng::for_surface(7, "big");
         let made: Vec<_> = Big
@@ -542,6 +584,7 @@ mod tests {
             seed: u64::MAX,
             generated: 1,
             sample: false,
+            today: Some("2026-11-22".into()),
         };
         let text = render(&header, &cases);
         assert!(text.is_ascii());
@@ -588,6 +631,32 @@ mod tests {
     }
 
     #[test]
+    fn the_replay_day_is_the_headers_or_the_legacy_one() {
+        let header = |today: Option<&str>| Header {
+            surface: "s".into(),
+            seed: 1,
+            generated: 0,
+            sample: true,
+            today: today.map(str::to_string),
+        };
+        let day = |h: Header| pin_day(&h).map(|d| d.iso());
+        assert_eq!(day(header(None)), Ok(LEGACY_DAY.to_string()));
+        assert_eq!(day(header(Some("2027-01-09"))), Ok("2027-01-09".into()));
+        for bad in [
+            "",
+            "2027-1-9",
+            "2027-13-01",
+            "2027-00-10",
+            "2027-01-32",
+            "x-y-z",
+            "2027-01-09-1",
+        ] {
+            let err = day(header(Some(bad))).expect_err(bad);
+            assert!(err.contains("is not YYYY-MM-DD"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
     fn bad_files_are_refused_with_the_line() {
         let ok = render(
             &Header {
@@ -595,6 +664,7 @@ mod tests {
                 seed: 1,
                 generated: 0,
                 sample: true,
+                today: None,
             },
             &[],
         );
@@ -636,6 +706,7 @@ mod tests {
             seed: 7,
             generated,
             sample,
+            today: None,
         };
         let case = |id: &str| Frozen {
             rust: None,

@@ -1,0 +1,32 @@
+#!/bin/sh
+# atl: run the atl binary that session start installed (see crates/anthology-runtime/src/atl_install.rs).
+# The path is read from ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json with sed.
+# The state writer (crates/anthology-core/src/state.rs) puts `  "atl_path": "<path>",` on a line
+# of its own (indent=2, sort_keys); a path that carries a backslash or quote is refused rather
+# than mis-parsed.
+state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
+atl_path=
+if [ -f "$state" ] && [ -r "$state" ]; then
+  atl_path=$(sed -n 's/^ *"atl_path": *"\([^"]*\)",\{0,1\} *$/\1/p' "$state" 2>/dev/null | head -n 1)
+fi
+case $atl_path in
+  *\\*|*\"*) atl_path= ;;
+  /*) ;;
+  *) atl_path= ;;
+esac
+if [ -z "$atl_path" ] || [ ! -f "$atl_path" ] || [ ! -x "$atl_path" ]; then
+  echo "atl is not installed: run /anthology:setup" >&2
+  exit 127
+fi
+# atl keeps a local history of the command lines it sees (tracking, 90 days), a recall store of
+# output it elided (30 days) and a tee spool. Keep them next to state.json, not in atl's default
+# data folder, so /anthology:setup remove deletes them (README "Local history", SECURITY.md).
+atl_data=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/atl
+ATL_DB_PATH=$atl_data/history.db
+ATL_RECALL_DB=$atl_data/recall.db
+ATL_TEE_DIR=$atl_data/tee
+export ATL_DB_PATH ATL_RECALL_DB ATL_TEE_DIR
+# atl otherwise tells Claude to run `atl init -g`, which would add a duplicate hook.
+ATL_SUPPRESS_HOOK_WARNING=1
+export ATL_SUPPRESS_HOOK_WARNING
+exec "$atl_path" "$@"

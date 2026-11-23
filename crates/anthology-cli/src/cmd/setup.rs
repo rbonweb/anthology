@@ -55,10 +55,10 @@ mod tests {
         sha256_hex(text.as_bytes())
     }
 
-    /// No download: the rtk wiring is absent and the guard binary is "present".
+    /// No download: the atl wiring is absent and the guard binary is "present".
     fn deps() -> SetupDeps<'static> {
         SetupDeps {
-            rtk: None,
+            atl: None,
             ensure_guard_binary: &present,
             ..SetupDeps::default()
         }

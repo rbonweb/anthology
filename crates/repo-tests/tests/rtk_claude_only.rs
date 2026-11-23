@@ -1,4 +1,4 @@
-//! Port of `tests/test_rtk_claude_only.py`: the rtk subtree is the Apache-2.0 edition, Claude Code
+//! Port of `tests/test_rtk_claude_only.py`: the atl subtree is the Apache-2.0 edition, Claude Code
 //! only, with no telemetry. An allowlist: an upstream sync that adds an agent, a dependency or a
 //! re-added file fails here, and the answer is to extend the trim, not this list.
 
@@ -12,12 +12,12 @@ use repo_tests::yaml;
 
 // Build output and OS debris that are never tracked: skipped by the tree allowlists.
 const UNTRACKED_DEBRIS: [&str; 2] = ["target", ".DS_Store"];
-const TOP_LEVEL: [&str; 22] = [
+const TOP_LEVEL: [&str; 23] = [
+    ".atl",
     ".cargo",
     ".git-blame-ignore-revs",
     ".gitattributes",
     ".gitignore",
-    ".rtk",
     "CHANGELOG.md",
     "CLAUDE.md",
     "CONTRIBUTING.md",
@@ -25,6 +25,7 @@ const TOP_LEVEL: [&str; 22] = [
     "Cargo.toml",
     "DISCLAIMER.md",
     "LICENSE",
+    "NOTICE",
     "README.md",
     "SECURITY.md",
     "build.rs",
@@ -38,14 +39,14 @@ const TOP_LEVEL: [&str; 22] = [
 ];
 const HOOKS_ENTRIES: [&str; 5] = [
     "README.md",
+    "atl-awareness-full.md",
+    "atl-awareness-high.md",
+    "atl-awareness.md",
     "claude",
-    "rtk-awareness-full.md",
-    "rtk-awareness-high.md",
-    "rtk-awareness.md",
 ];
-const TRIM_SH: &str = "scripts/rtk-trim.sh";
-const NET_TEST: &str = "scripts/rtk-net-test.sh";
-const SYNC: &str = "scripts/sync-rtk.sh";
+const TRIM_SH: &str = "scripts/atl-trim.sh";
+const NET_TEST: &str = "scripts/atl-net-test.sh";
+const SYNC: &str = "scripts/sync-atl.sh";
 
 const INIT_MODULES: [&str; 3] = ["agents_md.rs", "claude.rs", "mod.rs"];
 
@@ -56,6 +57,7 @@ fn cargo_deps_expected() -> BTreeMap<String, Vec<String>> {
             &[
                 "anthology-shell",
                 "anyhow",
+                "atl-text",
                 "base16ct",
                 "chrono",
                 "clap",
@@ -70,7 +72,6 @@ fn cargo_deps_expected() -> BTreeMap<String, Vec<String>> {
                 "quick-xml",
                 "ratatui",
                 "regex",
-                "rtk-text",
                 "rusqlite",
                 "serde",
                 "serde_json",
@@ -343,8 +344,8 @@ fn section_lines(rel: &str, name: &str) -> Vec<String> {
     lines
 }
 
-fn rtk(rel: &str) -> String {
-    format!("rtk/{rel}")
+fn atl(rel: &str) -> String {
+    format!("atl/{rel}")
 }
 
 fn matches(pattern: &str, text: &str) -> bool {
@@ -397,7 +398,7 @@ mod init_modules_test {
 
     #[test]
     fn test_only_claude_and_its_helpers() {
-        let init = rtk("src/hooks/init");
+        let init = atl("src/hooks/init");
         assert_eq!(glob_names(&init, "", ".rs"), INIT_MODULES);
         let dirs: Vec<String> = repo::list_dir(&init)
             .into_iter()
@@ -422,13 +423,13 @@ mod cargo_parser_test {
     fn test_plain_dotted_and_multi_line_values() {
         assert_eq!(
             deps(concat!(
-                "[dependencies]\nanyhow = \"1\"\nrtk-text = { path = \"text\" }\n",
+                "[dependencies]\nanyhow = \"1\"\natl-text = { path = \"text\" }\n",
                 "serde.workspace = true\n",
                 "windows-sys = { version = \"0.61\", features = [\n    \"A\",\n    \"B\",\n] }\n"
             )),
             deps_map(&[(
                 "dependencies",
-                &["anyhow", "rtk-text", "serde", "windows-sys"]
+                &["anyhow", "atl-text", "serde", "windows-sys"]
             )])
         );
     }
@@ -469,8 +470,8 @@ mod cargo_parser_test {
     fn test_other_tables_and_nested_arrays_are_not_dependencies() {
         assert_eq!(
             deps(concat!(
-                "[package]\nname = \"rtk\"\n[package.metadata.deb]\nassets = [\n",
-                "    [\"target/release/rtk\", \"usr/bin/\", \"755\"]\n]\n[[bin]]\nname = \"x\"\n",
+                "[package]\nname = \"atl\"\n[package.metadata.deb]\nassets = [\n",
+                "    [\"target/release/atl\", \"usr/bin/\", \"755\"]\n]\n[[bin]]\nname = \"x\"\n",
                 "[dependencies]\nok = \"1\"\n[features]\nfoo = [\"dep:ok\"]\n"
             )),
             deps_map(&[("dependencies", &["ok"])])
@@ -484,7 +485,7 @@ mod cargo_dependencies_test {
     #[test]
     fn test_cli_dependencies_per_section() {
         assert_eq!(
-            cargo_deps(&repo::path(&rtk("Cargo.toml"))),
+            cargo_deps(&repo::path(&atl("Cargo.toml"))),
             cargo_deps_expected()
         );
     }
@@ -492,7 +493,7 @@ mod cargo_dependencies_test {
     #[test]
     fn test_text_crate_dependencies() {
         assert_eq!(
-            cargo_deps(&repo::path(&rtk("text/Cargo.toml"))),
+            cargo_deps(&repo::path(&atl("text/Cargo.toml"))),
             deps_map(&[("dependencies", &["regex"])])
         );
     }
@@ -500,14 +501,14 @@ mod cargo_dependencies_test {
     #[test]
     fn test_workspace_is_the_cli_and_the_text_crate() {
         assert_eq!(
-            section_lines(&rtk("Cargo.toml"), "workspace"),
+            section_lines(&atl("Cargo.toml"), "workspace"),
             [r#"members = [".", "text"]"#]
         );
     }
 
     #[test]
     fn test_no_features() {
-        assert!(section_lines(&rtk("Cargo.toml"), "features").is_empty());
+        assert!(section_lines(&atl("Cargo.toml"), "features").is_empty());
     }
 
     #[test]
@@ -545,14 +546,14 @@ mod cargo_dependencies_test {
             }
         }
         let mut found = Vec::new();
-        walk(&repo::path("rtk"), "", &mut found);
+        walk(&repo::path("atl"), "", &mut found);
         found.sort();
         assert_eq!(found, ["Cargo.toml", "text/Cargo.toml"]);
     }
 
     #[test]
     fn test_dead_engine_cfg_is_declared_and_dead_code_allowed() {
-        let lints = section_lines(&rtk("Cargo.toml"), "lints.rust");
+        let lints = section_lines(&atl("Cargo.toml"), "lints.rust");
         assert!(lints.iter().any(|l| l == CHECK_CFG), "{lints:?}");
         assert!(
             lints.iter().any(|l| l == r#"dead_code = "allow""#),
@@ -566,7 +567,7 @@ mod cargo_dependencies_test {
 
     #[test]
     fn test_no_busl_license_in_the_tree() {
-        for rel in ["rtk/Cargo.toml", "rtk/text/Cargo.toml"] {
+        for rel in ["atl/Cargo.toml", "atl/text/Cargo.toml"] {
             assert!(
                 !matches(r#"(?m)^license\s*=\s*"BUSL"#, &repo::read(rel)),
                 "{rel}"
@@ -592,7 +593,7 @@ mod no_telemetry_test {
             }
         }
         let mut found = Vec::new();
-        walk(&repo::path("rtk/src"), &mut found);
+        walk(&repo::path("atl/src"), &mut found);
         found.sort();
         assert!(found.is_empty(), "{found:?}");
     }
@@ -601,13 +602,13 @@ mod no_telemetry_test {
     fn test_no_telemetry_module_command_or_ping() {
         assert!(!matches(
             r"\bmod telemetry",
-            &repo::read("rtk/src/core/mod.rs")
+            &repo::read("atl/src/core/mod.rs")
         ));
-        let lib = repo::read("rtk/src/lib.rs");
+        let lib = repo::read("atl/src/lib.rs");
         assert!(!lib.contains("Telemetry {"));
         assert!(!lib.contains("telemetry_cmd"));
         assert!(!lib.contains("maybe_ping"));
-        assert!(!repo::read("rtk/src/hooks/init/mod.rs").contains("prompt_telemetry_consent"));
+        assert!(!repo::read("atl/src/hooks/init/mod.rs").contains("prompt_telemetry_consent"));
     }
 }
 
@@ -617,12 +618,12 @@ mod tree_allowlist_test {
 
     #[test]
     fn test_top_level_entries() {
-        assert_eq!(entries("rtk"), TOP_LEVEL);
+        assert_eq!(entries("atl"), TOP_LEVEL);
     }
 
     #[test]
     fn test_hooks_entries() {
-        assert_eq!(entries("rtk/hooks"), HOOKS_ENTRIES);
+        assert_eq!(entries("atl/hooks"), HOOKS_ENTRIES);
     }
 }
 
@@ -634,7 +635,7 @@ mod removed_paths_test {
         // `os.path.lexists`: a broken symlink counts as present.
         let present: Vec<String> = removed_paths()
             .into_iter()
-            .filter(|p| std::fs::symlink_metadata(repo::path(&rtk(p))).is_ok())
+            .filter(|p| std::fs::symlink_metadata(repo::path(&atl(p))).is_ok())
             .collect();
         assert!(present.is_empty(), "{present:?}");
     }
@@ -644,7 +645,7 @@ mod claude_only_cli_test {
     use super::*;
 
     fn lib() -> String {
-        repo::read("rtk/src/lib.rs")
+        repo::read("atl/src/lib.rs")
     }
 
     #[test]
@@ -653,7 +654,7 @@ mod claude_only_cli_test {
         let m = Regex::new(r"(?ms)^(?:pub )?enum HookCommands \{\n(.*?)^\}")
             .unwrap()
             .captures(&lib)
-            .expect("enum HookCommands not found in rtk/src/lib.rs");
+            .expect("enum HookCommands not found in atl/src/lib.rs");
         let variants: BTreeSet<String> = Regex::new(r"(?m)^    ([A-Z]\w*)\b")
             .unwrap()
             .captures_iter(&m[1])
@@ -672,7 +673,7 @@ mod claude_only_cli_test {
 
     #[test]
     fn test_fork_tests_are_the_eight_kept() {
-        assert_eq!(glob_names("rtk/tests", "fork_", ".rs"), FORK_TESTS);
+        assert_eq!(glob_names("atl/tests", "fork_", ".rs"), FORK_TESTS);
     }
 }
 
@@ -688,9 +689,9 @@ mod trim_scripts_test {
         assert!(is_executable(TRIM_SH));
         assert!(text.starts_with("#!"));
         assert!(matches(r"(?m)^set -eu$", &text));
-        // omitted: the script names scripts/rtk_trim.py and that file exists (pins the Python
-        // trim) -> CO2 replacement: cutover_ci.rs asserts rtk-trim.sh runs the trim through
-        // scripts/dev.sh and scripts/rtk_trim.py is gone
+        // omitted: the script names scripts/atl_trim.py and that file exists (pins the Python
+        // trim) -> CO2 replacement: cutover_ci.rs asserts atl-trim.sh runs the trim through
+        // scripts/dev.sh and scripts/atl_trim.py is gone
     }
 
     #[test]
@@ -709,9 +710,9 @@ mod trim_scripts_test {
     #[test]
     fn test_sync_runs_the_trim_unconditionally() {
         let text = repo::read(SYNC);
-        assert!(text.contains("if bash scripts/rtk-trim.sh; then"));
+        assert!(text.contains("if bash scripts/atl-trim.sh; then"));
         assert!(!text.contains("trim skipped"));
-        assert!(!text.contains("if [ -f scripts/rtk-trim.sh ]"));
+        assert!(!text.contains("if [ -f scripts/atl-trim.sh ]"));
     }
 
     #[test]
@@ -731,17 +732,18 @@ mod trim_scripts_test {
     }
 
     #[test]
-    fn test_ci_runs_the_network_test_after_the_rtk_tests() {
+    fn test_ci_runs_the_network_test_after_the_rtk_tests(/* legacy */) {
+        // legacy: port/ledger names this test
         let ci = yaml::load_file(".github/workflows/ci.yml");
-        let runs: Vec<&str> = yaml::items(&ci["jobs"]["rtk-test"]["steps"])
+        let runs: Vec<&str> = yaml::items(&ci["jobs"]["atl-test"]["steps"])
             .iter()
             .map(|s| s["run"].as_str().unwrap_or(""))
             .collect();
         let position = |want: &str| {
             runs.iter()
                 .position(|r| *r == want)
-                .unwrap_or_else(|| panic!("no rtk-test step runs {want}: {runs:?}"))
+                .unwrap_or_else(|| panic!("no atl-test step runs {want}: {runs:?}"))
         };
-        assert!(position("scripts/rtk-test.sh") < position("scripts/rtk-net-test.sh"));
+        assert!(position("scripts/atl-test.sh") < position("scripts/atl-net-test.sh"));
     }
 }

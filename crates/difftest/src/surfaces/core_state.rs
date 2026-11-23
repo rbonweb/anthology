@@ -119,7 +119,7 @@ fn hex(b: &[u8]) -> String {
 
 const KEYS: [&str; 7] = [
     "data_dir",
-    "rtk_path",
+    "atl_path",
     "setup_done",
     "settings_ops_version",
     "settings_ops",
@@ -240,7 +240,7 @@ fn rand_prior(rng: &mut Rng) -> Option<Vec<u8>> {
         let extra = if rng.chance(0.5) {
             format!("{lone}: 1")
         } else {
-            format!("\"rtk_path\": {lone}")
+            format!("\"atl_path\": {lone}")
         };
         text = if text == "{}" {
             format!("{{{extra}}}")

@@ -221,13 +221,13 @@ fn guardrails_hooks_json_is_design_9_1() {
 }
 
 #[test]
-fn anthology_hooks_json_runs_session_start_sh_and_keeps_rtk_hook() {
+fn anthology_hooks_json_runs_session_start_sh_and_keeps_atl_hook() {
     let want = json::loads(
         r#"{"hooks": {
           "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"], "timeout": 60}]}],
           "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "sh",
-              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/rtk-hook"], "timeout": 60, "onFailure": "block"},
+              "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"], "timeout": 60, "onFailure": "block"},
             {"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"], "timeout": 60, "onFailure": "block"}]}],
           "Notification": [
@@ -240,7 +240,7 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_rtk_hook() {
     )
     .unwrap();
     assert_eq!(hooks("anthology"), want);
-    // The rtk entry is the live one, unchanged.
+    // The atl entry is the live one, unchanged.
     let live = json::loads(&repo::read("plugins/anthology/hooks/hooks.json")).unwrap();
     let pre = |v: &Value| {
         let hooks = v.as_object().unwrap().get("hooks").unwrap();
@@ -305,7 +305,7 @@ fn every_shim_is_posix_sh_with_a_shebang() {
 fn the_wrappers_differ_only_in_name_and_the_mem_argument() {
     let a = staged("anthology/bin/anthology");
     let m = staged("anthology/bin/anthology-mem");
-    assert!(a.contains("export RTK_SUPPRESS_HOOK_WARNING"));
+    assert!(a.contains("export ATL_SUPPRESS_HOOK_WARNING"));
     let norm = |s: &str| {
         code_lines(s)
             .into_iter()

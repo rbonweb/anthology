@@ -23,6 +23,8 @@ Do not use any tool yourself other than Agent. Then report the agent's reply.";
         "stream-json",
         "--verbose",
     ]));
+    // Scrub off: on Linux the scrub runs Bash in bubblewrap with the repo's `.claude` read-only,
+    // so the note could never be written.
     let opts = PromptOpts {
         cwd: Some(repo.clone()),
         variadic: sv([
@@ -32,7 +34,7 @@ Do not use any tool yourself other than Agent. Then report the agent's reply.";
             "Grep",
             "Bash(anthology-mem save *)",
         ]),
-        ..PromptOpts::default()
+        extra_env: Some(no_scrub()),
     };
     let p = ctx.prompt_run(&tmp, prompt, &flags, &opts)?;
     // A stream-json event has the same message.content shape as a transcript line.

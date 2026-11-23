@@ -1,11 +1,12 @@
 ---
-name: 'Evals on Linux runners need bubblewrap and socat'
-description: 'Why the first CI eval run failed all cases and which smokes depend on the Claude Code sandbox'
+name: 'Evals on Linux: bubblewrap, and the subprocess scrub breaks worktrees'
+description: 'Why Linux eval smokes failed: missing bubblewrap first, then CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 isolating Claude Code in bwrap'
 metadata:
   type: project
   modified: 2026-11-22
 ---
 
-The evals workflow runs on ubuntu-latest (ubuntu-26.04 image in Nov 2026). Claude Code on Linux needs bubblewrap and socat for its Bash sandbox; they are absent on the runner, so plugin eval refuses every case with a shell grant and every smoke that runs Bash without bypassPermissions fails (missing-interpreter, rtk-rewrite, agent-memory-path, live-guard). Smokes that use bypassPermissions pass.
-**Why:** the earlier evals were only run on macOS (seatbelt, no extra packages), so the first Linux run exposed it.
-**How to apply:** if an eval smoke fails with "Sandbox is required but failed to initialize", check the workflow installs bubblewrap and socat and that unprivileged user namespaces work (AppArmor restrict_unprivileged_userns). The smoke.json reasons are cut to 80-160 characters, so the full error of agent-start failures (model-check, knowledge-read-writers, worktree-base) is not in the artifact.
+The evals workflow runs on ubuntu-latest (ubuntu-26.04 in Nov 2026). Claude Code on Linux needs bubblewrap and socat; the workflow now installs them and lifts the AppArmor userns restriction. Smokes that use bypassPermissions pass either way.
+Second, separate cause: the smoke harness sets CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 by default (build_env). On macOS that only strips env; on Linux Claude Code 2.1.329 treats it as subprocess isolation (bwrap). Then (a) an isolation: worktree agent cannot start: "Failed to resolve base branch ..." (repo .git "could not be confirmed"), with or without worktree.baseRef=head, and (b) Bash sees the repo with .git and a missing .claude read-only, so a memory note is never written (agent-memory-path). Fix: those smokes pass extra_env no_scrub() like writer-memory-commit and auto-memory-dir.
+**Why:** the earlier evals only ran on macOS, so the first Linux runs exposed both. The smoke.json reasons are cut to 80-160 characters, so the full agent-start error is not in the artifact; reproduce it instead.
+**How to apply:** a new smoke that makes an agent create a worktree or writes under .claude/ from Bash must set extra_env no_scrub(). worktree.baseRef=head itself is fine in clones, shallow clones and detached HEADs; only a repo with no commits fails, in both baseRef modes.

@@ -1,0 +1,142 @@
+#!/bin/sh
+# atl-hook: the PreToolUse (Bash) hook. Runs `atl hook claude` with the hook input on stdin.
+# If atl is not installed it exits 0 without output, so the hook never blocks a command.
+# Same state.json lookup as bin/atl (the shim tests check both).
+state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
+atl_path=
+if [ -f "$state" ] && [ -r "$state" ]; then
+  atl_path=$(sed -n 's/^ *"atl_path": *"\([^"]*\)",\{0,1\} *$/\1/p' "$state" 2>/dev/null | head -n 1)
+fi
+case $atl_path in
+  *\\*|*\"*) exit 0 ;;
+  /*) ;;
+  *) exit 0 ;;
+esac
+if [ ! -f "$atl_path" ] || [ ! -x "$atl_path" ]; then
+  exit 0
+fi
+# atl keeps a local history of the command lines it sees (tracking, 90 days), a recall store of
+# output it elided (30 days) and a tee spool. Keep them next to state.json, not in atl's default
+# data folder, so /anthology:setup remove deletes them (README "Local history", SECURITY.md).
+atl_data=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/atl
+ATL_DB_PATH=$atl_data/history.db
+ATL_RECALL_DB=$atl_data/recall.db
+ATL_TEE_DIR=$atl_data/tee
+export ATL_DB_PATH ATL_RECALL_DB ATL_TEE_DIR
+ATL_SUPPRESS_HOOK_WARNING=1
+export ATL_SUPPRESS_HOOK_WARNING
+# A hook "ask" prompts in every permission mode, bypass and auto included, and atl asks for
+# many commands it leaves as typed (`node --version; bun --version`). So an ask is dropped:
+# the command then runs as typed, under the user's own mode and rules, as it would without atl.
+# Kept: a deny, a non-zero exit, and an ask on a line that mentions atl, which `Bash(atl *)`
+# would otherwise allow. The atl test runs on the value of every `"command"` key of the raw hook
+# input: quotes, `$` and backslashes removed, a line continuation joined, case folded. In JSON
+# a quote inside a string is always `\"`, so the pattern below only ever matches a real key and
+# its whole string value. A `\u` escape anywhere (a key spelled with one too) counts as a
+# mention, and an input with no such key is matched whole: both only keep more asks.
+# Ruling: a `$'...'` ANSI-C spelling (`$'\x61tl'`) is not a mention: `Bash(atl *)` matches the
+# literal command text and Claude Code never auto-allows a `$'...'` spelling, so keeping the ask
+# only caused false prompts (a `$'` in a heredoc body is not decoded by the shell). Cost if wrong:
+# a disguised-atl line gets the user's own checks, not atl's ask.
+# Ruling: atl counts only when no letter or underscore comes right before it (`chatlog` is not a
+# mention). n, r, t, b and f still count as a boundary: they are what a JSON `\n`, `\r`, `\t`, `\b`
+# or `\f` leaves once the backslashes are gone. Only a `\`+newline (`\\\n` in the JSON) is joined.
+# Cost if wrong: a real atl call with a letter glued in front gets the user's own checks, not the ask.
+# Ruling: the legacy name still counts as a mention, so a user's own `Bash(rtk *)` rule (legacy;
+# setup never removes one it did not add) cannot skip the ask. Cost if wrong: a line naming the
+# legacy tool gets the user's own checks, not the ask.
+mention='(^|[^a-z_]|[nrtbf])(atl|rtk)' # legacy rtk name kept on purpose
+input=$(cat)
+out=$(printf '%s' "$input" | "$atl_path" hook claude)
+rc=$?
+if [ "$rc" -eq 0 ] &&
+   printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"ask"' &&
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+  # A hook ask prompts even in bypass mode, where the user chose not to be asked, so atl's ask is
+  # dropped there and the command runs as typed. Claude Code sets permission_mode in the hook
+  # input, before tool_input; the model cannot. Only the part before the first `"tool_input"` is
+  # read, so a key of that name inside the tool input is ignored. Every other mode keeps the ask
+  # below, auto included: an ask on a line that mentions atl is what `Bash(atl *)` would allow, and
+  # dropping it would let that rule skip auto mode's classifier.
+  top=${input%%'"tool_input"'*}
+  case $top in
+    *'"permission_mode":"bypassPermissions"'*|*'"permission_mode": "bypassPermissions"'*) exit 0 ;;
+  esac
+  case $input in
+    *'\u'*) ;;
+    *)
+      cmd=$(printf '%s' "$input" | tr -d '\n\r' |
+        LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
+      [ -n "$cmd" ] || cmd=$input
+      # Both readings are tested: with every `\`+newline joined, and with none joined (a `\\` at
+      # the end of a line is a literal backslash, not a continuation). Either one keeps the ask.
+      { printf '%s' "$cmd" | LC_ALL=C sed 's/\\\\\\n//g'; printf '\n%s\n' "$cmd"; } |
+        LC_ALL=C tr -d "\\\\\"'\$" |
+        LC_ALL=C grep -Eqi "$mention" || exit 0 ;;
+  esac
+fi
+# Ruling: a rewrite into `atl read` (what atl makes of `cat`, `head` and `tail`) is dropped, so the
+# read runs as typed. atl's history shows `atl read` saving about 3% of what it reads, while it
+# changes the text Claude sees and costs the gate work. Only a deny or an ask is never dropped
+# here; dropping a rewrite leaves the typed command to the user's own rules, as without atl. A line
+# that holds `atl read` among other commands loses its whole rewrite. Cost if wrong: about 3% more
+# tokens on file reads.
+case $rc:$out in
+  0:*'atl read'*)
+    if ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"' &&
+       printf '%s' "$out" | LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
+         LC_ALL=C grep -Eq '(:[[:space:]]*"|[;&|(][[:space:]]*|\\n)atl read( |"|$)'; then
+      exit 0
+    fi ;;
+esac
+# Ruling: a plain rewrite (no ask, no deny) is kept only if what it runs exists. Claude Code's
+# shell snapshot defines `rg`, `grep` and `find` as shell FUNCTIONS, so a typed `rg` can work with
+# no `rg` file on PATH, while `atl rg` execs a real `rg` and fails ("search failed ... os error 2").
+# This hook is plain POSIX sh with no snapshot, so `command -v` finds real files (and builtins)
+# only. Two tests, either one drops the rewrite and the command runs as typed:
+#   1. the first word of the typed command (after leading `NAME=value` words), when it is one of
+#      rg, grep, ag, find, fd, must resolve;
+#   2. every `atl rg|grep|ag|find|fd` in the rewrite needs that program too (this catches
+#      `cd d && rg x`, whose first word is a builtin, and a first word that cannot be read).
+# Ruling: test 1 covers only the search family, the names Claude Code may define as shell
+# functions. Any other first word keeps its rewrite: a hook PATH poorer than the Bash tool's (an
+# app started from a GUI) would otherwise drop the rewrites for cargo, npm and docker, which are
+# never snapshot functions. For the same reason `atl <other program>` inside the rewrite is not
+# checked (nor is any later command of a compound line). Cost if wrong: a snapshot function
+# for some other program still fails through atl; the command then reports it, as it did before.
+# The typed first word is read from the raw JSON text of the first `"command"` key at or after
+# `"tool_input"`, and only when it is a plain name: a quoted, expanded, escaped or path-like word
+# (or anything else the pattern below does not match) is not judged, so test 1 keeps the rewrite.
+# Only the head of the command is read (at most 16 leading `NAME=value` words, whitespace stripped
+# in one pass each), so a `\u` escape later in it does not matter and a huge command stays fast.
+# A deny or an ask is never dropped here (the guard above skips them). Cost if wrong: where the
+# hook's PATH is poorer than the Bash tool's, a search program only the Bash tool can see loses its
+# rewrite, a few percent of tokens; the command still runs.
+if [ "$rc" -eq 0 ] &&
+   printf '%s' "$out" | grep -Eq '"updatedInput"' &&
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"'; then
+  rest=$(printf '%s' "${input#*'"tool_input"'}" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -n 1 |
+    LC_ALL=C sed -E 's/^"command"[[:space:]]*:[[:space:]]*"//; s/"$//')
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    rest=$(printf '%s' "$rest" | LC_ALL=C sed -E 's/^( |\\[nt])*//')
+    next=$(printf '%s' "$rest" |
+      LC_ALL=C sed -nE 's#^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.,:/+@%-]*( |\\[nt])(.*)$#\2#p')
+    [ -n "$next" ] || break
+    rest=$next
+  done
+  word=$(printf '%s' "$rest" |
+    LC_ALL=C sed -nE 's/^(rg|grep|ag|find|fd)([ ;&|<>]|\\[nt]|$).*/\1/p')
+  if [ -n "$word" ] && ! command -v "$word" >/dev/null 2>&1; then
+    exit 0
+  fi
+  progs=$(printf '%s' "$out" | tr -d '\n\r' |
+    LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
+    LC_ALL=C grep -Eo '(:[[:space:]]*"|[ ;&|(]|\\n)atl (rg|grep|ag|find|fd)( |"|\\|$)' |
+    LC_ALL=C sed -E 's/^.*atl ([a-z]+).*$/\1/')
+  for prog in $progs; do
+    command -v "$prog" >/dev/null 2>&1 || exit 0
+  done
+fi
+[ -z "$out" ] || printf '%s\n' "$out"
+exit "$rc"

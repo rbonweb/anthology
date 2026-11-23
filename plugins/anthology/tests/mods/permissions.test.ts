@@ -416,7 +416,7 @@ describe('checkBash', () => {
       { decision: 'deny', reason: 'guard', hook: 'PreToolUse' },
       { decision: 'deny', rule: 'Bash(cat:*)' },
       { decision: 'deny', reason: 'denied by mode' },
-      { decision: 'allow', rule: 'Bash(rtk *)' },
+      { decision: 'allow', rule: 'Bash(atl *)' },
       { ...ASK, rule: 'Bash(ls:*)' },
       { ...ASK, setting: 'permissions.blockReadsOutsideWorkingDirectories' },
       { ...ASK, hook: 'PreToolUse' },

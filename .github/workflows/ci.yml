@@ -148,18 +148,18 @@ jobs:
       - name: CLI syntax smoke
         run: ci/jobs/cli-syntax.sh
 
-  rtk-test:
-    # $RTK_TEST: rtk's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
+  atl-test:
+    # $ATL_TEST: atl's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Run the rtk tests in the pinned Rust image
-        run: scripts/rtk-test.sh
+      - name: Run the atl tests in the pinned Rust image
+        run: scripts/atl-test.sh
       - name: Run the release binary with the network off
-        run: scripts/rtk-net-test.sh
+        run: scripts/atl-net-test.sh
 
   # The Rust port (design §14.1). Each job runs ci/jobs/<job>.sh; the lane that owns a job edits
   # its script, never this file (plan §0.2). Placeholder scripts echo their name until then.

@@ -1,4 +1,4 @@
-//! The workspace and rtk build with the same Rust channel (GC-18, m-17). Only the channel must be
+//! The workspace and atl build with the same Rust channel (GC-18, m-17). Only the channel must be
 //! equal; the components and targets may differ.
 
 use std::path::Path;
@@ -30,10 +30,10 @@ fn channel(path: &Path) -> String {
 }
 
 #[test]
-fn the_workspace_channel_equals_rtks() {
+fn the_workspace_channel_equals_atls() {
     let ours = channel(&repo::path("rust-toolchain.toml"));
-    let rtk = channel(&repo::path("rtk/rust-toolchain.toml"));
-    assert_eq!(ours, rtk, "rust-toolchain.toml and rtk/rust-toolchain.toml");
+    let atl = channel(&repo::path("atl/rust-toolchain.toml"));
+    assert_eq!(ours, atl, "rust-toolchain.toml and atl/rust-toolchain.toml");
 }
 
 #[test]
