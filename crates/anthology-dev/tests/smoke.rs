@@ -1061,6 +1061,59 @@ mod smoke_body_tests {
         assert!(calls[0].flags.iter().any(|f| f == "bypassPermissions"));
     }
 
+    /// Every model run of a smoke must carry exactly the unscrubbed environment.
+    fn assert_all_unscrubbed(calls: &Calls, want_runs: usize) {
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), want_runs, "model runs");
+        for (i, c) in calls.iter().enumerate() {
+            assert_eq!(c.extra_env, Some(no_scrub()), "model run {i}");
+        }
+    }
+
+    /// On Linux, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` makes Claude Code run its subprocesses in
+    /// bubblewrap. It then cannot create an agent worktree ("Failed to resolve base branch ...")
+    /// and a Bash call cannot create `.claude/` in the repo. The four smokes that need either must
+    /// run with the scrub off, as `writer-memory-commit` does.
+    #[test]
+    fn test_worktree_base_runs_both_sessions_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        // Only `clone` has to leave something behind: the smoke writes into the clone.
+        deps.git = Box::new(|_ctx, tmp, _cwd, args| {
+            if args.first() == Some(&"clone") {
+                fs::create_dir_all(tmp.join("repo")).map_err(|e| e.to_string())?;
+            }
+            Ok(String::new())
+        });
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::worktree_base::run);
+        assert_eq!(status, Status::Fail); // no agent ran, so no marker
+        assert_all_unscrubbed(&calls, 2); // the baseRef=head run and the control
+    }
+
+    #[test]
+    fn test_model_check_runs_every_agent_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        fake_make_repo(&mut deps);
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::model_check::run);
+        assert_eq!(status, Status::Fail); // no transcripts
+        assert_all_unscrubbed(&calls, EXPECTED_ROSTER.len());
+    }
+
+    #[test]
+    fn test_knowledge_read_writers_runs_every_writer_unscrubbed() {
+        let mut deps = deps();
+        let calls = fake_prompt_run(&mut deps, nothing);
+        fake_make_repo(&mut deps);
+        let ctx = ctx_with(no_auth_env(), deps);
+        let (status, _) = first_run(&ctx, cases::knowledge_read_writers::run);
+        assert_eq!(status, Status::Fail); // no transcripts
+        let writers = EXPECTED_ROSTER.iter().filter(|row| row.2).count();
+        assert_all_unscrubbed(&calls, writers);
+    }
+
     #[test]
     fn test_the_other_model_smokes_keep_the_scrub() {
         let mut deps = deps();
@@ -1191,7 +1244,8 @@ mod smoke_body_tests {
         let ((status, reason), calls) = run(note, save, "echo main");
         assert_eq!(status, Status::Pass, "{reason}");
         let call = calls.borrow()[0].clone();
-        assert_eq!(call.extra_env, None); // the default scrub stays on
+        // The scrub is off: on Linux it runs Bash in bubblewrap with the repo's `.claude` read-only.
+        assert_eq!(call.extra_env, Some(no_scrub()));
         assert_eq!(call.flags[..2], ["--model", "sonnet"]);
         assert_eq!(flag_after(&call.flags, "--max-turns"), "12");
         assert!(call.flags.iter().any(|f| f == "stream-json"));
