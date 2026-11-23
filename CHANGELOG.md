@@ -10,6 +10,43 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- rtk is now ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs. Everything that
+  carried the old name is renamed: the `atl/` folder, the `atl` command and its `atl-hook`,
+  `atl.lock`, the `atl--v<version>` release tags and `atl-<target>.tar.gz` archives, the
+  `ATL_*` environment variables, the `atl_path` key in `state.json`, the install under
+  `<plugin data>/atl/`, the history under `~/.claude/anthology/atl/`, project filters in
+  `.atl/filters.toml` (they need `atl trust` again), `anthology atl-install`, and the allow
+  rule `Bash(atl *)`. There is no `rtk` alias. ATL stays under the Apache License 2.0:
+  `atl/NOTICE` credits upstream and ships with `atl/LICENSE` in every release archive, and the
+  tool's README, DISCLAIMER and manifests describe the fork. Its bug-report link, its hook's
+  install hint and its package maintainer now point at Anthology. `scripts/atl-rename.sh`
+  applies the rename rule again, and `scripts/sync-atl.sh` merges a new upstream release over
+  the renamed base. Tags already published under the old name stay as they are. The guard and
+  the hook still recognise the old `rtk` name, so a command typed with it is checked as
+  before. Routing guide section 7 is now "Command output: ATL (Anthology Token Layer)".
+  `anthology` now needs `anthology-guardrails` `~0.2.7`. The binary is `1.2.1-anthology.6`.
+  See ADR-035.
+- The session-start guard self-test also runs an ATL runner form
+  (`atl run -c 'npx playwright install'`) and expects it blocked, so a guard binary too old
+  to look inside `atl` commands warns "guardrails may be OFF" instead of passing quietly.
+  `scripts/release.sh` refuses to tag `anthology` or `anthology-guardrails` while the
+  plugin's `anthology.lock` pins an `anthology-bin` older than the workspace version.
+- Upgrading: after updating, re-run `/anthology:setup`, then restart your sessions. Session
+  start installs ATL beside the old files and removes nothing. Until you run setup, `atl`
+  commands prompt, and session start asks you to run it. Setup replaces the `Bash(rtk *)`
+  allow it added earlier with `Bash(atl *)` (an `rtk` allow you wrote yourself is never
+  touched), and shows, then deletes after you confirm, what the old install left: the
+  `rtk_path` entry in `state.json`, `<plugin data>/rtk/` and the old history in
+  `~/.claude/anthology/rtk/`. The old history is deleted, not migrated. Remove covers both the
+  ATL and the old files. Upstream rtk's own folders are never touched. A session started
+  before setup keeps the old hook: it exits cleanly, and `rtk` commands there fail until you
+  restart the session.
+- Downgrading to 0.2.x: that release's `/anthology:setup remove` does not know about ATL, so
+  it leaves `<plugin data>/atl/` and the ATL history in `~/.claude/anthology/atl/` in place.
+  Delete both folders by hand.
+
 #### Added
 
 - `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
@@ -413,6 +450,11 @@ a new version section.
 
 #### Changed
 
+- The guard reads `atl`, the new name of the command-output tool (ATL, Anthology Token Layer),
+  the way it read `rtk`: it looks through `atl run -c '…'`, `atl err …` and the other ATL
+  runners and checks the command inside. The old `rtk` name is still read the same way, so a
+  command typed with it cannot hide what it runs. Messages name ATL. `anthology` 0.3.0 needs
+  this release (`~0.2.7`). The change ships in the next `anthology` binary (0.2.0).
 - The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
   one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
   a backtick starts a command substitution, here one that never ends, so the block is right but

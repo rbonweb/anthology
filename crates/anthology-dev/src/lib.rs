@@ -5,6 +5,7 @@
 //! Until then the command exits 70 with `anthology-dev: <command> is not ported yet`.
 #![forbid(unsafe_code)]
 
+pub mod atl_trim;
 pub mod eval_baseline;
 pub mod gen_errno;
 pub mod gen_unicode;
@@ -15,7 +16,6 @@ pub mod lock;
 pub mod memory_diff;
 pub mod release_edit;
 pub mod replay;
-pub mod rtk_trim;
 pub mod seed;
 pub mod semver;
 pub mod smoke;
@@ -66,14 +66,14 @@ impl Output {
 
 const USAGE: &str = "usage: anthology-dev <command> [args]
 commands:
-  vendor fetch|build|check|sync|diff|set-rtk-upstream
+  vendor fetch|build|check|sync|diff|set-atl-upstream
   version-bump
   release-edit plugin-version|check-version|check-dependents|changelog-check|changelog-move|set-version|set-source-version
   memory-diff
   startup-budget
   eval-baseline record|compare|candidate
   upstream-watch
-  rtk-trim
+  atl-trim
   smoke
   lock write|check|check-fresh
   seed
@@ -102,7 +102,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("startup-budget") => startup_budget::run(rest, stdin),
         Some("eval-baseline") => eval_baseline::run(rest, stdin),
         Some("upstream-watch") => upstream_watch::run(rest, stdin),
-        Some("rtk-trim") => rtk_trim::run(rest, stdin),
+        Some("atl-trim") => atl_trim::run(rest, stdin),
         Some("smoke") => smoke::run(rest, stdin),
         Some("lock") => lock::run(rest, stdin),
         Some("seed") => seed::run(rest, stdin),

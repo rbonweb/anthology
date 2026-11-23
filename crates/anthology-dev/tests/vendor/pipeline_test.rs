@@ -335,7 +335,7 @@ fn test_check_skips_subtree_entries() {
         c.f.fetch(e)
     };
     let subtree =
-        jv(r#"{"name": "rtk", "managed_by": "subtree", "license": "Apache-2.0", "target": "rtk"}"#);
+        jv(r#"{"name": "atl", "managed_by": "subtree", "license": "Apache-2.0", "target": "atl"}"#);
     c.f.build_all(&c.entries);
     let mut all = c.entries.clone();
     all.push(subtree);
@@ -344,7 +344,7 @@ fn test_check_skips_subtree_entries() {
         vendor::check(&c.f.root, Some(&fetch)).unwrap(),
         Vec::<String>::new()
     );
-    assert!(!calls.borrow().iter().any(|n| n == "rtk"));
+    assert!(!calls.borrow().iter().any(|n| n == "atl"));
     vendor::build(&c.f.root, "plain", None, Some(&fetch), false).unwrap(); // others still build
-    assert!(vendor::build(&c.f.root, "rtk", None, Some(&fetch), false).is_err());
+    assert!(vendor::build(&c.f.root, "atl", None, Some(&fetch), false).is_err());
 }

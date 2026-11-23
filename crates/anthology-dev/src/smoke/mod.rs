@@ -39,8 +39,8 @@
 //! - `context-cap` ships a POSIX `sh` hook, not a `python3` one (the smoke needs no Python).
 //! - `guard-timeout` is new (m-8); `--list` shows it after the twelve original names, then the
 //!   EV1b smokes (`binary-missing`, `live-*`).
-//! - `approved_repo` approves with MS1's `approve` in process, and `rtk-rewrite` installs rtk
-//!   with `anthology rtk-install`; smoke.py ran the Python scripts for both.
+//! - `approved_repo` approves with MS1's `approve` in process, and `atl-rewrite` installs atl
+//!   with `anthology atl-install`; smoke.py ran the Python scripts for both.
 //! - Progress lines go to the progress writer as each smoke finishes (`run` writes them to
 //!   stdout; [`run_with`] collects them into the [`Output`] for the tests).
 
@@ -148,8 +148,8 @@ pub const SMOKES: [SmokeDef; 19] = [
         needs_anthology: true,
     },
     SmokeDef {
-        name: "rtk-rewrite",
-        run: cases::rtk_rewrite::run,
+        name: "atl-rewrite",
+        run: cases::atl_rewrite::run,
         needs_model: true,
         needs_claude: true,
         needs_anthology: true,

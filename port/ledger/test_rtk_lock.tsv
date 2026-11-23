@@ -1,6 +1,6 @@
 # python_id	status	rust_test	note
-test_rtk_lock.RtkLockTest.test_exact_keys	ported	crates/repo-tests/tests/rtk_lock.rs::rtk_lock_test::test_exact_keys	
-test_rtk_lock.RtkLockTest.test_load_lock_accepts_it	ported	crates/repo-tests/tests/rtk_lock.rs::rtk_lock_test::test_load_lock_accepts_it	
-test_rtk_lock.RtkLockTest.test_sha256_for_exactly_the_four_targets	ported	crates/repo-tests/tests/rtk_lock.rs::rtk_lock_test::test_sha256_for_exactly_the_four_targets	
-test_rtk_lock.RtkLockTest.test_tag_and_repo	ported	crates/repo-tests/tests/rtk_lock.rs::rtk_lock_test::test_tag_and_repo	
-test_rtk_lock.RtkLockTest.test_version_matches_cargo_toml	ported	crates/repo-tests/tests/rtk_lock.rs::rtk_lock_test::test_version_matches_cargo_toml	
+test_rtk_lock.RtkLockTest.test_exact_keys	ported	crates/repo-tests/tests/atl_lock.rs::atl_lock_test::test_exact_keys	
+test_rtk_lock.RtkLockTest.test_load_lock_accepts_it	ported	crates/repo-tests/tests/atl_lock.rs::atl_lock_test::test_load_lock_accepts_it	
+test_rtk_lock.RtkLockTest.test_sha256_for_exactly_the_four_targets	ported	crates/repo-tests/tests/atl_lock.rs::atl_lock_test::test_sha256_for_exactly_the_four_targets	
+test_rtk_lock.RtkLockTest.test_tag_and_repo	ported	crates/repo-tests/tests/atl_lock.rs::atl_lock_test::test_tag_and_repo	
+test_rtk_lock.RtkLockTest.test_version_matches_cargo_toml	ported	crates/repo-tests/tests/atl_lock.rs::atl_lock_test::test_version_matches_cargo_toml	

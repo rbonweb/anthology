@@ -448,7 +448,7 @@ enum G {
 }
 
 const RULES: &[&str] = &[
-    "Bash(rtk *)",
+    "Bash(atl *)",
     "Bash(anthology-mem save *)",
     "Bash(anthology-mem save:*)",
     "Bash(ls)",
@@ -544,8 +544,8 @@ const ESCAPED: &[&str] = &[
     r#""\ud800""#,
     r#""x\udc00y""#,
     r#""\ud83d\ude00""#,
-    r#""Bash(rtk \u002a)""#,
-    r#""Bash(rtk *)\u0000""#,
+    r#""Bash(atl \u002a)""#,
+    r#""Bash(atl *)\u0000""#,
     r#""\u2028\n\t\/""#,
     r#""head\u0020""#,
     r#""\u0068ead""#,
@@ -901,7 +901,7 @@ fn setup_like(rng: &mut Rng) -> Vec<Value> {
         "Bash(anthology-mem save:*)"
     };
     let mut ops = vec![
-        op_add(&["permissions", "allow"], s("Bash(rtk *)"), None),
+        op_add(&["permissions", "allow"], s("Bash(atl *)"), None),
         op_add(&["permissions", "allow"], s(mem), Some("mem-save")),
         op_add(
             &["permissions", "deny"],
@@ -962,7 +962,7 @@ fn gen_value(rng: &mut Rng) -> Value {
             r#"{"a": [1, {"b": null}], "c": "é"}"#,
             "[]",
             "{}",
-            r#"["Bash(rtk *)"]"#,
+            r#"["Bash(atl *)"]"#,
             r#"{"baseRef": "head"}"#,
         ]))
         .unwrap_or(Value::Null),
@@ -1179,8 +1179,8 @@ fn edit_text(rng: &mut Rng, text: &str) -> String {
             rng.pick(&["\"fresh\"", "1", "\"head\" ", "null"]),
             1,
         ),
-        1 => text.replacen("\"Bash(rtk *)\"", "\"Bash(make *)\"", 1),
-        2 => text.replacen("\"Bash(rtk *)\",", "", 1),
+        1 => text.replacen("\"Bash(atl *)\"", "\"Bash(make *)\"", 1),
+        2 => text.replacen("\"Bash(atl *)\",", "", 1),
         3 => text.replacen("[", "[\"Bash(pwd)\", ", 1),
         4 => match st::redact(text) {
             Ok(_) => text.replacen('{', "{\"extra\": {\"k\": [1]}, ", 1),
@@ -1729,7 +1729,7 @@ fn seeds() -> Vec<Value> {
         compact(r#"{"env": {"API_TOKEN": "hunter2", "PLAIN": "sk-live-123"}, "model": "opus", "permissions": {"allow": ["Bash(ls)"]}, "mcp": {"headers": {"Authorization": "Bearer abc.def"}}, "hooks": {"Stop": [{"command": "curl https://hooks.example/XYZSECRET"}]}, "proxyUrl": "http://u:s3cr3t-cookie@proxy"}"#),
         "{\n  \"model\": \"opus\",\n  \"permissions\": {\"allow\": [\"Bash(ls)\"]},\n  \"env\": {\"API_TOKEN\": \"hunter2\", \"PLAIN\": \"sk-live-123\", \"N\": 3}\n}\n".into(),
         indent(r#"{"permissions": {"allow": ["Bash(ls)"]}, "apiKeyHelper": "/bin/echo sk-live-123"}"#, "  ") + "\n",
-        indent(r#"{"permissions": {"allow": ["Bash(rtk *)", "Bash(ls)"]}}"#, "  ") + "\n",
+        indent(r#"{"permissions": {"allow": ["Bash(atl *)", "Bash(ls)"]}}"#, "  ") + "\n",
         r#"{"a": 1,}"#.into(),
         "{".into(),
         "[1, 2]".into(),
@@ -1745,7 +1745,7 @@ fn seeds() -> Vec<Value> {
     let mut rng = Rng::new(0x5e7);
     let ops = || {
         vec![
-            op_add(&["permissions", "allow"], s("Bash(rtk *)"), None),
+            op_add(&["permissions", "allow"], s("Bash(atl *)"), None),
             op_add(
                 &["permissions", "allow"],
                 s("Bash(anthology-mem save *)"),

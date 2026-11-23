@@ -2,7 +2,7 @@
   "cases": {
     "agent-fields": 1.0,
     "browser-browseros-only": 1.0,
-    "guard-beats-rtk": 1.0,
+    "guard-beats-atl": 1.0,
     "guard-g1": 1.0,
     "guard-g4": 1.0,
     "guard-g6": 1.0,

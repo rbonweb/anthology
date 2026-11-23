@@ -7,7 +7,9 @@
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 6, "params": {"rule": null, "case": ["Bash", {"command": "docker run --rm mcr.microsoft.com/playwright:v1.49.0 npx playwright test"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 7, "params": {"rule": null, "case": ["Bash", {"command": "docker compose run e2e npx playwright test"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 8, "params": {"rule": null, "case": ["Bash", {"command": "rtk git status"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 15, "params": {"rule": null, "case": ["Bash", {"command": "atl git status"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 9, "params": {"rule": null, "case": ["Bash", {"command": "rtk by\u0070ass git log"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 16, "params": {"rule": null, "case": ["Bash", {"command": "atl by\u0070ass git log"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 10, "params": {"rule": null, "case": ["Read", {"file_path": "src/chrome-extension/manifest.json"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 11, "params": {"rule": null, "case": ["mcp__browseros-neo__navigate", {"url": "https://x.dev"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_commands", "row": 12, "params": {"rule": null, "case": ["WebFetch", {"url": "https://x.dev", "prompt": "summarize"}]}}
@@ -32,6 +34,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 3, "params": {"rule": null, "case": ["Bash", {"command": "docker exec e2e npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 4, "params": {"rule": null, "case": ["Bash", {"command": "sudo docker run img npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 5, "params": {"rule": null, "case": ["Bash", {"command": "rtk docker run img npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 14, "params": {"rule": null, "case": ["Bash", {"command": "atl docker run img npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 6, "params": {"rule": null, "case": ["Bash", {"command": "docker run img sh -c 'npx playwright install && npx playwright test'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 7, "params": {"rule": null, "case": ["Bash", {"command": "docker run img bash -lc 'chromium --headless --remote-debugging-port=9222'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_docker_exemption", "row": 8, "params": {"rule": null, "case": ["Bash", {"command": "docker run img chromium --remote-debugging-port=9222"}]}}
@@ -164,6 +167,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 4, "params": {"rule": null, "case": ["Bash", {"command": "ag agent-browser"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 5, "params": {"rule": null, "case": ["Bash", {"command": "ack agent-browser"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 6, "params": {"rule": null, "case": ["Bash", {"command": "rtk grep -rn agent-browser src"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 55, "params": {"rule": null, "case": ["Bash", {"command": "atl grep -rn agent-browser src"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 7, "params": {"rule": null, "case": ["Bash", {"command": "git grep agent-browser"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 8, "params": {"rule": null, "case": ["Bash", {"command": "git log --oneline -- docs/agent-browser.md"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_g4_neighbours", "row": 9, "params": {"rule": null, "case": ["Bash", {"command": "git add docs/agent-browser"}]}}
@@ -295,7 +299,9 @@
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 17, "params": {"rule": null, "case": ["Bash", {"command": "sudo ls"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 18, "params": {"rule": null, "case": ["Bash", {"command": "time ls"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 19, "params": {"rule": null, "case": ["Bash", {"command": "rtk"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 38, "params": {"rule": null, "case": ["Bash", {"command": "atl"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 20, "params": {"rule": null, "case": ["Bash", {"command": "rtk git diff"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 39, "params": {"rule": null, "case": ["Bash", {"command": "atl git diff"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 21, "params": {"rule": null, "case": ["Bash", {"command": "bash -c 'ls'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 22, "params": {"rule": null, "case": ["Bash", {"command": "bash script.sh"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_prose_and_odd_but_ordinary_commands", "row": 23, "params": {"rule": null, "case": ["Bash", {"command": "sh -c"}]}}
@@ -375,6 +381,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 59, "params": {"rule": null, "case": ["Bash", {"command": "cat <<EOF\u000a\\$(npx playwright install)\u000aEOF"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 60, "params": {"rule": null, "case": ["Bash", {"command": "sudo -iu bob ls"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 61, "params": {"rule": null, "case": ["Bash", {"command": "rtk proxy -- git status"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 72, "params": {"rule": null, "case": ["Bash", {"command": "atl proxy -- git status"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 62, "params": {"rule": null, "case": ["Bash", {"command": "xargs --max-args 1 echo"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 63, "params": {"rule": null, "case": ["Bash", {"command": "tar czf /tmp/p.tgz -C src docs"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_allowed_round_1_neighbours", "row": 64, "params": {"rule": null, "case": ["Bash", {"command": "git -C ~/Library/Application\\ Support/Code status"}]}}
@@ -457,6 +464,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 3, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 4, "params": {"rule": "G1", "case": ["Bash", {"command": "docker ps; npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 5, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 198, "params": {"rule": "G1", "case": ["Bash", {"command": "atl npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 6, "params": {"rule": "G1", "case": ["Bash", {"command": "ls || npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 7, "params": {"rule": "G1", "case": ["Bash", {"command": "ls | npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 8, "params": {"rule": "G1", "case": ["Bash", {"command": "ls & npx playwright install"}]}}
@@ -507,10 +515,15 @@
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 53, "params": {"rule": "G1", "case": ["Bash", {"command": "echo \"`npx playwright install`\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 54, "params": {"rule": "G1", "case": ["Bash", {"command": "echo $(echo $(npx playwright install))"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 55, "params": {"rule": "G1", "case": ["Bash", {"command": "FOO=1 BAR=2 sudo env X=3 rtk npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 199, "params": {"rule": "G1", "case": ["Bash", {"command": "FOO=1 BAR=2 sudo env X=3 atl npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 56, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk -u npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 200, "params": {"rule": "G1", "case": ["Bash", {"command": "atl -u npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 57, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk by\u0070ass npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 201, "params": {"rule": "G1", "case": ["Bash", {"command": "atl by\u0070ass npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 58, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk proxy npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 202, "params": {"rule": "G1", "case": ["Bash", {"command": "atl proxy npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 59, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo rtk proxy npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 203, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo atl proxy npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 60, "params": {"rule": "G1", "case": ["Bash", {"command": "npx playwright install 2>&1 | tail -5"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 61, "params": {"rule": "G1", "case": ["Bash", {"command": "npx playwright install > /dev/null 2>&1"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 62, "params": {"rule": "G1", "case": ["Bash", {"command": "npx playwright install # for tests"}]}}
@@ -583,6 +596,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 129, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo -iu bob npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 130, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo --user bob npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 131, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk proxy -- npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 204, "params": {"rule": "G1", "case": ["Bash", {"command": "atl proxy -- npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 132, "params": {"rule": "G1", "case": ["Bash", {"command": "xargs --max-args 1 npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 133, "params": {"rule": "G1", "case": ["Bash", {"command": "coproc npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 134, "params": {"rule": "G1", "case": ["Bash", {"command": "echo \"$(cat <<'EOF'\u000ax\u000aEOF\u000a)\"; npx playwright install"}]}}
@@ -633,6 +647,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 179, "params": {"rule": "G1", "case": ["Bash", {"command": "eval npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 180, "params": {"rule": "G1", "case": ["Bash", {"command": "cat <<EOF\u000ait's fine\u000aEOF\u000anpx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 181, "params": {"rule": "G2", "case": ["Bash", {"command": "rtk by\u0070ass open -a \"Google Chrome\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 205, "params": {"rule": "G2", "case": ["Bash", {"command": "atl by\u0070ass open -a \"Google Chrome\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 182, "params": {"rule": "G2", "case": ["Bash", {"command": "sudo open -a \"Google Chrome\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 183, "params": {"rule": "G2", "case": ["Bash", {"command": "cd x && open -a \"Google Chrome\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 184, "params": {"rule": "G2", "case": ["Bash", {"command": "FOO=1 open -a \"Google Chrome\""}]}}
@@ -642,6 +657,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 188, "params": {"rule": "G2", "case": ["Bash", {"command": "xvfb-run -a chromium"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 189, "params": {"rule": "G4", "case": ["Bash", {"command": "cd x && agent-browser open y"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 190, "params": {"rule": "G4", "case": ["Bash", {"command": "rtk proxy agent-browser open x"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 206, "params": {"rule": "G4", "case": ["Bash", {"command": "atl proxy agent-browser open x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 191, "params": {"rule": "G4", "case": ["Bash", {"command": "sudo agent-browser open x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 192, "params": {"rule": "G4", "case": ["Bash", {"command": "FOO=1 agent-browser open x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_chains_wrappers_and_prefixes", "row": 193, "params": {"rule": "G4", "case": ["Bash", {"command": "bash -c 'agent-browser open x'"}]}}
@@ -894,6 +910,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 12, "params": {"rule": "G1", "case": ["Bash", {"command": "fish --no-config --command='npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 13, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo fish --command='npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 14, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --shell fish -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 42, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --shell fish -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 15, "params": {"rule": "G1", "case": ["Bash", {"command": "fish -C 'npx playwright install' <<< x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 16, "params": {"rule": "G3", "case": ["Bash", {"command": "fish --command='cat ~/.config/chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 17, "params": {"rule": "G3", "case": ["Bash", {"command": "fish --command 'cat ~/.config/chromium/Default/Cookies'"}]}}
@@ -910,6 +927,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 28, "params": {"rule": "G3", "case": ["Bash", {"command": "fish --no-config --command='cat ~/.config/chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 29, "params": {"rule": "G3", "case": ["Bash", {"command": "sudo fish --command='cat ~/.config/chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 30, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk run --shell fish -c 'cat ~/.config/chromium/Default/Cookies'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 43, "params": {"rule": "G3", "case": ["Bash", {"command": "atl run --shell fish -c 'cat ~/.config/chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 31, "params": {"rule": "G3", "case": ["Bash", {"command": "fish -C 'cat ~/.config/chromium/Default/Cookies' <<< x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 32, "params": {"rule": "G1", "case": ["Bash", {"command": "echo 'npx playwright install' | fish -C 'echo hi'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_fish_is_parsed_with_fish_options", "row": 33, "params": {"rule": "G3", "case": ["Bash", {"command": "docker run img fish --command='cat ~/.config/chromium/Default/Cookies'"}]}}
@@ -1101,6 +1119,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 31, "params": {"rule": "G3", "case": ["Bash", {"command": "python3 -c \"import glob, os; glob.glob(os.path.expanduser('~/.config/chrom*/Default/Cookies'))\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 32, "params": {"rule": "G3", "case": ["Bash", {"command": "python3 -c \"import glob; glob.glob('\u002fUsers/someone/Library/Application Support/G*/Chrome/*/Cookies')\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 33, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk run --shell python3 -c \"open('\u002fhome/tester/.config/google-chrome/Default/Cookies')\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 58, "params": {"rule": "G3", "case": ["Bash", {"command": "atl run --shell python3 -c \"open('\u002fhome/tester/.config/google-chrome/Default/Cookies')\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 34, "params": {"rule": null, "case": ["Bash", {"command": "python3 -c 'print(1)'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 35, "params": {"rule": null, "case": ["Bash", {"command": "node -e \"console.log(path)\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_inline_code", "row": 36, "params": {"rule": null, "case": ["Bash", {"command": "python3 -c \"print('chromium')\""}]}}
@@ -1205,6 +1224,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 77, "params": {"rule": "G3", "case": ["Bash", {"command": "(cat ~/.config/google-chrome/Default/Cookies)"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 78, "params": {"rule": "G3", "case": ["Bash", {"command": "echo \"$(cat ~/.config/google-chrome/Default/Cookies)\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 79, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk proxy cat ~/.config/google-chrome/Default/Cookies"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 91, "params": {"rule": "G3", "case": ["Bash", {"command": "atl proxy cat ~/.config/google-chrome/Default/Cookies"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 80, "params": {"rule": "G3", "case": ["Bash", {"command": "ls Library/Application\\ Support/Google"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 81, "params": {"rule": "G3", "case": ["Bash", {"command": "cd ~/Library/Application\\ Support && ls Google"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_g3_profile_paths_in_shell", "row": 82, "params": {"rule": "G3", "case": ["Bash", {"command": "cd ~/Library/Application\\ Support; cat Google/Chrome/Default/Cookies"}]}}
@@ -1345,6 +1365,7 @@
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 7, "params": {"rule": "G1", "case": ["Bash", {"command": "fish -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 8, "params": {"rule": "G1", "case": ["Bash", {"command": "fish --no-config -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 9, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --shell fish -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 16, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --shell fish -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 10, "params": {"rule": "G1", "case": ["Bash", {"command": "echo 'npx playwright install' | fish"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 11, "params": {"rule": null, "case": ["Bash", {"command": "pypy3 -c 'print(1)'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 12, "params": {"rule": null, "case": ["Bash", {"command": "tsx src/index.ts"}]}}
@@ -1352,50 +1373,95 @@
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 14, "params": {"rule": null, "case": ["Bash", {"command": "fish -c 'echo playwright'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_more_interpreters_and_fish", "row": 15, "params": {"rule": null, "case": ["Bash", {"command": "fish script.fish"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 0, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 45, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 1, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run -- npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 46, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run -- npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 2, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 47, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 3, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --command 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 48, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --command 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 4, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --command='npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 49, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --command='npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 5, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --shell bash -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 50, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --shell bash -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 6, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run -c 'npx playwright install' --shell zsh"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 51, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run -c 'npx playwright install' --shell zsh"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 7, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --shell=bash --command 'cd e2e && npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 52, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --shell=bash --command 'cd e2e && npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 8, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run -vc 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 53, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run -vc 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 9, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk err npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 54, "params": {"rule": "G1", "case": ["Bash", {"command": "atl err npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 10, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk err --shell bash 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 55, "params": {"rule": "G1", "case": ["Bash", {"command": "atl err --shell bash 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 11, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk err --shell=sh 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 56, "params": {"rule": "G1", "case": ["Bash", {"command": "atl err --shell=sh 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 12, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk test npx playwright test"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 57, "params": {"rule": "G1", "case": ["Bash", {"command": "atl test npx playwright test"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 13, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk test ! npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 58, "params": {"rule": "G1", "case": ["Bash", {"command": "atl test ! npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 14, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk test --shell sh 'npx playwright test'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 59, "params": {"rule": "G1", "case": ["Bash", {"command": "atl test --shell sh 'npx playwright test'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 15, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk summary npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 60, "params": {"rule": "G1", "case": ["Bash", {"command": "atl summary npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 16, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk summary --shell bash 'npm ci && npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 61, "params": {"rule": "G1", "case": ["Bash", {"command": "atl summary --shell bash 'npm ci && npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 17, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk -v run npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 62, "params": {"rule": "G1", "case": ["Bash", {"command": "atl -v run npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 18, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk -u summary npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 63, "params": {"rule": "G1", "case": ["Bash", {"command": "atl -u summary npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 19, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run --skip-env npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 64, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run --skip-env npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 20, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk err \"npx playwright install\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 65, "params": {"rule": "G1", "case": ["Bash", {"command": "atl err \"npx playwright install\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 21, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo rtk run npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 66, "params": {"rule": "G1", "case": ["Bash", {"command": "sudo atl run npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 22, "params": {"rule": "G1", "case": ["Bash", {"command": "cd e2e && rtk run -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 67, "params": {"rule": "G1", "case": ["Bash", {"command": "cd e2e && atl run -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 23, "params": {"rule": "G1", "case": ["Bash", {"command": "rtk run bash -euo pipefail -c 'npx playwright install'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 68, "params": {"rule": "G1", "case": ["Bash", {"command": "atl run bash -euo pipefail -c 'npx playwright install'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 24, "params": {"rule": "G2", "case": ["Bash", {"command": "rtk run open -a \"Google Chrome\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 69, "params": {"rule": "G2", "case": ["Bash", {"command": "atl run open -a \"Google Chrome\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 25, "params": {"rule": "G2", "case": ["Bash", {"command": "rtk run -c 'open -a \"Google Chrome\"'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 70, "params": {"rule": "G2", "case": ["Bash", {"command": "atl run -c 'open -a \"Google Chrome\"'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 26, "params": {"rule": "G2", "case": ["Bash", {"command": "rtk err chromium --headless"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 71, "params": {"rule": "G2", "case": ["Bash", {"command": "atl err chromium --headless"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 27, "params": {"rule": "G4", "case": ["Bash", {"command": "rtk err agent-browser open x"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 72, "params": {"rule": "G4", "case": ["Bash", {"command": "atl err agent-browser open x"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 28, "params": {"rule": "G4", "case": ["Bash", {"command": "rtk run -c 'agent-browser open x'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 73, "params": {"rule": "G4", "case": ["Bash", {"command": "atl run -c 'agent-browser open x'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 29, "params": {"rule": "G4", "case": ["Bash", {"command": "rtk test --shell bash 'agent-browser open x'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 74, "params": {"rule": "G4", "case": ["Bash", {"command": "atl test --shell bash 'agent-browser open x'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 30, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk run -c 'cat ~/.config/chromium/Default/Cookies'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 75, "params": {"rule": "G3", "case": ["Bash", {"command": "atl run -c 'cat ~/.config/chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 31, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk run --shell python3 -c \"open('\u002fhome/tester/.config/chromium/Default/Cookies')\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 76, "params": {"rule": "G3", "case": ["Bash", {"command": "atl run --shell python3 -c \"open('\u002fhome/tester/.config/chromium/Default/Cookies')\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 32, "params": {"rule": "G3", "case": ["Bash", {"command": "rtk err 'cd ~/.config && cat chromium/Default/Cookies'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 77, "params": {"rule": "G3", "case": ["Bash", {"command": "atl err 'cd ~/.config && cat chromium/Default/Cookies'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 33, "params": {"rule": null, "case": ["Bash", {"command": "rtk run ls"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 78, "params": {"rule": null, "case": ["Bash", {"command": "atl run ls"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 34, "params": {"rule": null, "case": ["Bash", {"command": "rtk run -c 'git status'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 79, "params": {"rule": null, "case": ["Bash", {"command": "atl run -c 'git status'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 35, "params": {"rule": null, "case": ["Bash", {"command": "rtk err cargo build"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 80, "params": {"rule": null, "case": ["Bash", {"command": "atl err cargo build"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 36, "params": {"rule": null, "case": ["Bash", {"command": "rtk test cargo test"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 81, "params": {"rule": null, "case": ["Bash", {"command": "atl test cargo test"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 37, "params": {"rule": null, "case": ["Bash", {"command": "rtk test -f Cargo.toml"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 82, "params": {"rule": null, "case": ["Bash", {"command": "atl test -f Cargo.toml"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 38, "params": {"rule": null, "case": ["Bash", {"command": "rtk summary npm run build"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 83, "params": {"rule": null, "case": ["Bash", {"command": "atl summary npm run build"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 39, "params": {"rule": null, "case": ["Bash", {"command": "rtk run --shell bash -c 'echo playwright'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 84, "params": {"rule": null, "case": ["Bash", {"command": "atl run --shell bash -c 'echo playwright'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 40, "params": {"rule": null, "case": ["Bash", {"command": "rtk run -- git log --oneline"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 85, "params": {"rule": null, "case": ["Bash", {"command": "atl run -- git log --oneline"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 41, "params": {"rule": null, "case": ["Bash", {"command": "rtk err --shell bash 'cargo build 2>&1'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 86, "params": {"rule": null, "case": ["Bash", {"command": "atl err --shell bash 'cargo build 2>&1'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 42, "params": {"rule": null, "case": ["Bash", {"command": "rtk test --shell sh 'pytest -q'"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 87, "params": {"rule": null, "case": ["Bash", {"command": "atl test --shell sh 'pytest -q'"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 43, "params": {"rule": null, "case": ["Bash", {"command": "rtk run docker run img npx playwright install"}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 88, "params": {"rule": null, "case": ["Bash", {"command": "atl run docker run img npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 44, "params": {"rule": null, "case": ["Bash", {"command": "rtk err \"cargo build --release\""}]}}
+{"py": "test_guard_rules.RuleTableTest.test_rtk_command_runners_are_unwrapped", "row": 89, "params": {"rule": null, "case": ["Bash", {"command": "atl err \"cargo build --release\""}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rule_order_g5_g6_then_g3_g4_g1_g2", "row": 0, "params": {"case": ["mcp__playwright__x", {"command": "npx playwright install"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rule_order_g5_g6_then_g3_g4_g1_g2", "row": 1, "params": {"case": ["Bash", {"command": "npx playwright install ~/.config/google-chrome"}]}}
 {"py": "test_guard_rules.RuleTableTest.test_rule_order_g5_g6_then_g3_g4_g1_g2", "row": 2, "params": {"case": ["Bash", {"command": "agent-browser open x; npx playwright install"}]}}

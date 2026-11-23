@@ -263,9 +263,9 @@ const PREFIXES: &[&str] = &[
     "cross-env A=1",
     "npm-run-all",
     "concurrently",
-    "rtk",
-    "rtk run",
-    "rtk bypass",
+    "rtk",        // legacy
+    "rtk run",    // legacy
+    "rtk bypass", // legacy
     "mise exec --",
     "asdf exec",
     "direnv exec .",
@@ -370,6 +370,41 @@ fn rust_blocks_every_prefix_cross_case_the_shipped_python_blocks() {
         pending.len(),
         PENDING_SH.len(),
         "a PENDING_SH case now blocks: remove it from the list"
+    );
+}
+
+/// The shipped Python knows the token layer by its legacy name, `rtk`, so the frozen table above holds no
+/// `atl` row. `atl` is the same tool under its new name: each of its prefixes gets the verdict of its legacy
+/// `rtk` twin, for every target, and so blocks wherever the shipped Python blocked the legacy name.
+#[test]
+fn atl_prefixes_get_the_verdict_of_their_legacy_twins() {
+    let rows: Vec<(&str, &str)> = PREFIX_TABLE
+        .lines()
+        .map(|l| l.split_once('\t').expect("a `rule\\tcommand` line"))
+        .collect();
+    let (mut compared, mut blocked) = (0, 0);
+    for (rule, command) in rows {
+        // `rtk`, `rtk run` and `rtk bypass` all start with the legacy name
+        let legacy_rest = command.strip_prefix("rtk "); // legacy
+        let Some(rest) = legacy_rest else {
+            continue;
+        };
+        let atl = format!("atl {rest}");
+        compared += 1;
+        assert_eq!(
+            verdict(&atl),
+            verdict(command),
+            "{atl:?} against {command:?}"
+        );
+        if rule != "-" {
+            blocked += 1;
+            assert_ne!(verdict(&atl), Verdict::Allow, "{atl:?}");
+        }
+    }
+    assert_eq!(compared, 87, "three prefixes x 29 targets");
+    assert!(
+        blocked > 0,
+        "the table has shipped blocks behind the legacy prefixes"
     );
 }
 

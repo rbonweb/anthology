@@ -369,6 +369,39 @@ fn a_stale_lock_stops_the_release_before_any_edit() {
 }
 
 #[test]
+fn a_lock_pinning_a_binary_older_than_the_workspace_stops_the_release() {
+    // A plugin must not ship beside an older guard binary than the crates it was tested with
+    // (for example one that cannot look inside `atl` commands).
+    let Some(r) = repo() else { return };
+    let cargo = r
+        .read("Cargo.toml")
+        .replace("version = \"0.1.0\"", "version = \"0.2.0\"");
+    r.write("Cargo.toml", &cargo);
+    r.commit("bump the workspace");
+    let before = r.state();
+    for plugin in ["anthology", "anthology-guardrails"] {
+        let out = r.release(&[plugin, "0.2.0"]);
+        let all = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert_eq!(out.status.code(), Some(1), "{plugin}: {all}");
+        assert!(
+            all.contains(&format!(
+                "release: plugins/{plugin}/anthology.lock pins anthology-bin 0.1.0, older than the workspace version 0.2.0"
+            )),
+            "{plugin}: {all}"
+        );
+        assert_eq!(r.state(), before, "{plugin}");
+    }
+    assert!(r.dev_calls().is_empty(), "{:?}", r.dev_calls());
+    // A plugin without a lock is not held back by it.
+    let out = r.release(&["anthology-superpowers", "0.2.0"]);
+    assert!(
+        !text(&out.stderr).contains("older than the workspace version"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 fn a_missing_binary_tag_stops_the_release() {
     let Some(r) = repo() else { return };
     r.git(&["tag", "-d", "anthology-bin--v0.1.0"]);

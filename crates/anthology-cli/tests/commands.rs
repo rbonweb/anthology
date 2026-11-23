@@ -13,7 +13,7 @@ const COMMANDS: &[&[&str]] = &[
     &["setup", "apply"],
     &["setup", "remove"],
     &["doctor"],
-    &["rtk-install"],
+    &["atl-install"],
     &["mem", "search"],
     &["mem", "related"],
     &["mem", "orphans"],

@@ -372,7 +372,7 @@ mod unchanged_copies_test {
             assert!(repo::path(target).is_dir(), "{target}");
             assert!(!files_under(target).is_empty(), "{target}");
         }
-        // A subtree (rtk) keeps its LICENSE in its own tree, not in vendor/licenses/.
+        // A subtree (atl) keeps its LICENSE in its own tree, not in vendor/licenses/.
         let slugs: BTreeSet<String> = sources
             .iter()
             .filter(|s| !is_subtree(s))

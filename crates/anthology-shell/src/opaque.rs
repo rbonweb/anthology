@@ -1,5 +1,5 @@
 //! Opaque-construct reasons (SH2): what the expansion could not see into, per entry. Additive to Python's
-//! `_Entry` (design §7.1): the guard ignores them (parity), rtk's gate asks on any of them. Rust may mark more
+//! `_Entry` (design §7.1): the guard ignores them (parity), atl's gate asks on any of them. Rust may mark more
 //! than Python sees. Each reason is set on the entry it concerns:
 //!
 //! - `DynamicCommandWord`: the program is only known at run time. A `$(...)`/backtick placeholder was dropped
@@ -19,7 +19,7 @@
 //!   only (`Entry.code`), never as commands. Not for a package manager running its own verb (`bun install`,
 //!   `bun test`), though `code` keeps Python's value.
 //! - `UnknownWrapperOption`: the analysis may have misread or missed a command. An option of a wrapper,
-//!   package runner, package manager or `rtk` was not one known to take a value or not, so it may have taken
+//!   package runner, package manager or `atl` was not one known to take a value or not, so it may have taken
 //!   the next word; or env's script was found past env's own options or attached (`-S'...'`,
 //!   `--split-string=...`); or the program runs a command the analysis does not parse
 //!   (`prefixes::UNPARSED_RUNNERS`: `su -c`, `flock f cmd`, `busybox sh`, `ssh host cmd`, ...; or

@@ -45,16 +45,16 @@ A blocked agent stops and reports. Answer it or ask the user, then resume.
 - Cleanup: remove your own containers, images, volumes; never stop Docker.
 - Tests: changed part while developing; full suite once at the end. Busy machine: re-check in 5-10 min.
 - Delete literal paths only, never `rm -rf $VAR`: Claude Code asks on removals it can't prove safe.
-- Pass these rules to dispatched agents.
+- Pass these rules to agents.
 
 ## 6. Web
-- WebFetch/WebSearch are fine for reading; all real-browser work uses BrowserOS Neo (MCP), the only browser. One tab per agent.
+- WebFetch/WebSearch for reading; all real-browser work uses BrowserOS Neo (MCP), the only browser. One tab per agent.
 - Never agent-browser, host Playwright/Puppeteer, chrome-devtools MCP or Claude in Chrome. Never launch Chrome.
 - BrowserOS Neo unavailable: stop and ask. Never install a browser.
 
-## 7. Command output (rtk)
+## 7. Command output: ATL (Anthology Token Layer)
 - Output is condensed; treat it as complete. Exact text stays exact: `cat`, `grep -o/-c`, `jq -r`, `curl -o/-w`.
-- `rtk bypass <cmd>` only when a result is unusable.
+- `atl bypass <cmd>` only when a result is unusable.
 
 ## 8. Memory
 - project, feedback, reference notes: repo `.claude/memory/` (approved repos; auto memory off).
@@ -62,5 +62,5 @@ A blocked agent stops and reports. Answer it or ask the user, then resume.
 - Name notes `<type>-<topic-slug>.md`; link `[[note-name]]`. Index not enough: `anthology-mem search|related`.
 - Save corrections and confirmed approaches with the why. Commit repo notes as `chore(memory): ...`.
 - Agents save notes with `anthology-mem save`. Before each merge or pull, and at task end, commit any uncommitted `.claude/agent-memory/` changes, whichever agent wrote them.
-- Act on each "Worth remembering": save keepers, delete notes flagged wrong.
+- Act on each "Worth remembering": save keepers, delete wrong notes.
 - Never save secrets, home paths, emails or private hosts in repo memory.

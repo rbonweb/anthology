@@ -1025,3 +1025,47 @@ ADR-032 left the classifier's `Proven` unusable on its own: the paths it lists a
 **Consequences**
 
 Nothing calls `perm classify` yet; P5 wires it into the permission mod behind the core verdict. Versions are left to the release branch; the plugins pick the command up with the next `anthology.lock` bump. An older binary answers `perm` with usage (exit 2), which the mod treats as no decision.
+
+## ADR-035: rtk is renamed ATL (Anthology Token Layer)
+
+- **Date:** 2026-11-22
+- **Task:** the ATL rename (plan: `atl-rename-plan.md`; T4 is settings, setup and docs)
+- **Status:** Accepted
+
+**Context**
+
+The tool this repo ships as `rtk` is a fork of rtk by RTK AI Labs (github.com/rtk-ai/rtk), Apache-2.0 edition only: the BUSL-1.1 parts were trimmed (ADR-017). The owner decided to rename it everywhere. The Apache-2.0 license (section 6) does not let a derivative use the licensor's names as its own product name, and a fork that keeps shipping as `rtk` next to the upstream tool collides on the Bash path and in people's heads. Every ADR, CHANGELOG entry, plan and record dated before this one keeps the name it was written with; this ADR is the map from old to new.
+
+**Decision**
+
+| Before | After |
+|---|---|
+| tool, binary, package, folder `rtk/` | `atl` (`atl/`) |
+| display name | ATL (Anthology Token Layer); "ATL" on first mention in docs |
+| shims `bin/rtk`, `bin/rtk-hook` | `bin/atl`, `bin/atl-hook` |
+| `plugins/anthology/rtk.lock` | `plugins/anthology/atl.lock` |
+| release tag `rtk--v<version>` | `atl--v<version>`; the tags `rtk--v1.2.1-anthology.1` to `.5` stay where they are |
+| release assets `rtk-<target>.tar.gz` | `atl-<target>.tar.gz`, holding `atl`, `LICENSE` and `NOTICE` |
+| workflow `rtk-release.yml`, CI job `rtk-test`, scripts `rtk-*.sh`, `sync-rtk.sh` | `atl-release.yml`, `atl-test`, `atl-*.sh`, `sync-atl.sh` |
+| environment `RTK_*` | `ATL_*` |
+| state.json key `rtk_path` | `atl_path` |
+| install `<plugin data>/rtk/<version>/rtk` | `<plugin data>/atl/<version>/atl` |
+| history `~/.claude/anthology/rtk/` | `~/.claude/anthology/atl/` |
+| project filters `.rtk/filters.toml` | `.atl/filters.toml` (trust is asked again) |
+| settings allow `Bash(rtk *)` | `Bash(atl *)`, tag `token-layer` |
+| `anthology rtk-install` | `anthology atl-install` |
+| settings `ALLOW_RTK` | `ALLOW_ATL`, with `TAG_TOKEN_LAYER` and `LEGACY_ALLOW_RTK` |
+
+- **License.** `atl/LICENSE` stays verbatim (Copyright 2026 RTK AI Labs). One `atl/NOTICE` says that ATL is a modified version of rtk (github.com/rtk-ai/rtk), Copyright 2026 RTK AI Labs, Apache-2.0, renamed and trimmed by Anthology. Every ATL archive ships the license and the NOTICE. The README and the crate description keep "a fork of rtk by RTK AI Labs". Upstream URLs, the authors and copyright lines in the crate and `atl/CHANGELOG.md` do not change.
+- **No alias.** There is no `rtk` command, wrapper or hook name any more.
+- **Session start** installs ATL into `<plugin data>/atl/` and writes `atl_path`. It never removes `rtk_path` or `<plugin data>/rtk/`.
+- **The allow rule.** The `Bash(atl *)` op carries the tag `token-layer`, which is replaceable. In `reconcile` a stored op with no tag that adds `Bash(rtk *)` to `permissions.allow` counts as `token-layer`, so a re-run reverts it and adds the ATL rule. Only a rule an earlier setup recorded is removed; a `Bash(rtk *)` the user wrote is never touched. The op set changes, so `OPS_CHANGED` nudges a setup re-run.
+- **Setup apply** deletes the legacy leftovers, shown in the preview first, in this order: write `settings.json`; drop `rtk_path` from `state.json`; delete `<plugin data>/rtk/`; delete `~/.claude/anthology/rtk/` (the old history). The folder guards (not a symlink, under the plugin data folder, real path as expected) are the ones `remove` uses. If the settings write fails nothing else runs, so a retry finds it all. `setup remove` covers the ATL and the legacy targets. The owner's answer: the old history is deleted, not migrated; ATL starts with an empty one.
+- **Never touched:** upstream rtk's own folders (`~/.local/share/rtk`, `~/Library/Application Support/rtk`, a project's `.rtk/`), the first release's default history folder, and any `rtk` the user installed on their own.
+- **Security strings.** The guard and the hook keep recognising `rtk` as a legacy name next to `atl`: the hook's mention check, the shell peel (`TOKEN_LAYER_NAMES`), the gate's own-name check. A command typed with the old name is still checked.
+- **Fail-closed windows.** Plugin updated before setup: `atl` rewrites prompt. Download fails: `atl-hook` exits 0. An old session after setup: the old hook exits 0 and `rtk` is not found. The guard keeps running in all three.
+- **Guard pin.** The ATL peel needs a new `anthology` binary release, so `anthology` pins `anthology-guardrails` at `~0.2.7` (0.2.2 to 0.2.6 ship on binaries without the ATL peel).
+
+**Consequences**
+
+One rename touches about 15,000 lines, so it lands as one integration branch (T1 binary, CI and scripts; T2 shell and guard; T3 install, hook and doctor; T4 settings, setup and docs) behind a repo test that fails on any `rtk` outside an allowed path or an allowed line. The users' cost is one `/anthology:setup` run after the update. Cost if wrong: a user who never re-runs setup keeps prompts on `atl` rewrites and the old files on disk, which are small; both fail closed.

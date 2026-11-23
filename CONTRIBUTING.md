@@ -22,18 +22,18 @@ For what the product is and why it is built this way, read the [README](README.m
 | Path | What it holds |
 |---|---|
 | `.claude-plugin/marketplace.json` | The marketplace `anthology` and its three plugins |
-| `plugins/anthology/` | Agents, generated knowledge, the three skills (`setup`, `export`, `import`), the `sh` hooks in `hooks/`, the `bin/` wrappers, `rtk.lock`, `anthology.lock`, the routing guide |
+| `plugins/anthology/` | Agents, generated knowledge, the three skills (`setup`, `export`, `import`), the `sh` hooks in `hooks/`, the `bin/` wrappers, `atl.lock`, `anthology.lock`, the routing guide |
 | `plugins/anthology-guardrails/` | The `PreToolUse` guard shim (`hooks/guard.sh`), its bootstrap and `anthology.lock`; the rules are compiled into the binary |
 | `plugins/anthology-superpowers/` | Generated from `vendor/`, renamed from superpowers |
 | `crates/` | The Rust workspace: `anthology-cli` (the `anthology` binary) and the libraries it is built from (`anthology-core`, `anthology-guard`, `anthology-shell`, `anthology-memory`, `anthology-runtime`, `anthology-settings`, `anthology-pycompat`); and the tools that never ship: `anthology-dev` (the maintainer tools), `difftest` (the golden replayer), `anthology-testkit` and `repo-tests` (the repository checks) |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
-| `rtk/` | The rtk source, a git subtree with its history |
-| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `sync-rtk.sh`, `rtk-trim.sh`, `rtk-test.sh`, `rtk-net-test.sh`, `release.sh`, `run-evals.sh` |
+| `atl/` | The source of ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs, as a git subtree with its history. `atl/LICENSE` is upstream's Apache-2.0 license, kept as it is, and `atl/NOTICE` records the origin and the changes; both ship in every archive |
+| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
 | `evals/` | Behaviour evals (one `case.yaml` per case) and the mocked BrowserOS Neo server in `mocks/`; run with `scripts/run-evals.sh`, which also runs the smoke cases (`anthology-dev smoke`) |
 | `port/` | The record of the port: the test ledger in `port/ledger/`, the difftest divergences and seeds, and the replay reports |
 | `fuzz/` | The fuzz targets, run weekly by `fuzz.yml` |
 | `ci/` | Pinned Docker images, the pinned Claude Code, and one script per CI job in `ci/jobs/` |
-| `.github/workflows/` | `ci.yml`, `evals.yml`, `upstream-watch.yml`, `fuzz.yml`, `rtk-release.yml`, `anthology-release.yml` |
+| `.github/workflows/` | `ci.yml`, `evals.yml`, `upstream-watch.yml`, `fuzz.yml`, `atl-release.yml`, `anthology-release.yml` |
 
 `skills/` holds only the three user commands. Every knowledge folder must be read by at least one agent, and a test enforces it.
 
@@ -50,8 +50,8 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
    ```
 
    [`scripts/rust-test.sh`](scripts/rust-test.sh) reads the image from `ci/images/rust.Dockerfile`, installs a few test-only tools inside the container (`git`, `curl`, `procps`, `busybox`, `nodejs`) and runs cargo as a non-root user. Named volumes keep the cargo registry and a target folder per checkout. `cargo test` also replays the frozen golden files and runs the shim tests.
-3. Run a maintainer tool with [`scripts/dev.sh`](scripts/dev.sh) `<command>`, which builds and runs `anthology-dev` in the same image; its stdout is the tool's own output. The commands are `vendor`, `version-bump`, `release-edit`, `memory-diff`, `startup-budget`, `eval-baseline`, `upstream-watch`, `rtk-trim`, `smoke`, `lock`, `seed`, `ledger`, `golden` and `replay`, plus the table generators `gen-unicode` and `gen-errno`. `scripts/dev.sh --help` lists them with their subcommands.
-4. Run the rtk tests with [`scripts/rtk-test.sh`](scripts/rtk-test.sh). It runs `cargo test --locked` for `rtk/` in the same image, as a non-root user; extra arguments go to `cargo test`. It needs Docker and network access, because it installs a few test-only tools (`git`, `curl`, `jq`, `procps`, `ca-certificates`) inside the container only. [`scripts/rtk-net-test.sh`](scripts/rtk-net-test.sh) builds the release binary in the same image and runs it with `docker run --network none`.
+3. Run a maintainer tool with [`scripts/dev.sh`](scripts/dev.sh) `<command>`, which builds and runs `anthology-dev` in the same image; its stdout is the tool's own output. The commands are `vendor`, `version-bump`, `release-edit`, `memory-diff`, `startup-budget`, `eval-baseline`, `upstream-watch`, `atl-trim`, `smoke`, `lock`, `seed`, `ledger`, `golden` and `replay`, plus the table generators `gen-unicode` and `gen-errno`. `scripts/dev.sh --help` lists them with their subcommands.
+4. Run the atl tests with [`scripts/atl-test.sh`](scripts/atl-test.sh). It runs `cargo test --locked` for `atl/` in the same image, as a non-root user; extra arguments go to `cargo test`. It needs Docker and network access, because it installs a few test-only tools (`git`, `curl`, `jq`, `procps`, `ca-certificates`) inside the container only. [`scripts/atl-net-test.sh`](scripts/atl-net-test.sh) builds the release binary in the same image and runs it with `docker run --network none`.
 5. Check the vendored content with `scripts/dev.sh vendor check`.
 6. Validate a plugin with the Claude Code version CI uses: `npm ci --prefix ci/claude-code`, then `ci/claude-code/node_modules/.bin/claude plugin validate --strict plugins/<name>`.
 7. Try your checkout in Claude Code: `claude plugin marketplace add <path to your checkout>` loads the marketplace in place, then install `anthology@anthology` as in the README. The plugins then install the released binary that `anthology.lock` pins, not one built from your checkout. The evals and smokes test a local build, on a scratch copy of `plugins/` that `anthology-dev seed` prepares.
@@ -66,8 +66,8 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
 | `shellcheck` and `shims-distros` | The `sh` shims pass `shellcheck -s sh`, and the shim tests pass on Alpine, Debian slim and Ubuntu, with each system's own shell and downloaders |
 | `ledger` (`ci/jobs/ledger.sh`) | Every row of the test ledger names a Rust test that cargo really runs, or a reviewed drop reason |
 | `fuzz-build` | Every fuzz target builds and survives a short run (`fuzz.yml` runs them longer, weekly) |
-| `rtk-test` job (`scripts/rtk-test.sh`, then `scripts/rtk-net-test.sh`) | rtk passes its tests, including one named test per change the fork makes, and the release binary works with the network off |
-| `rtk-release` and `anthology-release` workflows, on a pull request | A change to the workflow or the toolchain pin builds and tests all four release targets, without publishing |
+| `atl-test` job (`scripts/atl-test.sh`, then `scripts/atl-net-test.sh`) | atl passes its tests, including one named test per change the fork makes, and the release binary works with the network off |
+| `atl-release` and `anthology-release` workflows, on a pull request | A change to the workflow or the toolchain pin builds and tests all four release targets, without publishing |
 | `vendor-check` (`scripts/dev.sh vendor check`) | Every vendored tree and license regenerates exactly from its pin |
 | `version-bump` (`scripts/dev.sh version-bump`) | A changed plugin has a higher version than at the merge base |
 | `plugin-validate` (`claude plugin validate --strict`) | Each plugin is valid, using the pinned Claude Code in `ci/claude-code/` |
@@ -112,37 +112,37 @@ Notes for particular sources:
 - **`vendor/licenses/`** carries each source's license text, unchanged, refreshed by `fetch` and `sync`.
 - **Licenses inside the plugin.** Claude Code installs a plugin directory on its own, so `build` also copies each source's license, unchanged, into its target folder (a source with no license file of its own gets the fixed text as `LICENSE`). An upstream `NOTICE` outside the source folder must be listed in the entry's `license_extra` (caveman ships `NOTICE` and `LICENSE-MIT` this way), or `build` fails. `check` verifies the copies byte for byte.
 
-### Syncing rtk
+### Syncing atl
 
-rtk lives in `rtk/` as a git subtree with full history: the owner's fork merged with upstream. Both pins are in the `rtk` entry of `sources.json`. [`scripts/sync-rtk.sh`](scripts/sync-rtk.sh) moves to a new upstream release:
+ATL lives in `atl/` as a git subtree with full history: the owner's fork merged with upstream (`rtk-ai/rtk`). Both pins are in the upstream `rtk-ai/rtk` entry of `sources.json`, whose `target` is `atl`. [`scripts/sync-atl.sh`](scripts/sync-atl.sh) moves to a new upstream release:
 
 ```sh
-scripts/sync-rtk.sh <upstream tag>
+scripts/sync-atl.sh <upstream tag>
 ```
 
 Give it an upstream release tag like `v1.2.3`. It refuses to run on a dirty tree. In order, it:
 
-1. creates the branch `rtk-sync/<tag>` from `HEAD`;
+1. creates the branch `atl-sync/<tag>` from `HEAD`;
 2. runs `git subtree pull` for that tag. Upstream edits to files the trim deletes (`engine/` and similar) are resolved by deleting them again. On any other conflict it prints the conflicted files and **stops**, leaving the branch for you to resolve;
 3. records the tag and its commit as the upstream pin in `vendor/sources.json`;
-4. runs `scripts/rtk-trim.sh`;
-5. runs `scripts/rtk-test.sh`;
+4. runs `scripts/atl-trim.sh`;
+5. runs `scripts/atl-test.sh`;
 6. prints a summary.
 
 The pin and the trim's changes are left uncommitted, for review with the branch. It never pushes and never merges.
 
 What you do:
 
-1. If it stopped on conflicts, resolve them so that both upstream's change and the fork's intent survive. If a fork change cannot coexist with upstream, upstream's design wins and the intent is re-implemented where feasible. Record the decision in `DECISIONS.md`. Then re-run the remaining steps by hand (the pin, `scripts/rtk-trim.sh`, `scripts/rtk-test.sh`).
-2. `rtk-trim.sh` removes upstream's BUSL-1.1 `engine/`, `plugin/` and `proxy/`, so that what ships is the Apache-2.0 edition, and keeps rtk Claude Code only and free of telemetry. It is idempotent and stops with exit 1, naming the file and the anchor, when an edit's expected text is missing, which means an upstream refactor to look at. A removal whose target upstream renamed is not noticed that way; the allowlist tests below catch it. The allowlist test `crates/repo-tests/tests/rtk_claude_only.rs` fails when upstream adds a hook integration module or a Cargo dependency that is not on the list. Adding one is a deliberate decision, not a test fix.
+1. If it stopped on conflicts, resolve them so that both upstream's change and the fork's intent survive. If a fork change cannot coexist with upstream, upstream's design wins and the intent is re-implemented where feasible. Record the decision in `DECISIONS.md`. Then re-run the remaining steps by hand (the pin, `scripts/atl-trim.sh`, `scripts/atl-test.sh`).
+2. `atl-trim.sh` removes upstream's BUSL-1.1 `engine/`, `plugin/` and `proxy/`, so that what ships is the Apache-2.0 edition, and keeps atl Claude Code only and free of telemetry. It is idempotent and stops with exit 1, naming the file and the anchor, when an edit's expected text is missing, which means an upstream refactor to look at. A removal whose target upstream renamed is not noticed that way; the allowlist tests below catch it. The allowlist test `crates/repo-tests/tests/atl_claude_only.rs` fails when upstream adds a hook integration module or a Cargo dependency that is not on the list. Adding one is a deliberate decision, not a test fix.
 3. Each of the fork's eight remaining changes has a permanent named test (`fork_1_…` to `fork_7_…` and `fork_9_…`). They must still pass. The ninth, custom `[upstream.*]` headers, lived only in the removed BUSL engine, so its test is gone.
 4. Review and commit the pin and the trim's changes, run the tests (`scripts/rust-test.sh`, as in the development setup), then open a PR.
 
-#### Releasing rtk binaries
+#### Releasing atl binaries
 
-1. Set the `rtk/Cargo.toml` version to `<upstream version>-anthology.<n>` (for example `1.2.1-anthology.2`), update the `rtk` package entry in `rtk/Cargo.lock` to match (the builds use `--locked`), and merge that.
-2. Push a tag `rtk--v<version>` on the commit to release. `rtk-release.yml` fails unless the tag equals `rtk--v` plus the `Cargo.toml` version. It builds `aarch64` and `x86_64` for macOS (`apple-darwin`) and Linux (`unknown-linux-musl`), each on a native runner, with the toolchain in `rtk/rust-toolchain.toml`, running `cargo test --locked` before each `cargo build --release --locked`. It attests the archives and publishes `rtk-<target>.tar.gz` and `checksums.txt` to a new release; it fails rather than overwrite an existing release. To publish from an existing tag, run the workflow by hand with the tag as input.
-3. Write the version, the tag and the sha256 of each target from `checksums.txt` into `plugins/anthology/rtk.lock`. `crates/repo-tests/tests/rtk_lock.rs` checks that the lock matches `Cargo.toml` and has a 64-hex hash for all four targets.
+1. Set the `atl/Cargo.toml` version to `<upstream version>-anthology.<n>` (for example `1.2.1-anthology.2`), update the `atl` package entry in `atl/Cargo.lock` to match (the builds use `--locked`), and merge that.
+2. Push a tag `atl--v<version>` on the commit to release. `atl-release.yml` fails unless the tag equals `atl--v` plus the `Cargo.toml` version. It builds `aarch64` and `x86_64` for macOS (`apple-darwin`) and Linux (`unknown-linux-musl`), each on a native runner, with the toolchain in `atl/rust-toolchain.toml`, running `cargo test --locked` before each `cargo build --release --locked`. It attests the archives and publishes `atl-<target>.tar.gz` and `checksums.txt` to a new release; it fails rather than overwrite an existing release. To publish from an existing tag, run the workflow by hand with the tag as input.
+3. Write the version, the tag and the sha256 of each target from `checksums.txt` into `plugins/anthology/atl.lock`. `crates/repo-tests/tests/atl_lock.rs` checks that the lock matches `Cargo.toml` and has a 64-hex hash for all four targets.
 4. Verify one asset: `gh attestation verify <file> --repo rbonweb/anthology`, and compare its hash.
 5. The lock change is a change to `plugins/anthology`, so release a new `anthology` version (below). Installed users get the new binary at their next session start.
 
@@ -190,11 +190,11 @@ The behaviour evals in [`evals/`](evals/) catch a model update or a Claude Code 
 - knowledge-read order (each agent reads its Startup files before any other tool);
 - the G1, G4 and G6 blocks;
 - BrowserOS-only browsing, against a mocked `browseros-neo` MCP server in `evals/mocks/` and with no Chrome launch;
-- rtk condensing `git status` output, and G1 still blocking a Playwright command that rtk would rewrite;
+- atl condensing `git status` output, and G1 still blocking a Playwright command that atl would rewrite;
 - the routing guide being in the main session, and absent from agents;
 - the platform checks recorded in [DECISIONS.md](DECISIONS.md) that a case can express (agent fields, memory paths, hooks reaching subagents, skills hidden from the main session).
 
-The checks a case cannot express are smoke cases, run by `anthology-dev smoke` (`crates/anthology-dev/src/smoke/`): the Claude Code CLI syntax, the eval cost ceiling, the session-start output cap, a missing hook interpreter, a missing `anthology` binary (the shims fail closed and say why), a stalled guard, the worktree base, the model each agent runs on, rtk's rewrite, and the knowledge-read, agent-memory-path, auto-memory-directory and memory-commit checks for writers. `cli-syntax` and `binary-missing` call no model.
+The checks a case cannot express are smoke cases, run by `anthology-dev smoke` (`crates/anthology-dev/src/smoke/`): the Claude Code CLI syntax, the eval cost ceiling, the session-start output cap, a missing hook interpreter, a missing `anthology` binary (the shims fail closed and say why), a stalled guard, the worktree base, the model each agent runs on, atl's rewrite, and the knowledge-read, agent-memory-path, auto-memory-directory and memory-commit checks for writers. `cli-syntax` and `binary-missing` call no model.
 
 Run everything from the repo root with `scripts/run-evals.sh`. It runs the evals, then the smoke cases, against a scratch copy of `plugins/` with a locally built `anthology` binary seeded in (`anthology-dev seed`). It builds that binary and `anthology-dev` with `cargo build --release --locked`, so a local run needs the Rust toolchain from `rust-toolchain.toml` on the host, unless `ANTHOLOGY_BIN` and `ANTHOLOGY_DEV` name binaries you built. Under the hood it calls one `claude plugin eval` with a fixed `--allow-tools` list:
 
@@ -203,7 +203,7 @@ claude plugin eval . --trust-plugin --ablation none --no-publish --threshold 0 -
   --max-cost-usd <ceiling> --json <result.json> --output-dir <dir> --allow-tools <grants>
 ```
 
-A tool that is not granted is withheld from the model. The grants are the few harmless commands the guard and rtk cases need (listed in the script), so a broken guard still cannot download anything; the guard and rtk cases only work through the script, so don't run the bare command and read its failures as regressions. `--case GLOB` and `--tag TAG` run part of the suite (the comparison then tolerates missing cases, the smokes are skipped and `--record` is refused); `--no-smoke` skips the smokes. Results go to `evals/results/<UTC timestamp>/`.
+A tool that is not granted is withheld from the model. The grants are the few harmless commands the guard and atl cases need (listed in the script), so a broken guard still cannot download anything; the guard and atl cases only work through the script, so don't run the bare command and read its failures as regressions. `--case GLOB` and `--tag TAG` run part of the suite (the comparison then tolerates missing cases, the smokes are skipped and `--record` is refused); `--no-smoke` skips the smokes. Results go to `evals/results/<UTC timestamp>/`.
 
 The cost ceiling defaults to $20 for the evals (`--max-cost-usd`) plus $10 for all smokes together (`--smoke-total-budget-usd`). When the evals hit their ceiling the run is partial, and the comparison fails it with exit code 2, so raise the ceiling deliberately. The exit codes are the comparison's when it is not 0 (1 regression, 2 invalid or partial result, 3 no baseline), else 4 when a smoke failed, else 0. A smoke that skips because there are no credentials is not a failure.
 
@@ -231,7 +231,7 @@ When a sync fails a budget:
 
 ### The upstream watcher
 
-[`upstream-watch.yml`](.github/workflows/upstream-watch.yml) runs weekly and can be started by hand. It runs `anthology-dev upstream-watch` (`cargo run --locked --release -p anthology-dev -- upstream-watch` on the runner, because it needs the job's GitHub token), which compares every pin in `vendor/sources.json`, the rtk upstream release and the latest Claude Code release against upstream. For each change it opens one GitHub issue, labelled `upstream-watch`, with a summary of the diff and the command to run (`scripts/dev.sh vendor sync …` or `scripts/sync-rtk.sh …`). It updates an existing issue when the target moves again, and never closes one: close it when the sync merges. It never changes the repo itself.
+[`upstream-watch.yml`](.github/workflows/upstream-watch.yml) runs weekly and can be started by hand. It runs `anthology-dev upstream-watch` (`cargo run --locked --release -p anthology-dev -- upstream-watch` on the runner, because it needs the job's GitHub token), which compares every pin in `vendor/sources.json`, the upstream release of rtk (`rtk-ai/rtk`, which ATL forks) and the latest Claude Code release against upstream. For each change it opens one GitHub issue, labelled `upstream-watch`, with a summary of the diff and the command to run (`scripts/dev.sh vendor sync …` or `scripts/sync-atl.sh …`). It updates an existing issue when the target moves again, and never closes one: close it when the sync merges. It never changes the repo itself.
 
 A new Claude Code release also starts the evals. To bump the Claude Code that CI validates with, set the version in `ci/claude-code/package.json`, run `npm install --package-lock-only` in `ci/claude-code`, and let `plugin-validate` and the evals run on the PR.
 

@@ -16,7 +16,7 @@ use anthology_pycompat::json::{self, Int, Map, PY_DEFAULT, Value};
 
 pub const SP_REPO: &str = "https://github.com/obra/superpowers";
 pub const SKILLS_REPO: &str = "https://github.com/anthropics/skills";
-pub const RTK_REPO: &str = "https://github.com/rtk-ai/rtk";
+pub const ATL_REPO: &str = "https://github.com/rtk-ai/rtk";
 pub const NPM_URL: &str = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest";
 pub const UI_URL: &str = "https://uizze.sh/.well-known/skills/ui-taste";
 
@@ -159,11 +159,11 @@ pub fn url_entry(kw: Vec<(&str, Value)>) -> Value {
     with(base, kw)
 }
 
-pub fn rtk_entry(pin: &str, commit: &str) -> Value {
+pub fn atl_entry(pin: &str, commit: &str) -> Value {
     obj(vec![
-        ("name", st("rtk")),
+        ("name", st("atl")),
         ("managed_by", st("subtree")),
-        ("target", st("rtk")),
+        ("target", st("atl")),
         ("license", st("Apache-2.0")),
         (
             "fork",
@@ -176,7 +176,7 @@ pub fn rtk_entry(pin: &str, commit: &str) -> Value {
         (
             "upstream",
             obj(vec![
-                ("repo", st(RTK_REPO)),
+                ("repo", st(ATL_REPO)),
                 ("ref", st(pin)),
                 ("commit", st(commit)),
             ]),

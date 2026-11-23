@@ -70,23 +70,23 @@
    }
   ]
  },
- "rtk_install": {
-  "prog": "rtk_install.py",
-  "description": "Install the rtk binary pinned by rtk.lock.",
+ "atl_install": {
+  "prog": "atl_install.py",
+  "description": "Install the atl binary pinned by atl.lock.",
   "args": [
    {
     "flags": [
      "--data-dir"
     ],
     "required": true,
-    "help": "plugin data dir; rtk goes to <dir>/rtk/<version>/"
+    "help": "plugin data dir; atl goes to <dir>/atl/<version>/"
    },
    {
     "flags": [
      "--lock"
     ],
-    "default": "<REPO>/plugins/anthology/rtk.lock",
-    "help": "path to rtk.lock (default: next to scripts/)"
+    "default": "<REPO>/plugins/anthology/atl.lock",
+    "help": "path to atl.lock (default: next to scripts/)"
    },
    {
     "flags": [
@@ -547,16 +547,16 @@
    }
   ]
  },
- "rtk_trim": {
-  "prog": "rtk_trim.py",
-  "description": "Trim rtk/ to the Apache-2.0, Claude-only edition.",
+ "atl_trim": {
+  "prog": "atl_trim.py",
+  "description": "Trim atl/ to the Apache-2.0, Claude-only edition.",
   "args": [
    {
     "flags": [
      "--root"
     ],
-    "default": "<REPO>/rtk",
-    "help": "the rtk/ directory (default: %(default)s)"
+    "default": "<REPO>/atl",
+    "help": "the atl/ directory (default: %(default)s)"
    },
    {
     "mutex": {

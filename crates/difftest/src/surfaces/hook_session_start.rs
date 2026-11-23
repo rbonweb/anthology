@@ -6,8 +6,8 @@
 //! the same tree under their own temporary root: RT1a's layout entries, plus `sguard` entries (a
 //! guardrails folder whose guard is written as Python's `scripts/guard.py` and Rust's
 //! `hooks/guard.sh`, with the same exit code and stderr), and files whose text holds `@RULE@` or
-//! `@OPSV@`, built last. Each side reads the same seams from the case: the rtk module (a fake
-//! with the same interface; the real one is `rtk_install.reconcile`'s surface), `_elapsed`,
+//! `@OPSV@`, built last. Each side reads the same seams from the case: the atl module (a fake
+//! with the same interface; the real one is `atl_install.reconcile`'s surface), `_elapsed`,
 //! `os.getcwd` and `platform.system`.
 //!
 //! The memory step is real on both sides: `memory_sync.run` and the `SessionDeps::default()`
@@ -36,9 +36,9 @@
 //! characters), personal memory that is a file or a symlink, the repo approved or not, repo and
 //! agent notes (`type: user` ones swept out, a conflicting personal copy), legacy notes, a
 //! `migrated.json` ledger, `.claude` or `.claude/memory` unsafe, `settings.local.json` (missing,
-//! set, invalid, tracked), the exclude file, auto memory turned off; the fake rtk's warning
+//! set, invalid, tracked), the exclude file, auto memory turned off; the fake atl's warning
 //! (long enough to reach the 2,000 message cap), lock and reconcile errors; elapsed times on
-//! both sides of the rtk cutoff; Windows.
+//! both sides of the atl cutoff; Windows.
 //!
 //! The generator avoids what the two sides cannot agree on by design: a guard that sleeps
 //! (timeouts are unit-tested), stderr that is not UTF-8, deep but valid JSON (ST1's D-1), and
@@ -53,10 +53,10 @@ use anthology_core::Env;
 use anthology_core::lock::Lock;
 use anthology_pycompat::json::{Int, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::Reconciled;
 use anthology_runtime::bootstrap::GuardBinaryStatus;
 use anthology_runtime::guardrails_loc;
-use anthology_runtime::rtk_install::Reconciled;
-use anthology_runtime::session_start::{self, RtkWiring, SessionDeps};
+use anthology_runtime::session_start::{self, AtlWiring, SessionDeps};
 use anthology_settings as settings;
 use anthology_testkit::rt_a;
 
@@ -237,8 +237,8 @@ fn build(root: &Path, case: &Value, env: &Env, cwd: &Path, enc: &str) {
 
 // --- the Rust side ------------------------------------------------------------------------
 
-/// The fake rtk module of the case.
-struct CaseRtk {
+/// The fake atl module of the case.
+struct CaseAtl {
     warning: Option<String>,
     lock_exc: Option<String>,
     exc: Option<String>,
@@ -248,13 +248,13 @@ fn opt_str(v: &Value, k: &str) -> Option<String> {
     str_of(v, k).map(str::to_string)
 }
 
-impl RtkWiring for CaseRtk {
+impl AtlWiring for CaseAtl {
     fn load_lock(&self, _path: &Path) -> Result<Lock, PyExc> {
         match &self.lock_exc {
             Some(m) => Err(PyExc::Other("RuntimeError", m.clone())),
             None => Ok(Lock {
                 version: "9.9.9".into(),
-                tag: "rtk--v9.9.9".into(),
+                tag: "atl--v9.9.9".into(),
                 repo: "example/x".into(),
                 sha256: Default::default(),
             }),
@@ -265,7 +265,7 @@ impl RtkWiring for CaseRtk {
         match &self.exc {
             Some(m) => Err(PyExc::Other("RuntimeError", m.clone())),
             None => Ok(Reconciled {
-                rtk_path: None,
+                atl_path: None,
                 warning: self.warning.clone(),
                 installed: false,
             }),
@@ -309,9 +309,9 @@ fn run(case: &Value) -> Observed {
     env = env.with("PATH", &fake_git::path(&root_text, "/usr/bin:/bin"));
     let cwd_v = PathBuf::from(x(str_of(case, "cwd").unwrap_or("@ROOT@")));
     build(&root, case, &env, &cwd_v, &enc);
-    let rtk = field(case, "rtk")
+    let atl = field(case, "atl")
         .filter(|v| !matches!(v, Value::Null))
-        .map(|v| CaseRtk {
+        .map(|v| CaseAtl {
             warning: opt_str(v, "warning"),
             lock_exc: opt_str(v, "lock_exc"),
             exc: opt_str(v, "exc"),
@@ -331,7 +331,7 @@ fn run(case: &Value) -> Observed {
         },
         cwd: &cwd,
         elapsed: Some(&elapsed),
-        rtk: rtk.as_ref().map(|r| r as &dyn RtkWiring),
+        atl: atl.as_ref().map(|r| r as &dyn AtlWiring),
         ensure_guard_binary: &never_ensure,
         ..SessionDeps::default()
     };
@@ -396,7 +396,7 @@ fn sguard(p: &str, b: &str, reason: &str) -> Value {
 
 const PLUGIN: &str = "p/anthology";
 const GUARD: &str = "p/anthology-guardrails";
-const WRAPPERS: [&str; 4] = ["anthology", "anthology-mem", "rtk", "rtk-hook"];
+const WRAPPERS: [&str; 4] = ["anthology", "anthology-mem", "atl", "atl-hook"];
 const MANIFEST: &str = r#"{"name": "anthology", "version": "0.1.0"}"#;
 const GUIDE: &str = "# Anthology routing guide\n\nA short guide for the difftest.\n";
 
@@ -406,19 +406,19 @@ struct B {
     env: Map,
     stdin: String,
     cwd: String,
-    rtk: Value,
+    atl: Value,
     elapsed: f64,
     windows: bool,
 }
 
 impl B {
-    /// A healthy layout: the plugin with its manifest, guide, rtk.lock and wrappers, a blocking
+    /// A healthy layout: the plugin with its manifest, guide, atl.lock and wrappers, a blocking
     /// sibling guard, the config in `@ROOT@/cfg`, the data folder, a repo at `@ROOT@/w`.
     fn new() -> B {
         let mut tree = vec![
             file(&format!("{PLUGIN}/.claude-plugin/plugin.json"), MANIFEST),
             file(&format!("{PLUGIN}/templates/routing-guide.md"), GUIDE),
-            file(&format!("{PLUGIN}/rtk.lock"), "{}"),
+            file(&format!("{PLUGIN}/atl.lock"), "{}"),
             dir("home"),
             dir("data"),
             dir("w/.git"),
@@ -441,7 +441,7 @@ impl B {
             stdin: r#"{"hook_event_name": "SessionStart", "source": "startup", "cwd": "@ROOT@/w"}"#
                 .into(),
             cwd: "@ROOT@/w".into(),
-            rtk: obj(vec![
+            atl: obj(vec![
                 ("warning", Value::Null),
                 ("lock_exc", Value::Null),
                 ("exc", Value::Null),
@@ -548,9 +548,9 @@ impl B {
         ))
     }
 
-    fn rtk(mut self, warning: Option<&str>, lock_exc: Option<&str>, exc: Option<&str>) -> B {
+    fn atl(mut self, warning: Option<&str>, lock_exc: Option<&str>, exc: Option<&str>) -> B {
         let v = |o: Option<&str>| o.map_or(Value::Null, s);
-        self.rtk = obj(vec![
+        self.atl = obj(vec![
             ("warning", v(warning)),
             ("lock_exc", v(lock_exc)),
             ("exc", v(exc)),
@@ -564,7 +564,7 @@ impl B {
             ("env", Value::Object(self.env)),
             ("stdin", s(&self.stdin)),
             ("cwd", s(&self.cwd)),
-            ("rtk", self.rtk),
+            ("atl", self.atl),
             ("elapsed", Value::Float(self.elapsed)),
             ("windows", Value::Bool(self.windows)),
         ])
@@ -621,7 +621,7 @@ fn seeds() -> Vec<Value> {
             .into_iter()
             .next()
             .expect("a memory seed")
-            .rtk(Some(&format!("w {}", "y ".repeat(1100))), None, None)
+            .atl(Some(&format!("w {}", "y ".repeat(1100))), None, None)
             .build(),
     );
     let mut missing = B::new().setup_done();
@@ -657,7 +657,7 @@ fn seeds() -> Vec<Value> {
     );
     let mut wr = B::new().setup_done();
     wr.tree
-        .retain(|e| str_of(e, "p") != Some("p/anthology/bin/rtk"));
+        .retain(|e| str_of(e, "p") != Some("p/anthology/bin/atl"));
     wr.tree.push(chmod("p/anthology/bin/anthology-mem", 0o644));
     out.push(wr.build());
     out.push(
@@ -721,34 +721,34 @@ fn seeds() -> Vec<Value> {
             .env("CLAUDE_PLUGIN_DATA", None)
             .build(),
     );
-    // RtkTest
+    // AtlTest
     out.push(
         B::new()
             .setup_done()
-            .rtk(Some("rtk download failed: offline"), None, None)
+            .atl(Some("atl download failed: offline"), None, None)
             .build(),
     );
     out.push(
         B::new()
             .setup_done()
-            .rtk(None, Some("rtk.lock is not valid JSON"), None)
+            .atl(None, Some("atl.lock is not valid JSON"), None)
             .build(),
     );
     out.push(
         B::new()
             .setup_done()
-            .rtk(None, None, Some("kaboom"))
+            .atl(None, None, Some("kaboom"))
             .build(),
     );
-    out.push(B::new().setup_done().rtk(None, Some(""), None).build());
-    out.push(B::new().setup_done().rtk(None, None, Some("")).build());
+    out.push(B::new().setup_done().atl(None, Some(""), None).build());
+    out.push(B::new().setup_done().atl(None, None, Some("")).build());
     let mut absent = B::new().setup_done();
-    absent.rtk = Value::Null;
+    absent.atl = Value::Null;
     out.push(absent.build());
-    let mut no_lock = B::new().setup_done().rtk(None, Some("cannot read"), None);
+    let mut no_lock = B::new().setup_done().atl(None, Some("cannot read"), None);
     no_lock
         .tree
-        .retain(|e| str_of(e, "p") != Some("p/anthology/rtk.lock"));
+        .retain(|e| str_of(e, "p") != Some("p/anthology/atl.lock"));
     out.push(no_lock.build());
     for dd in ["5", "true", "[]", "\"\"", "[1]", "{\"a\": 1}", "1.5"] {
         out.push(
@@ -1144,7 +1144,7 @@ fn gen_case(rng: &mut Rng) -> Value {
             }
             if rng.chance(0.1) {
                 parts.push(
-                    r#""permissions": {"allow": ["Bash(rtk *)", "Bash(anthology-mem save *)", "@RULE@"], "deny": []}, "worktree": {"baseRef": "head"}"#
+                    r#""permissions": {"allow": ["Bash(atl *)", "Bash(anthology-mem save *)", "@RULE@"], "deny": []}, "worktree": {"baseRef": "head"}"#
                         .into(),
                 );
             }
@@ -1175,7 +1175,7 @@ fn gen_case(rng: &mut Rng) -> Value {
         }
     }
     if rng.chance(0.15) {
-        let p = format!("{PLUGIN}/rtk.lock");
+        let p = format!("{PLUGIN}/atl.lock");
         b.tree.retain(|e| str_of(e, "p") != Some(p.as_str()));
     }
     // the guardrails
@@ -1300,7 +1300,7 @@ fn gen_case(rng: &mut Rng) -> Value {
         _ => {}
     }
     b = gen_memory(rng, b);
-    b.rtk = match rng.below(8) {
+    b.atl = match rng.below(8) {
         0 => Value::Null,
         1 => obj(vec![
             ("warning", {
@@ -1325,7 +1325,7 @@ fn gen_case(rng: &mut Rng) -> Value {
             ("lock_exc", Value::Null),
             ("exc", Value::Null),
         ]),
-        _ => b.rtk,
+        _ => b.atl,
     };
     b.elapsed = match rng.below(10) {
         0 => 10.0,
@@ -1350,10 +1350,10 @@ mod tests {
             ("moved", "the plugin moved"),
             ("unreadable", "could not read settings.json"),
             ("ops", "anthology settings changed in this release"),
-            ("rtk skipped", "skipped the rtk check"),
-            ("rtk absent", "rtk wiring not present yet"),
-            ("rtk lock", "rtk.lock is not valid"),
-            ("rtk failed", "rtk setup failed"),
+            ("atl skipped", "skipped the atl check"),
+            ("atl absent", "atl wiring not present yet"),
+            ("atl lock", "atl.lock is not valid"),
+            ("atl failed", "atl setup failed"),
             ("data", "did not pass CLAUDE_PLUGIN_DATA"),
             ("wrappers", "bin/ wrappers are missing"),
             ("agent memory", "agent-memory/"),

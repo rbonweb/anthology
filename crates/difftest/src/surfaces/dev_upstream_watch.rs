@@ -360,7 +360,7 @@ fn run_main(case: &Value) -> Observed {
 
 const SP_REPO: &str = "https://github.com/obra/superpowers";
 const SKILLS_REPO: &str = "https://github.com/anthropics/skills";
-const RTK_REPO: &str = "https://github.com/rtk-ai/rtk";
+const ATL_REPO: &str = "https://github.com/rtk-ai/rtk";
 const OTHER_REPO: &str = "https://git.example.test/team/skills";
 const NPM_URL: &str = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest";
 const UI_URL: &str = "https://uizze.sh/.well-known/skills/ui-taste";
@@ -800,7 +800,7 @@ const NAMES: &[&str] = &[
     "beta",
     "superpowers",
     "ui-taste",
-    "rtk",
+    "atl",
     "x.y",
     "..",
     "a b",
@@ -1025,7 +1025,7 @@ fn generate(rng: &mut Rng) -> Value {
                     (
                         "upstream",
                         obj(vec![
-                            ("repo", s(RTK_REPO)),
+                            ("repo", s(ATL_REPO)),
                             ("ref", s(pin)),
                             ("commit", s(&commit)),
                         ]),
@@ -1036,15 +1036,15 @@ fn generate(rng: &mut Rng) -> Value {
                         .expect("obj")
                         .insert("managed_by".into(), s("subtree"));
                 }
-                if !refs.iter().any(|(r, _)| r == RTK_REPO) {
+                if !refs.iter().any(|(r, _)| r == ATL_REPO) {
                     let r = gen_refs(rng, &commit);
                     if let Some(Value::Array(pairs)) = r.as_object().and_then(|m| m.get("pairs")) {
                         for p in pairs {
                             let new = strings(p)[1].clone();
-                            http.push((compare_url(RTK_REPO, &commit, &new), gen_compare(rng)));
+                            http.push((compare_url(ATL_REPO, &commit, &new), gen_compare(rng)));
                         }
                     }
-                    refs.push((RTK_REPO.into(), r));
+                    refs.push((ATL_REPO.into(), r));
                 }
                 entries.push(e);
             }

@@ -589,7 +589,7 @@ fn sources(rng: &mut Rng) -> String {
     };
     let mut entries = vec![
         entry("anthology-superpowers", "0.1.0"),
-        entry("rtk", "1.2.1"),
+        entry("atl", "1.2.1"),
     ];
     if rng.chance(0.2) {
         entries.push("    {\"name\": \"x\", \"target\": \"plugins/x\"}".into());
@@ -1291,7 +1291,7 @@ fn generate(tool: Tool, rng: &mut Rng) -> Value {
                 let target = rng
                     .pick(&[
                         "plugins/anthology-superpowers",
-                        "plugins/rtk",
+                        "plugins/atl",
                         "plugins/x",
                         "nope",
                     ])

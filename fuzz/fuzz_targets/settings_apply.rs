@@ -6,14 +6,14 @@
 
 use anthology_pycompat::json::Value;
 use anthology_settings::{
-    ALLOW_MEM_SAVE, ALLOW_RTK, Op, TAG_MEM_SAVE, TAG_PLUGIN_READ, apply, plan, reconcile, redact,
-    revert,
+    ALLOW_ATL, ALLOW_MEM_SAVE, Op, TAG_MEM_SAVE, TAG_PLUGIN_READ, TAG_TOKEN_LAYER, apply, plan,
+    reconcile, redact, revert,
 };
 
 /// The shape of `setup_ops` without a plugin folder on disk.
 fn setup_like_ops() -> Vec<Op> {
     vec![
-        Op::add(&["permissions", "allow"], ALLOW_RTK),
+        Op::add(&["permissions", "allow"], ALLOW_ATL).with_tag(TAG_TOKEN_LAYER),
         Op::add(&["permissions", "allow"], ALLOW_MEM_SAVE).with_tag(TAG_MEM_SAVE),
         Op::add(&["permissions", "deny"], "Read(~/.config/chromium)"),
         Op::add(&["permissions", "deny"], "Read(~/.config/chromium/**)"),

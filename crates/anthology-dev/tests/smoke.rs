@@ -31,7 +31,7 @@ const NAMES: [&str; 12] = [
     "knowledge-read-writers",
     "auto-memory-dir",
     "writer-memory-commit",
-    "rtk-rewrite",
+    "atl-rewrite",
     "agent-memory-path",
 ];
 /// The smokes EV1b adds after `guard-timeout`.
@@ -52,7 +52,7 @@ const MODEL_SMOKES: [&str; 10] = [
     "knowledge-read-writers",
     "auto-memory-dir",
     "writer-memory-commit",
-    "rtk-rewrite",
+    "atl-rewrite",
     "agent-memory-path",
 ];
 
@@ -812,23 +812,23 @@ mod helper_tests {
         let clean = "On branch main\n* No commits yet on main\nclean \u{2014} nothing to commit"
             .to_string();
         let g1 = "anthology-guardrails (G1): playwright";
-        assert!(rtk_problems(&[clean.clone(), "blocked".to_string()], g1).is_empty());
+        assert!(atl_problems(&[clean.clone(), "blocked".to_string()], g1).is_empty());
         // In a tool result.
         assert!(
-            rtk_problems(
+            atl_problems(
                 &[clean.clone(), "anthology-guardrails (G1)".to_string()],
                 ""
             )
             .is_empty()
         );
         assert_eq!(
-            rtk_problems(&["Clean working tree".to_string()], "x (G1)"),
+            atl_problems(&["Clean working tree".to_string()], "x (G1)"),
             [
                 "no hook event or tool result shows 'anthology-guardrails (G1)' (the guard did not fire on the playwright command)"
             ]
         );
         let raw = "nothing to commit (create/copy files and use \"git add\" to track)".to_string();
-        let problems = rtk_problems(&[raw], "");
+        let problems = atl_problems(&[raw], "");
         assert_eq!(problems.len(), 3);
         assert!(problems[0].contains("condensed"));
         assert!(problems[1].contains("raw git"));
@@ -1129,8 +1129,8 @@ mod smoke_body_tests {
         }));
     }
 
-    /// Runs `rtk-rewrite` with a faked installer (`run`) and a faked model run answering `out`.
-    fn run_rtk(out: &str, install_code: i32) -> (Outcome, Vec<(Vec<String>, EnvMap)>, Calls) {
+    /// Runs `atl-rewrite` with a faked installer (`run`) and a faked model run answering `out`.
+    fn run_atl(out: &str, install_code: i32) -> (Outcome, Vec<(Vec<String>, EnvMap)>, Calls) {
         let installs: InstallLog = Rc::default();
         let log = Rc::clone(&installs);
         let mut deps = deps();
@@ -1141,31 +1141,32 @@ mod smoke_body_tests {
         let out = out.to_string();
         let calls = fake_prompt_run(&mut deps, move |_, _| Proc::new(0, &out, ""));
         let ctx = ctx_with(no_auth_env(), deps).with_anthology(Some(FAKE_BIN.to_string()), true);
-        let result = first_run(&ctx, cases::rtk_rewrite::run);
+        let result = first_run(&ctx, cases::atl_rewrite::run);
         let installs = installs.borrow().clone();
         (result, installs, calls)
     }
 
     #[test]
     fn test_rtk_rewrite_installs_rtk_then_runs_with_the_scratch_config() {
+        // legacy: port/ledger names this test
         let out = stream(&[
-            bash_call("git -C rtkrepo status"),
+            bash_call("git -C atlrepo status"),
             tool_result("* No commits yet on main\nclean \u{2014} nothing to commit"),
             tool_result("blocked: anthology-guardrails (G1) ..."),
         ]);
-        let ((status, reason), installs, calls) = run_rtk(&out, 0);
+        let ((status, reason), installs, calls) = run_atl(&out, 0);
         assert_eq!(status, Status::Pass, "{reason}");
         let (argv, env) = &installs[0];
-        // EV1b: the Rust installer, `anthology rtk-install`, with the staged plugin's rtk.lock.
+        // EV1b: the Rust installer, `anthology atl-install`, with the staged plugin's atl.lock.
         assert_eq!(argv[0], FAKE_BIN);
-        assert_eq!(argv[1..3], ["rtk-install", "--data-dir"]);
+        assert_eq!(argv[1..3], ["atl-install", "--data-dir"]);
         assert!(argv[3].ends_with("data"));
         assert_eq!(
             argv[4..],
             [
                 "--lock".to_string(),
                 repo_root()
-                    .join("plugins/anthology/rtk.lock")
+                    .join("plugins/anthology/atl.lock")
                     .to_string_lossy()
                     .into_owned()
             ]
@@ -1192,25 +1193,25 @@ mod smoke_body_tests {
         assert_eq!(
             call.variadic,
             [
-                "Bash(git init -q rtkrepo)",
-                "Bash(git -C rtkrepo status)",
-                "Bash(rtk git -C rtkrepo status)",
+                "Bash(git init -q atlrepo)",
+                "Bash(git -C atlrepo status)",
+                "Bash(atl git -C atlrepo status)",
                 "Bash(npx playwright test --list)",
-                "Bash(rtk playwright test --list)"
+                "Bash(atl playwright test --list)"
             ]
         );
     }
 
     #[test]
     fn test_rtk_rewrite_fails_loudly_when_the_install_fails_and_names_failed_parts() {
-        let ((status, reason), _, calls) = run_rtk("", 1);
+        let ((status, reason), _, calls) = run_atl("", 1);
         assert_eq!(status, Status::Fail);
-        assert!(reason.starts_with("rtk install failed: boom"), "{reason}");
+        assert!(reason.starts_with("atl install failed: boom"), "{reason}");
         assert!(calls.borrow().is_empty());
         let out = stream(&[tool_result(
             "nothing to commit (create/copy files and use git add)",
         )]);
-        let ((status, reason), _, _) = run_rtk(&out, 0);
+        let ((status, reason), _, _) = run_atl(&out, 0);
         assert_eq!(status, Status::Fail);
         for part in ["condensed", "raw git", "(G1)"] {
             assert!(reason.contains(part), "{reason}");

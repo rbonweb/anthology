@@ -198,7 +198,7 @@ fn test_apply_then_revert_restores_the_original_bytes() {
         assert_ne!(new, text, "{name}");
         assert!(!diff.is_empty(), "{name}");
         let data = v(&new);
-        assert!(strs(at(&data, &["permissions", "allow"])).contains(&"Bash(rtk *)".to_string()));
+        assert!(strs(at(&data, &["permissions", "allow"])).contains(&"Bash(atl *)".to_string()));
         assert_eq!(at(&data, &["worktree", "baseRef"]).as_str(), Some("head"));
         assert_eq!(revert(&new, &planned.stored).unwrap(), text, "{name}");
     }
@@ -303,11 +303,11 @@ fn test_everything_outside_the_edit_is_untouched() {
 fn test_inserted_lines_copy_the_files_style() {
     let base = v(BASE);
     let (two, _) = apply(&(dumps_indent(&base, "  ", true) + "\n"), &ops()).unwrap();
-    assert!(two.contains("\n      \"Bash(ls)\",\n      \"Bash(rtk *)\""));
+    assert!(two.contains("\n      \"Bash(ls)\",\n      \"Bash(atl *)\""));
     let (four, _) = apply(&(dumps_indent(&base, "    ", true) + "\n"), &ops()).unwrap();
-    assert!(four.contains("\n            \"Bash(ls)\",\n            \"Bash(rtk *)\""));
+    assert!(four.contains("\n            \"Bash(ls)\",\n            \"Bash(atl *)\""));
     let (tab, _) = apply(&(dumps_indent(&base, "\t", true) + "\n"), &ops()).unwrap();
-    assert!(tab.contains("\n\t\t\t\"Bash(ls)\",\n\t\t\t\"Bash(rtk *)\""));
+    assert!(tab.contains("\n\t\t\t\"Bash(ls)\",\n\t\t\t\"Bash(atl *)\""));
     let crlf_in = (dumps_indent(&base, "  ", true) + "\n").replace('\n', "\r\n");
     let (crlf, _) = apply(&crlf_in, &ops()).unwrap();
     // `assertNotRegex(crlf, r"(?<!\r)\n")`: every \n follows a \r.
@@ -350,7 +350,7 @@ fn test_setup_ops_contents() {
     let data = v(&text);
     let allow = strs(at(&data, &["permissions", "allow"]));
     let deny = strs(at(&data, &["permissions", "deny"]));
-    assert!(allow.contains(&"Bash(rtk *)".to_string()));
+    assert!(allow.contains(&"Bash(atl *)".to_string()));
     assert!(allow.contains(&ALLOW_MEM_SAVE.to_string()));
     assert!(ALLOW_MEM_SAVE.starts_with("Bash(anthology-mem save"));
     for root in PROFILE_ROOTS {
@@ -428,18 +428,18 @@ fn test_ops_are_json_serialisable() {
 
 #[test]
 fn test_users_own_rule_is_never_ours() {
-    let text = indent2(r#"{"permissions": {"allow": ["Bash(rtk *)", "Bash(ls)"]}}"#);
+    let text = indent2(r#"{"permissions": {"allow": ["Bash(atl *)", "Bash(ls)"]}}"#);
     let planned = plan(&text, &ops()).unwrap();
     assert!(
         !planned
             .ops
             .iter()
-            .any(|o| o.value().as_str() == Some("Bash(rtk *)"))
+            .any(|o| o.value().as_str() == Some("Bash(atl *)"))
     );
     let (new, _) = apply(&text, &planned.ops).unwrap();
     let back = revert(&new, &planned.stored).unwrap();
     assert_eq!(back, text);
-    assert!(strs(at(&v(&back), &["permissions", "allow"])).contains(&"Bash(rtk *)".to_string()));
+    assert!(strs(at(&v(&back), &["permissions", "allow"])).contains(&"Bash(atl *)".to_string()));
 }
 
 fn base_ref_record(planned: &Planned) -> Value {
@@ -750,7 +750,7 @@ fn test_a_pathologically_deep_file_is_unreadable_not_a_crash() {
 fn test_inline_one_item_array_keeps_the_files_comma_space_style() {
     let text = r#"{"permissions": {"allow": ["Bash(ls)"]}}"#;
     let (new, _) = apply(text, &ops()).unwrap();
-    assert!(new.contains(r#"["Bash(ls)", "Bash(rtk *)", "#));
+    assert!(new.contains(r#"["Bash(ls)", "Bash(atl *)", "#));
     assert!(new.contains(r#"}, "worktree""#));
     let planned = plan(text, &ops()).unwrap();
     assert_eq!(revert(&new, &planned.stored).unwrap(), text);
@@ -763,7 +763,7 @@ fn test_diff_has_no_context_lines() {
     let (_, diff) = apply(&text, &ops()).unwrap();
     assert!(!diff.contains("hunter2"));
     assert!(!diff.contains("SECRET_TOKEN"));
-    assert!(diff.contains("+      \"Bash(rtk *)\""));
+    assert!(diff.contains("+      \"Bash(atl *)\""));
 }
 
 // --- ReconcileTest -------------------------------------------------------------------------
@@ -839,10 +839,10 @@ fn test_rule_the_user_deleted_is_added_again_without_duplicating_the_record() {
         .unwrap()
         .as_array_mut()
         .unwrap()
-        .retain(|x| x.as_str() != Some("Bash(rtk *)"));
+        .retain(|x| x.as_str() != Some("Bash(atl *)"));
     let (t2, _, stored2) =
         reconcile(&(dumps_indent(&data, "  ", true) + "\n"), &ops(), &stored1).unwrap();
-    assert!(strs(at(&v(&t2), &["permissions", "allow"])).contains(&"Bash(rtk *)".to_string()));
+    assert!(strs(at(&v(&t2), &["permissions", "allow"])).contains(&"Bash(atl *)".to_string()));
     let keys: Vec<String> = stored2
         .iter()
         .map(|o| {
@@ -1156,7 +1156,7 @@ fn test_diff_is_a_unified_diff_of_the_change() {
     let (_, diff) = apply(&indent2(BASE), &ops()).unwrap();
     assert!(diff.contains("--- settings.json"));
     assert!(diff.contains("+++ settings.json"));
-    assert!(diff.contains("+      \"Bash(rtk *)\""));
+    assert!(diff.contains("+      \"Bash(atl *)\""));
 }
 
 // --- RedactTest ----------------------------------------------------------------------------
@@ -1178,7 +1178,7 @@ fn check(text: &str, diff_lines: &[&str], undo_lines: &[&str]) -> (String, Strin
     let (back, undo) = revert_with_diff(&new, &planned.stored).unwrap();
     assert_eq!(back, text);
     for (shown, lines) in [(&diff, diff_lines), (&undo, undo_lines)] {
-        assert!(shown.contains("Bash(rtk *)"));
+        assert!(shown.contains("Bash(atl *)"));
         assert!(shown.contains("baseRef"));
         for secret in SECRETS {
             assert!(!shown.contains(secret), "{secret} in {shown}");
@@ -1212,7 +1212,7 @@ fn test_minified_file() {
             r#""Authorization":"<redacted>""#,
             r#""command":"<redacted>""#,
             r#""proxyUrl":"<redacted>""#,
-            r#""Bash(ls)","Bash(rtk *)""#,
+            r#""Bash(ls)","Bash(atl *)""#,
         ] {
             assert!(shown.contains(part), "{part}");
         }
@@ -1293,7 +1293,7 @@ fn test_diff_without_secrets_is_unchanged_by_redaction() {
         "@@ -5 +5,10 @@",
         "-      \"Bash(ls)\"",
         "+      \"Bash(ls)\",",
-        "+      \"Bash(rtk *)\",",
+        "+      \"Bash(atl *)\",",
         "+      \"Bash(anthology-mem save *)\",",
         &format!("+      \"{rule}\""),
         "+    ],",
@@ -1362,8 +1362,8 @@ fn test_any_change_to_the_op_list_changes_it() {
     let edited: Vec<Op> = ops()
         .into_iter()
         .map(|o| {
-            if o.value().as_str() == Some("Bash(rtk *)") {
-                o.with_value(Value::Str("Bash(rtk status *)".into()))
+            if o.value().as_str() == Some("Bash(atl *)") {
+                o.with_value(Value::Str("Bash(atl status *)".into()))
             } else {
                 o
             }
@@ -1606,6 +1606,88 @@ fn a_manifest_too_deep_for_python_is_refused() {
     assert!(err.starts_with("RecursionError: "), "{err}");
     fs::write(&manifest, nested(900)).unwrap();
     assert!(setup_ops_with(&root, &g.env, Some(&PROFILE_ROOTS)).is_ok());
+}
+
+/// What the first ATL-era setup run records for the allow rule: tagged `token-layer`.
+#[test]
+fn the_allow_rule_is_atl_and_replaceable() {
+    assert_eq!(ALLOW_ATL, "Bash(atl *)");
+    assert_eq!(TAG_TOKEN_LAYER, "token-layer");
+    assert_eq!(LEGACY_ALLOW_RTK, "Bash(rtk *)"); // legacy
+    assert!(REPLACEABLE_TAGS.contains(&TAG_TOKEN_LAYER));
+    let allow = ops()
+        .into_iter()
+        .find(|o| o.value().as_str() == Some(ALLOW_ATL))
+        .expect("setup adds the ATL allow rule");
+    assert_eq!(allow.tag(), Some(TAG_TOKEN_LAYER));
+    assert!(
+        !ops()
+            .iter()
+            .any(|o| o.value().as_str() == Some(LEGACY_ALLOW_RTK)), // legacy
+        "setup no longer adds the legacy rule"
+    );
+}
+
+/// An earlier install recorded an untagged legacy allow rule; a re-run reverts it and adds the
+/// ATL rule, leaving everything else the user has.
+#[test]
+fn legacy_rtk_allow_is_replaced_only_when_setup_added_it() {
+    let text = indent2(BASE);
+    let old_ops = vec![Op::add(&["permissions", "allow"], LEGACY_ALLOW_RTK)]; // legacy
+    let (t1, _, stored1) = reconcile(&text, &old_ops, &[]).unwrap();
+    assert!(strs(at(&v(&t1), &["permissions", "allow"])).contains(&LEGACY_ALLOW_RTK.to_string())); // legacy
+    let (t2, diff, stored2) = reconcile(&t1, &ops(), &stored1).unwrap();
+    let allow = strs(at(&v(&t2), &["permissions", "allow"]));
+    assert!(!allow.contains(&LEGACY_ALLOW_RTK.to_string())); // legacy
+    assert!(allow.contains(&ALLOW_ATL.to_string()));
+    assert!(allow.contains(&"Bash(ls)".to_string()));
+    assert!(!diff.is_empty());
+    assert!(
+        !stored2
+            .iter()
+            .any(|o| at(o, &["value"]).as_str() == Some(LEGACY_ALLOW_RTK)), // legacy
+        "the replaced rule leaves the record"
+    );
+    assert_eq!(revert(&t2, &stored2).unwrap(), text);
+}
+
+/// A legacy allow rule the user wrote (setup never recorded it) stays, on a first run and on a
+/// re-run that holds an unrelated record.
+#[test]
+fn user_rtk_allow_is_never_touched(/* legacy */) {
+    let text = indent2(&format!(
+        r#"{{"permissions": {{"allow": ["{LEGACY_ALLOW_RTK}", "Bash(ls)"]}}}}"# // legacy
+    ));
+    let (t1, _, stored1) = reconcile(&text, &ops(), &[]).unwrap();
+    let allow = strs(at(&v(&t1), &["permissions", "allow"]));
+    assert!(allow.contains(&LEGACY_ALLOW_RTK.to_string())); // legacy
+    assert!(allow.contains(&ALLOW_ATL.to_string()));
+    assert!(
+        !stored1
+            .iter()
+            .any(|o| at(o, &["value"]).as_str() == Some(LEGACY_ALLOW_RTK)), // legacy
+        "setup did not add it, so it does not record it"
+    );
+    let (t2, _, stored2) = reconcile(&t1, &ops(), &stored1).unwrap();
+    assert_eq!(t2, t1);
+    let back = revert(&t2, &stored2).unwrap();
+    assert!(strs(at(&v(&back), &["permissions", "allow"])).contains(&LEGACY_ALLOW_RTK.to_string())); // legacy
+}
+
+/// An op that merely carries the legacy value under another path or a `set` is not the old
+/// allow rule and stays in the record.
+#[test]
+fn only_the_old_allow_add_counts_as_the_legacy_rule() {
+    let text = indent2(r#"{"permissions": {"deny": ["Read(.env)"]}}"#);
+    let other = vec![Op::add(&["permissions", "deny"], LEGACY_ALLOW_RTK)]; // legacy
+    let (t1, _, stored1) = reconcile(&text, &other, &[]).unwrap();
+    let (t2, _, stored2) = reconcile(&t1, &ops(), &stored1).unwrap();
+    assert!(strs(at(&v(&t2), &["permissions", "deny"])).contains(&LEGACY_ALLOW_RTK.to_string())); // legacy
+    assert!(
+        stored2
+            .iter()
+            .any(|o| at(o, &["value"]).as_str() == Some(LEGACY_ALLOW_RTK)) // legacy
+    );
 }
 
 /// `list(state.get("settings_ops") or [])`.

@@ -61,7 +61,7 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
     ),
     ("docs/superpowers/", "the port's plan and design"),
     ("port/", "the port's ledgers, divergences and reports"),
-    ("rtk/", "upstream rtk"),
+    ("atl/", "the fork of rtk, renamed"),
     ("vendor/", "upstream sources, patches and snapshots"),
     ("plugins/anthology-superpowers/", "vendored upstream"),
     ("plugins/anthology/knowledge/", "vendored upstream"),
@@ -79,7 +79,7 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
 ];
 
 /// Single lines elsewhere that mention Python on purpose: (file, a substring of the line, why).
-const ALLOWED_LINES: [(&str, &str, &str); 7] = [
+const ALLOWED_LINES: [(&str, &str, &str); 8] = [
     (
         "README.md",
         "`python3 -c`",
@@ -98,12 +98,17 @@ const ALLOWED_LINES: [(&str, &str, &str); 7] = [
     (
         "SECURITY.md",
         "`python -c`",
-        "the user's programs rtk cannot read inside",
+        "the user's programs atl cannot read inside",
     ),
     (
-        "scripts/rtk-trim.sh",
+        "scripts/atl-trim.sh",
         "no Python",
         "says that no Python runs",
+    ),
+    (
+        "scripts/atl-rename.sh",
+        "Python test ids",
+        "names the upstream test ids the rename keeps",
     ),
     (
         "scripts/run-evals.sh",

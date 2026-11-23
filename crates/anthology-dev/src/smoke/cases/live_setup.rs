@@ -85,7 +85,7 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
     let Some(sha) = path_str(&preview, &["settings", "sha256"]).map(str::to_string) else {
         return fail("setup preview has no settings.sha256".to_string());
     };
-    // rtk is installed for real here (network), so apply gets the longer timeout.
+    // atl is installed for real here (network), so apply gets the longer timeout.
     let applied = match parse_object(
         "setup apply",
         &setup(&["apply", "--json", "--expect-sha256", &sha], 240),
