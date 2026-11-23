@@ -1455,7 +1455,8 @@ mod main_with_stub_tests {
             let p = ctx
                 .prompt_run(&f.tmp, "x", &[], &PromptOpts::default())
                 .expect("a run");
-            assert_eq!(p.out, "hi");
+            // A failed spawn is `Proc(-1, "", "could not run …")`: show why, not just `""`.
+            assert_eq!(p.out, "hi", "exit {}: {}", p.code, p.err);
         }
         assert!((ctx.spent() - 1.2).abs() < 1e-7, "{}", ctx.spent());
         assert_eq!(
@@ -1864,6 +1865,46 @@ mod framework_extra {
             (p.code, p.err.as_str()),
             (-1, "could not run /no/such/program: FileNotFoundError")
         );
+    }
+
+    /// A file that is still open for writing cannot be executed (`ETXTBSY`). In a threaded test
+    /// binary another thread's fork inherits a just-closed write fd until its own exec, so
+    /// running a freshly written stub can hit this for a moment. Holding the fd here makes the
+    /// window deterministic. Linux only: macOS runs a file that is open for writing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stub_busy_for_a_moment_is_run_not_reported_as_empty_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stub = dir.path().join("stub");
+        write_exec(&stub, "#!/bin/sh\necho ok\n");
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&stub)
+            .expect("open for writing");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(writer);
+        });
+        let argv = to_strings(&[&stub.to_string_lossy()]);
+        let p = run_process(&argv, dir.path(), &EnvMap::new(), 10, None);
+        release.join().expect("release thread");
+        assert_eq!((p.code, p.out.as_str()), (0, "ok\n"), "{}", p.err);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stub_that_stays_busy_is_an_error_not_empty_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stub = dir.path().join("stub");
+        write_exec(&stub, "#!/bin/sh\necho ok\n");
+        let _writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&stub)
+            .expect("open for writing");
+        let argv = to_strings(&[&stub.to_string_lossy()]);
+        let p = run_process(&argv, dir.path(), &EnvMap::new(), 10, None);
+        assert_eq!(p.code, -1);
+        assert!(p.err.starts_with("could not run "), "{}", p.err);
     }
 
     #[test]
