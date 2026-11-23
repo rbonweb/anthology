@@ -109,12 +109,23 @@ fn a_frozen_golden_checks_clean_without_the_oracle_and_catches_a_diff() {
     let text = freeze_core_lock(&python, &golden);
     assert!(text.is_ascii());
     let mut lines = text.lines();
-    assert_eq!(
-        lines.next(),
-        Some(
+    // The header names the day of the freeze, which the replay pins Rust's clock to.
+    let header = lines.next().expect("header");
+    let day = header
+        .strip_prefix(
             "{\"difftest_golden\": 1, \"surface\": \"core.lock\", \"seed\": 20261121, \
-             \"gen\": 0, \"cases\": 820, \"sample\": true}"
+             \"gen\": 0, \"cases\": 820, \"sample\": true, \"today\": \"",
         )
+        .and_then(|rest| rest.strip_suffix("\"}"))
+        .unwrap_or_else(|| panic!("header: {header}"));
+    assert_eq!(day.len(), 10, "{header}");
+    assert!(
+        day.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 {
+            b == b'-'
+        } else {
+            b.is_ascii_digit()
+        }),
+        "{header}"
     );
     assert!(
         lines
