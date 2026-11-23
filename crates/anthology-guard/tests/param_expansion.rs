@@ -622,15 +622,17 @@ fn ordinary_commands_stay_allowed() {
     );
 }
 
+/// The hook's result for a Bash command.
+fn hook(command: &str) -> anthology_guard::HookResult {
+    let raw = format!(
+        r#"{{"tool_name":"Bash","tool_input":{{"command":"{}"}}}}"#,
+        command.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    anthology_guard::decide(raw.as_bytes(), HOME, false)
+}
+
 #[test]
 fn a_double_quoted_script_expansion_suggests_single_quotes() {
-    let hook = |command: &str| {
-        let raw = format!(
-            r#"{{"tool_name":"Bash","tool_input":{{"command":"{}"}}}}"#,
-            command.replace('\\', "\\\\").replace('"', "\\\"")
-        );
-        anthology_guard::decide(raw.as_bytes(), HOME, false)
-    };
     for command in [r#"x=1; sh -c "echo $x""#, r#"x=1; eval "echo $x""#] {
         let out = hook(command);
         assert_eq!(out.code, 2, "{command}");
@@ -645,5 +647,49 @@ fn a_double_quoted_script_expansion_suggests_single_quotes() {
         let out = hook(command);
         assert!(out.stderr.contains("(G0)"), "{}", out.stderr);
         assert!(!out.stderr.contains("single quotes"), "{}", out.stderr);
+    }
+}
+
+/// Field finding: a search pattern in double quotes that holds one backtick starts a command
+/// substitution that never ends, so the guard cannot read it (G0). The message says how to fix it.
+#[test]
+fn a_lone_backtick_in_double_quotes_suggests_single_quotes() {
+    const HINT: &str = "put the pattern in single quotes";
+    for command in [
+        r#"grep -n "foo\|^export const X = `" file"#,
+        r#"grep -n "foo\|bar `" file"#,
+        r#"cd src && grep -n "x`" a.rs | head"#,
+    ] {
+        let out = hook(command);
+        assert_eq!(out.code, 2, "{command}");
+        assert!(out.stderr.contains("(G0)"), "{command}: {}", out.stderr);
+        assert!(out.stderr.contains(HINT), "{command}: {}", out.stderr);
+        assert!(
+            out.stderr
+                .contains("backtick inside double quotes runs a command"),
+            "{command}: {}",
+            out.stderr
+        );
+    }
+    // another G0 gets no hint, nor does a pair of backticks that closes (a substitution that is read)
+    for command in [
+        "x=npx; $x playwright install",
+        r#"x=npx; $x run "a `b` c""#,
+        r#"x=1; sh -c "echo $x""#,
+    ] {
+        let out = hook(command);
+        assert!(out.stderr.contains("(G0)"), "{command}: {}", out.stderr);
+        assert!(!out.stderr.contains(HINT), "{command}: {}", out.stderr);
+    }
+    // the verdict does not change: a pattern in single quotes, or an escaped backtick, is allowed
+    for command in [
+        r#"grep -n 'foo\|^export const X = `' file"#,
+        r#"grep -n "foo\|^export const X = \`" file"#,
+        r#"grep -n "foo" file"#,
+    ] {
+        assert_eq!(verdict(command), Verdict::Allow, "{command}");
+        let out = hook(command);
+        assert_eq!(out.code, 0, "{command}: {}", out.stderr);
+        assert!(out.stderr.is_empty(), "{command}: {}", out.stderr);
     }
 }

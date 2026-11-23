@@ -103,14 +103,16 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         let data = match json::loads_bytes_lossy(raw) {
             Ok(data) => data,
             // `ValueError`: a number past the integer-digit limit
-            Err(e) if e.type_name() == "ValueError" => return (Verdict::TooComplex, false),
-            Err(_) => return (Verdict::Allow, false),
+            Err(e) if e.type_name() == "ValueError" => {
+                return (Verdict::TooComplex, String::new());
+            }
+            Err(_) => return (Verdict::Allow, String::new()),
         };
         let Some(map) = data.as_object() else {
-            return (Verdict::Allow, false);
+            return (Verdict::Allow, String::new());
         };
         let Some(tool_name @ Value::Str(_)) = map.get("tool_name") else {
-            return (Verdict::Allow, false);
+            return (Verdict::Allow, String::new());
         };
         #[cfg(feature = "panic-on-marker")]
         if String::from_utf8_lossy(raw).contains(PANIC_MARKER) {
@@ -119,19 +121,25 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         let null = Value::Null;
         let tool_input = map.get("tool_input").unwrap_or(&null);
         let verdict = check_with(tool_name, tool_input, home, limits);
-        let hint = verdict == Verdict::TooComplex
-            && tool_input
-                .as_object()
-                .and_then(|o| o.get("command"))
-                .and_then(Value::as_str)
-                .is_some_and(quoted_script_expansion);
-        (verdict, hint)
+        let command = tool_input
+            .as_object()
+            .and_then(|o| o.get("command"))
+            .and_then(Value::as_str)
+            .filter(|_| verdict == Verdict::TooComplex);
+        let mut hints = String::new();
+        if command.is_some_and(quoted_script_expansion) {
+            hints.push_str(QUOTED_SCRIPT_HINT);
+        }
+        if command.is_some_and(lone_backtick_in_double_quotes) {
+            hints.push_str(LONE_BACKTICK_HINT);
+        }
+        (verdict, hints)
     }));
     match verdict {
-        Ok((v, hint)) => match block_line(v) {
+        Ok((v, hints)) => match block_line(v) {
             None => HookResult::allow(shim),
-            Some(line) if hint => {
-                HookResult::block(format!("{}{QUOTED_SCRIPT_HINT}\n", line.trim_end()))
+            Some(line) if !hints.is_empty() => {
+                HookResult::block(format!("{}{hints}\n", line.trim_end()))
             }
             Some(line) => HookResult::block(line),
         },
@@ -187,6 +195,48 @@ fn quoted_script_expansion(command: &str) -> bool {
                 }
                 None => k += 1,
             },
+        }
+    }
+    false
+}
+
+/// Added to the `(G0)` line when a double-quoted word holds a backtick that is not closed (a grep
+/// pattern in double quotes that ends in a backtick): the backtick starts a command substitution, so
+/// the guard cannot read the word.
+pub const LONE_BACKTICK_HINT: &str =
+    ". A backtick inside double quotes runs a command; put the pattern in single quotes";
+
+/// `command` holds a double-quoted text with an odd number of backticks that a backslash does not
+/// escape, so one of them is unmatched. A hint only: it changes no verdict, and a command that is
+/// too complex for another reason may get it when the text is odd (an accepted false hint).
+fn lone_backtick_in_double_quotes(command: &str) -> bool {
+    let b = command.as_bytes();
+    let mut k = 0;
+    while k < b.len() {
+        match b[k] {
+            b'\\' => k += 2,
+            b'\'' => {
+                k = (k + 1..b.len())
+                    .find(|&j| b[j] == b'\'')
+                    .map_or(b.len(), |j| j + 1);
+            }
+            b'"' => {
+                let mut ticks = 0;
+                k += 1;
+                while k < b.len() && b[k] != b'"' {
+                    match b[k] {
+                        b'\\' => k += 1,
+                        b'`' => ticks += 1,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                if ticks % 2 == 1 {
+                    return true;
+                }
+                k += 1;
+            }
+            _ => k += 1,
         }
     }
     false

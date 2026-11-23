@@ -10,6 +10,49 @@ a new version section.
 
 ### [Unreleased]
 
+#### Added
+
+- `large-builds` skill: three rules for watching CI. A writer's report is not done until CI on
+  its PR is green, or the report names the exact failing job (the lead says so in the brief and
+  checks `gh pr checks` before accepting). At every status check the lead reads CI for every
+  open PR, including integration branches, and sends each red job back to its owner the same
+  hour. When an integration branch merges part PRs, the lead closes those part PRs with a
+  comment pointing to the integration PR.
+- `anthology perm classify` (nothing calls it yet): reads a Bash command, its working
+  directory, the roots and the `Read()` rules as JSON on stdin. Only when the command is
+  proven read-only does it print `anthology-perm:read-only:v1`, followed by the resolved path of
+  everything the command reads, one per line. Every such path must exist under a root, be a
+  file with one link or a directory, and match no `Read()` rule or secret pattern; recursive
+  trees are walked and refuse on any symlink inside, and globs, non-ASCII text, relative paths
+  without a leading absolute `cd` and a `PATH` entry inside the project give no decision.
+  A line that runs git is allowed only when the repository's whole configuration holds nothing
+  but a short allowlist of keys, no `GIT_*` variable, hook, alternates or submodule is in play,
+  no tracked file is a secret or `Read()`-denied, and the git form prints no history
+  (`show`, `log -p`, `diff --cached` and the like give no decision). Anything else gives no
+  decision, never a deny.
+- `bin/anthology` and `bin/anthology-mem` exit 127 at once, without downloading or installing,
+  when `ANTHOLOGY_NO_INSTALL` is set to any non-empty value.
+
+#### Fixed
+
+- Session start no longer says the guardrails are "failing closed" when they are not. The guard
+  self-test runs the guard shim with fetching switched off, so a binary that was not yet in
+  place when the shim looked (a parallel session was still installing it, or this hook had
+  deferred its own install) came back as "the guard binary is not installed (not attempted) ...
+  shell commands, file edits and MCP tools are blocked", although the guard installs the
+  binary on its first call and the binary was in the install folder a moment later. Session
+  start now checks the install folder itself: when the pinned binary is there it reports that the
+  self-test could not tell, and says the guard still runs on every command. It keeps the
+  failing-closed warning when the binary really is missing, unusable (empty marker, symlinked or
+  another version's folder) or the guard really refuses.
+- A guard self-test that times out with the binary installed is now reported as "skipped the
+  guard self-test (it timed out, the machine may be busy); the guard still runs on every
+  command; if commands hang or are blocked, run /anthology:setup" instead of "the guardrails
+  may be OFF". When less time is left than the self-test may take, it is not run: the install
+  folder is checked instead, and the line says session start ran out of time only when the
+  binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
+  disabled or missing is still named in that case.
+
 ### [0.2.9] - 2026-11-22
 
 #### Added
@@ -367,6 +410,15 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+#### Changed
+
+- The too-complex message (G0) now says how to fix a search pattern in double quotes that holds
+  one backtick, such as `grep -n "foo\|^export const X = <backtick>" file`. Inside double quotes
+  a backtick starts a command substitution, here one that never ends, so the block is right but
+  agents retried the same command. The message adds: "A backtick inside double quotes runs a
+  command; put the pattern in single quotes". The verdict does not change, and a pattern in
+  single quotes was and stays allowed. This ships in the next `anthology` binary (0.1.5).
 
 ### [0.2.4] - 2026-11-22
 

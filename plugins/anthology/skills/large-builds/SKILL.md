@@ -38,6 +38,14 @@ Read this before the first task of a large or long build (many tasks, several ag
 - Brief an agent with the plan path and the task ID, and let it read the task
   itself; paste no plan text. Why: copying plan sections costs the lead a
   read per task and drifts from the plan.
+- A writer's report is not done until CI on its PR is green, or the report
+  names the exact failing job. Say so in the brief, and run `gh pr checks`
+  yourself before you accept the report. Why: "done" with a red PR sends the
+  failure to the owner instead of the writer.
+- At every status check, read CI for every open PR, including integration
+  branches, not only the ones you wait on. Send each red job back to its
+  owner the same hour. Why: PRs nobody watched sat red until the owner
+  noticed.
 
 ## Waiting and hangs
 
@@ -185,6 +193,9 @@ Read this before the first task of a large or long build (many tasks, several ag
   green ones.
 - Merge, never rebase, a branch that already has a PR. Why: a rebase
   rewrites the commits the reviewer saw.
+- When an integration branch merges part PRs, close those part PRs with a
+  comment that points to the integration PR. Why: only PRs that will really
+  merge should stay open, or the PR list shows red PRs nobody will fix.
 
 ## Decide; don't wait
 
