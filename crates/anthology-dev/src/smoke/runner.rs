@@ -73,6 +73,29 @@ fn spawn_error_class(e: &std::io::Error) -> &'static str {
     }
 }
 
+/// How often, and how long apart, a spawn is retried when the program is busy (`ETXTBSY`).
+const BUSY_RETRIES: u32 = 20;
+const BUSY_BACKOFF: Duration = Duration::from_millis(25);
+
+/// `cmd.spawn()`, retried while the program file is "Text file busy". On Linux, a thread that
+/// writes an executable and runs it right away can lose a race with another thread's fork: the
+/// forked child still holds the write fd until its own exec, and `execve` of a file open for
+/// writing fails with `ETXTBSY`. The window is short; a file that stays busy is still an error.
+fn spawn_retrying(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut retries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && retries < BUSY_RETRIES =>
+            {
+                retries += 1;
+                thread::sleep(BUSY_BACKOFF);
+            }
+            other => return other,
+        }
+    }
+}
+
 fn read_all<R: Read + Send + 'static>(
     mut pipe: R,
     is_err: bool,
@@ -110,7 +133,7 @@ pub fn run_process(
         } else {
             Stdio::null()
         });
-    let mut child = match cmd.spawn() {
+    let mut child = match spawn_retrying(&mut cmd) {
         Ok(c) => c,
         Err(e) => {
             return Proc::new(
