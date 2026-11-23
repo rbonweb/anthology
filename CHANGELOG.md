@@ -52,6 +52,13 @@ a new version section.
   folder is checked instead, and the line says session start ran out of time only when the
   binary is installed, otherwise the failing-closed warning stands. A guardrails plugin that is
   disabled or missing is still named in that case.
+- The guard no longer blocks `docker exec db psql -c "select count(*) from t"` as too complex to
+  check. Inside a docker command every `-c` word was read as a shell option and the next word
+  was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` takes SQL,
+  and `docker exec` runs its arguments without a shell, so the quoted SQL is now data. Only
+  `psql` is listed: `sh -c`, `bash -c` and every other program that takes `-c` (`su`, `script`,
+  `grep`, `python`) keep the old reading, a runner after `psql` ends the exemption, and a
+  command substitution in the argument is still seen. Guard binary 0.1.6.
 
 ### [0.2.9] - 2026-11-22
 

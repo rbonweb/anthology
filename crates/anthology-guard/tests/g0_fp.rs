@@ -12,6 +12,9 @@
 //!    (`grep -E "['\"\`]A['\"\`]" d`): a `[` at the start of a word or after punctuation follows no name, so
 //!    it opens no subscript. bash 5.2 and zsh 5.9 agree on that and on `\`` being a literal backtick in
 //!    double quotes; a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` still runs `id`.
+//! 6. SQL given to `psql -c` through `docker exec` (`docker exec db psql -c "select count(*) from t"`): the
+//!    docker reading took every `-c` word for a shell option and parsed its SQL as a script. `psql -c` runs
+//!    no shell, and `docker exec` runs its argv with none, so the quoted SQL is data.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -239,5 +242,58 @@ fn an_expansion_elsewhere_in_the_command_may_put_a_name_before_a_bracket() {
             r#"echo a b; grep "[\`]x[\`]" f"#,
         ],
         Verdict::Allow,
+    );
+}
+
+#[test]
+fn sql_given_to_psql_through_docker_exec_is_data_not_a_script() {
+    assert_all(
+        &[
+            r#"docker exec db psql -c "select count(*) from t""#,
+            r#"docker exec db psql -Atc "select count(*) from t""#,
+            "docker exec db psql -c 'select count(*) from t'",
+            r#"docker exec -i db psql -U u -d d -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" -c "select max(id) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" -d x"#,
+            // the neighbours that were already allowed
+            r#"psql -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select 1""#,
+            r#"docker exec db mysql -e "select count(*) from t""#,
+            r#"docker exec db echo "a(b)""#,
+            r#"docker exec db echo "a*b""#,
+            r#"docker run --rm img echo "count(*)""#,
+            // docker exempts G1 and G2: running the install in the container is what G1 asks for
+            r#"docker exec c sh -c "npx playwright install""#,
+            r#"docker exec c bash -c "npx playwright install""#,
+            "docker exec c npx playwright install",
+        ],
+        Verdict::Allow,
+    );
+}
+
+#[test]
+fn docker_exec_still_reads_what_psql_does_not_own() {
+    // a shell given a script through docker is still read as one, also after a psql word
+    assert_all(
+        &[
+            r#"docker exec c sh -c "echo a(b)""#,
+            r#"docker exec c bash -c "echo a(b)""#,
+            r#"docker exec db psql -c "select count(*) from t" sh -c "echo a(b)""#,
+            // another program that takes `-c` keeps the fail-closed reading, and a runner after psql does too
+            r#"docker exec db su -c "echo a(b)" u"#,
+            r#"docker exec db psql su -c "echo a(b)""#,
+            r#"docker exec db psql sudo -c "echo a(b)""#,
+        ],
+        Verdict::TooComplex,
+    );
+    // an expansion in the argument runs on the host, whatever program gets the word
+    assert_all(
+        &[
+            r#"docker exec c psql -c "$(npx playwright install)""#,
+            r#"docker exec c psql -c "select `npx playwright install`""#,
+            r#"docker exec c psql -Atc "select $(npx playwright install)""#,
+            r#"docker exec c psql -c "select count(*) from t" && npx playwright install"#,
+        ],
+        Verdict::Block(Rule::G1),
     );
 }

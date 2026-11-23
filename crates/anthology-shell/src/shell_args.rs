@@ -342,17 +342,49 @@ fn is_shell_c_flag(word: &str) -> bool {
     }
 }
 
+/// Programs whose `-c` option takes data, not a shell script (`psql -c "select count(*) from t"`). An
+/// allowlist: only a name listed here is read as data, every other program keeps the fail-closed reading.
+const DATA_C_PROGRAMS: &[&str] = &["psql"];
+
+/// Programs that run a `-c` word through a shell, or run another program that may: a data program listed
+/// before one of them no longer owns a later `-c` (`psql su -c ...` stays a shell reading).
+const SHELL_RUNNERS: &[&str] = &[
+    "su", "runuser", "sudo", "doas", "script", "sg", "newgrp", "flock", "env", "xargs", "time",
+    "nice", "nohup", "timeout", "watch", "setsid", "exec", "command", "busybox", "docker", "ssh",
+];
+
 /// `_script_starts` within a budget (each start found costs one unit too): `None` when it ran out.
 pub(crate) fn script_starts_in(
     words: &[String],
     budget: &mut Budget,
 ) -> Option<Vec<(usize, String)>> {
+    script_starts_with(words, budget, false)
+}
+
+/// `_script_starts` for the words of a command run through docker, where `psql -c` takes SQL: the same
+/// starts, less a `-c` flag word that a data program (`DATA_C_PROGRAMS`) owns. The script of a shell word
+/// (`sh -c`) is never dropped.
+pub(crate) fn docker_script_starts_in(
+    words: &[String],
+    budget: &mut Budget,
+) -> Option<Vec<(usize, String)>> {
+    script_starts_with(words, budget, true)
+}
+
+fn script_starts_with(
+    words: &[String],
+    budget: &mut Budget,
+    data_programs: bool,
+) -> Option<Vec<(usize, String)>> {
     let mut starts = Vec::new();
+    // the last program word read is a data program: its `-c` words are its own options (one pass, linear)
+    let mut data_owner = false;
     let (mut k, n) = (0, words.len());
     while k + 1 < n {
         let word = &words[k];
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
+            data_owner = false;
             let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
             let cost = parsed.scripts.iter().map(|(_, s)| WORD + s.len()).sum();
             if !budget.spend(cost) {
@@ -362,7 +394,12 @@ pub(crate) fn script_starts_in(
             k = parsed.start.max(k + 1);
             continue;
         }
-        if is_shell_c_flag(word) {
+        if DATA_C_PROGRAMS.contains(&prog.as_str()) {
+            data_owner = data_programs;
+        } else if SHELL_RUNNERS.contains(&prog.as_str()) {
+            data_owner = false;
+        }
+        if is_shell_c_flag(word) && !data_owner {
             if !budget.spend(WORD + words[k + 1].len()) {
                 return None;
             }

@@ -70,7 +70,8 @@ use crate::prefixes::{
     is_interpreter, parallel_lines, pm_runs_own_verb, strip_prefixes,
 };
 use crate::shell_args::{
-    Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
+    Budget, SHELLS, ShellMode, WORD, docker_script_starts_in, embedded_shells_in, prog_name,
+    shell_parse,
 };
 
 const DOCKER: &[&str] = &["docker", "docker-compose"];
@@ -2834,8 +2835,8 @@ impl<'a> Ctx<'a> {
             }
         }
         if DOCKER.contains(&prog.as_str()) {
-            // `docker run img sh -euc "..."`
-            let Some(starts) = script_starts_in(&args, &mut self.work.extra) else {
+            // `docker run img sh -euc "..."`; not the SQL of `docker exec db psql -c "select count(*) ..."`
+            let Some(starts) = docker_script_starts_in(&args, &mut self.work.extra) else {
                 self.halt();
                 return None;
             };
