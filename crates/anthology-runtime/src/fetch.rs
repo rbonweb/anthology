@@ -1,4 +1,4 @@
-//! HTTPS fetch over ureq (RT2): `rtk_install.default_fetch` and its `HttpsOnlyRedirect`.
+//! HTTPS fetch over ureq (RT2): `atl_install.default_fetch` and its `HttpsOnlyRedirect`.
 //!
 //! The OS trust store (design §11.2) is **not** ureq's default: ureq 3 uses
 //! `RootCerts::WebPki` unless the agent's TLS config sets `RootCerts::PlatformVerifier`.
@@ -39,10 +39,10 @@ use ureq::Agent;
 use ureq::config::Config;
 use ureq::tls::{Certificate, RootCerts, TlsConfig, TlsProvider};
 
-/// The download cap (`rtk_install.MAX_DOWNLOAD_BYTES`, GC-9).
+/// The download cap (`atl_install.MAX_DOWNLOAD_BYTES`, GC-9).
 pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// The `User-Agent` of every request (GC-9).
-pub const USER_AGENT: &str = "anthology-rtk-installer";
+pub const USER_AGENT: &str = "anthology-atl-installer";
 /// urllib's `HTTPRedirectHandler.max_redirections`.
 pub const MAX_REDIRECTS: usize = 10;
 /// The size of each read (`resp.read1(1 << 14)`).

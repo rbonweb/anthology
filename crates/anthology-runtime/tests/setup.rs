@@ -2,7 +2,7 @@
 //! `guard_binary` step and the `<ah>/bin` remove of D§8.8).
 //!
 //! Modules are the Python classes; every ported test keeps the Python method name. Python's
-//! `mock.patch` sites go through `SetupDeps` (GC-19): `rtk_install` is a fake `RtkWiring`,
+//! `mock.patch` sites go through `SetupDeps` (GC-19): `atl_install` is a fake `AtlWiring`,
 //! `platform.system` is `uname`, `state.write` is `state_write`, `settings_patch.write_text` is
 //! `settings_write`, `memory_sync.{repo_root,repo_key,approve}` is `memory`. The layout is
 //! `anthology_testkit::rt_c::SetupCase` (its docs say why the plugin is a small copy).
@@ -27,27 +27,27 @@ use anthology_memory::approve as memory_approve;
 use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::Reconciled;
 use anthology_runtime::bootstrap::GuardBinaryStatus;
-use anthology_runtime::rtk_install::Reconciled;
-use anthology_runtime::session_start::RtkWiring;
-use anthology_runtime::setup::{self, GUARD_NOT_FOUND, MemoryDeps, RTK_TIMEOUT, SetupDeps};
+use anthology_runtime::session_start::AtlWiring;
+use anthology_runtime::setup::{self, ATL_TIMEOUT, GUARD_NOT_FOUND, MemoryDeps, SetupDeps};
 use anthology_settings as settings;
 use anthology_testkit::mem::{self, FAKE_REPO_KEY, MemCase, Note, note_text, write};
 use anthology_testkit::rows::{Row, rows};
 use anthology_testkit::rt_c::{SETTINGS, SetupCase, pretty};
 use anthology_testkit::sandbox::repo_root;
 
-const BYPASS: &str = "Note: `Bash(rtk *)` also auto-approves `rtk bypass <cmd>`, which runs any \
-                      command. rtk's hook still applies the deny and ask rules in your settings \
+const BYPASS: &str = "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any \
+                      command. atl's hook still applies the deny and ask rules in your settings \
                       files (user, project, local and managed) to the command it wraps, but not \
                       rules given with `--settings` or `--disallowedTools`, server-managed \
                       settings or an MDM profile.";
 
 // --- the fixture --------------------------------------------------------------------------
 
-/// `FakeRtk`: rtk_install's interface; `load_lock` returns the parsed lock (no validation),
+/// `FakeAtl`: atl_install's interface; `load_lock` returns the parsed lock (no validation),
 /// `reconcile` records the call and returns `result`.
-struct FakeRtk {
+struct FakeAtl {
     calls: RefCell<Vec<(PathBuf, Lock, f64)>>,
     result: RefCell<Reconciled>,
     exc: RefCell<Option<PyExc>>,
@@ -72,12 +72,12 @@ fn parsed_lock(path: &Path) -> Result<Lock, PyExc> {
     })
 }
 
-impl FakeRtk {
-    fn new() -> FakeRtk {
-        FakeRtk {
+impl FakeAtl {
+    fn new() -> FakeAtl {
+        FakeAtl {
             calls: RefCell::new(Vec::new()),
             result: RefCell::new(Reconciled {
-                rtk_path: None,
+                atl_path: None,
                 warning: None,
                 installed: true,
             }),
@@ -87,7 +87,7 @@ impl FakeRtk {
     }
 }
 
-impl RtkWiring for FakeRtk {
+impl AtlWiring for FakeAtl {
     fn load_lock(&self, path: &Path) -> Result<Lock, PyExc> {
         parsed_lock(path)
     }
@@ -177,14 +177,14 @@ fn allow(settings_file: &Path) -> Vec<String> {
 
 struct Fx {
     c: SetupCase,
-    rtk: FakeRtk,
+    atl: FakeAtl,
 }
 
 impl Fx {
     fn new() -> Fx {
         Fx {
             c: SetupCase::new(),
-            rtk: FakeRtk::new(),
+            atl: FakeAtl::new(),
         }
     }
 
@@ -202,7 +202,7 @@ impl Fx {
 
     fn deps(&self) -> SetupDeps<'_> {
         SetupDeps {
-            rtk: Some(&self.rtk),
+            atl: Some(&self.atl),
             ensure_guard_binary: &present,
             ..SetupDeps::default()
         }
@@ -220,8 +220,8 @@ impl Fx {
         fs::read_to_string(&self.c.settings).unwrap()
     }
 
-    fn rtk_calls(&self) -> usize {
-        self.rtk.calls.borrow().len()
+    fn atl_calls(&self) -> usize {
+        self.atl.calls.borrow().len()
     }
 
     /// `self.preview(cwd)`.
@@ -339,7 +339,7 @@ mod preview_test {
         let before = mem::snapshot(f.tmp());
         let out = f.preview(None);
         assert_eq!(mem::snapshot(f.tmp()), before);
-        assert_eq!(f.rtk_calls(), 0);
+        assert_eq!(f.atl_calls(), 0);
         assert!(json::loads(&dumped(&out)).is_ok()); // JSON-serialisable
     }
 
@@ -361,7 +361,7 @@ mod preview_test {
             "node",
             "docker",
             "browseros",
-            "rtk",
+            "atl",
             "platform_supported",
             "plugin_read_rule",
             "browseros_tools",
@@ -369,7 +369,7 @@ mod preview_test {
             "path_wrappers",
             "agent_memory_path",
             "subagent_model",
-            "rtk_savings",
+            "atl_savings",
         ];
         let mut got = names.clone();
         got.sort_unstable();
@@ -380,7 +380,7 @@ mod preview_test {
         assert_eq!(text_at(&out, &["settings", "sha256"]), sha(&text));
         assert_eq!(at(&out, &["settings", "changed"]), &Value::Bool(true));
         assert!(diff.contains("+++ settings.json"));
-        assert!(diff.contains("Bash(rtk *)"));
+        assert!(diff.contains("Bash(atl *)"));
         assert!(diff.contains("Bash(anthology-mem save"));
         assert!(diff.contains("\"head\""));
         assert_eq!(text_at(&out, &["settings", "bypass_note"]), BYPASS);
@@ -432,25 +432,25 @@ mod preview_test {
         let f = Fx::new();
         let root = f.c.plugin_with_guard(&f.tmp().join("p").join("anthology"));
         write(
-            &root.join("rtk.lock"),
+            &root.join("atl.lock"),
             r#"{"version": "1.2.1-anthology.1", "tag": "t", "targets": {}}"#,
             None,
         );
         // Python's fake `target` returned "test-target"; the Rust target is
-        // rtk_install::target for the `uname` seam.
+        // atl_install::target for the `uname` seam.
         let deps = SetupDeps {
             uname: linux,
             ..f.deps()
         };
         let out = setup::preview(&root, Some(f.tmp()), f.env(), &deps);
-        assert_eq!(text_at(&out, &["rtk", "version"]), "1.2.1-anthology.1");
+        assert_eq!(text_at(&out, &["atl", "version"]), "1.2.1-anthology.1");
         assert_eq!(
-            text_at(&out, &["rtk", "target"]),
+            text_at(&out, &["atl", "target"]),
             "x86_64-unknown-linux-musl"
         );
         assert_eq!(
-            text_at(&out, &["rtk", "dest"]),
-            p(&f.c.data_dir.join("rtk/1.2.1-anthology.1/rtk"))
+            text_at(&out, &["atl", "dest"]),
+            p(&f.c.data_dir.join("atl/1.2.1-anthology.1/atl"))
         );
     }
 
@@ -458,11 +458,11 @@ mod preview_test {
     fn test_rtk_step_skipped_when_wiring_is_absent() {
         let f = Fx::new();
         let deps = SetupDeps {
-            rtk: None,
+            atl: None,
             ..f.deps()
         };
         let out = f.preview_d(None, &deps);
-        assert!(text_at(&out, &["rtk", "skipped"]).contains("rtk wiring not present"));
+        assert!(text_at(&out, &["atl", "skipped"]).contains("atl wiring not present"));
     }
 
     fn installed(f: &Fx, text: &str) {
@@ -578,13 +578,13 @@ mod preview_test {
 
 mod real_rtk_test {
     use super::*;
+    use anthology_runtime::atl_install::{self, AtlDeps};
     use anthology_runtime::fetch::Fetch;
-    use anthology_runtime::rtk_install::{self, RtkDeps};
-    use anthology_testkit::release::{self, RTK_BODY, TARGET, VERSION};
-    use anthology_testkit::rt_b::{FakeAnswer, RtkFakeFetch, rtk_url_for};
+    use anthology_testkit::release::{self, ATL_BODY, TARGET, VERSION};
+    use anthology_testkit::rt_b::{AtlFakeFetch, FakeAnswer, atl_url_for};
     use std::io::Write;
 
-    struct Fake(RtkFakeFetch);
+    struct Fake(AtlFakeFetch);
 
     impl Fetch for Fake {
         fn fetch(&self, url: &str, dest: &mut dyn Write, timeout: f64) -> Result<(), PyExc> {
@@ -598,12 +598,12 @@ mod real_rtk_test {
         }
     }
 
-    /// The real `rtk_install` behind setup's adapters, with a fake download.
+    /// The real `atl_install` behind setup's adapters, with a fake download.
     struct Real<'a>(&'a Fake);
 
-    impl RtkWiring for Real<'_> {
+    impl AtlWiring for Real<'_> {
         fn load_lock(&self, path: &Path) -> Result<Lock, PyExc> {
-            rtk_install::load_lock(path)
+            atl_install::load_lock(path)
         }
 
         fn reconcile(
@@ -613,11 +613,11 @@ mod real_rtk_test {
             lock: &Lock,
             timeout: f64,
         ) -> Result<Reconciled, PyExc> {
-            let deps = RtkDeps {
+            let deps = AtlDeps {
                 uname: linux,
-                ..RtkDeps::new(self.0)
+                ..AtlDeps::new(self.0)
             };
-            Ok(rtk_install::reconcile(env, data_dir, lock, timeout, &deps))
+            Ok(atl_install::reconcile(env, data_dir, lock, timeout, &deps))
         }
     }
 
@@ -633,9 +633,9 @@ mod real_rtk_test {
         fn new() -> Rx {
             let m = MemCase::new();
             let data_dir = m.tmp.join("plugin-data");
-            let blob = release::tarball(RTK_BODY);
+            let blob = release::tarball(ATL_BODY);
             let root = m.tmp.join("plugin");
-            let lock = release::write_lock(&root.join("rtk.lock"), &blob, VERSION);
+            let lock = release::write_lock(&root.join("atl.lock"), &blob, VERSION);
             Rx {
                 m,
                 data_dir,
@@ -653,7 +653,7 @@ mod real_rtk_test {
     fn deps<'a>(real: &'a Real<'a>) -> SetupDeps<'a> {
         SetupDeps {
             uname: linux,
-            rtk: Some(real),
+            atl: Some(real),
             ensure_guard_binary: &present,
             ..SetupDeps::default()
         }
@@ -662,15 +662,15 @@ mod real_rtk_test {
     #[test]
     fn test_preview_names_the_version_target_and_destination() {
         let r = Rx::new();
-        let fetch = Fake(RtkFakeFetch::default());
+        let fetch = Fake(AtlFakeFetch::default());
         let real = Real(&fetch);
-        let out = setup::rtk_preview(&r.root, Some(&r.data()), &deps(&real));
+        let out = setup::atl_preview(&r.root, Some(&r.data()), &deps(&real));
         let mut want = Map::new();
         want.insert("version".into(), Value::Str(VERSION.into()));
         want.insert("target".into(), Value::Str(TARGET.into()));
         want.insert(
             "dest".into(),
-            Value::Str(p(&r.data_dir.join("rtk").join(VERSION).join("rtk"))),
+            Value::Str(p(&r.data_dir.join("atl").join(VERSION).join("atl"))),
         );
         assert_eq!(out, Value::Object(want));
     }
@@ -678,69 +678,69 @@ mod real_rtk_test {
     #[test]
     fn test_apply_installs_then_reports_up_to_date() {
         let r = Rx::new();
-        let fetch = Fake(RtkFakeFetch::serving(
-            &rtk_url_for(&r.lock, TARGET),
+        let fetch = Fake(AtlFakeFetch::serving(
+            &atl_url_for(&r.lock, TARGET),
             &r.blob,
         ));
         let real = Real(&fetch);
         let d = deps(&real);
         let data = r.data();
         assert_eq!(
-            setup::rtk_apply(&r.root, Some(&data), &r.m.env, &d),
+            setup::atl_apply(&r.root, Some(&data), &r.m.env, &d),
             ("installed".to_string(), None)
         );
         assert_eq!(
-            setup::rtk_apply(&r.root, Some(&data), &r.m.env, &d),
+            setup::atl_apply(&r.root, Some(&data), &r.m.env, &d),
             ("up to date".to_string(), None)
         );
-        let want = r.data_dir.join("rtk").join(VERSION).join("rtk");
+        let want = r.data_dir.join("atl").join(VERSION).join("atl");
         assert_eq!(
             state::read(&r.m.env)
-                .get("rtk_path")
+                .get("atl_path")
                 .and_then(Value::as_str),
             Some(p(&want).as_str())
         );
         assert!(fs::metadata(&want).unwrap().permissions().mode() & 0o111 != 0);
         let calls = fetch.0.calls();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1, RTK_TIMEOUT);
+        assert_eq!(calls[0].1, ATL_TIMEOUT);
     }
 
     #[test]
     fn test_a_bad_download_is_a_warning() {
         let r = Rx::new();
-        let fetch = Fake(RtkFakeFetch::serving(
-            &rtk_url_for(&r.lock, TARGET),
+        let fetch = Fake(AtlFakeFetch::serving(
+            &atl_url_for(&r.lock, TARGET),
             b"wrong",
         ));
         let real = Real(&fetch);
-        let (status, warning) = setup::rtk_apply(&r.root, Some(&r.data()), &r.m.env, &deps(&real));
+        let (status, warning) = setup::atl_apply(&r.root, Some(&r.data()), &r.m.env, &deps(&real));
         assert_eq!(status, "warning");
         assert!(
             warning
                 .unwrap()
-                .contains("rtk is not installed or up to date")
+                .contains("atl is not installed or up to date")
         );
-        assert!(state::read(&r.m.env).get("rtk_path").is_none());
+        assert!(state::read(&r.m.env).get("atl_path").is_none());
     }
 
     #[test]
     fn test_an_invalid_lock_is_a_warning() {
         let r = Rx::new();
-        fs::write(r.root.join("rtk.lock"), r#"{"version": "1"}"#).unwrap();
-        let fetch = Fake(RtkFakeFetch::default());
+        fs::write(r.root.join("atl.lock"), r#"{"version": "1"}"#).unwrap();
+        let fetch = Fake(AtlFakeFetch::default());
         let real = Real(&fetch);
         let d = deps(&real);
-        let (status, warning) = setup::rtk_apply(&r.root, Some(&r.data()), &r.m.env, &d);
+        let (status, warning) = setup::atl_apply(&r.root, Some(&r.data()), &r.m.env, &d);
         assert_eq!(status, "failed");
-        assert!(warning.unwrap().contains("rtk.lock"));
+        assert!(warning.unwrap().contains("atl.lock"));
         let mut want = Map::new();
         want.insert(
             "skipped".into(),
-            Value::Str("rtk wiring not present (no rtk.lock)".into()),
+            Value::Str("atl wiring not present (no atl.lock)".into()),
         );
         assert_eq!(
-            setup::rtk_preview(&r.root, Some(&r.data()), &d),
+            setup::atl_preview(&r.root, Some(&r.data()), &d),
             Value::Object(want)
         );
     }
@@ -756,7 +756,7 @@ mod apply_remove_test {
         let res = f.apply();
         assert!(ok(&res), "{res:?}");
         let data = json::loads(&f.read_settings()).unwrap();
-        assert!(allow(&f.c.settings).contains(&"Bash(rtk *)".to_string()));
+        assert!(allow(&f.c.settings).contains(&"Bash(atl *)".to_string()));
         assert_eq!(text_at(&data, &["worktree", "baseRef"]), "head");
         assert_eq!(text_at(&data, &["model"]), "opus");
         let st = f.state();
@@ -813,7 +813,7 @@ mod apply_remove_test {
         assert!(text_at(&res, &["error"]).contains("changed since the preview"));
         assert_eq!(f.read_settings(), changed);
         assert!(!f.state_exists());
-        assert_eq!(f.rtk_calls(), 0);
+        assert_eq!(f.atl_calls(), 0);
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod apply_remove_test {
         assert!(!ok(&res));
         assert!(text_at(&res, &["error"]).contains("not valid JSON"));
         assert_eq!(f.read_settings(), "{nope");
-        assert_eq!(f.rtk_calls(), 0);
+        assert_eq!(f.atl_calls(), 0);
         assert!(!f.anth().join("personal-memory").exists());
     }
 
@@ -846,26 +846,26 @@ mod apply_remove_test {
     fn test_apply_runs_the_rtk_reconcile_and_surfaces_its_warning() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
-        *f.rtk.result.borrow_mut() = Reconciled {
-            rtk_path: None,
-            warning: Some("rtk download failed: offline".into()),
+        *f.atl.result.borrow_mut() = Reconciled {
+            atl_path: None,
+            warning: Some("atl download failed: offline".into()),
             installed: false,
         };
         let res = f.apply();
-        let calls = f.rtk.calls.borrow();
+        let calls = f.atl.calls.borrow();
         assert_eq!(calls.len(), 1);
         let (data_dir, lock, timeout) = &calls[0];
         assert_eq!(data_dir, &f.c.data_dir);
         // The parsed lock (Python's `fetch` argument is gone: the real wiring always uses the
         // production fetch).
-        assert_eq!(lock, &parsed_lock(&f.c.plugin.join("rtk.lock")).unwrap());
+        assert_eq!(lock, &parsed_lock(&f.c.plugin.join("atl.lock")).unwrap());
         assert!(*timeout >= 60.0);
-        assert_eq!(text_at(&res, &["rtk", "status"]), "warning");
+        assert_eq!(text_at(&res, &["atl", "status"]), "warning");
         assert!(
             at(&res, &["warnings"])
                 .as_array()
                 .unwrap()
-                .contains(&Value::Str("rtk download failed: offline".into()))
+                .contains(&Value::Str("atl download failed: offline".into()))
         );
         assert!(ok(&res));
         assert_eq!(
@@ -878,13 +878,13 @@ mod apply_remove_test {
     fn test_apply_reports_installed_and_up_to_date() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
-        assert_eq!(text_at(&f.apply(), &["rtk", "status"]), "installed");
-        *f.rtk.result.borrow_mut() = Reconciled {
-            rtk_path: Some(PathBuf::from("x")),
+        assert_eq!(text_at(&f.apply(), &["atl", "status"]), "installed");
+        *f.atl.result.borrow_mut() = Reconciled {
+            atl_path: Some(PathBuf::from("x")),
             warning: None,
             installed: false,
         };
-        assert_eq!(text_at(&f.apply(), &["rtk", "status"]), "up to date");
+        assert_eq!(text_at(&f.apply(), &["atl", "status"]), "up to date");
     }
 
     #[test]
@@ -895,23 +895,23 @@ mod apply_remove_test {
         let mut want = Map::new();
         want.insert(
             "skipped".into(),
-            Value::Str("rtk wiring not present (no rtk.lock)".into()),
+            Value::Str("atl wiring not present (no atl.lock)".into()),
         );
         assert_eq!(
-            setup::rtk_preview(&root, Some(&data), &f.deps()),
+            setup::atl_preview(&root, Some(&data), &f.deps()),
             Value::Object(want)
         );
-        let (status, warning) = setup::rtk_apply(&root, Some(&data), f.env(), &f.deps());
+        let (status, warning) = setup::atl_apply(&root, Some(&data), f.env(), &f.deps());
         assert_eq!(status, "failed");
-        assert!(warning.unwrap().contains("rtk install failed"));
-        assert_eq!(f.rtk_calls(), 0);
+        assert!(warning.unwrap().contains("atl install failed"));
+        assert_eq!(f.atl_calls(), 0);
     }
 
     #[test]
     fn test_rtk_exception_is_a_warning() {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
-        *f.rtk.exc.borrow_mut() = Some(PyExc::Other("RuntimeError", "kaboom".into()));
+        *f.atl.exc.borrow_mut() = Some(PyExc::Other("RuntimeError", "kaboom".into()));
         let res = f.apply();
         assert!(ok(&res));
         assert!(dumped(at(&res, &["warnings"])).contains("kaboom"));
@@ -922,12 +922,12 @@ mod apply_remove_test {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         let deps = SetupDeps {
-            rtk: None,
+            atl: None,
             ..f.deps()
         };
         let res = f.apply_d(&deps);
         assert!(ok(&res));
-        assert!(text_at(&res, &["rtk", "status"]).contains("skipped"));
+        assert!(text_at(&res, &["atl", "status"]).contains("skipped"));
     }
 
     #[test]
@@ -944,7 +944,7 @@ mod apply_remove_test {
         let out = setup::preview(&f.c.plugin, Some(f.tmp()), &env, &deps);
         let digest = text_at(&out, &["settings", "sha256"]).to_string();
         setup::apply(&f.c.plugin, &digest, Some(f.tmp()), false, &env, &[], &deps);
-        assert_eq!(f.rtk.calls.borrow()[0].0, f.c.data_dir);
+        assert_eq!(f.atl.calls.borrow()[0].0, f.c.data_dir);
     }
 
     #[test]
@@ -962,7 +962,7 @@ mod apply_remove_test {
                 .file_type()
                 .is_symlink()
         );
-        assert!(fs::read_to_string(&target).unwrap().contains("Bash(rtk *)"));
+        assert!(fs::read_to_string(&target).unwrap().contains("Bash(atl *)"));
         f.remove(false, false, false);
         assert_eq!(fs::read_to_string(&target).unwrap(), text);
     }
@@ -1458,7 +1458,7 @@ mod legacy_promotion_test {
         assert!(!ok(&res));
         assert!(text_at(&res, &["error"]).contains("git repo"));
         assert_eq!(mem::snapshot(l.f.tmp()), before);
-        assert_eq!(l.f.rtk_calls(), 0);
+        assert_eq!(l.f.atl_calls(), 0);
         assert!(!l.f.approved(FAKE_REPO_KEY));
     }
 
@@ -1511,7 +1511,7 @@ mod fix_round1_test {
         let res = f.apply_with(&root, &sha(&f.read_settings()), &deps);
         assert!(!ok(&res));
         assert!(text_at(&res, &["error"]).contains("home folder"));
-        assert_eq!(f.rtk_calls(), 0);
+        assert_eq!(f.atl_calls(), 0);
         assert!(!f.state_exists());
         assert!(!f.read_settings().contains("Read(//"));
     }
@@ -1533,9 +1533,9 @@ mod fix_round1_test {
         let edited = pretty(SONNET);
         let (path, e) = (f.c.settings.clone(), edited.clone());
         // The user edits while we "download".
-        *f.rtk.on_reconcile.borrow_mut() = Some(Box::new(move || fs::write(&path, &e).unwrap()));
-        *f.rtk.result.borrow_mut() = Reconciled {
-            rtk_path: None,
+        *f.atl.on_reconcile.borrow_mut() = Some(Box::new(move || fs::write(&path, &e).unwrap()));
+        *f.atl.result.borrow_mut() = Reconciled {
+            atl_path: None,
             warning: None,
             installed: false,
         };
@@ -1651,7 +1651,7 @@ mod fix_round1_test {
             for out in &outs {
                 let diff = text_at(out, &["settings", "diff"]);
                 assert!(!diff.is_empty(), "{name}");
-                assert!(diff.contains("Bash(rtk *)"), "{name}");
+                assert!(diff.contains("Bash(atl *)"), "{name}");
                 let d = dumped(out);
                 assert!(!d.contains("hunter2"), "{name}");
                 assert!(!d.contains("sk-live-123"), "{name}");
@@ -1674,7 +1674,7 @@ mod fix_round1_test {
         let f = Fx::new();
         let text = f.c.write_settings(SETTINGS);
         f.apply();
-        write(&f.c.data_dir.join("rtk/1.0/rtk"), "bin", None);
+        write(&f.c.data_dir.join("atl/1.0/atl"), "bin", None);
         let applied = f.read_settings();
         let before = mem::snapshot(f.tmp());
         let out = f.remove(false, false, true);
@@ -1683,9 +1683,9 @@ mod fix_round1_test {
         assert_eq!(at(&out, &["preview"]), &Value::Bool(true));
         assert_eq!(at(&out, &["settings", "changed"]), &Value::Bool(true));
         let diff = text_at(&out, &["settings", "diff"]);
-        assert!(diff.contains("-      \"Bash(rtk *)\""), "{diff}");
+        assert!(diff.contains("-      \"Bash(atl *)\""), "{diff}");
         assert!(diff.contains("\"baseRef\""));
-        assert_eq!(text_at(&out, &["rtk", "dir"]), p(&f.c.data_dir.join("rtk")));
+        assert_eq!(text_at(&out, &["atl", "dir"]), p(&f.c.data_dir.join("atl")));
         assert_eq!(text_at(&out, &["state", "path"]), p(&state::path(f.env())));
         assert_eq!(at(&out, &["state", "exists"]), &Value::Bool(true));
         assert_eq!(f.read_settings(), applied);
@@ -1801,12 +1801,12 @@ mod fix_round1_test {
             config.join("plugins/data"),
             f.c.mem.home.clone(),
         ] {
-            write(&data.join("rtk/precious.txt"), "keep", None);
+            write(&data.join("atl/precious.txt"), "keep", None);
             state::write(f.env(), vec![("data_dir".into(), Value::Str(p(&data)))]).unwrap();
             let res = f.remove_env(&f.env_without_data(), false, false, false);
-            assert!(data.join("rtk/precious.txt").exists(), "{data:?}");
+            assert!(data.join("atl/precious.txt").exists(), "{data:?}");
             assert!(
-                dumped(at(&res, &["warnings"])).contains("rtk"),
+                dumped(at(&res, &["warnings"])).contains("atl"),
                 "{data:?}: {res:?}"
             );
             f.apply();
@@ -1818,7 +1818,7 @@ mod fix_round1_test {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
-        let elsewhere = f.c.mem.config.join("elsewhere").join("rtk");
+        let elsewhere = f.c.mem.config.join("elsewhere").join("atl");
         write(&elsewhere.join("precious.txt"), "keep", None);
         fs::create_dir_all(&f.c.data_dir).unwrap();
         symlink(elsewhere.parent().unwrap(), f.c.data_dir.join("sub")).unwrap();
@@ -1890,11 +1890,11 @@ mod remove_test {
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
-        write(&f.c.data_dir.join("rtk/1.0/rtk"), "bin", None);
+        write(&f.c.data_dir.join("atl/1.0/atl"), "bin", None);
         write(&f.c.data_dir.join("other/keep.txt"), "keep", None);
         let res = f.remove(false, false, false);
         assert!(ok(&res), "{res:?}");
-        assert!(!f.c.data_dir.join("rtk").exists());
+        assert!(!f.c.data_dir.join("atl").exists());
         assert!(f.c.data_dir.join("other/keep.txt").exists());
     }
 
@@ -1908,23 +1908,23 @@ mod remove_test {
 
     #[test]
     fn test_remove_deletes_the_rtk_history_folder() {
-        // I4: the folder bin/rtk and bin/rtk-hook point RTK_DB_PATH, RTK_RECALL_DB and
-        // RTK_TEE_DIR at.
+        // I4: the folder bin/atl and bin/atl-hook point ATL_DB_PATH, ATL_RECALL_DB and
+        // ATL_TEE_DIR at.
         let f = Fx::new();
         f.c.write_settings(SETTINGS);
         f.apply();
-        let history = state::rtk_data_dir(f.env());
+        let history = state::atl_data_dir(f.env());
         write(&history.join("history.db"), "commands", None);
         write(&history.join("tee").join("1_x.log"), "out", None);
         let preview = f.remove(false, false, true);
         assert_eq!(
-            at(&preview, &["rtk_history"]),
+            at(&preview, &["atl_history"]),
             &pairs(&[("dir", &p(&history)), ("status", "delete")])
         );
         assert!(history.join("history.db").exists());
         let res = f.remove(false, false, false);
         assert!(ok(&res), "{res:?}");
-        assert_eq!(at(&res, &["rtk_history"]), &pairs(&[("status", "deleted")]));
+        assert_eq!(at(&res, &["atl_history"]), &pairs(&[("status", "deleted")]));
         assert!(!history.exists());
     }
 
@@ -1935,11 +1935,11 @@ mod remove_test {
         f.apply();
         let preview = f.remove(false, false, true);
         assert_eq!(
-            text_at(&preview, &["rtk_history", "status"]),
+            text_at(&preview, &["atl_history", "status"]),
             "nothing to delete"
         );
         assert_eq!(
-            at(&f.remove(false, false, false), &["rtk_history"]),
+            at(&f.remove(false, false, false), &["atl_history"]),
             &pairs(&[("status", "nothing to delete")])
         );
     }
@@ -1951,7 +1951,7 @@ mod remove_test {
         f.apply();
         let elsewhere = f.c.mem.config.join("elsewhere-history");
         write(&elsewhere.join("precious.txt"), "keep", None);
-        let history = state::rtk_data_dir(f.env());
+        let history = state::atl_data_dir(f.env());
         fs::create_dir_all(history.parent().unwrap()).unwrap();
         symlink(&elsewhere, &history).unwrap();
         let res = f.remove(false, false, false);
@@ -1970,11 +1970,11 @@ mod remove_test {
         f.c.write_settings(SETTINGS);
         f.apply();
         let outside = f.tmp().join("outside");
-        write(&outside.join("rtk/precious.txt"), "keep", None);
+        write(&outside.join("atl/precious.txt"), "keep", None);
         state::write(f.env(), vec![("data_dir".into(), Value::Str(p(&outside)))]).unwrap();
         let res = f.remove_env(&f.env_without_data(), false, false, false);
-        assert!(outside.join("rtk/precious.txt").exists());
-        assert!(dumped(at(&res, &["warnings"])).contains("rtk"));
+        assert!(outside.join("atl/precious.txt").exists());
+        assert!(dumped(at(&res, &["warnings"])).contains("atl"));
     }
 
     #[test]
@@ -1985,7 +1985,7 @@ mod remove_test {
         let elsewhere = f.c.mem.config.join("elsewhere");
         write(&elsewhere.join("precious.txt"), "keep", None);
         fs::create_dir_all(&f.c.data_dir).unwrap();
-        symlink(&elsewhere, f.c.data_dir.join("rtk")).unwrap();
+        symlink(&elsewhere, f.c.data_dir.join("atl")).unwrap();
         f.remove(false, false, false);
         assert!(elsewhere.join("precious.txt").exists());
     }
@@ -2016,7 +2016,7 @@ mod remove_test {
     fn test_users_own_rules_survive_remove() {
         let f = Fx::new();
         f.c.write_settings(
-            r#"{"model": "opus", "permissions": {"allow": ["Bash(rtk *)", "Bash(ls)"]}}"#,
+            r#"{"model": "opus", "permissions": {"allow": ["Bash(atl *)", "Bash(ls)"]}}"#,
         );
         f.apply();
         let mut data = json::loads(&f.read_settings()).unwrap();
@@ -2035,7 +2035,7 @@ mod remove_test {
         f.remove(false, false, false);
         assert_eq!(
             allow(&f.c.settings),
-            ["Bash(rtk *)", "Bash(ls)", "Bash(make *)"]
+            ["Bash(atl *)", "Bash(ls)", "Bash(make *)"]
         );
         let got = json::loads(&f.read_settings()).unwrap();
         assert!(got.as_object().unwrap().get("worktree").is_none());
@@ -3607,7 +3607,7 @@ mod old_notes_by_type_test {
             assert!(error.contains("Nothing was written"), "{error}");
         }
         assert_eq!(mem::snapshot(n.f.tmp()), before);
-        assert_eq!(n.f.rtk_calls(), 0);
+        assert_eq!(n.f.atl_calls(), 0);
     }
 
     #[test]
@@ -3629,5 +3629,252 @@ mod old_notes_by_type_test {
         let (code, out, _) = setup::main(&argv, n.f.env(), &n.deps());
         assert_eq!(code, 0, "{out}");
         assert!(n.repo_mem.join("project-release.md").is_file());
+    }
+}
+
+/// The rename from the legacy rtk to ATL: what setup does about an install made before it (the plan's
+/// upgrade path, item 4). Every old name below is a legacy one.
+mod legacy_cleanup_test {
+    use super::*;
+
+    const LEGACY_DIR: &str = "rtk"; // legacy
+    const LEGACY_KEY: &str = "rtk_path"; // legacy
+
+    /// What a pre-rename install left: the downloaded folder, its history and the state key.
+    struct Legacy {
+        dir: PathBuf,
+        history: PathBuf,
+    }
+
+    fn leave_legacy(f: &Fx) -> Legacy {
+        let dir = f.c.data_dir.join(LEGACY_DIR);
+        let binary = dir.join("1.2.1").join(LEGACY_DIR);
+        write(&binary, "binary", None);
+        let history = state::legacy_rtk_data_dir(f.env());
+        write(&history.join("history.db"), "commands", None);
+        write(&history.join("tee").join("1_x.log"), "out", None);
+        state::write(
+            f.env(),
+            vec![
+                (LEGACY_KEY.into(), Value::Str(p(&binary))),
+                ("kept".into(), Value::Str("yes".into())),
+            ],
+        )
+        .unwrap();
+        Legacy { dir, history }
+    }
+
+    fn has_legacy_key(f: &Fx) -> bool {
+        f.state().get(LEGACY_KEY).is_some()
+    }
+
+    fn statuses(kv: &[(&str, &str)]) -> Value {
+        let mut m = Map::new();
+        for (k, v) in kv {
+            m.insert((*k).into(), Value::Str((*v).into()));
+        }
+        Value::Object(m)
+    }
+
+    /// The preview names all three leftovers, and writes nothing; apply writes settings.json
+    /// first (everything is still there when it does), then drops the state key, then deletes
+    /// the folder, then the history.
+    #[test]
+    fn setup_apply_removes_legacy_in_order() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let old = leave_legacy(&f);
+        let before = mem::snapshot(f.tmp());
+        let preview = f.preview(None);
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        let shown = at(&preview, &["legacy_rtk"]);
+        assert_eq!(at(shown, &["state", "present"]), &Value::Bool(true));
+        assert_eq!(text_at(shown, &["state", "key"]), LEGACY_KEY);
+        assert_eq!(text_at(shown, &["dir", "dir"]), p(&old.dir));
+        assert_eq!(text_at(shown, &["dir", "status"]), "delete");
+        assert_eq!(text_at(shown, &["history", "dir"]), p(&old.history));
+        assert_eq!(text_at(shown, &["history", "status"]), "delete");
+
+        let seen: RefCell<Vec<(bool, bool, bool)>> = RefCell::new(Vec::new());
+        let spy = |path: &Path, text: &str| {
+            seen.borrow_mut()
+                .push((has_legacy_key(&f), old.dir.exists(), old.history.exists()));
+            settings::write_text(path, text)
+        };
+        let deps = SetupDeps {
+            settings_write: &spy,
+            ..f.deps()
+        };
+        let res = f.apply_d(&deps);
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(*seen.borrow(), [(true, true, true)]);
+        assert!(f.read_settings().contains("Bash(atl *)"));
+        assert!(!has_legacy_key(&f));
+        assert!(!old.dir.exists());
+        assert!(!old.history.exists());
+        assert_eq!(f.state().get("kept"), Some(&Value::Str("yes".into())));
+        assert!(f.state().get("setup_done").is_some());
+        assert_eq!(
+            at(&res, &["legacy_rtk"]),
+            &statuses(&[
+                ("state", "dropped"),
+                ("dir", "deleted"),
+                ("history", "deleted")
+            ])
+        );
+        // A second run finds nothing left.
+        let again = f.apply();
+        assert!(ok(&again), "{again:?}");
+        assert_eq!(
+            at(&again, &["legacy_rtk"]),
+            &statuses(&[
+                ("state", "nothing to drop"),
+                ("dir", "nothing to delete"),
+                ("history", "nothing to delete")
+            ])
+        );
+    }
+
+    /// Step 1 failing stops everything: nothing old is touched, so a retry still finds it.
+    #[test]
+    fn setup_apply_leaves_legacy_alone_when_the_settings_write_fails() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let old = leave_legacy(&f);
+        let disk_full = |_: &Path, _: &str| Err(PyExc::Other("OSError", "disk full".into()));
+        let deps = SetupDeps {
+            settings_write: &disk_full,
+            ..f.deps()
+        };
+        let res = f.apply_d(&deps);
+        assert!(!ok(&res));
+        assert!(has_legacy_key(&f));
+        assert!(old.dir.exists());
+        assert!(old.history.exists());
+    }
+
+    /// The same guards as remove: a symlinked folder or history is never followed or deleted.
+    #[test]
+    fn setup_apply_keeps_a_symlinked_legacy_folder_and_history() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let elsewhere = f.c.mem.config.join("elsewhere");
+        write(&elsewhere.join("dir/precious.txt"), "keep", None);
+        write(&elsewhere.join("history/precious.txt"), "keep", None);
+        fs::create_dir_all(&f.c.data_dir).unwrap();
+        let dir = f.c.data_dir.join(LEGACY_DIR);
+        symlink(elsewhere.join("dir"), &dir).unwrap();
+        let history = state::legacy_rtk_data_dir(f.env());
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        symlink(elsewhere.join("history"), &history).unwrap();
+        let res = f.apply();
+        assert!(ok(&res), "{res:?}");
+        assert!(elsewhere.join("dir/precious.txt").exists());
+        assert!(elsewhere.join("history/precious.txt").exists());
+        assert!(fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&history)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let shown = at(&res, &["legacy_rtk"]);
+        assert_eq!(text_at(shown, &["dir"]), "left in place");
+        assert_eq!(text_at(shown, &["history"]), "left in place");
+        let warnings = dumped(at(&res, &["warnings"]));
+        assert!(warnings.contains("legacy"), "{warnings}");
+    }
+
+    /// A data folder that is the config folder or above plugins/data never loses a folder.
+    #[test]
+    fn setup_apply_never_deletes_a_legacy_folder_outside_the_plugin_data_folder() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let config = f.c.mem.config.clone();
+        for data in [config.clone(), config.join("plugins"), f.c.mem.home.clone()] {
+            write(&data.join(LEGACY_DIR).join("precious.txt"), "keep", None);
+            let env = f.env_without_data();
+            state::write(&env, vec![("data_dir".into(), Value::Str(p(&data)))]).unwrap();
+            let digest =
+                text_at(&f.preview_d(None, &f.deps()), &["settings", "sha256"]).to_string();
+            let res = setup::apply(
+                &f.c.plugin,
+                &digest,
+                Some(f.tmp()),
+                false,
+                &env,
+                &[],
+                &f.deps(),
+            );
+            assert!(ok(&res), "{data:?}: {res:?}");
+            assert!(
+                data.join(LEGACY_DIR).join("precious.txt").exists(),
+                "{data:?}"
+            );
+        }
+    }
+
+    /// Remove deletes the ATL folder and history and the legacy ones, shown in its preview.
+    #[test]
+    fn setup_remove_covers_atl_and_legacy() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let atl_dir = f.c.data_dir.join("atl");
+        write(&atl_dir.join("1.0/atl"), "bin", None);
+        let atl_history = state::atl_data_dir(f.env());
+        write(&atl_history.join("history.db"), "commands", None);
+        let old = leave_legacy(&f);
+        let all = [
+            ("atl", &atl_dir),
+            ("atl_history", &atl_history),
+            ("legacy_rtk", &old.dir),
+            ("legacy_rtk_history", &old.history),
+        ];
+        let preview = f.remove(false, false, true);
+        assert!(ok(&preview), "{preview:?}");
+        for (key, dir) in all {
+            assert_eq!(text_at(&preview, &[key, "dir"]), p(dir), "{key}");
+            assert_eq!(text_at(&preview, &[key, "status"]), "delete", "{key}");
+            assert!(dir.exists(), "{key}");
+        }
+        let res = f.remove(false, false, false);
+        assert!(ok(&res), "{res:?}");
+        for (key, dir) in all {
+            assert_eq!(
+                at(&res, &[key]),
+                &statuses(&[("status", "deleted")]),
+                "{key}"
+            );
+            assert!(!dir.exists(), "{key}");
+        }
+        assert!(!f.state_exists());
+    }
+
+    /// Remove applies the same guards to the legacy folder as to the ATL one.
+    #[test]
+    fn setup_remove_never_deletes_a_legacy_folder_outside_the_plugin_data_folder() {
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        f.apply();
+        let config = f.c.mem.config.clone();
+        for data in [
+            config.clone(),
+            config.join("plugins/data"),
+            f.c.mem.home.clone(),
+        ] {
+            write(&data.join(LEGACY_DIR).join("precious.txt"), "keep", None);
+            state::write(f.env(), vec![("data_dir".into(), Value::Str(p(&data)))]).unwrap();
+            let res = f.remove_env(&f.env_without_data(), false, false, false);
+            assert!(
+                data.join(LEGACY_DIR).join("precious.txt").exists(),
+                "{data:?}"
+            );
+            assert!(
+                dumped(at(&res, &["warnings"])).contains("legacy"),
+                "{data:?}: {res:?}"
+            );
+            f.apply();
+        }
     }
 }

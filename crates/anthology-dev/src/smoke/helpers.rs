@@ -26,7 +26,7 @@ pub const CLAUDE_TIMEOUT: u64 = 300;
 pub const NO_AUTH: &str = "no API credentials (set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)";
 pub const EXPECTED_AGENTS: usize = 11;
 pub const MARKER: &str = "smoke-unpushed-marker";
-pub const RTK_RAW_GIT: &str = "create/copy files and use";
+pub const ATL_RAW_GIT: &str = "create/copy files and use";
 pub const GUARD_G1: &str = "anthology-guardrails (G1)";
 pub const PROMPT_WORKTREE: &str = "Use the Agent tool to run the anthology:implementer agent with the prompt \
 'Run git log --oneline -3, change nothing, and report the output verbatim.' \
@@ -326,8 +326,8 @@ static NOT_FOUND_RE: LazyLock<Regex> = LazyLock::new(|| {
 static BLOCKED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)blocking because onFailure is .?block").expect("BLOCKED_RE is a fixed pattern")
 });
-static RTK_CLEAN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"clean . nothing to commit|Clean working tree").expect("RTK_CLEAN_RE is fixed")
+static ATL_CLEAN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"clean . nothing to commit|Clean working tree").expect("ATL_CLEAN_RE is fixed")
 });
 static MEM_NOTE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"metadata:\s*\n\s+type:\s*project").expect("MEM_NOTE_RE is a fixed pattern")
@@ -859,16 +859,16 @@ pub fn colon_memory_paths(root: &Path) -> Vec<String> {
 
 // ---- verdict helpers ----------------------------------------------------------------------
 
-/// What is wrong with an rtk-rewrite run: rtk's condensed status seen, no raw git status, G1 seen.
-pub fn rtk_problems(results: &[String], hooks: &str) -> Vec<String> {
+/// What is wrong with an atl-rewrite run: atl's condensed status seen, no raw git status, G1 seen.
+pub fn atl_problems(results: &[String], hooks: &str) -> Vec<String> {
     let mut problems = Vec::new();
-    if !results.iter().any(|r| RTK_CLEAN_RE.is_match(r)) {
+    if !results.iter().any(|r| ATL_CLEAN_RE.is_match(r)) {
         problems.push(
-            "no tool result shows rtk's condensed git status (clean - nothing to commit)"
+            "no tool result shows atl's condensed git status (clean - nothing to commit)"
                 .to_string(),
         );
     }
-    if results.iter().any(|r| r.contains(RTK_RAW_GIT)) {
+    if results.iter().any(|r| r.contains(ATL_RAW_GIT)) {
         problems.push("a tool result shows the raw git status text".to_string());
     }
     let seen = format!("{hooks}\n{}", results.join("\n"));

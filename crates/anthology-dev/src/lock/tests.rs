@@ -40,7 +40,7 @@ fn checksums_refuse_anything_else() {
         good.replacen(&hex('a'), &hex('A'), 1),       // upper case
         good.replacen(&hex('a'), &hex('a')[..63], 1), // 63 digits
         good.replacen("aarch64-apple-darwin", "x86_64-pc-windows", 1), // unknown target
-        good.replacen("anthology-aarch64", "rtk-aarch64", 1), // other asset
+        good.replacen("anthology-aarch64", "atl-aarch64", 1), // other asset
         good.replacen(".tar.gz\n", ".tgz\n", 1),
         format!("{good}\n"), // blank line
         format!("{good}{}  anthology-x86_64-apple-darwin.tar.gz\n", hex('e')), // duplicate
@@ -66,7 +66,7 @@ fn render_is_the_design_layout_and_refuses_bad_fields() {
     assert_eq!(text, want);
     for (tag, repo) in [
         ("anthology--v0.1.0", DEFAULT_REPO),
-        ("rtk--v0.1.0", DEFAULT_REPO),
+        ("atl--v0.1.0", DEFAULT_REPO),
         ("anthology-bin--v0.1", DEFAULT_REPO),
         ("anthology-bin--v0.1.0-", DEFAULT_REPO),
         ("anthology-bin--v0.1.0-rc_1", DEFAULT_REPO),

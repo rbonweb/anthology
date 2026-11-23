@@ -15,7 +15,7 @@ fn lock(version: &str, prefix: &str, repo: &str) -> Lock {
 }
 
 #[test]
-fn rtk_versions_follow_version_re_with_unicode_digits() {
+fn atl_versions_follow_version_re_with_unicode_digits() {
     for ok in [
         "0.1.0",
         "10.20.30",
@@ -25,7 +25,7 @@ fn rtk_versions_follow_version_re_with_unicode_digits() {
         "\u{661}.\u{662}.\u{663}",
         "1.\u{ff11}.3",
     ] {
-        assert!(rtk_version_ok(ok), "{ok:?}");
+        assert!(atl_version_ok(ok), "{ok:?}");
     }
     for bad in [
         "",
@@ -46,7 +46,7 @@ fn rtk_versions_follow_version_re_with_unicode_digits() {
         "\u{b2}.1.1",
         "1.2.3\n",
     ] {
-        assert!(!rtk_version_ok(bad), "{bad:?}");
+        assert!(!atl_version_ok(bad), "{bad:?}");
     }
 }
 
@@ -119,9 +119,9 @@ fn repr_of_a_deep_value_does_not_overflow() {
 #[test]
 fn an_unknown_prefix_is_refused() {
     assert!(
-        parse("{}", "rtk-v")
+        parse("{}", "atl-v")
             .unwrap_err()
-            .starts_with("unknown lock tag prefix 'rtk-v'")
+            .starts_with("unknown lock tag prefix 'atl-v'")
     );
 }
 
@@ -159,8 +159,8 @@ fn the_anthology_layout_is_exact() {
         Err("anthology.lock: not in the layout anthology-dev lock write produces".into())
     );
     assert_eq!(
-        parse(&compact, RTK_TAG_PREFIX).map(|l| l.version),
-        Err("rtk.lock: tag must be rtk--v0.1.0".into())
+        parse(&compact, ATL_TAG_PREFIX).map(|l| l.version),
+        Err("atl.lock: tag must be atl--v0.1.0".into())
     );
 }
 
@@ -238,8 +238,8 @@ proptest! {
     }
 
     #[test]
-    fn an_rtk_lock_in_the_same_layout_parses(l in arb_lock(RTK_TAG_PREFIX)) {
-        prop_assume!(rtk_version_ok(&l.version));
-        prop_assert_eq!(parse(&render_anthology(&l), RTK_TAG_PREFIX), Ok(l));
+    fn an_atl_lock_in_the_same_layout_parses(l in arb_lock(ATL_TAG_PREFIX)) {
+        prop_assume!(atl_version_ok(&l.version));
+        prop_assert_eq!(parse(&render_anthology(&l), ATL_TAG_PREFIX), Ok(l));
     }
 }

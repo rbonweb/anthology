@@ -1,4 +1,4 @@
-//! Port of `tests/test_rtk_release_workflow.py`: shape of the rtk release workflow, its toolchain pin and version.
+//! Port of `tests/test_rtk_release_workflow.py`: shape of the atl release workflow, its toolchain pin and version.
 
 use std::collections::BTreeSet;
 use std::process::Command;
@@ -7,7 +7,7 @@ use regex::Regex;
 use repo_tests::repo;
 use repo_tests::yaml::{self, Yaml};
 
-const WORKFLOW: &str = ".github/workflows/rtk-release.yml";
+const WORKFLOW: &str = ".github/workflows/atl-release.yml";
 const TARGETS: [&str; 4] = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -68,6 +68,7 @@ fn perms(y: &Yaml) -> Vec<(String, String)> {
 }
 
 mod rtk_release_workflow_test {
+    // legacy: port/ledger names this module
     use super::*;
 
     #[test]
@@ -140,13 +141,13 @@ mod rtk_release_workflow_test {
         let wf = load();
         // yaml-rust2 (YAML 1.2) keeps `on` as the string key; PyYAML read it as True.
         let on = &wf["on"];
-        assert!(yaml::strings(&on["push"]["tags"]).contains(&"rtk--v*".to_string()));
+        assert!(yaml::strings(&on["push"]["tags"]).contains(&"atl--v*".to_string()));
         assert_eq!(
             on["workflow_dispatch"]["inputs"]["tag"]["required"].as_bool(),
             Some(true)
         );
         assert!(
-            yaml::strings(&on["pull_request"]["paths"]).contains(&"rtk/rust-toolchain.toml".into())
+            yaml::strings(&on["pull_request"]["paths"]).contains(&"atl/rust-toolchain.toml".into())
         );
     }
 
@@ -157,7 +158,7 @@ mod rtk_release_workflow_test {
         assert_eq!(step["shell"].as_str(), Some("bash"));
         let run = text(step, "run");
         assert!(
-            run.contains("[[ $tag =~ ^rtk--v[0-9]+\\.[0-9]+\\.[0-9]+(-anthology\\.[0-9]+)?$ ]]"),
+            run.contains("[[ $tag =~ ^atl--v[0-9]+\\.[0-9]+\\.[0-9]+(-anthology\\.[0-9]+)?$ ]]"),
             "{run}"
         );
         // a line-based grep accepts a multi-line dispatch input
@@ -182,12 +183,13 @@ mod rtk_release_workflow_test {
             .and_then(|c| c.strip_suffix("; then"))
             .unwrap_or_else(|| panic!("unexpected check line: {check}"));
         let cases = [
-            ("rtk--v1.2.1", true),
-            ("rtk--v1.2.1-anthology.3", true),
-            ("rtk--v1.2.1\nanything", false),
-            ("evil\nrtk--v1.2.1", false),
-            ("rtk--v1.2", false),
-            ("rtk--v1.2.1-x", false),
+            ("atl--v1.2.1", true),
+            ("atl--v1.2.1-anthology.3", true),
+            ("rtk--v1.2.1-anthology.3", false), // legacy: a published tag is never rebuilt
+            ("atl--v1.2.1\nanything", false),
+            ("evil\natl--v1.2.1", false),
+            ("atl--v1.2", false),
+            ("atl--v1.2.1-x", false),
         ];
         for (tag, ok) in cases {
             let out = Command::new("bash")
@@ -222,7 +224,7 @@ mod rtk_release_workflow_test {
 
     #[test]
     fn test_toolchain_matches_the_rust_image() {
-        let toolchain = repo::read("rtk/rust-toolchain.toml");
+        let toolchain = repo::read("atl/rust-toolchain.toml");
         let channel = Regex::new(r#"(?m)^channel\s*=\s*"([^"]+)""#)
             .unwrap()
             .captures(&toolchain)
@@ -243,7 +245,7 @@ mod rtk_release_workflow_test {
 
     #[test]
     fn test_version_is_the_anthology_edition() {
-        let cargo = repo::read("rtk/Cargo.toml");
+        let cargo = repo::read("atl/Cargo.toml");
         let version = Regex::new(r#"(?m)^version = "([^"]+)""#)
             .unwrap()
             .captures(&cargo)
@@ -255,10 +257,10 @@ mod rtk_release_workflow_test {
                 .is_match(&version),
             "{version}"
         );
-        let lock = repo::read("rtk/Cargo.lock");
+        let lock = repo::read("atl/Cargo.lock");
         assert!(
-            lock.contains(&format!("name = \"rtk\"\nversion = \"{version}\"\n")),
-            "rtk/Cargo.lock does not pin {version}"
+            lock.contains(&format!("name = \"atl\"\nversion = \"{version}\"\n")),
+            "atl/Cargo.lock does not pin {version}"
         );
     }
 }

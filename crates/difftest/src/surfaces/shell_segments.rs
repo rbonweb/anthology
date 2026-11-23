@@ -383,7 +383,9 @@ pub(crate) const WORDS: &[&str] = &[
     "timeout",
     "10",
     "xargs",
-    "rtk",
+    // legacy name: this list is picked from, so it cannot grow without changing the generated
+    // cases the frozen goldens keep as digests; the atl forms are in `ATL_SWEEP`
+    "rtk", // legacy
     "run",
     "err",
     "proxy",
@@ -609,7 +611,7 @@ impl Gen<'_> {
             "bash -s <<<",
             "sudo bash -c",
             "env FOO=1 sh -c",
-            "rtk run -c",
+            "rtk run -c", // legacy (picked, so it stays; `ATL_SWEEP` has the atl form)
             "npx -c",
             "/bin/sh -xc",
             "\u{212a}sh -c",
@@ -788,8 +790,19 @@ pub(crate) fn sweep_cases() -> Vec<Value> {
         }
         out.push(segments_case(heredocs, 0));
     }
+    // Last, so the ids the frozen goldens keep as digests stay put.
+    for text in ATL_SWEEP {
+        out.push(segments_case(text.to_string(), 0));
+    }
     out
 }
+
+/// The atl forms of the legacy name in the picked word and shell-prefix lists above.
+const ATL_SWEEP: &[&str] = &[
+    "atl run -c 'npx playwright install'",
+    "atl run -c \"$(npx x)\"; atl err 'a b'",
+    "atl proxy x | atl run err proxy",
+];
 
 fn shell_parse_case(rng: &mut GenRng) -> Value {
     const ARGS: &[&str] = &[

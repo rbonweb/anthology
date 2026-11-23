@@ -64,7 +64,7 @@ impl Source {
 }
 
 /// `vendor.vendored(vendor.load_sources(ROOT))` restricted to the knowledge targets: the entries
-/// vendor.py builds (subtree-managed ones, like rtk, are skipped) that land in the knowledge folder.
+/// vendor.py builds (subtree-managed ones, like atl, are skipped) that land in the knowledge folder.
 fn knowledge_sources() -> Vec<Source> {
     let data = json::loads(&repo::read("vendor/sources.json")).expect("sources.json is JSON");
     let sources = data

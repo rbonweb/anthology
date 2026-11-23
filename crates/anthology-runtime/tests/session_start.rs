@@ -4,7 +4,7 @@
 //!
 //! Modules are the Python classes; every ported test keeps the Python method name. Python's
 //! `mock.patch` sites go through `SessionDeps` (GC-19): a step patched with a `side_effect` is
-//! `SessionDeps::fail`, `rtk_install` is a fake `RtkWiring`, `memory_sync.run` is
+//! `SessionDeps::fail`, `atl_install` is a fake `AtlWiring`, `memory_sync.run` is
 //! `memory_run`. The layout is `anthology_testkit::session::SessionCase` (its module docs say
 //! why it is a small copy of the plugin with a stand-in guard). The budget tests sit in modules
 //! named `budget` so `cargo test -p anthology-runtime budget` selects them.
@@ -30,10 +30,10 @@ use anthology_core::lock::Lock;
 use anthology_core::{Env, state};
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_pycompat::pyerr::PyExc;
+use anthology_runtime::atl_install::{self, AtlDeps, Reconciled};
 use anthology_runtime::bootstrap::GuardBinaryStatus;
-use anthology_runtime::rtk_install::{self, Reconciled, RtkDeps};
 use anthology_runtime::session_start::{
-    self, DEADLINE, MOVED, NAG, OPS_CHANGED, RTK_MIN_REMAINING, RTK_TIMEOUT, RtkWiring, RunResult,
+    self, ATL_MIN_REMAINING, ATL_TIMEOUT, AtlWiring, DEADLINE, MOVED, NAG, OPS_CHANGED, RunResult,
     RunSpec, SessionDeps, SessionLimits,
 };
 use anthology_settings::{self as settings, Op, SettingsDeps, TAG_PLUGIN_READ};
@@ -42,7 +42,7 @@ use anthology_testkit::session::{
     BLOCKS, EXIT_0, SessionCase, copy_bin, guard_plugin, guide_path, real_plugin, write_mode,
 };
 
-const DATA_LINE: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; rtk and the memory search index have no data folder (compatibility check)";
+const DATA_LINE: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; atl and the memory search index have no data folder (compatibility check)";
 const MODEL_LINE: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply; run /anthology:setup to see where it is set";
 const AGENTS: [&str; 11] = [
     "researcher",
@@ -60,8 +60,8 @@ const AGENTS: [&str; 11] = [
 
 // --- the fixture --------------------------------------------------------------------------
 
-/// `FakeRtk`: rtk_install's interface; records the calls.
-struct FakeRtk {
+/// `FakeAtl`: atl_install's interface; records the calls.
+struct FakeAtl {
     calls: RefCell<Vec<(PathBuf, Lock, f64)>>,
     lock_paths: RefCell<Vec<PathBuf>>,
     result: RefCell<Reconciled>,
@@ -72,19 +72,19 @@ struct FakeRtk {
 fn fake_lock() -> Lock {
     Lock {
         version: "9.9.9".into(),
-        tag: "rtk--v9.9.9".into(),
+        tag: "atl--v9.9.9".into(),
         repo: "example/x".into(),
         sha256: Default::default(),
     }
 }
 
-impl FakeRtk {
-    fn new() -> FakeRtk {
-        FakeRtk {
+impl FakeAtl {
+    fn new() -> FakeAtl {
+        FakeAtl {
             calls: RefCell::new(Vec::new()),
             lock_paths: RefCell::new(Vec::new()),
             result: RefCell::new(Reconciled {
-                rtk_path: None,
+                atl_path: None,
                 warning: None,
                 installed: false,
             }),
@@ -94,7 +94,7 @@ impl FakeRtk {
     }
 }
 
-impl RtkWiring for FakeRtk {
+impl AtlWiring for FakeAtl {
     fn load_lock(&self, path: &Path) -> Result<Lock, PyExc> {
         self.lock_paths.borrow_mut().push(path.to_path_buf());
         match self.lock_exc.borrow().clone() {
@@ -138,14 +138,14 @@ fn p(path: &Path) -> String {
 
 struct Fx {
     c: SessionCase,
-    rtk: FakeRtk,
+    atl: FakeAtl,
 }
 
 impl Fx {
     fn new() -> Fx {
         Fx {
             c: SessionCase::new(),
-            rtk: FakeRtk::new(),
+            atl: FakeAtl::new(),
         }
     }
 
@@ -165,10 +165,10 @@ impl Fx {
         self.c.env.clone()
     }
 
-    /// The test's production-like seams: the fake rtk and no binary bootstrap.
+    /// The test's production-like seams: the fake atl and no binary bootstrap.
     fn deps(&self) -> SessionDeps<'_> {
         SessionDeps {
-            rtk: Some(&self.rtk),
+            atl: Some(&self.atl),
             ensure_guard_binary: &no_ensure,
             ..SessionDeps::default()
         }
@@ -451,8 +451,8 @@ mod output_test {
         assert!(!has_msg(&out), "{out:?}");
         assert!(seen.borrow().is_empty(), "no guard self-test in a subagent");
         assert!(
-            f.rtk.calls.borrow().is_empty(),
-            "no rtk check in a subagent"
+            f.atl.calls.borrow().is_empty(),
+            "no atl check in a subagent"
         );
         assert_eq!(f.state(), before, "a subagent never writes state.json");
     }
@@ -481,7 +481,7 @@ mod output_test {
         assert!(!has_msg(&out), "{out:?}");
         assert!(!context(&out).contains("# Anthology routing guide"));
         assert!(seen.borrow().is_empty(), "no guard self-test in a subagent");
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(f.atl.calls.borrow().is_empty());
         assert_eq!(f.state(), before);
     }
 
@@ -926,7 +926,7 @@ mod ops_version_test {
         let f = Fx::new();
         write(&f.config().join("settings.json"), "{}\n", None);
         let deps = SetupDeps {
-            rtk: Some(&f.rtk),
+            atl: Some(&f.atl),
             ensure_guard_binary: &present,
             ..SetupDeps::default()
         };
@@ -1116,15 +1116,15 @@ mod compatibility_lines_test {
     #[test]
     fn test_wrappers_missing_or_not_executable_are_named() {
         let c = setup();
-        let root = c.copy_plugin(&["rtk"], &["anthology-mem"]);
+        let root = c.copy_plugin(&["atl"], &["anthology-mem"]);
         let mut d = c.f.deps();
         d.self_test = Some(&quiet_self_test);
         let l = c.lines_with(&d, &c.f.env().with_os("CLAUDE_PLUGIN_ROOT", &root));
         let hit: Vec<_> = l.iter().filter(|l| l.contains("bin/")).collect();
         assert_eq!(hit.len(), 1, "{l:?}");
-        assert!(hit[0].contains("rtk"));
+        assert!(hit[0].contains("atl"));
         assert!(hit[0].contains("anthology-mem"));
-        assert!(!hit[0].contains("rtk-hook"));
+        assert!(!hit[0].contains("atl-hook"));
     }
 
     #[test]
@@ -1397,7 +1397,7 @@ mod failure_test {
         for (name, e) in [
             ("_guard_selftest", exc("RuntimeError", "boom")),
             ("_setup_warning", exc("RecursionError", "")),
-            ("_reconcile_rtk", exc("OSError", "x")),
+            ("_reconcile_atl", exc("OSError", "x")),
             ("_read_guide", PyExc::UnicodeDecodeError("bad".into())),
             ("_parse_stdin", PyExc::ValueError("x".into())),
         ] {
@@ -1507,7 +1507,7 @@ mod platform_test {
         );
         assert!(!*mem_called.borrow());
         assert!(!*guard_called.borrow());
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(f.atl.calls.borrow().is_empty());
         assert!(!state::path(&f.env()).exists());
     }
 }
@@ -1564,7 +1564,7 @@ mod state_test {
     }
 }
 
-// --- RtkTest ------------------------------------------------------------------------------
+// --- AtlTest ------------------------------------------------------------------------------
 
 mod rtk_test {
     use super::*;
@@ -1573,7 +1573,7 @@ mod rtk_test {
     fn test_not_reconciled_before_setup_ran() {
         let f = Fx::new();
         f.go();
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(f.atl.calls.borrow().is_empty());
     }
 
     #[test]
@@ -1581,24 +1581,24 @@ mod rtk_test {
         let f = Fx::new();
         f.mark_setup(None);
         f.go();
-        let calls = f.rtk.calls.borrow();
+        let calls = f.atl.calls.borrow();
         assert_eq!(calls.len(), 1);
         let (data_dir, lock, timeout) = &calls[0];
         assert_eq!(data_dir, &f.c.mem.data);
         assert_eq!(
-            *f.rtk.lock_paths.borrow(),
-            vec![f.plugin().join("rtk.lock")]
+            *f.atl.lock_paths.borrow(),
+            vec![f.plugin().join("atl.lock")]
         );
         assert_eq!(lock, &fake_lock()); // the parsed lock, not a path
-        assert_eq!(*timeout, RTK_TIMEOUT);
+        assert_eq!(*timeout, ATL_TIMEOUT);
     }
 
     #[test]
     fn test_worst_case_reconcile_fits_the_hook_timeout() {
-        // rtk_install downloads for at most 4 x timeout plus one socket timeout; it only starts
-        // when RTK_MIN_REMAINING is left of the DEADLINE, which is itself under the 60 s hook
+        // atl_install downloads for at most 4 x timeout plus one socket timeout; it only starts
+        // when ATL_MIN_REMAINING is left of the DEADLINE, which is itself under the 60 s hook
         // timeout.
-        const { assert!(5.0 * RTK_TIMEOUT <= RTK_MIN_REMAINING) };
+        const { assert!(5.0 * ATL_TIMEOUT <= ATL_MIN_REMAINING) };
         const { assert!(DEADLINE < 60.0) };
     }
 
@@ -1610,23 +1610,23 @@ mod rtk_test {
         f.state_write(vec![("data_dir", Value::Str(p(&remembered)))]);
         let env = f.env().without("CLAUDE_PLUGIN_DATA");
         session_start::run(&env, "{}", &f.deps());
-        assert_eq!(f.rtk.calls.borrow()[0].0, remembered);
+        assert_eq!(f.atl.calls.borrow()[0].0, remembered);
     }
 
     #[test]
     fn test_returned_warning_is_shown() {
         let f = Fx::new();
         f.mark_setup(None);
-        f.rtk.result.borrow_mut().warning = Some("rtk download failed: offline".into());
-        assert!(lines(&f.go()).contains(&"rtk download failed: offline".to_string()));
+        f.atl.result.borrow_mut().warning = Some("atl download failed: offline".into());
+        assert!(lines(&f.go()).contains(&"atl download failed: offline".to_string()));
     }
 
     #[test]
     fn test_a_clean_result_adds_no_warning() {
         let f = Fx::new();
         f.mark_setup(None);
-        *f.rtk.result.borrow_mut() = Reconciled {
-            rtk_path: Some(f.c.mem.data.join("rtk/x/rtk")),
+        *f.atl.result.borrow_mut() = Reconciled {
+            atl_path: Some(f.c.mem.data.join("atl/x/atl")),
             warning: None,
             installed: true,
         };
@@ -1641,26 +1641,26 @@ mod rtk_test {
     fn test_a_missing_lock_is_the_not_wired_note() {
         let f = Fx::new();
         f.mark_setup(None);
-        *f.rtk.lock_exc.borrow_mut() = Some(exc("RuntimeError", "cannot read"));
+        *f.atl.lock_exc.borrow_mut() = Some(exc("RuntimeError", "cannot read"));
         let mut d = f.deps();
         d.path_exists = never_exists;
         let data = Value::Str(p(&f.c.mem.data));
-        let warning = session_start::reconcile_rtk(&f.env(), f.plugin(), Some(&data), &d).unwrap();
+        let warning = session_start::reconcile_atl(&f.env(), f.plugin(), Some(&data), &d).unwrap();
         assert_eq!(
             warning.as_deref(),
-            Some("anthology: rtk wiring not present yet; skipped")
+            Some("anthology: atl wiring not present yet; skipped")
         );
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(f.atl.calls.borrow().is_empty());
     }
 
     #[test]
     fn test_an_invalid_lock_is_a_warning_and_nothing_is_reconciled() {
         let f = Fx::new();
         f.mark_setup(None);
-        *f.rtk.lock_exc.borrow_mut() = Some(exc("RuntimeError", "rtk.lock is not valid JSON"));
+        *f.atl.lock_exc.borrow_mut() = Some(exc("RuntimeError", "atl.lock is not valid JSON"));
         let out = f.go();
-        assert!(sys(&out).contains("rtk.lock is not valid"));
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(sys(&out).contains("atl.lock is not valid"));
+        assert!(f.atl.calls.borrow().is_empty());
         assert!(context(&out).contains("# Anthology routing guide"));
     }
 
@@ -1668,9 +1668,9 @@ mod rtk_test {
     fn test_exception_becomes_a_warning() {
         let f = Fx::new();
         f.mark_setup(None);
-        *f.rtk.exc.borrow_mut() = Some(exc("RuntimeError", "kaboom"));
+        *f.atl.exc.borrow_mut() = Some(exc("RuntimeError", "kaboom"));
         let out = f.go();
-        assert!(sys(&out).contains("rtk"));
+        assert!(sys(&out).contains("atl"));
         assert!(sys(&out).contains("kaboom"));
         assert!(context(&out).contains("# Anthology routing guide"));
     }
@@ -1680,10 +1680,10 @@ mod rtk_test {
         let f = Fx::new();
         f.mark_setup(None);
         let mut d = f.deps();
-        d.rtk = None;
+        d.atl = None;
         let out = f.go_d(&d, None, &f.env(), &[]);
         assert!(
-            lines(&out).contains(&"anthology: rtk wiring not present yet; skipped".to_string())
+            lines(&out).contains(&"anthology: atl wiring not present yet; skipped".to_string())
         );
     }
 
@@ -1692,33 +1692,33 @@ mod rtk_test {
         let f = Fx::new();
         let data = Value::Int(json::Int::Small(5));
         let warning =
-            session_start::reconcile_rtk(&f.env(), f.plugin(), Some(&data), &f.deps()).unwrap();
+            session_start::reconcile_atl(&f.env(), f.plugin(), Some(&data), &f.deps()).unwrap();
         assert_eq!(
             warning.as_deref(),
             Some(
-                "anthology: rtk setup failed: argument should be a str or an os.PathLike object \
+                "anthology: atl setup failed: argument should be a str or an os.PathLike object \
                  where __fspath__ returns a str, not 'int'"
             )
         );
         let falsy = Value::Str(String::new());
         assert_eq!(
-            session_start::reconcile_rtk(&f.env(), f.plugin(), Some(&falsy), &f.deps()).unwrap(),
+            session_start::reconcile_atl(&f.env(), f.plugin(), Some(&falsy), &f.deps()).unwrap(),
             None
         );
     }
 }
 
-// --- RealRtkTest --------------------------------------------------------------------------
+// --- RealAtlTest --------------------------------------------------------------------------
 
 mod real_rtk_test {
     use super::*;
     use anthology_runtime::fetch::Fetch;
     use anthology_testkit::mem::MemCase;
-    use anthology_testkit::release::{self, RTK_BODY, TARGET, VERSION};
-    use anthology_testkit::rt_b::{FakeAnswer, RtkFakeFetch, rtk_url_for};
+    use anthology_testkit::release::{self, ATL_BODY, TARGET, VERSION};
+    use anthology_testkit::rt_b::{AtlFakeFetch, FakeAnswer, atl_url_for};
     use std::io::Write;
 
-    struct Fake(RtkFakeFetch);
+    struct Fake(AtlFakeFetch);
 
     impl Fetch for Fake {
         fn fetch(&self, url: &str, dest: &mut dyn Write, timeout: f64) -> Result<(), PyExc> {
@@ -1736,12 +1736,12 @@ mod real_rtk_test {
         (release::LINUX.0.into(), release::LINUX.1.into())
     }
 
-    /// The real `rtk_install` behind session start's adapter, with a fake download.
+    /// The real `atl_install` behind session start's adapter, with a fake download.
     struct Real<'a>(&'a Fake);
 
-    impl RtkWiring for Real<'_> {
+    impl AtlWiring for Real<'_> {
         fn load_lock(&self, path: &Path) -> Result<Lock, PyExc> {
-            rtk_install::load_lock(path)
+            atl_install::load_lock(path)
         }
 
         fn reconcile(
@@ -1751,17 +1751,17 @@ mod real_rtk_test {
             lock: &Lock,
             timeout: f64,
         ) -> Result<Reconciled, PyExc> {
-            let deps = RtkDeps {
+            let deps = AtlDeps {
                 uname: linux,
-                ..RtkDeps::new(self.0)
+                ..AtlDeps::new(self.0)
             };
-            Ok(rtk_install::reconcile(env, data_dir, lock, timeout, &deps))
+            Ok(atl_install::reconcile(env, data_dir, lock, timeout, &deps))
         }
     }
 
     fn deps<'a>(real: &'a Real<'a>) -> SessionDeps<'a> {
         SessionDeps {
-            rtk: Some(real),
+            atl: Some(real),
             ..SessionDeps::default()
         }
     }
@@ -1769,52 +1769,86 @@ mod real_rtk_test {
     #[test]
     fn test_installs_records_the_path_and_is_quiet_the_second_time() {
         let m = MemCase::new();
-        let blob = release::tarball(RTK_BODY);
+        let blob = release::tarball(ATL_BODY);
         let root = m.tmp.join("plugin");
-        let lock = release::write_lock(&root.join("rtk.lock"), &blob, VERSION);
-        let fetch = Fake(RtkFakeFetch::serving(&rtk_url_for(&lock, TARGET), &blob));
+        let lock = release::write_lock(&root.join("atl.lock"), &blob, VERSION);
+        let fetch = Fake(AtlFakeFetch::serving(&atl_url_for(&lock, TARGET), &blob));
         let real = Real(&fetch);
         let d = deps(&real);
         let data = Value::Str(p(&m.data));
-        let want = m.data.join("rtk").join(VERSION).join("rtk");
+        let want = m.data.join("atl").join(VERSION).join("atl");
         assert_eq!(
-            session_start::reconcile_rtk(&m.env, &root, Some(&data), &d).unwrap(),
+            session_start::reconcile_atl(&m.env, &root, Some(&data), &d).unwrap(),
             None
         );
         assert_eq!(
-            state::read(&m.env).get("rtk_path").and_then(Value::as_str),
+            state::read(&m.env).get("atl_path").and_then(Value::as_str),
             Some(p(&want).as_str())
         );
         assert!(fs::metadata(&want).unwrap().permissions().mode() & 0o111 != 0);
         assert_eq!(
-            session_start::reconcile_rtk(&m.env, &root, Some(&data), &d).unwrap(),
+            session_start::reconcile_atl(&m.env, &root, Some(&data), &d).unwrap(),
             None
         );
         let calls = fetch.0.calls();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1, RTK_TIMEOUT);
+        assert_eq!(calls[0].1, ATL_TIMEOUT);
+    }
+
+    #[test]
+    fn session_start_leaves_rtk_path_and_legacy_folder() {
+        // The old install stays exactly as it was until setup removes it: its state key, its
+        // downloaded versions (an ancient one included) and its history folder.
+        let m = MemCase::new();
+        let blob = release::tarball(ATL_BODY);
+        let root = m.tmp.join("plugin");
+        let lock = release::write_lock(&root.join("atl.lock"), &blob, VERSION);
+        let fetch = Fake(AtlFakeFetch::serving(&atl_url_for(&lock, TARGET), &blob));
+        let real = Real(&fetch);
+        let data = Value::Str(p(&m.data));
+        let old_bin = m.data.join("rtk/1.2.1-anthology.1/rtk"); // legacy binary
+        fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
+        fs::write(&old_bin, "old").unwrap();
+        let old_state = Value::Str(p(&old_bin));
+        state::write(&m.env, vec![("rtk_path".into(), old_state.clone())]).unwrap(); // legacy key
+        let history = state::legacy_rtk_data_dir(&m.env).join("history.db");
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+        fs::write(&history, "old history").unwrap();
+        assert_eq!(
+            session_start::reconcile_atl(&m.env, &root, Some(&data), &deps(&real)).unwrap(),
+            None
+        );
+        let st = state::read(&m.env);
+        let want = m.data.join("atl").join(VERSION).join("atl");
+        assert_eq!(
+            st.get("atl_path").and_then(Value::as_str),
+            Some(p(&want).as_str())
+        );
+        assert_eq!(st.get("rtk_path"), Some(&old_state)); // legacy key kept
+        assert_eq!(fs::read_to_string(&old_bin).unwrap(), "old");
+        assert_eq!(fs::read_to_string(&history).unwrap(), "old history");
     }
 
     #[test]
     fn test_a_failed_download_is_a_warning_and_state_is_untouched() {
         let m = MemCase::new();
-        let blob = release::tarball(RTK_BODY);
+        let blob = release::tarball(ATL_BODY);
         let root = m.tmp.join("plugin");
-        let lock = release::write_lock(&root.join("rtk.lock"), &blob, VERSION);
-        let fetch = Fake(RtkFakeFetch::serving(
-            &rtk_url_for(&lock, TARGET),
+        let lock = release::write_lock(&root.join("atl.lock"), &blob, VERSION);
+        let fetch = Fake(AtlFakeFetch::serving(
+            &atl_url_for(&lock, TARGET),
             b"not the pinned tarball",
         ));
         let real = Real(&fetch);
         let data = Value::Str(p(&m.data));
-        let warning = session_start::reconcile_rtk(&m.env, &root, Some(&data), &deps(&real))
+        let warning = session_start::reconcile_atl(&m.env, &root, Some(&data), &deps(&real))
             .unwrap()
             .unwrap();
         assert!(
-            warning.contains("rtk is not installed or up to date"),
+            warning.contains("atl is not installed or up to date"),
             "{warning}"
         );
-        assert!(state::read(&m.env).get("rtk_path").is_none());
+        assert!(state::read(&m.env).get("atl_path").is_none());
     }
 
     #[test]
@@ -1822,14 +1856,14 @@ mod real_rtk_test {
         let m = MemCase::new();
         let root = m.tmp.join("no-lock");
         fs::create_dir(&root).unwrap();
-        let fetch = Fake(RtkFakeFetch::default());
+        let fetch = Fake(AtlFakeFetch::default());
         let real = Real(&fetch);
         let data = Value::Str(p(&m.data));
         assert_eq!(
-            session_start::reconcile_rtk(&m.env, &root, Some(&data), &deps(&real))
+            session_start::reconcile_atl(&m.env, &root, Some(&data), &deps(&real))
                 .unwrap()
                 .as_deref(),
-            Some("anthology: rtk wiring not present yet; skipped")
+            Some("anthology: atl wiring not present yet; skipped")
         );
     }
 }
@@ -1956,7 +1990,7 @@ mod guard_location_test {
         let root = f.config().join("plugins/cache/anthology/anthology/0.1.0");
         fs::create_dir_all(root.join("templates")).unwrap();
         fs::copy(guide_path(), root.join("templates/routing-guide.md")).unwrap();
-        for name in ["anthology", "anthology-mem", "rtk", "rtk-hook"] {
+        for name in ["anthology", "anthology-mem", "atl", "atl-hook"] {
             write_mode(&root.join("bin").join(name), "#!/bin/sh\nexit 0\n", 0o755);
         }
         root
@@ -2126,9 +2160,9 @@ mod deadline_test {
         let mut d = f.deps();
         d.elapsed = Some(&late);
         let out = f.go_d(&d, None, &f.env(), &[]);
-        assert!(f.rtk.calls.borrow().is_empty());
+        assert!(f.atl.calls.borrow().is_empty());
         assert!(lines(&out).contains(
-            &"anthology: skipped the rtk check this session (not enough time left)".to_string()
+            &"anthology: skipped the atl check this session (not enough time left)".to_string()
         ));
         assert!(context(&out).contains("# Anthology routing guide"));
     }
@@ -2141,7 +2175,7 @@ mod deadline_test {
         let mut d = f.deps();
         d.elapsed = Some(&early);
         f.go_d(&d, None, &f.env(), &[]);
-        assert_eq!(f.rtk.calls.borrow().len(), 1);
+        assert_eq!(f.atl.calls.borrow().len(), 1);
     }
 }
 
@@ -2220,7 +2254,7 @@ mod skills_folder_test {
             "--plugin-root \"${CLAUDE_PLUGIN_ROOT}\"",
             "\"${CLAUDE_PLUGIN_ROOT}/bin/anthology\" setup ",
             "/anthology:setup remove",
-            "rtk bypass <cmd>",
+            "atl bypass <cmd>",
             "--expect-sha256",
             "claude plugin uninstall",
         ] {
@@ -2364,7 +2398,7 @@ mod guide_test {
             "chore(memory)",
             "commit before finishing",
             "Docker unavailable: stop and tell the user",
-            "rtk bypass <cmd>",
+            "atl bypass <cmd>",
             "anthology-mem search",
             "[[note-name]]",
             "Never save secrets",
@@ -2793,8 +2827,8 @@ mod time_rules {
             &f.env().with("ANTHOLOGY_BOOTSTRAP_DOWNLOADED", "0"),
             &[],
         );
-        // 16 s in: no ensure, and the rtk check is skipped too (F-20)
-        assert_eq!(lines(&out), vec![session_start::RTK_SKIPPED.to_string()]);
+        // 16 s in: no ensure, and the atl check is skipped too (F-20)
+        assert_eq!(lines(&out), vec![session_start::ATL_SKIPPED.to_string()]);
         let out = f.go_d(
             &f.deps(),
             None,
@@ -2819,13 +2853,14 @@ mod time_rules {
         d.run = &spy;
         d.elapsed = Some(&fits);
         let out = f.go_d(&d, None, &f.env(), &[]);
-        assert_eq!(*ran.borrow(), 1);
-        assert_eq!(lines(&out), vec![session_start::RTK_SKIPPED.to_string()]);
+        // The self-test is two guard runs: the plain sample and the one through an ATL runner.
+        assert_eq!(*ran.borrow(), 2);
+        assert_eq!(lines(&out), vec![session_start::ATL_SKIPPED.to_string()]);
 
         let late = || 40.5;
         d.elapsed = Some(&late);
         let out = f.go_d(&d, None, &f.env(), &[]);
-        assert_eq!(*ran.borrow(), 1, "the self-test must not run with no time");
+        assert_eq!(*ran.borrow(), 2, "the self-test must not run with no time");
         assert_eq!(
             lines(&out),
             vec![
@@ -2833,7 +2868,7 @@ mod time_rules {
                     "anthology: the guardrails are failing closed: {}",
                     session_start::BINARY_MISSING_REASON
                 ),
-                session_start::RTK_SKIPPED.to_string()
+                session_start::ATL_SKIPPED.to_string()
             ]
         );
     }
@@ -2852,7 +2887,7 @@ mod time_rules {
             lines(&out),
             vec![
                 session_start::GUARD_NOT_FOUND.to_string(),
-                session_start::RTK_SKIPPED.to_string()
+                session_start::ATL_SKIPPED.to_string()
             ]
         );
     }
@@ -2892,8 +2927,8 @@ mod time_rules {
     }
 
     #[test]
-    fn the_rtk_check_counts_from_the_hook_t0() {
-        // F-20: a hook that started 12 s ago (it downloaded the binary) skips the rtk check.
+    fn the_atl_check_counts_from_the_hook_t0() {
+        // F-20: a hook that started 12 s ago (it downloaded the binary) skips the atl check.
         let f = Fx::new();
         f.mark_setup(None);
         let t0 = format!("{}", now() as u64 - 12);
@@ -2903,8 +2938,8 @@ mod time_rules {
             &f.env().with("ANTHOLOGY_HOOK_T0", &t0),
             &[],
         );
-        assert!(f.rtk.calls.borrow().is_empty());
-        assert_eq!(lines(&out), vec![session_start::RTK_SKIPPED.to_string()]);
+        assert!(f.atl.calls.borrow().is_empty());
+        assert_eq!(lines(&out), vec![session_start::ATL_SKIPPED.to_string()]);
         // 5 s ago: time enough
         let t0 = format!("{}", now() as u64 - 5);
         f.go_d(
@@ -2913,7 +2948,7 @@ mod time_rules {
             &f.env().with("ANTHOLOGY_HOOK_T0", &t0),
             &[],
         );
-        assert_eq!(f.rtk.calls.borrow().len(), 1);
+        assert_eq!(f.atl.calls.borrow().len(), 1);
         // a T0 no hook could have (older than the 60 s hook timeout, garbage, the future)
         // counts from this run's start instead
         for t0 in [
@@ -2929,7 +2964,7 @@ mod time_rules {
                 &[],
             );
         }
-        assert_eq!(f.rtk.calls.borrow().len(), 5);
+        assert_eq!(f.atl.calls.borrow().len(), 5);
     }
 }
 
@@ -2990,18 +3025,39 @@ mod f4_self_test {
         f.mark_setup(None);
         let seen = f.tmp().join("seen");
         let body = format!(
-            "#!/bin/sh\ncat > {0}.in\nprintf '%s' \"$ANTHOLOGY_GUARD_NO_FETCH\" > {0}.env\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
+            "#!/bin/sh\ncat >> {0}.in\necho >> {0}.in\nprintf '%s' \"$ANTHOLOGY_GUARD_NO_FETCH\" > {0}.env\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
             p(&seen)
         );
         let root = f.c.fake_plugins(&body);
         f.mark_setup(Some(&root));
         let out = f.go_root(&root);
         assert!(!has_msg(&out), "{out:?}");
+        // the plain sample, then the same command run through an ATL runner
         assert_eq!(
             fs::read_to_string(seen.with_extension("in")).unwrap(),
-            r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright install chromium"}}"#
+            concat!(
+                r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright install chromium"}}"#,
+                "\n",
+                r#"{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "atl run -c 'npx playwright install'"}}"#,
+                "\n"
+            )
         );
         assert_eq!(fs::read_to_string(seen.with_extension("env")).unwrap(), "1");
+    }
+
+    #[test]
+    fn a_guard_too_old_to_look_inside_atl_warns() {
+        // A guard binary from before the rename (bin 0.1.1) blocks the plain sample but lets
+        // `atl run -c '…'` through: the self-test must not pass quietly.
+        let f = Fx::new();
+        let root = f.c.fake_plugins(
+            "#!/bin/sh\nin=$(cat)\ncase $in in *'atl run'*) printf 'anthology-guard:allow:v1\\n' >&2; exit 0 ;; esac\nprintf 'Blocked by anthology-guardrails (G1): x\\n' >&2\nexit 2\n",
+        );
+        f.mark_setup(Some(&root));
+        let got = lines(&f.go_root(&root));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].contains("atl"), "{got:?}");
+        assert!(got[0].contains("the guardrails may be OFF"), "{got:?}");
     }
 
     #[test]

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Anthology runtime: doctor, rtk install, session start, setup"
+description = "Anthology runtime: doctor, atl install, session start, setup"
 
 [lints]
 workspace = true

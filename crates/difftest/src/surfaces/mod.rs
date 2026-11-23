@@ -1,12 +1,13 @@
 //! Every difftest surface (plan §1.4). Each surface lives in its own module; its lane fills it.
 
+pub mod atl_install_reconcile;
 pub mod core_lock;
 pub mod core_state;
+pub mod dev_atl_trim;
 pub mod dev_dv2;
 pub mod dev_eval_baseline;
 pub mod dev_memory_diff;
 pub mod dev_release_edit;
-pub mod dev_rtk_trim;
 pub mod dev_smoke;
 pub mod dev_startup_budget;
 pub mod dev_upstream_watch;
@@ -33,7 +34,6 @@ pub mod pycompat_quote;
 pub mod pycompat_re;
 pub mod pycompat_shlex;
 pub mod pycompat_str;
-pub mod rtk_install_reconcile;
 pub mod runtime_guardrails_loc;
 pub mod settings;
 pub mod setup;
@@ -65,7 +65,7 @@ pub const ALL: &[&str] = &[
     memory_sync::NAME,
     mem::NAME,
     memory_portable::NAME,
-    rtk_install_reconcile::NAME,
+    atl_install_reconcile::NAME,
     doctor::NAME,
     hook_session_start::NAME,
     setup::NAME,
@@ -76,7 +76,7 @@ pub const ALL: &[&str] = &[
     dev_startup_budget::NAME,
     dev_eval_baseline::NAME,
     dev_upstream_watch::NAME,
-    dev_rtk_trim::NAME,
+    dev_atl_trim::NAME,
     dev_smoke::NAME,
     // Added by RT1a (controller-approved registration, after plan §1.4's list).
     runtime_guardrails_loc::NAME,
@@ -110,7 +110,7 @@ const IMPLS: &[MakeSurface] = &[
     memory_sync::surface,
     mem::surface,
     memory_portable::surface,
-    rtk_install_reconcile::surface,
+    atl_install_reconcile::surface,
     doctor::surface,
     hook_session_start::surface,
     setup::surface,
@@ -121,7 +121,7 @@ const IMPLS: &[MakeSurface] = &[
     dev_startup_budget::surface,
     dev_eval_baseline::surface,
     dev_upstream_watch::surface,
-    dev_rtk_trim::surface,
+    dev_atl_trim::surface,
     dev_smoke::surface,
     runtime_guardrails_loc::surface,
 ];
@@ -151,7 +151,7 @@ const ON_MACOS: &[bool] = &[
     memory_sync::ON_MACOS,
     mem::ON_MACOS,
     memory_portable::ON_MACOS,
-    rtk_install_reconcile::ON_MACOS,
+    atl_install_reconcile::ON_MACOS,
     doctor::ON_MACOS,
     hook_session_start::ON_MACOS,
     setup::ON_MACOS,
@@ -162,7 +162,7 @@ const ON_MACOS: &[bool] = &[
     dev_startup_budget::ON_MACOS,
     dev_eval_baseline::ON_MACOS,
     dev_upstream_watch::ON_MACOS,
-    dev_rtk_trim::ON_MACOS,
+    dev_atl_trim::ON_MACOS,
     dev_smoke::ON_MACOS,
     runtime_guardrails_loc::ON_MACOS,
 ];

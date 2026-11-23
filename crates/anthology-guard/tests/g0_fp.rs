@@ -364,6 +364,36 @@ fn only_a_psql_in_program_position_after_the_exec_options_is_data() {
 }
 
 #[test]
+fn a_subscript_tail_passed_through_a_function_argument_is_too_complex() {
+    // A function defined and called in one command gets the bracket tail as `$1` and joins it after a name in
+    // `unset`, `$((...))` or `((...))`. bash 5.2 and zsh 5.9 run the substitution there. The guard cannot see
+    // the join from the word that holds the tail, so the command is too complex, not allowed.
+    assert_all(
+        &[
+            r#"f() { unset "a$1"; }; f '[$(npx playwright install)]'"#,
+            r#"f() { unset "a$1"; }; f '[`npx playwright install`]'"#,
+            r#"f() { (( a$1 )); }; f '[$(npx playwright install)]'"#,
+            r#"f() { echo $((a$1)); }; f '[$(npx playwright install)]'"#,
+            r#"a=(1); f() { echo $((a$1)); }; f '[$(npx playwright install)]'"#,
+            r#"function f { unset "a$1"; }; f '[$(npx playwright install)]'"#,
+            r#"function f() { unset "a$1"; }; f '[$(npx playwright install)]'"#,
+            // the call comes through a variable, a loop over the arguments or a local copy
+            r#"s='[$(npx playwright install)]'; f() { unset "a$1"; }; f "$s""#,
+            r#"f() { for s; do unset "a$s"; done; }; f '[$(npx playwright install)]'"#,
+            r#"f() { local s=$1; (( a$s )); }; f '[$(npx playwright install)]'"#,
+            r#"f() { s=$1; echo $((a$s)); }; f '[$(npx playwright install)]'"#,
+            r#"f() { unset "a$@"; }; f '[$(npx playwright install)]'"#,
+            r#"f() { unset "a${1}"; }; f '[$(npx playwright install)]'"#,
+            // the call comes first in the text, and the call sits in a pipeline, a list or a subshell
+            r#"f() { unset "a$1"; }; true && f '[$(npx playwright install)]'"#,
+            r#"f() { unset "a$1"; }; (f '[$(npx playwright install)]')"#,
+            r#"f() { unset "a$1"; }; echo x | f '[$(npx playwright install)]'"#,
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
 fn docker_exec_still_reads_what_psql_does_not_own() {
     // a shell given a script through docker is still read as one, also after a psql word, and a shell
     // word ends psql's `-c` words
@@ -393,4 +423,43 @@ fn docker_exec_still_reads_what_psql_does_not_own() {
         ],
         Verdict::Block(Rule::G1),
     );
+}
+
+#[test]
+fn a_subscript_tail_stored_in_a_word_and_joined_in_any_context_is_too_complex() {
+    // every way to store the tail (`set --`, `for s in`, `read` with a here-string, `mapfile`, a default
+    // value) against every way to join it (`unset`, `$((...))`, `((...))`), the pairs the other tests leave out
+    assert_all(
+        &[
+            // `set --` with `unset` and both arithmetic contexts is in the test above
+            r#"set -- '[`npx playwright install`]'; echo $((a$1))"#,
+            r#"set -- '[$(npx playwright install)]'; s=$1; unset "a$s""#,
+            r#"for s in '[$(npx playwright install)]'; do (( a$s )); done"#,
+            r#"for s in '[$(npx playwright install)]'; do echo $((a$s)); done"#,
+            r#"for s in '[`npx playwright install`]'; do unset "a$s"; done"#,
+            r#"read s <<< '[$(npx playwright install)]'; (( a$s ))"#,
+            r#"read s <<< '[$(npx playwright install)]'; echo $((a$s))"#,
+            r#"read s <<< '[`npx playwright install`]'; unset "a$s""#,
+            r#"read s <<< '[$(npx playwright install)]'; set -- "$s"; unset "a$1""#,
+            r#"mapfile -t m <<< '[$(npx playwright install)]'; (( a${m[0]} ))"#,
+            r#"mapfile -t m <<< '[$(npx playwright install)]'; echo $((a${m[0]}))"#,
+            r#"mapfile -t m <<< '[$(npx playwright install)]'; set -- "${m[@]}"; unset "a$1""#,
+            r#"mapfile -t m <<< '[$(npx playwright install)]'; unset "a${m[@]}""#,
+            // a default value that takes the tail from another word
+            r#"s='[$(npx playwright install)]'; echo $((a${u:-$s}))"#,
+            r#"s='[$(npx playwright install)]'; (( a${u:-$s} ))"#,
+            r#"set -- '[$(npx playwright install)]'; unset "a${u:-$1}""#,
+        ],
+        Verdict::TooComplex,
+    );
+    // a default value that holds the tail in the same word: the substitution is in view, so the command it
+    // runs is checked and blocked (G1 here), never allowed
+    assert_none_allowed(&[
+        r#"echo $((a${s:-[$(npx playwright install)]}))"#,
+        r#"(( a${s:-[$(npx playwright install)]} ))"#,
+        r#"echo $((a${s-[`npx playwright install`]}))"#,
+        r#"unset "a${s:-[$(npx playwright install)]}""#,
+        r#"s=1; echo $((a${s:+[$(npx playwright install)]}))"#,
+        r#"f() { unset "a${1:-[$(npx playwright install)]}"; }; f"#,
+    ]);
 }

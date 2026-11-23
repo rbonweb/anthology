@@ -1,14 +1,14 @@
 # The Anthology Rust workspace (plan docs/superpowers/plans/2026-11-20-rust-port.md, task F1).
 # Every dependency is declared here once, with an exact version (design §11). Lanes do not add
 # crates or features; a change goes through the integrator's plumbing PR.
-# rtk/ is its own workspace (the vendored fork), and fuzz/ is the cargo-fuzz workspace.
+# atl/ is its own workspace (the vendored fork), and fuzz/ is the cargo-fuzz workspace.
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["rtk", "fuzz"]
+exclude = ["atl", "fuzz"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.100"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ publish = false
 
 [workspace.dependencies]
 # Workspace crates. anthology-shell is listed for the other crates; its own Cargo.toml inherits
-# nothing, because rtk builds it too (GC-18).
+# nothing, because atl builds it too (GC-18).
 anthology-pycompat = { path = "crates/anthology-pycompat" }
 anthology-shell = { path = "crates/anthology-shell" }
 anthology-guard = { path = "crates/anthology-guard" }

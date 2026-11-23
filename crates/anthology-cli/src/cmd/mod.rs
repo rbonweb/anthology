@@ -5,13 +5,13 @@
 //! F3 adds one `pub fn env() -> anthology_core::Env` here (the process environment, `HOME` from
 //! the environment or else the passwd entry; GC-2), so every command builds its `Env` the same way.
 
+pub mod atl_install;
 pub mod doctor;
 pub mod guard;
 pub mod hook;
 pub mod mem;
 pub mod memory;
 pub mod perm;
-pub mod rtk_install;
 pub mod setup;
 
 use std::ffi::OsString;
@@ -62,7 +62,7 @@ commands:
   hook session-start
   setup preview|apply|remove
   doctor
-  rtk-install
+  atl-install
   mem search|related|orphans|stale|rebuild|save
   memory export|import
   perm classify
@@ -97,7 +97,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("hook") => hook::run(rest, stdin),
         Some("setup") => setup::run(rest, stdin),
         Some("doctor") => doctor::run(rest, stdin),
-        Some("rtk-install") => rtk_install::run(rest, stdin),
+        Some("atl-install") => atl_install::run(rest, stdin),
         Some("mem") => mem::run(rest, stdin),
         Some("memory") => memory::run(rest, stdin),
         Some("perm") => perm::run(rest, stdin),

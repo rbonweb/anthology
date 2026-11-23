@@ -275,22 +275,24 @@ const PREFIXES: &[&str] = &[
     "FOO=bar",
     "\"\"",
     "$(x)",
-    "rtk",
-    "rtk -v",
-    "rtk run",
-    "rtk run -c",
-    "rtk run -vc",
-    "rtk run --command",
-    "rtk run --shell bash -c",
-    "rtk run --shell=",
-    "rtk err",
-    "rtk test --shell zsh",
-    "rtk summary --shell=fish",
-    "rtk proxy",
-    "rtk bypass --",
-    "rtk git",
-    "rtk npx",
-    "rtk -c",
+    // The legacy name stays in this picked list: a new entry would change every generated case
+    // the frozen goldens keep as a digest. Its atl twins are in `ATL_PREFIXES`.
+    "rtk",                      // legacy
+    "rtk -v",                   // legacy
+    "rtk run",                  // legacy
+    "rtk run -c",               // legacy
+    "rtk run -vc",              // legacy
+    "rtk run --command",        // legacy
+    "rtk run --shell bash -c",  // legacy
+    "rtk run --shell=",         // legacy
+    "rtk err",                  // legacy
+    "rtk test --shell zsh",     // legacy
+    "rtk summary --shell=fish", // legacy
+    "rtk proxy",                // legacy
+    "rtk bypass --",            // legacy
+    "rtk git",                  // legacy
+    "rtk npx",                  // legacy
+    "rtk -c",                   // legacy
     "npx",
     "npx -y",
     "npx -p x",
@@ -546,8 +548,8 @@ const SHAPES: &[&str] = &[
     "echo '{q}' | docker run -i img sh",
     "watch '{c}'",
     "env -S '{q}'",
-    "rtk run -c '{q}'",
-    "rtk err '{q}'",
+    "rtk run -c '{q}'", // legacy (picked: see the note in `PREFIXES`)
+    "rtk err '{q}'",    // legacy
     "npx -c '{q}'",
     "eval '{q}'",
     "{c} 2>&1 >/dev/null",
@@ -1011,11 +1013,12 @@ pub(crate) fn fixed_cases() -> Vec<Value> {
         "printf -- '-n x' | sh",
         "docker run img fish -c 'ls' bash -s",
         "docker run img sh -s <<'EOF'\nls\nEOF",
-        "rtk run --shell= -c ls; rtk err --shell= ls x",
-        "rtk run -c; rtk run --command",
-        "rtk proxy -v -- npx x; rtk bypass",
-        "rtk 'npx playwright install'",
-        "rtk err 'npx playwright install'",
+        // legacy rtk forms; their atl twins are in `ATL_TRICKY`, after the sweep
+        "rtk run --shell= -c ls; rtk err --shell= ls x", // legacy
+        "rtk run -c; rtk run --command",                 // legacy
+        "rtk proxy -v -- npx x; rtk bypass",             // legacy
+        "rtk 'npx playwright install'",                  // legacy
+        "rtk err 'npx playwright install'",              // legacy
         "env -S; env -S 'npx x' y; env --split-string=x",
         "timeout; timeout -k 3; timeout 5",
         "watch 'a b' c; watch -n 1 ab",
@@ -1058,8 +1061,50 @@ pub(crate) fn fixed_cases() -> Vec<Value> {
         }
         out.push(case(command, "/home/tester"));
     }
+    // ATL, after everything above, so the ids the frozen goldens keep as digests stay put: the
+    // twins of the legacy TRICKY lines, and every `ATL_PREFIXES` form before a program.
+    const ATL_TRICKY: &[&str] = &[
+        "atl run --shell= -c ls; atl err --shell= ls x",
+        "atl run -c; atl run --command",
+        "atl proxy -v -- npx x; atl bypass",
+        "atl 'npx playwright install'",
+        "atl err 'npx playwright install'",
+        "atl run -c 'npx playwright install'; atl err 'npx x'",
+    ];
+    for text in ATL_TRICKY {
+        for home in ["/home/tester", "", "/"] {
+            out.push(case(text.to_string(), home));
+        }
+        out.push(case(text.to_string(), &other_home()));
+    }
+    for prefix in ATL_PREFIXES {
+        out.push(case(
+            format!("{prefix} npx playwright install"),
+            "/home/tester",
+        ));
+    }
     out
 }
+
+/// The atl twins of the legacy forms in `PREFIXES`, which cannot grow (see the note there).
+const ATL_PREFIXES: &[&str] = &[
+    "atl",
+    "atl -v",
+    "atl run",
+    "atl run -c",
+    "atl run -vc",
+    "atl run --command",
+    "atl run --shell bash -c",
+    "atl run --shell=",
+    "atl err",
+    "atl test --shell zsh",
+    "atl summary --shell=fish",
+    "atl proxy",
+    "atl bypass --",
+    "atl git",
+    "atl npx",
+    "atl -c",
+];
 
 /// `n` generated cases for seed `seed`.
 pub(crate) fn generate(seed: u64, n: usize, seeds: &[Value]) -> Vec<Value> {
