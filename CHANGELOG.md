@@ -728,6 +728,10 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.3] - 2026-11-24
+
+- Fix: the session-start hook gives an interactive `claude` its introduction even when it inherited an `sdk-*` entrypoint from an SDK process. `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` or `1`; the `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins.
+
 ### [0.2.2] - 2026-11-24
 
 #### Fixed

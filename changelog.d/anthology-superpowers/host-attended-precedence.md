@@ -1,1 +1,0 @@
-- Fix: the session-start hook gives an interactive `claude` its introduction even when it inherited an `sdk-*` entrypoint from an SDK process. `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` or `1`; the `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins.
