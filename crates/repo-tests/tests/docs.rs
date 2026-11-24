@@ -48,6 +48,22 @@ const PUBLIC_DOCS: [&str; 4] = [
     "DECISIONS.md",
 ];
 
+/// The pages the README links under Documentation: the detail the README leaves out.
+const DOC_PAGES: [&str; 7] = [
+    "docs/agents.md",
+    "docs/atl.md",
+    "docs/binary.md",
+    "docs/guardrails.md",
+    "docs/memory.md",
+    "docs/mods.md",
+    "docs/setup.md",
+];
+
+/// Every public document: the root ones and the pages under docs/.
+fn all_public_docs() -> Vec<&'static str> {
+    PUBLIC_DOCS.iter().chain(DOC_PAGES.iter()).copied().collect()
+}
+
 fn markdown_link() -> Regex {
     Regex::new(r#"\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#).unwrap()
 }
@@ -252,7 +268,7 @@ mod repo_content_test {
 
     #[test]
     fn test_no_codeowners_file() {
-        // The README recommends CODEOWNERS for users' own memory folders; this repo has none.
+        // docs/memory.md recommends CODEOWNERS for users' own memory folders; this repo has none.
         let bad: Vec<String> = tracked_files()
             .into_iter()
             .filter(|rel| basename(rel) == "CODEOWNERS")
@@ -353,14 +369,44 @@ mod readme_test {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The README is the front page: it links every docs page, and the two security caveats
+    /// (the guard's known limits, the `Bash(atl *)` risk) are one link away from it.
+    #[test]
+    fn test_links_every_docs_page_and_the_caveats() {
+        let text = repo::read("README.md");
+        let mut failures = Vec::new();
+        for page in DOC_PAGES {
+            if !text.contains(&format!("]({page})")) {
+                failures.push(format!("README.md does not link {page}"));
+            }
+        }
+        for target in [
+            "docs/guardrails.md#known-limits",
+            "docs/atl.md#the-bashatl--risk",
+        ] {
+            if !text.contains(&format!("]({target})")) {
+                failures.push(format!("README.md does not link {target}"));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn test_readme_stays_a_short_front_page() {
+        let lines = repo::read("README.md").lines().count();
+        assert!(lines <= 120, "README.md is {lines} lines; the detail goes under docs/");
+    }
+
+    /// The limits stay documented, now in the pages the README links.
     #[test]
     fn test_states_the_limits() {
-        let text = repo::read("README.md");
         assert!(
-            text.to_lowercase()
+            repo::read("docs/memory.md")
+                .to_lowercase()
                 .contains("repo memory is visible to everyone who can see the repo")
         );
-        assert!(text.contains("Bash(atl *)"));
+        assert!(repo::read("docs/atl.md").contains("Bash(atl *)"));
+        assert!(repo::read("docs/guardrails.md").contains("not a sandbox"));
     }
 
     /// One row per public document.
@@ -368,7 +414,7 @@ mod readme_test {
     fn test_no_credit_sections() {
         let credit = Regex::new(r"(?i)credit|acknowledg|thanks").unwrap();
         let mut failures = Vec::new();
-        for name in PUBLIC_DOCS {
+        for name in all_public_docs() {
             for h in headings(&repo::read(name)) {
                 if credit.is_match(&h) {
                     failures.push(format!("{name}: credit heading {h:?}"));
@@ -380,7 +426,7 @@ mod readme_test {
 
     #[test]
     fn test_codeowners_example_is_a_placeholder() {
-        assert!(repo::read("README.md").contains("@your-org/reviewers"));
+        assert!(repo::read("docs/memory.md").contains("@your-org/reviewers"));
     }
 }
 
@@ -391,8 +437,10 @@ mod link_test {
     fn test_relative_links_resolve() {
         let scheme = Regex::new(r"^[a-z][a-z0-9+.-]*:").unwrap(); // https:, mailto:
         let mut problems = Vec::new();
-        for doc in PUBLIC_DOCS {
+        for doc in all_public_docs() {
             let text = repo::read(doc);
+            // A link is relative to the folder of the document that holds it.
+            let folder = doc.rsplit_once('/').map_or("", |(dir, _)| dir);
             for m in markdown_link().captures_iter(&text) {
                 let target = &m[1];
                 if scheme.is_match(target) {
@@ -404,8 +452,10 @@ mod link_test {
                 };
                 let rel = if path.is_empty() {
                     doc.to_string()
-                } else {
+                } else if folder.is_empty() {
                     clean(path)
+                } else {
+                    format!("{folder}/{}", clean(path))
                 };
                 let dest = repo::root().join(&rel);
                 if !dest.exists() {
@@ -430,7 +480,10 @@ mod link_test {
     fn test_named_scripts_and_workflows_exist() {
         let mut problems = Vec::new();
         // DECISIONS names paths in upstream trees
-        for doc in ["README.md", "SECURITY.md", "CONTRIBUTING.md"] {
+        for doc in all_public_docs()
+            .into_iter()
+            .filter(|d| *d != "DECISIONS.md")
+        {
             for m in code_span_path().captures_iter(&repo::read(doc)) {
                 let rel = &m[1];
                 if !repo::path(rel).is_file() {

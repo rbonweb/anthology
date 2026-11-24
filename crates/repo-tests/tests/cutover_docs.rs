@@ -81,12 +81,12 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
 /// Single lines elsewhere that mention Python on purpose: (file, a substring of the line, why).
 const ALLOWED_LINES: [(&str, &str, &str); 8] = [
     (
-        "README.md",
+        "docs/guardrails.md",
         "`python3 -c`",
         "the user's interpreter code the guard cannot read",
     ),
     (
-        "README.md",
+        "docs/atl.md",
         "`python -c`",
         "the user's code hidden from a parser",
     ),

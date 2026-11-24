@@ -51,6 +51,6 @@ Anthology is a Claude Code marketplace of three plugins backed by one static Rus
 - Output of `setup`, session start, doctor or memory sync: `scripts/dev.sh golden bless --surface X`, reason in the PR.
 - Ported tests keep their Python names. Add, drop or rename one only with its `port/ledger/*.tsv` row.
 - Vendored trees: change the patch or transform in `vendor/`, run `scripts/dev.sh vendor check`, bump the plugin.
-- Add or move a doc: `docs.rs` and `cutover_docs.rs` in `repo-tests` check it (the word "Python" is allowed only in listed places).
+- Docs: `README.md` is the front page (at most 120 lines); detail lives in `docs/*.md`, listed in `DOC_PAGES` in `repo-tests/tests/docs.rs`. Add or move a doc: `docs.rs` and `cutover_docs.rs` check it (the word "Python" is allowed only in listed places).
 - Add, remove or rewire a piece: update this map in the same commit.
 - Memory notes get their own `chore(memory): ...` commit.
