@@ -1,3 +1,5 @@
+Historical: the original build plan (2026-11-20). Current decisions live in DECISIONS.md.
+
 # Anthology — Plan
 
 > Opus plans, Sonnet builds, Haiku scouts — a model-tiered agent team for Claude Code.

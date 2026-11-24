@@ -30,7 +30,7 @@ const ALLOWED_PATHS: [&str; 11] = [
     "atl/CHANGELOG.md",
     "CHANGELOG.md",
     "DECISIONS.md",
-    "PLAN.md",
+    "docs/history/PLAN.md",
     "port/",
     // Dated agent notes are history, like the other dated records (ruling Q3).
     ".claude/agent-memory/",
@@ -215,7 +215,7 @@ fn the_rules_say_what_they_allow() {
         "atl/CHANGELOG.md",
         "CHANGELOG.md",
         "DECISIONS.md",
-        "PLAN.md",
+        "docs/history/PLAN.md",
         "port/difftest/divergences/guard.check.toml",
         ".claude/agent-memory/anthology-implementer/project-x.md",
         ".claude/memory/reference-project-map.md",

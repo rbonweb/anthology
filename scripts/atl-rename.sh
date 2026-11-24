@@ -100,7 +100,7 @@ my $start = qr{(?:(?<![A-Za-z0-9])|(?<=\\[nrtbf]))};
 
 my @skip = (
     qr{^atl/LICENSE$}, qr{^atl/CHANGELOG\.md$}, qr{^CHANGELOG\.md$}, qr{^DECISIONS\.md$},
-    qr{^PLAN\.md$}, qr{^port/}, qr{^docs/superpowers/[^/]+/2026-11-20-},
+    qr{^docs/history/PLAN\.md$}, qr{^port/}, qr{^docs/superpowers/[^/]+/2026-11-20-},
     qr{^crates/anthology-guard/tests/data/}, qr{^scripts/atl-rename\.sh$},
     qr{(?:^|/)target/}, qr{^\.git/}, qr{\.gz$},
 );

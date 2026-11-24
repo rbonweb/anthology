@@ -46,7 +46,8 @@ a new version section.
 - The README is now a short front page. The details live in `docs/` (setup, agents, mods,
   guardrails, ATL, memory, the binary), and the original build plan moved to
   `docs/history/PLAN.md`.
-- shellcheck now also checks `ci/jobs/lock-fresh.sh` and `scripts/rust-test.sh`.
+- shellcheck now also checks `ci/jobs/lock-fresh.sh` and `scripts/rust-test.sh` (the latter as
+  bash).
 - `scripts/rust-test.sh test -p <crate>` no longer adds `--workspace`, so a one-crate run tests
   only that crate, plain and with all features.
 - The agent status is now a row Anthology draws above the prompt
