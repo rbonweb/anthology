@@ -13,7 +13,8 @@ For what the product is and why it is built this way, read the [README](README.m
 - **One language: Rust.** Product code lives in `crates/` and ships as one static `anthology` binary (`crates/anthology-cli`), pinned per plugin by `anthology.lock`. The plugin side is POSIX `sh` only: the shims in `hooks/` and the wrappers in `bin/`. Maintainer tools are `anthology-dev` subcommands. The only other code is shell glue around docker, git and `claude` in `scripts/` and `ci/jobs/`. Do not add another language; the vendored superpowers files are upstream's and stay as they are.
 - **Behaviour is pinned.** The frozen golden files (`crates/<crate>/tests/golden/`) record what each ported surface must answer, and `cargo test` replays them. Change one only on purpose, with `scripts/dev.sh golden bless`, and say why in the PR. The test ledger in `port/ledger/` maps every test the port inherited to a Rust test or a reviewed drop reason; `ci/jobs/ledger.sh` (the `ledger` job) checks every row against the tests cargo really runs.
 - **The shipped set needs a binary release.** A change to the crates the binary is built from (their `src/` and `Cargo.toml`, their `Cargo.lock` entries, `rust-toolchain.toml`, the release profile) reaches users only through a new `anthology-bin--v*` release and a new `anthology.lock` (see [Releasing the anthology binary](#releasing-the-anthology-binary)).
-- **Every change to a plugin bumps that plugin's version.** CI fails when a released plugin's folder changes with no higher `version` in its `.claude-plugin/plugin.json`. Add a line under that plugin's `[Unreleased]` heading in [CHANGELOG.md](CHANGELOG.md) too.
+- **Every change to a plugin bumps that plugin's version.** CI fails when a released plugin's folder changes with no higher `version` in its `.claude-plugin/plugin.json`. Add a changelog entry too: a fragment file `changelog.d/<plugin>/<name>.md` (see [changelog.d/README.md](changelog.d/README.md)), so two PRs do not edit the same lines of [CHANGELOG.md](CHANGELOG.md). Writing under that plugin's `[Unreleased]` heading still works.
+- **Dev-only helpers go in dev crates.** Code that only tests or maintainers use belongs in `anthology-dev`, `anthology-testkit`, `difftest` or `repo-tests`, never behind a Cargo feature of a crate the binary is built from: such a feature changes the lock file and the shipped set, and the next release then needs a binary release for no user benefit.
 - **Memory changes get their own commits,** `chore(memory): …`.
 - **Models are aliases** (`opus`, `sonnet`, `haiku`), never version-pinned ids.
 
@@ -26,6 +27,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `plugins/anthology-guardrails/` | The `PreToolUse` guard shim (`hooks/guard.sh`), its bootstrap and `anthology.lock`; the rules are compiled into the binary |
 | `plugins/anthology-superpowers/` | Generated from `vendor/`, renamed from superpowers |
 | `crates/` | The Rust workspace: `anthology-cli` (the `anthology` binary) and the libraries it is built from (`anthology-core`, `anthology-guard`, `anthology-shell`, `anthology-memory`, `anthology-runtime`, `anthology-settings`, `anthology-pycompat`); and the tools that never ship: `anthology-dev` (the maintainer tools), `difftest` (the golden replayer), `anthology-testkit` and `repo-tests` (the repository checks) |
+| `changelog.d/` | Changelog fragments, `changelog.d/<plugin>/*.md`, which `scripts/release.sh` compiles into `CHANGELOG.md` and deletes |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
 | `atl/` | The source of ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs, as a git subtree with its history. `atl/LICENSE` is upstream's Apache-2.0 license, kept as it is, and `atl/NOTICE` records the origin and the changes; both ship in every archive |
 | `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
@@ -165,20 +167,20 @@ Each plugin is versioned on its own (semver). A release is a commit plus a tag `
 ```sh
 scripts/release.sh <plugin> <version> --dry-run   # look first
 scripts/release.sh <plugin> <version>             # commit and tag locally
-scripts/release.sh <plugin> <version> --push      # also push the branch and the tag
+scripts/release.sh <plugin> <version> --push      # also push the branch and the tag, in one atomic push
                                                   # (--remote NAME picks the remote; default origin)
 ```
 
 It refuses to run (and changes nothing) unless:
 
-- the working tree is clean;
+- the working tree is clean. Untracked files under `.claude/agent-memory/` and `.claude/memory/` do not count; any other untracked file, and any changed tracked file, does;
 - `<version>` is higher than the current one, or equal to it when that tag does not exist yet (a first release);
 - the tag does not exist;
-- the plugin's `[Unreleased]` section in `CHANGELOG.md` has content;
+- the plugin's `[Unreleased]` section in `CHANGELOG.md` has content, or `changelog.d/<plugin>/` holds at least one fragment with an entry;
 - every other plugin that depends on this one has a version range that accepts `<version>`. If one does not, widen the range in that plugin's `plugin.json` first, which is its own change with its own bump;
 - for a plugin that ships `anthology.lock`, `lock check-fresh` passes (see [Releasing the anthology binary](#releasing-the-anthology-binary)).
 
-Its edits run through `scripts/dev.sh`, so it needs Docker, or `ANTHOLOGY_DEV` naming an `anthology-dev` binary. Then it bumps `plugin.json` (and `plugin_version` in `vendor/sources.json` for `anthology-superpowers`), moves the `[Unreleased]` entries into a dated version section, commits as `release: <plugin> <version>`, and runs `claude plugin tag`. It never pushes without `--push`; without it, it prints the two `git push` commands to publish. `--dry-run` does all of this in a throwaway worktree, shows the commit and the CHANGELOG diff, and leaves your checkout, index and tags untouched.
+Its edits run through `scripts/dev.sh`, so it needs Docker, or `ANTHOLOGY_DEV` naming an `anthology-dev` binary. Then it bumps `plugin.json` (and `plugin_version` in `vendor/sources.json` for `anthology-superpowers`), moves the `[Unreleased]` entries, followed by the fragments in filename order, into a dated version section, deletes those fragments, commits as `release: <plugin> <version>`, and runs `claude plugin tag` (no push). With `--push` it then pushes the branch and the tag together with `git push --atomic`, so the remote gets both or neither. If that push fails, it deletes the local tag again and prints the commands to finish by hand. It never pushes without `--push`; without it, it prints the `git push --atomic` command to publish. The last line it prints is always `RELEASE OK <tag>` or `RELEASE FAILED: <step>`, where the step is `arguments`, `preconditions`, `edit`, `commit`, `tag` or `push`. `--dry-run` does all of this in a throwaway worktree, shows the commit and the CHANGELOG diff, and leaves your checkout, index and tags untouched.
 
 A plugin's `version` is what moves installed users to new code, so a change that is not released does not reach them. Release a dependency before the plugin that needs its new version.
 
