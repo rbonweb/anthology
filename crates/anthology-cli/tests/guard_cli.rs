@@ -485,6 +485,39 @@ fn a_panic_blocks_with_only_the_panic_line() {
 #[cfg(feature = "test-watchdog")]
 #[test]
 fn the_watchdog_fires_while_stdin_stays_open() {
+    let (code, err, out) = watchdog_run(&[]);
+    assert_eq!(code, Some(2));
+    assert_eq!(err, anthology_guard::LIMIT_LINE);
+    assert!(out.is_empty());
+}
+
+/// The watchdog line in a host with no `/plugin` command: the same block, without the `/plugin` text.
+#[cfg(feature = "test-watchdog")]
+#[test]
+fn the_watchdog_line_in_an_embedded_host_has_no_plugin_text() {
+    for env in [
+        &[("CLAUDE_CODE_SESSION_ATTENDED", "0")][..],
+        &[("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")],
+    ] {
+        let (code, err, out) = watchdog_run(env);
+        assert_eq!(code, Some(2), "{env:?}");
+        assert_eq!(err, anthology_guard::LIMIT_LINE_EMBEDDED, "{env:?}");
+        assert!(!err.contains("/plugin"), "{env:?}");
+        assert!(out.is_empty());
+    }
+    // the operator's full mode turns it off
+    let (code, err, _) = watchdog_run(&[
+        ("CLAUDE_CODE_SESSION_ATTENDED", "0"),
+        ("ANTHOLOGY_HOST_MODE", "full"),
+    ]);
+    assert_eq!(code, Some(2));
+    assert_eq!(err, anthology_guard::LIMIT_LINE);
+}
+
+/// Runs the hook with `env` added to a clear environment and a stdin that never closes, and returns its
+/// exit code, its stderr and its stdout once the watchdog has ended it.
+#[cfg(feature = "test-watchdog")]
+fn watchdog_run(env: &[(&str, &str)]) -> (Option<i32>, String, Vec<u8>) {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::Instant;
@@ -494,6 +527,7 @@ fn the_watchdog_fires_while_stdin_stays_open() {
         .env_clear()
         .env("HOME", HOME)
         .env("PATH", "/usr/bin:/bin")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -515,8 +549,6 @@ fn the_watchdog_fires_while_stdin_stays_open() {
         .expect("stdout")
         .read_to_end(&mut out)
         .expect("read");
-    assert_eq!(status.code(), Some(2));
-    assert_eq!(err, anthology_guard::LIMIT_LINE);
-    assert!(out.is_empty());
     assert!(start.elapsed() < Duration::from_secs(30));
+    (status.code(), err, out)
 }
