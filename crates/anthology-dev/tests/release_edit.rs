@@ -140,6 +140,171 @@ mod changelog_tests {
     }
 }
 
+/// Changelog fragments: `changelog.d/<plugin>/*.md` beside the CHANGELOG (new in the Rust tool).
+mod fragment_tests {
+    use super::*;
+    use anthology_core::Env;
+    use anthology_dev::release_edit::run_in;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    struct Ran {
+        code: i32,
+        err: String,
+    }
+
+    fn run(cwd: &Path, a: &[&str]) -> Ran {
+        let args: Vec<OsString> = a.iter().map(OsString::from).collect();
+        let o = run_in(&args, &mut std::io::empty(), &Env::default(), cwd);
+        Ran {
+            code: o.code,
+            err: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    }
+
+    fn repo_with_changelog() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("CHANGELOG.md"), CHANGELOG).unwrap();
+        tmp
+    }
+
+    fn fragment(tmp: &tempfile::TempDir, plugin: &str, name: &str, text: &str) {
+        let dir = tmp.path().join("changelog.d").join(plugin);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(name), text).unwrap();
+    }
+
+    #[test]
+    fn changelog_check_accepts_fragments_only() {
+        let tmp = repo_with_changelog();
+        // `anthology-superpowers` has an empty [Unreleased]: refused until a fragment has entries.
+        let check = ["changelog-check", "CHANGELOG.md", "anthology-superpowers"];
+        assert_eq!(run(tmp.path(), &check).code, 1);
+        // A heading with nothing under it is still an empty skeleton.
+        fragment(
+            &tmp,
+            "anthology-superpowers",
+            "10-skeleton.md",
+            "#### Added\n",
+        );
+        assert_eq!(run(tmp.path(), &check).code, 1);
+        // A fragment of another plugin does not count.
+        fragment(&tmp, "anthology", "10-other.md", "- Other plugin.\n");
+        assert_eq!(run(tmp.path(), &check).code, 1);
+        // Neither does a file that is not `.md`.
+        fragment(
+            &tmp,
+            "anthology-superpowers",
+            "20-notes.txt",
+            "- Not a fragment.\n",
+        );
+        assert_eq!(run(tmp.path(), &check).code, 1);
+        fragment(
+            &tmp,
+            "anthology-superpowers",
+            "20-thing.md",
+            "- Fragment thing.\n",
+        );
+        let ok = run(tmp.path(), &check);
+        assert_eq!((ok.code, ok.err.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn changelog_move_compiles_fragments_in_filename_order_and_removes_them() {
+        let tmp = repo_with_changelog();
+        fragment(&tmp, "anthology", "20-b.md", "- B.\n");
+        fragment(&tmp, "anthology", "10-a.md", "\n- A.\n\n");
+        fragment(&tmp, "anthology", "30-c.md", "#### Fixed\n\n- C.\n");
+        fragment(&tmp, "anthology", "40-empty.md", "\n");
+        fragment(&tmp, "anthology", "notes.txt", "kept\n");
+        fragment(
+            &tmp,
+            "anthology-guardrails",
+            "10-g.md",
+            "- Guardrails fragment.\n",
+        );
+        let mv = [
+            "changelog-move",
+            "CHANGELOG.md",
+            "anthology",
+            "0.1.0",
+            "--date",
+            "2026-11-20",
+        ];
+        let ran = run(tmp.path(), &mv);
+        assert_eq!((ran.code, ran.err.as_str()), (0, ""));
+        let out = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
+        assert!(
+            out.contains(
+                "### [Unreleased]\n\n### [0.1.0] - 2026-11-20\n\n#### Added\n\n- Anthology thing.\n\
+                 - A.\n- B.\n\n#### Fixed\n\n- C.\n\n### [0.0.9] - 2026-01-01\n"
+            ),
+            "{out}"
+        );
+        // Only this plugin's fragments are consumed, and only the `.md` files.
+        let left = |plugin: &str| -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(tmp.path().join("changelog.d").join(plugin))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(left("anthology"), ["notes.txt"]);
+        assert_eq!(left("anthology-guardrails"), ["10-g.md"]);
+        assert_eq!(
+            section(&out, "anthology-guardrails"),
+            section(CHANGELOG, "anthology-guardrails")
+        );
+    }
+
+    #[test]
+    fn changelog_move_with_only_fragments_fills_an_empty_unreleased() {
+        let tmp = repo_with_changelog();
+        fragment(
+            &tmp,
+            "anthology-superpowers",
+            "10-a.md",
+            "- From a fragment.\n",
+        );
+        let mv = [
+            "changelog-move",
+            "CHANGELOG.md",
+            "anthology-superpowers",
+            "0.1.0",
+            "--date",
+            "2026-11-20",
+        ];
+        assert_eq!(run(tmp.path(), &mv).code, 0);
+        let out = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
+        assert!(
+            out.ends_with("### [Unreleased]\n\n### [0.1.0] - 2026-11-20\n\n- From a fragment.\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_refused_move_keeps_the_fragments() {
+        let tmp = repo_with_changelog();
+        fragment(&tmp, "anthology", "10-a.md", "- A.\n");
+        // 0.0.9 already has a section: the move fails and nothing is consumed.
+        let mv = [
+            "changelog-move",
+            "CHANGELOG.md",
+            "anthology",
+            "0.0.9",
+            "--date",
+            "2026-11-20",
+        ];
+        assert_eq!(run(tmp.path(), &mv).code, 1);
+        assert!(tmp.path().join("changelog.d/anthology/10-a.md").exists());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap(),
+            CHANGELOG
+        );
+    }
+}
+
 mod version_edit_tests {
     use super::*;
 
@@ -764,10 +929,9 @@ exit 0
             fx.claude_log()
                 .contains("plugin tag plugins/anthology-guardrails -m anthology-guardrails %s")
         );
-        // prints how to publish
-        assert!(out.contains("git push origin HEAD"), "{out}");
+        // prints how to publish: one atomic push of the branch and the tag
         assert!(
-            out.contains("git push origin refs/tags/anthology-guardrails--v0.1.1"),
+            out.contains("git push --atomic origin HEAD refs/tags/anthology-guardrails--v0.1.1"),
             "{out}"
         );
     }
@@ -934,8 +1098,12 @@ exit 0
         let (code, out) = fx.release(&["anthology-guardrails", "0.1.1", "--push"]);
         assert_ne!(code, 0);
         assert!(out.contains("release commit exists locally"), "{out}");
-        assert!(out.contains("git push origin HEAD"), "{out}");
+        assert!(
+            out.contains("git push --atomic origin HEAD refs/tags/anthology-guardrails--v0.1.1"),
+            "{out}"
+        );
         assert!(out.contains("git reset --hard HEAD~1"), "{out}");
+        // The tag was made before the push; the rejected push takes it away again.
         assert_eq!(fx.git(&["tag", "-l"]), "");
         assert_eq!(fx.remote_refs(), remote_before);
         assert_eq!(
@@ -1010,7 +1178,8 @@ exit 0
             refs.contains("refs/tags/anthology-guardrails--v0.1.1"),
             "{refs}"
         );
-        assert!(fx.claude_log().contains("--push --remote origin"));
+        // claude only tags; the script pushes the branch and the tag together.
+        assert!(!fx.claude_log().contains("--push"));
     }
 
     #[test]
