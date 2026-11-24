@@ -16,6 +16,7 @@ pub mod lenient;
 pub mod lexer;
 pub mod limits;
 pub mod opaque;
+pub mod path_vars;
 pub mod prefixes;
 pub mod readonly;
 pub mod shell_args;
@@ -36,6 +37,8 @@ pub use lexer::*;
 pub use limits::*;
 #[allow(unused_imports)] // until the module has items
 pub use opaque::*;
+#[allow(unused_imports)] // until the module has items
+pub use path_vars::*;
 #[allow(unused_imports)] // until the module has items
 pub use prefixes::*;
 #[allow(unused_imports)] // until the module has items

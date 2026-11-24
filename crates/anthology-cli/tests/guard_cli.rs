@@ -382,6 +382,47 @@ fn an_sdk_host_gets_a_too_complex_line_without_the_plugin_command() {
     }
 }
 
+/// T4, carve-out (d): the hook reads the host path variables listed in its own environment, against
+/// its own working folder.
+#[test]
+fn a_listed_host_path_variable_is_read_from_the_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("t4-guard-cli");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("opt/hosttool/bin")).unwrap();
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    let tool = root.join("opt/hosttool/bin/tool");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let tool = tool.to_str().unwrap();
+    let payload = hook_input("Bash", obj(&[("command", r#""$HOST_TOOL" --version"#)]));
+    let run = |env: &Env, cwd: &Path| {
+        run_program_timeout(
+            Path::new(BIN),
+            &["guard", "hook", "--shim"],
+            &payload,
+            env,
+            cwd,
+            Some(Duration::from_secs(60)),
+        )
+    };
+    let listed = env_with_home(Some(HOME))
+        .with("HOST_TOOL", tool)
+        .with("ANTHOLOGY_GUARD_PATH_VARS", "HOST_TOOL");
+    let project = root.join("project");
+    let out = run(&listed, &project);
+    assert_eq!((out.code, out.stderr_text()), (0, TOKEN.to_string()));
+    // not listed: too complex, as before
+    let unlisted = env_with_home(Some(HOME)).with("HOST_TOOL", tool);
+    let out = run(&unlisted, &project);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr_text().contains("(G0)"), "{}", out.stderr_text());
+    // the hook's working folder holds the tool: not read
+    let out = run(&listed, &root);
+    assert_eq!(out.code, 2);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn usage_errors_exit_2() {
     for args in [

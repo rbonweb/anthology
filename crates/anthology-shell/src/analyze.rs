@@ -8,6 +8,8 @@
 //! reading, as Python's `_check` does, and the entries of every pass are kept (Python stops at the first pass a
 //! rule blocks; the union is what each rule sees across the passes). All passes share one work budget.
 
+use std::collections::BTreeMap;
+
 use crate::collect::{
     Ctx, calls_only_direct, evaluates_values, prefixes_allowed, sets_positionals, unseen_values,
     with_path_regexes,
@@ -15,6 +17,7 @@ use crate::collect::{
 use crate::lexer::{Group, GroupId, Reading, Redirect, Work};
 use crate::limits::{Limits, extra_limit, work_limit};
 use crate::opaque::Opaque;
+use crate::path_vars::{PathValue, PathVars, path_vars_allowed};
 
 /// A flattened command ready for the per-rule predicates (`_Entry`, field for field, plus `opaque`).
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -55,9 +58,37 @@ pub struct Analysis {
 
 /// `analyze()` with explicit limits (a test lowers `backtrack_limit`).
 pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
+    analyze_with_vars(command, home, limits, None)
+}
+
+/// [`analyze_with`] that reads a `"$NAME"` word of a variable `vars` vouches for as the file it names
+/// (carve-out d, [`crate::path_vars`]). When a name was read but the command is not plain
+/// (`path_vars_allowed`), or `vars` is `None`, the result is [`analyze_with`]'s as it was before.
+pub fn analyze_with_vars(
+    command: &str,
+    home: &str,
+    limits: &Limits,
+    vars: Option<&dyn PathVars>,
+) -> Analysis {
+    let (analysis, used) = run(command, home, limits, vars);
+    // nothing read: the analysis is the one without variables (and a second one is not needed)
+    if !used.is_empty() && !path_vars_allowed(command, &analysis.entries, &used) {
+        return run(command, home, limits, None).0;
+    }
+    analysis
+}
+
+/// One analysis of `command`, and the host variables it read (`Ctx::path_var_used`).
+fn run(
+    command: &str,
+    home: &str,
+    limits: &Limits,
+    vars: Option<&dyn PathVars>,
+) -> (Analysis, BTreeMap<String, PathValue>) {
     with_path_regexes(limits, |re| {
         let work = Work::new(work_limit(command), extra_limit(command), Reading::Bash5);
         let mut ctx = Ctx::new(home, re, work);
+        ctx.path_vars = vars;
         ctx.collect(command, false, 0);
         for reading in [Reading::Exact, Reading::Wide] {
             if ctx.halted() || !ctx.work.paren_lines {
@@ -77,12 +108,13 @@ pub fn analyze_with(command: &str, home: &str, limits: &Limits) -> Analysis {
                 && !prefixes_allowed(command, &ctx.entries, &ctx.prefix_names))
             || (unseen_values(&ctx.entries)
                 && evaluates_values(&ctx.entries, !ctx.arith_texts.is_empty()));
-        Analysis {
+        let analysis = Analysis {
             entries: ctx.entries,
             groups: ctx.groups,
             incomplete: ctx.incomplete || unproven,
             alternates: ctx.alternates,
-        }
+        };
+        (analysis, ctx.path_var_used)
     })
 }
 
