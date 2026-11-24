@@ -722,6 +722,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.2] - 2026-11-24
+
 #### Fixed
 
 - The session-start hook no longer injects the `using-superpowers` bootstrap in an embedded
