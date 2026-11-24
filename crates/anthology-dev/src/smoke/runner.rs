@@ -53,6 +53,9 @@ pub fn build_env(env: &Env, tmp: &Path, extra: Option<&EnvMap>) -> EnvMap {
     put("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1".to_string());
     // A broken guard cannot fetch a package.
     put("NPM_CONFIG_OFFLINE", "true".to_string());
+    // `claude -p` reads as an embedded host, which gets no routing guide; the cases that read
+    // the guide need the full session start.
+    put("ANTHOLOGY_HOST_MODE", "full".to_string());
     for k in AUTH_VARS {
         if let Some(v) = env.get(k).filter(|v| !v.is_empty()) {
             out.insert(k.to_string(), v.to_string());
