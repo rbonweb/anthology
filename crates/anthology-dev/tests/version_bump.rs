@@ -553,4 +553,110 @@ mod git_integration_tests {
             "{out}"
         );
     }
+
+    // The bump gate judges a head against the latest release tag, and against the merge base only
+    // to refuse a version that went down.
+
+    #[test]
+    fn an_unreleased_bump_on_the_base_counts() {
+        // Another change already raised the version on the base branch; this branch need not
+        // bump it again.
+        let mut fx = Fx::new();
+        fx.base_with_plugin("0.1.0", true);
+        fx.set_version("p", "0.2.0");
+        let base = fx.commit("bump on the base");
+        fx.write("plugins/p/skill.md", "two\n");
+        let head = fx.commit("edit without a new bump");
+        let (code, out) = fx.run_gate(&base, &head);
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("plugins/p 0.2.0 (bump already on the base; latest release 0.1.0)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn head_must_exceed_the_highest_release() {
+        // The branch was cut at 0.1.0, then 0.2.0 was released elsewhere. 0.1.5 is above the
+        // merge base but not above the release.
+        let mut fx = Fx::new();
+        let base = fx.base_with_plugin("0.1.0", true);
+        fx.git(&["tag", "p--v0.2.0"]);
+        fx.write("plugins/p/skill.md", "two\n");
+        fx.set_version("p", "0.1.5");
+        let head = fx.commit("edit+bump below the release");
+        let (code, out) = fx.run_gate(&base, &head);
+        assert_eq!(code, 1, "{out}");
+        assert!(
+            out.contains("plugins/p version 0.1.5 is not above the latest release 0.2.0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn head_below_base_fails() {
+        // 0.4.0 is above the release (0.1.0) but below the version already on the base.
+        let mut fx = Fx::new();
+        fx.base_with_plugin("0.1.0", true);
+        fx.set_version("p", "0.5.0");
+        let base = fx.commit("bump on the base");
+        fx.set_version("p", "0.4.0");
+        let head = fx.commit("lower the version");
+        let (code, out) = fx.run_gate(&base, &head);
+        assert_eq!(code, 1, "{out}");
+        assert!(
+            out.contains("plugins/p version went down (0.5.0 -> 0.4.0)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_highest_tag_is_semver_not_lexical() {
+        // Lexically `0.9.0` sorts above `0.10.0`; as semver it is the other way round.
+        let mut fx = Fx::new();
+        let base = fx.base_with_plugin("0.9.0", true);
+        fx.git(&["tag", "p--v0.10.0"]);
+        fx.write("plugins/p/skill.md", "two\n");
+        fx.set_version("p", "0.9.5");
+        let below = fx.commit("bump below the release");
+        let (code, out) = fx.run_gate(&base, &below);
+        assert_eq!(code, 1, "{out}");
+        assert!(
+            out.contains("plugins/p version 0.9.5 is not above the latest release 0.10.0"),
+            "{out}"
+        );
+        fx.set_version("p", "0.10.1");
+        let above = fx.commit("bump above the release");
+        let (code, out) = fx.run_gate(&base, &above);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("plugins/p 0.9.0 -> 0.10.1"), "{out}");
+    }
+
+    #[test]
+    fn a_plugin_name_prefix_does_not_match_another() {
+        // `pp` and `p-q` are other plugins; their tags are not releases of `p`.
+        let mut fx = Fx::new();
+        let base = fx.base_with_plugin("0.1.0", true);
+        fx.git(&["tag", "pp--v9.0.0"]);
+        fx.git(&["tag", "p-q--v9.0.0"]);
+        fx.write("plugins/p/skill.md", "two\n");
+        fx.set_version("p", "0.1.1");
+        let head = fx.commit("edit+bump");
+        let (code, out) = fx.run_gate(&base, &head);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("plugins/p 0.1.0 -> 0.1.1"), "{out}");
+    }
+
+    #[test]
+    fn a_tag_that_is_not_semver_is_ignored() {
+        let mut fx = Fx::new();
+        let base = fx.base_with_plugin("0.1.0", true);
+        fx.git(&["tag", "p--vbanana"]);
+        fx.write("plugins/p/skill.md", "two\n");
+        fx.set_version("p", "0.1.1");
+        let head = fx.commit("edit+bump");
+        let (code, out) = fx.run_gate(&base, &head);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("plugins/p 0.1.0 -> 0.1.1"), "{out}");
+    }
 }
