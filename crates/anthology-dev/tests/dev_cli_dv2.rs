@@ -615,7 +615,8 @@ mod version_bump_cli {
             p,
             &[(
                 "plugins/p/.claude-plugin/plugin.json",
-                "{\"version\": \"0.1.0\"}\n",
+                // Above the release tag: an unreadable base only drops the base side of the check.
+                "{\"version\": \"0.1.1\"}\n",
             )],
             "fix manifest",
         );
@@ -623,7 +624,7 @@ mod version_bump_cli {
         assert_eq!(r.code, 0, "{} {}", r.out, r.err);
         assert_eq!(
             r.out,
-            "ok   plugins/p 0.1.0 (base version None was invalid)\n"
+            "ok   plugins/p 0.1.1 (base version None was invalid)\n"
         );
     }
 
