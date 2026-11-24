@@ -38,6 +38,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anthology_core::git::RealGit;
+use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, clock, fsx, paths, platform, state};
 use anthology_memory::sync::{self, Placement, SyncDeps};
 use anthology_memory::{approve as memory_approve, notes, privacy, render, repo as memory_repo};
@@ -559,6 +560,33 @@ fn repo_info(cwd: &Path, env: &Env, deps: &SetupDeps<'_>) -> Option<(PathBuf, St
     let root = (deps.memory.repo_root)(cwd, env)?;
     let key = (deps.memory.repo_key)(&root, env);
     Some((root, key))
+}
+
+/// The most repos the preview lists when the folder it runs in holds repos but is not one.
+const REPOS_BELOW_SHOWN: usize = 10;
+
+/// The preview's extra `memory.repo` fields for a folder that is not a repo: `repos_below`
+/// (absolute paths of the repos one level down, sorted, at most [`REPOS_BELOW_SHOWN`]) and
+/// `repos_below_more` (how many were left out). Neither is set when there are no repos below.
+/// A name that is not UTF-8 is never listed (a lossy path would not name the real folder), but
+/// it counts in `repos_below_more`.
+fn repos_below_fields(cwd: &Path) -> Vec<(&'static str, Value)> {
+    let found = repos_below(cwd, REPO_SCAN_CAP);
+    let repos: Vec<String> = found
+        .iter()
+        .filter_map(|name| name.to_str())
+        .map(|name| pstr(&cwd.join(name)))
+        .collect();
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let shown = repos.len().min(REPOS_BELOW_SHOWN);
+    let mut fields = vec![("repos_below", strs(&repos[..shown]))];
+    if found.len() > shown {
+        let more = i64::try_from(found.len() - shown).unwrap_or(i64::MAX);
+        fields.push(("repos_below_more", Value::Int(json::Int::Small(more))));
+    }
+    fields
 }
 
 /// `_repo_mem(root)`: `<root>/.claude/memory`, or `None` if it or `.claude` is a symlink or
@@ -1312,7 +1340,11 @@ fn try_preview(
     }
     let info = repo_info(&cwd, env, deps);
     let repo = match &info {
-        None => obj(vec![("skipped", s("not a git repo"))]),
+        None => {
+            let mut fields = vec![("skipped", s("not a git repo"))];
+            fields.extend(repos_below_fields(&cwd));
+            obj(fields)
+        }
         Some((root, key)) => obj(vec![
             ("root", s(&pstr(root))),
             ("key", s(key)),

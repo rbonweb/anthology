@@ -7503,6 +7503,19 @@ mod tests {
         })
     }
 
+    /// The bound for `a_megabyte_line_asks_at_once_as_written`. The debug bound is a
+    /// ratio, not a clock: a loaded runner slows the 250 KB run and the 1 MB run
+    /// alike, so the 1 MB line gets 10x what the same shape took at 250 KB (and
+    /// at least 50 ms of it). A cost that grows faster than the line still breaks
+    /// the ratio. The release build keeps its fixed 2 s.
+    fn megabyte_ratio_bound(quarter: std::time::Duration) -> std::time::Duration {
+        if cfg!(debug_assertions) {
+            10 * quarter.max(std::time::Duration::from_millis(50))
+        } else {
+            std::time::Duration::from_millis(2_000)
+        }
+    }
+
     #[test]
     fn a_megabyte_line_asks_at_once_as_written() {
         with_machine(|m| {
@@ -7515,34 +7528,46 @@ mod tests {
                     &["Bash(atl *)"],
                 ),
             );
-            for cmd in [
-                format!("atl ls {}", "a ".repeat(500_000)),
-                format!("ls {}", "a ".repeat(500_000)),
-                format!("echo {}", "a; ".repeat(330_000)),
-                format!("atl bypass echo {}git push", "x ".repeat(500_000)),
-            ] {
-                assert!(unread(&cmd));
+            let timed_hook = |cmd: &str| {
                 let started = std::time::Instant::now();
-                let said = hook(&cmd);
-                let took = started.elapsed();
+                let said = hook(cmd);
+                (said, started.elapsed())
+            };
+            // Each shape is built at the full size and at a quarter of it (250 KB
+            // of the 1 MB): the debug bound is a ratio to the quarter's own time.
+            let asked: [fn(usize) -> String; 4] = [
+                |n| format!("atl ls {}", "a ".repeat(n)),
+                |n| format!("ls {}", "a ".repeat(n)),
+                |n| format!("echo {}", "a; ".repeat(n * 33 / 50)),
+                |n| format!("atl bypass echo {}git push", "x ".repeat(n)),
+            ];
+            for shape in asked {
+                let cmd = shape(500_000);
+                assert!(unread(&cmd));
+                let (_, quarter) = timed_hook(&shape(125_000));
+                let (said, took) = timed_hook(&cmd);
                 assert_eq!(
                     said,
                     HookDecision::AskRewrite(cmd.clone(), AskOwner::Hook),
                     "{}",
                     &cmd[..16]
                 );
-                assert!(took < megabyte_bound(), "{}: {took:?}", &cmd[..16]);
+                let bound = megabyte_ratio_bound(quarter);
+                assert!(took < bound, "{}: {took:?} (bound {bound:?})", &cmd[..16]);
             }
             // The upstream verdict and the gate's scan (within its budget) still
             // deny what they read, however long the line.
-            for pushed in [
-                format!("git push {}", "a ".repeat(500_000)),
-                format!("cat {}; atl git push", "key".repeat(100_000)),
-            ] {
-                let started = std::time::Instant::now();
-                assert_eq!(hook(&pushed), HookDecision::Deny, "{}", &pushed[..12]);
-                let took = started.elapsed();
-                assert!(took < megabyte_bound(), "{}: {took:?}", &pushed[..12]);
+            let pushed: [fn(usize) -> String; 2] = [
+                |n| format!("git push {}", "a ".repeat(n)),
+                |n| format!("cat {}; atl git push", "key".repeat(n / 5)),
+            ];
+            for shape in pushed {
+                let cmd = shape(500_000);
+                let (_, quarter) = timed_hook(&shape(125_000));
+                let (said, took) = timed_hook(&cmd);
+                assert_eq!(said, HookDecision::Deny, "{}", &cmd[..12]);
+                let bound = megabyte_ratio_bound(quarter);
+                assert!(took < bound, "{}: {took:?} (bound {bound:?})", &cmd[..12]);
             }
         });
     }
