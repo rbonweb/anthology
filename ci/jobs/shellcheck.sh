@@ -28,10 +28,12 @@ set -- \
     "$staging/anthology-guardrails/hooks/guard.sh" \
     ci/jobs/shellcheck.sh \
     ci/jobs/shims-distros.sh \
-    ci/jobs/mods.sh
+    ci/jobs/mods.sh \
+    ci/jobs/lock-fresh.sh
 
-# Scripts written for bash (not POSIX sh), checked as bash: the release script.
-bash_scripts="scripts/release.sh"
+# Scripts written for bash (not POSIX sh), checked as bash: the release script and the Rust test
+# runner (its shebang is bash and it uses ${var:0:12}).
+bash_scripts="scripts/release.sh scripts/rust-test.sh"
 
 for f in "$@" $bash_scripts; do
     if [ ! -f "$root/$f" ]; then
