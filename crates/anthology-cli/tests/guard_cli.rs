@@ -327,6 +327,62 @@ fn a_command_too_complex_to_check_is_blocked_naming_plugin() {
 }
 
 #[test]
+fn an_sdk_host_gets_a_too_complex_line_without_the_plugin_command() {
+    let command = format!("docker run img{}", " fish -cX".repeat(4000));
+    let payload = hook_input("Bash", obj(&[("command", &command)]));
+    // (CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SESSION_ATTENDED, ANTHOLOGY_HOST_MODE, the line names /plugin)
+    let rows = [
+        (Some("sdk-cli"), None, None, false),
+        (Some("sdk-ts"), Some("0"), Some("lean"), false),
+        (Some("hostapp"), Some("0"), None, false),
+        (None, Some("0"), None, false),
+        (Some("sdk-cli"), Some("0"), Some("full"), true),
+        (Some("hostapp"), Some("0"), Some("full"), true),
+        (Some("cli"), Some("1"), None, true),
+        (Some("hostapp"), None, None, true),
+        (None, None, Some("lean"), true),
+        (None, None, None, true),
+    ];
+    for (entrypoint, attended, mode, plugin) in rows {
+        let mut env = env_with_home(Some(HOME));
+        for (name, value) in [
+            ("CLAUDE_CODE_ENTRYPOINT", entrypoint),
+            ("CLAUDE_CODE_SESSION_ATTENDED", attended),
+            ("ANTHOLOGY_HOST_MODE", mode),
+        ] {
+            if let Some(v) = value {
+                env = env.with(name, v);
+            }
+        }
+        for args in [&["guard", "hook"][..], &["guard", "hook", "--shim"]] {
+            let out = run_program_timeout(
+                Path::new(BIN),
+                args,
+                &payload,
+                &env,
+                Path::new("/"),
+                Some(Duration::from_secs(60)),
+            );
+            let err = out.stderr_text();
+            assert_eq!(out.code, 2, "{entrypoint:?} {attended:?} {mode:?}");
+            assert!(
+                err.starts_with(
+                    "Blocked by anthology-guardrails (G0): this command is too complex to check \
+                     safely; simplify it or split it into smaller commands"
+                ),
+                "{err}"
+            );
+            assert_eq!(
+                err.contains("/plugin"),
+                plugin,
+                "{entrypoint:?} {attended:?} {mode:?}: {err}"
+            );
+            assert_eq!(err.matches('\n').count(), 1);
+        }
+    }
+}
+
+#[test]
 fn usage_errors_exit_2() {
     for args in [
         &["guard"][..],
