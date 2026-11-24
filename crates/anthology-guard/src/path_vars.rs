@@ -20,11 +20,38 @@ pub const PATH_VARS_VAR: &str = "ANTHOLOGY_GUARD_PATH_VARS";
 
 /// Names that change how a shell runs or finds things, or that a shell sets itself from what a command
 /// reads (`_`, `REPLY`, `OPTARG`, `MATCH`, `MBEGIN`, `MEND`, `MAPFILE`), so a command can change them
-/// without spelling them. Carve-out (a)'s names are denied too ([`DIRECTORY_PREFIX_NAMES`]), and
-/// `BASH_ENV` is one of the `BASH_*` names ([`DENIED_PREFIXES`]).
+/// without spelling them, and zsh's tied scalars, which a command changes through the lowercase array
+/// (`manpath=(…)` sets `MANPATH`). Carve-out (a)'s names are denied too ([`DIRECTORY_PREFIX_NAMES`]),
+/// and `BASH_ENV` is one of the `BASH_*` names ([`DENIED_PREFIXES`]). A name is uppercase by its
+/// pattern, so no lowercase form of a denied name is ever read.
 const DENIED: &[&str] = &[
-    "PATH", "IFS", "PWD", "OLDPWD", "SHELL", "ENV", "ZDOTDIR", "CDPATH", "FPATH", "PS1", "PS2",
-    "PS3", "PS4", "_", "REPLY", "OPTARG", "MATCH", "MBEGIN", "MEND", "MAPFILE",
+    "PATH",
+    "IFS",
+    "PWD",
+    "OLDPWD",
+    "SHELL",
+    "ENV",
+    "ZDOTDIR",
+    "CDPATH",
+    "FPATH",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "_",
+    "REPLY",
+    "OPTARG",
+    "MATCH",
+    "MBEGIN",
+    "MEND",
+    "MAPFILE",
+    "MANPATH",
+    "MAILPATH",
+    "MODULE_PATH",
+    "PSVAR",
+    "FIGNORE",
+    "WATCH",
+    "TERMINFO_DIRS",
 ];
 
 /// Name prefixes denied: prompts, the loaders' variables and the shells' own.

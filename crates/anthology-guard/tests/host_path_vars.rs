@@ -398,7 +398,14 @@ fn a_name_outside_the_pattern_is_not_read() {
 }
 
 /// Every name on the denied list, with a neighbour that is not on it.
-const DENIED: [&str; 38] = [
+const DENIED: [&str; 45] = [
+    "MANPATH",
+    "MAILPATH",
+    "MODULE_PATH",
+    "PSVAR",
+    "FIGNORE",
+    "WATCH",
+    "TERMINFO_DIRS",
     "PATH",
     "IFS",
     "PWD",
@@ -704,15 +711,90 @@ fn the_name_anywhere_else_is_too_complex() {
         Verdict::TooComplex,
         Verdict::TooComplex,
     );
-    // a zsh numeric range pattern names TOOL1 without spelling it
+}
+
+#[test]
+fn a_name_pattern_is_too_complex() {
+    let fx = Fixture::new("patterns");
+    let tool = fx.tool();
+    let vars = fx
+        .vars(
+            "HOST_TOOL,TOOL1,NODE18",
+            &[
+                ("HOST_TOOL", tool.clone()),
+                ("TOOL1", tool.clone()),
+                ("NODE18", tool),
+            ],
+        )
+        .unwrap();
+    // zsh numeric range patterns name TOOL1 and NODE18 without spelling them, also when quotes split
+    // them (zsh matches the pattern after quote removal)
     assert_each(
         &[
-            r#"typeset -m 'TOOL<->=/usr/bin/npx'; "$TOOL1" playwright install"#,
-            r#"typeset -m 'TOOL<1-9>=/usr/bin/npx'; "$TOOL1" playwright install"#,
+            r#"typeset -m 'TOOL<->=/usr/local/bin/npx'; "$TOOL1" playwright install"#,
+            r#"typeset -m 'TOOL<'-'>=/usr/local/bin/npx'; "$TOOL1" playwright install"#,
+            r#"typeset -m 'TOOL<1-9>=/usr/local/bin/npx'; "$TOOL1" playwright install"#,
+            r#"typeset -m 'NODE<1-20>=/usr/local/bin/npx'; "$NODE18" playwright install"#,
+            r#"declare -m 'NODE<'1-20'>=/usr/local/bin/npx'; "$NODE18" playwright install"#,
+            // any word with `<` or `>` in it
+            r#"echo 'a<b'; "$HOST_TOOL" x"#,
+            r#"echo 'a>b'; "$HOST_TOOL" x"#,
         ],
         &vars,
         Verdict::TooComplex,
         Verdict::TooComplex,
+    );
+    // `-m`, alone, in a cluster or with `+`, on every program that reads names as patterns
+    for prog in [
+        "typeset", "declare", "local", "integer", "float", "readonly", "export", "unset",
+    ] {
+        let command = format!(r#"{prog} -m 'TOOLX=/usr/local/bin/npx'; "$HOST_TOOL" x"#);
+        assert_eq!(
+            verdict(&command, Some(&vars)),
+            Verdict::TooComplex,
+            "{command}"
+        );
+    }
+    assert_each(
+        &[
+            r#"typeset -gm 'TOOLX=/x'; "$HOST_TOOL" x"#,
+            r#"typeset +m 'TOOLX'; "$HOST_TOOL" x"#,
+        ],
+        &vars,
+        Verdict::TooComplex,
+        Verdict::TooComplex,
+    );
+    // other options, and an `m` in a value, are not `-m`
+    assert_each(
+        &[
+            r#"typeset -x TOOLX=/x; "$HOST_TOOL" x"#,
+            r#"export TOOLX=-m; "$HOST_TOOL" x"#,
+            r#"mkdir -m 700 out; "$HOST_TOOL" x"#,
+        ],
+        &vars,
+        Verdict::Allow,
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn a_zsh_tied_name_is_not_read() {
+    let fx = Fixture::new("tied");
+    let tool = fx.tool();
+    // zsh sets MANPATH through its tied array: the name is denied, so it is never read
+    assert_not_read("MANPATH", fx.one("MANPATH", &tool).as_ref());
+    let vars = fx
+        .vars(
+            "HOST_TOOL,MANPATH",
+            &[("HOST_TOOL", tool.clone()), ("MANPATH", tool)],
+        )
+        .unwrap();
+    assert_eq!(
+        verdict(
+            r#"manpath=/usr/local/bin/npx; "$MANPATH" playwright install"#,
+            Some(&vars)
+        ),
+        Verdict::TooComplex
     );
 }
 
@@ -792,6 +874,10 @@ impl PathVars for NoVars {
     }
 }
 
+/// The API-level check: `analyze_with` is `analyze_with_vars(.., None)` by construction, so this
+/// only pins that no variable is read without a caller's `PathVars`. The proof that atl's analysis
+/// is byte-identical is the replay of the frozen `shell.analyze` and `shell.segments` goldens
+/// (`crates/anthology-shell/tests/golden/`), which `cargo test` runs and this change does not bless.
 #[test]
 fn atl_analysis_is_unchanged() {
     // ATL calls `analyze` and `analyze_with`, which read no host variable

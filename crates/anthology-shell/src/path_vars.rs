@@ -33,13 +33,19 @@ pub struct PathValue {
 /// variables, since carve-out (a) reads them in its own way.
 pub const DIRECTORY_PREFIX_NAMES: &[&str] = crate::lexer::PREFIX_NAMES;
 
+/// The programs whose `-m` option reads names as zsh patterns.
+const PATTERN_NAMERS: &[&str] = &[
+    "typeset", "declare", "local", "integer", "float", "readonly", "export", "unset",
+];
+
 /// Carve-out (d)'s plain command: the whole text keeps carve-out (a)'s allowlist, with a `"$NAME"`
 /// whole word of a read name (`used`) as the only expansion, no read name anywhere else, and nothing
 /// that sources a file or runs `eval`.
 ///
 /// - Every character outside those words is one of `[A-Za-z0-9_./:=,+@%-]`, a blank, a quote or one of
-///   `;&|<>`, with no `<<` (here-string, here-doc) and no `<` before a digit or `-` (zsh's `<->` and
-///   `<1-9>` patterns, which `typeset -m` matches names with).
+///   `;&|<>`, with no `<<` (here-string, here-doc).
+/// - No word of the analysis holds `<` or `>`, and no `typeset`-like program ([`PATTERN_NAMERS`]) gets
+///   `-m` (zsh's `<->` and `<1-9>` patterns, which `typeset -m` matches names with after quote removal).
 /// - Every `$` is in double quotes opened right before it, at the start of a word (the start of the text,
 ///   a blank or one of `;&|` before the quote, outside every quote) that is not a redirection target,
 ///   and is followed by a read NAME and the closing quote at the end of a word (the end of the text, a
@@ -88,9 +94,6 @@ pub(crate) fn path_vars_allowed(
         }
         if !(c.is_ascii_alphanumeric() || WORD.contains(&c) || SYNTAX.contains(&c))
             || command[k..].starts_with("<<")
-            || (c == b'<'
-                && b.get(k + 1)
-                    .is_some_and(|n| n.is_ascii_digit() || *n == b'-'))
         {
             return false;
         }
@@ -105,7 +108,18 @@ pub(crate) fn path_vars_allowed(
     let runs_text = entries
         .iter()
         .any(|e| matches!(e.prog.as_str(), "source" | "." | "eval"));
+    // zsh's `typeset -m` and its kin take their names as patterns, which zsh reads after quote removal:
+    // `'TOOL<'-'>=…'` sets `TOOL1` without spelling it. So no word holds `<` or `>` (a redirection is not
+    // a word), and none of those programs gets `-m`, alone or in a cluster.
+    let patterns = entries.iter().any(|e| {
+        e.raw.iter().any(|w| w.contains(['<', '>']))
+            || (PATTERN_NAMERS.contains(&e.prog.as_str())
+                && e.args
+                    .iter()
+                    .any(|a| a.starts_with(['-', '+']) && a.contains('m')))
+    });
     !runs_text
+        && !patterns
         && used.keys().all(|name| {
             !command
                 .match_indices(name.as_str())
