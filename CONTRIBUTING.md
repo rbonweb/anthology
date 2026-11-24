@@ -63,7 +63,7 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
 | Check | What it proves |
 |---|---|
 | `rust-lint` | `cargo fmt --check` and `clippy -D warnings` |
-| `rust-test-linux` and `rust-test-macos` | `cargo test --workspace --locked` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay |
+| `rust-test-linux` and `rust-test-macos` | `cargo test --workspace --locked` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay. Each gates on parallel `-shard` jobs (plain and `--all-features`; on Linux the golden replay is a shard of its own). A pull request that changes only release metadata (`ci/jobs/rust-scope.sh` lists it) skips the shards, and `rust-test-linux` runs the `repo-tests` checks instead |
 | `deny` | `cargo deny check` (advisories, bans, licenses, sources; `deny.toml`), and that `serde_json` stays out of the shipped binary |
 | `shellcheck` and `shims-distros` | The `sh` shims pass `shellcheck -s sh`, and the shim tests pass on Alpine, Debian slim and Ubuntu, with each system's own shell and downloaders |
 | `ledger` (`ci/jobs/ledger.sh`) | Every row of the test ledger names a Rust test that cargo really runs, or a reviewed drop reason |
