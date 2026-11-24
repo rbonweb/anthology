@@ -73,6 +73,17 @@ These run only when you ask for them.
 
 ## Host mode
 
-When another program drives Claude Code through the SDK (the session's entrypoint starts with `sdk-`), or the session is unattended (Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED` to `0` when nobody is at the terminal), the host brings its own prompt and Anthology adds none of its own. It adds no routing guide and no memory, `anthology-superpowers` adds no introduction, and the strict-delegation mod adds no coordinator text and refuses nothing. The guardrails stay on.
+When another program runs Claude Code for you (the Agent SDK, or `claude -p` in a script), nobody reads the session start. Anthology treats a session as embedded when `CLAUDE_CODE_SESSION_ATTENDED` is `0` or `CLAUDE_CODE_ENTRYPOINT` starts with `sdk-`. Interactive terminal and VS Code sessions are not embedded by default.
 
-Set `ANTHOLOGY_HOST_MODE=full` in the environment to opt back in.
+In an embedded session the host brings its own prompt and Anthology adds none of its own:
+
+- The session start sends no routing guide and no memory index. Its message keeps only the guard self-test and the guard binary bootstrap failures.
+- `anthology-superpowers` adds no introduction.
+- The strict-delegation mod adds no coordinator text and refuses nothing.
+- The guardrails stay on.
+
+To get the full session start in such a session, set `ANTHOLOGY_HOST_MODE=full` in its environment (for example under `env` in the settings that session reads).
+
+## Stale plugin version
+
+After an update of the anthology plugin, a session you resume or compact keeps running the version it loaded. When that version is older than the installed one, the session start says so, names the plugin, and asks you to restart Claude Code.

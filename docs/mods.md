@@ -43,7 +43,7 @@ Three things tell you that Claude Code needs you or what the agents are doing.
 
 - **Desktop alert.** A `Notification` hook pops a desktop alert with a sound when Claude Code shows a permission prompt or waits for your input. It uses macOS `osascript`, or on Linux `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell. This is the whole alert on a Claude Code without plugin mods.
 - **In-session alert.** Where Claude Code loads plugin mods, the mod `hooks/mods/alerts.tsx` also shows a one-line toast in the session, at most once every 20 seconds. It makes no sound: the shell hook keeps the only sound and the desktop alert, so where both run you get the toast and the desktop alert together.
-- **Status pane.** `/anthology-status` opens a pane called Anthology (from the same mod). It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a line under the prompt keeps the count (`2 agents running, 1 waiting for approval`). Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
+- **Status pane.** `/anthology-status` opens a pane called Anthology (from the same mod). It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a row above the prompt keeps the count (`● 2 running   ✓ 3 done   ✗ 1 failed   ! 1 needs you`, with the command on the right; `failed` counts failed and stopped agents). The row shows only while an agent runs or a prompt waits for you; finished agents alone draw no row. In a narrow window it drops the command, then done, then failed, then the word "running", and always keeps `needs you`. Times are on your machine's clock. The pane and the row draw plain text, so they read the same on the terminal, the desktop app, VS Code and mobile.
 
 The pane and the toast name a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
 
@@ -71,7 +71,7 @@ Set these in the environment, for example in the `env` block of `~/.claude/setti
 
 | Switch | Effect |
 |---|---|
-| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the toast, the status pane and its status line, and the read-only commands mod |
+| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the toast, the status pane and its row above the prompt, and the read-only commands mod |
 | `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
 | `ANTHOLOGY_NOTIFY=0` | Turns off the alert: the desktop alert and the toast |

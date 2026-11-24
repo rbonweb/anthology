@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::io::Read;
 
 use anthology_core::{Env, paths};
+use anthology_guard::host;
 
 use super::Output;
 
@@ -23,6 +24,8 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
             return Output::usage(&format!("unknown command: guard {}", first.unwrap_or("?")));
         }
     };
+    // Inside an SDK host there is no /plugin command, so the (G0) line leaves it out.
+    let embedded = host::embedded_from_env();
     // HOME (and the passwd fallback) is resolved under the hook's watchdog.
     let result = anthology_guard::hook_resolving_home(
         stdin,
@@ -31,6 +34,7 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
             paths::home_raw(&env).to_string_lossy().into_owned()
         },
         shim,
+        embedded,
     );
     Output {
         stdout: Vec::new(),

@@ -3,6 +3,7 @@
 - [Fetch origin build first](feedback-worktree-base-can-be-stale.md) — The agent worktree can branch from an old build commit; fetch and fast-forward before editing
 ## project
 - [Docs tests: plain rust image, and no "Python" in docs](project-docs-tests-container-and-python-word.md) — How to run docs and cutover_docs tests, the word rule, and how the README and docs pages a…
+- [Agents share one byte-identical Shell section](project-agent-shell-section.md) — plugins/anthology/agents/*.md carry the same ## Shell section after ## Do; roster.rs pins it; edit all 11 together
 - [Routing guide lines pinned by tests](project-routing-guide-pinned-needles.md) — Which guide and large-builds phrases tests pin, so a trim does not break them
 - [Committing other agents' memory notes to the public repo](project-memory-notes-pr-privacy-pass.md) — Notes from read-only agents sit untracked in the main checkout; scrub private details and hold …
 - [Where to verify project map claims](project-map-refresh-sources.md) — Which branch holds each fact when the project map is refreshed before a PR lands

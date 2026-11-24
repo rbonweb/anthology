@@ -387,6 +387,8 @@ mod list_and_env_tests {
         assert_eq!(env["DISABLE_AUTOUPDATER"], "1");
         assert_eq!(env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], "1"); // tools and hooks never see the key
         assert_eq!(env["NPM_CONFIG_OFFLINE"], "true");
+        // `claude -p` reads as an embedded host: the cases that read the guide need the full start
+        assert_eq!(env["ANTHOLOGY_HOST_MODE"], "full");
         assert_eq!(env["PATH"], "/usr/bin:/bin");
         let allowed: std::collections::BTreeSet<&str> = [
             "HOME",
@@ -399,6 +401,7 @@ mod list_and_env_tests {
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
             "NPM_CONFIG_OFFLINE",
+            "ANTHOLOGY_HOST_MODE",
         ]
         .into_iter()
         .collect();

@@ -5,6 +5,7 @@
 // The test's own hooks sit beneath the plugin and stand for Claude Code.
 import type { AgentReportInput, On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 const CORE = { plugin: 'engine', tier: 'core' } as const
 const BLOCK = 'After-work check'
@@ -20,7 +21,7 @@ type World = {
 
 /** Stands for Claude Code beneath the plugin, and records what the mods ask of it. */
 function engine(on: On, w: World = {}) {
-  const seen = { statuses: [] as (string | undefined)[], reportRuns: 0 }
+  const seen = { reportRuns: 0 }
   on('agent.report', (_, e) => {
     seen.reportRuns += 1
     return { text: e.text }
@@ -29,11 +30,21 @@ function engine(on: On, w: World = {}) {
   on('clock.now', () => (w.isClockBroken ? { deny: 'clock is down' } : { value: 1_000 }))
   if (w.isStateBroken) on('state.set', () => ({ deny: 'state is down' }) as never)
   on('agent.list', () => ({ value: [] }))
-  on('ui.status', (_, e) => {
-    seen.statuses.push(e.text)
-    return { value: undefined }
-  })
   return seen
+}
+
+/** Whether the status pane lists a finished agent: the sign that the report was tracked. */
+async function isTracked($: Engine): Promise<boolean> {
+  const ui = await $.ui.mount({
+    plugin: 'anthology',
+    component: 'Pane',
+    requestId: 'anthology-status',
+    surface: 'terminal',
+    props: { title: 'Anthology', isFocused: false, bodyColumns: 48, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  const drawn = JSON.stringify(await ui.drawn())
+  await ui.unmount()
+  return drawn.includes('Finished')
 }
 
 const writer = (text: string): AgentReportInput => ({
@@ -53,7 +64,7 @@ test('a report gets the after-work block and is tracked by the pane, from one re
   expect(r.text).toContain(BLOCK)
   expect(r.text?.startsWith(`${GAPPY}\n\n`)).toBe(true)
   expect(seen.reportRuns).toBe(1)
-  expect(seen.statuses).toEqual([undefined])
+  expect(await isTracked($)).toBe(true)
 })
 
 test('tracking that throws on the clock leaves the after-work block', async ($, on) => {
@@ -75,5 +86,5 @@ test('an after-work check that throws leaves the report as core made it, and the
   const r = await $.agent.report(writer(GAPPY))
   expect(r.text).toBe(GAPPY)
   expect(seen.reportRuns).toBe(1)
-  expect(seen.statuses).toEqual([undefined])
+  expect(await isTracked($)).toBe(true)
 })
