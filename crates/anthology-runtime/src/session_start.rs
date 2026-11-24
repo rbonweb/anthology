@@ -24,7 +24,7 @@
 //! `systemMessage` ([`subagent_output`]). Everything else is for the lead.
 //!
 //! **Embedded hosts.** A session another program runs (the Agent SDK, `claude -p` in a script;
-//! [`embedded`]) gets an empty `additionalContext` (no guide, no memory, no personal section)
+//! [`host::embedded`]) gets an empty `additionalContext` (no guide, no memory, no personal section)
 //! and a `systemMessage` with only the guard self-test and the bootstrap failures: nobody reads
 //! the rest, and the guide is for a lead that talks to a person. `ANTHOLOGY_HOST_MODE=full` turns
 //! this off.
@@ -72,7 +72,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
 use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, paths, platform, state};
-use anthology_guard::data;
+use anthology_guard::{data, host};
 use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Map, Value};
@@ -505,25 +505,12 @@ fn parse_stdin(stdin: &str) -> Map {
         .unwrap_or_default()
 }
 
-/// The variables that say who runs the session.
-const ENTRYPOINT_VAR: &str = "CLAUDE_CODE_ENTRYPOINT";
-const ATTENDED_VAR: &str = "CLAUDE_CODE_SESSION_ATTENDED";
-const MODE_VAR: &str = "ANTHOLOGY_HOST_MODE";
-
-// SWAP(T5): delete this and call `anthology_guard::host::embedded` (same signature).
-/// Whether another program runs the session: no `ANTHOLOGY_HOST_MODE=full`, and either nobody
-/// attends it (`CLAUDE_CODE_SESSION_ATTENDED=0`) or the entrypoint is an SDK build (`sdk-*`).
-fn embedded(entrypoint: Option<&str>, attended: Option<&str>, mode: Option<&str>) -> bool {
-    mode != Some("full")
-        && (attended == Some("0") || entrypoint.is_some_and(|e| e.starts_with("sdk-")))
-}
-
-/// [`embedded`] for the hook's own environment (the seam tests set).
+/// [`host::embedded`] for the hook's own environment (the seam tests set), not the process's.
 fn embedded_host(env: &Env) -> bool {
-    embedded(
-        env.get(ENTRYPOINT_VAR),
-        env.get(ATTENDED_VAR),
-        env.get(MODE_VAR),
+    host::embedded(
+        env.get(host::ENTRYPOINT_VAR),
+        env.get(host::ATTENDED_VAR),
+        env.get(host::MODE_VAR),
     )
 }
 
