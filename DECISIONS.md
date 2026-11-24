@@ -1070,6 +1070,50 @@ The tool this repo ships as `rtk` is a fork of rtk by RTK AI Labs (github.com/rt
 
 One rename touches about 15,000 lines, so it lands as one integration branch (T1 binary, CI and scripts; T2 shell and guard; T3 install, hook and doctor; T4 settings, setup and docs) behind a repo test that fails on any `rtk` outside an allowed path or an allowed line. The users' cost is one `/anthology:setup` run after the update. Cost if wrong: a user who never re-runs setup keeps prompts on `atl` rewrites and the old files on disk, which are small; both fail closed.
 
+## ADR-036: the version-bump gate compares a released plugin with its latest release tag
+
+- **Date:** 2026-11-24
+- **Task:** the version-bump gate fix in the 0.2.2 release batch (`crates/anthology-dev/src/version_bump.rs`)
+- **Status:** Accepted
+
+**Context**
+
+The `version-bump` job asked one question of a changed plugin: is its version above the version at the merge base of the pull request and its base branch? When two branches changed the same plugin, the first to merge bumped it, and every other branch then had to bump it again to pass, which also made `CHANGELOG.md` and `plugin.json` conflict on each merge. The release tag, not the base branch, is what users hold, so the tag is the better floor.
+
+**Decision**
+
+- A plugin counts as released once a tag `<plugin>--v*` exists on a commit that is an ancestor of the base. Only those tags count, so the tag a release commit creates in the pushed range is not a release that its own push has to exceed. An unreleased plugin needs no bump, as before.
+- A changed released plugin passes when its head version is above the highest `<plugin>--v*` tag merged into the base (semver, matched by the exact prefix `<plugin>--v`, so `pp--v1.0.0` is no release of `p`) and not below its version at the merge base. A bump that already landed on the base therefore counts, and a branch does not bump it again.
+- A tag whose version is not valid semver is ignored. When no tag is valid, or the head version is not valid semver, the old comparison with the merge-base version applies.
+- Ruling: the latest release is the floor, not the base branch's unreleased version. Cost if wrong: a bump already on the base lets a later branch pass without a bump of its own, so two branches can share one unreleased version. That is intended. The changes of both belong in that release, and `release.sh` is the step that fixes the number.
+
+**Consequences**
+
+Branches no longer re-bump a plugin that the base already moved past its last release, which removes the usual conflict on `plugin.json` and the changelog heading. A plugin that is still at its latest release, or below it, still fails, and the message names that release.
+
+## ADR-037: host mode, where an app drives Claude Code
+
+- **Date:** 2026-11-24
+- **Task:** host mode for embedded sessions in the 0.2.2 release batch (the delegation mod, the session-start hooks and the G0 message)
+- **Status:** Accepted
+
+**Context**
+
+Programs other than a person at a terminal drive Claude Code through its SDK. Such an app owns its system prompt and its task, and nobody there can read the lead instructions Anthology adds (the routing guide, the memory titles, the superpowers introduction, the coordinator section) or act on them. The delegation mod could refuse the host's own `Edit`, `Write` or `NotebookEdit` calls. The block message also offered `/plugin disable`, which no one in such a session can run.
+
+**Decision**
+
+- A session is an embedded host when `ANTHOLOGY_HOST_MODE` is not `full` and either `CLAUDE_CODE_SESSION_ATTENDED` is `0` or `CLAUDE_CODE_ENTRYPOINT` starts with `sdk-`. With no such variable set, there is no host mode.
+- In a host, Anthology adds no lead context: no guide, no memory, no superpowers bootstrap and no coordinator section, and the delegation mod refuses nothing. Guard verdicts do not change, and the G0 message drops its `/plugin disable` line.
+- `ANTHOLOGY_HOST_MODE=full` opts back in to everything. The evals set it.
+- One predicate, three readers: the delegation mod (`isEmbeddedHost` in `hooks/mods/delegation.ts`), the `anthology-superpowers` session-start hook (a patch in `vendor/patches/superpowers.patch`) and the Rust side (session start and the G0 message).
+- Why these signals: Claude Code recomputes the attended flag for each session, and an interactive `cli` or IDE session reads attended as `1`, so a person at a terminal is never taken for a host.
+- Ruling: the check changes what Anthology says, never what it blocks. Guard verdicts are the same in a host. Cost if wrong: a session that Claude Code reports as unattended or as an `sdk-*` entrypoint, though a person uses it, gets no guide, memory or coordinator section until `ANTHOLOGY_HOST_MODE=full` is set. Its safety checks are unchanged.
+
+**Consequences**
+
+Hosts stop paying for instructions they cannot use, and their own edits are no longer refused. The same two variables now decide the question in TypeScript, shell and Rust, so a change to one reader needs the same change in the other two.
+
 ## ADR-038: host path variables the user lists are read through (carve-out d)
 
 - **Date:** 2026-11-24
