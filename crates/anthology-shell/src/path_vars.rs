@@ -164,4 +164,13 @@ mod tests {
             assert!(!text_allowed(command), "{command}");
         }
     }
+
+    #[test]
+    fn a_quote_inside_the_other_kind_is_text() {
+        assert!(text_allowed(r#"echo "it's" 'a "b' "$HOST_TOOL""#));
+        // the `"` after `a' ` closes the text, so `$HOST_TOOL` is unquoted
+        assert!(!text_allowed(r#"echo "a' "$HOST_TOOL""#));
+        // the `"` inside single quotes opens nothing
+        assert!(!text_allowed(r#"echo 'a "'$HOST_TOOL"'"#));
+    }
 }
