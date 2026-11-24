@@ -10,6 +10,15 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The `anthology` binary 0.2.3 carries the Rust changes made since 0.2.2. The embedded-host
+  rule now lets the attended flag (`CLAUDE_CODE_SESSION_ATTENDED`) decide first, in the guard
+  and the session start alike. The stale-plugin restart notice compares a plugin only with the
+  install entry of its own scope and orders release candidates by number. The guard's "too
+  complex" (G0) message names its cause for three more shapes. No guard verdict changes. The
+  entries that follow give the details.
+
 ### [0.5.0] - 2026-11-24
 
 #### Added
