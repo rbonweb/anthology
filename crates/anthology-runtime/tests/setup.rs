@@ -2480,6 +2480,110 @@ mod guard_binary {
     }
 }
 
+mod parent_folder_test {
+    //! Setup started in a folder that holds repos but is not one: the preview lists the repos
+    //! below, so the skill can ask which one and rerun with `--cwd <repo>`.
+    use super::*;
+
+    /// A folder `name` under the fixture holding `repos` as bare `.git` folders.
+    fn parent_with(f: &Fx, name: &str, repos: &[&str]) -> PathBuf {
+        let parent = f.tmp().join(name);
+        for repo in repos {
+            fs::create_dir_all(parent.join(repo).join(".git")).unwrap();
+        }
+        fs::create_dir_all(&parent).unwrap();
+        parent
+    }
+
+    fn has_key(v: &Value, key: &str) -> bool {
+        v.as_object().unwrap().get(key).is_some()
+    }
+
+    fn listed(repo: &Value) -> Vec<String> {
+        at(repo, &["repos_below"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn preview_in_a_parent_lists_repos_below() {
+        let f = Fx::new();
+        let names: Vec<String> = (0..12).rev().map(|i| format!("repo-{i:02}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let parent = parent_with(&f, "work", &refs);
+        fs::create_dir_all(parent.join("plain-folder")).unwrap();
+        let out = f.preview(Some(&parent));
+        let repo = at(&out, &["memory", "repo"]);
+        assert_eq!(text_at(repo, &["skipped"]), "not a git repo");
+        let want: Vec<String> = (0..10)
+            .map(|i| p(&parent.join(format!("repo-{i:02}"))))
+            .collect();
+        assert_eq!(listed(repo), want);
+        assert_eq!(at(repo, &["repos_below_more"]).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn preview_in_a_parent_names_every_repo_when_few() {
+        let f = Fx::new();
+        let parent = parent_with(&f, "work", &["zeta", "alpha"]);
+        let out = f.preview(Some(&parent));
+        let repo = at(&out, &["memory", "repo"]);
+        assert_eq!(
+            listed(repo),
+            [p(&parent.join("alpha")), p(&parent.join("zeta"))]
+        );
+        assert!(!has_key(repo, "repos_below_more"));
+    }
+
+    #[test]
+    fn a_repo_name_with_control_characters_cannot_break_the_json() {
+        let f = Fx::new();
+        let parent = parent_with(&f, "work", &["odd\nname\u{1b}[31m"]);
+        let out = f.preview(Some(&parent));
+        let text = dumped(&out);
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(text.contains("odd\\nname\\u001b[31m"), "{text}");
+    }
+
+    #[test]
+    fn the_skill_asks_which_repo_and_reruns_with_cwd() {
+        let text = fs::read_to_string(repo_root().join("plugins/anthology/skills/setup/SKILL.md"))
+            .unwrap();
+        for want in ["repos_below", "ask which one", "--cwd <abs repo path>"] {
+            assert!(text.contains(want), "{want}");
+        }
+        let apply = text.split("setup apply").nth(1).unwrap();
+        assert!(apply.contains("--cwd <abs repo path>"), "{apply}");
+    }
+
+    #[test]
+    fn preview_with_cwd_of_a_child_shows_its_repo_diff() {
+        if !mem::needs_git() {
+            return;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let child =
+            f.c.mem
+                .make_repo("work/app", Some("https://example.invalid/acme/app.git"));
+        let parent = child.parent().unwrap().to_path_buf();
+        let from_parent = f.preview(Some(&parent));
+        assert_eq!(listed(at(&from_parent, &["memory", "repo"])), [p(&child)]);
+        let out = f.preview(Some(&child));
+        let repo = at(&out, &["memory", "repo"]);
+        assert_eq!(text_at(repo, &["root"]), p(&child));
+        assert_eq!(text_at(repo, &["key"]), "example.invalid/acme/app");
+        assert!(!has_key(repo, "skipped"));
+        assert!(!has_key(repo, "repos_below"));
+        let auto = at(repo, &["auto_memory"]);
+        assert_eq!(at(auto, &["changed"]), &Value::Bool(true));
+        assert!(text_at(auto, &["diff"]).contains("autoMemoryEnabled"));
+    }
+}
+
 mod cli_main {
     //! `main`'s argument parsing and exit codes beyond `CliTest` (not Python ports).
     use super::*;
