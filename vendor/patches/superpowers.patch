@@ -11,7 +11,7 @@
  
 --- a/hooks/session-start
 +++ b/hooks/session-start
-@@ -18,6 +18,22 @@
+@@ -18,6 +18,32 @@
    *) SCRIPT_DIR="." ;;
  esac
  PLUGIN_ROOT="${SCRIPT_DIR}/.."
@@ -31,7 +31,17 @@
 +    exit 0
 +  fi
 +fi
- 
++
++# Embedded hosts get no introduction either. An app that drives Claude Code through the SDK or
++# `claude -p` brings its own prompt, and the bootstrap only costs it context. Claude Code sets
++# CLAUDE_CODE_ENTRYPOINT to `sdk-*` there, and CLAUDE_CODE_SESSION_ATTENDED to 0 when nobody is
++# at the terminal. ANTHOLOGY_HOST_MODE=full opts back in. This reads only the environment.
++if [ "${ANTHOLOGY_HOST_MODE:-}" != "full" ] &&
++   { [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ] ||
++     [[ ${CLAUDE_CODE_ENTRYPOINT:-} == sdk-* ]]; }; then
++  exit 0
++fi
+
  # Read using-superpowers content with the read builtin (no cat, for the same
  # PATH-independence reason, and no $(< file) subshell). read returns 1 at end
 --- a/skills/brainstorming/scripts/server.cjs
