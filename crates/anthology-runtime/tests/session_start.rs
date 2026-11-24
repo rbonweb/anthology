@@ -3553,6 +3553,47 @@ mod host_mode {
         }
     }
 
+    /// Rewrites the install path of the entry that holds the loaded plugin's folder.
+    fn move_install_path(f: &Fx, to: &str) {
+        let file = f.config().join("plugins/installed_plugins.json");
+        let list = fs::read_to_string(&file).unwrap();
+        let from = jstr(&p(f.plugin()));
+        assert!(list.contains(&from), "{list}");
+        write(&file, &list.replacen(&from, &jstr(to), 1), None);
+    }
+
+    #[test]
+    fn the_loaded_folder_is_found_with_a_trailing_slash_or_a_symlink() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        let link = f.tmp().join("plugin-link");
+        std::os::unix::fs::symlink(f.plugin(), &link).unwrap();
+        for path in [format!("{}/", p(f.plugin())), p(&link)] {
+            // the project pin is the loaded one and is older than the user install
+            scoped_versions(&f, &proj, "project", "0.4.0", "0.4.0", "0.5.0");
+            move_install_path(&f, &path);
+            let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{path}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn an_install_that_moved_to_a_new_folder_is_stale() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // an update: no entry points at the loaded folder any more, and the newest is 0.5.0
+        scoped_versions(&f, &proj, "user", "0.4.1", "0.3.0", "0.5.0");
+        let new = f.tmp().join("cache/anthology/0.5.0");
+        fs::create_dir_all(&new).unwrap();
+        move_install_path(&f, &p(&new));
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.1", "0.5.0")]);
+    }
+
     #[test]
     fn a_stale_check_compares_the_loaded_scope_with_its_own_entry() {
         let f = Fx::new();

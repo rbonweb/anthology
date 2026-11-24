@@ -573,6 +573,16 @@ fn is_plugin_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Whether two paths name one folder: equal, or equal once symlinks are resolved (a symlinked
+/// root, or `/var` against `/private/var`). A path that cannot be resolved is only compared as is.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
 /// The line for a session that runs an older plugin than the one installed: the plugin at `root`
 /// (the folder this session loaded) is below the newest `installed_plugins.json` entry of the
 /// same name that applies to `cwd` (user scope, or a project that holds `cwd`). When one entry's
@@ -630,7 +640,7 @@ pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String
     // project. No entry has that path (it moved on to a newer folder): compare with all of them.
     let loaded_from = applicable
         .iter()
-        .find(|i| i.path.is_some_and(|p| Path::new(p) == root));
+        .find(|i| i.path.is_some_and(|p| same_folder(Path::new(p), root)));
     let mut newest: Option<(VersionKey, &str)> = None;
     for install in &applicable {
         if loaded_from.is_some_and(|l| l.scope != install.scope || l.project != install.project) {
