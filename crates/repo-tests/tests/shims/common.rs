@@ -11,6 +11,7 @@ pub const GUARD: &str = "plugins/anthology-guardrails/hooks/guard.sh";
 pub const G_BOOT: &str = "plugins/anthology-guardrails/hooks/bootstrap.sh";
 pub const A_BOOT: &str = "plugins/anthology/hooks/bootstrap.sh";
 pub const SESSION: &str = "plugins/anthology/hooks/session-start.sh";
+pub const SUBAGENT_STOP: &str = "plugins/anthology/hooks/subagent-stop.sh";
 pub const WRAP: &str = "plugins/anthology/bin/anthology";
 pub const WRAP_MEM: &str = "plugins/anthology/bin/anthology-mem";
 pub const G_LIB: &str = "plugins/anthology-guardrails/hooks/lib.sh";

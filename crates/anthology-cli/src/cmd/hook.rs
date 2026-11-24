@@ -1,4 +1,5 @@
-//! `anthology hook session-start`: the SessionStart hook (GC-7). Owner: RT3.
+//! `anthology hook session-start`: the SessionStart hook (GC-7). Owner: RT3. Also
+//! `anthology hook subagent-stop`: the SubagentStop hook.
 //!
 //! As `session_start.py main()`: stdin is read only when it is not a terminal (and must be
 //! UTF-8, else it counts as empty, as Python's strict decode), the hook output is one JSON line
@@ -10,6 +11,7 @@ use std::io::{IsTerminal, Read};
 
 use anthology_core::Env;
 use anthology_runtime::session_start::{self, SessionDeps};
+use anthology_runtime::subagent_stop;
 
 use super::Output;
 
@@ -30,8 +32,27 @@ pub fn run(args: &[OsString], stdin: &mut dyn Read) -> Output {
             std::panic::set_hook(Box::new(|_| {}));
             session_start_with(&Env::from_process(), &raw, &SessionDeps::default())
         }
+        Some("subagent-stop") => {
+            let raw = if std::io::stdin().is_terminal() {
+                String::new()
+            } else {
+                read_input(stdin)
+            };
+            std::panic::set_hook(Box::new(|_| {}));
+            subagent_stop_with(&raw)
+        }
         Some(other) => Output::usage(&format!("unknown command: hook {other}")),
-        None => Output::usage("hook needs one of: session-start"),
+        None => Output::usage("hook needs one of: session-start, subagent-stop"),
+    }
+}
+
+/// `anthology hook subagent-stop` after reading stdin: the block line when the subagent still
+/// has a running shell or monitor, else no output. Always exit 0 (fail open: a nudge, not a gate).
+pub fn subagent_stop_with(raw: &str) -> Output {
+    let line = std::panic::catch_unwind(|| subagent_stop::decide(raw)).unwrap_or(None);
+    Output {
+        stdout: line.map_or_else(Vec::new, |l| format!("{l}\n").into_bytes()),
+        ..Output::default()
     }
 }
 
@@ -125,6 +146,27 @@ mod tests {
         );
         let v = json::loads(&text).unwrap();
         assert!(v.as_object().unwrap().get("hookSpecificOutput").is_some());
+    }
+
+    #[test]
+    fn subagent_stop_prints_one_block_line_or_nothing() {
+        let running = br#"{"stop_hook_active":false,"background_tasks":[{"type":"shell","status":"running"}]}"#;
+        let out = subagent_stop_with(&read_input(&mut &running[..]));
+        assert_eq!(out.code, 0);
+        assert!(out.stderr.is_empty());
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.starts_with(r#"{"decision":"block","reason":"#) && text.ends_with("}\n"),
+            "{text:?}"
+        );
+        assert_eq!(text.matches('\n').count(), 1, "{text:?}");
+        for quiet in [&b"{}"[..], b"", b"not json"] {
+            let out = subagent_stop_with(&read_input(&mut &quiet[..]));
+            assert_eq!(
+                (out.code, out.stdout.is_empty(), out.stderr.is_empty()),
+                (0, true, true)
+            );
+        }
     }
 
     #[test]

@@ -10,3 +10,4 @@ pub mod fetch;
 pub mod guardrails_loc;
 pub mod session_start;
 pub mod setup;
+pub mod subagent_stop;

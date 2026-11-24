@@ -241,3 +241,60 @@ fn session_start_passes_the_hook_input_and_reports_a_failed_binary() {
         );
     });
 }
+
+#[test]
+fn subagent_stop_passes_the_hook_input_and_prints_the_one_block_line() {
+    each_shell("subagent stop", |sh| {
+        let body =
+            "cat >\"$BS_LOG\"; printf '{\"decision\":\"block\",\"reason\":\"r\"}\\n\\n\\n'; exit 0";
+        let mut sb = sandbox();
+        let log = sb.root.join("in.log");
+        sb.set_env("BS_LOG", log.clone());
+        sb.install(&fake_hook(V, ALLOW, body), 0o755);
+        let input = b"{\"hook_event_name\":\"SubagentStop\"}\n";
+        let run = sb.run(sh, SUBAGENT_STOP, &[], input);
+        assert_eq!(
+            (run.code, run.out()),
+            (
+                Some(0),
+                "{\"decision\":\"block\",\"reason\":\"r\"}\n".into()
+            ),
+            "{sh:?}: {}",
+            run.err()
+        );
+        assert_eq!(
+            std::fs::read(&log).unwrap(),
+            input,
+            "{sh:?}: stdin reached it"
+        );
+    });
+}
+
+#[test]
+fn subagent_stop_fails_open_whatever_the_binary_does() {
+    each_shell("subagent stop fails open", |sh| {
+        // An older binary that does not know the subcommand exits 2 with a usage text.
+        for body in [
+            "cat >/dev/null; echo 'anthology: unknown command' >&2; exit 2",
+            "cat >/dev/null; printf '{\"decision\":\"block\"}\\n'; exit 4",
+            "cat >/dev/null; exit 0",
+            "kill -9 $$",
+        ] {
+            let sb = sandbox();
+            sb.install(&fake_hook(V, ALLOW, body), 0o755);
+            let run = sb.run(sh, SUBAGENT_STOP, &[], b"{}");
+            assert_allowed(&run, &format!("{sh:?} {body}"));
+        }
+        // Not installed: nothing is downloaded or installed, and the stop is allowed.
+        let sb = sandbox();
+        sb.seed();
+        let run = sb.run(sh, SUBAGENT_STOP, &[], b"{}");
+        assert_allowed(&run, &format!("{sh:?} not installed"));
+        assert_not_installed(&sb, &format!("{sh:?} not installed"));
+        // lib.sh missing.
+        let sb = sandbox();
+        std::fs::remove_file(sb.root.join(A_LIB)).unwrap();
+        let run = sb.run(sh, SUBAGENT_STOP, &[], b"{}");
+        assert_allowed(&run, &format!("{sh:?} no lib.sh"));
+    });
+}

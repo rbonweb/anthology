@@ -234,7 +234,9 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_atl_hook() {
             {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "approval"], "timeout": 5}]},
             {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "sh",
-              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"], "timeout": 5}]}]
+              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"], "timeout": 5}]}],
+          "SubagentStop": [{"hooks": [{"type": "command", "command": "sh",
+              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.sh"], "timeout": 10}]}]
         },
         "modules": ["./mods/index.ts"]}"#,
     )
@@ -259,6 +261,7 @@ fn every_shim_is_posix_sh_with_a_shebang() {
     for rel in [
         "anthology/hooks/bootstrap.sh",
         "anthology/hooks/session-start.sh",
+        "anthology/hooks/subagent-stop.sh",
         "anthology/bin/anthology",
         "anthology/bin/anthology-mem",
         "anthology-guardrails/hooks/guard.sh",

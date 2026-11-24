@@ -59,7 +59,7 @@ impl Output {
 const USAGE: &str = "usage: anthology <command> [args]
 commands:
   guard hook [--shim]
-  hook session-start
+  hook session-start|subagent-stop
   setup preview|apply|remove
   doctor
   atl-install
