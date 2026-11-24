@@ -19,6 +19,7 @@ const FAKE_DEV: &str = r#"#!/bin/sh
 printf '%s|%s\n' "$(pwd -P)" "$*" >> "$DEV_LOG"
 if [ "$1" = lock ]; then exec "$REAL_DEV" "$@"; fi
 [ "$1" = release-edit ] || exit 70
+if [ "${DEV_FAIL:-}" = "$2" ]; then echo "fake dev: $2 refused" >&2; exit 1; fi
 case $2 in
     plugin-version) sed -n 's/^  "version": "\(.*\)",*$/\1/p' "$3" | head -n 1 ;;
     check-version) echo bump ;;
@@ -53,7 +54,18 @@ name=$(sed -n 's/^  "name": "\(.*\)",*$/\1/p' "$manifest" | head -n 1)
 ver=$(sed -n 's/^  "version": "\(.*\)",*$/\1/p' "$manifest" | head -n 1)
 tag="$name--v$ver"
 if [ "$dry" = 1 ]; then echo "$tag"; exit 0; fi
+if [ -n "${FAKE_CLAUDE_TAG_FAIL:-}" ]; then echo "fake claude: tagging refused" >&2; exit 1; fi
 git tag "$tag"
+if [ -n "${FAKE_CLAUDE_TAG_THEN_FAIL:-}" ]; then echo "fake claude: failed after tagging" >&2; exit 1; fi
+"#;
+
+/// A remote's `update` hook that refuses every tag, so a push that carries a tag is rejected as
+/// a whole when it is atomic, and only the tag is refused when it is not.
+const REFUSE_TAGS_HOOK: &str = r#"#!/bin/sh
+case "$1" in
+    refs/tags/*) echo "test remote: tags are refused" >&2; exit 1 ;;
+esac
+exit 0
 "#;
 
 fn have(program: &str) -> bool {
@@ -231,6 +243,55 @@ impl Repo {
         )
     }
 
+    /// A bare repository as `origin`, holding the current `main`.
+    fn add_remote(&self) -> PathBuf {
+        let remote = self.base.join("remote.git");
+        let out = Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&remote)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_DIR")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        self.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+        self.git(&["push", "-q", "origin", "main"]);
+        remote
+    }
+
+    /// Makes `remote` refuse every tag (see [`REFUSE_TAGS_HOOK`]).
+    fn refuse_tags_on(&self, remote: &Path) {
+        let hook = remote.join("hooks/update");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, REFUSE_TAGS_HOOK).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        anthology_testkit::rl::settle_exec(&hook, &[]);
+    }
+
+    /// What `remote` has: its `main` and its tags.
+    fn remote_state(&self, remote: &Path) -> (String, String) {
+        let out = |args: &[&str]| {
+            let o = Command::new("git")
+                .arg("--git-dir")
+                .arg(remote)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", text(&o.stderr));
+            text(&o.stdout).trim().to_string()
+        };
+        (out(&["rev-parse", "main"]), out(&["tag", "-l"]))
+    }
+
+    fn release_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.script(&self.base.join("fake-dev"), args)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap()
+    }
+
     fn release_with(&self, dev: &Path, args: &[&str]) -> Output {
         self.script(dev, args).output().unwrap()
     }
@@ -345,6 +406,7 @@ fn a_fresh_lock_lets_the_release_through() {
         text(&out.stderr)
     );
     assert!(r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+    assert_eq!(last_line(&out), "RELEASE OK anthology--v0.2.0");
     assert!(
         r.read("plugins/anthology/.claude-plugin/plugin.json")
             .contains("\"0.2.0\"")
@@ -466,6 +528,10 @@ fn the_dry_run_edits_a_worktree_under_target_and_leaves_the_checkout() {
         "{all}"
     );
     assert!(all.contains("- released anthology 0.2.0"), "{all}");
+    assert_eq!(
+        last_line(&out),
+        "RELEASE OK anthology--v0.2.0 (dry run: nothing was released)"
+    );
     assert_eq!(r.state(), before);
     let calls = r.dev_calls();
     let mv = calls
@@ -509,6 +575,16 @@ fn repo_with_engines() -> Option<Repo> {
 
 fn output_text(out: &Output) -> String {
     format!("{}{}", text(&out.stdout), text(&out.stderr))
+}
+
+/// The script's verdict: the last non-empty line of its standard output.
+fn last_line(out: &Output) -> String {
+    text(&out.stdout)
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 #[test]
@@ -596,4 +672,262 @@ fn a_claude_that_reports_no_version_is_refused_when_the_plugin_has_engines() {
     assert!(all.contains("cannot read the version of"), "{all}");
     assert!(all.contains("CLAUDE_BIN"), "{all}");
     assert_eq!(r.state(), before);
+}
+
+#[test]
+fn untracked_notes_do_not_block_a_release() {
+    let Some(r) = repo() else { return };
+    // Agent notes and the project memory are written all day; they are not part of a release.
+    r.write(".claude/agent-memory/anthology-implementer/note.md", "n\n");
+    r.write(".claude/memory/reference-x.md", "n\n");
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert_eq!(last_line(&out), "RELEASE OK anthology--v0.2.0", "{all}");
+    assert!(r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+    // The notes stay untracked and out of the release commit.
+    let files = r.git_out(&["show", "--name-only", "--format=", "HEAD"]);
+    assert!(!files.contains(".claude/"), "{files}");
+    let status = r.git_out(&["status", "--porcelain", "--untracked-files=all"]);
+    assert!(
+        status.contains("?? .claude/memory/reference-x.md"),
+        "{status}"
+    );
+}
+
+#[test]
+fn a_stray_untracked_file_still_blocks() {
+    let Some(r) = repo() else { return };
+    // Only the two memory folders are let through: not another file, not another folder under
+    // .claude, not a folder whose name only starts like one of them.
+    for stray in [
+        "stray.txt",
+        ".claude/settings.json",
+        ".claude/memorandum/x.md",
+        ".claude/agent-memory-old/x.md",
+    ] {
+        r.write(".claude/memory/reference-x.md", "n\n");
+        r.write(stray, "x\n");
+        let before = r.state();
+        let out = r.release(&["anthology", "0.2.0"]);
+        let all = output_text(&out);
+        assert_eq!(out.status.code(), Some(1), "{stray}: {all}");
+        assert!(all.contains("working tree is not clean"), "{stray}: {all}");
+        assert!(all.contains(stray), "{stray}: {all}");
+        assert_eq!(
+            last_line(&out),
+            "RELEASE FAILED: preconditions",
+            "{stray}: {all}"
+        );
+        assert_eq!(r.state(), before, "{stray}");
+        std::fs::remove_file(r.root.join(stray)).unwrap();
+    }
+    // A staged note is no longer untracked: it blocks, even under .claude/memory.
+    r.write(".claude/memory/staged.md", "s\n");
+    r.git(&["add", ".claude/memory/staged.md"]);
+    let before = r.state();
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "staged: {all}");
+    assert!(all.contains("working tree is not clean"), "staged: {all}");
+    assert!(all.contains(".claude/memory/staged.md"), "staged: {all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: preconditions", "{all}");
+    assert_eq!(r.state(), before);
+    r.commit("track a note");
+    // A changed file that git tracks blocks too.
+    r.write(".claude/memory/staged.md", "changed\n");
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "tracked: {all}");
+    assert!(all.contains("working tree is not clean"), "tracked: {all}");
+    assert!(all.contains(".claude/memory/staged.md"), "tracked: {all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: preconditions", "{all}");
+}
+
+#[test]
+fn a_failed_edit_names_the_edit_step_and_restores_the_files() {
+    let Some(r) = repo() else { return };
+    let before = r.state();
+    let out = r.release_env(&["anthology", "0.2.0"], &[("DEV_FAIL", "set-version")]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: edit", "{all}");
+    // changelog-move had already edited CHANGELOG.md: it is put back.
+    assert_eq!(r.state(), before);
+    assert!(!r.read("CHANGELOG.md").contains("released"));
+}
+
+#[test]
+fn a_failed_commit_names_the_commit_step_and_restores_the_files() {
+    let Some(r) = repo() else { return };
+    let hook = r.root.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho 'test hook: commit refused' >&2\nexit 1\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    anthology_testkit::rl::settle_exec(&hook, &[]);
+    let before = r.state();
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("commit refused"), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: commit", "{all}");
+    assert_eq!(r.state(), before);
+    assert!(!r.read("CHANGELOG.md").contains("released"));
+}
+
+#[test]
+fn a_tag_made_and_then_failed_is_deleted() {
+    let Some(r) = repo() else { return };
+    // `claude plugin tag` creates the tag and then fails: the tag is not left behind.
+    let out = r.release_env(
+        &["anthology", "0.2.0"],
+        &[("FAKE_CLAUDE_TAG_THEN_FAIL", "1")],
+    );
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: tag", "{all}");
+    assert!(!r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+}
+
+#[test]
+fn tag_failure_pushes_nothing() {
+    let Some(r) = repo() else { return };
+    let remote = r.add_remote();
+    let remote_before = r.remote_state(&remote);
+    let out = r.release_env(
+        &["anthology", "0.2.0", "--push"],
+        &[("FAKE_CLAUDE_TAG_FAIL", "1")],
+    );
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: tag", "{all}");
+    assert!(all.contains("claude plugin tag"), "{all}");
+    // The tag comes before the push, so a failed tag leaves the remote alone.
+    assert_eq!(r.remote_state(&remote), remote_before);
+    assert!(!r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+}
+
+#[test]
+fn branch_and_tag_push_atomically() {
+    let Some(r) = repo() else { return };
+    let remote = r.add_remote();
+    let out = r.release(&["anthology", "0.2.0", "--push"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert_eq!(last_line(&out), "RELEASE OK anthology--v0.2.0", "{all}");
+    let (main, tags) = r.remote_state(&remote);
+    assert_eq!(main, r.git_out(&["rev-parse", "HEAD"]));
+    assert!(tags.contains("anthology--v0.2.0"), "{tags}");
+    // The tag is made locally, then pushed with the branch: claude is not asked to push.
+    let claude_log = std::fs::read_to_string(r.base.join("claude.log")).unwrap();
+    assert!(!claude_log.contains("--push"), "{claude_log}");
+
+    // The proof it is one transaction: a remote that refuses the tag does not take the branch.
+    let Some(r) = repo() else { return };
+    let remote = r.add_remote();
+    r.refuse_tags_on(&remote);
+    let remote_before = r.remote_state(&remote);
+    let out = r.release(&["anthology", "0.2.0", "--push"]);
+    assert_eq!(out.status.code(), Some(1), "{}", output_text(&out));
+    assert_eq!(r.remote_state(&remote), remote_before);
+}
+
+#[test]
+fn push_rejected_removes_the_local_tag() {
+    let Some(r) = repo() else { return };
+    let remote = r.add_remote();
+    r.refuse_tags_on(&remote);
+    let remote_before = r.remote_state(&remote);
+    let out = r.release(&["anthology", "0.2.0", "--push"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: push", "{all}");
+    assert_eq!(r.remote_state(&remote), remote_before);
+    // The local tag would point at a commit that may be rewritten: it is gone.
+    assert!(!r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
+    // The release commit stays, and the message says how to finish.
+    assert_eq!(
+        r.git_out(&["log", "-1", "--format=%s"]),
+        "release: anthology 0.2.0"
+    );
+    assert!(
+        all.contains("claude plugin tag plugins/anthology"),
+        "no recovery command: {all}"
+    );
+    assert!(
+        all.contains("git push --atomic origin HEAD refs/tags/anthology--v0.2.0"),
+        "no recovery command: {all}"
+    );
+}
+
+#[test]
+fn fragments_compile_into_the_release() {
+    let Some(r) = repo() else { return };
+    // The real release-edit: the fake dev would not read fragments. This plugin has no lock.
+    r.write(
+        "CHANGELOG.md",
+        "# Changelog\n\n## anthology-superpowers\n\n### [Unreleased]\n\n",
+    );
+    r.write(
+        "vendor/sources.json",
+        "{\n  \"sources\": [\n    {\n      \"target\": \"plugins/anthology-superpowers\",\n      \"plugin_version\": \"0.1.0\"\n    }\n  ]\n}\n",
+    );
+    r.write("changelog.d/README.md", "How to write a fragment.\n");
+    r.write("changelog.d/anthology-superpowers/20-b.md", "- Second.\n");
+    r.write("changelog.d/anthology-superpowers/10-a.md", "- First.\n");
+    r.commit("fragments");
+    let real_dev = Path::new(BIN);
+
+    // The dry run shows the compiled section and leaves the checkout alone.
+    let before = r.state();
+    let out = r
+        .script(real_dev, &["anthology-superpowers", "0.2.0", "--dry-run"])
+        .env("RELEASE_DATE", "2026-11-20")
+        .output()
+        .unwrap();
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert!(all.contains("+- First.\n+- Second."), "{all}");
+    assert_eq!(r.state(), before);
+    assert!(
+        r.root
+            .join("changelog.d/anthology-superpowers/10-a.md")
+            .exists()
+    );
+
+    let out = r
+        .script(real_dev, &["anthology-superpowers", "0.2.0"])
+        .env("RELEASE_DATE", "2026-11-20")
+        .output()
+        .unwrap();
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert_eq!(
+        last_line(&out),
+        "RELEASE OK anthology-superpowers--v0.2.0",
+        "{all}"
+    );
+    assert!(
+        r.read("CHANGELOG.md")
+            .contains("### [Unreleased]\n\n### [0.2.0] - 2026-11-20\n\n- First.\n- Second.\n"),
+        "{}",
+        r.read("CHANGELOG.md")
+    );
+    // The fragments are deleted in the release commit itself; the README stays.
+    let files = r.git_out(&["show", "--name-status", "--format=", "HEAD"]);
+    assert!(
+        files.contains("D\tchangelog.d/anthology-superpowers/10-a.md"),
+        "{files}"
+    );
+    assert!(
+        files.contains("D\tchangelog.d/anthology-superpowers/20-b.md"),
+        "{files}"
+    );
+    assert!(!files.contains("README"), "{files}");
+    assert!(r.root.join("changelog.d/README.md").exists());
+    assert_eq!(r.git_out(&["status", "--porcelain"]), "");
 }

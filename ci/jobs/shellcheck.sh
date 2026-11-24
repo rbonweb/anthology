@@ -30,7 +30,10 @@ set -- \
     ci/jobs/shims-distros.sh \
     ci/jobs/mods.sh
 
-for f in "$@"; do
+# Scripts written for bash (not POSIX sh), checked as bash: the release script.
+bash_scripts="scripts/release.sh"
+
+for f in "$@" $bash_scripts; do
     if [ ! -f "$root/$f" ]; then
         echo "shellcheck: $f is missing" >&2
         exit 1
@@ -39,4 +42,7 @@ done
 
 docker run --rm -v "$root":/w:ro -w /w "$image" \
     --shell=sh --external-sources --source-path=SCRIPTDIR "$@"
-echo "shellcheck: $# files clean"
+# shellcheck disable=SC2086 # $bash_scripts is a list of paths without spaces
+docker run --rm -v "$root":/w:ro -w /w "$image" \
+    --shell=bash --external-sources --source-path=SCRIPTDIR $bash_scripts
+echo "shellcheck: $# files clean, plus $bash_scripts as bash"

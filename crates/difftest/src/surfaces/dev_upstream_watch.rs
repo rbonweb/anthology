@@ -1251,6 +1251,21 @@ fn gen_gh(
     spec
 }
 
+/// The surface pins its own table so a budget change doesn't break a digested golden.
+const BUDGET: [(&str, u64); 11] = [
+    ("researcher", 89267),
+    ("architect", 23612),
+    ("implementer", 26561),
+    ("debugger", 22167),
+    ("reviewer", 16672),
+    ("scout", 5944),
+    ("docs-writer", 31376),
+    ("ui-designer", 128097),
+    ("ui-reviewer", 65986),
+    ("product-planner", 102779),
+    ("marketer", 54384),
+];
+
 /// `(key, title, body)` of each change Rust finds in the world (with its startup sections).
 fn render_world(
     files: &[(String, Value)],
@@ -1274,8 +1289,7 @@ fn render_world(
     let (changes, _) = uw::check_all(dir.path(), &net, None);
     let root = anthology_dev::startup_budget::Root::new(dir.path(), Path::new("/"));
     let extra: HashMap<String, uw::Sections> =
-        uw::startup_budget_sections(&root, &changes, &anthology_dev::startup_budget::BUDGET)
-            .unwrap_or_default();
+        uw::startup_budget_sections(&root, &changes, &BUDGET).unwrap_or_default();
     changes
         .iter()
         .map(|c| {

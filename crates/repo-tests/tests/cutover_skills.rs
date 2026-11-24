@@ -13,7 +13,8 @@ use repo_tests::{frontmatter, repo};
 const SKILLS: &str = "plugins/anthology/skills";
 
 /// The `--` options of `anthology mem save --help` (what `bin/anthology-mem save` runs), less
-/// `--help` and `--json`.
+/// `--help`, `--json` and `--repo`. `--repo` saves into the repo's own memory, which only the lead
+/// does; no agent's Memory command passes it, so it is not in roster.rs's `SAVE_OPTIONS`.
 fn mem_save_options() -> BTreeSet<String> {
     let args: Vec<OsString> = ["save", "--help"].iter().map(OsString::from).collect();
     let out = index::main(&args, &Env::default(), &MemDeps::default());
@@ -23,7 +24,7 @@ fn mem_save_options() -> BTreeSet<String> {
         .unwrap()
         .find_iter(&help)
         .map(|m| m.as_str().to_string())
-        .filter(|o| o != "--help" && o != "--json")
+        .filter(|o| !["--help", "--json", "--repo"].contains(&o.as_str()))
         .collect()
 }
 

@@ -6,6 +6,10 @@
 //! `set-version`, `set-source-version`. Edits are made in place and are minimal: the rest of each
 //! file stays byte-identical.
 //!
+//! Changelog fragments (Rust only, no Python counterpart): `changelog-check` and `changelog-move`
+//! also read `changelog.d/<plugin>/*.md` beside the CHANGELOG. With no such folder both behave
+//! exactly as the Python did. `changelog-move` deletes the fragments it compiled.
+//!
 //! The library functions mirror the Python ones, so `tests/release_edit.rs` drives them as
 //! `tests/test_release.py` does.
 
@@ -339,9 +343,18 @@ fn has_entries(body: &[String]) -> bool {
 
 /// `changelog_check`: the plugin's `### [Unreleased]` has content.
 pub fn changelog_check(text: &str, plugin: &str) -> Result<(), ReleaseError> {
+    changelog_check_with(text, plugin, &[])
+}
+
+/// [`changelog_check`], where the texts of the plugin's changelog fragments count as content too.
+pub fn changelog_check_with(
+    text: &str,
+    plugin: &str,
+    fragments: &[String],
+) -> Result<(), ReleaseError> {
     let lines = split_lines(text);
     let (_h, first, end) = unreleased_span(&lines, plugin)?;
-    if !has_entries(&lines[first..end]) {
+    if !has_entries(&lines[first..end]) && !fragments.iter().any(|f| has_entries(&split_lines(f))) {
         return Err(ReleaseError(format!(
             "the `{UNRELEASED}` section of {plugin} in CHANGELOG.md is empty; write the \
              release notes there first"
@@ -358,7 +371,21 @@ pub fn changelog_move(
     version: &str,
     date: &str,
 ) -> Result<String, ReleaseError> {
-    changelog_check(text, plugin)?;
+    changelog_move_with(text, plugin, version, date, &[])
+}
+
+/// [`changelog_move`] with the plugin's changelog fragments (in the order given: filename order)
+/// added after the Unreleased content. A fragment that opens with a heading starts a new block
+/// (a blank line before it); any other fragment continues the lines above it. Fragments without
+/// entries are skipped.
+pub fn changelog_move_with(
+    text: &str,
+    plugin: &str,
+    version: &str,
+    date: &str,
+    fragments: &[String],
+) -> Result<String, ReleaseError> {
+    changelog_check_with(text, plugin, fragments)?;
     let mut lines = split_lines(text);
     if let Some(last) = lines.last_mut()
         && !last.ends_with('\n')
@@ -373,7 +400,23 @@ pub fn changelog_move(
         )));
     }
     let (heading, first, end) = unreleased_span(&lines, plugin)?;
-    let body = content(&lines[first..end]);
+    let mut body: Vec<String> = content(&lines[first..end]).to_vec();
+    for fragment in fragments {
+        let frag_lines = split_lines(fragment);
+        if !has_entries(&frag_lines) {
+            continue;
+        }
+        let piece = content(&frag_lines).to_vec();
+        if !body.is_empty() && piece[0].starts_with('#') {
+            body.push("\n".to_string());
+        }
+        body.extend(piece);
+        if let Some(last) = body.last_mut()
+            && !last.ends_with('\n')
+        {
+            last.push('\n');
+        }
+    }
     let mut out = String::new();
     for l in &lines[..heading] {
         out.push_str(l);
@@ -382,7 +425,7 @@ pub fn changelog_move(
     out.push('\n');
     out.push_str(&format!("### [{version}] - {date}\n"));
     out.push('\n');
-    for l in body {
+    for l in &body {
         out.push_str(l);
     }
     if end < lines.len() {
@@ -658,6 +701,50 @@ fn write_text(cwd: &Path, path: &OsStr, text: &str) -> Result<(), Failure> {
     fs::write(open_path(cwd, path)?, text).map_err(|e| Failure::Os(os_error_str(e, &shown)))
 }
 
+/// The changelog fragments of `plugin`: the regular `*.md` files directly inside
+/// `changelog.d/<plugin>/` beside the CHANGELOG (hidden files and other extensions are not
+/// fragments), as (path, text) in filename order. No such folder means no fragments.
+fn read_fragments(
+    cwd: &Path,
+    changelog: &OsStr,
+    plugin: &str,
+) -> Result<Vec<(PathBuf, String)>, Failure> {
+    if plugin.is_empty() || plugin == "." || plugin == ".." || plugin.contains(['/', '\\']) {
+        return Ok(Vec::new());
+    }
+    let changelog = open_path(cwd, changelog)?;
+    let dir = changelog
+        .parent()
+        .unwrap_or(cwd)
+        .join("changelog.d")
+        .join(plugin);
+    let shown = dir.to_string_lossy().into_owned();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Failure::Os(os_error_str(e, &shown))),
+    };
+    let mut names: Vec<OsString> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| Failure::Os(os_error_str(e, &shown)))?;
+        let name = entry.file_name();
+        let lossy = name.to_string_lossy();
+        let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+        if is_file && !lossy.starts_with('.') && lossy.ends_with(".md") {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let path = dir.join(name);
+            let text = read_text(cwd, path.as_os_str())?;
+            Ok((path, text))
+        })
+        .collect()
+}
+
 fn execute(cmd: &str, a: &argparse::Parsed, cwd: &Path, out: &mut Output) -> Result<i32, Failure> {
     let arg = |name: &str| a.os_str(name).unwrap_or_default();
     let sarg = |name: &str| arg(name).to_string_lossy().into_owned();
@@ -689,7 +776,12 @@ fn execute(cmd: &str, a: &argparse::Parsed, cwd: &Path, out: &mut Output) -> Res
                 return Ok(1);
             }
         }
-        "changelog-check" => changelog_check(&read_text(cwd, arg("path"))?, &sarg("plugin"))?,
+        "changelog-check" => {
+            let text = read_text(cwd, arg("path"))?;
+            let fragments = read_fragments(cwd, arg("path"), &sarg("plugin"))?;
+            let texts: Vec<String> = fragments.into_iter().map(|(_, t)| t).collect();
+            changelog_check_with(&text, &sarg("plugin"), &texts)?;
+        }
         "changelog-move" => {
             let given = a.os_str("date").map(|d| d.to_string_lossy().into_owned());
             let date = match given.filter(|d| !d.is_empty()) {
@@ -701,13 +793,21 @@ fn execute(cmd: &str, a: &argparse::Parsed, cwd: &Path, out: &mut Output) -> Res
                     ReleaseError(format!("date {} is not YYYY-MM-DD", str_repr(&date))).into(),
                 );
             }
-            let moved = changelog_move(
-                &read_text(cwd, arg("path"))?,
-                &sarg("plugin"),
-                &sarg("version"),
-                &date,
-            )?;
+            let text = read_text(cwd, arg("path"))?;
+            let fragments = read_fragments(cwd, arg("path"), &sarg("plugin"))?;
+            let texts: Vec<String> = fragments.iter().map(|(_, t)| t.clone()).collect();
+            let moved =
+                changelog_move_with(&text, &sarg("plugin"), &sarg("version"), &date, &texts)?;
             write_text(cwd, arg("path"), &moved)?;
+            // The fragments now live in the CHANGELOG: consume them (the release commit records
+            // the deletion). The emptied folder goes too, when nothing else is in it.
+            for (path, _) in &fragments {
+                let shown = path.to_string_lossy();
+                fs::remove_file(path).map_err(|e| Failure::Os(os_error_str(e, &shown)))?;
+            }
+            if let Some(dir) = fragments.first().and_then(|(p, _)| p.parent()) {
+                let _ = fs::remove_dir(dir);
+            }
         }
         "set-version" => {
             let edited = set_plugin_version(&read_text(cwd, arg("path"))?, &sarg("version"))?;
