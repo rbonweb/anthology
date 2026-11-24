@@ -1,6 +1,6 @@
 # Changelog fragments
 
-A pull request that changes what users get adds a fragment here instead of editing `CHANGELOG.md`. Two pull requests then no longer fight over the same lines of that file.
+A pull request that changes what users get adds a fragment here instead of editing `CHANGELOG.md`. Two pull requests then no longer fight over the same lines of that file (timing probe).
 
 ## Where a fragment goes
 
