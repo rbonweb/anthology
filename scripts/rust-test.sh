@@ -5,7 +5,10 @@
 #   scripts/rust-test.sh lint            # cargo fmt --check, clippy -D warnings (plain and
 #                                        #   --all-features)
 #   scripts/rust-test.sh test [ARGS]     # cargo test --workspace --locked [ARGS], then the same
-#                                        #   with --all-features (the test-only features, m-R10)
+#                                        #   with --all-features (the test-only features, m-R10).
+#                                        #   When ARGS name a package (-p X, -pX, --package X,
+#                                        #   --package=X), --workspace is dropped and cargo
+#                                        #   tests only that package, still in both runs.
 #   scripts/rust-test.sh run CMD [ARGS]  # any command in the same container (dev.sh uses it)
 #
 # The image is the FROM line of ci/images/rust.Dockerfile. As in atl-test.sh, the container
@@ -38,6 +41,19 @@ case "$mode" in
         ;;
 esac
 
+# `test` covers the whole workspace unless the arguments name a package (-p X, -pX,
+# --package X or --package=X); then cargo's own package selection applies. Arguments after
+# a bare `--` belong to the test binary, so they do not count.
+scope=--workspace
+if [ "$mode" = test ]; then
+    for arg in "$@"; do
+        case $arg in
+            --) break ;;
+            -p | -p?* | --package | --package=*) scope= ;;
+        esac
+    done
+fi
+
 digest=${image##*@sha256:}
 checkout=$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 
@@ -66,7 +82,7 @@ lint="cargo fmt --all --check && rustfmt --edition 2024 --check fuzz/fuzz_target
 && cargo clippy --workspace --all-targets --locked -- -D warnings \
 && cargo clippy --workspace --all-targets --locked --all-features -- -D warnings"
 # Plain first, so the shipped behaviour (the real watchdog) is tested; then the test features.
-tests="cargo test --workspace --locked \"\$@\" && cargo test --workspace --locked --all-features \"\$@\""
+tests="cargo test $RUST_TEST_SCOPE --locked \"\$@\" && cargo test $RUST_TEST_SCOPE --locked --all-features \"\$@\""
 case $mode in
     lint) set -- sh -c "$lint" ;;
     test) set -- sh -c "$tests" rust-test "$@" ;;
@@ -92,6 +108,7 @@ esac
 
 exec docker run --rm $interactive \
     -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-}" \
+    -e RUST_TEST_SCOPE="$scope" \
     -v "$root":/w \
     ${git_common:+-v "$git_common:$git_common:ro"} \
     -v anthology-cargo:/usr/local/cargo/registry \

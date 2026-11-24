@@ -143,6 +143,77 @@ fn an_input_that_never_ends_cannot_hang_the_hook() {
     assert!(started.elapsed() < Duration::from_secs(20));
 }
 
+const ENTRYPOINT: &str = "CLAUDE_CODE_ENTRYPOINT";
+const ATTENDED: &str = "CLAUDE_CODE_SESSION_ATTENDED";
+const MODE: &str = "ANTHOLOGY_HOST_MODE";
+
+#[test]
+fn an_sdk_host_gets_no_bootstrap() {
+    // An `sdk-*` entrypoint marks an embedded host, attended or not; so does an unattended
+    // session whatever its entrypoint; so does any mode that is not exactly `full`.
+    for env in [
+        vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "0")],
+        vec![(ENTRYPOINT, "sdk-cli"), (ATTENDED, "0")],
+        vec![(ENTRYPOINT, "sdk-ts")],
+        vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "1")],
+        vec![(ENTRYPOINT, "sdk-ts"), (MODE, "")],
+        vec![(ENTRYPOINT, "sdk-ts"), (MODE, "Full")],
+        vec![(ENTRYPOINT, "sdk-ts"), (MODE, "embedded")],
+    ] {
+        let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+        assert!(ran.silent(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
+    }
+}
+
+#[test]
+fn an_unattended_session_gets_no_bootstrap_whatever_the_entrypoint() {
+    for entrypoint in ["hostapp", "cli"] {
+        let env = [(ENTRYPOINT, entrypoint), (ATTENDED, "0")];
+        let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+        assert!(ran.silent(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
+    }
+    let ran = run_with(MAIN, &[(ATTENDED, "0")], "/usr/bin:/bin");
+    assert!(ran.silent(), "{} / {:?}", ran.stdout, ran.code);
+}
+
+#[test]
+fn an_embedded_host_with_an_empty_path_still_gets_none() {
+    // Like the subagent exit, the host exit keeps to builtins.
+    let ran = run_with(MAIN, &[(ENTRYPOINT, "sdk-ts")], "");
+    assert!(ran.silent(), "{} / {:?}", ran.stdout, ran.code);
+}
+
+#[test]
+fn host_mode_full_keeps_it() {
+    for env in [
+        vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "0"), (MODE, "full")],
+        vec![(ENTRYPOINT, "sdk-cli"), (ATTENDED, "0"), (MODE, "full")],
+        vec![(ATTENDED, "0"), (MODE, "full")],
+    ] {
+        let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+        assert!(ran.intro(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
+    }
+}
+
+#[test]
+fn cli_keeps_it() {
+    for env in [
+        vec![(ENTRYPOINT, "cli"), (ATTENDED, "1")],
+        vec![(ENTRYPOINT, "cli")],
+        vec![(ATTENDED, "1")],
+    ] {
+        let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+        assert!(ran.intro(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
+    }
+}
+
+#[test]
+fn an_attended_vscode_session_keeps_it() {
+    let env = [(ENTRYPOINT, "claude-vscode"), (ATTENDED, "1")];
+    let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+    assert!(ran.intro(), "{} / {:?}", ran.stdout, ran.code);
+}
+
 #[test]
 fn other_harnesses_are_not_asked() {
     // They pass no `agent_id`, and the hook must not wait on their stdin.
