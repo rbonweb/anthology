@@ -8,8 +8,9 @@
 // Subagent calls (they carry an `agentId`) are never touched. A headless run (`claude -p`, the
 // SDK with nothing attached: `$.session.surfaces()` is empty) is never touched either, and
 // neither is a session whose tool pool has no `Agent` tool, since the lead could not hand the work
-// on, nor an embedded host (an SDK program drives the session; see `isEmbeddedHost`), whatever
-// surface is attached. Nothing at `tool.call` tells a teammate in a pane of its own from a lead (an in-process
+// on, nor an embedded host (an SDK program drives the session and owns its system prompt; see
+// `isEmbeddedHost`), whatever surface is attached: there the coordinator section is left out too.
+// Nothing at `tool.call` tells a teammate in a pane of its own from a lead (an in-process
 // teammate carries an `agentId` and is skipped already), so the `Agent` tool in the pool is the
 // rule there: a pane teammate that has it is treated as a lead.
 // This is a workflow rule, not a safety boundary: every hook fails open, and a Bash write
@@ -222,7 +223,8 @@ export function registerDelegation(on: On): void {
       await remember($, false)
       return r
     }
-    if (await delegationOff($)) return r
+    // An embedded host owns its system prompt: no coordinator section there.
+    if ((await delegationOff($)) || (await isEmbeddedHost($))) return r
     await remember($, true)
     if (r.sections.some(s => s.id === COORDINATOR.id)) return r
     return { sections: [...r.sections, COORDINATOR] }

@@ -632,6 +632,16 @@ test('compose adds nothing when every anthology mod is off', async ($, on) => {
   expect((await compose($)).sections.map(s => s.id)).toEqual(['intro'])
 })
 
+test('adds no coordinator section in an SDK host', async ($, on) => {
+  engine(on, { env: SDK_HOST })
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('still adds it in claude-vscode attended', async ($, on) => {
+  engine(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode', CLAUDE_CODE_SESSION_ATTENDED: '1' } })
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro', 'anthology:coordinator'])
+})
+
 test('compose does not add the section twice', async ($, on) => {
   engine(on, { sections: [{ id: 'anthology:coordinator', text: 'already', scope: 'session' }] })
   const r = await compose($)
