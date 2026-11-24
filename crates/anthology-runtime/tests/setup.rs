@@ -2560,6 +2560,36 @@ mod parent_folder_test {
     }
 
     #[test]
+    fn the_skill_quotes_the_path_and_refuses_odd_names() {
+        let text = fs::read_to_string(repo_root().join("plugins/anthology/skills/setup/SKILL.md"))
+            .unwrap();
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for want in [
+            "single-quote the path in the command. If a path contains a quote, a backtick, a `$` or a control character, tell the user and do not run it.",
+            "only the first 200 entries are scanned",
+            "still says skipped, say so and stop; do not try another repo or loop.",
+        ] {
+            assert!(flat.contains(want), "{want}");
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_repo_name_is_not_listed_but_counts_as_left_out() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let f = Fx::new();
+        let parent = parent_with(&f, "work", &["alpha"]);
+        let odd = parent.join(OsStr::from_bytes(b"bad-\xff"));
+        if fs::create_dir_all(odd.join(".git")).is_err() {
+            return; // the file system refuses non-UTF-8 names (macOS)
+        }
+        let out = f.preview(Some(&parent));
+        let repo = at(&out, &["memory", "repo"]);
+        assert_eq!(listed(repo), [p(&parent.join("alpha"))]);
+        assert_eq!(at(repo, &["repos_below_more"]).as_i64(), Some(1));
+    }
+
+    #[test]
     fn preview_with_cwd_of_a_child_shows_its_repo_diff() {
         if !mem::needs_git() {
             return;

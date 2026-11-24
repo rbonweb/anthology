@@ -28,6 +28,11 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    continue without it, and say that the repo's memory, attribution and auto memory settings were not
    changed. Never pick a repo yourself.
 
+   The list can be incomplete in a very large folder: only the first 200 entries are scanned. Folder
+   names come from disk, so single-quote the path in the command. If a path contains a quote, a
+   backtick, a `$` or a control character, tell the user and do not run it. If the rerun with `--cwd`
+   still says skipped, say so and stop; do not try another repo or loop.
+
 2. Report the environment from `doctor.checks`:
    - `platform_supported` false: stop.
    - Docker missing or not running: tests and builds run in containers, so say so and ask the user
@@ -93,7 +98,7 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
      places. If `set_in` is empty, say nothing about it.
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
-     is skipped, and the user did not pick one of the `repos_below`.
+     is skipped (no repo was picked from `repos_below`).
    - **Claude Code's own auto memory:** `memory.repo.auto_memory` is the one memory change to the repo's
      committed `.claude/settings.json`: it adds `"autoMemoryEnabled": false`, so Claude Code's built-in
      auto memory does not run beside the repo's `.claude/memory/` and the personal memory. Show its `path`
@@ -131,8 +136,9 @@ If a Bash call is blocked with "(setup)", wait a minute and run the same command
    "${CLAUDE_PLUGIN_ROOT}/bin/anthology" setup apply --plugin-root "${CLAUDE_PLUGIN_ROOT}" --expect-sha256 <settings.sha256>
    ```
 
-   Add `--cwd <abs repo path>` if the user picked a repo from `repos_below`. Add `--move-old-notes` if the user said yes to moving the old notes (it cannot be combined with
-   `--skip-approve`); add nothing if they said no. Add `--skip-approve` if the user does not want this repo
+   Add `--cwd <abs repo path>` (single-quoted, as in step 1) if the user picked a repo from
+   `repos_below`. Add `--move-old-notes` if the user said yes to moving the old notes (it cannot be
+   combined with `--skip-approve`); add nothing if they said no. Add `--skip-approve` if the user does not want this repo
    approved: then the repo's settings are not changed either. Add
    `--remove-subagent-model` only if the user said yes to removing `CLAUDE_CODE_SUBAGENT_MODEL`. If it reports that
    settings.json changed since the preview, run the preview again and ask again.

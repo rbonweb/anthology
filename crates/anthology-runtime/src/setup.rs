@@ -568,20 +568,22 @@ const REPOS_BELOW_SHOWN: usize = 10;
 /// The preview's extra `memory.repo` fields for a folder that is not a repo: `repos_below`
 /// (absolute paths of the repos one level down, sorted, at most [`REPOS_BELOW_SHOWN`]) and
 /// `repos_below_more` (how many were left out). Neither is set when there are no repos below.
-/// A name that is not UTF-8 is left out: a lossy path would not name the real folder.
+/// A name that is not UTF-8 is never listed (a lossy path would not name the real folder), but
+/// it counts in `repos_below_more`.
 fn repos_below_fields(cwd: &Path) -> Vec<(&'static str, Value)> {
-    let repos: Vec<String> = repos_below(cwd, REPO_SCAN_CAP)
+    let found = repos_below(cwd, REPO_SCAN_CAP);
+    let repos: Vec<String> = found
         .iter()
         .filter_map(|name| name.to_str())
         .map(|name| pstr(&cwd.join(name)))
         .collect();
-    if repos.is_empty() {
+    if found.is_empty() {
         return Vec::new();
     }
     let shown = repos.len().min(REPOS_BELOW_SHOWN);
     let mut fields = vec![("repos_below", strs(&repos[..shown]))];
-    if repos.len() > shown {
-        let more = i64::try_from(repos.len() - shown).unwrap_or(i64::MAX);
+    if found.len() > shown {
+        let more = i64::try_from(found.len() - shown).unwrap_or(i64::MAX);
         fields.push(("repos_below_more", Value::Int(json::Int::Small(more))));
     }
     fields
