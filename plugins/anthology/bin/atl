@@ -20,7 +20,7 @@ if [ -z "$atl_path" ] || [ ! -f "$atl_path" ] || [ ! -x "$atl_path" ]; then
 fi
 # atl keeps a local history of the command lines it sees (tracking, 90 days), a recall store of
 # output it elided (30 days) and a tee spool. Keep them next to state.json, not in atl's default
-# data folder, so /anthology:setup remove deletes them (README "Local history", SECURITY.md).
+# data folder, so /anthology:setup remove deletes them (docs/atl.md "Local history", SECURITY.md).
 atl_data=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/atl
 ATL_DB_PATH=$atl_data/history.db
 ATL_RECALL_DB=$atl_data/recall.db

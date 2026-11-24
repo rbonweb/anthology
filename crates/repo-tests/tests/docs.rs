@@ -61,7 +61,11 @@ const DOC_PAGES: [&str; 7] = [
 
 /// Every public document: the root ones and the pages under docs/.
 fn all_public_docs() -> Vec<&'static str> {
-    PUBLIC_DOCS.iter().chain(DOC_PAGES.iter()).copied().collect()
+    PUBLIC_DOCS
+        .iter()
+        .chain(DOC_PAGES.iter())
+        .copied()
+        .collect()
 }
 
 fn markdown_link() -> Regex {
@@ -394,7 +398,10 @@ mod readme_test {
     #[test]
     fn test_readme_stays_a_short_front_page() {
         let lines = repo::read("README.md").lines().count();
-        assert!(lines <= 120, "README.md is {lines} lines; the detail goes under docs/");
+        assert!(
+            lines <= 120,
+            "README.md is {lines} lines; the detail goes under docs/"
+        );
     }
 
     /// The limits stay documented, now in the pages the README links.

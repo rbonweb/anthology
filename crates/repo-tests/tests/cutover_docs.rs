@@ -36,11 +36,11 @@ fn contributing_links_the_dev_tool_runner() {
 /// The PLAN "Runtime scripts" line names Rust, not Python.
 #[test]
 fn the_plan_runtime_line_is_rust() {
-    let plan = repo::read("PLAN.md");
+    let plan = repo::read("docs/history/PLAN.md");
     let line = plan
         .lines()
         .find(|l| l.starts_with("- **Runtime scripts:**"))
-        .expect("PLAN.md: the Runtime scripts line");
+        .expect("docs/history/PLAN.md: the Runtime scripts line");
     assert!(line.contains("**Rust**"), "{line}");
     assert!(!line.to_lowercase().contains("python"), "{line}");
 }
@@ -69,7 +69,7 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
     ("DECISIONS.md", "the ADRs are history"),
     ("CHANGELOG.md", "history"),
     (
-        "PLAN.md",
+        "docs/history/PLAN.md",
         "the approved product plan; CO2 changes only its Runtime scripts line",
     ),
     (
