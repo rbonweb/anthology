@@ -43,6 +43,10 @@ a new version section.
 - CI has an informational `lock-fresh` job that warns when a pull request makes the pinned
   `anthology-bin` binary stale. It never fails the PR. The version-bump comment now names the
   released tag, and a test pins the fuzz lock check (`cargo metadata --locked` in `fuzz/`).
+- The README is now a short front page. The details live in `docs/` (setup, agents, mods,
+  guardrails, ATL, memory, the binary), and the original build plan moved to
+  `docs/history/PLAN.md`.
+- shellcheck now also checks `ci/jobs/lock-fresh.sh` and `scripts/rust-test.sh`.
 - `scripts/rust-test.sh test -p <crate>` no longer adds `--workspace`, so a one-crate run tests
   only that crate, plain and with all features.
 - The agent status is now a row Anthology draws above the prompt
