@@ -191,16 +191,19 @@ fn hints_for(command: Option<&str>, cause: Option<Opaque>) -> String {
     hints.concat()
 }
 
-/// Added to the `(G0)` line when the program (or a command) comes from a variable or a substitution.
-pub const PROGRAM_HINT: &str =
-    ". The program comes from a variable or a substitution: write its path literally";
+/// Added to the `(G0)` line when the program (or a command) is only known at run time: it comes from a
+/// variable, a glob, or another command's output (`xargs`, a substitution).
+pub const PROGRAM_HINT: &str = ". The program comes from a variable, a glob or another command's \
+     output: write its path literally";
 
 /// Added to the `(G0)` line when a shell reads a script that the guard cannot see (a heredoc, a pipe).
 pub const STDIN_SHELL_HINT: &str = ". A shell that reads its script from a heredoc or pipe cannot be \
      checked: run the commands directly, one per call";
 
-/// Added to the `(G0)` line when a command runs a file the guard cannot read (`source`, `. file`).
-pub const SOURCE_HINT: &str = ". A sourced file cannot be read: run its commands directly";
+/// Added to the `(G0)` line when a command runs a file the guard cannot read (`source`, `. file`, or a
+/// shell given a script file).
+pub const SOURCE_HINT: &str =
+    ". A sourced file or script cannot be read: run its commands directly";
 
 /// Carve-out (c): added to the `(G0)` line when the command holds a double-quoted script with an expansion
 /// in it, which the outer shell fills in before the script runs, so the guard cannot read it.
