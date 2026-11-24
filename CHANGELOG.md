@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.0] - 2026-11-24
+
 #### Added
 
 - `anthology-mem save --repo` writes a repo note with the same privacy and secret checks as an
@@ -73,6 +75,7 @@ a new version section.
   0.2.2.
 - The debug-build timing bound in the ATL megabyte-line gate test is now a ratio to the same
   line at 250 KB, so slow CI runners no longer fail it. This changes a test only.
+- Pin anthology-bin 0.2.2.
 
 ### [0.4.1] - 2026-11-23
 
@@ -566,6 +569,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.10] - 2026-11-24
+
 #### Added
 
 - The guard reads a `"$NAME"` program or script word as the file it names when you list NAME in
@@ -576,6 +581,7 @@ a new version section.
 - The guard's too-complex (G0) message now names its cause when it can (a program from a
   variable or glob, a heredoc or piped shell script, a sourced file or script), and drops the
   `/plugin disable` line when Claude Code runs inside an embedded host. See ADR-037.
+- Pin anthology-bin 0.2.2.
 
 ### [0.2.9] - 2026-11-23
 
