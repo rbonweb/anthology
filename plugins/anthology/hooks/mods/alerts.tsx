@@ -7,8 +7,10 @@
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
 // agent.report, the latter hooked by index.ts), the last few that finished, and the permission prompts that wait for an answer.
-// A one-line status ("3 agents running") sits under the prompt. The pane draws with Box and Text
-// only, which every surface has, one row per Text so the terminal cuts a long row at its edge.
+// A row above the prompt ("● 2 running   ✓ 3 done   ! 1 needs you", with the command on the right)
+// keeps the counts in view; it shows only while something runs or waits on the person. The pane and
+// the row draw with Box and Text only, which every surface has, one row per Text so the terminal
+// cuts a long row at its edge.
 //
 // Privacy: the pane and the toasts name a tool and an agent's type and description, never what a
 // tool call does (no command, file path or URL), because a pane may be shown on a shared screen.
@@ -81,13 +83,32 @@ export function span(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 
-/** The line under the prompt, or undefined (which clears it) when nothing runs or waits. */
-export function statusLine(runningCount: number, waitingCount: number): string | undefined {
-  const parts: string[] = []
-  if (runningCount > 0) parts.push(`${runningCount} ${runningCount === 1 ? 'agent' : 'agents'} running`)
-  if (waitingCount > 0) parts.push(`${waitingCount} waiting for approval`)
-  return parts.length > 0 ? parts.join(', ') : undefined
+type BandPart = {
+  id: 'running' | 'done' | 'asks'
+  /** One cell wide, so the row reads the same without colour. */
+  glyph: string
+  text: string
 }
+
+/**
+ * The counts the row above the prompt shows, in the order running, done, needs you; a zero count is
+ * left out. Empty (no row at all) when nothing runs and nothing waits on the person. Done alone
+ * shows nothing: the finished list is capped at five and never ages out, so a row for it would
+ * stay up for the rest of the session after the work ended. The pane still lists what finished.
+ */
+export function bandParts(runningCount: number, doneCount: number, waitingCount: number): BandPart[] {
+  if (runningCount === 0 && waitingCount === 0) return []
+  const parts: BandPart[] = []
+  if (runningCount > 0) parts.push({ id: 'running', glyph: '●', text: `${runningCount} running` })
+  if (doneCount > 0) parts.push({ id: 'done', glyph: '✓', text: `${doneCount} done` })
+  if (waitingCount > 0) parts.push({ id: 'asks', glyph: '!', text: `${waitingCount} needs you` })
+  return parts
+}
+
+/** The gap between two counts in the row. */
+const BAND_GAP = '   '
+/** Cells kept free at the row's two edges (paddingX 1 each side). */
+const BAND_EDGES = 2
 
 /** Runs `work` and swallows its failure; see the note at the top of this file. */
 async function quietly(work: () => Promise<unknown>): Promise<void> {
@@ -200,12 +221,6 @@ async function liveRunning($: EngineInterface, rows: readonly AnthologyRun[]): P
   }
 }
 
-/** Puts the line under the prompt in step with the state. */
-async function refreshStatus($: EngineInterface): Promise<void> {
-  const { running, prompts } = await read($, status)
-  $.ui.status(statusLine((await liveRunning($, running)).length, prompts.length))
-}
-
 async function trackSpawn($: EngineInterface, e: AgentSpawnInput, agentId: string): Promise<void> {
   const row: AnthologyRun = {
     id: agentId,
@@ -217,7 +232,6 @@ async function trackSpawn($: EngineInterface, e: AgentSpawnInput, agentId: strin
     ...s,
     running: [...s.running.filter(r => r.id !== agentId), row].slice(-KEEP_RUNNING),
   }))
-  await refreshStatus($)
 }
 
 async function trackReport($: EngineInterface, e: AgentReportInput): Promise<void> {
@@ -240,7 +254,6 @@ async function trackReport($: EngineInterface, e: AgentReportInput): Promise<voi
       finished: [row, ...s.finished.filter(d => d.id !== e.agentId)].slice(0, KEEP_FINISHED),
     }
   })
-  await refreshStatus($)
 }
 
 type ToolRef = { tool_name: string; tool_input: unknown; agent_id?: string; agent_type?: string }
@@ -253,19 +266,15 @@ async function addPrompt($: EngineInterface, e: ToolRef): Promise<void> {
     at: await $.clock.now(),
   }
   await update($, status, s => ({ ...s, prompts: [...s.prompts, row].slice(-KEEP_PROMPTS) }))
-  await refreshStatus($)
 }
 
 /** A tool call that ended answers its prompt, if it had one: drop the first with the same key. */
 async function endPrompt($: EngineInterface, e: ToolRef): Promise<void> {
   const key = promptKey(e.tool_name, e.agent_id, e.tool_input)
-  let isHit = false
   await update($, status, s => {
     const i = s.prompts.findIndex(p => p.key === key)
-    isHit = i >= 0
     return i >= 0 ? { ...s, prompts: [...s.prompts.slice(0, i), ...s.prompts.slice(i + 1)] } : s
   })
-  if (isHit) await refreshStatus($)
 }
 
 /**
@@ -273,12 +282,9 @@ async function endPrompt($: EngineInterface, e: ToolRef): Promise<void> {
  * subagent's prompt stays, since the agent may still wait on it; its agent.report closes it.
  */
 async function clearPrompts($: EngineInterface): Promise<void> {
-  let isHit = false
-  await update($, status, s => {
-    isHit = s.prompts.some(p => p.agentId === undefined)
-    return isHit ? { ...s, prompts: s.prompts.filter(p => p.agentId !== undefined) } : s
-  })
-  if (isHit) await refreshStatus($)
+  await update($, status, s =>
+    s.prompts.some(p => p.agentId === undefined) ? { ...s, prompts: s.prompts.filter(p => p.agentId !== undefined) } : s,
+  )
 }
 
 /**
@@ -393,6 +399,40 @@ export function registerAlerts(on: On): void {
       if (!(await modsOff($))) await clearPrompts($)
     })
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The row above the prompt: `● 2 running   ✓ 3 done   ! 1 needs you        /anthology-status`.
+  // Box and Text only, so every surface draws it. It is the mod's own row, not a status entry, so
+  // Claude Code adds no plugin label to it. Where nothing runs or waits there is no row.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await modsOff($))) return next(e)
+    const { running, finished, prompts } = await read($, status)
+    const parts = bandParts((await liveRunning($, running)).length, finished.length, prompts.length)
+    if (parts.length === 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const hint = `/${COMMAND}`
+    const used = parts.reduce((n, p) => n + `${p.glyph} ${p.text}`.length, 0) + BAND_GAP.length * (parts.length - 1)
+    // A narrow band (a phone) keeps the counts and drops the hint.
+    const hasHint = used + hint.length + BAND_GAP.length + BAND_EDGES <= e.props.bodyColumns
+
+    return (
+      <Box width="100%" justifyContent="space-between" paddingX={1}>
+        <Text wrap="truncate-end">
+          {parts.map((p, i) => (
+            <Text>
+              {i > 0 && BAND_GAP}
+              <Text color={p.id === 'running' ? 'suggestion' : p.id === 'asks' ? 'warning' : undefined} dimColor={p.id === 'done'}>
+                {p.glyph}
+              </Text>
+              <Text color={p.id === 'asks' ? 'warning' : undefined} dimColor={p.id !== 'asks'}>
+                {` ${p.text}`}
+              </Text>
+            </Text>
+          ))}
+        </Text>
+        {hasHint && <Text dimColor>{hint}</Text>}
+      </Box>
+    )
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
