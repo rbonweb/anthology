@@ -296,3 +296,124 @@ fn agent_and_repo_are_exclusive() {
     }
     assert!(!c.repo.join(".claude").exists());
 }
+
+#[test]
+fn save_repo_refuses_every_spelling_of_a_user_type() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    for ty in ["User", "USER", " user", "user #x", "user\n", "users"] {
+        let p = c.save_repo(&[("type", ty)]);
+        assert_eq!(p.code, 1, "{ty:?}: {}", p.stderr_text());
+        assert!(!c.repo.join(".claude").exists(), "{ty:?}");
+    }
+}
+
+#[test]
+fn save_repo_refuses_a_bad_slug() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    for slug in ["Probe", "pröbe", "a/b", ".hidden", "../x", "a_b", "a--b"] {
+        let p = c.save_repo(&[("slug", slug)]);
+        assert_eq!(p.code, 1, "{slug:?}: {}", p.stderr_text());
+        assert!(p.stderr_text().contains("slug must be"), "{slug:?}");
+        assert!(!c.repo.join(".claude").exists(), "{slug:?}");
+    }
+}
+
+#[test]
+fn reindex_all_never_prints_a_folder_name_from_disk() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    ok(c.save_agent());
+    let agents = c.repo.join(".claude/agent-memory");
+    let evil = "anthology-evil\u{1b}[31m\nreindexed fake";
+    let note = "---\nname: x\ndescription: d\nmetadata:\n  type: project\n---\n\nb\n";
+    fs::create_dir(agents.join(evil)).expect("mkdir");
+    fs::write(agents.join(evil).join("project-x.md"), note).expect("write");
+    // A symlinked folder with such a name is neither followed nor printed.
+    let elsewhere = c.case.tmp.join("elsewhere");
+    fs::create_dir(&elsewhere).expect("mkdir");
+    fs::write(elsewhere.join("project-x.md"), note).expect("write");
+    symlink(&elsewhere, agents.join("anthology-\u{1b}link")).expect("symlink");
+    let p = ok(c.run(&["reindex", "--all"]));
+    for text in [p.stdout_text(), p.stderr_text()] {
+        assert!(
+            !text.contains('\u{1b}') && !text.contains("fake"),
+            "{text:?}"
+        );
+    }
+    assert!(!agents.join(evil).join("MEMORY.md").exists());
+    assert!(!elsewhere.join("MEMORY.md").exists());
+}
+
+#[test]
+fn reindex_refuses_a_symlinked_roster_folder_by_its_fixed_name() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let elsewhere = c.case.tmp.join("elsewhere");
+    fs::create_dir(&elsewhere).expect("mkdir");
+    fs::create_dir_all(c.repo.join(".claude/agent-memory")).expect("mkdir");
+    symlink(
+        &elsewhere,
+        c.repo.join(".claude/agent-memory/anthology-scout"),
+    )
+    .expect("symlink");
+    let p = c.run(&["reindex", "--all"]);
+    assert_eq!(p.code, 1);
+    assert!(
+        p.stderr_text()
+            .contains(".claude/agent-memory/anthology-scout is a symlink"),
+        "{}",
+        p.stderr_text()
+    );
+}
+
+#[test]
+fn repo_commands_refuse_a_repo_that_is_the_home_folder() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    c.case.git(&c.case.home, &["init", "-q"]);
+    let home = &c.case.home;
+    let p = run_mem(
+        &c.case.env,
+        home,
+        &[
+            "save",
+            "--repo",
+            "--type",
+            "project",
+            "--slug",
+            "x",
+            "--name",
+            "n",
+            "--description",
+            "d",
+            "--body",
+            "b",
+        ],
+    );
+    assert_eq!(p.code, 1);
+    assert!(
+        p.stderr_text().contains("home folder"),
+        "{}",
+        p.stderr_text()
+    );
+    for flag in ["--repo", "--all"] {
+        let p = run_mem(&c.case.env, home, &["reindex", flag]);
+        assert_eq!(p.code, 1, "{flag}");
+        assert!(p.stderr_text().contains("home folder"), "{flag}");
+    }
+    assert!(!home.join(".claude/memory").exists());
+    // Any other repo is fine.
+    ok(c.save_repo(&[]));
+}

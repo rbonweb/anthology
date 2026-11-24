@@ -608,7 +608,7 @@ pub enum ReindexTarget<'a> {
     Agent(&'a str),
     /// The repo's own memory folder.
     Repo,
-    /// The repo's folder and every agent folder.
+    /// The repo's folder and every roster agent's folder.
     All,
 }
 
@@ -639,17 +639,9 @@ pub fn reindex(
     }
     match target {
         ReindexTarget::Agent(agent) => dirs.push(agents.join(format!("anthology-{agent}"))),
+        // Only the roster's folder names: a name read from disk is never listed or printed.
         ReindexTarget::All => {
-            let mut found: Vec<PathBuf> = fs::read_dir(&agents)
-                .map(|rd| {
-                    rd.flatten()
-                        .filter(|e| !e.file_type().is_ok_and(|t| t.is_file()))
-                        .map(|e| e.path())
-                        .collect()
-                })
-                .unwrap_or_default();
-            found.sort();
-            dirs.extend(found);
+            dirs.extend(ROSTER.iter().map(|a| agents.join(format!("anthology-{a}"))));
         }
         ReindexTarget::Repo => {}
     }

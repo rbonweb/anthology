@@ -1495,6 +1495,24 @@ fn cwd_and_repo_root(env: &Env, deps: &MemDeps, out: &mut Out) -> Option<(PathBu
     Some((cwd, root))
 }
 
+/// Is `root` the user's home folder (a dotfiles repo)? Repo memory there would sit in `~/.claude`,
+/// where Claude Code keeps the user's own settings and personal memory, so `--repo` refuses it.
+/// Writes the refusal to `out` and says so.
+fn refuse_home_repo(root: &Path, env: &Env, out: &mut Out) -> bool {
+    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let is_home = env
+        .get_os("HOME")
+        .filter(|h| !h.is_empty())
+        .is_some_and(|h| real(Path::new(h)) == real(root));
+    if is_home {
+        out.err(
+            "anthology-mem: refusing to use the repo memory of your home folder (a dotfiles \
+             repo); run the command from a project repo",
+        );
+    }
+    is_home
+}
+
 fn run_reindex(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     let mut out = Out {
         stdout: String::new(),
@@ -1503,6 +1521,9 @@ fn run_reindex(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     let Some((_, root)) = cwd_and_repo_root(env, deps, &mut out) else {
         return out.done(1);
     };
+    if (p.flag("repo") || p.flag("all")) && refuse_home_repo(&root, env, &mut out) {
+        return out.done(1);
+    }
     let agent = arg_str(p, "agent");
     let target = if p.flag("all") {
         save::ReindexTarget::All
@@ -1537,6 +1558,9 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     let Some((cwd, root)) = cwd_and_repo_root(env, deps, &mut out) else {
         return out.done(1);
     };
+    if p.flag("repo") && refuse_home_repo(&root, env, &mut out) {
+        return out.done(1);
+    }
     let body = match p.os_str("body_file") {
         Some(arg) => match read_body_file(arg, &cwd, &root, env) {
             Ok(text) => text,
