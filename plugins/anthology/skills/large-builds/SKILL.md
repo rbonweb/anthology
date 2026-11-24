@@ -22,8 +22,12 @@ Read this before the first task of a large or long build (many tasks, several ag
 ## The lead and the user
 
 - A merge conflict goes to an implementer, with the branches and the
-  conflicting files named; the lead does not resolve it. Why: resolving a
-  conflict is code work, and the lead's context is for decisions.
+  conflicting files named; the lead does not resolve it, in any file (docs
+  and memory notes included). Why: resolving a conflict is code work, and the
+  lead's context is for decisions.
+- An interim notice that an agent is "waiting on its own background work"
+  needs no reply and no action. Why: the agent is still working, and a
+  reply only adds noise.
 - The lead never blocks on a run of more than a minute or two. Start it in
   the background, or hand it to an agent, and read the result when it exits.
   Why: a blocked lead cannot answer the user, merge or start the next task.
@@ -33,19 +37,35 @@ Read this before the first task of a large or long build (many tasks, several ag
 - A user's stop or pause beats the plan, the recurring check and any
   scheduled start. Start nothing new until the user says go. Why: a task
   started seconds after "do not pick up new tasks" breaks the user's trust.
+  To stop, TaskStop every agent (the waiting ones too) and every background
+  job, list them again, and say "stopped" only when none remain. Why: a
+  waiting agent is still running, so "all stopped" was false.
 - Before a restart, tell every running agent to commit its work in progress,
   and wait for those commits. Why: uncommitted worktree changes are lost.
 - Brief an agent with the plan path and the task ID, and let it read the task
   itself; paste no plan text. Why: copying plan sections costs the lead a
   read per task and drifts from the plan.
-- A writer's report is not done until CI on its PR is green, or the report
-  names the exact failing job. Say so in the brief, and run `gh pr checks`
-  yourself before you accept the report. Why: "done" with a red PR sends the
-  failure to the owner instead of the writer.
-- At every status check, read CI for every open PR, including integration
-  branches, not only the ones you wait on. Send each red job back to its
-  owner the same hour. Why: PRs nobody watched sat red until the owner
+- A writer reports at push, with the PR number and head SHA; it does not
+  wait for CI. The lead's one background watcher reads CI for every open PR,
+  including integration branches, and sends each red job back to its writer
+  with SendMessage. Why: a writer that waits for green CI sits in
+  wait-stop-wake cycles, and PRs nobody watched sat red until the owner
   noticed.
+- Never park ready work. Start it, or say what blocks it. Why: a parked task
+  idles the agents that could run it.
+- Run `scripts/release.sh` in the background, and never pipe it into `tail`.
+  Why: a pipe hides the script's exit status and its output until it ends.
+- After a guardrails release, restart the lead session. Why: a session keeps
+  the plugin version it loaded, so a stale guard keeps running.
+- Brief with repo-relative paths. Send review packages to the agent's
+  worktree or to `/tmp`, not into the lead's checkout. Why: an absolute path
+  into another checkout points a worktree agent at the wrong tree, and
+  access to it can be refused.
+- When the session starts outside a repo, keep the shell in the target repo
+  for every command. Why: setup and the repo's own rules apply only to a
+  shell inside the repo.
+- Append to ledgers with Edit, never a shell redirect. Why: a redirect
+  append can be refused in a worktree, and Edit shows exactly what changed.
 
 ## Waiting and hangs
 
@@ -226,12 +246,17 @@ Read this before the first task of a large or long build (many tasks, several ag
   on features, not on plumbing.
 - Lead with what is done, then what is running, then what is blocked and
   who must act. Why: done is what the owner can use or check today.
-- Give an honest time estimate for the rest, and say what it depends on.
-  Why: a hopeful estimate that slips costs more trust than a long one.
+- Report only on a merge, a finished or failed task, a decision, or the
+  10-minute check. Send one block, and never repeat a line that has not
+  changed. When only CI is pending, say so once. Why: repeated status lines
+  bury the news.
+- Give a time estimate only from durations you measured (timestamps you
+  read); otherwise write "unknown". Say what it depends on. Why: a guessed
+  estimate that slips costs more trust than an honest "unknown".
 
 ```text
 Done: <features that now work>.
-Running: <feature>: <what is happening>, about <time>.
+Running: <feature>: <what is happening>, about <time or unknown>.
 Blocked: <feature>: needs <who, what>.
-Remaining: about <time>, if <assumption>.
+Remaining: about <time or unknown>, if <assumption>.
 ```
