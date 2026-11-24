@@ -1250,6 +1250,18 @@ mod grant_tests {
         );
     }
 
+    // The evals run `claude -p`, an SDK-style session: without host mode "full" the session
+    // start would send no guide, and the cases that read it would test nothing.
+    #[test]
+    fn evals_run_in_full_host_mode() {
+        let text = repo::read("scripts/run-evals.sh");
+        assert!(
+            Regex::new(r"(?m)^export ANTHOLOGY_HOST_MODE=full$")
+                .unwrap()
+                .is_match(&text)
+        );
+    }
+
     // A gated tool needs the case entry AND an operator grant; the grant is path-limited.
     #[test]
     fn test_plain_write_tools_have_a_narrow_operator_grant() {

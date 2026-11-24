@@ -23,6 +23,19 @@
 //! subagent that compacted), only memory sync runs, and the output has no guide and no
 //! `systemMessage` ([`subagent_output`]). Everything else is for the lead.
 //!
+//! **Embedded hosts.** A session another program runs (the Agent SDK, `claude -p` in a script;
+//! [`embedded`]) gets an empty `additionalContext` (no guide, no memory, no personal section)
+//! and a `systemMessage` with only the guard self-test and the bootstrap failures: nobody reads
+//! the rest, and the guide is for a lead that talks to a person. `ANTHOLOGY_HOST_MODE=full` turns
+//! this off.
+//!
+//! **Startup only.** [`NAG`] and [`OPS_CHANGED`] are said when `source` is `startup`; a resume,
+//! clear or compact does not repeat them.
+//!
+//! **A stale plugin.** On `compact` and `resume` the session keeps running the plugin version it
+//! loaded. When that version (from its `plugin.json`) is below the version in
+//! `installed_plugins.json`, [`stale_plugin_warning`] names the plugin and asks for a restart.
+//!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
 //! `ANTHOLOGY_BOOTSTRAP_DOWNLOADED` is exactly `0` and
@@ -441,6 +454,7 @@ pub mod label {
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
     pub const COMPOSE: &str = "assembling the session context";
+    pub const STALE: &str = "the loaded plugin version check";
 }
 
 /// `_step`: runs `f`; an exception (or a panic) becomes `anthology: <label> failed (<Class>)`.
@@ -489,6 +503,107 @@ fn parse_stdin(stdin: &str) -> Map {
         .ok()
         .and_then(Value::into_object)
         .unwrap_or_default()
+}
+
+/// The variables that say who runs the session.
+const ENTRYPOINT_VAR: &str = "CLAUDE_CODE_ENTRYPOINT";
+const ATTENDED_VAR: &str = "CLAUDE_CODE_SESSION_ATTENDED";
+const MODE_VAR: &str = "ANTHOLOGY_HOST_MODE";
+
+// SWAP(T5): delete this and call `anthology_guard::host::embedded` (same signature).
+/// Whether another program runs the session: no `ANTHOLOGY_HOST_MODE=full`, and either nobody
+/// attends it (`CLAUDE_CODE_SESSION_ATTENDED=0`) or the entrypoint is an SDK build (`sdk-*`).
+fn embedded(entrypoint: Option<&str>, attended: Option<&str>, mode: Option<&str>) -> bool {
+    mode != Some("full")
+        && (attended == Some("0") || entrypoint.is_some_and(|e| e.starts_with("sdk-")))
+}
+
+/// [`embedded`] for the hook's own environment (the seam tests set).
+fn embedded_host(env: &Env) -> bool {
+    embedded(
+        env.get(ENTRYPOINT_VAR),
+        env.get(ATTENDED_VAR),
+        env.get(MODE_VAR),
+    )
+}
+
+/// `(major, minor, patch, is a release)`: a release is above its own prereleases.
+type VersionKey = (u64, u64, u64, bool);
+
+/// The ordering key of a plugin version (`x.y.z` or `x.y.z-pre`). `None` for anything else, so
+/// an unreadable version never warns.
+fn version_key(v: &str) -> Option<VersionKey> {
+    if !is_version(v) {
+        return None;
+    }
+    let (core, release) = match v.split_once('-') {
+        Some((c, _)) => (c, false),
+        None => (v, true),
+    };
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??, release))
+}
+
+/// A plugin name safe to print: what a marketplace allows.
+fn is_plugin_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The line for a session that runs an older plugin than the one installed: the plugin at `root`
+/// (the folder this session loaded) is below the newest `installed_plugins.json` entry of the
+/// same name that applies to `cwd` (user scope, or a project that holds `cwd`). `None` when
+/// either version cannot be read.
+pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String> {
+    let manifest = compat::read_json(&root.join(".claude-plugin").join("plugin.json"))?;
+    let manifest = manifest.as_object()?;
+    let name = manifest
+        .get("name")?
+        .as_str()
+        .filter(|n| is_plugin_name(n))?;
+    let loaded = manifest.get("version")?.as_str()?;
+    let loaded_key = version_key(loaded)?;
+    let list = compat::read_json(
+        &compat::config_dir(env)
+            .join("plugins")
+            .join("installed_plugins.json"),
+    )?;
+    let plugins = list.as_object()?.get("plugins")?.as_object()?;
+    let prefix = format!("{name}@");
+    let mut newest: Option<(VersionKey, &str)> = None;
+    for (key, entries) in plugins.iter() {
+        let Some(entries) = entries.as_array().filter(|_| key.starts_with(&prefix)) else {
+            continue;
+        };
+        for entry in entries.iter().filter_map(Value::as_object) {
+            if matches!(
+                entry.get("scope").and_then(Value::as_str),
+                Some("project" | "local")
+            ) {
+                let project = entry.get("projectPath").and_then(Value::as_str);
+                if !project.is_some_and(|p| cwd.starts_with(p)) {
+                    continue;
+                }
+            }
+            let Some(version) = entry.get("version").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(k) = version_key(version)
+                && newest.is_none_or(|(best, _)| k > best)
+            {
+                newest = Some((k, version));
+            }
+        }
+    }
+    let (key, installed) = newest?;
+    (loaded_key < key).then(|| {
+        format!(
+            "anthology: this session loaded {name} {loaded}, but {installed} is installed; restart Claude Code to load the new version"
+        )
+    })
 }
 
 /// `_is_subagent`: Claude Code puts `agent_id` in the hook input when the hook fires inside a
@@ -859,6 +974,10 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         return Ok(subagent_output(env, &cwd, deps));
     }
     let root = (deps.plugin_root)(env)?;
+    let source = hook.get("source").and_then(Value::as_str);
+    let embedded = embedded_host(env);
+    // What an embedded host still hears: the self-test and the bootstrap, nothing else.
+    let kept_from = warnings.len();
 
     let guard_root = step(
         &mut warnings,
@@ -896,6 +1015,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         None,
     );
     warnings.extend(self_test);
+    let host_warnings = warnings[kept_from..].to_vec();
 
     let data_dir = env
         .get_os("CLAUDE_PLUGIN_DATA")
@@ -930,8 +1050,13 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         (),
     );
 
+    // The nag and the settings note are for a session that starts, not one that resumes. A hook
+    // input with no `source` at all (Claude Code always sends one) is read as a start.
+    let at_startup = matches!(source, None | Some("startup"));
     if current.get("setup_done").is_none() {
-        warnings.push(NAG.into());
+        if at_startup {
+            warnings.push(NAG.into());
+        }
     } else {
         let w = step(
             &mut warnings,
@@ -943,16 +1068,18 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             None,
         );
         warnings.extend(w);
-        let w = step(
-            &mut warnings,
-            label::OPS,
-            |_| {
-                fault(deps, "_ops_warning")?;
-                Ok(ops_warning(env, &root, &current, deps))
-            },
-            None,
-        );
-        warnings.extend(w);
+        if at_startup {
+            let w = step(
+                &mut warnings,
+                label::OPS,
+                |_| {
+                    fault(deps, "_ops_warning")?;
+                    Ok(ops_warning(env, &root, &current, deps))
+                },
+                None,
+            );
+            warnings.extend(w);
+        }
         if elapsed() > DEADLINE - ATL_MIN_REMAINING {
             warnings.push(ATL_SKIPPED.into());
         } else {
@@ -1032,36 +1159,54 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     );
     warnings.extend(w);
 
+    if !embedded && matches!(source, Some("compact" | "resume")) {
+        let w = step(
+            &mut warnings,
+            label::STALE,
+            |_| {
+                fault(deps, "_stale_plugin_warning")?;
+                Ok(stale_plugin_warning(env, &root, &cwd))
+            },
+            None,
+        );
+        warnings.extend(w);
+    }
+
     let (memory, messages) = memory_step(&mut warnings, &cwd, env, deps);
     // A compact that runs in a git worktree the session moved into (or an agent's worktree)
     // really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
     let mut messages = messages;
-    if hook.get("source").and_then(Value::as_str) == Some("compact") {
+    if source == Some("compact") {
         messages.retain(|m| m != anthology_memory::sync::DIR_SET);
     }
 
-    let guide = step(
-        &mut warnings,
-        label::GUIDE,
-        |_| {
-            fault(deps, "_read_guide")?;
-            Ok(read_guide(&root))
-        },
-        None,
-    );
-    if guide.is_none() {
-        warnings.push(GUIDE_MISSING.into());
-    }
-    let guide_text = guide.unwrap_or_default();
-    let context = step(
-        &mut warnings,
-        label::COMPOSE,
-        |_| {
-            fault(deps, "_compose")?;
-            Ok(compose(&guide_text, &memory))
-        },
-        guide_text.clone(),
-    );
+    // An embedded host gets no guide and no memory text, so neither is read or composed.
+    let context = if embedded {
+        String::new()
+    } else {
+        let guide = step(
+            &mut warnings,
+            label::GUIDE,
+            |_| {
+                fault(deps, "_read_guide")?;
+                Ok(read_guide(&root))
+            },
+            None,
+        );
+        if guide.is_none() {
+            warnings.push(GUIDE_MISSING.into());
+        }
+        let guide_text = guide.unwrap_or_default();
+        step(
+            &mut warnings,
+            label::COMPOSE,
+            |_| {
+                fault(deps, "_compose")?;
+                Ok(compose(&guide_text, &memory))
+            },
+            guide_text.clone(),
+        )
+    };
 
     // Step 10: prune <ah>/bin; silent, and it never costs the output.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1073,8 +1218,13 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     hook_out.insert("additionalContext".into(), Value::Str(context));
     let mut out = Map::new();
     out.insert("hookSpecificOutput".into(), Value::Object(hook_out));
-    let mut all = warnings;
-    all.extend(messages);
+    let all = if embedded {
+        host_warnings
+    } else {
+        let mut all = warnings;
+        all.extend(messages);
+        all
+    };
     let message = all.join("\n");
     if !message.is_empty() {
         out.insert("systemMessage".into(), Value::Str(cap_message(&message)));

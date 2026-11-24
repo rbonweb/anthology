@@ -171,6 +171,14 @@ The routing guide says the main session plans, briefs agents, checks and merges,
 
 To turn it off, set `ANTHOLOGY_DELEGATION=0` in the environment (for example under `env` in your Claude Code settings) and restart the session. `ANTHOLOGY_MODS=0` turns off every anthology mod, this one included.
 
+### Sessions run by another program (host mode)
+
+When another program runs Claude Code for you (the Agent SDK, or `claude -p` in a script), nobody reads the session start. Anthology treats a session as embedded when `CLAUDE_CODE_SESSION_ATTENDED` is `0` or `CLAUDE_CODE_ENTRYPOINT` starts with `sdk-`; terminal and VS Code sessions are never embedded. In an embedded session the session start sends no routing guide and no memory index, and its message keeps only the guard self-test and the guard binary bootstrap failures.
+
+To get the full session start in such a session, set `ANTHOLOGY_HOST_MODE=full` in its environment (for example under `env` in the settings that session reads).
+
+After a plugin update, a session you resume or compact keeps running the version it loaded. When that version is older than the installed one, the session start says so, names the plugin, and asks you to restart Claude Code.
+
 ### Guardrails
 
 Two layers keep agents from installing browser tooling on your machine, touching your Chrome, using any browser other than BrowserOS Neo, or writing secrets into memory.
