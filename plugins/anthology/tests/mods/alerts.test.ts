@@ -497,7 +497,7 @@ test('the row shows the running and needs-you counts, with the command hint at t
   }
 })
 
-test('the row counts what finished between running and needs you', async ($, on) => {
+test('the row counts completed under done, failed and stopped under failed, between running and needs you', async ($, on) => {
   engine(on)
   const a = await spawn($, 'Build it')
   await spawn($, 'Review it')
@@ -505,7 +505,33 @@ test('the row counts what finished between running and needs you', async ($, on)
   await report($, 'x1', 'failed')
   await report($, 'x2', 'stopped')
   await ask($, 'git push')
-  expect(await band($)).toEqual(['● 1 running   ✓ 3 done   ! 1 needs you', HINT])
+  expect(await band($)).toEqual(['● 1 running   ✓ 1 done   ✗ 2 failed   ! 1 needs you', HINT])
+})
+
+test('the counts are not capped by the five agents the pane keeps', async ($, on) => {
+  engine(on)
+  for (let i = 1; i <= 7; i++) await report($, `d${i}`, 'completed')
+  for (let i = 1; i <= 6; i++) await report($, `f${i}`, 'failed')
+  await spawn($, 'Build it')
+  expect(await band($)).toEqual(['● 1 running   ✓ 7 done   ✗ 6 failed', HINT])
+  // The pane still lists five.
+  expect((await pane($)).filter(r => /^(ok|failed)\b/.test(r))).toHaveLength(5)
+})
+
+test('a second report of an agent the pane still lists is not counted again', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  await report($, 'x1', 'completed')
+  await report($, 'x1', 'completed')
+  expect(await band($)).toEqual(['● 1 running   ✓ 1 done', HINT])
+})
+
+test('failed alone draws no row, as done alone draws none', async ($, on) => {
+  engine(on)
+  await report($, 'x1', 'failed')
+  expect(await band($)).toEqual([])
+  await ask($, 'git push')
+  expect(await band($)).toEqual(['✗ 1 failed   ! 1 needs you', HINT])
 })
 
 test('a count of zero is left out', async ($, on) => {
@@ -539,28 +565,80 @@ test('the old status entry is never set', async ($, on) => {
   expect(seen.statuses).toEqual([])
 })
 
-test('the row draws running in the accent, done dim and needs you in the warning colour', async ($, on) => {
+/** Every Text of a tree that holds only text, with the props it was drawn with. */
+type Leaf = { text: string; props: Record<string, unknown> }
+function leaves(node: unknown): Leaf[] {
+  if (typeof node !== 'object' || node === null) return []
+  const n = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const kids = n.children ?? []
+  if (n.type === 'Text' && kids.every(k => typeof k === 'string')) return [{ text: kids.join(''), props: n.props ?? {} }]
+  return kids.flatMap(leaves)
+}
+
+test('the row colours: accent dot, dim labels, failed in error, needs you in permission, numerals plain', async ($, on) => {
   engine(on)
   const a = await spawn($, 'Build it')
   await spawn($, 'Review it')
   await report($, a, 'completed')
+  await report($, 'x1', 'failed')
   await ask($, 'git push')
-  const ui = await $.ui.mount({ ...BAND(80), surface: 'terminal' })
-  const drawn = JSON.stringify(await ui.drawn())
+  const ui = await $.ui.mount({ ...BAND(100), surface: 'terminal' })
+  const tree = await ui.drawn()
   await ui.unmount()
-  expect(drawn).toContain('"color":"suggestion"')
-  expect(drawn).toContain('"color":"warning"')
-  expect(drawn).toContain('"dimColor":true')
-  // Theme colours only: no hex or rgb value.
+  const by = (text: string) => leaves(tree).find(l => l.text === text)?.props
+  expect(by('●')).toMatchObject({ color: 'suggestion' })
+  expect(by(' running')).toMatchObject({ dimColor: true })
+  expect(by('✓')).toMatchObject({ dimColor: true })
+  expect(by(' done')).toMatchObject({ dimColor: true })
+  expect(by('✗')).toMatchObject({ color: 'error' })
+  expect(by(' failed')).toMatchObject({ color: 'error' })
+  expect(by('!')).toMatchObject({ color: 'permission' })
+  expect(by(' needs you')).toMatchObject({ color: 'permission' })
+  expect(by(' needs you')?.dimColor).not.toBe(true)
+  // The numbers are bare text beside the glyphs, so they take the text colour, not a dim one.
+  const drawn = JSON.stringify(tree)
+  expect(drawn).toContain('" 1"')
+  // Theme colours only: no hex, rgb or hsl value, and the warning colour is not used.
   expect(drawn).not.toMatch(/"color":"(#|rgb|hsl)/)
+  expect(drawn).not.toContain('"warning"')
 })
 
-test('a narrow band keeps the counts and drops the hint', async ($, on) => {
+test('the hint goes first, in a band too narrow for it', async ($, on) => {
   engine(on)
   await spawn($, 'Build it')
   await ask($, 'git push')
-  expect(await band($, 'mobile', 30)).toEqual(['● 1 running   ! 1 needs you'])
-  expect(await band($, 'mobile', 50)).toEqual(['● 1 running   ! 1 needs you', HINT])
+  // The counts take 29 cells, with ● and ! as two each; the hint adds 3 + 17, the edges 2.
+  expect(await band($, 'mobile', 51)).toEqual(['● 1 running   ! 1 needs you', HINT])
+  expect(await band($, 'mobile', 50)).toEqual(['● 1 running   ! 1 needs you'])
+})
+
+test('a narrow band drops done, then failed, then the label of running, and never cuts needs you', async ($, on) => {
+  engine(on)
+  const a = await spawn($, 'Build it')
+  await spawn($, 'Review it')
+  await report($, a, 'completed')
+  await report($, 'x1', 'failed')
+  await report($, 'x2', 'completed')
+  await ask($, 'git push')
+  const at = async (columns: number) => (await band($, 'mobile', columns))[0]
+  // Full row: 12 + 9 + 11 + 14 cells and three gaps of 3, the edges 2 more; the hint 20 more.
+  expect(await at(100)).toBe('● 1 running   ✓ 2 done   ✗ 1 failed   ! 1 needs you')
+  expect(await band($, 'mobile', 100)).toHaveLength(2)
+  expect(await at(60)).toBe('● 1 running   ✓ 2 done   ✗ 1 failed   ! 1 needs you')
+  expect(await band($, 'mobile', 60)).toHaveLength(1)
+  // Done goes first, then failed.
+  expect(await at(52)).toBe('● 1 running   ✗ 1 failed   ! 1 needs you')
+  expect(await at(40)).toBe('● 1 running   ! 1 needs you')
+  // Then running keeps its number alone, and past that "! N needs you" stands by itself.
+  expect(await at(30)).toBe('● 1   ! 1 needs you')
+  expect(await at(20)).toBe('! 1 needs you')
+  expect(await band($, 'mobile', 20)).toHaveLength(1)
+})
+
+test('running alone in a narrow band loses its label, never its count', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  expect(await band($, 'mobile', 8)).toEqual(['● 1'])
 })
 
 test('a survey holding the band keeps its place', async ($, on) => {
