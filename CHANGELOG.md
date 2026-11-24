@@ -45,6 +45,9 @@ a new version section.
   released tag, and a test pins the fuzz lock check (`cargo metadata --locked` in `fuzz/`).
 - `scripts/rust-test.sh test -p <crate>` no longer adds `--workspace`, so a one-crate run tests
   only that crate, plain and with all features.
+- The agent status is now a row Anthology draws above the prompt
+  (`● 2 running   ✓ 3 done   ! 1 needs you`, with `/anthology-status` on the right) instead of
+  a labelled status entry. It shows only while an agent runs or a prompt waits for you.
 - Session start: an embedded host (SDK entrypoint, or unattended session, unless
   `ANTHOLOGY_HOST_MODE=full`) gets no routing guide or memory, and only the guard self-test and
   bootstrap failure lines. The setup nag and the settings-changed note show only at startup. A
