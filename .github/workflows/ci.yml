@@ -27,9 +27,10 @@ jobs:
         run: scripts/dev.sh vendor check
 
   version-bump:
-    # A plugin whose files changed must carry a higher plugin.json version than at the
-    # merge base, once it has been released (a `<plugin>--v*` tag exists). Needs git history
-    # and tags (fetch-depth: 0 fetches both); scripts/dev.sh runs the check in the pinned Rust image.
+    # A plugin whose files changed must carry a higher plugin.json version than its latest
+    # released tag (`<plugin>--v<version>`, for example `anthology--v0.4.1`); a plugin with no such
+    # tag is unreleased and not gated. Needs git history and tags (fetch-depth: 0 fetches both);
+    # scripts/dev.sh runs the check in the pinned Rust image.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -252,3 +253,19 @@ jobs:
           persist-credentials: false
       - name: fuzz-build
         run: ci/jobs/fuzz-build.sh
+
+  lock-fresh:
+    # Informational: warns (annotation and job summary) when this PR changes what the pinned
+    # anthology binary is built from, so it needs a new anthology-bin release before the next
+    # plugin release. Never fails the PR (continue-on-error) and has no write token. Needs the
+    # history and the tags (fetch-depth: 0); the check runs in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: lock-fresh
+        run: ci/jobs/lock-fresh.sh
