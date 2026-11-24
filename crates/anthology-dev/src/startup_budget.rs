@@ -31,8 +31,8 @@ pub const BUDGET: [(&str, u64); 11] = [
     ("architect", 23612),        // measured 20532
     ("implementer", 26561),      // measured 23096 (karpathy-guidelines)
     ("debugger", 22167),         // measured 19275 (karpathy-guidelines)
-    ("reviewer", 17724),         // measured 14497 (karpathy-guidelines); +1052 for the Shell section
-    ("scout", 6996),             // measured 5168; +1052 for the Shell section
+    ("reviewer", 17724),         // measured 14497 (karpathy-guidelines), +1052 Shell
+    ("scout", 6996),             // measured 5168, +1052 Shell
     ("docs-writer", 31376),      // measured 27283
     ("ui-designer", 128097),     // measured 111388
     ("ui-reviewer", 65986),      // measured 57379
