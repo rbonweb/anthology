@@ -149,13 +149,13 @@ const MODE: &str = "ANTHOLOGY_HOST_MODE";
 
 #[test]
 fn an_sdk_host_gets_no_bootstrap() {
-    // An `sdk-*` entrypoint marks an embedded host, attended or not; so does an unattended
-    // session whatever its entrypoint; so does any mode that is not exactly `full`.
+    // An `sdk-*` entrypoint marks an embedded host when the attended flag says nothing; so does
+    // an unattended session whatever its entrypoint; so does any mode that is not exactly `full`.
     for env in [
         vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "0")],
         vec![(ENTRYPOINT, "sdk-cli"), (ATTENDED, "0")],
         vec![(ENTRYPOINT, "sdk-ts")],
-        vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "1")],
+        vec![(ENTRYPOINT, "sdk-ts"), (ATTENDED, "")],
         vec![(ENTRYPOINT, "sdk-ts"), (MODE, "")],
         vec![(ENTRYPOINT, "sdk-ts"), (MODE, "Full")],
         vec![(ENTRYPOINT, "sdk-ts"), (MODE, "embedded")],
@@ -202,6 +202,17 @@ fn cli_keeps_it() {
         vec![(ENTRYPOINT, "cli")],
         vec![(ATTENDED, "1")],
     ] {
+        let ran = run_with(MAIN, &env, "/usr/bin:/bin");
+        assert!(ran.intro(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
+    }
+}
+
+#[test]
+fn an_attended_session_keeps_it_whatever_the_entrypoint() {
+    // An interactive `claude` that an SDK process started inherits its `sdk-*` entrypoint, and
+    // Claude Code recomputes the attended flag: the person at it keeps the introduction.
+    for entrypoint in ["sdk-ts", "sdk-cli", "sdk-"] {
+        let env = [(ENTRYPOINT, entrypoint), (ATTENDED, "1")];
         let ran = run_with(MAIN, &env, "/usr/bin:/bin");
         assert!(ran.intro(), "{env:?}: {} / {:?}", ran.stdout, ran.code);
     }

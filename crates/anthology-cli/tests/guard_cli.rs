@@ -339,6 +339,7 @@ fn an_sdk_host_gets_a_too_complex_line_without_the_plugin_command() {
         (Some("sdk-cli"), Some("0"), Some("full"), true),
         (Some("hostapp"), Some("0"), Some("full"), true),
         (Some("cli"), Some("1"), None, true),
+        (Some("sdk-cli"), Some("1"), None, true),
         (Some("hostapp"), None, None, true),
         (None, None, Some("lean"), true),
         (None, None, None, true),

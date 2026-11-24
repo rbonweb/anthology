@@ -1114,6 +1114,10 @@ Programs other than a person at a terminal drive Claude Code through its SDK. Su
 
 Hosts stop paying for instructions they cannot use, and their own edits are no longer refused. The same two variables now decide the question in TypeScript, shell and Rust, so a change to one reader needs the same change in the other two.
 
+**Amendment (2026-11-24): the attended flag decides first**
+
+An interactive `claude` that an SDK process starts inherits `CLAUDE_CODE_ENTRYPOINT=sdk-*`, so the first rule took a person at a terminal for a host and withheld the guide. The decision line now reads: when `CLAUDE_CODE_SESSION_ATTENDED` is `0`, the session is embedded; when it is `1`, it is not; the `sdk-` entrypoint counts only when the flag is unset or has any other value. `ANTHOLOGY_HOST_MODE=full` still wins over both. The repo test `crates/repo-tests/tests/host_predicate.rs` runs one truth table, kept in `plugins/anthology/tests/mods/delegation.test.ts`, against all three readers.
+
 ## ADR-038: host path variables the user lists are read through (carve-out d)
 
 - **Date:** 2026-11-24
