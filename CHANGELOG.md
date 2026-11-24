@@ -45,6 +45,11 @@ a new version section.
   released tag, and a test pins the fuzz lock check (`cargo metadata --locked` in `fuzz/`).
 - `scripts/rust-test.sh test -p <crate>` no longer adds `--workspace`, so a one-crate run tests
   only that crate, plain and with all features.
+- Session start: an embedded host (SDK entrypoint, or unattended session, unless
+  `ANTHOLOGY_HOST_MODE=full`) gets no routing guide or memory, and only the guard self-test and
+  bootstrap failure lines. The setup nag and the settings-changed note show only at startup. A
+  resumed or compacted session names an anthology plugin older than the installed one. The
+  release smoke runs in full host mode. See ADR-037.
 - Strict delegation and the coordinator section no longer apply in an embedded SDK host
   (unattended, or an `sdk-*` entrypoint). There the lead's `Edit`, `Write` and `NotebookEdit`
   calls are not refused, even with a surface attached. `ANTHOLOGY_HOST_MODE=full` keeps both.
@@ -552,6 +557,12 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+#### Changed
+
+- The guard's too-complex (G0) message now names its cause when it can (a program from a
+  variable or glob, a heredoc or piped shell script, a sourced file or script), and drops the
+  `/plugin disable` line when Claude Code runs inside an embedded host. See ADR-037.
 
 ### [0.2.9] - 2026-11-23
 
