@@ -558,6 +558,11 @@ a new version section.
 
 ### [Unreleased]
 
+#### Added
+
+- The guard reads a `"$NAME"` program or script word as the file it names when you list NAME in
+  `ANTHOLOGY_GUARD_PATH_VARS` (opt-in; see ADR-038 and `SECURITY.md`).
+
 #### Changed
 
 - The guard's too-complex (G0) message now names its cause when it can (a program from a
