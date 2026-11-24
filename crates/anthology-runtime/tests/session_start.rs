@@ -3580,6 +3580,42 @@ mod host_mode {
     }
 
     #[test]
+    fn a_symlinked_project_path_still_holds_its_working_folder() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        let link = f.tmp().join("proj-link");
+        std::os::unix::fs::symlink(&proj, &link).unwrap();
+        // the project pin is the loaded one and older than the user install; the entry names the
+        // project through a link, and the session runs in the real folder (then the other way)
+        for (project_path, cwd) in [(&link, &proj), (&proj, &link)] {
+            scoped_versions(&f, project_path, "project", "0.4.0", "0.4.0", "0.5.0");
+            let out = f.go_d(&f.deps(), Some(cwd), &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{project_path:?} {cwd:?}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_path_that_cannot_be_resolved_does_not_hold_the_folder() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // a project that is gone and unrelated to the working folder: its entry is skipped
+        scoped_versions(
+            &f,
+            &f.tmp().join("gone"),
+            "project",
+            "0.4.0",
+            "0.4.0",
+            "0.5.0",
+        );
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.0", "0.5.0")]);
+    }
+
+    #[test]
     fn an_install_that_moved_to_a_new_folder_is_stale() {
         let f = Fx::new();
         f.mark_setup(None);

@@ -583,6 +583,16 @@ fn same_folder(a: &Path, b: &Path) -> bool {
         )
 }
 
+/// Whether `cwd` is `project` or below it: so as written, or once symlinks are resolved. A path
+/// that cannot be resolved is only compared as written.
+fn holds(project: &Path, cwd: &Path) -> bool {
+    cwd.starts_with(project)
+        || matches!(
+            (std::fs::canonicalize(project), std::fs::canonicalize(cwd)),
+            (Ok(p), Ok(c)) if c.starts_with(&p)
+        )
+}
+
 /// The line for a session that runs an older plugin than the one installed: the plugin at `root`
 /// (the folder this session loaded) is below the newest `installed_plugins.json` entry of the
 /// same name that applies to `cwd` (user scope, or a project that holds `cwd`). When one entry's
@@ -620,7 +630,7 @@ pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String
             let scope = entry.get("scope").and_then(Value::as_str);
             let project = entry.get("projectPath").and_then(Value::as_str);
             if matches!(scope, Some("project" | "local"))
-                && !project.is_some_and(|p| cwd.starts_with(p))
+                && !project.is_some_and(|p| holds(Path::new(p), cwd))
             {
                 continue;
             }
