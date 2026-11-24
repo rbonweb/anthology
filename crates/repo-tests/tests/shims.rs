@@ -10,7 +10,8 @@
 //! Acceptance (plan BS1) → module: 1 install, 9 GC-5 → `install`; 2 real downloaders →
 //! `downloads` (network) and `offline` (absent tools, lock, uname, seed); 3 recovery matrix →
 //! `recovery`; 4, 5 → `offline`; 6 → `scan`; 7, 8 → `entry` and `downloads`; static rules
-//! (R2, R3, R14, the NODE_GET constant) → `statics`.
+//! (R2, R3, R14, the NODE_GET constant) → `statics`. A download slower than one call, its
+//! resume, the failure reasons and the installer the guard lets through → `slow`.
 
 // An inline `shims` module, so its files live in tests/shims/ (no `#[path]`).
 mod shims {
@@ -21,5 +22,6 @@ mod shims {
     mod offline;
     mod recovery;
     mod scan;
+    mod slow;
     mod statics;
 }

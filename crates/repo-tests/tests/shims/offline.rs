@@ -268,7 +268,7 @@ fn missing_binary_allows_the_agent_and_cron_read_tools_and_still_blocks_writes()
             );
             assert_block(
                 &guard(&sb, sh, payload.as_bytes()),
-                &not_installed("not attempted"),
+                &not_installed(&sb, "not attempted"),
                 &format!("{sh:?} {tool}"),
             );
         }
@@ -285,7 +285,7 @@ fn no_fetch_blocks_with_not_attempted() {
         for p in [BASH, MCP, NESTED, b"not json".as_slice(), b""] {
             assert_block(
                 &guard(&sb, sh, p),
-                &not_installed("not attempted"),
+                &not_installed(&sb, "not attempted"),
                 &format!("{sh:?}"),
             );
         }
@@ -300,7 +300,11 @@ fn self_heal_is_rate_limited() {
         let sb = sandbox();
         sb.seed();
         std::fs::write(sb.bindir().join(".attempt"), b"").unwrap();
-        assert_block(&guard(&sb, sh, BASH), &rate_limited(), &format!("{sh:?}"));
+        assert_block(
+            &guard(&sb, sh, BASH),
+            &rate_limited(&sb),
+            &format!("{sh:?}"),
+        );
         assert!(!sb.vdir().exists());
         // A stale stamp is retired and the call heals.
         age(&sb.bindir().join(".attempt"), 120);
@@ -357,7 +361,7 @@ fn self_heal_classifies_the_new_binary_like_the_hot_path() {
         sb.seed();
         assert_block(
             &guard(&sb, sh, BASH),
-            &set_aside("exit 0: nope"),
+            &set_aside(&sb, "exit 0: nope"),
             &format!("{sh:?}"),
         );
         assert_eq!(sb.broken().len(), 1);
@@ -378,7 +382,7 @@ fn no_downloader_gives_the_manual_command() {
         // The second call in the minute is rate-limited.
         assert_block(
             &guard_path(&sb, sh, BASH, path.clone()),
-            &rate_limited(),
+            &rate_limited(&sb),
             &format!("{sh:?}"),
         );
         let mut spec = sb.spec(

@@ -25,6 +25,7 @@ Anthology is a Claude Code marketplace of three plugins backed by one static Rus
 ## Flows
 - Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock`, downloads it if missing -> it injects the guide, installs ATL. An embedded host gets only the self-test and bootstrap lines; the nag shows only at `startup`.
 - Bash call: `bin/atl-hook`, then `hooks/no-attribution.sh`; the guardrails `guard.sh` -> `anthology guard`. All run with `onFailure: block`, timeout 60. At a prompt, the permissions mod allows a command only when `anthology perm classify` proves it read-only.
+- Guard binary missing: a detached `bootstrap.sh fetch` downloads; `guard.sh` lets only the installer its blocks name through.
 - Binary release: root `Cargo.toml` version -> tag `anthology-bin--v<ver>` -> `anthology-release.yml` -> `scripts/dev.sh lock write` rewrites both `anthology.lock` -> release guardrails, then anthology.
 - ATL release: `atl/Cargo.toml` version `<upstream>-anthology.<n>` -> tag `atl--v<ver>` -> `atl-release.yml` -> `atl.lock` -> release anthology.
 - Plugin release: `scripts/release.sh <plugin> <ver>` bumps `plugin.json`, moves `[Unreleased]` entries, commits, tags, then `git push --atomic`; last line `RELEASE OK|FAILED`. Release a dependency plugin first; `lock check-fresh` refuses a lock older than the workspace.

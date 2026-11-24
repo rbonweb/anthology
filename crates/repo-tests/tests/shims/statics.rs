@@ -136,7 +136,7 @@ fn lib_sh_cannot_end_or_replace_the_sourcing_shell() {
 }
 
 #[test]
-fn guard_sh_has_exactly_two_allow_sites_and_falls_through_to_a_block() {
+fn guard_sh_has_exactly_three_allow_sites_and_falls_through_to_a_block() {
     let text = staged("anthology-guardrails/hooks/guard.sh");
     let lines = code_lines(&text);
     let mut zeros = Vec::new();
@@ -162,8 +162,9 @@ fn guard_sh_has_exactly_two_allow_sites_and_falls_through_to_a_block() {
             "no exit $var: {line}"
         );
     }
-    assert_eq!(zeros.len(), 2, "exit 0 sites: {zeros:?}");
-    // The allow sites: the token (exact, with one newline) and the read-only allowlist.
+    assert_eq!(zeros.len(), 3, "exit 0 sites: {zeros:?}");
+    // The allow sites: the token (exact, with one newline), the read-only allowlist, and the
+    // installer while the binary is missing.
     assert!(
         text.contains(
             "if [ \"$ANTH_RC\" = 0 ] && [ \"$ANTH_ERR\" = \"anthology-guard:allow:v1$anth_nl\" ]; then"
@@ -173,6 +174,10 @@ fn guard_sh_has_exactly_two_allow_sites_and_falls_through_to_a_block() {
     assert!(
         text.contains("if anth_readonly \"$anth_input\"; then"),
         "the allowlist"
+    );
+    assert!(
+        text.contains("if [ \"$ANTH_STATE\" = missing ] && anth_fix_call \"$anth_input\"; then"),
+        "the installer, only while the binary is missing"
     );
     assert!(text.contains("anth_nl='\n'\n"), "anth_nl is one newline");
     let n = lines.len();

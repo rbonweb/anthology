@@ -1,10 +1,12 @@
 #!/bin/sh
 # guard.sh: the anthology-guardrails PreToolUse shim (design §9.2). It fails closed.
 #
-# Exactly two paths allow (exit 0): the binary's allow token (exit 0 and stderr exactly
-# `anthology-guard:allow:v1` plus one newline) and the read-only allowlist when the binary
-# cannot run. Every other path, including anything unexpected, ends in a block (exit 2). The
-# pieces live in lib.sh; the decisions stay here, where the test counts them.
+# Exactly three paths allow (exit 0): the binary's allow token (exit 0 and stderr exactly
+# `anthology-guard:allow:v1` plus one newline), the read-only allowlist when the binary cannot
+# run, and, while the binary is missing, a Bash call that is exactly this plugin's installer
+# (so a missing binary is never a dead end). Every other path, including anything unexpected,
+# ends in a block (exit 2). The pieces live in lib.sh; the decisions stay here, where the test
+# counts them.
 anth_nl='
 '
 anth_loaded=
@@ -39,6 +41,13 @@ if [ "$anth_loaded" = 1 ] && anth_guard_state "$anth_hooks/.."; then
             rm -f "$anth_input"
             exit 0
         fi
+        # The one way out while the binary is missing: a Bash call that is exactly this
+        # plugin's own installer (anth_fix_call), so the block below is never a dead end.
+        anth_fix_cmd "$anth_hooks"
+        if [ "$ANTH_STATE" = missing ] && anth_fix_call "$anth_input"; then
+            rm -f "$anth_input"
+            exit 0
+        fi
         anth_guard_offline
         [ "$ANTH_RUN" != 1 ] || anth_call=1
     else
@@ -50,6 +59,7 @@ if [ "$anth_loaded" = 1 ] && anth_guard_state "$anth_hooks/.."; then
             [ -z "$anth_input" ] || rm -f "$anth_input"
             exit 0
         fi
+        anth_fix_cmd "$anth_hooks"
         anth_guard_settle
     fi
     [ -z "$anth_input" ] || rm -f "$anth_input"

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use anthology_testkit::bs::{self, Run, Shell};
+use anthology_testkit::bs::{self, Run, Sandbox, Shell};
 
 use super::common::*;
 
@@ -15,15 +15,16 @@ enum Why {
     AnyExit,
 }
 
-fn assert_set_aside(run: &Run, why: &Why, ctx: &str) {
+fn assert_set_aside(sb: &Sandbox, run: &Run, why: &Why, ctx: &str) {
     match why {
-        Why::Exact(w) => assert_block(run, &set_aside(w), ctx),
+        Why::Exact(w) => assert_block(run, &set_aside(sb, w), ctx),
         Why::AnyExit => {
             assert_blocked(run, ctx);
             let err = run.err();
             let head = "Blocked by anthology-guardrails (setup): the guard binary did not work (";
             let tail = format!(
-                ") and was set aside; it is reinstalled on a later call (at most once a minute), or run /anthology:setup{P}\n"
+                ") and was set aside; it is reinstalled on a later call (at most once a minute){P}{}\n",
+                fix_msg(sb)
             );
             assert!(
                 err.starts_with(head) && err.ends_with(&tail),
@@ -51,7 +52,7 @@ fn row_in(sh: Shell, name: &str, bytes: &[u8], mode: u32, why: &Why) {
     sb.set_env("BS_RAN", ran.clone());
     sb.install(bytes, mode);
     let run = guard(&sb, sh, BASH);
-    assert_set_aside(&run, why, &ctx);
+    assert_set_aside(&sb, &run, why, &ctx);
     assert!(!sb.vdir().exists(), "{ctx}: <version> moved away");
     let b = one_broken(&sb, &ctx);
     let name_re = regex::Regex::new(r"^\.broken-0\.1\.0-[0-9]+-[0-9]+$").unwrap();
@@ -277,7 +278,7 @@ fn matrix_not_executable_or_not_a_file_is_never_run() {
         std::os::unix::fs::symlink(&target, sb.bin()).unwrap();
         assert_block(
             &guard(&sb, sh, BASH),
-            &set_aside("it is not executable"),
+            &set_aside(&sb, "it is not executable"),
             &format!("{sh:?}"),
         );
         one_broken(&sb, "symlink");
@@ -288,7 +289,7 @@ fn matrix_not_executable_or_not_a_file_is_never_run() {
         std::fs::create_dir(sb.bin()).unwrap();
         assert_block(
             &guard(&sb, sh, BASH),
-            &set_aside("it is not executable"),
+            &set_aside(&sb, "it is not executable"),
             &format!("{sh:?} dir"),
         );
     });
@@ -368,11 +369,15 @@ fn parallel_calls_on_one_broken_binary_say_set_aside_never_not_writable() {
             let run = h.join().unwrap();
             let err = run.err();
             assert!(!err.contains("could not be set aside"), "{sh:?}: {err}");
-            if err == format!("{}\n", set_aside("exit 3: broken")) {
+            if err == format!("{}\n", set_aside(&sb, "exit 3: broken")) {
                 set += 1;
             } else {
                 // A call that started after the quarantine finds nothing installed.
-                assert_block(&run, &not_installed("not attempted"), &format!("{sh:?}"));
+                assert_block(
+                    &run,
+                    &not_installed(&sb, "not attempted"),
+                    &format!("{sh:?}"),
+                );
             }
             assert_eq!(run.code, Some(2));
         }
@@ -440,13 +445,13 @@ fn three_strikes_are_counted_by_the_name_epoch() {
             .push(("ANTHOLOGY_GUARD_NO_FETCH".into(), "1".into()));
         assert_block(
             &sb.run_spec(spec),
-            &not_installed("not attempted"),
+            &not_installed(&sb, "not attempted"),
             &format!("{sh:?} odd names, missing"),
         );
         sb.install(&script("exit 5"), 0o755);
         assert_block(
             &guard(&sb, sh, BASH),
-            &set_aside("exit 5"),
+            &set_aside(&sb, "exit 5"),
             &format!("{sh:?} one plus one"),
         );
         // The third quarantine uses the three-strikes text.
@@ -617,7 +622,7 @@ fn faults_end_in_a_block() {
         patch_lib(&sb, "anth_bootstrap_main() { echo status=present; }");
         assert_block(
             &guard(&sb, sh, BASH),
-            &set_aside("it is empty"),
+            &set_aside(&sb, "it is empty"),
             &format!("{sh:?} empty"),
         );
         // lib.sh missing, unparsable, or failing as it loads.
@@ -659,7 +664,7 @@ fn faults_end_in_a_block() {
         sb.set_env("ANTHOLOGY_GUARD_NO_FETCH", "1");
         assert_block(
             &guard(&sb, sh, BASH),
-            &not_installed("not attempted"),
+            &not_installed(&sb, "not attempted"),
             &format!("{sh:?} env"),
         );
     });
