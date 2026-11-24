@@ -19,6 +19,7 @@ const FAKE_DEV: &str = r#"#!/bin/sh
 printf '%s|%s\n' "$(pwd -P)" "$*" >> "$DEV_LOG"
 if [ "$1" = lock ]; then exec "$REAL_DEV" "$@"; fi
 [ "$1" = release-edit ] || exit 70
+if [ "${DEV_FAIL:-}" = "$2" ]; then echo "fake dev: $2 refused" >&2; exit 1; fi
 case $2 in
     plugin-version) sed -n 's/^  "version": "\(.*\)",*$/\1/p' "$3" | head -n 1 ;;
     check-version) echo bump ;;
@@ -55,6 +56,7 @@ tag="$name--v$ver"
 if [ "$dry" = 1 ]; then echo "$tag"; exit 0; fi
 if [ -n "${FAKE_CLAUDE_TAG_FAIL:-}" ]; then echo "fake claude: tagging refused" >&2; exit 1; fi
 git tag "$tag"
+if [ -n "${FAKE_CLAUDE_TAG_THEN_FAIL:-}" ]; then echo "fake claude: failed after tagging" >&2; exit 1; fi
 "#;
 
 /// A remote's `update` hook that refuses every tag, so a push that carries a tag is rejected as
@@ -720,12 +722,75 @@ fn a_stray_untracked_file_still_blocks() {
         assert_eq!(r.state(), before, "{stray}");
         std::fs::remove_file(r.root.join(stray)).unwrap();
     }
-    // A changed file that git tracks blocks, even under .claude/memory.
-    r.write(".claude/memory/tracked.md", "a\n");
-    r.commit("track a note");
-    r.write(".claude/memory/tracked.md", "b\n");
+    // A staged note is no longer untracked: it blocks, even under .claude/memory.
+    r.write(".claude/memory/staged.md", "s\n");
+    r.git(&["add", ".claude/memory/staged.md"]);
+    let before = r.state();
     let out = r.release(&["anthology", "0.2.0"]);
-    assert_eq!(out.status.code(), Some(1), "{}", output_text(&out));
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "staged: {all}");
+    assert!(all.contains("working tree is not clean"), "staged: {all}");
+    assert!(all.contains(".claude/memory/staged.md"), "staged: {all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: preconditions", "{all}");
+    assert_eq!(r.state(), before);
+    r.commit("track a note");
+    // A changed file that git tracks blocks too.
+    r.write(".claude/memory/staged.md", "changed\n");
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "tracked: {all}");
+    assert!(all.contains("working tree is not clean"), "tracked: {all}");
+    assert!(all.contains(".claude/memory/staged.md"), "tracked: {all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: preconditions", "{all}");
+}
+
+#[test]
+fn a_failed_edit_names_the_edit_step_and_restores_the_files() {
+    let Some(r) = repo() else { return };
+    let before = r.state();
+    let out = r.release_env(&["anthology", "0.2.0"], &[("DEV_FAIL", "set-version")]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: edit", "{all}");
+    // changelog-move had already edited CHANGELOG.md: it is put back.
+    assert_eq!(r.state(), before);
+    assert!(!r.read("CHANGELOG.md").contains("released"));
+}
+
+#[test]
+fn a_failed_commit_names_the_commit_step_and_restores_the_files() {
+    let Some(r) = repo() else { return };
+    let hook = r.root.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho 'test hook: commit refused' >&2\nexit 1\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    anthology_testkit::rl::settle_exec(&hook, &[]);
+    let before = r.state();
+    let out = r.release(&["anthology", "0.2.0"]);
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("commit refused"), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: commit", "{all}");
+    assert_eq!(r.state(), before);
+    assert!(!r.read("CHANGELOG.md").contains("released"));
+}
+
+#[test]
+fn a_tag_made_and_then_failed_is_deleted() {
+    let Some(r) = repo() else { return };
+    // `claude plugin tag` creates the tag and then fails: the tag is not left behind.
+    let out = r.release_env(
+        &["anthology", "0.2.0"],
+        &[("FAKE_CLAUDE_TAG_THEN_FAIL", "1")],
+    );
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: tag", "{all}");
+    assert!(!r.git_out(&["tag", "-l"]).contains("anthology--v0.2.0"));
 }
 
 #[test]

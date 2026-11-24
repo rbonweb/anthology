@@ -43,9 +43,21 @@ DRY_RUN=0
 WORK=$ROOT
 TMPDIR_DRY=""
 EDITED=""
+TAG_LOCAL=0
+# Deletes the local release tag while it is this run's (TAG_LOCAL=1); fails if git cannot.
+drop_local_tag() {
+  [ "$TAG_LOCAL" = 1 ] || return 0
+  TAG_LOCAL=0
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    git -C "$ROOT" tag -d "$TAG" >/dev/null 2>&1 || return 1
+  fi
+}
 cleanup() {
   status=$?
   trap - EXIT
+  if [ "$status" != 0 ] && ! drop_local_tag; then
+    echo "release: could not delete the local tag $TAG; delete it with: git tag -d $TAG" >&2
+  fi
   if [ -n "$EDITED" ] && [ "$DRY_RUN" != 1 ]; then
     # Files were rewritten but the release commit was never made: put them back.
     # shellcheck disable=SC2086
@@ -62,6 +74,10 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+# A signal ends the run through the same cleanup (and so deletes a local tag).
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # A sortable key for X.Y.Z (any suffix after a - or + is ignored): compare keys as text.
 version_key() { printf '%s\n' "${1%%[-+]*}" | awk -F. '{ printf "%09d%09d%09d\n", $1, $2, $3 }'; }
@@ -126,8 +142,8 @@ if [ ! -x "$DEV" ] && ! command -v "$DEV" >/dev/null 2>&1; then
 fi
 command -v "$CLAUDE" >/dev/null 2>&1 || die "'$CLAUDE' not found (install Claude Code, or set CLAUDE_BIN)"
 # The claude that will tag the release must be new enough for the plugin (engines.claude-code in
-# its manifest); an older one fails `claude plugin tag` validation after the release commit and
-# the push, leaving a half release. A plugin without the field is not checked.
+# its manifest); an older one fails `claude plugin tag` validation after the release commit,
+# leaving a half release. A plugin without the field is not checked.
 ENGINES=$(sed -n 's/.*"claude-code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST_REL" | head -n 1)
 if [ -n "$ENGINES" ]; then
   case "$ENGINES" in
@@ -150,7 +166,9 @@ fi
 
 # Untracked agent notes (.claude/agent-memory/, .claude/memory/) are the one thing let through;
 # a changed tracked file there, or any other untracked file, still blocks.
-DIRTY=$(git status --porcelain --untracked-files=all | grep -v -E '^\?\? "?\.claude/(agent-memory|memory)/' || true)
+# The status is read on its own first, so a failing `git status` stops the release (set -e).
+STATUS=$(git status --porcelain --untracked-files=all)
+DIRTY=$(printf '%s\n' "$STATUS" | grep -v -E '^$|^\?\? "?\.claude/(agent-memory|memory)/' || true)
 if [ -n "$DIRTY" ]; then
   printf '%s\n' "$DIRTY" >&2
   die "working tree is not clean; commit or stash your changes first"
@@ -261,6 +279,9 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # The tag is made locally first, so a failing `claude plugin tag` leaves the remote untouched.
+# From here until the release is done, the local tag is this run's: any failure or signal
+# deletes it (cleanup), also when `claude plugin tag` made the tag and then failed.
+TAG_LOCAL=1
 "$CLAUDE" plugin tag "plugins/$PLUGIN" -m "$TAG_MSG" \
   || die "the release commit exists locally but tagging failed; nothing was pushed. Fix the cause and run: $TAG_CMD  (or undo the release commit with: git reset --hard HEAD~1)"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 \
@@ -271,11 +292,17 @@ if [ "$PUSH" = 1 ]; then
   # One transaction: the branch and the tag both arrive, or neither does.
   if ! git push --atomic "$REMOTE" HEAD "refs/tags/$TAG"; then
     # The tag names a commit that a `git pull --rebase` may replace: take it away again.
-    git tag -d "$TAG" >/dev/null 2>&1 || true
-    die "the release commit exists locally but the push failed; nothing was pushed and the local tag $TAG was deleted. Fix the cause (e.g. git pull --rebase $REMOTE), then run: $TAG_CMD && $PUSH_CMD   -- or undo the release commit with: git reset --hard HEAD~1"
+    if drop_local_tag; then
+      GONE="the local tag $TAG was deleted"
+    else
+      GONE="deleting the local tag $TAG failed, delete it with: git tag -d $TAG"
+    fi
+    die "the release commit exists locally but the push failed; nothing was pushed and $GONE. Fix the cause (e.g. git pull --rebase $REMOTE), then run: $TAG_CMD && $PUSH_CMD   -- or undo the release commit with: git reset --hard HEAD~1"
   fi
+  TAG_LOCAL=0
   echo "released and pushed $TAG to $REMOTE"
 else
+  TAG_LOCAL=0
   echo
   echo "released $TAG locally; nothing was pushed. To publish, in one atomic push:"
   echo "  $PUSH_CMD"

@@ -83,7 +83,7 @@ Images are pinned by digest in `ci/images/*.Dockerfile`, Rust crates by `Cargo.l
 ### Pull requests
 
 - Say what changed and why.
-- Bump the plugin version, and add a CHANGELOG entry under `[Unreleased]`, for every plugin you touched.
+- Bump the plugin version, and add a changelog fragment `changelog.d/<plugin>/<name>.md` (see [changelog.d/README.md](changelog.d/README.md)), for every plugin you touched.
 - Add or update tests. For a bug, write the failing test first.
 - If a test fails on a startup budget, read [Startup budgets](#startup-budgets) before touching it.
 
@@ -180,7 +180,7 @@ It refuses to run (and changes nothing) unless:
 - every other plugin that depends on this one has a version range that accepts `<version>`. If one does not, widen the range in that plugin's `plugin.json` first, which is its own change with its own bump;
 - for a plugin that ships `anthology.lock`, `lock check-fresh` passes (see [Releasing the anthology binary](#releasing-the-anthology-binary)).
 
-Its edits run through `scripts/dev.sh`, so it needs Docker, or `ANTHOLOGY_DEV` naming an `anthology-dev` binary. Then it bumps `plugin.json` (and `plugin_version` in `vendor/sources.json` for `anthology-superpowers`), moves the `[Unreleased]` entries, followed by the fragments in filename order, into a dated version section, deletes those fragments, commits as `release: <plugin> <version>`, and runs `claude plugin tag` (no push). With `--push` it then pushes the branch and the tag together with `git push --atomic`, so the remote gets both or neither. If that push fails, it deletes the local tag again and prints the commands to finish by hand. It never pushes without `--push`; without it, it prints the `git push --atomic` command to publish. The last line it prints is always `RELEASE OK <tag>` or `RELEASE FAILED: <step>`, where the step is `arguments`, `preconditions`, `edit`, `commit`, `tag` or `push`. `--dry-run` does all of this in a throwaway worktree, shows the commit and the CHANGELOG diff, and leaves your checkout, index and tags untouched.
+Its edits run through `scripts/dev.sh`, so it needs Docker, or `ANTHOLOGY_DEV` naming an `anthology-dev` binary. Then it bumps `plugin.json` (and `plugin_version` in `vendor/sources.json` for `anthology-superpowers`), moves the `[Unreleased]` entries, followed by the fragments in filename order, into a dated version section, deletes those fragments, commits as `release: <plugin> <version>`, and runs `claude plugin tag` (no push). With `--push` it then pushes the branch and the tag together with `git push --atomic`, so the remote gets both or neither. If that push fails, or anything else fails or is interrupted after the tag was made, it deletes the local tag again; after a failed push it also prints the commands to finish by hand. It never pushes without `--push`; without it, it prints the `git push --atomic` command to publish. The last line it prints is always `RELEASE OK <tag>` or `RELEASE FAILED: <step>`, where the step is `arguments`, `preconditions`, `edit`, `commit`, `tag` or `push`. A dry run ends with `RELEASE OK <tag> (dry run: nothing was released)`. `--dry-run` does all of this in a throwaway worktree, shows the commit and the CHANGELOG diff, and leaves your checkout, index and tags untouched.
 
 A plugin's `version` is what moves installed users to new code, so a change that is not released does not reach them. Release a dependency before the plugin that needs its new version.
 
