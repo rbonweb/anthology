@@ -2,8 +2,8 @@
 //! must carry a higher version. Owner: DV2.
 //!
 //! Only released plugins are gated: a plugin counts as released once a git tag `<plugin>--v*`
-//! exists. A changed released plugin passes when its head version is above the highest such tag
-//! (semver, all tags) and not below its version at `git merge-base <base> <head>`, so a bump that
+//! exists on a commit reachable from the base. A changed released plugin passes when its head
+//! version is above the highest such tag (semver, all tags) and not below its version at `git merge-base <base> <head>`, so a bump that
 //! already landed on the base counts and a branch does not have to bump it again.
 //!
 //! Exit codes: 0 pass (or nothing to check), 1 a plugin changed without a valid bump, 2 the refs
@@ -125,14 +125,16 @@ pub fn release_verdict(
     if !base_exists || !head_exists {
         return plain();
     }
-    let (Some(head), Some(base), Some(release_v)) = (
+    let (Some(head), Some(release_v)) = (
         semver::parse_value(head_version),
-        semver::parse_value(base_version),
         release.and_then(semver::parse),
     ) else {
         return plain();
     };
-    if semver::cmp_parsed(&head, &base) == std::cmp::Ordering::Less {
+    // A base version that is not valid semver only drops the base side of the check.
+    let base = semver::parse_value(base_version);
+    let vs_base = base.as_ref().map(|b| semver::cmp_parsed(&head, b));
+    if vs_base == Some(std::cmp::Ordering::Less) {
         return plain();
     }
     let (b, h, r) = (
@@ -140,18 +142,16 @@ pub fn release_verdict(
         head_version.as_str().unwrap_or_default(),
         release.unwrap_or_default(),
     );
-    match (
-        semver::cmp_parsed(&head, &release_v),
-        semver::cmp_parsed(&head, &base),
-    ) {
-        (std::cmp::Ordering::Greater, std::cmp::Ordering::Greater) => {
+    match (semver::cmp_parsed(&head, &release_v), vs_base) {
+        (std::cmp::Ordering::Greater, None) => plain(),
+        (std::cmp::Ordering::Greater, Some(std::cmp::Ordering::Greater)) => {
             (true, format!("plugins/{plugin} {b} -> {h}"))
         }
-        (std::cmp::Ordering::Greater, _) => (
+        (std::cmp::Ordering::Greater, Some(_)) => (
             true,
             format!("plugins/{plugin} {h} (bump already on the base; latest release {r})"),
         ),
-        (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => (
+        (std::cmp::Ordering::Equal, Some(std::cmp::Ordering::Equal)) => (
             false,
             format!("plugins/{plugin} changed without a version bump (still {b})"),
         ),
@@ -286,12 +286,21 @@ impl Git<'_> {
 
     /// `_released_plugins`: each plugin with a `<plugin>--v*` tag, with its highest release (see
     /// [`highest_release`]; `None` if no such tag is valid semver). Matched by prefix, not by git
-    /// glob, so a plugin name can never be read as a pattern.
+    /// glob, so a plugin name can never be read as a pattern. Only tags on a commit that is an
+    /// ancestor of `base` count: a tag made inside `base..head` (the release commit of a push to
+    /// the base branch carries its own new tag) is not a release the head has to exceed.
     fn released_plugins(
         &self,
         plugins: &[String],
+        base: &str,
     ) -> Result<BTreeMap<String, Option<String>>, Stop> {
-        let listing = self.ok(&["for-each-ref", "--format=%(refname:strip=2)", "refs/tags"])?;
+        let listing = self.ok(&[
+            "for-each-ref",
+            "--merged",
+            base,
+            "--format=%(refname:strip=2)",
+            "refs/tags",
+        ])?;
         let tags = splitlines(&listing, false);
         Ok(plugins
             .iter()
@@ -349,7 +358,7 @@ fn gate(base: &str, head: &str, git: &Git<'_>, out: &mut String) -> Result<i32, 
         out.push_str("version gate: no plugin changed\n");
         return Ok(0);
     }
-    let released = git.released_plugins(&plugins)?;
+    let released = git.released_plugins(&plugins, &base_c)?;
     let mut failed = false;
     for plugin in &plugins {
         let Some(release) = released.get(plugin) else {
