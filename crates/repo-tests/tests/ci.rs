@@ -384,6 +384,129 @@ mod memory_diff_startup_budget_cli_syntax_job_tests {
     }
 }
 
+/// The `lock-fresh` job and the fuzz lock check: lock surprises show up on the PR that causes
+/// them, and the first one can never fail that PR.
+mod lock_check_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::{Command, Output};
+
+    const SCRIPT: &str = "ci/jobs/lock-fresh.sh";
+    const SENTENCE: &str =
+        "this PR needs a new anthology-bin release before the next plugin release";
+
+    /// Runs the script with `fake_dev` standing in for `scripts/dev.sh`; the job summary goes to
+    /// `summary`.
+    fn run_script(dir: &Path, fake_dev: &str, summary: &Path) -> Output {
+        let dev = dir.join("dev.sh");
+        std::fs::write(&dev, format!("#!/bin/sh\n{fake_dev}\n")).unwrap();
+        std::fs::set_permissions(&dev, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Command::new("sh")
+            .arg(repo::path(SCRIPT))
+            .env("ANTHOLOGY_DEV_SH", &dev)
+            .env("GITHUB_STEP_SUMMARY", summary)
+            .output()
+            .expect("sh ran")
+    }
+
+    #[test]
+    fn lock_fresh_job_is_informational() {
+        let wf = ci_jobs();
+        let job = &wf["jobs"]["lock-fresh"];
+        assert!(!job.is_badvalue(), "ci.yml has no job lock-fresh");
+        // A failure of the job does not fail the workflow run.
+        assert_eq!(job["continue-on-error"].as_bool(), Some(true));
+        // No write token: the workflow's `contents: read` is all the job gets.
+        assert_eq!(str_map(&wf["permissions"]), pairs(&[("contents", "read")]));
+        assert!(!yaml::has(job, "permissions"));
+        // The check reads the history and the tags.
+        assert_eq!(checkout_of(job)["with"]["fetch-depth"].as_i64(), Some(0));
+        assert_eq!(run_text(job).trim(), SCRIPT);
+        // The script reports through the job summary and annotations; it never exits non-zero
+        // on its own account, and it writes nothing to the PR.
+        let script = repo::read(SCRIPT);
+        assert!(script.contains("lock check-fresh"));
+        assert!(script.contains("::warning"));
+        assert!(script.contains("GITHUB_STEP_SUMMARY"));
+        assert!(!script.contains("gh pr"));
+        assert!(!script.contains("GITHUB_TOKEN"));
+        assert!(!script.lines().any(|l| l.trim().starts_with("exit 1")));
+    }
+
+    #[test]
+    fn lock_fresh_script_warns_and_exits_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = dir.path().join("summary.md");
+
+        // Fresh: no warning.
+        let out = run_script(dir.path(), "echo 'lock check-fresh: fresh'", &summary);
+        assert!(out.status.success(), "{out:?}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("::warning"));
+
+        // The check failed (exit 1): a warning and a summary that name the cause; still exit 0.
+        let out = run_script(
+            dir.path(),
+            "echo 'anthology-dev: lock check-fresh: crates/x/src changed' >&2; exit 1",
+            &summary,
+        );
+        assert!(out.status.success(), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let warning = stdout
+            .lines()
+            .find(|l| l.starts_with("::warning"))
+            .unwrap_or_else(|| panic!("no ::warning in {stdout}"));
+        assert!(warning.contains(SENTENCE), "{warning}");
+        let summary_text = std::fs::read_to_string(&summary).unwrap();
+        assert!(summary_text.contains(SENTENCE), "{summary_text}");
+        assert!(
+            summary_text.contains("crates/x/src changed"),
+            "{summary_text}"
+        );
+        // The tool's own lines are printed indented, so none can start a workflow command.
+        assert!(
+            !stdout.lines().any(|l| l.starts_with("anthology-dev:")),
+            "{stdout}"
+        );
+
+        // The check could not run (any other exit): a different warning, still exit 0.
+        let out = run_script(dir.path(), "echo 'docker is down' >&2; exit 125", &summary);
+        assert!(out.status.success(), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let warning = stdout
+            .lines()
+            .find(|l| l.starts_with("::warning"))
+            .unwrap_or_else(|| panic!("no ::warning in {stdout}"));
+        assert!(!warning.contains(SENTENCE), "{warning}");
+        assert!(warning.contains("125"), "{warning}");
+    }
+
+    #[test]
+    fn fuzz_build_is_locked() {
+        // fuzz-build.sh hands over to fuzz.sh, so fuzz.sh's checks are the job's.
+        assert!(repo::read("ci/jobs/fuzz-build.sh").contains("ci/jobs/fuzz.sh"));
+        let fuzz = repo::read("ci/jobs/fuzz.sh");
+        let line_of = |needle: &str| {
+            fuzz.lines()
+                .position(|l| l.trim_start().starts_with(needle))
+                .unwrap_or_else(|| panic!("fuzz.sh has no line starting {needle:?}"))
+        };
+        // cargo-fuzz has no --locked of its own: a stale fuzz/Cargo.lock must fail `cargo
+        // metadata --locked` before any `cargo fuzz` command can re-resolve it.
+        let metadata = line_of("cargo metadata");
+        assert!(fuzz.lines().nth(metadata).unwrap().contains("--locked"));
+        assert!(metadata < line_of("targets=$(cargo fuzz list)"));
+        assert!(metadata < line_of("cargo fuzz build"));
+        assert!(
+            fuzz.lines()
+                .filter(|l| l.trim_start().starts_with("cargo install"))
+                .all(|l| l.contains("--locked"))
+        );
+        // The check runs in fuzz/, the directory of the lock it guards.
+        assert!(line_of("cd \"$root/fuzz\"") < metadata);
+    }
+}
+
 mod upstream_watch_workflow_tests {
     use super::*;
 
