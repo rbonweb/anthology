@@ -26,7 +26,7 @@ use std::sync::LazyLock;
 
 use anthology_pycompat::json::Value;
 use anthology_shell::{
-    Analysis, Entry, Limits, MAX_CWD_DEPTH, Opaque, analyze_with, normalize_with,
+    Analysis, Entry, Limits, MAX_CWD_DEPTH, Opaque, PathVars, analyze_with_vars, normalize_with,
 };
 
 use crate::paths::Paths;
@@ -98,8 +98,29 @@ pub fn check_explained(
     home: &str,
     limits: &Limits,
 ) -> (Verdict, Option<Opaque>) {
+    check_explained_with(tool_name, tool_input, home, limits, None)
+}
+
+/// [`check_explained`] with the host path variables the user vouches for (carve-out d,
+/// [`crate::path_vars`]): the command is analyzed with `analyze_with_vars`. `None` is
+/// [`check_explained`].
+pub fn check_explained_with(
+    tool_name: &Value,
+    tool_input: &Value,
+    home: &str,
+    limits: &Limits,
+    vars: Option<&dyn PathVars>,
+) -> (Verdict, Option<Opaque>) {
     if *limits == Limits::default() {
-        run(tool_name, tool_input, home, limits, &DEFAULT_REGEXES, true)
+        run(
+            tool_name,
+            tool_input,
+            home,
+            limits,
+            &DEFAULT_REGEXES,
+            true,
+            vars,
+        )
     } else {
         run(
             tool_name,
@@ -108,6 +129,7 @@ pub fn check_explained(
             limits,
             &Regexes::new(limits),
             true,
+            vars,
         )
     }
 }
@@ -127,6 +149,7 @@ pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Ve
         &Limits::default(),
         &DEFAULT_REGEXES,
         false,
+        None,
     )
     .0
 }
@@ -158,6 +181,7 @@ fn run(
     limits: &Limits,
     regexes: &Regexes,
     fw: bool,
+    vars: Option<&dyn PathVars>,
 ) -> (Verdict, Option<Opaque>) {
     let name = tool_name.as_str().unwrap_or("");
     let empty = Value::Object(Default::default());
@@ -175,7 +199,7 @@ fn run(
         return (Verdict::Block(Rule::G5), None);
     }
     let analysis = match command {
-        Some(c) => analyze_with(c, home, limits),
+        Some(c) => analyze_with_vars(c, home, limits, vars),
         None => Analysis::default(),
     };
     let paths = Paths::new(home, limits, fw);

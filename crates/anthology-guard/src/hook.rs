@@ -23,9 +23,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anthology_pycompat::json::{self, Value};
-use anthology_shell::{Limits, Opaque};
+use anthology_shell::{Limits, Opaque, PathVars};
 
-use crate::check::{TOO_COMPLEX, TOO_COMPLEX_EMBEDDED, TOO_COMPLEX_ID, Verdict, check_explained};
+use crate::check::{
+    TOO_COMPLEX, TOO_COMPLEX_EMBEDDED, TOO_COMPLEX_ID, Verdict, check_explained_with,
+};
+use crate::path_vars::HostPathVars;
 
 /// The shim's allow token (GC-17), written with one `\n` on an allow in `--shim` mode only.
 pub const ALLOW_TOKEN: &str = "anthology-guard:allow:v1";
@@ -124,6 +127,19 @@ pub fn decide_for(
     limits: &Limits,
     embedded: bool,
 ) -> HookResult {
+    decide_with_vars(raw, home, shim, limits, embedded, None)
+}
+
+/// [`decide_for`] with the host path variables the user vouches for ([`crate::path_vars`]); `None` is
+/// [`decide_for`].
+pub fn decide_with_vars(
+    raw: &[u8],
+    home: &str,
+    shim: bool,
+    limits: &Limits,
+    embedded: bool,
+    vars: Option<&dyn PathVars>,
+) -> HookResult {
     let verdict = catch_unwind(AssertUnwindSafe(|| {
         let data = match json::loads_bytes_lossy(raw) {
             Ok(data) => data,
@@ -145,7 +161,7 @@ pub fn decide_for(
         }
         let null = Value::Null;
         let tool_input = map.get("tool_input").unwrap_or(&null);
-        let (verdict, cause) = check_explained(tool_name, tool_input, home, limits);
+        let (verdict, cause) = check_explained_with(tool_name, tool_input, home, limits, vars);
         let command = tool_input
             .as_object()
             .and_then(|o| o.get("command"))
@@ -166,7 +182,7 @@ pub fn decide_for(
 }
 
 /// The hints for a `(G0)` line: what the text of `command` shows (a double-quoted script with an
-/// expansion, a lone backtick) and what anthology-shell marked (`cause`, [`check_explained`]). Each hint
+/// expansion, a lone backtick) and what anthology-shell marked (`cause`, [`crate::check_explained`]). Each hint
 /// comes at most once, however many ways it was found. Hints only: they change no verdict.
 fn hints_for(command: Option<&str>, cause: Option<Opaque>) -> String {
     let mut hints: Vec<&str> = Vec::new();
@@ -349,23 +365,32 @@ pub fn hook_with(
     limits: &Limits,
     watchdog: Duration,
 ) -> HookResult {
-    run_hook(stdin, || home.to_string(), shim, false, limits, watchdog)
+    run_hook(
+        stdin,
+        || (home.to_string(), None),
+        shim,
+        false,
+        limits,
+        watchdog,
+    )
 }
 
-/// [`hook`] for the CLI: `home` is resolved after the watchdog has started, so a slow passwd
-/// lookup (HOME unset) is under the watchdog too. `embedded` is [`crate::host::embedded`].
-pub fn hook_resolving_home(
+/// [`hook`] for the CLI: `setup` gives the home folder and the host path variables
+/// ([`HostPathVars::new`]), and runs after the watchdog has started, so a slow passwd lookup (HOME
+/// unset) and the file system checks of the variables are under the watchdog too. `embedded` is
+/// [`crate::host::embedded`].
+pub fn hook_resolving(
     stdin: &mut dyn Read,
-    home: impl FnOnce() -> String,
+    setup: impl FnOnce() -> (String, Option<HostPathVars>),
     shim: bool,
     embedded: bool,
 ) -> HookResult {
-    run_hook(stdin, home, shim, embedded, &Limits::default(), WATCHDOG)
+    run_hook(stdin, setup, shim, embedded, &Limits::default(), WATCHDOG)
 }
 
 fn run_hook(
     stdin: &mut dyn Read,
-    home: impl FnOnce() -> String,
+    setup: impl FnOnce() -> (String, Option<HostPathVars>),
     shim: bool,
     embedded: bool,
     limits: &Limits,
@@ -377,10 +402,11 @@ fn run_hook(
     });
     start_watchdog(Arc::clone(&done), watchdog);
     std::panic::set_hook(Box::new(|_| {}));
-    let home = home();
+    let (home, vars) = setup();
+    let vars = vars.as_ref().map(|v| v as &dyn PathVars);
     let mut raw = Vec::new();
     let result = match stdin.read_to_end(&mut raw) {
-        Ok(_) => decide_for(&raw, &home, shim, limits, embedded),
+        Ok(_) => decide_with_vars(&raw, &home, shim, limits, embedded, vars),
         // Python's read raising meant "allow"; Rust cannot see the call, so it blocks (fail closed).
         Err(_) => HookResult::block(PANIC_LINE.to_string()),
     };

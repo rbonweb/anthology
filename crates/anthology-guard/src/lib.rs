@@ -2,8 +2,8 @@
 //!
 //! `data` and `secrets` are F1's; the rest is GD's. The `pub` items of `check`, `hook`, `paths`
 //! and `rules` are re-exported at the crate root, where plan §3.5 publishes them. Keep `pub`
-//! names unique across those modules and use `pub(crate)` for helpers. `host` is not re-exported:
-//! its items are used as `host::embedded`.
+//! names unique across those modules and use `pub(crate)` for helpers. `host` and `path_vars` are
+//! not re-exported: their items are used as `host::embedded` and `path_vars::HostPathVars`.
 //!
 //! A duplicate `pub` name across these modules fails clippy here (`ambiguous_glob_reexports`,
 //! denied by `-D warnings`): rename it in your module, or make it `pub(crate)`.
@@ -13,6 +13,7 @@ pub mod check;
 pub mod data;
 pub mod hook;
 pub mod host;
+pub mod path_vars;
 pub mod paths;
 pub mod rules;
 pub mod secrets;
