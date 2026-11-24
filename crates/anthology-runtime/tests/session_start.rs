@@ -1220,11 +1220,14 @@ mod compatibility_lines_test {
             ("_wrappers_warning", "the bin wrapper check"),
             ("_agent_memory_warning", "the agent-memory path check"),
             ("_subagent_model_warning", "the subagent model check"),
+            // only a compact or resume runs this step
+            ("_stale_plugin_warning", "the loaded plugin version check"),
         ] {
             let fail = move |n: &str| (n == name).then(|| exc("RuntimeError", "boom"));
             let mut d = c.f.deps();
             d.fail = &fail;
-            let out = c.f.go_d(&d, Some(&c.repo), &c.f.env(), &[]);
+            let out =
+                c.f.go_d(&d, Some(&c.repo), &c.f.env(), &[("source", "compact")]);
             assert!(
                 context(&out).contains("# Anthology routing guide"),
                 "{name}"
@@ -3500,6 +3503,20 @@ mod host_mode {
         versions(&f, "0.5.0-rc.1", "0.5.0");
         let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
         assert_eq!(lines(&out), vec![stale_line("0.5.0-rc.1", "0.5.0")]);
+    }
+
+    #[test]
+    fn a_build_tagged_installed_version_is_read_as_a_prerelease() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // the release is newer than a build of the same number: nothing to say
+        versions(&f, "0.2.9", "0.2.9-f99aa8723fd9");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert!(!has_msg(&out), "{out:?}");
+        // an older release than that build is stale, and the line names the installed version
+        versions(&f, "0.2.8", "0.2.9-f99aa8723fd9");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.2.8", "0.2.9-f99aa8723fd9")]);
     }
 
     #[test]
