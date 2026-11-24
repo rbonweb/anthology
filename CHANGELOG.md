@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.0] - 2026-11-24
+
 #### Added
 
 - `anthology-mem save --repo` writes a repo note with the same privacy and secret checks as an
@@ -73,6 +75,7 @@ a new version section.
   0.2.2.
 - The debug-build timing bound in the ATL megabyte-line gate test is now a ratio to the same
   line at 250 KB, so slow CI runners no longer fail it. This changes a test only.
+- Pin anthology-bin 0.2.2.
 
 ### [0.4.1] - 2026-11-23
 
