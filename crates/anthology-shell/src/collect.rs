@@ -1262,6 +1262,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) incomplete: bool,
     pub(crate) work: Work,
     halted: bool,
+    /// Why the analysis halted, for a halt that leaves no mark on an entry (`Analysis.halt_cause`); set
+    /// just before the halt (`name_cause`).
+    pub(crate) halt_cause: Option<Opaque>,
     /// `_Context.seen`: (depth, cwd at the end) for every text analyzed in this pass.
     seen: HashMap<SeenKey, (usize, Option<String>)>,
     /// `_Entry.stdin_runs`, by entry index.
@@ -1345,6 +1348,7 @@ impl<'a> Ctx<'a> {
             incomplete: false,
             work,
             halted: false,
+            halt_cause: None,
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
             launchers: HashSet::new(),
@@ -1394,6 +1398,13 @@ impl<'a> Ctx<'a> {
     fn halt(&mut self) {
         self.halted = true;
         self.incomplete = true;
+    }
+
+    /// Record why the analysis is about to halt (`Analysis.halt_cause`). The caller halts next, and every
+    /// caller is reached only while the analysis runs (a halted one returns first), so the first stop is the
+    /// one that names the cause.
+    fn name_cause(&mut self, reason: Opaque) {
+        self.halt_cause = Some(reason);
     }
 
     /// Spend `n` of the Rust-only budget.
@@ -1909,6 +1920,8 @@ impl<'a> Ctx<'a> {
                     .take_while(|&&e| e != shell)
                     .any(|&e| !self.literal_producer(e, &defined))
             {
+                // `curl x | sh`: the script is what another command prints
+                self.name_cause(Opaque::StdinShellUnreadable);
                 self.halt();
                 return;
             }
@@ -1934,6 +1947,7 @@ impl<'a> Ctx<'a> {
             }
             if shell.is_some() && texts.iter().any(|t| only_substitution(t)) {
                 // `sh <<< "$(f)"`: the text is what a command prints (the lexer leaves `""` for it)
+                self.name_cause(Opaque::StdinShellUnreadable);
                 self.halt();
                 return;
             }
@@ -2474,7 +2488,12 @@ impl<'a> Ctx<'a> {
             None => (tokens, holders, Vec::new()),
         };
         // F-8(b): the words as they are read, with a substitution at program position resolved (`which X`)
-        let result = resolve_holders(&tokens, &holders, &mut self.work);
+        let mut program_unknown = false;
+        let result = resolve_holders(&tokens, &holders, &mut self.work, &mut program_unknown);
+        if program_unknown {
+            // `$(echo ls) a`: the program is what a command prints
+            self.name_cause(Opaque::DynamicCommandWord);
+        }
         let resolved = self.take(result)?;
         let words = resolved.as_deref().unwrap_or(tokens.as_slice());
         // carve-out (d): a host variable as the program must name a file that runs, or it stays unproven
@@ -2918,11 +2937,14 @@ fn lookup_program(body: &str) -> Option<String> {
 /// one `strip_prefixes` reads: each holder (a word that held a `$(...)` or a backtick) is replaced by a stand-in
 /// in a probe copy, and a holder the probe reads as the program is too complex, unless it is the sole word and
 /// `lookup_program` reads it as X (then X is the program, `$(which npx) playwright install` is `npx playwright
-/// install`). `None`: no holder is at program position, and the words stand as they are.
+/// install`). `None`: no holder is at program position, and the words stand as they are. `program_unknown` is
+/// set when the error is a substitution as the program word that `lookup_program` cannot read (not a stop at
+/// the work budget).
 fn resolve_holders(
     tokens: &[String],
     holders: &[Holder],
     work: &mut Work,
+    program_unknown: &mut bool,
 ) -> Result<Option<Vec<String>>, TooComplex> {
     // a word with only a parameter expansion is `param_program`'s
     if !holders.iter().any(|h| h.subst) {
@@ -2953,9 +2975,10 @@ fn resolve_holders(
         let Some(k) = at else { break };
         let pos = open.iter().position(|h| h.index == k).ok_or(TooComplex)?;
         let holder = open.swap_remove(pos);
-        let program = lookup_program(&holder.body)
-            .filter(|_| holder.sole)
-            .ok_or(TooComplex)?;
+        let Some(program) = lookup_program(&holder.body).filter(|_| holder.sole) else {
+            *program_unknown = true;
+            return Err(TooComplex);
+        };
         words.get_or_insert_with(|| tokens.to_vec())[k] = program;
     }
     Ok(words)

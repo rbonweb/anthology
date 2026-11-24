@@ -89,8 +89,8 @@ pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Li
     check_explained(tool_name, tool_input, home, limits).0
 }
 
-/// [`check_with`], and for a [`Verdict::TooComplex`] the reason anthology-shell marked on the entries
-/// of the command, when one of the reasons that [`cause_of`] names is there. A text hint for the
+/// [`check_with`], and for a [`Verdict::TooComplex`] the reason anthology-shell stopped at or marked on the
+/// entries of the command, when one of the reasons that [`cause_of`] names is there. A text hint for the
 /// block line and nothing else: the verdict is the one [`check_with`] gives.
 pub fn check_explained(
     tool_name: &Value,
@@ -276,15 +276,20 @@ const CAUSES: [&[Opaque]; 4] = [
     &[Opaque::StdinShellUnreadable],
 ];
 
-/// The first of [`CAUSES`] that some entry (or alternate reading) of `analysis` carries.
+/// The reason `analysis` stopped (`Analysis.halt_cause`: a shell fed by another command, a substitution as the
+/// program, which no entry shows), else the first of [`CAUSES`] that some entry (or alternate reading) of it
+/// carries. The stop comes first because it is the reason the command is too complex; a mark on an entry
+/// may be on a command the guard allows.
 fn cause_of(analysis: &Analysis) -> Option<Opaque> {
-    CAUSES.iter().find_map(|group| {
-        group.iter().copied().find(|reason| {
-            analysis
-                .entries
-                .iter()
-                .chain(&analysis.alternates)
-                .any(|e| e.opaque.contains(reason))
+    analysis.halt_cause.or_else(|| {
+        CAUSES.iter().find_map(|group| {
+            group.iter().copied().find(|reason| {
+                analysis
+                    .entries
+                    .iter()
+                    .chain(&analysis.alternates)
+                    .any(|e| e.opaque.contains(reason))
+            })
         })
     })
 }

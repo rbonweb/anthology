@@ -43,6 +43,16 @@ pub const LIMIT_LINE: &str = "Blocked by anthology-guardrails (internal): the gu
      analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the command; if \
      this keeps happening, disable anthology-guardrails with /plugin\n";
 
+/// [`PANIC_LINE`] for a host that has no `/plugin` command (`embedded`, [`crate::host::embedded`]): no
+/// `/plugin` text, and the same block.
+pub const PANIC_LINE_EMBEDDED: &str = "Blocked by anthology-guardrails (internal): the guard failed on this input; \
+     it was blocked to be safe. Report it if this keeps happening\n";
+
+/// [`LIMIT_LINE`] for a host that has no `/plugin` command (`embedded`, [`crate::host::embedded`]): no
+/// `/plugin` text, and the same block.
+pub const LIMIT_LINE_EMBEDDED: &str = "Blocked by anthology-guardrails (internal): the guard could not finish \
+     analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the command\n";
+
 /// The hook's watchdog (GC-13: 8 s; the `test-watchdog` feature makes it short so a test can see it).
 pub const WATCHDOG: Duration = if cfg!(feature = "test-watchdog") {
     Duration::from_secs(2)
@@ -84,7 +94,8 @@ pub fn block_line(verdict: Verdict) -> Option<String> {
 }
 
 /// [`block_line`] for a host that may have no `/plugin` command (`embedded`, [`crate::host::embedded`]):
-/// the `(G0)` line then has no `/plugin disable` parenthetical. Every other line is the same.
+/// the `(G0)` line then has no `/plugin disable` parenthetical, and the limit line ([`LIMIT_LINE_EMBEDDED`])
+/// has no `/plugin` text. Every other line is the same.
 pub fn block_line_for(verdict: Verdict, embedded: bool) -> Option<String> {
     match verdict {
         Verdict::Allow => None,
@@ -93,7 +104,7 @@ pub fn block_line_for(verdict: Verdict, embedded: bool) -> Option<String> {
             rule.id(),
             rule.message()
         )),
-        Verdict::Incomplete => Some(LIMIT_LINE.to_string()),
+        Verdict::Incomplete => Some(limit_line(embedded).to_string()),
         Verdict::TooComplex => {
             let message = if embedded {
                 TOO_COMPLEX_EMBEDDED
@@ -104,6 +115,24 @@ pub fn block_line_for(verdict: Verdict, embedded: bool) -> Option<String> {
                 "Blocked by anthology-guardrails ({TOO_COMPLEX_ID}): {message}\n"
             ))
         }
+    }
+}
+
+/// The GC-14 limit line for a host: [`LIMIT_LINE_EMBEDDED`] when `embedded`, else [`LIMIT_LINE`].
+fn limit_line(embedded: bool) -> &'static str {
+    if embedded {
+        LIMIT_LINE_EMBEDDED
+    } else {
+        LIMIT_LINE
+    }
+}
+
+/// The GC-14 panic line for a host: [`PANIC_LINE_EMBEDDED`] when `embedded`, else [`PANIC_LINE`].
+fn panic_line(embedded: bool) -> &'static str {
+    if embedded {
+        PANIC_LINE_EMBEDDED
+    } else {
+        PANIC_LINE
     }
 }
 
@@ -119,7 +148,8 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
 }
 
 /// [`decide_with`] for a host: `embedded` ([`crate::host::embedded`]) drops the `/plugin disable`
-/// parenthetical from the `(G0)` line. The verdict, the exit code and the rule are the same either way.
+/// parenthetical from the `(G0)` line and the `/plugin` text from the limit and panic lines. The verdict,
+/// the exit code and the rule are the same either way.
 pub fn decide_for(
     raw: &[u8],
     home: &str,
@@ -177,7 +207,7 @@ pub fn decide_with_vars(
             }
             Some(line) => HookResult::block(line),
         },
-        Err(_) => HookResult::block(PANIC_LINE.to_string()),
+        Err(_) => HookResult::block(panic_line(embedded).to_string()),
     }
 }
 
@@ -322,9 +352,10 @@ struct Done {
     wake: Condvar,
 }
 
-/// Starts the watchdog: after `limit`, unless `done` is set, it writes the limit line and exits 2.
-/// It holds the lock while it exits, so a hook finishing at the same moment cannot write a second line.
-fn start_watchdog(done: Arc<Done>, limit: Duration) {
+/// Starts the watchdog: after `limit`, unless `done` is set, it writes the limit line (the one for a host
+/// when `embedded`) and exits 2. It holds the lock while it exits, so a hook finishing at the same moment
+/// cannot write a second line.
+fn start_watchdog(done: Arc<Done>, limit: Duration, embedded: bool) {
     // The deadline counts from the call, not from when the thread first runs.
     let deadline = Instant::now() + limit;
     let spawned = std::thread::Builder::new()
@@ -337,7 +368,7 @@ fn start_watchdog(done: Arc<Done>, limit: Duration) {
                 let now = Instant::now();
                 if now >= deadline {
                     let mut err = std::io::stderr().lock();
-                    let _ = err.write_all(LIMIT_LINE.as_bytes());
+                    let _ = err.write_all(limit_line(embedded).as_bytes());
                     let _ = err.flush();
                     std::process::exit(2);
                 }
@@ -400,7 +431,7 @@ fn run_hook(
         finished: Mutex::new(false),
         wake: Condvar::new(),
     });
-    start_watchdog(Arc::clone(&done), watchdog);
+    start_watchdog(Arc::clone(&done), watchdog, embedded);
     std::panic::set_hook(Box::new(|_| {}));
     let (home, vars) = setup();
     let vars = vars.as_ref().map(|v| v as &dyn PathVars);
@@ -408,7 +439,7 @@ fn run_hook(
     let result = match stdin.read_to_end(&mut raw) {
         Ok(_) => decide_with_vars(&raw, &home, shim, limits, embedded, vars),
         // Python's read raising meant "allow"; Rust cannot see the call, so it blocks (fail closed).
-        Err(_) => HookResult::block(PANIC_LINE.to_string()),
+        Err(_) => HookResult::block(panic_line(embedded).to_string()),
     };
     if let Ok(mut finished) = done.finished.lock() {
         *finished = true;

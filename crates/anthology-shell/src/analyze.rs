@@ -48,12 +48,19 @@ pub struct Entry {
 /// `alternates` (fix-wave I, lead ruling Q3=A): other readings of a wrapped command whose option values the
 /// tables may have misread (`npx --registry X playwright install` read as `X playwright install`). Each differs
 /// from the entry it came from, which is marked `UnknownWrapperOption`. The guard checks them against G1 only.
+///
+/// `halt_cause`: when the analysis stopped because of a shape that leaves no mark on any entry, the reason it
+/// stopped, as the [`Opaque`] that names it (`StdinShellUnreadable`: a shell whose script is another command's
+/// output, `curl x | sh` or `sh <<< "$(f)"`; `DynamicCommandWord`: a substitution as the program word). Always
+/// `None` for a complete analysis, and for a stop at the work budget or another shape. Additive: nothing else
+/// in the result depends on it, and no caller but the guard's message reads it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Analysis {
     pub entries: Vec<Entry>,
     pub groups: Vec<Group>,
     pub incomplete: bool,
     pub alternates: Vec<Entry>,
+    pub halt_cause: Option<Opaque>,
 }
 
 /// `analyze()` with explicit limits (a test lowers `backtrack_limit`).
@@ -113,6 +120,8 @@ fn run(
             groups: ctx.groups,
             incomplete: ctx.incomplete || unproven,
             alternates: ctx.alternates,
+            // only a stop names a cause (`incomplete` is then set too)
+            halt_cause: ctx.halt_cause,
         };
         (analysis, ctx.path_var_used)
     })

@@ -1,8 +1,8 @@
 //! Where the guard runs: a person's terminal, or a program that embeds Claude Code (an SDK host).
 //!
 //! A host has no `/plugin` command and nobody to type it, so a message that sends the reader there
-//! (the `(G0)` line's `/plugin disable` aside) is dropped for it. This is text only: no verdict, exit
-//! code or rule depends on it.
+//! (the `(G0)` line's `/plugin disable` aside, and the same words in the limit and panic lines) is
+//! dropped for it. This is text only: no verdict, exit code or rule depends on it.
 //!
 //! The module is not re-exported at the crate root; call `anthology_guard::host::embedded`.
 
