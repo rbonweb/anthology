@@ -1,6 +1,6 @@
 ---
 name: 'PR 159 carve-out gaps (round 2 head 583c129b)'
-description: 'Carve-out bypasses still open on PR 159 round 2, each proven with a marker npx in bash 5.2 or zsh 5.9'
+description: 'Brace-built HOME names and zsh positional setters that slipped the carve-outs; closed in bin 0.1.4'
 metadata:
   type: project
   modified: 2026-11-22

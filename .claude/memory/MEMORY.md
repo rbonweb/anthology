@@ -14,3 +14,6 @@
 - [rust-port-decision](project-rust-port-decision.md) — Owner decided 2026-11-20 to port all first-party Anthology Python to Rust before launch; delivery and fail-mode answers
 - [anthology-status](project-anthology-status.md) — Anthology project status — PLAN.md rev. 6 approved, building on branch `build` via SDD; ledger at .superpowers/sdd/PLAN/progress.md; repo public
 - [anthology-machine-facts](project-anthology-machine-facts.md) — The user's Mac setup relevant to anthology — tools, BrowserOS, installed plugins, past Chrome incident
+- [github-ignores-union-merge](project-github-ignores-union-merge.md) — GitHub's merge and update-branch ignore the .gitattributes union rule, so MEMORY.md index edits show as conflicts; push a local…
+## reference
+- [reference-project-map](reference-project-map.md) — How the pieces of this project connect, and the cleanups each kind of change brings. Read before planning or briefing.

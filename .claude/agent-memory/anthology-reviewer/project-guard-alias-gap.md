@@ -1,6 +1,6 @@
 ---
 name: 'The guard does not model shell aliases'
-description: 'An alias defined on one line and used on the next is Allow on build and PR 153 head; bash with expand_aliases runs it'
+description: 'An alias defined, then used on a later line, ran a blocked program; closed in bin 0.1.4'
 metadata:
   type: project
   modified: 2026-11-22
