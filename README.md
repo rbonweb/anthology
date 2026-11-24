@@ -229,7 +229,7 @@ The agent's own text is never rewritten or cut. A report with no gap is delivere
 Where Claude Code 2.1.330 or later loads plugin mods, the plugin adds two things on top of the alert above. Both come from `hooks/mods/alerts.tsx`.
 
 - **In-session alert.** When Claude Code needs you (a permission prompt, or an idle wait for input) the mod shows a one-line toast in the session, at most once every 20 seconds. It makes no sound: the shell hook above keeps the only sound and the desktop alert, so where both run you get the toast and the desktop alert together. The shell hook is also the whole alert on a Claude Code without plugin mods.
-- **Status pane.** `/anthology-status` opens a pane called Anthology. It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a line under the prompt keeps the count (`2 agents running, 1 waiting for approval`). Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
+- **Status pane.** `/anthology-status` opens a pane called Anthology. It lists the agents that run, the last five that finished and the permission prompts that wait for you, and a row above the prompt keeps the count (`● 2 running   ✓ 3 done   ✗ 1 failed   ! 1 needs you`, with the command on the right; `failed` counts failed and stopped agents). The row shows only while an agent runs or a prompt waits for you; finished agents alone draw no row. In a narrow window it drops the command, then done, then failed, then the word "running", and always keeps `needs you`. Times are on your machine's clock. The pane and the row draw plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
 
 The pane and the toast name a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
 
@@ -251,7 +251,7 @@ Approvals come first because nothing moves until you answer them. A subagent's a
 
 Not yet: the design's block of open pull requests and their CI status (it needs `gh`) is deferred; the pane does not show it.
 
-Switches: `ANTHOLOGY_NOTIFY=0` turns off the alert (the shell hook's switch too), and `ANTHOLOGY_MODS=0` turns off every anthology mod, this pane and its status line included. Set either in the `env` block of `~/.claude/settings.json`.
+Switches: `ANTHOLOGY_NOTIFY=0` turns off the alert (the shell hook's switch too), and `ANTHOLOGY_MODS=0` turns off every anthology mod, this pane and its row above the prompt included. Set either in the `env` block of `~/.claude/settings.json`.
 
 ### Read-only commands without a prompt
 
