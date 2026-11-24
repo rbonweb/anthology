@@ -10,7 +10,8 @@
 //   - uncommitted files in the agent's own worktree (from git).
 // Two items are reminders, never gaps. They ride in a block a gap raised and never raise one:
 //   - the project map, when the report names a new, removed or renamed piece and does not deal
-//     with the map (updated it, "no map", "map not needed", "map is missing");
+//     with the map (updated it, "map not needed", or "no map" / "map is missing" when the map
+//     file is really absent in the agent's folder, which `$.fs.exists` tells);
 //   - leftovers, when the report starts containers, volumes or temp files and does not say they
 //     were removed. Never for the docs-writer.
 // A report with no gap is delivered as written, with no block.
@@ -52,7 +53,12 @@ const ATTRIBUTION = /^[\s>*\-\u{1F916}]*(?:co-authored-by:|generated with\b)[^\n
 const REWIRED =
   /\b(?:new|added|created|removed|deleted|renamed|moved|rewired)\b[^.\n]{0,40}?(?:\b(?:modules?|commands?|hooks?|agents?|crates?|scripts?|skills?|mods?)\b|[\w/-]+\.(?:ts|tsx|js|jsx|rs|py|sh|md|json|toml|ya?ml)\b)/i
 const MAP_DEALT_WITH =
-  /project[- ]map|reference-project-map|\bno (?:project )?map\b|\bmap\b[^.\n]{0,20}\b(?:not needed|unneeded|missing|updated|exists)\b/i
+  /project[- ]map|reference-project-map|\bmap\b[^.\n]{0,20}\b(?:not needed|unneeded|updated|exists)\b/i
+// A claim that the map is not there ("no map yet", "the project map is missing"). It deals with the
+// map only when the file really is absent in the agent's folder (see mapIsThere).
+const MAP_ABSENT =
+  /\bno (?:project[- ])?map\b|\b(?:project[- ])?map\b[^.\n]{0,20}\b(?:missing|absent|not found)\b|\b(?:missing|absent)\b[^.\n]{0,20}\b(?:project[- ])?map\b/gi
+const MAP_FILE = '.claude/memory/reference-project-map.md'
 
 // Leftover reminder: something was started, and no removal said.
 const STARTED =
@@ -70,9 +76,15 @@ function without(text: string, res: readonly RegExp[]): string {
 
 /**
  * What the report text says about itself. `gaps` raise the block; `reminders` ride in it. `kind` is
- * the agent type, which decides whether leftovers are asked about at all.
+ * the agent type, which decides whether leftovers are asked about at all. `mapExists` is whether the
+ * map file is in the agent's folder: only `false` lets a "map missing" claim count; `undefined`
+ * (not known) does not.
  */
-export function check(text: string, kind: string): { gaps: string[]; reminders: string[] } {
+export function check(
+  text: string,
+  kind: string,
+  mapExists?: boolean,
+): { gaps: string[]; reminders: string[] } {
   const gaps: string[] = []
   const reminders: string[] = []
   const commitText = without(text, [NOT_COMMITTED])
@@ -83,7 +95,11 @@ export function check(text: string, kind: string): { gaps: string[]; reminders: 
   if (ATTRIBUTION.test(text)) {
     gaps.push('the report carries attribution lines (Co-Authored-By / Generated with); commits and PRs must not')
   }
-  if (REWIRED.test(text) && !MAP_DEALT_WITH.test(text)) {
+  // "No map" / "map missing" is cut out first, so "project map" inside it counts for nothing; it
+  // stands as dealing with the map only when the file is known to be absent.
+  const mapDealt =
+    MAP_DEALT_WITH.test(without(text, [MAP_ABSENT])) || (mapExists === false && text.search(MAP_ABSENT) >= 0)
+  if (REWIRED.test(text) && !mapDealt) {
     reminders.push('the report names new, removed or renamed pieces: update the project map, or say it needs none')
   }
   if (kind !== 'anthology:docs-writer' && STARTED.test(text) && !CLEANED.test(text)) {
@@ -134,6 +150,23 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
 }
 
 /**
+ * Whether the project map file is in the agent's own folder, asked only when the report names a
+ * piece and claims the map is not there (nothing else needs the answer). The folder comes from
+ * `$.agent.list()` as in dirtyFiles; it may be the session folder, which is then the agent's. Not
+ * known (no such agent, no folder, a failing lookup) is undefined, which leaves the claim unproven.
+ */
+async function mapIsThere($: EngineInterface, agentId: string, text: string): Promise<boolean | undefined> {
+  if (!REWIRED.test(text) || text.search(MAP_ABSENT) < 0) return undefined
+  try {
+    const agent = (await $.agent.list()).find(a => a.id === agentId)
+    if (!agent?.cwd) return undefined
+    return await $.fs.exists(`${agent.cwd.replace(/\/+$/, '')}/${MAP_FILE}`)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * This feature's part of the one `agent.report` hook (index.ts registers the event once, calls
  * `next` once and hands `r`, what it resolved to, to each feature). Returns `r` as it is, or `r`
  * with the block appended. It may throw: index.ts then keeps `r`.
@@ -143,7 +176,7 @@ export async function afterworkReport($: EngineInterface, e: AgentReportInput, r
   if (e.parentAgentId !== undefined || e.status !== 'completed' || !WRITERS.has(e.subagentType)) return r
   if (r.text.trim() === '') return r
   if ((await modsOff($)) || (await $.env.get('ANTHOLOGY_AFTERWORK')) === '0') return r
-  const { gaps, reminders } = check(r.text, e.subagentType)
+  const { gaps, reminders } = check(r.text, e.subagentType, await mapIsThere($, e.agentId, r.text))
   const dirty = await dirtyFiles($, e.agentId)
   if (dirty !== undefined) gaps.push(dirty)
   if (gaps.length === 0) return r

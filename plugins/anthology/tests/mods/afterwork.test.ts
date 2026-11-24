@@ -23,6 +23,8 @@ type World = {
   git?: (run: Run) => ProcessRunResult | Promise<ProcessRunResult>
   /** What core says of the report, beside its text. */
   review?: { review: 'flagged'; warning: string }
+  /** The paths that exist for `fs.exists`; any other path does not. */
+  files?: { includes(path: string): boolean }
 }
 
 const CLEAN: ProcessRunResult = {
@@ -44,6 +46,7 @@ function engine(on: On, w: World = {}) {
   on('fs.stat', (_$, e) => ({
     value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path },
   }))
+  on('fs.exists', (_$, e) => ({ value: w.files?.includes(e.path) ?? false }))
   on('process.run', async (_$, e) => {
     runs.push(e)
     return { value: await (w.git ?? (() => CLEAN))(e) }
@@ -171,11 +174,73 @@ test('the map reminder shows only for a named new, removed or renamed piece, and
   expect(r.text).toContain('Reminder: ')
   expect(r.text).toContain('project map')
   expect((await $.agent.report(report('Did the thing.'))).text).not.toContain('Reminder')
-  for (const said of ['No project map exists.', 'map not needed', 'There is no map.', 'The map is missing.', 'Updated the project map.']) {
+  for (const said of ['map not needed', 'Updated the project map.', 'Updated reference-project-map.md.']) {
     const t = await $.agent.report(report(`${base}\n${said}`))
     expect(t.text).toContain(CHECK)
     expect(t.text).not.toContain('Reminder')
   }
+})
+
+// The agent folder of IN_WORKTREE (below), and the map in it.
+const MAP = '/work/repo/.claude/worktrees/agent-1/.claude/memory/reference-project-map.md'
+const ABSENT_CLAIMS = [
+  'No project map exists.',
+  'There is no map.',
+  'The map is missing.',
+  'Project map missing in this worktree.',
+  'No map yet.',
+]
+const MAP_BASE = 'Changes: Added hooks/mods/x.ts, renamed the build command.'
+
+test('a "map missing" claim counts as dealing with the map only when the file is absent in the agent folder', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), files: [] })
+  for (const said of ABSENT_CLAIMS) {
+    const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
+    expect(r.text).toContain(CHECK)
+    expect(r.text).not.toContain('Reminder')
+  }
+})
+
+test('a "map missing" claim does not count when the map is there, and the reminder stays', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), files: [MAP] })
+  for (const said of ABSENT_CLAIMS) {
+    const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
+    expect(r.text).toContain('Reminder: ')
+    expect(r.text).toContain('project map')
+  }
+})
+
+test('a "map missing" claim does not count when the agent folder is not known', async ($, on) => {
+  engine(on, { agents: () => [], files: [] })
+  for (const said of ABSENT_CLAIMS) {
+    const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
+    expect(r.text).toContain('Reminder: ')
+  }
+})
+
+test('the map is looked up at the agent folder, never the session folder', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), files: ['/work/repo/.claude/memory/reference-project-map.md'] })
+  const r = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(r.text).not.toContain('Reminder')
+})
+
+test('a map that is there does not undo a report that says it updated the map', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), files: [MAP] })
+  const r = await $.agent.report(report(`${MAP_BASE}\nUpdated the project map.`))
+  expect(r.text).not.toContain('Reminder')
+  const said = await $.agent.report(report(`${MAP_BASE}\nThe map is missing, so I did not update it.`))
+  expect(said.text).toContain('Reminder: ')
+})
+
+test('a failing map lookup leaves the claim unverified', async ($, on) => {
+  const broken = {
+    includes: (): boolean => {
+      throw new Error('no fs')
+    },
+  }
+  engine(on, { ...IN_WORKTREE(), files: broken })
+  const r = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(r.text).toContain('Reminder: ')
 })
 
 test('the leftover reminder needs a started container, volume or temp file with no removal said', async ($, on) => {

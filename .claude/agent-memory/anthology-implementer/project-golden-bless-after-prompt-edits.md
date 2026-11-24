@@ -1,12 +1,13 @@
 ---
 name: 'Agent prompt edits need a startup-budget golden bless'
-description: 'Editing agent prompts drifts only the dev.startup-budget golden; how to check and bless it'
+description: 'Editing agent prompts drifts dev.startup-budget, and dev.upstream-watch when the scout budget moves; how to check and bless'
 metadata:
   type: project
-  modified: 2026-11-22
+  modified: 2026-11-24
 ---
 
-Changing any plugins/anthology/agents/*.md file changes the byte counts that anthology-dev startup-budget prints, so the dev.startup-budget golden drifts. The routing guide edit alone did not drift hook.session-start.
-Check with scripts/dev.sh golden check --all --show 3 (it takes several minutes; run it in the background), then scripts/dev.sh golden bless --surface dev.startup-budget. Run the bless after the last prompt edit, or it records stale numbers.
-In the container, scripts/rust-test.sh run cargo test --locked -p repo-tests -p anthology-dev -p anthology-runtime --test roster --test startup_budget --test session_start works; cargo accepts only one positional test-name filter, so filter by --test instead.
+Changing any plugins/anthology/agents/*.md file changes the byte counts that anthology-dev startup-budget prints, so the dev.startup-budget golden drifts. Raising a BUDGET row (scout, reviewer...) also drifts dev.upstream-watch: its main-op cases print the real BUDGET table from crates/anthology-dev/src/startup_budget.rs, even though the surface file crates/difftest/src/surfaces/dev_upstream_watch.rs pins its own table. The routing guide edit alone did not drift hook.session-start.
+Check with scripts/dev.sh golden check --surface dev.startup-budget,dev.upstream-watch (one comma list; two --surface flags are refused; about 3 minutes, run it in the background and wait with timeout 170 docker wait). Then scripts/dev.sh golden bless --surface dev.startup-budget,dev.upstream-watch. Run the bless after the last prompt edit, or it records stale numbers.
+The budget table is in three files: crates/anthology-dev/src/startup_budget.rs, crates/anthology-dev/tests/startup_budget.rs, crates/repo-tests/tests/roster.rs. Roster tests also pin the Shell and Do wording, so a prompt wording change needs their needles updated.
+In the container, scripts/rust-test.sh test -p repo-tests -p anthology-dev --no-fail-fast runs everything; without --no-fail-fast cargo stops at the first failing test binary.
 Why: avoids a red CI difftest job on a prompt-only change.

@@ -61,8 +61,8 @@ mod budget {
         ("implementer", 26561),
         ("debugger", 22167),
         ("reviewer", 17815), // GC-13 16672, plus the Shell section
-        ("scout", 7087),     // GC-13 5944, plus the Shell section
-        ("docs-writer", 31376),
+        ("scout", 7158),     // GC-13 5944, plus the Shell section
+        ("docs-writer", 31560),
         ("ui-designer", 128097),
         ("ui-reviewer", 65986),
         ("product-planner", 102779),
@@ -629,6 +629,30 @@ mod roster_test {
         );
     }
 
+    // Agents once read `~/.claude/agent-memory/...` and called the repo's notes missing, so every
+    // Memory section says where its notes live.
+    #[test]
+    fn test_memory_notes_live_in_the_repo_working_folder() {
+        each_agent(
+            |_| true,
+            |spec, p| {
+                let Some((_, _, memory)) = load_section(spec.name, "Memory", p) else {
+                    return;
+                };
+                expect_in(
+                    p,
+                    &format!(
+                        "Your notes are the repo's `.claude/agent-memory/anthology-{}/` under your \
+                         working folder, never `~/.claude`.",
+                        spec.name
+                    ),
+                    &memory,
+                    "Memory",
+                );
+            },
+        );
+    }
+
     // `anthology-mem save` writes the indexed frontmatter and regenerates MEMORY.md; a heredoc or
     // redirect never matches the `Bash(anthology-mem save *)` allow rule.
     #[test]
@@ -819,8 +843,8 @@ mod roster_test {
             "Delete only literal paths, never `rm -rf $VAR` or a glob.",
             "never `sleep N`",
             "never wait with Monitor (it returns at once)",
-            "`timeout` parameter",
-            "`run_in_background`",
+            "A foreground Bash call is moved to the background after 180 s, whatever its `timeout` says",
+            "`timeout 170 <blocking command>`",
             "`gh run watch <id>`",
             "\"no checks reported\" right after a push means CI has not started",
             "Never end your turn while a background command or Monitor you started is running.",
@@ -905,9 +929,8 @@ mod roster_test {
                 };
                 for needle in [
                     "Waiting: never `sleep N`, and never wait with Monitor (it returns at once).",
-                    "in the foreground with the Bash `timeout` parameter (10-minute cap).",
-                    "start it with `run_in_background`, keep working,",
-                    "(`gh pr checks <n> --watch`, `gh run watch <id>`, `docker wait <name>`)",
+                    "so block in chunks: `timeout 170 <blocking command>` (`gh pr checks <n> --watch`, \
+                     `gh run watch <id>`, `docker wait <name>`), repeated until done.",
                 ] {
                     expect_in(p, needle, &rules, "Shell");
                 }
@@ -973,6 +996,8 @@ mod roster_test {
                     "Project map: when your change adds, removes or rewires a piece, update \
                      `.claude/memory/reference-project-map.md` in your final commit",
                     "within its size budget",
+                    "Read `.claude/memory/reference-project-map.md` in your working folder first. \
+                     Call it missing only after that Read fails, and quote the error.",
                 ] {
                     expect_in(p, needle, &rules, "Do");
                 }
