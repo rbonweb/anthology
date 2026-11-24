@@ -53,13 +53,17 @@ async function isInteractive($: EngineInterface): Promise<boolean> {
 
 /**
  * An embedded host: a program drives the session through the SDK and nobody works at it, even when
- * a surface is attached. Same rule as the guard's host check: the mode is not `full` and either no
- * person attends (`CLAUDE_CODE_SESSION_ATTENDED` is `0`) or the entrypoint starts with `sdk-`.
+ * a surface is attached. Same rule as the guard's host check: the mode is not `full`, and
+ * `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` (embedded) or `1` (not). Otherwise the
+ * entrypoint decides: it starts with `sdk-`. An interactive `claude` that an SDK process started
+ * inherits an `sdk-*` entrypoint, but Claude Code recomputes the attended flag for each session.
  * Read through `$.env.get`: `process` does not exist in a mod.
  */
 async function isEmbeddedHost($: EngineInterface): Promise<boolean> {
   if ((await $.env.get('ANTHOLOGY_HOST_MODE')) === 'full') return false
-  if ((await $.env.get('CLAUDE_CODE_SESSION_ATTENDED')) === '0') return true
+  const attended = await $.env.get('CLAUDE_CODE_SESSION_ATTENDED')
+  if (attended === '0') return true
+  if (attended === '1') return false
   return ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) ?? '').startsWith('sdk-')
 }
 

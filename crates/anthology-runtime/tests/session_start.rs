@@ -3309,8 +3309,9 @@ mod host_mode {
         let hosts = [
             ("sdk-ts", Some("0")),
             ("sdk-cli", None),
-            // the entrypoint prefix marks an SDK build even when the flag says attended
-            ("sdk-py", Some("1")),
+            // the entrypoint prefix marks an SDK build when the attended flag says nothing
+            ("sdk-py", None),
+            ("sdk-py", Some("")),
             // a custom host nobody watches: the attended flag alone marks it
             ("hostapp", Some("0")),
         ];
@@ -3346,7 +3347,9 @@ mod host_mode {
     fn cli_and_vscode_get_the_guide() {
         let f = Fx::new();
         f.mark_setup(None);
-        for entrypoint in ["cli", "claude-vscode"] {
+        // `sdk-ts` is an interactive `claude` that an SDK process started and that inherited the
+        // entrypoint: Claude Code recomputes attended, so the person at it keeps the guide
+        for entrypoint in ["cli", "claude-vscode", "sdk-ts"] {
             let env = f
                 .env()
                 .with("CLAUDE_CODE_ENTRYPOINT", entrypoint)
@@ -3503,6 +3506,105 @@ mod host_mode {
         versions(&f, "0.5.0-rc.1", "0.5.0");
         let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
         assert_eq!(lines(&out), vec![stale_line("0.5.0-rc.1", "0.5.0")]);
+    }
+
+    /// A project-scope install of anthology for `proj` at `project` and a user-scope one at
+    /// `user`. The loaded plugin (manifest at `loaded`) sits at the install path of `which`.
+    fn scoped_versions(f: &Fx, proj: &Path, which: &str, loaded: &str, project: &str, user: &str) {
+        let user_dir = f.tmp().join("user-install");
+        fs::create_dir_all(&user_dir).unwrap();
+        let (project_path, user_path) = match which {
+            "project" => (f.plugin().to_path_buf(), user_dir),
+            _ => (f.tmp().join("project-install"), f.plugin().to_path_buf()),
+        };
+        write(
+            &f.plugin().join(".claude-plugin/plugin.json"),
+            &format!(r#"{{"name": "anthology", "version": "{loaded}"}}"#),
+            None,
+        );
+        write(
+            &f.config().join("plugins/installed_plugins.json"),
+            &format!(
+                r#"{{"version": 2, "plugins": {{
+                "anthology@anthology": [
+                  {{"scope": "user", "installPath": {}, "version": "{user}"}},
+                  {{"scope": "project", "projectPath": {}, "installPath": {}, "version": "{project}"}}],
+                "anthology-guardrails@anthology": [{{"scope": "user", "installPath": {}, "version": "0.2.9"}}]}}}}"#,
+                jstr(&p(&user_path)),
+                jstr(&p(proj)),
+                jstr(&p(&project_path)),
+                jstr(&p(&f.c.guard)),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn a_project_install_pinned_older_than_the_user_one_is_not_stale() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // the session loaded the project's own pin: nothing newer for that scope
+        scoped_versions(&f, &proj, "project", "0.4.0", "0.4.0", "0.5.0");
+        for source in ["compact", "resume"] {
+            let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", source)]);
+            assert!(!has_msg(&out), "{source}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_stale_check_compares_the_loaded_scope_with_its_own_entry() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // loaded from the user install; its own entry moved on, the project pin is older
+        scoped_versions(&f, &proj, "user", "0.4.1", "0.3.0", "0.5.0");
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.1", "0.5.0")]);
+        // loaded from the project install; its own entry moved on, the user one did not
+        scoped_versions(&f, &proj, "project", "0.4.0", "0.4.2", "0.4.1");
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.0", "0.4.2")]);
+    }
+
+    #[test]
+    fn release_candidates_of_one_version_are_ordered_by_number() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // a numeric order, not a text one
+        for (loaded, installed) in [("0.2.9-rc.1", "0.2.9-rc.2"), ("0.2.9-rc.2", "0.2.9-rc.10")] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert_eq!(lines(&out), vec![stale_line(loaded, installed)]);
+        }
+        for (loaded, installed) in [
+            ("0.2.9-rc.2", "0.2.9-rc.1"),
+            ("0.2.9-rc.10", "0.2.9-rc.2"),
+            ("0.2.9-rc.2", "0.2.9-rc.2"),
+        ] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{loaded} {installed}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn build_tags_of_one_version_are_not_ordered() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // a sha says nothing about age, so neither a sha nor a release candidate against a sha warns
+        for (loaded, installed) in [
+            ("0.2.9-f99aa8723fd9", "0.2.9-0123456789ab"),
+            ("0.2.9-0123456789ab", "0.2.9-f99aa8723fd9"),
+            ("0.2.9-rc.1", "0.2.9-f99aa8723fd9"),
+            ("0.2.9-f99aa8723fd9", "0.2.9-rc.1"),
+        ] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{loaded} {installed}: {out:?}");
+        }
     }
 
     #[test]

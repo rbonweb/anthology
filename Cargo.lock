@@ -726,6 +726,7 @@ version = "0.2.2"
 dependencies = [
  "anthology-core",
  "anthology-dev",
+ "anthology-guard",
  "anthology-memory",
  "anthology-pycompat",
  "anthology-testkit",

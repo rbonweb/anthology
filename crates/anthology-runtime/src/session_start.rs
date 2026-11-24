@@ -35,6 +35,9 @@
 //! **A stale plugin.** On `compact` and `resume` the session keeps running the plugin version it
 //! loaded. When that version (from its `plugin.json`) is below the version in
 //! `installed_plugins.json`, [`stale_plugin_warning`] names the plugin and asks for a restart.
+//! It compares with the entry of the scope the session loaded from (found by install path), so a
+//! project install pinned older than the user one is not stale. Candidates `x.y.z-rc.N` are
+//! ordered by `N`; any other suffix (a sha) is not ordered.
 //!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
@@ -514,8 +517,19 @@ fn embedded_host(env: &Env) -> bool {
     )
 }
 
-/// `(major, minor, patch, is a release)`: a release is above its own prereleases.
-type VersionKey = (u64, u64, u64, bool);
+/// What follows the `x.y.z` of a plugin version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pre {
+    /// `-rc.N`: candidates of one version are ordered by `N`.
+    Rc(u64),
+    /// Any other `-pre`, such as a build's sha: it says nothing about age.
+    Other,
+    /// No suffix: a release is above its own prereleases.
+    Release,
+}
+
+/// `(major, minor, patch)` and the suffix.
+type VersionKey = ((u64, u64, u64), Pre);
 
 /// The ordering key of a plugin version (`x.y.z` or `x.y.z-pre`). `None` for anything else, so
 /// an unreadable version never warns.
@@ -523,12 +537,31 @@ fn version_key(v: &str) -> Option<VersionKey> {
     if !is_version(v) {
         return None;
     }
-    let (core, release) = match v.split_once('-') {
-        Some((c, _)) => (c, false),
-        None => (v, true),
+    let (core, pre) = match v.split_once('-') {
+        Some((c, p)) => (
+            c,
+            p.strip_prefix("rc.")
+                .and_then(|n| n.parse().ok())
+                .map_or(Pre::Other, Pre::Rc),
+        ),
+        None => (v, Pre::Release),
     };
     let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
-    Some((parts.next()??, parts.next()??, parts.next()??, release))
+    Some(((parts.next()??, parts.next()??, parts.next()??), pre))
+}
+
+/// Whether version `a` is strictly newer than `b`. Prereleases of one `x.y.z` that are not both
+/// `rc.N` (two shas, or a sha and a candidate) are neither newer nor older.
+fn newer(a: VersionKey, b: VersionKey) -> bool {
+    if a.0 != b.0 {
+        return a.0 > b.0;
+    }
+    match (a.1, b.1) {
+        (Pre::Release, Pre::Release) => false,
+        (Pre::Release, _) => true,
+        (Pre::Rc(x), Pre::Rc(y)) => x > y,
+        _ => false,
+    }
 }
 
 /// A plugin name safe to print: what a marketplace allows.
@@ -542,8 +575,9 @@ fn is_plugin_name(name: &str) -> bool {
 
 /// The line for a session that runs an older plugin than the one installed: the plugin at `root`
 /// (the folder this session loaded) is below the newest `installed_plugins.json` entry of the
-/// same name that applies to `cwd` (user scope, or a project that holds `cwd`). `None` when
-/// either version cannot be read.
+/// same name that applies to `cwd` (user scope, or a project that holds `cwd`). When one entry's
+/// install path is `root`, only entries of its scope and project count. `None` when either
+/// version cannot be read.
 pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String> {
     let manifest = compat::read_json(&root.join(".claude-plugin").join("plugin.json"))?;
     let manifest = manifest.as_object()?;
@@ -560,33 +594,56 @@ pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String
     )?;
     let plugins = list.as_object()?.get("plugins")?.as_object()?;
     let prefix = format!("{name}@");
-    let mut newest: Option<(VersionKey, &str)> = None;
+    // Every entry that applies to `cwd`.
+    struct Install<'a> {
+        scope: Option<&'a str>,
+        project: Option<&'a str>,
+        path: Option<&'a str>,
+        version: &'a str,
+    }
+    let mut applicable: Vec<Install<'_>> = Vec::new();
     for (key, entries) in plugins.iter() {
         let Some(entries) = entries.as_array().filter(|_| key.starts_with(&prefix)) else {
             continue;
         };
         for entry in entries.iter().filter_map(Value::as_object) {
-            if matches!(
-                entry.get("scope").and_then(Value::as_str),
-                Some("project" | "local")
-            ) {
-                let project = entry.get("projectPath").and_then(Value::as_str);
-                if !project.is_some_and(|p| cwd.starts_with(p)) {
-                    continue;
-                }
+            let scope = entry.get("scope").and_then(Value::as_str);
+            let project = entry.get("projectPath").and_then(Value::as_str);
+            if matches!(scope, Some("project" | "local"))
+                && !project.is_some_and(|p| cwd.starts_with(p))
+            {
+                continue;
             }
             let Some(version) = entry.get("version").and_then(Value::as_str) else {
                 continue;
             };
-            if let Some(k) = version_key(version)
-                && newest.is_none_or(|(best, _)| k > best)
-            {
-                newest = Some((k, version));
-            }
+            applicable.push(Install {
+                scope,
+                project,
+                path: entry.get("installPath").and_then(Value::as_str),
+                version,
+            });
+        }
+    }
+    // The entry the session loaded from is the one whose install path is `root`. A project install
+    // pinned older than the user one is not stale, so compare only with entries of that scope and
+    // project. No entry has that path (it moved on to a newer folder): compare with all of them.
+    let loaded_from = applicable
+        .iter()
+        .find(|i| i.path.is_some_and(|p| Path::new(p) == root));
+    let mut newest: Option<(VersionKey, &str)> = None;
+    for install in &applicable {
+        if loaded_from.is_some_and(|l| l.scope != install.scope || l.project != install.project) {
+            continue;
+        }
+        if let Some(k) = version_key(install.version)
+            && newest.is_none_or(|(best, _)| newer(k, best))
+        {
+            newest = Some((k, install.version));
         }
     }
     let (key, installed) = newest?;
-    (loaded_key < key).then(|| {
+    newer(key, loaded_key).then(|| {
         format!(
             "anthology: this session loaded {name} {loaded}, but {installed} is installed; restart Claude Code to load the new version"
         )

@@ -73,7 +73,7 @@ These run only when you ask for them.
 
 ## Host mode
 
-When another program runs Claude Code for you (the Agent SDK, or `claude -p` in a script), nobody reads the session start. Anthology treats a session as embedded when `CLAUDE_CODE_SESSION_ATTENDED` is `0` or `CLAUDE_CODE_ENTRYPOINT` starts with `sdk-`. Interactive terminal and VS Code sessions are not embedded by default.
+When another program runs Claude Code for you (the Agent SDK, or `claude -p` in a script), nobody reads the session start. Anthology treats a session as embedded when `CLAUDE_CODE_SESSION_ATTENDED` is `0`. When that flag is `1`, the session is not embedded, whatever its entrypoint. Only when the flag is unset (or holds any other value) does an entrypoint that starts with `sdk-` mark an embedded session. So an interactive `claude` that an SDK process started, and that inherited an `sdk-*` entrypoint, keeps its guide. Interactive terminal and VS Code sessions are not embedded by default.
 
 In an embedded session the host brings its own prompt and Anthology adds none of its own:
 
