@@ -1233,8 +1233,16 @@ pub fn parser(env: &Env) -> Spec {
             .store_true()
             .help("machine-readable output")
     };
-    let mut save = Spec::command().allow_abbrev(false);
-    for flag in ["agent", "type", "slug", "name", "description"] {
+    let mut save = Spec::command().allow_abbrev(false).mutex(
+        true,
+        vec![
+            Arg::option(&["--agent"]).help("save into this agent's folder"),
+            Arg::option(&["--repo"])
+                .store_true()
+                .help("save into the repo's own memory (.claude/memory); never a user note"),
+        ],
+    );
+    for flag in ["type", "slug", "name", "description"] {
         let option = format!("--{flag}");
         save = save.arg(Arg::option(&[option.as_str()]).required());
     }
@@ -1301,6 +1309,23 @@ pub fn parser(env: &Env) -> Spec {
             "save",
             Some("save an agent memory note (no heredoc needed)"),
             save,
+        )
+        .parser(
+            "reindex",
+            Some("rewrite MEMORY.md from the notes (after a merge conflict, say)"),
+            Spec::command().allow_abbrev(false).mutex(
+                true,
+                vec![
+                    Arg::option(&["--agent"])
+                        .help("rewrite this agent's MEMORY.md (a roster name, e.g. scout)"),
+                    Arg::option(&["--repo"])
+                        .store_true()
+                        .help("rewrite the repo's .claude/memory/MEMORY.md"),
+                    Arg::option(&["--all"])
+                        .store_true()
+                        .help("rewrite the repo's and every agent's"),
+                ],
+            ),
         );
     Spec::new("anthology-mem")
         .description("Search and explore Anthology memory notes.")
@@ -1450,16 +1475,14 @@ fn repos_below_hint(cwd: &Path) -> Option<String> {
     ))
 }
 
-fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
-    let mut out = Out {
-        stdout: String::new(),
-        stderr: String::new(),
-    };
+/// The working folder and the root of the repo it is in. When there is none, the refusal is
+/// already in `out` and the command exits 1 (`save` and `reindex` work on the repo's files only).
+fn cwd_and_repo_root(env: &Env, deps: &MemDeps, out: &mut Out) -> Option<(PathBuf, PathBuf)> {
     let cwd = match cwd_of(deps) {
         Ok(c) => c,
         Err((ty, msg)) => {
-            uncaught(&mut out, ty, &msg);
-            return out.done(1);
+            uncaught(out, ty, &msg);
+            return None;
         }
     };
     let Some(root) = repo::repo_root(&cwd, env, deps.git) else {
@@ -1467,6 +1490,51 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         if let Some(hint) = repos_below_hint(&cwd) {
             out.err(&hint);
         }
+        return None;
+    };
+    Some((cwd, root))
+}
+
+fn run_reindex(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
+    let mut out = Out {
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    let Some((_, root)) = cwd_and_repo_root(env, deps, &mut out) else {
+        return out.done(1);
+    };
+    let agent = arg_str(p, "agent");
+    let target = if p.flag("all") {
+        save::ReindexTarget::All
+    } else if p.flag("repo") {
+        save::ReindexTarget::Repo
+    } else {
+        save::ReindexTarget::Agent(&agent)
+    };
+    match save::reindex(&root, target, &save::SaveDeps::default()) {
+        Ok(done) if done.is_empty() => out.line("nothing to reindex: no memory folder yet"),
+        Ok(done) => {
+            for (path, wrote) in done {
+                out.line(&format!(
+                    "{} {path}",
+                    if wrote { "reindexed" } else { "unchanged" }
+                ));
+            }
+        }
+        Err(SaveError(m)) => {
+            out.err(&format!("anthology-mem: {m}"));
+            return out.done(1);
+        }
+    }
+    out.done(0)
+}
+
+fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
+    let mut out = Out {
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    let Some((cwd, root)) = cwd_and_repo_root(env, deps, &mut out) else {
         return out.done(1);
     };
     let body = match p.os_str("body_file") {
@@ -1479,18 +1547,33 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         },
         None => arg_str(p, "body"),
     };
-    let saved: Result<Saved, SaveError> = save::save_note(
-        &root,
-        &arg_str(p, "agent"),
-        &arg_str(p, "type"),
-        &arg_str(p, "slug"),
-        &arg_str(p, "name"),
-        &arg_str(p, "description"),
-        &body,
-        p.flag("replace"),
-        None,
-        env,
-    );
+    let saved: Result<Saved, SaveError> = if p.flag("repo") {
+        save::save_repo_note_with(
+            &root,
+            &arg_str(p, "type"),
+            &arg_str(p, "slug"),
+            &arg_str(p, "name"),
+            &arg_str(p, "description"),
+            &body,
+            p.flag("replace"),
+            None,
+            env,
+            &save::SaveDeps::default(),
+        )
+    } else {
+        save::save_note(
+            &root,
+            &arg_str(p, "agent"),
+            &arg_str(p, "type"),
+            &arg_str(p, "slug"),
+            &arg_str(p, "name"),
+            &arg_str(p, "description"),
+            &body,
+            p.flag("replace"),
+            None,
+            env,
+        )
+    };
     let saved = match saved {
         Ok(s) => s,
         Err(SaveError(m)) => {
@@ -1666,6 +1749,9 @@ pub fn main(args: &[OsString], env: &Env, deps: &MemDeps) -> Output {
     let command = parsed.str("command").unwrap_or("").to_string();
     if command == "save" {
         return run_save(&parsed, env, deps);
+    }
+    if command == "reindex" {
+        return run_reindex(&parsed, env, deps);
     }
     if command == "search"
         && let Some(refused) = check_search_words(&parsed, env)
