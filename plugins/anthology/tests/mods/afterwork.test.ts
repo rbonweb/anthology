@@ -219,9 +219,70 @@ test('a "map missing" claim does not count when the agent folder is not known', 
 })
 
 test('the map is looked up at the agent folder, never the session folder', async ($, on) => {
-  engine(on, { ...IN_WORKTREE(), files: ['/work/repo/.claude/memory/reference-project-map.md'] })
+  // The agent folder holds its own .git, so the walk up never reaches the session folder's map.
+  engine(on, { ...IN_WORKTREE(), files: [`${WORKTREE}/.git`, '/work/repo/.claude/memory/reference-project-map.md'] })
   const r = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
   expect(r.text).not.toContain('Reminder')
+})
+
+// What an agent writes when it follows "call it missing only after that Read fails, and quote the
+// error": the claim names the file and carries the error text, so no leftover mention of the
+// project map may stand for dealing with it.
+const QUOTED_CLAIMS = [
+  'Map file not found at .claude/memory/reference-project-map.md',
+  'Read .claude/memory/reference-project-map.md: not found.',
+  'Read of /work/repo/.claude/memory/reference-project-map.md failed: File does not exist.',
+  'The project map does not exist.',
+  'project map: ENOENT',
+  "ENOENT: no such file or directory, open '/work/repo/.claude/memory/reference-project-map.md'",
+]
+
+test('a quoted read error is judged by whether the map exists, not by the words around it', async ($, on) => {
+  const w: World = { ...IN_WORKTREE(), files: { includes: p => p === MAP } }
+  engine(on, w)
+  for (const said of QUOTED_CLAIMS) {
+    const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
+    expect(r.text, said).toContain('Reminder: ')
+  }
+  w.files = { includes: () => false }
+  for (const said of QUOTED_CLAIMS) {
+    const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
+    expect(r.text, said).toContain(CHECK)
+    expect(r.text, said).not.toContain('Reminder')
+  }
+})
+
+test('a report that updated the map and says nothing of it missing is not asked about the lookup', async ($, on) => {
+  engine(on, { ...IN_WORKTREE(), files: { includes: () => false } })
+  const r = await $.agent.report(report(`${MAP_BASE}\nUpdated .claude/memory/reference-project-map.md; tests failed before the fix.`))
+  expect(r.text).not.toContain('Reminder')
+})
+
+const REPO = '/work/repo/.claude/worktrees/agent-1'
+const REPO_MAP = `${REPO}/.claude/memory/reference-project-map.md`
+const at = (cwd: string): World => ({ agents: () => [{ id: 'a1', cwd } as AgentInfo] })
+
+test('a subfolder cwd also looks in the parent folders, up to the first one that holds .git', async ($, on) => {
+  const w: World = { ...at(`${REPO}/crates/x`), files: { includes: p => p === REPO_MAP || p === `${REPO}/.git` } }
+  engine(on, w)
+  const there = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(there.text).toContain('Reminder: ')
+  w.files = { includes: p => p === `${REPO}/.git` }
+  const gone = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(gone.text).not.toContain('Reminder')
+})
+
+test('the walk up stops at the first folder with .git, so a map above the repo does not count', async ($, on) => {
+  const above = '/work/repo/.claude/worktrees/.claude/memory/reference-project-map.md'
+  engine(on, { ...at(`${REPO}/crates/x`), files: { includes: p => p === above || p === `${REPO}/.git` } })
+  const r = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(r.text).not.toContain('Reminder')
+})
+
+test('a trailing slash on the agent cwd does not matter', async ($, on) => {
+  engine(on, { ...at(`${REPO}/`), files: { includes: p => p === REPO_MAP } })
+  const there = await $.agent.report(report(`${MAP_BASE}\nThe map is missing.`))
+  expect(there.text).toContain('Reminder: ')
 })
 
 test('a map that is there does not undo a report that says it updated the map', async ($, on) => {

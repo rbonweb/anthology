@@ -31,6 +31,9 @@ const WRITERS: ReadonlySet<string> = new Set([
 /** The one git call must end well inside the hook's 10 s budget. */
 const GIT_TIMEOUT_MS = 2000
 
+/** The most folders mapIsThere looks in, from the agent's cwd upward. */
+const MAX_WALK = 32
+
 // Commit. A lettered sha stands alone; an all-digit one only beside commit, HEAD or sha wording.
 const SHA = /\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/
 const SHA_WORDED = /\b(?:commit(?:ted)?|head|sha)\b[^\n]{0,20}?\b[0-9a-f]{7,40}\b/i
@@ -54,10 +57,25 @@ const REWIRED =
   /\b(?:new|added|created|removed|deleted|renamed|moved|rewired)\b[^.\n]{0,40}?(?:\b(?:modules?|commands?|hooks?|agents?|crates?|scripts?|skills?|mods?)\b|[\w/-]+\.(?:ts|tsx|js|jsx|rs|py|sh|md|json|toml|ya?ml)\b)/i
 const MAP_DEALT_WITH =
   /project[- ]map|reference-project-map|\bmap\b[^.\n]{0,20}\b(?:not needed|unneeded|updated|exists)\b/i
-// A claim that the map is not there ("no map yet", "the project map is missing"). It deals with the
-// map only when the file really is absent in the agent's folder (see mapIsThere).
-const MAP_ABSENT =
-  /\bno (?:project[- ])?map\b|\b(?:project[- ])?map\b[^.\n]{0,20}\b(?:missing|absent|not found)\b|\b(?:missing|absent)\b[^.\n]{0,20}\b(?:project[- ])?map\b/gi
+// A claim that the map is not there: "no map yet", "the project map is missing", or the Read error an
+// agent quotes ("reference-project-map.md: not found", "... failed: File does not exist", ENOENT).
+// Where it matches anywhere, only the file decides (see mapIsThere): the words around it, which
+// often name the project map themselves, never stand for dealing with it. A word spans a sentence
+// at most 20 characters and never crosses a `.`; the file name carries its own `.md`.
+const MAP_WORD = String.raw`(?:project[- ])?map\b`
+const MAP_NAMED = String.raw`reference-project-map(?:\.md)?\b`
+const MAP_GONE = String.raw`(?:missing|absent|not found|not there|(?:does|do|did)\s+not\s+exist|(?:doesn't|don't|didn't)\s+exist|no such file|ENOENT)`
+const MAP_ABSENT = new RegExp(
+  [
+    String.raw`\bno (?:project[- ])?map\b`,
+    String.raw`\b${MAP_WORD}[^.\n]{0,20}\b${MAP_GONE}`,
+    String.raw`\b${MAP_GONE}\b[^.\n]{0,20}\b${MAP_WORD}`,
+    String.raw`${MAP_NAMED}[^.\n]{0,25}\b${MAP_GONE}`,
+    String.raw`\b(?:ENOENT|no such file)\b[^\n]{0,80}?${MAP_NAMED}`,
+    String.raw`${MAP_NAMED}[:\s]{0,3}(?:read\s+)?failed\b`,
+  ].join('|'),
+  'i',
+)
 const MAP_FILE = '.claude/memory/reference-project-map.md'
 
 // Leftover reminder: something was started, and no removal said.
@@ -95,10 +113,9 @@ export function check(
   if (ATTRIBUTION.test(text)) {
     gaps.push('the report carries attribution lines (Co-Authored-By / Generated with); commits and PRs must not')
   }
-  // "No map" / "map missing" is cut out first, so "project map" inside it counts for nothing; it
-  // stands as dealing with the map only when the file is known to be absent.
-  const mapDealt =
-    MAP_DEALT_WITH.test(without(text, [MAP_ABSENT])) || (mapExists === false && text.search(MAP_ABSENT) >= 0)
+  // A claim that the map is absent is judged by the file alone, never by leftover mentions of the
+  // map: it deals with the map only when the file is known to be absent.
+  const mapDealt = MAP_ABSENT.test(text) ? mapExists === false : MAP_DEALT_WITH.test(text)
   if (REWIRED.test(text) && !mapDealt) {
     reminders.push('the report names new, removed or renamed pieces: update the project map, or say it needs none')
   }
@@ -152,15 +169,24 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
 /**
  * Whether the project map file is in the agent's own folder, asked only when the report names a
  * piece and claims the map is not there (nothing else needs the answer). The folder comes from
- * `$.agent.list()` as in dirtyFiles; it may be the session folder, which is then the agent's. Not
- * known (no such agent, no folder, a failing lookup) is undefined, which leaves the claim unproven.
+ * `$.agent.list()` as in dirtyFiles; it may be the session folder, which is then the agent's. An
+ * agent working in a subfolder of its repo has the map above it, so the folders are walked upward
+ * from the cwd, up to and including the first one that holds `.git` (a folder or, in a worktree, a
+ * file); the map is there if any of them has it. Not known (no such agent, no folder, a failing
+ * lookup) is undefined, which leaves the claim unproven.
  */
 async function mapIsThere($: EngineInterface, agentId: string, text: string): Promise<boolean | undefined> {
-  if (!REWIRED.test(text) || text.search(MAP_ABSENT) < 0) return undefined
+  if (!REWIRED.test(text) || !MAP_ABSENT.test(text)) return undefined
   try {
     const agent = (await $.agent.list()).find(a => a.id === agentId)
     if (!agent?.cwd) return undefined
-    return await $.fs.exists(`${agent.cwd.replace(/\/+$/, '')}/${MAP_FILE}`)
+    let dir = agent.cwd.replace(/\/+$/, '')
+    for (let depth = 0; depth < MAX_WALK && dir !== ''; depth++) {
+      if (await $.fs.exists(`${dir}/${MAP_FILE}`)) return true
+      if (await $.fs.exists(`${dir}/.git`)) return false
+      dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))
+    }
+    return false
   } catch {
     return undefined
   }
