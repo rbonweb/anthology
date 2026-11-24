@@ -23,9 +23,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anthology_pycompat::json::{self, Value};
-use anthology_shell::Limits;
+use anthology_shell::{Limits, Opaque};
 
-use crate::check::{TOO_COMPLEX, TOO_COMPLEX_ID, Verdict, check_with};
+use crate::check::{TOO_COMPLEX, TOO_COMPLEX_EMBEDDED, TOO_COMPLEX_ID, Verdict, check_explained};
 
 /// The shim's allow token (GC-17), written with one `\n` on an allow in `--shim` mode only.
 pub const ALLOW_TOKEN: &str = "anthology-guard:allow:v1";
@@ -77,6 +77,12 @@ impl HookResult {
 
 /// The block line for a verdict, or `None` for an allow.
 pub fn block_line(verdict: Verdict) -> Option<String> {
+    block_line_for(verdict, false)
+}
+
+/// [`block_line`] for a host that may have no `/plugin` command (`embedded`, [`crate::host::embedded`]):
+/// the `(G0)` line then has no `/plugin disable` parenthetical. Every other line is the same.
+pub fn block_line_for(verdict: Verdict, embedded: bool) -> Option<String> {
     match verdict {
         Verdict::Allow => None,
         Verdict::Block(rule) => Some(format!(
@@ -85,9 +91,16 @@ pub fn block_line(verdict: Verdict) -> Option<String> {
             rule.message()
         )),
         Verdict::Incomplete => Some(LIMIT_LINE.to_string()),
-        Verdict::TooComplex => Some(format!(
-            "Blocked by anthology-guardrails ({TOO_COMPLEX_ID}): {TOO_COMPLEX}\n"
-        )),
+        Verdict::TooComplex => {
+            let message = if embedded {
+                TOO_COMPLEX_EMBEDDED
+            } else {
+                TOO_COMPLEX
+            };
+            Some(format!(
+                "Blocked by anthology-guardrails ({TOO_COMPLEX_ID}): {message}\n"
+            ))
+        }
     }
 }
 
@@ -99,6 +112,18 @@ pub fn decide(raw: &[u8], home: &str, shim: bool) -> HookResult {
 
 /// [`decide`] with explicit limits (a test forces a backtrack limit, GC-19).
 pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookResult {
+    decide_for(raw, home, shim, limits, false)
+}
+
+/// [`decide_with`] for a host: `embedded` ([`crate::host::embedded`]) drops the `/plugin disable`
+/// parenthetical from the `(G0)` line. The verdict, the exit code and the rule are the same either way.
+pub fn decide_for(
+    raw: &[u8],
+    home: &str,
+    shim: bool,
+    limits: &Limits,
+    embedded: bool,
+) -> HookResult {
     let verdict = catch_unwind(AssertUnwindSafe(|| {
         let data = match json::loads_bytes_lossy(raw) {
             Ok(data) => data,
@@ -120,23 +145,16 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         }
         let null = Value::Null;
         let tool_input = map.get("tool_input").unwrap_or(&null);
-        let verdict = check_with(tool_name, tool_input, home, limits);
+        let (verdict, cause) = check_explained(tool_name, tool_input, home, limits);
         let command = tool_input
             .as_object()
             .and_then(|o| o.get("command"))
             .and_then(Value::as_str)
             .filter(|_| verdict == Verdict::TooComplex);
-        let mut hints = String::new();
-        if command.is_some_and(quoted_script_expansion) {
-            hints.push_str(QUOTED_SCRIPT_HINT);
-        }
-        if command.is_some_and(lone_backtick_in_double_quotes) {
-            hints.push_str(LONE_BACKTICK_HINT);
-        }
-        (verdict, hints)
+        (verdict, hints_for(command, cause))
     }));
     match verdict {
-        Ok((v, hints)) => match block_line(v) {
+        Ok((v, hints)) => match block_line_for(v, embedded) {
             None => HookResult::allow(shim),
             Some(line) if !hints.is_empty() => {
                 HookResult::block(format!("{}{hints}\n", line.trim_end()))
@@ -146,6 +164,43 @@ pub fn decide_with(raw: &[u8], home: &str, shim: bool, limits: &Limits) -> HookR
         Err(_) => HookResult::block(PANIC_LINE.to_string()),
     }
 }
+
+/// The hints for a `(G0)` line: what the text of `command` shows (a double-quoted script with an
+/// expansion, a lone backtick) and what anthology-shell marked (`cause`, [`check_explained`]). Each hint
+/// comes at most once, however many ways it was found. Hints only: they change no verdict.
+fn hints_for(command: Option<&str>, cause: Option<Opaque>) -> String {
+    let mut hints: Vec<&str> = Vec::new();
+    let mut add = |hint: &'static str| {
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    };
+    if command.is_some_and(quoted_script_expansion) {
+        add(QUOTED_SCRIPT_HINT);
+    }
+    if command.is_some_and(lone_backtick_in_double_quotes) {
+        add(LONE_BACKTICK_HINT);
+    }
+    match cause {
+        Some(Opaque::DynamicCommandWord) => add(PROGRAM_HINT),
+        Some(Opaque::Eval | Opaque::ShellScriptFromExpansion) => add(QUOTED_SCRIPT_HINT),
+        Some(Opaque::Source) => add(SOURCE_HINT),
+        Some(Opaque::StdinShellUnreadable) => add(STDIN_SHELL_HINT),
+        _ => {}
+    }
+    hints.concat()
+}
+
+/// Added to the `(G0)` line when the program (or a command) comes from a variable or a substitution.
+pub const PROGRAM_HINT: &str =
+    ". The program comes from a variable or a substitution: write its path literally";
+
+/// Added to the `(G0)` line when a shell reads a script that the guard cannot see (a heredoc, a pipe).
+pub const STDIN_SHELL_HINT: &str = ". A shell that reads its script from a heredoc or pipe cannot be \
+     checked: run the commands directly, one per call";
+
+/// Added to the `(G0)` line when a command runs a file the guard cannot read (`source`, `. file`).
+pub const SOURCE_HINT: &str = ". A sourced file cannot be read: run its commands directly";
 
 /// Carve-out (c): added to the `(G0)` line when the command holds a double-quoted script with an expansion
 /// in it, which the outer shell fills in before the script runs, so the guard cannot read it.
@@ -291,23 +346,25 @@ pub fn hook_with(
     limits: &Limits,
     watchdog: Duration,
 ) -> HookResult {
-    run_hook(stdin, || home.to_string(), shim, limits, watchdog)
+    run_hook(stdin, || home.to_string(), shim, false, limits, watchdog)
 }
 
 /// [`hook`] for the CLI: `home` is resolved after the watchdog has started, so a slow passwd
-/// lookup (HOME unset) is under the watchdog too.
+/// lookup (HOME unset) is under the watchdog too. `embedded` is [`crate::host::embedded`].
 pub fn hook_resolving_home(
     stdin: &mut dyn Read,
     home: impl FnOnce() -> String,
     shim: bool,
+    embedded: bool,
 ) -> HookResult {
-    run_hook(stdin, home, shim, &Limits::default(), WATCHDOG)
+    run_hook(stdin, home, shim, embedded, &Limits::default(), WATCHDOG)
 }
 
 fn run_hook(
     stdin: &mut dyn Read,
     home: impl FnOnce() -> String,
     shim: bool,
+    embedded: bool,
     limits: &Limits,
     watchdog: Duration,
 ) -> HookResult {
@@ -320,7 +377,7 @@ fn run_hook(
     let home = home();
     let mut raw = Vec::new();
     let result = match stdin.read_to_end(&mut raw) {
-        Ok(_) => decide_with(&raw, &home, shim, limits),
+        Ok(_) => decide_for(&raw, &home, shim, limits, embedded),
         // Python's read raising meant "allow"; Rust cannot see the call, so it blocks (fail closed).
         Err(_) => HookResult::block(PANIC_LINE.to_string()),
     };
@@ -447,6 +504,37 @@ mod tests {
              fixed version ships if this keeps happening\n"
         );
         assert_eq!(ALLOW_TOKEN, "anthology-guard:allow:v1");
+    }
+
+    #[test]
+    fn a_hint_comes_once_and_only_for_a_named_cause() {
+        let quoted = r#"sh -c "echo $x""#;
+        for cause in [Opaque::Eval, Opaque::ShellScriptFromExpansion] {
+            // the text and the cause both call for it: one copy; the cause alone: one copy
+            assert_eq!(hints_for(Some(quoted), Some(cause)), QUOTED_SCRIPT_HINT);
+            assert_eq!(hints_for(Some("bash x"), Some(cause)), QUOTED_SCRIPT_HINT);
+        }
+        assert_eq!(hints_for(Some(quoted), None), QUOTED_SCRIPT_HINT);
+        assert_eq!(
+            hints_for(Some(quoted), Some(Opaque::DynamicCommandWord)),
+            format!("{QUOTED_SCRIPT_HINT}{PROGRAM_HINT}")
+        );
+        assert_eq!(hints_for(None, Some(Opaque::Source)), SOURCE_HINT);
+        assert_eq!(
+            hints_for(None, Some(Opaque::StdinShellUnreadable)),
+            STDIN_SHELL_HINT
+        );
+        // the other reasons name nothing, and no command and no cause names nothing
+        for cause in [
+            Opaque::DepthCap,
+            Opaque::InterpreterCode,
+            Opaque::UnknownWrapperOption,
+            Opaque::Unbalanced,
+            Opaque::RegexLimit,
+        ] {
+            assert_eq!(hints_for(Some("ls"), Some(cause)), "");
+        }
+        assert_eq!(hints_for(None, None), "");
     }
 
     #[test]
