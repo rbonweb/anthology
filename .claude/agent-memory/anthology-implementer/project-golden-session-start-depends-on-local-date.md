@@ -1,11 +1,11 @@
 ---
-name: 'Session-start and memory.sync goldens depend on the local date'
-description: 'The migrated-<date> file name makes the goldens fail on any other day; bless with a TZ that keeps the golden date'
+name: 'Session-start golden replay pins the day; compare a re-bless per case'
+description: 'The day-dependence is fixed (header pins the clock); how to prove a hook.session-start bless changed only the intended lines'
 metadata:
   type: project
-  modified: 2026-11-23
+  modified: 2026-11-24
 ---
 
-The hook.session-start and memory.sync goldens contain side-by-side file names such as project-x.migrated-2026-11-22.md. The date comes from the local clock (anthology-core clock::today_local, localtime_r), so cargo test -p difftest --test golden and golden check fail on every other day: about 24 hook.session-start and 18 memory.sync cases, all with only the date digits different.
-Why: build went red the day after the last bless and it looked like a leaked repo file; a merge also re-recorded 23 date-only cases that hid the real changes.
-How to apply: to bless or check on a later day, run the command inside the container with a POSIX TZ that gives the golden date, for example scripts/rust-test.sh run sh -c 'TZ=HST10 cargo run --locked --quiet -p anthology-dev -- golden bless --surface hook.session-start' (HST10 is UTC-10, so it is still the 22nd until 10:00 UTC on the 23rd; scripts/dev.sh cannot pass TZ). Then gunzip the old and new golden and compare per case id: only the cases you expect should differ.
+The hook.session-start and memory.sync goldens replay on the day recorded in the golden header (crates/difftest/src/golden.rs pin_day, legacy 2026-11-22), so bless and check give the same result on any day and no TZ trick is needed. An older version of this note said they failed on every other day; that is fixed.
+Why it matters: a re-bless rewrites every case that differs, so a reviewer cannot see the intent from the file alone.
+How to apply: keep the old gz in /tmp, bless with scripts/dev.sh golden bless --surface hook.session-start, then gunzip both and compare by case id (rows are id, case, expect, marks; large cases have case null). For a session-start text change, edit the old expect.stdout the way the code now does (for example drop one systemMessage line) and require it to equal the new one for every changed id. Count the changed ids and name the cause in the PR.
