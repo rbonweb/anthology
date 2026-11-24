@@ -1,0 +1,3 @@
+- Fix: the agents' waiting rule now fits Claude Code's 180 s limit on a subagent's foreground Bash call. They block in `timeout 170` chunks (`gh pr checks --watch`, `gh run watch`, `docker wait`) instead of relying on the `timeout` parameter or `run_in_background`.
+- Fix: the four writing agents read `.claude/memory/reference-project-map.md` in their working folder before calling the map missing, and quote the error when the read fails. Every agent's Memory section says its notes are the repo's `.claude/agent-memory/<agent>/`, never `~/.claude`.
+- Fix: the after-work check counts a report that says the project map is "missing" as dealing with the map only when the file is really absent in the agent's working folder.
