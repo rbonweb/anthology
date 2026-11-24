@@ -124,6 +124,40 @@ test('a headless run (no surface) is not refused', async ($, on) => {
   expect(ran).toEqual([`Write ${SRC}`])
 })
 
+// An embedded host (an SDK program that drives the session, nobody at a terminal) is never refused,
+// even when a surface is attached and the Agent tool is in the pool. The test names the variables
+// Claude Code sets: the entrypoint and whether a person attends the session.
+const SDK_HOST = { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', CLAUDE_CODE_SESSION_ATTENDED: '0' }
+
+test('skips an SDK host that has the Agent tool and a surface', async ($, on) => {
+  const ran = engine(on, { surfaces: ['terminal'], tools: ['Agent', 'Read'], env: SDK_HOST })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toBeUndefined()
+  expect((await edit($, SRC, lines(30), lines(30))).deny).toBeUndefined()
+  expect(ran).toHaveLength(2)
+})
+
+test('still refuses in cli with a surface', async ($, on) => {
+  const ran = engine(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ATTENDED: '1' } })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toContain('anthology:implementer')
+  expect(ran).toHaveLength(0)
+})
+
+test('still refuses in claude-vscode attended', async ($, on) => {
+  const ran = engine(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode', CLAUDE_CODE_SESSION_ATTENDED: '1' } })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toContain('anthology:implementer')
+  expect(ran).toHaveLength(0)
+})
+
+test('host mode full keeps the refusal', async ($, on) => {
+  const ran = engine(on, { env: { ...SDK_HOST, ANTHOLOGY_HOST_MODE: 'full' } })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toContain('anthology:implementer')
+  expect(ran).toHaveLength(0)
+})
+
 for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
   test(`the ${surface} surface counts as interactive`, async ($, on) => {
     engine(on, { surfaces: [surface] })

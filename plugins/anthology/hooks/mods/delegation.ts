@@ -8,7 +8,8 @@
 // Subagent calls (they carry an `agentId`) are never touched. A headless run (`claude -p`, the
 // SDK with nothing attached: `$.session.surfaces()` is empty) is never touched either, and
 // neither is a session whose tool pool has no `Agent` tool, since the lead could not hand the work
-// on. Nothing at `tool.call` tells a teammate in a pane of its own from a lead (an in-process
+// on, nor an embedded host (an SDK program drives the session; see `isEmbeddedHost`), whatever
+// surface is attached. Nothing at `tool.call` tells a teammate in a pane of its own from a lead (an in-process
 // teammate carries an `agentId` and is skipped already), so the `Agent` tool in the pool is the
 // rule there: a pane teammate that has it is treated as a lead.
 // This is a workflow rule, not a safety boundary: every hook fails open, and a Bash write
@@ -47,6 +48,18 @@ async function delegationOff($: EngineInterface): Promise<boolean> {
 /** A person can be at the session: some surface draws. Empty in a plain `-p` run. */
 async function isInteractive($: EngineInterface): Promise<boolean> {
   return (await $.session.surfaces()).length > 0
+}
+
+/**
+ * An embedded host: a program drives the session through the SDK and nobody works at it, even when
+ * a surface is attached. Same rule as the guard's host check: the mode is not `full` and either no
+ * person attends (`CLAUDE_CODE_SESSION_ATTENDED` is `0`) or the entrypoint starts with `sdk-`.
+ * Read through `$.env.get`: `process` does not exist in a mod.
+ */
+async function isEmbeddedHost($: EngineInterface): Promise<boolean> {
+  if ((await $.env.get('ANTHOLOGY_HOST_MODE')) === 'full') return false
+  if ((await $.env.get('CLAUDE_CODE_SESSION_ATTENDED')) === '0') return true
+  return ((await $.env.get('CLAUDE_CODE_ENTRYPOINT')) ?? '').startsWith('sdk-')
 }
 
 /** The lead can hand work on only when the session's tool pool has the Agent tool. */
@@ -223,6 +236,7 @@ export function registerDelegation(on: On): void {
 
   on('tool.call', { tool: ['Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
     if (e.agentId !== undefined || (await delegationOff($)) || !(await isInteractive($))) return next(e)
+    if (await isEmbeddedHost($)) return next(e)
     const file = field(e, e.tool === 'NotebookEdit' ? 'notebook_path' : 'file_path')
     if (await isLeadNote($, file)) return next(e)
     if (!(await canDispatch($))) return next(e)
