@@ -71,9 +71,8 @@ pub fn analyze_with_vars(
     vars: Option<&dyn PathVars>,
 ) -> Analysis {
     let (analysis, used) = run(command, home, limits, vars);
-    if !used.is_empty()
-        && !path_vars_allowed(command, &analysis.entries, &analysis.alternates, &used)
-    {
+    // nothing read: the analysis is the one without variables (and a second one is not needed)
+    if !used.is_empty() && !path_vars_allowed(command, &analysis.entries, &used) {
         return run(command, home, limits, None).0;
     }
     analysis

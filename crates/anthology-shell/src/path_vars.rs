@@ -44,12 +44,15 @@ pub const DIRECTORY_PREFIX_NAMES: &[&str] = crate::lexer::PREFIX_NAMES;
 ///   a blank or one of `;&|` before the quote, outside every quote) that is not a redirection target,
 ///   and is followed by a read NAME and the closing quote at the end of a word (the end of the text, a
 ///   blank or one of `;&|<>`). So no `$` inside single quotes, in another word, or in braces.
-/// - No read NAME appears in the text outside those words, or in any word of the analysis (`entries`
-///   and `alternates`, quotes removed, so `HO''ST` counts): a plain substring match, so it over-blocks.
+/// - No read NAME appears in the text outside those words, or in any word of the analysis (`entries`,
+///   quotes removed, so `HO''ST` counts): a plain substring match, so it over-blocks. An alternate
+///   reading holds the words of its entry, or the values as written.
+///
+/// The text check and the word check overlap: a `"$NAME"` form that is not a whole word leaves
+/// `$NAME` in a word of the analysis too, unless it is a redirection target. Each stands on its own.
 pub(crate) fn path_vars_allowed(
     command: &str,
     entries: &[Entry],
-    alternates: &[Entry],
     used: &BTreeMap<String, PathValue>,
 ) -> bool {
     const WORD: &[u8] = b"_./:=,+@%-";
@@ -63,7 +66,8 @@ pub(crate) fn path_vars_allowed(
     while k < b.len() {
         let c = b[k];
         if c == b'$' {
-            let opened = !single && double && k > 0 && b[k - 1] == b'"';
+            // a double quote is never open inside single quotes (the toggles below)
+            let opened = double && k > 0 && b[k - 1] == b'"';
             let at_start = opened && (k == 1 || BEFORE.contains(&b[k - 2]));
             let end = (k + 1..b.len())
                 .find(|&j| !(b[j].is_ascii_alphanumeric() || b[j] == b'_'))
@@ -97,13 +101,10 @@ pub(crate) fn path_vars_allowed(
         }
         k += 1;
     }
-    let runs_text = entries.iter().any(|e| {
-        let prog = match e.prog.as_str() {
-            "builtin" | "command" => e.args.first().map_or("", String::as_str),
-            prog => prog,
-        };
-        matches!(prog, "source" | "." | "eval")
-    });
+    // `builtin source` and `command .` are peeled to `source` and `.` before they become entries
+    let runs_text = entries
+        .iter()
+        .any(|e| matches!(e.prog.as_str(), "source" | "." | "eval"));
     !runs_text
         && used.keys().all(|name| {
             !command
@@ -111,7 +112,6 @@ pub(crate) fn path_vars_allowed(
                 .any(|(i, _)| !covered[i])
                 && !entries
                     .iter()
-                    .chain(alternates)
                     .flat_map(|e| &e.raw)
                     .any(|w| w.contains(name.as_str()))
         })
@@ -125,4 +125,43 @@ fn redirected(b: &[u8], quote: usize) -> bool {
     };
     matches!(b[p], b'<' | b'>')
         || (matches!(b[p], b'&' | b'|') && p > 0 && matches!(b[p - 1], b'<' | b'>'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text check alone, with no words of an analysis to fall back on.
+    fn text_allowed(command: &str) -> bool {
+        let value = PathValue {
+            value: "/opt/hosttool/bin/tool".into(),
+            canonical: "/opt/hosttool/bin/tool".into(),
+            executable: true,
+        };
+        let used = BTreeMap::from([("HOST_TOOL".to_string(), value)]);
+        path_vars_allowed(command, &[], &used)
+    }
+
+    #[test]
+    fn a_whole_double_quoted_word_ends_at_its_closing_quote() {
+        for command in [
+            r#""$HOST_TOOL" x"#,
+            r#""$HOST_TOOL""#,
+            r#"a;"$HOST_TOOL"|b"#,
+            r#""$HOST_TOOL">f"#,
+        ] {
+            assert!(text_allowed(command), "{command}");
+        }
+        for command in [
+            // not closed right after the name, though a word end follows
+            r#""$HOST_TOOL  x""#,
+            r#""$HOST_TOOL;x""#,
+            // closed, but the word goes on
+            r#""$HOST_TOOL"x"#,
+            r#""$HOST_TOOL"'x'"#,
+            r#""$HOST_TOOL""x""#,
+        ] {
+            assert!(!text_allowed(command), "{command}");
+        }
+    }
 }

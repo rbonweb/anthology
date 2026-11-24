@@ -20,10 +20,11 @@ pub const PATH_VARS_VAR: &str = "ANTHOLOGY_GUARD_PATH_VARS";
 
 /// Names that change how a shell runs or finds things, or that a shell sets itself from what a command
 /// reads (`_`, `REPLY`, `OPTARG`, `MATCH`, `MBEGIN`, `MEND`, `MAPFILE`), so a command can change them
-/// without spelling them. Carve-out (a)'s names are denied too ([`DIRECTORY_PREFIX_NAMES`]).
+/// without spelling them. Carve-out (a)'s names are denied too ([`DIRECTORY_PREFIX_NAMES`]), and
+/// `BASH_ENV` is one of the `BASH_*` names ([`DENIED_PREFIXES`]).
 const DENIED: &[&str] = &[
-    "PATH", "IFS", "PWD", "OLDPWD", "SHELL", "ENV", "BASH_ENV", "ZDOTDIR", "CDPATH", "FPATH",
-    "PS1", "PS2", "PS3", "PS4", "_", "REPLY", "OPTARG", "MATCH", "MBEGIN", "MEND", "MAPFILE",
+    "PATH", "IFS", "PWD", "OLDPWD", "SHELL", "ENV", "ZDOTDIR", "CDPATH", "FPATH", "PS1", "PS2",
+    "PS3", "PS4", "_", "REPLY", "OPTARG", "MATCH", "MBEGIN", "MEND", "MAPFILE",
 ];
 
 /// Name prefixes denied: prompts, the loaders' variables and the shells' own.
