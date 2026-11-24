@@ -566,6 +566,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.10] - 2026-11-24
+
 #### Added
 
 - The guard reads a `"$NAME"` program or script word as the file it names when you list NAME in
@@ -576,6 +578,7 @@ a new version section.
 - The guard's too-complex (G0) message now names its cause when it can (a program from a
   variable or glob, a heredoc or piped shell script, a sourced file or script), and drops the
   `/plugin disable` line when Claude Code runs inside an embedded host. See ADR-037.
+- Pin anthology-bin 0.2.2.
 
 ### [0.2.9] - 2026-11-23
 
