@@ -60,8 +60,8 @@ mod budget {
         ("architect", 23612),
         ("implementer", 26561),
         ("debugger", 22167),
-        ("reviewer", 17724), // GC-13 16672, plus the Shell section
-        ("scout", 6996),     // GC-13 5944, plus the Shell section
+        ("reviewer", 17815), // GC-13 16672, plus the Shell section
+        ("scout", 7087),     // GC-13 5944, plus the Shell section
         ("docs-writer", 31376),
         ("ui-designer", 128097),
         ("ui-reviewer", 65986),
@@ -818,10 +818,10 @@ mod roster_test {
             "no `cd`, no `git -C <other path>`",
             "Delete only literal paths, never `rm -rf $VAR` or a glob.",
             "never `sleep N`",
+            "never wait with Monitor (it returns at once)",
             "`timeout` parameter",
             "`run_in_background`",
-            "ToolSearch `select:Monitor`",
-            "never pass `query` to Monitor",
+            "`gh run watch <id>`",
             "\"no checks reported\" right after a push means CI has not started",
             "Never end your turn while a background command or Monitor you started is running.",
             "TaskStop each one and say none remain",
@@ -892,10 +892,11 @@ mod roster_test {
         );
     }
 
-    // A long `sleep` is blocked, a Monitor call fails when the deferred tool was never loaded,
-    // and a hung test run can sit for most of an hour. Every agent reads the same Shell rules.
+    // A long `sleep` is blocked, and Monitor returns at once without keeping a turn open, so
+    // each event and each turn end with background work running sends the lead another notice.
+    // Every agent waits in the foreground instead (the same Shell rules for all).
     #[test]
-    fn test_every_agent_waits_with_a_timeout_or_a_monitor() {
+    fn test_every_agent_waits_in_the_foreground_and_never_with_monitor() {
         each_agent(
             |_| true,
             |spec, p| {
@@ -903,10 +904,10 @@ mod roster_test {
                     return;
                 };
                 for needle in [
-                    "Waiting: never `sleep N`.",
-                    "Under 9 minutes, run in the foreground with the Bash `timeout` parameter;",
-                    "longer, use `run_in_background` and wait with Monitor",
-                    "(load it with ToolSearch `select:Monitor`; never pass `query` to Monitor)",
+                    "Waiting: never `sleep N`, and never wait with Monitor (it returns at once).",
+                    "in the foreground with the Bash `timeout` parameter (10-minute cap).",
+                    "start it with `run_in_background`, keep working,",
+                    "(`gh pr checks <n> --watch`, `gh run watch <id>`, `docker wait <name>`)",
                 ] {
                     expect_in(p, needle, &rules, "Shell");
                 }

@@ -24,7 +24,7 @@ Haiku scout. Find, run and summarize. Do not judge.
 - The Bash tool runs zsh: write `${rev}:path`, never `$rev:path` (zsh reads `:a`, `:c` and `:p` as modifiers). Quote every glob and any URL with `?`, or use the Grep and Glob tools.
 - One plain command per Bash call, from your working folder: no `cd`, no `git -C <other path>`, no `..` paths, loops or heredocs. Branch refs are shared.
 - Delete only literal paths, never `rm -rf $VAR` or a glob.
-- Waiting: never `sleep N`. Under 9 minutes, run in the foreground with the Bash `timeout` parameter; longer, use `run_in_background` and wait with Monitor (load it with ToolSearch `select:Monitor`; never pass `query` to Monitor). `gh event listen` is not available. "no checks reported" right after a push means CI has not started.
+- Waiting: never `sleep N`, and never wait with Monitor (it returns at once). Run checks in the foreground with the Bash `timeout` parameter (10-minute cap). For longer work, start it with `run_in_background`, keep working, then wait for it in the foreground with one blocking command (`gh pr checks <n> --watch`, `gh run watch <id>`, `docker wait <name>`). "no checks reported" right after a push means CI has not started.
 - Never end your turn while a background command or Monitor you started is running. Before the final report, TaskStop each one and say none remain.
 - Durations come only from timestamps you read.
 - A report names a settings key and its file; it never pastes settings JSON or permission-mode strings.

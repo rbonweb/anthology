@@ -281,8 +281,8 @@ mod lead_extras {
                 ("architect", 23612),
                 ("implementer", 26561),
                 ("debugger", 22167),
-                ("reviewer", 17724), // GC-13 16672, plus the Shell section
-                ("scout", 6996),     // GC-13 5944, plus the Shell section
+                ("reviewer", 17815), // GC-13 16672, plus the Shell section
+                ("scout", 7087),     // GC-13 5944, plus the Shell section
                 ("docs-writer", 31376),
                 ("ui-designer", 128097),
                 ("ui-reviewer", 65986),
