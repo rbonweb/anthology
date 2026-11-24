@@ -151,6 +151,77 @@ test('still refuses in claude-vscode attended', async ($, on) => {
   expect(ran).toHaveLength(0)
 })
 
+// The host rule as a table: [entrypoint, attended, mode, embedded]; `undefined` is an unset variable.
+// The attended flag decides when it is `0` or `1`; any other value leaves it to an `sdk-` entrypoint;
+// mode `full` wins. The guard (`host::embedded`) and the superpowers session-start hook hold the same
+// rule, and crates/repo-tests/tests/host_predicate.rs reads these rows to run both against them.
+// host-truth-table:begin
+const HOST_TABLE: [string | undefined, string | undefined, string | undefined, boolean][] = [
+  ['claude-vscode', '1', undefined, false],
+  ['cli', '1', undefined, false],
+  ['sdk-ts', '1', undefined, false],
+  ['sdk-cli', '1', undefined, false],
+  ['sdk-', '1', undefined, false],
+  ['sdk-ts', '0', undefined, true],
+  ['sdk-cli', '0', undefined, true],
+  ['hostapp', '0', undefined, true],
+  ['cli', '0', undefined, true],
+  [undefined, '0', undefined, true],
+  ['hostapp', undefined, undefined, false],
+  ['hostapp', '1', undefined, false],
+  ['sdk-cli', undefined, undefined, true],
+  ['sdk-', undefined, undefined, true],
+  ['sdk-cli', '', undefined, true],
+  ['sdk-cli', '00', undefined, true],
+  ['sdk-cli', 'true', undefined, true],
+  ['hostapp', '', undefined, false],
+  ['hostapp', '00', undefined, false],
+  ['hostapp', 'false', undefined, false],
+  ['hostapp', 'true', undefined, false],
+  ['cli', undefined, undefined, false],
+  ['cli', '', undefined, false],
+  ['cli', 'true', undefined, false],
+  ['claude-vscode', undefined, undefined, false],
+  ['claude-vscode', '', undefined, false],
+  ['claude-vscode', 'true', undefined, false],
+  ['SDK-cli', undefined, undefined, false],
+  ['xsdk-cli', undefined, undefined, false],
+  ['sdk', undefined, undefined, false],
+  ['', undefined, undefined, false],
+  ['sdk-ts', '0', 'full', false],
+  ['sdk-cli', undefined, 'full', false],
+  ['sdk-cli', '1', 'full', false],
+  ['hostapp', '0', 'full', false],
+  ['sdk-ts', '0', 'lean', true],
+  ['sdk-ts', '0', '', true],
+  ['sdk-ts', '0', 'FULL', true],
+  ['sdk-ts', '0', 'full ', true],
+  [undefined, undefined, 'lean', false],
+  [undefined, undefined, undefined, false],
+]
+// host-truth-table:end
+
+for (const [entrypoint, attended, mode, embedded] of HOST_TABLE) {
+  const label = JSON.stringify({ entrypoint, attended, mode })
+  test(`host rule ${label}: ${embedded ? 'embedded, not refused' : 'a person, refused'}`, async ($, on) => {
+    const env: { [name: string]: string } = {}
+    if (entrypoint !== undefined) env.CLAUDE_CODE_ENTRYPOINT = entrypoint
+    if (attended !== undefined) env.CLAUDE_CODE_SESSION_ATTENDED = attended
+    if (mode !== undefined) env.ANTHOLOGY_HOST_MODE = mode
+    engine(on, { env })
+    const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+    if (embedded) expect(w.deny).toBeUndefined()
+    else expect(w.deny).toContain('anthology:implementer')
+  })
+}
+
+test('an interactive claude that inherited an sdk entrypoint is still refused', async ($, on) => {
+  const ran = engine(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', CLAUDE_CODE_SESSION_ATTENDED: '1' } })
+  const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(w.deny).toContain('anthology:implementer')
+  expect(ran).toHaveLength(0)
+})
+
 test('host mode full keeps the refusal', async ($, on) => {
   const ran = engine(on, { env: { ...SDK_HOST, ANTHOLOGY_HOST_MODE: 'full' } })
   const w = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })

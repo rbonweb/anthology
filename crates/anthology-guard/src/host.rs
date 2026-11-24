@@ -12,7 +12,7 @@ pub const ENTRYPOINT_VAR: &str = "CLAUDE_CODE_ENTRYPOINT";
 
 /// The environment variable Claude Code sets to `1` in an interactive session and to `0` for `-p` and
 /// the SDK. It recomputes the value even when one is preset, so a host cannot hide behind a custom
-/// entrypoint.
+/// entrypoint, and an interactive session cannot inherit its parent's value.
 pub const ATTENDED_VAR: &str = "CLAUDE_CODE_SESSION_ATTENDED";
 
 /// The environment variable an operator sets to `full` to give an embedded host the full terminal
@@ -23,12 +23,21 @@ pub const MODE_VAR: &str = "ANTHOLOGY_HOST_MODE";
 const FULL: &str = "full";
 
 /// Whether the guard runs inside an embedding host: `mode` (the value of [`MODE_VAR`]) is not exactly
-/// `full`, and either `attended` (the value of [`ATTENDED_VAR`]) is exactly `0` or `entrypoint` (the
-/// value of [`ENTRYPOINT_VAR`]) starts with `sdk-`. An unset variable is `None`; an empty one is
+/// `full`, and the session is unattended. `attended` (the value of [`ATTENDED_VAR`]) decides when it is
+/// exactly `0` (embedded) or `1` (not). Otherwise, whether it is unset, empty or anything else, the
+/// `entrypoint` (the value of [`ENTRYPOINT_VAR`]) decides: embedded when it starts with `sdk-`. So an
+/// interactive `claude` that an SDK process started and that inherited an `sdk-*` entrypoint is not a
+/// host: Claude Code recomputes attended for each session. An unset variable is `None`; an empty one is
 /// `Some("")`, which matches nothing.
 pub fn embedded(entrypoint: Option<&str>, attended: Option<&str>, mode: Option<&str>) -> bool {
-    mode != Some(FULL)
-        && (attended == Some("0") || entrypoint.is_some_and(|e| e.starts_with("sdk-")))
+    if mode == Some(FULL) {
+        return false;
+    }
+    match attended {
+        Some("0") => true,
+        Some("1") => false,
+        _ => entrypoint.is_some_and(|e| e.starts_with("sdk-")),
+    }
 }
 
 /// [`embedded`] for this process: the three variables from its environment. A variable that is unset or

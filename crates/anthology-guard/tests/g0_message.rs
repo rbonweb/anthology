@@ -249,10 +249,15 @@ fn embedded_table() {
         Option<&'static str>,
         bool,
     );
-    let rows: [Row; 30] = [
+    let rows: [Row; 35] = [
         // an interactive session: attended 1, whatever the entrypoint
         (Some("claude-vscode"), Some("1"), None, false),
         (Some("cli"), Some("1"), None, false),
+        // attended decides when it is set: an `sdk-*` entrypoint that an interactive `claude`
+        // inherited from an SDK process does not make it a host
+        (Some("sdk-ts"), Some("1"), None, false),
+        (Some("sdk-cli"), Some("1"), None, false),
+        (Some("sdk-"), Some("1"), None, false),
         // `-p` and the SDK: attended 0
         (Some("sdk-ts"), Some("0"), None, true),
         (Some("sdk-cli"), Some("0"), None, true),
@@ -263,12 +268,13 @@ fn embedded_table() {
         (Some("hostapp"), Some("1"), None, false),
         (Some("cli"), Some("0"), None, true),
         (None, Some("0"), None, true),
-        // the `sdk-` entrypoint alone, with attended unset or not 0
+        // the `sdk-` entrypoint counts only when attended says nothing: unset, empty or not 0/1
         (Some("sdk-cli"), None, None, true),
         (Some("sdk-"), None, None, true),
-        (Some("sdk-cli"), Some("1"), None, true),
         (Some("sdk-cli"), Some(""), None, true),
-        // attended is exactly `0`
+        (Some("sdk-cli"), Some("00"), None, true),
+        (Some("sdk-cli"), Some("true"), None, true),
+        // attended is exactly `0` or `1`
         (Some("hostapp"), Some(""), None, false),
         (Some("hostapp"), Some("00"), None, false),
         (Some("hostapp"), Some("false"), None, false),
@@ -280,6 +286,7 @@ fn embedded_table() {
         // mode `full` turns it off, and only exactly `full`
         (Some("sdk-ts"), Some("0"), Some("full"), false),
         (Some("sdk-cli"), None, Some("full"), false),
+        (Some("sdk-cli"), Some("1"), Some("full"), false),
         (Some("hostapp"), Some("0"), Some("full"), false),
         (Some("sdk-ts"), Some("0"), Some("lean"), true),
         (Some("sdk-ts"), Some("0"), Some(""), true),
