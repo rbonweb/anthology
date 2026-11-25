@@ -33,15 +33,16 @@ from=$(git merge-base "$base" "$head") || full "no merge base of $base and $head
 files=$(git diff --name-only --no-renames "$from" "$head" --) || full "git diff failed"
 [ -n "$files" ] || full "no file changed"
 
-# The text of file $2 at revision $1 without the lines a version bump may change ($3: toml,
-# lock or json).
+# The text of file $2 at revision $1 with the lines a version bump may change ($3: toml, lock or
+# json) each replaced by one placeholder line: a changed version compares equal, but a version
+# line that is removed or added (or duplicated) leaves a different number of lines.
 versionless() {
     git show "$1:$2" | awk -v kind="$3" '
         /^\[/ { table = $0 }
         kind == "toml" && (table == "[package]" || table == "[workspace.package]") &&
-            /^version = "[^"]*"$/ { next }
-        kind == "lock" && /^version = "[^"]*"$/ { next }
-        kind == "json" && /^  "version": "[^"]*",?$/ { next }
+            /^version = "[^"]*"$/ { print "@version-line@"; next }
+        kind == "lock" && /^version = "[^"]*"$/ { print "@version-line@"; next }
+        kind == "json" && /^  "version": "[^"]*",?$/ { print "@version-line@"; next }
         { print }'
 }
 

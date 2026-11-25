@@ -253,7 +253,7 @@ fn each_kind_of_release_metadata_alone_skips_the_full_suite() {
 
 #[test]
 fn anything_beyond_release_metadata_runs_the_full_suite() {
-    let cases: [Case; 13] = [
+    let cases: [Case; 19] = [
         ("code", |d| put(d, "crates/x/src/lib.rs", "pub fn y() {}\n")),
         ("code beside metadata", |d| {
             release_metadata(d);
@@ -321,6 +321,40 @@ fn anything_beyond_release_metadata_runs_the_full_suite() {
             put(d, ".claude/settings.json", "{}\n")
         }),
         ("no change at all", |_| {}),
+        // A version line that goes or is added is not a version bump, only a changed one is.
+        ("a removed Cargo.toml version line", |d| {
+            edit(d, "Cargo.toml", "version = \"0.2.3\"\n", "")
+        }),
+        ("a removed lock version line", |d| {
+            edit(d, "Cargo.lock", "version = \"0.2.3\"\n", "")
+        }),
+        ("a removed plugin.json version line", |d| {
+            edit(d, PLUGIN_JSON, "  \"version\": \"0.5.0\",\n", "")
+        }),
+        ("a duplicate Cargo.toml version line", |d| {
+            edit(
+                d,
+                "Cargo.toml",
+                "version = \"0.2.3\"\n",
+                "version = \"0.2.3\"\nversion = \"0.2.3\"\n",
+            )
+        }),
+        ("a duplicate lock version line", |d| {
+            edit(
+                d,
+                "fuzz/Cargo.lock",
+                "version = \"0.2.3\"\n",
+                "version = \"0.2.3\"\nversion = \"0.2.3\"\n",
+            )
+        }),
+        ("a duplicate plugin.json version line", |d| {
+            edit(
+                d,
+                PLUGIN_JSON,
+                "  \"version\": \"0.5.0\",\n",
+                "  \"version\": \"0.5.0\",\n  \"version\": \"0.5.1\",\n",
+            )
+        }),
     ];
     for (what, change) in cases {
         assert_eq!(scope_after(change), "full=true\n", "{what}");
