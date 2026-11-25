@@ -125,8 +125,34 @@ pub const GUARD_NOT_FOUND: &str = "anthology: the guardrails plugin was not foun
 pub const GUARD_TIMED_OUT: &str = "anthology: skipped the guard self-test (it timed out, the machine may be busy); the guard still runs on every command";
 /// Added to [`GUARD_TIMED_OUT`] when the binary is installed.
 pub const TIMED_OUT_HINT: &str = "; if commands hang or are blocked, run /anthology:setup";
-/// The shim's reason for a missing binary, as the self-test would have seen it (no fetch).
-pub const BINARY_MISSING_REASON: &str = "the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin";
+/// The shim's reason for a missing binary, as the self-test would have seen it (no fetch), up to
+/// where [`binary_missing_reason`] adds the recovery sentence.
+pub const BINARY_MISSING_REASON: &str = "the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it; if this keeps happening, disable anthology-guardrails with /plugin";
+/// Added to [`BINARY_MISSING_REASON`] when the guardrails folder cannot be named exactly (the
+/// guard shim then lets no command through, so the installer is run from a terminal).
+pub const RECOVERY_IN_TERMINAL: &str = ". To install it now, run hooks/bootstrap.sh guard --plugin guardrails --quiet --budget 300 from the anthology-guardrails plugin folder in a terminal";
+
+/// `BINARY_MISSING_REASON` plus the one command the guard shim lets through while its binary is
+/// missing, `/bin/sh '<guardrails plugin folder>/hooks/bootstrap.sh' guard --plugin guardrails
+/// --quiet --budget 300`. The shim compares that text exactly, against the folder it was started
+/// from (`${0%/*}`: `<CLAUDE_PLUGIN_ROOT>/hooks`, a doubled slash kept). `launch_root` must
+/// therefore be the hooks' `CLAUDE_PLUGIN_ROOT` exactly as Claude Code sets it
+/// ([`guardrails_loc::inspect_launch`]), joined as a plain string. With `None`, or a folder that
+/// is not absolute or holds a quote, a backslash or a control character, the message gets
+/// [`RECOVERY_IN_TERMINAL`] instead (the shim's `anth_fix_cmd` makes the same cut): never a
+/// command the guard would block.
+pub fn binary_missing_reason(launch_root: Option<&str>) -> String {
+    let named = launch_root
+        .filter(|r| r.starts_with('/') && !r.chars().any(|c| c.is_control() || "\"'\\".contains(c)))
+        .map(|r| format!("{r}/hooks"));
+    match named {
+        Some(h) => format!(
+            "{BINARY_MISSING_REASON}. To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): /bin/sh '{h}/bootstrap.sh' guard --plugin guardrails --quiet --budget 300"
+        ),
+        None => format!("{BINARY_MISSING_REASON}{RECOVERY_IN_TERMINAL}"),
+    }
+}
+
 /// Too little of the session start budget was left to run the self-test.
 pub const SELF_TEST_NO_TIME: &str = "anthology: skipped the guard self-test (session start ran out of time); the guard still runs on every command";
 /// The shim found no binary and the self-test never fetches, but the install folder holds the
@@ -696,7 +722,7 @@ fn self_test_in(
     deps: &SessionDeps<'_>,
     time_left: bool,
 ) -> Result<Option<String>, PyExc> {
-    let loc = guardrails_loc::inspect(root, env, cwd);
+    let (loc, launch_root) = guardrails_loc::inspect_launch(root, env, cwd);
     match loc.problem {
         Some(Problem::Disabled) => return Ok(Some(GUARD_DISABLED.into())),
         Some(Problem::NotInstalled) => return Ok(Some(GUARD_NOT_INSTALLED.into())),
@@ -711,7 +737,10 @@ fn self_test_in(
         return Ok(Some(if bootstrap::guard_binary_installed(&base, env) {
             SELF_TEST_NO_TIME.into()
         } else {
-            format!("anthology: the guardrails are failing closed: {BINARY_MISSING_REASON}")
+            format!(
+                "anthology: the guardrails are failing closed: {}",
+                binary_missing_reason(launch_root.as_deref())
+            )
         }));
     }
     let plain = data::self_test_sample();
