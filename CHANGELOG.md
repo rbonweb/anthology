@@ -578,6 +578,13 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.11] - 2026-11-25
+
+- Pin anthology-bin 0.2.3.
+- The guard's "too complex" (G0) message now names its cause for three more common shapes: a shell fed by another command's output (`curl ... | sh`), a shell whose heredoc or here-string is only a command substitution, and a command substitution used as the program word (`$(echo ls) a`). The reason the analysis stopped now comes before a mark on an earlier command. No verdict changes.
+- In an SDK-embedded host, the guard's limit and panic lines no longer tell the reader to use `/plugin`, as the G0 line already did.
+- Fix: the guard no longer takes an interactive `claude` for an embedded host when it inherited an `sdk-*` entrypoint from an SDK process. `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` or `1`; the `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins. Only the text of the G0 message changes (the `/plugin disable` line); verdicts are the same.
+
 ### [0.2.10] - 2026-11-24
 
 #### Added

@@ -1,2 +1,0 @@
-- The guard's "too complex" (G0) message now names its cause for three more common shapes: a shell fed by another command's output (`curl ... | sh`), a shell whose heredoc or here-string is only a command substitution, and a command substitution used as the program word (`$(echo ls) a`). The reason the analysis stopped now comes before a mark on an earlier command. No verdict changes.
-- In an SDK-embedded host, the guard's limit and panic lines no longer tell the reader to use `/plugin`, as the G0 line already did.
