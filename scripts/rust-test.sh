@@ -10,10 +10,11 @@
 #                                        #   --package=X), --workspace is dropped and cargo
 #                                        #   tests only that package, still in both runs.
 #   scripts/rust-test.sh run CMD [ARGS]  # any command in the same container (dev.sh uses it)
-#   scripts/rust-test.sh session-start NAME   # one long-lived container, set up once (NAME must
-#                                        #   start with anthology-); while $ANTHOLOGY_RUST_SESSION
-#                                        #   names it, every mode above runs in it with `docker
-#                                        #   exec` instead of a fresh container and its setup
+#   scripts/rust-test.sh session-start NAME   # one container, set up once, that ends by itself
+#                                        #   after 4 hours (NAME must start with anthology-release-);
+#                                        #   while $ANTHOLOGY_RUST_SESSION names it, every mode
+#                                        #   above runs in it with `docker exec` instead of a fresh
+#                                        #   container and its setup
 #   scripts/rust-test.sh session-stop NAME    # removes that container
 #
 # The image is the FROM line of ci/images/rust.Dockerfile. As in atl-test.sh, the container
@@ -47,9 +48,9 @@ case "$mode" in
         fi
         # Only our own containers: the name is what `docker rm -f` is given.
         case $2 in
-            anthology-*[!A-Za-z0-9_.-]* | anthology-) echo "rust-test: bad session name $2" >&2; exit 2 ;;
-            anthology-*) ;;
-            *) echo "rust-test: a session name starts with anthology-" >&2; exit 2 ;;
+            anthology-release-*[!A-Za-z0-9_.-]* | anthology-release-) echo "rust-test: bad session name $2" >&2; exit 2 ;;
+            anthology-release-*) ;;
+            *) echo "rust-test: a session name starts with anthology-release-" >&2; exit 2 ;;
         esac
         ;;
     *)
@@ -147,8 +148,10 @@ volumes=(
 )
 
 if [ "$mode" = session-start ]; then
-    # A container that only waits; the setup runs in it once, here, and a failed setup removes it.
-    docker run -d --rm --name "$2" "${volumes[@]}" -w /w "$image" tail -f /dev/null >/dev/null
+    # A container that only waits, and only for 4 hours, so one that its owner never removed (a
+    # killed release, a crashed host) ends by itself; --rm then deletes it. The setup runs in it
+    # once, here, and a failed setup removes it.
+    docker run -d --rm --name "$2" "${volumes[@]}" -w /w "$image" sleep 14400 >/dev/null
     if ! docker exec "$2" sh -c "$setup" >&2; then
         docker rm -f "$2" >/dev/null 2>&1 || true
         echo "rust-test: the setup of session $2 failed" >&2

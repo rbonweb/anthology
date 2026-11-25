@@ -46,6 +46,8 @@ TMPDIR_DRY=""
 EDITED=""
 TAG_LOCAL=0
 SESSION=""
+# The container runner, the same one scripts/dev.sh uses (ANTHOLOGY_RUST_TEST is its test seam).
+RUNNER=${ANTHOLOGY_RUST_TEST:-$ROOT/scripts/rust-test.sh}
 # Deletes the local release tag while it is this run's (TAG_LOCAL=1); fails if git cannot.
 drop_local_tag() {
   [ "$TAG_LOCAL" = 1 ] || return 0
@@ -67,7 +69,7 @@ cleanup() {
     echo "release: failed before committing; restored $EDITED" >&2
   fi
   if [ -n "$SESSION" ]; then
-    "$ROOT/scripts/rust-test.sh" session-stop "$SESSION" >/dev/null 2>&1 || true
+    "$RUNNER" session-stop "$SESSION" >/dev/null 2>&1 || true
   fi
   if [ -n "$TMPDIR_DRY" ]; then
     git -C "$ROOT" worktree remove --force "$TMPDIR_DRY/wt" >/dev/null 2>&1 || true
@@ -127,20 +129,26 @@ fi
 
 # anthology-dev runs at the repository root and is given paths relative to it: scripts/dev.sh
 # mounts only the repository into its container.
-dev() { (cd "$ROOT" && "$DEV" "$@"); }
+dev() {
+  if [ -n "$SESSION" ]; then
+    (cd "$ROOT" && ANTHOLOGY_RUST_SESSION=$SESSION "$DEV" "$@")
+  else
+    (cd "$ROOT" && "$DEV" "$@")
+  fi
+}
 
 # Every `dev` call would start its own container and repeat its setup (apt-get, rustup, the build
 # of anthology-dev: minutes each). With the default scripts/dev.sh, one container per release does
 # the setup once and the calls share it (scripts/rust-test.sh session-start; $ANTHOLOGY_RUST_SESSION
-# makes dev.sh use it). The session is removed by `cleanup`, whatever the exit. Not used with
-# $ANTHOLOGY_DEV, $ANTHOLOGY_RUST_TEST, or a session the caller already set. Called before the
-# first dev call, in this shell (a command substitution would lose $SESSION).
+# makes dev.sh use it, and `dev` sets it for its own call only). The session is removed by
+# `cleanup`, whatever the exit, and ends by itself after 4 hours if even that never ran. Not used
+# with $ANTHOLOGY_DEV or a session the caller already set. Called before the first dev call, in
+# this shell (a command substitution would lose $SESSION).
 start_dev_session() {
   [ -z "$SESSION" ] || return 0
-  [ -z "${ANTHOLOGY_DEV:-}${ANTHOLOGY_RUST_TEST:-}${ANTHOLOGY_RUST_SESSION:-}" ] || return 0
+  [ -z "${ANTHOLOGY_DEV:-}${ANTHOLOGY_RUST_SESSION:-}" ] || return 0
   SESSION="anthology-release-$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)-$$"
-  "$ROOT/scripts/rust-test.sh" session-start "$SESSION" >&2 || die "cannot start the build container (Docker is needed)"
-  export ANTHOLOGY_RUST_SESSION=$SESSION
+  "$RUNNER" session-start "$SESSION" >&2 || die "cannot start the build container (Docker is needed)"
 }
 
 # ---- preconditions: every failure leaves the repository exactly as it was -----------
