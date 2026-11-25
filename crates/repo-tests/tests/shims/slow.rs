@@ -296,6 +296,72 @@ fn a_failed_download_says_why() {
     });
 }
 
+/// A symbolic link planted in the fetch folder, or as the folder itself, is never followed:
+/// the guard blocks and names it, the fetcher run directly neither downloads nor writes, and
+/// the link's target is untouched (a `part` link would get the archive appended through
+/// `curl -C -`, a `fail.<pid>` link truncated, a `done` link to a folder receive the archive).
+#[test]
+fn a_planted_link_in_the_fetch_folder_is_never_followed() {
+    each_shell("planted links", |sh| {
+        for (name, to_dir) in [
+            ("part", false),
+            ("done", false),
+            ("done", true),
+            ("fail", false),
+            ("fail.1", false),
+            ("fail.99999", true),
+            ("", true),
+        ] {
+            let c = format!(
+                "{sh:?} link {name:?} to a {}",
+                if to_dir { "folder" } else { "file" }
+            );
+            let (sb, path) = served(1, 0, SLOW_CURL);
+            let target = sb.root.join("outside");
+            if to_dir {
+                std::fs::create_dir(&target).unwrap();
+            } else {
+                std::fs::write(&target, "keep\n").unwrap();
+            }
+            let link = if name.is_empty() {
+                std::fs::create_dir_all(sb.bindir()).unwrap();
+                fdir(&sb)
+            } else {
+                std::fs::create_dir_all(fdir(&sb)).unwrap();
+                fdir(&sb).join(name)
+            };
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let reason = format!(
+                "a symbolic link in bin/.fetch-{} was refused",
+                sb.release.version
+            );
+            assert_block(
+                &guard_path(&sb, sh, BASH, path.clone()),
+                &not_installed(&sb, &reason),
+                &c,
+            );
+            let run = boot_path(&sb, sh, &["fetch", "--plugin", "guardrails"], path);
+            assert_eq!((run.code, run.out()), (Some(0), String::new()), "{c}");
+            stop_fetcher(&sb);
+            assert!(starts(&sb).is_empty(), "{c}: downloaded {:?}", starts(&sb));
+            if to_dir {
+                let n = std::fs::read_dir(&target).unwrap().count();
+                assert_eq!(n, 0, "{c}: written into the target folder");
+            } else {
+                assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep\n", "{c}");
+            }
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{c}: the link itself is left for the user"
+            );
+            assert_not_installed(&sb, &c);
+        }
+    });
+}
+
 /// Session start begins the download, so it is often done before the first tool call; where
 /// the fetcher outlives the hook, that call installs it without a second download.
 #[test]
@@ -491,7 +557,37 @@ fn the_installer_is_the_one_command_let_through_while_the_binary_is_missing() {
         let f = json_str(&fix);
         let escaped_slash = json_str(&fix).replace('/', "\\/");
         let unicode_space = json_str(&fix).replacen(' ', "\\u0020", 1);
+        // "command" with its first letter as a JSON escape: a parser reads it as the command
+        // key, a raw-text match does not.
+        let k = format!("\"{}u0063ommand\"", '\\');
         for (name, payload) in [
+            (
+                "an escaped command key, the installer nested",
+                format!(
+                    r#"{{"tool_name":"Bash","tool_input":{{{k}:"id","x":{{"command":{f}}}}}}}"#
+                ),
+            ),
+            (
+                "an escaped command key after the installer",
+                format!(r#"{{"tool_name":"Bash","tool_input":{{"command":{f},{k}:"id"}}}}"#),
+            ),
+            (
+                "an escaped command key before the installer",
+                format!(r#"{{"tool_name":"Bash","tool_input":{{{k}:"id","command":{f}}}}}"#),
+            ),
+            (
+                "an escaped tool_input key",
+                format!(
+                    r#"{{"tool_name":"Bash","tool_{}u0069nput":{{"command":"id"}},"x":{{"command":{f}}}}}"#,
+                    '\\'
+                ),
+            ),
+            (
+                "an escape in another value",
+                format!(
+                    r#"{{"tool_name":"Bash","tool_input":{{"command":{f},"description":"a \"quoted\" word"}}}}"#
+                ),
+            ),
             (
                 "a second command key",
                 format!(r#"{{"tool_name":"Bash","tool_input":{{"command":{f},"command":"id"}}}}"#),

@@ -685,6 +685,20 @@ anth_fetch_failed() {
     return 0
 }
 
+# anth_fetch_safe: neither the fetch folder nor its part, done, fail or any fail.* is a
+# symbolic link, which a download, a rename or a write would follow out of the folder. Else
+# status 1 and ANTH_REASON: nothing in the folder is used or written.
+anth_fetch_safe() {
+    _s_bad=
+    [ ! -h "$ANTH_FDIR" ] || _s_bad=1
+    for _s_f in "$ANTH_FDIR/part" "$ANTH_FDIR/done" "$ANTH_FDIR/fail" "$ANTH_FDIR"/fail.*; do
+        [ ! -h "$_s_f" ] || _s_bad=1
+    done
+    [ -n "$_s_bad" ] || return 0
+    ANTH_REASON="a symbolic link in bin/.fetch-$ANTH_VERSION was refused"
+    return 1
+}
+
 # anth_fetch_start: starts a fetcher unless one runs. It leaves this process's session (setsid)
 # or at least its process group (job control), so a hook runner that ends the hook's group does
 # not end the download, and it holds none of the hook's descriptors. Where neither works, the
@@ -736,12 +750,17 @@ anth_fetch_wait() {
 # against the lock (status 0); 2 when there is no downloader; else 1 with ANTH_REASON.
 anth_fetch_get() {
     anth_fetch_paths
+    anth_fetch_safe || return 1
     if [ ! -f "$ANTH_FDIR/done" ]; then
         anth_dl_present || return 2
         [ -h "$ANTH_FDIR" ] || mkdir "$ANTH_FDIR" 2>/dev/null
         [ -d "$ANTH_FDIR" ] && [ ! -h "$ANTH_FDIR" ] || anth_cannot_write || return 1
         anth_fetch_start
-        anth_fetch_wait "$2" || return 1
+        anth_fetch_wait "$2"
+        _g_rc=$?
+        # A link planted while it waited: the fetcher refuses it too and writes nothing.
+        anth_fetch_safe || return 1
+        [ "$_g_rc" = 0 ] || return 1
     fi
     if cp "$ANTH_FDIR/done" "$1/a.tgz" 2>/dev/null && anth_sha256 "$1/a.tgz" &&
         [ "$ANTH_H" = "$ANTH_SHA" ]; then
@@ -771,6 +790,9 @@ anth_fetch_run() {
     # bootstrap.sh's EXIT trap removes ANTH_TMP, so the lock goes on every end but SIGKILL.
     ANTH_TMP=$ANTH_FDIR/run
     printf '%s\n' "$$" >"$ANTH_FDIR/run/pid" 2>/dev/null
+    # A planted link is never followed: no download, no rename, no fail word (the caller
+    # finds the link and names it).
+    anth_fetch_safe || return 1
     rm -f "$ANTH_FDIR/fail"
     [ ! -f "$ANTH_FDIR/done" ] || return 0
     _r_word=failed
@@ -784,6 +806,8 @@ anth_fetch_run() {
         _r_before=$ANTH_H
         anth_download "$(anth_url)" "$ANTH_FDIR/part" "$ANTH_FETCH_BUDGET" resume
         _r_rc=$?
+        # The download took minutes: check again before any rename or write.
+        anth_fetch_safe || return 1
         if [ "$_r_rc" = 0 ]; then
             if anth_sha256 "$ANTH_FDIR/part" && [ "$ANTH_H" = "$ANTH_SHA" ]; then
                 mv -f "$ANTH_FDIR/part" "$ANTH_FDIR/done" 2>/dev/null && return 0
@@ -816,7 +840,8 @@ anth_fetch_run() {
             esac
         fi
     fi
-    printf '%s\n' "$_r_word" >"$ANTH_FDIR/fail.$$" 2>/dev/null &&
+    # Noclobber, as in anth_stamp: an existing fail.<pid> (a link included) is not written.
+    (set -C && printf '%s\n' "$_r_word" >"$ANTH_FDIR/fail.$$") 2>/dev/null &&
         mv -f "$ANTH_FDIR/fail.$$" "$ANTH_FDIR/fail" 2>/dev/null
     rm -f "$ANTH_FDIR/fail.$$"
     return 1
@@ -1042,10 +1067,12 @@ anth_fix_cmd() {
 # anth_fix_call FILE: status 0 when the payload is a Bash call whose command is exactly the
 # installer (after anth_fix_cmd): `<base>`, `<base> --quiet`, `<base> --budget N` or
 # `<base> --quiet --budget N`, where <base> is ANTH_FIX up to `guardrails` and N is 1 to 4
-# digits, the first not 0. The payload holds no control character but newlines and exactly
-# one "command" key, and the value is compared as its raw JSON text: with no backslash in it
-# that text is the command itself, so an escape, a second key, another path (a symlink to this
-# one included), a shell metacharacter or one more blank never matches.
+# digits, the first not 0. The payload holds no control character but newlines, no backslash
+# anywhere and exactly one "command" key, and the value is compared as its raw JSON text.
+# Without a backslash every key and value is its own raw text (a command key with a letter
+# written as a JSON unicode escape would hide the real command from the count), so an escape,
+# a second key, another path (a symlink to this one included), a shell metacharacter or one
+# more blank never matches.
 anth_fix_call() {
     [ -n "$ANTH_FIX" ] || return 1
     [ "$(anth_tool_name "$1")" = Bash ] || return 1
@@ -1055,6 +1082,7 @@ anth_fix_call() {
     _x_ok=$(LC_ALL=C ANTH_X=${ANTH_FIX% --quiet --budget 300} awk '
         { s = s $0 "\n" }
         END {
+            bs = index(s, "\\")
             w = ENVIRON["ANTH_X"]
             n = 0
             ok = 0
@@ -1075,7 +1103,7 @@ anth_fix_call() {
                 }
                 if (t ~ /^[1-9][0-9]?[0-9]?[0-9]?$/) ok = 1
             }
-            if (n == 1 && ok == 1) print "installer"
+            if (bs == 0 && n == 1 && ok == 1) print "installer"
         }' <"$1" 2>/dev/null)
     [ "$_x_ok" = installer ]
 }
