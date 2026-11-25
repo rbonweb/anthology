@@ -6,7 +6,8 @@
 # the only `exit` is inside the download watchdog's background subshell. Callers decide how to
 # end, so guard.sh keeps its fail-closed shape (exactly two `exit 0` sites, design §9.2).
 #
-# The caller sets the plugin root with `anth_paths <root>` first.
+# The caller sets the plugin root with `anth_paths <root>` first, which also makes PATH safe
+# (anth_safe_path) before any command here is looked up.
 # shellcheck disable=SC2034 # the ANTH_ variables are read by the scripts that source this file
 
 ANTH_TOKEN='anthology-guard:allow:v1'
@@ -31,16 +32,92 @@ ANTH_OS='' ANTH_ARCH='' ANTH_TARGET='' ANTH_VERSION='' ANTH_TAG='' ANTH_REPO='' 
 ANTH_STATUS='' ANTH_REASON='' ANTH_STATE='' ANTH_WHY='' ANTH_MSG='' ANTH_RUN='' ANTH_BUF=''
 ANTH_RC='' ANTH_ERR='' ANTH_H='' ANTH_SHA_CMD='' ANTH_STRIKES='' ANTH_QUAR='' ANTH_TMP=''
 ANTH_BG='' ANTH_FDIR='' ANTH_DL_RC='' ANTH_DL_TOOL='' ANTH_FIX='' ANTH_FIXMSG=''
+ANTH_UPATH='' ANTH_UPATH_SET=''
 
 # --- paths (GC-1) -------------------------------------------------------------------------
 
-# anth_paths ROOT: the plugin root, its lock, and <ah>/bin. <ah> is $CLAUDE_CONFIG_DIR/anthology
+# anth_safe_path: PATH without its relative and empty entries, the absolute ones kept in order.
+# Hooks run in the folder of the repository the user opened, so `.`, an empty entry (`::`, a
+# leading or trailing `:`) or a relative folder such as `bin` would let that repository plant
+# the curl, tar or shasum the installer runs. When no entry is left, the fixed system list
+# (with Homebrew's folders on macOS). Exported, so the helpers the shim starts get it too.
+#
+# The first call keeps the caller's PATH for anth_user_path: ANTH_UPATH, with ANTH_UPATH_SET
+# `set`. A PATH the caller did not export is the shell's own default, not the caller's (macOS sh
+# fills in one that ends in `.`), so when it has something to drop, or there is none at all,
+# ANTH_UPATH_SET is `safe` and the binary gets the safe PATH as well. Linear in the length of
+# PATH: a PATH with nothing to drop is kept as it is, with no fork.
+anth_safe_path() {
+    _u_first=
+    if [ -z "$ANTH_UPATH_SET" ]; then
+        _u_first=1
+        ANTH_UPATH=${PATH-}
+        ANTH_UPATH_SET='set'
+        [ -n "${PATH+x}" ] || ANTH_UPATH_SET='safe'
+    fi
+    _u_path=${PATH-}
+    case :$_u_path: in
+        *::* | *:[!/]*)
+            if [ -n "$_u_first" ]; then
+                # `export -p` is a builtin: dash, BusyBox and bash in POSIX mode print
+                # `export PATH=…`, bash otherwise `declare -x PATH=…`.
+                case $ANTH_NL$(export -p) in
+                    *"${ANTH_NL}export PATH="* | *"${ANTH_NL}declare -x PATH="*) ;;
+                    *) ANTH_UPATH_SET='safe' ;;
+                esac
+            fi
+            # Something to drop. One split on `:`, the kept entries printed and collected at
+            # once: appending them to a variable one by one would copy it each time (quadratic
+            # on a long PATH). The subshell holds set -f and IFS, and looks nothing up (printf
+            # is a builtin; its PATH is the fixed list anyway).
+            _u_path=$(
+                _u_in=$_u_path
+                PATH=/usr/bin:/bin
+                set -f
+                IFS=:
+                # shellcheck disable=SC2086 # split on IFS (`:`) on purpose; globbing is off
+                for _u_dir in $_u_in; do
+                    # `(/*)`: bash 3.2 misreads a bare `/*)` inside `$( )`.
+                    case $_u_dir in
+                        (/*) printf '%s:' "$_u_dir" ;;
+                    esac
+                done
+            )
+            _u_path=${_u_path%:}
+            ;;
+    esac
+    if [ -z "$_u_path" ]; then
+        _u_path=/usr/bin:/bin:/usr/sbin:/sbin
+        # uname is looked up on the fixed list.
+        PATH=$_u_path
+        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+            _u_path=$_u_path:/opt/homebrew/bin:/usr/local/bin
+        fi
+    fi
+    PATH=$_u_path
+    export PATH
+}
+
+# anth_user_path: PATH as the caller exported it, before anth_safe_path, for the anthology
+# binary only: it runs the user's own commands, and their lookups are the user's. Without one
+# (ANTH_UPATH_SET `safe`) the safe PATH stays. The shim's own helpers keep the safe PATH, so
+# callers use this in a subshell or right before exec.
+anth_user_path() {
+    if [ "$ANTH_UPATH_SET" = set ]; then
+        PATH=$ANTH_UPATH
+        export PATH
+    fi
+}
+
+# anth_paths ROOT: PATH made safe (anth_safe_path), then the plugin root, its lock, and
+# <ah>/bin. <ah> is $CLAUDE_CONFIG_DIR/anthology
 # when that is set, else $HOME/.claude/anthology, and it must be an absolute path: a relative
 # one would pick a binary under the hook's working folder, which the hot path runs unhashed,
 # and an unset or empty HOME is not a home (there is no passwd lookup here). Otherwise ANTH_AH
 # and every path below it stay empty and anth_home_ok fails, as
 # `anthology_core::paths::install_home` does.
 anth_paths() {
+    anth_safe_path
     ANTH_ROOT=$1
     ANTH_LOCK=$1/anthology.lock
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -707,7 +784,7 @@ anth_fetch_start() {
     anth_fetch_alive && return 0
     rm -f "$ANTH_FDIR/fail"
     if command -v setsid >/dev/null 2>&1; then
-        setsid sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+        setsid /bin/sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
             </dev/null >/dev/null 2>&1 &
     else
         # As in anth_watch: the subshell must not see the staging folder bootstrap.sh's EXIT
@@ -715,7 +792,7 @@ anth_fetch_start() {
         _f_t=$ANTH_TMP ANTH_TMP=
         (
             set -m
-            sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+            /bin/sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
                 </dev/null >/dev/null 2>&1 &
         ) </dev/null >/dev/null 2>&1
         ANTH_TMP=$_f_t
@@ -1307,17 +1384,17 @@ anth_guard_offline() {
 # command of the pipeline still inherits stdin. ANTH_RC is digits only, else ? (a late
 # writer after the sentinel). The binary runs in a subshell, so the shell's own notes, such as
 # a report that it was killed by a signal, go to /dev/null, not into ANTH_ERR or the hook's
-# stderr.
+# stderr. That subshell also gives the binary the caller's PATH (anth_user_path).
 anth_guard_run() {
     ANTH_RC='' ANTH_ERR=''
     if [ -n "${1:-}" ]; then
         ANTH_ERR=$({
-            ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null <"$1")
+            (anth_user_path; "$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null <"$1")
             printf 'x%s' "$?" >&3
         } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     else
         ANTH_ERR=$({
-            ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null)
+            (anth_user_path; "$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null)
             printf 'x%s' "$?" >&3
         } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     fi

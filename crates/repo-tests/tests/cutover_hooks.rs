@@ -105,8 +105,8 @@ fn every_hooks_json_is_pretty_printed() {
 /// test_guard_cli `test_hooks_json_is_the_exec_form_pretooluse_hook` and
 /// `test_hooks_json_points_at_an_existing_script`, test_session_start
 /// `test_hooks_json_has_the_session_start_entry_and_the_atl_pretooluse_entry`: every hook is the
-/// exec form `sh <script under the plugin root>`, the script ships, and a PreToolUse hook blocks
-/// when it fails. The exact entries are BS1's `statics.rs`.
+/// exec form `/bin/sh <script under the plugin root>`, the script ships, and a PreToolUse hook
+/// blocks when it fails. The exact entries are BS1's `statics.rs`.
 #[test]
 fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
     for plugin in PLUGINS {
@@ -116,7 +116,11 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
         for (event, hook) in hooks {
             let at = format!("{plugin} {event}");
             assert_eq!(str_of(hook, "type"), "command", "{at}");
-            assert_eq!(str_of(hook, "command"), "sh", "{at}: exec form, sh");
+            assert_eq!(
+                str_of(hook, "command"),
+                "/bin/sh",
+                "{at}: exec form, /bin/sh"
+            );
             let args = get(hook, "args").and_then(Value::as_array).expect("args");
             let script = args.first().and_then(Value::as_str).expect("args[0]");
             let rel = script
@@ -136,6 +140,50 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
             }
         }
     }
+}
+
+/// Claude Code looks a bare hook program up on the user's PATH, and hooks run in the folder of
+/// the repository the user opened: with `.` or an empty entry on PATH that repository's own
+/// `./sh` would replace the guard, and its `exit 0` would allow every tool call. So in every
+/// plugin's hooks.json each command hook starts with an absolute path: the exec form's
+/// `command` is the interpreter's absolute path, and a shell-form line starts with an absolute
+/// path or the plugin root.
+#[test]
+fn every_hook_command_starts_with_an_absolute_path() {
+    let mut seen = 0;
+    let mut plugins: Vec<_> = std::fs::read_dir(repo::path("plugins"))
+        .expect("plugins")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    plugins.sort();
+    for dir in plugins {
+        let file = dir.join("hooks/hooks.json");
+        if !file.is_file() {
+            continue;
+        }
+        let v = json::loads(&read(&file)).expect("hooks.json");
+        for (event, hook) in hooks_of(&v) {
+            if str_of(hook, "type") != "command" {
+                continue;
+            }
+            let at = format!("{} {event}", file.display());
+            let command = str_of(hook, "command");
+            if get(hook, "args").is_some() {
+                assert!(
+                    command.starts_with('/'),
+                    "{at}: `{command}` is not absolute"
+                );
+            } else {
+                let first = command.trim_start().trim_start_matches(['"', '\'']);
+                assert!(
+                    first.starts_with('/') || first.starts_with("${CLAUDE_PLUGIN_ROOT}/"),
+                    "{at}: `{command}` does not start with an absolute path"
+                );
+            }
+            seen += 1;
+        }
+    }
+    assert!(seen >= 8, "command hooks found: {seen}");
 }
 
 /// The anthology plugin's `modules` entry names its Claude Code mods module, a TypeScript file
