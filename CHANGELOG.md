@@ -10,10 +10,15 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.2] - 2026-11-25
+
 #### Changed
 
 - The `anthology` binary 0.2.4 changes the session-start message for failing-closed guardrails:
   it now names the exact recovery command.
+- Pin anthology-bin 0.2.4.
+- Fix: `/anthology:setup` no longer tells the model to retry a command the guard blocks because its binary is missing. It runs the installer command the block names, which the guard lets through until the binary is installed.
+- Fix: when the guard binary is missing and session start has no time left to run the self-test, the "guardrails are failing closed" message no longer says to run `/anthology:setup`, which needs the shell commands the guard is blocking. It now names the one command the guard lets through, `/bin/sh '<guardrails plugin folder>/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300`, with the real folder, and keeps the advice to start a new session while online or disable anthology-guardrails with `/plugin`.
 
 ### [0.5.1] - 2026-11-25
 

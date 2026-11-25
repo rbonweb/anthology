@@ -1,1 +1,0 @@
-- Fix: `/anthology:setup` no longer tells the model to retry a command the guard blocks because its binary is missing. It runs the installer command the block names, which the guard lets through until the binary is installed.
