@@ -606,6 +606,10 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.15] - 2026-11-25
+
+- Pin anthology-bin 0.2.5.
+
 ### [0.2.14] - 2026-11-25
 
 - Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could take over the guard. Claude Code looked up the hooks' `sh` on that PATH, so a planted `./sh` could replace the guard and allow every tool call. The guard's installer could also run a planted `curl`, `tar`, `shasum` or `sh`. The hooks now start with `/bin/sh`, and they drop those PATH entries for their own helpers, keeping the absolute ones in order and falling back to the standard system folders when none is left. The guard binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check and the fail-closed behaviour are unchanged.
