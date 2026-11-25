@@ -215,9 +215,9 @@ fn hooks(plugin: &str) -> Value {
 fn guardrails_hooks_json_is_design_9_1() {
     let want = json::loads(
         r#"{"hooks": {
-          "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
+          "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh", "session", "--plugin", "guardrails"], "timeout": 60}]}],
-          "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "sh",
+          "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh"], "timeout": 60, "onFailure": "block"}]}]
         }}"#,
     )
@@ -229,16 +229,16 @@ fn guardrails_hooks_json_is_design_9_1() {
 fn anthology_hooks_json_runs_session_start_sh_and_keeps_atl_hook() {
     let want = json::loads(
         r#"{"hooks": {
-          "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
+          "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"], "timeout": 60}]}],
-          "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "sh",
+          "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"], "timeout": 60, "onFailure": "block"},
-            {"type": "command", "command": "sh",
+            {"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"], "timeout": 60, "onFailure": "block"}]}],
           "Notification": [
-            {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "sh",
+            {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "approval"], "timeout": 5}]},
-            {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "sh",
+            {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"], "timeout": 5}]}]
         },
         "modules": ["./mods/index.ts"]}"#,

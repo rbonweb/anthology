@@ -1191,9 +1191,9 @@ mod files_test {
         assert_eq!(names, ["Notification", "PreToolUse", "SessionStart"]);
         let want = json::loads(
             r#"[{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"],
+                {"type": "command", "command": "/bin/sh", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"],
                  "timeout": 60, "onFailure": "block"},
-                {"type": "command", "command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"],
+                {"type": "command", "command": "/bin/sh", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"],
                  "timeout": 60, "onFailure": "block"}]}]"#,
         )
         .expect("want");
