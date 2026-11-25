@@ -2870,7 +2870,7 @@ mod time_rules {
             vec![
                 format!(
                     "anthology: the guardrails are failing closed: {}",
-                    session_start::BINARY_MISSING_REASON
+                    session_start::binary_missing_reason(&f.c.guard)
                 ),
                 session_start::ATL_SKIPPED.to_string()
             ]
@@ -3956,8 +3956,49 @@ mod real_shim {
             lines_with_elapsed(&sb, 45.0),
             vec![format!(
                 "anthology: the guardrails are failing closed: {}",
-                session_start::BINARY_MISSING_REASON
+                session_start::binary_missing_reason(&sb.plugin("anthology-guardrails"))
             )]
+        );
+    }
+
+    #[test]
+    fn the_failing_closed_message_names_the_exact_recovery_command_the_shim_allows() {
+        let sb = sandbox();
+        let guard = sb.plugin("anthology-guardrails");
+        let line = lines_with_elapsed(&sb, 45.0).remove(0);
+        assert_eq!(
+            line,
+            format!(
+                "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it; if this keeps happening, disable anthology-guardrails with /plugin. To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): /bin/sh '{}/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300",
+                guard.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_guardrails_folder_that_cannot_be_matched_exactly_gets_the_terminal_sentence() {
+        for odd in [
+            "relative/guard",
+            "/with'quote",
+            "/with\"quote",
+            "/back\\slash",
+            "/new\nline",
+        ] {
+            let reason = session_start::binary_missing_reason(Path::new(odd));
+            assert_eq!(
+                reason,
+                format!(
+                    "{}{}",
+                    session_start::BINARY_MISSING_REASON,
+                    session_start::RECOVERY_IN_TERMINAL
+                ),
+                "{odd:?}"
+            );
+            assert!(!reason.contains("/bin/sh"), "{odd:?}");
+        }
+        assert!(
+            session_start::binary_missing_reason(Path::new("/opt/a b/guard"))
+                .ends_with("/bin/sh '/opt/a b/guard/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300")
         );
     }
 
