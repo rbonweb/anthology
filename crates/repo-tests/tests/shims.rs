@@ -11,7 +11,8 @@
 //! `downloads` (network) and `offline` (absent tools, lock, uname, seed); 3 recovery matrix →
 //! `recovery`; 4, 5 → `offline`; 6 → `scan`; 7, 8 → `entry` and `downloads`; static rules
 //! (R2, R3, R14, the NODE_GET constant) → `statics`. A download slower than one call, its
-//! resume, the failure reasons and the installer the guard lets through → `slow`.
+//! resume, the failure reasons and the installer the guard lets through → `slow`. Tools the
+//! opened repository plants on a relative or empty PATH entry → `planted`.
 
 // An inline `shims` module, so its files live in tests/shims/ (no `#[path]`).
 mod shims {
@@ -20,6 +21,7 @@ mod shims {
     mod entry;
     mod install;
     mod offline;
+    mod planted;
     mod recovery;
     mod scan;
     mod slow;

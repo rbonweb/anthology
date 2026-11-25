@@ -6,6 +6,30 @@
 # session. Set ANTHOLOGY_NOTIFY=0 to turn it off.
 [ "${ANTHOLOGY_NOTIFY:-}" = "0" ] && exit 0
 
+# PATH without its relative and empty entries first, as hooks/lib.sh's anth_safe_path makes it:
+# the hook runs in the folder of the repository the user opened, which must not supply the
+# uname, timeout or notifier below.
+case :${PATH-}: in
+    *::* | *:[!/]*)
+        PATH=$(
+            anth_in=${PATH-}
+            PATH=/usr/bin:/bin
+            set -f
+            IFS=:
+            # shellcheck disable=SC2086 # split on IFS (`:`) on purpose; globbing is off
+            for anth_dir in $anth_in; do
+                # `(/*)`: bash 3.2 misreads a bare `/*)` inside `$( )`.
+                case $anth_dir in
+                    (/*) printf '%s:' "$anth_dir" ;;
+                esac
+            done
+        )
+        PATH=${PATH%:}
+        ;;
+esac
+[ -n "${PATH-}" ] || PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
 case ${1:-} in
     approval) msg="Claude needs your approval" ;;
     idle) msg="Claude is waiting for you" ;;

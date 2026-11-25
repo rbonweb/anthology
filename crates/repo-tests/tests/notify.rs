@@ -281,9 +281,9 @@ fn notification_entries() -> Value {
 fn hooks_json_runs_notify_sh_for_approval_and_idle_prompts() {
     let want = json::loads(
         r#"[
-          {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "sh",
+          {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "approval"], "timeout": 5}]},
-          {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "sh",
+          {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"], "timeout": 5}]}
         ]"#,
     )

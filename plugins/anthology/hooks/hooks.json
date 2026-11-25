@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh",
+            "command": "/bin/sh",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"],
             "timeout": 60
           }
@@ -18,14 +18,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh",
+            "command": "/bin/sh",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"],
             "timeout": 60,
             "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "sh",
+            "command": "/bin/sh",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"],
             "timeout": 60,
             "onFailure": "block"
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh",
+            "command": "/bin/sh",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "approval"],
             "timeout": 5
           }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh",
+            "command": "/bin/sh",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.sh", "idle"],
             "timeout": 5
           }

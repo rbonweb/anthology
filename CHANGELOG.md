@@ -10,6 +10,19 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.4] - 2026-11-25
+
+#### Changed
+
+- The `anthology` binary 0.2.5: git is run only from an absolute `PATH` entry, never a relative
+  one, when Anthology runs it inside a repo.
+- Pin anthology-bin 0.2.5.
+- Fix: the after-work check and the binary's own git calls (memory sync, session start) now look for `git` only on the absolute entries of `PATH` and run it by its absolute path. A `.`, empty or relative entry can no longer run a `git` planted in a repository.
+
+### [0.5.3] - 2026-11-25
+
+- Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could supply programs that the plugin's hooks and the `anthology` and `anthology-mem` commands ran: the hooks' `sh`; the `curl`, `tar`, `shasum`, `date`, `readlink` or `dirname` used while finding and installing the binary; and the `cat`, `sed`, `grep`, `tr`, `uname` or notifier used by the atl, attribution and notification hooks. The hooks now start with `/bin/sh`, and these helpers run on PATH without those entries, keeping the absolute ones in order and falling back to the standard system folders when none is left. The anthology binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check is unchanged.
+
 ### [0.5.2] - 2026-11-25
 
 #### Changed
@@ -596,6 +609,14 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.15] - 2026-11-25
+
+- Pin anthology-bin 0.2.5.
+
+### [0.2.14] - 2026-11-25
+
+- Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could take over the guard. Claude Code looked up the hooks' `sh` on that PATH, so a planted `./sh` could replace the guard and allow every tool call. The guard's installer could also run a planted `curl`, `tar`, `shasum` or `sh`. The hooks now start with `/bin/sh`, and they drop those PATH entries for their own helpers, keeping the absolute ones in order and falling back to the standard system folders when none is left. The guard binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check and the fail-closed behaviour are unchanged.
 
 ### [0.2.13] - 2026-11-25
 

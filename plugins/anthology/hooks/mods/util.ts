@@ -82,6 +82,39 @@ export async function runAnthology(
   return $.process.run([bin, ...args], { stdin, timeoutMs, env: { ANTHOLOGY_NO_INSTALL: '1' } })
 }
 
+/**
+ * The files called `name` on the absolute entries of the user's PATH only, in PATH order: empty
+ * and relative entries (`.`, `::`, `bin`) are skipped, so a repo cannot plant a fake one that a
+ * hook then runs from inside it (the same rule the shell hooks follow). Only a regular file
+ * counts, a link being followed (a folder, a dangling link or a missing path is passed over, as
+ * the shell passes it over); `$.fs.stat` has no mode, so a file that is not executable is
+ * found here and the caller moves on when it cannot start. `path` is the PATH to hand the child,
+ * the absolute entries only. Empty `bins` when there is none, as when the tool is not
+ * installed. Never throws.
+ */
+export async function onAbsolutePath(
+  $: EngineInterface,
+  name: string,
+): Promise<{ bins: string[]; path: string }> {
+  const bins: string[] = []
+  let path = ''
+  try {
+    const dirs = ((await $.env.get('PATH')) ?? '').split(':').filter(d => d.startsWith('/'))
+    path = dirs.join(':')
+    for (const dir of dirs) {
+      const bin = `${dir.replace(/\/+$/, '')}/${name}`
+      try {
+        if ((await $.fs.stat(bin)).kind === 'file') bins.push(bin)
+      } catch {
+        // missing or unreadable: the next entry
+      }
+    }
+  } catch {
+    // no PATH to read: nothing found
+  }
+  return { bins, path }
+}
+
 /** The `permissions` block of the merged settings, as plain lists of strings. */
 export type PermissionSettings = {
   additionalDirectories: string[]
