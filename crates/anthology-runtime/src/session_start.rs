@@ -23,6 +23,22 @@
 //! subagent that compacted), only memory sync runs, and the output has no guide and no
 //! `systemMessage` ([`subagent_output`]). Everything else is for the lead.
 //!
+//! **Embedded hosts.** A session another program runs (the Agent SDK, `claude -p` in a script;
+//! [`host::embedded`]) gets an empty `additionalContext` (no guide, no memory, no personal section)
+//! and a `systemMessage` with only the guard self-test and the bootstrap failures: nobody reads
+//! the rest, and the guide is for a lead that talks to a person. `ANTHOLOGY_HOST_MODE=full` turns
+//! this off.
+//!
+//! **Startup only.** [`NAG`] and [`OPS_CHANGED`] are said when `source` is `startup`; a resume,
+//! clear or compact does not repeat them.
+//!
+//! **A stale plugin.** On `compact` and `resume` the session keeps running the plugin version it
+//! loaded. When that version (from its `plugin.json`) is below the version in
+//! `installed_plugins.json`, [`stale_plugin_warning`] names the plugin and asks for a restart.
+//! It compares with the entry of the scope the session loaded from (found by install path), so a
+//! project install pinned older than the user one is not stale. Candidates `x.y.z-rc.N` are
+//! ordered by `N`; any other suffix (a sha) is not ordered.
+//!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
 //! `ANTHOLOGY_BOOTSTRAP_DOWNLOADED` is exactly `0` and
@@ -59,7 +75,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
 use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, paths, platform, state};
-use anthology_guard::data;
+use anthology_guard::{data, host};
 use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Map, Value};
@@ -441,6 +457,7 @@ pub mod label {
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
     pub const COMPOSE: &str = "assembling the session context";
+    pub const STALE: &str = "the loaded plugin version check";
 }
 
 /// `_step`: runs `f`; an exception (or a panic) becomes `anthology: <label> failed (<Class>)`.
@@ -489,6 +506,168 @@ fn parse_stdin(stdin: &str) -> Map {
         .ok()
         .and_then(Value::into_object)
         .unwrap_or_default()
+}
+
+/// [`host::embedded`] for the hook's own environment (the seam tests set), not the process's.
+fn embedded_host(env: &Env) -> bool {
+    host::embedded(
+        env.get(host::ENTRYPOINT_VAR),
+        env.get(host::ATTENDED_VAR),
+        env.get(host::MODE_VAR),
+    )
+}
+
+/// What follows the `x.y.z` of a plugin version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pre {
+    /// `-rc.N`: candidates of one version are ordered by `N`.
+    Rc(u64),
+    /// Any other `-pre`, such as a build's sha: it says nothing about age.
+    Other,
+    /// No suffix: a release is above its own prereleases.
+    Release,
+}
+
+/// `(major, minor, patch)` and the suffix.
+type VersionKey = ((u64, u64, u64), Pre);
+
+/// The ordering key of a plugin version (`x.y.z` or `x.y.z-pre`). `None` for anything else, so
+/// an unreadable version never warns.
+fn version_key(v: &str) -> Option<VersionKey> {
+    if !is_version(v) {
+        return None;
+    }
+    let (core, pre) = match v.split_once('-') {
+        Some((c, p)) => (
+            c,
+            p.strip_prefix("rc.")
+                .and_then(|n| n.parse().ok())
+                .map_or(Pre::Other, Pre::Rc),
+        ),
+        None => (v, Pre::Release),
+    };
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    Some(((parts.next()??, parts.next()??, parts.next()??), pre))
+}
+
+/// Whether version `a` is strictly newer than `b`. Prereleases of one `x.y.z` that are not both
+/// `rc.N` (two shas, or a sha and a candidate) are neither newer nor older.
+fn newer(a: VersionKey, b: VersionKey) -> bool {
+    if a.0 != b.0 {
+        return a.0 > b.0;
+    }
+    match (a.1, b.1) {
+        (Pre::Release, Pre::Release) => false,
+        (Pre::Release, _) => true,
+        (Pre::Rc(x), Pre::Rc(y)) => x > y,
+        _ => false,
+    }
+}
+
+/// A plugin name safe to print: what a marketplace allows.
+fn is_plugin_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Whether two paths name one folder: equal, or equal once symlinks are resolved (a symlinked
+/// root, or `/var` against `/private/var`). A path that cannot be resolved is only compared as is.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
+/// Whether `cwd` is `project` or below it: so as written, or once symlinks are resolved. A path
+/// that cannot be resolved is only compared as written.
+fn holds(project: &Path, cwd: &Path) -> bool {
+    cwd.starts_with(project)
+        || matches!(
+            (std::fs::canonicalize(project), std::fs::canonicalize(cwd)),
+            (Ok(p), Ok(c)) if c.starts_with(&p)
+        )
+}
+
+/// The line for a session that runs an older plugin than the one installed: the plugin at `root`
+/// (the folder this session loaded) is below the newest `installed_plugins.json` entry of the
+/// same name that applies to `cwd` (user scope, or a project that holds `cwd`). When one entry's
+/// install path is `root`, only entries of its scope and project count. `None` when either
+/// version cannot be read.
+pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String> {
+    let manifest = compat::read_json(&root.join(".claude-plugin").join("plugin.json"))?;
+    let manifest = manifest.as_object()?;
+    let name = manifest
+        .get("name")?
+        .as_str()
+        .filter(|n| is_plugin_name(n))?;
+    let loaded = manifest.get("version")?.as_str()?;
+    let loaded_key = version_key(loaded)?;
+    let list = compat::read_json(
+        &compat::config_dir(env)
+            .join("plugins")
+            .join("installed_plugins.json"),
+    )?;
+    let plugins = list.as_object()?.get("plugins")?.as_object()?;
+    let prefix = format!("{name}@");
+    // Every entry that applies to `cwd`.
+    struct Install<'a> {
+        scope: Option<&'a str>,
+        project: Option<&'a str>,
+        path: Option<&'a str>,
+        version: &'a str,
+    }
+    let mut applicable: Vec<Install<'_>> = Vec::new();
+    for (key, entries) in plugins.iter() {
+        let Some(entries) = entries.as_array().filter(|_| key.starts_with(&prefix)) else {
+            continue;
+        };
+        for entry in entries.iter().filter_map(Value::as_object) {
+            let scope = entry.get("scope").and_then(Value::as_str);
+            let project = entry.get("projectPath").and_then(Value::as_str);
+            if matches!(scope, Some("project" | "local"))
+                && !project.is_some_and(|p| holds(Path::new(p), cwd))
+            {
+                continue;
+            }
+            let Some(version) = entry.get("version").and_then(Value::as_str) else {
+                continue;
+            };
+            applicable.push(Install {
+                scope,
+                project,
+                path: entry.get("installPath").and_then(Value::as_str),
+                version,
+            });
+        }
+    }
+    // The entry the session loaded from is the one whose install path is `root`. A project install
+    // pinned older than the user one is not stale, so compare only with entries of that scope and
+    // project. No entry has that path (it moved on to a newer folder): compare with all of them.
+    let loaded_from = applicable
+        .iter()
+        .find(|i| i.path.is_some_and(|p| same_folder(Path::new(p), root)));
+    let mut newest: Option<(VersionKey, &str)> = None;
+    for install in &applicable {
+        if loaded_from.is_some_and(|l| l.scope != install.scope || l.project != install.project) {
+            continue;
+        }
+        if let Some(k) = version_key(install.version)
+            && newest.is_none_or(|(best, _)| newer(k, best))
+        {
+            newest = Some((k, install.version));
+        }
+    }
+    let (key, installed) = newest?;
+    newer(key, loaded_key).then(|| {
+        format!(
+            "anthology: this session loaded {name} {loaded}, but {installed} is installed; restart Claude Code to load the new version"
+        )
+    })
 }
 
 /// `_is_subagent`: Claude Code puts `agent_id` in the hook input when the hook fires inside a
@@ -859,6 +1038,10 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         return Ok(subagent_output(env, &cwd, deps));
     }
     let root = (deps.plugin_root)(env)?;
+    let source = hook.get("source").and_then(Value::as_str);
+    let embedded = embedded_host(env);
+    // What an embedded host still hears: the self-test and the bootstrap, nothing else.
+    let kept_from = warnings.len();
 
     let guard_root = step(
         &mut warnings,
@@ -896,6 +1079,7 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         None,
     );
     warnings.extend(self_test);
+    let host_warnings = warnings[kept_from..].to_vec();
 
     let data_dir = env
         .get_os("CLAUDE_PLUGIN_DATA")
@@ -930,8 +1114,13 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         (),
     );
 
+    // The nag and the settings note are for a session that starts, not one that resumes. A hook
+    // input with no `source` at all (Claude Code always sends one) is read as a start.
+    let at_startup = matches!(source, None | Some("startup"));
     if current.get("setup_done").is_none() {
-        warnings.push(NAG.into());
+        if at_startup {
+            warnings.push(NAG.into());
+        }
     } else {
         let w = step(
             &mut warnings,
@@ -943,16 +1132,18 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             None,
         );
         warnings.extend(w);
-        let w = step(
-            &mut warnings,
-            label::OPS,
-            |_| {
-                fault(deps, "_ops_warning")?;
-                Ok(ops_warning(env, &root, &current, deps))
-            },
-            None,
-        );
-        warnings.extend(w);
+        if at_startup {
+            let w = step(
+                &mut warnings,
+                label::OPS,
+                |_| {
+                    fault(deps, "_ops_warning")?;
+                    Ok(ops_warning(env, &root, &current, deps))
+                },
+                None,
+            );
+            warnings.extend(w);
+        }
         if elapsed() > DEADLINE - ATL_MIN_REMAINING {
             warnings.push(ATL_SKIPPED.into());
         } else {
@@ -1032,36 +1223,54 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     );
     warnings.extend(w);
 
+    if !embedded && matches!(source, Some("compact" | "resume")) {
+        let w = step(
+            &mut warnings,
+            label::STALE,
+            |_| {
+                fault(deps, "_stale_plugin_warning")?;
+                Ok(stale_plugin_warning(env, &root, &cwd))
+            },
+            None,
+        );
+        warnings.extend(w);
+    }
+
     let (memory, messages) = memory_step(&mut warnings, &cwd, env, deps);
     // A compact that runs in a git worktree the session moved into (or an agent's worktree)
     // really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
     let mut messages = messages;
-    if hook.get("source").and_then(Value::as_str) == Some("compact") {
+    if source == Some("compact") {
         messages.retain(|m| m != anthology_memory::sync::DIR_SET);
     }
 
-    let guide = step(
-        &mut warnings,
-        label::GUIDE,
-        |_| {
-            fault(deps, "_read_guide")?;
-            Ok(read_guide(&root))
-        },
-        None,
-    );
-    if guide.is_none() {
-        warnings.push(GUIDE_MISSING.into());
-    }
-    let guide_text = guide.unwrap_or_default();
-    let context = step(
-        &mut warnings,
-        label::COMPOSE,
-        |_| {
-            fault(deps, "_compose")?;
-            Ok(compose(&guide_text, &memory))
-        },
-        guide_text.clone(),
-    );
+    // An embedded host gets no guide and no memory text, so neither is read or composed.
+    let context = if embedded {
+        String::new()
+    } else {
+        let guide = step(
+            &mut warnings,
+            label::GUIDE,
+            |_| {
+                fault(deps, "_read_guide")?;
+                Ok(read_guide(&root))
+            },
+            None,
+        );
+        if guide.is_none() {
+            warnings.push(GUIDE_MISSING.into());
+        }
+        let guide_text = guide.unwrap_or_default();
+        step(
+            &mut warnings,
+            label::COMPOSE,
+            |_| {
+                fault(deps, "_compose")?;
+                Ok(compose(&guide_text, &memory))
+            },
+            guide_text.clone(),
+        )
+    };
 
     // Step 10: prune <ah>/bin; silent, and it never costs the output.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1073,8 +1282,13 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     hook_out.insert("additionalContext".into(), Value::Str(context));
     let mut out = Map::new();
     out.insert("hookSpecificOutput".into(), Value::Object(hook_out));
-    let mut all = warnings;
-    all.extend(messages);
+    let all = if embedded {
+        host_warnings
+    } else {
+        let mut all = warnings;
+        all.extend(messages);
+        all
+    };
     let message = all.join("\n");
     if !message.is_empty() {
         out.insert("systemMessage".into(), Value::Str(cap_message(&message)));

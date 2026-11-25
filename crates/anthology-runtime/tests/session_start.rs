@@ -422,8 +422,9 @@ mod output_test {
     fn test_a_subagent_on_compact_gets_none_of_the_lead_warnings() {
         let f = Fx::new();
         let (mine, env) = lead_warnings_setup(&f);
-        // The same session as the lead gets the warnings, so the subagent's silence is real.
-        let lead = f.go_d(&f.deps(), Some(&mine), &env, &[("source", "compact")]);
+        // The same session as the lead gets the warnings (the nag is for a start), so the
+        // subagent's silence is real.
+        let lead = f.go_d(&f.deps(), Some(&mine), &env, &[("source", "startup")]);
         let lead_lines = lines(&lead);
         assert!(lead_lines.contains(&NAG.to_string()), "{lead_lines:?}");
         assert!(lead_lines.iter().any(|l| l.contains("not installed")));
@@ -1219,11 +1220,14 @@ mod compatibility_lines_test {
             ("_wrappers_warning", "the bin wrapper check"),
             ("_agent_memory_warning", "the agent-memory path check"),
             ("_subagent_model_warning", "the subagent model check"),
+            // only a compact or resume runs this step
+            ("_stale_plugin_warning", "the loaded plugin version check"),
         ] {
             let fail = move |n: &str| (n == name).then(|| exc("RuntimeError", "boom"));
             let mut d = c.f.deps();
             d.fail = &fail;
-            let out = c.f.go_d(&d, Some(&c.repo), &c.f.env(), &[]);
+            let out =
+                c.f.go_d(&d, Some(&c.repo), &c.f.env(), &[("source", "compact")]);
             assert!(
                 context(&out).contains("# Anthology routing guide"),
                 "{name}"
@@ -3261,6 +3265,515 @@ mod prune {
         fs::create_dir_all(bin.join(&q)).unwrap();
         f.go();
         assert!(!bin.join(&q).exists());
+    }
+}
+
+// --- embedded hosts, the startup-only lines, and a stale loaded plugin ---------------------
+
+mod host_mode {
+    use super::*;
+
+    const GUIDE_HEADING: &str = "# Anthology routing guide";
+
+    /// An SDK host: the entrypoint every SDK build sets, and a session nobody watches.
+    fn sdk(f: &Fx) -> Env {
+        f.env()
+            .with("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
+            .with("CLAUDE_CODE_SESSION_ATTENDED", "0")
+    }
+
+    /// One personal note, so a run that gets memory shows a `## Personal memory` section.
+    fn personal_note(f: &Fx) {
+        let name = "project-host-note";
+        let note = Note::new(name).type_("project").desc("A host note").text();
+        write(
+            &f.c.mem
+                .anth
+                .join("personal-memory")
+                .join(format!("{name}.md")),
+            &note,
+            None,
+        );
+    }
+
+    /// A guard that lets the self-test sample through, so the self-test has something to say.
+    fn weak_guard(f: &Fx) {
+        write_mode(&f.c.guard.join("hooks/guard.sh"), EXIT_0, 0o755);
+    }
+
+    #[test]
+    fn an_sdk_host_gets_no_guide_and_no_memory() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        personal_note(&f);
+        let hosts = [
+            ("sdk-ts", Some("0")),
+            ("sdk-cli", None),
+            // the entrypoint prefix marks an SDK build when the attended flag says nothing
+            ("sdk-py", None),
+            ("sdk-py", Some("")),
+            // a custom host nobody watches: the attended flag alone marks it
+            ("hostapp", Some("0")),
+        ];
+        for (entrypoint, attended) in hosts {
+            let mut env = f.env().with("CLAUDE_CODE_ENTRYPOINT", entrypoint);
+            if let Some(a) = attended {
+                env = env.with("CLAUDE_CODE_SESSION_ATTENDED", a);
+            }
+            let out = f.go_d(&f.deps(), None, &env, &[]);
+            assert_eq!(context(&out), "", "{entrypoint} {attended:?}");
+            assert!(!has_msg(&out), "{entrypoint}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn host_mode_full_restores_the_guide() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        personal_note(&f);
+        let env = sdk(&f).with("ANTHOLOGY_HOST_MODE", "full");
+        let ctx = context(&f.go_d(&f.deps(), None, &env, &[]));
+        assert!(ctx.contains(GUIDE_HEADING), "{ctx}");
+        assert!(ctx.contains("## Personal memory"), "{ctx}");
+        // only the exact word counts: anything else leaves the host mode on
+        for other in ["", "FULL", "full ", "1", "off"] {
+            let env = sdk(&f).with("ANTHOLOGY_HOST_MODE", other);
+            let ctx = context(&f.go_d(&f.deps(), None, &env, &[]));
+            assert_eq!(ctx, "", "{other:?}");
+        }
+    }
+
+    #[test]
+    fn cli_and_vscode_get_the_guide() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // `sdk-ts` is an interactive `claude` that an SDK process started and that inherited the
+        // entrypoint: Claude Code recomputes attended, so the person at it keeps the guide
+        for entrypoint in ["cli", "claude-vscode", "sdk-ts"] {
+            let env = f
+                .env()
+                .with("CLAUDE_CODE_ENTRYPOINT", entrypoint)
+                .with("CLAUDE_CODE_SESSION_ATTENDED", "1");
+            let ctx = context(&f.go_d(&f.deps(), None, &env, &[]));
+            assert!(ctx.contains(GUIDE_HEADING), "{entrypoint}: {ctx}");
+        }
+        // no variable at all: not a host
+        assert!(context(&f.go()).contains(GUIDE_HEADING));
+    }
+
+    #[test]
+    fn no_personal_memory_in_a_host() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        personal_note(&f);
+        let control = context(&f.go());
+        assert!(control.contains("## Personal memory"), "{control}");
+        assert!(control.contains("project-host-note"), "{control}");
+        for source in ["startup", "resume", "compact", "clear"] {
+            let out = f.go_d(&f.deps(), None, &sdk(&f), &[("source", source)]);
+            let ctx = context(&out);
+            assert!(!ctx.contains("Personal memory"), "{source}: {ctx}");
+            assert!(!ctx.contains("project-host-note"), "{source}: {ctx}");
+        }
+    }
+
+    #[test]
+    fn an_sdk_host_keeps_only_the_self_test_and_bootstrap_failures() {
+        let f = Fx::new();
+        // Setup never ran, there is no data folder and the guard lets the sample through: the
+        // lead would get the nag, the data line and the self-test warning.
+        weak_guard(&f);
+        let env = sdk(&f).without("CLAUDE_PLUGIN_DATA");
+        let lead = f.go_d(&f.deps(), None, &f.env().without("CLAUDE_PLUGIN_DATA"), &[]);
+        let lead_lines = lines(&lead);
+        assert!(lead_lines.contains(&NAG.to_string()), "{lead_lines:?}");
+        assert!(lead_lines.iter().any(|l| l.contains("did NOT block")));
+
+        let out = f.go_d(&f.deps(), None, &env, &[]);
+        let host_lines = lines(&out);
+        assert_eq!(host_lines.len(), 1, "{host_lines:?}");
+        assert!(host_lines[0].contains("did NOT block"), "{host_lines:?}");
+        assert_eq!(context(&out), "");
+
+        // a failing bootstrap step is kept as well
+        let fail = |n: &str| (n == "ensure").then(|| exc("RuntimeError", "x"));
+        let mut d = f.deps();
+        d.fail = &fail;
+        let out = f.go_d(&d, None, &env, &[]);
+        let host_lines = lines(&out);
+        assert!(
+            host_lines.contains(
+                &"anthology: ensuring the guardrails binary failed (RuntimeError)".to_string()
+            ),
+            "{host_lines:?}"
+        );
+        assert!(!host_lines.contains(&NAG.to_string()), "{host_lines:?}");
+    }
+
+    #[test]
+    fn a_host_drops_the_memory_messages_and_the_other_warnings() {
+        let f = Fx::new();
+        f.state_write(vec![("setup_done", Value::Str("0.1.0".into()))]);
+        // no settings file: a lead would hear that the plugin moved
+        let mem = |_: &Path, _: &Env| Ok(("note".to_string(), vec!["memory said hi".to_string()]));
+        let mut d = f.deps();
+        d.memory_run = &mem;
+        let lead = f.go_d(&d, None, &f.env(), &[]);
+        assert!(lines(&lead).contains(&MOVED.to_string()), "{lead:?}");
+        assert!(lines(&lead).contains(&"memory said hi".to_string()));
+        let out = f.go_d(&d, None, &sdk(&f), &[]);
+        assert!(!has_msg(&out), "{out:?}");
+        assert_eq!(context(&out), "");
+    }
+
+    #[test]
+    fn the_setup_nag_shows_only_at_startup() {
+        let f = Fx::new();
+        let at = |source: &str| lines(&f.go_d(&f.deps(), None, &f.env(), &[("source", source)]));
+        assert!(at("startup").contains(&NAG.to_string()));
+        for source in ["resume", "compact", "clear"] {
+            assert!(!at(source).contains(&NAG.to_string()), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_hook_input_with_no_source_is_read_as_a_start() {
+        let f = Fx::new();
+        let out = session_start::run(&f.env(), "{}", &f.deps());
+        let out = json::loads(&out).unwrap();
+        assert!(lines(&out).contains(&NAG.to_string()), "{out:?}");
+        let out = session_start::run(&f.env(), r#"{"source": "other"}"#, &f.deps());
+        let out = json::loads(&out).unwrap();
+        assert!(!lines(&out).contains(&NAG.to_string()), "{out:?}");
+    }
+
+    #[test]
+    fn the_settings_changed_note_shows_only_at_startup() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        f.state_write(vec![(
+            "settings_ops_version",
+            Value::Str("1-0000000000000000".into()),
+        )]);
+        let at = |source: &str| lines(&f.go_d(&f.deps(), None, &f.env(), &[("source", source)]));
+        assert_eq!(at("startup"), vec![OPS_CHANGED.to_string()]);
+        for source in ["resume", "compact", "clear"] {
+            assert!(at(source).is_empty(), "{source}");
+        }
+    }
+
+    /// `installed_plugins.json` with anthology at `installed` and the sibling guardrails, and the
+    /// loaded plugin's manifest at `loaded`.
+    fn versions(f: &Fx, loaded: &str, installed: &str) {
+        write(
+            &f.plugin().join(".claude-plugin/plugin.json"),
+            &format!(r#"{{"name": "anthology", "version": "{loaded}"}}"#),
+            None,
+        );
+        write(
+            &f.config().join("plugins/installed_plugins.json"),
+            &format!(
+                r#"{{"version": 2, "plugins": {{
+                "anthology@anthology": [{{"scope": "user", "installPath": {}, "version": "{installed}"}}],
+                "anthology-guardrails@anthology": [{{"scope": "user", "installPath": {}, "version": "0.2.9"}}]}}}}"#,
+                jstr(&p(f.plugin())),
+                jstr(&p(&f.c.guard)),
+            ),
+            None,
+        );
+    }
+
+    fn stale_line(loaded: &str, installed: &str) -> String {
+        format!(
+            "anthology: this session loaded anthology {loaded}, but {installed} is installed; restart Claude Code to load the new version"
+        )
+    }
+
+    #[test]
+    fn a_stale_loaded_plugin_is_named() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        versions(&f, "0.4.1", "0.5.0");
+        for source in ["compact", "resume"] {
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", source)]);
+            assert_eq!(lines(&out), vec![stale_line("0.4.1", "0.5.0")], "{source}");
+        }
+        // a numeric order, not a text one
+        versions(&f, "0.9.0", "0.10.0");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.9.0", "0.10.0")]);
+        // a release is newer than its own prerelease
+        versions(&f, "0.5.0-rc.1", "0.5.0");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.5.0-rc.1", "0.5.0")]);
+    }
+
+    /// A project-scope install of anthology for `proj` at `project` and a user-scope one at
+    /// `user`. The loaded plugin (manifest at `loaded`) sits at the install path of `which`.
+    fn scoped_versions(f: &Fx, proj: &Path, which: &str, loaded: &str, project: &str, user: &str) {
+        let user_dir = f.tmp().join("user-install");
+        fs::create_dir_all(&user_dir).unwrap();
+        let (project_path, user_path) = match which {
+            "project" => (f.plugin().to_path_buf(), user_dir),
+            _ => (f.tmp().join("project-install"), f.plugin().to_path_buf()),
+        };
+        write(
+            &f.plugin().join(".claude-plugin/plugin.json"),
+            &format!(r#"{{"name": "anthology", "version": "{loaded}"}}"#),
+            None,
+        );
+        write(
+            &f.config().join("plugins/installed_plugins.json"),
+            &format!(
+                r#"{{"version": 2, "plugins": {{
+                "anthology@anthology": [
+                  {{"scope": "user", "installPath": {}, "version": "{user}"}},
+                  {{"scope": "project", "projectPath": {}, "installPath": {}, "version": "{project}"}}],
+                "anthology-guardrails@anthology": [{{"scope": "user", "installPath": {}, "version": "0.2.9"}}]}}}}"#,
+                jstr(&p(&user_path)),
+                jstr(&p(proj)),
+                jstr(&p(&project_path)),
+                jstr(&p(&f.c.guard)),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn a_project_install_pinned_older_than_the_user_one_is_not_stale() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // the session loaded the project's own pin: nothing newer for that scope
+        scoped_versions(&f, &proj, "project", "0.4.0", "0.4.0", "0.5.0");
+        for source in ["compact", "resume"] {
+            let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", source)]);
+            assert!(!has_msg(&out), "{source}: {out:?}");
+        }
+    }
+
+    /// Rewrites the install path of the entry that holds the loaded plugin's folder.
+    fn move_install_path(f: &Fx, to: &str) {
+        let file = f.config().join("plugins/installed_plugins.json");
+        let list = fs::read_to_string(&file).unwrap();
+        let from = jstr(&p(f.plugin()));
+        assert!(list.contains(&from), "{list}");
+        write(&file, &list.replacen(&from, &jstr(to), 1), None);
+    }
+
+    #[test]
+    fn the_loaded_folder_is_found_with_a_trailing_slash_or_a_symlink() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        let link = f.tmp().join("plugin-link");
+        std::os::unix::fs::symlink(f.plugin(), &link).unwrap();
+        for path in [format!("{}/", p(f.plugin())), p(&link)] {
+            // the project pin is the loaded one and is older than the user install
+            scoped_versions(&f, &proj, "project", "0.4.0", "0.4.0", "0.5.0");
+            move_install_path(&f, &path);
+            let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{path}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_project_path_still_holds_its_working_folder() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        let link = f.tmp().join("proj-link");
+        std::os::unix::fs::symlink(&proj, &link).unwrap();
+        // the project pin is the loaded one and older than the user install; the entry names the
+        // project through a link, and the session runs in the real folder (then the other way)
+        for (project_path, cwd) in [(&link, &proj), (&proj, &link)] {
+            scoped_versions(&f, project_path, "project", "0.4.0", "0.4.0", "0.5.0");
+            let out = f.go_d(&f.deps(), Some(cwd), &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{project_path:?} {cwd:?}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_path_that_cannot_be_resolved_does_not_hold_the_folder() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // a project that is gone and unrelated to the working folder: its entry is skipped
+        scoped_versions(
+            &f,
+            &f.tmp().join("gone"),
+            "project",
+            "0.4.0",
+            "0.4.0",
+            "0.5.0",
+        );
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.0", "0.5.0")]);
+    }
+
+    #[test]
+    fn an_install_that_moved_to_a_new_folder_is_stale() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // an update: no entry points at the loaded folder any more, and the newest is 0.5.0
+        scoped_versions(&f, &proj, "user", "0.4.1", "0.3.0", "0.5.0");
+        let new = f.tmp().join("cache/anthology/0.5.0");
+        fs::create_dir_all(&new).unwrap();
+        move_install_path(&f, &p(&new));
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.1", "0.5.0")]);
+    }
+
+    #[test]
+    fn a_stale_check_compares_the_loaded_scope_with_its_own_entry() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let proj = f.tmp().join("proj");
+        fs::create_dir(&proj).unwrap();
+        // loaded from the user install; its own entry moved on, the project pin is older
+        scoped_versions(&f, &proj, "user", "0.4.1", "0.3.0", "0.5.0");
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.1", "0.5.0")]);
+        // loaded from the project install; its own entry moved on, the user one did not
+        scoped_versions(&f, &proj, "project", "0.4.0", "0.4.2", "0.4.1");
+        let out = f.go_d(&f.deps(), Some(&proj), &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.4.0", "0.4.2")]);
+    }
+
+    #[test]
+    fn release_candidates_of_one_version_are_ordered_by_number() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // a numeric order, not a text one
+        for (loaded, installed) in [("0.2.9-rc.1", "0.2.9-rc.2"), ("0.2.9-rc.2", "0.2.9-rc.10")] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert_eq!(lines(&out), vec![stale_line(loaded, installed)]);
+        }
+        for (loaded, installed) in [
+            ("0.2.9-rc.2", "0.2.9-rc.1"),
+            ("0.2.9-rc.10", "0.2.9-rc.2"),
+            ("0.2.9-rc.2", "0.2.9-rc.2"),
+        ] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{loaded} {installed}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn build_tags_of_one_version_are_not_ordered() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // a sha says nothing about age, so neither a sha nor a release candidate against a sha warns
+        for (loaded, installed) in [
+            ("0.2.9-f99aa8723fd9", "0.2.9-0123456789ab"),
+            ("0.2.9-0123456789ab", "0.2.9-f99aa8723fd9"),
+            ("0.2.9-rc.1", "0.2.9-f99aa8723fd9"),
+            ("0.2.9-f99aa8723fd9", "0.2.9-rc.1"),
+        ] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{loaded} {installed}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_build_tagged_installed_version_is_read_as_a_prerelease() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        // the release is newer than a build of the same number: nothing to say
+        versions(&f, "0.2.9", "0.2.9-f99aa8723fd9");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert!(!has_msg(&out), "{out:?}");
+        // an older release than that build is stale, and the line names the installed version
+        versions(&f, "0.2.8", "0.2.9-f99aa8723fd9");
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert_eq!(lines(&out), vec![stale_line("0.2.8", "0.2.9-f99aa8723fd9")]);
+    }
+
+    #[test]
+    fn a_current_or_newer_loaded_plugin_is_quiet() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        for (loaded, installed) in [
+            ("0.5.0", "0.5.0"),
+            ("0.6.0", "0.5.0"),
+            ("0.5.0", "0.5.0-rc.1"),
+        ] {
+            versions(&f, loaded, installed);
+            for source in ["compact", "resume"] {
+                let out = f.go_d(&f.deps(), None, &f.env(), &[("source", source)]);
+                assert!(!has_msg(&out), "{loaded} {installed} {source}: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_stale_check_is_for_compact_and_resume_only() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        versions(&f, "0.4.1", "0.5.0");
+        for source in ["startup", "clear"] {
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", source)]);
+            assert!(!has_msg(&out), "{source}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_stale_check_that_cannot_read_a_version_stays_quiet() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        for (loaded, installed) in [("0.4.1", "unknown"), ("dev", "0.5.0"), ("0.4", "0.5.0")] {
+            versions(&f, loaded, installed);
+            let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+            assert!(!has_msg(&out), "{loaded} {installed}: {out:?}");
+        }
+        // no manifest in the loaded folder, no installed list, an entry for another project
+        versions(&f, "0.4.1", "0.5.0");
+        fs::remove_file(f.plugin().join(".claude-plugin/plugin.json")).unwrap();
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert!(
+            !lines(&out).iter().any(|l| l.contains("restart")),
+            "{out:?}"
+        );
+        let other = f.tmp().join("other-project");
+        fs::create_dir(&other).unwrap();
+        versions(&f, "0.4.1", "0.5.0");
+        let list = fs::read_to_string(f.config().join("plugins/installed_plugins.json")).unwrap();
+        let scoped = list.replacen(
+            r#"{"scope": "user", "installPath": "#,
+            &format!(
+                r#"{{"scope": "project", "projectPath": {}, "installPath": "#,
+                jstr(&p(&other))
+            ),
+            1,
+        );
+        write(
+            &f.config().join("plugins/installed_plugins.json"),
+            &scoped,
+            None,
+        );
+        let out = f.go_d(&f.deps(), None, &f.env(), &[("source", "compact")]);
+        assert!(
+            !lines(&out).iter().any(|l| l.contains("restart")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_gets_no_stale_line() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        versions(&f, "0.4.1", "0.5.0");
+        let out = f.go_d(&f.deps(), None, &sdk(&f), &[("source", "compact")]);
+        assert!(!has_msg(&out), "{out:?}");
     }
 }
 

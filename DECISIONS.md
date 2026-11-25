@@ -1069,3 +1069,74 @@ The tool this repo ships as `rtk` is a fork of rtk by RTK AI Labs (github.com/rt
 **Consequences**
 
 One rename touches about 15,000 lines, so it lands as one integration branch (T1 binary, CI and scripts; T2 shell and guard; T3 install, hook and doctor; T4 settings, setup and docs) behind a repo test that fails on any `rtk` outside an allowed path or an allowed line. The users' cost is one `/anthology:setup` run after the update. Cost if wrong: a user who never re-runs setup keeps prompts on `atl` rewrites and the old files on disk, which are small; both fail closed.
+
+## ADR-036: the version-bump gate compares a released plugin with its latest release tag
+
+- **Date:** 2026-11-24
+- **Task:** the version-bump gate fix in the 0.2.2 release batch (`crates/anthology-dev/src/version_bump.rs`)
+- **Status:** Accepted
+
+**Context**
+
+The `version-bump` job asked one question of a changed plugin: is its version above the version at the merge base of the pull request and its base branch? When two branches changed the same plugin, the first to merge bumped it, and every other branch then had to bump it again to pass, which also made `CHANGELOG.md` and `plugin.json` conflict on each merge. The release tag, not the base branch, is what users hold, so the tag is the better floor.
+
+**Decision**
+
+- A plugin counts as released once a tag `<plugin>--v*` exists on a commit that is an ancestor of the base. Only those tags count, so the tag a release commit creates in the pushed range is not a release that its own push has to exceed. An unreleased plugin needs no bump, as before.
+- A changed released plugin passes when its head version is above the highest `<plugin>--v*` tag merged into the base (semver, matched by the exact prefix `<plugin>--v`, so `pp--v1.0.0` is no release of `p`) and not below its version at the merge base. A bump that already landed on the base therefore counts, and a branch does not bump it again.
+- A tag whose version is not valid semver is ignored. When no tag is valid, or the head version is not valid semver, the old comparison with the merge-base version applies.
+- Ruling: the latest release is the floor, not the base branch's unreleased version. Cost if wrong: a bump already on the base lets a later branch pass without a bump of its own, so two branches can share one unreleased version. That is intended. The changes of both belong in that release, and `release.sh` is the step that fixes the number.
+
+**Consequences**
+
+Branches no longer re-bump a plugin that the base already moved past its last release, which removes the usual conflict on `plugin.json` and the changelog heading. A plugin that is still at its latest release, or below it, still fails, and the message names that release.
+
+## ADR-037: host mode, where an app drives Claude Code
+
+- **Date:** 2026-11-24
+- **Task:** host mode for embedded sessions in the 0.2.2 release batch (the delegation mod, the session-start hooks and the G0 message)
+- **Status:** Accepted
+
+**Context**
+
+Programs other than a person at a terminal drive Claude Code through its SDK. Such an app owns its system prompt and its task, and nobody there can read the lead instructions Anthology adds (the routing guide, the memory titles, the superpowers introduction, the coordinator section) or act on them. The delegation mod could refuse the host's own `Edit`, `Write` or `NotebookEdit` calls. The block message also offered `/plugin disable`, which no one in such a session can run.
+
+**Decision**
+
+- A session is an embedded host when `ANTHOLOGY_HOST_MODE` is not `full` and either `CLAUDE_CODE_SESSION_ATTENDED` is `0` or `CLAUDE_CODE_ENTRYPOINT` starts with `sdk-`. With no such variable set, there is no host mode.
+- In a host, Anthology adds no lead context: no guide, no memory, no superpowers bootstrap and no coordinator section, and the delegation mod refuses nothing. Guard verdicts do not change, and the G0 message drops its `/plugin disable` line.
+- `ANTHOLOGY_HOST_MODE=full` opts back in to everything. The evals set it.
+- One predicate, three readers: the delegation mod (`isEmbeddedHost` in `hooks/mods/delegation.ts`), the `anthology-superpowers` session-start hook (a patch in `vendor/patches/superpowers.patch`) and the Rust side (session start and the G0 message).
+- Why these signals: Claude Code recomputes the attended flag for each session, and an interactive `cli` or IDE session reads attended as `1`, so a person at a terminal is never taken for a host.
+- Ruling: the check changes what Anthology says, never what it blocks. Guard verdicts are the same in a host. Cost if wrong: a session that Claude Code reports as unattended or as an `sdk-*` entrypoint, though a person uses it, gets no guide, memory or coordinator section until `ANTHOLOGY_HOST_MODE=full` is set. Its safety checks are unchanged.
+
+**Consequences**
+
+Hosts stop paying for instructions they cannot use, and their own edits are no longer refused. The same two variables now decide the question in TypeScript, shell and Rust, so a change to one reader needs the same change in the other two.
+
+**Amendment (2026-11-24): the attended flag decides first**
+
+An interactive `claude` that an SDK process starts inherits `CLAUDE_CODE_ENTRYPOINT=sdk-*`, so the first rule took a person at a terminal for a host and withheld the guide. The decision line now reads: when `CLAUDE_CODE_SESSION_ATTENDED` is `0`, the session is embedded; when it is `1`, it is not; the `sdk-` entrypoint counts only when the flag is unset or has any other value. `ANTHOLOGY_HOST_MODE=full` still wins over both. The repo test `crates/repo-tests/tests/host_predicate.rs` runs one truth table, kept in `plugins/anthology/tests/mods/delegation.test.ts`, against all three readers.
+
+## ADR-038: host path variables the user lists are read through (carve-out d)
+
+- **Date:** 2026-11-24
+- **Task:** audit fix plan T4 (PE-1 carve-out d)
+- **Status:** Accepted
+
+**Context**
+
+An app that embeds Claude Code can tell its agent to run the app's own tool as `"$TOOL" "$SCRIPT" subcommand …`, with both variables set to absolute paths in Claude Code's environment. ADR-033 (PE-1) makes any program from a parameter expansion too complex (G0), so every such call was blocked, and nobody in the host could approve it. A spike checked what the hook sees against what the Bash tool's shell sees: they start with the same values, but a `CLAUDE_ENV_FILE` export or a shell startup file can change the shell's value and never the hook's. So the hook cannot know on its own that the shell will run the file it checked.
+
+**Decision**
+
+- **Opt-in only.** The guard reads `ANTHOLOGY_GUARD_PATH_VARS` from its own environment: a comma-separated list of names (no blanks) that the user sets in the `env` of their settings. With it unset, the analysis is exactly the one before this change. Listing a name is the user vouching that no startup file or env file changes it (`SECURITY.md`). Ruling (spike, reversing the plan's default of reading every variable that passes): automatic reading was dropped because the shell's value can differ from the hook's. Cost if wrong: a host user who wants the call allowed has to add one setting.
+- **The name.** A listed name is read only when it matches `^[A-Z_][A-Z0-9_]*$` and is not denied: `PATH`, `IFS`, `PWD`, `OLDPWD`, `SHELL`, `ENV`, `BASH_ENV`, `ZDOTDIR`, `CDPATH`, `FPATH`, `PS1` to `PS4`, every `PROMPT*`, carve-out (a)'s names (`HOME`, `TMPDIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, `VIRTUAL_ENV`), and every `LD_*`, `DYLD_*`, `BASH_*` and `ZSH_*`. Ruling (T4): also `_`, `REPLY`, `OPTARG`, `MATCH`, `MBEGIN`, `MEND` and `MAPFILE`, which the shells set themselves from what a command reads (`true /x; "$_"`, a bare `read`, `getopts`, `mapfile`, zsh's `regexp-replace`), so a command can change them without spelling them. Ruling (security review of #217): also zsh's tied scalars `MANPATH`, `MAILPATH`, `MODULE_PATH`, `PSVAR`, `FIGNORE`, `WATCH` and `TERMINFO_DIRS`, which a command changes through the lowercase array (`manpath=/x` sets `MANPATH`). A name is uppercase by its pattern, so no lowercase spelling of a denied name is ever read. Cost if wrong: a host whose variable has one of those names must rename it.
+- **The value.** It must be an absolute path of `[A-Za-z0-9_./+-]` with no `..`, and name a regular file whose canonical path keeps to the same pattern. The file must be executable when the word is the program. Neither the value nor the canonical path may lie in a temp folder (`/tmp`, `/var/tmp`, `/dev/shm`, `/var/folders`, and the environment's `TMPDIR`, `TMP`, `TEMP` and `TEMPDIR`) or under the hook's working folder, each folder as written and resolved: an agent writes files there, and could put another file in place of the one checked. The hook reads the values once, under its watchdog, before it reads its input; no working folder reads nothing.
+- **The form.** Only a whole double-quoted `"$NAME"` word, in the program or an argument position, is read, and only when the whole command is plain. Plain is carve-out (a)'s allowlist: every character outside those words is one of `[A-Za-z0-9_./:=,+@%-]`, a blank, a quote or one of `; & | < >`, with no here-string or here-doc. Every `$` must open such a word: inside double quotes opened right before it, outside single quotes, at the start of a word, not as a redirection target, and closed at the end of a word. A read name may not appear anywhere else in the text, or in any word of the analysis with its quotes removed (`HO''ST` counts), and nothing may source a file or run `eval`. Ruling (T4, made word-level by the security review of #217): zsh's `typeset -m` and its kin take names as patterns, matched after quote removal, so `typeset -m 'TOOL<'-'>=/x'` sets `TOOL1` without spelling it. So no word of the analysis (quotes removed; a redirection is not a word) may hold `<` or `>`, and `typeset`, `declare`, `local`, `integer`, `float`, `readonly`, `export` and `unset` may not get `-m`, alone or in a flag cluster (`-gm`, `+m`). The first ruling looked for `<` before a digit or `-` in the raw text, which quotes split. Otherwise the command is analyzed as if nothing were listed, so the old rule applies (a program from a variable is G0).
+- **What the rules read.** When the command is read through, the word is put in place as the canonical path, so a link with another name that leads to `npx` is G1; when it is not, it is G0 as before. Either way it is blocked. Ruling (T4): the value as written is read as another reading of the same command (an `Analysis.alternates` entry, its words as written), because a link named `npx` that leads to `npx-cli.js` must still meet G1, as the same path typed out would. Every rule (G1 to G6) reads both.
+- `anthology-shell` gains the `PathVars` trait and `analyze_with_vars(.., vars: Option<&dyn PathVars>)`; `analyze_with` is `vars: None`. atl calls `analyze` and `analyze_with` only, so its analysis does not change (`atl_analysis_is_unchanged`). The guard's `HostPathVars::new(env, cwd)` does every check above that needs the environment or the file system; `anthology guard hook` passes the process environment and working folder.
+
+**Consequences**
+
+A host's documented call is allowed once the user lists its variables, and each rule still applies to the file the variable names. Accepted over-blocks: `"${TOOL}"`, an unquoted `$TOOL`, a listed variable beside any other expansion (`"$TOOL" "$x"`, `"$TOOL" "$HOME/x"`) and a command with any character outside the allowlist stay G0, and a canonical path that holds a listed name as text blocks its own command. Known limits: a file can change between the check and the run, as for a path typed out; the guard does not see a variable a startup file or a function changes, which is what listing it vouches against. The setting can come from a repository's `.claude/settings.json` too, so a cloned repository can list names; `SECURITY.md` says to check a repository's settings before trusting it. An arithmetic assignment that does not spell the name cannot be ruled out entirely (`let`, `declare -i`, zsh's `integer`), but it can only set a number, and running `"$NAME"` then runs a program named by a number, which is no worse than typing one. `atl_analysis_is_unchanged` only checks the API (`analyze_with` is `analyze_with_vars(.., None)` by construction); the proof that atl's analysis is unchanged is the replay of the frozen `shell.analyze` and `shell.segments` goldens, which this change does not bless. The goldens do not change: no case sets the variable.

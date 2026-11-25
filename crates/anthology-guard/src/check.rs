@@ -26,7 +26,7 @@ use std::sync::LazyLock;
 
 use anthology_pycompat::json::Value;
 use anthology_shell::{
-    Analysis, Entry, Limits, MAX_CWD_DEPTH, Opaque, analyze_with, normalize_with,
+    Analysis, Entry, Limits, MAX_CWD_DEPTH, Opaque, PathVars, analyze_with_vars, normalize_with,
 };
 
 use crate::paths::Paths;
@@ -59,6 +59,11 @@ pub const TOO_COMPLEX: &str = "this command is too complex to check safely; simp
      it into smaller commands (to run it as written, the user can turn the guard off with \
      `/plugin disable anthology-guardrails@anthology`)";
 
+/// [`TOO_COMPLEX`] without its `/plugin disable` parenthetical, for a host that has no `/plugin`
+/// ([`crate::host::embedded`]). [`TOO_COMPLEX`] starts with this text.
+pub const TOO_COMPLEX_EMBEDDED: &str = "this command is too complex to check safely; simplify it or \
+     split it into smaller commands";
+
 /// The patterns a check compiles once per backtrack limit.
 struct Regexes {
     secrets: Vec<Option<Secret>>,
@@ -81,8 +86,41 @@ pub fn check(tool_name: &Value, tool_input: &Value, home: &str) -> Verdict {
 
 /// [`check`] with explicit limits (a test lowers `backtrack_limit`, GC-19).
 pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Limits) -> Verdict {
+    check_explained(tool_name, tool_input, home, limits).0
+}
+
+/// [`check_with`], and for a [`Verdict::TooComplex`] the reason anthology-shell stopped at or marked on the
+/// entries of the command, when one of the reasons that [`cause_of`] names is there. A text hint for the
+/// block line and nothing else: the verdict is the one [`check_with`] gives.
+pub fn check_explained(
+    tool_name: &Value,
+    tool_input: &Value,
+    home: &str,
+    limits: &Limits,
+) -> (Verdict, Option<Opaque>) {
+    check_explained_with(tool_name, tool_input, home, limits, None)
+}
+
+/// [`check_explained`] with the host path variables the user vouches for (carve-out d,
+/// [`crate::path_vars`]): the command is analyzed with `analyze_with_vars`. `None` is
+/// [`check_explained`].
+pub fn check_explained_with(
+    tool_name: &Value,
+    tool_input: &Value,
+    home: &str,
+    limits: &Limits,
+    vars: Option<&dyn PathVars>,
+) -> (Verdict, Option<Opaque>) {
     if *limits == Limits::default() {
-        run(tool_name, tool_input, home, limits, &DEFAULT_REGEXES, true)
+        run(
+            tool_name,
+            tool_input,
+            home,
+            limits,
+            &DEFAULT_REGEXES,
+            true,
+            vars,
+        )
     } else {
         run(
             tool_name,
@@ -91,6 +129,7 @@ pub fn check_with(tool_name: &Value, tool_input: &Value, home: &str, limits: &Li
             limits,
             &Regexes::new(limits),
             true,
+            vars,
         )
     }
 }
@@ -110,7 +149,9 @@ pub fn check_without_d8(tool_name: &Value, tool_input: &Value, home: &str) -> Ve
         &Limits::default(),
         &DEFAULT_REGEXES,
         false,
+        None,
     )
+    .0
 }
 
 /// Tracks the first blocking rule and whether some step could not finish.
@@ -140,7 +181,8 @@ fn run(
     limits: &Limits,
     regexes: &Regexes,
     fw: bool,
-) -> Verdict {
+    vars: Option<&dyn PathVars>,
+) -> (Verdict, Option<Opaque>) {
     let name = tool_name.as_str().unwrap_or("");
     let empty = Value::Object(Default::default());
     let input = match tool_input {
@@ -154,10 +196,10 @@ fn run(
         .filter(|c| !c.is_empty());
 
     if g5(name) {
-        return Verdict::Block(Rule::G5);
+        return (Verdict::Block(Rule::G5), None);
     }
     let analysis = match command {
-        Some(c) => analyze_with(c, home, limits),
+        Some(c) => analyze_with_vars(c, home, limits, vars),
         None => Analysis::default(),
     };
     let paths = Paths::new(home, limits, fw);
@@ -177,26 +219,26 @@ fn run(
         },
     );
     if let Some(v) = out.hit(Rule::G6, g6) {
-        return v;
+        return (v, None);
     }
     if let Some(v) = out.hit(Rule::G3, g3_input(name, input, &paths)) {
-        return v;
+        return (v, None);
     }
     // Every entry, then each other reading of a wrapped command (`Analysis.alternates`), against
     // G3, G4, G1 and G2 (final review C-1, I-3): an alternate is a reading the shipped Python may
     // take, so a rule it hits blocks.
     for entry in analysis.entries.iter().chain(&analysis.alternates) {
         if let Some(v) = out.hit(Rule::G3, g3(entry, &paths)) {
-            return v;
+            return (v, None);
         }
         if g4(entry) {
-            return Verdict::Block(Rule::G4);
+            return (Verdict::Block(Rule::G4), None);
         }
         if g1_with(entry, fw) {
-            return Verdict::Block(Rule::G1);
+            return (Verdict::Block(Rule::G1), None);
         }
         if g2(entry) {
-            return Verdict::Block(Rule::G2);
+            return (Verdict::Block(Rule::G2), None);
         }
     }
     let regex_limit = analysis
@@ -214,12 +256,42 @@ fn run(
         }
     }
     if out.limited || (analysis.incomplete && regex_limit) {
-        Verdict::Incomplete
+        (Verdict::Incomplete, None)
     } else if analysis.incomplete || capped {
-        Verdict::TooComplex
+        let cause = analysis.incomplete.then(|| cause_of(&analysis)).flatten();
+        (Verdict::TooComplex, cause)
     } else {
-        Verdict::Allow
+        (Verdict::Allow, None)
     }
+}
+
+/// The reasons [`check_explained`] can name, most likely cause first. Each is one anthology-shell
+/// marked on an entry, and each has a hint in [`crate::hook`]. Not every marked entry is the cause: a
+/// `source` or a shell reading stdin is often allowed, so with an unrelated reason beside it the hint
+/// is a false one (text only; the verdict does not depend on it).
+const CAUSES: [&[Opaque]; 4] = [
+    &[Opaque::DynamicCommandWord],
+    &[Opaque::Eval, Opaque::ShellScriptFromExpansion],
+    &[Opaque::Source],
+    &[Opaque::StdinShellUnreadable],
+];
+
+/// The reason `analysis` stopped (`Analysis.halt_cause`: a shell fed by another command, a substitution as the
+/// program, which no entry shows), else the first of [`CAUSES`] that some entry (or alternate reading) of it
+/// carries. The stop comes first because it is the reason the command is too complex; a mark on an entry
+/// may be on a command the guard allows.
+fn cause_of(analysis: &Analysis) -> Option<Opaque> {
+    analysis.halt_cause.or_else(|| {
+        CAUSES.iter().find_map(|group| {
+            group.iter().copied().find(|reason| {
+                analysis
+                    .entries
+                    .iter()
+                    .chain(&analysis.alternates)
+                    .any(|e| e.opaque.contains(reason))
+            })
+        })
+    })
 }
 
 /// Whether anthology-shell stopped reading `entry` at one of Python's caps: a script nested past

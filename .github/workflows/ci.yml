@@ -27,9 +27,10 @@ jobs:
         run: scripts/dev.sh vendor check
 
   version-bump:
-    # A plugin whose files changed must carry a higher plugin.json version than at the
-    # merge base, once it has been released (a `<plugin>--v*` tag exists). Needs git history
-    # and tags (fetch-depth: 0 fetches both); scripts/dev.sh runs the check in the pinned Rust image.
+    # A plugin whose files changed must carry a higher plugin.json version than its latest
+    # released tag (`<plugin>--v<version>`, for example `anthology--v0.4.1`); a plugin with no such
+    # tag is unreleased and not gated. Needs git history and tags (fetch-depth: 0 fetches both);
+    # scripts/dev.sh runs the check in the pinned Rust image.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -175,27 +176,104 @@ jobs:
       - name: rust-lint
         run: ci/jobs/rust-lint.sh
 
-  rust-test-linux:
-    # cargo test --workspace --locked in the pinned Rust image (with git, busybox and node).
+  rust-scope:
+    # full=false when a pull request changes only release metadata (versions, locks, the
+    # changelog, memory notes; ci/jobs/rust-scope.sh lists them): the Rust test shards are then
+    # skipped and rust-test-linux runs repo-tests instead. Push runs are always full.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: rust-scope
+        id: scope
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ci/jobs/rust-scope.sh "$BASE" "$HEAD_SHA" >>"$GITHUB_OUTPUT"
+
+  rust-test-linux-shard:
+    # cargo test --workspace --locked in the pinned Rust image (with git, busybox and node), plain
+    # and --all-features, each split into the difftest golden replay and every other test.
+    needs: rust-scope
+    if: needs.rust-scope.outputs.full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [plain, all]
+        part: [replay, rest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: rust-test-linux
-        run: ci/jobs/rust-test-linux.sh
+        env:
+          FEATURES: ${{ matrix.features }}
+          PART: ${{ matrix.part }}
+        run: ci/jobs/rust-test-linux.sh "$FEATURES" "$PART"
 
-  rust-test-macos:
-    # cargo test --workspace --locked on macOS.
+  rust-test-linux:
+    # Green when every Linux shard passed, or, for release metadata only, when repo-tests pass.
+    needs: [rust-scope, rust-test-linux-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shards
+        env:
+          SCOPE: ${{ needs.rust-scope.result }}
+          FULL: ${{ needs.rust-scope.outputs.full }}
+          SHARDS: ${{ needs.rust-test-linux-shard.result }}
+        run: ci/jobs/rust-gate.sh rust-test-linux "$SCOPE" "$FULL" "$SHARDS"
+      - name: repo-tests (release metadata only)
+        if: needs.rust-scope.outputs.full == 'false'
+        run: ci/jobs/rust-test-linux.sh release-metadata
+
+  rust-test-macos-shard:
+    # cargo test --workspace --locked on macOS: plain (then the shims), and --all-features (then
+    # the ledger's macOS listings).
+    needs: rust-scope
+    if: needs.rust-scope.outputs.full == 'true'
     runs-on: macos-15
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [plain, all]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: rust-test-macos
-        run: ci/jobs/rust-test-macos.sh
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: ci/jobs/rust-test-macos.sh "$FEATURES"
+
+  rust-test-macos:
+    # Green when both macOS shards passed, or when they were skipped for release metadata only.
+    needs: [rust-scope, rust-test-macos-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shards
+        env:
+          SCOPE: ${{ needs.rust-scope.result }}
+          FULL: ${{ needs.rust-scope.outputs.full }}
+          SHARDS: ${{ needs.rust-test-macos-shard.result }}
+        run: ci/jobs/rust-gate.sh rust-test-macos "$SCOPE" "$FULL" "$SHARDS"
 
   deny:
     # cargo deny check (advisories, bans, licenses, sources) and the serde_json tree check.
@@ -252,3 +330,19 @@ jobs:
           persist-credentials: false
       - name: fuzz-build
         run: ci/jobs/fuzz-build.sh
+
+  lock-fresh:
+    # Informational: warns (annotation and job summary) when this PR changes what the pinned
+    # anthology binary is built from, so it needs a new anthology-bin release before the next
+    # plugin release. Never fails the PR (continue-on-error) and has no write token. Needs the
+    # history and the tags (fetch-depth: 0); the check runs in the pinned Rust image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: lock-fresh
+        run: ci/jobs/lock-fresh.sh

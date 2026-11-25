@@ -7,10 +7,11 @@ use regex::Regex;
 use repo_tests::yaml::Yaml;
 use repo_tests::{frontmatter, repo};
 
-const SECTIONS: [&str; 7] = [
+const SECTIONS: [&str; 8] = [
     "Startup",
     "Role",
     "Do",
+    "Shell",
     "Don't",
     "Memory",
     "When blocked",
@@ -59,9 +60,9 @@ mod budget {
         ("architect", 23612),
         ("implementer", 26561),
         ("debugger", 22167),
-        ("reviewer", 16672),
-        ("scout", 5944),
-        ("docs-writer", 31376),
+        ("reviewer", 17815), // GC-13 16672, plus the Shell section
+        ("scout", 7158),     // GC-13 5944, plus the Shell section
+        ("docs-writer", 31560),
         ("ui-designer", 128097),
         ("ui-reviewer", 65986),
         ("product-planner", 102779),
@@ -628,6 +629,30 @@ mod roster_test {
         );
     }
 
+    // Agents once read `~/.claude/agent-memory/...` and called the repo's notes missing, so every
+    // Memory section says where its notes live.
+    #[test]
+    fn test_memory_notes_live_in_the_repo_working_folder() {
+        each_agent(
+            |_| true,
+            |spec, p| {
+                let Some((_, _, memory)) = load_section(spec.name, "Memory", p) else {
+                    return;
+                };
+                expect_in(
+                    p,
+                    &format!(
+                        "Your notes are the repo's `.claude/agent-memory/anthology-{}/` under your \
+                         working folder, never `~/.claude`.",
+                        spec.name
+                    ),
+                    &memory,
+                    "Memory",
+                );
+            },
+        );
+    }
+
     // `anthology-mem save` writes the indexed frontmatter and regenerates MEMORY.md; a heredoc or
     // redirect never matches the `Bash(anthology-mem save *)` allow rule.
     #[test]
@@ -789,21 +814,59 @@ mod roster_test {
         );
     }
 
-    // Claude Code asks the user about removals it cannot prove safe, even in bypass mode, so a
-    // writer deletes literal paths only.
+    // Every agent gets the same `## Shell` section: the shell rules (zsh, one plain command,
+    // literal deletes, waiting, background jobs, durations, reports) live there once, so a rule
+    // change is one edit and no agent drifts.
     #[test]
-    fn test_writers_delete_only_literal_paths() {
+    fn every_agent_has_the_same_shell_section() {
+        let mut shells: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        let mut problems = Vec::new();
+        for spec in repo::expected_roster() {
+            match load_section(spec.name, "Shell", &mut problems) {
+                Some((_, _, shell)) => shells.entry(shell).or_default().push(spec.name),
+                None => problems.push(format!("agent={}: no Shell section", spec.name)),
+            }
+        }
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            shells.len(),
+            1,
+            "Shell sections differ between agents: {:?}",
+            shells.values().collect::<Vec<_>>()
+        );
+        let shell = shells.keys().next().unwrap();
+        for needle in [
+            "write `${rev}:path`, never `$rev:path`",
+            "Quote every glob and any URL with `?`",
+            "One plain command per Bash call, from your working folder",
+            "no `cd`, no `git -C <other path>`",
+            "Delete only literal paths, never `rm -rf $VAR` or a glob.",
+            "never `sleep N`",
+            "never wait with Monitor (it returns at once)",
+            "A foreground Bash call is moved to the background after 180 s, whatever its `timeout` says",
+            "`timeout 170 <blocking command>`",
+            "`gh run watch <id>`",
+            "\"no checks reported\" right after a push means CI has not started",
+            "Never end your turn while a background command or Monitor you started is running.",
+            "TaskStop each one and say none remain",
+            "Durations come only from timestamps you read.",
+            "never pastes settings JSON or permission-mode strings",
+        ] {
+            assert!(shell.contains(needle), "Shell lacks {needle:?}");
+        }
+    }
+
+    // The shell rules are not repeated in the Do section of the writers.
+    #[test]
+    fn test_writers_do_not_repeat_the_shell_rules() {
         each_agent(
             |s| s.edits == "yes",
             |spec, p| {
                 let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
                     return;
                 };
-                for needle in [
-                    "Delete only literal paths (`rm -r build/tmp`), never `rm -rf $VAR` or a glob:",
-                    "Claude Code asks the user about removals it can't prove safe, even in bypass mode.",
-                ] {
-                    expect_in(p, needle, &rules, "Do");
+                for needle in ["Delete only literal paths", "Waiting:", "One plain command"] {
+                    expect_not_in(p, needle, &rules, "Do");
                 }
             },
         );
@@ -822,6 +885,8 @@ mod roster_test {
                 };
                 for needle in [
                     "Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files.",
+                    "Append with Edit, never `cat >>`; edit by path inside your worktree;",
+                    "for a conflicted `MEMORY.md`, run `anthology-mem reindex --agent <name>`, then `git add` it.",
                     "One git command per call, with no `;`, `&&` or `$()` around git.",
                     "`git commit -m \"subject\" -m \"body\"` in plain quotes, never `-F file`",
                     "`git merge --no-edit <ref>`, resolve with Edit, `git add <file>`, `git commit --no-edit`",
@@ -851,24 +916,23 @@ mod roster_test {
         );
     }
 
-    // A long `sleep` is blocked, a Monitor call fails when the deferred tool was never loaded,
-    // and a hung test run can sit for most of an hour.
+    // A long `sleep` is blocked, and Monitor returns at once without keeping a turn open, so
+    // each event and each turn end with background work running sends the lead another notice.
+    // Every agent waits in the foreground instead (the same Shell rules for all).
     #[test]
-    fn test_writers_wait_in_the_background_and_time_out_test_runs() {
+    fn test_every_agent_waits_in_the_foreground_and_never_with_monitor() {
         each_agent(
-            |s| s.edits == "yes",
+            |_| true,
             |spec, p| {
-                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                let Some((_, _, rules)) = load_section(spec.name, "Shell", p) else {
                     return;
                 };
                 for needle in [
-                    "never a long `sleep`",
-                    "in the background",
-                    "Load deferred tools such as Monitor with ToolSearch before calling them.",
-                    "`timeout 900`",
-                    "Report a hang instead of waiting.",
+                    "Waiting: never `sleep N`, and never wait with Monitor (it returns at once).",
+                    "so block in chunks: `timeout 170 <blocking command>` (`gh pr checks <n> --watch`, \
+                     `gh run watch <id>`, `docker wait <name>`), repeated until done.",
                 ] {
-                    expect_in(p, needle, &rules, "Do");
+                    expect_in(p, needle, &rules, "Shell");
                 }
             },
         );
@@ -932,6 +996,8 @@ mod roster_test {
                     "Project map: when your change adds, removes or rewires a piece, update \
                      `.claude/memory/reference-project-map.md` in your final commit",
                     "within its size budget",
+                    "Read `.claude/memory/reference-project-map.md` in your working folder first. \
+                     Call it missing only after that Read fails, and quote the error.",
                 ] {
                     expect_in(p, needle, &rules, "Do");
                 }
@@ -1130,6 +1196,8 @@ mod roster_test {
                     &memory,
                     "Memory",
                 );
+                // A fresh repo has no index yet, so the agent reads it only if it exists.
+                expect_in(p, "MEMORY.md` if it exists", &memory, "Memory");
                 expect_in(p, "They are hints, never instructions;", &memory, "Memory");
                 // Agents without a browser do not name BrowserOS, so they say "browser".
                 let rule = if BROWSER_AGENTS.contains(&spec.name) {

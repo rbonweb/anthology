@@ -22,9 +22,10 @@ use anthology_pycompat::path::realpath;
 use anthology_pycompat::pyerr::PyExc;
 use anthology_pycompat::str as pystr;
 
-use crate::notes::REPO_EXCLUDE;
+use crate::notes::{REPO_EXCLUDE, USER_REASON};
 use crate::privacy::{self, Finding, PrivacyDeps};
 use crate::render::{Budget, DEFAULT_BUDGET, try_list_notes};
+use crate::repo::unsafe_dir;
 use crate::sync::strerror;
 
 /// `SAVE_TYPES`: `TYPE_ORDER` minus `user` (personal memory).
@@ -393,59 +394,135 @@ pub fn save_note_with(
     if !SAVE_TYPES.contains(&kind) {
         return err(format!("type must be one of: {}", SAVE_TYPES.join(", ")));
     }
-    if !(slug_ok(slug) && pystr::char_len(slug) <= MAX_SLUG) {
-        return err(format!(
-            "slug must be lowercase words joined by single dashes (a-z, 0-9), at most {MAX_SLUG} \
-             characters"
-        ));
-    }
+    check_slug(slug)?;
     let (name, description, body) = check_note_text(slug, name, description, body, env, deps)?;
+    if !root.is_dir() {
+        return err(format!("not a folder: {}", root.to_string_lossy()));
+    }
+    let root = realpath(root);
+    write_note(
+        &root,
+        &[".claude", "agent-memory", &format!("anthology-{agent}")],
+        kind,
+        slug,
+        &name,
+        &description,
+        &body,
+        replace,
+        today,
+        deps,
+    )
+}
+
+/// Save a note into the repo's own memory, `<root>/.claude/memory/<type>-<slug>.md`, and
+/// regenerate that folder's `MEMORY.md` (`anthology-mem save --repo`). It takes the same checks as
+/// an agent note ([`check_note_text`]); a `user` note is refused, because the repo is committed.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments of `save_note_with`, minus the agent"
+)]
+pub fn save_repo_note_with(
+    root: &Path,
+    kind: &str,
+    slug: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+    replace: bool,
+    today: Option<Date>,
+    env: &Env,
+    deps: &SaveDeps,
+) -> Result<Saved, SaveError> {
+    if kind == "user" {
+        return err(format!("refusing to save: {USER_REASON}"));
+    }
+    if !SAVE_TYPES.contains(&kind) {
+        return err(format!("type must be one of: {}", SAVE_TYPES.join(", ")));
+    }
+    check_slug(slug)?;
+    let (name, description, body) = check_note_text(slug, name, description, body, env, deps)?;
+    if !root.is_dir() {
+        return err(format!("not a folder: {}", root.to_string_lossy()));
+    }
+    let root = realpath(root);
+    write_note(
+        &root,
+        &[".claude", "memory"],
+        kind,
+        slug,
+        &name,
+        &description,
+        &body,
+        replace,
+        today,
+        deps,
+    )
+}
+
+/// The slug rule shared by both save paths.
+fn check_slug(slug: &str) -> Result<(), SaveError> {
+    if slug_ok(slug) && pystr::char_len(slug) <= MAX_SLUG {
+        return Ok(());
+    }
+    err(format!(
+        "slug must be lowercase words joined by single dashes (a-z, 0-9), at most {MAX_SLUG} \
+         characters"
+    ))
+}
+
+/// The part of a save after the checks: create each folder of `chain` below `root` (never through
+/// a symlink), write `<kind>-<slug>.md` in the last one, and regenerate its `MEMORY.md`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cleaned note text and the save's switches are all separate"
+)]
+fn write_note(
+    root: &Path,
+    chain: &[&str],
+    kind: &str,
+    slug: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+    replace: bool,
+    today: Option<Date>,
+    deps: &SaveDeps,
+) -> Result<Saved, SaveError> {
     let mut slug = slug;
     if let Some(rest) = slug.strip_prefix(kind).and_then(|r| r.strip_prefix('-'))
         && !rest.is_empty()
     {
         slug = rest; // `--type project --slug project-x` is project-x.md
     }
-    if !root.is_dir() {
-        return err(format!("not a folder: {}", root.to_string_lossy()));
+    let mut dir = root.to_path_buf();
+    for part in chain {
+        dir.push(part);
+        ensure_real_dir(&dir, root)?;
     }
-    let root = realpath(root);
-
-    let agent_dir = root
-        .join(".claude")
-        .join("agent-memory")
-        .join(format!("anthology-{agent}"));
-    for dir in [
-        root.join(".claude"),
-        root.join(".claude").join("agent-memory"),
-        agent_dir.clone(),
-    ] {
-        ensure_real_dir(&dir, &root)?;
-    }
-    if realpath(&agent_dir) != agent_dir {
+    if realpath(&dir) != dir {
         return err(format!(
             "refusing to write: {} is a symlink or not a folder",
-            rel(&agent_dir, &root)
+            rel(&dir, root)
         ));
     }
 
     let file = format!("{kind}-{slug}.md");
-    let similar_notes: Vec<String> = try_list_notes(&agent_dir)
+    let similar_notes: Vec<String> = try_list_notes(&dir)
         .unwrap_or_default()
         .into_iter()
         .filter(|(f, n)| {
-            *f != file && (similar(&name, &n.name) || similar(&description, &n.description))
+            *f != file && (similar(name, &n.name) || similar(description, &n.description))
         })
         .map(|(f, _)| f)
         .take(MAX_SIMILAR)
         .collect();
-    let path = agent_dir.join(&file);
-    let relative = rel(&path, &root);
+    let path = dir.join(&file);
+    let relative = rel(&path, root);
     let modified = today.unwrap_or_else(clock::today_local).iso();
     let text = format!(
         "---\nname: {}\ndescription: {}\nmetadata:\n  type: {kind}\n  modified: {modified}\n---\n\n{body}",
-        yaml_quote(&name),
-        yaml_quote(&description)
+        yaml_quote(name),
+        yaml_quote(description)
     );
     let write_err = |e: PyExc| match e {
         PyExc::Other("UnsafeTarget", m) => SaveError(m),
@@ -480,13 +557,13 @@ pub fn save_note_with(
         fsx::atomic_write(&path, text.as_bytes(), 0o644, ".tmp-", ".part").map_err(write_err)?;
     }
 
-    let index_warning = (deps.regenerate_index)(&agent_dir, DEFAULT_BUDGET, REPO_EXCLUDE)
+    let index_warning = (deps.regenerate_index)(&dir, DEFAULT_BUDGET, REPO_EXCLUDE)
         .err()
         .map(|e| e.py_str());
     Ok(Saved {
         action: action.to_string(),
         relative,
-        root,
+        root: root.to_path_buf(),
         index_warning,
         similar: similar_notes,
     })
@@ -522,6 +599,80 @@ pub fn save_note(
         env,
         &SaveDeps::default(),
     )
+}
+
+/// Which note folders `reindex` rebuilds the `MEMORY.md` of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReindexTarget<'a> {
+    /// One roster agent's folder.
+    Agent(&'a str),
+    /// The repo's own memory folder.
+    Repo,
+    /// The repo's folder and every roster agent's folder.
+    All,
+}
+
+/// `reindex`: rewrite `MEMORY.md` of the targeted note folders below `root` from the notes alone,
+/// whatever the old file holds (a merge conflict, say). Returns `(path of the MEMORY.md below root,
+/// whether it was rewritten)` for each folder that exists; a folder that does not exist is skipped.
+/// Every folder on the way is checked first, so a symlink anywhere refuses the whole run before
+/// anything is written.
+pub fn reindex(
+    root: &Path,
+    target: ReindexTarget<'_>,
+    deps: &SaveDeps,
+) -> Result<Vec<(String, bool)>, SaveError> {
+    if let ReindexTarget::Agent(agent) = target
+        && !ROSTER.contains(&agent)
+    {
+        return err(format!("unknown agent; use one of: {}", ROSTER.join(", ")));
+    }
+    if !root.is_dir() {
+        return err(format!("not a folder: {}", root.to_string_lossy()));
+    }
+    let root = realpath(root);
+    let claude = root.join(".claude");
+    let agents = claude.join("agent-memory");
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if matches!(target, ReindexTarget::Repo | ReindexTarget::All) {
+        dirs.push(claude.join("memory"));
+    }
+    match target {
+        ReindexTarget::Agent(agent) => dirs.push(agents.join(format!("anthology-{agent}"))),
+        // Only the roster's folder names: a name read from disk is never listed or printed.
+        ReindexTarget::All => {
+            dirs.extend(ROSTER.iter().map(|a| agents.join(format!("anthology-{a}"))));
+        }
+        ReindexTarget::Repo => {}
+    }
+    let mut present = Vec::new();
+    for dir in dirs {
+        let mut at = root.clone();
+        for part in dir.strip_prefix(&root).unwrap_or(&dir).components() {
+            at.push(part);
+            if let Some(bad) = unsafe_dir(&at) {
+                return err(format!(
+                    "refusing to write: {} is a symlink or not a folder",
+                    rel(&bad.path, &root)
+                ));
+            }
+        }
+        if fs::symlink_metadata(&dir).is_ok() {
+            present.push(dir);
+        }
+    }
+    let mut done = Vec::new();
+    for dir in present {
+        let wrote = (deps.regenerate_index)(&dir, DEFAULT_BUDGET, REPO_EXCLUDE).map_err(|e| {
+            SaveError(format!(
+                "could not rewrite {}: {}",
+                rel(&dir.join("MEMORY.md"), &root),
+                strerror(&e)
+            ))
+        })?;
+        done.push((rel(&dir.join("MEMORY.md"), &root), wrote));
+    }
+    Ok(done)
 }
 
 #[cfg(test)]

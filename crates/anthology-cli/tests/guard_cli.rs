@@ -327,6 +327,104 @@ fn a_command_too_complex_to_check_is_blocked_naming_plugin() {
 }
 
 #[test]
+fn an_sdk_host_gets_a_too_complex_line_without_the_plugin_command() {
+    let command = format!("docker run img{}", " fish -cX".repeat(4000));
+    let payload = hook_input("Bash", obj(&[("command", &command)]));
+    // (CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SESSION_ATTENDED, ANTHOLOGY_HOST_MODE, the line names /plugin)
+    let rows = [
+        (Some("sdk-cli"), None, None, false),
+        (Some("sdk-ts"), Some("0"), Some("lean"), false),
+        (Some("hostapp"), Some("0"), None, false),
+        (None, Some("0"), None, false),
+        (Some("sdk-cli"), Some("0"), Some("full"), true),
+        (Some("hostapp"), Some("0"), Some("full"), true),
+        (Some("cli"), Some("1"), None, true),
+        (Some("sdk-cli"), Some("1"), None, true),
+        (Some("hostapp"), None, None, true),
+        (None, None, Some("lean"), true),
+        (None, None, None, true),
+    ];
+    for (entrypoint, attended, mode, plugin) in rows {
+        let mut env = env_with_home(Some(HOME));
+        for (name, value) in [
+            ("CLAUDE_CODE_ENTRYPOINT", entrypoint),
+            ("CLAUDE_CODE_SESSION_ATTENDED", attended),
+            ("ANTHOLOGY_HOST_MODE", mode),
+        ] {
+            if let Some(v) = value {
+                env = env.with(name, v);
+            }
+        }
+        for args in [&["guard", "hook"][..], &["guard", "hook", "--shim"]] {
+            let out = run_program_timeout(
+                Path::new(BIN),
+                args,
+                &payload,
+                &env,
+                Path::new("/"),
+                Some(Duration::from_secs(60)),
+            );
+            let err = out.stderr_text();
+            assert_eq!(out.code, 2, "{entrypoint:?} {attended:?} {mode:?}");
+            assert!(
+                err.starts_with(
+                    "Blocked by anthology-guardrails (G0): this command is too complex to check \
+                     safely; simplify it or split it into smaller commands"
+                ),
+                "{err}"
+            );
+            assert_eq!(
+                err.contains("/plugin"),
+                plugin,
+                "{entrypoint:?} {attended:?} {mode:?}: {err}"
+            );
+            assert_eq!(err.matches('\n').count(), 1);
+        }
+    }
+}
+
+/// T4, carve-out (d): the hook reads the host path variables listed in its own environment, against
+/// its own working folder.
+#[test]
+fn a_listed_host_path_variable_is_read_from_the_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("t4-guard-cli");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("opt/hosttool/bin")).unwrap();
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    let tool = root.join("opt/hosttool/bin/tool");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let tool = tool.to_str().unwrap();
+    let payload = hook_input("Bash", obj(&[("command", r#""$HOST_TOOL" --version"#)]));
+    let run = |env: &Env, cwd: &Path| {
+        run_program_timeout(
+            Path::new(BIN),
+            &["guard", "hook", "--shim"],
+            &payload,
+            env,
+            cwd,
+            Some(Duration::from_secs(60)),
+        )
+    };
+    let listed = env_with_home(Some(HOME))
+        .with("HOST_TOOL", tool)
+        .with("ANTHOLOGY_GUARD_PATH_VARS", "HOST_TOOL");
+    let project = root.join("project");
+    let out = run(&listed, &project);
+    assert_eq!((out.code, out.stderr_text()), (0, TOKEN.to_string()));
+    // not listed: too complex, as before
+    let unlisted = env_with_home(Some(HOME)).with("HOST_TOOL", tool);
+    let out = run(&unlisted, &project);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr_text().contains("(G0)"), "{}", out.stderr_text());
+    // the hook's working folder holds the tool: not read
+    let out = run(&listed, &root);
+    assert_eq!(out.code, 2);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn usage_errors_exit_2() {
     for args in [
         &["guard"][..],
@@ -387,6 +485,39 @@ fn a_panic_blocks_with_only_the_panic_line() {
 #[cfg(feature = "test-watchdog")]
 #[test]
 fn the_watchdog_fires_while_stdin_stays_open() {
+    let (code, err, out) = watchdog_run(&[]);
+    assert_eq!(code, Some(2));
+    assert_eq!(err, anthology_guard::LIMIT_LINE);
+    assert!(out.is_empty());
+}
+
+/// The watchdog line in a host with no `/plugin` command: the same block, without the `/plugin` text.
+#[cfg(feature = "test-watchdog")]
+#[test]
+fn the_watchdog_line_in_an_embedded_host_has_no_plugin_text() {
+    for env in [
+        &[("CLAUDE_CODE_SESSION_ATTENDED", "0")][..],
+        &[("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")],
+    ] {
+        let (code, err, out) = watchdog_run(env);
+        assert_eq!(code, Some(2), "{env:?}");
+        assert_eq!(err, anthology_guard::LIMIT_LINE_EMBEDDED, "{env:?}");
+        assert!(!err.contains("/plugin"), "{env:?}");
+        assert!(out.is_empty());
+    }
+    // the operator's full mode turns it off
+    let (code, err, _) = watchdog_run(&[
+        ("CLAUDE_CODE_SESSION_ATTENDED", "0"),
+        ("ANTHOLOGY_HOST_MODE", "full"),
+    ]);
+    assert_eq!(code, Some(2));
+    assert_eq!(err, anthology_guard::LIMIT_LINE);
+}
+
+/// Runs the hook with `env` added to a clear environment and a stdin that never closes, and returns its
+/// exit code, its stderr and its stdout once the watchdog has ended it.
+#[cfg(feature = "test-watchdog")]
+fn watchdog_run(env: &[(&str, &str)]) -> (Option<i32>, String, Vec<u8>) {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::Instant;
@@ -396,6 +527,7 @@ fn the_watchdog_fires_while_stdin_stays_open() {
         .env_clear()
         .env("HOME", HOME)
         .env("PATH", "/usr/bin:/bin")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -417,8 +549,6 @@ fn the_watchdog_fires_while_stdin_stays_open() {
         .expect("stdout")
         .read_to_end(&mut out)
         .expect("read");
-    assert_eq!(status.code(), Some(2));
-    assert_eq!(err, anthology_guard::LIMIT_LINE);
-    assert!(out.is_empty());
     assert!(start.elapsed() < Duration::from_secs(30));
+    (status.code(), err, out)
 }

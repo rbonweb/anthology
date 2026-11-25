@@ -52,7 +52,7 @@
 
 mod printf;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::analyze::Entry;
@@ -64,6 +64,7 @@ use crate::lexer::{
 };
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
+use crate::path_vars::{PathValue, PathVars};
 use crate::prefixes::hidden::runs_option_command;
 use crate::prefixes::{
     MAX_FED, STDIN_ARG_RUNNERS, StdinRun, Stripped, UNPARSED_RUNNERS, is_assignment,
@@ -1261,6 +1262,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) incomplete: bool,
     pub(crate) work: Work,
     halted: bool,
+    /// Why the analysis halted, for a halt that leaves no mark on an entry (`Analysis.halt_cause`); set
+    /// just before the halt (`name_cause`).
+    pub(crate) halt_cause: Option<Opaque>,
     /// `_Context.seen`: (depth, cwd at the end) for every text analyzed in this pass.
     seen: HashMap<SeenKey, (usize, Option<String>)>,
     /// `_Entry.stdin_runs`, by entry index.
@@ -1325,6 +1329,11 @@ pub(crate) struct Ctx<'a> {
     pub(crate) prefix_names: HashSet<&'static str>,
     /// PE-4: the text of every arithmetic context lexed (`LexInfo::arith_texts`).
     pub(crate) arith_texts: Vec<String>,
+    /// Carve-out (d): the host variables the caller vouches for (`analyze_with_vars`); `None` for atl.
+    pub(crate) path_vars: Option<&'a dyn PathVars>,
+    /// Carve-out (d): the host variables read through, by name (`read_path_vars`); the analysis stands
+    /// only when the whole command is plain (`path_vars_allowed`).
+    pub(crate) path_var_used: BTreeMap<String, PathValue>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1339,6 +1348,7 @@ impl<'a> Ctx<'a> {
             incomplete: false,
             work,
             halted: false,
+            halt_cause: None,
             seen: HashMap::new(),
             stdin_runs: HashMap::new(),
             launchers: HashSet::new(),
@@ -1365,6 +1375,8 @@ impl<'a> Ctx<'a> {
             function_calls: Vec::new(),
             prefix_names: HashSet::new(),
             arith_texts: Vec::new(),
+            path_vars: None,
+            path_var_used: BTreeMap::new(),
         }
     }
 
@@ -1386,6 +1398,13 @@ impl<'a> Ctx<'a> {
     fn halt(&mut self) {
         self.halted = true;
         self.incomplete = true;
+    }
+
+    /// Record why the analysis is about to halt (`Analysis.halt_cause`). The caller halts next, and every
+    /// caller is reached only while the analysis runs (a halted one returns first), so the first stop is the
+    /// one that names the cause.
+    fn name_cause(&mut self, reason: Opaque) {
+        self.halt_cause = Some(reason);
     }
 
     /// Spend `n` of the Rust-only budget.
@@ -1901,6 +1920,8 @@ impl<'a> Ctx<'a> {
                     .take_while(|&&e| e != shell)
                     .any(|&e| !self.literal_producer(e, &defined))
             {
+                // `curl x | sh`: the script is what another command prints
+                self.name_cause(Opaque::StdinShellUnreadable);
                 self.halt();
                 return;
             }
@@ -1926,6 +1947,7 @@ impl<'a> Ctx<'a> {
             }
             if shell.is_some() && texts.iter().any(|t| only_substitution(t)) {
                 // `sh <<< "$(f)"`: the text is what a command prints (the lexer leaves `""` for it)
+                self.name_cause(Opaque::StdinShellUnreadable);
                 self.halt();
                 return;
             }
@@ -2460,10 +2482,26 @@ impl<'a> Ctx<'a> {
             self.halt();
             return None;
         }
+        // carve-out (d): a `"$NAME"` word of a host variable, read as the file it names
+        let (tokens, holders, path_reads) = match self.path_vars {
+            Some(vars) => read_path_vars(vars, tokens, holders, &mut self.path_var_used),
+            None => (tokens, holders, Vec::new()),
+        };
         // F-8(b): the words as they are read, with a substitution at program position resolved (`which X`)
-        let result = resolve_holders(&tokens, &holders, &mut self.work);
+        let mut program_unknown = false;
+        let result = resolve_holders(&tokens, &holders, &mut self.work, &mut program_unknown);
+        if program_unknown {
+            // `$(echo ls) a`: the program is what a command prints
+            self.name_cause(Opaque::DynamicCommandWord);
+        }
         let resolved = self.take(result)?;
         let words = resolved.as_deref().unwrap_or(tokens.as_slice());
+        // carve-out (d): a host variable as the program must name a file that runs, or it stays unproven
+        let read = |k: usize| path_reads.iter().find(|(i, _)| *i == k);
+        let result = held_program(words, |k| read(k).is_some(), &mut self.work);
+        if let Some((_, at)) = self.take(result)? {
+            self.unproven |= !at.and_then(read).is_some_and(|(_, v)| v.executable);
+        }
         // PE-1: a program word from a parameter expansion. Carve-out (a): unless it is a standard directory
         // prefix (`"$HOME/.cargo/bin/cargo"`), read with HOME in place (any other prefix is an unknown
         // directory); `prefixes_allowed` then checks the whole command keeps to the allowlist
@@ -2607,6 +2645,19 @@ impl<'a> Ctx<'a> {
                 alternates.push((main_at, reading, false));
             }
         }
+        // carve-out (d): the command with each host variable's value as written, which may name the program
+        // the canonical path does not (a link named `npx` to `npx-cli.js`); its words are the raw words too
+        let literal = |words: &[String]| {
+            let mut words = words.to_vec();
+            for (k, read) in &path_reads {
+                words[*k].clone_from(&read.value);
+            }
+            words
+        };
+        let literal_at = (!path_reads.is_empty()).then(|| {
+            alternates.push((main_at, literal(words), false));
+            alternates.len() - 1
+        });
         let mut differs = false;
         for (k, (at, alternate, verbatim)) in alternates.into_iter().enumerate() {
             let other = if verbatim {
@@ -2651,7 +2702,11 @@ impl<'a> Ctx<'a> {
                 .map(<[String]>::to_vec)
                 .unwrap_or_default();
             self.alternates.push(Entry {
-                raw: tokens.clone(),
+                raw: if literal_at == Some(k) {
+                    literal(&tokens)
+                } else {
+                    tokens.clone()
+                },
                 redirs: Vec::new(),
                 prog_path: other
                     .cmd
@@ -2882,11 +2937,14 @@ fn lookup_program(body: &str) -> Option<String> {
 /// one `strip_prefixes` reads: each holder (a word that held a `$(...)` or a backtick) is replaced by a stand-in
 /// in a probe copy, and a holder the probe reads as the program is too complex, unless it is the sole word and
 /// `lookup_program` reads it as X (then X is the program, `$(which npx) playwright install` is `npx playwright
-/// install`). `None`: no holder is at program position, and the words stand as they are.
+/// install`). `None`: no holder is at program position, and the words stand as they are. `program_unknown` is
+/// set when the error is a substitution as the program word that `lookup_program` cannot read (not a stop at
+/// the work budget).
 fn resolve_holders(
     tokens: &[String],
     holders: &[Holder],
     work: &mut Work,
+    program_unknown: &mut bool,
 ) -> Result<Option<Vec<String>>, TooComplex> {
     // a word with only a parameter expansion is `param_program`'s
     if !holders.iter().any(|h| h.subst) {
@@ -2917,9 +2975,10 @@ fn resolve_holders(
         let Some(k) = at else { break };
         let pos = open.iter().position(|h| h.index == k).ok_or(TooComplex)?;
         let holder = open.swap_remove(pos);
-        let program = lookup_program(&holder.body)
-            .filter(|_| holder.sole)
-            .ok_or(TooComplex)?;
+        let Some(program) = lookup_program(&holder.body).filter(|_| holder.sole) else {
+            *program_unknown = true;
+            return Err(TooComplex);
+        };
         words.get_or_insert_with(|| tokens.to_vec())[k] = program;
     }
     Ok(words)
@@ -2951,6 +3010,36 @@ fn param_program(
         |k| holders.iter().any(|h| h.param && h.index == k),
         work,
     )
+}
+
+/// Carve-out (d): each word of `tokens` that held an expansion and reads `$NAME`, for a NAME `vars` reads,
+/// put in place as the file's canonical path. Its holder is dropped, so every later step reads the word as
+/// a literal path. Which forms may be read this way is `path_vars_allowed`'s to say, over the whole text:
+/// with any other, the analysis is done again without variables. Returns the words and holders, and each
+/// word put in place with its value; `used` gains each name read.
+fn read_path_vars(
+    vars: &dyn PathVars,
+    mut tokens: Vec<String>,
+    holders: Vec<Holder>,
+    used: &mut BTreeMap<String, PathValue>,
+) -> (Vec<String>, Vec<Holder>, Vec<(usize, PathValue)>) {
+    let mut reads = Vec::new();
+    let mut kept = Vec::new();
+    for holder in holders {
+        let found = tokens
+            .get(holder.index)
+            .and_then(|w| w.strip_prefix('$'))
+            .and_then(|name| Some((name.to_string(), vars.resolve(name)?)));
+        match found {
+            Some((name, value)) => {
+                tokens[holder.index].clone_from(&value.canonical);
+                reads.push((holder.index, value.clone()));
+                used.insert(name, value);
+            }
+            None => kept.push(holder),
+        }
+    }
+    (tokens, kept, reads)
 }
 
 /// `param_program` for the words `held` accepts (by index): the program word and, when it is one word of

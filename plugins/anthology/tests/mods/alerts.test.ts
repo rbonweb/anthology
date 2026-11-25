@@ -151,6 +151,23 @@ async function pane($: Engine, surface: Surface = 'terminal') {
   return rows(tree)
 }
 
+const BAND = (bodyColumns: number) =>
+  ({
+    plugin: 'anthology',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  }) as const
+
+/** The row above the prompt as one surface draws it: its counts, then its hint when it has room. */
+async function band($: Engine, surface: Surface = 'terminal', bodyColumns = 80) {
+  const ui = await $.ui.mount({ ...BAND(bodyColumns), surface })
+  const tree = await ui.drawn()
+  await ui.unmount()
+  return rows(tree)
+}
+
+const HINT = '/anthology-status'
+
 const hhmm = (ms: number) => {
   const d = new Date(ms)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -207,7 +224,7 @@ test('ANTHOLOGY_NOTIFY=0 turns the alert off and leaves the pane on', async ($, 
   await notify($, 'permission_prompt')
   expect(seen.toasts).toHaveLength(0)
   await spawn($, 'Build it')
-  expect(seen.statuses).toEqual(['1 agent running'])
+  expect(await band($)).toEqual(['● 1 running', HINT])
 })
 
 // ---- The command ------------------------------------------------------------------------------------
@@ -247,16 +264,15 @@ test('the pane with no agents shows an empty state, on every surface', async ($,
 })
 
 test('the pane lists one running agent with its start time, type and description, on every surface', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await spawn($, 'Build the alerts mod')
   for (const surface of SURFACES) {
     expect(await pane($, surface)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Build the alerts mod`])
   }
-  expect(seen.statuses).toEqual(['1 agent running'])
 })
 
 test('the pane lists many agents and says how many it leaves out', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   for (let i = 1; i <= 25; i++) await spawn($, `Task ${i}`, i % 2 ? 'anthology:scout' : 'general-purpose')
   const shown = await pane($)
   expect(shown[0]).toBe('Running (25)')
@@ -264,13 +280,14 @@ test('the pane lists many agents and says how many it leaves out', async ($, on)
   expect(shown[2]).toBe(`${hhmm(T0)}  general-purpose  Task 2`)
   expect(shown).toHaveLength(22)
   expect(shown.at(-1)).toBe('and 5 more')
-  expect(seen.statuses.at(-1)).toBe('25 agents running')
+  expect(await band($)).toEqual(['● 25 running', HINT])
 })
 
 test('a report moves the agent from running to finished, with how it ended', async ($, on) => {
-  const { clock, seen } = engine(on)
+  const { clock } = engine(on)
   const a = await spawn($, 'Build it')
   const b = await spawn($, 'Review it', 'anthology:reviewer')
+  expect(await band($)).toEqual(['● 2 running', HINT])
   await clock.advance(192_000)
   await report($, a, 'completed')
   await report($, b, 'failed', 'anthology:reviewer')
@@ -281,7 +298,8 @@ test('a report moves the agent from running to finished, with how it ended', asy
     'failed   3m 12s  reviewer  Review it',
     'ok       3m 12s  implementer  Build it',
   ])
-  expect(seen.statuses).toEqual(['1 agent running', '2 agents running', '1 agent running', undefined])
+  // Done alone draws no row: two finished agents, none running, none waiting.
+  expect(await band($)).toEqual([])
 })
 
 test('a stopped agent reads stopped, and a report whose start was not seen still lists', async ($, on) => {
@@ -308,18 +326,18 @@ test('the pane keeps the last five finished agents, newest first', async ($, on)
 })
 
 test('a workflow agent, a teammate and a refused spawn are not tracked', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   const base = { tool_use_id: 't', prompt: 'p', description: 'x', subagentType: 'general-purpose', provider: CORE, parentModel: 'm', background: false, fork: false } as const
   await $.agent.spawn({ ...base, workflow: { runId: 'wf_1', agentIndex: 1 } })
   await $.agent.spawn({ ...base, isTeammate: true })
-  expect(seen.statuses).toEqual([])
+  expect(await band($)).toEqual([])
   expect(await pane($)).toEqual(['Running (0)', 'No agents yet. They show here while they work.'])
 })
 
 test('a refused spawn is not tracked', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await $.agent.spawn({ tool_use_id: 't', prompt: 'p', description: 'x', subagentType: 'denied', provider: CORE, parentModel: 'm', background: false, fork: false })
-  expect(seen.statuses).toEqual([])
+  expect(await band($)).toEqual([])
 })
 
 test('a report reaches the parent as the engine made it', async ($, on) => {
@@ -330,8 +348,8 @@ test('a report reaches the parent as the engine made it', async ($, on) => {
 
 // ---- Permission prompts -----------------------------------------------------------------------------
 
-test('a permission prompt shows first, in the pane and the status line, until its call ends', async ($, on) => {
-  const { seen } = engine(on)
+test('a permission prompt shows first, in the pane and the row, until its call ends', async ($, on) => {
+  engine(on)
   await spawn($, 'Build it')
   await ask($, 'git push origin p8-alerts-pane')
   expect(await pane($)).toEqual([
@@ -340,16 +358,16 @@ test('a permission prompt shows first, in the pane and the status line, until it
     'Running (1)',
     `${hhmm(T0)}  implementer  Build it`,
   ])
-  expect(seen.statuses.at(-1)).toBe('1 agent running, 1 waiting for approval')
+  expect(await band($)).toEqual(['● 1 running   ! 1 needs you', HINT])
   await $.classic.PostToolUse({ tool_name: 'Bash', tool_input: { command: 'git push origin p8-alerts-pane' }, tool_response: '', tool_use_id: 'toolu_9' })
   expect((await pane($))[0]).toBe('Running (1)')
-  expect(seen.statuses.at(-1)).toBe('1 agent running')
+  expect(await band($)).toEqual(['● 1 running', HINT])
 })
 
 test('a prompt another hook answered is not pending', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await $.classic.PermissionRequest({ tool_name: 'Read', tool_input: { file_path: '/w/a' } })
-  expect(seen.statuses).toEqual([])
+  expect(await band($)).toEqual([])
   expect((await pane($))[0]).toBe('Running (0)')
 })
 
@@ -371,69 +389,72 @@ test('a prompt never shows what the call does: no command, path or URL, on any s
     const shown = (await pane($, surface)).join('\n')
     for (const s of secrets) expect(shown.includes(s)).toBe(false)
     expect(shown).toContain('Needs your approval (3)')
+    const row = (await band($, surface)).join('\n')
+    for (const s of secrets) expect(row.includes(s)).toBe(false)
+    expect(row).toContain('! 3 needs you')
   }
   const everything = JSON.stringify([seen.toasts, seen.statuses])
   for (const s of secrets) expect(everything.includes(s)).toBe(false)
 })
 
 test('the lead turn ending leaves a subagent prompt open until that agent reports', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   const a = await spawn($, 'Build it')
   await $.classic.PermissionRequest({ tool_name: 'Edit', tool_input: { file_path: '/w/a' }, agent_id: a, agent_type: 'anthology:implementer' })
   await ask($, 'rm x')
-  expect(seen.statuses.at(-1)).toBe('1 agent running, 2 waiting for approval')
+  expect((await band($))[0]).toBe('● 1 running   ! 2 needs you')
   await $.classic.Stop({ stop_hook_active: false })
   expect((await pane($)).slice(0, 2)).toEqual(['Needs your approval (1)', 'Edit  from implementer'])
-  expect(seen.statuses.at(-1)).toBe('1 agent running, 1 waiting for approval')
+  expect((await band($))[0]).toBe('● 1 running   ! 1 needs you')
   await report($, a, 'completed')
   expect((await pane($))[0]).toBe('Running (0)')
-  expect(seen.statuses.at(-1)).toBeUndefined()
+  expect(await band($)).toEqual([])
 })
 
 test('a denied call and a finished turn close the prompts', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await ask($, 'rm x')
   await $.classic.PermissionDenied({ tool_name: 'Bash', tool_input: { command: 'rm x' }, tool_use_id: 't1', reason: 'no' })
-  expect(seen.statuses.at(-1)).toBeUndefined()
+  expect(await band($)).toEqual([])
   await ask($, 'rm y')
   await ask($, 'rm z')
-  expect(seen.statuses.at(-1)).toBe('2 waiting for approval')
+  expect(await band($)).toEqual(['! 2 needs you', HINT])
   await $.classic.Stop({ stop_hook_active: false })
-  expect(seen.statuses.at(-1)).toBeUndefined()
+  expect(await band($)).toEqual([])
   expect((await pane($))[0]).toBe('Running (0)')
 })
 
 test('a call that fails closes its prompt', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await ask($, 'make')
   await $.classic.PostToolUseFailure({ tool_name: 'Bash', tool_input: { command: 'make' }, tool_use_id: 't2', error: 'exit 2' })
-  expect(seen.statuses.at(-1)).toBeUndefined()
+  expect(await band($)).toEqual([])
 })
 
 test('a call with another input leaves the prompt open', async ($, on) => {
-  const { seen } = engine(on)
+  engine(on)
   await ask($, 'make')
   await $.classic.PostToolUse({ tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: '', tool_use_id: 't3' })
-  expect(seen.statuses.at(-1)).toBe('1 waiting for approval')
+  expect(await band($)).toEqual(['! 1 needs you', HINT])
 })
 
 // ---- Agents the engine no longer lists, and a tracking call that fails -------------------------------
 
-test('a run that ended without a report leaves the pane and the status line', async ($, on) => {
+test('a run that ended without a report leaves the pane and the row', async ($, on) => {
   const { seen } = engine(on)
   const a = await spawn($, 'Build it')
   await spawn($, 'Review it')
   seen.alive.delete(a)
   expect(await pane($)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Review it`])
   await ask($, 'ls')
-  expect(seen.statuses.at(-1)).toBe('1 agent running, 1 waiting for approval')
+  expect(await band($)).toEqual(['● 1 running   ! 1 needs you', HINT])
 })
 
 test('where the agent list cannot be read the pane keeps its rows', async ($, on) => {
-  const { seen } = engine(on, { isListBroken: true })
+  engine(on, { isListBroken: true })
   await spawn($, 'Build it')
   expect(await pane($)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Build it`])
-  expect(seen.statuses.at(-1)).toBe('1 agent running')
+  expect(await band($)).toEqual(['● 1 running', HINT])
 })
 
 test(
@@ -464,6 +485,171 @@ test(
   },
 )
 
+// ---- The row above the prompt -----------------------------------------------------------------------
+
+test('the row shows the running and needs-you counts, with the command hint at the right', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  await spawn($, 'Review it', 'anthology:reviewer')
+  await ask($, 'git push')
+  for (const surface of SURFACES) {
+    expect(await band($, surface)).toEqual(['● 2 running   ! 1 needs you', HINT])
+  }
+})
+
+test('the row counts completed under done, failed and stopped under failed, between running and needs you', async ($, on) => {
+  engine(on)
+  const a = await spawn($, 'Build it')
+  await spawn($, 'Review it')
+  await report($, a, 'completed')
+  await report($, 'x1', 'failed')
+  await report($, 'x2', 'stopped')
+  await ask($, 'git push')
+  expect(await band($)).toEqual(['● 1 running   ✓ 1 done   ✗ 2 failed   ! 1 needs you', HINT])
+})
+
+test('the counts are not capped by the five agents the pane keeps', async ($, on) => {
+  engine(on)
+  for (let i = 1; i <= 7; i++) await report($, `d${i}`, 'completed')
+  for (let i = 1; i <= 6; i++) await report($, `f${i}`, 'failed')
+  await spawn($, 'Build it')
+  expect(await band($)).toEqual(['● 1 running   ✓ 7 done   ✗ 6 failed', HINT])
+  // The pane still lists five.
+  expect((await pane($)).filter(r => /^(ok|failed)\b/.test(r))).toHaveLength(5)
+})
+
+test('a second report of an agent the pane still lists is not counted again', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  await report($, 'x1', 'completed')
+  await report($, 'x1', 'completed')
+  expect(await band($)).toEqual(['● 1 running   ✓ 1 done', HINT])
+})
+
+test('failed alone draws no row, as done alone draws none', async ($, on) => {
+  engine(on)
+  await report($, 'x1', 'failed')
+  expect(await band($)).toEqual([])
+  await ask($, 'git push')
+  expect(await band($)).toEqual(['✗ 1 failed   ! 1 needs you', HINT])
+})
+
+test('a count of zero is left out', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  expect(await band($)).toEqual(['● 1 running', HINT])
+  await ask($, 'git push')
+  await $.classic.Stop({ stop_hook_active: false })
+  const a = await spawn($, 'Build more')
+  await report($, a, 'completed')
+  const shown = (await band($))[0] ?? ''
+  expect(shown).toBe('● 1 running   ✓ 1 done')
+  expect(shown).not.toContain('needs you')
+})
+
+test('nothing running and nothing waiting draws no row, and done alone draws none either', async ($, on) => {
+  engine(on)
+  expect(await band($)).toEqual([])
+  const a = await spawn($, 'Build it')
+  await report($, a, 'completed')
+  expect(await band($)).toEqual([])
+})
+
+test('the old status entry is never set', async ($, on) => {
+  const { seen } = engine(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const a = await spawn($, 'Build it')
+  await ask($, 'git push')
+  await report($, a, 'completed')
+  await $.classic.Stop({ stop_hook_active: false })
+  expect(seen.statuses).toEqual([])
+})
+
+/** Every Text of a tree that holds only text, with the props it was drawn with. */
+type Leaf = { text: string; props: Record<string, unknown> }
+function leaves(node: unknown): Leaf[] {
+  if (typeof node !== 'object' || node === null) return []
+  const n = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const kids = n.children ?? []
+  if (n.type === 'Text' && kids.every(k => typeof k === 'string')) return [{ text: kids.join(''), props: n.props ?? {} }]
+  return kids.flatMap(leaves)
+}
+
+test('the row colours: accent dot, dim labels, failed in error, needs you in permission, numerals plain', async ($, on) => {
+  engine(on)
+  const a = await spawn($, 'Build it')
+  await spawn($, 'Review it')
+  await report($, a, 'completed')
+  await report($, 'x1', 'failed')
+  await ask($, 'git push')
+  const ui = await $.ui.mount({ ...BAND(100), surface: 'terminal' })
+  const tree = await ui.drawn()
+  await ui.unmount()
+  const by = (text: string) => leaves(tree).find(l => l.text === text)?.props
+  expect(by('●')).toMatchObject({ color: 'suggestion' })
+  expect(by(' running')).toMatchObject({ dimColor: true })
+  expect(by('✓')).toMatchObject({ dimColor: true })
+  expect(by(' done')).toMatchObject({ dimColor: true })
+  expect(by('✗')).toMatchObject({ color: 'error' })
+  expect(by(' failed')).toMatchObject({ color: 'error' })
+  expect(by('!')).toMatchObject({ color: 'permission' })
+  expect(by(' needs you')).toMatchObject({ color: 'permission' })
+  expect(by(' needs you')?.dimColor).not.toBe(true)
+  // The numbers are bare text beside the glyphs, so they take the text colour, not a dim one.
+  const drawn = JSON.stringify(tree)
+  expect(drawn).toContain('" 1"')
+  // Theme colours only: no hex, rgb or hsl value, and the warning colour is not used.
+  expect(drawn).not.toMatch(/"color":"(#|rgb|hsl)/)
+  expect(drawn).not.toContain('"warning"')
+})
+
+test('the hint goes first, in a band too narrow for it', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  await ask($, 'git push')
+  // The counts take 29 cells, with ● and ! as two each; the hint adds 3 + 17, the edges 2.
+  expect(await band($, 'mobile', 51)).toEqual(['● 1 running   ! 1 needs you', HINT])
+  expect(await band($, 'mobile', 50)).toEqual(['● 1 running   ! 1 needs you'])
+})
+
+test('a narrow band drops done, then failed, then the label of running, and never cuts needs you', async ($, on) => {
+  engine(on)
+  const a = await spawn($, 'Build it')
+  await spawn($, 'Review it')
+  await report($, a, 'completed')
+  await report($, 'x1', 'failed')
+  await report($, 'x2', 'completed')
+  await ask($, 'git push')
+  const at = async (columns: number) => (await band($, 'mobile', columns))[0]
+  // Full row: 12 + 9 + 11 + 14 cells and three gaps of 3, the edges 2 more; the hint 20 more.
+  expect(await at(100)).toBe('● 1 running   ✓ 2 done   ✗ 1 failed   ! 1 needs you')
+  expect(await band($, 'mobile', 100)).toHaveLength(2)
+  expect(await at(60)).toBe('● 1 running   ✓ 2 done   ✗ 1 failed   ! 1 needs you')
+  expect(await band($, 'mobile', 60)).toHaveLength(1)
+  // Done goes first, then failed.
+  expect(await at(52)).toBe('● 1 running   ✗ 1 failed   ! 1 needs you')
+  expect(await at(40)).toBe('● 1 running   ! 1 needs you')
+  // Then running keeps its number alone, and past that "! N needs you" stands by itself.
+  expect(await at(30)).toBe('● 1   ! 1 needs you')
+  expect(await at(20)).toBe('! 1 needs you')
+  expect(await band($, 'mobile', 20)).toHaveLength(1)
+})
+
+test('running alone in a narrow band loses its label, never its count', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  expect(await band($, 'mobile', 8)).toEqual(['● 1'])
+})
+
+test('a survey holding the band keeps its place', async ($, on) => {
+  engine(on)
+  await spawn($, 'Build it')
+  const ui = await $.ui.mount({ ...BAND(80), props: { ...BAND(80).props, hasSurvey: true }, surface: 'terminal' })
+  const tree = await ui.drawn()
+  await ui.unmount()
+  expect(rows(tree)).toEqual([])
+})
+
 // ---- Switched off -----------------------------------------------------------------------------------
 
 test('ANTHOLOGY_MODS=0 switches everything off', async ($, on) => {
@@ -479,6 +665,7 @@ test('ANTHOLOGY_MODS=0 switches everything off', async ($, on) => {
   expect(seen.sounds).toEqual([])
   expect(seen.statuses).toEqual([])
   expect(seen.opened).toEqual([])
+  expect(await band($)).toEqual([])
   // The command went to the engine, and the events went down to the engine and the user hooks.
   expect(r.text).toBe('engine')
   expect(seen.notifications).toBe(1)

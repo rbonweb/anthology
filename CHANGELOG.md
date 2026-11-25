@@ -10,6 +10,91 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.1] - 2026-11-25
+
+#### Changed
+
+- The `anthology` binary 0.2.3 carries the Rust changes made since 0.2.2. The embedded-host
+  rule now lets the attended flag (`CLAUDE_CODE_SESSION_ATTENDED`) decide first, in the guard
+  and the session start alike. The stale-plugin restart notice compares a plugin only with the
+  install entry of its own scope and orders release candidates by number. The guard's "too
+  complex" (G0) message names its cause for three more shapes. No guard verdict changes. The
+  entries that follow give the details.
+- Fix: the agents' waiting rule now fits Claude Code's 180 s limit on a subagent's foreground Bash call. They block in `timeout 170` chunks (`gh pr checks --watch`, `gh run watch`, `docker wait`) instead of relying on the `timeout` parameter or `run_in_background`.
+- Fix: the four writing agents read `.claude/memory/reference-project-map.md` in their working folder before calling the map missing, and quote the error when the read fails. Every agent's Memory section says its notes are the repo's `.claude/agent-memory/<agent>/`, never `~/.claude`.
+- Fix: the after-work check counts a report that says the project map is "missing" as dealing with the map only when the file is really absent in the agent's working folder.
+- Pin anthology-bin 0.2.3.
+- Fix: an interactive `claude` started from inside an SDK process no longer loses its guide, memory and coordinator section. The attended flag (`CLAUDE_CODE_SESSION_ATTENDED`, `0` or `1`) now decides when it is set; an `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins. The delegation mod, the session start and the G0 message follow the same rule.
+- Fix: the stale-plugin restart notice compares the loaded plugin only with the install entry of its own scope, so a project install pinned older than the user one no longer asks for a restart.
+- Fix: the stale-plugin notice orders release candidates of one version by number (`0.2.9-rc.1` is older than `0.2.9-rc.2`), and still treats two build tags (shas) as equal.
+
+### [0.5.0] - 2026-11-24
+
+#### Added
+
+- `anthology-mem save --repo` writes a repo note with the same privacy and secret checks as an
+  agent note, and never a user note, so the lead can save repo notes through the tool instead of
+  by hand. `anthology-mem reindex --agent|--repo|--all` rebuilds a `MEMORY.md` after a merge
+  conflict without hand edits. Both refuse to use a home folder that is itself a git repo. The
+  change ships in the `anthology` binary 0.2.2.
+
+#### Changed
+
+- Every agent prompt now carries one shared Shell section: the zsh traps, one plain command per
+  call, literal deletes, the rules for waiting and background jobs, durations taken from
+  timestamps, and settings keys named in reports. Writers append to notes with Edit and use
+  `anthology-mem reindex --agent <name>` for a conflicted `MEMORY.md`. Agents read `MEMORY.md`
+  only if it exists.
+- Lead rules updated. Stop means TaskStop every agent and background job. Waiting notices are
+  ignored, and idle agents with startable work are a bug. Conflicts in any file go to the
+  implementer. The lead saves repo notes with `anthology-mem save --repo`. The `large-builds`
+  skill now has writers report at push, with one background watcher that sends red CI back, and
+  it adds the status cadence, estimates that are measured or "unknown", the `release.sh` and
+  restart rules, and the path and ledger rules.
+- The version-bump gate compares a released plugin with its latest release tag (tags created in
+  the pushed range are ignored) and with the merge base. A bump already on the base counts, so
+  branches no longer re-bump the plugin and conflict. See ADR-036.
+- `scripts/release.sh` tags the release commit first, then pushes the branch and the tag
+  together with `git push --atomic`. A failed or interrupted run deletes the local tag and
+  prints the recovery command. Untracked agent notes no longer block a release. The last line
+  is `RELEASE OK <tag>` or `RELEASE FAILED: <step>`. Changelog fragments in
+  `changelog.d/<plugin>/*.md` are compiled into the release and deleted in the release commit.
+  The script is now shellchecked.
+- CI has an informational `lock-fresh` job that warns when a pull request makes the pinned
+  `anthology-bin` binary stale. It never fails the PR. The version-bump comment now names the
+  released tag, and a test pins the fuzz lock check (`cargo metadata --locked` in `fuzz/`).
+- The README is now a short front page. The details live in `docs/` (setup, agents, mods,
+  guardrails, ATL, memory, the binary), and the original build plan moved to
+  `docs/history/PLAN.md`.
+- shellcheck now also checks `ci/jobs/lock-fresh.sh` and `scripts/rust-test.sh` (the latter as
+  bash).
+- `scripts/rust-test.sh test -p <crate>` no longer adds `--workspace`, so a one-crate run tests
+  only that crate, plain and with all features.
+- The agent status is now a row Anthology draws above the prompt
+  (`● 2 running   ✓ 3 done   ! 1 needs you`, with `/anthology-status` on the right) instead of
+  a labelled status entry. It shows only while an agent runs or a prompt waits for you.
+- Session start: an embedded host (SDK entrypoint, or unattended session, unless
+  `ANTHOLOGY_HOST_MODE=full`) gets no routing guide or memory, and only the guard self-test and
+  bootstrap failure lines. The setup nag and the settings-changed note show only at startup. A
+  resumed or compacted session names an anthology plugin older than the installed one. The
+  release smoke runs in full host mode. See ADR-037.
+- Strict delegation and the coordinator section no longer apply in an embedded SDK host
+  (unattended, or an `sdk-*` entrypoint). There the lead's `Edit`, `Write` and `NotebookEdit`
+  calls are not refused, even with a surface attached. `ANTHOLOGY_HOST_MODE=full` keeps both.
+  See ADR-037.
+
+#### Fixed
+
+- `/anthology:setup` run from a folder that holds repos but is not one itself now lists the
+  repos below it. The skill asks which one and reruns the preview and the apply with `--cwd`
+  (the path in single quotes; odd names are refused), so the repo's memory, attribution and
+  auto memory settings are no longer skipped silently. The preview's `memory.repo` carries the
+  list as `repos_below` and `repos_below_more`, and the change ships in the `anthology` binary
+  0.2.2.
+- The debug-build timing bound in the ATL megabyte-line gate test is now a ratio to the same
+  line at 250 KB, so slow CI runners no longer fail it. This changes a test only.
+- Pin anthology-bin 0.2.2.
+
 ### [0.4.1] - 2026-11-23
 
 #### Added
@@ -502,6 +587,27 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.11] - 2026-11-25
+
+- Pin anthology-bin 0.2.3.
+- The guard's "too complex" (G0) message now names its cause for three more common shapes: a shell fed by another command's output (`curl ... | sh`), a shell whose heredoc or here-string is only a command substitution, and a command substitution used as the program word (`$(echo ls) a`). The reason the analysis stopped now comes before a mark on an earlier command. No verdict changes.
+- In an SDK-embedded host, the guard's limit and panic lines no longer tell the reader to use `/plugin`, as the G0 line already did.
+- Fix: the guard no longer takes an interactive `claude` for an embedded host when it inherited an `sdk-*` entrypoint from an SDK process. `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` or `1`; the `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins. Only the text of the G0 message changes (the `/plugin disable` line); verdicts are the same.
+
+### [0.2.10] - 2026-11-24
+
+#### Added
+
+- The guard reads a `"$NAME"` program or script word as the file it names when you list NAME in
+  `ANTHOLOGY_GUARD_PATH_VARS` (opt-in; see ADR-038 and `SECURITY.md`).
+
+#### Changed
+
+- The guard's too-complex (G0) message now names its cause when it can (a program from a
+  variable or glob, a heredoc or piped shell script, a sourced file or script), and drops the
+  `/plugin disable` line when Claude Code runs inside an embedded host. See ADR-037.
+- Pin anthology-bin 0.2.2.
+
 ### [0.2.9] - 2026-11-23
 
 #### Changed
@@ -646,6 +752,19 @@ a new version section.
 ## anthology-superpowers
 
 ### [Unreleased]
+
+### [0.2.3] - 2026-11-24
+
+- Fix: the session-start hook gives an interactive `claude` its introduction even when it inherited an `sdk-*` entrypoint from an SDK process. `CLAUDE_CODE_SESSION_ATTENDED` decides when it is `0` or `1`; the `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins.
+
+### [0.2.2] - 2026-11-24
+
+#### Fixed
+
+- The session-start hook no longer injects the `using-superpowers` bootstrap in an embedded
+  host (an unattended session, or an `sdk-*` entrypoint), unless `ANTHOLOGY_HOST_MODE=full`.
+  An app that drives Claude Code owns its prompt, so the introduction had no reader there. See
+  ADR-037.
 
 ### [0.2.1] - 2026-11-22
 

@@ -28,9 +28,18 @@ set -- \
     "$staging/anthology-guardrails/hooks/guard.sh" \
     ci/jobs/shellcheck.sh \
     ci/jobs/shims-distros.sh \
-    ci/jobs/mods.sh
+    ci/jobs/mods.sh \
+    ci/jobs/lock-fresh.sh \
+    ci/jobs/rust-scope.sh \
+    ci/jobs/rust-gate.sh \
+    ci/jobs/rust-test-linux.sh \
+    ci/jobs/rust-test-macos.sh
 
-for f in "$@"; do
+# Scripts written for bash (not POSIX sh), checked as bash: the release script and the Rust test
+# runner (its shebang is bash and it uses ${var:0:12}).
+bash_scripts="scripts/release.sh scripts/rust-test.sh"
+
+for f in "$@" $bash_scripts; do
     if [ ! -f "$root/$f" ]; then
         echo "shellcheck: $f is missing" >&2
         exit 1
@@ -39,4 +48,7 @@ done
 
 docker run --rm -v "$root":/w:ro -w /w "$image" \
     --shell=sh --external-sources --source-path=SCRIPTDIR "$@"
-echo "shellcheck: $# files clean"
+# shellcheck disable=SC2086 # $bash_scripts is a list of paths without spaces
+docker run --rm -v "$root":/w:ro -w /w "$image" \
+    --shell=bash --external-sources --source-path=SCRIPTDIR $bash_scripts
+echo "shellcheck: $# files clean, plus $bash_scripts as bash"

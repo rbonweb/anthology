@@ -6,7 +6,7 @@
 #   <plugin>      a directory under plugins/ (anthology, anthology-guardrails, ...)
 #   <version>     X.Y.Z; must be higher than the current version, or equal to it when the
 #                 tag <plugin>--v<version> does not exist yet (the first release)
-#   --push        also push the branch and the tag (to --remote, default origin)
+#   --push        also push the branch and the tag in one atomic push (to --remote, default origin)
 #   --dry-run     do everything in a throwaway detached worktree, show the commit and the
 #                 CHANGELOG diff, then discard it; the checkout, index and tags are untouched
 #
@@ -18,6 +18,16 @@
 # pinned Rust image, so Docker is needed) or through $ANTHOLOGY_DEV if set. A plugin that ships
 # anthology.lock is released only if `anthology-dev lock check-fresh` passes: the binary it pins
 # must have been built from the shipped crates as they are now. Works with bash 3.2 (macOS).
+#
+# The tree must be clean, except for untracked files under .claude/agent-memory/ and
+# .claude/memory/ (agent notes are written all day; they are not part of a release).
+# The release commit is tagged first (`claude plugin tag`, no push); only then are the branch and
+# the tag pushed, together, with `git push --atomic`. If that push fails, the local tag is deleted
+# again and the command to finish by hand is printed.
+# The CHANGELOG entries are the plugin's `[Unreleased]` section plus the files
+# changelog.d/<plugin>/*.md, in filename order; the release commit deletes those files.
+# The last line on standard output is always `RELEASE OK <tag>` or `RELEASE FAILED: <step>`
+# (arguments, preconditions, edit, commit, tag, push); a dry run ends `RELEASE OK <tag> (dry run: ...)`.
 set -euo pipefail
 
 die() { echo "release: $*" >&2; exit 1; }
@@ -27,19 +37,59 @@ usage() {
   exit "${1:-2}"
 }
 
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+STEP=arguments
+DRY_RUN=0
+WORK=$ROOT
+TMPDIR_DRY=""
+EDITED=""
+TAG_LOCAL=0
+# Deletes the local release tag while it is this run's (TAG_LOCAL=1); fails if git cannot.
+drop_local_tag() {
+  [ "$TAG_LOCAL" = 1 ] || return 0
+  TAG_LOCAL=0
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    git -C "$ROOT" tag -d "$TAG" >/dev/null 2>&1 || return 1
+  fi
+}
+cleanup() {
+  status=$?
+  trap - EXIT
+  if [ "$status" != 0 ] && ! drop_local_tag; then
+    echo "release: could not delete the local tag $TAG; delete it with: git tag -d $TAG" >&2
+  fi
+  if [ -n "$EDITED" ] && [ "$DRY_RUN" != 1 ]; then
+    # Files were rewritten but the release commit was never made: put them back.
+    # shellcheck disable=SC2086
+    (cd "$WORK" && git reset -q HEAD -- $EDITED && git checkout -q -- $EDITED) || true
+    echo "release: failed before committing; restored $EDITED" >&2
+  fi
+  if [ -n "$TMPDIR_DRY" ]; then
+    git -C "$ROOT" worktree remove --force "$TMPDIR_DRY/wt" >/dev/null 2>&1 || true
+    git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+    rm -rf "$TMPDIR_DRY"
+  fi
+  # Whatever failed, the last line says which step it was (--help is not a failure).
+  if [ "$status" != 0 ]; then echo "RELEASE FAILED: $STEP"; fi
+  exit "$status"
+}
+trap cleanup EXIT
+# A signal ends the run through the same cleanup (and so deletes a local tag).
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # A sortable key for X.Y.Z (any suffix after a - or + is ignored): compare keys as text.
 version_key() { printf '%s\n' "${1%%[-+]*}" | awk -F. '{ printf "%09d%09d%09d\n", $1, $2, $3 }'; }
 # The first X.Y.Z in a string ("2.1.330 (Claude Code)", ">=2.1.330"); empty when there is none.
 semver_of() { printf '%s\n' "$1" | sed -n 's/^[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*$/\1/p' | head -n 1; }
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEV=${ANTHOLOGY_DEV:-$ROOT/scripts/dev.sh}
 CLAUDE=${CLAUDE_BIN:-claude}
 
 PLUGIN=""
 VERSION=""
 PUSH=0
-DRY_RUN=0
 REMOTE=origin
 POSITIONAL=0
 while [ $# -gt 0 ]; do
@@ -76,6 +126,7 @@ dev() { (cd "$ROOT" && "$DEV" "$@"); }
 
 # ---- preconditions: every failure leaves the repository exactly as it was -----------
 
+STEP=preconditions
 case "$PLUGIN" in
   *[!a-z0-9-]*|-*) die "invalid plugin name '$PLUGIN' (lowercase letters, digits, hyphens)" ;;
 esac
@@ -91,8 +142,8 @@ if [ ! -x "$DEV" ] && ! command -v "$DEV" >/dev/null 2>&1; then
 fi
 command -v "$CLAUDE" >/dev/null 2>&1 || die "'$CLAUDE' not found (install Claude Code, or set CLAUDE_BIN)"
 # The claude that will tag the release must be new enough for the plugin (engines.claude-code in
-# its manifest); an older one fails `claude plugin tag` validation after the release commit and
-# the push, leaving a half release. A plugin without the field is not checked.
+# its manifest); an older one fails `claude plugin tag` validation after the release commit,
+# leaving a half release. A plugin without the field is not checked.
 ENGINES=$(sed -n 's/.*"claude-code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST_REL" | head -n 1)
 if [ -n "$ENGINES" ]; then
   case "$ENGINES" in
@@ -113,8 +164,13 @@ if [ "$PUSH" = 1 ]; then
   git symbolic-ref -q HEAD >/dev/null 2>&1 || die "--push needs a checked-out branch (HEAD is detached)"
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
-  git status --short >&2
+# Untracked agent notes (.claude/agent-memory/, .claude/memory/) are the one thing let through;
+# a changed tracked file there, or any other untracked file, still blocks.
+# The status is read on its own first, so a failing `git status` stops the release (set -e).
+STATUS=$(git status --porcelain --untracked-files=all)
+DIRTY=$(printf '%s\n' "$STATUS" | grep -v -E '^$|^\?\? "?\.claude/(agent-memory|memory)/' || true)
+if [ -n "$DIRTY" ]; then
+  printf '%s\n' "$DIRTY" >&2
   die "working tree is not clean; commit or stash your changes first"
 fi
 
@@ -143,27 +199,8 @@ dev release-edit check-dependents . "$PLUGIN" "$VERSION"
 
 # ---- work area: this checkout, or (dry run) a throwaway detached worktree -----------
 
-WORK=$ROOT
+STEP=edit
 WORK_REL=.
-TMPDIR_DRY=""
-EDITED=""
-cleanup() {
-  status=$?
-  if [ -n "$EDITED" ] && [ "$DRY_RUN" != 1 ]; then
-    # Files were rewritten but the release commit was never made: put them back.
-    # shellcheck disable=SC2086
-    (cd "$WORK" && git reset -q HEAD -- $EDITED && git checkout -q -- $EDITED) || true
-    echo "release: failed before committing; restored $EDITED" >&2
-  fi
-  if [ -n "$TMPDIR_DRY" ]; then
-    git -C "$ROOT" worktree remove --force "$TMPDIR_DRY/wt" >/dev/null 2>&1 || true
-    git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
-    rm -rf "$TMPDIR_DRY"
-  fi
-  exit "$status"
-}
-trap cleanup EXIT
-
 GIT_COMMIT_OPTS=""
 if [ "$DRY_RUN" = 1 ]; then
   # Inside the repository (target/ is ignored), so the scripts/dev.sh container sees it.
@@ -186,9 +223,14 @@ fi
 # ---- edits ---------------------------------------------------------------------------
 
 FILES="CHANGELOG.md"
+# changelog-move compiles changelog.d/<plugin>/*.md into the new section and deletes those files;
+# the release commit takes the deletions with it.
+if [ -n "$(git -C "$WORK" ls-files -- "changelog.d/$PLUGIN")" ]; then
+  FILES="$FILES changelog.d/$PLUGIN"
+fi
+EDITED="$FILES"
 dev release-edit changelog-move "$WORK_REL/CHANGELOG.md" "$PLUGIN" "$VERSION" \
   ${RELEASE_DATE:+--date "$RELEASE_DATE"}
-EDITED="$FILES"
 
 if [ "$MODE" = bump ]; then
   dev release-edit set-version "$WORK_REL/$MANIFEST_REL" "$VERSION"
@@ -205,6 +247,7 @@ fi
 
 # ---- commit ----------------------------------------------------------------------------
 
+STEP=commit
 NO_VERIFY=""
 if [ "$DRY_RUN" = 1 ]; then NO_VERIFY="--no-verify"; fi
 
@@ -214,9 +257,12 @@ git -C "$WORK" add -- $FILES
 git -C "$WORK" $GIT_COMMIT_OPTS commit -q $NO_VERIFY -m "release: $PLUGIN $VERSION" -- $FILES
 EDITED=""
 
-# ---- tag -------------------------------------------------------------------------------
+# ---- tag, then push --------------------------------------------------------------------
 
+STEP=tag
 TAG_MSG="$PLUGIN %s"
+TAG_CMD="$CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG'"
+PUSH_CMD="git push --atomic $REMOTE HEAD refs/tags/$TAG"
 if [ "$DRY_RUN" = 1 ]; then
   echo "== dry run: nothing in this checkout was changed =="
   echo
@@ -227,19 +273,38 @@ if [ "$DRY_RUN" = 1 ]; then
   echo
   echo "== claude plugin tag --dry-run =="
   (cd "$WORK" && "$CLAUDE" plugin tag --dry-run "$WORK/plugins/$PLUGIN" -m "$TAG_MSG")
+  echo
+  echo "RELEASE OK $TAG (dry run: nothing was released)"
   exit 0
 fi
 
+# The tag is made locally first, so a failing `claude plugin tag` leaves the remote untouched.
+# From here until the release is done, the local tag is this run's: any failure or signal
+# deletes it (cleanup), also when `claude plugin tag` made the tag and then failed.
+TAG_LOCAL=1
+"$CLAUDE" plugin tag "plugins/$PLUGIN" -m "$TAG_MSG" \
+  || die "the release commit exists locally but tagging failed; nothing was pushed. Fix the cause and run: $TAG_CMD  (or undo the release commit with: git reset --hard HEAD~1)"
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 \
+  || die "'$CLAUDE plugin tag' succeeded but tag $TAG does not exist; nothing was pushed. Look at the tags with: git tag -l '$PLUGIN--v*'"
+
 if [ "$PUSH" = 1 ]; then
-  git push "$REMOTE" HEAD || die "the release commit exists locally but the push of the branch failed (no tag was created). Fix the cause (e.g. git pull --rebase $REMOTE), then run: git push $REMOTE HEAD && $CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG' --push --remote $REMOTE   -- or undo the release commit with: git reset --hard HEAD~1"
-  "$CLAUDE" plugin tag "plugins/$PLUGIN" -m "$TAG_MSG" --push --remote "$REMOTE" \
-    || die "the release commit was pushed but tagging failed; fix the cause and run: $CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG' --push --remote $REMOTE"
+  STEP=push
+  # One transaction: the branch and the tag both arrive, or neither does.
+  if ! git push --atomic "$REMOTE" HEAD "refs/tags/$TAG"; then
+    # The tag names a commit that a `git pull --rebase` may replace: take it away again.
+    if drop_local_tag; then
+      GONE="the local tag $TAG was deleted"
+    else
+      GONE="deleting the local tag $TAG failed, delete it with: git tag -d $TAG"
+    fi
+    die "the release commit exists locally but the push failed; nothing was pushed and $GONE. Fix the cause (e.g. git pull --rebase $REMOTE), then run: $TAG_CMD && $PUSH_CMD   -- or undo the release commit with: git reset --hard HEAD~1"
+  fi
+  TAG_LOCAL=0
   echo "released and pushed $TAG to $REMOTE"
 else
-  "$CLAUDE" plugin tag "plugins/$PLUGIN" -m "$TAG_MSG" \
-    || die "the release commit exists but tagging failed; fix the cause and run: $CLAUDE plugin tag plugins/$PLUGIN -m '$TAG_MSG'  (or undo the commit with: git reset --hard HEAD~1)"
+  TAG_LOCAL=0
   echo
-  echo "released $TAG locally; nothing was pushed. To publish:"
-  echo "  git push $REMOTE HEAD"
-  echo "  git push $REMOTE refs/tags/$TAG"
+  echo "released $TAG locally; nothing was pushed. To publish, in one atomic push:"
+  echo "  $PUSH_CMD"
 fi
+echo "RELEASE OK $TAG"

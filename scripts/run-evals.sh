@@ -146,6 +146,9 @@ cd "$ROOT"
 # If a guard regresses, a granted npx command (npx playwright ...) must not be able to fetch
 # packages from the registry.
 export NPM_CONFIG_OFFLINE=true
+# The cases run `claude -p`, which anthology reads as an embedded host and sends no routing
+# guide to; the cases check the guide, so they ask for the full session start.
+export ANTHOLOGY_HOST_MODE=full
 BASELINE=evals/baseline.json
 
 if [ -n "${CLAUDE_BIN:-}" ]; then

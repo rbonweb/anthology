@@ -1,6 +1,6 @@
 ---
 name: 'Guard gaps open after PR 159 (head b3fe664a)'
-description: 'Allowed on PR 159 head and proven to run in bash 5.2 or zsh 5.9; all also allowed on base d1831e79, none a regression'
+description: 'Positional, renamed-program and code-from-value bypasses found in PR 159; closed in bin 0.1.4'
 metadata:
   type: project
   modified: 2026-11-22
