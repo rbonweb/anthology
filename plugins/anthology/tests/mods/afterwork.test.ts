@@ -10,7 +10,7 @@ import { expect, test } from 'claude-code/testing'
 
 type Run = {
   readonly argv: readonly string[]
-  readonly init?: { readonly cwd?: string; readonly timeoutMs?: number }
+  readonly init?: { readonly cwd?: string; readonly timeoutMs?: number; readonly env?: Record<string, string> }
 }
 
 type World = {
@@ -25,7 +25,12 @@ type World = {
   review?: { review: 'flagged'; warning: string }
   /** The paths that exist for `fs.exists`; any other path does not. */
   files?: { includes(path: string): boolean }
+  /** The paths where a `git` file exists, whatever `files` says; by default one on the system PATH. */
+  gitAt?: readonly string[]
 }
+
+/** The PATH the test session has unless `env.PATH` says otherwise. */
+const SYSTEM_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 const CLEAN: ProcessRunResult = {
   exitCode: 0,
@@ -39,14 +44,16 @@ const CLEAN: ProcessRunResult = {
 function engine(on: On, w: World = {}) {
   const runs: Run[] = []
   on('agent.report', (_$, e) => ({ text: e.text, review: 'cleared', ...w.review }))
-  on('env.get', (_$, e) => ({ value: w.env?.[e.name] }))
+  on('env.get', (_$, e) => ({ value: w.env?.[e.name] ?? (e.name === 'PATH' ? SYSTEM_PATH : undefined) }))
   on('agent.list', () => ({ value: w.agents?.() ?? [] }))
   on('session.cwd', () => ({ value: w.cwd ?? '/work/repo' }))
   on('session.root', () => ({ value: w.root ?? '/work/repo' }))
   on('fs.stat', (_$, e) => ({
     value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path },
   }))
-  on('fs.exists', (_$, e) => ({ value: w.files?.includes(e.path) ?? false }))
+  on('fs.exists', (_$, e) => ({
+    value: (w.gitAt ?? ['/usr/bin/git']).includes(e.path) || (w.files?.includes(e.path) ?? false),
+  }))
   on('process.run', async (_$, e) => {
     runs.push(e)
     return { value: await (w.git ?? (() => CLEAN))(e) }
@@ -382,11 +389,40 @@ test('dirty files in the agent worktree add one gap, from one git call with a ti
   expect(r.text?.startsWith(`${FULL}\n\n`)).toBe(true)
   expect(r.text?.slice(FULL.length)).toContain('2 uncommitted')
   expect(runs).toHaveLength(1)
-  expect(runs[0]?.argv.slice(0, 1)).toEqual(['git'])
+  expect(runs[0]?.argv.slice(0, 1)).toEqual(['/usr/bin/git'])
   expect(runs[0]?.argv).toContain('status')
   expect(runs[0]?.init?.cwd).toBe(WORKTREE)
   expect(runs[0]?.init?.timeoutMs).toBeGreaterThan(0)
   expect(runs[0]?.init?.timeoutMs).toBeLessThanOrEqual(3000)
+})
+
+test('git is the absolute file on the absolute PATH entries; relative and empty entries are ignored', async ($, on) => {
+  // The worktree holds a planted `git`: `.`, `::`, `bin` and a bare leading colon must not find it.
+  const planted = [`${WORKTREE}/git`, `${WORKTREE}/bin/git`, 'git', 'bin/git', './git']
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '.:bin::/opt/tools/bin/:relative/dir:/usr/bin:/bin' },
+    gitAt: [...planted, '/opt/tools/bin/git', '/usr/bin/git'],
+    git: () => ({ ...CLEAN, stdout: ' M a\n' }),
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs).toHaveLength(1)
+  expect(runs[0]?.argv[0]).toBe('/opt/tools/bin/git')
+  expect(runs[0]?.init?.env?.PATH).toBe('/opt/tools/bin/:/usr/bin:/bin')
+})
+
+test('git is not run when the PATH has no absolute entry that holds one', async ($, on) => {
+  const w: World = { ...IN_WORKTREE(), gitAt: [`${WORKTREE}/git`, 'git', './git', 'bin/git'] }
+  const runs = engine(on, w)
+  for (const PATH of ['.', ':', '.::bin', 'bin:./tools', '']) {
+    w.env = { PATH }
+    expect((await $.agent.report(report(FULL))).text, PATH).toBe(FULL)
+  }
+  w.env = { PATH: '/usr/bin:/bin' } // absolute entries, but none holds a git
+  w.gitAt = ['/usr/local/bin/git']
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(runs).toHaveLength(0)
 })
 
 test('the git call leaves the agents own memory notes out, from the repo top', async ($, on) => {

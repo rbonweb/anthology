@@ -82,6 +82,29 @@ export async function runAnthology(
   return $.process.run([bin, ...args], { stdin, timeoutMs, env: { ANTHOLOGY_NO_INSTALL: '1' } })
 }
 
+/**
+ * A tool found on the absolute entries of the user's PATH only: empty and relative entries (`.`,
+ * `::`, `bin`) are skipped, so a repo cannot plant a fake one that a hook then runs from inside it
+ * (the same rule the shell hooks follow). `bin` is the absolute path to run; `path` is the PATH
+ * to hand the child, with the absolute entries only. Undefined when there is none, as when the
+ * tool is not installed. Never throws.
+ */
+export async function onAbsolutePath(
+  $: EngineInterface,
+  name: string,
+): Promise<{ bin: string; path: string } | undefined> {
+  try {
+    const dirs = ((await $.env.get('PATH')) ?? '').split(':').filter(d => d.startsWith('/'))
+    for (const dir of dirs) {
+      const bin = `${dir.replace(/\/+$/, '')}/${name}`
+      if (await $.fs.exists(bin)) return { bin, path: dirs.join(':') }
+    }
+  } catch {
+    // fall through: not found
+  }
+  return undefined
+}
+
 /** The `permissions` block of the merged settings, as plain lists of strings. */
 export type PermissionSettings = {
   additionalDirectories: string[]

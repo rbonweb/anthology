@@ -18,7 +18,7 @@
 //
 // Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off.
 import type { AgentReportInput, AgentReportResult, EngineInterface } from 'claude-code'
-import { modsOff } from './util.ts'
+import { modsOff, onAbsolutePath } from './util.ts'
 
 /** The agent types that write, as `agent.report` names them. Reviewer and scout only read. */
 const WRITERS: ReadonlySet<string> = new Set([
@@ -149,12 +149,16 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
     const dir = await real($, agent.cwd)
     const session = await Promise.all([$.session.cwd(), $.session.root()].map(async p => real($, await p)))
     if (session.includes(dir)) return undefined
+    // The worktree is the agent's own, so git is looked up on the absolute PATH entries only: a
+    // `.` or empty entry would run a `git` planted in it. The child gets that PATH too.
+    const git = await onAbsolutePath($, 'git')
+    if (git === undefined) return undefined
     const run = await $.process.run(
       [
-        'git', '-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--porcelain',
+        git.bin, '-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--porcelain',
         '--', ':(top)', ':(top,exclude).claude/agent-memory',
       ],
-      { cwd: dir, timeoutMs: GIT_TIMEOUT_MS },
+      { cwd: dir, timeoutMs: GIT_TIMEOUT_MS, env: { PATH: git.path } },
     )
     if (run.exitCode !== 0) return undefined
     const n = run.stdout.split('\n').filter(l => l.trim() !== '').length
