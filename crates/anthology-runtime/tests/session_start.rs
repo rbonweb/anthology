@@ -4020,7 +4020,7 @@ mod real_shim {
         );
     }
 
-    /// Runs the real guard shim as hooks.json does (`sh ${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`)
+    /// Runs the real guard shim as hooks.json does (`/bin/sh ${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`)
     /// on a Bash call, with no binary installed and no fetch; returns its exit code.
     fn shim_code(sb: &Sandbox, root: &str, command: &str) -> i32 {
         use std::io::Write;

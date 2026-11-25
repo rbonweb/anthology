@@ -32,6 +32,7 @@ ANTH_OS='' ANTH_ARCH='' ANTH_TARGET='' ANTH_VERSION='' ANTH_TAG='' ANTH_REPO='' 
 ANTH_STATUS='' ANTH_REASON='' ANTH_STATE='' ANTH_WHY='' ANTH_MSG='' ANTH_RUN='' ANTH_BUF=''
 ANTH_RC='' ANTH_ERR='' ANTH_H='' ANTH_SHA_CMD='' ANTH_STRIKES='' ANTH_QUAR='' ANTH_TMP=''
 ANTH_BG='' ANTH_FDIR='' ANTH_DL_RC='' ANTH_DL_TOOL='' ANTH_FIX='' ANTH_FIXMSG=''
+ANTH_UPATH='' ANTH_UPATH_SET=''
 
 # --- paths (GC-1) -------------------------------------------------------------------------
 
@@ -39,18 +40,38 @@ ANTH_BG='' ANTH_FDIR='' ANTH_DL_RC='' ANTH_DL_TOOL='' ANTH_FIX='' ANTH_FIXMSG=''
 # Hooks run in the folder of the repository the user opened, so `.`, an empty entry (`::`, a
 # leading or trailing `:`) or a relative folder such as `bin` would let that repository plant
 # the curl, tar or shasum the installer runs. When no entry is left, the fixed system list
-# (with Homebrew's folders on macOS). Exported, so what the shim starts gets the same PATH.
+# (with Homebrew's folders on macOS). Exported, so the helpers the shim starts get it too. The
+# first call keeps the caller's PATH (ANTH_UPATH; ANTH_UPATH_SET is set or unset) for
+# anth_user_path. Linear in the length of PATH: a PATH with nothing to drop is kept as it is.
 anth_safe_path() {
-    _u_rest=${PATH-}
-    _u_path=
-    while :; do
-        _u_dir=${_u_rest%%:*}
-        case $_u_dir in
-            /*) _u_path=${_u_path:+$_u_path:}$_u_dir ;;
-        esac
-        [ "$_u_dir" != "$_u_rest" ] || break
-        _u_rest=${_u_rest#*:}
-    done
+    if [ -z "$ANTH_UPATH_SET" ]; then
+        ANTH_UPATH=${PATH-}
+        ANTH_UPATH_SET='unset'
+        [ -z "${PATH+x}" ] || ANTH_UPATH_SET='set'
+    fi
+    _u_path=${PATH-}
+    case :$_u_path: in
+        *::* | *:[!/]*)
+            # Something to drop. One split on `:`, the kept entries printed and collected at
+            # once: appending them to a variable one by one would copy it each time (quadratic
+            # on a long PATH). The subshell holds set -f and IFS, and looks nothing up (printf
+            # is a builtin; its PATH is the fixed list anyway).
+            _u_path=$(
+                _u_in=$_u_path
+                PATH=/usr/bin:/bin
+                set -f
+                IFS=:
+                # shellcheck disable=SC2086 # split on IFS (`:`) on purpose; globbing is off
+                for _u_dir in $_u_in; do
+                    # `(/*)`: bash 3.2 misreads a bare `/*)` inside `$( )`.
+                    case $_u_dir in
+                        (/*) printf '%s:' "$_u_dir" ;;
+                    esac
+                done
+            )
+            _u_path=${_u_path%:}
+            ;;
+    esac
     if [ -z "$_u_path" ]; then
         _u_path=/usr/bin:/bin:/usr/sbin:/sbin
         # uname is looked up on the fixed list.
@@ -61,6 +82,19 @@ anth_safe_path() {
     fi
     PATH=$_u_path
     export PATH
+}
+
+# anth_user_path: PATH as the caller gave it, before anth_safe_path (unset if it was), for the
+# anthology binary only: it runs the user's own commands, and their lookups are the user's.
+# The shim's own helpers keep the safe PATH, so callers use this in a subshell or before exec.
+anth_user_path() {
+    case $ANTH_UPATH_SET in
+        set)
+            PATH=$ANTH_UPATH
+            export PATH
+            ;;
+        unset) unset PATH ;;
+    esac
 }
 
 # anth_paths ROOT: PATH made safe (anth_safe_path), then the plugin root, its lock, and
@@ -1338,17 +1372,17 @@ anth_guard_offline() {
 # command of the pipeline still inherits stdin. ANTH_RC is digits only, else ? (a late
 # writer after the sentinel). The binary runs in a subshell, so the shell's own notes, such as
 # a report that it was killed by a signal, go to /dev/null, not into ANTH_ERR or the hook's
-# stderr.
+# stderr. That subshell also gives the binary the caller's PATH (anth_user_path).
 anth_guard_run() {
     ANTH_RC='' ANTH_ERR=''
     if [ -n "${1:-}" ]; then
         ANTH_ERR=$({
-            ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null <"$1")
+            (anth_user_path; "$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null <"$1")
             printf 'x%s' "$?" >&3
         } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     else
         ANTH_ERR=$({
-            ("$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null)
+            (anth_user_path; "$ANTH_BIN" guard hook --shim 2>&3 3>&- >/dev/null)
             printf 'x%s' "$?" >&3
         } 3>&1 2>/dev/null | LC_ALL=C tr '\000' '\001')
     fi

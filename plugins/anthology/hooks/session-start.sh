@@ -37,7 +37,8 @@ if ! anth_resolve "$anth_hooks/.." || ! anth_installed; then
     anth_incomplete 'the anthology binary is missing'
     exit 0
 fi
-anth_out=$("$ANTH_BIN" hook session-start; printf 'x%s' "$?")
+# The binary gets the caller's PATH; this shell keeps the safe one (lib.sh anth_user_path).
+anth_out=$(anth_user_path; "$ANTH_BIN" hook session-start; printf 'x%s' "$?")
 anth_rc=${anth_out##*x}
 anth_out=${anth_out%x*}
 # Digits only: a late writer after the sentinel must not reach the JSON below.
