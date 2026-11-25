@@ -25,8 +25,12 @@ type World = {
   review?: { review: 'flagged'; warning: string }
   /** The paths that exist for `fs.exists`; any other path does not. */
   files?: { includes(path: string): boolean }
-  /** The paths where a `git` file exists, whatever `files` says; by default one on the system PATH. */
+  /** The paths of a regular `git` file; by default one on the system PATH. Any other `git` path is missing. */
   gitAt?: readonly string[]
+  /** The paths of a folder called `git`. */
+  gitDirs?: readonly string[]
+  /** The paths of a link called `git`, with what it leads to (a dangling link is `other`). */
+  gitLinks?: Record<string, 'file' | 'dir' | 'other'>
 }
 
 /** The PATH the test session has unless `env.PATH` says otherwise. */
@@ -48,12 +52,18 @@ function engine(on: On, w: World = {}) {
   on('agent.list', () => ({ value: w.agents?.() ?? [] }))
   on('session.cwd', () => ({ value: w.cwd ?? '/work/repo' }))
   on('session.root', () => ({ value: w.root ?? '/work/repo' }))
-  on('fs.stat', (_$, e) => ({
-    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path },
-  }))
-  on('fs.exists', (_$, e) => ({
-    value: (w.gitAt ?? ['/usr/bin/git']).includes(e.path) || (w.files?.includes(e.path) ?? false),
-  }))
+  on('fs.stat', (_$, e) => {
+    const fileAt = (w.gitAt ?? ['/usr/bin/git']).includes(e.path)
+    const link = w.gitLinks?.[e.path]
+    // What `$.fs.stat` says of a `git` path: a link is followed, a dangling one is `other`, a missing path rejects.
+    if (fileAt || link !== undefined || w.gitDirs?.includes(e.path)) {
+      const kind = fileAt ? 'file' : link ?? 'dir'
+      return { value: { kind, size: 0, mtimeMs: 0, isLink: link !== undefined } }
+    }
+    if (e.path === 'git' || e.path.endsWith('/git')) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path } }
+  })
+  on('fs.exists', (_$, e) => ({ value: w.files?.includes(e.path) ?? false }))
   on('process.run', async (_$, e) => {
     runs.push(e)
     return { value: await (w.git ?? (() => CLEAN))(e) }
@@ -423,6 +433,49 @@ test('git is not run when the PATH has no absolute entry that holds one', async 
   w.gitAt = ['/usr/local/bin/git']
   expect((await $.agent.report(report(FULL))).text).toBe(FULL)
   expect(runs).toHaveLength(0)
+})
+
+test('a folder, a dangling link or a link to a folder called git is passed over for the next entry', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/a:/b:/c:/d:/e' },
+    gitDirs: ['/a/git'],
+    gitLinks: { '/b/git': 'other', '/c/git': 'dir', '/d/git': 'file' }, // a link to a file is a git
+    gitAt: ['/e/git'],
+    git: () => ({ ...CLEAN, stdout: ' M a\n' }),
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs).toHaveLength(1)
+  expect(runs[0]?.argv[0]).toBe('/d/git')
+})
+
+test('a git that cannot start, as a file that is not executable, is passed over for the next one', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/noexec:/usr/bin' },
+    gitAt: ['/noexec/git', '/usr/bin/git'],
+    git: run => {
+      if (run.argv[0] === '/noexec/git') throw new Error('spawn EACCES')
+      return { ...CLEAN, stdout: ' M a\n' }
+    },
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs.map(x => x.argv[0])).toEqual(['/noexec/git', '/usr/bin/git'])
+})
+
+test('at most three gits are tried, and all failing leaves the text-only check', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/a:/b:/c:/d' },
+    gitAt: ['/a/git', '/b/git', '/c/git', '/d/git'],
+    git: () => {
+      throw new Error('spawn EACCES')
+    },
+  })
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(runs).toHaveLength(3)
 })
 
 test('the git call leaves the agents own memory notes out, from the repo top', async ($, on) => {

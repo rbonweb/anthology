@@ -83,26 +83,36 @@ export async function runAnthology(
 }
 
 /**
- * A tool found on the absolute entries of the user's PATH only: empty and relative entries (`.`,
- * `::`, `bin`) are skipped, so a repo cannot plant a fake one that a hook then runs from inside it
- * (the same rule the shell hooks follow). `bin` is the absolute path to run; `path` is the PATH
- * to hand the child, with the absolute entries only. Undefined when there is none, as when the
- * tool is not installed. Never throws.
+ * The files called `name` on the absolute entries of the user's PATH only, in PATH order: empty
+ * and relative entries (`.`, `::`, `bin`) are skipped, so a repo cannot plant a fake one that a
+ * hook then runs from inside it (the same rule the shell hooks follow). Only a regular file
+ * counts, a link being followed (a folder, a dangling link or a missing path is passed over, as
+ * the shell passes it over); `$.fs.stat` has no mode, so a file that is not executable is
+ * found here and the caller moves on when it cannot start. `path` is the PATH to hand the child,
+ * the absolute entries only. Empty `bins` when there is none, as when the tool is not
+ * installed. Never throws.
  */
 export async function onAbsolutePath(
   $: EngineInterface,
   name: string,
-): Promise<{ bin: string; path: string } | undefined> {
+): Promise<{ bins: string[]; path: string }> {
+  const bins: string[] = []
+  let path = ''
   try {
     const dirs = ((await $.env.get('PATH')) ?? '').split(':').filter(d => d.startsWith('/'))
+    path = dirs.join(':')
     for (const dir of dirs) {
       const bin = `${dir.replace(/\/+$/, '')}/${name}`
-      if (await $.fs.exists(bin)) return { bin, path: dirs.join(':') }
+      try {
+        if ((await $.fs.stat(bin)).kind === 'file') bins.push(bin)
+      } catch {
+        // missing or unreadable: the next entry
+      }
     }
   } catch {
-    // fall through: not found
+    // no PATH to read: nothing found
   }
-  return undefined
+  return { bins, path }
 }
 
 /** The `permissions` block of the merged settings, as plain lists of strings. */

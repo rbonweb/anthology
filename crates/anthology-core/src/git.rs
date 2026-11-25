@@ -14,7 +14,8 @@
 //! The `git` that runs is found once per call, on the absolute entries of the `Env`'s `PATH` only
 //! ([`resolve_git`]), and run by its absolute path: the working directory is inside a repository,
 //! so a `.`, empty or relative entry must not find a `git` the repository holds. No such git
-//! found is a missing git.
+//! found is a missing git. The child's own `PATH` is cut to the same absolute entries, so what
+//! git starts (ssh, credential helpers, hooks) is not found through a relative one either.
 //!
 //! The spawn itself is also bounded by the timeout. On macOS, `Command::spawn` creates its
 //! pipes with `pipe()` and sets `FD_CLOEXEC` in a second step, and (with `PATH` in the child's
@@ -115,6 +116,12 @@ pub fn find_on_absolute_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf
         })
 }
 
+/// `path` with its empty and relative entries dropped, in order.
+fn absolute_entries(path: &OsStr) -> std::ffi::OsString {
+    let dirs = std::env::split_paths(path).filter(|dir| dir.is_absolute());
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 /// The `git` that `env`'s `PATH` finds among its absolute entries, to be run by its absolute path
 /// (never by the bare name, which the OS would look up in relative entries too).
 pub fn resolve_git(env: &Env) -> Option<PathBuf> {
@@ -132,7 +139,14 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in env.iter() {
-        if !STRIPPED_VARS.iter().any(|s| OsStr::new(s) == k) {
+        if STRIPPED_VARS.iter().any(|s| OsStr::new(s) == k) {
+            continue;
+        }
+        if k == "PATH" {
+            // What git starts (ssh, credential helpers, hooks) is found on the absolute entries
+            // only, as git itself was. `git` was found on one, so the list is not empty.
+            cmd.env(k, absolute_entries(v));
+        } else {
             cmd.env(k, v);
         }
     }
