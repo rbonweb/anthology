@@ -10,6 +10,16 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.2] - 2026-11-25
+
+#### Changed
+
+- The `anthology` binary 0.2.4 changes the session-start message for failing-closed guardrails:
+  it now names the exact recovery command.
+- Pin anthology-bin 0.2.4.
+- Fix: `/anthology:setup` no longer tells the model to retry a command the guard blocks because its binary is missing. It runs the installer command the block names, which the guard lets through until the binary is installed.
+- Fix: when the guard binary is missing and session start has no time left to run the self-test, the "guardrails are failing closed" message no longer says to run `/anthology:setup`, which needs the shell commands the guard is blocking. It now names the one command the guard lets through, `/bin/sh '<guardrails plugin folder>/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300`, with the real folder, and keeps the advice to start a new session while online or disable anthology-guardrails with `/plugin`.
+
 ### [0.5.1] - 2026-11-25
 
 #### Changed
@@ -586,6 +596,16 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.13] - 2026-11-25
+
+- Pin anthology-bin 0.2.4.
+
+### [0.2.12] - 2026-11-25
+
+- Fix: on a slow network the guard binary never installed and the session stayed blocked. Each tool call gave the download 20 seconds and then started again from zero, so an archive that needed longer never arrived. The download now runs in the background with a 10-minute budget, starting at session start, and a stopped download continues from what it already got (with `curl`). A blocked call waits up to 20 seconds for it and then says how many bytes have arrived.
+- Fix: a missing guard binary no longer locks the session. The block named `/anthology:setup`, which needs the shell commands the guard was blocking. While the binary is missing, the guard now lets exactly one shell command through: the plugin's own installer, `/bin/sh '<plugin folder>/hooks/bootstrap.sh' guard --plugin guardrails` (optionally with `--quiet` and `--budget N`), with the path matched exactly. Every `(setup)` block and the session-start message name that command with the real folder. Anything else is still blocked.
+- The block now says why the install failed: still downloading, the download timed out (slow network), no network, or a sha256 mismatch with `anthology.lock`.
 
 ### [0.2.11] - 2026-11-25
 

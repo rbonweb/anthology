@@ -25,13 +25,21 @@ Both plugins run one static program, `anthology`, written in Rust. It needs no l
 
 The guardrails fail closed. Read-only tools still work (`Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, `Skill`, `Task`, `Agent`, the to-do and plan tools and the like), so `/anthology:setup` can still load. Shell commands, file writes and edits, MCP tools and any tool not on that list are blocked until the binary is installed. A blocked call tries the install again at most once a minute, so the session heals once the network is back. Until the binary is installed, the `anthology` plugin's routing guide, memory and ATL are off.
 
+**A slow network.** The guardrails download the archive in the background, with a budget of 10 minutes, starting at session start. A tool call waits up to 20 seconds for it and is then blocked with how many bytes have arrived so far; the download goes on, and a later call installs it. A download that stops (the session ends, the machine sleeps, the 10 minutes run out) keeps what it got, and the next attempt continues from there when `curl` is the downloader.
+
+**The installer is always allowed.** While the binary is missing, the guard lets exactly one shell command through: this plugin's own installer, which every `(setup)` block names with the real folder, for example `/bin/sh '/home/user/.claude/plugins/cache/anthology/anthology-guardrails/<version>/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300`. It may also end in `--quiet`, `--budget N` or nothing after `guardrails`. It waits for the download up to the budget, installs the binary and prints `status=installed`. Anything else on that line (another path, a symlink to it, `;`, `&&`, `$(…)`, a redirection, one more space) is blocked like every other command.
+
 What you may see, and what to do (the text in parentheses names the cause):
 
 | The message says | What to do |
 |---|---|
-| At session start: `anthology-guardrails: could not install the guard binary (…)` or `anthology: could not install the anthology binary (…)` | Start a new session while online, or run `/anthology:setup` |
-| `Blocked by anthology-guardrails (setup): the guard binary is not installed (…)` | The same. Inside a session, waiting a minute and retrying also works |
-| `… the last install attempt was less than a minute ago` | Retry in a minute, or run `/anthology:setup` |
+| At session start: `anthology-guardrails: could not install the guard binary (…)` or `anthology: could not install the anthology binary (…)` | Start a new session while online, or run the installer command the message names |
+| `Blocked by anthology-guardrails (setup): the guard binary is not installed (…)` | Run the installer command the message names. Starting a new session while online, or waiting a minute and retrying, also works |
+| `… is still downloading in the background (N bytes so far)` | A slow network: retry in a few seconds, or run the installer command, which waits for the download |
+| `… download timed out (slow network)` | Retry: the next try continues the download. Or run the installer command |
+| `… could not be downloaded (no network: …)` | Connect, then retry, or run the installer command |
+| `… does not match anthology.lock (sha256 mismatch)` | The download was not what the lock pins (a proxy that changes downloads, or a broken release). Nothing was installed. Retry on another network, or report it |
+| `… the last install attempt was less than a minute ago` | Retry in a minute, or run the installer command |
 | `… did not work (…) and was set aside` | Nothing: it is reinstalled on a later call (at most once a minute) |
 | `… failed to run 3 times in 24 hours` | A new session tries once more, at most once an hour. Or disable `anthology-guardrails` until a fixed version ships |
 | `… does not run on this machine` | A wrong architecture, or a home folder mounted `noexec`. Disable `anthology-guardrails`, fix the cause, start a new session |

@@ -192,7 +192,7 @@ fn parallel_guard_calls_never_give_a_wrong_verdict_or_a_corrupt_install() {
                 allowed += 1;
             } else {
                 // Only a race loser may see the minute's stamp.
-                assert_block(&run, &rate_limited(), &format!("{sh:?}"));
+                assert_block(&run, &rate_limited(&sb), &format!("{sh:?}"));
             }
         }
         assert!(allowed >= 1, "{sh:?}: someone installed");
@@ -312,7 +312,10 @@ fn session_mode_honours_the_cap_except_once_an_hour() {
             &format!("{sh:?} second"),
         );
         let run = boot(&sb, sh, &["session", "--plugin", "guardrails"]);
-        assert_eq!(run.out(), format!("{}\n", sys_guardrails("three-strikes")));
+        assert_eq!(
+            run.out(),
+            format!("{}\n", sys_guardrails(&sb, "three-strikes"))
+        );
         assert_eq!(run.code, Some(0));
         // A stale stamp is retired and the hour's attempt runs again.
         age(&stamp, 3700);
@@ -401,7 +404,7 @@ fn an_unwritable_bin_folder_is_cannot_write_even_with_a_stale_attempt() {
             if stamp == Some(5) {
                 // A fresh stamp is the minute's rate limit, as designed (step 5.2 first).
                 assert_status(&boot_run, "status=failed:rate-limited", &c);
-                assert_block(&guard_run, &rate_limited(), &c);
+                assert_block(&guard_run, &rate_limited(&sb), &c);
             } else {
                 assert_status(&boot_run, &format!("status=failed:{R_WRITE}"), &c);
                 assert_block(&guard_run, &cannot_write(&sb.bindir()), &c);
@@ -549,7 +552,7 @@ fn no_sha256_tool_is_named() {
         sb.seed();
         assert_block(
             &guard_path(&sb, sh, BASH, path),
-            &not_installed(R_SHA_TOOL),
+            &not_installed(&sb, R_SHA_TOOL),
             &format!("{sh:?}"),
         );
     });
@@ -631,7 +634,7 @@ fn quiet_lines_and_exit_codes_follow_gc5() {
         let run = sb.run_spec(spec);
         assert_eq!(
             (run.code, run.out()),
-            (Some(0), format!("{}\n", sys_guardrails(&r)))
+            (Some(0), format!("{}\n", sys_guardrails(&sb, &r)))
         );
         let mut spec = sb.spec(sh, A_BOOT, &["session", "--plugin", "anthology"], b"");
         spec.path = Some(path.clone());

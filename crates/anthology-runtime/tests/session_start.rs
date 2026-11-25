@@ -2870,7 +2870,8 @@ mod time_rules {
             vec![
                 format!(
                     "anthology: the guardrails are failing closed: {}",
-                    session_start::BINARY_MISSING_REASON
+                    // no installed_plugins.json: the folder is a sibling, not known as written
+                    session_start::binary_missing_reason(None)
                 ),
                 session_start::ATL_SKIPPED.to_string()
             ]
@@ -3949,15 +3950,206 @@ mod real_shim {
             .collect()
     }
 
+    const RECOVERY_ARGS: &str = "guard --plugin guardrails --quiet --budget 300";
+
+    /// Registers the guardrails plugin as an install of marketplace `m` at `install` (as
+    /// written), which is a `github` marketplace unless `source` says otherwise.
+    fn register(sb: &Sandbox, install: &[u8], source: Option<&str>) {
+        let plugins = sb.config.join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        let mut installed = br#"{"version": 2, "plugins": {"anthology-guardrails@m": [{"scope": "user", "installPath": ""#.to_vec();
+        installed.extend_from_slice(install);
+        installed.extend_from_slice(
+            br#"", "version": "0.1.0", "lastUpdated": "2026-01-01T00:00:00Z"}]}}"#,
+        );
+        fs::write(plugins.join("installed_plugins.json"), installed).unwrap();
+        if let Some(source) = source {
+            fs::write(plugins.join("known_marketplaces.json"), source).unwrap();
+        }
+    }
+
+    fn github_marketplace() -> &'static str {
+        r#"{"m": {"source": {"source": "github", "repo": "x/y"}, "installLocation": "/nowhere", "lastUpdated": "x"}}"#
+    }
+
+    fn failing_closed_line(sb: &Sandbox) -> String {
+        lines_with_elapsed(sb, 45.0).remove(0)
+    }
+
+    fn command_of(install: &str) -> String {
+        format!("/bin/sh '{install}/hooks/bootstrap.sh' {RECOVERY_ARGS}")
+    }
+
+    fn terminal_sentence() -> String {
+        format!(
+            "anthology: the guardrails are failing closed: {}{}",
+            session_start::BINARY_MISSING_REASON,
+            session_start::RECOVERY_IN_TERMINAL
+        )
+    }
+
     #[test]
-    fn with_no_time_and_no_binary_session_start_says_failing_closed() {
+    fn the_failing_closed_message_names_the_exact_recovery_command_the_shim_allows() {
         let sb = sandbox();
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(&sb, guard.as_bytes(), Some(github_marketplace()));
         assert_eq!(
-            lines_with_elapsed(&sb, 45.0),
-            vec![format!(
-                "anthology: the guardrails are failing closed: {}",
-                session_start::BINARY_MISSING_REASON
-            )]
+            failing_closed_line(&sb),
+            format!(
+                "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it; if this keeps happening, disable anthology-guardrails with /plugin. To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): {}",
+                command_of(&guard)
+            )
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_in_install_path_is_kept_as_the_shim_sees_it() {
+        // hooks.json runs `${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`, so `${0%/*}` keeps the slash.
+        let sb = sandbox();
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(
+            &sb,
+            format!("{guard}/").as_bytes(),
+            Some(github_marketplace()),
+        );
+        let line = failing_closed_line(&sb);
+        assert!(line.ends_with(&command_of(&format!("{guard}/"))), "{line}");
+        assert!(
+            line.contains(&format!("'{guard}//hooks/bootstrap.sh'")),
+            "{line}"
+        );
+    }
+
+    /// Runs the real guard shim as hooks.json does (`sh ${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`)
+    /// on a Bash call, with no binary installed and no fetch; returns its exit code.
+    fn shim_code(sb: &Sandbox, root: &str, command: &str) -> i32 {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let payload = format!(
+            r#"{{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {{"command": {}}}}}"#,
+            jstr(command)
+        );
+        let mut child = Command::new("/bin/sh")
+            .arg(format!("{root}/hooks/guard.sh"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &sb.home)
+            .env("CLAUDE_CONFIG_DIR", &sb.config)
+            .env("TMPDIR", &sb.tmpdir)
+            .env("CLAUDE_PLUGIN_ROOT", root)
+            .env("ANTHOLOGY_GUARD_NO_FETCH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        child.wait().unwrap().code().unwrap()
+    }
+
+    #[test]
+    fn the_real_shim_lets_the_messages_command_through_and_nothing_else() {
+        // #230's anth_fix_call compares the command with the folder the shim started from
+        // (`${0%/*}`), so a plain and a trailing-slash install path both have to match.
+        for slash in ["", "/"] {
+            let sb = sandbox();
+            let root = format!("{}{slash}", p(&sb.plugin("anthology-guardrails")));
+            register(&sb, root.as_bytes(), Some(github_marketplace()));
+            let line = failing_closed_line(&sb);
+            let command = &line[line.find("/bin/sh '").expect("a command")..];
+            assert_eq!(command, command_of(&root), "{slash:?}");
+            assert_eq!(shim_code(&sb, &root, command), 0, "{command}");
+            // the same shim blocks anything else, so the allow above is the installer match
+            assert_eq!(shim_code(&sb, &root, "echo hi"), 2, "{slash:?}");
+            let other = command.replace("/hooks/", "/hook/");
+            assert_eq!(shim_code(&sb, &root, &other), 2, "{other}");
+        }
+    }
+
+    #[test]
+    fn dollar_and_backtick_in_the_folder_stay_literal_inside_the_single_quotes() {
+        let sb = sandbox();
+        let odd = p(&sb.root.join("plugins").join("g$x`y"));
+        fs::create_dir_all(format!("{odd}/hooks")).unwrap();
+        fs::write(format!("{odd}/hooks/guard.sh"), "").unwrap();
+        register(&sb, odd.as_bytes(), Some(github_marketplace()));
+        let line = failing_closed_line(&sb);
+        assert!(line.ends_with(&command_of(&odd)), "{line}");
+    }
+
+    #[test]
+    fn a_symlinked_directory_marketplace_gets_the_terminal_sentence() {
+        // The live folder is a realpath of installLocation + source; what Claude Code runs the
+        // hook from is not known to be that string, so no command is printed.
+        let sb = sandbox();
+        let real = sb.root.join("market-real");
+        fs::create_dir_all(real.join(".claude-plugin")).unwrap();
+        fs::create_dir_all(real.join("plugins/anthology-guardrails/hooks")).unwrap();
+        fs::write(real.join("plugins/anthology-guardrails/hooks/guard.sh"), "").unwrap();
+        fs::write(
+            real.join(".claude-plugin/marketplace.json"),
+            r#"{"name": "m", "plugins": [{"name": "anthology-guardrails", "source": "./plugins/anthology-guardrails"}]}"#,
+        )
+        .unwrap();
+        let link = sb.root.join("market-link");
+        symlink(&real, &link).unwrap();
+        let known = format!(
+            r#"{{"m": {{"source": {{"source": "directory", "path": {0}}}, "installLocation": {0}, "lastUpdated": "x"}}}}"#,
+            jstr(&p(&link))
+        );
+        register(
+            &sb,
+            p(&sb.plugin("anthology-guardrails")).as_bytes(),
+            Some(&known),
+        );
+        assert_eq!(failing_closed_line(&sb), terminal_sentence());
+    }
+
+    #[test]
+    fn an_unknown_marketplace_or_a_non_utf8_install_path_gets_no_command() {
+        let sb = sandbox();
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(&sb, guard.as_bytes(), None);
+        assert_eq!(failing_closed_line(&sb), terminal_sentence());
+        // A folder name that is not UTF-8 cannot be matched as text either.
+        let sb = sandbox();
+        let mut raw = guard.as_bytes().to_vec();
+        raw.extend_from_slice(b"-\xff");
+        register(&sb, &raw, Some(github_marketplace()));
+        assert!(
+            lines_with_elapsed(&sb, 45.0)
+                .iter()
+                .all(|l| !l.contains("/bin/sh")),
+        );
+    }
+
+    #[test]
+    fn a_launch_folder_the_shim_cannot_match_exactly_gets_the_terminal_sentence() {
+        for odd in [
+            "relative/guard",
+            "",
+            "/with'quote",
+            "/with\"quote",
+            "/back\\slash",
+            "/new\nline",
+            "/del\u{7f}",
+        ] {
+            let reason = session_start::binary_missing_reason(Some(odd));
+            assert_eq!(
+                reason,
+                session_start::binary_missing_reason(None),
+                "{odd:?}"
+            );
+            assert!(!reason.contains("/bin/sh"), "{odd:?}");
+        }
+        assert!(
+            session_start::binary_missing_reason(Some("/opt/a b/guard"))
+                .ends_with(&command_of("/opt/a b/guard"))
         );
     }
 

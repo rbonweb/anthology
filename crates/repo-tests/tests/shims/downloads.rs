@@ -104,21 +104,25 @@ fn a_never_ending_download_is_killed_at_the_budget() {
         .map(|d| {
             std::thread::spawn(move || {
                 let (sb, path) = served(d, |_| Mode::Never);
-                // The default budget (20 s): killed within 20 s + 2 s.
+                // The default budget (20 s) ends the wait, not the background download: the
+                // call reports how far it got and returns within 20 s + 4 s.
                 let run = boot_path(
                     &sb,
                     first_shell(),
                     &["guard", "--plugin", "guardrails", "--quiet"],
                     path,
                 );
-                assert_status(
-                    &run,
-                    &format!("status=failed:{R_DOWNLOAD}"),
-                    &format!("{d:?}"),
+                stop_fetcher(&sb);
+                let out = run.out();
+                assert!(
+                    out.starts_with("status=failed:still downloading (")
+                        && out.ends_with(" bytes so far)\n"),
+                    "{d:?}: {out:?}"
                 );
+                assert_eq!(run.code, Some(1), "{d:?}");
                 assert!(
                     run.elapsed >= Duration::from_secs(19)
-                        && run.elapsed <= Duration::from_secs(22),
+                        && run.elapsed <= Duration::from_secs(24),
                     "{d:?}: {:?}",
                     run.elapsed
                 );
@@ -186,6 +190,7 @@ fn download_failures_have_their_reasons() {
                 ],
                 path,
             );
+            stop_fetcher(&sb);
             let c = format!("{d:?} {name}");
             assert_status(&run, &format!("status=failed:{want}"), &c);
             assert_not_installed(&sb, &c);
@@ -205,6 +210,7 @@ fn download_failures_have_their_reasons() {
             ],
             path,
         );
+        stop_fetcher(&sb);
         assert!(
             run.out().starts_with("status=failed:"),
             "{d:?} oversize: {}",
@@ -259,7 +265,7 @@ fn a_stale_seed_falls_through_to_the_network() {
         std::fs::remove_file(sb.bindir().join(".attempt")).unwrap();
         assert_block(
             &guard_path(&sb, sh, BASH, path),
-            &not_installed(&r_seed(sb.release.target.triple())),
+            &not_installed(&sb, &r_seed(sb.release.target.triple())),
             &format!("{d:?}"),
         );
     }
@@ -284,7 +290,7 @@ fn the_guard_heals_over_the_network_and_parallel_calls_share_downloads() {
                     assert_allowed(&run, &format!("{d:?} {sh:?}"));
                     allowed += 1;
                 } else {
-                    assert_block(&run, &rate_limited(), &format!("{d:?} {sh:?}"));
+                    assert_block(&run, &rate_limited(&sb), &format!("{d:?} {sh:?}"));
                 }
             }
             assert!(allowed >= 1, "{d:?} {sh:?}");
