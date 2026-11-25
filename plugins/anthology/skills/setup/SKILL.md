@@ -11,7 +11,7 @@ command below prints one JSON object. Run them from the user's current folder.
 
 Anthology supports macOS and Linux only. If a command exits with code 2, show its message and stop.
 
-If a Bash call is blocked with "(setup)", wait a minute and run the same command once more: the guard reinstalls its binary. If it is still blocked, tell the user to start a new session while online, or to disable anthology-guardrails with /plugin.
+If a Bash call is blocked with "(setup)", the guard binary is missing. The block ends with the one command the guard lets through until the binary is installed, `/bin/sh '<guardrails plugin folder>/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300`: copy it from the message exactly (it names the real folder), run it with a Bash timeout of 360000 ms, and then run the blocked command again. It prints `status=installed` or `status=present` when the binary is in place. `status=failed:still downloading (...)` means a slow link: the download goes on in the background, so run the same command once more. Any other `status=failed:` reason: show it, and tell the user to start a new session while online, or to disable anthology-guardrails with /plugin.
 
 ## Setup (`/anthology:setup`)
 
