@@ -398,10 +398,16 @@ anth_watch() {
         exec </dev/null >/dev/null 2>&1
         _w_s=
         trap 'kill "$_w_s" 2>/dev/null; exit 0' TERM
-        sleep "$_w_limit" &
-        _w_s=$!
-        wait "$_w_s"
-        kill -9 "$_w_p" 2>/dev/null
+        # dash drops a TERM that arrives before the subshell has cleared the traps it inherited
+        # (bootstrap.sh traps TERM), and the watchdog then slept out its whole limit. The TERM
+        # is sent only after CMD has ended and been reaped, so a CMD that is gone by now means
+        # it was sent already: there is nothing to watch.
+        if kill -0 "$_w_p" 2>/dev/null; then
+            sleep "$_w_limit" &
+            _w_s=$!
+            wait "$_w_s"
+            kill -9 "$_w_p" 2>/dev/null
+        fi
     ) &
     _w_w=$!
     ANTH_TMP=$_w_t
