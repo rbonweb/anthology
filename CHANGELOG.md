@@ -10,10 +10,14 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.4] - 2026-11-25
+
 #### Changed
 
 - The `anthology` binary 0.2.5: git is run only from an absolute `PATH` entry, never a relative
   one, when Anthology runs it inside a repo.
+- Pin anthology-bin 0.2.5.
+- Fix: the after-work check and the binary's own git calls (memory sync, session start) now look for `git` only on the absolute entries of `PATH` and run it by its absolute path. A `.`, empty or relative entry can no longer run a `git` planted in a repository.
 
 ### [0.5.3] - 2026-11-25
 

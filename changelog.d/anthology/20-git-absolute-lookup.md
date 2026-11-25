@@ -1,1 +1,0 @@
-- Fix: the after-work check and the binary's own git calls (memory sync, session start) now look for `git` only on the absolute entries of `PATH` and run it by its absolute path. A `.`, empty or relative entry can no longer run a `git` planted in a repository.
