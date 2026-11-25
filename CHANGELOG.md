@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.1] - 2026-11-25
+
 #### Changed
 
 - The `anthology` binary 0.2.3 carries the Rust changes made since 0.2.2. The embedded-host
@@ -18,6 +20,13 @@ a new version section.
   install entry of its own scope and orders release candidates by number. The guard's "too
   complex" (G0) message names its cause for three more shapes. No guard verdict changes. The
   entries that follow give the details.
+- Fix: the agents' waiting rule now fits Claude Code's 180 s limit on a subagent's foreground Bash call. They block in `timeout 170` chunks (`gh pr checks --watch`, `gh run watch`, `docker wait`) instead of relying on the `timeout` parameter or `run_in_background`.
+- Fix: the four writing agents read `.claude/memory/reference-project-map.md` in their working folder before calling the map missing, and quote the error when the read fails. Every agent's Memory section says its notes are the repo's `.claude/agent-memory/<agent>/`, never `~/.claude`.
+- Fix: the after-work check counts a report that says the project map is "missing" as dealing with the map only when the file is really absent in the agent's working folder.
+- Pin anthology-bin 0.2.3.
+- Fix: an interactive `claude` started from inside an SDK process no longer loses its guide, memory and coordinator section. The attended flag (`CLAUDE_CODE_SESSION_ATTENDED`, `0` or `1`) now decides when it is set; an `sdk-*` entrypoint counts only when the flag is unset or holds another value. `ANTHOLOGY_HOST_MODE=full` still wins. The delegation mod, the session start and the G0 message follow the same rule.
+- Fix: the stale-plugin restart notice compares the loaded plugin only with the install entry of its own scope, so a project install pinned older than the user one no longer asks for a restart.
+- Fix: the stale-plugin notice orders release candidates of one version by number (`0.2.9-rc.1` is older than `0.2.9-rc.2`), and still treats two build tags (shas) as equal.
 
 ### [0.5.0] - 2026-11-24
 
