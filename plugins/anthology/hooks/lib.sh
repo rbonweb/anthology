@@ -6,7 +6,8 @@
 # the only `exit` is inside the download watchdog's background subshell. Callers decide how to
 # end, so guard.sh keeps its fail-closed shape (exactly two `exit 0` sites, design §9.2).
 #
-# The caller sets the plugin root with `anth_paths <root>` first.
+# The caller sets the plugin root with `anth_paths <root>` first, which also makes PATH safe
+# (anth_safe_path) before any command here is looked up.
 # shellcheck disable=SC2034 # the ANTH_ variables are read by the scripts that source this file
 
 ANTH_TOKEN='anthology-guard:allow:v1'
@@ -34,13 +35,43 @@ ANTH_BG='' ANTH_FDIR='' ANTH_DL_RC='' ANTH_DL_TOOL='' ANTH_FIX='' ANTH_FIXMSG=''
 
 # --- paths (GC-1) -------------------------------------------------------------------------
 
-# anth_paths ROOT: the plugin root, its lock, and <ah>/bin. <ah> is $CLAUDE_CONFIG_DIR/anthology
+# anth_safe_path: PATH without its relative and empty entries, the absolute ones kept in order.
+# Hooks run in the folder of the repository the user opened, so `.`, an empty entry (`::`, a
+# leading or trailing `:`) or a relative folder such as `bin` would let that repository plant
+# the curl, tar or shasum the installer runs. When no entry is left, the fixed system list
+# (with Homebrew's folders on macOS). Exported, so what the shim starts gets the same PATH.
+anth_safe_path() {
+    _u_rest=${PATH-}
+    _u_path=
+    while :; do
+        _u_dir=${_u_rest%%:*}
+        case $_u_dir in
+            /*) _u_path=${_u_path:+$_u_path:}$_u_dir ;;
+        esac
+        [ "$_u_dir" != "$_u_rest" ] || break
+        _u_rest=${_u_rest#*:}
+    done
+    if [ -z "$_u_path" ]; then
+        _u_path=/usr/bin:/bin:/usr/sbin:/sbin
+        # uname is looked up on the fixed list.
+        PATH=$_u_path
+        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+            _u_path=$_u_path:/opt/homebrew/bin:/usr/local/bin
+        fi
+    fi
+    PATH=$_u_path
+    export PATH
+}
+
+# anth_paths ROOT: PATH made safe (anth_safe_path), then the plugin root, its lock, and
+# <ah>/bin. <ah> is $CLAUDE_CONFIG_DIR/anthology
 # when that is set, else $HOME/.claude/anthology, and it must be an absolute path: a relative
 # one would pick a binary under the hook's working folder, which the hot path runs unhashed,
 # and an unset or empty HOME is not a home (there is no passwd lookup here). Otherwise ANTH_AH
 # and every path below it stay empty and anth_home_ok fails, as
 # `anthology_core::paths::install_home` does.
 anth_paths() {
+    anth_safe_path
     ANTH_ROOT=$1
     ANTH_LOCK=$1/anthology.lock
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
