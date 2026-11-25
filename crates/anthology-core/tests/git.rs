@@ -126,6 +126,122 @@ fn a_missing_git_or_cwd_is_no_result() {
 }
 
 #[test]
+fn a_git_in_the_cwd_is_never_run_through_a_relative_or_empty_path_entry() {
+    // The cwd is a repository that holds a `git` of its own. `.`, an empty entry and `./`
+    // resolve to it from there; the absolute entry after them holds the git that must run.
+    let marker_dir = tempfile::tempdir().expect("marks");
+    let marker = marker_dir.path().join("ran");
+    let (planted, _) = fake_git(&format!(": > '{}'; echo planted", marker.display()));
+    let (_good, good_bin) = fake_git("echo good");
+    // `../` and `..` find the planted git from a folder below the one that holds it.
+    let below = planted.path().join("sub");
+    std::fs::create_dir(&below).expect("mkdir");
+    for lead in [".", "", "./", ".:.", "../", ".."] {
+        let cwd = if lead.starts_with("..") {
+            &below
+        } else {
+            planted.path()
+        };
+        let path = format!("{lead}:{}:/usr/bin:/bin", good_bin.display());
+        let env = Env::default().with_os("PATH", path);
+        let out = RealGit.run(&env, cwd, &["x"]).expect("ran");
+        assert_eq!(out.stdout, b"good\n", "lead {lead:?}");
+        assert!(!marker.exists(), "the planted git ran (lead {lead:?})");
+    }
+}
+
+#[test]
+fn the_child_gets_a_path_of_the_absolute_entries_only() {
+    let (_d, bin) = fake_git(r#"printf '%s\n' "$PATH""#);
+    let path = format!(".::{}:bin:/usr/bin:/bin:", bin.display());
+    let env = Env::default().with_os("PATH", path);
+    let out = RealGit.run(&env, Path::new("/"), &[]).expect("ran");
+    let want = format!("{}:/usr/bin:/bin\n", bin.display());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want);
+}
+
+#[test]
+fn a_link_to_a_git_is_found_and_a_dangling_link_or_one_to_a_folder_is_not() {
+    use std::os::unix::fs::symlink;
+    let (_real, real_bin) = fake_git("echo linked");
+    let dirs = tempfile::tempdir().expect("dirs");
+    let link = dirs.path().join("link");
+    std::fs::create_dir(&link).expect("mkdir");
+    symlink(real_bin.join("git"), link.join("git")).expect("symlink");
+    let dangling = dirs.path().join("dangling");
+    std::fs::create_dir(&dangling).expect("mkdir");
+    symlink(dirs.path().join("nowhere"), dangling.join("git")).expect("symlink");
+    let to_folder = dirs.path().join("to_folder");
+    std::fs::create_dir(&to_folder).expect("mkdir");
+    symlink(dirs.path(), to_folder.join("git")).expect("symlink");
+    let skipped = [&dangling, &to_folder];
+    let path = std::env::join_paths(skipped.iter().map(|p| p.as_path()).chain([link.as_path()]))
+        .expect("join");
+    let env = Env::default().with_os("PATH", &path);
+    assert_eq!(
+        anthology_core::git::resolve_git(&env),
+        Some(link.join("git"))
+    );
+    let out = RealGit.run(&env, Path::new("/"), &[]).expect("ran");
+    assert_eq!(out.stdout, b"linked\n");
+    // Only the skipped ones: no git.
+    let none = std::env::join_paths(skipped.iter().map(|p| p.as_path())).expect("join");
+    let env = Env::default().with_os("PATH", &none);
+    assert_eq!(anthology_core::git::resolve_git(&env), None);
+}
+
+#[test]
+fn only_relative_or_empty_path_entries_find_no_git() {
+    let marker_dir = tempfile::tempdir().expect("marks");
+    let marker = marker_dir.path().join("ran");
+    let (planted, _) = fake_git(&format!(": > '{}'", marker.display()));
+    for path in [".", ":", "", ".::", "bin", "./git", "..:."] {
+        let env = Env::default().with_os("PATH", path);
+        assert_eq!(RealGit.run(&env, planted.path(), &["x"]), None, "{path:?}");
+        assert!(!marker.exists(), "the planted git ran (PATH {path:?})");
+    }
+    // No PATH at all is a missing git, not a search of the cwd.
+    assert_eq!(RealGit.run(&Env::default(), planted.path(), &[]), None);
+    assert!(!marker.exists());
+}
+
+#[test]
+fn the_search_takes_the_first_executable_file_on_an_absolute_entry() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_a, a_bin) = fake_git("exit 0");
+    let (_b, b_bin) = fake_git("exit 0");
+    let dirs = tempfile::tempdir().expect("dirs");
+    // `plain` holds a `git` that is not executable; `folder` holds a folder called `git`.
+    let plain = dirs.path().join("plain");
+    std::fs::create_dir(&plain).expect("mkdir");
+    std::fs::write(plain.join("git"), "#!/bin/sh\n").expect("write");
+    std::fs::set_permissions(plain.join("git"), std::fs::Permissions::from_mode(0o644))
+        .expect("chmod");
+    let folder = dirs.path().join("folder");
+    std::fs::create_dir_all(folder.join("git")).expect("mkdir");
+    let path = std::env::join_paths([
+        Path::new("."),
+        Path::new(""),
+        &plain,
+        &folder,
+        &a_bin,
+        &b_bin,
+    ])
+    .expect("join");
+    let found = anthology_core::git::find_on_absolute_path("git", Some(&path));
+    assert_eq!(found, Some(a_bin.join("git")));
+    assert_eq!(
+        anthology_core::git::find_on_absolute_path("git", None),
+        None
+    );
+    let env = Env::default().with_os("PATH", &path);
+    assert_eq!(
+        anthology_core::git::resolve_git(&env),
+        Some(a_bin.join("git"))
+    );
+}
+
+#[test]
 fn a_hung_git_is_killed_at_the_timeout() {
     assert_eq!(GIT_TIMEOUT, Duration::from_secs(10));
     assert_eq!(TimedGit::default().timeout, GIT_TIMEOUT);

@@ -17,8 +17,8 @@
 // A report with no gap is delivered as written, with no block.
 //
 // Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off.
-import type { AgentReportInput, AgentReportResult, EngineInterface } from 'claude-code'
-import { modsOff } from './util.ts'
+import type { AgentReportInput, AgentReportResult, EngineInterface, ProcessRunResult } from 'claude-code'
+import { modsOff, onAbsolutePath } from './util.ts'
 
 /** The agent types that write, as `agent.report` names them. Reviewer and scout only read. */
 const WRITERS: ReadonlySet<string> = new Set([
@@ -30,6 +30,9 @@ const WRITERS: ReadonlySet<string> = new Set([
 
 /** The one git call must end well inside the hook's 10 s budget. */
 const GIT_TIMEOUT_MS = 2000
+
+/** The most gits on the PATH tried when one cannot start: 3 x 2 s stays inside the 10 s budget. */
+const MAX_GITS = 3
 
 /** The most folders mapIsThere looks in, from the agent's cwd upward. */
 const MAX_WALK = 32
@@ -149,14 +152,27 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
     const dir = await real($, agent.cwd)
     const session = await Promise.all([$.session.cwd(), $.session.root()].map(async p => real($, await p)))
     if (session.includes(dir)) return undefined
-    const run = await $.process.run(
-      [
-        'git', '-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--porcelain',
-        '--', ':(top)', ':(top,exclude).claude/agent-memory',
-      ],
-      { cwd: dir, timeoutMs: GIT_TIMEOUT_MS },
-    )
-    if (run.exitCode !== 0) return undefined
+    // The worktree is the agent's own, so git is looked up on the absolute PATH entries only: a
+    // `.` or empty entry would run a `git` planted in it. The child gets that PATH too.
+    // A git that cannot start (not executable, as `$.fs.stat` cannot tell) is passed over for the
+    // next on the PATH, as the shell does; a few at most, so the hook's budget holds.
+    const git = await onAbsolutePath($, 'git')
+    let run: ProcessRunResult | undefined
+    for (const bin of git.bins.slice(0, MAX_GITS)) {
+      try {
+        run = await $.process.run(
+          [
+            bin, '-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--porcelain',
+            '--', ':(top)', ':(top,exclude).claude/agent-memory',
+          ],
+          { cwd: dir, timeoutMs: GIT_TIMEOUT_MS, env: { PATH: git.path } },
+        )
+        break
+      } catch {
+        // cannot start, or timed out: the next one
+      }
+    }
+    if (run === undefined || run.exitCode !== 0) return undefined
     const n = run.stdout.split('\n').filter(l => l.trim() !== '').length
     if (run.isStdoutTruncated) return 'many uncommitted changes in the agent\'s worktree (git status)'
     if (n === 0) return undefined

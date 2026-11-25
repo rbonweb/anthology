@@ -10,7 +10,7 @@ import { expect, test } from 'claude-code/testing'
 
 type Run = {
   readonly argv: readonly string[]
-  readonly init?: { readonly cwd?: string; readonly timeoutMs?: number }
+  readonly init?: { readonly cwd?: string; readonly timeoutMs?: number; readonly env?: Record<string, string> }
 }
 
 type World = {
@@ -25,7 +25,16 @@ type World = {
   review?: { review: 'flagged'; warning: string }
   /** The paths that exist for `fs.exists`; any other path does not. */
   files?: { includes(path: string): boolean }
+  /** The paths of a regular `git` file; by default one on the system PATH. Any other `git` path is missing. */
+  gitAt?: readonly string[]
+  /** The paths of a folder called `git`. */
+  gitDirs?: readonly string[]
+  /** The paths of a link called `git`, with what it leads to (a dangling link is `other`). */
+  gitLinks?: Record<string, 'file' | 'dir' | 'other'>
 }
+
+/** The PATH the test session has unless `env.PATH` says otherwise. */
+const SYSTEM_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 const CLEAN: ProcessRunResult = {
   exitCode: 0,
@@ -39,13 +48,21 @@ const CLEAN: ProcessRunResult = {
 function engine(on: On, w: World = {}) {
   const runs: Run[] = []
   on('agent.report', (_$, e) => ({ text: e.text, review: 'cleared', ...w.review }))
-  on('env.get', (_$, e) => ({ value: w.env?.[e.name] }))
+  on('env.get', (_$, e) => ({ value: w.env?.[e.name] ?? (e.name === 'PATH' ? SYSTEM_PATH : undefined) }))
   on('agent.list', () => ({ value: w.agents?.() ?? [] }))
   on('session.cwd', () => ({ value: w.cwd ?? '/work/repo' }))
   on('session.root', () => ({ value: w.root ?? '/work/repo' }))
-  on('fs.stat', (_$, e) => ({
-    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path },
-  }))
+  on('fs.stat', (_$, e) => {
+    const fileAt = (w.gitAt ?? ['/usr/bin/git']).includes(e.path)
+    const link = w.gitLinks?.[e.path]
+    // What `$.fs.stat` says of a `git` path: a link is followed, a dangling one is `other`, a missing path rejects.
+    if (fileAt || link !== undefined || w.gitDirs?.includes(e.path)) {
+      const kind = fileAt ? 'file' : link ?? 'dir'
+      return { value: { kind, size: 0, mtimeMs: 0, isLink: link !== undefined } }
+    }
+    if (e.path === 'git' || e.path.endsWith('/git')) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: w.real?.[e.path] ?? e.path } }
+  })
   on('fs.exists', (_$, e) => ({ value: w.files?.includes(e.path) ?? false }))
   on('process.run', async (_$, e) => {
     runs.push(e)
@@ -382,11 +399,83 @@ test('dirty files in the agent worktree add one gap, from one git call with a ti
   expect(r.text?.startsWith(`${FULL}\n\n`)).toBe(true)
   expect(r.text?.slice(FULL.length)).toContain('2 uncommitted')
   expect(runs).toHaveLength(1)
-  expect(runs[0]?.argv.slice(0, 1)).toEqual(['git'])
+  expect(runs[0]?.argv.slice(0, 1)).toEqual(['/usr/bin/git'])
   expect(runs[0]?.argv).toContain('status')
   expect(runs[0]?.init?.cwd).toBe(WORKTREE)
   expect(runs[0]?.init?.timeoutMs).toBeGreaterThan(0)
   expect(runs[0]?.init?.timeoutMs).toBeLessThanOrEqual(3000)
+})
+
+test('git is the absolute file on the absolute PATH entries; relative and empty entries are ignored', async ($, on) => {
+  // The worktree holds a planted `git`: `.`, `::`, `bin` and a bare leading colon must not find it.
+  const planted = [`${WORKTREE}/git`, `${WORKTREE}/bin/git`, 'git', 'bin/git', './git']
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '.:bin::/opt/tools/bin/:relative/dir:/usr/bin:/bin' },
+    gitAt: [...planted, '/opt/tools/bin/git', '/usr/bin/git'],
+    git: () => ({ ...CLEAN, stdout: ' M a\n' }),
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs).toHaveLength(1)
+  expect(runs[0]?.argv[0]).toBe('/opt/tools/bin/git')
+  expect(runs[0]?.init?.env?.PATH).toBe('/opt/tools/bin/:/usr/bin:/bin')
+})
+
+test('git is not run when the PATH has no absolute entry that holds one', async ($, on) => {
+  const w: World = { ...IN_WORKTREE(), gitAt: [`${WORKTREE}/git`, 'git', './git', 'bin/git'] }
+  const runs = engine(on, w)
+  for (const PATH of ['.', ':', '.::bin', 'bin:./tools', '']) {
+    w.env = { PATH }
+    expect((await $.agent.report(report(FULL))).text, PATH).toBe(FULL)
+  }
+  w.env = { PATH: '/usr/bin:/bin' } // absolute entries, but none holds a git
+  w.gitAt = ['/usr/local/bin/git']
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(runs).toHaveLength(0)
+})
+
+test('a folder, a dangling link or a link to a folder called git is passed over for the next entry', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/a:/b:/c:/d:/e' },
+    gitDirs: ['/a/git'],
+    gitLinks: { '/b/git': 'other', '/c/git': 'dir', '/d/git': 'file' }, // a link to a file is a git
+    gitAt: ['/e/git'],
+    git: () => ({ ...CLEAN, stdout: ' M a\n' }),
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs).toHaveLength(1)
+  expect(runs[0]?.argv[0]).toBe('/d/git')
+})
+
+test('a git that cannot start, as a file that is not executable, is passed over for the next one', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/noexec:/usr/bin' },
+    gitAt: ['/noexec/git', '/usr/bin/git'],
+    git: run => {
+      if (run.argv[0] === '/noexec/git') throw new Error('spawn EACCES')
+      return { ...CLEAN, stdout: ' M a\n' }
+    },
+  })
+  const r = await $.agent.report(report(FULL))
+  expect(r.text).toContain('1 uncommitted')
+  expect(runs.map(x => x.argv[0])).toEqual(['/noexec/git', '/usr/bin/git'])
+})
+
+test('at most three gits are tried, and all failing leaves the text-only check', async ($, on) => {
+  const runs = engine(on, {
+    ...IN_WORKTREE(),
+    env: { PATH: '/a:/b:/c:/d' },
+    gitAt: ['/a/git', '/b/git', '/c/git', '/d/git'],
+    git: () => {
+      throw new Error('spawn EACCES')
+    },
+  })
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(runs).toHaveLength(3)
 })
 
 test('the git call leaves the agents own memory notes out, from the repo top', async ($, on) => {

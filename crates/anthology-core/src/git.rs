@@ -11,6 +11,12 @@
 //! writing gets `SIGPIPE`, as it does once Python's `Popen` closes the pipes (Rust closes them
 //! at the grandchild's next write rather than at once, and buffers at most one more chunk).
 //!
+//! The `git` that runs is found once per call, on the absolute entries of the `Env`'s `PATH` only
+//! ([`resolve_git`]), and run by its absolute path: the working directory is inside a repository,
+//! so a `.`, empty or relative entry must not find a `git` the repository holds. No such git
+//! found is a missing git. The child's own `PATH` is cut to the same absolute entries, so what
+//! git starts (ssh, credential helpers, hooks) is not found through a relative one either.
+//!
 //! The spawn itself is also bounded by the timeout. On macOS, `Command::spawn` creates its
 //! pipes with `pipe()` and sets `FD_CLOEXEC` in a second step, and (with `PATH` in the child's
 //! environment) forks rather than using `posix_spawn`, then reads a status pipe until every
@@ -25,7 +31,7 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -95,8 +101,35 @@ impl Git for TimedGit {
     }
 }
 
+/// The first executable file called `name` in the absolute entries of `path`, as found. Empty and
+/// relative entries (`.`, `::`, `bin`) are skipped: they resolve against the working directory,
+/// where a repository could plant a program of that name. `None` when `path` is unset or no
+/// absolute entry holds one, as for a tool that is not installed.
+pub fn find_on_absolute_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
+/// `path` with its empty and relative entries dropped, in order.
+fn absolute_entries(path: &OsStr) -> std::ffi::OsString {
+    let dirs = std::env::split_paths(path).filter(|dir| dir.is_absolute());
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+/// The `git` that `env`'s `PATH` finds among its absolute entries, to be run by its absolute path
+/// (never by the bare name, which the OS would look up in relative entries too).
+pub fn resolve_git(env: &Env) -> Option<PathBuf> {
+    find_on_absolute_path("git", env.get_os("PATH"))
+}
+
 fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<GitOut> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(resolve_git(env)?);
     cmd.arg("-c")
         .arg("core.fsmonitor=false")
         .args(args)
@@ -106,7 +139,14 @@ fn run_git(env: &Env, cwd: &Path, args: &[&str], timeout: Duration) -> Option<Gi
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in env.iter() {
-        if !STRIPPED_VARS.iter().any(|s| OsStr::new(s) == k) {
+        if STRIPPED_VARS.iter().any(|s| OsStr::new(s) == k) {
+            continue;
+        }
+        if k == "PATH" {
+            // What git starts (ssh, credential helpers, hooks) is found on the absolute entries
+            // only, as git itself was. `git` was found on one, so the list is not empty.
+            cmd.env(k, absolute_entries(v));
+        } else {
             cmd.env(k, v);
         }
     }
