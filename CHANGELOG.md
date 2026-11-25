@@ -10,6 +10,11 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The `anthology` binary 0.2.5: git is run only from an absolute `PATH` entry, never a relative
+  one, when Anthology runs it inside a repo.
+
 ### [0.5.3] - 2026-11-25
 
 - Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could supply programs that the plugin's hooks and the `anthology` and `anthology-mem` commands ran: the hooks' `sh`; the `curl`, `tar`, `shasum`, `date`, `readlink` or `dirname` used while finding and installing the binary; and the `cat`, `sed`, `grep`, `tr`, `uname` or notifier used by the atl, attribution and notification hooks. The hooks now start with `/bin/sh`, and these helpers run on PATH without those entries, keeping the absolute ones in order and falling back to the standard system folders when none is left. The anthology binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check is unchanged.
