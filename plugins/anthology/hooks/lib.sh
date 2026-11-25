@@ -438,7 +438,10 @@ anth_download() {
     if command -v wget >/dev/null 2>&1; then
         if wget --version 2>/dev/null | grep -q 'GNU Wget'; then
             ANTH_DL_TOOL=wget
-            anth_watch "$3" wget --https-only -q -T 10 -U anthology-bootstrap -O "$2" "$1" \
+            # One try, as with the other downloaders: GNU wget's default of 20 tries with
+            # back-off would keep a dropped download "still downloading" for minutes under the
+            # fetcher's budget instead of failing. The next attempt is the retry.
+            anth_watch "$3" wget --https-only -q -t 1 -T 10 -U anthology-bootstrap -O "$2" "$1" \
                 >/dev/null 2>&1
             ANTH_DL_RC=$?
             [ "$ANTH_DL_RC" = 0 ] || return 1
