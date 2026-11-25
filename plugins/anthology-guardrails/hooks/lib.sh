@@ -40,18 +40,32 @@ ANTH_UPATH='' ANTH_UPATH_SET=''
 # Hooks run in the folder of the repository the user opened, so `.`, an empty entry (`::`, a
 # leading or trailing `:`) or a relative folder such as `bin` would let that repository plant
 # the curl, tar or shasum the installer runs. When no entry is left, the fixed system list
-# (with Homebrew's folders on macOS). Exported, so the helpers the shim starts get it too. The
-# first call keeps the caller's PATH (ANTH_UPATH; ANTH_UPATH_SET is set or unset) for
-# anth_user_path. Linear in the length of PATH: a PATH with nothing to drop is kept as it is.
+# (with Homebrew's folders on macOS). Exported, so the helpers the shim starts get it too.
+#
+# The first call keeps the caller's PATH for anth_user_path: ANTH_UPATH, with ANTH_UPATH_SET
+# `set`. A PATH the caller did not export is the shell's own default, not the caller's (macOS sh
+# fills in one that ends in `.`), so when it has something to drop, or there is none at all,
+# ANTH_UPATH_SET is `safe` and the binary gets the safe PATH as well. Linear in the length of
+# PATH: a PATH with nothing to drop is kept as it is, with no fork.
 anth_safe_path() {
+    _u_first=
     if [ -z "$ANTH_UPATH_SET" ]; then
+        _u_first=1
         ANTH_UPATH=${PATH-}
-        ANTH_UPATH_SET='unset'
-        [ -z "${PATH+x}" ] || ANTH_UPATH_SET='set'
+        ANTH_UPATH_SET='set'
+        [ -n "${PATH+x}" ] || ANTH_UPATH_SET='safe'
     fi
     _u_path=${PATH-}
     case :$_u_path: in
         *::* | *:[!/]*)
+            if [ -n "$_u_first" ]; then
+                # `export -p` is a builtin: dash, BusyBox and bash in POSIX mode print
+                # `export PATH=…`, bash otherwise `declare -x PATH=…`.
+                case $ANTH_NL$(export -p) in
+                    *"${ANTH_NL}export PATH="* | *"${ANTH_NL}declare -x PATH="*) ;;
+                    *) ANTH_UPATH_SET='safe' ;;
+                esac
+            fi
             # Something to drop. One split on `:`, the kept entries printed and collected at
             # once: appending them to a variable one by one would copy it each time (quadratic
             # on a long PATH). The subshell holds set -f and IFS, and looks nothing up (printf
@@ -84,17 +98,15 @@ anth_safe_path() {
     export PATH
 }
 
-# anth_user_path: PATH as the caller gave it, before anth_safe_path (unset if it was), for the
-# anthology binary only: it runs the user's own commands, and their lookups are the user's.
-# The shim's own helpers keep the safe PATH, so callers use this in a subshell or before exec.
+# anth_user_path: PATH as the caller exported it, before anth_safe_path, for the anthology
+# binary only: it runs the user's own commands, and their lookups are the user's. Without one
+# (ANTH_UPATH_SET `safe`) the safe PATH stays. The shim's own helpers keep the safe PATH, so
+# callers use this in a subshell or right before exec.
 anth_user_path() {
-    case $ANTH_UPATH_SET in
-        set)
-            PATH=$ANTH_UPATH
-            export PATH
-            ;;
-        unset) unset PATH ;;
-    esac
+    if [ "$ANTH_UPATH_SET" = set ]; then
+        PATH=$ANTH_UPATH
+        export PATH
+    fi
 }
 
 # anth_paths ROOT: PATH made safe (anth_safe_path), then the plugin root, its lock, and
@@ -772,7 +784,7 @@ anth_fetch_start() {
     anth_fetch_alive && return 0
     rm -f "$ANTH_FDIR/fail"
     if command -v setsid >/dev/null 2>&1; then
-        setsid sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+        setsid /bin/sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
             </dev/null >/dev/null 2>&1 &
     else
         # As in anth_watch: the subshell must not see the staging folder bootstrap.sh's EXIT
@@ -780,7 +792,7 @@ anth_fetch_start() {
         _f_t=$ANTH_TMP ANTH_TMP=
         (
             set -m
-            sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+            /bin/sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
                 </dev/null >/dev/null 2>&1 &
         ) </dev/null >/dev/null 2>&1
         ANTH_TMP=$_f_t

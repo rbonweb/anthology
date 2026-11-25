@@ -13,9 +13,18 @@ use anthology_testkit::bs::{self, Mode, Sandbox};
 
 use super::common::*;
 
-/// The tools a planted copy stands in for: every helper the shims run. Not `cat`: the fake
-/// binaries use it, and they run on the caller's PATH on purpose.
+/// The tools a planted copy stands in for: every helper the shims and hooks run. The fake
+/// binaries here use builtins only: they run on the caller's PATH on purpose.
 const PLANTED: &[&str] = &[
+    "cat",
+    "sed",
+    "head",
+    "grep",
+    "timeout",
+    "osascript",
+    "notify-send",
+    "canberra-gtk-play",
+    "paplay",
     "curl",
     "wget",
     "node",
@@ -95,15 +104,26 @@ fn plant(sb: &Sandbox, dir: &Path) {
 /// and returns a PATH with `entry`, then the real tools. For `Trailing` the real folder lacks
 /// `masked`, so only the working folder has them.
 fn planted_path(sb: &Sandbox, entry: Entry, masked: &[&str]) -> OsString {
+    let base = Sandbox::base_path().to_string_lossy().into_owned();
+    let trailing = if entry == Entry::Trailing {
+        sb.path_with(masked, &[]).to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+    planted_path_on(sb, entry, &base, &trailing)
+}
+
+/// [`planted_path`] with the real folders given: `base` after the unsafe entry, and `trailing`
+/// before a trailing `:`.
+fn planted_path_on(sb: &Sandbox, entry: Entry, base: &str, trailing: &str) -> OsString {
     plant(sb, &sb.root);
     plant(sb, &sb.root.join("bin"));
-    let base = Sandbox::base_path().to_string_lossy().into_owned();
     let path = match entry {
         Entry::Dot => format!(".:{base}"),
         Entry::Leading => format!(":{base}"),
         Entry::Middle => format!("{}::{base}", sb.tmpdir.display()),
         Entry::RelDir => format!("bin:{base}"),
-        Entry::Trailing => format!("{}:", sb.path_with(masked, &[]).to_string_lossy()),
+        Entry::Trailing => format!("{trailing}:"),
         Entry::OnlyRelative => ".:bin:".to_string(),
     };
     path.into()
@@ -221,7 +241,7 @@ fn a_download_never_runs_a_planted_downloader() {
     });
 }
 
-/// The guardrails' background download: the fetcher (`setsid sh bootstrap.sh fetch`), its
+/// The guardrails' background download: the fetcher (`setsid /bin/sh bootstrap.sh fetch`), its
 /// folder and its downloader all come from the safe PATH.
 #[test]
 fn the_background_download_runs_no_planted_tool() {
@@ -381,5 +401,133 @@ fn a_long_path_is_made_safe_quickly() {
             "{sh:?} session start: {:?}",
             run.elapsed
         );
+    });
+}
+
+/// A PATH every entry of which is absolute and not empty.
+#[track_caller]
+fn assert_absolute_path(text: &str, ctx: &str) {
+    let p = text.trim_end_matches('\n');
+    assert!(
+        !p.is_empty() && p.split(':').all(|d| d.starts_with('/')),
+        "{ctx}: the binary got {p:?}"
+    );
+}
+
+/// A caller with no PATH in its environment (`env -u PATH`): the shell fills in its own default,
+/// which it does not export (macOS sh's ends in `.`). That is no PATH of the caller's, so the
+/// binary gets the safe one: never a relative entry, from the wrapper, session start or guard.
+#[test]
+fn without_a_path_the_binary_gets_no_relative_entry() {
+    let show = "printf '%s\\n' \"$PATH\"; exit 0";
+    let guard_log = "while IFS= read -r _l; do :; done; printf '%s\\n' \"$PATH\" >\"$BS_LOG\"; printf 'anthology-guard:allow:v1\\n' >&2; exit 0";
+    each_shell("no PATH", |sh| {
+        let sb = sandbox();
+        let log = sb.root.join("guard-path");
+        sb.install(&fake_hook(V, guard_log, show), 0o755);
+        let env: Vec<(OsString, OsString)> = vec![
+            ("HOME".into(), sb.home.clone().into()),
+            ("CLAUDE_CONFIG_DIR".into(), sb.config.clone().into()),
+            ("TMPDIR".into(), sb.tmpdir.clone().into()),
+            ("LANG".into(), "C".into()),
+            ("BS_LOG".into(), log.clone().into()),
+        ];
+        let run = |script: &str, args: &[&str], stdin: &[u8]| {
+            let mut argv = sh.argv().expect("the shell is present");
+            argv.push(sb.root.join(script).into());
+            argv.extend(args.iter().map(OsString::from));
+            bs::run_argv(&argv, &env, stdin, Duration::from_secs(60), &sb.root)
+        };
+        let r = run(WRAP, &["hook"], b"");
+        assert_eq!(r.code, Some(0), "{sh:?} wrapper: {}", r.err());
+        assert_absolute_path(&r.out(), &format!("{sh:?} wrapper"));
+        let r = run(SESSION, &[], b"{}");
+        assert_eq!(r.code, Some(0), "{sh:?} session start: {}", r.err());
+        assert_absolute_path(&r.out(), &format!("{sh:?} session start"));
+        let r = run(GUARD, &[], BASH);
+        assert_allowed(&r, &format!("{sh:?} guard"));
+        assert_absolute_path(
+            &std::fs::read_to_string(&log).unwrap(),
+            &format!("{sh:?} guard"),
+        );
+    });
+}
+
+/// The notifiers notify.sh may run: kept off the real PATH, so no test pops up an alert.
+const NOTIFIERS: &[&str] = &[
+    "osascript",
+    "notify-send",
+    "canberra-gtk-play",
+    "paplay",
+    "timeout",
+];
+
+/// The anthology plugin's other hooks (atl-hook, no-attribution.sh, notify.sh) run on the safe
+/// PATH from their first line.
+#[test]
+fn the_other_hooks_run_no_planted_tool() {
+    let ask = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"x"}}"#;
+    let atl_input =
+        br#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"atl gain"}}"#;
+    let attribution = br#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"git commit -m \"fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""}}"#;
+    each_shell("planted tools, other hooks", |sh| {
+        for entry in Entry::ALL {
+            let c = format!("{sh:?} {entry:?}");
+            let sb = builtin_sandbox();
+            // atl-hook: atl is installed and asks on a line that names atl, which is kept.
+            let atl = sb.root.join("fake-atl");
+            std::fs::write(
+                &atl,
+                format!("#!/bin/sh\nwhile IFS= read -r _l; do :; done\nprintf '%s\\n' '{ask}'\n"),
+            )
+            .unwrap();
+            chmod(&atl, 0o755);
+            std::fs::create_dir_all(sb.ah()).unwrap();
+            std::fs::write(
+                sb.ah().join("state.json"),
+                format!(
+                    "{{\n  \"atl_path\": \"{}\",\n  \"z\": 1\n}}\n",
+                    atl.display()
+                ),
+            )
+            .unwrap();
+            let mut spec = sb.spec(sh, "plugins/anthology/bin/atl-hook", &[], atl_input);
+            spec.path = Some(planted_path(&sb, entry, &[]));
+            let run = sb.run_spec(spec);
+            assert_nothing_planted_ran(&sb, &format!("{c} atl-hook"));
+            assert_eq!(
+                (run.code, run.out()),
+                (Some(0), format!("{ask}\n")),
+                "{c} atl-hook: {}",
+                run.err()
+            );
+            // no-attribution.sh: denies an assistant co-author trailer.
+            let mut spec = sb.spec(
+                sh,
+                "plugins/anthology/hooks/no-attribution.sh",
+                &[],
+                attribution,
+            );
+            spec.path = Some(planted_path(&sb, entry, &[]));
+            let run = sb.run_spec(spec);
+            assert_nothing_planted_ran(&sb, &format!("{c} no-attribution"));
+            assert_eq!(run.code, Some(0), "{c} no-attribution: {}", run.err());
+            assert!(
+                run.out().contains("\"permissionDecision\":\"deny\""),
+                "{c} no-attribution: {}",
+                run.out()
+            );
+            // notify.sh: with no real notifier, the bell; nothing planted runs. The fixed list
+            // holds the real osascript on macOS, so nothing-absolute is not run there.
+            if entry == Entry::OnlyRelative && cfg!(target_os = "macos") {
+                continue;
+            }
+            let quiet = sb.path_with(NOTIFIERS, &[]).to_string_lossy().into_owned();
+            let mut spec = sb.spec(sh, "plugins/anthology/hooks/notify.sh", &["idle"], b"{}");
+            spec.path = Some(planted_path_on(&sb, entry, &quiet, &quiet));
+            let run = sb.run_spec(spec);
+            assert_nothing_planted_ran(&sb, &format!("{c} notify"));
+            assert_eq!(run.code, Some(0), "{c} notify: {}", run.err());
+        }
     });
 }

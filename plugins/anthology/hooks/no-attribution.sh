@@ -18,6 +18,29 @@
 # `\"`, so the key pattern only matches a real key and its whole string value, and a newline inside
 # the command is the two characters `\n`: a trailer is matched up to the next `\n`, `\r` or the end
 # of the string, so the name has to sit on the trailer's own line.
+#
+# PATH without its relative and empty entries first, as hooks/lib.sh's anth_safe_path makes it:
+# the hook runs in the folder of the repository the user opened, which must not supply the cat,
+# tr or grep below.
+case :${PATH-}: in
+  *::*|*:[!/]*)
+    PATH=$(
+      anth_in=${PATH-}
+      PATH=/usr/bin:/bin
+      set -f
+      IFS=:
+      # shellcheck disable=SC2086 # split on IFS (`:`) on purpose; globbing is off
+      for anth_dir in $anth_in; do
+        # `(/*)`: bash 3.2 misreads a bare `/*)` inside `$( )`.
+        case $anth_dir in
+          (/*) printf '%s:' "$anth_dir" ;;
+        esac
+      done
+    )
+    PATH=${PATH%:} ;;
+esac
+[ -n "${PATH-}" ] || PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 input=$(cat)
 cmd=$(printf '%s' "$input" | LC_ALL=C tr -d '\n\r' |
   LC_ALL=C grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
