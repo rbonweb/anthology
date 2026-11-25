@@ -10,6 +10,11 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The `anthology` binary 0.2.4 changes the session-start message for failing-closed guardrails:
+  it now names the exact recovery command.
+
 ### [0.5.1] - 2026-11-25
 
 #### Changed
