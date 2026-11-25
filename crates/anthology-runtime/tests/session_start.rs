@@ -4020,6 +4020,57 @@ mod real_shim {
         );
     }
 
+    /// Runs the real guard shim as hooks.json does (`sh ${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`)
+    /// on a Bash call, with no binary installed and no fetch; returns its exit code.
+    fn shim_code(sb: &Sandbox, root: &str, command: &str) -> i32 {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let payload = format!(
+            r#"{{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {{"command": {}}}}}"#,
+            jstr(command)
+        );
+        let mut child = Command::new("/bin/sh")
+            .arg(format!("{root}/hooks/guard.sh"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &sb.home)
+            .env("CLAUDE_CONFIG_DIR", &sb.config)
+            .env("TMPDIR", &sb.tmpdir)
+            .env("CLAUDE_PLUGIN_ROOT", root)
+            .env("ANTHOLOGY_GUARD_NO_FETCH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        child.wait().unwrap().code().unwrap()
+    }
+
+    #[test]
+    fn the_real_shim_lets_the_messages_command_through_and_nothing_else() {
+        // #230's anth_fix_call compares the command with the folder the shim started from
+        // (`${0%/*}`), so a plain and a trailing-slash install path both have to match.
+        for slash in ["", "/"] {
+            let sb = sandbox();
+            let root = format!("{}{slash}", p(&sb.plugin("anthology-guardrails")));
+            register(&sb, root.as_bytes(), Some(github_marketplace()));
+            let line = failing_closed_line(&sb);
+            let command = &line[line.find("/bin/sh '").expect("a command")..];
+            assert_eq!(command, command_of(&root), "{slash:?}");
+            assert_eq!(shim_code(&sb, &root, command), 0, "{command}");
+            // the same shim blocks anything else, so the allow above is the installer match
+            assert_eq!(shim_code(&sb, &root, "echo hi"), 2, "{slash:?}");
+            let other = command.replace("/hooks/", "/hook/");
+            assert_eq!(shim_code(&sb, &root, &other), 2, "{other}");
+        }
+    }
+
     #[test]
     fn dollar_and_backtick_in_the_folder_stay_literal_inside_the_single_quotes() {
         let sb = sandbox();
