@@ -31,7 +31,7 @@ Anthology is a Claude Code marketplace of three plugins backed by one static Rus
 
 ## Checks
 - Everything: `scripts/rust-test.sh`. One crate: `scripts/rust-test.sh test -p <crate>` (`rust_test_script.rs`).
-- CI (`.github/workflows/ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also runs `release.sh` and `rust-test.sh` as bash). Other workflows: `evals`, `fuzz`, `upstream-watch`, releases. A PR in merge conflict runs no CI: merge `origin/build` and push.
+- CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` checks `release.sh`, `rust-test.sh` as bash); `rust-test-linux`/`-macos` gate on `-shard` jobs, which `rust-scope.sh` skips for release metadata. Other workflows: `evals`, `fuzz`, `upstream-watch`, releases. A PR in merge conflict runs no CI: merge `origin/build`.
 - `lock-fresh.sh`: `dev lock check-fresh`, always exits 0, warns only (`ANTHOLOGY_DEV_SH` replaces dev.sh in tests). `fuzz.sh`: `cargo metadata --locked` guards the fuzz lock (`fuzz_build_is_locked`).
 - Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `ci/jobs/ledger.sh`; `port/ledger/*.tsv` maps each inherited test to a Rust test or a drop reason; a change needs its row.
 - Budgets: agent `BUDGET` in `startup_budget.rs`; guide at most 3800 characters, session-start output at most 9000 (`session_start.rs`).

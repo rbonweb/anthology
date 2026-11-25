@@ -29,7 +29,11 @@ set -- \
     ci/jobs/shellcheck.sh \
     ci/jobs/shims-distros.sh \
     ci/jobs/mods.sh \
-    ci/jobs/lock-fresh.sh
+    ci/jobs/lock-fresh.sh \
+    ci/jobs/rust-scope.sh \
+    ci/jobs/rust-gate.sh \
+    ci/jobs/rust-test-linux.sh \
+    ci/jobs/rust-test-macos.sh
 
 # Scripts written for bash (not POSIX sh), checked as bash: the release script and the Rust test
 # runner (its shebang is bash and it uses ${var:0:12}).
