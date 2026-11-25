@@ -2,6 +2,29 @@
 # atl-hook: the PreToolUse (Bash) hook. Runs `atl hook claude` with the hook input on stdin.
 # If atl is not installed it exits 0 without output, so the hook never blocks a command.
 # Same state.json lookup as bin/atl (the shim tests check both).
+#
+# PATH without its relative and empty entries first, as hooks/lib.sh's anth_safe_path makes it:
+# the hook runs in the folder of the repository the user opened, which must not supply the sed,
+# grep or tr below (nor what `command -v` finds). atl runs on it too.
+case :${PATH-}: in
+  *::*|*:[!/]*)
+    PATH=$(
+      anth_in=${PATH-}
+      PATH=/usr/bin:/bin
+      set -f
+      IFS=:
+      # shellcheck disable=SC2086 # split on IFS (`:`) on purpose; globbing is off
+      for anth_dir in $anth_in; do
+        # `(/*)`: bash 3.2 misreads a bare `/*)` inside `$( )`.
+        case $anth_dir in
+          (/*) printf '%s:' "$anth_dir" ;;
+        esac
+      done
+    )
+    PATH=${PATH%:} ;;
+esac
+[ -n "${PATH-}" ] || PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 state=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/anthology/state.json
 atl_path=
 if [ -f "$state" ] && [ -r "$state" ]; then

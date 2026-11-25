@@ -478,9 +478,9 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
 
 ```json
 {"hooks": {
-  "SessionStart": [{"hooks": [{"type": "command", "command": "sh",
+  "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/sh",
       "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh", "session", "--plugin", "guardrails"], "timeout": 60}]}],
-  "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "sh",
+  "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/bin/sh",
       "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh"], "timeout": 60, "onFailure": "block"}]}]
 }}
 ```

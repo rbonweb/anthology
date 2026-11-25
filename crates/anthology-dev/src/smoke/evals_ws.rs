@@ -55,8 +55,9 @@ fn os(p: &Path, e: std::io::Error) -> String {
 }
 
 /// Puts `eval-seed.sh` in front of every SessionStart command hook of `hooks_json`
-/// (`sh <script> ARGS` becomes `sh eval-seed.sh <script> ARGS`). Every such hook must be an
-/// `sh` command with `args`, as the staged hooks are; anything else is an error.
+/// (`/bin/sh <script> ARGS` becomes `/bin/sh eval-seed.sh <script> ARGS`). Every such hook must
+/// be a `/bin/sh` (or `sh`) command with `args`, as the shipped hooks are; anything else is an
+/// error.
 pub fn wrap_session_start(text: &str) -> Result<String, String> {
     let mut data = json::loads(text).map_err(|e| format!("ValueError: hooks.json: {}", e.msg))?;
     let groups = data
@@ -82,7 +83,10 @@ pub fn wrap_session_start(text: &str) -> Result<String, String> {
             if obj.get("type").and_then(Value::as_str) != Some("command") {
                 continue;
             }
-            if obj.get("command").and_then(Value::as_str) != Some("sh") {
+            if !matches!(
+                obj.get("command").and_then(Value::as_str),
+                Some("/bin/sh" | "sh")
+            ) {
                 return Err(
                     "RuntimeError: a SessionStart hook is not an `sh` command; cannot wrap it"
                         .to_string(),
@@ -172,7 +176,7 @@ mod tests {
 
     #[test]
     fn session_start_hooks_are_wrapped_and_the_rest_is_kept() {
-        let text = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sh","args":["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"],"timeout":60}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"sh","args":["x"]}]}]}}"#;
+        let text = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/sh","args":["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"],"timeout":60}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"sh","args":["x"]}]}]}}"#;
         let out = wrap_session_start(text).expect("wraps");
         let v = json::loads(&out).expect("json");
         let ss = &v.as_object().expect("obj").get("hooks").expect("hooks");
