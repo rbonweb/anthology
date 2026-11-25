@@ -32,6 +32,26 @@ case $2 in
 esac
 "#;
 
+/// A fake container runner (`$ANTHOLOGY_RUST_TEST`, the seam of release.sh and dev.sh): it logs
+/// `session-start`/`session-stop` and, for `run`, the session the call was given. A `run` is
+/// what dev.sh sends (`sh -c SCRIPT dev OUTFILE ARGS…`): the runner answers it with the fake dev
+/// and the output file. `$RUNNER_START_FAIL` makes session-start fail; `$RUNNER_HANG` names a
+/// release-edit step that then waits to be killed (after it writes `$RUNNER_HANGING`).
+const FAKE_RUNNER: &str = r#"#!/bin/sh
+case "$1" in
+    session-start) echo "start $2" >> "$RUNNER_LOG"; [ -z "${RUNNER_START_FAIL:-}" ] || exit 1; exit 0 ;;
+    session-stop) echo "stop $2" >> "$RUNNER_LOG"; exit 0 ;;
+    run) ;;
+    *) exit 9 ;;
+esac
+shift 5
+out=$1
+shift
+echo "run ${ANTHOLOGY_RUST_SESSION:-none} $*" >> "$RUNNER_LOG"
+if [ "${RUNNER_HANG:-}" = "$2" ]; then : > "$RUNNER_HANGING"; exec sleep 30; fi
+exec "$FAKE_DEV" "$@" > "$out"
+"#;
+
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # Fake `claude`: `--version` prints $FAKE_CLAUDE_VERSION (default 9.9.9) and is not logged;
 # every other call is recorded; for `plugin tag` it creates the tag with git.
@@ -165,7 +185,17 @@ impl Repo {
         let script = r.root.join("scripts/release.sh");
         std::fs::create_dir_all(script.parent().unwrap()).unwrap();
         std::fs::copy(anthology_testkit::staged(RELEASE_SH), &script).unwrap();
-        for (name, body) in [("fake-dev", FAKE_DEV), ("fake-claude", FAKE_CLAUDE)] {
+        // dev.sh, which release.sh runs when $ANTHOLOGY_DEV is not set (the session tests).
+        std::fs::copy(
+            anthology_testkit::staged("scripts/dev.sh"),
+            r.root.join("scripts/dev.sh"),
+        )
+        .unwrap();
+        for (name, body) in [
+            ("fake-dev", FAKE_DEV),
+            ("fake-runner", FAKE_RUNNER),
+            ("fake-claude", FAKE_CLAUDE),
+        ] {
             let p = r.base.join(name);
             std::fs::write(&p, body).unwrap();
             use std::os::unix::fs::PermissionsExt;
@@ -575,6 +605,201 @@ fn repo_with_engines() -> Option<Repo> {
 
 fn output_text(out: &Output) -> String {
     format!("{}{}", text(&out.stdout), text(&out.stderr))
+}
+
+// ---- the container session: one per release, removed on every exit -------------------------
+
+impl Repo {
+    /// The release as it runs with the real scripts/dev.sh (no $ANTHOLOGY_DEV), the fake runner
+    /// standing in for scripts/rust-test.sh and the fake dev for anthology-dev inside it.
+    fn session_release(&self, args: &[&str]) -> Command {
+        let mut cmd = self.script(&self.base.join("fake-dev"), args);
+        cmd.env_remove("ANTHOLOGY_DEV")
+            .env_remove("ANTHOLOGY_RUST_SESSION")
+            .env("ANTHOLOGY_RUST_TEST", self.base.join("fake-runner"))
+            .env("FAKE_DEV", self.base.join("fake-dev"))
+            .env("RUNNER_LOG", self.base.join("runner.log"))
+            .env("RUNNER_HANGING", self.base.join("hanging"));
+        cmd
+    }
+
+    /// What the fake runner logged, one entry per line.
+    fn runner_log(&self) -> Vec<String> {
+        std::fs::read_to_string(self.base.join("runner.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The session name the log's `start` line holds; it must be one of ours.
+    fn session_name(&self) -> String {
+        let log = self.runner_log();
+        let name = log
+            .first()
+            .and_then(|l| l.strip_prefix("start "))
+            .unwrap_or_else(|| panic!("no session was started: {log:?}"))
+            .to_string();
+        let tail = name.strip_prefix("anthology-release-").expect("our prefix");
+        assert!(
+            tail.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "{name}"
+        );
+        name
+    }
+}
+
+#[test]
+fn one_session_serves_every_dev_call_and_is_removed_at_the_end() {
+    let Some(r) = repo() else { return };
+    let out = r.session_release(&["anthology", "0.2.0"]).output().unwrap();
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert_eq!(last_line(&out), "RELEASE OK anthology--v0.2.0", "{all}");
+    let name = r.session_name();
+    let log = r.runner_log();
+    assert_eq!(log.iter().filter(|l| l.starts_with("start ")).count(), 1);
+    let runs: Vec<&String> = log.iter().filter(|l| l.starts_with("run ")).collect();
+    assert_eq!(runs.len(), 7, "{log:?}");
+    for l in &runs {
+        assert!(l.starts_with(&format!("run {name} ")), "{l}");
+    }
+    assert_eq!(log.last().unwrap(), &format!("stop {name}"), "{log:?}");
+    assert_eq!(log.iter().filter(|l| l.starts_with("stop ")).count(), 1);
+    // The steps and their order are what they always were.
+    let calls: Vec<String> = r.dev_calls().into_iter().map(|c| c.1).collect();
+    assert_eq!(
+        calls,
+        [
+            "lock check-fresh",
+            "release-edit plugin-version plugins/anthology/.claude-plugin/plugin.json",
+            "release-edit check-version 0.1.0 0.2.0 0",
+            "release-edit changelog-check CHANGELOG.md anthology",
+            "release-edit check-dependents . anthology 0.2.0",
+            "release-edit changelog-move ./CHANGELOG.md anthology 0.2.0",
+            "release-edit set-version ./plugins/anthology/.claude-plugin/plugin.json 0.2.0",
+        ]
+    );
+}
+
+#[test]
+fn a_failed_step_still_removes_the_session() {
+    let Some(r) = repo() else { return };
+    let out = r
+        .session_release(&["anthology", "0.2.0"])
+        .env("DEV_FAIL", "changelog-check")
+        .output()
+        .unwrap();
+    let all = output_text(&out);
+    assert_ne!(out.status.code(), Some(0), "{all}");
+    assert!(last_line(&out).starts_with("RELEASE FAILED:"), "{all}");
+    let name = r.session_name();
+    assert_eq!(r.runner_log().last().unwrap(), &format!("stop {name}"));
+}
+
+#[test]
+fn a_session_that_cannot_start_fails_the_release_and_is_removed_anyway() {
+    let Some(r) = repo() else { return };
+    let out = r
+        .session_release(&["anthology", "0.2.0"])
+        .env("RUNNER_START_FAIL", "1")
+        .output()
+        .unwrap();
+    let all = output_text(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert_eq!(last_line(&out), "RELEASE FAILED: preconditions", "{all}");
+    let name = r.session_name();
+    assert_eq!(
+        r.runner_log(),
+        [format!("start {name}"), format!("stop {name}")]
+    );
+    assert!(r.dev_calls().is_empty());
+}
+
+/// Starts the release with a runner that hangs in `changelog-move`, sends `signal` to its whole
+/// process group once it hangs (as Ctrl-C does) and returns the finished release.
+fn interrupted(r: &Repo, signal: &str) -> Output {
+    use std::os::unix::process::CommandExt;
+    let child = r
+        .session_release(&["anthology", "0.2.0"])
+        .env("RUNNER_HANG", "changelog-move")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let hanging = r.base.join("hanging");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !hanging.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the release never reached changelog-move"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let killed = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -s {signal} -- -{}", child.id()))
+        .output()
+        .unwrap();
+    assert!(killed.status.success(), "{}", text(&killed.stderr));
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn an_interrupt_or_a_termination_removes_the_session_and_the_tag() {
+    let Some(r) = repo() else { return };
+    for (signal, code) in [("TERM", 143), ("INT", 130)] {
+        let _ = std::fs::remove_file(r.base.join("runner.log"));
+        let _ = std::fs::remove_file(r.base.join("hanging"));
+        let before = r.state();
+        let out = interrupted(&r, signal);
+        let all = output_text(&out);
+        assert_eq!(out.status.code(), Some(code), "{signal}: {all}");
+        assert!(
+            last_line(&out).starts_with("RELEASE FAILED:"),
+            "{signal}: {all}"
+        );
+        let name = r.session_name();
+        let log = r.runner_log();
+        assert_eq!(
+            log.iter().filter(|l| l.starts_with("stop ")).count(),
+            1,
+            "{signal}: {log:?}"
+        );
+        assert_eq!(log.last().unwrap(), &format!("stop {name}"), "{signal}");
+        assert_eq!(r.state(), before, "{signal}: the checkout is as it was");
+    }
+}
+
+#[test]
+fn a_session_the_caller_set_is_used_and_not_removed() {
+    let Some(r) = repo() else { return };
+    let out = r
+        .session_release(&["anthology", "0.2.0"])
+        .env("ANTHOLOGY_RUST_SESSION", "anthology-release-theirs")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", output_text(&out));
+    let log = r.runner_log();
+    assert_eq!(log.len(), 7, "{log:?}");
+    assert!(
+        log.iter()
+            .all(|l| l.starts_with("run anthology-release-theirs "))
+    );
+}
+
+#[test]
+fn a_fake_dev_means_no_session() {
+    let Some(r) = repo() else { return };
+    let out = r
+        .script(&r.base.join("fake-dev"), &["anthology", "0.2.0"])
+        .env("ANTHOLOGY_RUST_TEST", r.base.join("fake-runner"))
+        .env("RUNNER_LOG", r.base.join("runner.log"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", output_text(&out));
+    assert!(r.runner_log().is_empty(), "{:?}", r.runner_log());
 }
 
 /// The script's verdict: the last non-empty line of its standard output.

@@ -28,21 +28,69 @@ pub const G1: &str = "Blocked by anthology-guardrails (G1): run it inside Docker
 
 pub const P: &str = "; if this keeps happening, disable anthology-guardrails with /plugin";
 
-pub fn not_installed(reason: &str) -> String {
+/// The installer command the guard lets through while the binary is missing, for the
+/// sandbox's guardrails plugin.
+pub fn fix(sb: &Sandbox) -> String {
     format!(
-        "Blocked by anthology-guardrails (setup): the guard binary is not installed ({reason}), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it{P}"
+        "/bin/sh '{}/bootstrap.sh' guard --plugin guardrails --quiet --budget 300",
+        sb.plugin("anthology-guardrails").join("hooks").display()
     )
 }
 
-pub fn rate_limited() -> String {
+/// The sentence that names it, at the end of every block a reinstall can heal.
+pub fn fix_msg(sb: &Sandbox) -> String {
     format!(
-        "Blocked by anthology-guardrails (setup): the guard binary is not installed yet and the last install attempt was less than a minute ago; retry in a minute, or run /anthology:setup{P}"
+        ". To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): {}",
+        fix(sb)
     )
 }
 
-pub fn set_aside(why: &str) -> String {
+pub fn not_installed(sb: &Sandbox, reason: &str) -> String {
     format!(
-        "Blocked by anthology-guardrails (setup): the guard binary did not work ({why}) and was set aside; it is reinstalled on a later call (at most once a minute), or run /anthology:setup{P}"
+        "Blocked by anthology-guardrails (setup): the guard binary is not installed ({reason}), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it{P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn rate_limited(sb: &Sandbox) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary is not installed yet and the last install attempt was less than a minute ago; retry in a minute{P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn set_aside(sb: &Sandbox, why: &str) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary did not work ({why}) and was set aside; it is reinstalled on a later call (at most once a minute){P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn downloading(sb: &Sandbox, bytes: u64) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary is still downloading in the background ({bytes} bytes so far), so shell commands, file edits and MCP tools are blocked until it installs; retry in a few seconds{P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn timed_out(sb: &Sandbox) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary download timed out (slow network); the part downloaded so far is kept and the next try resumes it, so retry in a minute{P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn no_network(sb: &Sandbox) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the guard binary could not be downloaded (no network: github.com could not be reached); connect, then retry in a minute{P}{}",
+        fix_msg(sb)
+    )
+}
+
+pub fn sha_mismatch(sb: &Sandbox) -> String {
+    format!(
+        "Blocked by anthology-guardrails (setup): the downloaded guard binary does not match anthology.lock (sha256 mismatch), so it was not installed (a proxy may have changed it, or the release is broken); retry in a minute{P}{}",
+        fix_msg(sb)
     )
 }
 
@@ -105,9 +153,10 @@ pub fn sys_anthology(reason: &str) -> String {
     )
 }
 
-pub fn sys_guardrails(reason: &str) -> String {
+pub fn sys_guardrails(sb: &Sandbox, reason: &str) -> String {
     format!(
-        "{{\"systemMessage\":\"anthology-guardrails: could not install the guard binary ({reason}); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online, or run /anthology:setup; if this keeps happening, disable anthology-guardrails with /plugin.\"}}"
+        "{{\"systemMessage\":\"anthology-guardrails: could not install the guard binary ({reason}); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online; if this keeps happening, disable anthology-guardrails with /plugin{}\"}}",
+        fix_msg(sb)
     )
 }
 
@@ -137,6 +186,11 @@ pub const R_LOCK: &str = "anthology.lock is not valid";
 pub const R_WRITE: &str = "cannot write the install folder";
 pub const R_SHA_TOOL: &str = "no sha256 tool";
 pub const R_HOME: &str = "HOME or CLAUDE_CONFIG_DIR is not an absolute path";
+pub const R_OFFLINE: &str = "download failed (no network)";
+
+pub fn r_downloading(bytes: u64) -> String {
+    format!("still downloading ({bytes} bytes so far)")
+}
 
 pub fn r_seed(target: &str) -> String {
     format!("seed file anthology-{target}.tar.gz does not match anthology.lock")
@@ -361,6 +415,29 @@ pub fn patch_lib(sb: &Sandbox, text: &str) {
     }
 }
 
+/// `<ah>/bin/.fetch-<version>`, the background download's folder.
+pub fn fdir(sb: &Sandbox) -> PathBuf {
+    sb.bindir().join(format!(".fetch-{}", sb.release.version))
+}
+
+/// Kills the background fetcher, if one runs, with its session and process group (it leaves
+/// the run's group, so the harness's own kill does not reach it).
+pub fn stop_fetcher(sb: &Sandbox) {
+    let Ok(pid) = std::fs::read_to_string(fdir(sb).join("run/pid")) else {
+        return;
+    };
+    let pid = pid.trim();
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return;
+    }
+    let _ = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!("kill -9 -{pid} 2>/dev/null; kill -9 {pid} 2>/dev/null"),
+        ])
+        .status();
+}
+
 /// The single `.broken-*` directory, or a panic.
 #[track_caller]
 pub fn one_broken(sb: &Sandbox, ctx: &str) -> PathBuf {
@@ -373,10 +450,15 @@ pub fn one_broken(sb: &Sandbox, ctx: &str) -> PathBuf {
 #[test]
 fn every_gc14_shim_message_names_the_plugin_escape() {
     let bindir = Path::new("/h/.claude/anthology/bin");
+    let sb = sandbox();
     let all = [
-        not_installed("x"),
-        rate_limited(),
-        set_aside("exit 1"),
+        not_installed(&sb, "x"),
+        rate_limited(&sb),
+        set_aside(&sb, "exit 1"),
+        downloading(&sb, 1),
+        timed_out(&sb),
+        no_network(&sb),
+        sha_mismatch(&sb),
         not_set_aside("exit 1", bindir),
         cannot_write(bindir),
         three_strikes(V),
@@ -385,7 +467,7 @@ fn every_gc14_shim_message_names_the_plugin_escape() {
         unsupported("Plan9", "mips"),
         no_downloader("https://github.com/a/b/x.tar.gz", bindir),
         FALLBACK.to_string(),
-        sys_guardrails("x"),
+        sys_guardrails(&sb, "x"),
     ];
     for m in all {
         assert!(names_the_escape(&m), "{m}");

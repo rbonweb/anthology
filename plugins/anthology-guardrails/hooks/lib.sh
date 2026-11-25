@@ -11,6 +11,8 @@
 
 ANTH_TOKEN='anthology-guard:allow:v1'
 ANTH_BUDGET=20
+# The background download's own budget (the guardrails' guard and session modes).
+ANTH_FETCH_BUDGET=600
 ANTH_PROBE_TIMEOUT=5
 ANTH_MAX_BYTES=67108864
 ANTH_TAG_PREFIX='anthology-bin--v'
@@ -28,6 +30,7 @@ ANTH_ROOT='' ANTH_LOCK='' ANTH_AH='' ANTH_BINDIR='' ANTH_VDIR='' ANTH_BIN=''
 ANTH_OS='' ANTH_ARCH='' ANTH_TARGET='' ANTH_VERSION='' ANTH_TAG='' ANTH_REPO='' ANTH_SHA=''
 ANTH_STATUS='' ANTH_REASON='' ANTH_STATE='' ANTH_WHY='' ANTH_MSG='' ANTH_RUN='' ANTH_BUF=''
 ANTH_RC='' ANTH_ERR='' ANTH_H='' ANTH_SHA_CMD='' ANTH_STRIKES='' ANTH_QUAR='' ANTH_TMP=''
+ANTH_BG='' ANTH_FDIR='' ANTH_DL_RC='' ANTH_DL_TOOL='' ANTH_FIX='' ANTH_FIXMSG=''
 
 # --- paths (GC-1) -------------------------------------------------------------------------
 
@@ -395,10 +398,16 @@ anth_watch() {
         exec </dev/null >/dev/null 2>&1
         _w_s=
         trap 'kill "$_w_s" 2>/dev/null; exit 0' TERM
-        sleep "$_w_limit" &
-        _w_s=$!
-        wait "$_w_s"
-        kill -9 "$_w_p" 2>/dev/null
+        # dash drops a TERM that arrives before the subshell has cleared the traps it inherited
+        # (bootstrap.sh traps TERM), and the watchdog then slept out its whole limit. The TERM
+        # is sent only after CMD has ended and been reaped, so a CMD that is gone by now means
+        # it was sent already: there is nothing to watch.
+        if kill -0 "$_w_p" 2>/dev/null; then
+            sleep "$_w_limit" &
+            _w_s=$!
+            wait "$_w_s"
+            kill -9 "$_w_p" 2>/dev/null
+        fi
     ) &
     _w_w=$!
     ANTH_TMP=$_w_t
@@ -411,32 +420,66 @@ anth_watch() {
 
 # --- getting the archive (design §8.4 step 6) ---------------------------------------------
 
-# anth_download URL OUT BUDGET: one downloader, the first present of curl, GNU wget, BusyBox
-# wget and node, with the whole budget (R7). Status 0 ok, 1 failed, 2 no downloader.
+# anth_download URL OUT BUDGET [resume]: one downloader, the first present of curl, GNU wget,
+# BusyBox wget and node, with the whole budget (R7). Status 0 ok, 1 failed, 2 no downloader.
+# ANTH_DL_TOOL names the downloader and ANTH_DL_RC is its exit status. With `resume`, curl
+# continues OUT where it stops (`-C -`); the others always start OUT from zero.
 anth_download() {
+    ANTH_DL_TOOL='' ANTH_DL_RC=''
     if command -v curl >/dev/null 2>&1; then
-        anth_watch "$3" curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 \
-            --max-time "$3" --max-filesize "$ANTH_MAX_BYTES" -A anthology-bootstrap \
-            -o "$2" "$1" >/dev/null 2>&1 || return 1
+        ANTH_DL_TOOL=curl
+        if [ "${4:-}" = resume ]; then
+            anth_watch "$3" curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 \
+                --max-time "$3" --max-filesize "$ANTH_MAX_BYTES" -A anthology-bootstrap \
+                -C - -o "$2" "$1" >/dev/null 2>&1
+        else
+            anth_watch "$3" curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 \
+                --max-time "$3" --max-filesize "$ANTH_MAX_BYTES" -A anthology-bootstrap \
+                -o "$2" "$1" >/dev/null 2>&1
+        fi
+        ANTH_DL_RC=$?
+        [ "$ANTH_DL_RC" = 0 ] || return 1
         return 0
     fi
     if command -v wget >/dev/null 2>&1; then
         if wget --version 2>/dev/null | grep -q 'GNU Wget'; then
-            anth_watch "$3" wget --https-only -q -T 10 -U anthology-bootstrap -O "$2" "$1" \
-                >/dev/null 2>&1 || return 1
+            ANTH_DL_TOOL=wget
+            # One try, as with the other downloaders: GNU wget's default of 20 tries with
+            # back-off would keep a dropped download "still downloading" for minutes under the
+            # fetcher's budget instead of failing. The next attempt is the retry.
+            anth_watch "$3" wget --https-only -q -t 1 -T 10 -U anthology-bootstrap -O "$2" "$1" \
+                >/dev/null 2>&1
+            ANTH_DL_RC=$?
+            [ "$ANTH_DL_RC" = 0 ] || return 1
             return 0
         fi
         if wget --help 2>&1 | grep -q BusyBox; then
-            anth_watch "$3" wget -q -T 10 -O "$2" "$1" >/dev/null 2>&1 || return 1
+            ANTH_DL_TOOL=wget
+            anth_watch "$3" wget -q -T 10 -O "$2" "$1" >/dev/null 2>&1
+            ANTH_DL_RC=$?
+            [ "$ANTH_DL_RC" = 0 ] || return 1
             return 0
         fi
     fi
     if command -v node >/dev/null 2>&1; then
+        ANTH_DL_TOOL=node
         anth_watch "$3" env NODE_USE_ENV_PROXY=1 node -e "$ANTH_NODE_GET" "$1" "$2" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1
+        ANTH_DL_RC=$?
+        [ "$ANTH_DL_RC" = 0 ] || return 1
         return 0
     fi
     return 2
+}
+
+# anth_dl_present: one of the downloaders anth_download would pick is here.
+anth_dl_present() {
+    command -v curl >/dev/null 2>&1 && return 0
+    if command -v wget >/dev/null 2>&1; then
+        wget --version 2>/dev/null | grep -q 'GNU Wget' && return 0
+        wget --help 2>&1 | grep -q BusyBox && return 0
+    fi
+    command -v node >/dev/null 2>&1
 }
 
 # anth_no_downloader_reason: the GC-14 reason with the manual command.
@@ -505,7 +548,14 @@ anth_install_in() {
             rm -f "$1/a.tgz"
         fi
     fi
-    if [ -z "$_i_got" ]; then
+    if [ -z "$_i_got" ] && [ -n "$ANTH_BG" ]; then
+        # The guardrails' guard and session modes: the background download (anth_fetch_get).
+        anth_fetch_get "$1" "$2"
+        case $? in
+            0) _i_got=1 ;;
+            2) anth_no_downloader_reason ;;
+        esac
+    elif [ -z "$_i_got" ]; then
         anth_download "$(anth_url)" "$1/a.tgz" "$2"
         case $? in
             0)
@@ -518,11 +568,17 @@ anth_install_in() {
             2) anth_no_downloader_reason ;;
             *) ANTH_REASON='download failed' ;;
         esac
-        if [ -z "$_i_got" ]; then
-            [ -z "$_i_stale" ] ||
-                ANTH_REASON="seed file anthology-$ANTH_TARGET.tar.gz does not match anthology.lock"
-            return 1
-        fi
+    fi
+    if [ -z "$_i_got" ]; then
+        # A download still running says more than a stale seed.
+        case $ANTH_REASON in
+            'still downloading '*) ;;
+            *)
+                [ -z "$_i_stale" ] ||
+                    ANTH_REASON="seed file anthology-$ANTH_TARGET.tar.gz does not match anthology.lock"
+                ;;
+        esac
+        return 1
     fi
     if ! anth_extract "$1"; then
         ANTH_REASON='the archive has no anthology binary'
@@ -572,6 +628,223 @@ anth_install() {
     rm -rf "$ANTH_TMP"
     ANTH_TMP=
     return "$_n_rc"
+}
+
+# --- the background download (guardrails guard and session modes) -------------------------
+#
+# A hook call has a budget of seconds, but a slow link can need minutes for the archive. So the
+# guardrails' guard and session modes get it from a detached fetcher (`bootstrap.sh fetch`,
+# anth_fetch_run) with its own long budget, in <ah>/bin/.fetch-<version>/:
+#   run/   the fetcher's lock, holding its pid (removed when it ends);
+#   part   the download so far (curl resumes it on the next attempt);
+#   done   the whole archive, renamed from part only once its sha256 is the lock's;
+#   fail   one word for the last failure: timeout, offline, sha256 or failed.
+# A caller starts the fetcher when none runs, waits up to its own budget for `done`, and
+# installs from it exactly as from a seed: copied into its staging folder, hashed against the
+# lock again, extracted and probed. The fetcher never installs anything itself.
+
+# anth_fetch_paths: ANTH_FDIR (after anth_vpaths).
+anth_fetch_paths() {
+    ANTH_FDIR=$ANTH_BINDIR/.fetch-$ANTH_VERSION
+}
+
+# anth_fetch_alive: a fetcher holds run/: its pid answers `kill -0`, is not a zombie (Linux,
+# where an init that does not reap leaves a killed fetcher as one), and run/ is younger than
+# the fetch budget plus two minutes, so a reused pid cannot hold it longer. A run/ without a
+# pid yet (the fetcher is starting) counts for one minute.
+anth_fetch_alive() {
+    [ -d "$ANTH_FDIR/run" ] && [ ! -h "$ANTH_FDIR/run" ] || return 1
+    anth_fresh "$ANTH_FDIR/run" $((ANTH_FETCH_BUDGET / 60 + 2)) || return 1
+    if anth_first_line "$ANTH_FDIR/run/pid" && anth_decimal "$ANTH_H"; then
+        kill -0 "$ANTH_H" 2>/dev/null || return 1
+        if anth_first_line "/proc/$ANTH_H/stat"; then
+            case ${ANTH_H##*') '} in
+                Z*) return 1 ;;
+            esac
+        fi
+        return 0
+    fi
+    anth_fresh "$ANTH_FDIR/run" 1
+}
+
+# anth_fetch_bytes: ANTH_H = the bytes downloaded so far (0 when there are none).
+anth_fetch_bytes() {
+    ANTH_H=0
+    [ -f "$ANTH_FDIR/part" ] && anth_size "$ANTH_FDIR/part" || ANTH_H=0
+}
+
+# anth_fetch_failed: ANTH_REASON from the last fetcher's `fail` word; status 1 when none.
+anth_fetch_failed() {
+    anth_first_line "$ANTH_FDIR/fail" || return 1
+    case $ANTH_H in
+        timeout) ANTH_REASON='download timed out (slow network)' ;;
+        offline) ANTH_REASON='download failed (no network)' ;;
+        sha256) ANTH_REASON='sha256 does not match anthology.lock' ;;
+        *) ANTH_REASON='download failed' ;;
+    esac
+    return 0
+}
+
+# anth_fetch_safe: neither the fetch folder nor its part, done, fail or any fail.* is a
+# symbolic link, which a download, a rename or a write would follow out of the folder. Else
+# status 1 and ANTH_REASON: nothing in the folder is used or written.
+anth_fetch_safe() {
+    _s_bad=
+    [ ! -h "$ANTH_FDIR" ] || _s_bad=1
+    for _s_f in "$ANTH_FDIR/part" "$ANTH_FDIR/done" "$ANTH_FDIR/fail" "$ANTH_FDIR"/fail.*; do
+        [ ! -h "$_s_f" ] || _s_bad=1
+    done
+    [ -n "$_s_bad" ] || return 0
+    ANTH_REASON="a symbolic link in bin/.fetch-$ANTH_VERSION was refused"
+    return 1
+}
+
+# anth_fetch_start: starts a fetcher unless one runs. It leaves this process's session (setsid)
+# or at least its process group (job control), so a hook runner that ends the hook's group does
+# not end the download, and it holds none of the hook's descriptors. Where neither works, the
+# fetcher ends with the hook and the next attempt resumes its part.
+anth_fetch_start() {
+    anth_fetch_alive && return 0
+    rm -f "$ANTH_FDIR/fail"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+            </dev/null >/dev/null 2>&1 &
+    else
+        # As in anth_watch: the subshell must not see the staging folder bootstrap.sh's EXIT
+        # trap removes.
+        _f_t=$ANTH_TMP ANTH_TMP=
+        (
+            set -m
+            sh "$ANTH_ROOT/hooks/bootstrap.sh" fetch --plugin guardrails \
+                </dev/null >/dev/null 2>&1 &
+        ) </dev/null >/dev/null 2>&1
+        ANTH_TMP=$_f_t
+    fi
+}
+
+# anth_fetch_wait BUDGET: waits up to BUDGET seconds for `done` (status 0). Otherwise status 1
+# and ANTH_REASON: the fetcher's failure, `download interrupted` when it is gone without one, or
+# `still downloading (<n> bytes so far)` when it still runs.
+anth_fetch_wait() {
+    _f_n=0
+    while :; do
+        [ ! -f "$ANTH_FDIR/done" ] || return 0
+        anth_fetch_failed && return 1
+        # Three seconds for a fetcher just started to take its lock.
+        if [ "$_f_n" -ge 3 ] && ! anth_fetch_alive; then
+            [ ! -f "$ANTH_FDIR/done" ] || return 0
+            anth_fetch_failed && return 1
+            ANTH_REASON='download interrupted'
+            return 1
+        fi
+        [ "$_f_n" -lt "$1" ] || break
+        sleep 1
+        _f_n=$((_f_n + 1))
+    done
+    anth_fetch_bytes
+    ANTH_REASON="still downloading ($ANTH_H bytes so far)"
+    return 1
+}
+
+# anth_fetch_get TMP BUDGET: TMP/a.tgz = the archive from the background download, checked
+# against the lock (status 0); 2 when there is no downloader; else 1 with ANTH_REASON.
+anth_fetch_get() {
+    anth_fetch_paths
+    anth_fetch_safe || return 1
+    if [ ! -f "$ANTH_FDIR/done" ]; then
+        anth_dl_present || return 2
+        [ -h "$ANTH_FDIR" ] || mkdir "$ANTH_FDIR" 2>/dev/null
+        [ -d "$ANTH_FDIR" ] && [ ! -h "$ANTH_FDIR" ] || anth_cannot_write || return 1
+        anth_fetch_start
+        anth_fetch_wait "$2"
+        _g_rc=$?
+        # A link planted while it waited: the fetcher refuses it too and writes nothing.
+        anth_fetch_safe || return 1
+        [ "$_g_rc" = 0 ] || return 1
+    fi
+    if cp "$ANTH_FDIR/done" "$1/a.tgz" 2>/dev/null && anth_sha256 "$1/a.tgz" &&
+        [ "$ANTH_H" = "$ANTH_SHA" ]; then
+        return 0
+    fi
+    # The fetcher checked it, so it changed since: never used, and gone for the next attempt.
+    rm -f "$ANTH_FDIR/done" "$1/a.tgz"
+    ANTH_REASON='sha256 does not match anthology.lock'
+    return 1
+}
+
+# anth_fetch_run: the fetcher, `bootstrap.sh fetch --plugin guardrails` (after anth_paths). One
+# download of the pinned asset into part with ANTH_FETCH_BUDGET, then `done` or `fail`. Its
+# status is not used: callers read the files.
+anth_fetch_run() {
+    anth_platform && anth_lock && anth_home_ok || return 1
+    anth_vpaths
+    anth_fetch_paths
+    [ -d "$ANTH_FDIR" ] && [ ! -h "$ANTH_FDIR" ] || return 1
+    if ! mkdir "$ANTH_FDIR/run" 2>/dev/null; then
+        anth_fetch_alive && return 0
+        # A dead fetcher's lock: retire it (only one racer's rename finds it), then try once.
+        mv -f "$ANTH_FDIR/run" "$ANTH_FDIR/run.stale.$$" 2>/dev/null &&
+            rm -rf "$ANTH_FDIR/run.stale.$$"
+        mkdir "$ANTH_FDIR/run" 2>/dev/null || return 0
+    fi
+    # bootstrap.sh's EXIT trap removes ANTH_TMP, so the lock goes on every end but SIGKILL.
+    ANTH_TMP=$ANTH_FDIR/run
+    printf '%s\n' "$$" >"$ANTH_FDIR/run/pid" 2>/dev/null
+    # A planted link is never followed: no download, no rename, no fail word (the caller
+    # finds the link and names it).
+    anth_fetch_safe || return 1
+    rm -f "$ANTH_FDIR/fail"
+    [ ! -f "$ANTH_FDIR/done" ] || return 0
+    _r_word=failed
+    if anth_sha_tool; then
+        # A part that is already the whole archive (a fetcher ended before its rename).
+        if [ -f "$ANTH_FDIR/part" ] && anth_sha256 "$ANTH_FDIR/part" &&
+            [ "$ANTH_H" = "$ANTH_SHA" ]; then
+            mv -f "$ANTH_FDIR/part" "$ANTH_FDIR/done" 2>/dev/null && return 0
+        fi
+        anth_fetch_bytes
+        _r_before=$ANTH_H
+        anth_download "$(anth_url)" "$ANTH_FDIR/part" "$ANTH_FETCH_BUDGET" resume
+        _r_rc=$?
+        # The download took minutes: check again before any rename or write.
+        anth_fetch_safe || return 1
+        if [ "$_r_rc" = 0 ]; then
+            if anth_sha256 "$ANTH_FDIR/part" && [ "$ANTH_H" = "$ANTH_SHA" ]; then
+                mv -f "$ANTH_FDIR/part" "$ANTH_FDIR/done" 2>/dev/null && return 0
+            else
+                rm -f "$ANTH_FDIR/part"
+                _r_word=sha256
+            fi
+        elif [ "$_r_rc" = 1 ]; then
+            anth_fetch_bytes
+            # Only curl resumes; the others start from zero.
+            [ "$ANTH_DL_TOOL" = curl ] || _r_before=0
+            case $ANTH_DL_RC in
+                5 | 6 | 7) [ "$ANTH_DL_TOOL" != curl ] || _r_word=offline ;;
+            esac
+            # Stopped at the budget (curl's 28, or the watchdog's kill): slow if bytes came.
+            case $ANTH_DL_TOOL:$ANTH_DL_RC in
+                curl:28 | *:12[89] | *:1[3-9][0-9])
+                    if [ "$ANTH_H" -gt "$_r_before" ]; then
+                        _r_word=timeout
+                    else
+                        _r_word=offline
+                    fi
+                    ;;
+            esac
+            # curl keeps a part it can resume; any other end starts the next try from zero.
+            case $ANTH_DL_TOOL:$ANTH_DL_RC in
+                curl:5 | curl:6 | curl:7 | curl:18 | curl:28 | curl:56) ;;
+                curl:12[89] | curl:1[3-9][0-9]) ;;
+                *) rm -f "$ANTH_FDIR/part" ;;
+            esac
+        fi
+    fi
+    # Noclobber, as in anth_stamp: an existing fail.<pid> (a link included) is not written.
+    (set -C && printf '%s\n' "$_r_word" >"$ANTH_FDIR/fail.$$") 2>/dev/null &&
+        mv -f "$ANTH_FDIR/fail.$$" "$ANTH_FDIR/fail" 2>/dev/null
+    rm -f "$ANTH_FDIR/fail.$$"
+    return 1
 }
 
 # --- rate limit and cap (design §8.4 step 5, A28) -----------------------------------------
@@ -648,6 +921,9 @@ anth_bootstrap() {
             fi
             if anth_current; then
                 touch "$ANTH_VDIR/.last-used" 2>/dev/null
+                # A finished background download is not needed any more.
+                anth_fetch_paths
+                [ ! -d "$ANTH_FDIR" ] || anth_fetch_alive || rm -rf "$ANTH_FDIR"
                 ANTH_STATUS=present
                 return 0
             fi
@@ -677,7 +953,17 @@ anth_bootstrap() {
                 ANTH_REASON=three-strikes
                 return 1
             fi
-            anth_stamp "$ANTH_BINDIR/.attempt" 1 rate-limited || return 1
+            anth_fetch_paths
+            if [ -n "$ANTH_BG" ] && { anth_fetch_alive || [ -f "$ANTH_FDIR/done" ]; }; then
+                # Waiting on a background download, or using a finished one, is no new attempt.
+                :
+            elif ! anth_stamp "$ANTH_BINDIR/.attempt" 1 rate-limited; then
+                # Within the minute, the last download's own failure says more than the limit.
+                if [ -n "$ANTH_BG" ] && [ "$ANTH_REASON" = rate-limited ]; then
+                    anth_fetch_failed || :
+                fi
+                return 1
+            fi
             ;;
     esac
     # 6 to 10.
@@ -689,7 +975,8 @@ anth_bootstrap() {
 # anth_system_message PLUGIN REASON: the bootstrap's GC-14 systemMessage line.
 anth_system_message() {
     if [ "$1" = guardrails ]; then
-        printf '{"systemMessage":"anthology-guardrails: could not install the guard binary (%s); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online, or run /anthology:setup; if this keeps happening, disable anthology-guardrails with /plugin."}\n' "$2"
+        # ANTH_FIXMSG holds no double quote, backslash or control character (anth_fix_cmd).
+        printf '{"systemMessage":"anthology-guardrails: could not install the guard binary (%s); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online; if this keeps happening, disable anthology-guardrails with /plugin%s"}\n' "$2" "${ANTH_FIXMSG:-.}"
     else
         printf '{"systemMessage":"anthology: could not install the anthology binary (%s); the routing guide, memory and atl are off until it installs. Start a new session while online, or run /anthology:setup."}\n' "$2"
     fi
@@ -697,10 +984,12 @@ anth_system_message() {
 
 # anth_bootstrap_main ARGS: the bootstrap.sh CLI (GC-17, GC-5). Needs anth_paths.
 #   <session|guard|wrapper> --plugin <anthology|guardrails> [--quiet] [--budget SECONDS]
+# The guardrails' guard and session modes download in the background (ANTH_BG); `fetch
+# --plugin guardrails` is that background download itself and prints nothing.
 anth_bootstrap_main() {
     _m_mode='' _m_plugin='' _m_quiet='' _m_budget=$ANTH_BUDGET _m_bad=''
     case ${1:-} in
-        session | guard | wrapper) _m_mode=$1 ;;
+        session | guard | wrapper | fetch) _m_mode=$1 ;;
         *) _m_bad=1 ;;
     esac
     [ "$#" -eq 0 ] || shift
@@ -725,9 +1014,20 @@ anth_bootstrap_main() {
         esac
         shift
     done
+    if [ "$_m_mode" = fetch ] && [ "$_m_plugin" != guardrails ]; then
+        _m_bad=1
+    fi
     if [ -n "$_m_bad" ] || [ -z "$_m_plugin" ] || [ "${#_m_budget}" -gt 5 ]; then
         printf '%s\n' 'usage: bootstrap.sh <session|guard|wrapper> --plugin <anthology|guardrails> [--quiet] [--budget SECONDS]' >&2
         return 2
+    fi
+    ANTH_BG=
+    if [ "$_m_plugin" = guardrails ] && [ "$_m_mode" != wrapper ]; then
+        ANTH_BG=1
+    fi
+    if [ "$_m_mode" = fetch ]; then
+        anth_fetch_run
+        return 0
     fi
     anth_bootstrap "$_m_mode" "$_m_budget"
     _m_rc=$?
@@ -745,8 +1045,71 @@ anth_bootstrap_main() {
 
 # --- the guard shim's pieces (design §9.2; guard.sh holds the decisions) ------------------
 
+# anth_fix_cmd HOOKS: ANTH_FIX = the installer command the guard lets through while the binary
+# is missing, `/bin/sh '<HOOKS>/bootstrap.sh' guard --plugin guardrails --quiet --budget 300`,
+# and ANTH_FIXMSG = the sentence that names it (`. To install it now, …`). HOOKS is this
+# plugin's hooks folder as the hook was started with it. It must be absolute and hold no double
+# quote, single quote, backslash or control character: those would need escaping in the JSON
+# payload or the shell, so no exact match is possible, and the guard then lets nothing through
+# (status 1, ANTH_FIX empty) and the sentence says to run the installer from a terminal.
+anth_fix_cmd() {
+    ANTH_FIX=''
+    ANTH_FIXMSG='. To install it now, run hooks/bootstrap.sh guard --plugin guardrails --quiet --budget 300 from the anthology-guardrails plugin folder in a terminal'
+    case $1 in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\042\047\134\177')" = "$1" ] || return 1
+    ANTH_FIX="/bin/sh '$1/bootstrap.sh' guard --plugin guardrails --quiet --budget 300"
+    ANTH_FIXMSG=". To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): $ANTH_FIX"
+}
+
+# anth_fix_call FILE: status 0 when the payload is a Bash call whose command is exactly the
+# installer (after anth_fix_cmd): `<base>`, `<base> --quiet`, `<base> --budget N` or
+# `<base> --quiet --budget N`, where <base> is ANTH_FIX up to `guardrails` and N is 1 to 4
+# digits, the first not 0. The payload holds no control character but newlines, no backslash
+# anywhere and exactly one "command" key, and the value is compared as its raw JSON text.
+# Without a backslash every key and value is its own raw text (a command key with a letter
+# written as a JSON unicode escape would hide the real command from the count), so an escape,
+# a second key, another path (a symlink to this one included), a shell metacharacter or one
+# more blank never matches.
+anth_fix_call() {
+    [ -n "$ANTH_FIX" ] || return 1
+    [ "$(anth_tool_name "$1")" = Bash ] || return 1
+    _x_n=$(LC_ALL=C tr -d '\n -~\200-\377' <"$1" 2>/dev/null | wc -c)
+    _x_n=${_x_n##*[!0123456789]}
+    [ "$_x_n" = 0 ] || return 1
+    _x_ok=$(LC_ALL=C ANTH_X=${ANTH_FIX% --quiet --budget 300} awk '
+        { s = s $0 "\n" }
+        END {
+            bs = index(s, "\\")
+            w = ENVIRON["ANTH_X"]
+            n = 0
+            ok = 0
+            while (match(s, /"command"[ \n]*:[ \n]*/)) {
+                n++
+                s = substr(s, RSTART + RLENGTH)
+                if (substr(s, 1, 1) != "\"") continue
+                e = index(substr(s, 2), "\"")
+                if (e == 0) continue
+                v = substr(s, 2, e - 1)
+                t = ""
+                if (v == w || v == w " --quiet") {
+                    ok = 1
+                } else if (substr(v, 1, length(w) + 18) == w " --quiet --budget ") {
+                    t = substr(v, length(w) + 19)
+                } else if (substr(v, 1, length(w) + 10) == w " --budget ") {
+                    t = substr(v, length(w) + 11)
+                }
+                if (t ~ /^[1-9][0-9]?[0-9]?[0-9]?$/) ok = 1
+            }
+            if (bs == 0 && n == 1 && ok == 1) print "installer"
+        }' <"$1" 2>/dev/null)
+    [ "$_x_ok" = installer ]
+}
+
 anth_msg_not_installed() {
-    ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary is not installed ($1), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it$ANTH_P"
+    ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary is not installed ($1), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it$ANTH_P$ANTH_FIXMSG"
 }
 
 anth_msg_three_strikes() {
@@ -773,7 +1136,21 @@ anth_msg_lock() {
 anth_msg_reason() {
     case $1 in
         rate-limited)
-            ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary is not installed yet and the last install attempt was less than a minute ago; retry in a minute, or run /anthology:setup$ANTH_P"
+            ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary is not installed yet and the last install attempt was less than a minute ago; retry in a minute$ANTH_P$ANTH_FIXMSG"
+            ;;
+        'still downloading ('*' bytes so far)')
+            _q_n=${1#'still downloading ('}
+            _q_n=${_q_n%' bytes so far)'}
+            ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary is still downloading in the background ($_q_n bytes so far), so shell commands, file edits and MCP tools are blocked until it installs; retry in a few seconds$ANTH_P$ANTH_FIXMSG"
+            ;;
+        'download timed out (slow network)')
+            ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary download timed out (slow network); the part downloaded so far is kept and the next try resumes it, so retry in a minute$ANTH_P$ANTH_FIXMSG"
+            ;;
+        'download failed (no network)')
+            ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary could not be downloaded (no network: github.com could not be reached); connect, then retry in a minute$ANTH_P$ANTH_FIXMSG"
+            ;;
+        'sha256 does not match anthology.lock')
+            ANTH_MSG="Blocked by anthology-guardrails (setup): the downloaded guard binary does not match anthology.lock (sha256 mismatch), so it was not installed (a proxy may have changed it, or the release is broken); retry in a minute$ANTH_P$ANTH_FIXMSG"
             ;;
         three-strikes) anth_msg_three_strikes ;;
         'cannot write the install folder') anth_msg_cannot_write ;;
@@ -801,7 +1178,7 @@ anth_quarantine_msg() {
     if [ "$ANTH_STRIKES" -ge 3 ]; then
         anth_msg_three_strikes
     else
-        ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary did not work ($1) and was set aside; it is reinstalled on a later call (at most once a minute), or run /anthology:setup$ANTH_P"
+        ANTH_MSG="Blocked by anthology-guardrails (setup): the guard binary did not work ($1) and was set aside; it is reinstalled on a later call (at most once a minute)$ANTH_P$ANTH_FIXMSG"
     fi
 }
 
