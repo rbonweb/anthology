@@ -333,11 +333,25 @@ fn effective_cwd(cwd: &Path) -> Option<PathBuf> {
 /// means the process's working folder; when that cannot be read, the answer is `Disabled` with
 /// no folder (fail closed: the repo settings cannot be checked).
 pub fn inspect(plugin_root: &Path, env: &Env, cwd: &Path) -> GuardLoc {
+    inspect_launch(plugin_root, env, cwd).0
+}
+
+/// [`inspect`] plus the string Claude Code runs the guardrails hooks from, when it is known for
+/// certain: `installPath` exactly as `installed_plugins.json` holds it, for an entry of a
+/// marketplace that is readable and not a `directory` one. That string is the hooks' own
+/// `${CLAUDE_PLUGIN_ROOT}`, so a command built from it matches what the guard shim sees as its
+/// `$0` (no realpath, no collapsed or trimmed slash). `None` for every other case: a `directory`
+/// marketplace (the folder is a realpath of a joined path, and what Claude Code runs is not
+/// known to be the same string), an unknown marketplace, or no folder at all.
+pub fn inspect_launch(plugin_root: &Path, env: &Env, cwd: &Path) -> (GuardLoc, Option<String>) {
     let Some(cwd) = effective_cwd(cwd) else {
-        return GuardLoc {
-            root: None,
-            problem: Some(Problem::Disabled),
-        };
+        return (
+            GuardLoc {
+                root: None,
+                problem: Some(Problem::Disabled),
+            },
+            None,
+        );
     };
     let data = read_json(
         &compat::config_dir(env)
@@ -387,8 +401,12 @@ pub fn inspect(plugin_root: &Path, env: &Env, cwd: &Path) -> GuardLoc {
         root: None,
         problem: None,
     };
+    let mut as_written = None;
     if let Some((_, install, name)) = best {
         loc = live_root(plugin_root, env, name, install);
+        if marketplace_is_directory(&compat::config_dir(env), marketplace_of(name)) == Some(false) {
+            as_written = Some(install.to_string());
+        }
     } else if plugins
         .iter()
         .any(|(name, _)| name.starts_with(ANTHOLOGY_PREFIX))
@@ -403,7 +421,7 @@ pub fn inspect(plugin_root: &Path, env: &Env, cwd: &Path) -> GuardLoc {
     if matches!(loc.problem, None | Some(Problem::LiveMissing)) && disabled(env, &cwd) {
         loc.problem = Some(Problem::Disabled);
     }
-    loc
+    (loc, as_written)
 }
 
 // ---------------------------------------------------------------------------------------------

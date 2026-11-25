@@ -2870,7 +2870,8 @@ mod time_rules {
             vec![
                 format!(
                     "anthology: the guardrails are failing closed: {}",
-                    session_start::binary_missing_reason(&f.c.guard)
+                    // no installed_plugins.json: the folder is a sibling, not known as written
+                    session_start::binary_missing_reason(None)
                 ),
                 session_start::ATL_SKIPPED.to_string()
             ]
@@ -3949,56 +3950,155 @@ mod real_shim {
             .collect()
     }
 
-    #[test]
-    fn with_no_time_and_no_binary_session_start_says_failing_closed() {
-        let sb = sandbox();
-        assert_eq!(
-            lines_with_elapsed(&sb, 45.0),
-            vec![format!(
-                "anthology: the guardrails are failing closed: {}",
-                session_start::binary_missing_reason(&sb.plugin("anthology-guardrails"))
-            )]
+    const RECOVERY_ARGS: &str = "guard --plugin guardrails --quiet --budget 300";
+
+    /// Registers the guardrails plugin as an install of marketplace `m` at `install` (as
+    /// written), which is a `github` marketplace unless `source` says otherwise.
+    fn register(sb: &Sandbox, install: &[u8], source: Option<&str>) {
+        let plugins = sb.config.join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        let mut installed = br#"{"version": 2, "plugins": {"anthology-guardrails@m": [{"scope": "user", "installPath": ""#.to_vec();
+        installed.extend_from_slice(install);
+        installed.extend_from_slice(
+            br#"", "version": "0.1.0", "lastUpdated": "2026-01-01T00:00:00Z"}]}}"#,
         );
+        fs::write(plugins.join("installed_plugins.json"), installed).unwrap();
+        if let Some(source) = source {
+            fs::write(plugins.join("known_marketplaces.json"), source).unwrap();
+        }
+    }
+
+    fn github_marketplace() -> &'static str {
+        r#"{"m": {"source": {"source": "github", "repo": "x/y"}, "installLocation": "/nowhere", "lastUpdated": "x"}}"#
+    }
+
+    fn failing_closed_line(sb: &Sandbox) -> String {
+        lines_with_elapsed(sb, 45.0).remove(0)
+    }
+
+    fn command_of(install: &str) -> String {
+        format!("/bin/sh '{install}/hooks/bootstrap.sh' {RECOVERY_ARGS}")
+    }
+
+    fn terminal_sentence() -> String {
+        format!(
+            "anthology: the guardrails are failing closed: {}{}",
+            session_start::BINARY_MISSING_REASON,
+            session_start::RECOVERY_IN_TERMINAL
+        )
     }
 
     #[test]
     fn the_failing_closed_message_names_the_exact_recovery_command_the_shim_allows() {
         let sb = sandbox();
-        let guard = sb.plugin("anthology-guardrails");
-        let line = lines_with_elapsed(&sb, 45.0).remove(0);
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(&sb, guard.as_bytes(), Some(github_marketplace()));
         assert_eq!(
-            line,
+            failing_closed_line(&sb),
             format!(
-                "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it; if this keeps happening, disable anthology-guardrails with /plugin. To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): /bin/sh '{}/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300",
-                guard.display()
+                "anthology: the guardrails are failing closed: the guard binary is not installed (not attempted), so shell commands, file edits and MCP tools are blocked; start a new session while online to install it; if this keeps happening, disable anthology-guardrails with /plugin. To install it now, run this exact command, which the guard allows while the binary is missing (it waits up to 5 minutes): {}",
+                command_of(&guard)
             )
         );
     }
 
     #[test]
-    fn a_guardrails_folder_that_cannot_be_matched_exactly_gets_the_terminal_sentence() {
+    fn a_trailing_slash_in_install_path_is_kept_as_the_shim_sees_it() {
+        // hooks.json runs `${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh`, so `${0%/*}` keeps the slash.
+        let sb = sandbox();
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(
+            &sb,
+            format!("{guard}/").as_bytes(),
+            Some(github_marketplace()),
+        );
+        let line = failing_closed_line(&sb);
+        assert!(line.ends_with(&command_of(&format!("{guard}/"))), "{line}");
+        assert!(
+            line.contains(&format!("'{guard}//hooks/bootstrap.sh'")),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn dollar_and_backtick_in_the_folder_stay_literal_inside_the_single_quotes() {
+        let sb = sandbox();
+        let odd = p(&sb.root.join("plugins").join("g$x`y"));
+        fs::create_dir_all(format!("{odd}/hooks")).unwrap();
+        fs::write(format!("{odd}/hooks/guard.sh"), "").unwrap();
+        register(&sb, odd.as_bytes(), Some(github_marketplace()));
+        let line = failing_closed_line(&sb);
+        assert!(line.ends_with(&command_of(&odd)), "{line}");
+    }
+
+    #[test]
+    fn a_symlinked_directory_marketplace_gets_the_terminal_sentence() {
+        // The live folder is a realpath of installLocation + source; what Claude Code runs the
+        // hook from is not known to be that string, so no command is printed.
+        let sb = sandbox();
+        let real = sb.root.join("market-real");
+        fs::create_dir_all(real.join(".claude-plugin")).unwrap();
+        fs::create_dir_all(real.join("plugins/anthology-guardrails/hooks")).unwrap();
+        fs::write(real.join("plugins/anthology-guardrails/hooks/guard.sh"), "").unwrap();
+        fs::write(
+            real.join(".claude-plugin/marketplace.json"),
+            r#"{"name": "m", "plugins": [{"name": "anthology-guardrails", "source": "./plugins/anthology-guardrails"}]}"#,
+        )
+        .unwrap();
+        let link = sb.root.join("market-link");
+        symlink(&real, &link).unwrap();
+        let known = format!(
+            r#"{{"m": {{"source": {{"source": "directory", "path": {0}}}, "installLocation": {0}, "lastUpdated": "x"}}}}"#,
+            jstr(&p(&link))
+        );
+        register(
+            &sb,
+            p(&sb.plugin("anthology-guardrails")).as_bytes(),
+            Some(&known),
+        );
+        assert_eq!(failing_closed_line(&sb), terminal_sentence());
+    }
+
+    #[test]
+    fn an_unknown_marketplace_or_a_non_utf8_install_path_gets_no_command() {
+        let sb = sandbox();
+        let guard = p(&sb.plugin("anthology-guardrails"));
+        register(&sb, guard.as_bytes(), None);
+        assert_eq!(failing_closed_line(&sb), terminal_sentence());
+        // A folder name that is not UTF-8 cannot be matched as text either.
+        let sb = sandbox();
+        let mut raw = guard.as_bytes().to_vec();
+        raw.extend_from_slice(b"-\xff");
+        register(&sb, &raw, Some(github_marketplace()));
+        assert!(
+            lines_with_elapsed(&sb, 45.0)
+                .iter()
+                .all(|l| !l.contains("/bin/sh")),
+        );
+    }
+
+    #[test]
+    fn a_launch_folder_the_shim_cannot_match_exactly_gets_the_terminal_sentence() {
         for odd in [
             "relative/guard",
+            "",
             "/with'quote",
             "/with\"quote",
             "/back\\slash",
             "/new\nline",
+            "/del\u{7f}",
         ] {
-            let reason = session_start::binary_missing_reason(Path::new(odd));
+            let reason = session_start::binary_missing_reason(Some(odd));
             assert_eq!(
                 reason,
-                format!(
-                    "{}{}",
-                    session_start::BINARY_MISSING_REASON,
-                    session_start::RECOVERY_IN_TERMINAL
-                ),
+                session_start::binary_missing_reason(None),
                 "{odd:?}"
             );
             assert!(!reason.contains("/bin/sh"), "{odd:?}");
         }
         assert!(
-            session_start::binary_missing_reason(Path::new("/opt/a b/guard"))
-                .ends_with("/bin/sh '/opt/a b/guard/hooks/bootstrap.sh' guard --plugin guardrails --quiet --budget 300")
+            session_start::binary_missing_reason(Some("/opt/a b/guard"))
+                .ends_with(&command_of("/opt/a b/guard"))
         );
     }
 
