@@ -592,6 +592,10 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.13] - 2026-11-25
+
+- Pin anthology-bin 0.2.4.
+
 ### [0.2.12] - 2026-11-25
 
 - Fix: on a slow network the guard binary never installed and the session stayed blocked. Each tool call gave the download 20 seconds and then started again from zero, so an archive that needed longer never arrived. The download now runs in the background with a 10-minute budget, starting at session start, and a stopped download continues from what it already got (with `curl`). A blocked call waits up to 20 seconds for it and then says how many bytes have arrived.
