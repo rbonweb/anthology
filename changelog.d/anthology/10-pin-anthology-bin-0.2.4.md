@@ -1,0 +1,1 @@
+- Pin anthology-bin 0.2.4.
