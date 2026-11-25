@@ -10,6 +10,11 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The `anthology` binary 0.2.5: git is run only from an absolute `PATH` entry, never a relative
+  one, when Anthology runs it inside a repo.
+
 ### [0.5.2] - 2026-11-25
 
 #### Changed
