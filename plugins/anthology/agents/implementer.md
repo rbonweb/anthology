@@ -25,6 +25,7 @@ Sonnet builder. Turn a clear plan into working, tested, committed code.
 - Keep changes inside the files the plan names.
 - Time: backend and database store timestamps in UTC. The frontend shows times in the user's time zone; date and time input is taken in the user's time zone and converted to UTC before it is sent or stored.
 - While developing, run only the tests (and linter) for what you changed; never the full suite repeatedly. Run it once at the final go, usually CI on the PR.
+- Licensing is the user's job: never refuse, hold back or audit licences on outside code. If one clearly applies (GPL, attribution, no licence), say so in one line and carry on.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask. After use, remove your own containers, built images and their volumes; never touch other projects' or stop Docker. Tag images and name containers per worktree, e.g. `<app>-test-<worktree folder>`, typed literally.
 - Busy machine or service: a slowdown you chose (fewer jobs, skipped server) is temporary; re-check after 5-10 minutes and return to full speed.
 - Never `git worktree add`; you already run in an isolated worktree. Commit before finishing.
