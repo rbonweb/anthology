@@ -342,17 +342,138 @@ fn is_shell_c_flag(word: &str) -> bool {
     }
 }
 
+/// `docker exec` options that take the next word as their value, and are not `-e`/`--env`.
+const EXEC_VALUE_FLAGS: &[&str] = &["-u", "--user", "-w", "--workdir", "--detach-keys"];
+
+/// `docker exec` options that take no value.
+const EXEC_BOOL_FLAGS: &[&str] = &[
+    "-i",
+    "-t",
+    "-d",
+    "-it",
+    "--privileged",
+    "--interactive",
+    "--tty",
+    "--detach",
+];
+
+/// The variables `docker exec -e` may set for a `psql` the guard reads as data: libpq's connection settings.
+/// Not `PATH` (it picks the program `psql` names), and not `PGPASSCOMMAND`, `PAGER`, `PSQLRC`, `LD_PRELOAD`
+/// or any other variable that makes a program or a library run. `--env-file` is not listed at all: its file
+/// can set any of them.
+const PSQL_ENV: &[&str] = &[
+    "PGAPPNAME",
+    "PGCLIENTENCODING",
+    "PGCONNECT_TIMEOUT",
+    "PGDATABASE",
+    "PGHOST",
+    "PGPASSWORD",
+    "PGPORT",
+    "PGSSLMODE",
+    "PGTZ",
+    "PGUSER",
+];
+
+/// A word that is the same text at run time, whatever shell reads it and however it was quoted (the quotes are
+/// gone by now): one or more of `[A-Za-z0-9_./:=,+@%-]`, and not starting with `=` (zsh's `=cmd`). No
+/// expansion, glob, brace, `~`, or zsh extendedglob `#` and `^`. The same allowlist as `literal_call_word`
+/// in collect.rs.
+fn literal_word(word: &str) -> bool {
+    !word.is_empty()
+        && !word.starts_with('=')
+        && word
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_./:=,+@%-".contains(&c))
+}
+
+/// The value of `docker exec -e` or `--env`: `NAME=value` or `NAME` for one of `PSQL_ENV`, as plain text.
+fn psql_env(value: &str) -> bool {
+    literal_word(value) && PSQL_ENV.contains(&value.split('=').next().unwrap_or(value))
+}
+
+/// The index of the program word of `docker exec [options] CONTAINER PROGRAM ...`
+/// (`docker compose exec` and `docker-compose exec` too) when it is exactly `psql`, else `None`. The parse is
+/// by position, from the lists above, and every word from `exec` through `psql`, every option value
+/// included, is a plain literal word. Any other option (`--env-file`, an attached `-u=x`), any word that is
+/// not plain, and any other docker command (`docker run`) is `None`: nothing is known about where the program
+/// is, or what it runs, so the caller keeps the fail-closed reading.
+fn docker_exec_psql(prog: &str, args: &[String]) -> Option<usize> {
+    let mut i = match (prog, args.first().map(String::as_str)) {
+        ("docker", Some("exec")) | ("docker-compose", Some("exec")) => 1,
+        ("docker", Some("compose")) if args.get(1).map(String::as_str) == Some("exec") => 2,
+        _ => return None,
+    };
+    while let Some(word) = args.get(i).filter(|w| w.starts_with('-')) {
+        let word = word.as_str();
+        if EXEC_BOOL_FLAGS.contains(&word) {
+            i += 1;
+            continue;
+        }
+        let value = args.get(i + 1)?;
+        let allowed = match word {
+            "-e" | "--env" => psql_env(value),
+            _ => EXEC_VALUE_FLAGS.contains(&word) && literal_word(value),
+        };
+        if !allowed {
+            return None;
+        }
+        i += 2;
+    }
+    // `args[i]` is the container or service; the word after it is the program, `psql` and nothing else
+    // (not `PSQL`, not `/usr/bin/psql`: those keep the shell reading)
+    (literal_word(args.get(i)?) && args.get(i + 1).map(String::as_str) == Some("psql"))
+        .then_some(i + 1)
+}
+
+/// The value of a `psql -c` the guard may read as data: no backslash (`\!` and `\o |` make psql start a
+/// shell), and none that expansion could bring (`$`, a backtick, `~`, zsh's `^` and `#`). A `*`, `?` or
+/// `[` is the SQL's own: the caller has seen that no word of the command held an unquoted one.
+fn psql_value_is_data(value: &str) -> bool {
+    !value.contains(['\\', '$', '`', '~', '^', '#'])
+}
+
 /// `_script_starts` within a budget (each start found costs one unit too): `None` when it ran out.
 pub(crate) fn script_starts_in(
     words: &[String],
     budget: &mut Budget,
 ) -> Option<Vec<(usize, String)>> {
+    script_starts_with(words, budget, None)
+}
+
+/// `_script_starts` for the arguments of the docker command `prog`. `literal`: the caller has seen that no
+/// word of the command holds an expansion, a glob or a brace, and that `words` are the command's words as
+/// written. Then, for `docker exec CONTAINER psql ...` (see `docker_exec_psql`), the `-c` and `-Atc` words
+/// of that psql are not script starts when their value is data (`psql_value_is_data`): `psql -c` takes SQL
+/// and `docker exec` runs it with no shell. Every other command reads as `script_starts_in`, which is also
+/// what the lenient lexer uses.
+pub(crate) fn docker_script_starts_in(
+    prog: &str,
+    words: &[String],
+    literal: bool,
+    budget: &mut Budget,
+) -> Option<Vec<(usize, String)>> {
+    let psql_at = if literal {
+        docker_exec_psql(prog, words)
+    } else {
+        None
+    };
+    script_starts_with(words, budget, psql_at)
+}
+
+fn script_starts_with(
+    words: &[String],
+    budget: &mut Budget,
+    psql_at: Option<usize>,
+) -> Option<Vec<(usize, String)>> {
     let mut starts = Vec::new();
+    // set from the psql word on, and cleared by a shell word: the `-c` words read there are psql's own
+    let mut psql = false;
     let (mut k, n) = (0, words.len());
     while k + 1 < n {
         let word = &words[k];
         let prog = prog_name(word);
         if SHELLS.contains(&prog.as_str()) {
+            psql = false;
             let parsed = shell_parse_in(&prog, words, k + 1, budget)?;
             let cost = parsed.scripts.iter().map(|(_, s)| WORD + s.len()).sum();
             if !budget.spend(cost) {
@@ -362,7 +483,10 @@ pub(crate) fn script_starts_in(
             k = parsed.start.max(k + 1);
             continue;
         }
-        if is_shell_c_flag(word) {
+        if psql_at == Some(k) {
+            psql = true;
+        }
+        if is_shell_c_flag(word) && !(psql && psql_value_is_data(&words[k + 1])) {
             if !budget.spend(WORD + words[k + 1].len()) {
                 return None;
             }

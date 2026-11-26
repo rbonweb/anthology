@@ -12,6 +12,14 @@
 //!    (`grep -E "['\"\`]A['\"\`]" d`): a `[` at the start of a word or after punctuation follows no name, so
 //!    it opens no subscript. bash 5.2 and zsh 5.9 agree on that and on `\`` being a literal backtick in
 //!    double quotes; a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` still runs `id`.
+//! 6. SQL given to `psql -c` through `docker exec` (`docker exec db psql -c "select count(*) from t"`): the
+//!    docker reading took every `-c` word for a shell option and parsed its SQL as a script. `psql -c` of
+//!    plain SQL runs no shell, and `docker exec` runs its argv with none, so the quoted SQL is data. Only
+//!    when every word from `exec` through `psql` and each option value is a plain literal (no expansion,
+//!    glob or brace: the shell may split or expand one into more words, `docker exec $(echo c su) psql -c
+//!    ...`), the options are the listed ones (not `--env-file`, not `-e PATH=...`), the program word is
+//!    exactly `psql`, and the `-c` value holds no backslash (`\!` and `\o |` make psql start a shell), also
+//!    none that an expansion could bring.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -309,4 +317,268 @@ fn a_subscript_tail_stored_in_a_word_and_joined_in_any_context_is_too_complex() 
         r#"s=1; echo $((a${s:+[$(npx playwright install)]}))"#,
         r#"f() { unset "a${1:-[$(npx playwright install)]}"; }; f"#,
     ]);
+}
+
+/// The script a `-c` word hands over, when it is read as a shell script: G4 names the program in it.
+const MARKER: &str = "agent-browser open x";
+/// SQL the docker reading cannot parse as a shell script (`count(*)`): G0 when it is read as one.
+const SQL: &str = "select count(*) from t";
+
+/// A command shape with `BODY` where the `-c` value goes.
+#[track_caller]
+fn shaped(shape: &str, body: &str) -> String {
+    assert!(shape.contains("BODY"), "{shape}");
+    shape.replace("BODY", body)
+}
+
+#[test]
+fn sql_given_to_psql_through_docker_exec_is_data_not_a_script() {
+    assert_all(
+        &[
+            r#"docker exec db psql -c "select count(*) from t""#,
+            r#"docker exec db psql -Atc "select count(*) from t""#,
+            "docker exec db psql -c 'select count(*) from t'",
+            r#"docker exec -i db psql -U u -d d -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" -c "select max(id) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" -d x"#,
+            // a quoted `*`, `?` and `[` are SQL
+            r#"docker exec db psql -c "select * from t where a like 'x_' and b = (select a[1] from u limit 1)""#,
+            // docker compose and docker-compose read the same way
+            r#"docker compose exec db psql -c "select count(*) from t""#,
+            r#"docker-compose exec db psql -Atc "select count(*) from t""#,
+            // each value option of exec takes the next word, each boolean option takes none
+            r#"docker exec -e PGPASSWORD=x db psql -c "select count(*) from t""#,
+            r#"docker exec --env PGUSER=u db psql -c "select count(*) from t""#,
+            r#"docker exec -e PGPASSWORD db psql -c "select count(*) from t""#,
+            r#"docker exec -u postgres db psql -c "select count(*) from t""#,
+            r#"docker exec --user postgres db psql -c "select count(*) from t""#,
+            r#"docker exec -w /tmp db psql -c "select count(*) from t""#,
+            r#"docker exec --workdir /tmp db psql -c "select count(*) from t""#,
+            r#"docker exec --detach-keys ctrl-x db psql -c "select count(*) from t""#,
+            r#"docker exec -i db psql -c "select count(*) from t""#,
+            r#"docker exec -t db psql -c "select count(*) from t""#,
+            r#"docker exec -d db psql -c "select count(*) from t""#,
+            r#"docker exec -it db psql -c "select count(*) from t""#,
+            r#"docker exec --privileged db psql -c "select count(*) from t""#,
+            r#"docker exec --interactive db psql -c "select count(*) from t""#,
+            r#"docker exec --tty db psql -c "select count(*) from t""#,
+            r#"docker exec --detach db psql -c "select count(*) from t""#,
+            r#"docker exec -it -u postgres -w /tmp -e PGPASSWORD=x db psql -c "select count(*) from t""#,
+            // the neighbours that were already allowed
+            r#"psql -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select 1""#,
+            r#"docker exec db mysql -e "select count(*) from t""#,
+            r#"docker exec db echo "a(b)""#,
+            r#"docker run --rm img echo "count(*)""#,
+            // docker exempts G1 and G2: running the install in the container is what G1 asks for
+            r#"docker exec c sh -c "npx playwright install""#,
+            "docker exec c npx playwright install",
+        ],
+        Verdict::Allow,
+    );
+}
+
+#[test]
+fn a_psql_value_with_a_backslash_or_an_expansion_character_is_still_read_as_a_script() {
+    // `\!` and `\o |` start a shell in psql: a value with any backslash keeps the shell reading (G4 here)
+    for command in [
+        format!(r"docker exec c psql -c '\! {MARKER}'"),
+        format!(r"docker exec c psql -c '\o |{MARKER}'"),
+        format!(r"docker exec c psql -Atc '\! {MARKER}'"),
+        format!(r#"docker exec c psql -c "select 1" -c '\! {MARKER}'"#),
+        format!(r"docker exec c psql -c '\! {MARKER}' dbname"),
+        format!(r#"docker exec c psql -c '\! {MARKER}' -c "select count(*) from t""#),
+        format!(r"docker compose exec c psql -c '\! {MARKER}'"),
+        format!(r"docker-compose exec c psql -c '\! {MARKER}'"),
+        // the value is a script when it holds a character an expansion could turn into a backslash
+        format!(r"docker exec c psql -c '$x; {MARKER}'"),
+        format!(r"docker exec c psql -c '~; {MARKER}'"),
+        format!(r"docker exec c psql -c '^; {MARKER}'"),
+        format!(r"docker exec c psql -c 'a#; {MARKER}'"),
+    ] {
+        assert_eq!(verdict(&command), Verdict::Block(Rule::G4), "{command}");
+    }
+    assert_eq!(
+        verdict(r"docker exec c psql -c '\! echo a(b)'"),
+        Verdict::TooComplex
+    );
+    // the same SQL without a backslash is data
+    assert_eq!(
+        verdict(r#"docker exec c psql -c "select count(*) from t" -c "select 1""#),
+        Verdict::Allow
+    );
+}
+
+/// Shapes where a word between `exec` and `psql`, or an option value, is not a plain literal: the shell
+/// splits or expands it into other words at run time (`docker exec $(echo c su) psql -c CMD` runs
+/// `su psql -c CMD` in the container `c`), so psql is not the program and the `-c` is `su`'s. Each keeps the
+/// reading it has had (G4 for a script, G0 for SQL it cannot parse), and the run-time proof of each is in
+/// bash 5.2 and zsh 5.9.
+const SPLIT_WORD_SHAPES: &[&str] = &[
+    r#"docker exec $(echo c su) psql -c "BODY""#,
+    r#"docker exec `echo c su` psql -c "BODY""#,
+    r#"docker exec {c,su} psql -c "BODY""#,
+    r#"C='c su'; docker exec $C psql -c "BODY""#,
+    r#"C='c su'; docker exec ${=C} psql -c "BODY""#,
+    r#"docker exec c* psql -c "BODY""#,
+    r#"docker exec -e $(echo A=b c su) psql -c "BODY""#,
+    r#"docker exec -u $(echo u c su) psql -c "BODY""#,
+    r#"docker exec "$(echo c su)" psql -c "BODY""#,
+    r#"docker exec c$(echo)x psql -c "BODY""#,
+    r#"docker exec c ps$(echo)ql -c "BODY""#,
+    r#"docker exec c psq? -c "BODY""#,
+    // zsh runs `=name` as the path of a program, and `~` is the home folder
+    r#"docker exec =c psql -c "BODY""#,
+    r#"docker exec -u =x c psql -c "BODY""#,
+    r#"docker exec ~ psql -c "BODY""#,
+    r#"docker exec c psql -c "BODY" $(echo x)"#,
+];
+
+/// Shapes where the `-c` value gets a backslash at run time: a parameter, a glob, an ANSI-C quote or an
+/// expansion makes `\! CMD` out of text with none (`psql -c "$Q"` with `Q='\! CMD'`).
+const EXPANDED_VALUE_SHAPES: &[&str] = &[
+    r#"B='\'; docker exec c psql -c "${B}! BODY""#,
+    r#"docker exec c psql -c "${(#):-92}! BODY""#,
+    r#"docker exec c psql -c $'\\! BODY'"#,
+    r#"docker exec c psql -c $'\x5c! BODY'"#,
+];
+
+/// Shapes that set what runs as `psql` (or the program itself): a plant in the container is named `psql`
+/// and found through `PATH`, an env file or a variable can set `PATH`, `PAGER`, `LD_PRELOAD` or
+/// `PGPASSCOMMAND`.
+const PLANTED_PSQL_SHAPES: &[&str] = &[
+    r#"docker exec -e PATH=/tmp:/usr/bin c psql -c "BODY""#,
+    r#"docker exec --env PATH=/tmp c psql -c "BODY""#,
+    r#"docker exec -e PATH c psql -c "BODY""#,
+    r#"docker exec --env-file f c psql -c "BODY""#,
+    r#"docker exec -e PGPASSCOMMAND=x c psql -c "BODY""#,
+    r#"docker exec -e PAGER=x c psql -c "BODY""#,
+    r#"docker exec -e LD_PRELOAD=/tmp/x.so c psql -c "BODY""#,
+    r#"docker exec -e A=b c psql -c "BODY""#,
+];
+
+/// A psql in the wrong place, or not named exactly: the `-c` belongs to another program.
+const NOT_PSQL_SHAPES: &[&str] = &[
+    r#"docker exec c su psql -c "BODY""#,
+    r#"docker exec c su -l psql -c "BODY""#,
+    r#"docker exec c runuser psql -c "BODY""#,
+    r#"docker exec c script -q psql -c "BODY""#,
+    r#"docker exec c flock /tmp/psql -c "BODY""#,
+    r#"docker exec -u psql c python3 -c "BODY""#,
+    r#"docker exec -w /srv/psql c python3 -c "BODY""#,
+    r#"docker exec -e PGUSER=psql c python3 -c "BODY""#,
+    r#"docker run --name psql img python3 -c "BODY""#,
+    r#"docker run img psql -c "BODY""#,
+    r#"docker compose run psql python3 -c "BODY""#,
+    // an option exec does not list: nothing says where the program is
+    r#"docker exec --unknown c psql -c "BODY""#,
+    r#"docker exec -u=u c psql -c "BODY""#,
+    r#"docker exec -T c psql -c "BODY""#,
+    r#"docker -H h exec c psql -c "BODY""#,
+    // the exact name: not another case, not a path, not behind a wrapper
+    r#"docker exec c PSQL -c "BODY""#,
+    r#"docker exec c /usr/bin/psql -c "BODY""#,
+    r#"docker exec c env psql -c "BODY""#,
+    // no container: `psql` is the container, and the `-c` is nobody's psql
+    r#"docker exec psql -c "BODY""#,
+];
+
+#[test]
+fn a_command_that_is_not_plain_literal_text_keeps_its_reading() {
+    for (name, shapes) in [
+        ("split word", SPLIT_WORD_SHAPES),
+        ("expanded value", EXPANDED_VALUE_SHAPES),
+        ("planted psql", PLANTED_PSQL_SHAPES),
+        ("not psql", NOT_PSQL_SHAPES),
+    ] {
+        for shape in shapes.iter().filter(|s| s.contains("BODY")) {
+            assert_eq!(
+                verdict(&shaped(shape, MARKER)),
+                Verdict::Block(Rule::G4),
+                "{name}: {shape}"
+            );
+            assert_eq!(
+                verdict(&shaped(shape, SQL)),
+                Verdict::TooComplex,
+                "{name}: {shape}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_value_that_a_variable_or_a_glob_fills_in_is_never_allowed() {
+    // the value's backslash arrives by expansion (`Q='\! CMD'`, `-c *` with a file of that name): the
+    // verdict is the one these had before, never an allow
+    for command in [
+        format!(r#"Q='\! {MARKER}'; docker exec c psql -c "$Q""#),
+        format!(r#"Q='\! {SQL}'; docker exec c psql -c "$Q""#),
+        format!(r#"Q='\! {MARKER}'; docker exec c psql -c $Q"#),
+        format!(r#"Q='\! {MARKER}'; docker exec c psql -Atc "$Q""#),
+        r"docker exec c psql -c *".to_string(),
+        r"docker exec c psql -c ?".to_string(),
+        r"docker exec c psql -c [a-z]*".to_string(),
+        r"docker exec c psql -Atc *".to_string(),
+        r"docker exec c psql -c *.sql -c *".to_string(),
+        format!(r"docker exec c psql -c '`x`; {MARKER}'"),
+        // a brace in a SQL value: the shell may split it into more words
+        format!(r#"docker exec c psql -c "{SQL}"{{,}}"#),
+        format!(r#"docker exec c psql -c "{SQL}" -d x{{a,b}}"#),
+    ] {
+        assert_eq!(verdict(&command), Verdict::TooComplex, "{command}");
+    }
+}
+
+#[test]
+fn docker_exec_still_reads_what_psql_does_not_own() {
+    // a shell given a script through docker is still read as one, also after a psql word, and a shell
+    // word ends psql's `-c` words
+    assert_all(
+        &[
+            r#"docker exec c sh -c "echo a(b)""#,
+            r#"docker exec c bash -c "echo a(b)""#,
+            r#"docker exec db psql -c "select count(*) from t" sh -c "echo a(b)""#,
+            r#"docker exec db psql -c "select 1" sh -c "echo a" -c "echo a(b)""#,
+            r#"docker exec db su -c "echo a(b)" u"#,
+        ],
+        Verdict::TooComplex,
+    );
+    assert_eq!(
+        verdict(&format!(
+            r#"docker exec c psql -c "select 1" sh -c "{MARKER}""#
+        )),
+        Verdict::Block(Rule::G4)
+    );
+    // an expansion in the argument runs on the host, whatever program gets the word
+    assert_all(
+        &[
+            r#"docker exec c psql -c "$(npx playwright install)""#,
+            r#"docker exec c psql -c "select `npx playwright install`""#,
+            r#"docker exec c psql -Atc "select $(npx playwright install)""#,
+            r#"docker exec c psql -c "select count(*) from t" && npx playwright install"#,
+        ],
+        Verdict::Block(Rule::G1),
+    );
+}
+
+#[test]
+fn a_psql_whose_arguments_come_from_somewhere_else_keeps_its_reading() {
+    // `xargs` adds stdin words to the command, a wrapper's own words are not the command's
+    assert_all(
+        &[
+            r#"echo x | xargs docker exec c psql -c "select count(*) from t""#,
+            r#"echo x | xargs -I{} docker exec c psql -c "select count(*) from t" {}"#,
+            r#"env -S 'docker exec c psql -c "select count(*) from t"'"#,
+        ],
+        Verdict::TooComplex,
+    );
+    // a wrapper that leaves the words as they are changes nothing
+    assert_all(
+        &[
+            r#"sudo docker exec c psql -c "select count(*) from t""#,
+            r#"time docker exec c psql -c "select count(*) from t""#,
+            r#"FOO=1 docker exec c psql -c "select count(*) from t""#,
+        ],
+        Verdict::Allow,
+    );
 }
