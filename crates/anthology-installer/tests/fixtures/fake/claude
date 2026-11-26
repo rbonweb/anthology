@@ -1,0 +1,92 @@
+#!/bin/sh
+# A fake `claude` for the end-to-end tests. It keeps its state in $FAKE_STATE, logs every call to
+# $FAKE_STATE/calls.log and prints the JSON shapes Claude Code 2.1.x prints (see
+# tests/fixtures/claude). Switches: FAKE_FAIL=marketplace-add|plugin-install, FAKE_ENGINE_OLD=1.
+state=${FAKE_STATE:?FAKE_STATE is not set}
+echo "claude $*" >>"$state/calls.log"
+
+if [ "$1" = "--version" ]; then
+    echo "2.1.330 (Claude Code)"
+    exit 0
+fi
+[ "$1" = plugin ] || exit 64
+shift
+
+installed=$state/installed
+touch "$installed"
+
+has() {
+    grep -qx "$1" "$installed"
+}
+
+drop() {
+    grep -vx "$1" "$installed" >"$installed.new"
+    mv "$installed.new" "$installed"
+}
+
+case $1 in
+marketplace)
+    case $2 in
+    list)
+        if [ -f "$state/marketplaces" ]; then cat "$state/marketplaces"; else echo '[]'; fi
+        ;;
+    add)
+        if [ "$FAKE_FAIL" = marketplace-add ]; then
+            echo '{"command":"marketplace-add","outcome":"failed","message":"clone failed","failureCode":"error"}'
+            echo "x Failed to add marketplace: clone failed" >&2
+            exit 1
+        fi
+        printf '[{"name":"anthology","source":"github","repo":"%s","installLocation":"/m"}]\n' "$3" >"$state/marketplaces"
+        echo '{"command":"marketplace-add","outcome":"ok","marketplace":"anthology","message":"added"}'
+        ;;
+    update)
+        echo '{"command":"marketplace-update","outcome":"ok","marketplace":"anthology","message":"updated"}'
+        ;;
+    remove)
+        echo '[]' >"$state/marketplaces"
+        echo '{"command":"marketplace-remove","outcome":"ok","message":"removed"}'
+        ;;
+    esac
+    ;;
+list)
+    printf '['
+    sep=
+    while read -r id; do
+        [ -n "$id" ] || continue
+        name=${id%%@*}
+        extra=
+        if [ "$FAKE_ENGINE_OLD" = 1 ] && [ "$id" = anthology@anthology ]; then
+            extra=',"errors":["Plugin \"anthology\" not loaded: needs Claude Code >=2.1.330, this is 2.1.326. Run `claude update`"],"errorDetails":[{"type":"engine-range-unsatisfied","plugin":"anthology"}]'
+        fi
+        printf '%s{"id":"%s","version":"1.0.0","scope":"user","enabled":true,"installPath":"%s/plugins/%s"%s}' "$sep" "$id" "$state" "$name" "$extra"
+        sep=,
+    done <"$installed"
+    echo ']'
+    ;;
+install)
+    if [ "$FAKE_FAIL" = plugin-install ]; then
+        echo '{"command":"install","outcome":"failed","message":"not found","failureCode":"not_found"}'
+        exit 1
+    fi
+    has "$2" || echo "$2" >>"$installed"
+    if [ "$2" = anthology@anthology ]; then
+        has anthology-guardrails@anthology || echo anthology-guardrails@anthology >>"$installed"
+        has anthology-superpowers@anthology || echo anthology-superpowers@anthology >>"$installed"
+    fi
+    echo "{\"command\":\"install\",\"outcome\":\"ok\",\"plugin\":\"$2\",\"message\":\"installed\"}"
+    ;;
+update)
+    echo "{\"command\":\"update\",\"outcome\":\"ok\",\"plugin\":\"$2\",\"message\":\"latest\",\"oldVersion\":\"1.0.0\",\"newVersion\":\"1.0.0\"}"
+    ;;
+uninstall)
+    drop "$2"
+    # The dependencies stay: the installer installed them by name, so they are not auto-installed.
+    case " $* " in
+    *" --json "*) echo "{\"command\":\"uninstall\",\"outcome\":\"ok\",\"plugin\":\"$2\",\"message\":\"removed\"}" ;;
+    *) echo "Uninstalled $2" ;;
+    esac
+    ;;
+*)
+    exit 64
+    ;;
+esac

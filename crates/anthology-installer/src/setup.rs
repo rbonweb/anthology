@@ -51,7 +51,7 @@ pub struct Preview {
 
 /// The JSON object a setup command printed, or why there is none. `{"ok": false, "error": ...}`
 /// is how setup refuses, with any exit code, so it is checked first.
-fn result_object(out: &Output, what: &str) -> Result<json::Map, String> {
+pub(crate) fn result_object(out: &Output, what: &str) -> Result<json::Map, String> {
     let object = json::loads(&out.stdout)
         .ok()
         .and_then(Value::into_object)

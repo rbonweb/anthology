@@ -1,0 +1,3 @@
+#!/bin/sh
+# A fake `git`: the installer only checks that one is on PATH.
+exit 0

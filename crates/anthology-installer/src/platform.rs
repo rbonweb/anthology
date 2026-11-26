@@ -151,12 +151,11 @@ mod tests {
             parse("Linux", "riscv64", false),
             Err(Unsupported::Arch("riscv64".into()))
         );
-        assert_eq!(
+        assert!(
             parse("Linux", "i686", false)
                 .unwrap_err()
                 .message()
-                .contains("i686"),
-            true
+                .contains("i686")
         );
     }
 

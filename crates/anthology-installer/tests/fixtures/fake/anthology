@@ -1,0 +1,34 @@
+#!/bin/sh
+# A fake plugin shim `bin/anthology`: only `setup preview|apply|remove`.
+echo "shim $*" >>"$FAKE_STATE/calls.log"
+[ "$1" = setup ] || exit 64
+applied=$FAKE_STATE/setup-applied
+case $2 in
+preview)
+    changed=true
+    [ ! -f "$applied" ] || changed=false
+    printf '{"supported":true,"settings":{"path":"/c/settings.json","sha256":"abc123","changed":%s,"diff":"+  \\"env\\": {}\\n"}}\n' "$changed"
+    ;;
+apply)
+    case " $* " in
+    *" --expect-sha256 abc123 "*) ;;
+    *)
+        echo '{"ok":false,"error":"checksum mismatch"}'
+        exit 1
+        ;;
+    esac
+    : >"$applied"
+    echo '{"ok":true}'
+    ;;
+remove)
+    case " $* " in
+    *" --preview "*)
+        printf '%s\n' '{"ok":true,"preview":true,"settings":{"path":"/c/settings.json","changed":true,"diff":"-  \"env\": {}\n"},"atl":{"dir":"/d/atl","status":"delete"},"atl_history":{"dir":"/d/hist","status":"nothing to delete"}}'
+        ;;
+    *)
+        rm -f "$applied"
+        echo '{"ok":true}'
+        ;;
+    esac
+    ;;
+esac

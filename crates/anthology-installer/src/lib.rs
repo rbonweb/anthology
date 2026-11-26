@@ -10,10 +10,14 @@ pub mod binary;
 pub mod claude;
 pub mod cli;
 pub mod ctx;
+pub mod install;
 pub mod platform;
 pub mod proc;
 pub mod report;
 pub mod setup;
+pub mod state;
+pub mod status;
 pub mod steps;
 #[cfg(test)]
 mod testing;
+pub mod uninstall;
