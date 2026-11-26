@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anthology-installer"
+version = "0.1.0"
+dependencies = [
+ "anthology-pycompat",
+ "lexopt",
+ "tempfile",
+]
+
+[[package]]
 name = "anthology-memory"
 version = "0.2.5"
 dependencies = [

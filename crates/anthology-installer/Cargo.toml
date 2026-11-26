@@ -1,0 +1,25 @@
+[package]
+name = "anthology-installer"
+# Its own version, released by the tag `anthology-installer--v<version>` (installer-release.yml).
+# It is not the workspace version: the anthology binary and this installer ship separately, and
+# the crate is outside the anthology-cli graph, so a change here never stales the plugins' lock.
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "One-command installer for the Anthology plugins (shipped through Homebrew, never bundled)"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "anthology-installer"
+path = "src/main.rs"
+
+[dependencies]
+anthology-pycompat.workspace = true
+lexopt.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
