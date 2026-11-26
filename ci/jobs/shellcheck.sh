@@ -29,6 +29,7 @@ set -- \
     ci/jobs/shims-distros.sh \
     ci/jobs/mods.sh \
     ci/jobs/lock-fresh.sh \
+    ci/jobs/installer-formula.sh \
     ci/jobs/rust-scope.sh \
     ci/jobs/rust-gate.sh \
     ci/jobs/rust-test-linux.sh \

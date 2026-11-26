@@ -1,0 +1,358 @@
+name: installer-release
+
+# Builds the `anthology-installer` binary (crates/anthology-installer) for four targets, tests it
+# first, attests the tarballs and publishes them, with checksums.txt, to the release for the tag
+# `anthology-installer--v<version>` (<version> is that crate's own version, not the workspace
+# one). A tap job then renders Formula/anthology-installer.rb from checksums.txt and pushes it to
+# the Homebrew tap rbonweb/homebrew-anthology. Modelled on anthology-release.yml.
+#
+#   - push of a tag `anthology-installer--v*`: build, test, attest, publish, update the tap.
+#   - workflow_dispatch with `tag`: the same, from that existing tag.
+#   - pull_request touching the installer, its packaging or this file: a dry run. It builds and
+#     tests the four targets, renders the formula against the tarballs it just built, and runs
+#     `brew audit --strict`, `brew install` and `brew test` on macOS and Ubuntu. Nothing is
+#     published and no secret is read.
+#
+# The tap job needs the secret TAP_DEPLOY_KEY (a deploy key with write access to the tap), in the
+# `release` environment. Without it the job ends cleanly with a notice: the release itself is
+# already published at that point, and the formula can be pushed later by re-running the job.
+# Users verify a tarball with `gh attestation verify <file> --repo rbonweb/anthology`.
+on:
+  push:
+    tags: ['anthology-installer--v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (anthology-installer--v<version>)'
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/installer-release.yml'
+      - 'crates/anthology-installer/**'
+      - 'packaging/homebrew/**'
+      - 'ci/jobs/installer-formula.sh'
+
+permissions: {}
+
+concurrency:
+  group: installer-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  meta:
+    # Resolve and validate the tag; the other jobs take it from here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+      publish: ${{ steps.tag.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve and validate the tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -eu
+          case "$EVENT_NAME" in
+            pull_request)
+              printf 'tag=\nref=\npublish=false\n' >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            workflow_dispatch) tag=$INPUT_TAG ;;
+            *) tag=$REF_NAME ;;
+          esac
+          if ! [[ $tag =~ ^anthology-installer--v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag is not of the form anthology-installer--v<major>.<minor>.<patch>[-<pre>]"
+            exit 1
+          fi
+          printf 'tag=%s\nref=refs/tags/%s\npublish=true\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          persist-credentials: false
+      - name: The tag must name the version of crates/anthology-installer/Cargo.toml
+        id: version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -eu
+          # The version line of the [package] table, and no other table's.
+          version=$(awk -F'"' '
+            /^\[/ { in_pkg = ($0 == "[package]"); next }
+            in_pkg && /^version = "/ { print $2; exit }
+          ' crates/anthology-installer/Cargo.toml)
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::crates/anthology-installer/Cargo.toml version is not of the form <major>.<minor>.<patch>[-<pre>]"
+            exit 1
+          fi
+          echo "crates/anthology-installer/Cargo.toml version: $version"
+          # A pull request has no tag: the version format is all there is to check.
+          if [ -n "$TAG" ] && [ "$TAG" != "anthology-installer--v$version" ]; then
+            echo "::error::tag $TAG does not equal anthology-installer--v$version (Cargo.toml)"
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  deny:
+    # cargo deny check and the serde_json tree check, once: neither depends on the target.
+    needs: meta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - name: cargo deny check
+        run: ci/jobs/deny.sh
+
+  build:
+    needs: [meta, deny]
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Intel macOS is built and tested natively on macos-15-intel, as are both Linux targets.
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml) and the target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
+          cargo --version
+      - name: Test the installer
+        # The end-to-end tests run the real binary against fakes on PATH; the real ~/.claude is
+        # never touched.
+        run: cargo test --locked --target "$TARGET" -p anthology-installer
+      - name: Build
+        run: cargo build --release --locked -p anthology-installer --target "$TARGET"
+      - name: Check --version
+        run: |
+          set -eu
+          got=$("target/$TARGET/release/anthology-installer" --version)
+          want="anthology-installer $VERSION"
+          if [ "$got" != "$want" ]; then
+            echo "::error::anthology-installer --version printed '$got', expected '$want'"
+            exit 1
+          fi
+          echo "$got"
+      - name: Package
+        run: |
+          set -eu
+          stage=$(mktemp -d)
+          cp "target/$TARGET/release/anthology-installer" LICENSE "$stage/"
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -czf "dist/anthology-installer-$TARGET.tar.gz" -C "$stage" anthology-installer LICENSE
+          tar -tzf "dist/anthology-installer-$TARGET.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: anthology-installer-${{ matrix.target }}
+          path: dist/anthology-installer-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  formula-check:
+    # The pull-request dry run (it also runs for a tag, before publishing). It renders the formula
+    # against the tarballs the build job made, with file:// URLs, then audits, installs and tests
+    # it from a throwaway local tap, on one macOS and one Linux runner.
+    needs: [meta, build]
+    name: formula-check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: anthology-installer-*
+          path: dist
+          merge-multiple: true
+      - name: Render the formula against the local tarballs
+        run: |
+          set -eu
+          ls -l dist
+          (cd dist && shasum -a 256 anthology-installer-*.tar.gz > checksums.txt)
+          ci/jobs/installer-formula.sh "$VERSION" dist/checksums.txt "file://$PWD/dist" > anthology-installer.rb
+          cat anthology-installer.rb
+      - name: brew audit --strict, brew install and brew test
+        run: |
+          set -eu
+          if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+          brew --version
+          tap=local/anthology-installer-check
+          brew tap-new --no-git "$tap"
+          mkdir -p "$(brew --repository "$tap")/Formula"
+          cp anthology-installer.rb "$(brew --repository "$tap")/Formula/anthology-installer.rb"
+          brew audit --strict --formula "$tap/anthology-installer"
+          brew install --formula "$tap/anthology-installer"
+          brew test "$tap/anthology-installer"
+          anthology-installer --version
+
+  publish:
+    # Not on pull requests (the dry run stops after the build and formula jobs).
+    if: needs.meta.outputs.publish == 'true'
+    needs: [meta, deny, build, formula-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: anthology-installer-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -eu
+          ls -l
+          count=$(find . -maxdepth 1 -name 'anthology-installer-*.tar.gz' | wc -l | tr -d ' ')
+          if [ "$count" != 4 ]; then
+            echo "::error::expected 4 tarballs, found $count"
+            exit 1
+          fi
+          sha256sum anthology-installer-*.tar.gz | LC_ALL=C sort -k2 > checksums.txt
+          cat checksums.txt
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/anthology-installer-*.tar.gz
+      - name: Create the release (fails if it already exists)
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release for $TAG already exists; not overwriting it"
+            exit 1
+          fi
+          gh release create "$TAG" \
+            dist/anthology-installer-aarch64-apple-darwin.tar.gz \
+            dist/anthology-installer-x86_64-apple-darwin.tar.gz \
+            dist/anthology-installer-x86_64-unknown-linux-musl.tar.gz \
+            dist/anthology-installer-aarch64-unknown-linux-musl.tar.gz \
+            dist/checksums.txt \
+            --title "$TAG" \
+            --notes "The anthology-installer binary, built from crates/anthology-installer at this tag, with build-provenance attestations. Install it with Homebrew from the rbonweb/anthology tap. Verify a tarball with: gh attestation verify <file> --repo rbonweb/anthology" \
+            --verify-tag
+
+  tap:
+    # Pushes Formula/anthology-installer.rb to rbonweb/homebrew-anthology with a deploy key. The
+    # `release` environment holds the key and can require a reviewer. Without TAP_DEPLOY_KEY the
+    # job only says so.
+    needs: [meta, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAP_REPO: rbonweb/homebrew-anthology
+    steps:
+      - name: Is the deploy key there?
+        id: key
+        env:
+          HAVE_KEY: ${{ secrets.TAP_DEPLOY_KEY != '' }}
+        run: |
+          set -eu
+          if [ "$HAVE_KEY" = true ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAP_DEPLOY_KEY is not set in the release environment, so the Homebrew formula was not pushed. The release is published. Add the secret and re-run this job."
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.present == 'true'
+        with:
+          ref: refs/tags/${{ needs.meta.outputs.tag }}
+          persist-credentials: false
+      - name: Render the formula from the release's checksums.txt
+        if: steps.key.outputs.present == 'true'
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" --pattern checksums.txt --dir "$RUNNER_TEMP/release"
+          ci/jobs/installer-formula.sh "$VERSION" "$RUNNER_TEMP/release/checksums.txt" \
+            "https://github.com/$GH_REPO/releases/download/$TAG" > "$RUNNER_TEMP/anthology-installer.rb"
+          cat "$RUNNER_TEMP/anthology-installer.rb"
+      - name: Push it to the tap
+        if: steps.key.outputs.present == 'true'
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -eu
+          ssh_dir=$RUNNER_TEMP/ssh
+          mkdir -m 700 "$ssh_dir"
+          # The key goes to a file with printf, never onto a command line. GitHub's published
+          # ed25519 host key is pinned, so the push cannot go to a look-alike host.
+          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$ssh_dir/key")
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$ssh_dir/known_hosts"
+          ssh-keygen -lf "$ssh_dir/known_hosts" | grep -q 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU'
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          git clone --depth 1 "git@github.com:$TAP_REPO.git" "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          mkdir -p Formula
+          cp "$RUNNER_TEMP/anthology-installer.rb" Formula/anthology-installer.rb
+          if git diff --quiet -- Formula/anthology-installer.rb && [ -z "$(git status --porcelain)" ]; then
+            echo "The tap already has this formula."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/anthology-installer.rb
+          git commit -m "anthology-installer $VERSION"
+          git push origin HEAD
