@@ -736,6 +736,7 @@ dependencies = [
  "anthology-core",
  "anthology-dev",
  "anthology-guard",
+ "anthology-installer",
  "anthology-memory",
  "anthology-pycompat",
  "anthology-testkit",

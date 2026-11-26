@@ -13,6 +13,7 @@ pub mod ctx;
 pub mod platform;
 pub mod proc;
 pub mod report;
+pub mod setup;
 pub mod steps;
 #[cfg(test)]
 mod testing;

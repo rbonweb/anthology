@@ -22,6 +22,9 @@ yaml-rust2.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+# installer: its bootstrap command against lib.sh's anth_fix_cmd. A path, not a workspace entry:
+# the installer is outside the anthology-cli graph and must not touch the root manifest.
+anthology-installer = { path = "../anthology-installer" }
 # host_predicate: the guard's `host::embedded` against the same truth table as the hook and the mod.
 anthology-guard.workspace = true
 anthology-testkit.workspace = true
