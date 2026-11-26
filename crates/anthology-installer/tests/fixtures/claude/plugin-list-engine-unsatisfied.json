@@ -1,0 +1,51 @@
+[
+  {
+    "id": "anthology-guardrails@anthology",
+    "version": "0.2.15-900b9134aefc",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/anthology/anthology-guardrails/0.2.15-900b9134aefc",
+    "installedAt": "2026-11-21T07:54:28.967Z",
+    "lastUpdated": "2026-11-25T08:56:20.162Z",
+    "projectEnabled": false
+  },
+  {
+    "id": "anthology-superpowers@anthology",
+    "version": "0.2.3-4d8b34a1de73",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/anthology/anthology-superpowers/0.2.3-4d8b34a1de73",
+    "installedAt": "2026-11-21T14:13:07.487Z",
+    "lastUpdated": "2026-11-24T08:41:11.459Z",
+    "projectEnabled": false
+  },
+  {
+    "id": "anthology@anthology",
+    "version": "0.5.5",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/anthology/anthology/0.5.5",
+    "installedAt": "2026-11-22T03:39:24.060Z",
+    "lastUpdated": "2026-11-26T04:19:47.614Z",
+    "errors": [
+      "Plugin \"anthology\" not loaded: needs Claude Code >=2.1.330, this is 2.1.326. Run `claude update`"
+    ],
+    "errorDetails": [
+      {
+        "type": "engine-range-unsatisfied",
+        "plugin": "anthology"
+      }
+    ],
+    "projectEnabled": false
+  },
+  {
+    "id": "frontend-design@claude-plugins-official",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": false,
+    "installPath": "/home/user/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown",
+    "installedAt": "2026-11-01T00:00:00.000Z",
+    "lastUpdated": "2026-11-01T00:00:00.000Z",
+    "projectEnabled": false
+  }
+]

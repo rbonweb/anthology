@@ -1,0 +1,1 @@
+{"command":"install","outcome":"failed","plugin":"nope@anthology","scope":"user","message":"Plugin \"nope\" not found in marketplace \"anthology\". Your local copy may be out of date — try `claude plugin marketplace update anthology`.","failureCode":"not_found"}

@@ -6,7 +6,13 @@
 //! changes for it.
 #![forbid(unsafe_code)]
 
+pub mod binary;
+pub mod claude;
 pub mod cli;
+pub mod ctx;
 pub mod platform;
 pub mod proc;
 pub mod report;
+pub mod steps;
+#[cfg(test)]
+mod testing;
