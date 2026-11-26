@@ -13,6 +13,7 @@
 - [Test fixtures must not contain home-style paths](project-test-fixtures-home-paths.md) — repo-tests docs test_no_real_home_paths fails on any tracked file with a home-folder path unless the name is…
 - [rtk-hook tests live in anthology-runtime, run in own Docker](project-rtk-hook-tests-and-docker.md) — Where the rtk-hook shell tests are and how to run them without scripts/rust-test.sh
 ## reference
+- [osascript notifications belong to Script Editor](reference-macos-osascript-notification-attribution.md) — Why notify.sh no longer uses osascript on macOS, and how to check a notification sender
 - [Claude Code hook input fields can be read from the installed binary](reference-cc-hook-input-from-binary.md) — How to check which fields a hook input carries (agent_id on a subagent compact) from …
 - [Proving guard bypasses in bash and zsh](reference-shell-bypass-probe-container.md) — A container recipe to show whether a command runs a marker program in bash 5.2 and zsh 5.9
 - [Reading a difftest golden report](reference-golden-report-reading.md) — Where the golden check report lands and how to read its hook cases inside the rust container

@@ -16,11 +16,13 @@ const SCRIPT: &str = "plugins/anthology/hooks/notify.sh";
 const APPROVAL: &str = "Claude needs your approval";
 const IDLE: &str = "Claude is waiting for you";
 const OTHER: &str = "Claude needs your attention";
-const MAC_SCRIPT: [&str; 3] = [
-    "on run argv",
-    "display notification (item 1 of argv) with title \"Claude Code\" sound name \"Glass\"",
-    "end run",
+/// The environment the VS Code extension gives the hook. notify.sh reads none of it; one case
+/// shows that a host's variables change nothing.
+const VS_CODE: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_ENTRYPOINT", "claude-vscode"),
+    ("__CFBundleIdentifier", "com.microsoft.VSCode"),
 ];
+const GLASS: &str = "/System/Library/Sounds/Glass.aiff";
 
 /// A sandbox: a folder of fake tools, a log folder and a working folder.
 struct Sandbox {
@@ -48,7 +50,13 @@ impl Sandbox {
             work,
         };
         sb.fake("uname", "echo \"$FAKE_UNAME\"");
-        for name in ["osascript", "notify-send", "canberra-gtk-play", "paplay"] {
+        for name in [
+            "osascript",
+            "afplay",
+            "notify-send",
+            "canberra-gtk-play",
+            "paplay",
+        ] {
             sb.fake(
                 name,
                 &format!("printf '%s\\n' \"$@\" > \"$FAKE_LOG/{name}\""),
@@ -107,11 +115,9 @@ impl Sandbox {
     }
 }
 
-fn mac_args(message: &str) -> Vec<String> {
-    let [a, b, c] = MAC_SCRIPT;
-    ["-e", a, "-e", b, "-e", c, message]
-        .map(str::to_string)
-        .to_vec()
+/// What the fake `notify-send` logs for a message.
+fn send_args(message: &str) -> Vec<String> {
+    vec!["Claude Code".into(), message.into()]
 }
 
 fn ok_and_quiet(out: &Output) {
@@ -124,19 +130,50 @@ fn ok_and_quiet(out: &Output) {
 }
 
 #[test]
-fn approval_on_macos_sends_the_fixed_message_to_osascript_as_an_argument() {
-    let sb = Sandbox::new();
-    let out = sb.run(&["approval"], "Darwin", &[], b"");
-    ok_and_quiet(&out);
-    assert_eq!(sb.logged("osascript"), Some(mac_args(APPROVAL)));
+fn macos_never_runs_osascript_and_plays_the_sound_with_afplay() {
+    // A notification that osascript posts belongs to Script Editor, so clicking it opens Script
+    // Editor, not the app the session runs in. Wrapping the call in `tell application id "<host>"`
+    // does not change that (checked against usernoted on macOS). afplay posts no notification and
+    // works where the session has no terminal, such as the VS Code extension.
+    for host in [VS_CODE, &[]] {
+        for arg in ["approval", "idle", "other"] {
+            let sb = Sandbox::new();
+            let out = sb.run(&[arg], "Darwin", host, b"");
+            ok_and_quiet(&out);
+            assert_eq!(sb.logged("osascript"), None, "{host:?} {arg}");
+            assert_eq!(
+                sb.logged("afplay"),
+                Some(vec![GLASS.into()]),
+                "{host:?} {arg}"
+            );
+            assert_eq!(sb.logged("notify-send"), None, "{host:?} {arg}");
+        }
+    }
 }
 
 #[test]
-fn idle_on_macos_sends_the_waiting_message() {
+fn macos_without_afplay_still_exits_0_quietly() {
     let sb = Sandbox::new();
+    std::fs::remove_file(sb.bin.join("afplay")).unwrap();
     let out = sb.run(&["idle"], "Darwin", &[], b"");
     ok_and_quiet(&out);
-    assert_eq!(sb.logged("osascript"), Some(mac_args(IDLE)));
+    assert!(sb.nothing_logged());
+}
+
+#[test]
+fn approval_on_linux_sends_the_fixed_message_as_an_argument() {
+    let sb = Sandbox::new();
+    let out = sb.run(&["approval"], "Linux", &[], b"");
+    ok_and_quiet(&out);
+    assert_eq!(sb.logged("notify-send"), Some(send_args(APPROVAL)));
+}
+
+#[test]
+fn idle_on_linux_sends_the_waiting_message() {
+    let sb = Sandbox::new();
+    let out = sb.run(&["idle"], "Linux", &[], b"");
+    ok_and_quiet(&out);
+    assert_eq!(sb.logged("notify-send"), Some(send_args(IDLE)));
 }
 
 #[test]
@@ -151,9 +188,9 @@ fn an_unknown_or_missing_argument_gets_the_generic_message() {
         &[hostile],
     ] {
         let sb = Sandbox::new();
-        let out = sb.run(arg, "Darwin", &[], b"");
+        let out = sb.run(arg, "Linux", &[], b"");
         ok_and_quiet(&out);
-        assert_eq!(sb.logged("osascript"), Some(mac_args(OTHER)), "{arg:?}");
+        assert_eq!(sb.logged("notify-send"), Some(send_args(OTHER)), "{arg:?}");
         assert!(!sb.work.join("PWNED").exists(), "{arg:?}: nothing ran");
     }
 }
@@ -162,9 +199,9 @@ fn an_unknown_or_missing_argument_gets_the_generic_message() {
 fn only_the_argument_picks_the_message_stdin_is_ignored() {
     let sb = Sandbox::new();
     let junk = br#"{"message":"$(touch PWNED)","notification_type":"idle_prompt"}"#;
-    let out = sb.run(&["approval"], "Darwin", &[], junk);
+    let out = sb.run(&["approval"], "Linux", &[], junk);
     ok_and_quiet(&out);
-    assert_eq!(sb.logged("osascript"), Some(mac_args(APPROVAL)));
+    assert_eq!(sb.logged("notify-send"), Some(send_args(APPROVAL)));
     assert!(!sb.work.join("PWNED").exists());
 }
 
@@ -182,9 +219,9 @@ fn anthology_notify_0_turns_the_alert_off() {
 fn other_values_of_anthology_notify_keep_the_alert_on() {
     for value in ["1", "", "off"] {
         let sb = Sandbox::new();
-        let out = sb.run(&["idle"], "Darwin", &[("ANTHOLOGY_NOTIFY", value)], b"");
+        let out = sb.run(&["idle"], "Linux", &[("ANTHOLOGY_NOTIFY", value)], b"");
         ok_and_quiet(&out);
-        assert_eq!(sb.logged("osascript"), Some(mac_args(IDLE)), "{value:?}");
+        assert_eq!(sb.logged("notify-send"), Some(send_args(IDLE)), "{value:?}");
     }
 }
 
@@ -221,7 +258,13 @@ fn linux_without_notify_send_still_exits_0() {
 #[test]
 fn with_no_notifier_at_all_it_exits_0_quietly() {
     let sb = Sandbox::new();
-    for name in ["osascript", "notify-send", "canberra-gtk-play", "paplay"] {
+    for name in [
+        "osascript",
+        "afplay",
+        "notify-send",
+        "canberra-gtk-play",
+        "paplay",
+    ] {
         std::fs::remove_file(sb.bin.join(name)).unwrap();
     }
     // PATH is the fake `uname` alone: no notifier, no `timeout`, no other tool.
@@ -235,8 +278,8 @@ fn with_no_notifier_at_all_it_exits_0_quietly() {
 #[test]
 fn a_failing_notifier_never_fails_the_hook() {
     let sb = Sandbox::new();
-    sb.fake("osascript", "echo boom >&2; exit 9");
-    let out = sb.run(&["approval"], "Darwin", &[], b"");
+    sb.fake("notify-send", "echo boom >&2; exit 9");
+    let out = sb.run(&["approval"], "Linux", &[], b"");
     ok_and_quiet(&out);
 }
 
