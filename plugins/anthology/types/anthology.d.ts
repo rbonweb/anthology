@@ -37,12 +37,6 @@ declare module 'claude-code' {
           agent?: string
           at: number
         }[]
-        /**
-         * agents that ended with `completed`, and with `failed` or `stopped`, since the session
-         * began. Not capped as `finished` is: the row above the prompt shows them.
-         */
-        doneCount: number
-        failedCount: number
       }>
     }
   }
