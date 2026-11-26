@@ -58,7 +58,7 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 | `/anthology:setup remove` | Takes out the settings entries and the ATL download that setup added; never deletes your notes (see [Removing](setup.md#removing)) |
 | `/anthology:export` | Exports your memory notes to a portable archive (see [Export and import](memory.md#export-and-import)) |
 | `/anthology:import <file>` | Imports an archive after a dry run |
-| `/anthology-status` | Opens a pane with the agents that run, the last few that finished and the permission prompts that wait for you (see [Alerts and the status pane](mods.md#alerts-and-the-status-pane)) |
+| `/anthology-status` | Opens a pane with the agents that run, the last few that finished and the permission prompts that wait for you (see [The status pane](mods.md#the-status-pane)) |
 
 These run only when you ask for them.
 

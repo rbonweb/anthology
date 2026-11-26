@@ -19,7 +19,6 @@ set -- \
     "$staging/anthology/hooks/lib.sh" \
     "$staging/anthology/hooks/bootstrap.sh" \
     "$staging/anthology/hooks/session-start.sh" \
-    "$staging/anthology/hooks/notify.sh" \
     "$staging/anthology/hooks/no-attribution.sh" \
     "$staging/anthology/bin/anthology" \
     "$staging/anthology/bin/anthology-mem" \
