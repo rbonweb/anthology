@@ -1,6 +1,6 @@
 #!/bin/sh
-# Notification hook: a desktop alert with sound (Linux) or the terminal bell (macOS, see below)
-# when Claude Code needs your attention. The hook entry in hooks.json passes what happened as the
+# Notification hook: a desktop alert with sound (Linux) or a sound plus the terminal bell (macOS,
+# see below) when Claude Code needs your attention. The hook entry in hooks.json passes what happened as the
 # one argument: `approval` (a permission prompt) or `idle` (waiting for your input). The hook JSON
 # on stdin is ignored, so no text from it ever reaches a notifier. The alert is best effort: this
 # script always exits 0 and never blocks a session. Set ANTHOLOGY_NOTIFY=0 to turn it off.
@@ -50,8 +50,13 @@ case $(uname -s 2>/dev/null) in
     Darwin)
         # No `osascript`: macOS attributes a notification it posts to Script Editor, so clicking
         # the alert opens Script Editor, not the app the session runs in. Running the call inside
-        # `tell application id "<host>"` does not change the attribution. The host app alerts
-        # inside itself (the VS Code extension, the plugin's own toast); the bell below is the rest.
+        # `tell application id "<host>"` does not change the attribution. The host app shows the
+        # alert itself (the plugin's in-app toast). `afplay` plays the sound and posts nothing;
+        # the bell below stays too, and `notified` stays 0 so it always rings. A missing afplay
+        # or sound file only fails quietly.
+        if command -v afplay >/dev/null 2>&1; then
+            notify_run afplay /System/Library/Sounds/Glass.aiff
+        fi
         ;;
     Linux)
         if command -v notify-send >/dev/null 2>&1; then

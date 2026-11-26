@@ -16,32 +16,13 @@ const SCRIPT: &str = "plugins/anthology/hooks/notify.sh";
 const APPROVAL: &str = "Claude needs your approval";
 const IDLE: &str = "Claude is waiting for you";
 const OTHER: &str = "Claude needs your attention";
-/// The hosts a session can run in on macOS, as the environment they give the hook.
-const MAC_HOSTS: [&[(&str, &str)]; 7] = [
-    &[
-        ("CLAUDE_CODE_ENTRYPOINT", "claude-vscode"),
-        ("TERM_PROGRAM", "vscode"),
-        ("__CFBundleIdentifier", "com.microsoft.VSCode"),
-    ],
-    &[
-        ("TERM_PROGRAM", "iTerm.app"),
-        ("__CFBundleIdentifier", "com.googlecode.iterm2"),
-    ],
-    &[
-        ("TERM_PROGRAM", "Apple_Terminal"),
-        ("__CFBundleIdentifier", "com.apple.Terminal"),
-    ],
-    &[
-        ("TERM_PROGRAM", "WarpTerminal"),
-        ("__CFBundleIdentifier", "dev.warp.Warp-Stable"),
-    ],
-    &[
-        ("TERM_PROGRAM", "ghostty"),
-        ("__CFBundleIdentifier", "com.mitchellh.ghostty"),
-    ],
-    &[("TERM_PROGRAM", "tmux")],
-    &[],
+/// The environment the VS Code extension gives the hook. notify.sh reads none of it; one case
+/// shows that a host's variables change nothing.
+const VS_CODE: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_ENTRYPOINT", "claude-vscode"),
+    ("__CFBundleIdentifier", "com.microsoft.VSCode"),
 ];
+const GLASS: &str = "/System/Library/Sounds/Glass.aiff";
 
 /// A sandbox: a folder of fake tools, a log folder and a working folder.
 struct Sandbox {
@@ -69,7 +50,13 @@ impl Sandbox {
             work,
         };
         sb.fake("uname", "echo \"$FAKE_UNAME\"");
-        for name in ["osascript", "notify-send", "canberra-gtk-play", "paplay"] {
+        for name in [
+            "osascript",
+            "afplay",
+            "notify-send",
+            "canberra-gtk-play",
+            "paplay",
+        ] {
             sb.fake(
                 name,
                 &format!("printf '%s\\n' \"$@\" > \"$FAKE_LOG/{name}\""),
@@ -143,22 +130,34 @@ fn ok_and_quiet(out: &Output) {
 }
 
 #[test]
-fn macos_never_runs_osascript_whatever_the_host() {
+fn macos_never_runs_osascript_and_plays_the_sound_with_afplay() {
     // A notification that osascript posts belongs to Script Editor, so clicking it opens Script
     // Editor, not the app the session runs in. Wrapping the call in `tell application id "<host>"`
-    // does not change that (checked against usernoted on macOS), so no host gets osascript.
-    for host in MAC_HOSTS {
+    // does not change that (checked against usernoted on macOS). afplay posts no notification and
+    // works where the session has no terminal, such as the VS Code extension.
+    for host in [VS_CODE, &[]] {
         for arg in ["approval", "idle", "other"] {
             let sb = Sandbox::new();
             let out = sb.run(&[arg], "Darwin", host, b"");
             ok_and_quiet(&out);
             assert_eq!(sb.logged("osascript"), None, "{host:?} {arg}");
-            assert!(
-                sb.nothing_logged(),
-                "{host:?} {arg}: no desktop tool ran on macOS, the terminal bell is the fallback"
+            assert_eq!(
+                sb.logged("afplay"),
+                Some(vec![GLASS.into()]),
+                "{host:?} {arg}"
             );
+            assert_eq!(sb.logged("notify-send"), None, "{host:?} {arg}");
         }
     }
+}
+
+#[test]
+fn macos_without_afplay_still_exits_0_quietly() {
+    let sb = Sandbox::new();
+    std::fs::remove_file(sb.bin.join("afplay")).unwrap();
+    let out = sb.run(&["idle"], "Darwin", &[], b"");
+    ok_and_quiet(&out);
+    assert!(sb.nothing_logged());
 }
 
 #[test]
@@ -259,7 +258,13 @@ fn linux_without_notify_send_still_exits_0() {
 #[test]
 fn with_no_notifier_at_all_it_exits_0_quietly() {
     let sb = Sandbox::new();
-    for name in ["osascript", "notify-send", "canberra-gtk-play", "paplay"] {
+    for name in [
+        "osascript",
+        "afplay",
+        "notify-send",
+        "canberra-gtk-play",
+        "paplay",
+    ] {
         std::fs::remove_file(sb.bin.join(name)).unwrap();
     }
     // PATH is the fake `uname` alone: no notifier, no `timeout`, no other tool.
