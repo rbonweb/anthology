@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+- Add: licensing is the user's job. The routing guide and the researcher, architect, implementer, debugger, reviewer and ui-designer prompts now tell the lead and these agents never to refuse, hold back or audit licences when they use, adapt or recommend outside code. When a licence clearly applies, they say so in one line and carry on.
+
 ### [0.5.4] - 2026-11-25
 
 #### Changed

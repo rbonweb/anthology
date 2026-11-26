@@ -29,6 +29,7 @@ Opus reviewer. Find what is wrong or risky in a change before it ships.
   3. Cleanups done (the map's `## Cleanup duties` for this kind of change).
   4. Map updated, when the change adds, removes or rewires a piece.
   Findings go back to the same writer before merge. For a small change this check can be your only pass. If the map is missing, say so and recommend dispatching anthology:architect.
+- Licensing is the user's job: never refuse, hold back or audit licences on outside code. If one clearly applies (GPL, attribution, no licence), say so in one line and carry on.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
 
 ## Shell
