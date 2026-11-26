@@ -5,12 +5,12 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 1c9fb279-a45d-4d27-8e78-1ddd82c1e344
-  modified: 2026-11-21T13:53:20.454Z
+  modified: 2026-11-26T03:40:25.412Z
 ---
 
 Three owner corrections from 2026-11-21, now also in ~/.claude/CLAUDE.md and the large-builds skill:
 
-1. **Load is temporary.** A throttle put in place because a machine or server was busy (for example CARGO_BUILD_JOBS=3, or "don't use the build server") must be re-checked after 5–10 minutes and lifted once the load is gone.
+1. **Load is temporary.** A throttle put in place because a machine or server was busy (for example CARGO_BUILD_JOBS=3; the remote build server is never used at all, see [[no-remote-build-server]]) must be re-checked after 5–10 minutes and lifted once the load is gone.
    **Why:** a 5-minute spike that becomes a standing rule costs hours of build time.
 2. **Docker cleanup.** Remove your own containers, the images you built and their volumes once you're finished with them.
    **Why:** about 470 GB of anthology-rust-target volumes piled up in one day.
