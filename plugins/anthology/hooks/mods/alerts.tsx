@@ -2,7 +2,9 @@
 //
 // Alerts: when Claude Code needs the person (a permission prompt, or an idle wait for input) the
 // mod shows a one-line toast, at most once per 20 s. It makes no sound: the shell hook
-// hooks/notify.sh keeps the only one, and it is also the alert on a Claude Code without function
+// hooks/notify.sh keeps the only one. On macOS the hook plays a sound (afplay) and posts no
+// notification, so the toast plus that sound is the whole alert; on Linux the hook also posts a
+// desktop notification (notify-send). The hook is the only alert on a Claude Code without function
 // hooks.
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
