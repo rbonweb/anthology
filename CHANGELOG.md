@@ -10,7 +10,11 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.5] - 2026-11-26
+
 - Add: licensing is the user's job. The routing guide and the researcher, architect, implementer, debugger, reviewer and ui-designer prompts now tell the lead and these agents never to refuse, hold back or audit licences when they use, adapt or recommend outside code. When a licence clearly applies, they say so in one line and carry on.
+- Remove: the status row above the prompt (`● 2 running   ! 1 needs you   /anthology-status`) is gone. Nothing is drawn above the prompt any more. `/anthology-status` still opens the pane with the running agents, the last five that finished and the permission prompts that wait for you.
+- Fix: on macOS the `Notification` hook no longer posts its alert through `osascript`. macOS attributes such a notification to Script Editor (running it inside `tell application id "<host>"` changes nothing), so clicking the alert opened Script Editor instead of your editor or terminal. The hook now plays the Glass sound with `afplay` and rings the terminal bell on macOS; the in-session toast is the visible alert. Linux alerts are unchanged.
 
 ### [0.5.4] - 2026-11-25
 
