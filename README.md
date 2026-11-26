@@ -12,7 +12,7 @@ Three plugins. Installing `anthology` brings the other two with it.
   - An agent roster: Opus researches, plans and reviews, Sonnet builds, Haiku scouts. Each agent reads its own knowledge, and a routing guide tells the main session when to delegate and to whom. See [Agents](docs/agents.md).
   - Memory as Markdown notes committed with your project. It survives re-clones and team merges, with search, export and import. See [Memory](docs/memory.md).
   - ATL (Anthology Token Layer), which condenses the output of common dev commands to save tokens. It is a fork of rtk by RTK AI Labs. See [ATL](docs/atl.md).
-  - Claude Code mods: strict delegation, an after-work check on agent reports, desktop alerts and an `/anthology-status` pane. See [Mods](docs/mods.md).
+  - Claude Code mods: strict delegation, an after-work check on agent reports and an `/anthology-status` pane. See [Mods](docs/mods.md).
   - Commits that carry only your name: no `Co-Authored-By` trailer and no "Generated with" line. See [Commit attribution](docs/guardrails.md#commits-carry-only-your-name).
   - The commands `/anthology:setup`, `/anthology:export`, `/anthology:import` and `/anthology-status`.
 - **`anthology-guardrails`** blocks what agents must not do: install or launch a browser on your machine, touch your Chrome profile, use any browser other than BrowserOS Neo, or write secrets into memory. See [Guardrails](docs/guardrails.md).
@@ -74,11 +74,13 @@ See [Removing](docs/setup.md#removing) for what it keeps and what to delete by h
 
 - [Setup, updating and removing](docs/setup.md): what `/anthology:setup` changes, what happens at session start, replacing the official superpowers and design-skills.
 - [Agents, commands and working rules](docs/agents.md): model roles, the roster, the commands and host mode.
-- [Claude Code mods](docs/mods.md): strict delegation, the after-work check, alerts and the status pane, and the switches that turn them off.
+- [Claude Code mods](docs/mods.md): strict delegation, the after-work check, the status pane, and the switches that turn them off.
 - [Guardrails](docs/guardrails.md): what the guard blocks, its known limits, commit attribution and the browser rule.
 - [ATL](docs/atl.md): condensed command output, local history and the `Bash(atl *)` risk.
 - [Memory](docs/memory.md): approved repos, re-clones, team merges, CODEOWNERS, `anthology-mem`, export and import.
 - [The `anthology` binary](docs/binary.md): where it comes from, how it is verified and what to do when it cannot be installed.
+
+Want notifications? Anthology sends none; use [Coucou](https://github.com/Louis-CFM/coucou).
 
 ## Project
 

@@ -1,6 +1,6 @@
 # Claude Code mods
 
-This page covers the mods the `anthology` plugin adds on Claude Code 2.1.330 or later: strict delegation, the after-work check, and the alerts and status pane. A mod is code the plugin loads into Claude Code itself; on an older Claude Code none of them run.
+This page covers the mods the `anthology` plugin adds on Claude Code 2.1.330 or later: strict delegation, the after-work check, and the status pane. A mod is code the plugin loads into Claude Code itself; on an older Claude Code none of them run.
 
 A fourth mod, which lets provably read-only shell commands run without a prompt, is described under [Guardrails](guardrails.md#read-only-commands-without-a-prompt). The switches for all of them are at the [end of this page](#switches).
 
@@ -37,15 +37,13 @@ The agent's own text is never rewritten or cut. A report with no gap is delivere
 
 When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out). Any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are.
 
-## Alerts and the status pane
+## The status pane
 
-Three things tell you that Claude Code needs you or what the agents are doing.
+`/anthology-status` opens a pane called Anthology. It lists the agents that run, the last five that finished and the permission prompts that wait for you. Nothing is drawn above the prompt: the pane is the only status display. Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
 
-- **Desktop alert.** A `Notification` hook alerts you when Claude Code shows a permission prompt or waits for your input. On Linux it pops a desktop alert with `notify-send` plus `paplay` or `canberra-gtk-play`, else a terminal bell. On macOS it plays the Glass sound with `afplay` and rings the terminal bell, but posts no notification: one posted through `osascript` belongs to Script Editor, so clicking it opens Script Editor. On macOS the alert you see is the in-session toast below. On a Claude Code without plugin mods, the sound and the bell are the whole alert there.
-- **In-session alert.** Where Claude Code loads plugin mods, the mod `hooks/mods/alerts.tsx` also shows a one-line toast in the session, at most once every 20 seconds. It makes no sound: the shell hook keeps the only sound. On macOS you get the toast plus that sound; on Linux you get the toast and the `notify-send` desktop alert together.
-- **Status pane.** `/anthology-status` opens a pane called Anthology (from the same mod). It lists the agents that run, the last five that finished and the permission prompts that wait for you. Nothing is drawn above the prompt: the pane is the only status display. Times are on your machine's clock. The pane draws plain text, so it reads the same on the terminal, the desktop app, VS Code and mobile.
+Anthology sends no desktop alerts, sounds or toasts; any notification app you choose works alongside it.
 
-The pane and the toast name a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
+The pane names a tool and an agent's type and description, and never what a tool call does: no command, file path or URL is shown, on any surface.
 
 ```text
 Needs your approval (2)
@@ -71,8 +69,7 @@ Set these in the environment, for example in the `env` block of `~/.claude/setti
 
 | Switch | Effect |
 |---|---|
-| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the toast, the status pane, and the read-only commands mod |
+| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, and the read-only commands mod |
 | `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
-| `ANTHOLOGY_NOTIFY=0` | Turns off the alert: the desktop alert and the toast |
 | `ANTHOLOGY_HOST_MODE=full` | Opts back in when another program drives the session (see [Host mode](agents.md#host-mode)) |
