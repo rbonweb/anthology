@@ -1,9 +1,9 @@
 #!/bin/sh
-# Notification hook: a desktop alert with sound when Claude Code needs your attention. The hook
-# entry in hooks.json passes what happened as the one argument: `approval` (a permission prompt)
-# or `idle` (waiting for your input). The hook JSON on stdin is ignored, so no text from it ever
-# reaches a notifier. The alert is best effort: this script always exits 0 and never blocks a
-# session. Set ANTHOLOGY_NOTIFY=0 to turn it off.
+# Notification hook: a desktop alert with sound (Linux) or the terminal bell (macOS, see below)
+# when Claude Code needs your attention. The hook entry in hooks.json passes what happened as the
+# one argument: `approval` (a permission prompt) or `idle` (waiting for your input). The hook JSON
+# on stdin is ignored, so no text from it ever reaches a notifier. The alert is best effort: this
+# script always exits 0 and never blocks a session. Set ANTHOLOGY_NOTIFY=0 to turn it off.
 [ "${ANTHOLOGY_NOTIFY:-}" = "0" ] && exit 0
 
 # PATH without its relative and empty entries first, as hooks/lib.sh's anth_safe_path makes it:
@@ -48,11 +48,10 @@ notify_run() {
 notified=0
 case $(uname -s 2>/dev/null) in
     Darwin)
-        if command -v osascript >/dev/null 2>&1; then
-            notify_run osascript -e 'on run argv' \
-                -e 'display notification (item 1 of argv) with title "Claude Code" sound name "Glass"' \
-                -e 'end run' "$msg" && notified=1
-        fi
+        # No `osascript`: macOS attributes a notification it posts to Script Editor, so clicking
+        # the alert opens Script Editor, not the app the session runs in. Running the call inside
+        # `tell application id "<host>"` does not change the attribution. The host app alerts
+        # inside itself (the VS Code extension, the plugin's own toast); the bell below is the rest.
         ;;
     Linux)
         if command -v notify-send >/dev/null 2>&1; then
