@@ -1,0 +1,1 @@
+- Remove: the status row above the prompt (`● 2 running   ! 1 needs you   /anthology-status`) is gone. Nothing is drawn above the prompt any more. `/anthology-status` still opens the pane with the running agents, the last five that finished and the permission prompts that wait for you.

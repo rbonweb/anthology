@@ -9,10 +9,8 @@
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
 // agent.report, the latter hooked by index.ts), the last few that finished, and the permission prompts that wait for an answer.
-// A row above the prompt ("● 2 running   ✓ 3 done   ✗ 1 failed   ! 1 needs you", with the command on the right)
-// keeps the counts in view; it shows only while something runs or waits on the person. The pane and
-// the row draw with Box and Text only, which every surface has, one row per Text so the terminal
-// cuts a long row at its edge.
+// The pane draws with Box and Text only, which every surface has, one row per Text so the terminal
+// cuts a long row at its edge. Nothing is drawn above the prompt: the mod hooks no AbovePrompt.
 //
 // Privacy: the pane and the toasts name a tool and an agent's type and description, never what a
 // tool call does (no command, file path or URL), because a pane may be shown on a shared screen.
@@ -54,12 +52,13 @@ const SHOW_RUNNING = 20
 const SHOW_PROMPTS = 5
 
 // Bump the shape tag when a row's fields change: a value an earlier version stored reads as empty.
-// status-2 added `doneCount` and `failedCount`; a `status-1` value (kept across a hot reload) reads
-// as empty, so a reload from the older code starts the counters and the lists from nothing.
+// status-3 dropped the `doneCount` and `failedCount` that status-2 added for the row above the
+// prompt; a `status-2` value (kept across a hot reload) reads as empty, so a reload from the older
+// code starts the lists from nothing.
 const status = atom(
   { plugin: 'anthology', key: 'status' } as const,
-  { running: [], finished: [], prompts: [], doneCount: 0, failedCount: 0 },
-  { shape: 'status-2' },
+  { running: [], finished: [], prompts: [] },
+  { shape: 'status-3' },
 )
 
 // ---- Text helpers (pure) ------------------------------------------------------------------------
@@ -89,75 +88,6 @@ export function span(ms: number): string {
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
-}
-
-type BandPart = {
-  id: 'running' | 'done' | 'failed' | 'asks'
-  glyph: string
-  count: number
-  /** Absent when the row is too narrow for it: the glyph and the number still say it. */
-  label?: string
-}
-
-export type BandCounts = { running: number; done: number; failed: number; asks: number }
-export type BandLayout = { parts: BandPart[]; hasHint: boolean }
-
-/** The gap between two counts in the row. */
-const BAND_GAP = '   '
-/** Cells kept free at the row's two edges (paddingX 1 each side). */
-const BAND_EDGES = 2
-const BAND_LABELS = { running: 'running', done: 'done', failed: 'failed', asks: 'needs you' } as const
-const BAND_GLYPHS = { running: '●', done: '✓', failed: '✗', asks: '!' } as const
-/** Theme colours only, so light and dark themes both work. A label with none is drawn dim. */
-const BAND_TONES: Readonly<Record<BandPart['id'], { glyph: 'suggestion' | 'error' | 'permission' | undefined; label: 'error' | 'permission' | undefined }>> = {
-  running: { glyph: 'suggestion', label: undefined },
-  done: { glyph: undefined, label: undefined },
-  failed: { glyph: 'error', label: 'error' },
-  asks: { glyph: 'permission', label: 'permission' },
-}
-
-/**
- * What a part takes of the row. The glyphs ● ✓ ✗ ! are ambiguous in width: some terminals and fonts
- * draw them in two cells, so each counts as two and the row never overruns.
- */
-function partCells(p: BandPart): number {
-  return 2 + 1 + String(p.count).length + (p.label !== undefined ? 1 + p.label.length : 0)
-}
-
-function rowCells(parts: readonly BandPart[]): number {
-  return parts.reduce((n, p) => n + partCells(p), 0) + BAND_GAP.length * Math.max(0, parts.length - 1)
-}
-
-/**
- * The counts the row above the prompt shows, in the order running, done, failed, needs you; a zero
- * count is left out, and the hint (the pane's command) goes at the right where there is room.
- *
- * No row at all (no parts) when nothing runs and nothing waits on the person. Done and failed alone
- * show nothing either: they count the agents that ended this session, which never age out, so a row
- * for them would stay up after the work ended. The pane still lists the last five that finished.
- *
- * When `columns` (the band's width) is short, parts leave in this order: the hint, done, failed, the
- * label of running. If the needs-you part still does not fit beside running, running leaves too:
- * "! N needs you" is never cut.
- */
-export function bandLayout(counts: BandCounts, columns: number, hint: string): BandLayout {
-  if (counts.running === 0 && counts.asks === 0) return { parts: [], hasHint: false }
-  const part = (id: BandPart['id'], isLabelled = true): BandPart[] =>
-    counts[id] > 0 ? [{ id, glyph: BAND_GLYPHS[id], count: counts[id], ...(isLabelled ? { label: BAND_LABELS[id] } : {}) }] : []
-  const full = [...part('running'), ...part('done'), ...part('failed'), ...part('asks')]
-  const steps: BandPart[][] = [
-    full,
-    [...part('running'), ...part('failed'), ...part('asks')],
-    [...part('running'), ...part('asks')],
-    [...part('running', false), ...part('asks')],
-    part('asks'),
-  ]
-  const room = columns - BAND_EDGES
-  if (rowCells(full) + BAND_GAP.length + hint.length <= room) return { parts: full, hasHint: true }
-  // Each step is tried in turn. Where none fits, running alone is cut at the edge by its Text; a
-  // needs-you part always has a step of its own (the last), which fits any band of 16 cells or more.
-  const fits = steps.find(s => s.length > 0 && rowCells(s) <= room)
-  return { parts: fits ?? steps[counts.asks > 0 ? 4 : 3] ?? [], hasHint: false }
 }
 
 /** Runs `work` and swallows its failure; see the note at the top of this file. */
@@ -297,17 +227,11 @@ async function trackReport($: EngineInterface, e: AgentReportInput): Promise<voi
       endedAt,
       status: e.status,
     }
-    // The lists are capped; the counters are not, and only the row above the prompt reads them. A
-    // second report of an agent still in the list is not counted again.
-    const isNew = !s.finished.some(d => d.id === e.agentId)
-    const isDone = e.status === 'completed'
     return {
       // The agent is done, so a prompt it still held open is over too.
       prompts: s.prompts.filter(p => p.agentId !== e.agentId),
       running: s.running.filter(r => r.id !== e.agentId),
       finished: [row, ...s.finished.filter(d => d.id !== e.agentId)].slice(0, KEEP_FINISHED),
-      doneCount: s.doneCount + (isNew && isDone ? 1 : 0),
-      failedCount: s.failedCount + (isNew && !isDone ? 1 : 0),
     }
   })
 }
@@ -455,47 +379,6 @@ export function registerAlerts(on: On): void {
       if (!(await modsOff($))) await clearPrompts($)
     })
     return next(e)
-  }).catch(($, e, next) => next(e))
-
-  // The row above the prompt: `● 2 running   ✓ 3 done   ! 1 needs you        /anthology-status`.
-  // Box and Text only, so every surface draws it. It is the mod's own row, not a status entry, so
-  // Claude Code adds no plugin label to it. Where nothing runs or waits there is no row.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || (await modsOff($))) return next(e)
-    const { running, prompts, doneCount, failedCount } = await read($, status)
-    // The row is drawn when the state is written. An agent that ends with no agent.report (a
-    // killed one) leaves `running` with no write to redraw, so the row keeps its count until the
-    // next write (a spawn, a report, a prompt); the pane, drawn on demand, is always right. No
-    // timer: a stale count for a while is cheaper than a clock that redraws the band.
-    const counts = { running: (await liveRunning($, running)).length, done: doneCount, failed: failedCount, asks: prompts.length }
-    const hint = `/${COMMAND}`
-    const { parts, hasHint } = bandLayout(counts, e.props.bodyColumns, hint)
-    if (parts.length === 0) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
-
-    // The glyph and the label carry the colour; the number stays in the text colour so it reads first.
-    // Running and done are quiet (accent glyph, dim label); a failure and a prompt are not.
-    return (
-      <Box width="100%" justifyContent="space-between" paddingX={1}>
-        <Text wrap="truncate-end">
-          {parts.map((p, i) => (
-            <Text>
-              {i > 0 && BAND_GAP}
-              <Text color={BAND_TONES[p.id].glyph} dimColor={p.id === 'done'}>
-                {p.glyph}
-              </Text>
-              {` ${p.count}`}
-              {p.label !== undefined && (
-                <Text color={BAND_TONES[p.id].label} dimColor={BAND_TONES[p.id].label === undefined}>
-                  {` ${p.label}`}
-                </Text>
-              )}
-            </Text>
-          ))}
-        </Text>
-        {hasHint && <Text dimColor>{hint}</Text>}
-      </Box>
-    )
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
