@@ -453,17 +453,8 @@ fn without_a_path_the_binary_gets_no_relative_entry() {
     });
 }
 
-/// The notifiers notify.sh may run: kept off the real PATH, so no test pops up an alert.
-const NOTIFIERS: &[&str] = &[
-    "osascript",
-    "notify-send",
-    "canberra-gtk-play",
-    "paplay",
-    "timeout",
-];
-
-/// The anthology plugin's other hooks (atl-hook, no-attribution.sh, notify.sh) run on the safe
-/// PATH from their first line.
+/// The anthology plugin's other hooks (atl-hook, no-attribution.sh) run on the safe PATH from
+/// their first line.
 #[test]
 fn the_other_hooks_run_no_planted_tool() {
     let ask = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"x"}}"#;
@@ -517,17 +508,6 @@ fn the_other_hooks_run_no_planted_tool() {
                 "{c} no-attribution: {}",
                 run.out()
             );
-            // notify.sh: with no real notifier, the bell; nothing planted runs. The fixed list
-            // holds the real osascript on macOS, so nothing-absolute is not run there.
-            if entry == Entry::OnlyRelative && cfg!(target_os = "macos") {
-                continue;
-            }
-            let quiet = sb.path_with(NOTIFIERS, &[]).to_string_lossy().into_owned();
-            let mut spec = sb.spec(sh, "plugins/anthology/hooks/notify.sh", &["idle"], b"{}");
-            spec.path = Some(planted_path_on(&sb, entry, &quiet, &quiet));
-            let run = sb.run_spec(spec);
-            assert_nothing_planted_ran(&sb, &format!("{c} notify"));
-            assert_eq!(run.code, Some(0), "{c} notify: {}", run.err());
         }
     });
 }

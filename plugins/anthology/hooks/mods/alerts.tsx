@@ -1,24 +1,21 @@
-// Alerts and a live status pane (post-release mods design §5, item 4).
+// A live status pane (post-release mods design §5, item 4). The file keeps the name it had when it
+// also raised alerts.
 //
-// Alerts: when Claude Code needs the person (a permission prompt, or an idle wait for input) the
-// mod shows a one-line toast, at most once per 20 s. It makes no sound: the shell hook
-// hooks/notify.sh keeps the only one. On macOS the hook plays a sound (afplay) and posts no
-// notification, so the toast plus that sound is the whole alert; on Linux the hook also posts a
-// desktop notification (notify-send). The hook is the only alert on a Claude Code without function
-// hooks.
+// No alerts: Anthology raises none of its own, neither a toast nor a sound nor a desktop
+// notification. The mod hooks no Notification event, so each one goes straight to the user's own
+// hooks, and any notification app the user chooses works alongside it.
 //
 // Status pane: `/anthology-status` opens a pane that lists the agents that run (agent.spawn and
 // agent.report, the latter hooked by index.ts), the last few that finished, and the permission prompts that wait for an answer.
 // The pane draws with Box and Text only, which every surface has, one row per Text so the terminal
 // cuts a long row at its edge. Nothing is drawn above the prompt: the mod hooks no AbovePrompt.
 //
-// Privacy: the pane and the toasts name a tool and an agent's type and description, never what a
-// tool call does (no command, file path or URL), because a pane may be shown on a shared screen.
+// Privacy: the pane names a tool and an agent's type and description, never what a tool call does
+// (no command, file path or URL), because a pane may be shown on a shared screen.
 //
 // What the pane draws lives in `$.state` (`anthology.status`, declared in types/anthology.d.ts),
 // never in a module variable, so a hot reload keeps it and a write redraws the pane.
-// ANTHOLOGY_MODS=0 turns everything here off; ANTHOLOGY_NOTIFY=0 turns off the alert alone, as it
-// does for notify.sh.
+// ANTHOLOGY_MODS=0 turns everything here off.
 //
 // Nothing here may throw once a hook has called `next`: the hook's `.catch` would call `next`
 // again and replay a result that drops what the hooks beneath it returned. So every tracking call
@@ -36,12 +33,6 @@ type AnthologyPrompt = Status['prompts'][number]
 
 const PANE = 'anthology-status'
 const COMMAND = 'anthology-status'
-const ALERT_GAP_MS = 20_000
-const TOAST_MS = 8_000
-const REASONS: Readonly<Record<string, string>> = {
-  permission_prompt: 'Claude needs your approval',
-  idle_prompt: 'Claude is waiting for you',
-}
 
 // Bounds, so a long session never grows the state without end.
 const KEEP_RUNNING = 60
@@ -267,19 +258,6 @@ async function clearPrompts($: EngineInterface): Promise<void> {
   )
 }
 
-/**
- * Shows the toast for `type`, unless the last alert was under 20 s ago or the type is not one that
- * needs the person. Returns when the last alert was, for the next call.
- */
-async function alertUser($: EngineInterface, type: string, lastAt: number | undefined): Promise<number | undefined> {
-  const reason = REASONS[type]
-  if (reason === undefined || (await modsOff($)) || (await $.env.get('ANTHOLOGY_NOTIFY')) === '0') return lastAt
-  const now = await $.clock.now()
-  if (lastAt !== undefined && now - lastAt < ALERT_GAP_MS) return lastAt
-  $.ui.toast(reason, { timeoutMs: TOAST_MS })
-  return now
-}
-
 // ---- Registration -------------------------------------------------------------------------------
 
 /**
@@ -292,25 +270,6 @@ export async function alertsReport($: EngineInterface, e: AgentReportInput): Pro
 }
 
 export function registerAlerts(on: On): void {
-  // When the last alert fired. A hot reload or a restart of the hooks worker forgets it, which at
-  // worst lets one alert through early.
-  let lastAlertAt: number | undefined
-  // Set before the first await, so two notifications that arrive together raise one alert.
-  let isAlerting = false
-
-  // The Notification event that settings hooks hear (notify.sh among them) reaches here first;
-  // `next` hands it on, so those hooks still run.
-  on('classic.Notification', async ($, e, next) => {
-    if (REASONS[e.notification_type] !== undefined && !isAlerting) {
-      isAlerting = true
-      await quietly(async () => {
-        lastAlertAt = await alertUser($, e.notification_type, lastAlertAt)
-      })
-      isAlerting = false
-    }
-    return next(e)
-  }).catch(($, e, next) => next(e))
-
   on('session.start', async ($, e, next) => {
     if (!(await modsOff($))) {
       await $.command.register({ name: COMMAND, description: 'Show running agents and pending approvals in a pane' })
