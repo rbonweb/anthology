@@ -128,11 +128,9 @@ fn every_hook_is_an_exec_form_sh_command_on_a_shipped_script() {
                 .unwrap_or_else(|| panic!("{at}: {script} is not under the plugin root"));
             let file = plugin_file(plugin, rel);
             assert!(file.is_file(), "{at}: {} does not exist", file.display());
-            // The attention alert (crates/repo-tests/tests/notify.rs) is capped at 5 s.
-            let timeout = if event == "Notification" { 5 } else { 60 };
             assert_eq!(
                 get(hook, "timeout").and_then(Value::as_i64),
-                Some(timeout),
+                Some(60),
                 "{at}"
             );
             if event == "PreToolUse" {
@@ -183,7 +181,7 @@ fn every_hook_command_starts_with_an_absolute_path() {
             seen += 1;
         }
     }
-    assert!(seen >= 8, "command hooks found: {seen}");
+    assert!(seen >= 6, "command hooks found: {seen}");
 }
 
 /// The anthology plugin's `modules` entry names its Claude Code mods module, a TypeScript file
@@ -211,19 +209,14 @@ fn only_the_anthology_plugin_names_a_shipped_mods_module() {
 }
 
 /// test_guard_cli `test_only_pretooluse_is_registered`: after the cutover the guardrails plugin
-/// also bootstraps its binary at SessionStart (design §9.1); nothing else is registered. The
-/// anthology plugin adds the `Notification` attention alert (crates/repo-tests/tests/notify.rs).
+/// also bootstraps its binary at SessionStart (design §9.1); nothing else is registered. Neither
+/// plugin registers `Notification`: Anthology sends no alert of its own (crates/repo-tests/tests/notify.rs).
 #[test]
 fn the_hook_events_are_session_start_and_pre_tool_use() {
     for plugin in PLUGINS {
         let (_, v) = hooks_json(plugin);
         let names: Vec<&str> = events(&v).iter().map(|(k, _)| k).collect();
-        let want: &[&str] = if plugin == "anthology" {
-            &["SessionStart", "PreToolUse", "Notification"]
-        } else {
-            &["SessionStart", "PreToolUse"]
-        };
-        assert_eq!(names, want, "{plugin}");
+        assert_eq!(names, ["SessionStart", "PreToolUse"], "{plugin}");
     }
 }
 

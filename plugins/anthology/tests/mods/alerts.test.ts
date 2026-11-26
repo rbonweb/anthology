@@ -1,7 +1,8 @@
-// alerts.tsx (post-release mods design §5, item 4): the alert on a Notification, the status pane and
-// its command, and that nothing is drawn above the prompt. The test's own hooks sit beneath the plugin and stand for
-// Claude Code: they answer the `$` calls the mod makes (toast, sound, status, pane, command) and
-// record them, and `mock.clock` and `mock.env` stand for the clock and the environment.
+// alerts.tsx (post-release mods design §5, item 4): that no alert is raised on a Notification, the
+// status pane and its command, and that nothing is drawn above the prompt. The test's own hooks sit
+// beneath the plugin and stand for Claude Code: they answer the `$` calls the mod makes (toast,
+// sound, status, pane, command) and record them, and `mock.clock` and `mock.env` stand for the
+// clock and the environment.
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
@@ -162,58 +163,34 @@ const hhmm = (ms: number) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// ---- Alerts ---------------------------------------------------------------------------------------
+// ---- No alerts ------------------------------------------------------------------------------------
+// Anthology sends no alert of its own: no toast, no sound and no status, whatever the notification type.
 
-test('a permission prompt shows a toast and plays no sound, and the user hooks still run', async ($, on) => {
+test('a permission prompt, an idle prompt and any other notification raise no toast, sound or status, and the user hooks still run', async ($, on) => {
   const { seen } = engine(on)
-  await notify($, 'permission_prompt')
-  expect(seen.toasts).toEqual([{ text: 'Claude needs your approval', timeoutMs: 8000 }])
-  // notify.sh keeps the only sound.
+  for (const type of ['permission_prompt', 'idle_prompt', 'auth_success', 'elicitation_dialog']) await notify($, type)
+  expect(seen.toasts).toEqual([])
   expect(seen.sounds).toEqual([])
-  expect(seen.notifications).toBe(1)
+  expect(seen.statuses).toEqual([])
+  // Each event went down to the engine and the user's own hooks.
+  expect(seen.notifications).toBe(4)
 })
 
-test('an idle prompt alerts with its own line', async ($, on) => {
-  const { seen } = engine(on)
-  await notify($, 'idle_prompt')
-  expect(seen.toasts.map(t => t.text)).toEqual(['Claude is waiting for you'])
-})
-
-test('two notifications that arrive together raise one alert', async ($, on) => {
-  const { seen } = engine(on)
-  await Promise.all([notify($, 'permission_prompt'), notify($, 'idle_prompt'), notify($, 'permission_prompt')])
-  expect(seen.toasts).toHaveLength(1)
-  expect(seen.notifications).toBe(3)
-})
-
-test('a notification that does not need the person raises no alert', async ($, on) => {
-  const { seen } = engine(on)
-  await notify($, 'auth_success')
-  expect(seen.toasts).toHaveLength(0)
-  expect(seen.notifications).toBe(1)
-})
-
-test('at most one alert per 20 seconds', async ($, on) => {
-  const { clock, seen } = engine(on)
+test('a notification raises no toast however long apart, and ANTHOLOGY_NOTIFY changes nothing', async ($, on) => {
+  const { clock, seen } = engine(on, { env: { ANTHOLOGY_NOTIFY: '1' } })
   await notify($, 'permission_prompt')
-  await clock.advance(19_999)
+  await clock.advance(60_000)
   await notify($, 'idle_prompt')
-  expect(seen.toasts).toHaveLength(1)
-  await clock.advance(1)
-  await notify($, 'idle_prompt')
-  expect(seen.toasts.map(t => t.text)).toEqual(['Claude needs your approval', 'Claude is waiting for you'])
-  // An alert held back does not restart the window.
-  await clock.advance(10_000)
-  await notify($, 'permission_prompt')
-  expect(seen.toasts).toHaveLength(2)
+  expect(seen.toasts).toEqual([])
 })
 
-test('ANTHOLOGY_NOTIFY=0 turns the alert off and leaves the pane on', async ($, on) => {
-  const { seen } = engine(on, { env: { ANTHOLOGY_NOTIFY: '0' } })
-  await notify($, 'permission_prompt')
-  expect(seen.toasts).toHaveLength(0)
+test('the pane still lists agents and prompts while no alert is raised', async ($, on) => {
+  const { seen } = engine(on)
   await spawn($, 'Build it')
-  expect(await pane($)).toEqual(['Running (1)', `${hhmm(T0)}  implementer  Build it`])
+  await ask($, 'git push')
+  await notify($, 'permission_prompt')
+  expect(seen.toasts).toEqual([])
+  expect(await pane($)).toEqual(['Needs your approval (1)', 'Bash', 'Running (1)', `${hhmm(T0)}  implementer  Build it`])
 })
 
 // ---- The command ------------------------------------------------------------------------------------
