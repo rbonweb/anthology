@@ -339,8 +339,28 @@ fn sql_given_to_psql_through_docker_exec_is_data_not_a_script() {
             r#"docker exec db psql -Atc "select count(*) from t""#,
             "docker exec db psql -c 'select count(*) from t'",
             r#"docker exec -i db psql -U u -d d -c "select count(*) from t""#,
-            r#"docker exec db psql -c "select count(*) from t" -c "select max(id) from t""#,
             r#"docker exec db psql -c "select count(*) from t" -d x"#,
+            // the psql options the guard knows: a plain name for each value, plain flags
+            r#"docker exec db psql -U u -h h -p 5432 -d d -c "select count(*) from t""#,
+            r#"docker exec db psql --username u --host h --port 5432 --dbname d -c "select count(*) from t""#,
+            r#"docker exec db psql -h /var/run/postgresql -c "select count(*) from t""#,
+            r#"docker exec db psql -A -t -q -X -c "select count(*) from t""#,
+            r#"docker exec db psql --csv -c "select count(*) from t""#,
+            r#"docker exec db psql --command "select count(*) from t""#,
+            r#"docker exec db psql --command "select 1" -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" --command "select 1" d"#,
+            r#"docker exec db psql d -c "select count(*) from t""#,
+            r#"docker exec db psql -c "select count(*) from t" d u"#,
+            r#"docker exec db psql -AtXc "select count(*) from t" d"#,
+            // several -c values, each plain, with the reporting variables and the detach and input options
+            r#"docker exec -u u c psql -U u -d db -v ON_ERROR_STOP=1 -c "create table t (a int)" -c "insert into t values (1)""#,
+            r#"docker exec c psql -c "select count(*) from t" -c "select max(a) from t" --command "select 1""#,
+            r#"docker exec c psql --set ON_ERROR_STOP=1 --variable AUTOCOMMIT=off -c "select count(*) from t""#,
+            r#"docker exec -d c psql -U u -c "insert into t values (1)" -c "select count(*) from t""#,
+            r#"docker exec --detach c psql -c "select count(*) from t""#,
+            r#"docker exec -i c psql -c "select count(*) from t" -c "select 1""#,
+            r#"docker exec -it -d c psql -c "select count(*) from t""#,
+            r#"docker compose exec -d db psql -v ON_ERROR_STOP=1 -c "select count(*) from t""#,
             // a quoted `*`, `?` and `[` are SQL
             r#"docker exec db psql -c "select * from t where a like 'x_' and b = (select a[1] from u limit 1)""#,
             // docker compose and docker-compose read the same way
@@ -404,7 +424,7 @@ fn a_psql_value_with_a_backslash_or_an_expansion_character_is_still_read_as_a_sc
     );
     // the same SQL without a backslash is data
     assert_eq!(
-        verdict(r#"docker exec c psql -c "select count(*) from t" -c "select 1""#),
+        verdict(r#"docker exec c psql -c "select count(*) from t" d"#),
         Verdict::Allow
     );
 }
@@ -470,6 +490,10 @@ const NOT_PSQL_SHAPES: &[&str] = &[
     r#"docker run --name psql img python3 -c "BODY""#,
     r#"docker run img psql -c "BODY""#,
     r#"docker compose run psql python3 -c "BODY""#,
+    r#"docker compose run c psql -c "BODY""#,
+    r#"docker compose exec2 c psql -c "BODY""#,
+    r#"docker-compose run c psql -c "BODY""#,
+    r#"docker compose c psql -c "BODY""#,
     // an option exec does not list: nothing says where the program is
     r#"docker exec --unknown c psql -c "BODY""#,
     r#"docker exec -u=u c psql -c "BODY""#,
@@ -483,27 +507,91 @@ const NOT_PSQL_SHAPES: &[&str] = &[
     r#"docker exec psql -c "BODY""#,
 ];
 
+/// A redirect anywhere in the command: the lexer takes `c<1-5>` for a `<` and a `>` redirect, and the `>`
+/// swallows the next word, but zsh reads `<1-5>` as a numeric glob word (`c1` to `c5`), so the words the guard
+/// sees are not the words that run (`docker exec c<1-5> flock psql -c ...` runs `flock psql -c ...` in the
+/// container `c1`, and `flock` runs the value with `sh`). Any redirect in the command keeps the old reading.
+const REDIRECT_SHAPES: &[&str] = &[
+    r#"docker exec c<1-5> flock psql -c "BODY""#,
+    r#"docker exec c<-> flock psql -c "BODY""#,
+    r#"docker exec c<1-5>flock psql -c "BODY""#,
+    r#"docker exec c<1-> flock psql -c "BODY""#,
+    r#"docker exec -u u<1-5> c psql -c "BODY""#,
+    r#"docker exec -e PGUSER=u<1-5> c psql -c "BODY""#,
+    r#"docker exec c psql -c "BODY" > /dev/null"#,
+    r#"docker exec c psql -c "BODY" 2>&1"#,
+    r#"docker exec c psql -c "BODY" < /dev/null"#,
+    r#"docker exec c psql -c "BODY" <<< x"#,
+];
+
+/// The options of psql other than the few the guard knows: `-o '|CMD'`, `--output`, `-f -` fed by a
+/// here-string, `-L` and `-P pager=...` make psql run a shell or a program, an attached value or a conninfo
+/// string (`host=h`, `postgres://h/d`) is not a plain name, and a second `-c`, `--command=` or an
+/// unknown option is not a shape the guard has checked. Each keeps the old reading.
+const PSQL_OPTION_SHAPES: &[&str] = &[
+    r#"docker exec c psql -o '|agent-browser open x' -c "BODY""#,
+    r#"docker exec c psql -c "BODY" -o '|agent-browser open x'"#,
+    r#"docker exec c psql --output='|agent-browser open x' -c "BODY""#,
+    r#"docker exec c psql --output '|agent-browser open x' -c "BODY""#,
+    r#"docker exec -i c psql -f - -c "BODY" <<< '\! agent-browser open x'"#,
+    r#"docker exec c psql -f x.sql -c "BODY""#,
+    r#"docker exec c psql --file x.sql -c "BODY""#,
+    r#"docker exec c psql -L x.log -c "BODY""#,
+    r#"docker exec c psql --log-file x.log -c "BODY""#,
+    r#"docker exec c psql -P pager=x -c "BODY""#,
+    r#"docker exec c psql -Ppager=x -c "BODY""#,
+    r#"docker exec c psql --pset=pager=x -c "BODY""#,
+    r#"docker exec c psql -v X=1 -c "BODY""#,
+    r#"docker exec c psql -Uu -c "BODY""#,
+    r#"docker exec c psql --username=u -c "BODY""#,
+    r#"docker exec c psql -hh -c "BODY""#,
+    r#"docker exec c psql -d host=h -c "BODY""#,
+    r#"docker exec c psql -d postgres://h/d -c "BODY""#,
+    r#"docker exec c psql --dbname=postgres://h/d -c "BODY""#,
+    r#"docker exec c psql host=h -c "BODY""#,
+    r#"docker exec c psql postgres://h/d -c "BODY""#,
+    r#"docker exec c psql -c "BODY" host=h"#,
+    r#"docker exec c psql -U -c "BODY""#,
+    // a variable psql is not known to leave alone, an expansion or a missing value
+    r#"docker exec c psql -v PROMPT1=x -c "BODY""#,
+    r#"docker exec c psql -v ON_ERROR_STOP -c "BODY""#,
+    r#"docker exec c psql -v ON_ERROR_STOP=$x -c "BODY""#,
+    r#"docker exec c psql -v ON_ERROR_STOP=1 -c"#,
+    r#"docker exec c psql --set HISTFILE=x -c "BODY""#,
+    r#"docker exec c psql -c "BODY" -c"#,
+    r#"docker exec c psql -c "BODY" a b c"#,
+    r#"docker exec c psql -d -c "BODY""#,
+    r#"docker exec c psql -c "BODY" -"#,
+    r#"docker exec c psql -cA "BODY""#,
+    r#"docker exec c psql -- -c "BODY""#,
+    r#"docker exec c psql --unknown -c "BODY""#,
+];
+
 #[test]
 fn a_command_that_is_not_plain_literal_text_keeps_its_reading() {
+    let mut wrong: Vec<String> = Vec::new();
     for (name, shapes) in [
         ("split word", SPLIT_WORD_SHAPES),
         ("expanded value", EXPANDED_VALUE_SHAPES),
         ("planted psql", PLANTED_PSQL_SHAPES),
         ("not psql", NOT_PSQL_SHAPES),
+        ("redirect", REDIRECT_SHAPES),
+        ("psql option", PSQL_OPTION_SHAPES),
     ] {
         for shape in shapes.iter().filter(|s| s.contains("BODY")) {
-            assert_eq!(
-                verdict(&shaped(shape, MARKER)),
-                Verdict::Block(Rule::G4),
-                "{name}: {shape}"
-            );
-            assert_eq!(
-                verdict(&shaped(shape, SQL)),
-                Verdict::TooComplex,
-                "{name}: {shape}"
-            );
+            for (body, want) in [
+                (MARKER, Verdict::Block(Rule::G4)),
+                (SQL, Verdict::TooComplex),
+            ] {
+                let command = shaped(shape, body);
+                let got = verdict(&command);
+                if got != want {
+                    wrong.push(format!("{name}: {command}: {got:?}, want {want:?}"));
+                }
+            }
         }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]

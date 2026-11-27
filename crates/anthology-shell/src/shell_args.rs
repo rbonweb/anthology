@@ -421,8 +421,106 @@ fn docker_exec_psql(prog: &str, args: &[String]) -> Option<usize> {
     }
     // `args[i]` is the container or service; the word after it is the program, `psql` and nothing else
     // (not `PSQL`, not `/usr/bin/psql`: those keep the shell reading)
-    (literal_word(args.get(i)?) && args.get(i + 1).map(String::as_str) == Some("psql"))
-        .then_some(i + 1)
+    (literal_word(args.get(i)?)
+        && args.get(i + 1).map(String::as_str) == Some("psql")
+        && psql_words_known(&args[i + 2..]))
+    .then_some(i + 1)
+}
+
+/// psql options that take the next word, and that word is a plain name (a user, a host, a port, a database).
+const PSQL_NAME_FLAGS: &[&str] = &[
+    "-U",
+    "--username",
+    "-h",
+    "--host",
+    "-p",
+    "--port",
+    "-d",
+    "--dbname",
+];
+
+/// psql options that take no value and run nothing: no `-o`, `-f`, `-L`, `-P` or `-v`, which name a file,
+/// a pipe (`-o '|cmd'`) or a program (`-P pager=cmd`).
+const PSQL_BOOL_FLAGS: &[&str] = &[
+    "--csv",
+    "--no-psqlrc",
+    "--quiet",
+    "--tuples-only",
+    "--no-align",
+];
+
+/// The letters of a cluster of psql short flags that take no value (`-Atq`), the last of which may be `c`.
+const PSQL_SHORT_FLAGS: &str = "AtqXxH";
+
+/// A word psql takes as a name: plain text, no `-` first, and not a connection string (`host=h`,
+/// `postgres://h/d`), which psql reads for more settings than a name.
+fn psql_name(word: &str) -> bool {
+    literal_word(word) && !word.starts_with('-') && !word.contains('=') && !word.contains("://")
+}
+
+/// The words after `psql` (`psql [OPTION]... [DBNAME [USERNAME]]`) are known: the options of the lists above,
+/// `-c` or `--command` one or more times, each with its value as the next word, `-v` for a few reporting
+/// variables, and at most two names. psql runs a shell
+/// or a program for `-o '|cmd'`, `-f -` fed `\!`, `-L`, `-P pager=...`, so every option not listed, any
+/// attached value (`-Uu`, `--output=x`) and any connection string keeps the caller's fail-closed reading.
+fn psql_words_known(words: &[String]) -> bool {
+    let (mut names, mut i) = (0, 0);
+    while let Some(word) = words.get(i) {
+        let word = word.as_str();
+        i += 1;
+        if PSQL_BOOL_FLAGS.contains(&word) {
+            continue;
+        }
+        if PSQL_NAME_FLAGS.contains(&word) {
+            if !words.get(i).is_some_and(|v| psql_name(v)) {
+                return false;
+            }
+            i += 1;
+        } else if word == "-v" || word == "--set" || word == "--variable" {
+            if !words.get(i).is_some_and(|v| psql_setting(v)) {
+                return false;
+            }
+            i += 1;
+        } else if word == "--command" {
+            i += 1;
+        } else if let Some(cluster) = word.strip_prefix('-') {
+            let (flags, command) = match cluster.strip_suffix('c') {
+                Some(flags) => (flags, true),
+                None => (cluster, false),
+            };
+            if (flags.is_empty() && !command)
+                || !flags.chars().all(|c| PSQL_SHORT_FLAGS.contains(c))
+            {
+                return false;
+            }
+            if command {
+                i += 1;
+            }
+        } else if psql_name(word) {
+            names += 1;
+        } else {
+            return false;
+        }
+    }
+    // a `-c` takes the next word: it must be there (`i` past the end means it was not)
+    names <= 2 && i == words.len()
+}
+
+/// The psql variables `-v NAME=VALUE` may set: they change how psql reports or stops, and name no file,
+/// pipe or program (not `PROMPT1`, `HISTFILE`, `SHELL`-like or user variables that a `:name` could expand).
+const PSQL_VARIABLES: &[&str] = &[
+    "ON_ERROR_STOP",
+    "ON_ERROR_ROLLBACK",
+    "AUTOCOMMIT",
+    "ECHO",
+    "QUIET",
+    "VERBOSITY",
+];
+
+/// The value of `-v`: `NAME=VALUE` for one of `PSQL_VARIABLES`, the value plain text.
+fn psql_setting(word: &str) -> bool {
+    word.split_once('=')
+        .is_some_and(|(name, value)| PSQL_VARIABLES.contains(&name) && psql_name(value))
 }
 
 /// The value of a `psql -c` the guard may read as data: no backslash (`\!` and `\o |` make psql start a

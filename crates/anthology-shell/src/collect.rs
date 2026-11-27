@@ -2561,8 +2561,11 @@ impl<'a> Ctx<'a> {
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
         // the command's words are the literal text written: no word held a parameter, a substitution, an
         // unquoted glob or a brace, the program and its arguments are the last words as they stand, and
-        // nothing adds arguments at run time (`xargs`)
+        // nothing adds arguments at run time (`xargs`), and no redirect or here-string anywhere in the segment:
+        // the lexer takes zsh's numeric glob `c<1-5>` for two redirects and drops the words they swallow
         let literal_command = !had_holders
+            && redirs.is_empty()
+            && self.group_texts(group).is_empty()
             && !subst
             && !arith
             && !self.braces
