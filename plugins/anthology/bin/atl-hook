@@ -6,6 +6,16 @@
 # PATH without its relative and empty entries first, as hooks/lib.sh's anth_safe_path makes it:
 # the hook runs in the folder of the repository the user opened, which must not supply the sed,
 # grep or tr below (nor what `command -v` finds). atl runs on it too.
+#
+# The caller's PATH is kept for atl in ATL_HOOK_USER_PATH (an inherited value is replaced, or
+# removed when PATH is unset): atl asks `anthology perm classify` whether a line is read-only,
+# and that proof is about the PATH the user's shell runs the line with, which is not this safe one.
+if [ -n "${PATH+x}" ]; then
+  ATL_HOOK_USER_PATH=$PATH
+  export ATL_HOOK_USER_PATH
+else
+  unset ATL_HOOK_USER_PATH
+fi
 case :${PATH-}: in
   *::*|*:[!/]*)
     PATH=$(
@@ -48,6 +58,14 @@ ATL_TEE_DIR=$atl_data/tee
 export ATL_DB_PATH ATL_RECALL_DB ATL_TEE_DIR
 ATL_SUPPRESS_HOOK_WARNING=1
 export ATL_SUPPRESS_HOOK_WARNING
+# Where atl finds the read-only proof: the anthology shim beside this one (an inherited value is
+# replaced). atl runs it with ANTHOLOGY_NO_INSTALL, so it never downloads; when the binary is not
+# installed it exits 127 and atl takes no proof, which keeps its ask. Only a path of the shape
+# `<dir>/atl-hook` names a sibling.
+case $0 in
+  /*/atl-hook) ATL_PERM_CLASSIFY=${0%/atl-hook}/anthology; export ATL_PERM_CLASSIFY ;;
+  *) unset ATL_PERM_CLASSIFY ;;
+esac
 # A hook "ask" prompts in every permission mode, bypass and auto included, and atl asks for
 # many commands it leaves as typed (`node --version; bun --version`). So an ask is dropped:
 # the command then runs as typed, under the user's own mode and rules, as it would without atl.
