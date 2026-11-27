@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "atl"
-version = "1.2.1-anthology.7"
+version = "1.2.1-anthology.9"
 dependencies = [
  "anthology-shell",
  "anyhow",

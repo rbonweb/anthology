@@ -1891,10 +1891,22 @@ fn hook_in(
     classifier: bool,
     env: &[(&str, &str)],
 ) -> Said {
+    hook_at(sb, &sb.project, cmd, mode, classifier, env)
+}
+
+/// [`hook_in`] with the payload's working directory spelled as `cwd`.
+fn hook_at(
+    sb: &Sandbox,
+    cwd: &std::path::Path,
+    cmd: &str,
+    mode: Option<&str>,
+    classifier: bool,
+    env: &[(&str, &str)],
+) -> Said {
     let mut payload = serde_json::json!({
         "tool_name": "Bash",
         "tool_input": { "command": cmd },
-        "cwd": sb.project.to_string_lossy(),
+        "cwd": cwd.to_string_lossy(),
     });
     if let Some(mode) = mode {
         payload["permission_mode"] = serde_json::Value::String(mode.to_string());
@@ -2527,4 +2539,66 @@ fn what_is_not_atl_bypass_is_not_asked_about_as_one() {
             "{cmd}"
         );
     }
+}
+
+/// A project reached through a symlink (macOS: `/var` and `/tmp` are links into
+/// `/private`) is still the project: the paths a proof lists and the root are
+/// compared as the file system resolves them, not as they are spelled.
+#[cfg(unix)]
+#[test]
+fn a_project_reached_through_a_symlink_is_still_the_project() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let link = sb._root.path().join("via-link");
+    std::os::unix::fs::symlink(&sb.project, &link).expect("symlink the project");
+    assert_eq!(
+        hook_at(&sb, &link, "grep -n foo atl/notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
+    // The same with the root named by `CLAUDE_PROJECT_DIR` through the link.
+    let dir = link.to_string_lossy().into_owned();
+    assert_eq!(
+        hook_at(
+            &sb,
+            &sb.project,
+            "grep -n foo atl/notes.txt",
+            None,
+            true,
+            &[("CLAUDE_PROJECT_DIR", dir.as_str())]
+        ),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
+}
+
+/// A path the proof lists that is spelled inside the project but resolves outside
+/// it (a link in the project to somewhere else) is not under the project: the ask
+/// stays, whatever the classifier printed.
+#[cfg(unix)]
+#[test]
+fn a_listed_path_that_resolves_outside_the_project_keeps_the_ask() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let outside = sb._root.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("mkdir outside");
+    std::fs::write(outside.join("secret.txt"), "s3cret\n").expect("write secret");
+    std::os::unix::fs::symlink(&outside, sb.project.join("escape")).expect("symlink out");
+    // The stand-in prints each absolute word as written, as a classifier that
+    // did not resolve links would.
+    let cmd = format!("grep -n atl {}/escape/secret.txt", sb.project.display());
+    assert!(
+        matches!(hook_in(&sb, &cmd, None, true, &[]), Said::Ask(_)),
+        "{cmd}"
+    );
+    // Control: the same file inside the project is fine.
+    let inside = format!("grep -n atl {}/atl/notes.txt", sb.project.display());
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &[]), Said::Rewrite(_)),
+        "{inside}"
+    );
 }
