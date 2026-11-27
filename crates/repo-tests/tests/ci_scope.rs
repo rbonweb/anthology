@@ -16,7 +16,6 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use anthology_pycompat::json::{self, Value};
-use regex::Regex;
 use repo_tests::repo;
 use tempfile::TempDir;
 
@@ -771,24 +770,29 @@ fn a_crate_change_switches_on_the_jobs_that_build_that_crate() {
             "version-bump",
         ])
     );
+    // repo-tests links anthology-dev, anthology-memory and anthology-guard too (musl build).
     assert_eq!(
         jobs_for("crates/anthology-dev/src/lib.rs"),
         with(&[
             "cli-syntax",
             "memory-diff",
+            "shims-distros",
             "startup-budget",
             "vendor-check",
             "version-bump",
         ])
     );
-    // In the fixture neither the shim tests nor anthology-dev build the cli, difftest, guard or
-    // shell crates, so only the ledger, lint and shipped-set check read them.
-    for krate in [
-        "anthology-cli",
-        "difftest",
-        "anthology-guard",
-        "anthology-shell",
-    ] {
+    // guard and memory (shell reaches them): the shim build, nothing else of the dev tool, since
+    // the fixture's anthology-dev uses only pycompat.
+    for krate in ["anthology-guard", "anthology-memory", "anthology-shell"] {
+        assert_eq!(
+            jobs_for(&format!("crates/{krate}/src/lib.rs")),
+            with(&["shims-distros"]),
+            "{krate}"
+        );
+    }
+    // Nothing the shim tests link, and the fixture's anthology-dev does not use them.
+    for krate in ["anthology-cli", "difftest"] {
         assert_eq!(
             jobs_for(&format!("crates/{krate}/src/lib.rs")),
             with(&[]),
@@ -968,31 +972,31 @@ fn the_macos_shards_run_the_affected_crates_with_both_feature_sets() {
     let features: Vec<&str> = shards.iter().map(|x| field(x, "features")).collect();
     assert_eq!(features, ["plain", "all"]);
     for shard in &shards {
-        // repo-tests is not among them: its tests are text checks and the shim tests, and
-        // nothing the guard crate does changes either (see the shim cases below).
+        // repo-tests stays: some of its tests run shell and node under the macOS runner.
         assert_eq!(
             field(shard, "packages"),
-            "anthology-cli anthology-guard anthology-memory difftest"
+            "anthology-cli anthology-guard anthology-memory difftest repo-tests"
         );
-        assert_eq!(field(shard, "shims"), "false");
     }
 }
 
 #[test]
-fn macos_runs_the_shim_tests_only_when_what_they_build_or_run_changed() {
-    // The shims, the hooks, and the crates the shim tests link (pycompat is one in the fixture;
-    // core and the testkit are the others): repo-tests runs on macOS, and its shim network cases.
+fn macos_always_runs_repo_tests_when_it_runs_at_all() {
+    // Every path that fires a macos rule: repo-tests (its host_predicate, session-start and
+    // shim tests run hooks under macOS bash 3.2) is among the crates of each shard.
     for file in [
+        "crates/anthology-guard/src/lib.rs",
+        "crates/anthology-pycompat/src/pyerr.rs",
         "plugins/anthology/bin/anthology",
         "plugins/anthology/hooks/lib.sh",
         "plugins/anthology-guardrails/hooks/guard.sh",
+        "plugins/anthology-superpowers/hooks/session-start",
+        "plugins/anthology/tests/mods/delegation.test.ts",
         "crates/repo-tests/tests/shims/offline.rs",
-        "crates/anthology-pycompat/src/pyerr.rs",
     ] {
         let s = scope_after(|d| touch(d, file));
         assert!(s.flag("run_macos"), "{file}");
         for shard in s.shards("macos_matrix") {
-            assert_eq!(field(&shard, "shims"), "true", "{file}");
             assert!(
                 field(&shard, "packages")
                     .split(' ')
@@ -1001,27 +1005,6 @@ fn macos_runs_the_shim_tests_only_when_what_they_build_or_run_changed() {
                 field(&shard, "packages")
             );
         }
-    }
-    // Platform code the shim tests do not link: macOS runs the affected crates but not repo-tests.
-    let s = scope_after(|d| touch(d, "crates/anthology-guard/src/lib.rs"));
-    assert!(s.flag("run_macos"));
-    assert!(
-        s.list("packages").contains(&"repo-tests"),
-        "linux still runs it"
-    );
-    for shard in s.shards("macos_matrix") {
-        assert!(!field(&shard, "packages").contains("repo-tests"));
-    }
-}
-
-#[test]
-fn a_full_run_runs_the_shim_tests_on_macos_with_the_whole_workspace() {
-    let s = scope_with(|d| touch(d, "docs/setup.md"), "[\"full-ci\"]", "head");
-    let shards = s.shards("macos_matrix");
-    assert_eq!(shards.len(), 2);
-    for shard in &shards {
-        assert_eq!(field(shard, "shims"), "true");
-        assert_eq!(field(shard, "packages"), "");
     }
 }
 
@@ -1679,9 +1662,7 @@ fn every_rule_matches_a_tracked_path_and_names_real_things() {
         if let Some(name) = row[0].strip_prefix("crate:") {
             assert!(crates.contains(&name.to_string()), "{row:?}");
             assert!(
-                row[1]
-                    .split(' ')
-                    .all(|e| e.starts_with("job:") || e == "shims"),
+                row[1].split(' ').all(|e| e.starts_with("job:")),
                 "a crate row only switches jobs on: {row:?}"
             );
         } else {
@@ -1702,7 +1683,7 @@ fn every_rule_matches_a_tracked_path_and_names_real_things() {
                     )
                 }
                 None => assert!(
-                    ["full", "atl", "atl-macos", "fuzz", "macos", "shims"].contains(&effect),
+                    ["full", "atl", "atl-macos", "fuzz", "macos"].contains(&effect),
                     "{row:?}"
                 ),
                 _ => panic!("{row:?}"),
@@ -1711,7 +1692,7 @@ fn every_rule_matches_a_tracked_path_and_names_real_things() {
     }
 }
 
-/// The crates a `crate:NAME` row names for `effect` (`shims` or `job:NAME`).
+/// The crates a `crate:NAME` row names for `effect` (`job:NAME`).
 fn crate_rows_for(effect: &str) -> BTreeSet<String> {
     rows(RULES)
         .into_iter()
@@ -1721,26 +1702,32 @@ fn crate_rows_for(effect: &str) -> BTreeSet<String> {
 }
 
 #[test]
-fn the_shim_crate_rows_name_every_crate_the_shim_tests_use() {
-    // shims-distros builds tests/shims.rs and its folder; a crate they use and that has no row
-    // would leave a change to it unnoticed by the job.
-    let mut files = vec!["crates/repo-tests/tests/shims.rs".to_string()];
-    for f in repo::list_dir("crates/repo-tests/tests/shims") {
-        files.push(format!("crates/repo-tests/tests/shims/{f}"));
+fn the_shims_distros_crate_rows_name_every_workspace_crate_repo_tests_links() {
+    // shims-distros builds repo-tests (its dependencies and dev-dependencies, the testkit among
+    // them) for musl; a crate it links that has no row would leave a change to it unnoticed.
+    let manifest = repo::read("crates/repo-tests/Cargo.toml");
+    let linked: BTreeSet<String> = manifest
+        .lines()
+        .filter_map(|l| l.split_once(".workspace")?.0.strip_prefix("anthology-"))
+        .map(|n| format!("anthology-{n}"))
+        .collect();
+    for krate in [
+        "anthology-core",
+        "anthology-pycompat",
+        "anthology-dev",
+        "anthology-memory",
+        "anthology-guard",
+        "anthology-testkit",
+    ] {
+        assert!(linked.contains(krate), "{krate} in {linked:?}");
     }
-    let used = Regex::new(r"\banthology_([a-z]+)\b").unwrap();
-    let mut crates = BTreeSet::new();
-    for f in &files {
-        for c in used.captures_iter(&repo::read(f)) {
-            crates.insert(format!("anthology-{}", &c[1]));
-        }
-    }
-    assert!(crates.contains("anthology-testkit"), "{crates:?}");
     assert_eq!(
-        crates,
-        crate_rows_for("shims"),
-        "crates the shim tests use (left) against the `shims` crate rows (right)"
+        linked,
+        crate_rows_for("job:shims-distros"),
+        "crates repo-tests links (left) against the `crate:` rows of shims-distros (right)"
     );
+    // repo-tests itself is no row: an edit to any of its tests would run the job.
+    assert!(!linked.contains("repo-tests"));
 }
 
 #[test]

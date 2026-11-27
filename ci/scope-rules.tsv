@@ -19,10 +19,8 @@
 #   job:NAME      run the repository job NAME of ci.yml (the `jobs` output): a job that reads
 #                 only some paths runs only when one of them changes. gitleaks, deny and
 #                 shellcheck have no row: they run on every pull request.
-#   shims         the shim tests (crates/repo-tests/tests/shims*) read or build this: job
-#                 shims-distros, and on macOS repo-tests with its shim network cases
 #
-# A row whose glob is `crate:NAME` is not a path. Its effects (job: and shims only) apply when
+# A row whose glob is `crate:NAME` is not a path. Its effects (job: only) apply when
 # the crate NAME is affected by a change to a crate source: NAME itself or a crate it depends on
 # changed. It lists the crates a job builds or runs, so the job notices a change to one of them.
 #
@@ -52,11 +50,13 @@ plugins/anthology/knowledge/*	job:startup-budget job:vendor-check
 plugins/anthology-superpowers/*	job:vendor-check
 plugins/anthology-superpowers/skills/*	job:startup-budget
 plugins/*/anthology.lock	job:lock-fresh
-plugins/*/hooks/hooks.json	shims
-plugins/anthology/skills/setup/SKILL.md	shims
-plugins/*/bin/*	macos shims
-plugins/anthology/hooks/*.sh	macos shims
-plugins/anthology-guardrails/hooks/*.sh	macos shims
+plugins/*/bin/*	macos
+plugins/anthology/hooks/*.sh	macos
+plugins/anthology-guardrails/hooks/*.sh	macos
+# repo-tests runs hooks and reads the mods' truth table under macOS bash 3.2 (host_predicate.rs,
+# superpowers_session_start.rs, no_attribution.rs)
+plugins/anthology-superpowers/hooks/*	macos
+plugins/anthology/tests/mods/delegation.test.ts	macos
 .claude-plugin/*	pkg:repo-tests job:plugin-validate
 # --- the divergence files every golden check reads
 port/difftest/*	pkg:repo-tests surface:*
@@ -100,15 +100,20 @@ deny.toml	pkg:repo-tests
 # --- a crate: every crate is read by the test listing (ledger), lint and the shipped-set check
 crates/*	job:ledger job:rust-lint job:lock-fresh
 # --- the crates a job builds or runs (a change to the crate or one it depends on switches it on)
-crate:anthology-dev	job:cli-syntax job:vendor-check job:version-bump job:memory-diff job:lock-fresh job:startup-budget
+crate:anthology-dev	job:cli-syntax job:vendor-check job:version-bump job:memory-diff job:lock-fresh job:startup-budget job:shims-distros
 crate:anthology-runtime	job:startup-budget
-crate:anthology-core	shims
-crate:anthology-pycompat	shims
-crate:anthology-testkit	shims
+# shims-distros builds repo-tests for musl, which links these (and their dependencies; dev is
+# above). Not a crate:repo-tests row: that would run the job for an edit to any repo-tests test.
+crate:anthology-core	job:shims-distros
+crate:anthology-pycompat	job:shims-distros
+crate:anthology-testkit	job:shims-distros
+crate:anthology-memory	job:shims-distros
+crate:anthology-guard	job:shims-distros
 # repo-tests: the shim tests and the roster budget it holds, by file (its other tests are read by
 # no repository job)
-crates/repo-tests/src/*	shims job:startup-budget
-crates/repo-tests/Cargo.toml	shims job:startup-budget
+crates/repo-tests/src/*	job:shims-distros job:startup-budget
+crates/repo-tests/Cargo.toml	job:shims-distros job:startup-budget
+crates/repo-tests/tests/shims*	job:shims-distros
 crates/repo-tests/tests/roster.rs	job:startup-budget
 # --- platform-sensitive Rust: the guard, code that spawns, waits or reads the platform
 crates/anthology-guard/*	macos
@@ -133,4 +138,4 @@ crates/anthology-cli/src/cmd/perm/git.rs	macos
 crates/anthology-testkit/src/run.rs	macos
 crates/anthology-testkit/src/sandbox.rs	macos
 crates/anthology-testkit/src/bs.rs	macos
-crates/repo-tests/tests/shims*	macos shims
+crates/repo-tests/tests/shims*	macos

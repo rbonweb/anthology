@@ -366,7 +366,6 @@ jobs:
         env:
           FEATURES: ${{ matrix.features }}
           PACKAGES: ${{ matrix.packages }}
-          SHIMS: ${{ matrix.shims }}
         run: ci/jobs/rust-test-macos.sh "$FEATURES"
 
   rust-test-macos:

@@ -406,65 +406,6 @@ fn the_macos_shards_together_run_both_feature_sets_and_the_ledger() {
     assert!(macos("other", None).is_err());
 }
 
-/// The `cargo` calls the `plain` shard makes in CI (`CI=true`) with `PACKAGES` and `SHIMS` set as
-/// given. The hosts file is stubbed as already mapped (a stub `grep`), so nothing is written.
-fn macos_in_ci(packages: Option<&str>, shims: Option<&str>) -> Vec<String> {
-    let dir = tempfile::tempdir().unwrap();
-    let log = dir.path().join("calls");
-    executable(dir.path(), "cargo", "echo \"cargo $*\" >> \"$CALLS\"");
-    executable(dir.path(), "rustup", "echo \"rustup $*\" >> \"$CALLS\"");
-    executable(dir.path(), "grep", "exit 0");
-    let mut cmd = Command::new("sh");
-    cmd.arg(repo::path(MACOS))
-        .arg("plain")
-        .env("PATH", path_with(dir.path()))
-        .env("CALLS", &log)
-        .env("CI", "true")
-        .env_remove("PACKAGES")
-        .env_remove("SHIMS");
-    if let Some(p) = packages {
-        cmd.env("PACKAGES", p);
-    }
-    if let Some(s) = shims {
-        cmd.env("SHIMS", s);
-    }
-    let out = cmd.output().expect("sh ran");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    fs::read_to_string(&log)
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-#[test]
-fn the_shim_network_cases_run_on_macos_unless_the_scope_says_they_are_not_needed() {
-    let shims = "cargo test --locked -p repo-tests --test shims";
-    // A full run (no SHIMS) and a scope that asks for them.
-    assert!(macos_in_ci(None, None).contains(&shims.to_string()));
-    assert!(
-        macos_in_ci(Some("anthology-guard repo-tests"), Some("true")).contains(&shims.to_string())
-    );
-    // A pull request whose change the shim tests do not read.
-    let calls = macos_in_ci(Some("anthology-guard"), Some("false"));
-    assert!(
-        !calls.iter().any(|c| c.contains("--test shims")),
-        "{calls:?}"
-    );
-    assert_eq!(
-        calls,
-        [
-            "rustup toolchain install",
-            "cargo --version",
-            "cargo test -p anthology-guard --locked",
-        ]
-    );
-}
-
 #[test]
 fn a_macos_shard_builds_the_anthology_binary_first_for_the_crates_that_run_it() {
     assert_eq!(
@@ -787,7 +728,6 @@ fn the_macos_shards_come_from_the_scope_matrix() {
     let step = step_running(&job, run);
     assert_eq!(text(&step["env"], "FEATURES"), "${{ matrix.features }}");
     assert_eq!(text(&step["env"], "PACKAGES"), "${{ matrix.packages }}");
-    assert_eq!(text(&step["env"], "SHIMS"), "${{ matrix.shims }}");
 }
 
 fn check_gate(name: &str, run_output: &str) {
