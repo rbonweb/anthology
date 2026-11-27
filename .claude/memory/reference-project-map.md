@@ -26,7 +26,7 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 - `evals/` (runners export `ANTHOLOGY_HOST_MODE=full`), `ci/jobs/` (one script per CI job), `changelog.d/<plugin>/*.md` (fragments `release-edit` reads and deletes).
 
 ## Flows
-- Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock`, downloads it if missing -> it injects the guide, installs ATL. Embedded hosts get only self-test and bootstrap lines.
+- Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock`, downloads it if missing -> it injects the guide, installs ATL. Embedded hosts get only self-test and bootstrap lines. At startup it warns when the official `superpowers` is enabled next to `anthology-superpowers` (`doctor::enabled_official_superpowers`); the line names the official one, because `anthology` requires the other and Claude Code refuses to disable it alone.
 - Bash call: `bin/atl-hook`, then `hooks/no-attribution.sh`; the guardrails `guard.sh` -> `anthology guard`. All run with `onFailure: block`, timeout 60. At a prompt, the permissions mod allows a command only when `anthology perm classify` proves it read-only.
 - Guard binary missing: a detached `bootstrap.sh fetch` downloads; `guard.sh` lets only the installer its blocks name through.
 - Binary release: root `Cargo.toml` version -> tag `anthology-bin--v<ver>` -> `anthology-release.yml` -> `scripts/dev.sh lock write` rewrites both `anthology.lock` -> release guardrails, then anthology.

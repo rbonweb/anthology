@@ -149,7 +149,7 @@ pub const FALLBACK: &str = "Blocked by anthology-guardrails (setup): the guard b
 
 pub fn sys_anthology(reason: &str) -> String {
     format!(
-        "{{\"systemMessage\":\"anthology: could not install the anthology binary ({reason}); the routing guide, memory and atl are off until it installs. Start a new session while online, or run /anthology:setup.\"}}"
+        "{{\"systemMessage\":\"anthology: could not install the anthology binary ({reason}); the routing guide, memory and atl are off until it installs, and if anthology-guardrails is on, its guard (the same binary) blocks shell commands, file edits and MCP tools too. Start a new session while online; anthology-guardrails names the command that installs it now.\"}}"
     )
 }
 

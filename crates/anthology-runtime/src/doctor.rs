@@ -1526,6 +1526,45 @@ pub fn find_duplicates(env: &Env, _cwd: &Path) -> Vec<Duplicate> {
     find_duplicates_in(installed_plugins_state(env).0.as_ref())
 }
 
+/// The first install of the official `superpowers` that is enabled for the session in `cwd`,
+/// found as [`find_duplicates_in`] finds it. Anthology bundles its own copy
+/// (`anthology-superpowers`), so an enabled official one loads the same instructions twice.
+/// Enabled: an `enabledPlugins` entry of the plugin's key is `true` in the user settings, the
+/// project's `.claude/settings.json` or its `settings.local.json`, and none of them says
+/// anything else for it. Only installs with a runnable [`Duplicate::command`] count.
+pub fn enabled_official_superpowers(env: &Env, cwd: &Path) -> Option<Duplicate> {
+    let found: Vec<Duplicate> = find_duplicates(env, cwd)
+        .into_iter()
+        .filter(|d| d.command.is_some() && d.plugin.split('@').next() == Some("superpowers"))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    let top = compat::repo_top(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let project = top.join(".claude");
+    // The project's two files come with the clone, so they are bounded.
+    let files = [
+        compat::read_json(&compat::config_dir(env).join("settings.json")),
+        compat::read_json_limited(&project.join("settings.json"), compat::REPO_READ_LIMIT),
+        compat::read_json_limited(
+            &project.join("settings.local.json"),
+            compat::REPO_READ_LIMIT,
+        ),
+    ];
+    let marks = |key: &str| -> Vec<bool> {
+        files
+            .iter()
+            .filter_map(|f| obj(obj(f.as_ref()).and_then(|m| m.get("enabledPlugins"))))
+            .filter_map(|m| m.get(key))
+            .map(|v| matches!(v, Value::Bool(true)))
+            .collect()
+    };
+    found.into_iter().find(|d| {
+        let marks = marks(&d.plugin);
+        !marks.is_empty() && marks.iter().all(|on| *on)
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // main()
 
