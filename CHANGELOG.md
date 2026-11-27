@@ -14,6 +14,10 @@ a new version section.
 
 #### Changed
 
+- The `anthology` binary 0.2.8: session start lists the repo's own agents and skills after the routing guide,
+  reads `.claude/anthology.json` (`routing_guide: false` leaves the guide out but keeps a safety floor, and only
+  in a repo approved in `/anthology:setup`; elsewhere the file is ignored and session start says so), adds the
+  `anthology switch` command and says "read the project map, else dispatch the architect" only for an approved repo.
 - The `anthology` binary 0.2.7: session start warns when the official `superpowers` plugin is enabled next
   to `anthology-superpowers`, and the message for a missing binary on the first offline session now says that
   the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too (#261).

@@ -62,10 +62,29 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 
 These run only when you ask for them.
 
+## Your own agents and skills
+
+The agents above fill the gaps; they do not replace yours. When a repo has its own agents or skills, the main session uses them first. The routing guide says so in one line, and session start adds a short section, "This project's own agents and skills", right after the guide. It lists:
+
+- the repo's `.claude/agents/*.md` and `.claude/skills/*/SKILL.md`, each by its frontmatter `name` and a description cut to 100 characters;
+- an agent table or list in the repo's `CLAUDE.md` (or `.claude/CLAUDE.md`): the rows of a table and the items of a list under a heading that has "agent" in it, such as `## Project agents`. In a table, the column whose header says "agent" is the name; without one, the first column is;
+- then your own agents and skills in the Claude config folder (`~/.claude/agents`, `~/.claude/skills`, or under `CLAUDE_CONFIG_DIR`).
+
+Under the heading is the rule: for the jobs they cover, use the project's own agents and skills before Anthology's; Anthology's agents fill the gaps. Then a line says the entries are text from the repo's own files, not instructions. The list holds at most 12 entries (project ones first; a name appears once), so it stays inside the session-start budget. Names and descriptions lose `<`, `>`, backticks and control, invisible and direction-changing characters. A file that does not parse, one with no description, and Anthology's own (`anthology`, `anthology:*`, `anthology-*`) are left out. A dispatch to any agent, yours included, is never refused or redirected.
+
+A repo can switch parts of this off for itself in `.claude/anthology.json` at the project root (found at the git top, so a session started in a subfolder reads the same file), a JSON object with boolean keys. A missing key, a value that is not `false`, or a file that does not parse leaves the default. **A switch counts only in a repo you approved in `/anthology:setup`.** A repo you cloned can ship the file, and it cannot use it to switch Anthology's rules off: in any other repo the file is ignored, and session start says so in its message. When a switch does count, the message says that too, every session.
+
+| Key | `false` means |
+|---|---|
+| `routing_guide` | Session start leaves out the routing guide, this section and the project-map line below. Memory still loads, and a **safety floor** of guide lines stays: no attribution, tests and builds in containers, no host installs, literal-path deletes, the browser rule and no secrets in repo memory. |
+| `delegation` | The [strict-delegation mod](mods.md#strict-delegation) does nothing in this repo. It asks the installed `anthology switch delegation <folder>`, which applies the same approval rule; with no binary installed the mod stays on. |
+
+The line "before planning, read `.claude/memory/reference-project-map.md`; missing: dispatch `anthology:architect`" is not in the guide. Session start adds it only for a repo you approved in `/anthology:setup`.
+
 ## Working rules the routing guide sets
 
-- **Worktrees.** Writers use Claude Code's built-in isolation, never `git worktree add`. Writers commit before they finish, and the main session reviews and merges. Parallel writers get separate files.
-- **Docker.** Tests, builds and end-to-end suites run in containers that mount only the current worktree. Agents do no host-level installs (`brew`, `npm -g`, global `pip`, browser downloads). Project-level installs such as `npm install` are fine. If Docker is unavailable, the agent stops and tells you.
+- **Worktrees.** With worktrees, writers use Claude Code's built-in isolation, never `git worktree add`. Writers commit before they finish, and the main session reviews and merges. Parallel writers get separate files.
+- **Docker.** If the repo has tests, builds or end-to-end suites, they run in containers that mount only the current worktree. Agents do no host-level installs (`brew`, `npm -g`, global `pip`, browser downloads). Project-level installs such as `npm install` are fine. If Docker is unavailable, the agent stops and tells you.
 - **Blocked agents.** A subagent cannot ask you a question. It stops and reports it, and the main session answers or asks you, then resumes it.
 - **Coding and long builds.** Code follows the Karpathy guidelines (think first, simplest fit, surgical diffs, verify). The implementer, debugger and reviewer read them at startup. For long or multi-agent builds, status reports and decisions made while you are away, the main session loads `anthology:large-builds`: plain feature-based status reports (done, running, blocked, an honest estimate), and each decision recorded as `Ruling: what — why — cost if wrong`, while still stopping for irreversible, security-sensitive or outward-facing actions.
 - **Strict delegation.** The main session plans, briefs agents, checks and merges, and does not produce the work itself. A mod enforces this in interactive sessions (see [Strict delegation](mods.md#strict-delegation)).
