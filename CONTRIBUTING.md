@@ -30,7 +30,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `changelog.d/` | Changelog fragments, `changelog.d/<plugin>/*.md`, which `scripts/release.sh` compiles into `CHANGELOG.md` and deletes |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
 | `atl/` | The source of ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs, as a git subtree with its history. `atl/LICENSE` is upstream's Apache-2.0 license, kept as it is, and `atl/NOTICE` records the origin and the changes; both ship in every archive |
-| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
+| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `remote-build.sh` (the same checks on a remote build host), `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
 | `evals/` | Behaviour evals (one `case.yaml` per case) and the mocked BrowserOS Neo server in `mocks/`; run with `scripts/run-evals.sh`, which also runs the smoke cases (`anthology-dev smoke`) |
 | `port/` | The record of the port: the test ledger in `port/ledger/`, the difftest divergences and seeds, and the replay reports |
 | `fuzz/` | The fuzz targets, run weekly by `fuzz.yml` |
@@ -57,6 +57,29 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
 5. Check the vendored content with `scripts/dev.sh vendor check`.
 6. Validate a plugin with the Claude Code version CI uses: `npm ci --prefix ci/claude-code`, then `ci/claude-code/node_modules/.bin/claude plugin validate --strict plugins/<name>`.
 7. Try your checkout in Claude Code: `claude plugin marketplace add <path to your checkout>` loads the marketplace in place, then install `anthology@anthology` as in the README. The plugins then install the released binary that `anthology.lock` pins, not one built from your checkout. The evals and smokes test a local build, on a scratch copy of `plugins/` that `anthology-dev seed` prepares.
+
+### Building on a remote host
+
+To keep a long Rust build off your own machine, [`scripts/remote-build.sh`](scripts/remote-build.sh) runs `scripts/rust-test.sh` on a Linux build host over ssh. The host needs Docker (your user in the `docker` group), `bash` 4 or newer and `tar`; `rsync` is used when both ends have it. Key-based ssh login must already work: the script uses `ssh -o BatchMode=yes`, never prompts, never uses `sudo`, and changes nothing about the host's ssh or auth setup. Give it the host's ssh alias in the environment, never in a file of the repo:
+
+```sh
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh test -p anthology-guard
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh lint
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-ours
+```
+
+The arguments are the ones `scripts/rust-test.sh` takes. The script copies the checkout (tracked files, plus uncommitted and new files that are not ignored; never `target/` or `.claude/worktrees`) to `~/anthology-remote/<hash>/` on the host, runs the checks there, streams the output and exits with their exit code. The `<hash>` names the checkout, so each worktree has its own folder and its own target volume. Run one build per checkout at a time: a new run removes the containers that an earlier run of the same checkout left.
+
+The host is shared, so the script leaves nothing of ours on it that can fill its disk:
+
+- **Clean by default.** When a run ends, passed or failed, and also on Ctrl-C or a dropped connection, the checkout's folder, its `anthology-rust-target-*` volume and its containers are removed. `ANTHOLOGY_KEEP_REMOTE=1` keeps the folder and volume, so the next run sends only what changed and builds warm. Use it for one working session, then run `--clean`.
+- **Only our own items.** The script removes only what it created: the folders under `~/anthology-remote/`; the `anthology-rust-target-*`, `anthology-cargo`, `anthology-sccache` and `anthology-rustup-*` volumes, which it creates itself with the label `anthology.remote-build=1` and treats as ours only when the name matches and the label is there (a same-named volume without the label was on the host before us and is never touched); the containers that mount those volumes; and the Rust image, only if it was not on the host when our run started (the script records that in `~/anthology-remote/.pulled-images`) and only when no container that is not ours uses it. It never prunes, never forces a removal and touches nothing outside `~/anthology-remote`.
+- **Self-heal at the start.** Before each run the script removes our own leftovers that were not used for 12 hours: folders, `anthology-rust-target-*` volumes and our stopped containers. When nothing of ours has run for 48 hours (the time of `~/anthology-remote/.last-used`, written at the start and the end of each run), it also removes the `anthology-cargo`, `anthology-sccache` and `anthology-rustup-*` caches and the pulled image. A volume that a running container uses stays.
+- **Disk guard.** The script refuses to start, and says so, when the host has less than 20 GB free on its home disk or its Docker data disk.
+- **`--clean`** removes this checkout's folder, volume and containers. **`--clean-ours`** removes everything of ours, as defined above, and nothing else. The caches and the image stay between runs so that a run starts quickly; run `--clean-ours` when you are done for the day.
+
+The remote folder is a copy without git history, so checks that read it (for example `scripts/dev.sh lock check-fresh`) belong on your own machine or in CI.
 
 ### What CI runs
 
