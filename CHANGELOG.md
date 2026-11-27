@@ -12,6 +12,9 @@ a new version section.
 
 #### Changed
 
+- The `anthology` binary 0.2.7: session start warns when the official `superpowers` plugin is enabled next
+  to `anthology-superpowers`, and the message for a missing binary on the first offline session now says that
+  the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too (#261).
 - The `anthology` binary 0.2.6: the guard no longer blocks `docker exec db psql -c "select count(*) from t"`
   as too complex to check. Inside a docker command every `-c` word was read as a shell option and the next
   word was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain SQL runs

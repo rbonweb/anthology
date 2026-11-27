@@ -39,6 +39,11 @@
 //! project install pinned older than the user one is not stale. Candidates `x.y.z-rc.N` are
 //! ordered by `N`; any other suffix (a sha) is not ordered.
 //!
+//! **A duplicate superpowers.** At startup (not on resume, clear or compact, and not for an
+//! embedded host), [`duplicate_superpowers_warning`] says so when the official `superpowers`
+//! plugin is enabled next to `anthology-superpowers`: one line naming both and the command that
+//! disables the official one.
+//!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
 //! `ANTHOLOGY_BOOTSTRAP_DOWNLOADED` is exactly `0` and
@@ -85,6 +90,7 @@ use anthology_settings::{self as settings, SettingsDeps, SettingsLimits, TAG_PLU
 use crate::atl_install::{self, AtlDeps, AtlLimits, Reconciled};
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
+use crate::doctor;
 use crate::guardrails_loc::{self, GUARD_REL, Problem};
 
 /// Windows (the only output there).
@@ -484,6 +490,7 @@ pub mod label {
     pub const GUIDE: &str = "reading the routing guide";
     pub const COMPOSE: &str = "assembling the session context";
     pub const STALE: &str = "the loaded plugin version check";
+    pub const DUPLICATE_SUPERPOWERS: &str = "the duplicate superpowers check";
 }
 
 /// `_step`: runs `f`; an exception (or a panic) becomes `anthology: <label> failed (<Class>)`.
@@ -694,6 +701,19 @@ pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String
             "anthology: this session loaded {name} {loaded}, but {installed} is installed; restart Claude Code to load the new version"
         )
     })
+}
+
+/// The line for an enabled official `superpowers` next to Anthology's own `anthology-superpowers`
+/// (both would load the same instructions). It names the command that disables the official one:
+/// `anthology` lists `anthology-superpowers` as a dependency, so Claude Code refuses to disable
+/// that one alone. The detection is the one `/anthology:setup` uses
+/// ([`doctor::enabled_official_superpowers`]).
+pub fn duplicate_superpowers_warning(env: &Env, cwd: &Path) -> Option<String> {
+    let d = doctor::enabled_official_superpowers(env, cwd)?;
+    let (plugin, scope) = (d.plugin, d.scope);
+    Some(format!(
+        "anthology: superpowers loads twice: {plugin} and anthology-superpowers@anthology are both enabled; disable the official one with: claude plugin disable {plugin} -s {scope}"
+    ))
 }
 
 /// `_is_subagent`: Claude Code puts `agent_id` in the hook input when the hook fires inside a
@@ -1259,6 +1279,19 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             |_| {
                 fault(deps, "_stale_plugin_warning")?;
                 Ok(stale_plugin_warning(env, &root, &cwd))
+            },
+            None,
+        );
+        warnings.extend(w);
+    }
+
+    if !embedded && at_startup {
+        let w = step(
+            &mut warnings,
+            label::DUPLICATE_SUPERPOWERS,
+            |_| {
+                fault(deps, "_duplicate_superpowers_warning")?;
+                Ok(duplicate_superpowers_warning(env, &cwd))
             },
             None,
         );
