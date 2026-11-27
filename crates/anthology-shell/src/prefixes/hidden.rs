@@ -203,6 +203,7 @@ pub(crate) fn runs_assigned_command(word: &str) -> bool {
         "GIT_CONFIG_PARAMETERS",
         "LESSOPEN",
         "LESSCLOSE",
+        "RIPGREP_CONFIG_PATH",
     ];
     let Some((name, value)) = word.split_once('=') else {
         return false;
@@ -442,13 +443,171 @@ pub(crate) fn option_commands(prog: &str, args: &[String]) -> Vec<String> {
     commands
 }
 
-/// `option_commands` has a command that is not a known harmless value (`cat`, a pager, a compressor for
-/// `sort`), so what the program runs cannot be told from the text.
+/// The values of `option_commands` that run nothing when handed a file: not `HARMLESS_VALUES`, which holds
+/// editors (vim runs the `:!` lines of the file it is given) and `ssh`.
+const FILE_FED_HARMLESS: &[&str] = &["", "true", "false", "cat", "less", "less -R", "more"];
+
+/// The program runs something the text does not show: `option_commands` has a command that is not a known
+/// harmless value (`cat`, a pager, a compressor for `sort`; no editor), a config file can hold such an option
+/// (`ug` and `ugrep --config`/`---FILE` read ugrep options from files), or an awk program runs a command.
 pub(crate) fn runs_unread_command(prog: &str, args: &[String]) -> bool {
     let compressor = matches!(prog, "sort" | "gsort");
-    option_commands(prog, args)
-        .iter()
-        .any(|c| !(harmless_value(c) || (compressor && COMPRESSORS.contains(&c.as_str()))))
+    option_commands(prog, args).iter().any(|c| {
+        !(FILE_FED_HARMLESS.contains(&c.as_str())
+            || (compressor && COMPRESSORS.contains(&c.as_str())))
+    }) || reads_ugrep_config(prog, args)
+        || awk_runs_commands(prog, args)
+}
+
+/// A ugrep-family program that loads option files: `ug` and `ug+` read `.ugrep` from the working folder and the
+/// home folder, `--config` reads the same, and `---FILE` reads FILE.
+fn reads_ugrep_config(prog: &str, args: &[String]) -> bool {
+    match prog {
+        "ug" | "ug+" => true,
+        "grep" | "egrep" | "fgrep" | "ugrep" => args
+            .iter()
+            .any(|a| a == "--config" || a.starts_with("--config=") || a.starts_with("---")),
+        _ => false,
+    }
+}
+
+/// awk runs commands from its program: `system(`, a pipe to or from a string (`print | "cmd"`,
+/// `"cmd" | getline`, `|&`), a gawk `@` directive (`@load`, `@include`), or text the analysis cannot see: a program
+/// file (`-f`, `-E`), an extension (`-l`) or an include other than `inplace` (`-i`). The program is the first
+/// operand, or the value of `-e`/`--source`; operands after it, and the values of `-F` and `-v`, are not read as
+/// program text.
+fn awk_runs_commands(prog: &str, args: &[String]) -> bool {
+    if !matches!(prog, "awk" | "gawk" | "mawk" | "nawk" | "original-awk") {
+        return false;
+    }
+    let mut programs: Vec<&str> = Vec::new();
+    let mut operands = false;
+    let mut k = 0;
+    while k < args.len() {
+        let arg = args[k].as_str();
+        let next = args.get(k + 1).map(String::as_str);
+        k += 1;
+        if operands || !arg.starts_with('-') || arg == "-" {
+            // the first operand is the program (when `-e` gave none), the rest are files and assignments
+            if programs.is_empty() {
+                programs.push(arg);
+            }
+            break;
+        }
+        if arg == "--" {
+            operands = true;
+        } else if let Some(long) = arg.strip_prefix("--") {
+            let (name, attached) = long
+                .split_once('=')
+                .map_or((long, None), |(n, v)| (n, Some(v)));
+            let abbreviates = |full: &str, min: usize| name.len() >= min && full.starts_with(name);
+            if abbreviates("file", 3) || abbreviates("exec", 3) || abbreviates("load", 3) {
+                return true;
+            }
+            if abbreviates("include", 3) {
+                if attached.or(next) != Some("inplace") {
+                    return true;
+                }
+                k += usize::from(attached.is_none());
+            } else if abbreviates("source", 3) {
+                programs.extend(attached.or(next));
+                k += usize::from(attached.is_none());
+            }
+        } else {
+            for (at, c) in arg.char_indices().skip(1) {
+                let rest = &arg[at + c.len_utf8()..];
+                match c {
+                    'f' | 'E' | 'l' => return true,
+                    'i' | 'e' | 'F' | 'v' | 'W' => {
+                        let value = if rest.is_empty() { next } else { Some(rest) };
+                        k += usize::from(rest.is_empty());
+                        match (c, value) {
+                            ('i', value) if value != Some("inplace") => return true,
+                            ('e', Some(text)) => programs.push(text),
+                            _ => {}
+                        }
+                        break;
+                    }
+                    // the rest of the word is the value of an option like `-ofile`, `-Dfile`, `-pfile`
+                    'o' | 'D' | 'p' | 'd' => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    programs.into_iter().any(awk_text_runs)
+}
+
+/// Whether awk program text holds `system(`, an `@`, or a `|` that is not `||` outside a string, a comment and a
+/// regular expression. A `/` opens a regular expression only where an operand can start (after nothing, `(`, `,`,
+/// `~`, `!`, `&`, `|`, `{`, `;`, `}` or a newline); after anything else (`n++ / 2`) it divides, so a pipe after it
+/// still counts.
+fn awk_text_runs(text: &str) -> bool {
+    let b = text.as_bytes();
+    let mut prev = b'\n';
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b' ' | b'\t' | b'\r' => {
+                i += 1;
+                continue;
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                prev = b'"';
+                continue;
+            }
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if matches!(
+                prev,
+                b'\n' | b'(' | b',' | b'~' | b'!' | b'&' | b'|' | b'{' | b';' | b'}'
+            ) =>
+            {
+                i += 1;
+                while i < b.len() && b[i] != b'/' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                prev = b'/';
+                continue;
+            }
+            b'|' => {
+                if b.get(i + 1) != Some(&b'|') {
+                    return true;
+                }
+                i += 2;
+                prev = b'|';
+                continue;
+            }
+            b'@' => return true,
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let after = text[i..].trim_start_matches([' ', '\t']);
+                if &text[start..i] == "system" && after.starts_with('(') {
+                    return true;
+                }
+                prev = b'a';
+                continue;
+            }
+            _ => {}
+        }
+        prev = c;
+        i += 1;
+    }
+    false
 }
 
 /// The variables `less` runs as a command on every file it opens: `value` with the mode a leading `|`, `||` or

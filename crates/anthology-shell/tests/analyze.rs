@@ -615,6 +615,39 @@ fn search_sort_and_pager_commands_are_marked() {
         "LESSOPEN='|npx %s' less f",
         "LESSCLOSE='npx %s %s' less f",
         "export LESSOPEN='|npx %s'",
+        // editors run the `:!` lines of the files they are handed
+        "rg --pre=vim x f",
+        "rg --pre=nano x f",
+        "ugrep --filter='*:vi' x f",
+        "sort --compress-program=vim big",
+        // awk runs commands from its program text, a program file or an include
+        "awk 'BEGIN{system(\"cmd\")}'",
+        "gawk 'BEGIN{system (\"cmd\")}'",
+        "mawk '{print | \"cmd\"}' f",
+        "nawk 'BEGIN{\"cmd\" | getline x}'",
+        "gawk '{print |& \"cmd\"}' f",
+        "awk -e 'BEGIN{system(\"cmd\")}'",
+        "gawk --source='BEGIN{system(\"cmd\")}'",
+        "awk -f p.awk f",
+        "awk --file=p.awk f",
+        "gawk -l ext 'BEGIN{}'",
+        "gawk -i lib.awk '{print}' f",
+        "gawk '@load \"x\"'",
+        "gawk --exec=p.awk f",
+        "gawk --load=ext '{print}' f",
+        "gawk --include=lib.awk '{print}' f",
+        "gawk --include inplace 'BEGIN{system(\"cmd\")}'",
+        "gawk --include=inplace 'BEGIN{system(\"cmd\")}'",
+        "gawk --source 'BEGIN{system(\"cmd\")}'",
+        "gawk -s -e 'BEGIN{system(\"cmd\")}'",
+        // config files hold any option
+        "RIPGREP_CONFIG_PATH=cfg rg x f",
+        "export RIPGREP_CONFIG_PATH=cfg",
+        "ugrep --config=cfg x f",
+        "ugrep --config x f",
+        "ugrep ---cfg x f",
+        "ug x f",
+        "ug+ x f",
     ] {
         assert!(
             any_has(command, Opaque::UnknownWrapperOption),
@@ -638,6 +671,16 @@ fn search_sort_and_pager_commands_are_marked() {
         "sort --check f",
         "LESSOPEN= less f",
         "LESSKEY=x less f",
+        "RIPGREP_CONFIG_PATH= rg x f",
+        "rg --no-config x f",
+        "ugrep -r x .",
+        "rg --pre=less x f",
+        "awk '{print $1}' f",
+        "awk -F'|' '{print $1}' f",
+        "awk '/a|b/ {n++} END {print n}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "gawk -i inplace '{print}' f",
+        "awk -v OFS='|' '{print $1, $2}' f",
     ] {
         assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
     }
@@ -645,6 +688,91 @@ fn search_sort_and_pager_commands_are_marked() {
 
 /// zsh reads an unquoted `(a|b)` among the words of a command as a glob group, which can add or replace words
 /// the analysis never saw (`docker exec c (flock|x) psql ...` runs `flock`). bash reads it as a syntax error.
+/// The everyday forms of rg, ugrep and awk are neither marked nor unproven (`clear` looks at marks only).
+#[test]
+fn everyday_rg_ugrep_and_awk_are_complete() {
+    for command in [
+        "RIPGREP_CONFIG_PATH= rg x f",
+        "export RIPGREP_CONFIG_PATH=",
+        "rg --no-config x f",
+        "rg --pre=cat x f",
+        "ugrep -r x .",
+        "ugrep --pager=less x f",
+        "awk '{print $1}' f",
+        "awk -F'|' '{print $1}' f",
+        "awk '/a|b/ {n++} END {print n}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "awk -v OFS='|' '{print $1, $2}' f",
+        "gawk -i inplace '{print}' f",
+        "gawk --include=inplace '{print}' f",
+        "gawk --include inplace '{print}' f",
+        "gawk --posix '{print}' f",
+        "gawk --traditional '{print}' f",
+        "gawk --lint '{print}' f",
+        "gawk -ofile.out '{print}' f",
+        "gawk -pprof.out '{print}' f",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(!a.incomplete, "{command}: {a:?}");
+    }
+}
+
+/// awk program text is read as awk reads it: a pipe in a string, a comment or a regular expression is data, a
+/// pipe after anything else (and `system(`, and `@`) runs a command.
+#[test]
+fn awk_program_text_is_read_for_commands() {
+    for command in [
+        "awk 'BEGIN{system(\"cmd\")}'",
+        "awk 'BEGIN { system (\"cmd\") }'",
+        "awk 'BEGIN{\n system(\"cmd\")\n}'",
+        "awk '{ x = \"a\" } END { system(\"cmd\") }'",
+        "awk '{print} # a comment\n END{system(\"cmd\")}'",
+        "awk '{print | \"cmd\"}' f",
+        "awk '{print $1 | \"sort\"}' f",
+        "awk '{print \"a\" | \"cmd\"}' f",
+        "awk '{print \"q\\\"\" | \"cmd\"}' f",
+        "awk 'BEGIN{\"cmd\" | getline x}'",
+        "gawk '{print |& \"cmd\"}' f",
+        "awk '/a/ { n++ / 2 | \"cmd\" }' f",
+        "awk '/a|b/ { print | \"cmd\" }' f",
+        "awk '/x/ { print | \"cmd\" }' f",
+        "awk 'BEGIN{system(c)}' c=id",
+        "gawk '@include \"x\"'",
+        "awk 'a || system(\"cmd\")'",
+        "awk 'aaaaaaaaa == bbbbbbbbb || system(\"cmd\")'",
+    ] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    for command in [
+        "awk '{print $1}' f",
+        "awk 'x'",
+        "awk ''",
+        "awk 'NR > 1 && /x|y/' f",
+        "awk '{print \"a | b\"}' f",
+        "awk '{print \"q\\\"|x\"}' f",
+        "awk '{print \"\"}' f",
+        // an unterminated string or regular expression is a syntax error for awk, nothing runs
+        "awk '{print \"abc}' f",
+        "awk '/abc' f",
+        "awk '{print} # a comment at the end' f",
+        "awk '/a|/' f",
+        "awk '{ # a | pipe\n print }' f",
+        "awk '/a\\/|b/' f",
+        "awk '/a|b/ {print $2}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "awk '{print length($0)}' f",
+        "awk '{print substr($1, 1, 2)}' f",
+        "awk '{print \"system(x)\"}' f",
+        "awk '{gsub(/a|b/, \"\"); print}' f",
+        "awk '$0 ~ /a|b/ {n++}' f",
+        "awk '{ s += $1 } END { print s / NR }' f",
+        "awk '{print $1 / 2}' f",
+        "awk 'BEGIN{printf \"%s|%s\\n\", 1, 2}'",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
 #[test]
 fn a_zsh_glob_group_among_the_words_of_a_command_is_incomplete() {
     for command in [

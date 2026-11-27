@@ -318,3 +318,160 @@ fn parentheses_in_everyday_shell_stay_allowed() {
         Verdict::Allow,
     );
 }
+
+// ------------------------------------------------------------------ review round: editors, awk, config files
+
+/// vim and ex run the `:!` lines of the file the search hands them, so an editor is no harmless value for an
+/// option that feeds it files (`rg --pre`, ugrep's `--filter` and `--pager`, `sort --compress-program`).
+#[test]
+fn an_editor_given_to_an_option_that_runs_it_is_too_complex() {
+    assert_all(
+        &[
+            "rg --pre=vim x f",
+            "rg --pre vim x f",
+            "rg --pre=vi x f",
+            "rg --pre=nvim x f",
+            "rg --pre=ex x f",
+            "rg --pre=view x f",
+            "rg --pre=emacs x f",
+            "rg --pre=nano x f",
+            "rg --hostname-bin=vim --hyperlink-format=default x f",
+            "ugrep --filter='txt:vim' x f",
+            "ugrep --filter='*:vi' x f",
+            "ugrep --filter='cat,*:vim' x f",
+            "grep --filter=vi x f",
+            "ugrep --pager=vim x f",
+            "ugrep --pager=nano x f",
+            "sort --compress-program=vim big",
+            "sort --compress-program=nano big",
+        ],
+        Verdict::TooComplex,
+    );
+    assert_all(
+        &[
+            "rg --pre=cat x f",
+            "rg --pre=less x f",
+            "rg --pre=more x f",
+            "ugrep --pager=less x f",
+            "ugrep --filter='*:cat' x f",
+            "sort --compress-program=zstd big",
+        ],
+        Verdict::Allow,
+    );
+}
+
+/// awk (and gawk, mawk, nawk) runs commands from its program text: `system(`, a pipe to or from a string, `|&`.
+#[test]
+fn an_awk_program_that_runs_a_command_is_too_complex() {
+    assert_all(
+        &[
+            r#"awk 'BEGIN{system("cmd")}'"#,
+            r#"gawk 'BEGIN{system("cmd")}'"#,
+            r#"mawk 'BEGIN{system("cmd")}'"#,
+            r#"nawk 'BEGIN{system("cmd")}'"#,
+            r#"original-awk 'BEGIN{system("cmd")}'"#,
+            r#"awk 'BEGIN { system ("cmd") }'"#,
+            r#"awk -F: 'BEGIN{system("cmd")}' f"#,
+            r#"awk -F : -v x=1 'BEGIN{system("cmd")}' f"#,
+            r#"awk '{print | "cmd"}' f"#,
+            r#"awk '{print $1 | "sort"}' f"#,
+            r#"awk '{print > "/dev/stderr"; print $1 | "cmd"}' f"#,
+            r#"awk 'BEGIN{"cmd" | getline x; print x}'"#,
+            r#"gawk 'BEGIN{"cmd" |& getline x}'"#,
+            r#"gawk '{print |& "cmd"}' f"#,
+            r#"awk 'BEGIN{x = 1; cmd = "id"; cmd | getline y}'"#,
+            r#"awk '/a/ { n++ / 2 | "cmd" }' f"#,
+            r#"awk '/a|b/ { print | "cmd" }' f"#,
+            "awk 'BEGIN{\n  system(\"cmd\")\n}'",
+            r#"awk -e 'BEGIN{system("cmd")}'"#,
+            r#"awk -e'BEGIN{system("cmd")}'"#,
+            r#"gawk --source='BEGIN{system("cmd")}'"#,
+            r#"gawk --source 'BEGIN{system("cmd")}'"#,
+            "awk 'BEGIN{system(c)}' c=id",
+            r#"gawk '@load "x"; BEGIN{}'"#,
+            "awk -f p.awk f",
+            "awk -fp.awk f",
+            "awk --file=p.awk f",
+            "gawk -E p.awk f",
+            "gawk -l ext 'BEGIN{}'",
+            "gawk -i lib.awk '{print}' f",
+            "gawk --include=lib.awk '{print}' f",
+            "sudo awk 'BEGIN{system(\"cmd\")}'",
+            "cat f | awk '{print | \"cmd\"}'",
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn an_awk_install_in_a_command_is_not_allowed() {
+    assert_none_allowed(&[
+        r#"awk 'BEGIN{system("npx playwright install")}'"#,
+        r#"awk '{print | "npx playwright install"}' f"#,
+    ]);
+}
+
+#[test]
+fn everyday_awk_stays_allowed() {
+    assert_all(
+        &[
+            "awk '{print $1}' f",
+            "awk -F: '{print $1}' /etc/passwd",
+            "awk -F'|' '{print $1}' f",
+            "awk -F '|' '{print $2}' f",
+            "awk -v OFS='|' '{print $1, $2}' f",
+            "awk '/foo|bar/' f",
+            "awk '/foo|bar/ {print $2}' f",
+            "awk '$1 == \"a\" || $2 == \"b\"' f",
+            "awk '$0 ~ /a|b/ {n++} END {print n}' f",
+            "awk 'NR > 1 && /x|y/' f",
+            "awk '{gsub(/a|b/, \"\"); print}' f",
+            "awk 'BEGIN{printf \"%s|%s\\n\", 1, 2}'",
+            "awk '{print \"a | b\"}' f",
+            "awk '{print \"system(x)\"}' f",
+            "awk '{ # a pipe | in a comment\n print }' f",
+            "awk '!seen[$0]++' f",
+            "awk '{ s += $1 } END { print s / NR }' f",
+            "awk '{print $1 / 2}' f",
+            "awk -F, '{print $1}' f g",
+            "gawk -i inplace '{print}' f",
+            "awk 'BEGIN { x = 1 } END { print x }' f",
+            "echo a | awk '{print $1}'",
+        ],
+        Verdict::Allow,
+    );
+}
+
+/// ripgrep's config file and ugrep's `--config`, `---FILE` and `ug` (which reads `.ugrep` from the working
+/// folder and the home folder) can hold any option, `--pre` and `--filter` among them.
+#[test]
+fn a_config_file_for_rg_or_ugrep_is_too_complex() {
+    assert_all(
+        &[
+            "RIPGREP_CONFIG_PATH=cfg rg x f",
+            "RIPGREP_CONFIG_PATH=/tmp/cfg rg --files",
+            "env RIPGREP_CONFIG_PATH=cfg rg x f",
+            "export RIPGREP_CONFIG_PATH=cfg; rg x f",
+            "RIPGREP_CONFIG_PATH=cfg sudo rg x f",
+            "ugrep --config=cfg x f",
+            "ugrep --config x f",
+            "grep --config=cfg x f",
+            "ugrep ---cfg x f",
+            "grep ---cfg x f",
+            "ug x f",
+            "ug+ x f",
+            "ug -r x .",
+        ],
+        Verdict::TooComplex,
+    );
+    assert_all(
+        &[
+            "RIPGREP_CONFIG_PATH= rg x f",
+            "rg --no-config x f",
+            "ugrep -r x .",
+            "grep -rn x .",
+            "ugrep --colour=never x f",
+        ],
+        Verdict::Allow,
+    );
+}

@@ -878,16 +878,19 @@ fn only_substitution(text: &str) -> bool {
         || (t.len() > 1 && t.starts_with('`') && t.ends_with('`'))
 }
 
-/// A `LESSOPEN` or `LESSCLOSE` assignment with a command in the prefix words of the command, or in the words of
-/// an exporter (`export LESSOPEN=...`): `less` runs it with a file name the text may not show, so its effect is
-/// not proven (the command is also read as a script, `assignment_scripts`).
-fn sets_less_command(prefix: &[String], prog: &str, args: &[String]) -> bool {
+/// A `LESSOPEN` or `LESSCLOSE` assignment with a command, or a `RIPGREP_CONFIG_PATH` with a file (its options
+/// can hold `--pre`), in the prefix words of the command or in the words of an exporter (`export LESSOPEN=...`):
+/// the program runs it with a file name the text may not show, so its effect is not proven (a `less` command is
+/// also read as a script, `assignment_scripts`).
+fn sets_hook_variable(prefix: &[String], prog: &str, args: &[String]) -> bool {
     let exported = if EXPORTERS.contains(&prog) { args } else { &[] };
     prefix.iter().chain(exported).any(|word| {
         word.split_once('=')
             .filter(|_| is_assignment(word))
-            .and_then(|(name, value)| less_command(name, value))
-            .is_some_and(|command| !command.is_empty())
+            .is_some_and(|(name, value)| match less_command(name, value) {
+                Some(command) => !command.is_empty(),
+                None => name == "RIPGREP_CONFIG_PATH" && !value.is_empty(),
+            })
     })
 }
 
@@ -2617,7 +2620,7 @@ impl<'a> Ctx<'a> {
             || renames_program(&prog, &args, &tokens)
             || tokens.iter().any(|t| nested_subscript_runs(t))
             || runs_unread_command(&prog, &args)
-            || sets_less_command(prefix, &prog, &args);
+            || sets_hook_variable(prefix, &prog, &args);
         // an integer sequence is allowed after the program word only: before it, or as it, it could form one
         if self.braces
             && tokens[..(prefix.len() + 1).min(tokens.len())]

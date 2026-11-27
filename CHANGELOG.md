@@ -23,6 +23,12 @@ a new version section.
      abbreviations; `gsort` too), and `LESSOPEN` and `LESSCLOSE` as a prefix assignment or an `export`.
      The options that only look alike (`--pre-glob`, `--filter-magic-label`) stay allowed, and so do
      `--pre=cat`, `--pager=less` and `sort --compress-program=gzip`.
+     The harmless values for these options no longer include editors (`vi`, `vim`, `nano`, ...): vim and ex run
+     the `:!` lines of the file they are handed. The same class on `build` is also closed: an awk (`awk`, `gawk`,
+     `mawk`, `nawk`) program with `system(`, a pipe to or from a string, `|&` or an `@` directive, `awk -f`, `-E`,
+     `-l` and `-i` other than `inplace` are too complex; so are `RIPGREP_CONFIG_PATH` set to a file,
+     `ugrep --config`, `ugrep ---FILE` and `ug` (which reads `.ugrep`). A `.ugrep` file read by plain `ugrep`
+     cannot be seen; see Known limits in `docs/guardrails.md`.
   2. zsh runs a command written between two backslash-escaped backticks inside an arithmetic subscript, in a
      `((` command, in `$((` and in `for ((`; bash does not. In arithmetic text the escaped pair is now read as a
      command substitution, and an unclosed one is too complex.
