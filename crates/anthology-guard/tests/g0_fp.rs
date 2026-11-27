@@ -541,6 +541,19 @@ const PAREN_SHAPES: &[&str] = &[
     r#"f() { echo x; }; docker exec c psql -c "BODY""#,
 ];
 
+#[test]
+fn a_text_the_lexer_could_not_balance_keeps_its_reading() {
+    // the whitespace fallback splits it, so its words are not the command's: a script is still found in a
+    // `-c` value (G4); SQL there was Allow on the base and stays so
+    for command in [
+        format!(r#"docker exec c psql -c "{MARKER}" '"#),
+        format!(r#"docker exec c psql -c "{MARKER}" "x"#),
+        format!(r#"docker exec c psql -U u -c "{MARKER}" '"#),
+    ] {
+        assert_eq!(verdict(&command), Verdict::Block(Rule::G4), "{command}");
+    }
+}
+
 const PSQL_OPTION_SHAPES: &[&str] = &[
     r#"docker exec c psql -o '|agent-browser open x' -c "BODY""#,
     r#"docker exec c psql -c "BODY" -o '|agent-browser open x'"#,

@@ -16,13 +16,13 @@ a new version section.
   as too complex to check. Inside a docker command every `-c` word was read as a shell option and the next
   word was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain SQL runs
   no shell and `docker exec` runs its arguments without one, so that SQL is now data. This holds only when
-  the whole command is plain text (no parameter, substitution, glob, brace or redirect, so the shell
+  the whole command is plain text (no parameter, substitution, glob, brace, redirect or parenthesis, so the shell
   cannot split or expand a word into others), the command is `docker exec`, `docker compose exec` or
   `docker-compose exec` with only the options `-u`, `--user`, `-w`, `--workdir`, `--detach-keys`, `-i`,
   `-t`, `-d`, `-it`, `--privileged`, `--interactive`, `--tty`, `--detach` and `-e`/`--env` for the libpq
   connection variables (`PGPASSWORD`, `PGUSER`, `PGDATABASE`, `PGHOST`, `PGPORT` and a few more; never
   `PATH`, and `--env-file` is not accepted), the program word is exactly `psql` (not `PSQL`, not a path),
-  and each `-c` value (there may be several) holds no backslash (`\!` and `\o |` make psql start a
+  and each `-c` and `--command` value (there may be several; one that fails ends the reading for all of them) holds no backslash (`\!` and `\o |` make psql start a
   shell), `$`, backtick, `~`, `^` or `#`. The options of psql are checked too: `-c`, `--command`, `-U`, `-h`,
   `-p`, `-d` (and their long forms) with a plain name, `-v` for `ON_ERROR_STOP`, `ON_ERROR_ROLLBACK`,
   `AUTOCOMMIT`, `ECHO`, `QUIET` and `VERBOSITY`, a cluster of `A`, `t`, `q`, `X`, `x`, `H`, and at most two
