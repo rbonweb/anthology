@@ -548,10 +548,22 @@ const TEXT_CONSUMERS: &[&str] = &["alias", "busybox", "eval", "source", "xargs",
 /// alias that a later word expands to a name and a bracket). A `$` counts
 /// anywhere, even in single quotes, because the quote scan here is only approximate (an apostrophe in a comment
 /// opens a quote bash does not see); every doubt is "not plain", and an unclosed single quote is not plain.
+/// Not counted, outside single quotes: a `$` a backslash escapes (`"a\$b"`, a regex that ends in a literal
+/// dollar), one a backslash follows (`"\\$\{"`: `$` then `\` is no expansion; a backslash and a newline would
+/// join lines and make `$1`, so that one counts), and one that ends a double-quoted string (`"x$"`).
 fn plain_text(text: &str, segments: &[crate::lexer::Segment]) -> bool {
     let (mut single, mut double, mut escaped) = (false, false, false);
-    for &c in text.as_bytes() {
-        if c == b'$' {
+    let bytes = text.as_bytes();
+    for (at, &c) in bytes.iter().enumerate() {
+        // a `$` expands unless a backslash escapes it, a backslash follows it (`$\{`: not a name, a bracket or a
+        // brace; not `$\` and a newline, which joins lines), or it ends a double-quoted string (`"x$"`).
+        // Never one in single quotes: the scan is approximate there.
+        if c == b'$'
+            && !(escaped
+                || (!single
+                    && (bytes.get(at + 1) == Some(&b'\\') && bytes.get(at + 2) != Some(&b'\n')
+                        || (double && bytes.get(at + 1) == Some(&b'"')))))
+        {
             return false;
         }
         if escaped {

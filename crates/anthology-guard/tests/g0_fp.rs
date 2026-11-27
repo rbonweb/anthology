@@ -12,6 +12,11 @@
 //!    (`grep -E "['\"\`]A['\"\`]" d`): a `[` at the start of a word or after punctuation follows no name, so
 //!    it opens no subscript. bash 5.2 and zsh 5.9 agree on that and on `\`` being a literal backtick in
 //!    double quotes; a subscript is evaluated after quote removal, so `unset "a[\`id\`]"` still runs `id`.
+//! 6. The same regex with an escaped dollar (`grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir`): the text
+//!    counted every `$` as a possible expansion, also one a backslash escapes, so the text was not plain and
+//!    each `[` after a quote or a backtick was read as a possible subscript start. `\$` in double quotes or
+//!    unquoted is a literal dollar in bash and zsh and expands nothing; a `$` that is not escaped (`\\$x`
+//!    is a backslash and then `$x`), a `$(`, a backtick substitution and a `$` in single quotes still do.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -309,4 +314,55 @@ fn a_subscript_tail_stored_in_a_word_and_joined_in_any_context_is_too_complex() 
         r#"s=1; echo $((a${s:+[$(npx playwright install)]}))"#,
         r#"f() { unset "a${1:-[$(npx playwright install)]}"; }; f"#,
     ]);
+}
+
+#[test]
+fn a_search_pattern_with_an_escaped_dollar_and_quote_characters_is_allowed() {
+    // `\$` is a literal dollar: nothing expands, so the two bracket expressions that hold a quote and a
+    // backtick are regex text, not subscripts
+    assert_all(
+        &[
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir | cut -c1-200 | head"#,
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*\\$" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{)" dir"#,
+            r#"rg -n "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(x\$|y)" dir"#,
+            r#"grep -E [\"\'\`][^\"\'\`]*\(x\$\|y\) dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir | head -5"#,
+            // the dollar escaped once (the shell text `\$`), and a dollar that ends a double-quoted string
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\$\{|\" *\+)" dir | cut -c1-200 | head"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*\$" dir"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*$" dir"#,
+            r#"rg "[\"'\`][^\"'\`]*(\$\{|x)" dir"#,
+            r#"grep -rnE "[\"'\`]x[^\"'\`]*$" dir"#,
+        ],
+        Verdict::Allow,
+    );
+}
+
+#[test]
+fn an_expansion_in_a_search_pattern_with_quote_characters_is_still_too_complex() {
+    // the same patterns with a real expansion: a `$` that nothing escapes, an escaped backslash before a
+    // `$`, a substitution, a `$` in single quotes (the quote scan is approximate: it counts there too)
+    assert_all(
+        &[
+            r#"grep -E "[\"'\`][^\"'\`]*($(id)|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(`id`|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*($x|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(${x}|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\\\$x|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" "$d""#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" $(echo d)"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" `echo d`"#,
+            r#"grep -E '[`"][^`"]*($x|y)' dir"#,
+            r#"grep -E '[`"][^`"]*(\$|y)' dir"#,
+            r#"grep -E '[`"][^`"]*(\\$\{|y)' dir"#, // a dollar, a backslash and a newline: the lines join and `$1` is read
+            "set -- '[`id`]'; unset \"a$\\\n1\"",
+            r#"set -- '[`id`]'; unset "a$1""#,
+            r#"set -- '[`id`]'; grep -E "[\"'\`][^\"'\`]*(\\$|y)" d; unset "a$1""#,
+        ],
+        Verdict::TooComplex,
+    );
 }
