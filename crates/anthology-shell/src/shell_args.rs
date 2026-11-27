@@ -482,6 +482,10 @@ fn psql_words_known(words: &[String]) -> bool {
             }
             i += 1;
         } else if word == "--command" {
+            // the script scan reads only the one-dash `-c` words, so every value is held to the rule here
+            if !words.get(i).is_some_and(|v| psql_value_is_data(v)) {
+                return false;
+            }
             i += 1;
         } else if let Some(cluster) = word.strip_prefix('-') {
             let (flags, command) = match cluster.strip_suffix('c') {
@@ -494,6 +498,10 @@ fn psql_words_known(words: &[String]) -> bool {
                 return false;
             }
             if command {
+                // one value with a backslash (`\copy ... to program`) ends the data reading for all of them
+                if !words.get(i).is_some_and(|v| psql_value_is_data(v)) {
+                    return false;
+                }
                 i += 1;
             }
         } else if psql_name(word) {
@@ -541,7 +549,8 @@ pub(crate) fn script_starts_in(
 /// `_script_starts` for the arguments of the docker command `prog`. `literal`: the caller has seen that no
 /// word of the command holds an expansion, a glob or a brace, and that `words` are the command's words as
 /// written. Then, for `docker exec CONTAINER psql ...` (see `docker_exec_psql`), the `-c` and `-Atc` words
-/// of that psql are not script starts when their value is data (`psql_value_is_data`): `psql -c` takes SQL
+/// of that psql are not script starts, because every value of them is data (`psql_value_is_data`, checked in
+/// `psql_words_known` for all of them or for none): `psql -c` takes SQL
 /// and `docker exec` runs it with no shell. Every other command reads as `script_starts_in`, which is also
 /// what the lenient lexer uses.
 pub(crate) fn docker_script_starts_in(
@@ -584,7 +593,8 @@ fn script_starts_with(
         if psql_at == Some(k) {
             psql = true;
         }
-        if is_shell_c_flag(word) && !(psql && psql_value_is_data(&words[k + 1])) {
+        // psql's own `-c` words: `docker_exec_psql` has checked every value to be data
+        if is_shell_c_flag(word) && !psql {
             if !budget.spend(WORD + words[k + 1].len()) {
                 return None;
             }

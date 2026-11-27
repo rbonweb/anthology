@@ -97,6 +97,10 @@ pub(crate) struct LexInfo {
     /// PE-2, PE-3: a word runs code the lexer does not model (a zsh glob qualifier, `${x@P}`, `${(e)x}`,
     /// `${~x}`, `$~x`). Lexing goes on; the analysis is too complex at its end.
     pub(crate) unproven: bool,
+    /// Rust-only: an unquoted `(` or `)` was met, anywhere in the text. The lexer ends a segment there, but zsh
+    /// reads `(-o|-x)` in a word list as a glob group that expands to one of its words, so the segments before
+    /// and after a paren may be one command (`docker exec c psql -c SQL (-o|-x) '|cmd'`).
+    pub(crate) parens: bool,
 }
 
 /// `_TooComplex`: the work budget ran out.
@@ -857,6 +861,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                         && text[i + 1..]
                             .trim_start_matches([' ', '\t'])
                             .starts_with(')');
+                    self.sh.info.parens |= c != b';';
                     self.paren(c, i)?;
                     let before = self.out.len();
                     self.end_seg(true);

@@ -1286,6 +1286,9 @@ pub(crate) struct Ctx<'a> {
     /// G0-FP: the text being collected has no `$`, no unescaped backtick and no consumer of text (`plain_text`),
     /// so no word can be given a name by an expansion (`subscript_runs`); scoped to one `collect` call.
     plain: bool,
+    /// The text being collected holds an unquoted paren, or was split by the lenient fallback (`LexInfo::parens`):
+    /// the segments may not be the commands that run, so no reading of a command's words as plain data holds.
+    parens: bool,
     /// SH-F3: the entries whose segment held a `$(` or a backtick.
     held_entries: HashSet<usize>,
     /// SH-F3: how many stdin-reading entries have been added (`reads_stdin_as_shell`), in this pass or
@@ -1359,6 +1362,7 @@ impl<'a> Ctx<'a> {
             holders: Vec::new(),
             subst: false,
             plain: false,
+            parens: true,
             held_entries: HashSet::new(),
             readers: 0,
             script_readers: HashSet::new(),
@@ -1685,9 +1689,11 @@ impl<'a> Ctx<'a> {
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
         let (braces, quoted_braces, plain) = (self.braces, self.quoted_braces, self.plain);
+        let parens = self.parens;
         let readers = self.readers;
         self.collect_once(text, exempt, depth, known);
         (self.braces, self.quoted_braces, self.plain) = (braces, quoted_braces, plain);
+        self.parens = parens;
         if self.readers > readers {
             self.reads_seen.insert(key.clone());
         }
@@ -1712,6 +1718,7 @@ impl<'a> Ctx<'a> {
         }
         self.unproven |= info.unproven;
         self.plain = !(lexed.lenient || info.nested_lenient) && plain_text(text, &lexed.segments);
+        self.parens = info.parens || lexed.lenient || info.nested_lenient;
         self.arith_texts.extend(info.arith_texts);
         let mut from_text = Vec::new();
         if lexed.lenient || info.nested_lenient {
@@ -2562,8 +2569,10 @@ impl<'a> Ctx<'a> {
         // the command's words are the literal text written: no word held a parameter, a substitution, an
         // unquoted glob or a brace, the program and its arguments are the last words as they stand, and
         // nothing adds arguments at run time (`xargs`), and no redirect or here-string anywhere in the segment:
-        // the lexer takes zsh's numeric glob `c<1-5>` for two redirects and drops the words they swallow
+        // the lexer takes zsh's numeric glob `c<1-5>` for two redirects and drops the words they swallow; and no
+        // unquoted paren anywhere in the text: it ends the segment, but zsh reads `(-o|-x)` as one word's glob
         let literal_command = !had_holders
+            && !self.parens
             && redirs.is_empty()
             && self.group_texts(group).is_empty()
             && !subst

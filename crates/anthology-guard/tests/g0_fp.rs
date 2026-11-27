@@ -528,6 +528,19 @@ const REDIRECT_SHAPES: &[&str] = &[
 /// here-string, `-L` and `-P pager=...` make psql run a shell or a program, an attached value or a conninfo
 /// string (`host=h`, `postgres://h/d`) is not a plain name, and a second `-c`, `--command=` or an
 /// unknown option is not a shape the guard has checked. Each keeps the old reading.
+/// An unquoted paren anywhere in the command: the lexer ends the segment at it, but zsh reads `(-o|-x)` in a
+/// word list as a glob group that expands to one of its words when a file of that name exists, so
+/// `psql -c SQL (-o|-x) '|cmd'` is `psql -c SQL -o '|cmd'` and runs `cmd`. Any paren keeps the old reading.
+const PAREN_SHAPES: &[&str] = &[
+    r#"docker exec c psql -c "BODY" (-o|-x) '|agent-browser open x'"#,
+    r#"docker exec c psql -c "BODY" (-o) '|agent-browser open x'"#,
+    r#"docker exec c psql -c "BODY" (-o|-x)"#,
+    r#"(echo x); docker exec c psql -c "BODY""#,
+    r#"docker exec c psql -c "BODY"; (echo x)"#,
+    r#"echo x | (cat); docker exec c psql -c "BODY""#,
+    r#"f() { echo x; }; docker exec c psql -c "BODY""#,
+];
+
 const PSQL_OPTION_SHAPES: &[&str] = &[
     r#"docker exec c psql -o '|agent-browser open x' -c "BODY""#,
     r#"docker exec c psql -c "BODY" -o '|agent-browser open x'"#,
@@ -560,6 +573,15 @@ const PSQL_OPTION_SHAPES: &[&str] = &[
     r#"docker exec c psql --set HISTFILE=x -c "BODY""#,
     r#"docker exec c psql -c "BODY" -c"#,
     r#"docker exec c psql -c "BODY" a b c"#,
+    // a backslash meta-command in any value: `\!` and `\copy ... to program` run a shell, and `--command` is not
+    // a word the script scan reads, so its value was never looked at
+    r#"docker exec c psql -c "BODY" --command '\! agent-browser open x'"#,
+    r#"docker exec c psql --command '\! agent-browser open x' -c "BODY""#,
+    r#"docker exec c psql -c "BODY" --command '\o |agent-browser open x'"#,
+    r#"docker exec c psql -c "BODY" -c "\copy t to program 'agent-browser open x'""#,
+    r#"docker exec c psql -c "\copy t to program 'agent-browser open x'" -c "BODY""#,
+    r#"docker exec c psql -c "BODY" --command '$x'"#,
+    r#"docker exec c psql -c "BODY" --command"#,
     r#"docker exec c psql -d -c "BODY""#,
     r#"docker exec c psql -c "BODY" -"#,
     r#"docker exec c psql -cA "BODY""#,
@@ -577,6 +599,7 @@ fn a_command_that_is_not_plain_literal_text_keeps_its_reading() {
         ("not psql", NOT_PSQL_SHAPES),
         ("redirect", REDIRECT_SHAPES),
         ("psql option", PSQL_OPTION_SHAPES),
+        ("paren", PAREN_SHAPES),
     ] {
         for shape in shapes.iter().filter(|s| s.contains("BODY")) {
             for (body, want) in [
