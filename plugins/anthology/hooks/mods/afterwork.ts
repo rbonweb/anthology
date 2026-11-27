@@ -15,6 +15,8 @@
 //   - leftovers, when the report starts containers, volumes or temp files and does not say they
 //     were removed. Never for the docs-writer.
 // A report with no gap is delivered as written, with no block.
+// The commit and test gaps do not apply when every path the report edited is outside a git repo
+// (see editsOnlyOutsideRepo): a settings file in the home folder has nothing to commit or test.
 //
 // Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off.
 import type { AgentReportInput, AgentReportResult, EngineInterface, ProcessRunResult } from 'claude-code'
@@ -99,20 +101,23 @@ function without(text: string, res: readonly RegExp[]): string {
  * What the report text says about itself. `gaps` raise the block; `reminders` ride in it. `kind` is
  * the agent type, which decides whether leftovers are asked about at all. `mapExists` is whether the
  * map file is in the agent's folder: only `false` lets a "map missing" claim count; `undefined`
- * (not known) does not.
+ * (not known) does not. `outsideRepo` is true when every path the report edited is outside a git
+ * repo (see editsOnlyOutsideRepo): there is nothing to commit and no test to run, so the commit
+ * and test gaps do not apply.
  */
 export function check(
   text: string,
   kind: string,
   mapExists?: boolean,
+  outsideRepo = false,
 ): { gaps: string[]; reminders: string[] } {
   const gaps: string[] = []
   const reminders: string[] = []
   const commitText = without(text, [NOT_COMMITTED])
-  if (!SHA.test(commitText) && !SHA_WORDED.test(commitText) && !COMMITTED.test(commitText)) {
+  if (!outsideRepo && !SHA.test(commitText) && !SHA_WORDED.test(commitText) && !COMMITTED.test(commitText)) {
     gaps.push('no commit sha or "committed" in the report')
   }
-  if (!TESTED.test(without(text, NOT_TESTED))) gaps.push('nothing about what was tested')
+  if (!outsideRepo && !TESTED.test(without(text, NOT_TESTED))) gaps.push('nothing about what was tested')
   if (ATTRIBUTION.test(text)) {
     gaps.push('the report carries attribution lines (Co-Authored-By / Generated with); commits and PRs must not')
   }
@@ -208,6 +213,87 @@ async function mapIsThere($: EngineInterface, agentId: string, text: string): Pr
   }
 }
 
+// Edited paths, as the report names them: absolute (`/a/b`, two folders at least, so `/plugin` and
+// `/anthology:setup` are not paths), `~/x`, and relative ones (`./x`, `../x`, or a name ending in a
+// source or config extension). A URL is none: a path never starts right after `:`, `/`, `.` or a word.
+const SEG = String.raw`[\w.@+%-]+`
+const NOT_AFTER = String.raw`(?<![\w:/.~@+%-])`
+const PATH_TOKENS: readonly RegExp[] = [
+  new RegExp(String.raw`${NOT_AFTER}~?(?:/${SEG})+`, 'g'),
+  new RegExp(String.raw`${NOT_AFTER}(?:\.{1,2}/)?(?:${SEG}/)*${SEG}\.(?:tsx?|jsx?|rs|py|sh|md|json|toml|ya?ml)\b`, 'g'),
+  new RegExp(String.raw`${NOT_AFTER}\.{1,2}/${SEG}(?:/${SEG})*`, 'g'),
+]
+
+/** The most distinct paths looked at; a report that names more keeps the checks. */
+const MAX_PATHS = 20
+
+function pathsIn(text: string): string[] {
+  const found = new Set<string>()
+  for (const re of PATH_TOKENS) {
+    for (const m of text.matchAll(re)) {
+      const p = m[0].replace(/[.,;:]+$/, '')
+      const folders = p.split('/').filter(s => s !== '').length
+      if (p.startsWith('/') ? folders >= 2 : true) found.add(p)
+    }
+  }
+  return [...found]
+}
+
+/** `a/./b//c/../d` as `a/b/d`, for an absolute path. */
+function normalize(path: string): string {
+  const out: string[] = []
+  for (const s of path.split('/')) {
+    if (s === '' || s === '.') continue
+    if (s === '..') out.pop()
+    else out.push(s)
+  }
+  return `/${out.join('/')}`
+}
+
+/** Whether the path, or a folder above it, holds `.git` (a folder or, in a worktree, a file). */
+async function inGitRepo($: EngineInterface, path: string): Promise<boolean> {
+  let dir = path
+  for (let depth = 0; depth < MAX_WALK; depth++) {
+    if (await $.fs.exists(`${dir === '/' ? '' : dir}/.git`)) return true
+    if (dir === '/') return false
+    dir = dir.slice(0, Math.max(1, dir.lastIndexOf('/')))
+  }
+  return true // too deep to tell: keep the checks
+}
+
+/**
+ * True when the report names edited paths and every one is outside a git repo, as for
+ * `~/.claude/settings.json`: there is nothing to commit and no test to run. A relative path is
+ * taken from the agent's folder (`$.agent.list()`), a `~` path from HOME. A report that names no
+ * path, a path in a repo, or one that cannot be placed (no agent folder, no HOME, a failing
+ * lookup, more than MAX_PATHS paths) is false, so the checks stay. A mixed report is false too:
+ * the checks then speak for the in-repo paths.
+ */
+async function editsOnlyOutsideRepo($: EngineInterface, agentId: string, text: string): Promise<boolean> {
+  const paths = pathsIn(text)
+  if (paths.length === 0 || paths.length > MAX_PATHS) return false
+  try {
+    const home = (await $.env.get('HOME'))?.replace(/\/+$/, '')
+    let cwd: string | undefined
+    for (const p of paths) {
+      let abs: string
+      if (p.startsWith('/')) abs = p
+      else if (p.startsWith('~/')) {
+        if (!home?.startsWith('/')) return false
+        abs = `${home}${p.slice(1)}`
+      } else {
+        cwd ??= (await $.agent.list()).find(a => a.id === agentId)?.cwd
+        if (!cwd?.startsWith('/')) return false
+        abs = `${cwd}/${p}`
+      }
+      if (await inGitRepo($, normalize(abs))) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * This feature's part of the one `agent.report` hook (index.ts registers the event once, calls
  * `next` once and hands `r`, what it resolved to, to each feature). Returns `r` as it is, or `r`
@@ -218,7 +304,13 @@ export async function afterworkReport($: EngineInterface, e: AgentReportInput, r
   if (e.parentAgentId !== undefined || e.status !== 'completed' || !WRITERS.has(e.subagentType)) return r
   if (r.text.trim() === '') return r
   if ((await modsOff($)) || (await $.env.get('ANTHOLOGY_AFTERWORK')) === '0') return r
-  const { gaps, reminders } = check(r.text, e.subagentType, await mapIsThere($, e.agentId, r.text))
+  const mapExists = await mapIsThere($, e.agentId, r.text)
+  let result = check(r.text, e.subagentType, mapExists)
+  // Asked only when a gap stands: edits outside any git repo have no commit and no test to report.
+  if (result.gaps.length > 0 && (await editsOnlyOutsideRepo($, e.agentId, r.text))) {
+    result = check(r.text, e.subagentType, mapExists, true)
+  }
+  const { gaps, reminders } = result
   const dirty = await dirtyFiles($, e.agentId)
   if (dirty !== undefined) gaps.push(dirty)
   if (gaps.length === 0) return r

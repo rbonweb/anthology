@@ -1798,3 +1798,525 @@ fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
 }
+
+// --- needless asks on read-only commands ---
+//
+// With any rule in place, a line that merely contains `atl` (a path such as
+// `atl/src/main.rs`) is not in the plain shape, so the hook asks, and a hook ask
+// beats the `Bash(atl *)` allow in every mode. When the original line is shown
+// read-only by `anthology perm classify` the ask is needless. The tests stand a
+// script in for the classifier: ATL reaches it through `ATL_PERM_CLASSIFY`.
+
+/// A stand-in for `anthology perm classify`. It answers like the real one: the
+/// token line and then the absolute paths read (here: each absolute word of the
+/// command, the `cd` target included), or exit 1 and no decision. It
+/// refuses a request naming `rm`, `git push`, `kubectl` or `curl`, unless
+/// `FAKE_PROVE_ALL` is set; `FAKE_LOG` names a file each request is appended to.
+const FAKE_CLASSIFIER: &str = r#"#!/bin/sh
+[ "$1" = perm ] && [ "$2" = classify ] || exit 2
+input=$(cat)
+[ -z "${FAKE_LOG:-}" ] || printf '%s\n' "$input" >> "$FAKE_LOG"
+if [ -z "${FAKE_PROVE_ALL:-}" ]; then
+  case $input in
+    *' rm '*|*'git push'*|*kubectl*|*curl*)
+      echo 'anthology perm: no decision: not read-only' >&2
+      exit 1 ;;
+  esac
+fi
+command=$(printf '%s' "$input" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+printf 'anthology-perm:read-only:v1\n'
+set -f
+for word in $command; do
+  case $word in /*) printf '%s\n' "$word" ;; esac
+done
+"#;
+
+/// The stand-in, written once for the whole test binary (a script written while
+/// another test thread forks can fail to start with ETXTBSY, so it is finished
+/// before any test spawns atl with it).
+fn fake_classifier() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = common::scratch_dir().join("fake-perm-classify.sh");
+        std::fs::write(&path, FAKE_CLASSIFIER).expect("write the fake classifier");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod the fake classifier");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        path.to_string_lossy().into_owned()
+    })
+}
+
+/// A sandbox whose project holds `atl/notes.txt`, a path that mentions atl.
+fn atl_named_sandbox(rules: Rules) -> Sandbox {
+    let sb = Sandbox::new(rules);
+    std::fs::create_dir_all(sb.project.join("atl")).expect("mkdir atl");
+    std::fs::write(sb.project.join("atl/notes.txt"), "notes\n").expect("write notes");
+    sb
+}
+
+/// What the hook says about `cmd` in permission mode `mode` (`None`: the payload
+/// carries none), with the classifier on or off.
+fn hook_in(
+    sb: &Sandbox,
+    cmd: &str,
+    mode: Option<&str>,
+    classifier: bool,
+    env: &[(&str, &str)],
+) -> Said {
+    hook_at(sb, &sb.project, cmd, mode, classifier, env)
+}
+
+/// [`hook_in`] with the payload's working directory spelled as `cwd`.
+fn hook_at(
+    sb: &Sandbox,
+    cwd: &std::path::Path,
+    cmd: &str,
+    mode: Option<&str>,
+    classifier: bool,
+    env: &[(&str, &str)],
+) -> Said {
+    let mut payload = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": cmd },
+        "cwd": cwd.to_string_lossy(),
+    });
+    if let Some(mode) = mode {
+        payload["permission_mode"] = serde_json::Value::String(mode.to_string());
+    }
+    let mut vars: Vec<(&str, &str)> = env.to_vec();
+    if classifier {
+        vars.push(("ATL_PERM_CLASSIFY", fake_classifier()));
+    }
+    let (code, stdout, stderr) = sb.spawn(&["hook", "claude"], Some(payload.to_string()), &vars);
+    assert_eq!(
+        code, 0,
+        "atl hook claude exited {code} for {cmd:?}: {stderr}"
+    );
+    Sandbox::classify(cmd, &stdout)
+}
+
+/// Read-only reads of a path that mentions atl get the plain rewrite, with no
+/// decision of the hook's own: the user's `Bash(atl *)` rule (or its absence, or
+/// `allowManagedPermissionRulesOnly`) decides, as for a line that does not mention
+/// atl. An explicit allow would beat settings that have no such rule.
+#[test]
+fn a_provably_read_only_original_gets_the_plain_rewrite_instead_of_an_ask() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    for (cmd, rewritten) in [
+        ("grep -n foo atl/notes.txt", "atl grep -n foo atl/notes.txt"),
+        ("ls -la atl | head -60", "atl ls -la atl | head -60"),
+    ] {
+        assert_eq!(
+            hook_in(&sb, cmd, None, true, &[]),
+            Said::Rewrite(rewritten.into()),
+            "{cmd}"
+        );
+        // The same mode the host reports for an ordinary session.
+        assert_eq!(
+            hook_in(&sb, cmd, Some("default"), true, &[]),
+            Said::Rewrite(rewritten.into()),
+            "{cmd} in default mode"
+        );
+    }
+    // Without a `Bash(atl *)` rule: still no decision of the hook's own.
+    let no_allow = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        ..Rules::default()
+    });
+    assert_eq!(
+        hook_in(&no_allow, "grep -n foo atl/notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
+    // A rewrite that is not in the plain shape is not made: the host judges the
+    // original (the permission mod may then allow it).
+    assert_eq!(
+        hook_in(&sb, "grep -n \"foo\\|bar\" atl/notes.txt", None, true, &[]),
+        Said::Nothing
+    );
+}
+
+/// No classifier, or one that does not prove the line: the ask stays, as before.
+#[test]
+fn what_is_not_proven_read_only_still_asks() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    // `ATL_PERM_CLASSIFY` unset: nothing proves anything.
+    for cmd in ["grep -n foo atl/notes.txt", "ls -la atl | head -60"] {
+        assert!(
+            matches!(hook_in(&sb, cmd, None, false, &[]), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
+    // The classifier refuses a line that writes.
+    assert!(matches!(
+        hook_in(&sb, "rm -f atl/notes.txt", None, true, &[]),
+        Said::Ask(_)
+    ));
+    // A classifier that cannot be run proves nothing.
+    assert!(matches!(
+        hook_in(
+            &sb,
+            "grep -n foo atl/notes.txt",
+            None,
+            false,
+            &[("ATL_PERM_CLASSIFY", "/nonexistent/anthology")]
+        ),
+        Said::Ask(_)
+    ));
+    assert!(matches!(
+        hook_in(
+            &sb,
+            "grep -n foo atl/notes.txt",
+            None,
+            false,
+            &[("ATL_PERM_CLASSIFY", "relative/anthology")]
+        ),
+        Said::Ask(_)
+    ));
+}
+
+/// A proof never loosens a rule: a deny stays a deny, and a user's ask rule
+/// stays an ask, even when the classifier proves every line read-only.
+#[test]
+fn a_proof_never_beats_a_deny_or_an_ask_rule() {
+    let log = TempDir::new().expect("tempdir");
+    let log_path = log.path().join("requests.log");
+    let log_arg = log_path.to_string_lossy().into_owned();
+    let env = [("FAKE_PROVE_ALL", "1"), ("FAKE_LOG", log_arg.as_str())];
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        ask: &["grep *"],
+        allow: &["atl *"],
+        read_deny: &["**/.env"],
+        read_ask: &["./asked.txt"],
+    });
+    // The deny comes first: the classifier is never even asked.
+    for cmd in [
+        "git push origin atl",
+        "cat config/.env",
+        "ls atl && git push",
+    ] {
+        assert_eq!(hook_in(&sb, cmd, None, true, &env), Said::Deny, "{cmd}");
+    }
+    assert!(
+        !log_path.exists(),
+        "a denied command is not sent to the classifier"
+    );
+    // An ask rule: still asked.
+    for cmd in ["grep -n foo atl/notes.txt", "ls atl | grep notes"] {
+        assert!(
+            matches!(hook_in(&sb, cmd, None, true, &env), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
+    // A `Read()` ask rule: no rewrite, as before (an atl read of it asks).
+    assert_eq!(
+        hook_in(&sb, "cat asked.txt", None, true, &env),
+        Said::Nothing
+    );
+    assert!(matches!(
+        hook_in(&sb, "atl read asked.txt", None, true, &env),
+        Said::Ask(_)
+    ));
+}
+
+/// A line that runs atl is never read-only, whatever the classifier says: the
+/// ask on a typed `atl ...` stays.
+#[test]
+fn a_typed_atl_command_is_asked_about_even_if_a_classifier_would_pass_it() {
+    let sb = atl_named_sandbox(Rules {
+        ask: &["kubectl apply:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let env = [("FAKE_PROVE_ALL", "1")];
+    for cmd in [
+        "atl kubectl apply -f x.yaml",
+        "atl run -c 'kubectl apply -f x'",
+    ] {
+        assert!(
+            matches!(hook_in(&sb, cmd, None, true, &env), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
+}
+
+/// Without a rule the hook says what it said before, classifier or not.
+#[test]
+fn the_classifier_is_inert_in_a_bare_sandbox() {
+    let sb = atl_named_sandbox(Rules::default());
+    for cmd in ["grep -n foo atl/notes.txt", "ls -la atl | head -60"] {
+        assert_eq!(
+            hook_in(&sb, cmd, None, true, &[]),
+            hook_in(&sb, cmd, None, false, &[]),
+            "{cmd}"
+        );
+    }
+}
+
+/// Auto mode: the host's classifier judges what the model wrote, so a hook that
+/// changes the input makes it refuse ("a hook changed this call's input after
+/// auto mode reviewed it"). Nothing is rewritten; a deny is still a deny.
+#[test]
+fn in_auto_mode_nothing_is_rewritten() {
+    let rules = || Rules {
+        deny: &["git push:*", "curl:*"],
+        ask: &["kubectl apply:*"],
+        allow: &["atl *", "grep *"],
+        read_deny: &["./secret.txt"],
+        ..Rules::default()
+    };
+    let sb = atl_named_sandbox(rules());
+    for cmd in [
+        "git status",
+        "git log --oneline -5",
+        "ls -la sub | head -60",
+        "cat ok.txt",
+        "grep -n foo sub/note.txt",
+        "grep -n foo atl/notes.txt",
+        "ls -la atl | head -60",
+    ] {
+        // Today's answer, for contrast: a rewrite.
+        assert!(
+            matches!(
+                hook_in(&sb, cmd, Some("default"), true, &[]),
+                Said::Rewrite(_) | Said::Allow(_) | Said::Ask(_)
+            ),
+            "{cmd} outside auto mode"
+        );
+        assert_eq!(
+            hook_in(&sb, cmd, Some("auto"), true, &[]),
+            Said::Nothing,
+            "{cmd} in auto mode"
+        );
+    }
+    // The gate's deny comes first, in every mode.
+    for cmd in ["git push origin main", "curl x", "cat secret.txt"] {
+        assert_eq!(
+            hook_in(&sb, cmd, Some("auto"), true, &[]),
+            Said::Deny,
+            "{cmd}"
+        );
+    }
+    // A line the proof does not cover keeps its ask in auto mode too.
+    assert!(matches!(
+        hook_in(&sb, "kubectl apply -f x.yaml", Some("auto"), true, &[]),
+        Said::Ask(_)
+    ));
+    assert!(matches!(
+        hook_in(&sb, "rm -f atl/notes.txt", Some("auto"), true, &[]),
+        Said::Ask(_)
+    ));
+    // No rule anywhere: still no rewrite in auto mode.
+    let bare = Sandbox::bare();
+    assert_eq!(
+        hook_in(&bare, "git status", Some("auto"), false, &[]),
+        Said::Nothing
+    );
+    assert_eq!(
+        hook_in(&bare, "git status", Some("default"), false, &[]),
+        Said::Rewrite("atl git status".into())
+    );
+}
+
+/// Every other mode rewrites as before; bypass included (the shim drops an ask
+/// there, and a plain rewrite or an allow is fine).
+#[test]
+fn the_other_modes_keep_their_rewrite() {
+    let bare = Sandbox::bare();
+    for mode in [
+        None,
+        Some("default"),
+        Some("acceptEdits"),
+        Some("plan"),
+        Some("dontAsk"),
+        Some("bypassPermissions"),
+        // Not a mode Claude Code names: treated as no mode, never as auto.
+        Some("Auto"),
+        Some("autopilot"),
+    ] {
+        assert_eq!(
+            hook_in(&bare, "git status", mode, false, &[]),
+            Said::Rewrite("atl git status".into()),
+            "{mode:?}"
+        );
+    }
+    let allowed = Sandbox::new(Rules {
+        allow: &["git status"],
+        ..Rules::default()
+    });
+    assert_eq!(
+        hook_in(
+            &allowed,
+            "git status",
+            Some("bypassPermissions"),
+            false,
+            &[]
+        ),
+        Said::Allow("atl git status".into())
+    );
+    assert_eq!(
+        hook_in(&allowed, "git status", Some("auto"), false, &[]),
+        Said::Nothing
+    );
+}
+
+/// A project under a home that has a `.claude` folder, and no `.claude` of its own,
+/// with the rules in `~/.claude/settings.json`. The settings walk from the project
+/// reaches the home's `.claude` first, so it is no marker of where the project ends.
+fn home_marker_sandbox() -> Sandbox {
+    let root = TempDir::new().expect("tempdir");
+    let home = root.path().join("home");
+    let claude_home = home.join(".claude");
+    let project = home.join("proj");
+    std::fs::create_dir_all(home.join(".config")).expect("mkdir config");
+    std::fs::create_dir_all(&claude_home).expect("mkdir claude home");
+    std::fs::create_dir_all(&project).expect("mkdir project");
+    std::fs::create_dir_all(root.path().join("tee")).expect("mkdir tee");
+    std::fs::write(
+        claude_home.join("settings.json"),
+        serde_json::json!({"permissions": {"deny": ["Bash(git push:*)"], "allow": ["Bash(atl *)"]}})
+            .to_string(),
+    )
+    .expect("write settings");
+    std::fs::write(home.join("secret.txt"), "s3cret\n").expect("write secret");
+    std::fs::write(project.join("notes.txt"), "notes\n").expect("write notes");
+    Sandbox {
+        _root: root,
+        home,
+        claude_home,
+        project,
+    }
+}
+
+/// The root of the proof is the project (`CLAUDE_PROJECT_DIR`, else the working
+/// directory's git top level, else the directory itself), never the first folder
+/// up the tree that has a `.claude`: that is the home when the repository has none,
+/// and the whole home is not the project.
+#[test]
+fn the_proof_root_is_the_project_not_the_first_claude_folder_up_the_tree() {
+    let sb = home_marker_sandbox();
+    let secret = sb.home.join("secret.txt");
+    let outside = format!("grep -n atl {}", secret.display());
+    let inside = format!("grep -n atl {}", sb.project.join("notes.txt").display());
+    // Outside the project, inside the home: asked, as without the proof.
+    assert!(
+        matches!(hook_in(&sb, &outside, None, true, &[]), Said::Ask(_)),
+        "{outside}"
+    );
+    // Inside it: the plain rewrite.
+    assert_eq!(
+        hook_in(&sb, "grep -n atl notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n atl notes.txt".into())
+    );
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &[]), Said::Rewrite(_)),
+        "{inside}"
+    );
+    // `CLAUDE_PROJECT_DIR` names the root, and only it.
+    let dir = sb.project.to_string_lossy().into_owned();
+    let env = [("CLAUDE_PROJECT_DIR", dir.as_str())];
+    assert!(
+        matches!(hook_in(&sb, &outside, None, true, &env), Said::Ask(_)),
+        "{outside} with CLAUDE_PROJECT_DIR"
+    );
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &env), Said::Rewrite(_)),
+        "{inside} with CLAUDE_PROJECT_DIR"
+    );
+}
+
+/// In auto mode an ask the proof does not cover is an ask about the line as typed:
+/// carrying the rewrite would make Claude Code's classifier refuse the changed input.
+#[test]
+fn in_auto_mode_an_ask_that_stays_is_about_the_original_with_no_rewrite() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    // The stand-in refuses a line naming curl, so nothing is proven.
+    let cmd = "grep -n curl atl/notes.txt";
+    assert_eq!(
+        hook_in(&sb, cmd, Some("default"), true, &[]),
+        Said::Ask("atl grep -n curl atl/notes.txt".into()),
+        "outside auto mode the ask carries the rewrite, as before"
+    );
+    assert_eq!(
+        hook_in(&sb, cmd, Some("auto"), true, &[]),
+        Said::Ask(cmd.into())
+    );
+}
+
+/// A project reached through a symlink (macOS: `/var` and `/tmp` are links into
+/// `/private`) is still the project: the paths a proof lists and the root are
+/// compared as the file system resolves them, not as they are spelled.
+#[cfg(unix)]
+#[test]
+fn a_project_reached_through_a_symlink_is_still_the_project() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let link = sb._root.path().join("via-link");
+    std::os::unix::fs::symlink(&sb.project, &link).expect("symlink the project");
+    assert_eq!(
+        hook_at(&sb, &link, "grep -n foo atl/notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
+    // The same with the root named by `CLAUDE_PROJECT_DIR` through the link.
+    let dir = link.to_string_lossy().into_owned();
+    assert_eq!(
+        hook_at(
+            &sb,
+            &sb.project,
+            "grep -n foo atl/notes.txt",
+            None,
+            true,
+            &[("CLAUDE_PROJECT_DIR", dir.as_str())]
+        ),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
+}
+
+/// A path the proof lists that is spelled inside the project but resolves outside
+/// it (a link in the project to somewhere else) is not under the project: the ask
+/// stays, whatever the classifier printed.
+#[cfg(unix)]
+#[test]
+fn a_listed_path_that_resolves_outside_the_project_keeps_the_ask() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let outside = sb._root.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("mkdir outside");
+    std::fs::write(outside.join("secret.txt"), "s3cret\n").expect("write secret");
+    std::os::unix::fs::symlink(&outside, sb.project.join("escape")).expect("symlink out");
+    // The stand-in prints each absolute word as written, as a classifier that
+    // did not resolve links would.
+    let cmd = format!("grep -n atl {}/escape/secret.txt", sb.project.display());
+    assert!(
+        matches!(hook_in(&sb, &cmd, None, true, &[]), Said::Ask(_)),
+        "{cmd}"
+    );
+    // Control: the same file inside the project is fine.
+    let inside = format!("grep -n atl {}/atl/notes.txt", sb.project.display());
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &[]), Said::Rewrite(_)),
+        "{inside}"
+    );
+}

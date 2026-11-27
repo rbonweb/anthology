@@ -405,6 +405,25 @@ pub(crate) fn decide_for_claude_hook_at(
     super::anthology_gate::apply(gate, cmd, decision, &permissions.gate)
 }
 
+/// [`decide_for_claude_hook_at`] for the hook itself, which also knows the call's
+/// permission mode: nothing is rewritten in auto mode, and the gate's ask for a
+/// line shown read-only is dropped (`read_only_proof`). A deny comes back as it
+/// was.
+pub(crate) fn decide_for_claude_hook_in(
+    cmd: &str,
+    permissions: &super::permissions::ClaudeHookPermissions,
+    cwd: Option<&str>,
+    mode: super::read_only_proof::Mode,
+) -> HookDecision {
+    super::read_only_proof::refine_claude(
+        cmd,
+        decide_for_claude_hook_at(cmd, permissions, cwd),
+        mode,
+        permissions,
+        cwd,
+    )
+}
+
 fn decide_for_agent_at_with_attestation(
     cmd: &str,
     verdict: PermissionVerdict,

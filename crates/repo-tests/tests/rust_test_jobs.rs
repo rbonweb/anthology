@@ -129,6 +129,8 @@ fn linux(args: &[&str], env: &[(&str, &str)]) -> Result<Vec<String>, Output> {
         .envs(env.iter().copied())
         .env("PATH", path_with(dir.path()))
         .env("DOCKER_ARGV", &argv)
+        // The stub keeps only the last call: this reads the container run, not the volume clean-up.
+        .env("ANTHOLOGY_KEEP_TARGET", "1")
         .output()
         .expect("sh ran");
     if !out.status.success() {
