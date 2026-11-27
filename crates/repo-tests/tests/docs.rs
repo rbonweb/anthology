@@ -390,8 +390,12 @@ mod readme_test {
                 "/plugin install anthology@anthology",
             ),
         ] {
-            let cli_at = text.find(cli).unwrap_or_else(|| panic!("README.md lacks {cli}"));
-            let slash_at = text.find(slash).unwrap_or_else(|| panic!("README.md lacks {slash}"));
+            let cli_at = text
+                .find(cli)
+                .unwrap_or_else(|| panic!("README.md lacks {cli}"));
+            let slash_at = text
+                .find(slash)
+                .unwrap_or_else(|| panic!("README.md lacks {slash}"));
             assert!(cli_at < slash_at, "README.md shows {slash} before {cli}");
         }
         assert!(
