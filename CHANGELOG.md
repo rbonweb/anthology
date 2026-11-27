@@ -30,6 +30,10 @@ a new version section.
   reading they had, because psql can run a program for them. Anything else keeps the reading it had,
   including `sh -c`, `bash -c`, `docker run` and every other program that takes `-c`.
 
+### [0.5.6] - 2026-11-26
+
+- Remove: Anthology no longer raises alerts of its own. The `Notification` hook and `hooks/notify.sh` (the Glass sound on macOS, the `notify-send` desktop alert on Linux, the terminal bell) are gone, and so is the in-session toast of the alerts mod. The `ANTHOLOGY_NOTIFY` switch goes with them, since there is nothing left to turn off. The `/anthology-status` pane and its command stay. Any notification app you choose works alongside Anthology, or you can add a `Notification` hook of your own.
+
 ### [0.5.5] - 2026-11-26
 
 - Add: licensing is the user's job. The routing guide and the researcher, architect, implementer, debugger, reviewer and ui-designer prompts now tell the lead and these agents never to refuse, hold back or audit licences when they use, adapt or recommend outside code. When a licence clearly applies, they say so in one line and carry on.

@@ -1173,6 +1173,41 @@ fn repo_settings_preview(root: &Path, env: &Env) -> Value {
     }
 }
 
+/// The preview's `union_attrs` note: the rule only helps a merge that can see it.
+pub const UNION_ATTRS_NOTE: &str = "Commit .gitattributes. A merge only unions the index files in a checkout that has this rule, so a worktree or clone made from a commit without it still conflicts. GitHub's merge button ignores the rule; merge locally, or rebuild a conflicted index with `anthology-mem reindex`.";
+
+/// The preview's `memory.repo.union_attrs`: the `.gitattributes` change approving the repo makes,
+/// so the generated `MEMORY.md` indexes merge by keeping both sides' lines. A symlinked or special
+/// `.gitattributes` has nothing to show (apply leaves it alone and reports it).
+fn union_attrs_preview(root: &Path) -> Value {
+    let path = root.join(".gitattributes");
+    match memory_approve::plan_union_attrs(root) {
+        Ok(plan) => {
+            let from = if lexists(&path) {
+                "a/.gitattributes"
+            } else {
+                "/dev/null"
+            };
+            let diff = note_diff(
+                &diff_lines(plan.existing.as_bytes()),
+                &diff_lines(plan.updated().as_bytes()),
+                from,
+                "b/.gitattributes",
+            );
+            obj(vec![
+                ("path", s(&pstr(&path))),
+                ("changed", Value::Bool(!plan.missing.is_empty())),
+                ("diff", Value::Str(diff)),
+                ("note", s(UNION_ATTRS_NOTE)),
+            ])
+        }
+        Err(e) => obj(vec![
+            ("path", s(&pstr(&path))),
+            ("skipped", Value::Str(exc_text(&e))),
+        ]),
+    }
+}
+
 /// Apply's step for an approved repo: record the edit in state.json first (so `remove` can always
 /// undo it), then write the merged file.
 fn apply_repo_settings(root: &Path, env: &Env, deps: &SetupDeps<'_>) -> Result<Value, String> {
@@ -1352,6 +1387,7 @@ fn try_preview(
                 "approved",
                 Value::Bool(memory_approve::is_approved(key, env)),
             ),
+            ("union_attrs", union_attrs_preview(root)),
             ("auto_memory", repo_settings_preview(root, env)),
         ]),
     };
