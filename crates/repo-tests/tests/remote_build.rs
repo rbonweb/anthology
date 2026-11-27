@@ -40,21 +40,108 @@ esac
 HOME=$FAKE_REMOTE_HOME exec sh -c "$*"
 "#;
 
+/// A docker with state in two files: `containers` (`<id> <volume> <running|exited>` per line) and
+/// `volumes` (`<name> <created, RFC 3339>` per line). It answers the calls the script makes.
 const FAKE_DOCKER: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_STATE/docker.log"
+touch "$FAKE_STATE/containers" "$FAKE_STATE/volumes"
+drop_line() { # drop_line FILE KEY: remove the lines whose first word is KEY
+    grep -v "^$2 " "$1" > "$1.new" || true
+    mv "$1.new" "$1"
+}
 case $1 in
-    ps) cat "$FAKE_STATE/containers" 2>/dev/null || true ;;
-    rm) : > "$FAKE_STATE/containers" ;;
+    ps)
+        shift
+        all=
+        vol=
+        status=
+        for a in "$@"; do
+            case $a in
+                -a | -aq) all=1 ;;
+                volume=*) vol=${a#volume=} ;;
+                status=*) status="$status ${a#status=}" ;;
+            esac
+        done
+        awk -v vol="$vol" -v st="$status" -v all="$all" '
+            BEGIN { n = split(st, s, " ") }
+            vol == "" || $2 == vol {
+                ok = 0
+                if (n == 0) ok = (all == 1 || $3 == "running")
+                else for (i = 1; i <= n; i++) if ($3 == s[i]) ok = 1
+                if (ok) print $1
+            }' "$FAKE_STATE/containers"
+        ;;
+    rm)
+        shift
+        for a in "$@"; do
+            case $a in -*) ;; *) drop_line "$FAKE_STATE/containers" "$a" ;; esac
+        done
+        ;;
+    volume)
+        case $2 in
+            ls)
+                filter=
+                for a in "$@"; do
+                    case $a in name=*) filter=${a#name=} ;; esac
+                done
+                awk -v f="$filter" 'f == "" || index($1, f) > 0 { print $1 }' "$FAKE_STATE/volumes"
+                ;;
+            inspect) awk -v v="$5" '$1 == v { print $2 }' "$FAKE_STATE/volumes" ;;
+            rm) drop_line "$FAKE_STATE/volumes" "$3" ;;
+        esac
+        ;;
+    info) printf '%s\n' "$FAKE_DOCKER_ROOT" ;;
 esac
+exit 0
 "#;
 
+/// `df -Pk PATH`: the free space is `FAKE_DF_KB`, or `FAKE_DF_DOCKER_KB` for the Docker data dir.
+const FAKE_DF: &str = r#"#!/bin/sh
+for last; do :; done
+kb=${FAKE_DF_KB:-999999999}
+[ "$last" != "$FAKE_DOCKER_ROOT" ] || kb=${FAKE_DF_DOCKER_KB:-$kb}
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 1000000000 1 $kb 1% /"
+"#;
+
+/// Starts a container on the volume the real runner would name: the cksum of its root path.
 const FAKE_RUST_TEST: &str = r#"#!/bin/sh
 echo "rust-test args: $*"
 echo "rust-test cwd: $(pwd)"
-echo cont1 >> "$FAKE_STATE/containers"
+root=$(cd "$(dirname "$0")/.." && pwd)
+echo "cont1 anthology-rust-target-$(printf '%s' "$root" | cksum | cut -d' ' -f1) running" >> "$FAKE_STATE/containers"
 [ -z "${FAKE_HANG:-}" ] || exec sleep 30
 exit "${FAKE_EXIT:-0}"
 "#;
+
+const DOCKERFILE: &str = "FROM rust@sha256:0123456789abcdef\n";
+const IMAGE: &str = "rust@sha256:0123456789abcdef";
+
+/// The fake host is this machine, so the remote half needs GNU tools (`stat -c`, `date -d`, `find
+/// -printf`, `sort -z`): the Linux test container has them, macOS does not. Skip there.
+fn gnu_userland() -> bool {
+    let ok = |cmd: &str| {
+        Command::new("sh")
+            .args(["-c", cmd])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    ok(
+        "date -d '1 hour ago' +%s && stat -c %Y . && find . -maxdepth 0 -printf x && printf 'a\\0' | sort -z",
+    )
+}
+
+/// A rig, or an early return from the test where the fake host cannot work.
+macro_rules! rig {
+    () => {{
+        if !gnu_userland() {
+            eprintln!("skipped: needs GNU userland for the fake host");
+            return;
+        }
+        Rig::new()
+    }};
+}
 
 fn executable(path: &Path, text: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -92,11 +179,14 @@ impl Rig {
         let bin = dir.path().join("bin");
         let state = dir.path().join("state");
         let home = dir.path().join("remote-home");
-        for d in [&repo, &state, &home] {
+        for d in [&repo, &state, &home.join("docker-root")] {
             fs::create_dir_all(d).unwrap();
         }
         executable(&bin.join("ssh"), FAKE_SSH);
         executable(&bin.join("docker"), FAKE_DOCKER);
+        executable(&bin.join("df"), FAKE_DF);
+        fs::create_dir_all(repo.join("ci/images")).unwrap();
+        fs::write(repo.join("ci/images/rust.Dockerfile"), DOCKERFILE).unwrap();
         executable(
             &repo.join(SCRIPT),
             &fs::read_to_string(repo::path(SCRIPT)).expect("scripts/remote-build.sh exists"),
@@ -133,6 +223,9 @@ impl Rig {
             .env("PATH", env::join_paths(path).unwrap())
             .env("ANTHOLOGY_BUILD_HOST", ALIAS)
             .env("ANTHOLOGY_REMOTE_SYNC", "tar")
+            // The tests look at the remote folder after a run; the default removes it.
+            .env("ANTHOLOGY_KEEP_REMOTE", "1")
+            .env("FAKE_DOCKER_ROOT", self.home.join("docker-root"))
             .env("FAKE_STATE", &self.state)
             .env("FAKE_REMOTE_HOME", &self.home)
             .stdin(Stdio::null());
@@ -143,15 +236,34 @@ impl Rig {
         self.command(args).output().expect("script ran")
     }
 
+    fn remote_root(&self) -> PathBuf {
+        self.home.join("anthology-remote")
+    }
+
+    /// The folders under `~/anthology-remote` on the fake host (not the `.stamp` files).
+    fn remote_dirs(&self) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(self.remote_root()) else {
+            return Vec::new();
+        };
+        let mut dirs = entries
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_dir())
+            .collect::<Vec<_>>();
+        dirs.sort();
+        dirs
+    }
+
     /// The one checkout folder on the fake host.
     fn remote_dir(&self) -> PathBuf {
-        let parent = self.home.join("anthology-remote");
-        let mut dirs = fs::read_dir(&parent)
-            .unwrap_or_else(|e| panic!("no {}: {e}", parent.display()))
-            .map(|e| e.unwrap().path())
-            .collect::<Vec<_>>();
+        let mut dirs = self.remote_dirs();
         assert_eq!(dirs.len(), 1, "{dirs:?}");
         dirs.remove(0)
+    }
+
+    /// Where this checkout's folder is, or will be, on the fake host.
+    fn own_remote_dir(&self) -> PathBuf {
+        let sum = sh(r#"printf '%s' "$0" | cksum | cut -d' ' -f1"#, &self.repo);
+        self.remote_root().join(sum)
     }
 
     fn log(&self, name: &str) -> String {
@@ -161,6 +273,50 @@ impl Rig {
     fn containers(&self) -> String {
         self.log("containers")
     }
+
+    fn volumes(&self) -> String {
+        self.log("volumes")
+    }
+
+    /// A folder on the fake host with a `.stamp` file last touched `hours_ago` hours ago.
+    fn seed_dir(&self, name: &str, hours_ago: u32) -> PathBuf {
+        let dir = self.remote_root().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f.txt"), "x\n").unwrap();
+        let stamp = self.remote_root().join(format!("{name}.stamp"));
+        fs::write(&stamp, "").unwrap();
+        sh(&format!("touch -d '{hours_ago} hours ago' \"$0\""), &stamp);
+        dir
+    }
+
+    fn seed_volume(&self, name: &str, hours_ago: u32) {
+        let created = sh(
+            &format!("date -u -d '{hours_ago} hours ago' +%Y-%m-%dT%H:%M:%SZ"),
+            Path::new("."),
+        );
+        self.append("volumes", &format!("{name} {created}\n"));
+    }
+
+    fn seed_container(&self, id: &str, volume: &str, status: &str) {
+        self.append("containers", &format!("{id} {volume} {status}\n"));
+    }
+
+    fn append(&self, file: &str, line: &str) {
+        let mut text = self.log(file);
+        text.push_str(line);
+        fs::write(self.state.join(file), text).unwrap();
+    }
+}
+
+/// Runs a shell snippet with `$0` set to `arg`; its trimmed stdout.
+fn sh(script: &str, arg: &Path) -> String {
+    let out = Command::new("sh")
+        .args(["-c", script])
+        .arg(arg)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{script}: {}", text(&out.stderr));
+    text(&out.stdout).trim().to_owned()
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -183,7 +339,7 @@ fn volume_for(path: &Path) -> String {
 
 #[test]
 fn an_unset_host_prints_usage_and_exits_2() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig
         .command(&["test", "-p", "x"])
         .env_remove("ANTHOLOGY_BUILD_HOST")
@@ -196,7 +352,7 @@ fn an_unset_host_prints_usage_and_exits_2() {
 
 #[test]
 fn an_empty_host_is_unset() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig
         .command(&["lint"])
         .env("ANTHOLOGY_BUILD_HOST", "")
@@ -207,7 +363,7 @@ fn an_empty_host_is_unset() {
 
 #[test]
 fn a_host_that_looks_like_an_option_is_refused() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig
         .command(&["lint"])
         .env("ANTHOLOGY_BUILD_HOST", "-oProxyCommand=x")
@@ -220,7 +376,7 @@ fn a_host_that_looks_like_an_option_is_refused() {
 
 #[test]
 fn arguments_reach_rust_test_on_the_host_and_output_streams_back() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig.run(&["test", "-p", "some crate", "--", "it's"]);
     let shown = all_output(&out);
     assert_eq!(out.status.code(), Some(0), "{shown}");
@@ -238,7 +394,7 @@ fn arguments_reach_rust_test_on_the_host_and_output_streams_back() {
 
 #[test]
 fn the_exit_code_of_the_remote_run_is_the_exit_code() {
-    let rig = Rig::new();
+    let rig = rig!();
     for code in ["1", "7", "101"] {
         let out = rig
             .command(&["lint"])
@@ -256,7 +412,7 @@ fn the_exit_code_of_the_remote_run_is_the_exit_code() {
 
 #[test]
 fn the_sync_sends_tracked_and_new_files_but_not_target_or_worktrees() {
-    let rig = Rig::new();
+    let rig = rig!();
     assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
     let remote = rig.remote_dir();
     assert_eq!(
@@ -275,7 +431,7 @@ fn the_sync_sends_tracked_and_new_files_but_not_target_or_worktrees() {
 
 #[test]
 fn a_rerun_sends_changes_and_drops_files_that_left_the_checkout() {
-    let rig = Rig::new();
+    let rig = rig!();
     assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
     let remote = rig.remote_dir();
     fs::write(remote.join("stale.txt"), "left over\n").unwrap();
@@ -301,7 +457,7 @@ fn rsync_syncs_the_same_files_when_both_ends_have_it() {
         eprintln!("skipped: no GNU rsync 3 on PATH");
         return;
     }
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig
         .command(&["lint"])
         .env_remove("ANTHOLOGY_REMOTE_SYNC")
@@ -317,7 +473,7 @@ fn rsync_syncs_the_same_files_when_both_ends_have_it() {
 
 #[test]
 fn containers_of_the_checkout_are_removed_when_the_run_ends() {
-    let rig = Rig::new();
+    let rig = rig!();
     for code in ["0", "3"] {
         fs::write(rig.state.join("containers"), "").unwrap();
         rig.command(&["test"])
@@ -327,22 +483,23 @@ fn containers_of_the_checkout_are_removed_when_the_run_ends() {
         assert_eq!(rig.containers().trim(), "", "exit {code}");
         let docker = rig.log("docker.log");
         assert!(docker.contains("rm -f cont1"), "{docker}");
-        let volume = volume_for(&rig.remote_dir());
+        let volume = volume_for(&rig.own_remote_dir());
         assert!(docker.contains(&format!("volume={volume}")), "{docker}");
     }
 }
 
 #[test]
 fn a_container_left_by_a_dropped_run_is_removed_before_the_next_one() {
-    let rig = Rig::new();
-    fs::write(rig.state.join("containers"), "stale1\n").unwrap();
+    let rig = rig!();
+    let volume = volume_for(&rig.own_remote_dir());
+    rig.seed_container("stale1", &volume, "running");
     assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
     assert!(rig.log("docker.log").contains("rm -f stale1"));
 }
 
 #[test]
 fn a_dropped_ssh_link_stops_the_run_and_removes_its_containers() {
-    let rig = Rig::new();
+    let rig = rig!();
     let started = Instant::now();
     let out = rig
         .command(&["test"])
@@ -361,7 +518,7 @@ fn a_dropped_ssh_link_stops_the_run_and_removes_its_containers() {
 
 #[test]
 fn clean_removes_the_remote_folder_and_the_target_volume() {
-    let rig = Rig::new();
+    let rig = rig!();
     assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
     let remote = rig.remote_dir();
     let volume = volume_for(&remote);
@@ -379,14 +536,14 @@ fn clean_removes_the_remote_folder_and_the_target_volume() {
 
 #[test]
 fn clean_before_any_run_succeeds() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig.run(&["--clean"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
 }
 
 #[test]
 fn clean_takes_no_other_arguments() {
-    let rig = Rig::new();
+    let rig = rig!();
     let out = rig.run(&["--clean", "lint"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(rig.log("ssh.log").is_empty(), "ssh was called");
@@ -394,7 +551,7 @@ fn clean_takes_no_other_arguments() {
 
 #[test]
 fn the_alias_never_appears_in_output() {
-    let rig = Rig::new();
+    let rig = rig!();
     let runs = [
         rig.run(&["test", "-p", "x"]),
         rig.command(&["lint"])
@@ -430,4 +587,193 @@ fn the_script_asks_for_no_privilege_and_installs_nothing() {
     ] {
         assert!(!script.contains(word), "{SCRIPT} mentions {word}");
     }
+}
+
+/// The `.stamp` file next to a checkout folder: when the folder was last used.
+fn stamp_of(dir: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.stamp", dir.display()))
+}
+
+#[test]
+fn a_run_removes_its_folder_stamp_and_volume_by_default() {
+    let rig = rig!();
+    for code in ["0", "5"] {
+        let out = rig
+            .command(&["test"])
+            .env_remove("ANTHOLOGY_KEEP_REMOTE")
+            .env("FAKE_EXIT", code)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), code.parse::<i32>().ok(), "exit {code}");
+        let left = fs::read_dir(rig.remote_root()).unwrap().count();
+        assert_eq!(left, 0, "something is left under ~/anthology-remote");
+        let volume = volume_for(&rig.own_remote_dir());
+        let docker = rig.log("docker.log");
+        assert!(docker.contains(&format!("volume rm {volume}")), "{docker}");
+        assert_eq!(rig.containers().trim(), "");
+    }
+}
+
+#[test]
+fn a_dropped_link_removes_the_folder_by_default_too() {
+    let rig = rig!();
+    let out = rig
+        .command(&["test"])
+        .env_remove("ANTHOLOGY_KEEP_REMOTE")
+        .env("FAKE_SSH_DROP", "1")
+        .env("FAKE_HANG", "1")
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(fs::read_dir(rig.remote_root()).unwrap().count(), 0);
+}
+
+#[test]
+fn keep_leaves_the_folder_stamp_and_volume_for_the_next_run() {
+    let rig = rig!();
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    let dir = rig.remote_dir();
+    assert!(dir.join("src/lib.rs").is_file());
+    assert!(stamp_of(&dir).is_file(), "the stamp marks the last use");
+    let docker = rig.log("docker.log");
+    assert!(!docker.contains("volume rm"), "{docker}");
+}
+
+#[test]
+fn the_start_of_a_run_sweeps_only_our_old_leftovers() {
+    let rig = rig!();
+    let old = rig.seed_dir("1111", 13);
+    let recent = rig.seed_dir("2222", 1);
+    let busy = rig.seed_dir("3333", 20);
+    let (v_old, v_recent, v_busy) = (volume_for(&old), volume_for(&recent), volume_for(&busy));
+    let orphan_old = "anthology-rust-target-9999";
+    let orphan_new = "anthology-rust-target-8888";
+    for (name, age) in [
+        (v_old.as_str(), 20),
+        (v_recent.as_str(), 20),
+        (v_busy.as_str(), 20),
+        (orphan_old, 13),
+        (orphan_new, 2),
+        ("other-project-data", 50),
+        ("anthology-cargo", 50),
+    ] {
+        rig.seed_volume(name, age);
+    }
+    rig.seed_container("c-old", &v_old, "exited");
+    rig.seed_container("c-busy", &v_busy, "running");
+    rig.seed_container("c-recent-stopped", &v_recent, "exited");
+    rig.seed_container("c-orphan-stopped", orphan_old, "exited");
+    rig.seed_container("c-foreign", "other-project-data", "exited");
+
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+
+    assert!(!old.exists() && !stamp_of(&old).exists(), "13 hours old");
+    assert!(recent.exists() && stamp_of(&recent).exists(), "1 hour old");
+    assert!(busy.exists(), "old, but a container uses its volume");
+    let volumes = rig.volumes();
+    for gone in [v_old.as_str(), orphan_old] {
+        assert!(!volumes.contains(gone), "{gone} is still there:\n{volumes}");
+    }
+    for kept in [
+        v_recent.as_str(),
+        v_busy.as_str(),
+        orphan_new,
+        "other-project-data",
+        "anthology-cargo",
+    ] {
+        assert!(volumes.contains(kept), "{kept} was removed:\n{volumes}");
+    }
+    let containers = rig.containers();
+    for gone in ["c-old", "c-recent-stopped", "c-orphan-stopped"] {
+        assert!(!containers.contains(gone), "{gone}: {containers}");
+    }
+    for kept in ["c-busy", "c-foreign"] {
+        assert!(containers.contains(kept), "{kept}: {containers}");
+    }
+    let docker = rig.log("docker.log");
+    for untouched in ["volume rm other-project-data", "volume rm anthology-cargo"] {
+        assert!(!docker.contains(untouched), "{untouched}");
+    }
+}
+
+#[test]
+fn a_host_with_under_20_gb_free_refuses_to_start() {
+    let rig = rig!();
+    let old = rig.seed_dir("1111", 13);
+    for (var, kb) in [
+        ("FAKE_DF_KB", "1000"),
+        ("FAKE_DF_KB", "20971519"),
+        ("FAKE_DF_DOCKER_KB", "20971519"),
+    ] {
+        let out = rig.command(&["test"]).env(var, kb).output().unwrap();
+        let shown = all_output(&out);
+        assert_ne!(out.status.code(), Some(0), "{var}={kb}: {shown}");
+        assert!(text(&out.stderr).contains("20 GB"), "{shown}");
+        assert!(text(&out.stderr).contains("free"), "{shown}");
+        assert!(
+            !text(&out.stdout).contains("rust-test args"),
+            "ran: {shown}"
+        );
+        assert!(!shown.contains(ALIAS), "{shown}");
+    }
+    assert!(!old.exists(), "the sweep runs first, to make room");
+    assert!(
+        rig.remote_dirs().is_empty(),
+        "nothing was copied: {:?}",
+        rig.remote_dirs()
+    );
+}
+
+#[test]
+fn exactly_20_gb_free_is_enough() {
+    let rig = rig!();
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_KB", "20971520")
+        .env("FAKE_DF_DOCKER_KB", "20971520")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+}
+
+#[test]
+fn clean_all_removes_every_leftover_and_the_rust_image() {
+    let rig = rig!();
+    rig.seed_dir("1111", 13);
+    rig.seed_dir("2222", 1);
+    for name in [
+        "anthology-rust-target-1",
+        "anthology-rust-target-2",
+        "anthology-cargo",
+        "anthology-rustup-abc",
+        "other-project-data",
+    ] {
+        rig.seed_volume(name, 1);
+    }
+    rig.seed_container("c1", "anthology-rust-target-1", "running");
+    rig.seed_container("c2", "other-project-data", "running");
+
+    let out = rig.run(&["--clean-all"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(!rig.remote_root().exists(), "~/anthology-remote is gone");
+    assert_eq!(
+        rig.volumes().trim().split(' ').next(),
+        Some("other-project-data")
+    );
+    assert_eq!(rig.volumes().lines().count(), 1, "{}", rig.volumes());
+    assert!(!rig.containers().contains("c1 "), "{}", rig.containers());
+    assert!(rig.containers().contains("c2 "), "{}", rig.containers());
+    let docker = rig.log("docker.log");
+    assert!(docker.contains(&format!("rmi {IMAGE}")), "{docker}");
+    assert!(!docker.contains("rm -f c2"), "{docker}");
+    assert!(!all_output(&out).contains(ALIAS));
+}
+
+#[test]
+fn clean_all_before_any_run_succeeds_and_takes_no_other_arguments() {
+    let rig = rig!();
+    assert_eq!(rig.run(&["--clean-all"]).status.code(), Some(0));
+    let out = rig.run(&["--clean-all", "lint"]);
+    assert_eq!(out.status.code(), Some(2));
 }
