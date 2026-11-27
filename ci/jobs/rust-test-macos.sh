@@ -6,6 +6,10 @@
 #   ci/jobs/rust-test-macos.sh all     # the run with the test-only features (m-R10), then the
 #                                      # ledger's macOS ground truth
 #
+# With PACKAGES='a b' (a pull request that touched platform-sensitive paths; ci/jobs/rust-scope.sh
+# names the crates its change reaches) only those crates are tested, and the ledger's listings
+# are left to the full run on `build`, which has no PACKAGES.
+#
 # The ledger's macOS ground truth (F4a, controller ruling; this F1 file is touched for it):
 # what cargo compiles and would skip here, `cargo test -- --list [--ignored]`, plain and with
 # --all-features, and `anthology-dev ledger check --listings … --platform macos`, so every ported
@@ -25,10 +29,17 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 rustup toolchain install
 cargo --version
-# shellcheck disable=SC2086 # $features is empty or one option
-cargo test --workspace --locked $features
+scope=--workspace
+if [ -n "${PACKAGES:-}" ]; then
+    scope=
+    for p in $PACKAGES; do
+        scope="$scope -p $p"
+    done
+fi
+# shellcheck disable=SC2086 # $scope is --workspace or -p options; $features is empty or one option
+cargo test $scope --locked $features
 
-if [ "$1" = all ]; then
+if [ "$1" = all ] && [ "$scope" = --workspace ]; then
     listings=target/ledger-macos
     rm -rf "$listings"
     mkdir -p "$listings"

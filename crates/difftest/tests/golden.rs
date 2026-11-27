@@ -415,9 +415,105 @@ fn the_committed_goldens_fit_the_size_caps() {
     assert!(total <= TOTAL_CAP, "the goldens hold {total} bytes");
 }
 
+/// The committed goldens replay clean, one test per surface:
+/// `golden_replay::<surface>`, with `.` and `-` in the surface's name written `_`. CI runs them in
+/// parallel shards and, on a pull request, only the surfaces of the changed crates
+/// (`ci/jobs/rust-scope.sh`, `ci/jobs/rust-test-linux.sh`), so a test name here and the surface
+/// it replays must keep that spelling. Before the goldens exist every surface is a `skip`; after
+/// the cutover a ported surface without one fails ([`every_ported_surface_has_a_replay_test`]).
+#[cfg(target_os = "linux")]
+mod golden_replay {
+    use super::difftest;
+
+    /// `difftest golden check --surface NAME`: Rust against the committed golden, no oracle.
+    fn replay(surface: &str) {
+        let (code, out) = difftest(&["golden", "check", "--surface", surface]);
+        assert_eq!(code, 0, "{out}");
+    }
+
+    macro_rules! replay_tests {
+        ($($test:ident => $surface:literal,)*) => {
+            /// Every surface with a replay test.
+            pub const SURFACES: &[&str] = &[$($surface),*];
+            $(
+                #[test]
+                fn $test() {
+                    replay($surface);
+                }
+            )*
+        };
+    }
+
+    replay_tests! {
+        pycompat_json => "pycompat.json",
+        pycompat_str => "pycompat.str",
+        pycompat_re => "pycompat.re",
+        pycompat_difflib => "pycompat.difflib",
+        pycompat_fnmatch => "pycompat.fnmatch",
+        pycompat_quote => "pycompat.quote",
+        pycompat_path => "pycompat.path",
+        pycompat_pyerr => "pycompat.pyerr",
+        pycompat_ipaddress => "pycompat.ipaddress",
+        pycompat_shlex => "pycompat.shlex",
+        pycompat_argparse => "pycompat.argparse",
+        core_state => "core.state",
+        core_lock => "core.lock",
+        shell_segments => "shell.segments",
+        shell_analyze => "shell.analyze",
+        guard_check => "guard.check",
+        guard_hook => "guard.hook",
+        settings => "settings",
+        privacy_findings => "privacy.findings",
+        notes_parse => "notes.parse",
+        memory_sync => "memory.sync",
+        mem => "mem",
+        memory_portable => "memory.portable",
+        atl_install_reconcile => "atl_install.reconcile",
+        doctor => "doctor",
+        hook_session_start => "hook.session-start",
+        setup => "setup",
+        dev_vendor => "dev.vendor",
+        dev_version_bump => "dev.version-bump",
+        dev_release_edit => "dev.release-edit",
+        dev_memory_diff => "dev.memory-diff",
+        dev_startup_budget => "dev.startup-budget",
+        dev_eval_baseline => "dev.eval-baseline",
+        dev_upstream_watch => "dev.upstream-watch",
+        dev_rtk_trim => "dev.rtk-trim",
+        runtime_guardrails_loc => "runtime.guardrails_loc",
+    }
+}
+
+/// The replay tests cover exactly the surfaces `golden check --all` would replay. Pointing
+/// `--golden` at a folder with no goldens makes every ported surface fail with `no golden at`
+/// (the oracle is gone, so a missing golden is a failure) without running a single case, so the
+/// failing names are the ported surfaces. A new surface needs a golden and a line in
+/// `golden_replay`.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_committed_goldens_replay_clean() {
-    let (code, out) = difftest(&["golden", "check", "--all"]);
-    assert_eq!(code, 0, "{out}");
+fn every_ported_surface_has_a_replay_test() {
+    let (code, out) = difftest(&[
+        "golden",
+        "check",
+        "--all",
+        "--golden",
+        "/nonexistent-goldens",
+    ]);
+    assert_eq!(code, 1, "{out}");
+    let ported: std::collections::BTreeSet<&str> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("FAIL ")?.split_once(": no golden at "))
+        .map(|(name, _)| name)
+        .collect();
+    let tested: std::collections::BTreeSet<&str> =
+        golden_replay::SURFACES.iter().copied().collect();
+    assert_eq!(
+        golden_replay::SURFACES.len(),
+        tested.len(),
+        "a surface is listed twice"
+    );
+    assert_eq!(
+        ported, tested,
+        "ported surfaces (left) against replay tests (right)\n{out}"
+    );
 }
