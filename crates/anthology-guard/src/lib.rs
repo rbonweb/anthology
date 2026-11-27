@@ -23,6 +23,7 @@ pub use check::*;
 #[allow(unused_imports)] // until the module has items
 pub use hook::*;
 #[allow(unused_imports)] // until the module has items
+// Throwaway line for the CI timing proof.
 pub use paths::*;
 #[allow(unused_imports)] // until the module has items
 pub use rules::*;
