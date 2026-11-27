@@ -24,8 +24,9 @@
 //!   `--split-string=...`); or the program runs a command the analysis does not parse
 //!   (`prefixes::UNPARSED_RUNNERS`: `su -c`, `flock f cmd`, `busybox sh`, `ssh host cmd`, ...; or
 //!   `hidden::runs_option_command`: `trap 'cmd' EXIT`, `fd -x`, `git -c alias.x='!cmd'`/`core.pager`,
-//!   `tar --to-command`/`-I`, `rsync -e`); or an assignment names a command a program runs later
-//!   (`GIT_PAGER='cmd' git log`, `BASH_ENV=f`).
+//!   `tar --to-command`/`-I`, `rsync -e`, `rg --pre`, `ugrep --filter`, `sort --compress-program`); or an
+//!   assignment names a command a program runs later (`GIT_PAGER='cmd' git log`, `BASH_ENV=f`,
+//!   `LESSOPEN='|cmd %s' less f`).
 //! - `Unbalanced`: the text the entry came from had an unbalanced quote or substitution (lenient split).
 //! - `RegexLimit`: a regex backtrack limit was hit while lexing the text the entry came from
 //!   (`Analysis.incomplete` is then set too). A work-budget stop sets only `Analysis.incomplete`.

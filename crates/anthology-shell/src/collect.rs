@@ -65,7 +65,7 @@ use crate::lexer::{
 use crate::limits::{DEFAULT_BACKTRACK_LIMIT, ENTRY_COST, Limits, MAX_CWD_DEPTH, MAX_DEPTH};
 use crate::opaque::{Opaque, TEST_BRACKETS, is_dynamic, mark};
 use crate::path_vars::{PathValue, PathVars};
-use crate::prefixes::hidden::runs_option_command;
+use crate::prefixes::hidden::{less_command, runs_option_command, runs_unread_command};
 use crate::prefixes::{
     MAX_FED, STDIN_ARG_RUNNERS, StdinRun, Stripped, UNPARSED_RUNNERS, is_assignment,
     is_interpreter, parallel_lines, pm_runs_own_verb, strip_prefixes,
@@ -904,6 +904,22 @@ fn only_substitution(text: &str) -> bool {
     t.is_empty()
         || (t.starts_with("$(") && t.ends_with(')'))
         || (t.len() > 1 && t.starts_with('`') && t.ends_with('`'))
+}
+
+/// A `LESSOPEN` or `LESSCLOSE` assignment with a command, or a `RIPGREP_CONFIG_PATH` with a file (its options
+/// can hold `--pre`), in the prefix words of the command or in the words of an exporter (`export LESSOPEN=...`):
+/// the program runs it with a file name the text may not show, so its effect is not proven (a `less` command is
+/// also read as a script, `assignment_scripts`).
+fn sets_hook_variable(prefix: &[String], prog: &str, args: &[String]) -> bool {
+    let exported = if EXPORTERS.contains(&prog) { args } else { &[] };
+    prefix.iter().chain(exported).any(|word| {
+        word.split_once('=')
+            .filter(|_| is_assignment(word))
+            .is_some_and(|(name, value)| match less_command(name, value) {
+                Some(command) => !command.is_empty(),
+                None => name == "RIPGREP_CONFIG_PATH" && !value.is_empty(),
+            })
+    })
 }
 
 /// Fail closed: `TAR_OPTIONS` / `GIT_CONFIG_*` set (in `prefix`, the words before the program, or as an
@@ -2625,12 +2641,14 @@ impl<'a> Ctx<'a> {
         let globbed = self
             .take(result)?
             .is_some_and(|(w, _)| !TEST_BRACKETS.contains(&w.as_str()) && !element_assignment(&w));
+        let prefix = &words[..words.len().saturating_sub(cmd.len())];
         let unproven = (program.is_some() && !positional_program && carved.is_none())
             || globbed
             || value_code_words(&prog, &args, &tokens)
             || renames_program(&prog, &args, &tokens)
-            || tokens.iter().any(|t| nested_subscript_runs(t));
-        let prefix = &words[..words.len().saturating_sub(cmd.len())];
+            || tokens.iter().any(|t| nested_subscript_runs(t))
+            || runs_unread_command(&prog, &args)
+            || sets_hook_variable(prefix, &prog, &args);
         // an integer sequence is allowed after the program word only: before it, or as it, it could form one
         if self.braces
             && tokens[..(prefix.len() + 1).min(tokens.len())]
@@ -2655,7 +2673,8 @@ impl<'a> Ctx<'a> {
         if EXPORTERS.contains(&prog.as_str()) {
             for arg in &args {
                 if let Some((name, value)) = arg.split_once('=')
-                    && COMMAND_ENV.contains(&name)
+                    // `less`'s variables hold a command after a mode (`|`, `||`, `-`)
+                    && let Some(value) = less_command(name, value).or(COMMAND_ENV.contains(&name).then_some(value))
                     && !value.is_empty()
                     && !scripts.iter().any(|s| s == value)
                 {

@@ -10,6 +10,40 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.10] - 2026-11-27
+
+- Pin anthology-bin 0.2.9.
+
+#### Fixed
+
+- The `anthology` binary 0.2.9: the guard closes three bypasses that were already on `build` (they are not new in
+  0.2.9; each was shown to run a program in bash 5 or zsh 5.9 while the guard allowed the command).
+  1. Programs that run another program from an option the guard did not read. The value is now read as a command
+     (so an install in it is G1), and a value that is not a known harmless one (`cat`, `less`, a compressor for
+     `sort`) makes the command too complex (G0), because these programs also pass the command a file name that
+     the text may not show (`rg --pre sh x p.sh` runs `sh p.sh`). Covered: `rg --pre` and `--hostname-bin` (and an
+     abbreviation of either of at least four characters), ugrep's `--filter` and `--pager` (ugrep is the `grep`
+     that Claude Code's shell runs; also `ug`, `egrep` and `fgrep`), `sort --compress-program` (and its `--co...`
+     abbreviations; `gsort` too), and `LESSOPEN` and `LESSCLOSE` as a prefix assignment or an `export`.
+     The options that only look alike (`--pre-glob`, `--filter-magic-label`) stay allowed, and so do
+     `--pre=cat`, `--pager=less` and `sort --compress-program=gzip`.
+     The harmless values for these options no longer include editors (`vi`, `vim`, `nano`, ...): vim and ex run
+     the `:!` lines of the file they are handed. The same class on `build` is also closed: an awk (`awk`, `gawk`,
+     `mawk`, `nawk`) program with `system(`, a pipe to or from a string, `|&` or an `@` directive, `awk -f`, `-E`,
+     `-l` and `-i` other than `inplace` are too complex; so are `RIPGREP_CONFIG_PATH` set to a file,
+     `ugrep --config`, `ugrep ---FILE` and `ug` (which reads `.ugrep`). A `.ugrep` file read by plain `ugrep`
+     cannot be seen; see Known limits in `docs/guardrails.md`.
+  2. zsh runs a command written between two backslash-escaped backticks inside an arithmetic subscript, in a
+     `((` command, in `$((` and in `for ((`; bash does not. In arithmetic text the escaped pair is now read as a
+     command substitution, and an unclosed one is too complex.
+  3. An unquoted zsh glob group among the words of a command (`docker exec c (flock|x) psql -c "..."`, with a file
+     `flock` in the folder) expands to words the guard never saw, so zsh ran `flock`. The lexer split the command
+     at the paren and the analysis skipped the program that ran; such a `(` after a blank that follows words of a
+     command is now too complex. A subshell or pattern list that follows `if`, `then`, `else`, `elif`, `while`,
+     `until`, `do`, `!`, `{`, `case ... in` or `function name`, `for ((`, a function definition `f ()`, a `[[ ]]`
+     pattern and an arithmetic command are unchanged; `time (cmd)` is now too complex.
+- Fix: the guard in the `anthology` binary 0.2.9 closes three bypasses of its Bash check (options that run another program such as `rg --pre`, an escaped backtick in a zsh arithmetic subscript, and an unquoted zsh glob group such as `(a|b)` among a command's words), and treats editors, `RIPGREP_CONFIG_PATH`, `ugrep --config` and awk programs that run commands as too complex to check. See the `anthology-guardrails` entry and the 0.2.9 line above.
+
 ### [0.5.9] - 2026-11-27
 
 - Pin anthology-bin 0.2.8 and ATL 1.2.1-anthology.9.
@@ -666,6 +700,11 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.18] - 2026-11-27
+
+- Pin anthology-bin 0.2.9.
+- Fix: the guard closes three known bypasses of its Bash check. A command that runs another program through an option the guard did not model (`rg --pre`, `rg --hostname-bin`, `grep --filter` or `--pager` in ugrep, `sort --compress-program`, `LESSOPEN`, `LESSCLOSE`), an escaped backtick inside a zsh arithmetic subscript, and an unquoted zsh glob group such as `(a|b)` among a command's words are now blocked as too complex to check. Editors, `RIPGREP_CONFIG_PATH`, `ugrep --config` and an awk program that runs commands are treated the same way. Everyday `rg`, `grep`, `ugrep`, `sort` and `awk` commands still run without a prompt. Needs the `anthology` binary 0.2.9.
 
 ### [0.2.17] - 2026-11-27
 

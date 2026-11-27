@@ -384,6 +384,10 @@ struct Lexer<'t, 'a> {
     heredocs: Vec<Pending>,
     /// A heredoc never closed: bash reads the rest as its body.
     swallowed: bool,
+    /// A heredoc body in this text was cut mid-line, at a body line that starts with the delimiter and holds a
+    /// parenthesis (`EOF is (here)`): the reading of `$(...)` that bash 5 takes. What follows is read as code in
+    /// that reading only; the reading zsh shares (`Reading::Exact`) cuts nowhere and lexes the text again.
+    cut: bool,
     /// Heredocs whose terminator was searched for in vain.
     unclosed: usize,
     /// False: an unclosed heredoc's body is not scanned.
@@ -470,6 +474,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             pending: None,
             heredocs: Vec::new(),
             swallowed: false,
+            cut: false,
             unclosed: 0,
             full,
             shallow,
@@ -793,6 +798,22 @@ impl<'t, 'a> Lexer<'t, 'a> {
         Ok(())
     }
 
+    /// The backslash-backtick at `i`, in arithmetic text. bash reads it as two characters, but zsh evaluates a
+    /// subscript there (`(( a[\`cmd\`] ))`) and runs the command between this pair and the next one, so that text
+    /// is lexed as a command, as the plain backtick form is. No closing pair: the analysis is too complex.
+    /// Returns where the text goes on.
+    fn escaped_backtick(&mut self, i: usize) -> Result<usize, TooComplex> {
+        let text = self.text;
+        let Some(close) = text.get(i + 2..).and_then(|rest| rest.find("\\`")) else {
+            self.sh.info.unproven = true;
+            return Ok(i + 2);
+        };
+        let body = &text[i + 2..i + 2 + close];
+        self.subs.push(body.to_string()); // the word holds a substitution (F-8)
+        self.nested(body, Some(i), false)?;
+        Ok(i + 2 + close + 2)
+    }
+
     fn run(mut self) -> Result<Vec<(Segment, Vec<Holder>, bool)>, LexError> {
         let text = self.text;
         let bytes = text.as_bytes();
@@ -801,6 +822,12 @@ impl<'t, 'a> Lexer<'t, 'a> {
         while i < n {
             let c = bytes[i];
             match c {
+                b'\\'
+                    if byte_at(text, i + 1) == Some(b'`')
+                        && (self.arith.is_some() || self.arith_text) =>
+                {
+                    i = self.escaped_backtick(i)?;
+                }
                 b'\\' => match char_at(text, i + 1) {
                     Some(next) => {
                         if next != '\n' {
@@ -852,6 +879,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
                     let after_group = i > 0 && bytes[i - 1] == b')';
                     self.sh.info.unproven |=
                         c == b'(' && (self.has_word || after_group) && self.glob_qualifier(i);
+                    self.sh.info.unproven |= c == b'(' && self.glob_group(i);
                     self.sh.info.unproven |= c == b'('
                         && !self.has_word
                         && self.tokens.is_empty()
@@ -920,6 +948,36 @@ impl<'t, 'a> Lexer<'t, 'a> {
         }
         let rest = self.text.get(i + 1..).unwrap_or("");
         !rest.trim_start_matches([' ', '\t']).starts_with(')')
+    }
+
+    /// The `(` at `i` comes after a blank that follows words of the segment, and no grammar word makes it open a
+    /// subshell or a pattern list. zsh reads `(a|b)` there as a glob group, one word that expands to any number
+    /// (`docker exec c (flock|x) psql ...` runs `flock` when a file `flock` exists), so the words that follow it
+    /// are not the ones the analysis reads; the lexer splits the segment at the paren all the same. Not after
+    /// the grammar words that start a command (`if (cmd)`, `then (cmd)`, `! (cmd)`, `{ (cmd)`), not in a `case`
+    /// pattern list (`case x in (a|b)`), not the `((` of `for ((;;))`, and not where [`Lexer::glob_qualifier`]
+    /// says no. Not in the text of a heredoc body that never closed either (`swallowed`), nor after a body that
+    /// a `$(...)` reading cut (`cut`): the lexer reads that text as commands too, for the rules that block, but
+    /// no zsh reading runs prose such as `EOF is (here)`, and the exact reading lexes the text again.
+    fn glob_group(&self, i: usize) -> bool {
+        /// Words after which a `(` opens a subshell. Not `time`, which a quoted spelling makes a program.
+        const STARTS: &[&str] = &[
+            "if", "then", "else", "elif", "while", "until", "do", "!", "{",
+        ];
+        let words = &self.tokens;
+        // `function name` names a definition: what follows it starts the body
+        let body = match words.first() {
+            Some(first) if first == "function" => words.get(2..).unwrap_or_default(),
+            _ => words,
+        };
+        !self.has_word
+            && !words.is_empty()
+            && !self.swallowed
+            && !self.cut
+            && self.glob_qualifier(i)
+            && !body.iter().all(|w| STARTS.contains(&w.as_str()))
+            && !(words[0] == "case" && words.last().is_some_and(|w| w == "in"))
+            && !(words.len() == 1 && words[0] == "for" && byte_at(self.text, i + 1) == Some(b'('))
     }
 
     /// Track `(` depth. A `((` with no word before it that closes with `))` is an arithmetic command: its
@@ -1285,6 +1343,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             }
             if let Some(after) = after {
                 i = after;
+                self.cut |= i < n && text.as_bytes()[i - 1] != b'\n';
             }
         }
         Ok(i)
