@@ -22,16 +22,22 @@
 //!      what the line may run, and the next point answers that;
 //!    - `anthology perm classify`, the proof the permissions mod uses, shows the
 //!      line read-only ([`proven_read_only`]), so the line runs no atl at all, and
-//!      every path it reads lies under a project root, where Claude Code reads
-//!      without asking.
+//!      every path it reads lies under the project ([`proof_roots`]: never the
+//!      first folder up the tree with a `.claude`, which is the home in a
+//!      repository that has none), where Claude Code reads without asking.
 //!
-//!    The answer is then an allow with the rewrite when the rewrite is in the
-//!    plain shape and the gate passes it as well; otherwise no rewrite and no
-//!    decision (`Defer`): the host judges the original, as it would without atl.
-//!    Anything the proof does not cover keeps today's ask.
+//!    The answer is then the plain rewrite, with no decision of the hook's own,
+//!    when the rewrite is in the plain shape and the gate passes it as well: the
+//!    host decides, as for a line that does not mention atl (`Bash(atl *)` allows
+//!    it when the user has that rule; an explicit allow from here would also beat
+//!    settings without it, and `allowManagedPermissionRulesOnly`). Otherwise no
+//!    rewrite and no decision (`Defer`): the host judges the original. Anything
+//!    the proof does not cover keeps today's ask.
 //! 3. **Auto mode.** With `permission_mode` `auto` in the payload nothing is
 //!    rewritten: an allow or a host-judged rewrite becomes `Defer`, and a needless
-//!    ask (point 2) becomes `Defer` too. An ask the proof does not cover stays.
+//!    ask (point 2) becomes `Defer` too. An ask the proof does not cover stays,
+//!    about the line as typed, with no `updatedInput` (a fish wrap, asked about on
+//!    purpose, is the exception).
 //!
 //! The proof is a subprocess, so it is spent only on a line the gate would ask
 //! about. ATL finds it through `ATL_PERM_CLASSIFY`, set by `bin/atl-hook` to the
@@ -50,7 +56,7 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // The variables read below are named with literals, which the environment scan of
 // `core::test_isolation` needs: `ATL_PERM_CLASSIFY` is the plugin's `bin/anthology`
@@ -127,12 +133,21 @@ pub(crate) fn refine(
         // A fish wrap is asked about on purpose (the host would judge one `atl run`
         // command); its script is not one the proof reads, and it is left alone here.
         HookDecision::AskRewrite(rewritten, AskOwner::Hook)
-            if !rewritten.starts_with(FISH_WRAP) && checks.needless() =>
+            if !rewritten.starts_with(FISH_WRAP) =>
         {
-            if mode == Mode::Auto || rewritten == cmd || !(checks.rewrite_clear)(&rewritten) {
-                HookDecision::Defer
+            if checks.needless() {
+                if mode == Mode::Auto || rewritten == cmd || !(checks.rewrite_clear)(&rewritten) {
+                    HookDecision::Defer
+                } else {
+                    // No `permissionDecision`: the host decides on the rewrite.
+                    HookDecision::AskRewrite(rewritten, AskOwner::Host)
+                }
+            } else if mode == Mode::Auto {
+                // The ask stays, about the line as typed: a changed input is what
+                // auto mode refuses.
+                HookDecision::AskRewrite(cmd.to_string(), AskOwner::Hook)
             } else {
-                HookDecision::AllowRewrite(rewritten)
+                HookDecision::AskRewrite(rewritten, AskOwner::Hook)
             }
         }
         other => other,
@@ -166,18 +181,43 @@ pub(crate) fn refine_claude(
                 evaluate(rewritten, rules, PermissionVerdict::Default, cwd) == Gate::Pass
                     && plain(rewritten, rules, cwd) == Gate::Pass
             },
-            proof: &|| proven_read_only(cmd, cwd, rules.project_roots(), rules.read_rule_texts()),
+            proof: &|| {
+                proven_read_only(
+                    cmd,
+                    cwd,
+                    super::anthology_gate::env_project_dir(),
+                    rules.read_rule_texts(),
+                )
+            },
         },
     )
 }
 
+/// The directories a proof may read in: `project_dir` (`CLAUDE_PROJECT_DIR`) when
+/// it is absolute, else the git top level of `cwd` (the nearest folder at or above
+/// it that holds a `.git`, file or folder), else `cwd` itself. Never the folder
+/// ATL finds its settings in (`user_dirs::project_root`): it walks up to the first
+/// `.claude`, which is the home's when the repository has none, and the whole home
+/// is not the project.
+pub(crate) fn proof_roots(project_dir: Option<PathBuf>, cwd: &str) -> Vec<PathBuf> {
+    if let Some(dir) = project_dir.filter(|dir| dir.is_absolute()) {
+        return vec![dir];
+    }
+    let cwd = Path::new(cwd);
+    if !cwd.is_absolute() {
+        return Vec::new();
+    }
+    let top = cwd.ancestors().find(|dir| dir.join(".git").exists());
+    vec![top.unwrap_or(cwd).to_path_buf()]
+}
+
 /// Whether `anthology perm classify` shows `cmd` read-only, run in `cwd`, and
-/// every path it reads lies under one of `roots`. False on every failure: no
+/// every path it reads lies under [`proof_roots`]. False on every failure: no
 /// classifier, a working directory it cannot send, a refusal, a timeout.
 pub(crate) fn proven_read_only(
     cmd: &str,
     cwd: Option<&str>,
-    roots: &[PathBuf],
+    project_dir: Option<PathBuf>,
     read_rules: Vec<String>,
 ) -> bool {
     let Some(classifier) = classifier() else {
@@ -194,7 +234,7 @@ pub(crate) fn proven_read_only(
     if cmd.len() > MAX_COMMAND || cmd.contains(['\n', '\r']) {
         return false;
     }
-    let roots: Vec<PathBuf> = roots
+    let roots: Vec<PathBuf> = proof_roots(project_dir, cwd)
         .iter()
         .filter_map(|root| std::fs::canonicalize(root).ok())
         .filter(|root| root.is_dir())
@@ -210,7 +250,7 @@ pub(crate) fn proven_read_only(
         "read_rules": read_rules,
     })
     .to_string();
-    let Some(stdout) = run_classifier(&classifier, &request) else {
+    let Some(stdout) = run_classifier(&classifier, &request, TIMEOUT) else {
         return false;
     };
     classified_paths(&stdout).is_some_and(|paths| {
@@ -246,8 +286,13 @@ fn classified_paths(stdout: &str) -> Option<Vec<&str>> {
 }
 
 /// Run `<classifier> perm classify` with `request` on stdin: its stdout when it
-/// exits 0 within [`TIMEOUT`], `None` otherwise. The child is killed on a timeout.
-fn run_classifier(classifier: &Path, request: &str) -> Option<String> {
+/// exits 0 within `timeout`, `None` otherwise. The child is killed on a timeout,
+/// and when it prints more than [`MAX_STDOUT`].
+///
+/// The calling thread blocks on a channel: a helper thread reads the child's
+/// stdout to its end, which is when the child exits. There is no polling, so a
+/// fast classifier costs no more than its own run.
+fn run_classifier(classifier: &Path, request: &str, timeout: Duration) -> Option<String> {
     let mut command = Command::new(classifier);
     command
         .args(["perm", "classify"])
@@ -266,27 +311,23 @@ fn run_classifier(classifier: &Path, request: &str) -> Option<String> {
     let _ = stdin.write_all(request.as_bytes());
     drop(stdin);
     let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut text = Vec::new();
         let _ = stdout.take(MAX_STDOUT + 1).read_to_end(&mut text);
-        text
+        let _ = sender.send(text);
     });
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+    let text = match receiver.recv_timeout(timeout) {
+        Ok(text) if text.len() as u64 <= MAX_STDOUT => text,
+        // Too slow, or too much: it may still be running.
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
         }
     };
-    let text = reader.join().ok()?;
-    if !status.success() || text.len() as u64 > MAX_STDOUT {
+    // Its stdout is closed: it is exiting.
+    if !child.wait().ok()?.success() {
         return None;
     }
     String::from_utf8(text).ok()
@@ -343,11 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn a_needless_ask_becomes_an_allow_with_the_rewrite() {
+    fn a_needless_ask_becomes_the_plain_rewrite_with_no_decision_of_ours() {
+        // Never an explicit allow: the host decides on the rewrite (its own
+        // `Bash(atl *)` rule, or a prompt without one).
         let facts = Facts::needless();
         assert_eq!(
             facts.refine(hook_ask(REWRITE), Mode::Other),
-            HookDecision::AllowRewrite(REWRITE.to_string())
+            HookDecision::AskRewrite(REWRITE.to_string(), AskOwner::Host)
         );
     }
 
@@ -391,13 +434,17 @@ mod tests {
                 },
             ),
         ] {
-            for mode in [Mode::Other, Mode::Auto] {
-                assert_eq!(
-                    facts.refine(hook_ask(REWRITE), mode),
-                    hook_ask(REWRITE),
-                    "{name} / {mode:?}"
-                );
-            }
+            // The ask stays; in auto mode it is about the line as typed.
+            assert_eq!(
+                facts.refine(hook_ask(REWRITE), Mode::Other),
+                hook_ask(REWRITE),
+                "{name}"
+            );
+            assert_eq!(
+                facts.refine(hook_ask(REWRITE), Mode::Auto),
+                hook_ask(CMD),
+                "{name} / auto"
+            );
         }
     }
 
@@ -501,10 +548,63 @@ mod tests {
             proven: false,
             ..Facts::needless()
         };
+        // About the line as typed, with no `updatedInput` change.
         assert_eq!(
             unproven.refine(hook_ask(REWRITE), Mode::Auto),
-            hook_ask(REWRITE)
+            hook_ask(CMD)
         );
+        // An ask that already is about the line as typed is as it was.
+        assert_eq!(unproven.refine(hook_ask(CMD), Mode::Auto), hook_ask(CMD));
+    }
+
+    #[test]
+    fn the_proof_root_is_the_project_never_the_settings_marker() {
+        let dir = std::env::temp_dir().join(format!("atl-proof-roots-{}", std::process::id()));
+        let repo = dir.join("repo");
+        let sub = repo.join("a/b");
+        let bare = dir.join("bare/c");
+        std::fs::create_dir_all(&sub).expect("mkdir sub");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        std::fs::create_dir_all(&bare).expect("mkdir bare");
+        // A `.claude` above both: the home's, in the field.
+        std::fs::create_dir_all(dir.join(".claude")).expect("mkdir .claude");
+        let at = |project: Option<PathBuf>, cwd: &Path| proof_roots(project, cwd.to_str().unwrap());
+        // CLAUDE_PROJECT_DIR wins when absolute.
+        assert_eq!(at(Some(dir.join("p")), &sub), vec![dir.join("p")]);
+        // A relative one is not used.
+        assert_eq!(at(Some(PathBuf::from("p")), &sub), vec![repo.clone()]);
+        // The git top level, from a subfolder.
+        assert_eq!(at(None, &sub), vec![repo.clone()]);
+        // No git: the directory itself, not the `.claude` folder's parent.
+        assert_eq!(at(None, &bare), vec![bare.clone()]);
+        // A `.git` file (a linked worktree) counts too.
+        let linked = dir.join("linked");
+        std::fs::create_dir_all(&linked).expect("mkdir linked");
+        std::fs::write(linked.join(".git"), "gitdir: x\n").expect("write .git file");
+        assert_eq!(at(None, &linked), vec![linked.clone()]);
+        // A relative cwd gives no root.
+        assert!(proof_roots(None, "relative").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A classifier that prints without end is killed at the output cap, long before
+    /// the timeout, and one that exits non-zero gives nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_classifier_that_floods_or_fails_is_no_proof() {
+        use std::time::Instant;
+        let yes = Path::new("/usr/bin/yes");
+        if yes.is_file() {
+            let started = Instant::now();
+            // `yes perm classify` prints that line for ever.
+            assert_eq!(run_classifier(yes, "{}", Duration::from_secs(30)), None);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+        let cat = Path::new("/bin/cat");
+        if cat.is_file() {
+            // `cat perm classify` finds no such files and exits 1.
+            assert_eq!(run_classifier(cat, "{}", Duration::from_secs(30)), None);
+        }
     }
 
     #[test]
@@ -599,10 +699,9 @@ mod tests {
     /// Nothing that can be checked without a subprocess gets one.
     #[test]
     fn no_classifier_no_proof() {
-        let root = [PathBuf::from("/")];
         let prove = |classifier: Option<&str>, cmd: &str, cwd: Option<&str>| {
             user_env::with_vars(&[("ATL_PERM_CLASSIFY", classifier)], || {
-                proven_read_only(cmd, cwd, &root, Vec::new())
+                proven_read_only(cmd, cwd, Some(PathBuf::from("/")), Vec::new())
             })
         };
         // Unset, empty, relative, missing.

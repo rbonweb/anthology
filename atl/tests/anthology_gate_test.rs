@@ -1808,7 +1808,8 @@ fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
 // script in for the classifier: ATL reaches it through `ATL_PERM_CLASSIFY`.
 
 /// A stand-in for `anthology perm classify`. It answers like the real one: the
-/// token line and then the absolute paths read, or exit 1 and no decision. It
+/// token line and then the absolute paths read (here: each absolute word of the
+/// command, the `cd` target included), or exit 1 and no decision. It
 /// refuses a request naming `rm`, `git push`, `kubectl` or `curl`, unless
 /// `FAKE_PROVE_ALL` is set; `FAKE_LOG` names a file each request is appended to.
 const FAKE_CLASSIFIER: &str = r#"#!/bin/sh
@@ -1822,8 +1823,12 @@ if [ -z "${FAKE_PROVE_ALL:-}" ]; then
       exit 1 ;;
   esac
 fi
-root=$(printf '%s' "$input" | sed -n 's/.*"roots":\["\([^"]*\)".*/\1/p')
-printf 'anthology-perm:read-only:v1\n%s\n' "$root"
+command=$(printf '%s' "$input" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+printf 'anthology-perm:read-only:v1\n'
+set -f
+for word in $command; do
+  case $word in /*) printf '%s\n' "$word" ;; esac
+done
 "#;
 
 /// The stand-in, written once for the whole test binary (a script written while
@@ -1882,10 +1887,12 @@ fn hook_in(
     Sandbox::classify(cmd, &stdout)
 }
 
-/// Read-only reads of a path that mentions atl are allowed with their rewrite,
-/// and the user's own rules still decide everything else.
+/// Read-only reads of a path that mentions atl get the plain rewrite, with no
+/// decision of the hook's own: the user's `Bash(atl *)` rule (or its absence, or
+/// `allowManagedPermissionRulesOnly`) decides, as for a line that does not mention
+/// atl. An explicit allow would beat settings that have no such rule.
 #[test]
-fn a_provably_read_only_original_is_allowed_with_its_rewrite_instead_of_asked() {
+fn a_provably_read_only_original_gets_the_plain_rewrite_instead_of_an_ask() {
     let sb = atl_named_sandbox(Rules {
         deny: &["git push:*"],
         allow: &["atl *"],
@@ -1897,16 +1904,25 @@ fn a_provably_read_only_original_is_allowed_with_its_rewrite_instead_of_asked() 
     ] {
         assert_eq!(
             hook_in(&sb, cmd, None, true, &[]),
-            Said::Allow(rewritten.into()),
+            Said::Rewrite(rewritten.into()),
             "{cmd}"
         );
         // The same mode the host reports for an ordinary session.
         assert_eq!(
             hook_in(&sb, cmd, Some("default"), true, &[]),
-            Said::Allow(rewritten.into()),
+            Said::Rewrite(rewritten.into()),
             "{cmd} in default mode"
         );
     }
+    // Without a `Bash(atl *)` rule: still no decision of the hook's own.
+    let no_allow = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        ..Rules::default()
+    });
+    assert_eq!(
+        hook_in(&no_allow, "grep -n foo atl/notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n foo atl/notes.txt".into())
+    );
     // A rewrite that is not in the plain shape is not made: the host judges the
     // original (the permission mod may then allow it).
     assert_eq!(
@@ -2141,5 +2157,92 @@ fn the_other_modes_keep_their_rewrite() {
     assert_eq!(
         hook_in(&allowed, "git status", Some("auto"), false, &[]),
         Said::Nothing
+    );
+}
+
+/// A project under a home that has a `.claude` folder, and no `.claude` of its own,
+/// with the rules in `~/.claude/settings.json`. The settings walk from the project
+/// reaches the home's `.claude` first, so it is no marker of where the project ends.
+fn home_marker_sandbox() -> Sandbox {
+    let root = TempDir::new().expect("tempdir");
+    let home = root.path().join("home");
+    let claude_home = home.join(".claude");
+    let project = home.join("proj");
+    std::fs::create_dir_all(home.join(".config")).expect("mkdir config");
+    std::fs::create_dir_all(&claude_home).expect("mkdir claude home");
+    std::fs::create_dir_all(&project).expect("mkdir project");
+    std::fs::create_dir_all(root.path().join("tee")).expect("mkdir tee");
+    std::fs::write(
+        claude_home.join("settings.json"),
+        serde_json::json!({"permissions": {"deny": ["Bash(git push:*)"], "allow": ["Bash(atl *)"]}})
+            .to_string(),
+    )
+    .expect("write settings");
+    std::fs::write(home.join("secret.txt"), "s3cret\n").expect("write secret");
+    std::fs::write(project.join("notes.txt"), "notes\n").expect("write notes");
+    Sandbox {
+        _root: root,
+        home,
+        claude_home,
+        project,
+    }
+}
+
+/// The root of the proof is the project (`CLAUDE_PROJECT_DIR`, else the working
+/// directory's git top level, else the directory itself), never the first folder
+/// up the tree that has a `.claude`: that is the home when the repository has none,
+/// and the whole home is not the project.
+#[test]
+fn the_proof_root_is_the_project_not_the_first_claude_folder_up_the_tree() {
+    let sb = home_marker_sandbox();
+    let secret = sb.home.join("secret.txt");
+    let outside = format!("grep -n atl {}", secret.display());
+    let inside = format!("grep -n atl {}", sb.project.join("notes.txt").display());
+    // Outside the project, inside the home: asked, as without the proof.
+    assert!(
+        matches!(hook_in(&sb, &outside, None, true, &[]), Said::Ask(_)),
+        "{outside}"
+    );
+    // Inside it: the plain rewrite.
+    assert_eq!(
+        hook_in(&sb, "grep -n atl notes.txt", None, true, &[]),
+        Said::Rewrite("atl grep -n atl notes.txt".into())
+    );
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &[]), Said::Rewrite(_)),
+        "{inside}"
+    );
+    // `CLAUDE_PROJECT_DIR` names the root, and only it.
+    let dir = sb.project.to_string_lossy().into_owned();
+    let env = [("CLAUDE_PROJECT_DIR", dir.as_str())];
+    assert!(
+        matches!(hook_in(&sb, &outside, None, true, &env), Said::Ask(_)),
+        "{outside} with CLAUDE_PROJECT_DIR"
+    );
+    assert!(
+        matches!(hook_in(&sb, &inside, None, true, &env), Said::Rewrite(_)),
+        "{inside} with CLAUDE_PROJECT_DIR"
+    );
+}
+
+/// In auto mode an ask the proof does not cover is an ask about the line as typed:
+/// carrying the rewrite would make Claude Code's classifier refuse the changed input.
+#[test]
+fn in_auto_mode_an_ask_that_stays_is_about_the_original_with_no_rewrite() {
+    let sb = atl_named_sandbox(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    // The stand-in refuses a line naming curl, so nothing is proven.
+    let cmd = "grep -n curl atl/notes.txt";
+    assert_eq!(
+        hook_in(&sb, cmd, Some("default"), true, &[]),
+        Said::Ask("atl grep -n curl atl/notes.txt".into()),
+        "outside auto mode the ask carries the rewrite, as before"
+    );
+    assert_eq!(
+        hook_in(&sb, cmd, Some("auto"), true, &[]),
+        Said::Ask(cmd.into())
     );
 }
