@@ -43,6 +43,7 @@ It also tells you when something needs attention:
 - It warns you if the plugin has moved so that agents can no longer read their knowledge files. Re-run `/anthology:setup` to fix that.
 - It prints one loud line when a compatibility assumption breaks: Claude Code did not pass `CLAUDE_PLUGIN_DATA`, the plugin's `bin/` wrappers are missing or not executable, agent memory was written somewhere other than `anthology-<agent>/`, or `CLAUDE_CODE_SUBAGENT_MODEL` is set (run `/anthology:setup` to remove it).
 - When a release changes the `settings.json` entries that setup makes and one of them is missing, it prints "anthology settings changed in this release — run /anthology:setup to review" and changes nothing itself. If you deleted one of those entries on purpose (for example `Bash(atl *)`), the line returns at each session start after every such release, until you run setup again.
+- When the official `superpowers` plugin is enabled next to Anthology's own `anthology-superpowers`, it prints one line at each session start (not on resume, clear or compact) that names both and gives the command that disables the official one, for example `claude plugin disable superpowers@claude-plugins-official -s user`. Both would otherwise load their instructions. It names the official plugin and not `anthology-superpowers` because `anthology` lists `anthology-superpowers` as a dependency, and Claude Code refuses to disable a plugin that an enabled one requires. A plugin manifest has no way to mark a dependency optional.
 - If the personal-memory folder is a symlink or not a folder, it prints a line saying personal memory was not loaded and nothing was moved or copied.
 
 When another program drives the session, Anthology stays quiet instead (see [Host mode](agents.md#host-mode)).
@@ -76,6 +77,14 @@ What an update changes:
 - The `anthology` binary that the new `anthology.lock` pins is installed beside the old one at the next session start.
 - ATL is reconciled to the pinned version at each session start.
 - The memory index format is versioned and rebuilt when it changes.
+
+### Two copies of a plugin in the cache
+
+The plugin cache can hold two folders for one dependency, `X.Y.Z` and `X.Y.Z-<sha>`. This is Claude Code's normal cache scheme for dependencies with a version range, and only the `-<sha>` copy is used. Nothing is broken, and you do not need to act.
+
+Claude Code removes old versions on its own, about 14 days after they are orphaned. `/plugin` shows what is installed.
+
+To clean up by hand instead, quit all Claude Code sessions first. Then delete only the version folders whose path is not an `installPath` in `~/.claude/plugins/installed_plugins.json`. Never delete a folder that file lists.
 
 ## Removing
 

@@ -1,0 +1,1 @@
+- Fix: `hooks/lib.sh` (shared with `anthology`) words the `anthology` plugin's "could not install the anthology binary" session-start line so it says the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too. The guardrails' own session-start line, which names the installer command, is unchanged.
