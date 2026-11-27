@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.10] - 2026-11-27
+
 - Pin anthology-bin 0.2.9.
 
 #### Fixed
@@ -40,6 +42,7 @@ a new version section.
      command is now too complex. A subshell or pattern list that follows `if`, `then`, `else`, `elif`, `while`,
      `until`, `do`, `!`, `{`, `case ... in` or `function name`, `for ((`, a function definition `f ()`, a `[[ ]]`
      pattern and an arithmetic command are unchanged; `time (cmd)` is now too complex.
+- Fix: the guard in the `anthology` binary 0.2.9 closes three bypasses of its Bash check (options that run another program such as `rg --pre`, an escaped backtick in a zsh arithmetic subscript, and an unquoted zsh glob group such as `(a|b)` among a command's words), and treats editors, `RIPGREP_CONFIG_PATH`, `ugrep --config` and awk programs that run commands as too complex to check. See the `anthology-guardrails` entry and the 0.2.9 line above.
 
 ### [0.5.9] - 2026-11-27
 
