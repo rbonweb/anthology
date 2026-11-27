@@ -2874,6 +2874,22 @@ mod guide_test {
         }
     }
 
+    // A typed `atl grep -r ...` asks the owner by design; a plain `grep` is rewritten for the
+    // agent. So the ATL section tells the lead (and the agents' Shell section tells them)
+    // never to type `atl`, except `atl bypass <cmd>`.
+    #[test]
+    fn test_atl_section_says_never_type_atl() {
+        let text = guide();
+        let start = text.find("## 7. ATL").expect("ATL section");
+        let section = text[start..].split("\n## ").next().unwrap();
+        assert!(
+            section.contains(
+                "Never type `atl` (added for you), except `atl bypass <cmd>` when a result is unusable."
+            ),
+            "{section}"
+        );
+    }
+
     #[test]
     fn test_uses_anthology_ids_for_every_roster_agent() {
         let text = guide();

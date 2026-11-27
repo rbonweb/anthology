@@ -57,12 +57,12 @@ mod budget {
     /// preloaded SKILL.md, per agent.
     pub const BUDGET: [(&str, usize); 11] = [
         ("researcher", 89267),
-        ("architect", 23612),
+        ("architect", 23738),
         ("implementer", 26561),
-        ("debugger", 22167),
+        ("debugger", 22293),
         ("reviewer", 17815), // GC-13 16672, plus the Shell section
-        ("scout", 7158),     // GC-13 5944, plus the Shell section
-        ("docs-writer", 31560),
+        ("scout", 7284),     // GC-13 5944, plus the Shell section
+        ("docs-writer", 31686),
         ("ui-designer", 128097),
         ("ui-reviewer", 65986),
         ("product-planner", 102779),
@@ -851,6 +851,7 @@ mod roster_test {
             "TaskStop each one and say none remain",
             "Durations come only from timestamps you read.",
             "never pastes settings JSON or permission-mode strings",
+            "Type commands plainly; never type `atl` yourself (it is added for you), except `atl bypass <cmd>` when a result is unusable.",
         ] {
             assert!(shell.contains(needle), "Shell lacks {needle:?}");
         }

@@ -29,6 +29,7 @@ Opus UI critic. A different model from the builder, so you catch what it missed.
 ## Shell
 - The Bash tool runs zsh: write `${rev}:path`, never `$rev:path` (zsh reads `:a`, `:c` and `:p` as modifiers). Quote every glob and any URL with `?`, or use the Grep and Glob tools.
 - One plain command per Bash call, from your working folder: no `cd`, no `git -C <other path>`, no `..` paths, loops or heredocs. Branch refs are shared.
+- Type commands plainly; never type `atl` yourself (it is added for you), except `atl bypass <cmd>` when a result is unusable.
 - Delete only literal paths, never `rm -rf $VAR` or a glob.
 - Waiting: never `sleep N`, and never wait with Monitor (it returns at once). A foreground Bash call is moved to the background after 180 s, whatever its `timeout` says, so block in chunks: `timeout 170 <blocking command>` (`gh pr checks <n> --watch`, `gh run watch <id>`, `docker wait <name>`), repeated until done. "no checks reported" right after a push means CI has not started.
 - Never end your turn while a background command or Monitor you started is running. Before the final report, TaskStop each one and say none remain.
