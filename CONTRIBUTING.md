@@ -30,7 +30,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `changelog.d/` | Changelog fragments, `changelog.d/<plugin>/*.md`, which `scripts/release.sh` compiles into `CHANGELOG.md` and deletes |
 | `vendor/` | `sources.json` (every pin), `patches/`, `snapshots/`, `licenses/` |
 | `atl/` | The source of ATL (Anthology Token Layer), a fork of rtk by RTK AI Labs, as a git subtree with its history. `atl/LICENSE` is upstream's Apache-2.0 license, kept as it is, and `atl/NOTICE` records the origin and the changes; both ship in every archive |
-| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
+| `scripts/` | Shell entry points: `dev.sh` (runs `anthology-dev` in the pinned Rust image), `rust-test.sh`, `remote-build.sh` (the same checks on a remote build host), `sync-atl.sh`, `atl-trim.sh`, `atl-test.sh`, `atl-net-test.sh`, `release.sh`, `run-evals.sh` |
 | `evals/` | Behaviour evals (one `case.yaml` per case) and the mocked BrowserOS Neo server in `mocks/`; run with `scripts/run-evals.sh`, which also runs the smoke cases (`anthology-dev smoke`) |
 | `port/` | The record of the port: the test ledger in `port/ledger/`, the difftest divergences and seeds, and the replay reports |
 | `fuzz/` | The fuzz targets, run weekly by `fuzz.yml` |
@@ -58,17 +58,41 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
 6. Validate a plugin with the Claude Code version CI uses: `npm ci --prefix ci/claude-code`, then `ci/claude-code/node_modules/.bin/claude plugin validate --strict plugins/<name>`.
 7. Try your checkout in Claude Code: `claude plugin marketplace add <path to your checkout>` loads the marketplace in place, then install `anthology@anthology` as in the README. The plugins then install the released binary that `anthology.lock` pins, not one built from your checkout. The evals and smokes test a local build, on a scratch copy of `plugins/` that `anthology-dev seed` prepares.
 
+### Building on a remote host
+
+To keep a long Rust build off your own machine, [`scripts/remote-build.sh`](scripts/remote-build.sh) runs `scripts/rust-test.sh` on a Linux build host over ssh. The host needs Docker (your user in the `docker` group), `bash` 4 or newer and `tar`; `rsync` is used when both ends have it. Key-based ssh login must already work: the script uses `ssh -o BatchMode=yes`, never prompts, never uses `sudo`, and changes nothing about the host's ssh or auth setup. Give it the host's ssh alias in the environment, never in a file of the repo:
+
+```sh
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh test -p anthology-guard
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh lint
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-ours
+```
+
+The arguments are the ones `scripts/rust-test.sh` takes. The script copies the checkout (tracked files, plus uncommitted and new files that are not ignored; never `target/` or `.claude/worktrees`) to `~/anthology-remote/<hash>/` on the host, runs the checks there, streams the output and exits with their exit code. The `<hash>` names the checkout, so each worktree has its own folder and its own target volume. Run one build per checkout at a time: a new run removes the containers that an earlier run of the same checkout left.
+
+The host is shared, so the script leaves nothing of ours on it that can fill its disk:
+
+- **Clean by default.** When a run ends, passed or failed, and also on Ctrl-C or a dropped connection, the checkout's folder, its `anthology-rust-target-*` volume and its containers are removed. `ANTHOLOGY_KEEP_REMOTE=1` keeps the folder and volume, so the next run sends only what changed and builds warm. Use it for one working session, then run `--clean`.
+- **Only our own items.** The script removes only what it created: the folders under `~/anthology-remote/`; the `anthology-rust-target-*`, `anthology-cargo`, `anthology-sccache` and `anthology-rustup-*` volumes, which it creates itself with the label `anthology.remote-build=1` and treats as ours only when the name matches and the label is there (a same-named volume without the label was on the host before us and is never touched); the containers that mount those volumes; and the Rust image, only if it was not on the host when our run started (the script records that in `~/anthology-remote/.pulled-images`) and only when no container that is not ours uses it. It never prunes, never forces a removal and touches nothing outside `~/anthology-remote`.
+- **Self-heal at the start.** Before each run the script removes our own leftovers that were not used for 12 hours: folders, `anthology-rust-target-*` volumes and our stopped containers. When nothing of ours has run for 48 hours (the time of `~/anthology-remote/.last-used`, written at the start and the end of each run), it also removes the `anthology-cargo`, `anthology-sccache` and `anthology-rustup-*` caches and the pulled image. A volume that a running container uses stays.
+- **Disk guard.** The script refuses to start, and says so, when the host has less than 20 GB free on its home disk or its Docker data disk.
+- **`--clean`** removes this checkout's folder, volume and containers. **`--clean-ours`** removes everything of ours, as defined above, and nothing else. The caches and the image stay between runs so that a run starts quickly; run `--clean-ours` when you are done for the day.
+
+The remote folder is a copy without git history, so checks that read it (for example `scripts/dev.sh lock check-fresh`) belong on your own machine or in CI.
+
 ### What CI runs
 
 | Check | What it proves |
 |---|---|
 | `rust-lint` | `cargo fmt --check` and `clippy -D warnings` |
-| `rust-test-linux` and `rust-test-macos` | `cargo test --workspace --locked` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay. Each gates on parallel `-shard` jobs (plain and `--all-features`; on Linux the golden replay is a shard of its own). A pull request that changes only release metadata (`ci/jobs/rust-scope.sh` lists it) skips the shards, and `rust-test-linux` runs the `repo-tests` checks instead |
+| `rust-test-linux` and `rust-test-macos` | `cargo test` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay (one test per difftest surface). They are the required checks and gate on parallel `-shard` jobs (plain and `--all-features`), which pass when `ci/jobs/rust-scope.sh` found nothing for them to run. See [What a pull request runs](#what-a-pull-request-runs) |
 | `deny` | `cargo deny check` (advisories, bans, licenses, sources; `deny.toml`), and that `serde_json` stays out of the shipped binary |
 | `shellcheck` and `shims-distros` | The `sh` shims pass `shellcheck -s sh`, and the shim tests pass on Alpine, Debian slim and Ubuntu, with each system's own shell and downloaders |
 | `ledger` (`ci/jobs/ledger.sh`) | Every row of the test ledger names a Rust test that cargo really runs, or a reviewed drop reason |
 | `fuzz-build` | Every fuzz target builds and survives a short run (`fuzz.yml` runs them longer, weekly) |
 | `atl-test` job (`scripts/atl-test.sh`, then `scripts/atl-net-test.sh`) | atl passes its tests, including one named test per change the fork makes, and the release binary works with the network off |
+| `atl-test-macos` (`ci/jobs/atl-test-macos.sh`) | atl passes its tests on macOS too, where temporary folders sit behind `/private/var` symlinks |
 | `atl-release` and `anthology-release` workflows, on a pull request | A change to the workflow or the toolchain pin builds and tests all four release targets, without publishing |
 | `vendor-check` (`scripts/dev.sh vendor check`) | Every vendored tree and license regenerates exactly from its pin |
 | `version-bump` (`scripts/dev.sh version-bump`) | A changed plugin has a higher version than at the merge base |
@@ -77,6 +101,20 @@ You need git, Docker and Node 22 or newer. You do not need Rust, Chrome or any b
 | `memory-diff` (`scripts/dev.sh memory-diff`, pull requests) | Lists changed files under `.claude/memory/` and `.claude/agent-memory/` in the job summary, so a memory note is reviewed like code |
 | `startup-budget` (`scripts/dev.sh startup-budget`, then the budget tests) | The per-agent startup budgets and the session-start output budget (9,000 characters) hold |
 | `cli-syntax` (`ci/jobs/cli-syntax.sh`) | The `claude plugin` subcommands and flags the plugins and evals rely on exist in the pinned Claude Code. No model is called |
+
+### What a pull request runs
+
+A pull request runs only the Rust tests its change can affect, so a round takes minutes. `ci/jobs/rust-scope.sh` (rules in `ci/scope-rules.tsv`) reads the changed files and `cargo metadata`, and picks:
+
+- **Crates.** The changed crates plus every crate that depends on them, through a normal, build or dev dependency. The `rest` shards run their tests and are split by the weights in `ci/test-weights.tsv`.
+- **Golden surfaces.** The golden replay is one test per surface (`golden_replay::<surface>` in `crates/difftest/tests/golden.rs`). A pull request replays the surfaces of the crates it reaches, in one shard, plus the surfaces a rule names (an agent prompt replays `dev.startup-budget`). A change to `difftest` replays all of them.
+- **Docs, plugins, scripts, evals, memory notes, release metadata.** The repository checks (`repo-tests`) only.
+- **atl and fuzz.** `atl-test` runs for a change to `atl/` or a crate atl builds, `atl-test-macos` for a change to `atl/` itself, and `fuzz-build` for a change to `fuzz/` or a crate the targets build.
+- **macOS.** The macOS shards run on a pull request only for platform-sensitive paths (the `macos` rules: shims, hooks, the guard, code that spawns processes or reads the platform), and then only for the affected crates.
+
+Everything runs, as before, on every push to `build` and `main`, on a manual run of the workflow, and on a pull request that has the `full-ci` label or a commit with `[full-ci]` in its message (a trailer line or the subject). It also runs for a change to the test machinery itself (`ci.yml`, `ci/jobs/rust-*`, `ci/scope-rules.tsv`, the Rust image, the toolchain, `Cargo.toml` or `Cargo.lock` beyond a version) and for a path no rule places, so a new top-level folder needs a row in `ci/scope-rules.tsv`.
+
+The Linux shards keep the cargo registry, the toolchain and the dependency build in a cache (`ci/jobs/rust-cache.sh`): a push to `build` or `main` saves it and a pull request reads it.
 
 Images are pinned by digest in `ci/images/*.Dockerfile`, Rust crates by `Cargo.lock`, the toolchain by `rust-toolchain.toml`, and GitHub Actions by commit SHA. Dependabot proposes the bumps, and CI and the evals gate them.
 

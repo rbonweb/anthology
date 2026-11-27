@@ -10,8 +10,17 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.7] - 2026-11-27
+
 #### Changed
 
+- The `anthology` binary 0.2.8: session start lists the repo's own agents and skills after the routing guide,
+  reads `.claude/anthology.json` (`routing_guide: false` leaves the guide out but keeps a safety floor, and only
+  in a repo approved in `/anthology:setup`; elsewhere the file is ignored and session start says so), adds the
+  `anthology switch` command and says "read the project map, else dispatch the architect" only for an approved repo.
+- The `anthology` binary 0.2.7: session start warns when the official `superpowers` plugin is enabled next
+  to `anthology-superpowers`, and the message for a missing binary on the first offline session now says that
+  the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too (#261).
 - The `anthology` binary 0.2.6: the guard no longer blocks `docker exec db psql -c "select count(*) from t"`
   as too complex to check. Inside a docker command every `-c` word was read as a shell option and the next
   word was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain SQL runs
@@ -29,6 +38,14 @@ a new version section.
   plain database or user names. `-o`, `-f`, `-L`, `-P`, any attached value and any connection string keep the
   reading they had, because psql can run a program for them. Anything else keeps the reading it had,
   including `sh -c`, `bash -c`, `docker run` and every other program that takes `-c`.
+- Fix: ATL no longer prompts for a harmless read, and no longer makes auto mode refuse a call. With any deny, ask or `Read()` rule set, a line that merely contains `atl` or the legacy `rtk` (`grep -n x atl/src/main.rs`, `ls -la atl | head -60`) was not in the plain shape, so ATL's hook asked about it, and a hook ask beats `Bash(atl *)` in every mode. When `anthology perm classify` shows the line as typed read-only, every path it reads is under the project (`CLAUDE_PROJECT_DIR`, else the git top level, else the working directory), and no ask or `Read()` rule applies, ATL now hands back the plain rewrite with no decision of its own, so your `Bash(atl *)` rule decides, or leaves the line to Claude Code when it cannot rewrite it plainly. Deny rules are checked first and still win, and an ask rule still asks. In auto mode ATL no longer rewrites a command at all, so auto mode judges what the model wrote instead of refusing with "a hook changed this call's input after auto mode reviewed it". Other modes rewrite as before. This is ATL `1.2.1-anthology.7`; `bin/atl-hook` now tells ATL where the plugin's `bin/anthology` is (`ATL_PERM_CLASSIFY`) and which `PATH` you exported (`ATL_HOOK_USER_PATH`). An ATL installed without the plugin has no classifier and asks as before.
+- Fix: the after-work check no longer flags "no commit" and "nothing about what was tested" on a report whose edited files are all outside a git repo, such as `~/.claude/settings.json`: there is nothing to commit or test there. The edited paths are read from the report text (absolute, `~/` and relative ones, relative to the agent's folder), and a path is in a repo when it or a folder above it holds `.git`. A report that names no path, a path in a repo, or a path the check cannot place keeps both checks, so a mixed report is still checked. Attribution lines are still flagged.
+- Docs: the README install steps lead with `claude plugin marketplace add` and `claude plugin install`, which also work in the VS Code extension, which has no `/plugin` slash commands; the `/plugin` form stays as the terminal-app alternative. `docs/setup.md` explains the two cached copies of a dependency (`X.Y.Z` and `X.Y.Z-<sha>`) and how to clean up by hand.
+- Fix: the guard no longer blocks a read-only search such as `grep -rnoE "[\"'\`][^\"'\`]*(\$\{|\" *\+)" dir | cut -c1-200 | head` as too complex to check. A dollar sign that a backslash escapes, or that a backslash follows, is a plain character in bash and zsh and expands nothing, but the guard counted it as an expansion, which made it read each `[` after a quote or a backtick as a possible subscript start. This holds only in a command line made up entirely of searches and filters (`grep`, `egrep`, `fgrep`, `rg`, `cut`, `head`, `tail`, `sort`, `uniq`, `wc`); in any other line an escaped dollar can be how a live one reaches a nested text such as `trap "..."` or `. <(...)`, so it is read as before. A real expansion (`$(`, `$name`, `${`, a backtick, or a `$` in single quotes) is read as before. Guard binary 0.2.6.
+- Fix: `/anthology:setup` now shows the `.gitattributes` change that makes the generated `MEMORY.md` indexes merge by keeping both sides' lines (`merge=union`), so parallel agents stop conflicting there. The preview lists the lines it adds, never adds one twice and keeps the rest of the file, and tells you to commit the file so other worktrees and clones have the rule. Session start prints one line when an approved repo's `HEAD` lacks the rule; it writes nothing.
+- Fix: ATL's read-only proof now compares the project and the paths the classifier lists as the file system resolves them, so a project under a symlinked folder (on macOS `/var` and `/tmp` are links into `/private`) is still the project, and a path that resolves outside the project never counts. The `1.2.1-anthology.7` release build failed its macOS tests for this reason and was not published; this is ATL `1.2.1-anthology.8`.
+- Add: session start prints one line when the official `superpowers` plugin is enabled next to `anthology-superpowers`, because both sets of instructions would load. The line names both plugins and the command that disables the official one (`claude plugin disable <plugin> -s <scope>`). It does not name `anthology-superpowers`: `anthology` requires it, so Claude Code refuses to disable it alone. It shows at startup only, not on resume, clear or compact, and not for an embedded host. It uses the same detection as `/anthology:setup`. Needs the next `anthology` binary.
+- Fix: when the `anthology` binary cannot be installed (offline on the first session), the session-start line now says that the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too, and points to the `anthology-guardrails` line for the command that installs it. Before, it named only the routing guide, memory and atl, and sent the reader to `/anthology:setup`, which needs a shell command the closed guard blocks.
 
 ### [0.5.6] - 2026-11-26
 
@@ -639,6 +656,10 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.16] - 2026-11-27
+
+- Fix: `hooks/lib.sh` (shared with `anthology`) words the `anthology` plugin's "could not install the anthology binary" session-start line so it says the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too. The guardrails' own session-start line, which names the installer command, is unchanged.
 
 ### [0.2.15] - 2026-11-25
 

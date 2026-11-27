@@ -16,8 +16,12 @@
 //! (new step); the guardrails self-test (F-4); state; the NAG, or the read-rule, ops-version and
 //! atl checks (the atl check skipped when more than 10 s passed since `ANTHOLOGY_HOOK_T0`,
 //! F-20); the data-folder, wrapper, agent-memory and subagent checks; the git-folder check (a
-//! session folder that is not a repo but holds repos); memory sync; the guide; compose; prune
-//! `<ah>/bin` (design §8.5).
+//! session folder that is not a repo but holds repos); memory sync; the guide, then what the repo
+//! adds after it ([`project`]: its own agents and skills, and [`MAP_LINE`] when it is approved
+//! in setup; in a repo approved in setup, `.claude/anthology.json` with `routing_guide: false`
+//! leaves only [`project::floor`] of the guide, anywhere else the file is ignored, and a
+//! message line says which happened); compose;
+//! prune `<ah>/bin` (design §8.5).
 //!
 //! **Subagents.** When the hook input has a non-empty `agent_id` (a SessionStart inside a
 //! subagent that compacted), only memory sync runs, and the output has no guide and no
@@ -38,6 +42,11 @@
 //! It compares with the entry of the scope the session loaded from (found by install path), so a
 //! project install pinned older than the user one is not stale. Candidates `x.y.z-rc.N` are
 //! ordered by `N`; any other suffix (a sha) is not ordered.
+//!
+//! **A duplicate superpowers.** At startup (not on resume, clear or compact, and not for an
+//! embedded host), [`duplicate_superpowers_warning`] says so when the official `superpowers`
+//! plugin is enabled next to `anthology-superpowers`: one line naming both and the command that
+//! disables the official one.
 //!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
@@ -85,7 +94,9 @@ use anthology_settings::{self as settings, SettingsDeps, SettingsLimits, TAG_PLU
 use crate::atl_install::{self, AtlDeps, AtlLimits, Reconciled};
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
+use crate::doctor;
 use crate::guardrails_loc::{self, GUARD_REL, Problem};
+use crate::project;
 
 /// Windows (the only output there).
 pub const REFUSAL: &str = "Anthology supports macOS and Linux only; it is inactive on Windows.";
@@ -109,6 +120,13 @@ pub const ATL_SKIPPED: &str =
 pub const ATL_NOT_WIRED: &str = "anthology: atl wiring not present yet; skipped";
 /// The session folder is not in a git repo but git repos sit directly below it.
 pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git repos sit below it. Anthology's agents need worktrees, so start Claude Code inside the repo you are working on";
+/// Said after the guide for a repo approved in setup. The architect run for a missing project
+/// map is for those repos only, so it is not in the guide itself, which every repo gets.
+pub const MAP_LINE: &str = "This repo is approved in /anthology:setup. Before planning, read `.claude/memory/reference-project-map.md`; missing: dispatch anthology:architect.";
+/// An approved repo turned the routing guide off; the safety floor stays.
+pub const GUIDE_OFF: &str = "anthology: routing guide turned off by .claude/anthology.json (this repo is approved in /anthology:setup); the safety rules stay";
+/// An approved repo turned the delegation mod off.
+pub const DELEGATION_OFF: &str = "anthology: delegation mod turned off by .claude/anthology.json (this repo is approved in /anthology:setup)";
 /// The guide file is missing or unreadable.
 pub const GUIDE_MISSING: &str =
     "anthology: the routing guide is missing from the plugin (templates/routing-guide.md)";
@@ -482,8 +500,11 @@ pub mod label {
     pub const GIT_FOLDER: &str = "the git folder check";
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
+    pub const PROJECT: &str = "reading the repo's own agents and skills";
+    pub const SWITCHES: &str = "reading the repo's .claude/anthology.json";
     pub const COMPOSE: &str = "assembling the session context";
     pub const STALE: &str = "the loaded plugin version check";
+    pub const DUPLICATE_SUPERPOWERS: &str = "the duplicate superpowers check";
 }
 
 /// `_step`: runs `f`; an exception (or a panic) becomes `anthology: <label> failed (<Class>)`.
@@ -694,6 +715,19 @@ pub fn stale_plugin_warning(env: &Env, root: &Path, cwd: &Path) -> Option<String
             "anthology: this session loaded {name} {loaded}, but {installed} is installed; restart Claude Code to load the new version"
         )
     })
+}
+
+/// The line for an enabled official `superpowers` next to Anthology's own `anthology-superpowers`
+/// (both would load the same instructions). It names the command that disables the official one:
+/// `anthology` lists `anthology-superpowers` as a dependency, so Claude Code refuses to disable
+/// that one alone. The detection is the one `/anthology:setup` uses
+/// ([`doctor::enabled_official_superpowers`]).
+pub fn duplicate_superpowers_warning(env: &Env, cwd: &Path) -> Option<String> {
+    let d = doctor::enabled_official_superpowers(env, cwd)?;
+    let (plugin, scope) = (d.plugin, d.scope);
+    Some(format!(
+        "anthology: superpowers loads twice: {plugin} and anthology-superpowers@anthology are both enabled; disable the official one with: claude plugin disable {plugin} -s {scope}"
+    ))
 }
 
 /// `_is_subagent`: Claude Code puts `agent_id` in the hook input when the hook fires inside a
@@ -935,6 +969,54 @@ fn read_guide(root: &Path) -> Option<String> {
     let text = String::from_utf8(raw).ok()?;
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     Some(format!("{}\n", text.trim_end_matches('\n')))
+}
+
+/// The lines for `.claude/anthology.json` switches that ask to turn something off, and whether
+/// the routing guide is off: a switch is honoured only in an approved repo, so the other is said
+/// to be ignored.
+fn switch_notes(env: &Env, cwd: &Path) -> (bool, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut guide_off = false;
+    for (key, what) in [
+        (project::GUIDE_KEY, "routing guide"),
+        (project::DELEGATION_KEY, "delegation mod"),
+    ] {
+        match project::state(env, cwd, key) {
+            project::Switch::On => {}
+            project::Switch::Off => {
+                guide_off |= key == project::GUIDE_KEY;
+                notes.push(if key == project::GUIDE_KEY {
+                    GUIDE_OFF.to_string()
+                } else {
+                    DELEGATION_OFF.to_string()
+                });
+            }
+            project::Switch::Ignored => notes.push(format!(
+                "anthology: .claude/anthology.json asks to turn off the {what}, but this repo is not approved in /anthology:setup, so it is ignored"
+            )),
+        }
+    }
+    (guide_off, notes)
+}
+
+/// What follows the guide for this repo, as blocks separated by a blank line: its own agents
+/// and skills ([`project::section`]), and, for an approved repo, [`MAP_LINE`]. Empty for none.
+fn repo_extras(env: &Env, cwd: &Path, repo: &Path) -> String {
+    let mut blocks = Vec::new();
+    blocks.extend(project::section(repo, &compat::config_dir(env)));
+    if project::repo_approved(env, cwd) {
+        blocks.push(MAP_LINE.to_string());
+    }
+    blocks.join("\n\n")
+}
+
+/// `guide` with `extras` after it, one blank line between; either may be empty.
+fn with_extras(guide: &str, extras: &str) -> String {
+    match (guide.is_empty(), extras.is_empty()) {
+        (_, true) => guide.to_string(),
+        (true, false) => format!("{extras}\n"),
+        (false, false) => format!("{}\n\n{extras}\n", guide.trim_end_matches('\n')),
+    }
 }
 
 /// `_compose(guide, memory)`: the guide, then memory cut to fit [`CONTEXT_BUDGET`].
@@ -1265,6 +1347,19 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         warnings.extend(w);
     }
 
+    if !embedded && at_startup {
+        let w = step(
+            &mut warnings,
+            label::DUPLICATE_SUPERPOWERS,
+            |_| {
+                fault(deps, "_duplicate_superpowers_warning")?;
+                Ok(duplicate_superpowers_warning(env, &cwd))
+            },
+            None,
+        );
+        warnings.extend(w);
+    }
+
     let (memory, messages) = memory_step(&mut warnings, &cwd, env, deps);
     // A compact that runs in a git worktree the session moved into (or an agent's worktree)
     // really writes that worktree's setting, but the notice is noise mid-session: keep it quiet.
@@ -1277,6 +1372,19 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     let context = if embedded {
         String::new()
     } else {
+        // A repo approved in setup can turn the guide off (`.claude/anthology.json`): then only
+        // the safety floor of the guide stays. Any other repo's file is ignored. Either way the
+        // user is told, every session.
+        let (guide_off, notes) = step(
+            &mut warnings,
+            label::SWITCHES,
+            |_| {
+                fault(deps, "_repo_switches")?;
+                Ok(switch_notes(env, &cwd))
+            },
+            (false, Vec::new()),
+        );
+        warnings.extend(notes);
         let guide = step(
             &mut warnings,
             label::GUIDE,
@@ -1289,7 +1397,24 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
         if guide.is_none() {
             warnings.push(GUIDE_MISSING.into());
         }
-        let guide_text = guide.unwrap_or_default();
+        let guide_text = match guide {
+            None => String::new(),
+            Some(g) if guide_off => project::floor(&g),
+            // What follows the guide only makes sense beside it.
+            Some(g) => {
+                let repo = project::repo_dir(&cwd);
+                let extras = step(
+                    &mut warnings,
+                    label::PROJECT,
+                    |_| {
+                        fault(deps, "_repo_extras")?;
+                        Ok(repo_extras(env, &cwd, &repo))
+                    },
+                    String::new(),
+                );
+                with_extras(&g, &extras)
+            }
+        };
         step(
             &mut warnings,
             label::COMPOSE,

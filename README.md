@@ -25,23 +25,25 @@ Two things to read before you install:
 
 ## Install
 
+Run steps 1 and 2 in a shell, with the `claude plugin` commands. They work everywhere, including the VS Code extension, which does not support the `/plugin` slash commands. In the Claude Code terminal app you can type the `/plugin` form instead.
+
 1. Add the marketplace:
 
    ```text
-   /plugin marketplace add rbonweb/anthology
+   claude plugin marketplace add rbonweb/anthology
    ```
 
-   From a terminal, the same step is `claude plugin marketplace add rbonweb/anthology`.
+   In the terminal app: `/plugin marketplace add rbonweb/anthology`.
 
 2. Install the plugin. This also installs `anthology-guardrails` and `anthology-superpowers`:
 
    ```text
-   /plugin install anthology@anthology
+   claude plugin install anthology@anthology
    ```
 
-   From a terminal: `claude plugin install anthology@anthology`.
+   In the terminal app: `/plugin install anthology@anthology`.
 
-3. Turn on auto-update: run `/plugin`, open the **Marketplaces** tab, select `anthology` and enable auto-update. Auto-update is off by default for every marketplace that is not Anthropic's own, so without this step you only get new versions when you update by hand.
+3. Turn on auto-update, in the terminal app: run `/plugin`, open the **Marketplaces** tab, select `anthology` and enable auto-update. Auto-update is off by default for every marketplace that is not Anthropic's own, so without this step you only get new versions when you update by hand (see [Updating and removing](#updating-and-removing)). The VS Code extension has no such screen, so update by hand there.
 4. Run `/anthology:setup` in each repo you want memory in. The first run also does the one-time machine setup. It checks your machine, shows every change and applies them only after you confirm once. Restart the session when it finishes. See [Setup](docs/setup.md).
 
 The first session after you install downloads the plugins' `anthology` program. Until it is installed, the guardrails block shell commands, file edits and MCP tools. See [The `anthology` binary](docs/binary.md) for what to do if the download fails.

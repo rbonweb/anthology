@@ -1,0 +1,16 @@
+# How long each workspace crate's tests take, so ci/jobs/rust-scope.sh can split the crates of a
+# run over parallel shards. One row per crate: name, tab, seconds. Only the ratios matter (these
+# are one machine's wall time for `cargo test -p <crate>` with the golden replay left out). A new
+# crate needs a row (crates/repo-tests/tests/ci_scope.rs); a crate without one weighs 30.
+repo-tests	82
+anthology-shell	38
+difftest	36
+anthology-runtime	34
+anthology-memory	29
+anthology-pycompat	20
+anthology-guard	16
+anthology-cli	13
+anthology-dev	6
+anthology-core	2
+anthology-testkit	1
+anthology-settings	1
