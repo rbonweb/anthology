@@ -7,6 +7,7 @@ name: atl-release
 #   - workflow_dispatch with `tag`: the same, from that existing tag.
 #   - pull_request touching this file or the toolchain pin: a dry run (build and test
 #     the whole matrix, no attestation, no release).
+# (throwaway dry run for PR 259, do not merge)
 on:
   push:
     tags: ['atl--v*']
