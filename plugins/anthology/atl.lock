@@ -3,9 +3,9 @@
   "tag": "atl--v1.2.1-anthology.9",
   "repo": "rbonweb/anthology",
   "sha256": {
-    "aarch64-apple-darwin": "d8f960905a019bd0d923ef119c2cc3996276cf1e79b8815c05cdd5fde2698957",
-    "x86_64-apple-darwin": "cd989869564d090199d2dc031fa45483f1d5129868beaad9c47ef65ca2cfd904",
-    "x86_64-unknown-linux-musl": "64ce9e2aee952f19216925908c782061ae530f340ba0b88ffba56ab17c6805c7",
-    "aarch64-unknown-linux-musl": "1b1a1f55a1a3afd59e051758c756de236ea29800e891f1b04c675a96936bee3b"
+    "aarch64-apple-darwin": "ded293bf776be65f799bb7cebba7d94917974ae8ae46de8915256846067420ea",
+    "x86_64-apple-darwin": "88b4c2ec78c406334a960360d72bb1b308e39089a7391bb2dfbdb6aa9b5c8bc6",
+    "x86_64-unknown-linux-musl": "7d1904034a1c6d28cc0d7474c64509e2d5ca403b67fe57dc0cb506165270528d",
+    "aarch64-unknown-linux-musl": "af66bae7382ed69498d4f0f6ebde2142b6a10c336adebbb87fa2f037e365825a"
   }
 }

@@ -17,10 +17,19 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Which jobs run on a pull request: the `rust-scope` job (ci/jobs/rust-scope.sh, rules in
+# ci/scope-rules.tsv) answers per job in its `jobs` output, from the paths a job reads and the
+# crates it builds. A push, a manual run, the `full-ci` label, a `[full-ci]` commit message and a
+# change to the test machinery run every job. gitleaks, deny and shellcheck run on every pull
+# request. A job skipped by scope shows as skipped, which a required check accepts.
 jobs:
   vendor-check:
     # Needs git and network: rebuild every vendored tree from its pinned upstream and diff it
-    # against the committed tree (anthology-dev vendor check in the pinned Rust image).
+    # against the committed tree (anthology-dev vendor check in the pinned Rust image). Reads
+    # vendor/, the vendored trees (plugins/anthology-superpowers, plugins/anthology/knowledge,
+    # atl) and anthology-dev.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',vendor-check,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -34,7 +43,10 @@ jobs:
     # A plugin whose files changed must carry a higher plugin.json version than its latest
     # released tag (`<plugin>--v<version>`, for example `anthology--v0.4.1`); a plugin with no such
     # tag is unreleased and not gated. Needs git history and tags (fetch-depth: 0 fetches both);
-    # scripts/dev.sh runs the check in the pinned Rust image.
+    # scripts/dev.sh runs the check in the pinned Rust image. Only a change under plugins/ (or to
+    # anthology-dev, scripts/dev.sh) can fail it.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',version-bump,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -50,7 +62,9 @@ jobs:
 
   plugin-validate:
     # Validate the marketplace manifest and each plugin with the Claude Code version pinned in
-    # ci/claude-code.
+    # ci/claude-code. A skipped matrix job shows as one skipped check, not one per target.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',plugin-validate,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -92,7 +106,8 @@ jobs:
     # Lists the memory notes a pull request adds, changes, renames or deletes (.claude/memory and
     # .claude/agent-memory) in the job summary: notes load into everyone's sessions, so reviewers
     # read them like code. A listing, not a gate, and it comments nothing on the PR (fork-safe).
-    if: github.event_name == 'pull_request'
+    needs: rust-scope
+    if: github.event_name == 'pull_request' && contains(needs.rust-scope.outputs.jobs, ',memory-diff,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -109,7 +124,11 @@ jobs:
   startup-budget:
     # The per-agent startup budget (anthology-dev startup-budget and the test_roster port
     # `startup_budget`, PLAN section 5) and the session-start output budget (the
-    # test_session_start `budget` ports, U8's 9,000 characters), in the pinned Rust image.
+    # test_session_start `budget` ports, U8's 9,000 characters), in the pinned Rust image. Reads
+    # the agents, the startup knowledge and skills, the routing guide, and anthology-dev,
+    # anthology-runtime and the roster test.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',startup-budget,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -124,7 +143,10 @@ jobs:
 
   mods:
     # The anthology plugin's Claude Code mods: `claude plugin validate --strict` and
-    # `claude plugin test` with the pinned Claude Code, in the pinned node image.
+    # `claude plugin test` with the pinned Claude Code, in the pinned node image. Reads only
+    # plugins/anthology and the pins.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',mods,')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -138,6 +160,9 @@ jobs:
     # The Claude Code CLI surface the plugins and the evals rely on (U4): every `claude plugin`
     # subcommand answers --help with the flags we use, `validate --strict` passes for each plugin
     # and `tag --dry-run` names the release tag. No model is called and no credentials are needed.
+    # Reads plugins/, the pinned Claude Code and anthology-dev.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',cli-syntax,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -195,7 +220,10 @@ jobs:
   # its script, never this file (plan §0.2). Placeholder scripts echo their name until then.
 
   rust-lint:
-    # cargo fmt --check and clippy -D warnings, in the pinned Rust image.
+    # cargo fmt --check and clippy -D warnings, in the pinned Rust image. Reads Rust files only:
+    # the crates and the fuzz targets.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',rust-lint,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -222,6 +250,7 @@ jobs:
       run_macos: ${{ steps.scope.outputs.run_macos }}
       linux_matrix: ${{ steps.scope.outputs.linux_matrix }}
       macos_matrix: ${{ steps.scope.outputs.macos_matrix }}
+      jobs: ${{ steps.scope.outputs.jobs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -368,7 +397,12 @@ jobs:
         run: ci/jobs/deny.sh
 
   shims-distros:
-    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1).
+    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1), then
+    # `claude plugin validate --strict` on the anthology and anthology-guardrails plugins. Reads
+    # those two plugins, the shim tests and the crates they link, the three images, and the
+    # pinned Claude Code. Any change to either plugin, so to the guard's shim scripts, runs it.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',shims-distros,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -390,7 +424,9 @@ jobs:
         run: ci/jobs/shellcheck.sh
 
   ledger:
-    # anthology-dev ledger check --report (F4a).
+    # anthology-dev ledger check --report (F4a). Reads every crate (the test listing) and port/.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',ledger,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -420,6 +456,8 @@ jobs:
     # anthology binary is built from, so it needs a new anthology-bin release before the next
     # plugin release. Never fails the PR (continue-on-error) and has no write token. Needs the
     # history and the tags (fetch-depth: 0); the check runs in the pinned Rust image.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',lock-fresh,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
