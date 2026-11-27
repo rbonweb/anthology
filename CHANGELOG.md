@@ -698,7 +698,10 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.18] - 2026-11-27
+
 - Pin anthology-bin 0.2.9.
+- Fix: the guard closes three known bypasses of its Bash check. A command that runs another program through an option the guard did not model (`rg --pre`, `rg --hostname-bin`, `grep --filter` or `--pager` in ugrep, `sort --compress-program`, `LESSOPEN`, `LESSCLOSE`), an escaped backtick inside a zsh arithmetic subscript, and an unquoted zsh glob group such as `(a|b)` among a command's words are now blocked as too complex to check. Editors, `RIPGREP_CONFIG_PATH`, `ugrep --config` and an awk program that runs commands are treated the same way. Everyday `rg`, `grep`, `ugrep`, `sort` and `awk` commands still run without a prompt. Needs the `anthology` binary 0.2.9.
 
 ### [0.2.17] - 2026-11-27
 
