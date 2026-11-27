@@ -33,7 +33,7 @@ What you may see, and what to do (the text in parentheses names the cause):
 
 | The message says | What to do |
 |---|---|
-| At session start: `anthology-guardrails: could not install the guard binary (…)` or `anthology: could not install the anthology binary (…)` | Start a new session while online, or run the installer command the message names |
+| At session start: `anthology-guardrails: could not install the guard binary (…)` or `anthology: could not install the anthology binary (…)` | Start a new session while online, or run the installer command the `anthology-guardrails` message names. The `anthology` message says that the guard, which runs the same binary, blocks shell commands, file edits and MCP tools too, and has no command of its own, because the guard lets through only the guardrails' installer |
 | `Blocked by anthology-guardrails (setup): the guard binary is not installed (…)` | Run the installer command the message names. Starting a new session while online, or waiting a minute and retrying, also works |
 | `… is still downloading in the background (N bytes so far)` | A slow network: retry in a few seconds, or run the installer command, which waits for the download |
 | `… download timed out (slow network)` | Retry: the next try continues the download. Or run the installer command |

@@ -540,6 +540,11 @@ fn fail_closed(tokens: &[String], braces: bool, quoted_braces: bool, hidden_name
 /// Programs that read text as shell words or commands, or splice their input into a command line (`xargs -I@`).
 const TEXT_CONSUMERS: &[&str] = &["alias", "busybox", "eval", "source", "xargs", "parallel"];
 
+/// The programs of a text that only searches or filters: they read no word as shell text (`plain_text`).
+const SEARCH_PROGRAMS: &[&str] = &[
+    "grep", "egrep", "fgrep", "rg", "cut", "head", "tail", "sort", "uniq", "wc",
+];
+
 /// G0-FP: `text` gives no word a name it does not show, so a `[` that follows no name in its own word follows
 /// none in the command (`subscript_runs`). That holds when the text has no `$` (so no parameter, arithmetic or
 /// command expansion, which can put a name in front of a word that was set aside: `set -- '[...]'; unset
@@ -549,10 +554,33 @@ const TEXT_CONSUMERS: &[&str] = &["alias", "busybox", "eval", "source", "xargs",
 /// alias that a later word expands to a name and a bracket). A `$` counts
 /// anywhere, even in single quotes, because the quote scan here is only approximate (an apostrophe in a comment
 /// opens a quote bash does not see); every doubt is "not plain", and an unclosed single quote is not plain.
+/// Not counted, in a text whose every command is a search or filter (`SEARCH_PROGRAMS`) and outside single
+/// quotes: a `$` a backslash escapes (`"a\$b"`, a regex that ends in a literal
+/// dollar), one a backslash follows (`"\\$\{"`: `$` then `\` is no expansion; a backslash and a newline would
+/// join lines and make `$1`, so that one counts), and one that ends a double-quoted string (`"x$"`).
 fn plain_text(text: &str, segments: &[crate::lexer::Segment]) -> bool {
     let (mut single, mut double, mut escaped) = (false, false, false);
-    for &c in text.as_bytes() {
-        if c == b'$' {
+    let bytes = text.as_bytes();
+    // the escapes below are literal only where nothing reads the words as shell text: every command of the text
+    // is a search or a filter. In any other text an escaped dollar is how a live one is handed to a nested text
+    // of the same shell (`trap "[[ a\$X -eq 0 ]]"`, `. <(echo ...)`), where the escape is gone.
+    let searches = segments.iter().all(|s| {
+        s.tokens
+            .first()
+            .is_some_and(|w| SEARCH_PROGRAMS.contains(&w.as_str()))
+    });
+    for (at, &c) in bytes.iter().enumerate() {
+        // a `$` expands unless (in a text of searches only) a backslash escapes it, a backslash follows it
+        // (`$\{`: not a name, a bracket or a brace; not `$\` and a newline, which joins lines), or it ends a
+        // double-quoted string (`"x$"`). Never one in single quotes: the scan is approximate there.
+        if c == b'$'
+            && !(searches
+                && (escaped
+                    || (!single
+                        && (bytes.get(at + 1) == Some(&b'\\')
+                            && bytes.get(at + 2) != Some(&b'\n')
+                            || (double && bytes.get(at + 1) == Some(&b'"'))))))
+        {
             return false;
         }
         if escaped {

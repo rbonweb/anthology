@@ -97,8 +97,16 @@ printf "atl git log -5" >"$w/want"
 check "atl rewrite \"git log -5\" (exit 3: rewrite, host prompts)" 3 "$ATL" rewrite "git log -5"
 
 printf "%s" "{\"session_id\":\"s1\",\"tool_use_id\":\"t1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"},\"cwd\":\"/tmp/repo\"}" >"$w/in"
-printf "%s\n" "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecisionReason\":\"ATL auto-rewrite\",\"updatedInput\":{\"command\":\"atl git status\"}}}" >"$w/want"
-check "atl hook claude (git status is rewritten)" 0 "$ATL" hook claude
+: >"$w/want"
+check "atl hook claude (git status is left alone: no allow rule, no proof)" 0 "$ATL" hook claude
+
+# ATL never widens permissions: it rewrites only what the user allows (or a read-only
+# proof shows), so the rewrite needs an allow rule of the user.
+mkdir -p "$HOME/.claude"
+printf "%s" "{\"permissions\":{\"allow\":[\"Bash(git status)\"]}}" >"$HOME/.claude/settings.json"
+printf "%s" "{\"session_id\":\"s1\",\"tool_use_id\":\"t1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"},\"cwd\":\"/tmp/repo\"}" >"$w/in"
+printf "%s\n" "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecisionReason\":\"ATL auto-rewrite\",\"updatedInput\":{\"command\":\"atl git status\"},\"permissionDecision\":\"allow\"}}" >"$w/want"
+check "atl hook claude (an allowed git status is rewritten)" 0 "$ATL" hook claude
 
 printf "%s" "{\"session_id\":\"s1\",\"tool_use_id\":\"t2\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"},\"cwd\":\"/tmp/repo\"}" >"$w/in"
 : >"$w/want"

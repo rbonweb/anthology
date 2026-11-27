@@ -37,9 +37,12 @@ use anthology_testkit::rows::{Row, rows};
 use anthology_testkit::rt_c::{SETTINGS, SetupCase, pretty};
 use anthology_testkit::sandbox::repo_root;
 
-const BYPASS: &str = "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any \
-                      command. atl's hook still applies the deny and ask rules in your settings \
-                      files (user, project, local and managed) to the command it wraps, but not \
+const BYPASS: &str = "Note: `Bash(atl *)` approves any line that starts with `atl`, and `atl \
+                      bypass <cmd>` runs any command. atl's hook judges such a line, and a \
+                      command it rewrites to atl, as the command it runs: it lets the line \
+                      through only when that command is read-only or one of your own allow \
+                      rules covers it, and asks you otherwise. It also applies the deny and ask \
+                      rules in your settings files (user, project, local and managed), but not \
                       rules given with `--settings` or `--disallowedTools`, server-managed \
                       settings or an MDM profile.";
 
