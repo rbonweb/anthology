@@ -1,4 +1,5 @@
 name: atl-release
+# throwaway: triggers the dry run on a macOS runner; never merged
 
 # Builds atl/ for four targets (tests first), attests the tarballs and publishes them
 # to the release for the tag `atl--v<version>` (<version> is atl/Cargo.toml's version).
