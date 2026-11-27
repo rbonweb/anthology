@@ -1,0 +1,12 @@
+---
+name: 'ATL needless ask: read_only_proof.rs and how it is wired'
+description: 'Why ATL asked for harmless reads, how the fix proves them read-only, and the traps hit building and testing it'
+metadata:
+  type: project
+  modified: 2026-11-27
+---
+
+The Claude hook (atl/src/hooks) asked with AskOwner::Hook for any line containing atl or rtk once any deny, ask or Read rule existed, because mentions_token_layer needs the plain shape; a path like atl/src/x.go was enough. atl/src/hooks/read_only_proof.rs, called from decision::decide_for_claude_hook_in after the gate, drops that ask when verdict is not Ask, the gate on the typed line passes, and anthology perm classify proves the line read-only with every path under a project root. Allow plus rewrite if the rewrite is plain, else Defer. permission_mode auto at the top level of the payload: no rewrite at all (CC refuses a hook-changed input there).
+Why it is built this way: the classifier trusts the request cwd only through a leading absolute cd, so ATL sends cd CWD && LINE; ATL cannot call tool.check, so it checks the printed paths against project roots itself; the proof reaches ATL through ATL_PERM_CLASSIFY and ATL_HOOK_USER_PATH set by plugins/anthology/bin/atl-hook (the shim itself runs on a safe PATH). bin/atl-hook already drops asks for lines that do not mention atl, so the field prompt only shows when the typed line contains atl.
+Traps: core::test_isolation scans user_env::var calls and wants string literals, not constants. repo-tests atl_rename wants the word legacy on any line naming rtk. Bumping atl/Cargo.toml needs atl.lock at the same version (placeholder digests) or atl_lock test_version_matches_cargo_toml fails. Integration tests stand a shell script in for the classifier; write it once per test binary (OnceLock) and sleep briefly to dodge ETXTBSY. In the atl workspace cargo fmt --all fails (missing cfg engine modules): run rustfmt on touched files. cargo clippy --all-targets fails on an old for-loop-over-single-element in tests/hook_decision_protocol_test.rs: lint lib, bins and the test you touched. repo-tests atl_rename cannot list git files inside a worktree container (the .git file points outside the mount).
+How to apply: to change what the hook asks, edit read_only_proof.rs and its tests in atl/tests/anthology_gate_test.rs; never relax when verdict is Ask or the gate on the original is not Pass.
