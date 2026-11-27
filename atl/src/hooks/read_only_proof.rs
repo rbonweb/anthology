@@ -25,20 +25,28 @@
 //!      every path it reads lies under the project ([`proof_roots`]: never the
 //!      first folder up the tree with a `.claude`, which is the home in a
 //!      repository that has none), where Claude Code reads without asking. The
-//!      one atl the proof sees through is `atl bypass <cmd>` (and `atl proxy`),
-//!      which runs `<cmd>` itself: where it starts a command in the plainest
-//!      spelling, the line is proven without those words
-//!      ([`without_bypass`]), and one left in the line (a path to atl, `env`, a
-//!      quoted command) is no proof. Without this every `atl bypass` would ask
-//!      (`anthology_gate`, point 9), a harmless `atl bypass git log -5` too.
+//!      atl the proof sees through is what atl only wraps (`atl bypass <cmd>`,
+//!      `atl proxy`, `run`, `err`, `test`, `summary`, `atl <tool>` and the
+//!      readers): where it starts a command in the plainest spelling, the line is
+//!      proven without those words ([`without_atl`]), and one left in the line (a
+//!      path to atl, `env`, a quoted command) is no proof. Without this every
+//!      typed atl line would ask (`anthology_gate`, point 9), a harmless
+//!      `atl bypass git log -5` too.
 //!
-//!    The answer is then the plain rewrite, with no decision of the hook's own,
-//!    when the rewrite is in the plain shape and the gate passes it as well: the
-//!    host decides, as for a line that does not mention atl (`Bash(atl *)` allows
-//!    it when the user has that rule; an explicit allow from here would also beat
-//!    settings without it, and `allowManagedPermissionRulesOnly`). Otherwise no
-//!    rewrite and no decision (`Defer`): the host judges the original. Anything
-//!    the proof does not cover keeps today's ask.
+//!    "Covered" is the proof, or the user's own allow rules (`user_allow`, Claude
+//!    Code's matching; the blanket `Bash(atl *)` never counts) allowing the line as
+//!    it runs. The answer is then the plain rewrite, with no decision of the
+//!    hook's own, when the rewrite is in the plain shape and the gate passes it as
+//!    well: the host decides, as for a line that does not mention atl (`Bash(atl
+//!    *)` allows it when the user has that rule; an explicit allow from here would
+//!    also beat settings without it, and `allowManagedPermissionRulesOnly`).
+//!    Otherwise no rewrite and no decision (`Defer`): the host judges the
+//!    original. Anything not covered keeps the ask.
+//!
+//!    The same check governs every rewrite, ask or not (ATL never widens
+//!    permissions): an allow or a host-judged rewrite of a line that is not covered
+//!    becomes `Defer`, so `Bash(atl *)` never approves what Claude Code would
+//!    have prompted for.
 //! 3. **Auto mode.** With `permission_mode` `auto` in the payload nothing is
 //!    rewritten: an allow or a host-judged rewrite becomes `Defer`, and a needless
 //!    ask (point 2) becomes `Defer` too. An ask the proof does not cover stays,
@@ -54,9 +62,10 @@
 //! `cd <payload cwd> && <line>`, which is the working directory the gate already
 //! resolves relative paths and rules against.
 
-use super::anthology_gate::{Gate, evaluate, plain, runs_bypass, without_bypass};
+use super::anthology_gate::{Gate, atl_own_read_only, atl_use, evaluate, plain, without_atl};
 use super::decision::{AskOwner, HookDecision};
 use super::permissions::{ClaudeHookPermissions, PermissionVerdict};
+use super::user_allow::user_allows;
 use crate::core::user_env;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -106,19 +115,32 @@ impl Mode {
 pub(crate) struct Checks<'a> {
     /// The host's rule matching, as ATL mirrors it, asks about the line.
     pub(crate) rule_asks: bool,
+    /// A subcommand word of an `atl` command is not plain literal text: the hook
+    /// asks, whatever else holds.
+    pub(crate) pinned: &'a dyn Fn() -> bool,
     /// The gate, run on the line as typed, has nothing to ask about.
     pub(crate) original_clear: &'a dyn Fn() -> bool,
     /// The gate passes the rewrite, and it is in the plain shape.
     pub(crate) rewrite_clear: &'a dyn Fn(&str) -> bool,
+    /// The user's own allow rules cover the line (`user_allow`), or it is one of atl's
+    /// own read-only subcommands.
+    pub(crate) allowed: &'a dyn Fn() -> bool,
     /// `anthology perm classify` shows the line read-only.
     pub(crate) proof: &'a dyn Fn() -> bool,
 }
 
 impl Checks<'_> {
-    /// An ask the gate gave only because the line may run atl, for a line shown
-    /// not to.
+    /// Claude Code would have allowed the line as typed: an allow rule of the
+    /// user's covers it, or it is read-only. ATL never widens permissions, so only
+    /// then may the hook leave the line to a `Bash(atl *)` allow.
+    fn covered(&self) -> bool {
+        (self.allowed)() || (self.proof)()
+    }
+
+    /// An ask the gate gave only because the line may run atl, for a line that
+    /// Claude Code would have allowed as typed.
     fn needless(&self) -> bool {
-        !self.rule_asks && (self.original_clear)() && (self.proof)()
+        !self.rule_asks && !(self.pinned)() && (self.original_clear)() && self.covered()
     }
 }
 
@@ -135,6 +157,27 @@ pub(crate) fn refine(
             if mode == Mode::Auto =>
         {
             HookDecision::Defer
+        }
+        // A rewrite the host would judge as `atl ...`, which `Bash(atl *)` allows: only
+        // for a line Claude Code would have allowed as typed. Otherwise the original
+        // goes back untouched and Claude Code judges it as it would without atl. An
+        // explicit allow stays one only when the user's rules (as Claude Code matches
+        // them) cover the line; a read-only line gets no decision of ours.
+        HookDecision::AllowRewrite(rewritten) => {
+            if (checks.allowed)() {
+                HookDecision::AllowRewrite(rewritten)
+            } else if (checks.proof)() {
+                HookDecision::AskRewrite(rewritten, AskOwner::Host)
+            } else {
+                HookDecision::Defer
+            }
+        }
+        HookDecision::AskRewrite(rewritten, AskOwner::Host) => {
+            if checks.covered() {
+                HookDecision::AskRewrite(rewritten, AskOwner::Host)
+            } else {
+                HookDecision::Defer
+            }
         }
         // A fish wrap is asked about on purpose (the host would judge one `atl run`
         // command); its script is not one the proof reads, and it is left alone here.
@@ -182,18 +225,28 @@ pub(crate) fn refine_claude(
         mode,
         &Checks {
             rule_asks: permissions.verdict == PermissionVerdict::Ask,
+            pinned: &|| atl_use(cmd, rules, cwd).dynamic,
             original_clear: &|| evaluate(cmd, rules, permissions.verdict, cwd) == Gate::Pass,
             rewrite_clear: &|rewritten| {
                 evaluate(rewritten, rules, PermissionVerdict::Default, cwd) == Gate::Pass
                     && plain(rewritten, rules, cwd) == Gate::Pass
             },
-            proof: &|| {
-                // `atl bypass <cmd>` is `<cmd>`: the line is proven as it would run,
-                // without those words. Any `atl bypass` left in it (a path to atl,
-                // `env`, a quoted command) is no proof, whatever the classifier says.
-                let line = without_bypass(cmd);
+            allowed: &|| {
+                // The line as it runs (`atl git push` is `git push`), against the
+                // user's allow rules as Claude Code matches them; what atl only wraps
+                // is looked through, the rest (`atl init -g`, `atl rm x`) is covered
+                // only by a rule of the user's own, never the blanket `Bash(atl *)`.
+                let line = without_atl(cmd);
                 let line = line.as_deref().unwrap_or(cmd);
-                !runs_bypass(line, rules, cwd)
+                atl_own_read_only(cmd) || user_allows(line, &permissions.allow)
+            },
+            proof: &|| {
+                // The line is proven as it runs, without the `atl` words atl only
+                // wraps. Any atl command left in it (a path to atl, `env`, a quoted
+                // command, an own subcommand) is no proof, whatever the classifier says.
+                let line = without_atl(cmd);
+                let line = line.as_deref().unwrap_or(cmd);
+                !atl_use(line, rules, cwd).typed
                     && proven_read_only(
                         line,
                         cwd,
@@ -361,8 +414,10 @@ mod tests {
     /// The answers of a [`Checks`], and how often the proof was asked.
     struct Facts {
         rule_asks: bool,
+        pinned: bool,
         original_clear: bool,
         rewrite_clear: bool,
+        allowed: bool,
         proven: bool,
         proofs: Cell<u32>,
     }
@@ -371,8 +426,10 @@ mod tests {
         fn needless() -> Self {
             Self {
                 rule_asks: false,
+                pinned: false,
                 original_clear: true,
                 rewrite_clear: true,
+                allowed: false,
                 proven: true,
                 proofs: Cell::new(0),
             }
@@ -385,8 +442,10 @@ mod tests {
                 mode,
                 &Checks {
                     rule_asks: self.rule_asks,
+                    pinned: &|| self.pinned,
                     original_clear: &|| self.original_clear,
                     rewrite_clear: &|_| self.rewrite_clear,
+                    allowed: &|| self.allowed,
                     proof: &|| {
                         self.proofs.set(self.proofs.get() + 1);
                         self.proven
@@ -450,6 +509,14 @@ mod tests {
                     ..Facts::needless()
                 },
             ),
+            (
+                "a subcommand word is not literal",
+                Facts {
+                    pinned: true,
+                    allowed: true,
+                    ..Facts::needless()
+                },
+            ),
         ] {
             // The ask stays; in auto mode it is about the line as typed.
             assert_eq!(
@@ -481,17 +548,53 @@ mod tests {
             facts.refine(hook_ask(REWRITE), Mode::Other);
             assert_eq!(facts.proofs.get(), 0);
         }
-        // Nothing but a hook ask is ever proven.
+        // Nothing but a hook ask or a rewrite is ever proven.
         let facts = Facts::needless();
-        for decision in [
-            HookDecision::Deny,
-            HookDecision::Defer,
-            HookDecision::AllowRewrite(REWRITE.to_string()),
-            HookDecision::AskRewrite(REWRITE.to_string(), AskOwner::Host),
-        ] {
+        for decision in [HookDecision::Deny, HookDecision::Defer] {
             facts.refine(decision, Mode::Other);
         }
         assert_eq!(facts.proofs.get(), 0);
+        // A line the user's allow rules cover needs no proof either.
+        let allowed = Facts {
+            allowed: true,
+            ..Facts::needless()
+        };
+        for decision in [
+            HookDecision::AllowRewrite(REWRITE.to_string()),
+            HookDecision::AskRewrite(REWRITE.to_string(), AskOwner::Host),
+            hook_ask(REWRITE),
+        ] {
+            allowed.refine(decision, Mode::Other);
+        }
+        assert_eq!(allowed.proofs.get(), 0);
+    }
+
+    /// ATL never widens permissions: a rewrite the host would judge as `atl ...`
+    /// (which `Bash(atl *)` allows) is made only for a line Claude Code would have
+    /// allowed as typed, because the user's allow rules cover it or it is read-only.
+    #[test]
+    fn a_rewrite_is_made_only_for_a_line_claude_code_would_allow() {
+        let host = || HookDecision::AskRewrite(REWRITE.to_string(), AskOwner::Host);
+        let allow = || HookDecision::AllowRewrite(REWRITE.to_string());
+        let neither = Facts {
+            proven: false,
+            ..Facts::needless()
+        };
+        // Not covered: the original goes back untouched, whatever the rewrite was.
+        assert_eq!(neither.refine(host(), Mode::Other), HookDecision::Defer);
+        assert_eq!(neither.refine(allow(), Mode::Other), HookDecision::Defer);
+        // Read-only: the host decides; an explicit allow is not ours to give.
+        let read_only = Facts::needless();
+        assert_eq!(read_only.refine(host(), Mode::Other), host());
+        assert_eq!(read_only.refine(allow(), Mode::Other), host());
+        // The user's allow rules cover it: both stand, an allow stays an allow.
+        let allowed = Facts {
+            proven: false,
+            allowed: true,
+            ..Facts::needless()
+        };
+        assert_eq!(allowed.refine(host(), Mode::Other), host());
+        assert_eq!(allowed.refine(allow(), Mode::Other), allow());
     }
 
     /// The wrap the fish path builds (`fish_script::wrap`) keeps its explicit ask.
@@ -536,6 +639,7 @@ mod tests {
     fn auto_mode_rewrites_nothing_the_host_would_judge() {
         let facts = Facts {
             proven: false,
+            allowed: true,
             ..Facts::needless()
         };
         let host_judged = || {

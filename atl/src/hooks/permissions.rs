@@ -163,6 +163,9 @@ pub(crate) struct ClaudeHookPermissions {
     scan: SettingsScan,
     // anthology fork: what `anthology_gate` enforces past atl prefixes.
     pub(crate) gate: super::anthology_gate::GateRules,
+    // anthology fork: the user's `Bash(...)` allow patterns, for `user_allow`: a
+    // line is left to `Bash(atl *)` only if these or the read-only proof cover it.
+    pub(crate) allow: Vec<String>,
 }
 
 impl ClaudeHookPermissions {
@@ -204,6 +207,7 @@ pub(crate) fn check_claude_hook_command(cmd: &str) -> ClaudeHookPermissions {
         verdict,
         scan,
         gate,
+        allow: allow_rules,
     }
 }
 

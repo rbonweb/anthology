@@ -432,7 +432,9 @@ mod decision_consistency {
     /// where one happens, and both stay silent where it doesn't.
     #[test]
     fn both_paths_agree_on_the_corpus() {
-        let sb = Sandbox::bare();
+        // The user allows everything, so the hook rewrites (ATL never widens
+        // permissions: with no allow rule and no proof it leaves a command alone).
+        let sb = Sandbox::with_rules(&[], &[], &["*"]);
         let cases: [(&str, Option<&str>); 9] = [
             ("git status", Some("atl git status")),
             (
@@ -485,9 +487,11 @@ mod decision_consistency {
             "atl rewrite reports the no-op rewrite"
         );
 
-        // In-process path: nothing to say.
+        // In-process path: nothing to say (the user's own rule covers the line, so
+        // the hook has no ask of its own either).
+        let allowing = Sandbox::with_rules(&[], &[], &["git status"]);
         assert_eq!(
-            sb.hook_claude_rewrite("atl git status"),
+            allowing.hook_claude_rewrite("atl git status"),
             None,
             "atl hook claude defers on the no-op rewrite"
         );
@@ -568,7 +572,9 @@ mod hook_check {
     /// `atl rewrite` CLI reports it -- see `decision_consistency`.
     #[test]
     fn no_agent_applies_a_rewrite_that_changed_nothing() {
-        let sb = Sandbox::bare();
+        // The user's own rule covers the line, so the Claude hook has no ask of its
+        // own (a typed `atl ...` line with no such rule asks; see the gate tests).
+        let sb = Sandbox::with_rules(&[], &[], &["git status"]);
 
         for agent in ["claude", "pi", "kimi"] {
             let (code, stdout, _) = sb.run(&["hook", "check", "--agent", agent, "atl git status"]);
@@ -577,7 +583,10 @@ mod hook_check {
         assert_eq!(sb.hook_claude_rewrite("atl git status"), None);
 
         // The CLI itself still reports it, which is what the delegates guard against.
-        assert_eq!(sb.rewrite("atl git status"), (3, "atl git status".into()));
+        assert_eq!(
+            Sandbox::bare().rewrite("atl git status"),
+            (3, "atl git status".into())
+        );
     }
 
     /// Every install target answers; only a genuine typo is rejected.

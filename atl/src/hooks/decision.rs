@@ -349,7 +349,7 @@ pub(crate) fn decide_for_claude_hook_at(
     // the install allows `Bash(atl *)`, so a deny or ask rule that names what an
     // `atl ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
     // enforced here (`anthology_gate`).
-    use super::anthology_gate::{Gate, evaluate, mentions_token_layer, plain, runs_bypass, unread};
+    use super::anthology_gate::{Gate, atl_use, evaluate, mentions_token_layer, plain, unread};
     let rules = &permissions.gate;
     let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
     // A line too long to read within the gate's work budget asks as written
@@ -369,12 +369,13 @@ pub(crate) fn decide_for_claude_hook_at(
             _ => Gate::Ask,
         };
     }
-    // `atl bypass <cmd>` runs any command, so `Bash(atl *)` must not approve it: it
-    // is judged as `<cmd>` itself. The rules above already met the inner command (a
-    // deny denied it, an ask rule asked); what is left is that the allow rule must
-    // not decide, with or without any rule, so the hook asks, and
-    // `read_only_proof` drops that ask for an inner command shown read-only.
-    if matches!(gate, Gate::Pass | Gate::Defer) && runs_bypass(cmd, rules, cwd) {
+    // `Bash(atl *)` approves every `atl ...` line, and `atl bypass`, `atl run`, `atl
+    // <program>` and atl's own writing subcommands run or change anything. So a typed
+    // atl line is judged as what it runs: the rules above already met it (a deny
+    // denied it, an ask rule asked), and what is left is that the allow rule must not
+    // decide, with or without any rule, so the hook asks. `read_only_proof` drops that
+    // ask when the command is read-only or the user's own allow rules cover it.
+    if matches!(gate, Gate::Pass | Gate::Defer) && atl_use(cmd, rules, cwd).typed {
         gate = Gate::Ask;
     }
     match gate {
@@ -646,7 +647,13 @@ impl AgentPath {
     pub(crate) fn decide(&self, cmd: &str) -> HookDecision {
         if matches!(self, Self::ClaudeHook) {
             let permissions = super::permissions::check_claude_hook_command(cmd);
-            return decide_for_claude_hook_at(cmd, &permissions, None);
+            // The diagnostic reports the rewrite the rules allow; whether the hook
+            // keeps it also depends on a read-only proof it cannot run here (no
+            // working directory). An ask about the line as typed is no rewrite.
+            return match decide_for_claude_hook_at(cmd, &permissions, None) {
+                HookDecision::AskRewrite(rewritten, _) if rewritten == cmd => HookDecision::Defer,
+                other => other,
+            };
         }
         let verdict = self.verdict(cmd);
         self.approval_owner().apply(

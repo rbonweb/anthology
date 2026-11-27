@@ -75,19 +75,22 @@
 //!    the same single command with nothing opaque in it, so an entry the analysis
 //!    could not see into (`opaque`) behind atl always asks.
 //!
-//! 9. **`atl bypass` is judged as the command it runs** (atl 1.2.1-anthology.9).
-//!    `atl bypass <cmd>` (and `atl proxy`, its old name) runs any command, so the
-//!    user's `Bash(atl *)` allow would approve anything. Points 1-3 already apply
-//!    the deny, ask and `Read()` rules to `<cmd>`; on top of them
-//!    [`runs_bypass`] finds the words in every shape the scan reads (alone, behind
-//!    a path to atl, `env`, an assignment or a launcher, in `&&`, `||`, `;`, a pipe,
-//!    a group, a substitution, a shell script, `find -exec` or `xargs`), whether or
-//!    not any rule exists, and the line asks. Reading `<cmd>` as read-only is the
-//!    proof's job (`read_only_proof`, through [`without_bypass`]), which drops the
-//!    ask for a line whose inner commands are shown read-only.
+//! 9. **ATL never widens permissions** (atl 1.2.1-anthology.9). The user's
+//!    `Bash(atl *)` allow approves every line that starts with `atl`, and `atl
+//!    bypass`, `proxy`, `run`, `err`, `test`, `summary` and `atl <tool>` run any
+//!    command, so a typed atl line is judged as the command it runs. Points 1-3
+//!    already apply the deny, ask and `Read()` rules to it; on top of them
+//!    [`atl_use`] finds a typed atl form in every shape the scan reads (alone,
+//!    behind a path to atl, `env`, an assignment or a launcher, in `&&`, `||`, `;`,
+//!    a pipe, a group, a substitution, a shell script, `find -exec` or `xargs`) and
+//!    a subcommand word that is not literal text (`$`, a brace, a backquote, a
+//!    glob), whether or not any rule exists, and the line asks. Reading the command
+//!    as read-only, or as allowed by the user's own allow rules, is the proof's
+//!    job (`read_only_proof`, through [`without_atl`] and `user_allow`), which
+//!    drops the ask for a covered line and keeps a rewrite only for one.
 //!
-//! With no deny, ask or `Read` rule anywhere the gate is inert, except for point
-//! 9, and the hook's output is what it was before.
+//! With no deny, ask or `Read` rule anywhere the plain-shape step (point 6) is
+//! inert; point 9 is not.
 //!
 //! # Scope
 //!
@@ -1025,34 +1028,135 @@ fn scan<'a>(cmd: &str, rules: &'a GateRules, cwd: Option<&str>) -> Option<Scanne
     Some(scanner)
 }
 
-/// Whether `cmd` may run `atl bypass` or `atl proxy` anywhere: as a command of
-/// its own, in a compound line or pipe, after `env` or an assignment, behind a
-/// path to atl, or in a shell script, `find -exec` or `xargs` payload it reads.
-/// Such a command runs its inner command unfiltered, so `Bash(atl *)` would
-/// approve anything; the hook asks about it instead ([`without_bypass`] says
-/// when that is needless).
-///
-/// Unlike [`evaluate`] this reads the line whether or not any rule exists. A line
-/// the scan could not finish reading (the work budget, a deny rule that cut it
-/// short) counts: the caller asks.
-pub(crate) fn runs_bypass(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> bool {
-    if !mentions_token_layer(cmd) {
-        return false;
-    }
-    scan(cmd, rules, cwd).is_none_or(|scanner| scanner.bypass || scanner.exhausted || unread(cmd))
+/// What a line does with `atl`, read with the gate's scanner and the shared parser.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AtlUse {
+    /// The line runs an `atl` command somewhere (as a command of its own, in a
+    /// compound line or pipe, after `env`, an assignment or a launcher, behind a path
+    /// to atl, or in a shell script, `find -exec` or `xargs` payload the scan reads),
+    /// or the scan could not finish reading it.
+    pub(crate) typed: bool,
+    /// An `atl` command's subcommand word is not plain literal text (`$`, `{`, a
+    /// backquote, a glob): what it runs cannot be read, so the hook always asks.
+    pub(crate) dynamic: bool,
 }
 
-/// `cmd` without the `atl bypass` / `atl proxy` words of every command that starts
-/// with them, or `None` when there is none to take out. What remains is the
-/// inner command as it would run, for the read-only proof.
+/// What `cmd` does with `atl`. Unlike [`evaluate`] this reads the line whether or
+/// not any rule exists: `Bash(atl *)` approves every `atl ...` line, so one is left
+/// to it only when Claude Code would have allowed what was typed anyway
+/// (`read_only_proof`, `user_allow`). A line the scan could not finish reading (the
+/// work budget, a deny rule that cut it short) counts as typed.
+pub(crate) fn atl_use(cmd: &str, rules: &GateRules, cwd: Option<&str>) -> AtlUse {
+    if !mentions_token_layer(cmd) {
+        return AtlUse::default();
+    }
+    match scan(cmd, rules, cwd) {
+        None => AtlUse {
+            typed: true,
+            dynamic: false,
+        },
+        Some(scanner) => AtlUse {
+            typed: scanner.atl || scanner.dynamic || scanner.exhausted || unread(cmd),
+            dynamic: scanner.dynamic,
+        },
+    }
+}
+
+/// The programs `atl <name> ...` runs as `<name> ...`, filtered: for these the line
+/// without `atl` is what runs.
+const ATL_WRAPPED: &[&str] = &[
+    "ls",
+    "tree",
+    "wc",
+    "diff",
+    "grep",
+    "rg",
+    "find",
+    "git",
+    "gh",
+    "glab",
+    "aws",
+    "psql",
+    "pnpm",
+    "dotnet",
+    "docker",
+    "kubectl",
+    "oc",
+    "curl",
+    "wget",
+    "npm",
+    "npx",
+    "bun",
+    "bunx",
+    "cargo",
+    "go",
+    "pip",
+    "uv",
+    "pytest",
+    "ruff",
+    "mypy",
+    "tsc",
+    "jest",
+    "vitest",
+    "prettier",
+    "playwright",
+    "next",
+    "ng",
+    "prisma",
+    "rake",
+    "rubocop",
+    "rspec",
+    "php",
+    "phpunit",
+    "phpstan",
+    "pest",
+    "deno",
+    "sbt",
+    "gt",
+    "mvn",
+    "mvnd",
+    "gradlew",
+    "ctest",
+];
+
+/// The subcommands that run the command after them (`atl run ls`, `atl bypass ls`).
+const ATL_RUNNERS: &[&str] = &["bypass", "proxy", "run", "err", "test", "summary"];
+
+/// The subcommands that read the files after them, like `cat`.
+const ATL_READERS: &[&str] = &["read", "json", "log", "smart", "deps"];
+
+/// Whether `cmd` is one of atl's own subcommands that only reads and prints (`atl
+/// gain`, `atl gain --history`, `atl --version`), alone on the line. The others
+/// write settings, rules, trust or history, or run what they are given.
+pub(crate) fn atl_own_read_only(cmd: &str) -> bool {
+    let words = lexer::shell_split(cmd);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let literal_line = !cmd.contains([
+        '\'', '"', '\\', '$', '`', ';', '&', '|', '<', '>', '(', '\n',
+    ]);
+    literal_line
+        && matches!(
+            words.as_slice(),
+            ["atl" | "rtk" /* legacy */, "--version" | "-V" | "gain"]
+                | ["atl" | "rtk" /* legacy */, "gain", "--history"]
+        )
+}
+
+/// `cmd` as it runs without the `atl` words of every command in it that atl only
+/// wraps: `atl bypass|proxy|run|err|test|summary <cmd>` is `<cmd>`, `atl <tool> ...`
+/// for a tool in [`ATL_WRAPPED`] is `<tool> ...`, and `atl read|json|log|smart|deps
+/// ...` reads like `cat ...`. `None` when there is nothing to take out. What remains is
+/// the line the read-only proof and the user's allow rules are asked about.
 ///
 /// Only the plainest spelling goes: the bare word `atl` (or the legacy `rtk`), alone
 /// as a word, where a command starts (the line's start, or after `&&`, `||`, `;`, a
-/// newline or a pipe), with atl's global flags, then `bypass` or `proxy` spelled
-/// without quotes, then an unquoted word for the inner command. A path to atl, `env`,
-/// an assignment, a launcher, a quoted or missing inner command word (`atl bypass
-/// 'rm -rf x'` runs a script) stay in the line, so the proof refuses it.
-pub(crate) fn without_bypass(cmd: &str) -> Option<String> {
+/// newline or a pipe), with atl's global flags, then the subcommand spelled without
+/// quotes, and for a runner an unquoted command word that is not an option. A path to
+/// atl, `env`, an assignment, a launcher, `atl run -c '...'`, a quoted command word
+/// (`atl bypass 'rm -rf x'` runs a script), atl's own subcommands and any program atl
+/// does not wrap (`atl rm -rf x`) stay in the line as typed, so the proof refuses it
+/// and only a rule of the user's own can cover it.
+pub(crate) fn without_atl(cmd: &str) -> Option<String> {
     let tokens = lexer::tokenize_with_newlines(cmd);
     let end = |token: &lexer::ParsedToken| token.offset + token.value.len();
     // The lexer cuts a word at `$`, `*`, a backquote and the like: a token is a
@@ -1076,31 +1180,50 @@ pub(crate) fn without_bypass(cmd: &str) -> Option<String> {
                 _ => false,
             }
     };
+    // A word with nothing in it the shell would expand or unquote.
+    let literal = |word: &str| {
+        !word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./:,=+%@".contains(c))
+    };
     let mut out = String::new();
     let mut kept = 0;
     let mut at = 0;
     while at < tokens.len() {
-        let word = &tokens[at].value;
         if starts_command(at)
             && alone(at)
-            && matches!(word.as_str(), "atl" | "rtk" /* legacy */)
+            && matches!(tokens[at].value.as_str(), "atl" | "rtk" /* legacy */)
         {
             let mut sub = at + 1;
             while sub < tokens.len() && alone(sub) && is_global_flag(&tokens[sub].value) {
                 sub += 1;
             }
-            let plain_inner = tokens.get(sub + 1).is_some_and(|inner| {
-                inner.kind == TokenKind::Arg && !inner.value.contains(['\'', '"', '\\', '$'])
-            });
-            if sub < tokens.len()
-                && alone(sub)
-                && matches!(tokens[sub].value.as_str(), "bypass" | "proxy")
-                && plain_inner
-            {
-                out.push_str(&cmd[kept..tokens[at].offset]);
-                kept = end(&tokens[sub]);
-                at = sub + 1;
-                continue;
+            if sub < tokens.len() && alone(sub) && literal(&tokens[sub].value) {
+                let name = tokens[sub].value.as_str();
+                // What replaces the words from `atl` up to a byte offset (a wrapped
+                // tool keeps its own name).
+                let replacement: Option<(&str, usize)> = if ATL_RUNNERS.contains(&name) {
+                    let command_word = tokens.get(sub + 1).is_some_and(|word| {
+                        word.kind == TokenKind::Arg
+                            && !word.value.starts_with('-')
+                            && !word.value.contains(['\'', '"', '\\', '$'])
+                    });
+                    command_word.then_some(("", end(&tokens[sub])))
+                } else if ATL_WRAPPED.contains(&name) {
+                    Some(("", tokens[sub].offset))
+                } else if ATL_READERS.contains(&name) {
+                    Some(("cat", end(&tokens[sub])))
+                } else {
+                    None
+                };
+                if let Some((text, until)) = replacement {
+                    out.push_str(&cmd[kept..tokens[at].offset]);
+                    out.push_str(text);
+                    kept = until;
+                    at = sub + 1;
+                    continue;
+                }
             }
         }
         at += 1;
@@ -1445,8 +1568,10 @@ struct Scanner<'a> {
     exhausted: bool,
     /// An atl, wrapper or payload expansion was met.
     expanded: bool,
-    /// A command that runs `atl bypass` or `atl proxy` was met ([`runs_bypass`]).
-    bypass: bool,
+    /// An `atl` command was met ([`atl_use`]).
+    atl: bool,
+    /// An `atl` command whose subcommand word is not plain literal text was met.
+    dynamic: bool,
     budget: usize,
     /// The disk lookups' own budget (RG2), apart from `budget`, so running out
     /// of it never stops the text from being read.
@@ -1484,7 +1609,8 @@ impl<'a> Scanner<'a> {
             defer: false,
             exhausted: false,
             expanded: false,
-            bypass: false,
+            atl: false,
+            dynamic: false,
             budget: WORK_BUDGET,
             probes: WORK_BUDGET,
         }
@@ -1907,7 +2033,8 @@ impl<'a> Scanner<'a> {
         if let Some(inner) = atl_inner(p.form, words, spans) {
             if !quiet {
                 self.ask |= inner.opaque || (substitution && !suffix);
-                self.bypass |= inner.bypass;
+                self.atl = true;
+                self.dynamic |= inner.dynamic;
             }
             for text in inner.texts {
                 push_expansion(expansions, launched(text, true, false, false));
@@ -2107,13 +2234,6 @@ fn entry_is_atl_sub(entry: &ShellEntry) -> bool {
         .is_some_and(|word| is_atl_word(word))
 }
 
-/// Whether the entry was reached through `atl bypass` or `atl proxy`
-/// (`nice atl bypass rm x`): the words before its program say so.
-fn entry_via_bypass(entry: &ShellEntry) -> bool {
-    let prefix: Vec<&str> = entry_prefix(entry).iter().map(String::as_str).collect();
-    (0..prefix.len()).any(|at| is_bypass_command(&prefix[at..]))
-}
-
 /// The entry's command word as a rule sees it ([`norm_command`]). The analysis
 /// lowercases its program name; where the program word stands in `raw` just before
 /// the arguments, its case is kept, so a case-sensitive file system reads `GIT`
@@ -2228,7 +2348,7 @@ impl Scanner<'_> {
             if entry.prog.is_empty() {
                 continue;
             }
-            self.bypass |= entry_via_bypass(entry);
+            self.atl |= entry_via_atl(entry);
             let words: Vec<String> = std::iter::once(entry_command_word(entry))
                 .chain(entry.args.iter().cloned())
                 .collect();
@@ -2903,9 +3023,10 @@ pub(crate) struct AtlInner {
     pub(crate) texts: Vec<String>,
     /// The inner command cannot be read: the hook asks.
     pub(crate) opaque: bool,
-    /// The segment is `atl bypass ...` or `atl proxy ...` (its old name): it runs
-    /// the inner command unfiltered, as itself, so `Bash(atl *)` must not cover it.
-    pub(crate) bypass: bool,
+    /// The subcommand word is not plain literal text (`$`, `{`, a backquote, a
+    /// glob, a tilde): the shell decides what it is, so nothing here can say what
+    /// the segment runs.
+    pub(crate) dynamic: bool,
 }
 
 fn is_global_flag(word: &str) -> bool {
@@ -2915,19 +3036,6 @@ fn is_global_flag(word: &str) -> bool {
         || word
             .strip_prefix('-')
             .is_some_and(|vs| !vs.is_empty() && vs.chars().all(|c| c == 'v'))
-}
-
-/// Whether `words` open with `atl bypass` or `atl proxy`, with atl's global flags
-/// allowed between (`atl -v bypass x`).
-fn is_bypass_command(words: &[&str]) -> bool {
-    let Some((first, rest)) = words.split_first() else {
-        return false;
-    };
-    is_atl_word(&resolve_word_text(first))
-        && rest
-            .iter()
-            .find(|word| !is_global_flag(word))
-            .is_some_and(|word| matches!(resolve_word_text(word).as_str(), "bypass" | "proxy"))
 }
 
 fn join_command(name: &str, rest: &str) -> String {
@@ -2969,6 +3077,9 @@ pub(crate) fn atl_inner(form: &str, words: &[&str], spans: &[usize]) -> Option<A
     let Some(sub_raw) = words.get(i) else {
         return Some(inner);
     };
+    // Quoted text is the word it spells, but a `$`, brace, backquote, glob or tilde
+    // anywhere in it (quoted or not) may be the shell's to expand: not plain.
+    inner.dynamic = sub_raw.contains(['$', '`', '{', '}', '(', ')', '*', '?', '[', ']', '~', '!']);
     let sub = resolve_word_text(sub_raw);
     let rest_from = |j: usize| -> &str { spans.get(j).map_or("", |&at| form[at..].trim()) };
     let rest = rest_from(i + 1);
@@ -2977,7 +3088,6 @@ pub(crate) fn atl_inner(form: &str, words: &[&str], spans: &[usize]) -> Option<A
         "run" => run_inner(words, spans, form, i + 1, &mut inner),
         "err" | "test" | "summary" => shell_option_inner(words, spans, form, i + 1, &mut inner),
         "bypass" | "proxy" => {
-            inner.bypass = true;
             push_rest(&mut inner.texts, rest);
             lone_script(&mut inner, words, i + 1);
         }
@@ -5474,28 +5584,34 @@ mod tests {
     // --- `atl bypass` ---
 
     #[test]
-    fn atl_inner_marks_bypass_and_proxy_only() {
+    fn atl_inner_marks_a_subcommand_word_that_is_not_literal_text() {
         for cmd in [
-            "atl bypass ls",
-            "atl proxy ls",
-            "atl -v bypass ls",
-            "/x/atl bypass ls",
+            "atl {bypass,rm} -rf x",
+            "atl ${X:-bypass} x",
+            "atl $X x",
+            "atl \"$X\" x",
+            "atl `echo bypass` x",
+            "atl by* x",
+            "atl -v $X x",
+            "atl ~ x",
         ] {
-            assert!(inner(cmd).expect("an atl command").bypass, "{cmd}");
+            assert!(inner(cmd).expect("an atl command").dynamic, "{cmd}");
         }
         for cmd in [
-            "atl ls",
-            "atl llm-proxy status",
-            "atl run -c 'ls'",
-            "atl git bypass",
+            "atl bypass ls",
+            "atl 'bypass' ls",
+            "atl git push $X",
+            "atl run -c '$X'",
+            "atl -v ls",
+            "atl",
         ] {
-            assert!(!inner(cmd).expect("an atl command").bypass, "{cmd}");
+            assert!(!inner(cmd).expect("an atl command").dynamic, "{cmd}");
         }
     }
 
-    /// With no rule at all, the line is still read for `atl bypass`.
+    /// With no rule at all, the line is still read for `atl`.
     #[test]
-    fn runs_bypass_reads_the_line_with_or_without_rules() {
+    fn atl_use_reads_the_line_with_or_without_rules() {
         let none = rules(&[], &[], &[]);
         let some = rules(&["git push:*"], &[], &["./secret"]);
         let cwd = Some("/work/project");
@@ -5503,6 +5619,9 @@ mod tests {
             for cmd in [
                 "atl bypass rm x",
                 "atl proxy rm x",
+                "atl git status",
+                "atl rm -rf x",
+                "atl init -g",
                 "/usr/bin/atl bypass rm x",
                 "env atl bypass rm x",
                 "ls && atl bypass rm x",
@@ -5514,24 +5633,94 @@ mod tests {
                 "nice atl bypass rm x",
                 "rtk bypass rm x", // legacy
             ] {
-                assert!(runs_bypass(cmd, r, cwd), "{cmd}");
+                assert!(atl_use(cmd, r, cwd).typed, "{cmd}");
             }
             for cmd in [
-                "atl git status",
                 "atl llm-proxy status",
-                "atl run -c 'ls'",
                 "echo atl bypass",
                 "grep -n x atl/src/main.rs",
                 "git commit -m 'atl bypass'",
                 "ls",
             ] {
-                assert!(!runs_bypass(cmd, r, cwd), "{cmd}");
+                // `atl llm-proxy` is an atl command too; the others never run atl.
+                assert_eq!(
+                    atl_use(cmd, r, cwd).typed,
+                    cmd.starts_with("atl llm-proxy"),
+                    "{cmd}"
+                );
             }
+            for cmd in [
+                "X=bypass; atl $X rm x",
+                "atl {bypass,rm} -rf x",
+                "atl $(echo bypass) x",
+                "ls && atl $X ls",
+            ] {
+                assert!(atl_use(cmd, r, cwd).dynamic, "{cmd}");
+            }
+            assert!(!atl_use("atl bypass rm x", r, cwd).dynamic);
         }
     }
 
     #[test]
-    fn without_bypass_takes_out_the_plain_spelling_only() {
+    fn without_atl_takes_out_the_words_atl_only_wraps() {
+        // Runners, wrapped tools and the readers, in the plain spelling.
+        let cases: &[(&str, Option<&str>)] = &[
+            ("atl git status", Some("git status")),
+            ("atl -v git status", Some("git status")),
+            ("atl ls -la | atl grep x", Some("ls -la | grep x")),
+            (
+                "atl cargo test && atl find . -name x",
+                Some("cargo test && find . -name x"),
+            ),
+            ("atl run ls -la", Some(" ls -la")),
+            ("atl err cargo build", Some(" cargo build")),
+            ("atl test cargo test", Some(" cargo test")),
+            ("atl summary ls", Some(" ls")),
+            ("atl read a.txt", Some("cat a.txt")),
+            ("ls | atl smart a.txt", Some("ls | cat a.txt")),
+            // Nothing to take out, or only what is plain.
+            ("atl run -c 'ls'", None),
+            ("atl run --shell bash -c 'ls'", None),
+            ("atl run", None),
+            ("atl run 'ls -la'", None),
+            ("atl run -x ls", None),
+            ("atl rm -rf x", None),
+            ("atl sh -c 'touch y'", None),
+            ("atl init -g", None),
+            ("atl gain", None),
+            ("atl $X ls", None),
+            ("atl 'git' status", None),
+            ("atl git; atl init -g", Some("git; atl init -g")),
+        ];
+        for (cmd, want) in cases {
+            assert_eq!(without_atl(cmd).as_deref(), *want, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn atl_s_own_read_only_subcommands_are_the_few_that_only_print() {
+        for cmd in ["atl gain", "atl gain --history", "atl --version", "atl -V"] {
+            assert!(atl_own_read_only(cmd), "{cmd}");
+        }
+        for cmd in [
+            "atl gain --reset",
+            "atl gain --reset --yes",
+            "atl gain; rm x",
+            "atl gain | tee x",
+            "atl gain > x",
+            "atl init -g",
+            "atl config --create",
+            "atl trust -y",
+            "atl learn --write-rules",
+            "atl",
+            "gain",
+        ] {
+            assert!(!atl_own_read_only(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn without_atl_takes_out_a_bypass_in_its_plain_spelling_only() {
         let cases: &[(&str, Option<&str>)] = &[
             ("atl bypass git log -5", Some(" git log -5")),
             ("atl proxy git log", Some(" git log")),
@@ -5549,7 +5738,6 @@ mod tests {
             ("ls\natl bypass ls", Some("ls\n ls")),
             // Nothing to take out.
             ("git log", None),
-            ("atl git log", None),
             ("echo atl bypass ls", None),
             ("atl llm-proxy status", None),
             // Spellings that stay: the proof then refuses the line.
@@ -5576,7 +5764,7 @@ mod tests {
             ("atl bypass atl bypass ls", Some(" atl bypass ls")),
         ];
         for (cmd, want) in cases {
-            assert_eq!(without_bypass(cmd).as_deref(), *want, "{cmd}");
+            assert_eq!(without_atl(cmd).as_deref(), *want, "{cmd}");
         }
     }
 

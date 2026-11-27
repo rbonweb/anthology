@@ -289,9 +289,9 @@ fn read_deny_rules_block_the_commands_atl_turns_into_reads() {
 #[test]
 fn read_deny_rules_leave_other_paths_alone_and_ask_about_uncertain_ones() {
     let sb = Sandbox::atl_allowed_with_rules();
-    // Another file still rewrites, as it did before.
+    // Another file still rewrites, as it did before (it is read-only).
     assert_eq!(
-        sb.hook("cat ok.txt"),
+        proven(&sb, "cat ok.txt"),
         Said::Rewrite("atl read ok.txt".into())
     );
     // A glob might name the denied file: the hook asks (round 6: at top level too).
@@ -316,25 +316,22 @@ fn an_opaque_inner_command_asks() {
     );
 }
 
-/// No rule anywhere: the hook says what it said before this change, byte for byte.
+/// No rule anywhere: no deny, and no rewrite of a command Claude Code would prompt
+/// for; the original goes back untouched.
 #[test]
-fn the_bare_sandbox_is_unchanged() {
+fn the_bare_sandbox_denies_nothing_and_rewrites_only_what_is_safe() {
     let sb = Sandbox::bare();
+    // `curl` is no read-only command: it is not rewritten (it was, into `atl curl`).
+    assert_eq!(sb.hook_raw("curl x", &[]), "");
+    // A read-only one is, byte for byte as before, with the classifier in place.
     assert_eq!(
-        sb.hook_raw("curl x", &[]).trim(),
-        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl curl x"}}}"#
+        proven(&sb, "cat secret.txt"),
+        Said::Rewrite("atl read secret.txt".into())
     );
-    assert_eq!(sb.hook("atl git status"), Said::Nothing);
-    assert_eq!(sb.hook_raw("atl git status", &[]), "");
-    assert_eq!(
-        sb.hook_raw("cat secret.txt", &[]).trim(),
-        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl read secret.txt"}}}"#
-    );
-    assert_eq!(
-        sb.hook("atl git push"),
-        Said::Nothing,
-        "the owner's accepted Bash(atl *) risk: no rule, no decision"
-    );
+    // A typed atl line is judged as what it runs: it asks (it never did, and
+    // `Bash(atl *)` approved it).
+    assert!(matches!(sb.hook("atl git push"), Said::Ask(_)));
+    assert_eq!(proven(&sb, "atl git status"), Said::Nothing);
 }
 
 #[test]
@@ -356,7 +353,7 @@ fn the_payload_cwd_is_where_a_relative_path_and_a_relative_rule_anchor() {
         let (code, stdout, _) = sb.spawn(
             &["hook", "claude"],
             Some(Sandbox::payload(cmd, Some(cwd))),
-            &[],
+            &[("ATL_PERM_CLASSIFY", fake_classifier())],
         );
         assert_eq!(code, 0);
         Sandbox::classify(cmd, &stdout)
@@ -380,7 +377,8 @@ fn claude_project_dir_adds_its_settings() {
     )
     .expect("write settings");
     let dir = other.to_string_lossy().into_owned();
-    assert_eq!(sb.hook("atl git push"), Said::Nothing);
+    // No rule here: not denied (a typed atl line asks).
+    assert_inert(&sb, "atl git push");
     let stdout = sb.hook_raw("atl git push", &[("CLAUDE_PROJECT_DIR", &dir)]);
     assert_eq!(Sandbox::classify("atl git push", &stdout), Said::Deny);
 }
@@ -734,7 +732,7 @@ fn an_operand_that_expands_or_hides_a_path_is_not_allowed() {
 fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
     let sb = Sandbox::new(Rules {
         deny: &["git push:*"],
-        allow: &["atl *"],
+        allow: &["atl *", "cargo test:*"],
         ..Rules::default()
     });
     for cmd in [
@@ -744,7 +742,7 @@ fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
         "git log --oneline -5",
         "cargo test",
     ] {
-        match sb.hook(cmd) {
+        match proven(&sb, cmd) {
             Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
                 assert!(rewritten.starts_with("atl "), "{cmd}: {rewritten}");
             }
@@ -754,20 +752,21 @@ fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
     // Round 7: a rewrite out of the plain shape is not made; the host judges the
     // original, with no prompt from the hook.
     for cmd in ["ls src/*.rs", "git log -- *.rs"] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, cmd), Said::Nothing, "{cmd}");
     }
 }
 
-/// Every line of `cmds` runs `atl bypass`, which asks even with no rule of any
-/// kind: `Bash(atl *)` must not approve what it runs (see "`atl bypass` is judged
-/// as the command it runs" below).
+/// Every line of `cmds` runs `atl` in a way that asks even with no rule of any
+/// kind: `Bash(atl *)` must not approve what it runs (see "ATL never widens
+/// permissions" below).
 fn assert_bypass_asks(sb: &Sandbox, cmds: &[&str]) {
     for cmd in cmds {
         assert!(matches!(sb.hook(cmd), Said::Ask(_)), "{cmd}");
     }
 }
 
-/// With no rule of any kind every backstop is silent; `atl bypass` alone asks.
+/// With no rule of any kind no backstop acts: nothing is denied or rewritten; what
+/// runs atl asks, as `Bash(atl *)` must not approve it.
 #[test]
 fn every_backstop_is_inert_in_a_bare_sandbox() {
     let sb = Sandbox::bare();
@@ -776,7 +775,7 @@ fn every_backstop_is_inert_in_a_bare_sandbox() {
         "if true; then atl git push; fi",
         "export HO\"ME\"=/; atl read ~/.ssh/id_rsa",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
     assert_bypass_asks(
         &sb,
@@ -786,9 +785,14 @@ fn every_backstop_is_inert_in_a_bare_sandbox() {
             "atl bypass base64 secre*",
         ],
     );
+    // An embedded word is no reason to hold back a rewrite of a read-only command.
+    let log = Sandbox::new(Rules {
+        allow: &["git log:*"],
+        ..Rules::default()
+    });
     assert!(
         matches!(
-            sb.hook("git log --grep='git push'"),
+            log.hook("git log --grep='git push'"),
             Said::Rewrite(_) | Said::Allow(_)
         ),
         "an embedded word is no reason to hold back a rewrite"
@@ -842,7 +846,7 @@ fn options_between_a_rules_words_do_not_hide_it() {
     let only = push_only_sandbox();
     asked(&only, &["atl git -C . $x"]);
     assert!(matches!(
-        only.hook("git commit -m 'push fix'"),
+        proven(&only, "git commit -m 'push fix'"),
         Said::Allow(_) | Said::Rewrite(_)
     ));
 }
@@ -965,7 +969,7 @@ fn the_round_three_backstops_leave_ordinary_commands_alone() {
         "git status",
         "git commit -m 'fix the push button'",
     ] {
-        match sb.hook(cmd) {
+        match proven(&sb, cmd) {
             Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
                 assert!(rewritten.starts_with("atl "), "{cmd}: {rewritten}");
             }
@@ -977,11 +981,12 @@ fn the_round_three_backstops_leave_ordinary_commands_alone() {
         "atl grep python src/",
         "atl git log --oneline",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, cmd), Said::Nothing, "{cmd}");
     }
 }
 
-/// No rule anywhere: every round-3 spelling says nothing, as before.
+/// No rule anywhere: no round-3 spelling is denied or rewritten; each that runs atl
+/// asks.
 #[test]
 fn the_round_three_backstops_are_inert_in_a_bare_sandbox() {
     let sb = Sandbox::bare();
@@ -990,7 +995,7 @@ fn the_round_three_backstops_are_inert_in_a_bare_sandbox() {
         "atl /usr/bin/git push",
         "atl run -c 'time time git push'",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
     assert_bypass_asks(
         &sb,
@@ -1059,7 +1064,7 @@ fn the_text_the_hook_rewrites_a_command_into_is_gated_too() {
 fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
     let sb = Sandbox::new(Rules {
         deny: &["git push:*"],
-        allow: &["atl *"],
+        allow: &["atl *", "cargo test:*"],
         read_deny: &["./secret.txt"],
         ..Rules::default()
     });
@@ -1074,7 +1079,7 @@ fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
         "npx eslint .",
         "pip install -e .",
     ] {
-        match sb.hook(cmd) {
+        match proven(&sb, cmd) {
             Said::Allow(rewritten) | Said::Rewrite(rewritten) => {
                 assert!(rewritten.starts_with("atl "), "{cmd}: {rewritten}");
             }
@@ -1085,9 +1090,9 @@ fn ordinary_rewrites_keep_their_rewrite_with_a_deny_and_a_read_rule() {
     }
     for cmd in ["git status", "cargo test", "cat README.md"] {
         assert!(
-            matches!(sb.hook(cmd), Said::Allow(_) | Said::Rewrite(_)),
+            matches!(proven(&sb, cmd), Said::Allow(_) | Said::Rewrite(_)),
             "{cmd}: {:?}",
-            sb.hook(cmd)
+            proven(&sb, cmd)
         );
     }
     let only = push_only_sandbox();
@@ -1177,10 +1182,15 @@ fn positional_words_between_a_rules_words_do_not_cost_the_rewrite() {
 /// round 7: so does every program off the plain list.)
 #[test]
 fn a_bare_dot_and_interpreter_operands_do_not_prompt() {
-    let only = push_only_sandbox();
+    let only = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &["atl *", "git add:*", "cargo fmt:*"],
+        ..Rules::default()
+    });
     for cmd in ["atl ls .", "atl tree .", "atl git add .", "atl cargo fmt"] {
-        assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&only, cmd), Said::Nothing, "{cmd}");
     }
+    let only = push_only_sandbox();
     // Round 7: off the plain list, whatever the operands.
     asked(
         &only,
@@ -1204,7 +1214,7 @@ fn the_round_four_backstops_are_inert_in_a_bare_sandbox() {
         "atl git -c alias.p=push p",
         "atl pnpm exec cat secret.txt",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
     assert_bypass_asks(&sb, &["atl bypass caffeinate sh -c 'cat secret.txt'"]);
 }
@@ -1276,6 +1286,19 @@ fn the_round_four_bypass_classes_are_stopped() {
 #[test]
 fn listed_commands_pass_without_a_prompt() {
     let only = push_only_sandbox();
+    // Plain in shape; the ones that are not read-only also need the user's allow
+    // (ATL never widens permissions: `Bash(atl *)` is not one).
+    let allowing = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        allow: &[
+            "atl *",
+            "git add:*",
+            "git commit:*",
+            "cargo test:*",
+            "cargo clippy:*",
+        ],
+        ..Rules::default()
+    });
     for cmd in [
         "atl git status",
         "atl git log --oneline -5",
@@ -1293,7 +1316,7 @@ fn listed_commands_pass_without_a_prompt() {
         "atl find . -name '*.rs'",
         "atl wc -l ok.txt",
     ] {
-        assert_eq!(only.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&allowing, cmd), Said::Nothing, "{cmd}");
     }
     // Round 7: everything else asks, a compound with a plain part included.
     asked(
@@ -1418,7 +1441,7 @@ fn the_allowlist_is_inert_in_a_bare_sandbox() {
         "atl git >/dev/null push",
         "atl ls # x",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
     assert_bypass_asks(
         &sb,
@@ -1474,7 +1497,7 @@ fn the_round_six_screens_are_inert_in_a_bare_sandbox() {
         "atl cat < secr?t.txt",
         "atl dotnet build -p:X=y",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
 }
 
@@ -1539,11 +1562,12 @@ fn the_plain_shape_is_inert_in_a_bare_sandbox() {
         "< secret.txt atl cat",
         "atl read /dev/stdin",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
     assert_bypass_asks(&sb, &["atl bypass git push"]);
+    // A read-only original (here by the stand-in's proof) is still rewritten.
     assert_eq!(
-        sb.hook("ls src/*.rs"),
+        proven(&sb, "ls src/*.rs"),
         Said::Rewrite("atl ls src/*.rs".into())
     );
 }
@@ -1573,7 +1597,7 @@ fn the_round_eight_glob_operators_are_stopped() {
         "atl git commit -m 'costs $5'",
         "atl ls '$(id)'",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, cmd), Said::Nothing, "{cmd}");
     }
 }
 
@@ -1613,7 +1637,7 @@ fn the_shared_parser_never_loosens_a_verdict() {
         "atl read ok.txt",
         "atl git log -n 5",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, cmd), Said::Nothing, "{cmd}");
     }
 }
 
@@ -1657,17 +1681,19 @@ fn a_literal_cd_and_a_counted_head_keep_their_rewrite_under_rules() {
         "cd ./sub && git log --oneline | head -n 5".to_string(),
         format!("cd {abs}/sub && git log --oneline | tail -n 3"),
     ] {
-        let rewritten = rewrite_of(sb.hook(&cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
+        let rewritten =
+            rewrite_of(proven(&sb, &cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
         assert!(rewritten.contains("atl git"), "{cmd}: {rewritten}");
     }
-    // typed with `atl` already: the plain shape passes with no prompt and nothing to rewrite
+    // typed with `atl` already: the plain shape passes with no prompt and nothing to
+    // rewrite (when what it runs is read-only)
     for cmd in [
         "cd ./sub && atl git status".to_string(),
         "atl git log --oneline | head -n 5".to_string(),
         "cd ./sub && atl ls -la | tail -n 3".to_string(),
         format!("cd {abs}/sub && atl ls"),
     ] {
-        assert_eq!(sb.hook(&cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, &cmd), Said::Nothing, "{cmd}");
     }
 }
 
@@ -1700,7 +1726,7 @@ fn a_read_after_a_cd_still_meets_the_deny_rules() {
         "cd ./sub && atl read note.txt",
         "cd ./config && atl read ../ok.txt",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_eq!(proven(&sb, cmd), Said::Nothing, "{cmd}");
     }
 }
 
@@ -1810,7 +1836,7 @@ fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
         "cd sub && git status",
         "git log | head -n 5",
     ] {
-        let rewritten = rewrite_of(sb.hook(cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
+        let rewritten = rewrite_of(proven(&sb, cmd)).unwrap_or_else(|| panic!("{cmd}: no rewrite"));
         assert!(rewritten.contains("atl git"), "{cmd}: {rewritten}");
     }
     for cmd in [
@@ -1819,7 +1845,7 @@ fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
         "atl git log | head -n $N",
         "atl git log | tail -f",
     ] {
-        assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
+        assert_inert(&sb, cmd);
     }
 }
 
@@ -1834,7 +1860,9 @@ fn the_cd_and_count_shapes_are_inert_in_a_bare_sandbox() {
 /// A stand-in for `anthology perm classify`. It answers like the real one: the
 /// token line and then the absolute paths read (here: each absolute word of the
 /// command, the `cd` target included), or exit 1 and no decision. It
-/// refuses a request naming `rm`, `git push`, `kubectl` or `curl`, unless
+/// refuses a request naming `rm`, `git push`, `kubectl`, `curl` or another program that
+/// writes or runs what it is given (`touch`, `ssh`, `docker`, `npx`, `aws`, `sh`, `cargo`,
+/// `find -delete`...) unless
 /// `FAKE_PROVE_ALL` is set; `FAKE_LOG` names a file each request is appended to.
 const FAKE_CLASSIFIER: &str = r#"#!/bin/sh
 [ "$1" = perm ] && [ "$2" = classify ] || exit 2
@@ -1842,7 +1870,7 @@ input=$(cat)
 [ -z "${FAKE_LOG:-}" ] || printf '%s\n' "$input" >> "$FAKE_LOG"
 if [ -z "${FAKE_PROVE_ALL:-}" ]; then
   case $input in
-    *' rm '*|*'git push'*|*kubectl*|*curl*)
+    *' rm '*|*'git push'*|*kubectl*|*curl*|*' touch '*|*' tee '*|*' ssh '*|*' docker '*|*' npx '*|*' npm '*|*' psql '*|*' aws '*|*' sh '*|*' bash '*|*' cargo '*|*-delete*|*-exec*)
       echo 'anthology perm: no decision: not read-only' >&2
       exit 1 ;;
   esac
@@ -2076,16 +2104,21 @@ fn a_typed_atl_command_is_asked_about_even_if_a_classifier_would_pass_it() {
     }
 }
 
-/// Without a rule the hook says what it said before, classifier or not.
+/// Without a rule the gate is not inert (ATL never widens permissions): a read-only
+/// original is rewritten, one the proof does not cover is left to the host.
 #[test]
-fn the_classifier_is_inert_in_a_bare_sandbox() {
+fn the_classifier_decides_the_rewrite_in_a_bare_sandbox() {
     let sb = atl_named_sandbox(Rules::default());
-    for cmd in ["grep -n foo atl/notes.txt", "ls -la atl | head -60"] {
+    for (cmd, rewritten) in [
+        ("grep -n foo atl/notes.txt", "atl grep -n foo atl/notes.txt"),
+        ("ls -la atl | head -60", "atl ls -la atl | head -60"),
+    ] {
         assert_eq!(
             hook_in(&sb, cmd, None, true, &[]),
-            hook_in(&sb, cmd, None, false, &[]),
+            Said::Rewrite(rewritten.into()),
             "{cmd}"
         );
+        assert_eq!(hook_in(&sb, cmd, None, false, &[]), Said::Nothing, "{cmd}");
     }
 }
 
@@ -2149,7 +2182,7 @@ fn in_auto_mode_nothing_is_rewritten() {
         Said::Nothing
     );
     assert_eq!(
-        hook_in(&bare, "git status", Some("default"), false, &[]),
+        hook_in(&bare, "git status", Some("default"), true, &[]),
         Said::Rewrite("atl git status".into())
     );
 }
@@ -2171,7 +2204,7 @@ fn the_other_modes_keep_their_rewrite() {
         Some("autopilot"),
     ] {
         assert_eq!(
-            hook_in(&bare, "git status", mode, false, &[]),
+            hook_in(&bare, "git status", mode, true, &[]),
             Said::Rewrite("atl git status".into()),
             "{mode:?}"
         );
@@ -2281,6 +2314,345 @@ fn in_auto_mode_an_ask_that_stays_is_about_the_original_with_no_rewrite() {
         hook_in(&sb, cmd, Some("auto"), true, &[]),
         Said::Ask(cmd.into())
     );
+}
+
+/// What the hook says about `cmd` with the stand-in for `anthology perm classify`
+/// in place, so a read-only command is rewritten (or, typed as `atl ...`, left
+/// alone) as it is in a session that has the plugin.
+fn proven(sb: &Sandbox, cmd: &str) -> Said {
+    hook_in(sb, cmd, None, true, &[])
+}
+
+/// With no rule of the user's behind it the hook neither denies nor rewrites `cmd`:
+/// it says nothing or asks (an ask `Bash(atl *)` cannot approve).
+fn assert_inert(sb: &Sandbox, cmd: &str) {
+    let said = sb.hook(cmd);
+    assert!(
+        matches!(said, Said::Nothing | Said::Ask(_)),
+        "{cmd}: {said:?}"
+    );
+}
+
+// --- ATL never widens permissions ---
+//
+// `Bash(atl *)` approves every line that starts with `atl`, so a line may get no
+// decision from the hook only when Claude Code would have allowed what the user
+// typed anyway: it is read-only (`anthology perm classify`) or one of the user's own
+// allow rules covers it. Otherwise a rewrite is not made (Claude Code judges the
+// original) and a typed `atl ...` line asks. Every case below runs with no deny, ask
+// or `Read()` rule, and again beside an unrelated one.
+
+/// The sandboxes the principle is checked in: only the install's allow rule, and
+/// beside an unrelated deny rule (which makes the plain-shape gate active).
+fn widening_sandboxes(allow: &[&str]) -> Vec<Sandbox> {
+    let mut allow: Vec<&str> = allow.to_vec();
+    allow.push("atl *");
+    vec![
+        Sandbox::new(Rules {
+            allow: &allow,
+            ..Rules::default()
+        }),
+        Sandbox::new(Rules {
+            deny: &["mkfs:*"],
+            allow: &allow,
+            ..Rules::default()
+        }),
+    ]
+}
+
+/// A rewrite makes `Bash(atl *)` approve a command Claude Code would prompt for.
+#[test]
+fn a_command_claude_code_would_prompt_for_is_not_rewritten() {
+    for sb in widening_sandboxes(&[]) {
+        for cmd in [
+            "git push --force origin main",
+            "ssh h rm -rf x",
+            "docker run -v /:/h alpine",
+            "find . -delete",
+            "npx pkg",
+            "npm run build",
+            "psql -c 'drop table t'",
+            "aws s3 rm s3://b --recursive",
+            "kubectl delete pod x",
+            "cargo build",
+        ] {
+            for classifier in [false, true] {
+                for mode in [None, Some("default")] {
+                    assert_eq!(
+                        hook_in(&sb, cmd, mode, classifier, &[]),
+                        Said::Nothing,
+                        "{cmd} (classifier {classifier}, {mode:?})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Everyday commands still flow: a read-only one is rewritten with no decision,
+/// one the user allowed is rewritten, as before.
+#[test]
+fn everyday_commands_still_flow() {
+    for sb in widening_sandboxes(&["cargo test:*", "git status"]) {
+        for (cmd, rewritten) in [
+            ("git status", "atl git status"),
+            ("git log --oneline -5", "atl git log --oneline -5"),
+            ("ls -la", "atl ls -la"),
+            ("grep -n foo ok.txt", "atl grep -n foo ok.txt"),
+        ] {
+            // Read-only, or allowed (`git status` is both): rewritten.
+            let said = hook_in(&sb, cmd, None, true, &[]);
+            assert!(
+                said == Said::Rewrite(rewritten.into()) || said == Said::Allow(rewritten.into()),
+                "{cmd}: {said:?}"
+            );
+        }
+        // Allowed by the user's rule, whatever the classifier says.
+        assert_eq!(
+            hook_in(&sb, "cargo test", None, false, &[]),
+            Said::Allow("atl cargo test".into())
+        );
+        // (This one names atl, so the host decides on the rewrite, and its
+        // `Bash(atl *)` rule approves it; an allow rule covers the original.)
+        let said = hook_in(&sb, "cargo test -p atl", None, false, &[]);
+        assert!(
+            said == Said::Allow("atl cargo test -p atl".into())
+                || said == Said::Rewrite("atl cargo test -p atl".into()),
+            "{said:?}"
+        );
+        // Not read-only and not allowed: no rewrite.
+        assert_eq!(hook_in(&sb, "cargo build", None, true, &[]), Said::Nothing);
+        // No classifier and no allow rule: no rewrite, so Claude Code judges it.
+        assert_eq!(hook_in(&sb, "ls -la", None, false, &[]), Said::Nothing);
+        // An allow rule is Claude Code's matching: an exact rule is the exact command.
+        assert_eq!(
+            hook_in(&sb, "git status -s", None, false, &[]),
+            Said::Nothing
+        );
+    }
+}
+
+/// A user's allow rule matches as Claude Code's does: exact, `prefix:*`, `prefix *`.
+#[test]
+fn an_allow_rule_matches_the_way_claude_code_matches_it() {
+    let sb = Sandbox::new(Rules {
+        allow: &[
+            "atl *",
+            "git push",
+            "cargo build:*",
+            "npm run *",
+            "make check",
+        ],
+        ..Rules::default()
+    });
+    // Typed `atl ...` lines are judged as the command they run; no classifier here.
+    for (cmd, allowed) in [
+        ("atl git push", true),
+        ("atl git push --force", false),
+        ("atl cargo build", true),
+        ("atl cargo build --release", true),
+        ("atl cargo builder", false),
+        ("atl npm run build", true),
+        ("atl npm run", true),
+        ("atl npm install", false),
+        ("atl run make check", true),
+        ("atl run make check all", false),
+        ("atl git push && atl cargo build", true),
+        ("atl git push && atl rm -rf x", false),
+    ] {
+        let said = hook_in(&sb, cmd, None, false, &[]);
+        if allowed {
+            assert_eq!(said, Said::Nothing, "{cmd}");
+        } else {
+            assert!(matches!(said, Said::Ask(_)), "{cmd}: {said:?}");
+        }
+    }
+}
+
+/// `atl <runner or tool> <cmd>` is judged as `<cmd>`, the way a rewrite is.
+#[test]
+fn a_typed_atl_runner_or_tool_asks_unless_its_command_is_read_only_or_allowed() {
+    for sb in widening_sandboxes(&[]) {
+        for cmd in [
+            "atl run rm -rf x",
+            "atl run -c 'rm -rf x'",
+            "atl run --shell bash -c 'touch y'",
+            "atl err rm -rf x",
+            "atl test touch y",
+            "atl summary rm -rf x",
+            "atl rm -rf x",
+            "atl sh -c 'touch y'",
+            "atl touch y",
+            "atl find . -delete",
+            "atl find . -exec rm {} ;",
+            "atl npx pkg",
+            "atl npm run build",
+            "atl git push --force origin main",
+            "atl docker run -v /:/h alpine sh",
+            "atl psql -c 'drop table t'",
+            "atl aws s3 rm s3://b --recursive",
+            "atl curl -X POST http://x",
+            "atl cargo build",
+            "atl bypass rm -rf x",
+        ] {
+            for classifier in [false, true] {
+                assert!(
+                    matches!(hook_in(&sb, cmd, None, classifier, &[]), Said::Ask(_)),
+                    "{cmd} (classifier {classifier})"
+                );
+            }
+            // Auto mode: no rewrite, the ask is about the line as typed.
+            assert_eq!(
+                hook_in(&sb, cmd, Some("auto"), true, &[]),
+                Said::Ask(cmd.into()),
+                "{cmd} in auto mode"
+            );
+        }
+    }
+}
+
+/// A read-only inner command, or one the user allowed, is not asked about.
+#[test]
+fn a_typed_atl_line_runs_when_its_command_is_read_only_or_allowed() {
+    for sb in widening_sandboxes(&["cargo test:*", "git push", "npm run build"]) {
+        for cmd in [
+            "atl git status",
+            "atl git log --oneline -5",
+            "atl ls -la",
+            "atl grep -n foo ok.txt",
+            "atl run ls -la",
+            "atl bypass git log -5",
+            "atl read ok.txt",
+        ] {
+            assert_eq!(hook_in(&sb, cmd, None, true, &[]), Said::Nothing, "{cmd}");
+            // Without a classifier nothing is proven: it asks.
+            assert!(
+                matches!(hook_in(&sb, cmd, None, false, &[]), Said::Ask(_)),
+                "{cmd} (no classifier)"
+            );
+        }
+        for cmd in [
+            "atl cargo test",
+            "atl cargo test -p atl",
+            "atl git push",
+            "atl run npm run build",
+            "atl bypass cargo test",
+        ] {
+            for classifier in [false, true] {
+                assert_eq!(
+                    hook_in(&sb, cmd, None, classifier, &[]),
+                    Said::Nothing,
+                    "{cmd} (classifier {classifier})"
+                );
+            }
+        }
+        // The allow rule is the exact command's: not a longer one.
+        for cmd in ["atl git push --force", "atl npm run build --prod"] {
+            assert!(
+                matches!(hook_in(&sb, cmd, None, true, &[]), Said::Ask(_)),
+                "{cmd}"
+            );
+        }
+    }
+}
+
+/// A subcommand word that is not plain literal text (`$`, `{`, a backquote, a glob)
+/// hides what runs: ask, always, whatever the classifier proves.
+#[test]
+fn a_subcommand_word_that_is_not_literal_text_always_asks() {
+    let env = [("FAKE_PROVE_ALL", "1")];
+    for sb in widening_sandboxes(&["touch y"]) {
+        for cmd in [
+            "atl {bypass,rm} -rf x",
+            "atl ${X:-bypass} touch y",
+            "atl $(echo bypass) touch y",
+            "atl `echo bypass` touch y",
+            "atl \"$X\" touch y",
+            "atl $X touch y",
+            "X=bypass; atl $X touch y",
+            "X=bypass; atl $X ls",
+            "atl byp* touch y",
+            "atl by?ass touch y",
+            "atl -v $X ls",
+            "ls && atl $X ls",
+            "bash -c 'atl $X ls'",
+        ] {
+            assert!(
+                matches!(hook_in(&sb, cmd, None, true, &env), Said::Ask(_)),
+                "{cmd}"
+            );
+            assert!(
+                matches!(hook_in(&sb, cmd, None, false, &[]), Said::Ask(_)),
+                "{cmd} (no classifier)"
+            );
+        }
+    }
+}
+
+/// atl's own subcommands that write (settings, rules, trust, history) ask unless
+/// the user allowed them by a rule of their own: the install's `Bash(atl *)` is not
+/// one. Its read-only ones run.
+#[test]
+fn atl_s_own_writing_subcommands_ask_unless_allowed() {
+    let own = [
+        "atl init -g",
+        "atl config --create",
+        "atl trust -y",
+        "atl learn --write-rules",
+        "atl gain --reset --yes",
+    ];
+    for sb in widening_sandboxes(&[]) {
+        for cmd in own {
+            for classifier in [false, true] {
+                assert!(
+                    matches!(hook_in(&sb, cmd, None, classifier, &[]), Said::Ask(_)),
+                    "{cmd} (classifier {classifier})"
+                );
+            }
+        }
+        for cmd in ["atl gain", "atl gain --history", "atl --version"] {
+            assert_eq!(hook_in(&sb, cmd, None, false, &[]), Said::Nothing, "{cmd}");
+        }
+    }
+    // The user's own rule for one of them.
+    for sb in widening_sandboxes(&["atl init:*", "atl config --create"]) {
+        assert_eq!(hook_in(&sb, "atl init -g", None, false, &[]), Said::Nothing);
+        assert_eq!(
+            hook_in(&sb, "atl config --create", None, false, &[]),
+            Said::Nothing
+        );
+        for cmd in [
+            "atl trust -y",
+            "atl config --reset",
+            "atl learn --write-rules",
+        ] {
+            assert!(
+                matches!(hook_in(&sb, cmd, None, false, &[]), Said::Ask(_)),
+                "{cmd}"
+            );
+        }
+    }
+}
+
+/// The deny and ask rules still come first, and the other modes keep their rules.
+#[test]
+fn the_widening_check_never_loosens_a_deny_or_an_ask_rule() {
+    let sb = Sandbox::new(Rules {
+        deny: &["git push:*"],
+        ask: &["kubectl apply:*"],
+        allow: &["atl *", "git push:*", "kubectl apply:*"],
+        ..Rules::default()
+    });
+    let env = [("FAKE_PROVE_ALL", "1")];
+    for cmd in ["git push", "atl git push", "atl run git push origin"] {
+        assert_eq!(hook_in(&sb, cmd, None, true, &env), Said::Deny, "{cmd}");
+    }
+    for cmd in ["kubectl apply -f x", "atl kubectl apply -f x"] {
+        assert!(
+            matches!(hook_in(&sb, cmd, None, true, &env), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
 }
 
 // --- `atl bypass` is judged as the command it runs ---
@@ -2528,7 +2900,6 @@ fn what_is_not_atl_bypass_is_not_asked_about_as_one() {
     });
     for cmd in [
         "atl git status",
-        "atl llm-proxy status",
         "echo atl bypass rm -rf x",
         "git commit -m 'atl bypass rm'",
         "grep -rn 'atl bypass' docs",
