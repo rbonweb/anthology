@@ -43,6 +43,7 @@ Because approvals follow the remote URL, re-cloning the same repo into any folde
   .claude/agent-memory/*/MEMORY.md merge=union
   ```
 
+- Commit `.gitattributes`. Session start prints one line when an approved repo's `HEAD` lacks the rule (never written, or written and not committed); it writes nothing. Git reads the rule from the checkout the merge runs in, so a worktree or clone made from a commit without it still conflicts. A conflict that does get through (a merge in such a checkout, or on GitHub) is fixed by rebuilding the index from the notes: `anthology-mem reindex --agent <name>`, or `anthology-mem reindex --repo`.
 - The next session start regenerates the index, which cleans up anything the merge left behind. GitHub's web merge button ignores merge drivers, so a PR may still show a conflict in a `MEMORY.md` there. Keeping both sides' lines, or merging locally, is always correct.
 - Memory changes go in their own commits, `chore(memory): …`, so they never ride along with unrelated work. Agents that work in a worktree commit their memory there before they finish.
 

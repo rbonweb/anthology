@@ -1,15 +1,16 @@
 ---
 name: 'docker exec psql -c literal reading (PR 247) review findings'
-description: 'Head 267e62f6: every PR 193 shape holds; a zsh numeric glob hides a word before psql (Critical); psql -o and -f - unmask pre-existing runs'
+description: 'Round 2 head 98ae962f: earlier repros hold; --command values go unchecked and zsh (a|b) glob groups hide psql words; several -c unmask backslash meta-commands'
 metadata:
   type: project
-  modified: 2026-11-26
+  modified: 2026-11-27
 ---
 
-PR 247 (head 267e62f6, base a5529497) reads docker exec psql -c SQL as data when the command is plain literal (crates/anthology-shell/src/shell_args.rs docker_exec_psql, literal_command in collect.rs add_one).
-Held on head (same verdict as base): every PR 193 split-word, expanded-value, planted-PATH, env-file, su/flock/-u psql, wrong-name, attached -u=x, --, compose -T and -f, env -S, xargs, watch, parallel, sg, eval shape; ANSI-C backslash forms; alias -g lines (G0).
-Critical regression, runtime proven in zsh 5.9: zsh reads c<1-5> (also c<->, u<1-5> as an option value, c<1-5>flock) as a numeric glob word, the guard reads a < redirect plus a > redirect that swallows the next word. touch c1; docker exec c<1-5> flock psql -c "select 1; MARKER" is base G4, head Allow, and zsh runs docker exec c1 flock psql -c ..., so flock runs the value with sh. bash errors on the redirect and runs nothing.
-Important, runtime proven in postgres:16: psql -o with a pipe value, --output=, and -f - fed by a here-string run a shell; with count(*) SQL these went base G0 to head Allow. Pre-existing: the same with paren-free SQL is Allow on base. COPY TO PROGRAM is Allow on both. ssh h docker exec ... with a joined ; value is Allow on base.
-Harmless head Allows checked: sudo -s and -i (sudo 1.9.16 backslash-escapes the joined words), ANSI-C \0134 (VT then 4 in bash and zsh), PGDATABASE (libpq does not expand it as a conninfo), psql -- -c, -v PROMPT1 (no prompt with -c).
-Why: per-word literal checks still trust the guard lexer, which does not model zsh numeric globs outside readonly.rs; and psql options other than -c can run programs.
-How to apply: in any later round, probe zsh numeric globs between exec and psql and the psql -o and -f options; the probe and runtime case files from this round used a G4 marker program.
+PR 247 (base a5529497) reads docker exec psql -c SQL as data when the command is plain literal (crates/anthology-shell/src/shell_args.rs docker_exec_psql and psql_words_known, literal_command in collect.rs add_one).
+Round 1 (head 267e62f6): Critical zsh numeric glob c<1-5> hid a word before psql; Important psql -o, --output= and -f - with a here-string went base G0 to head Allow.
+Round 2 (head 98ae962f) closed both by refusing any redirect or here-string and a positional allowlist after psql. Held: -v PROMPT1, -Ao, -tf, --, >2 names, conninfo, --out and --comm abbreviations, =(...) procsub, ANSI-C backslash.
+Round 2 gaps, runtime proven in postgres:16 with zsh 5.9: the --command value is never a script start (is_shell_c_flag needs one dash), yet psql_words_known accepts it, so -c "select count(*) from t" --command with a backslash-bang or backslash-o pipe value is base G0, head Allow and runs. A zsh glob group after psql, c psql -c SQL (-o|-x) with a pipe word, is base G0, head Allow: the lexer splits at the paren, zsh expands it to -o when a file -o exists in cwd. Several -c values unmask a backslash-copy to program value (base G0, head Allow).
+Pre-existing on base and head: docker exec c (flock|x) psql -c "select 1; MARKER" is Allow, zsh runs flock with a file flock in cwd (proven). A lone --command or backslash-copy program value is Allow on base.
+Harmless: psql does not read stdin when -c is given; SQL in -c goes to the server with no psql interpolation, so a gexec or :var in SQL never becomes a meta-command; backslash-bang does not expand :var.
+Why: the literal check is per lexer segment, and the lexer does not model zsh glob groups; a skipped value list and the script scanner must name the same options.
+How to apply: in later rounds probe (a|b) groups before and after psql, --command, and backslash meta-commands next to a count(*) value.
