@@ -981,6 +981,49 @@ fn the_macos_shards_run_the_affected_crates_with_both_feature_sets() {
 }
 
 #[test]
+fn the_scripts_repo_tests_executes_run_macos_and_the_other_scripts_do_not() {
+    // repo-tests runs these four under macOS bash 3.2: atl_rename_script.rs, atl_sync_fixture.rs
+    // and rtk_layout.rs (sync-atl.sh runs real, with atl-rename.sh), remote_build.rs and
+    // rust_test_script.rs. A change to only one of them must run the macOS shards, repo-tests
+    // among them. rust-test.sh is a `full` path (the whole workspace, so no package list).
+    assert!(scope_after(|d| touch(d, "scripts/rust-test.sh")).flag("run_macos"));
+    for file in [
+        "scripts/atl-rename.sh",
+        "scripts/sync-atl.sh",
+        "scripts/remote-build.sh",
+    ] {
+        let s = scope_after(|d| touch(d, file));
+        assert!(s.flag("run_macos"), "{file}");
+        for shard in s.shards("macos_matrix") {
+            assert!(
+                field(&shard, "packages")
+                    .split(' ')
+                    .any(|p| p == "repo-tests"),
+                "{file}: {}",
+                field(&shard, "packages")
+            );
+        }
+    }
+    // The rest of scripts/ is only read as text by repo-tests (atl-trim.sh, atl-test.sh,
+    // atl-net-test.sh, run-evals.sh) or stubbed in the fixtures (dev.sh), so a rule for all of
+    // scripts/ would run macOS for nothing.
+    for file in [
+        "scripts/atl-trim.sh",
+        "scripts/atl-test.sh",
+        "scripts/atl-net-test.sh",
+        "scripts/run-evals.sh",
+        "scripts/dev.sh",
+        "scripts/release.sh",
+        "scripts/perm-latency.sh",
+        "scripts/mods-types.mjs",
+    ] {
+        let s = scope_after(|d| touch(d, file));
+        assert!(!s.flag("run_macos"), "{file}");
+        assert!(s.shards("macos_matrix").is_empty(), "{file}");
+    }
+}
+
+#[test]
 fn macos_always_runs_repo_tests_when_it_runs_at_all() {
     // Every path that fires a macos rule: repo-tests (its host_predicate, session-start and
     // shim tests run hooks under macOS bash 3.2) is among the crates of each shard.
