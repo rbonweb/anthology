@@ -692,27 +692,24 @@ mod rewrite_host_scoping {
         let bare = Sandbox::bare();
         // Each host reads its own keys, so each hook is held to its own shape: a
         // Claude hook answering in Cursor's keys would be ignored by Claude Code.
-        for (hook, command_at, permission_at) in [(
-            "hooks/claude/atl-rewrite.sh",
-            "/hookSpecificOutput/updatedInput/command",
-            "/hookSpecificOutput/permissionDecision",
-        )] {
-            let (code, stdout, stderr) =
-                bare.run_hook(hook, "git status", &[("ATL_REWRITE_HOST", "openclaw")]);
-            let reply: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-                panic!("{hook} gave no JSON ({e}), exit {code}: stdout {stdout:?}, stderr {stderr:?}")
-            });
-            assert_eq!(
-                reply.pointer(command_at).and_then(|v| v.as_str()),
-                Some("atl git status"),
-                "{hook} did not hand back the rewrite at {command_at}: {reply}"
-            );
-            assert_ne!(
-                reply.pointer(permission_at).and_then(|v| v.as_str()),
-                Some("allow"),
-                "{hook} auto-allowed under an inherited host: {reply}"
-            );
-        }
+        let hook = "hooks/claude/atl-rewrite.sh";
+        let command_at = "/hookSpecificOutput/updatedInput/command";
+        let permission_at = "/hookSpecificOutput/permissionDecision";
+        let (code, stdout, stderr) =
+            bare.run_hook(hook, "git status", &[("ATL_REWRITE_HOST", "openclaw")]);
+        let reply: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("{hook} gave no JSON ({e}), exit {code}: stdout {stdout:?}, stderr {stderr:?}")
+        });
+        assert_eq!(
+            reply.pointer(command_at).and_then(|v| v.as_str()),
+            Some("atl git status"),
+            "{hook} did not hand back the rewrite at {command_at}: {reply}"
+        );
+        assert_ne!(
+            reply.pointer(permission_at).and_then(|v| v.as_str()),
+            Some("allow"),
+            "{hook} auto-allowed under an inherited host: {reply}"
+        );
     }
 
     /// The default ask collapses to allow: that is the whole of what the host
