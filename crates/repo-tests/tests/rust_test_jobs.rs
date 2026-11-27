@@ -436,6 +436,8 @@ fn linux(args: &[&str]) -> Result<Vec<String>, Output> {
         .args(args)
         .env("PATH", std::env::join_paths(path).unwrap())
         .env("DOCKER_ARGV", &argv)
+        // The stub keeps only the last call: this reads the container run, not the volume clean-up.
+        .env("ANTHOLOGY_KEEP_TARGET", "1")
         .output()
         .expect("sh ran");
     if !out.status.success() {

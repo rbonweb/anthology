@@ -253,10 +253,15 @@ pub(crate) fn proven_read_only(
     let Some(stdout) = run_classifier(&classifier, &request, TIMEOUT) else {
         return false;
     };
+    // Roots and listed paths are compared as the file system resolves them
+    // (macOS keeps `/var` and `/tmp` under `/private`, so the same folder has two
+    // spellings), and a path that cannot be resolved is not under any root: a link
+    // that leaves the project fails here whatever the classifier printed.
     classified_paths(&stdout).is_some_and(|paths| {
-        paths
-            .iter()
-            .all(|path| roots.iter().any(|root| Path::new(path).starts_with(root)))
+        paths.iter().all(|path| {
+            std::fs::canonicalize(path)
+                .is_ok_and(|real| roots.iter().any(|root| real.starts_with(root)))
+        })
     })
 }
 

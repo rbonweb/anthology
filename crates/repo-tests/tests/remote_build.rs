@@ -151,6 +151,7 @@ echo "fake 1000000000 1 $kb 1% /"
 const FAKE_RUST_TEST: &str = r#"#!/bin/sh
 echo "rust-test args: $*"
 echo "rust-test cwd: $(pwd)"
+echo "keep-target=${ANTHOLOGY_KEEP_TARGET:-unset}"
 [ -z "$(find "$HOME/anthology-remote/.last-used" -mmin -5 2>/dev/null)" ] || echo "last-used is fresh"
 [ -z "${FAKE_AGE_LAST_USED:-}" ] || touch -d '5 hours ago' "$HOME/anthology-remote/.last-used"
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -160,7 +161,7 @@ rustup=anthology-rustup-$(printf '%s' "${image##*@sha256:}" | cut -c1-12)
 # `docker run` pulls a missing image and creates a missing volume, with no label.
 touch "$FAKE_STATE/images" "$FAKE_STATE/volumes"
 grep -qxF -- "$image" "$FAKE_STATE/images" || echo "$image" >> "$FAKE_STATE/images"
-for v in "$vol" anthology-cargo "$rustup"; do
+for v in "$vol" anthology-cargo anthology-sccache "$rustup"; do
     grep -q "^$v " "$FAKE_STATE/volumes" || echo "$v $(date -u +%Y-%m-%dT%H:%M:%SZ) -" >> "$FAKE_STATE/volumes"
 done
 echo "cont1 $vol running $image" >> "$FAKE_STATE/containers"
@@ -910,7 +911,11 @@ fn the_old_name_clean_all_is_refused_not_passed_on() {
 
 /// Our caches, 100 hours old, an unrelated volume, and the Rust image as we pulled it.
 fn seed_caches(rig: &Rig) {
-    for name in ["anthology-cargo", "anthology-rustup-abc"] {
+    for name in [
+        "anthology-cargo",
+        "anthology-sccache",
+        "anthology-rustup-abc",
+    ] {
         rig.seed_volume(name, 100);
     }
     rig.seed_foreign_volume("other-project-data", 100);
@@ -927,6 +932,7 @@ fn caches_unused_for_48_hours_are_swept_with_the_image() {
     let docker = rig.log("docker.log");
     // The run then creates what it needs again, so the proof is in the calls.
     assert!(docker.contains("volume rm anthology-cargo"), "{docker}");
+    assert!(docker.contains("volume rm anthology-sccache"), "{docker}");
     assert!(
         docker.contains("volume rm anthology-rustup-abc"),
         "{docker}"
@@ -999,6 +1005,7 @@ fn what_we_create_carries_our_label() {
     let names = [
         volume_for(&rig.own_remote_dir()),
         "anthology-cargo".to_owned(),
+        "anthology-sccache".to_owned(),
         "anthology-rustup-0123456789ab".to_owned(),
     ];
     for name in names {
@@ -1110,4 +1117,25 @@ fn the_script_never_prunes_or_forces_a_removal() {
     ] {
         assert!(!script.contains(word), "{SCRIPT} mentions {word}");
     }
+}
+
+#[test]
+fn the_runner_keeps_its_target_volume_only_when_the_run_is_kept() {
+    let rig = rig!();
+    let kept = rig.run(&["lint"]);
+    assert!(
+        text(&kept.stdout).contains("keep-target=1"),
+        "{}",
+        all_output(&kept)
+    );
+    let dropped = rig
+        .command(&["lint"])
+        .env_remove("ANTHOLOGY_KEEP_REMOTE")
+        .output()
+        .unwrap();
+    assert!(
+        text(&dropped.stdout).contains("keep-target=0"),
+        "{}",
+        all_output(&dropped)
+    );
 }

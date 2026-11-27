@@ -15,7 +15,8 @@
 # The host is shared: we remove only what we created, and leave nothing of it behind that can fill
 # the disk. What we create, and how we tell it from the rest:
 #   - the folders under ~/anthology-remote (a path nothing else uses);
-#   - the volumes anthology-rust-target-<n>, anthology-cargo and anthology-rustup-<digest>. The
+#   - the volumes anthology-rust-target-<n>, anthology-cargo, anthology-sccache and
+#     anthology-rustup-<digest>. The
 #     script creates them first with the label anthology.remote-build=1 (rust-test.sh would create
 #     them bare), and treats a volume as ours only if its name matches AND it has the label: a
 #     volume with the same name and no label was there before us and is never touched;
@@ -31,7 +32,8 @@
 #      unused for 12 hours (a folder's age is that of its .stamp file, a volume without a folder
 #      goes by its creation time), our stopped containers, and, when nothing of ours has run for 48
 #      hours (the time of ~/anthology-remote/.last-used, written at the start and the end of each
-#      run), the anthology-cargo and anthology-rustup-* caches and the pulled image. A volume that
+#      run), the anthology-cargo, anthology-sccache and anthology-rustup-* caches and the pulled
+#      image. A volume that
 #      a running container uses is left alone;
 #   2. it refuses to start when the host has less than 20 GB free, on the home disk or the Docker
 #      data disk;
@@ -140,7 +142,7 @@ vol=anthology-rust-target-$(printf "%s" "$dir" | cksum | cut -d" " -f1)
 # is_ours V: our name and our label. Never true for a volume that was there before us.
 is_ours() {
     case $1 in
-        anthology-rust-target-* | anthology-cargo | anthology-rustup-*) ;;
+        anthology-rust-target-* | anthology-cargo | anthology-sccache | anthology-rustup-*) ;;
         *) return 1 ;;
     esac
     docker volume ls -q --filter "label=$label" --filter "name=$1" 2>/dev/null | grep -qxF -- "$1"
@@ -261,7 +263,7 @@ done
 last=$root/.last-used
 if [ -e "$last" ] && [ "$(stat -c %Y "$last")" -lt "$cache_cutoff" ]; then
     for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do
-        case $v in anthology-cargo | anthology-rustup-*) drop_volume "$v" || true ;; esac
+        case $v in anthology-cargo | anthology-sccache | anthology-rustup-*) drop_volume "$v" || true ;; esac
     done
     drop_image "$image"
 fi
@@ -292,6 +294,7 @@ make_volume() {
 }
 make_volume "$vol"
 make_volume anthology-cargo
+make_volume anthology-sccache
 digest=${image##*@sha256:}
 [ -z "$image" ] || make_volume "anthology-rustup-${digest:0:12}"
 
@@ -342,6 +345,9 @@ leave() {
 trap stop INT TERM HUP
 trap leave EXIT
 sweep
+# rust-test.sh removes the target volume when a one-shot run ends, unless told to keep it: keep it
+# exactly when we were asked to keep the run warm (otherwise `leave` removes it).
+export ANTHOLOGY_KEEP_TARGET=$keep
 scripts/rust-test.sh "$@" &
 pid=$!
 { cat; kill -TERM $$; } <&0 >/dev/null 2>&1 &
