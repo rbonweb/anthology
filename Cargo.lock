@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-cli"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-guard",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-core"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-pycompat",
  "libc",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-dev"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-guard",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-guard"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-pycompat",
  "anthology-shell",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-memory"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-guard",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-pycompat"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "fancy-regex",
  "proptest",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-runtime"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-guard",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-settings"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-guard",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "anthology-testkit"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-pycompat",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "difftest"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-dev",
@@ -722,7 +722,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "repo-tests"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anthology-core",
  "anthology-dev",
