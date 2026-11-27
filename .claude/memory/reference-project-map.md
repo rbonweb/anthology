@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 1c9fb279-a45d-4d27-8e78-1ddd82c1e344
-  modified: 2026-11-25T06:25:20.874Z
+  modified: 2026-11-27T08:05:34.573Z
 ---
 
 ## Overview
@@ -26,18 +26,18 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 - `evals/` (runners export `ANTHOLOGY_HOST_MODE=full`), `ci/jobs/` (one script per CI job), `changelog.d/<plugin>/*.md` (fragments `release-edit` reads and deletes).
 
 ## Flows
-- Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock`, downloads it if missing -> it injects the guide, installs ATL. Startup warns of an enabled official `superpowers` (`doctor::enabled_official_superpowers`).
+- Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock`, downloads it if missing -> it injects the guide, installs ATL, warns of an enabled official `superpowers` (`doctor.rs`).
 - Bash call: `bin/atl-hook`, then `hooks/no-attribution.sh`; the guardrails `guard.sh` -> `anthology guard`. All run with `onFailure: block`, timeout 60. At a prompt, the permissions mod allows a command only when `anthology perm classify` proves it read-only.
-- Guard binary missing: a detached `bootstrap.sh fetch` downloads; `guard.sh` lets only the installer its blocks name through.
+- Guard binary missing: a detached `bootstrap.sh fetch` downloads; `guard.sh` lets through only the installer it names.
 - Binary release: root `Cargo.toml` version -> tag `anthology-bin--v<ver>` -> `anthology-release.yml` -> `scripts/dev.sh lock write` rewrites both `anthology.lock` -> release guardrails, then anthology.
 - ATL release: `atl/Cargo.toml` version `<upstream>-anthology.<n>` -> tag `atl--v<ver>` -> `atl-release.yml` -> `atl.lock` -> release anthology.
 - Plugin release: `scripts/release.sh <plugin> <ver>` bumps `plugin.json`, moves `[Unreleased]` entries, commits, tags, then `git push --atomic`; last line `RELEASE OK|FAILED`. Its dev calls share one `rust-test.sh` session. Release a dependency plugin first; `lock check-fresh` refuses a lock older than the workspace.
 
 ## Checks
-- Everything: `scripts/rust-test.sh`. One crate: `... test -p <crate>`. One-shot runs and `session-stop` remove the checkout's target volume (`ANTHOLOGY_KEEP_TARGET=1` keeps it); `session-start` runs `gc`; `anthology-sccache` is shared (`rust_test_script.rs`).
-- CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also checks `release.sh`, `rust-test.sh`); `rust-test-linux`/`-macos` gate on `-shard` jobs, which `rust-scope.sh` skips for release metadata. A PR in merge conflict runs no CI: merge `origin/build`.
+- Everything: `scripts/rust-test.sh`; one crate: `... test -p <crate>`. One-shots and `session-stop` drop the target volume (`ANTHOLOGY_KEEP_TARGET=1` keeps it); `session-start` runs `gc`; `anthology-sccache` is shared. Remote: `ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <args>` cleans only its own items.
+- CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also checks `release.sh`, `rust-test.sh`, `remote-build.sh`); `rust-test-linux`/`-macos` gate on `-shard` jobs, which `rust-scope.sh` skips for release metadata. A PR in merge conflict runs no CI.
 - `lock-fresh.sh` warns only (exit 0). `fuzz.sh`: `cargo metadata --locked` guards the fuzz lock.
-- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps each inherited test to a Rust test or drop reason (`ci/jobs/ledger.sh`).
+- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons (`ledger.sh`).
 - Budgets: agent `BUDGET` in `startup_budget.rs`; guide max 3800 characters, session-start output max 9000 (`session_start.rs`).
 
 ## Cleanup duties
