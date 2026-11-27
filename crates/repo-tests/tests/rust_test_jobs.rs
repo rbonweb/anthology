@@ -635,6 +635,7 @@ fn the_scope_job_reads_the_pull_request_range_and_labels() {
         "run_macos",
         "linux_matrix",
         "macos_matrix",
+        "jobs",
     ] {
         assert_eq!(
             text(&job["outputs"], out),

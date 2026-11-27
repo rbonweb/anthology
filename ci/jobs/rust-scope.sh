@@ -39,6 +39,11 @@
 #   macos_matrix   the macOS shards (plain and --all-features), each with the crates to test (empty
 #                  for a full run: the whole workspace and the ledger listings); {"include":[]}
 #                  when none runs
+#   jobs           the repository jobs of ci.yml that run, as `,name,name,` (so ci.yml can test
+#                  `contains(jobs, ',name,')`), sorted; every one on a full run. A job runs when a
+#                  path it reads changed (`job:NAME` rules), or a crate it builds or runs did (the
+#                  `crate:NAME` rows: the crate or one it depends on changed). The jobs gitleaks,
+#                  deny and shellcheck are not here: they run on every pull request
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -82,10 +87,29 @@ path_packages() {
     done
 }
 
+# The repository jobs of ci.yml that rust-scope switches (the `jobs` output); the tests in
+# crates/repo-tests/tests/ci_scope.rs hold this list to the jobs ci.yml reads it for.
+all_jobs="cli-syntax ledger lock-fresh memory-diff mods plugin-validate rust-lint shims-distros startup-budget vendor-check version-bump"
+
+# The effects of the `crate:NAME` rows whose crate is among $src_affected, as words.
+crate_effects() {
+    while IFS="$tab" read -r pattern effects; do
+        case $pattern in
+            crate:*)
+                if printf '%s\n' "$src_affected" | grep -qx -- "${pattern#crate:}"; then
+                    printf '%s ' "$effects"
+                fi
+                ;;
+        esac
+    done <"$rules"
+}
+
 # Prints the output lines. $1: true for a full run. The accumulated state is in the globals set
-# below: changed, direct_surfaces, all_surfaces, want_atl, want_atl_macos, want_fuzz, want_macos.
+# below: changed, src_changed, jobs, direct_surfaces, all_surfaces, want_atl, want_atl_macos,
+# want_fuzz, want_macos.
 emit() {
     is_full=$1
+    src_affected=
     if [ "$is_full" = true ]; then
         affected=$(printf '%s\n' "$dirs" | awk -F'\t' 'NF == 2 { print $2 }' | LC_ALL=C sort -u)
         all_surfaces=true
@@ -93,11 +117,25 @@ emit() {
         want_atl_macos=true
         want_fuzz=true
         want_macos=true
-    elif [ -n "$changed" ]; then
-        # shellcheck disable=SC2086 # $changed is a list of package names
-        affected=$(node "$graph" "$meta" affected $changed) || return 1
+        jobs=$all_jobs
     else
-        affected=
+        if [ -n "$changed" ]; then
+            # shellcheck disable=SC2086 # $changed is a list of package names
+            affected=$(node "$graph" "$meta" affected $changed) || return 1
+        else
+            affected=
+        fi
+        # The crates whose source changed (not the repo-tests an edit to docs stands for) and the
+        # crates that depend on them: the ones a `crate:NAME` row names are affected by them.
+        if [ -n "$src_changed" ]; then
+            # shellcheck disable=SC2086 # $src_changed is a list of package names
+            src_affected=$(node "$graph" "$meta" affected $src_changed) || return 1
+        fi
+        for effect in $(crate_effects); do
+            case $effect in
+                job:*) jobs="$jobs ${effect#job:}" ;;
+            esac
+        done
     fi
 
     # The surfaces: every golden of an affected crate (all of them for a difftest change or a
@@ -209,6 +247,11 @@ emit() {
         macos_matrix="{\"include\":[{\"features\":\"plain\",\"name\":\"plain\",\"packages\":\"$for_macos\"},{\"features\":\"all\",\"name\":\"all\",\"packages\":\"$for_macos\"}]}"
     fi
 
+    # `,a,b,` (empty when no job runs), sorted and without repeats.
+    # shellcheck disable=SC2086 # $jobs is a list of job names
+    jobs_out=$(printf '%s\n' $jobs | grep . | LC_ALL=C sort -u | paste -sd, -)
+    [ -z "$jobs_out" ] || jobs_out=,$jobs_out,
+
     echo "full=$is_full"
     echo "packages=$packages"
     echo "surfaces=$surface_list"
@@ -219,9 +262,12 @@ emit() {
     echo "run_macos=$run_macos"
     echo "linux_matrix=$linux_matrix"
     echo "macos_matrix=$macos_matrix"
+    echo "jobs=$jobs_out"
 }
 
 changed=
+src_changed=
+jobs=
 direct_surfaces=
 all_surfaces=false
 want_atl=false
@@ -298,6 +344,11 @@ for f in $files; do
     IFS=$old_ifs
     if release_metadata "$f"; then
         changed="$changed repo-tests"
+        # Release metadata stays out of the crates and the goldens, but a job may read it (the
+        # memory listing reads the notes, lock-fresh the root manifest and lock).
+        for effect in $(rule_effects "$f"); do
+            case $effect in job:*) jobs="$jobs ${effect#job:}" ;; esac
+        done
         IFS=$nl
         continue
     fi
@@ -314,6 +365,7 @@ for f in $files; do
             member=$(name_of_dir "$folder")
             [ -n "$member" ] || full "$f is in $folder, which is not a workspace member"
             changed="$changed $member"
+            src_changed="$src_changed $member"
             [ "$member" != difftest ] || all_surfaces=true
             placed=true
             ;;
@@ -326,6 +378,7 @@ for f in $files; do
             atl-macos) want_atl_macos=true ;;
             fuzz) want_fuzz=true ;;
             macos) want_macos=true ;;
+            job:*) jobs="$jobs ${effect#job:}" ;;
             pkg:*) changed="$changed ${effect#pkg:}" ;;
             surface:'*') all_surfaces=true ;;
             surface:*) direct_surfaces="$direct_surfaces${effect#surface:}$nl" ;;
@@ -338,5 +391,6 @@ IFS=$old_ifs
 set +f
 
 changed=$(printf '%s' "$changed" | tr ' ' '\n' | grep . | LC_ALL=C sort -u | tr '\n' ' ' || true)
+src_changed=$(printf '%s' "$src_changed" | tr ' ' '\n' | grep . | LC_ALL=C sort -u | tr '\n' ' ' || true)
 echo "rust-scope: changed crates:${changed:- none}" >&2
 emit false || full "the dependency graph could not be read"
