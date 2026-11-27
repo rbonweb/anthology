@@ -186,7 +186,8 @@ pub(crate) fn check_claude_hook_command(cmd: &str) -> ClaudeHookPermissions {
     // anthology fork: managed settings and `CLAUDE_PROJECT_DIR` join the files
     // read, and `allowManagedPermissionRulesOnly` drops the others.
     let files = claude_hook_settings_files();
-    let (deny_rules, ask_rules, allow_rules) = load_claude_hook_rules(&files, &mut scan);
+    let (deny_rules, ask_rules, allow_rules) =
+        load_claude_hook_rules(&files, &claude_hook_allow_files(), &mut scan);
     let (_, transparent_prefixes) = crate::core::config::hook_rewrite_params();
     let verdict = check_command_with_rules_and_prefixes(
         cmd,
@@ -224,18 +225,40 @@ fn claude_hook_settings_files() -> super::anthology_gate::SettingsFiles {
     )
 }
 
+/// anthology fork: the files, besides the managed ones, whose ALLOW rules count.
+/// Claude Code reads project settings from the project directory only, while
+/// [`find_project_root`] walks up the tree and may find a parent folder's
+/// `.claude`: its deny and ask rules are read (more of those is the safe side), its
+/// allow rules are not. The project directory is `CLAUDE_PROJECT_DIR`, else the git
+/// root of the working directory, else the working directory itself.
+fn claude_hook_allow_files() -> Vec<PathBuf> {
+    let project = super::anthology_gate::env_project_dir()
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| {
+            let cwd = user_dirs::working_dir()?;
+            let root = user_dirs::ancestors(&cwd)
+                .find(|dir| dir.join(".git").exists())
+                .map(std::path::Path::to_path_buf);
+            Some(root.unwrap_or(cwd))
+        });
+    get_settings_paths_from(project, resolve_claude_dir().ok())
+}
+
 /// anthology fork: [`load_permission_rules_tracking`] over the managed files and,
 /// unless a managed file sets `allowManagedPermissionRulesOnly` (Claude Code then
-/// ignores every other file), the rest.
+/// ignores every other file), the rest, whose allow rules count only for the files
+/// in `allow_from` ([`claude_hook_allow_files`]).
 fn load_claude_hook_rules(
     files: &super::anthology_gate::SettingsFiles,
+    allow_from: &[PathBuf],
     scan: &mut SettingsScan,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
     let (mut deny, mut ask, mut allow) = load_permission_rules_tracking(&files.managed, scan);
     if super::anthology_gate::managed_rules_only(&files.managed) {
         return (deny, ask, allow);
     }
-    let (other_deny, other_ask, other_allow) = load_permission_rules_tracking(&files.other, scan);
+    let (other_deny, other_ask, other_allow) =
+        load_permission_rules_tracking_allowing(&files.other, Some(allow_from), scan);
     deny.extend(other_deny);
     ask.extend(other_ask);
     allow.extend(other_allow);
@@ -490,6 +513,16 @@ fn load_permission_rules_tracking(
     paths: &[PathBuf],
     scan: &mut SettingsScan,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
+    load_permission_rules_tracking_allowing(paths, None, scan)
+}
+
+/// [`load_permission_rules_tracking`] that takes allow rules only from the files in
+/// `allow_from` (`None`: from every file). Deny and ask rules come from all of them.
+fn load_permission_rules_tracking_allowing(
+    paths: &[PathBuf],
+    allow_from: Option<&[PathBuf]>,
+    scan: &mut SettingsScan,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut deny_rules = Vec::new();
     let mut ask_rules = Vec::new();
     let mut allow_rules = Vec::new();
@@ -545,7 +578,9 @@ fn load_permission_rules_tracking(
         super::anthology_gate::append_read_rules(permissions.get("deny"), &mut scan.read_deny);
         super::anthology_gate::append_read_rules(permissions.get("ask"), &mut scan.read_ask);
         append_bash_rules(permissions.get("ask"), &mut ask_rules);
-        append_bash_rules(permissions.get("allow"), &mut allow_rules);
+        if allow_from.is_none_or(|files| files.contains(path)) {
+            append_bash_rules(permissions.get("allow"), &mut allow_rules);
+        }
     }
 
     (deny_rules, ask_rules, allow_rules)

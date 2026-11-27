@@ -16,6 +16,12 @@
 //!   only `*` also matches the bare command (`npm run *` covers `npm run`);
 //! - **exact**: the command is the rule, nothing else.
 //!
+//! A prefix or wildcard rule never covers an exec wrapper (`watch`, `setsid`,
+//! `ionice`, `flock`) or a `find` that runs or writes (`-exec`, `-execdir`, `-ok`,
+//! `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`, `-files0-from`),
+//! as in Claude Code, where `Bash(find *)` does not allow `find . -delete`. Which
+//! files may supply allow rules is `permissions::claude_hook_allow_files`.
+//!
 //! A line must be covered a simple command at a time, and a line that cannot be cut
 //! into simple commands (a substitution, a redirect to a file) is covered by none.
 //! The install's own blanket `Bash(atl *)` allow is not the user's allow for an `atl`
@@ -74,6 +80,11 @@ pub(crate) fn matches(command: &str, rule: &str) -> bool {
     if rule.is_empty() || rule.contains('\\') {
         return false;
     }
+    // Claude Code never lets a prefix or wildcard rule cover these (only an exact
+    // rule, where the user wrote the whole line).
+    if rule.contains('*') && runs_what_follows(command) {
+        return false;
+    }
     if let Some(prefix) = rule.strip_suffix(":*")
         && !prefix.contains('*')
     {
@@ -94,6 +105,39 @@ pub(crate) fn matches(command: &str, rule: &str) -> bool {
         return true;
     }
     glob(command.as_bytes(), rule.as_bytes())
+}
+
+/// The exec wrappers Claude Code's prefix and wildcard rules never cover.
+const EXEC_WRAPPERS: [&str; 4] = ["watch", "setsid", "ionice", "flock"];
+
+/// The `find` options that run a command or write a file.
+const FIND_RUNNING_OPTIONS: [&str; 10] = [
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-delete",
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-fls",
+    "-files0-from",
+];
+
+/// Whether `command` starts with an exec wrapper, or is a `find` that runs or
+/// writes. Quotes are ignored, so `'-delete'` counts, and a path to the program
+/// is the program.
+fn runs_what_follows(command: &str) -> bool {
+    let mut words = command.split([' ', '\t']).filter(|word| !word.is_empty());
+    let Some(first) = words.next() else {
+        return false;
+    };
+    let program = basename(first.trim_matches(['\'', '"']));
+    if EXEC_WRAPPERS.contains(&program) {
+        return true;
+    }
+    program == "find"
+        && words.any(|word| FIND_RUNNING_OPTIONS.contains(&word.trim_matches(['\'', '"'])))
 }
 
 /// `*` matches any run of bytes (including none); the rest is literal; both ends are
@@ -161,6 +205,58 @@ mod tests {
         for (command, rule, want) in cases {
             assert_eq!(matches(command, rule), *want, "{command:?} vs {rule:?}");
         }
+    }
+
+    /// Claude Code's own exceptions: a `*` or `:*` rule never covers an exec wrapper
+    /// or a `find` that runs or writes; an exact rule is the exact command.
+    #[test]
+    fn a_star_rule_never_covers_an_exec_wrapper_or_a_find_that_runs_or_writes() {
+        let cases: &[(&str, &str, bool)] = &[
+            ("find . -delete", "find *", false),
+            ("find . -delete", "find:*", false),
+            ("find . -delete", "*", false),
+            ("find . -delete", "find . *", false),
+            ("find . -exec rm {} ;", "find *", false),
+            ("find . -execdir rm {} ;", "find *", false),
+            ("find . -ok rm {} ;", "find *", false),
+            ("find . -okdir rm {} ;", "find *", false),
+            ("find . -fprint o", "find *", false),
+            ("find . -fprint0 o", "find *", false),
+            ("find . -fprintf o x", "find *", false),
+            ("find . -fls o", "find *", false),
+            ("find . -files0-from l", "find *", false),
+            ("find . '-delete'", "find *", false),
+            ("/usr/bin/find . -delete", "/usr/bin/find *", false),
+            ("find", "find *", true),
+            ("find . -name x", "find *", true),
+            ("find . -name -deleted", "find *", true),
+            ("watch touch x", "watch *", false),
+            ("watch touch x", "watch:*", false),
+            ("watch touch x", "*", false),
+            ("setsid touch x", "setsid *", false),
+            ("ionice touch x", "ionice:*", false),
+            ("flock f touch x", "flock *", false),
+            ("/usr/bin/flock f touch x", "*", false),
+            // An exact rule is the whole line, whatever it holds.
+            ("find . -delete", "find . -delete", true),
+            ("watch touch x", "watch touch x", true),
+            // Not an exception: other launchers and other finds.
+            ("timeout 5 ls", "timeout *", true),
+            ("findutils --version", "findutils *", true),
+        ];
+        for (command, rule, want) in cases {
+            assert_eq!(matches(command, rule), *want, "{command:?} vs {rule:?}");
+        }
+        // Through `atl`, the line is judged as what it runs.
+        let allow = rules(&["atl *", "find *", "watch *"]);
+        for line in [
+            "find . -delete",
+            "watch touch /tmp/pwn",
+            "find . -name x && find . -delete",
+        ] {
+            assert!(!user_allows(line, &allow), "{line}");
+        }
+        assert!(user_allows("find . -name x", &allow));
     }
 
     #[test]

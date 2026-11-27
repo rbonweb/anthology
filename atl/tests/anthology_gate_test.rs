@@ -2973,3 +2973,155 @@ fn a_listed_path_that_resolves_outside_the_project_keeps_the_ask() {
         "{inside}"
     );
 }
+
+// --- the allow-rule matcher follows Claude Code's exceptions and sources ---
+
+/// Claude Code never lets a `*` or `:*` allow rule cover an exec wrapper
+/// (`watch`, `setsid`, `ionice`, `flock`) or a `find` that runs or writes
+/// (`-exec`, `-delete`, `-fprint`...), because they run what follows. So such a
+/// rule must not make ATL leave the command to `Bash(atl *)`: no rewrite, and a
+/// typed `atl` line asks.
+#[test]
+fn an_allow_rule_with_a_star_never_covers_an_exec_wrapper_or_a_find_that_runs() {
+    let sb = Sandbox::new(Rules {
+        allow: &[
+            "atl *", "find *", "watch *", "setsid:*", "ionice *", "flock *",
+        ],
+        ..Rules::default()
+    });
+    for cmd in [
+        "find . -delete",
+        "find . -fprint out.txt",
+        "find . -name x -execdir rm {} +",
+        "find . -files0-from list",
+        "watch touch /tmp/pwn",
+        "setsid touch /tmp/pwn",
+        "ionice touch /tmp/pwn",
+        "flock lock touch /tmp/pwn",
+    ] {
+        // No classifier: the stand-in proves more than the real one refuses.
+        assert_eq!(
+            hook_in(&sb, cmd, None, false, &[]),
+            Said::Nothing,
+            "{cmd} must not be rewritten"
+        );
+        let typed = format!("atl {cmd}");
+        let bypassed = format!("atl bypass {cmd}");
+        for line in [&typed, &bypassed] {
+            assert!(
+                matches!(hook_in(&sb, line, None, false, &[]), Said::Ask(_)),
+                "{line}: {:?}",
+                hook_in(&sb, line, None, false, &[])
+            );
+        }
+    }
+    // Controls: the same rules cover a find that only reads and a plain command.
+    assert_eq!(
+        hook_in(&sb, "atl find . -name x", None, false, &[]),
+        Said::Nothing
+    );
+    assert_eq!(
+        hook_in(&sb, "atl bypass find . -name x", None, false, &[]),
+        Said::Nothing
+    );
+    // An exact rule is the exact command: the user wrote the whole line.
+    let exact = Sandbox::new(Rules {
+        allow: &["atl *", "find . -delete"],
+        ..Rules::default()
+    });
+    assert_eq!(
+        hook_in(&exact, "atl find . -delete", None, false, &[]),
+        Said::Nothing
+    );
+}
+
+/// A sandbox whose project (`work/proj`) has no `.claude` of its own and whose
+/// parent folder (`work`) holds `parent_settings`.
+fn nested_project_sandbox(parent_settings: serde_json::Value) -> Sandbox {
+    let sb = Sandbox::bare();
+    let work = sb._root.path().join("work");
+    let proj = work.join("proj");
+    std::fs::create_dir_all(&proj).expect("mkdir work/proj");
+    std::fs::create_dir_all(work.join(".claude")).expect("mkdir work/.claude");
+    std::fs::write(
+        work.join(".claude/settings.json"),
+        parent_settings.to_string(),
+    )
+    .expect("write the parent's settings");
+    Sandbox {
+        _root: sb._root,
+        home: sb.home,
+        claude_home: sb.claude_home,
+        project: proj,
+    }
+}
+
+/// Claude Code reads project settings from the project directory only, not from a
+/// parent folder's `.claude`, which the hook's walk up the tree may find. An allow
+/// rule found there must not count; a deny rule there still does (reading more of
+/// those is the safe side).
+#[test]
+fn an_allow_rule_in_a_parent_folder_is_not_the_users_allow() {
+    let sb = nested_project_sandbox(serde_json::json!({
+        "permissions": { "allow": ["Bash(*)", "Bash(atl *)"], "deny": ["Bash(rm:*)"] }
+    }));
+    let project_dir = sb.project.to_string_lossy().into_owned();
+    // `CLAUDE_PROJECT_DIR` set, and unset with a git root.
+    std::fs::create_dir_all(sb.project.join(".git")).expect("mkdir .git");
+    for env in [&[("CLAUDE_PROJECT_DIR", project_dir.as_str())][..], &[]] {
+        for cmd in [
+            "atl run touch /tmp/x",
+            "atl bypass touch /tmp/x",
+            "atl err touch /tmp/x",
+            "atl run sh -c 'touch /tmp/x'",
+            "atl bypass sh -c 'touch /tmp/x'",
+            "atl err sh -c 'touch /tmp/x'",
+        ] {
+            let said = hook_in(&sb, cmd, None, false, env);
+            assert!(matches!(said, Said::Ask(_)), "{cmd} ({env:?}): {said:?}");
+        }
+        // No rewrite either: the parent's allow is not the user's.
+        assert_eq!(
+            hook_in(&sb, "touch /tmp/x", None, false, env),
+            Said::Nothing,
+            "{env:?}"
+        );
+        // A deny in the parent folder still denies.
+        assert_eq!(
+            hook_in(&sb, "rm x", None, false, env),
+            Said::Deny,
+            "{env:?}"
+        );
+    }
+}
+
+/// The places an allow rule does count: the project directory's own settings, the
+/// user's settings and the managed settings.
+#[test]
+fn an_allow_rule_in_the_project_the_user_or_managed_settings_still_counts() {
+    let allow_all = serde_json::json!({ "permissions": { "allow": ["Bash(*)"] } }).to_string();
+    // The project directory's own `.claude`, named by `CLAUDE_PROJECT_DIR`.
+    let sb = nested_project_sandbox(serde_json::json!({}));
+    let project_dir = sb.project.to_string_lossy().into_owned();
+    std::fs::create_dir_all(sb.project.join(".claude")).expect("mkdir proj/.claude");
+    std::fs::write(sb.project.join(".claude/settings.local.json"), &allow_all)
+        .expect("write the project's local settings");
+    assert_eq!(
+        hook_in(
+            &sb,
+            "atl run touch /tmp/x",
+            None,
+            false,
+            &[("CLAUDE_PROJECT_DIR", project_dir.as_str())]
+        ),
+        Said::Nothing
+    );
+    // The user's settings.
+    let sb = nested_project_sandbox(serde_json::json!({}));
+    std::fs::write(sb.claude_home.join("settings.json"), &allow_all)
+        .expect("write the user's settings");
+    assert_eq!(
+        hook_in(&sb, "atl run touch /tmp/x", None, false, &[]),
+        Said::Nothing
+    );
+}
