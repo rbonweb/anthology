@@ -34,7 +34,7 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 - Plugin release: `scripts/release.sh <plugin> <ver>` bumps `plugin.json`, moves `[Unreleased]` entries, commits, tags, then `git push --atomic`; last line `RELEASE OK|FAILED`. Its dev calls share one `anthology-release-*` container (`rust-test.sh session-start|stop`). Release a dependency plugin first; `lock check-fresh` refuses a lock older than the workspace.
 
 ## Checks
-- Everything: `scripts/rust-test.sh`. One crate: `scripts/rust-test.sh test -p <crate>` (`rust_test_script.rs`).
+- Everything: `scripts/rust-test.sh`. One crate: `scripts/rust-test.sh test -p <crate>` (`rust_test_script.rs`). Remote: `ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <same args>` (`remote_build.rs`).
 - CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` checks `release.sh`, `rust-test.sh` as bash); `rust-test-linux`/`-macos` gate on `-shard` jobs, which `rust-scope.sh` skips for release metadata. A PR in merge conflict runs no CI: merge `origin/build`.
 - `lock-fresh.sh` warns only (exit 0). `fuzz.sh`: `cargo metadata --locked` guards the fuzz lock.
 - Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps each inherited test to a Rust test or a drop reason (`ci/jobs/ledger.sh`).
