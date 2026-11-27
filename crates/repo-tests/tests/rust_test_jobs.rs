@@ -1,26 +1,26 @@
-//! The Rust test jobs in ci.yml: the full suite runs in parallel shards, and a pull request that
-//! changes nothing but release metadata runs only the repository checks (repo-tests, which hold
-//! the `anthology_lock` and `atl_lock` tests). `rust-test-linux` and `rust-test-macos` stay the
-//! job names to read: each gates on its shards.
+//! The Rust test jobs in ci.yml. `ci/jobs/rust-scope.sh` decides what a run needs (its own tests
+//! are in `ci_scope.rs`): the Linux and macOS shards come from its matrices, `rust-test-linux`
+//! and `rust-test-macos` stay the job names to read (the required checks) and gate on their
+//! shards, passing when the shards were rightly skipped. Here: the gate, the shard scripts, the
+//! workflow's wiring and the cache.
 //!
-//! The scripts run here with stubs: a throwaway git repository for `ci/jobs/rust-scope.sh`, and
-//! a `docker` (Linux) or `cargo` and `rustup` (macOS) on PATH that record their arguments.
+//! The scripts run here with stubs: a `docker` (Linux) or `cargo` and `rustup` (macOS) on PATH
+//! that record their arguments.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
+use regex::Regex;
 use repo_tests::repo;
 use repo_tests::yaml::{self, Yaml};
-use tempfile::TempDir;
 
-const SCOPE: &str = "ci/jobs/rust-scope.sh";
 const GATE: &str = "ci/jobs/rust-gate.sh";
 const LINUX: &str = "ci/jobs/rust-test-linux.sh";
 const MACOS: &str = "ci/jobs/rust-test-macos.sh";
-/// The difftest golden replay: about 9 of the 16 minutes of one Linux run, so it is a shard.
-const REPLAY: &str = "the_committed_goldens_replay_clean";
+const CACHE: &str = "ci/jobs/rust-cache.sh";
 
 fn ci() -> Yaml {
     yaml::load_file(".github/workflows/ci.yml")
@@ -52,356 +52,47 @@ fn step_running<'a>(job: &'a Yaml, run: &str) -> &'a Yaml {
         .unwrap_or_else(|| panic!("no step runs {run}"))
 }
 
+fn step_using<'a>(job: &'a Yaml, action: &str) -> &'a Yaml {
+    yaml::items(&job["steps"])
+        .iter()
+        .find(|s| text(s, "uses").starts_with(action))
+        .unwrap_or_else(|| panic!("no step uses {action}"))
+}
+
 fn executable(dir: &Path, name: &str, body: &str) {
     let p = dir.join(name);
     fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
     fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-// ---- ci/jobs/rust-scope.sh -----------------------------------------------------------------
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
-        .output()
-        .expect("git ran");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn put(dir: &Path, rel: &str, body: &str) {
-    let p = dir.join(rel);
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, body).unwrap();
-}
-
-/// Replaces `from` (which must be there) with `to` in `rel`.
-fn edit(dir: &Path, rel: &str, from: &str, to: &str) {
-    let p = dir.join(rel);
-    let old = fs::read_to_string(&p).unwrap();
-    assert!(old.contains(from), "{rel} has no {from:?}");
-    fs::write(p, old.replacen(from, to, 1)).unwrap();
-}
-
-const CARGO_TOML: &str = "[workspace]\nmembers = [\"crates/*\"]\n\n\
-[workspace.package]\nversion = \"0.2.3\"\nedition = \"2024\"\n\n\
-[workspace.dependencies]\nregex = \"=1.13.2\"\n\n\
-[dependencies.extra]\nversion = \"=1.0.0\"\n";
-
-const CARGO_LOCK: &str = "version = 4\n\n\
-[[package]]\nname = \"anthology-cli\"\nversion = \"0.2.3\"\ndependencies = [\n \"regex\",\n]\n\n\
-[[package]]\nname = \"regex\"\nversion = \"1.13.2\"\n\
-source = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"aaaa\"\n";
-
-const PLUGIN_JSON: &str = "plugins/anthology/.claude-plugin/plugin.json";
-
-/// A repository at a base commit holding every kind of release metadata and some code.
-fn fixture() -> (TempDir, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let d = dir.path();
-    git(d, &["init", "-q", "-b", "main"]);
-    put(d, "Cargo.toml", CARGO_TOML);
-    put(d, "Cargo.lock", CARGO_LOCK);
-    put(d, "fuzz/Cargo.lock", CARGO_LOCK);
-    put(
-        d,
-        PLUGIN_JSON,
-        "{\n  \"name\": \"anthology\",\n  \"version\": \"0.5.0\",\n  \"description\": \"d\"\n}\n",
-    );
-    put(
-        d,
-        "plugins/anthology/anthology.lock",
-        "{\n  \"version\": \"0.2.2\",\n  \"sha256\": \"aa\"\n}\n",
-    );
-    put(d, "CHANGELOG.md", "# Changelog\n");
-    put(d, "changelog.d/README.md", "How to write a fragment.\n");
-    put(d, ".claude/memory/reference-x.md", "note\n");
-    put(
-        d,
-        ".claude/agent-memory/anthology-implementer/a.md",
-        "note\n",
-    );
-    put(d, "crates/x/src/lib.rs", "pub fn x() {}\n");
-    git(d, &["add", "-A"]);
-    git(d, &["commit", "-q", "-m", "base"]);
-    let base = git(d, &["rev-parse", "HEAD"]);
-    (dir, base)
-}
-
-fn run_scope(dir: &Path, base: &str, head: &str) -> Output {
-    Command::new("sh")
-        .arg(repo::path(SCOPE))
-        .args([base, head])
-        .current_dir(dir)
-        .output()
-        .expect("sh ran")
-}
-
-/// rust-scope.sh's answer for a commit that `change` makes on top of the fixture's base.
-fn scope_after(change: impl FnOnce(&Path)) -> String {
-    let (dir, base) = fixture();
-    let d = dir.path();
-    change(d);
-    git(d, &["add", "-A"]);
-    git(d, &["commit", "-q", "--allow-empty", "-m", "head"]);
-    let head = git(d, &["rev-parse", "HEAD"]);
-    let out = run_scope(d, &base, &head);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// Every release-metadata change at once: the versions in Cargo.toml and both locks, a plugin
-/// version, an anthology.lock pin, the changelog, its fragments and memory notes.
-fn release_metadata(d: &Path) {
-    edit(
-        d,
-        "Cargo.toml",
-        "version = \"0.2.3\"",
-        "version = \"0.2.4\"",
-    );
-    for lock in ["Cargo.lock", "fuzz/Cargo.lock"] {
-        edit(d, lock, "version = \"0.2.3\"", "version = \"0.2.4\"");
-    }
-    edit(
-        d,
-        PLUGIN_JSON,
-        "\"version\": \"0.5.0\"",
-        "\"version\": \"0.5.1\"",
-    );
-    put(
-        d,
-        "plugins/anthology/anthology.lock",
-        "{\n  \"version\": \"0.2.3\",\n  \"sha256\": \"bb\"\n}\n",
-    );
-    put(d, "CHANGELOG.md", "# Changelog\n\n## 0.2.4\n");
-    put(d, "changelog.d/anthology/10-pin.md", "- Pin.\n");
-    fs::remove_file(d.join("changelog.d/README.md")).unwrap();
-    put(d, ".claude/memory/reference-x.md", "note, changed\n");
-    put(
-        d,
-        ".claude/agent-memory/anthology-implementer/b.md",
-        "new note\n",
-    );
-}
-
-/// A named change to the fixture.
-type Case = (&'static str, fn(&Path));
-
-#[test]
-fn release_metadata_alone_skips_the_full_suite() {
-    assert_eq!(scope_after(release_metadata), "full=false\n");
-}
-
-#[test]
-fn each_kind_of_release_metadata_alone_skips_the_full_suite() {
-    let cases: [Case; 6] = [
-        ("Cargo.toml version", |d| {
-            edit(
-                d,
-                "Cargo.toml",
-                "version = \"0.2.3\"",
-                "version = \"0.2.4\"",
-            )
-        }),
-        ("fuzz lock version", |d| {
-            edit(
-                d,
-                "fuzz/Cargo.lock",
-                "version = \"0.2.3\"",
-                "version = \"0.2.4\"",
-            )
-        }),
-        ("plugin version", |d| {
-            edit(
-                d,
-                PLUGIN_JSON,
-                "\"version\": \"0.5.0\"",
-                "\"version\": \"0.5.1\"",
-            )
-        }),
-        ("anthology.lock", |d| {
-            edit(d, "plugins/anthology/anthology.lock", "aa", "cc")
-        }),
-        ("changelog fragment", |d| {
-            put(d, "changelog.d/anthology-guardrails/x.md", "- x\n")
-        }),
-        ("memory note", |d| put(d, ".claude/memory/new.md", "n\n")),
-    ];
-    for (what, change) in cases {
-        assert_eq!(scope_after(change), "full=false\n", "{what}");
-    }
-}
-
-#[test]
-fn anything_beyond_release_metadata_runs_the_full_suite() {
-    let cases: [Case; 19] = [
-        ("code", |d| put(d, "crates/x/src/lib.rs", "pub fn y() {}\n")),
-        ("code beside metadata", |d| {
-            release_metadata(d);
-            put(d, "crates/x/src/lib.rs", "pub fn y() {}\n");
-        }),
-        ("a workspace dependency", |d| {
-            edit(d, "Cargo.toml", "=1.13.2", "=1.13.3")
-        }),
-        ("a version line outside a package table", |d| {
-            edit(
-                d,
-                "Cargo.toml",
-                "version = \"=1.0.0\"",
-                "version = \"=1.0.1\"",
-            )
-        }),
-        ("a new Cargo.toml line", |d| {
-            edit(
-                d,
-                "Cargo.toml",
-                "edition = \"2024\"\n",
-                "edition = \"2024\"\nlicense = \"x\"\n",
-            )
-        }),
-        ("a registry dependency in the lock", |d| {
-            edit(
-                d,
-                "Cargo.lock",
-                "version = \"1.13.2\"",
-                "version = \"1.13.3\"",
-            );
-            edit(
-                d,
-                "Cargo.lock",
-                "checksum = \"aaaa\"",
-                "checksum = \"bbbb\"",
-            );
-        }),
-        ("a lock checksum", |d| {
-            edit(
-                d,
-                "fuzz/Cargo.lock",
-                "checksum = \"aaaa\"",
-                "checksum = \"bbbb\"",
-            )
-        }),
-        ("a plugin.json key other than version", |d| {
-            edit(
-                d,
-                PLUGIN_JSON,
-                "\"description\": \"d\"",
-                "\"description\": \"e\"",
-            )
-        }),
-        ("Cargo.toml deleted", |d| {
-            fs::remove_file(d.join("Cargo.toml")).unwrap()
-        }),
-        ("an anthology.lock below a plugin's top folder", |d| {
-            put(d, "plugins/anthology/knowledge/x/anthology.lock", "{}\n")
-        }),
-        ("a changelog that is not the root one", |d| {
-            put(d, "atl/CHANGELOG.md", "# x\n")
-        }),
-        ("another .claude file", |d| {
-            put(d, ".claude/settings.json", "{}\n")
-        }),
-        ("no change at all", |_| {}),
-        // A version line that goes or is added is not a version bump, only a changed one is.
-        ("a removed Cargo.toml version line", |d| {
-            edit(d, "Cargo.toml", "version = \"0.2.3\"\n", "")
-        }),
-        ("a removed lock version line", |d| {
-            edit(d, "Cargo.lock", "version = \"0.2.3\"\n", "")
-        }),
-        ("a removed plugin.json version line", |d| {
-            edit(d, PLUGIN_JSON, "  \"version\": \"0.5.0\",\n", "")
-        }),
-        ("a duplicate Cargo.toml version line", |d| {
-            edit(
-                d,
-                "Cargo.toml",
-                "version = \"0.2.3\"\n",
-                "version = \"0.2.3\"\nversion = \"0.2.3\"\n",
-            )
-        }),
-        ("a duplicate lock version line", |d| {
-            edit(
-                d,
-                "fuzz/Cargo.lock",
-                "version = \"0.2.3\"\n",
-                "version = \"0.2.3\"\nversion = \"0.2.3\"\n",
-            )
-        }),
-        ("a duplicate plugin.json version line", |d| {
-            edit(
-                d,
-                PLUGIN_JSON,
-                "  \"version\": \"0.5.0\",\n",
-                "  \"version\": \"0.5.0\",\n  \"version\": \"0.5.1\",\n",
-            )
-        }),
-    ];
-    for (what, change) in cases {
-        assert_eq!(scope_after(change), "full=true\n", "{what}");
-    }
-}
-
-#[test]
-fn without_a_usable_base_the_full_suite_runs() {
-    let (dir, base) = fixture();
-    let d = dir.path();
-    for (b, h) in [
-        ("", base.as_str()),
-        (base.as_str(), ""),
-        ("0000000000000000000000000000000000000000", base.as_str()),
-        ("not-a-commit", base.as_str()),
-    ] {
-        let out = run_scope(d, b, h);
-        assert!(out.status.success(), "{b:?} {h:?}: {out:?}");
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            "full=true\n",
-            "{b:?} {h:?}"
-        );
-    }
+/// PATH with `dir` first.
+fn path_with(dir: &Path) -> std::ffi::OsString {
+    let mut path = vec![dir.to_path_buf()];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::join_paths(path).unwrap()
 }
 
 // ---- ci/jobs/rust-gate.sh ------------------------------------------------------------------
 
-fn gate(scope: &str, full: &str, shards: &str) -> Output {
+fn gate(scope: &str, run: &str, shards: &str) -> Output {
     Command::new("sh")
         .arg(repo::path(GATE))
-        .args(["rust-test-linux", scope, full, shards])
+        .args(["rust-test-linux", scope, run, shards])
         .output()
         .expect("sh ran")
 }
 
 #[test]
 fn the_gate_passes_when_the_shards_pass_or_were_rightly_skipped() {
-    for (full, shards) in [("true", "success"), ("false", "skipped")] {
-        let out = gate("success", full, shards);
-        assert!(out.status.success(), "{full} {shards}: {out:?}");
+    for (run, shards) in [("true", "success"), ("false", "skipped")] {
+        let out = gate("success", run, shards);
+        assert!(out.status.success(), "{run} {shards}: {out:?}");
     }
 }
 
 #[test]
 fn the_gate_fails_on_any_other_outcome() {
-    for (scope, full, shards) in [
+    for (scope, run, shards) in [
         ("success", "true", "failure"),
         ("success", "true", "cancelled"),
         ("success", "true", "skipped"),
@@ -411,31 +102,36 @@ fn the_gate_fails_on_any_other_outcome() {
         ("failure", "", "skipped"),
         ("cancelled", "true", "success"),
     ] {
-        let out = gate(scope, full, shards);
-        assert!(!out.status.success(), "{scope} {full} {shards}: {out:?}");
-        assert!(!out.stderr.is_empty(), "{scope} {full} {shards}: says why");
+        let out = gate(scope, run, shards);
+        assert!(!out.status.success(), "{scope} {run} {shards}: {out:?}");
+        assert!(!out.stderr.is_empty(), "{scope} {run} {shards}: says why");
     }
 }
 
 // ---- ci/jobs/rust-test-linux.sh ------------------------------------------------------------
 
 /// The arguments `scripts/rust-test.sh` hands the container after its own name, `rust-test`,
-/// when ci/jobs/rust-test-linux.sh runs with `args` (a stub `docker` records them).
-fn linux(args: &[&str]) -> Result<Vec<String>, Output> {
+/// when ci/jobs/rust-test-linux.sh runs with `args` and the environment `env` (a stub `docker`
+/// records them).
+fn linux(args: &[&str], env: &[(&str, &str)]) -> Result<Vec<String>, Output> {
     let dir = tempfile::tempdir().unwrap();
     let argv = dir.path().join("argv");
     executable(
         dir.path(),
         "docker",
-        "for a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$DOCKER_ARGV\"",
+        // the first call is `docker run`; the later `docker volume rm` must not overwrite it
+        "[ -e \"$DOCKER_ARGV\" ] || for a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$DOCKER_ARGV\"",
     );
-    let mut path = vec![dir.path().to_path_buf()];
-    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let out = Command::new("sh")
         .arg(repo::path(LINUX))
         .args(args)
-        .env("PATH", std::env::join_paths(path).unwrap())
+        .env_remove("PACKAGES")
+        .env_remove("SURFACES")
+        .envs(env.iter().copied())
+        .env("PATH", path_with(dir.path()))
         .env("DOCKER_ARGV", &argv)
+        // The stub keeps only the last call: this reads the container run, not the volume clean-up.
+        .env("ANTHOLOGY_KEEP_TARGET", "1")
         .output()
         .expect("sh ran");
     if !out.status.success() {
@@ -448,96 +144,226 @@ fn linux(args: &[&str]) -> Result<Vec<String>, Output> {
 }
 
 #[test]
-fn the_rest_shards_run_the_workspace_without_the_replay() {
+fn the_rest_shards_test_the_named_crates_without_the_replay() {
+    let env = [("PACKAGES", "anthology-guard anthology-cli")];
     for (features, extra) in [("plain", &[][..]), ("all", &["--all-features"][..])] {
-        let got = linux(&[features, "rest"]).unwrap();
-        let mut want = vec!["run", "cargo", "test", "--workspace", "--locked"];
+        let got = linux(&[features, "rest"], &env).unwrap();
+        let mut want = vec![
+            "run",
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "anthology-guard",
+            "-p",
+            "anthology-cli",
+        ];
         want.extend_from_slice(extra);
-        want.extend_from_slice(&["--", "--exact", "--skip", REPLAY]);
+        want.extend_from_slice(&["--", "--skip", "golden_replay::"]);
         assert_eq!(got, want, "{features}");
     }
 }
 
 #[test]
-fn the_replay_shards_run_only_the_replay_with_the_same_features() {
-    for (features, extra) in [("plain", &[][..]), ("all", &["--all-features"][..])] {
-        let got = linux(&[features, "replay"]).unwrap();
+fn a_rest_shard_builds_the_anthology_binary_first_for_the_crates_that_run_it() {
+    // memory, runtime and dev run the built binary (testkit's run_bin); a whole-workspace
+    // run builds it anyway, but a shard that names crates does not, unless anthology-cli is one.
+    for (features, flag) in [("plain", ""), ("all", "--all-features")] {
+        let env = [("PACKAGES", "anthology-memory repo-tests")];
+        let got = linux(&[features, "rest"], &env).unwrap();
         assert_eq!(got[..3], ["run", "sh", "-c"], "{features}");
-        let script = &got[3];
-        let mut tail = vec!["rust-test-linux", REPLAY];
-        tail.extend_from_slice(extra);
-        assert_eq!(got[4..], tail, "{features}");
-        // The whole workspace is selected, so --all-features unifies every member's features
-        // exactly as in the full run; a filter that matches no test fails instead of passing.
         assert!(
-            script.contains(
-                r#"cargo test --workspace --locked "$@" --test golden -- --list --exact "$replay""#
-            ),
-            "{script}"
+            got[3].contains("cargo build --locked -p anthology-cli $1"),
+            "{}",
+            got[3]
         );
-        assert!(
-            script.contains(
-                r#"exec cargo test --workspace --locked "$@" --test golden -- --exact "$replay""#
-            ),
-            "{script}"
-        );
+        let mut want = vec!["rust-test-linux", flag, "cargo", "test", "--locked"];
+        want.extend_from_slice(&["-p", "anthology-memory", "-p", "repo-tests"]);
+        if !flag.is_empty() {
+            want.push(flag);
+        }
+        want.extend_from_slice(&["--", "--skip", "golden_replay::"]);
+        assert_eq!(got[4..], want, "{features}");
+    }
+    // Nothing to build first when the crates do not run it, or when cargo builds it for cli's tests.
+    for packages in [
+        "repo-tests anthology-guard",
+        "anthology-memory anthology-cli",
+    ] {
+        let got = linux(&["plain", "rest"], &[("PACKAGES", packages)]).unwrap();
+        assert_eq!(got[..3], ["run", "cargo", "test"], "{packages}");
+    }
+}
+
+/// The crates that run the built binary are exactly the ones the scripts name.
+#[test]
+fn the_crates_that_run_the_anthology_binary_are_the_ones_the_scripts_build_it_for() {
+    fn uses_binary(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                uses_binary(&p)
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "rust_test_jobs.rs")
+            {
+                fs::read_to_string(&p)
+                    .is_ok_and(|t| t.contains("run_bin(") || t.contains("anthology_bin("))
+            } else {
+                false
+            }
+        })
+    }
+    let mut users: Vec<String> = Vec::new();
+    for krate in repo::list_dir("crates") {
+        // testkit defines the helpers and cli builds the binary.
+        if krate == "anthology-testkit" || krate == "anthology-cli" {
+            continue;
+        }
+        if uses_binary(&repo::path(&format!("crates/{krate}"))) {
+            users.push(krate);
+        }
+    }
+    users.sort();
+    for script in [LINUX, MACOS] {
+        let text = repo::read(script);
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("needs_binary=\""))
+            .unwrap_or_else(|| panic!("{script} has no needs_binary line"));
+        let mut named: Vec<&str> = line.trim_end_matches('"').split(' ').collect();
+        named.sort_unstable();
+        assert_eq!(named, users, "{script}");
     }
 }
 
 #[test]
-fn the_release_metadata_run_is_repo_tests_with_both_lock_tests() {
-    let got = linux(&["release-metadata"]).unwrap();
+fn a_rest_shard_without_crates_tests_the_whole_workspace() {
+    let got = linux(&["plain", "rest"], &[]).unwrap();
     assert_eq!(
         got,
-        ["run", "cargo", "test", "--locked", "-p", "repo-tests"]
+        [
+            "run",
+            "cargo",
+            "test",
+            "--locked",
+            "--workspace",
+            "--",
+            "--skip",
+            "golden_replay::"
+        ]
     );
-    for t in ["anthology_lock", "atl_lock"] {
-        assert!(
-            repo::path(&format!("crates/repo-tests/tests/{t}.rs")).is_file(),
-            "{t}"
+}
+
+#[test]
+fn the_replay_shards_run_only_the_named_surfaces_with_the_same_features() {
+    let env = [(
+        "SURFACES",
+        "guard.check,hook.session-start,dev.version-bump,mem",
+    )];
+    for features in ["plain", "all"] {
+        let got = linux(&[features, "replay"], &env).unwrap();
+        assert_eq!(got[..3], ["run", "sh", "-c"], "{features}");
+        let script = &got[3];
+        assert_eq!(
+            got[4..],
+            [
+                "rust-test-linux",
+                features,
+                "golden_replay::guard_check",
+                "golden_replay::hook_session_start",
+                "golden_replay::dev_version_bump",
+                "golden_replay::mem",
+            ],
+            "{features}"
         );
+        // The whole workspace is selected, so --all-features unifies every member's features
+        // exactly as in a full run; a name that matches no test fails instead of passing.
+        assert!(
+            script.contains(r#"cargo test --workspace --locked $f --test golden -- --list"#),
+            "{script}"
+        );
+        assert!(
+            script.contains(
+                r#"exec cargo test --workspace --locked $f --test golden -- --exact "$@""#
+            ),
+            "{script}"
+        );
+        assert!(script.contains("is listed"), "{script}");
     }
 }
 
 #[test]
-fn an_unknown_linux_shard_is_refused() {
-    for args in [&[][..], &["plain"], &["plain", "x"], &["some", "rest"]] {
-        let out = linux(args).unwrap_err();
+fn a_replay_shard_needs_surfaces_and_the_other_shards_are_refused() {
+    for (args, env) in [
+        (&["plain", "replay"][..], &[][..]),
+        (&["plain", "x"], &[]),
+        (&["some", "rest"], &[]),
+        (&[], &[]),
+        (&["plain"], &[]),
+        (&["plain", "rest", "extra"], &[]),
+    ] {
+        let out = linux(args, env).unwrap_err();
         assert_eq!(out.status.code(), Some(2), "{args:?}");
     }
 }
 
-/// The shards' filter names a test that exists, once, as a Linux-only test of difftest.
+/// The names the shards pass are the ones golden.rs defines: `.` and `-` of a surface written
+/// `_`, one test per committed golden, and the shards' skip filter is its module's name.
 #[test]
-fn the_replay_test_the_shards_split_on_exists() {
+fn the_replay_tests_the_shards_name_exist_for_every_golden() {
     let golden = repo::read("crates/difftest/tests/golden.rs");
-    let at = golden
-        .find(&format!("fn {REPLAY}()"))
-        .expect("difftest golden.rs defines the replay test");
-    assert!(golden[..at].trim_end().ends_with("#[test]"));
-    assert_eq!(golden.matches(REPLAY).count(), 1);
-    assert!(repo::read(LINUX).contains(&format!("replay={REPLAY}\n")));
+    assert!(
+        golden.contains("mod golden_replay {"),
+        "the module the shards filter on"
+    );
+    let pair = Regex::new(r#"(?m)^\s+(\w+) => "([^"]+)",(?: //.*)?$"#).unwrap();
+    let mut tested = BTreeSet::new();
+    for c in pair.captures_iter(&golden) {
+        assert_eq!(c[1], c[2].replace(['.', '-'], "_"), "{}", &c[2]);
+        tested.insert(c[2].to_string());
+    }
+    let mut committed = BTreeSet::new();
+    for krate in repo::list_dir("crates") {
+        let folder = format!("crates/{krate}/tests/golden");
+        if !repo::path(&folder).is_dir() {
+            continue;
+        }
+        for file in repo::list_dir(&folder) {
+            if let Some(surface) = file.strip_suffix(".jsonl.gz") {
+                committed.insert(surface.to_string());
+            }
+        }
+    }
+    assert_eq!(
+        tested, committed,
+        "replay tests (left) against committed goldens (right)"
+    );
+    assert!(!tested.is_empty());
 }
 
 // ---- ci/jobs/rust-test-macos.sh ------------------------------------------------------------
 
-/// The `cargo` calls ci/jobs/rust-test-macos.sh makes for `shard`, outside CI (stub `cargo` and
-/// `rustup`), one line each.
-fn macos(shard: &str) -> Result<Vec<String>, Output> {
+/// The `cargo` calls ci/jobs/rust-test-macos.sh makes for `shard` with `PACKAGES` set to
+/// `packages`, outside CI (stub `cargo` and `rustup`), one line each.
+fn macos(shard: &str, packages: Option<&str>) -> Result<Vec<String>, Output> {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("calls");
     executable(dir.path(), "cargo", "echo \"cargo $*\" >> \"$CALLS\"");
     executable(dir.path(), "rustup", "echo \"rustup $*\" >> \"$CALLS\"");
-    let mut path = vec![dir.path().to_path_buf()];
-    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let out = Command::new("sh")
-        .arg(repo::path(MACOS))
+    let mut cmd = Command::new("sh");
+    cmd.arg(repo::path(MACOS))
         .arg(shard)
-        .env("PATH", std::env::join_paths(path).unwrap())
+        .env("PATH", path_with(dir.path()))
         .env("CALLS", &log)
         .env_remove("CI")
-        .output()
-        .expect("sh ran");
+        .env_remove("PACKAGES");
+    if let Some(p) = packages {
+        cmd.env("PACKAGES", p);
+    }
+    let out = cmd.output().expect("sh ran");
     if !out.status.success() {
         return Err(out);
     }
@@ -550,7 +376,7 @@ fn macos(shard: &str) -> Result<Vec<String>, Output> {
 
 #[test]
 fn the_macos_shards_together_run_both_feature_sets_and_the_ledger() {
-    let plain = macos("plain").unwrap();
+    let plain = macos("plain", None).unwrap();
     assert_eq!(
         plain,
         [
@@ -559,7 +385,7 @@ fn the_macos_shards_together_run_both_feature_sets_and_the_ledger() {
             "cargo test --workspace --locked",
         ]
     );
-    let all = macos("all").unwrap();
+    let all = macos("all", None).unwrap();
     assert_eq!(
         all,
         [
@@ -577,18 +403,246 @@ fn the_macos_shards_together_run_both_feature_sets_and_the_ledger() {
     // The shim network cases run in CI only, after the plain tests.
     let script = repo::read(MACOS);
     assert_eq!(script.matches("--test shims").count(), 1);
-    assert!(macos("other").is_err());
+    assert!(macos("other", None).is_err());
+}
+
+#[test]
+fn a_macos_shard_builds_the_anthology_binary_first_for_the_crates_that_run_it() {
+    assert_eq!(
+        macos("plain", Some("anthology-memory repo-tests")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo build -p anthology-cli --locked",
+            "cargo test -p anthology-memory -p repo-tests --locked",
+        ]
+    );
+    assert_eq!(
+        macos("all", Some("anthology-runtime")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo build -p anthology-cli --locked --all-features",
+            "cargo test -p anthology-runtime --locked --all-features",
+        ]
+    );
+    // cli among the crates: cargo builds the binary for its tests.
+    assert_eq!(
+        macos("plain", Some("anthology-memory anthology-cli")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo test -p anthology-memory -p anthology-cli --locked",
+        ]
+    );
+}
+
+#[test]
+fn a_macos_shard_with_crates_tests_only_those_and_skips_the_ledger() {
+    let packages = Some("anthology-guard repo-tests");
+    assert_eq!(
+        macos("plain", packages).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo test -p anthology-guard -p repo-tests --locked",
+        ]
+    );
+    assert_eq!(
+        macos("all", packages).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo test -p anthology-guard -p repo-tests --locked --all-features",
+        ]
+    );
+}
+
+// ---- ci/jobs/atl-test-macos.sh -------------------------------------------------------------
+
+#[test]
+fn atl_tests_run_on_macos_with_atls_own_toolchain_and_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("calls");
+    for tool in ["cargo", "rustup"] {
+        executable(
+            dir.path(),
+            tool,
+            &format!("echo \"{tool} $* in $(basename \"$PWD\")\" >> \"$CALLS\""),
+        );
+    }
+    let out = Command::new("sh")
+        .arg(repo::path("ci/jobs/atl-test-macos.sh"))
+        .env("PATH", path_with(dir.path()))
+        .env("CALLS", &log)
+        .output()
+        .expect("sh ran");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // In atl/, where rust-toolchain.toml and Cargo.lock are atl's own.
+    let calls: Vec<String> = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "rustup toolchain install in atl",
+            "cargo --version in atl",
+            "cargo test --locked in atl",
+        ]
+    );
+}
+
+// ---- ci/jobs/rust-cache.sh -----------------------------------------------------------------
+
+/// What a stub `docker` recorded for `ci/jobs/rust-cache.sh args`, one call per line.
+fn cache_calls(args: &[&str]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("calls");
+    executable(dir.path(), "docker", "echo \"docker $*\" >> \"$CALLS\"");
+    let out = Command::new("sh")
+        .arg(repo::path(CACHE))
+        .args(args)
+        .env("PATH", path_with(dir.path()))
+        .env("CALLS", &log)
+        .output()
+        .expect("sh ran");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The named volumes `scripts/rust-test.sh run` mounts: its stub `docker` prints its argv.
+fn runner_volumes() -> BTreeSet<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let argv = dir.path().join("argv");
+    executable(
+        dir.path(),
+        "docker",
+        // the first call is `docker run`; the later `docker volume rm` must not overwrite it
+        "[ -e \"$DOCKER_ARGV\" ] || for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$DOCKER_ARGV\"",
+    );
+    let out = Command::new(repo::path("scripts/rust-test.sh"))
+        .args(["run", "true"])
+        .env("PATH", path_with(dir.path()))
+        .env("DOCKER_ARGV", &argv)
+        // CI turns sccache off by default; the Linux shards turn it on (ci.yml)
+        .env("ANTHOLOGY_SCCACHE", "1")
+        .env_remove("CI")
+        .output()
+        .expect("rust-test.sh ran");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::read_to_string(&argv)
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("anthology-") && l.contains(':'))
+        .map(|l| l.split(':').next().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn the_cache_volumes_are_the_ones_the_test_runner_mounts() {
+    // The registry, the toolchain, the checkout's target folder and the shared sccache. The target
+    // volume is made for one run and removed with it, so only the other three are kept: sccache
+    // holds what the dependencies compiled.
+    let mut volumes = runner_volumes();
+    assert_eq!(volumes.len(), 4, "{volumes:?}");
+    volumes.retain(|v| !v.starts_with("anthology-rust-target-"));
+    assert_eq!(volumes.len(), 3, "{volumes:?}");
+    let calls = cache_calls(&["volumes", "/cache"]);
+    let created: BTreeSet<String> = calls
+        .iter()
+        .map(|c| {
+            let name = c.split_whitespace().last().unwrap();
+            name.to_string()
+        })
+        .collect();
+    assert_eq!(created, volumes, "{calls:?}");
+    for call in &calls {
+        assert!(
+            call.starts_with("docker volume create --driver local"),
+            "{call}"
+        );
+        assert!(
+            call.contains("--opt type=none") && call.contains("--opt o=bind"),
+            "{call}"
+        );
+        assert!(call.contains("device=/cache/"), "{call}");
+    }
+}
+
+#[test]
+fn the_cache_folders_are_made_before_docker_binds_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let out = Command::new("sh")
+        .arg(repo::path(CACHE))
+        .args(["dirs"])
+        .arg(&cache)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    for sub in ["cargo", "rustup", "sccache"] {
+        assert!(cache.join(sub).is_dir(), "{sub}");
+    }
 }
 
 // ---- ci.yml --------------------------------------------------------------------------------
 
+fn event_types() -> Vec<String> {
+    yaml::strings(&ci()["on"]["pull_request"]["types"])
+}
+
 #[test]
-fn the_scope_job_reads_the_pull_request_range() {
-    let job = job("rust-scope");
+fn a_label_change_and_a_manual_run_start_the_workflow() {
+    // The full-ci label is read by rust-scope, so adding or removing it re-runs the checks.
+    let types = event_types();
+    for t in ["opened", "synchronize", "reopened", "labeled", "unlabeled"] {
+        assert!(types.contains(&t.to_string()), "{t}");
+    }
+    assert!(yaml::has(&ci()["on"], "workflow_dispatch"));
     assert_eq!(
-        text(&job["outputs"], "full"),
-        "${{ steps.scope.outputs.full }}"
+        yaml::strings(&ci()["on"]["push"]["branches"]),
+        ["main", "build"]
     );
+}
+
+#[test]
+fn the_scope_job_reads_the_pull_request_range_and_labels() {
+    let job = job("rust-scope");
+    for out in [
+        "full",
+        "atl",
+        "atl_macos",
+        "fuzz",
+        "run_linux",
+        "run_macos",
+        "linux_matrix",
+        "macos_matrix",
+        "jobs",
+    ] {
+        assert_eq!(
+            text(&job["outputs"], out),
+            format!("${{{{ steps.scope.outputs.{out} }}}}"),
+            "{out}"
+        );
+    }
     let run = r#"ci/jobs/rust-scope.sh "$BASE" "$HEAD_SHA" >>"$GITHUB_OUTPUT""#;
     let step = step_running(&job, run);
     assert_eq!(text(step, "id"), "scope");
@@ -600,16 +654,23 @@ fn the_scope_job_reads_the_pull_request_range() {
         text(&step["env"], "HEAD_SHA"),
         "${{ github.event.pull_request.head.sha }}"
     );
+    assert_eq!(
+        text(&step["env"], "PR_LABELS"),
+        "${{ toJSON(github.event.pull_request.labels.*.name) }}"
+    );
+    // cargo metadata must not install the pinned toolchain on the runner just to read manifests.
+    assert_eq!(text(&step["env"], "RUSTUP_TOOLCHAIN"), "stable");
     let checkout = &yaml::items(&job["steps"])[0];
     assert_eq!(checkout["with"]["fetch-depth"].as_i64(), Some(0));
 }
 
-fn check_shards(name: &str, runner: &str, axes: &[(&str, &[&str])], run: &str) {
-    let job = job(&format!("{name}-shard"));
+/// A shard job: gated on a scope output, with its matrix read from another.
+fn check_shard_job(name: &str, runner: &str, run_output: &str, matrix_output: &str) -> Yaml {
+    let job = job(name);
     assert_eq!(text(&job, "needs"), "rust-scope", "{name}");
     assert_eq!(
         text(&job, "if"),
-        "needs.rust-scope.outputs.full == 'true'",
+        format!("needs.rust-scope.outputs.{run_output} == 'true'"),
         "{name}"
     );
     assert_eq!(text(&job, "runs-on"), runner, "{name}");
@@ -618,31 +679,72 @@ fn check_shards(name: &str, runner: &str, axes: &[(&str, &[&str])], run: &str) {
         Some(false),
         "{name}"
     );
-    let matrix = &job["strategy"]["matrix"];
-    assert_eq!(yaml::keys(matrix).len(), axes.len(), "{name}");
-    for (axis, values) in axes {
-        assert_eq!(yaml::strings(&matrix[*axis]), *values, "{name} {axis}");
-    }
-    assert_eq!(runs(&job), [run], "{name}");
+    assert_eq!(
+        text(&job["strategy"], "matrix"),
+        format!("${{{{ fromJSON(needs.rust-scope.outputs.{matrix_output}) }}}}"),
+        "{name}"
+    );
+    assert_eq!(
+        text(&job, "name"),
+        format!("{name} (${{{{ matrix.name }}}})"),
+        "{name}: the shard name shows what it runs"
+    );
+    job
 }
 
-fn check_gate(name: &str, extra: &[&str]) {
+#[test]
+fn the_linux_shards_come_from_the_scope_matrix() {
+    let job = check_shard_job(
+        "rust-test-linux-shard",
+        "ubuntu-latest",
+        "run_linux",
+        "linux_matrix",
+    );
+    let run = r#"ci/jobs/rust-test-linux.sh "$FEATURES" "$PART""#;
+    let step = step_running(&job, run);
+    for (key, axis) in [
+        ("FEATURES", "features"),
+        ("PART", "part"),
+        ("PACKAGES", "packages"),
+        ("SURFACES", "surfaces"),
+    ] {
+        assert_eq!(
+            text(&step["env"], key),
+            format!("${{{{ matrix.{axis} }}}}"),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn the_macos_shards_come_from_the_scope_matrix() {
+    let job = check_shard_job(
+        "rust-test-macos-shard",
+        "macos-15",
+        "run_macos",
+        "macos_matrix",
+    );
+    let run = r#"ci/jobs/rust-test-macos.sh "$FEATURES""#;
+    let step = step_running(&job, run);
+    assert_eq!(text(&step["env"], "FEATURES"), "${{ matrix.features }}");
+    assert_eq!(text(&step["env"], "PACKAGES"), "${{ matrix.packages }}");
+}
+
+fn check_gate(name: &str, run_output: &str) {
     let job = job(name);
     let needs = yaml::strings(&job["needs"]);
     assert_eq!(needs, ["rust-scope", &format!("{name}-shard")], "{name}");
     assert_eq!(text(&job, "if"), "${{ !cancelled() }}", "{name}");
-    let gate_run = format!(r#"ci/jobs/rust-gate.sh {name} "$SCOPE" "$FULL" "$SHARDS""#);
-    let mut want = vec![gate_run.as_str()];
-    want.extend_from_slice(extra);
-    assert_eq!(runs(&job), want, "{name}");
+    let gate_run = format!(r#"ci/jobs/rust-gate.sh {name} "$SCOPE" "$RUN" "$SHARDS""#);
+    assert_eq!(runs(&job), [gate_run.as_str()], "{name}");
     let step = step_running(&job, &gate_run);
     assert_eq!(
         text(&step["env"], "SCOPE"),
         "${{ needs.rust-scope.result }}"
     );
     assert_eq!(
-        text(&step["env"], "FULL"),
-        "${{ needs.rust-scope.outputs.full }}"
+        text(&step["env"], "RUN"),
+        format!("${{{{ needs.rust-scope.outputs.{run_output} }}}}")
     );
     assert_eq!(
         text(&step["env"], "SHARDS"),
@@ -651,56 +753,157 @@ fn check_gate(name: &str, extra: &[&str]) {
 }
 
 #[test]
-fn rust_test_linux_runs_four_shards_and_gates_on_them() {
-    check_shards(
-        "rust-test-linux",
-        "ubuntu-latest",
-        &[
-            ("features", &["plain", "all"]),
-            ("part", &["replay", "rest"]),
-        ],
-        r#"ci/jobs/rust-test-linux.sh "$FEATURES" "$PART""#,
-    );
-    check_gate(
-        "rust-test-linux",
-        &["ci/jobs/rust-test-linux.sh release-metadata"],
-    );
-    let job = job("rust-test-linux");
-    let light = step_running(&job, "ci/jobs/rust-test-linux.sh release-metadata");
+fn the_required_checks_keep_their_names_and_gate_on_the_shards() {
+    check_gate("rust-test-linux", "run_linux");
+    check_gate("rust-test-macos", "run_macos");
+}
+
+#[test]
+fn atl_test_macos_runs_for_a_change_to_atl_itself() {
+    let job = job("atl-test-macos");
+    assert_eq!(text(&job, "needs"), "rust-scope");
     assert_eq!(
-        text(light, "if"),
-        "needs.rust-scope.outputs.full == 'false'"
+        text(&job, "if"),
+        "needs.rust-scope.outputs.atl_macos == 'true'"
     );
+    assert_eq!(text(&job, "runs-on"), "macos-15");
+    assert_eq!(
+        runs(&job),
+        ["rustup toolchain install", "ci/jobs/atl-test-macos.sh"]
+    );
+    assert_eq!(
+        text(&job["steps"][0], "uses").split('@').next(),
+        Some("actions/checkout")
+    );
+    let cache = step_using(&job, "Swatinem/rust-cache@");
+    assert_eq!(text(&cache["with"], "workspaces"), "atl");
 }
 
 #[test]
-fn rust_test_macos_runs_two_shards_and_gates_on_them() {
-    check_shards(
-        "rust-test-macos",
-        "macos-15",
-        &[("features", &["plain", "all"])],
-        r#"ci/jobs/rust-test-macos.sh "$FEATURES""#,
-    );
-    check_gate("rust-test-macos", &[]);
-}
-
-#[test]
-fn the_shards_get_their_matrix_values_by_env() {
-    for (name, axes) in [
-        ("rust-test-linux-shard", &["features", "part"][..]),
-        ("rust-test-macos-shard", &["features"]),
-    ] {
+fn atl_test_and_fuzz_build_run_only_when_their_inputs_changed() {
+    for (name, output) in [("atl-test", "atl"), ("fuzz-build", "fuzz")] {
         let job = job(name);
-        let step = yaml::items(&job["steps"])
+        assert_eq!(text(&job, "needs"), "rust-scope", "{name}");
+        assert_eq!(
+            text(&job, "if"),
+            format!("needs.rust-scope.outputs.{output} == 'true'"),
+            "{name}"
+        );
+    }
+}
+
+/// The folders `actions/cache` keeps for the Linux shards: the registry, the toolchain and the
+/// sccache of the dependencies, three of the volumes the test runner mounts.
+const CACHE_DIRS: [&str; 3] = [
+    "${{ runner.temp }}/rust-cache/cargo",
+    "${{ runner.temp }}/rust-cache/rustup",
+    "${{ runner.temp }}/rust-cache/sccache",
+];
+
+#[test]
+fn a_linux_shard_restores_binds_and_saves_the_rust_cache() {
+    let job = job("rust-test-linux-shard");
+    let order: Vec<String> = yaml::items(&job["steps"])
+        .iter()
+        .map(|s| {
+            let run = text(s, "run").trim_end();
+            let uses = text(s, "uses");
+            if !run.is_empty() {
+                run.to_string()
+            } else {
+                uses.to_string()
+            }
+        })
+        .collect();
+    let at = |needle: &str| {
+        order
             .iter()
-            .find(|s| !text(s, "run").is_empty())
-            .unwrap();
-        for axis in axes {
-            assert_eq!(
-                text(&step["env"], &axis.to_uppercase()),
-                format!("${{{{ matrix.{axis} }}}}"),
-                "{name}"
-            );
+            .position(|s| s.contains(needle))
+            .unwrap_or_else(|| panic!("no step with {needle}: {order:?}"))
+    };
+    // dirs, restore, volumes, test, save
+    assert!(at("rust-cache.sh dirs") < at("actions/cache/restore@"));
+    assert!(at("actions/cache/restore@") < at("rust-cache.sh volumes"));
+    assert!(at("rust-cache.sh volumes") < at("rust-test-linux.sh"));
+    assert!(at("rust-test-linux.sh") < at("actions/cache/save@"));
+    for sub in ["dirs", "volumes"] {
+        let step = step_running(
+            &job,
+            &format!(r#"ci/jobs/rust-cache.sh {sub} "$CACHE_DIR""#),
+        );
+        assert_eq!(
+            text(&step["env"], "CACHE_DIR"),
+            "${{ runner.temp }}/rust-cache",
+            "{sub}"
+        );
+    }
+    // scripts/rust-test.sh leaves sccache off in CI (a runner starts empty); with the cache
+    // restored it is what makes the dependencies a hit.
+    let test = step_running(&job, r#"ci/jobs/rust-test-linux.sh "$FEATURES" "$PART""#);
+    assert_eq!(text(&test["env"], "ANTHOLOGY_SCCACHE"), "1");
+    let restore = step_using(&job, "actions/cache/restore@");
+    let save = step_using(&job, "actions/cache/save@");
+    for step in [restore, save] {
+        let paths: Vec<&str> = text(&step["with"], "path").lines().collect();
+        assert_eq!(paths, CACHE_DIRS);
+    }
+    // One key per shard, for the toolchain, the image and the lock: the first full run saves it.
+    let key = text(&restore["with"], "key");
+    assert_eq!(key, text(&save["with"], "key"));
+    for part in [
+        "matrix.name",
+        "hashFiles('Cargo.lock', 'rust-toolchain.toml', 'ci/images/rust.Dockerfile')",
+    ] {
+        assert!(key.contains(part), "{key}");
+    }
+    assert!(text(&restore["with"], "restore-keys").contains("matrix.name"));
+    // Only a push (build, main) or a manual run saves: a pull request only reads, so it cannot
+    // fill the repository's cache quota with its own copies.
+    assert_eq!(
+        text(save, "if"),
+        "${{ success() && github.event_name != 'pull_request' }}"
+    );
+    // A cached folder is not trusted for anything but speed: the pinned image runs the tests.
+    assert!(!text(restore, "if").contains("pull_request"));
+}
+
+#[test]
+fn a_macos_shard_caches_the_dependency_build() {
+    let job = job("rust-test-macos-shard");
+    let cache = step_using(&job, "Swatinem/rust-cache@");
+    assert_eq!(text(&cache["with"], "key"), "${{ matrix.features }}");
+    assert_eq!(
+        text(&cache["with"], "save-if"),
+        "${{ github.event_name != 'pull_request' }}"
+    );
+    // The pinned toolchain is installed first, so the cache key is made for the toolchain that
+    // builds, not for the runner's own.
+    let steps = yaml::items(&job["steps"]);
+    let at = |pred: &dyn Fn(&Yaml) -> bool| steps.iter().position(pred).unwrap();
+    let install = at(&|s| text(s, "run").trim_end() == "rustup toolchain install");
+    let cached = at(&|s| text(s, "uses").starts_with("Swatinem/rust-cache@"));
+    let tests = at(&|s| text(s, "run").contains("rust-test-macos.sh"));
+    assert!(install < cached && cached < tests);
+}
+
+#[test]
+fn the_cache_actions_are_pinned_and_the_workflow_stays_read_only() {
+    let uses_re = Regex::new(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$").unwrap();
+    for name in ["rust-test-linux-shard", "rust-test-macos-shard"] {
+        for step in yaml::items(&job(name)["steps"]) {
+            if yaml::has(step, "uses") {
+                assert!(
+                    uses_re.is_match(text(step, "uses")),
+                    "{name}: {}",
+                    text(step, "uses")
+                );
+            }
         }
     }
+    assert_eq!(
+        ci()["permissions"].as_hash().map(|h| h.len()),
+        Some(1),
+        "contents: read and nothing else"
+    );
+    assert_eq!(text(&ci()["permissions"], "contents"), "read");
 }

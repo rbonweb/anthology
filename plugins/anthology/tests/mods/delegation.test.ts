@@ -8,6 +8,7 @@ import { type Engine, expect, test } from 'claude-code/testing'
 
 const HOME = '/home/dev'
 const ROOT = '/work/repo'
+const LOCK = '{"version": "0.1.1", "tag": "anthology-bin--v0.1.1", "repo": "rbonweb/anthology", "sha256": {}}'
 
 type World = {
   surfaces?: readonly RenderSurface[]
@@ -19,11 +20,20 @@ type World = {
   /** the `autoMemoryDirectory` setting */
   autoMemoryDirectory?: string
   /** events whose hook beneath the plugin throws, to see the mod fail open */
-  fails?: readonly ('env.get' | 'state.get' | 'state.set' | 'settings.read' | 'tool.list' | 'session.root')[]
+  fails?: readonly ('env.get' | 'state.get' | 'state.set' | 'settings.read' | 'tool.list' | 'session.root' | 'fs.exists' | 'fs.read')[]
   /** an Edit of a path holding this text comes back from the tool as an error */
   broken?: string
   /** a tool.call of a path holding this text is refused beneath the plugin (another plugin's deny) */
   denied?: string
+  /** the folders that hold a `.git`; unset, every folder does, so every path is inside a repo */
+  repos?: readonly string[]
+  /** the text of `<root>/.claude/anthology.json`; unset, there is no such file */
+  repoConfig?: string
+  /**
+   * What the installed `anthology switch delegation <cwd>` prints (`off`, `ignored` or `on`);
+   * unset, no binary is installed
+   */
+  switchAnswer?: string
 }
 
 const boom = (): never => {
@@ -48,6 +58,42 @@ function engine(on: On, world: World = {}): string[] {
       : () => ({ value: world.autoMemoryDirectory === undefined ? {} : { autoMemoryDirectory: world.autoMemoryDirectory } }),
   )
   on('tool.list', fails.has('tool.list') ? boom : () => ({ value: tools.map(name => ({ name, description: '', mcp: false })) }))
+  // a folder holds a `.git` when it is listed in `repos` (a file in a worktree answers the same)
+  on(
+    'fs.exists',
+    fails.has('fs.exists')
+      ? boom
+      : (_$, e) => ({
+          value: e.path.endsWith('/.git') && (world.repos === undefined || world.repos.includes(e.path.slice(0, -'/.git'.length))),
+        }),
+  )
+  on(
+    'fs.read',
+    fails.has('fs.read')
+      ? boom
+      : (_$, e) => {
+          if (e.path === `${ROOT}/.claude/anthology.json` && world.repoConfig !== undefined) return { value: world.repoConfig }
+          if (e.path.endsWith('/anthology.lock') && world.switchAnswer !== undefined) return { value: LOCK }
+          throw new Error(`ENOENT: ${e.path}`)
+        },
+  )
+  // the installed binary, as the shim finds it, when the world answers `anthology switch`
+  on('fs.stat', (_$, e) => {
+    const ah = `${HOME}/.claude/anthology`
+    const known: { [path: string]: { kind: 'dir' | 'file'; size: number } } = {
+      [`${ah}/bin`]: { kind: 'dir', size: 0 },
+      [`${ah}/bin/0.1.1`]: { kind: 'dir', size: 0 },
+      [`${ah}/bin/0.1.1/anthology`]: { kind: 'file', size: 100 },
+      [`${ah}/bin/0.1.1/.sha256`]: { kind: 'file', size: 65 },
+    }
+    const s = world.switchAnswer === undefined ? undefined : known[e.path]
+    if (s === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { ...s, mtimeMs: 0, isLink: false } }
+  })
+  on('process.run', (_$, e) => {
+    ran.push(`run ${e.argv.slice(1).join(' ')}`)
+    return { value: { exitCode: 0, stdout: `${world.switchAnswer}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   // the kit answers `$.state` itself, and a hook that throws is skipped; a `{ deny }` makes the call reject
   if (fails.has('state.get')) on('state.get', () => ({ deny: 'boom' }) as never)
   if (fails.has('state.set')) on('state.set', () => ({ deny: 'boom' }) as never)
@@ -330,10 +376,7 @@ test('a path that climbs out of an exempt folder is refused', async ($, on) => {
   for (const p of [
     `${ROOT}/.superpowers/../src/app.ts`,
     `${ROOT}/docs/superpowers/plans/../../../src/app.ts`,
-    `${HOME}/.claude/plans/../settings.json`,
-    `${HOME}/.claude/projects/-work-repo/memory/../../x.json`,
     `${ROOT}/.claude/memory/../settings.json`,
-    `${HOME}/.claude/anthology/personal-memory/../state.json`,
     '../outside.md',
     '.superpowers/../src/app.ts',
   ]) {
@@ -347,10 +390,6 @@ test('look-alike folders are refused', async ($, on) => {
   for (const p of [
     `${ROOT}/.superpowers-extra/a.md`,
     `${ROOT}/docs/superpowers/other/a.md`,
-    `${HOME}/.claude/projects/-work-repo/notes/a.md`,
-    `${HOME}/.claude/projects/memory/a.md`,
-    `${HOME}/.claude/settings.json`,
-    `${HOME}/.claude/plansx/a.md`,
     'relative/.superpowers/a.md',
     // look-alikes of the memory folders
     `${ROOT}/.claude/memory-old/a.md`,
@@ -358,10 +397,6 @@ test('look-alike folders are refused', async ($, on) => {
     `${ROOT}/.claude/agent-memory/a.md`,
     `${ROOT}/.claude/settings.json`,
     `${ROOT}/src/.claude/memory/a.md`,
-    `${HOME}/.claude/anthology/personal-memory-x/a.md`,
-    `${HOME}/.claude/anthology/personal-memory`,
-    `${HOME}/.claude/anthology/state.json`,
-    `${HOME}/.claude/anthology/atl/x`,
     '~root/.claude/plans/a.md',
   ]) {
     const w = await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })
@@ -374,9 +409,11 @@ test('CLAUDE_CONFIG_DIR moves the memory, plans and personal-memory folders', as
   for (const p of ['/cfg/projects/p/memory/a.md', '/cfg/plans/a.md', '/cfg/anthology/personal-memory/a.md']) {
     expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toBeUndefined()
   }
-  for (const p of [`${HOME}/.claude/plans/a.md`, `${HOME}/.claude/anthology/personal-memory/a.md`, '/cfg/settings.json']) {
+  for (const p of [`${HOME}/.claude/plans/a.md`, `${HOME}/.claude/anthology/personal-memory/a.md`]) {
     expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toContain('anthology:')
   }
+  // the whole config folder is the user's own, wherever it is (see the config-folder tests below)
+  expect((await $.tool.call({ tool: 'Write', file_path: '/cfg/settings.json', content: 'x' })).deny).toBeUndefined()
 })
 
 test('the autoMemoryDirectory setting is the lead memory folder when it is set', async ($, on) => {
@@ -717,4 +754,262 @@ test('compose does not add the section twice', async ($, on) => {
   engine(on, { sections: [{ id: 'anthology:coordinator', text: 'already', scope: 'session' }] })
   const r = await compose($)
   expect(r.sections.filter(s => s.id === 'anthology:coordinator')).toHaveLength(1)
+})
+
+// --- the project's own agents come first ----------------------------------------------------------
+
+test('the coordinator section sends the change to the project own agent when one fits', async ($, on) => {
+  engine(on)
+  const s = (await compose($)).sections.find(x => x.id === 'anthology:coordinator')
+  if (!s) throw new Error('no coordinator section')
+  expect(s.text).toContain("the project's own when one fits, else anthology:implementer")
+  expect(s.text.length).toBeLessThanOrEqual(400)
+})
+
+test('the refusal names the project own agent first and the anthology one as the fallback', async ($, on) => {
+  engine(on)
+  const code = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(code.deny).toContain(
+    "Dispatch the project's own matching agent when one fits, else anthology:implementer (anthology:debugger for a bug fix), with this change.",
+  )
+  const md = await $.tool.call({ tool: 'Write', file_path: `${ROOT}/docs/a.md`, content: 'x' })
+  expect(md.deny).toContain("Dispatch the project's own matching agent when one fits, else anthology:docs-writer, with this change.")
+  const ui = await $.tool.call({ tool: 'Write', file_path: `${ROOT}/web/a.css`, content: 'x' })
+  expect(ui.deny).toContain("Dispatch the project's own matching agent when one fits, else anthology:ui-designer, with this change.")
+})
+
+test('a dispatch to any agent is never refused or redirected', async ($, on) => {
+  const ran = engine(on)
+  const types = ['code-reviewer', 'general-purpose', 'anthology:implementer', 'shop:theme-builder', 'Explore']
+  for (const subagent_type of types) {
+    const r = await $.tool.call({ tool: 'Agent', subagent_type, description: 'a job', prompt: 'do it' })
+    expect(r.deny).toBeUndefined()
+  }
+  // not even with the tiny-fix budget used up
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+  expect((await edit($, SRC)).deny).toBeDefined()
+  const after = await $.tool.call({ tool: 'Agent', subagent_type: 'code-reviewer', description: 'a job', prompt: 'do it' })
+  expect(after.deny).toBeUndefined()
+  expect(ran.filter(r => r.startsWith('Agent'))).toHaveLength(types.length + 1)
+})
+
+// --- files that are not project code ---------------------------------------------------------------
+
+test('a file outside every git repo is the lead own: any size, no budget', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT] })
+  expect((await $.tool.call({ tool: 'Write', file_path: '/srv/other/a.ts', content: lines(40) })).deny).toBeUndefined()
+  expect((await edit($, '/srv/other/a.ts', lines(40), lines(41))).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: '/tmp/scratch.json', content: 'x' })).deny).toBeUndefined()
+  // none of that cost the tiny-fix budget
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+  expect(ran).toHaveLength(6)
+})
+
+test('a file inside a git repo is still handed off, at any depth', async ($, on) => {
+  engine(on, { repos: [ROOT] })
+  for (const p of [SRC, `${ROOT}/a/b/c/d/e/f.rs`, `${ROOT}/x.md`]) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toContain('anthology:')
+  }
+  expect((await edit($, SRC, lines(6), lines(6))).deny).toContain('anthology:implementer')
+})
+
+test('a repo nested inside another is a repo of its own', async ($, on) => {
+  engine(on, { repos: ['/work/outer', '/work/outer/inner'], cwd: '/work/outer' })
+  expect((await $.tool.call({ tool: 'Write', file_path: '/work/outer/inner/a.ts', content: 'x' })).deny).toContain('anthology:')
+  expect((await $.tool.call({ tool: 'Write', file_path: '/work/elsewhere/a.ts', content: 'x' })).deny).toBeUndefined()
+})
+
+test('a relative path is judged from the session directory', async ($, on) => {
+  engine(on, { repos: [ROOT], cwd: '/srv/scratch' })
+  expect((await $.tool.call({ tool: 'Write', file_path: 'notes.ts', content: 'x' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: `${ROOT}/src/a.ts`, content: 'x' })).deny).toContain('anthology:')
+})
+
+test('the Claude config folder is the lead own, even when it sits inside a repo', async ($, on) => {
+  // a dotfiles repo at the home folder holds ~/.claude, the working repo is elsewhere
+  const ran = engine(on, { repos: [HOME, ROOT] })
+  for (const p of [`${HOME}/.claude/settings.json`, `${HOME}/.claude/agents/mine.md`, '~/.claude/keybindings.json']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: lines(30) })).deny).toBeUndefined()
+  }
+  // the home folder outside .claude is a repo like any other
+  expect((await $.tool.call({ tool: 'Write', file_path: `${HOME}/dotfiles/a.ts`, content: 'x' })).deny).toContain('anthology:')
+  expect(ran).toHaveLength(3)
+})
+
+test('CLAUDE_CONFIG_DIR moves the config folder', async ($, on) => {
+  engine(on, { env: { CLAUDE_CONFIG_DIR: '/cfg' } })
+  expect((await $.tool.call({ tool: 'Write', file_path: '/cfg/settings.json', content: 'x' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Write', file_path: `${HOME}/.claude/settings.json`, content: 'x' })).deny).toContain('anthology:')
+  expect((await $.tool.call({ tool: 'Write', file_path: '/cfg/../src/a.ts', content: 'x' })).deny).toContain('anthology:')
+})
+
+test('a path that climbs out of the config folder into a repo is refused', async ($, on) => {
+  engine(on, { repos: [ROOT] })
+  expect((await $.tool.call({ tool: 'Write', file_path: `${HOME}/.claude/../../../work/repo/src/a.ts`, content: 'x' })).deny).toContain('anthology:')
+})
+
+test('when the repo check cannot run the file is treated as project code', async ($, on) => {
+  const ran = engine(on, { fails: ['fs.exists'], repos: [] })
+  expect((await $.tool.call({ tool: 'Write', file_path: '/srv/other/a.ts', content: 'x' })).deny).toContain('anthology:')
+  expect(ran).toHaveLength(0)
+})
+
+// --- risk, not only size ---------------------------------------------------------------------------
+
+test('a pure deletion of up to 30 lines is a tiny fix, one of 31 is not', async ($, on) => {
+  const ran = engine(on)
+  expect((await edit($, SRC, lines(30), '')).deny).toBeUndefined()
+  const over = await edit($, SRC, lines(31), '')
+  expect(over.deny).toContain('a deletion is at most 30 lines and this one is 31')
+  expect(ran).toEqual([`Edit ${SRC}`])
+})
+
+test('the 14-line deletion from the user settings goes through', async ($, on) => {
+  const ran = engine(on, { repos: [HOME] })
+  expect((await edit($, `${HOME}/.claude/settings.json`, lines(14), '')).deny).toBeUndefined()
+  expect(ran).toHaveLength(1)
+})
+
+test('a deletion is capped by size as well: 4 KB', async ($, on) => {
+  engine(on)
+  expect((await edit($, SRC, 'a'.repeat(4096), '')).deny).toBeUndefined()
+  expect((await edit($, SRC, 'a'.repeat(4097), '')).deny).toContain('a deletion is at most about 4 KB')
+})
+
+test('a deletion counts toward the three edits of the turn and the one-file rule', async ($, on) => {
+  engine(on)
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC, lines(20), '')).deny).toBeUndefined()
+  expect((await edit($, SRC, lines(20), '')).deny).toContain('already used its 3 inline edits')
+  await newTurn($)
+  expect((await edit($, SRC, lines(20), '')).deny).toBeUndefined()
+  expect((await edit($, `${ROOT}/src/other.ts`, lines(20), '')).deny).toContain(`already in ${SRC}`)
+})
+
+test('only an empty new_string is a deletion: blank text is a replacement', async ($, on) => {
+  engine(on)
+  for (const blank of [' ', '\n', '  \n  ', '\t']) {
+    expect((await edit($, SRC, lines(6), blank)).deny, JSON.stringify(blank)).toContain('an inline fix is at most 5 lines and this one is 6')
+  }
+  expect((await edit($, SRC, lines(6), '')).deny).toBeUndefined()
+})
+
+test('replacing text is not a deletion, even when the new text is short', async ($, on) => {
+  engine(on)
+  expect((await edit($, SRC, lines(6), 'x')).deny).toContain('an inline fix is at most 5 lines and this one is 6')
+  expect((await edit($, SRC, '', lines(6))).deny).toContain('an inline fix is at most 5 lines')
+  // an empty replacement of nothing is no deletion either
+  expect((await edit($, SRC, '', '')).deny).toBeUndefined()
+})
+
+test('a deletion by replace_all is still refused', async ($, on) => {
+  engine(on)
+  expect((await edit($, SRC, 'a', '', { replace_all: true })).deny).toContain('replace_all is not an inline fix')
+})
+
+test('a small config edit of up to 15 lines is a tiny fix, a code edit is still 5', async ($, on) => {
+  engine(on)
+  for (const f of ['package.json', 'cfg/app.yaml', 'Cargo.toml', 'tsconfig.jsonc', 'a.ini', 'x.conf', 'my.env']) {
+    expect((await edit($, `${ROOT}/${f}`, lines(15), lines(15))).deny).toBeUndefined()
+    await newTurn($)
+  }
+  expect((await edit($, `${ROOT}/package.json`, lines(16), lines(16))).deny).toContain('a config edit is at most 15 lines and this one is 16')
+  // CI pipelines run code: they keep the code limit
+  for (const f of [
+    '.github/workflows/ci.yml',
+    '.github/ci.yml',
+    '.gitlab-ci.yml',
+    'sub/.gitlab-ci.yaml',
+    '.circleci/config.yml',
+    'azure-pipelines.yml',
+    '.travis.yml',
+    'bitbucket-pipelines.yml',
+  ]) {
+    expect((await edit($, `${ROOT}/${f}`, lines(6), lines(6))).deny, f).toContain('an inline fix is at most 5 lines and this one is 6')
+  }
+  for (const f of ['src/a.ts', 'a.rs', 'a.py', 'README.md', 'a.json.bak', 'Makefile']) {
+    const r = await edit($, `${ROOT}/${f}`, lines(6), lines(6))
+    expect(r.deny).toContain('an inline fix is at most 5 lines and this one is 6')
+  }
+})
+
+test('a config edit keeps the 2 KB size cap and the budget', async ($, on) => {
+  engine(on)
+  expect((await edit($, `${ROOT}/package.json`, 'a'.repeat(1025), 'b'.repeat(1024))).deny).toContain('2 KB')
+  for (let i = 0; i < 3; i++) expect((await edit($, `${ROOT}/package.json`, lines(10), lines(10))).deny).toBeUndefined()
+  expect((await edit($, `${ROOT}/package.json`, lines(10), lines(10))).deny).toContain('already used')
+})
+
+test('a Write of a config file is still never a tiny fix', async ($, on) => {
+  engine(on)
+  expect((await $.tool.call({ tool: 'Write', file_path: `${ROOT}/package.json`, content: 'x' })).deny).toContain('a Write is never an inline fix')
+})
+
+// --- a repo's own switch ----------------------------------------------------------------------------
+
+test('an approved repo can turn the mod off in .claude/anthology.json', async ($, on) => {
+  const ran = engine(on, { repoConfig: '{"delegation": false}', switchAnswer: 'off' })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: lines(40) })).deny).toBeUndefined()
+  expect((await edit($, SRC, lines(30), lines(30))).deny).toBeUndefined()
+  // the installed binary was asked, with the session folder
+  expect(ran.filter(r => r.startsWith('run '))).toContain(`run switch delegation ${ROOT}`)
+  // and the prompt carries no coordinator section
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('a repo that is not approved cannot turn the mod off: the file is ignored', async ($, on) => {
+  const ran = engine(on, { repoConfig: '{"delegation": false}', switchAnswer: 'ignored' })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('anthology:implementer')
+  expect((await compose($)).sections.map(s => s.id)).toEqual(['intro', 'anthology:coordinator'])
+  expect(ran.some(r => r.startsWith('run switch'))).toBe(true)
+})
+
+for (const answer of ['on', '', 'OFF', 'off please', 'offline']) {
+  test(`an answer of ${JSON.stringify(answer)} from the binary leaves the mod on`, async ($, on) => {
+    engine(on, { repoConfig: '{"delegation": false}', switchAnswer: answer })
+    expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('anthology:implementer')
+  })
+}
+
+test('with no installed binary the file cannot turn the mod off, and nothing is spawned', async ($, on) => {
+  const ran = engine(on, { repoConfig: '{"delegation": false}' })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('anthology:implementer')
+  expect(ran.some(r => r.startsWith('run '))).toBe(false)
+})
+
+test('the binary is asked only when the file asks', async ($, on) => {
+  const ran = engine(on, { repoConfig: '{"routing_guide": false}', switchAnswer: 'off' })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('anthology:implementer')
+  expect(ran.some(r => r.startsWith('run '))).toBe(false)
+})
+
+for (const repoConfig of ['{"delegation": true}', '{"delegation": "off"}', '{"delegation": 0}', '{"routing_guide": false}', '{}', 'not json', '[]', 'null', '']) {
+  test(`the repo file ${JSON.stringify(repoConfig)} leaves the mod on`, async ($, on) => {
+    engine(on, { repoConfig, switchAnswer: 'off' })
+    const r = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+    expect(r.deny).toContain('anthology:implementer')
+  })
+}
+
+test('without the repo file, or when it cannot be read, the mod stays on', async ($, on) => {
+  engine(on, { fails: ['fs.read'] })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('anthology:implementer')
+})
+
+test('a session started in a subfolder reads the file at the git top, as session start does', async ($, on) => {
+  const ran = engine(on, { repoConfig: '{"delegation": false}', switchAnswer: 'off', repos: [ROOT], cwd: `${ROOT}/pkg/deep` })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toBeUndefined()
+  // the binary gets the session folder and finds the same top by itself
+  expect(ran).toContain(`run switch delegation ${ROOT}/pkg/deep`)
+})
+
+test('a subfolder session without the file at the git top is not switched off', async ($, on) => {
+  engine(on, { repoConfig: '{"delegation": false}', switchAnswer: 'off', repos: ['/elsewhere'], cwd: '/elsewhere/pkg' })
+  expect((await $.tool.call({ tool: 'Write', file_path: '/elsewhere/src/a.ts', content: 'x' })).deny).toContain('anthology:implementer')
+})
+
+test('a repo that leaves the setting out is still refused, and the refusal says how to switch off', async ($, on) => {
+  engine(on)
+  const r = await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })
+  expect(r.deny).toContain('ANTHOLOGY_DELEGATION=0')
+  expect(r.deny).toContain('"delegation": false in .claude/anthology.json')
 })

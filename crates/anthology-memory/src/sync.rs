@@ -46,6 +46,11 @@ use crate::repo::{legacy_dirs, repo_key, repo_root, unsafe_dir};
 /// `HINT`: an unapproved repo that has memory notes.
 pub const HINT: &str = "this repo has memory notes; repo notes load only after /anthology:setup, \
                         but notes in .claude/agent-memory still reach their agents, so review them";
+/// An approved repo whose HEAD has no union-merge rule for the memory indexes: a worktree branched
+/// from HEAD would conflict on them. Setup writes the rule; the user commits it. Nothing is
+/// written here.
+pub const UNION_HINT: &str = "anthology memory: HEAD has no union-merge rule for MEMORY.md; run \
+                              /anthology:setup if .gitattributes lacks it, then commit .gitattributes";
 /// `DIR_SET`: this clone's `autoMemoryDirectory` was written in this run.
 pub const DIR_SET: &str = "anthology memory: set autoMemoryDirectory for this clone; its memory \
                            index is injected for this session";
@@ -1269,6 +1274,9 @@ fn sync_repo(
             "anthology memory: {conflicts} migrated note(s) differ from existing ones; kept side \
              by side as *.migrated-*.md"
         ));
+    }
+    if crate::approve::union_rule_in_head(root, env, deps.git) == Some(false) {
+        messages.push(UNION_HINT.into());
     }
     let agents = agent_dirs(&claude.join("agent-memory"))?;
     let (mut moved, mut side) = (0usize, 0usize);

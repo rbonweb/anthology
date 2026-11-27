@@ -16,13 +16,14 @@ It checks your machine, then shows every change and applies them only after you 
 2. **Duplicates.** If you have the official `superpowers` or `design-skills` installed, it recommends uninstalling them and shows the commands for you to run (see [Replacing the official superpowers and design-skills](#replacing-the-official-superpowers-and-design-skills)).
 3. **Binaries.** Makes sure the `anthology` binary that `anthology-guardrails` pins is installed, with the same download and checks as at session start (see [The `anthology` binary](binary.md)). Then it downloads the pinned ATL binary for your platform from this repo's releases, checks its sha256 against `atl.lock` and installs it in the plugin's data folder. If the download or the check fails, nothing is installed and setup shows a warning.
 4. **Settings.** Edits `~/.claude/settings.json`:
-   - allows `Bash(atl *)`. This also auto-approves `atl bypass <cmd>` (see [The `Bash(atl *)` risk](atl.md#the-bashatl--risk));
+   - allows `Bash(atl *)`. ATL's hook never widens it: a command is rewritten, and a typed `atl bypass <cmd>` or other `atl …` line is let through, only when the command is read-only or your own allow rules cover it, and it asks otherwise (see [The `Bash(atl *)` risk](atl.md#the-bashatl--risk));
    - allows `Bash(anthology-mem save *)`, so agents that cannot edit files can still save their own memory notes (see [Saving notes](memory.md#saving-notes-anthology-mem-save));
    - denies `Read(...)` on the Chrome and Chromium data folders and everything under them: `~/Library/Application Support/Google` and `.../Chromium` on macOS, `~/.config/google-chrome` and `~/.config/chromium` (with the `-beta`, `-dev` and similar channel variants) on Linux;
    - allows `Read(...)` on the parent folder of the plugin's install location, so agents can read their own knowledge files. Outside auto mode, Claude Code does not auto-approve those reads;
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch;
    - only if you say yes to its own question: removes `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block (see [Agent models](agents.md#agent-models)).
 5. **Memory.** Approves the current repo for memory (you can decline this step). That adds two `merge=union` lines to the repo's `.gitattributes` and `"autoMemoryEnabled": false` to the repo's committed `.claude/settings.json`, merged into what is there.
+   - The preview shows the `.gitattributes` change as a diff. It adds only the lines that are missing and keeps the rest of the file. Commit the file: a worktree or clone made from a commit without it does not union-merge the index files.
    - The setting turns off Claude Code's own auto memory in this repo, so the repo's `.claude/memory/` and your personal memory are the only memory. Other repos keep auto memory, and your user-wide settings are not touched for this.
    - The file is committed, so once you push it, auto memory is off for everyone who uses the repo, including teammates who do not use Anthology.
    - Auto memory also covers Claude Code's subagent memory, so in this repo roster agents no longer get their `MEMORY.md` preloaded. Each agent's prompt tells it to read its own.
@@ -42,6 +43,7 @@ It also tells you when something needs attention:
 - It warns you if the plugin has moved so that agents can no longer read their knowledge files. Re-run `/anthology:setup` to fix that.
 - It prints one loud line when a compatibility assumption breaks: Claude Code did not pass `CLAUDE_PLUGIN_DATA`, the plugin's `bin/` wrappers are missing or not executable, agent memory was written somewhere other than `anthology-<agent>/`, or `CLAUDE_CODE_SUBAGENT_MODEL` is set (run `/anthology:setup` to remove it).
 - When a release changes the `settings.json` entries that setup makes and one of them is missing, it prints "anthology settings changed in this release — run /anthology:setup to review" and changes nothing itself. If you deleted one of those entries on purpose (for example `Bash(atl *)`), the line returns at each session start after every such release, until you run setup again.
+- When the official `superpowers` plugin is enabled next to Anthology's own `anthology-superpowers`, it prints one line at each session start (not on resume, clear or compact) that names both and gives the command that disables the official one, for example `claude plugin disable superpowers@claude-plugins-official -s user`. Both would otherwise load their instructions. It names the official plugin and not `anthology-superpowers` because `anthology` lists `anthology-superpowers` as a dependency, and Claude Code refuses to disable a plugin that an enabled one requires. A plugin manifest has no way to mark a dependency optional.
 - If the personal-memory folder is a symlink or not a folder, it prints a line saying personal memory was not loaded and nothing was moved or copied.
 
 When another program drives the session, Anthology stays quiet instead (see [Host mode](agents.md#host-mode)).
@@ -75,6 +77,14 @@ What an update changes:
 - The `anthology` binary that the new `anthology.lock` pins is installed beside the old one at the next session start.
 - ATL is reconciled to the pinned version at each session start.
 - The memory index format is versioned and rebuilt when it changes.
+
+### Two copies of a plugin in the cache
+
+The plugin cache can hold two folders for one dependency, `X.Y.Z` and `X.Y.Z-<sha>`. This is Claude Code's normal cache scheme for dependencies with a version range, and only the `-<sha>` copy is used. Nothing is broken, and you do not need to act.
+
+Claude Code removes old versions on its own, about 14 days after they are orphaned. `/plugin` shows what is installed.
+
+To clean up by hand instead, quit all Claude Code sessions first. Then delete only the version folders whose path is not an `installPath` in `~/.claude/plugins/installed_plugins.json`. Never delete a folder that file lists.
 
 ## Removing
 

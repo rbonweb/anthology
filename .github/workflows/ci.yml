@@ -3,7 +3,11 @@ name: ci
 on:
   push:
     branches: [main, build]
+  # labeled/unlabeled: the `full-ci` label asks for every test (ci/jobs/rust-scope.sh reads it).
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # A manual run is a full run, and fills the Rust build cache for a branch.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,10 +17,19 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Which jobs run on a pull request: the `rust-scope` job (ci/jobs/rust-scope.sh, rules in
+# ci/scope-rules.tsv) answers per job in its `jobs` output, from the paths a job reads and the
+# crates it builds. A push, a manual run, the `full-ci` label, a `[full-ci]` commit message and a
+# change to the test machinery run every job. gitleaks, deny and shellcheck run on every pull
+# request. A job skipped by scope shows as skipped, which a required check accepts.
 jobs:
   vendor-check:
     # Needs git and network: rebuild every vendored tree from its pinned upstream and diff it
-    # against the committed tree (anthology-dev vendor check in the pinned Rust image).
+    # against the committed tree (anthology-dev vendor check in the pinned Rust image). Reads
+    # vendor/, the vendored trees (plugins/anthology-superpowers, plugins/anthology/knowledge,
+    # atl) and anthology-dev.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',vendor-check,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -30,7 +43,10 @@ jobs:
     # A plugin whose files changed must carry a higher plugin.json version than its latest
     # released tag (`<plugin>--v<version>`, for example `anthology--v0.4.1`); a plugin with no such
     # tag is unreleased and not gated. Needs git history and tags (fetch-depth: 0 fetches both);
-    # scripts/dev.sh runs the check in the pinned Rust image.
+    # scripts/dev.sh runs the check in the pinned Rust image. Only a change under plugins/ (or to
+    # anthology-dev, scripts/dev.sh) can fail it.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',version-bump,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -46,7 +62,9 @@ jobs:
 
   plugin-validate:
     # Validate the marketplace manifest and each plugin with the Claude Code version pinned in
-    # ci/claude-code.
+    # ci/claude-code. A skipped matrix job shows as one skipped check, not one per target.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',plugin-validate,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -88,7 +106,8 @@ jobs:
     # Lists the memory notes a pull request adds, changes, renames or deletes (.claude/memory and
     # .claude/agent-memory) in the job summary: notes load into everyone's sessions, so reviewers
     # read them like code. A listing, not a gate, and it comments nothing on the PR (fork-safe).
-    if: github.event_name == 'pull_request'
+    needs: rust-scope
+    if: github.event_name == 'pull_request' && contains(needs.rust-scope.outputs.jobs, ',memory-diff,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -105,7 +124,11 @@ jobs:
   startup-budget:
     # The per-agent startup budget (anthology-dev startup-budget and the test_roster port
     # `startup_budget`, PLAN section 5) and the session-start output budget (the
-    # test_session_start `budget` ports, U8's 9,000 characters), in the pinned Rust image.
+    # test_session_start `budget` ports, U8's 9,000 characters), in the pinned Rust image. Reads
+    # the agents, the startup knowledge and skills, the routing guide, and anthology-dev,
+    # anthology-runtime and the roster test.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',startup-budget,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -120,7 +143,10 @@ jobs:
 
   mods:
     # The anthology plugin's Claude Code mods: `claude plugin validate --strict` and
-    # `claude plugin test` with the pinned Claude Code, in the pinned node image.
+    # `claude plugin test` with the pinned Claude Code, in the pinned node image. Reads only
+    # plugins/anthology and the pins.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',mods,')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -134,6 +160,9 @@ jobs:
     # The Claude Code CLI surface the plugins and the evals rely on (U4): every `claude plugin`
     # subcommand answers --help with the flags we use, `validate --strict` passes for each plugin
     # and `tag --dry-run` names the release tag. No model is called and no credentials are needed.
+    # Reads plugins/, the pinned Claude Code and anthology-dev.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',cli-syntax,')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -151,6 +180,9 @@ jobs:
 
   atl-test:
     # $ATL_TEST: atl's own cargo test suite in the pinned Rust image (ci/images/rust.Dockerfile).
+    # Runs when atl/ or a crate atl builds changes, and on every push (rust-scope).
+    needs: rust-scope
+    if: needs.rust-scope.outputs.atl == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -162,11 +194,36 @@ jobs:
       - name: Run the release binary with the network off
         run: scripts/atl-net-test.sh
 
+  atl-test-macos:
+    # atl's own tests on macOS, where temporary folders sit behind /private/var symlinks that
+    # Linux does not have (three atl tests failed in atl-release.yml's macOS builds after a pull
+    # request passed). Only for a change to atl/ itself, and on every push (rust-scope).
+    needs: rust-scope
+    if: needs.rust-scope.outputs.atl_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain, so the cache key is made for it
+        working-directory: atl
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: atl
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: atl-test-macos
+        run: ci/jobs/atl-test-macos.sh
+
   # The Rust port (design §14.1). Each job runs ci/jobs/<job>.sh; the lane that owns a job edits
   # its script, never this file (plan §0.2). Placeholder scripts echo their name until then.
 
   rust-lint:
-    # cargo fmt --check and clippy -D warnings, in the pinned Rust image.
+    # cargo fmt --check and clippy -D warnings, in the pinned Rust image. Reads Rust files only:
+    # the crates and the fuzz targets.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',rust-lint,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -177,13 +234,23 @@ jobs:
         run: ci/jobs/rust-lint.sh
 
   rust-scope:
-    # full=false when a pull request changes only release metadata (versions, locks, the
-    # changelog, memory notes; ci/jobs/rust-scope.sh lists them): the Rust test shards are then
-    # skipped and rust-test-linux runs repo-tests instead. Push runs are always full.
+    # What this run needs (ci/jobs/rust-scope.sh, rules in ci/scope-rules.tsv): on a pull request
+    # the changed crates and every crate that depends on them, the golden surfaces of those
+    # crates, atl and fuzz only when they, or a crate they build, changed, and macOS only for
+    # platform-sensitive paths. A push to build or main, a manual run, the `full-ci` label, a
+    # `[full-ci]` commit message, or a change to the test machinery itself runs everything.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      atl: ${{ steps.scope.outputs.atl }}
+      atl_macos: ${{ steps.scope.outputs.atl_macos }}
+      fuzz: ${{ steps.scope.outputs.fuzz }}
+      run_linux: ${{ steps.scope.outputs.run_linux }}
+      run_macos: ${{ steps.scope.outputs.run_macos }}
+      linux_matrix: ${{ steps.scope.outputs.linux_matrix }}
+      macos_matrix: ${{ steps.scope.outputs.macos_matrix }}
+      jobs: ${{ steps.scope.outputs.jobs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,32 +261,70 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # cargo metadata reads the manifests with the runner's toolchain; the pinned one would
+          # be downloaded just for that.
+          RUSTUP_TOOLCHAIN: stable
         run: ci/jobs/rust-scope.sh "$BASE" "$HEAD_SHA" >>"$GITHUB_OUTPUT"
 
   rust-test-linux-shard:
-    # cargo test --workspace --locked in the pinned Rust image (with git, busybox and node), plain
-    # and --all-features, each split into the difftest golden replay and every other test.
+    # cargo test in the pinned Rust image (with git, busybox and node), plain and --all-features:
+    # `rest` shards (the crates' tests, split by ci/test-weights.tsv) and a `replay` shard (the
+    # difftest golden surfaces, one test each). The shards are the rust-scope matrix; the cache
+    # keeps the registry, the toolchain and the dependency build (ci/jobs/rust-cache.sh).
+    name: rust-test-linux-shard (${{ matrix.name }})
     needs: rust-scope
-    if: needs.rust-scope.outputs.full == 'true'
+    if: needs.rust-scope.outputs.run_linux == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        features: [plain, all]
-        part: [replay, rest]
+      matrix: ${{ fromJSON(needs.rust-scope.outputs.linux_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: cache folders
+        env:
+          CACHE_DIR: ${{ runner.temp }}/rust-cache
+        run: ci/jobs/rust-cache.sh dirs "$CACHE_DIR"
+      - name: restore the Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/rust-cache/cargo
+            ${{ runner.temp }}/rust-cache/rustup
+            ${{ runner.temp }}/rust-cache/sccache
+          key: rust-linux-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'ci/images/rust.Dockerfile') }}
+          restore-keys: |
+            rust-linux-${{ matrix.name }}-
+      - name: cache volumes
+        env:
+          CACHE_DIR: ${{ runner.temp }}/rust-cache
+        run: ci/jobs/rust-cache.sh volumes "$CACHE_DIR"
       - name: rust-test-linux
         env:
           FEATURES: ${{ matrix.features }}
           PART: ${{ matrix.part }}
+          PACKAGES: ${{ matrix.packages }}
+          SURFACES: ${{ matrix.surfaces }}
+          # sccache keeps what the dependencies compiled in the cached volume; scripts/rust-test.sh
+          # leaves it off in CI by default, because a runner starts empty.
+          ANTHOLOGY_SCCACHE: "1"
         run: ci/jobs/rust-test-linux.sh "$FEATURES" "$PART"
+      # Only a push or a manual run saves: a pull request reads the cache of its base branch.
+      - name: save the Rust cache
+        if: ${{ success() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/rust-cache/cargo
+            ${{ runner.temp }}/rust-cache/rustup
+            ${{ runner.temp }}/rust-cache/sccache
+          key: rust-linux-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'ci/images/rust.Dockerfile') }}
 
   rust-test-linux:
-    # Green when every Linux shard passed, or, for release metadata only, when repo-tests pass.
+    # The required check. Green when every Linux shard passed, or when rust-scope needed none.
     needs: [rust-scope, rust-test-linux-shard]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -231,35 +336,40 @@ jobs:
       - name: shards
         env:
           SCOPE: ${{ needs.rust-scope.result }}
-          FULL: ${{ needs.rust-scope.outputs.full }}
+          RUN: ${{ needs.rust-scope.outputs.run_linux }}
           SHARDS: ${{ needs.rust-test-linux-shard.result }}
-        run: ci/jobs/rust-gate.sh rust-test-linux "$SCOPE" "$FULL" "$SHARDS"
-      - name: repo-tests (release metadata only)
-        if: needs.rust-scope.outputs.full == 'false'
-        run: ci/jobs/rust-test-linux.sh release-metadata
+        run: ci/jobs/rust-gate.sh rust-test-linux "$SCOPE" "$RUN" "$SHARDS"
 
   rust-test-macos-shard:
-    # cargo test --workspace --locked on macOS: plain (then the shims), and --all-features (then
-    # the ledger's macOS listings).
+    # cargo test on macOS, plain (then the shims) and --all-features (then the ledger's macOS
+    # listings): the whole workspace on a push, and on a pull request only the affected crates,
+    # only when it touched platform-sensitive paths (the `macos` rules of ci/scope-rules.tsv).
+    name: rust-test-macos-shard (${{ matrix.name }})
     needs: rust-scope
-    if: needs.rust-scope.outputs.full == 'true'
+    if: needs.rust-scope.outputs.run_macos == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        features: [plain, all]
+      matrix: ${{ fromJSON(needs.rust-scope.outputs.macos_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the pinned toolchain, so the cache key is made for it
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.features }}
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: rust-test-macos
         env:
           FEATURES: ${{ matrix.features }}
+          PACKAGES: ${{ matrix.packages }}
         run: ci/jobs/rust-test-macos.sh "$FEATURES"
 
   rust-test-macos:
-    # Green when both macOS shards passed, or when they were skipped for release metadata only.
+    # The required check. Green when both macOS shards passed, or when rust-scope needed none.
     needs: [rust-scope, rust-test-macos-shard]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -271,9 +381,9 @@ jobs:
       - name: shards
         env:
           SCOPE: ${{ needs.rust-scope.result }}
-          FULL: ${{ needs.rust-scope.outputs.full }}
+          RUN: ${{ needs.rust-scope.outputs.run_macos }}
           SHARDS: ${{ needs.rust-test-macos-shard.result }}
-        run: ci/jobs/rust-gate.sh rust-test-macos "$SCOPE" "$FULL" "$SHARDS"
+        run: ci/jobs/rust-gate.sh rust-test-macos "$SCOPE" "$RUN" "$SHARDS"
 
   deny:
     # cargo deny check (advisories, bans, licenses, sources) and the serde_json tree check.
@@ -287,7 +397,12 @@ jobs:
         run: ci/jobs/deny.sh
 
   shims-distros:
-    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1).
+    # The repo-tests shim suite in the alpine, debian-slim (+node) and ubuntu images (BS1), then
+    # `claude plugin validate --strict` on the anthology and anthology-guardrails plugins. Reads
+    # those two plugins, the shim tests and the crates they link, the three images, and the
+    # pinned Claude Code. Any change to either plugin, so to the guard's shim scripts, runs it.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',shims-distros,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -309,7 +424,9 @@ jobs:
         run: ci/jobs/shellcheck.sh
 
   ledger:
-    # anthology-dev ledger check --report (F4a).
+    # anthology-dev ledger check --report (F4a). Reads every crate (the test listing) and port/.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',ledger,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -321,7 +438,10 @@ jobs:
 
   fuzz-build:
     # Every fuzz target compiles on the pinned nightly and survives 1,000 runs (F1). The long
-    # runs are fuzz.yml's, weekly.
+    # runs are fuzz.yml's, weekly. Runs when fuzz/ or a crate the targets build changes, and on
+    # every push (rust-scope).
+    needs: rust-scope
+    if: needs.rust-scope.outputs.fuzz == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -336,6 +456,8 @@ jobs:
     # anthology binary is built from, so it needs a new anthology-bin release before the next
     # plugin release. Never fails the PR (continue-on-error) and has no write token. Needs the
     # history and the tags (fetch-depth: 0); the check runs in the pinned Rust image.
+    needs: rust-scope
+    if: contains(needs.rust-scope.outputs.jobs, ',lock-fresh,')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true

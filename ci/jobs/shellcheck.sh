@@ -19,7 +19,6 @@ set -- \
     "$staging/anthology/hooks/lib.sh" \
     "$staging/anthology/hooks/bootstrap.sh" \
     "$staging/anthology/hooks/session-start.sh" \
-    "$staging/anthology/hooks/notify.sh" \
     "$staging/anthology/hooks/no-attribution.sh" \
     "$staging/anthology/bin/anthology" \
     "$staging/anthology/bin/anthology-mem" \
@@ -32,12 +31,14 @@ set -- \
     ci/jobs/lock-fresh.sh \
     ci/jobs/rust-scope.sh \
     ci/jobs/rust-gate.sh \
+    ci/jobs/rust-cache.sh \
     ci/jobs/rust-test-linux.sh \
-    ci/jobs/rust-test-macos.sh
+    ci/jobs/rust-test-macos.sh \
+    ci/jobs/atl-test-macos.sh
 
-# Scripts written for bash (not POSIX sh), checked as bash: the release script and the Rust test
-# runner (its shebang is bash and it uses ${var:0:12}).
-bash_scripts="scripts/release.sh scripts/rust-test.sh"
+# Scripts written for bash (not POSIX sh), checked as bash: the release script, the Rust test
+# runner (its shebang is bash and it uses ${var:0:12}) and its remote-host wrapper.
+bash_scripts="scripts/release.sh scripts/rust-test.sh scripts/remote-build.sh"
 
 for f in "$@" $bash_scripts; do
     if [ ! -f "$root/$f" ]; then

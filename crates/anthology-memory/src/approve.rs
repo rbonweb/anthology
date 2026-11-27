@@ -87,21 +87,84 @@ pub fn unapprove(key: &str, env: &Env) -> Result<bool, PyExc> {
 /// `<root>/.gitattributes` (lines compare with their whitespace collapsed); returns whether
 /// it changed anything. Refuses a symlinked or special `.gitattributes` (`UnsafeTarget`).
 pub fn ensure_union_attrs(root: &Path) -> Result<bool, PyExc> {
+    let plan = plan_union_attrs(root)?;
+    for line in &plan.missing {
+        fsx::append_line(&plan.path, line)?;
+    }
+    Ok(!plan.missing.is_empty())
+}
+
+/// What [`ensure_union_attrs`] would do to `<root>/.gitattributes`; see [`plan_union_attrs`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnionAttrsPlan {
+    /// `<root>/.gitattributes`.
+    pub path: PathBuf,
+    /// The file as it is now (lossy UTF-8); empty when it does not exist.
+    pub existing: String,
+    /// The [`UNION_LINES`] the file lacks, in order.
+    pub missing: Vec<&'static str>,
+}
+
+impl UnionAttrsPlan {
+    /// The file once [`ensure_union_attrs`] has run: `existing` kept as it is (a newline is added
+    /// after its last line when that has none), then each missing line.
+    pub fn updated(&self) -> String {
+        let mut out = self.existing.clone();
+        for line in &self.missing {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// Reads `<root>/.gitattributes` and returns which [`UNION_LINES`] it lacks (lines compare with
+/// their whitespace collapsed), without writing anything. Refuses a symlinked or special file
+/// (`UnsafeTarget`), as [`ensure_union_attrs`] does.
+pub fn plan_union_attrs(root: &Path) -> Result<UnionAttrsPlan, PyExc> {
     let path = root.join(".gitattributes");
     let existing = fsx::read_regular(&path, None)?;
-    let existing = String::from_utf8_lossy(&existing);
-    let have: Vec<String> = splitlines(&existing)
+    let existing = String::from_utf8_lossy(&existing).into_owned();
+    let missing = missing_union_lines(&existing);
+    Ok(UnionAttrsPlan {
+        path,
+        existing,
+        missing,
+    })
+}
+
+/// The [`UNION_LINES`] that `text` lacks (lines compare with their whitespace collapsed).
+fn missing_union_lines(text: &str) -> Vec<&'static str> {
+    let have: Vec<String> = splitlines(text)
         .into_iter()
         .map(|l| split_ws(l).join(" "))
         .collect();
-    let mut changed = false;
-    for line in UNION_LINES {
-        if !have.iter().any(|h| h == line) {
-            fsx::append_line(&path, line)?;
-            changed = true;
-        }
+    UNION_LINES
+        .into_iter()
+        .filter(|line| !have.iter().any(|h| h == line))
+        .collect()
+}
+
+/// Whether the commit `HEAD` of the repo at `root` has both [`UNION_LINES`] in its
+/// `.gitattributes`: a worktree or clone made from HEAD only has the rule then. `None` when that
+/// cannot be told (git missing or timed out, or no commit yet). Reads only; writes nothing.
+pub fn union_rule_in_head(root: &Path, env: &Env, git: &dyn Git) -> Option<bool> {
+    if git
+        .run(env, root, &["rev-parse", "--verify", "-q", "HEAD"])?
+        .code
+        != 0
+    {
+        return None;
     }
-    Ok(changed)
+    let shown = git.run(env, root, &["show", "HEAD:.gitattributes"])?;
+    if shown.code != 0 {
+        return Some(false);
+    }
+    let text = String::from_utf8_lossy(&shown.stdout);
+    Some(missing_union_lines(&text).is_empty())
 }
 
 fn save_approved(data: &Map, env: &Env) -> Result<(), PyExc> {

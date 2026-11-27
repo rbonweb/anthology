@@ -1,6 +1,6 @@
 {
   "name": "anthology-guardrails",
-  "version": "0.2.15",
+  "version": "0.2.17",
   "description": "Anthology guardrails: safety hooks and rules for Claude Code.",
   "author": { "name": "rbonweb" },
   "license": "Apache-2.0",

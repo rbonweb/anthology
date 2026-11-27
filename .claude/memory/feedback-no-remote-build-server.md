@@ -1,13 +1,15 @@
 ---
 name: 'no-remote-build-server'
-description: 'Never use the owner''s remote build server for builds or tests; only local Docker and CI. A permanent rule, not a load throttle'
+description: 'Never use the owner''s first remote build server; one second host is approved, reached only through ANTHOLOGY_BUILD_HOST and scripts/remote-build.sh'
 metadata:
   type: feedback
-  modified: 2026-11-26
+  modified: 2026-11-27
 ---
 
-On 2026-11-26 the owner said not to use the remote build server for builds and similar work.
+The owner, 2026-11-26: never use the remote build server they first set up for builds or tests (no remote-rust-test.sh, no SSH builds there), even when CI is down.
 
-**Why:** it is the owner's machine and they don't want Anthology work running on it. This replaces the older idea that "don't use the build server" was a temporary throttle to re-check after 5-10 minutes; for the build server it is permanent.
+The owner, 2026-11-27: a second host is approved for builds. Its alias lives only in personal memory and the ANTHOLOGY_BUILD_HOST env var, never in the repo. Use it through scripts/remote-build.sh.
 
-**How to apply:** no remote-rust-test.sh, no SSH builds or tests, even when CI is down. Use local Docker containers and CI only. Put this in every agent brief. Related: [[owner-build-rules-2026-11-21]].
+**Why:** the first server was off limits; the second one takes build load off the Mac.
+
+**How to apply:** build locally by default; a cold guard test is about 54 s on the Mac against about 2m41s on the remote host. Use the remote host when the Mac is busy or several agents build at once. Never name either host in the public repo.

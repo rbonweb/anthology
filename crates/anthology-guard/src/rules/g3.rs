@@ -40,7 +40,9 @@ pub(crate) fn g3_input(tool_name: &str, input: &Value, paths: &Paths<'_>) -> Res
         || {
             let mut code = Vec::new();
             code_strings(input, paths.walk_depth(), &mut code);
-            paths.code_hits_profile(&code, None)
+            // a script in a tool input is code, not a shell word: no G0 for a brace group
+            // too large to expand
+            paths.code_hits_profile(&code, None, false)
         },
     )
 }
@@ -57,6 +59,6 @@ pub(crate) fn g3(entry: &Entry, paths: &Paths<'_>) -> Result<bool, Limit> {
     let cwd = entry.cwd.as_deref();
     either(
         paths.words_hit(&words, cwd, |p, c, cwd| p.is_profile_path(c, cwd, false)),
-        || paths.code_hits_profile(&entry.code, cwd),
+        || paths.code_hits_profile(&entry.code, cwd, true),
     )
 }

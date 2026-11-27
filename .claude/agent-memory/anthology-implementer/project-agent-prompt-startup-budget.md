@@ -1,11 +1,11 @@
 ---
-name: 'Agent prompt edits must fit the startup budget, scout has about 4 bytes spare'
-description: 'The per-agent startup budget in anthology-dev is fixed; adding a phrase to every agent prompt overran scout'
+name: 'Agent prompt edits must fit the startup budget and the 60-line body cap'
+description: 'A line added to every agent prompt overran four budgets and the ui-designer line cap; where the budget table lives'
 metadata:
   type: project
-  modified: 2026-11-22
+  modified: 2026-11-27
 ---
 
-Adding the same sentence to all eleven agent prompts overran the scout budget (5940 of 5944 bytes before the edit). The budget table lives in crates/anthology-dev/src/startup_budget.rs, crates/anthology-dev/tests/startup_budget.rs and crates/repo-tests/tests/roster.rs, so raising it means three edits. Check with scripts/dev.sh startup-budget before committing a prompt change.
-
-Why: the scout is the smallest agent and has almost no headroom, so a shared wording change has to skip it or trim it.
+A shared line added to the Shell section of all 11 agent prompts (126 bytes) pushed architect, debugger, docs-writer and scout over budget (debugger had 1 byte spare, scout 3) and made ui-designer 61 body lines against the cap of 60 in roster.rs test_body_shape. Fix: raise those four BUDGET rows by the added bytes (precedent: a note such as +126 atl in the row comment) and merge two lines in ui-designer (the build-and-check line and the fix-and-hand-back line).
+The budget table lives in three files: crates/anthology-dev/src/startup_budget.rs, crates/anthology-dev/tests/startup_budget.rs, crates/repo-tests/tests/roster.rs. crates/difftest/src/surfaces/dev_upstream_watch.rs pins its own table; leave it, bless instead. Run scripts/dev.sh startup-budget before committing a prompt change, then bless dev.startup-budget and dev.upstream-watch.
+Why: headroom per agent is tiny after earlier Shell additions, so any shared wording change needs a budget decision and a line count check.

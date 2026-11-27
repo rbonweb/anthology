@@ -16,6 +16,11 @@ pub mod init;
 pub mod integrity;
 pub mod permissions;
 pub mod permissions_opencode;
+// anthology fork: drops the gate's needless ask for a line shown read-only, and
+// rewrites nothing in auto mode.
+pub mod read_only_proof;
+// anthology fork: the user's own allow rules, matched as Claude Code matches them.
+pub mod user_allow;
 #[deny(clippy::print_stdout, clippy::print_stderr)]
 #[cfg(feature = "engine")]
 pub mod posthook;

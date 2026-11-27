@@ -89,7 +89,7 @@ If a Bash call is blocked with "(setup)", the guard binary is missing. The block
      `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`. Every value under
      those three is shown as it is, including your own rules, so a token written inside one of your allow or
      deny rules would reach the conversation. Then print this note verbatim:
-     `settings.bypass_note`, which reads: "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. atl's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
+     `settings.bypass_note`, which reads: "Note: `Bash(atl *)` approves any line that starts with `atl`, and `atl bypass <cmd>` runs any command. atl's hook judges such a line, and a command it rewrites to atl, as the command it runs: it lets the line through only when that command is read-only or one of your own allow rules covers it, and asks you otherwise. It also applies the deny and ask rules in your settings files (user, project, local and managed), but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **CLAUDE_CODE_SUBAGENT_MODEL:** `subagent_model.set_in` lists where it is set (never its value).
      If `removable` is true, show `subagent_model.diff` as a diff (the value reads `"<redacted>"`): this is
@@ -99,6 +99,12 @@ If a Bash call is blocked with "(setup)", the guard binary is missing. The block
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
      is skipped (no repo was picked from `repos_below`).
+   - **Union-merge rule:** `memory.repo.union_attrs` is the `.gitattributes` change that makes the
+     generated `MEMORY.md` indexes (the repo's and each agent's) merge by keeping both sides' lines,
+     so parallel agents do not conflict there. Show its `diff` as a diff (only the missing lines are
+     added; the rest of the file is kept) and print its `note` verbatim: the file must be committed
+     for other worktrees and clones to have the rule. If `changed` is false, say nothing about it.
+     If it has `skipped`, show the reason: the file is left alone.
    - **Claude Code's own auto memory:** `memory.repo.auto_memory` is the one memory change to the repo's
      committed `.claude/settings.json`: it adds `"autoMemoryEnabled": false`, so Claude Code's built-in
      auto memory does not run beside the repo's `.claude/memory/` and the personal memory. Show its `path`
