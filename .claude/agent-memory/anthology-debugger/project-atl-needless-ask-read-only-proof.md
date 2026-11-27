@@ -1,0 +1,13 @@
+---
+name: 'ATL needless ask: read_only_proof.rs and how it is wired'
+description: 'Why ATL asked for harmless reads, how the fix proves them read-only, review fixes, and the traps hit building and testing it'
+metadata:
+  type: project
+  modified: 2026-11-27
+---
+
+The Claude hook (atl/src/hooks) asked with AskOwner::Hook for any line containing atl or rtk once any deny, ask or Read rule existed, because mentions_token_layer needs the plain shape; a path like atl/src/x.go was enough. atl/src/hooks/read_only_proof.rs, called from decision::decide_for_claude_hook_in after the gate, drops that ask when verdict is not Ask, the gate on the typed line passes, and anthology perm classify proves the line read-only with every path under the proof root. Answer: the plain rewrite with NO permissionDecision (AskRewrite Host), never an explicit allow (it beats settings without Bash(atl *) and allowManagedPermissionRulesOnly); else Defer. permission_mode auto at the top level of the payload: no rewrite at all, and an ask that stays is about the original (fish wrap exempt).
+Proof root: CLAUDE_PROJECT_DIR, else the git top level of the payload cwd (walk for .git), else the cwd. Never user_dirs::project_root: it walks to the first .claude, which is HOME in a repo without one (PR 250 review).
+Why it is built this way: the classifier trusts the request cwd only through a leading absolute cd, so ATL sends cd CWD && LINE; ATL cannot call tool.check, so it checks the printed paths against the root itself; the proof reaches ATL through ATL_PERM_CLASSIFY and ATL_HOOK_USER_PATH set by plugins/anthology/bin/atl-hook. bin/atl-hook already drops asks for lines that do not mention atl, so the field prompt only shows when the typed line contains atl. The classifier call blocks on an mpsc recv_timeout (no polling): hook 11.0 ms to 7.7 ms on the proven path in a Linux container.
+Traps: core::test_isolation scans user_env::var calls and wants string literals. repo-tests atl_rename wants the word legacy on any line naming rtk and cannot list git files inside a worktree container. Bumping atl/Cargo.toml needs atl.lock at the same version (placeholder digests). Integration tests stand a shell script in for the classifier (prints each absolute word of the command as a read path); write it once per test binary (OnceLock) and sleep briefly to dodge ETXTBSY. In the atl workspace cargo fmt --all fails: run rustfmt on touched files. cargo clippy --all-targets fails on an old lint in tests/hook_decision_protocol_test.rs: lint lib, bins and the test you touched.
+How to apply: to change what the hook asks, edit read_only_proof.rs and its tests in atl/tests/anthology_gate_test.rs; never relax when verdict is Ask or the gate on the original is not Pass.

@@ -99,6 +99,12 @@ If a Bash call is blocked with "(setup)", the guard binary is missing. The block
    - **repo memory:** `memory.repo`. If it has a `key`, the repo `<key>` is approved for memory and
      a union-merge rule is added to its `.gitattributes`. If it says "not a git repo", this step
      is skipped (no repo was picked from `repos_below`).
+   - **Union-merge rule:** `memory.repo.union_attrs` is the `.gitattributes` change that makes the
+     generated `MEMORY.md` indexes (the repo's and each agent's) merge by keeping both sides' lines,
+     so parallel agents do not conflict there. Show its `diff` as a diff (only the missing lines are
+     added; the rest of the file is kept) and print its `note` verbatim: the file must be committed
+     for other worktrees and clones to have the rule. If `changed` is false, say nothing about it.
+     If it has `skipped`, show the reason: the file is left alone.
    - **Claude Code's own auto memory:** `memory.repo.auto_memory` is the one memory change to the repo's
      committed `.claude/settings.json`: it adds `"autoMemoryEnabled": false`, so Claude Code's built-in
      auto memory does not run beside the repo's `.claude/memory/` and the personal memory. Show its `path`
