@@ -283,6 +283,8 @@ jobs:
       - name: trim the cache to the dependencies
         env:
           CACHE_DIR: ${{ runner.temp }}/rust-cache
+          # cargo metadata lists the workspace's crates with the runner's toolchain.
+          RUSTUP_TOOLCHAIN: stable
         run: ci/jobs/rust-cache.sh trim "$CACHE_DIR"
       # Only a push or a manual run saves: a pull request reads the cache of its base branch.
       - name: save the Rust cache

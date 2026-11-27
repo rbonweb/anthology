@@ -13,6 +13,9 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The crates whose tests run the built `anthology` binary (anthology_testkit::run::run_bin).
+# crates/repo-tests/tests/rust_test_jobs.rs checks this list against the source.
+needs_binary="anthology-dev anthology-memory anthology-runtime"
 
 usage() {
     echo "usage: [PACKAGES='a b'] ci/jobs/rust-test-linux.sh plain|all rest" >&2
@@ -32,15 +35,38 @@ case $2 in
     rest)
         # The crates by name, so the tests of the crates a change reaches run, no more.
         set -- cargo test --locked
+        build_first=false
         if [ -n "${PACKAGES:-}" ]; then
             for p in $PACKAGES; do
                 set -- "$@" -p "$p"
             done
+            # A crate that runs the built binary needs it, and a run of the whole workspace builds
+            # it only because cli is in it: build it first unless cli's own tests are in the run.
+            case " $PACKAGES " in
+                *" anthology-cli "*) ;;
+                *)
+                    for p in $needs_binary; do
+                        case " $PACKAGES " in *" $p "*) build_first=true ;; esac
+                    done
+                    ;;
+            esac
         else
             set -- "$@" --workspace
         fi
-        # shellcheck disable=SC2086 # $features is empty or one option
-        exec "$root/scripts/rust-test.sh" run "$@" $features -- --skip golden_replay::
+        if [ -n "$features" ]; then
+            set -- "$@" "$features"
+        fi
+        set -- "$@" -- --skip golden_replay::
+        if [ "$build_first" = true ]; then
+            # shellcheck disable=SC2016 # expanded by the container shell; $1 is empty or one option
+            exec "$root/scripts/rust-test.sh" run sh -c '
+set -eu
+cargo build --locked -p anthology-cli $1
+shift
+exec "$@"
+' rust-test-linux "$features" "$@"
+        fi
+        exec "$root/scripts/rust-test.sh" run "$@"
         ;;
     replay)
         [ -n "${SURFACES:-}" ] || usage

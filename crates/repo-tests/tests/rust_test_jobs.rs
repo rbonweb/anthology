@@ -162,6 +162,81 @@ fn the_rest_shards_test_the_named_crates_without_the_replay() {
 }
 
 #[test]
+fn a_rest_shard_builds_the_anthology_binary_first_for_the_crates_that_run_it() {
+    // memory, runtime and dev run the built binary (testkit's run_bin); a whole-workspace
+    // run builds it anyway, but a shard that names crates does not, unless anthology-cli is one.
+    for (features, flag) in [("plain", ""), ("all", "--all-features")] {
+        let env = [("PACKAGES", "anthology-memory repo-tests")];
+        let got = linux(&[features, "rest"], &env).unwrap();
+        assert_eq!(got[..3], ["run", "sh", "-c"], "{features}");
+        assert!(
+            got[3].contains("cargo build --locked -p anthology-cli $1"),
+            "{}",
+            got[3]
+        );
+        let mut want = vec!["rust-test-linux", flag, "cargo", "test", "--locked"];
+        want.extend_from_slice(&["-p", "anthology-memory", "-p", "repo-tests"]);
+        if !flag.is_empty() {
+            want.push(flag);
+        }
+        want.extend_from_slice(&["--", "--skip", "golden_replay::"]);
+        assert_eq!(got[4..], want, "{features}");
+    }
+    // Nothing to build first when the crates do not run it, or when cargo builds it for cli's tests.
+    for packages in [
+        "repo-tests anthology-guard",
+        "anthology-memory anthology-cli",
+    ] {
+        let got = linux(&["plain", "rest"], &[("PACKAGES", packages)]).unwrap();
+        assert_eq!(got[..3], ["run", "cargo", "test"], "{packages}");
+    }
+}
+
+/// The crates that run the built binary are exactly the ones the scripts name.
+#[test]
+fn the_crates_that_run_the_anthology_binary_are_the_ones_the_scripts_build_it_for() {
+    fn uses_binary(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                uses_binary(&p)
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "rust_test_jobs.rs")
+            {
+                fs::read_to_string(&p)
+                    .is_ok_and(|t| t.contains("run_bin(") || t.contains("anthology_bin("))
+            } else {
+                false
+            }
+        })
+    }
+    let mut users: Vec<String> = Vec::new();
+    for krate in repo::list_dir("crates") {
+        // testkit defines the helpers and cli builds the binary.
+        if krate == "anthology-testkit" || krate == "anthology-cli" {
+            continue;
+        }
+        if uses_binary(&repo::path(&format!("crates/{krate}"))) {
+            users.push(krate);
+        }
+    }
+    users.sort();
+    for script in [LINUX, MACOS] {
+        let text = repo::read(script);
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("needs_binary=\""))
+            .unwrap_or_else(|| panic!("{script} has no needs_binary line"));
+        let mut named: Vec<&str> = line.trim_end_matches('"').split(' ').collect();
+        named.sort_unstable();
+        assert_eq!(named, users, "{script}");
+    }
+}
+
+#[test]
 fn a_rest_shard_without_crates_tests_the_whole_workspace() {
     let got = linux(&["plain", "rest"], &[]).unwrap();
     assert_eq!(
@@ -326,6 +401,37 @@ fn the_macos_shards_together_run_both_feature_sets_and_the_ledger() {
     let script = repo::read(MACOS);
     assert_eq!(script.matches("--test shims").count(), 1);
     assert!(macos("other", None).is_err());
+}
+
+#[test]
+fn a_macos_shard_builds_the_anthology_binary_first_for_the_crates_that_run_it() {
+    assert_eq!(
+        macos("plain", Some("anthology-memory repo-tests")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo build -p anthology-cli --locked",
+            "cargo test -p anthology-memory -p repo-tests --locked",
+        ]
+    );
+    assert_eq!(
+        macos("all", Some("anthology-runtime")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo build -p anthology-cli --locked --all-features",
+            "cargo test -p anthology-runtime --locked --all-features",
+        ]
+    );
+    // cli among the crates: cargo builds the binary for its tests.
+    assert_eq!(
+        macos("plain", Some("anthology-memory anthology-cli")).unwrap(),
+        [
+            "rustup toolchain install",
+            "cargo --version",
+            "cargo test -p anthology-memory -p anthology-cli --locked",
+        ]
+    );
 }
 
 #[test]
@@ -786,6 +892,9 @@ fn a_linux_shard_restores_binds_trims_and_saves_the_rust_cache() {
             "{sub}"
         );
     }
+    // trim reads the manifests with cargo on the runner, which must not fetch the pinned toolchain.
+    let trim = step_running(&job, r#"ci/jobs/rust-cache.sh trim "$CACHE_DIR""#);
+    assert_eq!(text(&trim["env"], "RUSTUP_TOOLCHAIN"), "stable");
     let restore = step_using(&job, "actions/cache/restore@");
     let save = step_using(&job, "actions/cache/save@");
     for step in [restore, save] {

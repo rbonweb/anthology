@@ -27,14 +27,32 @@ esac
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
+# The crates whose tests run the built `anthology` binary (anthology_testkit::run::run_bin).
+# crates/repo-tests/tests/rust_test_jobs.rs checks this list against the source.
+needs_binary="anthology-dev anthology-memory anthology-runtime"
 rustup toolchain install
 cargo --version
 scope=--workspace
 if [ -n "${PACKAGES:-}" ]; then
     scope=
+    build_first=false
     for p in $PACKAGES; do
         scope="$scope -p $p"
     done
+    # A crate that runs the built binary needs it, and a run of the whole workspace builds it
+    # only because cli is in it: build it first unless cli's own tests are in the run.
+    case " $PACKAGES " in
+        *" anthology-cli "*) ;;
+        *)
+            for p in $needs_binary; do
+                case " $PACKAGES " in *" $p "*) build_first=true ;; esac
+            done
+            ;;
+    esac
+    if [ "$build_first" = true ]; then
+        # shellcheck disable=SC2086 # $features is empty or one option
+        cargo build -p anthology-cli --locked $features
+    fi
 fi
 # shellcheck disable=SC2086 # $scope is --workspace or -p options; $features is empty or one option
 cargo test $scope --locked $features
