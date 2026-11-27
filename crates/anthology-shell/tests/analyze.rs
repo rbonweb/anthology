@@ -665,6 +665,7 @@ fn a_zsh_glob_group_among_the_words_of_a_command_is_incomplete() {
         "case x in a (b|c)) :;; esac",
         "case (a|b) in x) :;; esac",
         "for x in a b (c|d); do :; done",
+        "for (a|b) in x; do :; done",
         // a closed heredoc body is data, and the text after it is code again
         "cat <<'EOF'\nProse (with parens)\nEOF\nls (a|b)",
         "echo \"$(cat <<'EOF'\nEOF is (here)\nEOF\n)\"; ls (a|b)",
@@ -731,6 +732,57 @@ fn an_escaped_backtick_in_arithmetic_is_a_command() {
     }
     for command in [r"(( a[\`id] ))", r"echo $(( a[\`id] ))"] {
         assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    // the text goes on right after the closing pair, or after an unclosed one: what follows is still lexed
+    // as commands, and each pair of a text is a command
+    for (command, programs) in [
+        (
+            r"(( a[\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"echo $(( a[\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"(( a[\`id\`] + b[\`npx playwright install\`] ))",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"(( a[\`npx playwright install\`] + b[\`id\`] ))",
+            vec!["playwright", "id"],
+        ),
+        (
+            r"echo xxxxxxxx; (( a[\`npx playwright install\`] + b[\`id\`] )); id",
+            vec!["playwright", "id"],
+        ),
+        (r"(( a[\`) )); npx playwright install", vec!["playwright"]),
+        (
+            r"echo xxxxxxxx; (( a[\`) )); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo xxxxxxxx; (( a[\`)); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo xxxxxxxx; echo $(( a[\`)); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo $(( a[\`) )); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"(( a[\`id\`\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+    ] {
+        let a = analyze(command, HOME);
+        let shown: Vec<&str> = a.entries.iter().map(|e| e.prog.as_str()).collect();
+        for program in programs {
+            assert!(shown.contains(&program), "{command}: {shown:?}");
+        }
     }
     for command in [
         "(( i++ ))",
