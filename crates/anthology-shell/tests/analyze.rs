@@ -595,6 +595,154 @@ fn common_forms_stay_clear() {
 }
 
 #[test]
+fn search_sort_and_pager_commands_are_marked() {
+    for command in [
+        "rg --pre sh x p.sh",
+        "rg --pre=npx x f",
+        "rg --pr=npx x f",
+        "rg --hostname-bin=npx x f",
+        "rg --hostname-bin npx x f",
+        "ugrep --filter='txt:npx' x f",
+        "ugrep --filter 'txt:npx' x f",
+        "ugrep --filter='txt:cat,*:npx' x f",
+        "grep --filter='*:npx' x f",
+        "ug --pager=npx x f",
+        "sort --compress-program=npx f",
+        "sort --compress-program npx f",
+        "sort --compress=npx f",
+        "sort --com=npx f",
+        "gsort --compress-program=npx f",
+        "LESSOPEN='|npx %s' less f",
+        "LESSCLOSE='npx %s %s' less f",
+        "export LESSOPEN='|npx %s'",
+    ] {
+        assert!(
+            any_has(command, Opaque::UnknownWrapperOption),
+            "{command}: {:?}",
+            analyze(command, HOME)
+        );
+    }
+    for command in [
+        "rg x f",
+        "rg --pre=cat x f",
+        "rg --pre-glob '*.pdf' x f",
+        "rg --pretty x f",
+        "rg --hostname-bin=cat x f",
+        "ugrep --pager=less x f",
+        "ugrep --pager x f",
+        "ugrep --filter-magic-label=x x f",
+        "ugrep --filter 'txt:cat' x f",
+        "sort -u f",
+        "sort --compress-program=gzip big",
+        "sort --compress-program zstd big",
+        "sort --check f",
+        "LESSOPEN= less f",
+        "LESSKEY=x less f",
+    ] {
+        assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
+    }
+}
+
+/// zsh reads an unquoted `(a|b)` among the words of a command as a glob group, which can add or replace words
+/// the analysis never saw (`docker exec c (flock|x) psql ...` runs `flock`). bash reads it as a syntax error.
+#[test]
+fn a_zsh_glob_group_among_the_words_of_a_command_is_incomplete() {
+    for command in [
+        "echo x (a|b)",
+        "ls (a|b)",
+        "ls -l (a|b) c",
+        "docker exec c (flock|x) psql -c 'select 1'",
+        "docker exec c ( flock|x ) psql",
+        "FOO=1 ls (a|b)",
+        "echo a; ls (a|b)",
+        "echo $(ls (a|b))",
+        "ls (a|b)(.)",
+        "ls ((a|b))",
+        "echo x ((1+2))",
+        "time (sleep 1)",
+        "function f { ls (a|b); }",
+        "function f ls (a|b)",
+        "case x in a (b|c)) :;; esac",
+        "case (a|b) in x) :;; esac",
+        "for x in a b (c|d); do :; done",
+        // a closed heredoc body is data, and the text after it is code again
+        "cat <<'EOF'\nProse (with parens)\nEOF\nls (a|b)",
+        "echo \"$(cat <<'EOF'\nEOF is (here)\nEOF\n)\"; ls (a|b)",
+        "echo \"$(cat <<'EOF'\nprose\nEOF\n)\" (a|b)",
+    ] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    for command in [
+        "(cd d && ls)",
+        "echo a && (cd d && ls)",
+        "ls | (cat)",
+        "if (true); then (echo a); fi",
+        "if ! (false); then echo a; fi",
+        "while (true); do break; done",
+        "until (false); do break; done",
+        "for f in a b; do (cd $f; ls); done",
+        "{ (echo a); }",
+        "f () { echo a; }",
+        "f() { echo a; }",
+        "function f () { echo a; }",
+        "function f { (echo a); }",
+        "function f () ( echo a )",
+        "case x in (a|b) echo hi;; esac",
+        "case x in a|b) echo hi;; esac",
+        "[[ $x == (a|b) ]]",
+        "(( i++ ))",
+        "for ((i=0; i<3; i++)); do echo $i; done",
+        "while (( i < 3 )); do i=$((i+1)); done",
+        "x=(1 2); echo ${x[1]}",
+        "arr+=(a b)",
+        "echo $((1 + (2 * 3)))",
+        "diff <(ls a) <(ls b)",
+        r"find . \( -name a -o -name b \)",
+        "echo 'ls (a|b)'",
+        // prose in a heredoc body: one that never closes is also lexed as commands, and so is the rest of a
+        // `$(...)` body that a reading cuts at a line holding a parenthesis (`EOF is (here)`)
+        "git commit -m \"$(cat <<'EOF'\nFix bug (see #12)\nEOF\n)\"",
+        "cat <<'EOF'\nProse (with parens) here\n",
+        "echo \"$(cat <<'EOF'\nEOF is (here)\nline two (x)\nEOF\n)\"",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
+/// zsh evaluates a subscript in arithmetic text, backticks escaped or not; the escaped pair is a command.
+#[test]
+fn an_escaped_backtick_in_arithmetic_is_a_command() {
+    for command in [
+        r"(( a[\`npx playwright install\`] ))",
+        r"(( grep + path[\`npx playwright install\`] ))",
+        r"(( a[\`npx playwright install\`] = 1 ))",
+        r"echo $(( a[\`npx playwright install\`] ))",
+        r"x=$(( a[\`npx playwright install\`] ))",
+        r"for ((i=0; i<a[\`npx playwright install\`]; i++)); do :; done",
+        "(( a[`npx playwright install`] = 1 ))",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(
+            a.entries
+                .iter()
+                .any(|e| e.raw == ["npx", "playwright", "install"]),
+            "{command}: {a:?}"
+        );
+    }
+    for command in [r"(( a[\`id] ))", r"echo $(( a[\`id] ))"] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    for command in [
+        "(( i++ ))",
+        "echo $(( 1 + 2 ))",
+        r"echo a\`b",
+        r"echo 'a\`b'",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
+#[test]
 fn a_budget_stop_is_incomplete_but_not_a_regex_limit() {
     let a = analyze(&format!("find . {}", "-exec find . ".repeat(5000)), HOME);
     assert!(a.incomplete);

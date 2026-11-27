@@ -201,6 +201,8 @@ pub(crate) fn runs_assigned_command(word: &str) -> bool {
         "LD_PRELOAD",
         "DYLD_INSERT_LIBRARIES",
         "GIT_CONFIG_PARAMETERS",
+        "LESSOPEN",
+        "LESSCLOSE",
     ];
     let Some((name, value)) = word.split_once('=') else {
         return false;
@@ -306,8 +308,8 @@ fn git_config_runs_command(config: &str) -> bool {
 /// `fd -x cmd`, `git -c alias.x='!cmd'`, `git --config-env=core.pager=V`, git's transport options and `ext::`
 /// URLs (`git clone -u cmd`), `tar --to-command=cmd`, `tar --checkpoint-action exec=cmd`, `tar -I cmd`
 /// (other than exactly a compressor's name), `rsync -e cmd` (other than exactly `ssh`), `rsync --rsync-path=cmd`
-/// (other than exactly `rsync`), and
-/// `export GIT_PAGER=cmd` (as `runs_assigned_command`).
+/// (other than exactly `rsync`), `export GIT_PAGER=cmd` (as `runs_assigned_command`), and the options of
+/// `option_commands` (`rg --pre`, `ugrep --filter`, `sort --compress-program`; as `runs_unread_command`).
 pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
     match prog {
         "trap" => {
@@ -351,10 +353,6 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                     .any(|v| !harmless_value(v))
         }
         "tar" | "gtar" | "bsdtar" => {
-            const COMPRESSORS: &[&str] = &[
-                "gzip", "pigz", "zstd", "unzstd", "xz", "pixz", "bzip2", "pbzip2", "lbzip2", "lz4",
-                "lzip", "plzip", "lzma", "lzop", "brotli", "compress",
-            ];
             !option_values(
                 args,
                 &[
@@ -389,6 +387,72 @@ pub(crate) fn runs_option_command(prog: &str, args: &[String]) -> bool {
                     .iter()
                     .any(|v| *v != "rsync")
         }
-        _ => false,
+        _ => runs_unread_command(prog, args),
     }
+}
+
+/// The compressors `tar -I` and `sort --compress-program` may name: they run no command of their own.
+const COMPRESSORS: &[&str] = &[
+    "gzip", "pigz", "zstd", "unzstd", "xz", "pixz", "bzip2", "pbzip2", "lbzip2", "lz4", "lzip",
+    "plzip", "lzma", "lzop", "brotli", "compress",
+];
+
+/// The commands `prog` runs from the options it takes them in, the ones that hand the command a file name the
+/// text may not show: `rg --pre` and `--hostname-bin`, ugrep's `--filter` (a comma list of `exts:command`; the
+/// Claude Code shell `grep` is ugrep) and `--pager=`, and `sort --compress-program`. The long option may be
+/// abbreviated to a prefix at least as long as the listed minimum, as getopt reads it. The value is the one
+/// attached with `=` or the next word (only the attached one for `--pager`, whose value is optional).
+pub(crate) fn option_commands(prog: &str, args: &[String]) -> Vec<String> {
+    // (long option, shortest abbreviation read, whether the next word may be the value)
+    let options: &[(&str, usize, bool)] = match prog {
+        "rg" | "ripgrep" => &[("--pre", 4, true), ("--hostname-bin", 4, true)],
+        "grep" | "egrep" | "fgrep" | "ugrep" | "ug" => {
+            &[("--filter", 8, true), ("--pager", 7, false)]
+        }
+        "sort" | "gsort" => &[("--compress-program", 4, true)],
+        _ => return Vec::new(),
+    };
+    let mut commands = Vec::new();
+    for (k, arg) in args.iter().enumerate() {
+        let (name, attached) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        let Some(&(long, _, next)) = options
+            .iter()
+            .find(|(long, min, _)| name.len() >= *min && long.starts_with(name))
+        else {
+            continue;
+        };
+        let Some(value) = attached.or(args.get(k + 1).map(String::as_str).filter(|_| next)) else {
+            continue;
+        };
+        if long == "--filter" {
+            // `exts:command`, or a command alone
+            commands.extend(
+                value
+                    .split(',')
+                    .map(|item| item.split_once(':').map_or(item, |(_, command)| command))
+                    .map(str::to_string),
+            );
+        } else {
+            commands.push(value.to_string());
+        }
+    }
+    commands
+}
+
+/// `option_commands` has a command that is not a known harmless value (`cat`, a pager, a compressor for
+/// `sort`), so what the program runs cannot be told from the text.
+pub(crate) fn runs_unread_command(prog: &str, args: &[String]) -> bool {
+    let compressor = matches!(prog, "sort" | "gsort");
+    option_commands(prog, args)
+        .iter()
+        .any(|c| !(harmless_value(c) || (compressor && COMPRESSORS.contains(&c.as_str()))))
+}
+
+/// The variables `less` runs as a command on every file it opens: `value` with the mode a leading `|`, `||` or
+/// `-` sets taken off, when `name` is one of them.
+pub(crate) fn less_command<'a>(name: &str, value: &'a str) -> Option<&'a str> {
+    matches!(name, "LESSOPEN" | "LESSCLOSE").then(|| value.trim_start_matches(['|', '-']))
 }

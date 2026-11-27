@@ -21,7 +21,7 @@
 
 pub(crate) mod hidden;
 
-use hidden::{runs_assigned_command, wrapper_known};
+use hidden::{less_command, option_commands, runs_assigned_command, wrapper_known};
 
 use crate::atl_forms::{TOKEN_LAYER_NAMES, atl_command};
 use crate::lexer::words::ansi_c;
@@ -1881,6 +1881,8 @@ fn assignment_scripts(words: &[String]) -> Vec<String> {
     for &(name, value) in &values {
         if has(COMMAND_VARIABLES, name) {
             out.push(Some(value.to_string()));
+        } else if let Some(command) = less_command(name, value) {
+            out.push(Some(command.to_string()));
         } else if name == "GIT_CONFIG_PARAMETERS" {
             for (key, val) in git_config_parameters(value) {
                 out.push(git_command_value(&key, &val));
@@ -2597,6 +2599,13 @@ pub(crate) fn strip_prefixes(
             }
         } else if name == "rsync" {
             scripts.extend(rsync_scripts(rest));
+        } else {
+            // Rust-only: `rg --pre`, ugrep's `--filter`, `sort --compress-program`
+            scripts.extend(
+                option_commands(&name, rest)
+                    .into_iter()
+                    .filter(|c| !c.is_empty()),
+            );
         }
     }
     if let Some(alternates) = alternates {

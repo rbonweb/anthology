@@ -869,6 +869,81 @@ fn trap_tar_rsync_and_fd_run_commands() {
     ]);
 }
 
+/// Each command has an install entry or alternate (the analysis may be incomplete as well).
+#[track_caller]
+fn assert_reads_install(commands: &[&str]) {
+    let missed: Vec<String> = commands
+        .iter()
+        .filter_map(|command| {
+            let a = analyze(command, HOME);
+            (!installs(&a)).then(|| format!("{command:?}: {}", summary(&a)))
+        })
+        .collect();
+    assert!(missed.is_empty(), "no install read:\n{}", missed.join("\n"));
+}
+
+/// Search, sort and pager programs that run a command from an option or a variable (rg `--pre`, ugrep
+/// `--filter`/`--pager`, `sort --compress-program`, `LESSOPEN`): the value is read as a command, and one that is
+/// not a known harmless value leaves the analysis incomplete, since the program also passes it a file name.
+#[test]
+fn search_sort_and_pager_values_run_commands() {
+    assert_reads_install(&[
+        "rg --pre 'npx playwright install' x f",
+        "rg --pre='npx playwright install' x f",
+        "rg --pr='npx playwright install' x f",
+        "rg --hostname-bin='npx playwright install' x f",
+        "rg --hostname-bin 'npx playwright install' x f",
+        "ugrep --filter='txt:npx playwright install' x f",
+        "ugrep --filter 'txt:npx playwright install' x f",
+        "ugrep --filter='txt:cat,*:npx playwright install' x f",
+        "ugrep --filter='npx playwright install' x f",
+        "grep --filter='*:npx playwright install' x f",
+        "ug --pager='npx playwright install' x f",
+        "sort --compress-program='npx playwright install' f",
+        "sort --compress-program 'npx playwright install' f",
+        "sort --compress='npx playwright install' f",
+        "sort --com='npx playwright install' f",
+        "gsort --compress-program='npx playwright install' f",
+        "LESSOPEN='|npx playwright install %s' less f",
+        "LESSOPEN='||npx playwright install %s' less f",
+        "LESSOPEN='-npx playwright install %s' less f",
+        "LESSOPEN='npx playwright install %s' less f",
+        "LESSCLOSE='npx playwright install %s %s' less f",
+        "export LESSOPEN='|npx playwright install %s'",
+        "env LESSOPEN='|npx playwright install %s' less f",
+    ]);
+    for command in [
+        "rg --pre sh x p.sh",
+        "rg --pre=npx x f",
+        "rg --pre playwright x install",
+        "rg --hostname-bin=npx x f",
+        "ugrep --filter='txt:npx' x f",
+        "ugrep --pager=npx x f",
+        "sort --compress-program=npx f",
+        "sort --co npx f",
+        "LESSOPEN='|npx %s' less f",
+        "LESSCLOSE='npx %s %s' less f",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(a.incomplete, "{command:?}: {}", summary(&a));
+    }
+    assert_clear(&[
+        "rg x f",
+        "rg --pre=cat x f",
+        "rg --pre-glob '*.pdf' x f",
+        "rg --pretty x f",
+        "ugrep --pager=less x f",
+        "ugrep --pager x f",
+        "ugrep --filter-magic-label=x x f",
+        "sort --compress-program=gzip big",
+        "sort --compress-program zstd big",
+        "sort --compress-program=gzip --compress-program=zstd big",
+        "sort --check f",
+        "LESSOPEN= less f",
+        "LESSKEY=x less f",
+    ]);
+}
+
 // ------------------------------------------------------------------ 6. fed shells
 
 #[test]
