@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+- Pin anthology-bin 0.2.9.
+
 #### Fixed
 
 - The `anthology` binary 0.2.9: the guard closes three bypasses that were already on `build` (they are not new in
@@ -695,6 +697,8 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+- Pin anthology-bin 0.2.9.
 
 ### [0.2.17] - 2026-11-27
 
