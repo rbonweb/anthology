@@ -9,13 +9,16 @@ A fourth mod, which lets provably read-only shell commands run without a prompt,
 The routing guide says the main session plans, briefs agents, checks and merges, and never produces the work itself. The mod `hooks/mods/delegation.ts` makes that rule hold in **interactive** sessions. It does nothing in a headless run (`claude -p`, CI), in a subagent, in an embedded host (see [Host mode](agents.md#host-mode)), or in a session whose tool pool has no `Agent` tool (the lead could not hand the work on).
 
 - **Coordinator text.** When the session has the `Agent` tool, the system prompt gets one short section: the lead plans, briefs, checks and merges, hands the making to agents, and fixes inline only a few lines in one file that you asked for. A prompt without the section (`--bare`, a teammate's) gets the same rule inside each refusal.
-- **Refusals.** The main session's `Edit`, `Write` and `NotebookEdit` calls are refused. The message says why (the fix is too long or too large, a second file, the budget is used up, or a `Write`, `NotebookEdit` or `replace_all` is never inline) and names the agent to hand the change to:
+- **Refusals.** The main session's `Edit`, `Write` and `NotebookEdit` calls on project code are refused. The message says why (the fix is too long or too large, a second file, the budget is used up, or a `Write`, `NotebookEdit` or `replace_all` is never inline) and sends the change to the project's own matching agent when one fits (see [Your own agents and skills](agents.md#your-own-agents-and-skills)), else to the Anthology agent for the file:
   - `anthology:docs-writer` for `.md`, `.mdx`, `.markdown`, `.rst` and `.txt` files;
   - `anthology:ui-designer` for `.tsx`, `.jsx`, `.css`, `.html` and `.svg`;
   - `anthology:implementer` (or `anthology:debugger` for a bug fix) for anything else.
+
+  Only those three file tools are gated. A dispatch (the `Agent` tool) to any agent, a project agent included, is never refused or redirected.
 - **Allowed without a refusal.**
   - Notes the lead keeps. Under `CLAUDE_CONFIG_DIR` (else `~/.claude`): `projects/<project>/memory/` (Claude Code's auto memory), `plans/` and `anthology/personal-memory/`. The folder in your `autoMemoryDirectory` setting, when you set one. In the project: `.claude/memory/` (the repo memory, where setup turned auto memory off), `.superpowers/` and `docs/superpowers/plans/`. `~` and `..` are folded and a relative path is taken from the session's directory before the match.
-  - A tiny fix: an `Edit` with `old_string` and `new_string` of at most 5 lines each and about 2 KB changed in all (2048 characters), no `replace_all`, at most 3 of them per turn, all in one file. The count starts again at each turn, and an edit that failed or was refused by another hook does not count. A `Write` or `NotebookEdit` is never a tiny fix.
+  - Files that are not project code: everything in the Claude config folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`), even when a dotfiles repo holds it, and any file outside every git repo (a folder or file named `.git` in its folder or above it makes it part of a repo; when that check cannot run, the file counts as project code). Any size, no budget.
+  - A tiny fix: one `Edit`, no `replace_all`, at most 3 of them per turn, all in one file. The count starts again at each turn, and an edit that failed or was refused by another hook does not count. A `Write` or `NotebookEdit` is never a tiny fix. How much it may change depends on the risk: code that is added or changed, at most 5 lines each in `old_string` and `new_string` and about 2 KB in all (2048 characters); a small config file (`.json`, `.jsonc`, `.json5`, `.yaml`, `.yml`, `.toml`, `.ini`, `.cfg`, `.conf`, `.env`, `.properties`, `.plist`), 15 lines and the same 2 KB; a pure deletion (`new_string` empty), up to 30 lines and 4 KB, in any file.
 - **Limits.** Bash writes (`sed -i`, a redirect) are not seen; the routing guide covers them. Paths are matched as written, with no symlinks resolved. A teammate in a pane of its own looks like a lead to a hook (nothing tells them apart), so the `Agent` tool in its pool is the rule there. This is a workflow rule, not a safety boundary: if the mod fails, Claude Code's own verdict stands and the edit runs.
 - **Not built yet.** A gate on MCP tools that do not say they are read-only, with an allowlist for `mcp__plugin-authoring__scan_secrets`. For now only the file tools above are gated.
 
@@ -70,6 +73,6 @@ Set these in the environment, for example in the `env` block of `~/.claude/setti
 | Switch | Effect |
 |---|---|
 | `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, and the read-only commands mod |
-| `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation |
+| `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation (for one repo only: `{"delegation": false}` in its `.claude/anthology.json`, see [Your own agents and skills](agents.md#your-own-agents-and-skills)) |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
 | `ANTHOLOGY_HOST_MODE=full` | Opts back in when another program drives the session (see [Host mode](agents.md#host-mode)) |

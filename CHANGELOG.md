@@ -12,6 +12,9 @@ a new version section.
 
 #### Changed
 
+- The `anthology` binary 0.2.8: session start lists the repo's own agents and skills after the routing guide,
+  reads `.claude/anthology.json` (`routing_guide: false` leaves the guide out) and says "read the project map,
+  else dispatch the architect" only for a repo approved in `/anthology:setup`.
 - The `anthology` binary 0.2.6: the guard no longer blocks `docker exec db psql -c "select count(*) from t"`
   as too complex to check. Inside a docker command every `-c` word was read as a shell option and the next
   word was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain SQL runs

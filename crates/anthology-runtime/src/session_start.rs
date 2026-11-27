@@ -16,8 +16,10 @@
 //! (new step); the guardrails self-test (F-4); state; the NAG, or the read-rule, ops-version and
 //! atl checks (the atl check skipped when more than 10 s passed since `ANTHOLOGY_HOOK_T0`,
 //! F-20); the data-folder, wrapper, agent-memory and subagent checks; the git-folder check (a
-//! session folder that is not a repo but holds repos); memory sync; the guide; compose; prune
-//! `<ah>/bin` (design §8.5).
+//! session folder that is not a repo but holds repos); memory sync; the guide, then what the repo
+//! adds after it ([`project`]: its own agents and skills, and [`MAP_LINE`] when it is approved
+//! in setup; none of it when `.claude/anthology.json` has `routing_guide: false`); compose;
+//! prune `<ah>/bin` (design §8.5).
 //!
 //! **Subagents.** When the hook input has a non-empty `agent_id` (a SessionStart inside a
 //! subagent that compacted), only memory sync runs, and the output has no guide and no
@@ -72,10 +74,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anthology_core::git::RealGit;
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
 use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, paths, platform, state};
 use anthology_guard::{data, host};
+use anthology_memory::approve::is_approved;
+use anthology_memory::repo::{repo_key, repo_root};
 use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Map, Value};
@@ -86,6 +91,7 @@ use crate::atl_install::{self, AtlDeps, AtlLimits, Reconciled};
 use crate::bootstrap::{self, GuardBinaryStatus};
 use crate::compat;
 use crate::guardrails_loc::{self, GUARD_REL, Problem};
+use crate::project;
 
 /// Windows (the only output there).
 pub const REFUSAL: &str = "Anthology supports macOS and Linux only; it is inactive on Windows.";
@@ -109,6 +115,9 @@ pub const ATL_SKIPPED: &str =
 pub const ATL_NOT_WIRED: &str = "anthology: atl wiring not present yet; skipped";
 /// The session folder is not in a git repo but git repos sit directly below it.
 pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git repos sit below it. Anthology's agents need worktrees, so start Claude Code inside the repo you are working on";
+/// Said after the guide for a repo approved in setup. The architect run for a missing project
+/// map is for those repos only, so it is not in the guide itself, which every repo gets.
+pub const MAP_LINE: &str = "This repo is approved in /anthology:setup. Before planning, read `.claude/memory/reference-project-map.md`; missing: dispatch anthology:architect.";
 /// The guide file is missing or unreadable.
 pub const GUIDE_MISSING: &str =
     "anthology: the routing guide is missing from the plugin (templates/routing-guide.md)";
@@ -482,6 +491,7 @@ pub mod label {
     pub const GIT_FOLDER: &str = "the git folder check";
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
+    pub const PROJECT: &str = "reading the repo's own agents and skills";
     pub const COMPOSE: &str = "assembling the session context";
     pub const STALE: &str = "the loaded plugin version check";
 }
@@ -937,6 +947,32 @@ fn read_guide(root: &Path) -> Option<String> {
     Some(format!("{}\n", text.trim_end_matches('\n')))
 }
 
+/// Whether the repo holding `cwd` was approved in `/anthology:setup` (the memory sync's rule).
+fn repo_approved(env: &Env, cwd: &Path) -> bool {
+    let git = RealGit;
+    repo_root(cwd, env, &git).is_some_and(|root| is_approved(&repo_key(&root, env, &git), env))
+}
+
+/// What follows the guide for this repo, as blocks separated by a blank line: its own agents
+/// and skills ([`project::section`]), and, for an approved repo, [`MAP_LINE`]. Empty for none.
+fn repo_extras(env: &Env, cwd: &Path, repo: &Path) -> String {
+    let mut blocks = Vec::new();
+    blocks.extend(project::section(repo, &compat::config_dir(env)));
+    if repo_approved(env, cwd) {
+        blocks.push(MAP_LINE.to_string());
+    }
+    blocks.join("\n\n")
+}
+
+/// `guide` with `extras` after it, one blank line between; either may be empty.
+fn with_extras(guide: &str, extras: &str) -> String {
+    match (guide.is_empty(), extras.is_empty()) {
+        (_, true) => guide.to_string(),
+        (true, false) => format!("{extras}\n"),
+        (false, false) => format!("{}\n\n{extras}\n", guide.trim_end_matches('\n')),
+    }
+}
+
 /// `_compose(guide, memory)`: the guide, then memory cut to fit [`CONTEXT_BUDGET`].
 pub fn compose(guide: &str, memory: &str) -> String {
     let memory = memory.trim_end_matches('\n');
@@ -1277,19 +1313,39 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     let context = if embedded {
         String::new()
     } else {
-        let guide = step(
-            &mut warnings,
-            label::GUIDE,
-            |_| {
-                fault(deps, "_read_guide")?;
-                Ok(read_guide(&root))
-            },
-            None,
-        );
-        if guide.is_none() {
-            warnings.push(GUIDE_MISSING.into());
-        }
-        let guide_text = guide.unwrap_or_default();
+        // A repo can turn the guide off (`.claude/anthology.json`): then neither it nor what
+        // follows it is read, and a guide that is not there is not a fault.
+        let repo = compat::repo_top(&cwd).unwrap_or_else(|| cwd.clone());
+        let guide_text = if project::guide_off(&repo) {
+            String::new()
+        } else {
+            let guide = step(
+                &mut warnings,
+                label::GUIDE,
+                |_| {
+                    fault(deps, "_read_guide")?;
+                    Ok(read_guide(&root))
+                },
+                None,
+            );
+            if guide.is_none() {
+                warnings.push(GUIDE_MISSING.into());
+            }
+            // What follows the guide only makes sense beside it.
+            let extras = match guide {
+                Some(_) => step(
+                    &mut warnings,
+                    label::PROJECT,
+                    |_| {
+                        fault(deps, "_repo_extras")?;
+                        Ok(repo_extras(env, &cwd, &repo))
+                    },
+                    String::new(),
+                ),
+                None => String::new(),
+            };
+            with_extras(&guide.unwrap_or_default(), &extras)
+        };
         step(
             &mut warnings,
             label::COMPOSE,

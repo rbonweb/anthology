@@ -2,9 +2,15 @@
 // briefs agents, checks and merges; it does not make the changes. Two parts:
 //   - `prompt.compose` adds a short coordinator section when the session has the Agent tool;
 //   - `tool.call` refuses the main loop's Edit, Write and NotebookEdit, says why, names the agent
-//     to hand the change to, and lets through the lead's own notes (memory, plans, `.superpowers/`)
-//     and a tiny fix (one Edit of at most 5 lines and about 2 KB, at most 3 per turn, all in one
-//     file, counted only when the edit succeeded).
+//     to hand the change to (the project's own matching agent when one fits, else ours), and lets
+//     through the lead's own notes (memory, plans, `.superpowers/`), files that are not project
+//     code (the Claude config folder; anything outside every git repo) and a tiny fix: one Edit,
+//     at most 3 per turn, all in one file, counted only when the edit succeeded. How tiny depends
+//     on the risk: 5 lines and about 2 KB; a small config file 15 lines; a pure deletion 30 lines
+//     and 4 KB.
+// Only those three file tools are gated: a dispatch (the `Agent` tool) to any agent, the project's
+// own included, is never touched, and neither is a call to any other tool.
+// A repo can switch the mod off with `"delegation": false` in `<root>/.claude/anthology.json`.
 // Subagent calls (they carry an `agentId`) are never touched. A headless run (`claude -p`, the
 // SDK with nothing attached: `$.session.surfaces()` is empty) is never touched either, and
 // neither is a session whose tool pool has no `Agent` tool, since the lead could not hand the work
@@ -28,6 +34,14 @@ const NO_EDITS = { file: '', edits: 0 }
 const MAX_EDIT_LINES = 5
 const MAX_EDIT_CHARS = 2048
 const MAX_EDITS_PER_TURN = 3
+// Risk, not only size. A pure deletion adds nothing to review; a small config file is read at a
+// glance. Code that is added or changed stays at MAX_EDIT_LINES.
+const MAX_DELETE_LINES = 30
+const MAX_DELETE_CHARS = 4096
+const MAX_CONFIG_LINES = 15
+const CONFIG_FILE = /\.(json|jsonc|json5|ya?ml|toml|ini|cfg|conf|env|properties|plist)$/i
+/** Folders looked at on the way up from a file to see whether a `.git` is there. */
+const MAX_WALK = 64
 
 // Steady text (the prompt cache holds), 400 characters at most.
 const COORDINATOR: PromptComposeSection = {
@@ -35,15 +49,37 @@ const COORDINATOR: PromptComposeSection = {
   scope: 'session',
   text:
     'Coordinator: you lead, you do not make. Plan, brief agents, check their work and merge. ' +
-    'Hand every change to the matching agent: anthology:implementer, anthology:debugger, ' +
-    'anthology:docs-writer or anthology:ui-designer. Inline only a fix of at most a few lines in ' +
-    'one file that the user asked for (5 lines, 3 edits a turn). Memory, plans and .superpowers ' +
-    'notes are yours.',
+    "Hand every change to the matching agent: the project's own when one fits, else " +
+    'anthology:implementer, anthology:debugger, anthology:docs-writer or anthology:ui-designer. ' +
+    'Inline only a fix of at most a few lines in one file that the user asked for (5 lines, ' +
+    '3 edits a turn). Memory, plans, .superpowers are yours.',
 }
 
-/** ANTHOLOGY_DELEGATION=0 turns this mod off; ANTHOLOGY_MODS=0 turns every anthology mod off. */
+/**
+ * The boolean `key` of `<session root>/.claude/anthology.json`, the repo's own switches; undefined
+ * when there is no such file, it is not a JSON object, or the key is not a boolean.
+ */
+async function repoSwitch($: EngineInterface, key: string): Promise<boolean | undefined> {
+  try {
+    const root = await $.session.root()
+    const parsed: unknown = JSON.parse(await $.fs.read(`${root}/.claude/anthology.json`))
+    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { readonly [k: string]: unknown })[key] : undefined
+    return typeof value === 'boolean' ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * ANTHOLOGY_DELEGATION=0 turns this mod off; ANTHOLOGY_MODS=0 turns every anthology mod off; a
+ * repo turns it off with `"delegation": false` in its `.claude/anthology.json`.
+ */
 async function delegationOff($: EngineInterface): Promise<boolean> {
-  return (await modsOff($)) || (await $.env.get('ANTHOLOGY_DELEGATION')) === '0'
+  return (
+    (await modsOff($)) ||
+    (await $.env.get('ANTHOLOGY_DELEGATION')) === '0' ||
+    (await repoSwitch($, 'delegation')) === false
+  )
 }
 
 /** A person can be at the session: some surface draws. Empty in a plain `-p` run. */
@@ -132,6 +168,36 @@ async function isLeadNote($: EngineInterface, file: string): Promise<boolean> {
   return false
 }
 
+/** Whether a `.git` (a folder, or a file in a worktree) is in the folder of `path` or above it. */
+async function inGitRepo($: EngineInterface, path: string): Promise<boolean> {
+  try {
+    let dir = path.slice(0, path.lastIndexOf('/'))
+    for (let depth = 0; depth < MAX_WALK; depth++) {
+      if (await $.fs.exists(`${dir}/.git`)) return true
+      if (dir === '') return false
+      dir = dir.slice(0, dir.lastIndexOf('/'))
+    }
+    return true
+  } catch {
+    // Unknown is project code: the file is handed off as before.
+    return true
+  }
+}
+
+/**
+ * Files that are not project code, so there is nothing to hand off: the Claude config folder
+ * (`CLAUDE_CONFIG_DIR`, else `~/.claude`: settings, keybindings, agents, plugins), even when a
+ * dotfiles repo holds it, and any file outside every git repo.
+ */
+async function isOutsideProject($: EngineInterface, file: string): Promise<boolean> {
+  const path = await resolvePath($, file)
+  if (path === undefined) return false
+  const home = await $.env.get('HOME')
+  const claude = await resolvePath($, (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home ? `${home}/.claude` : ''))
+  if (claude !== undefined && inside(path, claude)) return true
+  return !(await inGitRepo($, path))
+}
+
 function field(e: object, name: string): string {
   const v = (e as { readonly [k: string]: unknown })[name]
   return typeof v === 'string' ? v : ''
@@ -141,17 +207,27 @@ function lineCount(text: string): number {
   return text === '' ? 0 : text.replace(/\n$/, '').split('\n').length
 }
 
+/** How much an Edit may change and still be a tiny fix, by what it does and to what. */
+function limitsFor(file: string, deleting: boolean): { what: string; lines: number; chars: number } {
+  if (deleting) return { what: 'a deletion', lines: MAX_DELETE_LINES, chars: MAX_DELETE_CHARS }
+  if (CONFIG_FILE.test(file)) return { what: 'a config edit', lines: MAX_CONFIG_LINES, chars: MAX_EDIT_CHARS }
+  return { what: 'an inline fix', lines: MAX_EDIT_LINES, chars: MAX_EDIT_CHARS }
+}
+
 /** Why an Edit is not a tiny fix, or undefined when it is one (before the budget is looked at). */
-function whyNotTiny(e: object): string | undefined {
+function whyNotTiny(e: object, file: string): string | undefined {
   if ((e as { readonly replace_all?: unknown }).replace_all === true) {
     return 'replace_all is not an inline fix'
   }
   const before = field(e, 'old_string')
   const after = field(e, 'new_string')
+  const limit = limitsFor(file, before.trim() !== '' && after.trim() === '')
   const lines = Math.max(lineCount(before), lineCount(after))
-  if (lines > MAX_EDIT_LINES) return `an inline fix is at most ${MAX_EDIT_LINES} lines and this one is ${lines}`
+  if (lines > limit.lines) return `${limit.what} is at most ${limit.lines} lines and this one is ${lines}`
   const chars = before.length + after.length
-  if (chars > MAX_EDIT_CHARS) return `an inline fix is at most about 2 KB changed and this one is ${chars} characters`
+  if (chars > limit.chars) {
+    return `${limit.what} is at most about ${Math.round(limit.chars / 1024)} KB changed and this one is ${chars} characters`
+  }
   return undefined
 }
 
@@ -213,9 +289,11 @@ async function refusal($: EngineInterface, file: string, why: string): Promise<s
   const bug = agent === 'anthology:implementer' ? ' (anthology:debugger for a bug fix)' : ''
   const rule = (await hasSection($)) ? '' : ` ${COORDINATOR.text}`
   return (
-    `anthology: the lead hands off making and changing (${why}). Dispatch ${agent}${bug} with this change. ` +
-    `Inline only: an Edit of at most ${MAX_EDIT_LINES} lines in one file, at most ${MAX_EDITS_PER_TURN} per turn. ` +
-    `Set ANTHOLOGY_DELEGATION=0 to turn this off.${rule}`
+    `anthology: the lead hands off making and changing (${why}). ` +
+    `Dispatch the project's own matching agent when one fits, else ${agent}${bug}, with this change. ` +
+    `Inline only: an Edit of at most ${MAX_EDIT_LINES} lines (${MAX_CONFIG_LINES} in a config file, ${MAX_DELETE_LINES} for a pure deletion) ` +
+    `in one file, at most ${MAX_EDITS_PER_TURN} per turn. Files outside a git repo and the Claude config folder are yours. ` +
+    `Set ANTHOLOGY_DELEGATION=0, or "delegation": false in .claude/anthology.json, to turn this off.${rule}`
   )
 }
 
@@ -244,9 +322,9 @@ export function registerDelegation(on: On): void {
     if (e.agentId !== undefined || (await delegationOff($)) || !(await isInteractive($))) return next(e)
     if (await isEmbeddedHost($)) return next(e)
     const file = field(e, e.tool === 'NotebookEdit' ? 'notebook_path' : 'file_path')
-    if (await isLeadNote($, file)) return next(e)
+    if ((await isLeadNote($, file)) || (await isOutsideProject($, file))) return next(e)
     if (!(await canDispatch($))) return next(e)
-    const why = e.tool === 'Edit' ? whyNotTiny(e) : `a ${e.tool} is never an inline fix`
+    const why = e.tool === 'Edit' ? whyNotTiny(e, file) : `a ${e.tool} is never an inline fix`
     if (why !== undefined) return { deny: await refusal($, file, why) }
     const busy = await reserveTinyFix($, file)
     if (busy !== undefined) return { deny: await refusal($, file, busy) }

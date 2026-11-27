@@ -8,5 +8,6 @@ pub mod compat;
 pub mod doctor;
 pub mod fetch;
 pub mod guardrails_loc;
+pub mod project;
 pub mod session_start;
 pub mod setup;
