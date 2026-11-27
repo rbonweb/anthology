@@ -104,4 +104,4 @@ claude plugin uninstall anthology@anthology --prune -y
 
 `--prune -y` also removes the dependencies that were installed automatically. Uninstalling without `--keep-data` also removes the plugin's data folder (the ATL binaries and the memory search index).
 
-Remove keeps the `anthology` binaries in `~/.claude/anthology/bin/` while `anthology-guardrails` is still installed, because its guard needs them. After you uninstall, delete that folder yourself (about 6 MB per version).
+Remove keeps the `anthology` binaries in `~/.claude/anthology/bin/` while `anthology-guardrails` is still installed, because its guard needs them. After you uninstall, delete that folder yourself (about 6 MB for each version).
