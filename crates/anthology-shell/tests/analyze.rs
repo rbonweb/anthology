@@ -595,6 +595,334 @@ fn common_forms_stay_clear() {
 }
 
 #[test]
+fn search_sort_and_pager_commands_are_marked() {
+    for command in [
+        "rg --pre sh x p.sh",
+        "rg --pre=npx x f",
+        "rg --pr=npx x f",
+        "rg --hostname-bin=npx x f",
+        "rg --hostname-bin npx x f",
+        "ugrep --filter='txt:npx' x f",
+        "ugrep --filter 'txt:npx' x f",
+        "ugrep --filter='txt:cat,*:npx' x f",
+        "grep --filter='*:npx' x f",
+        "ug --pager=npx x f",
+        "sort --compress-program=npx f",
+        "sort --compress-program npx f",
+        "sort --compress=npx f",
+        "sort --com=npx f",
+        "gsort --compress-program=npx f",
+        "LESSOPEN='|npx %s' less f",
+        "LESSCLOSE='npx %s %s' less f",
+        "export LESSOPEN='|npx %s'",
+        // editors run the `:!` lines of the files they are handed
+        "rg --pre=vim x f",
+        "rg --pre=nano x f",
+        "ugrep --filter='*:vi' x f",
+        "sort --compress-program=vim big",
+        // awk runs commands from its program text, a program file or an include
+        "awk 'BEGIN{system(\"cmd\")}'",
+        "gawk 'BEGIN{system (\"cmd\")}'",
+        "mawk '{print | \"cmd\"}' f",
+        "nawk 'BEGIN{\"cmd\" | getline x}'",
+        "gawk '{print |& \"cmd\"}' f",
+        "awk -e 'BEGIN{system(\"cmd\")}'",
+        "gawk --source='BEGIN{system(\"cmd\")}'",
+        "awk -f p.awk f",
+        "awk --file=p.awk f",
+        "gawk -l ext 'BEGIN{}'",
+        "gawk -i lib.awk '{print}' f",
+        "gawk '@load \"x\"'",
+        "gawk --exec=p.awk f",
+        "gawk --load=ext '{print}' f",
+        "gawk --include=lib.awk '{print}' f",
+        "gawk --include inplace 'BEGIN{system(\"cmd\")}'",
+        "gawk --include=inplace 'BEGIN{system(\"cmd\")}'",
+        "gawk --source 'BEGIN{system(\"cmd\")}'",
+        "gawk -s -e 'BEGIN{system(\"cmd\")}'",
+        // config files hold any option
+        "RIPGREP_CONFIG_PATH=cfg rg x f",
+        "export RIPGREP_CONFIG_PATH=cfg",
+        "ugrep --config=cfg x f",
+        "ugrep --config x f",
+        "ugrep ---cfg x f",
+        "ug x f",
+        "ug+ x f",
+    ] {
+        assert!(
+            any_has(command, Opaque::UnknownWrapperOption),
+            "{command}: {:?}",
+            analyze(command, HOME)
+        );
+    }
+    for command in [
+        "rg x f",
+        "rg --pre=cat x f",
+        "rg --pre-glob '*.pdf' x f",
+        "rg --pretty x f",
+        "rg --hostname-bin=cat x f",
+        "ugrep --pager=less x f",
+        "ugrep --pager x f",
+        "ugrep --filter-magic-label=x x f",
+        "ugrep --filter 'txt:cat' x f",
+        "sort -u f",
+        "sort --compress-program=gzip big",
+        "sort --compress-program zstd big",
+        "sort --check f",
+        "LESSOPEN= less f",
+        "LESSKEY=x less f",
+        "RIPGREP_CONFIG_PATH= rg x f",
+        "rg --no-config x f",
+        "ugrep -r x .",
+        "rg --pre=less x f",
+        "awk '{print $1}' f",
+        "awk -F'|' '{print $1}' f",
+        "awk '/a|b/ {n++} END {print n}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "gawk -i inplace '{print}' f",
+        "awk -v OFS='|' '{print $1, $2}' f",
+    ] {
+        assert!(clear(command), "{command}: {:?}", analyze(command, HOME));
+    }
+}
+
+/// zsh reads an unquoted `(a|b)` among the words of a command as a glob group, which can add or replace words
+/// the analysis never saw (`docker exec c (flock|x) psql ...` runs `flock`). bash reads it as a syntax error.
+/// The everyday forms of rg, ugrep and awk are neither marked nor unproven (`clear` looks at marks only).
+#[test]
+fn everyday_rg_ugrep_and_awk_are_complete() {
+    for command in [
+        "RIPGREP_CONFIG_PATH= rg x f",
+        "export RIPGREP_CONFIG_PATH=",
+        "rg --no-config x f",
+        "rg --pre=cat x f",
+        "ugrep -r x .",
+        "ugrep --pager=less x f",
+        "awk '{print $1}' f",
+        "awk -F'|' '{print $1}' f",
+        "awk '/a|b/ {n++} END {print n}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "awk -v OFS='|' '{print $1, $2}' f",
+        "gawk -i inplace '{print}' f",
+        "gawk --include=inplace '{print}' f",
+        "gawk --include inplace '{print}' f",
+        "gawk --posix '{print}' f",
+        "gawk --traditional '{print}' f",
+        "gawk --lint '{print}' f",
+        "gawk -ofile.out '{print}' f",
+        "gawk -pprof.out '{print}' f",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(!a.incomplete, "{command}: {a:?}");
+    }
+}
+
+/// awk program text is read as awk reads it: a pipe in a string, a comment or a regular expression is data, a
+/// pipe after anything else (and `system(`, and `@`) runs a command.
+#[test]
+fn awk_program_text_is_read_for_commands() {
+    for command in [
+        "awk 'BEGIN{system(\"cmd\")}'",
+        "awk 'BEGIN { system (\"cmd\") }'",
+        "awk 'BEGIN{\n system(\"cmd\")\n}'",
+        "awk '{ x = \"a\" } END { system(\"cmd\") }'",
+        "awk '{print} # a comment\n END{system(\"cmd\")}'",
+        "awk '{print | \"cmd\"}' f",
+        "awk '{print $1 | \"sort\"}' f",
+        "awk '{print \"a\" | \"cmd\"}' f",
+        "awk '{print \"q\\\"\" | \"cmd\"}' f",
+        "awk 'BEGIN{\"cmd\" | getline x}'",
+        "gawk '{print |& \"cmd\"}' f",
+        "awk '/a/ { n++ / 2 | \"cmd\" }' f",
+        "awk '/a|b/ { print | \"cmd\" }' f",
+        "awk '/x/ { print | \"cmd\" }' f",
+        "awk 'BEGIN{system(c)}' c=id",
+        "gawk '@include \"x\"'",
+        "awk 'a || system(\"cmd\")'",
+        "awk 'aaaaaaaaa == bbbbbbbbb || system(\"cmd\")'",
+    ] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    for command in [
+        "awk '{print $1}' f",
+        "awk 'x'",
+        "awk ''",
+        "awk 'NR > 1 && /x|y/' f",
+        "awk '{print \"a | b\"}' f",
+        "awk '{print \"q\\\"|x\"}' f",
+        "awk '{print \"\"}' f",
+        // an unterminated string or regular expression is a syntax error for awk, nothing runs
+        "awk '{print \"abc}' f",
+        "awk '/abc' f",
+        "awk '{print} # a comment at the end' f",
+        "awk '/a|/' f",
+        "awk '{ # a | pipe\n print }' f",
+        "awk '/a\\/|b/' f",
+        "awk '/a|b/ {print $2}' f",
+        "awk '$1 == \"a\" || $2 == \"b\"' f",
+        "awk '{print length($0)}' f",
+        "awk '{print substr($1, 1, 2)}' f",
+        "awk '{print \"system(x)\"}' f",
+        "awk '{gsub(/a|b/, \"\"); print}' f",
+        "awk '$0 ~ /a|b/ {n++}' f",
+        "awk '{ s += $1 } END { print s / NR }' f",
+        "awk '{print $1 / 2}' f",
+        "awk 'BEGIN{printf \"%s|%s\\n\", 1, 2}'",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
+#[test]
+fn a_zsh_glob_group_among_the_words_of_a_command_is_incomplete() {
+    for command in [
+        "echo x (a|b)",
+        "ls (a|b)",
+        "ls -l (a|b) c",
+        "docker exec c (flock|x) psql -c 'select 1'",
+        "docker exec c ( flock|x ) psql",
+        "FOO=1 ls (a|b)",
+        "echo a; ls (a|b)",
+        "echo $(ls (a|b))",
+        "ls (a|b)(.)",
+        "ls ((a|b))",
+        "echo x ((1+2))",
+        "time (sleep 1)",
+        "function f { ls (a|b); }",
+        "function f ls (a|b)",
+        "case x in a (b|c)) :;; esac",
+        "case (a|b) in x) :;; esac",
+        "for x in a b (c|d); do :; done",
+        "for (a|b) in x; do :; done",
+        // a closed heredoc body is data, and the text after it is code again
+        "cat <<'EOF'\nProse (with parens)\nEOF\nls (a|b)",
+        "echo \"$(cat <<'EOF'\nEOF is (here)\nEOF\n)\"; ls (a|b)",
+        "echo \"$(cat <<'EOF'\nprose\nEOF\n)\" (a|b)",
+    ] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    for command in [
+        "(cd d && ls)",
+        "echo a && (cd d && ls)",
+        "ls | (cat)",
+        "if (true); then (echo a); fi",
+        "if ! (false); then echo a; fi",
+        "while (true); do break; done",
+        "until (false); do break; done",
+        "for f in a b; do (cd $f; ls); done",
+        "{ (echo a); }",
+        "f () { echo a; }",
+        "f() { echo a; }",
+        "function f () { echo a; }",
+        "function f { (echo a); }",
+        "function f () ( echo a )",
+        "case x in (a|b) echo hi;; esac",
+        "case x in a|b) echo hi;; esac",
+        "[[ $x == (a|b) ]]",
+        "(( i++ ))",
+        "for ((i=0; i<3; i++)); do echo $i; done",
+        "while (( i < 3 )); do i=$((i+1)); done",
+        "x=(1 2); echo ${x[1]}",
+        "arr+=(a b)",
+        "echo $((1 + (2 * 3)))",
+        "diff <(ls a) <(ls b)",
+        r"find . \( -name a -o -name b \)",
+        "echo 'ls (a|b)'",
+        // prose in a heredoc body: one that never closes is also lexed as commands, and so is the rest of a
+        // `$(...)` body that a reading cuts at a line holding a parenthesis (`EOF is (here)`)
+        "git commit -m \"$(cat <<'EOF'\nFix bug (see #12)\nEOF\n)\"",
+        "cat <<'EOF'\nProse (with parens) here\n",
+        "echo \"$(cat <<'EOF'\nEOF is (here)\nline two (x)\nEOF\n)\"",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
+/// zsh evaluates a subscript in arithmetic text, backticks escaped or not; the escaped pair is a command.
+#[test]
+fn an_escaped_backtick_in_arithmetic_is_a_command() {
+    for command in [
+        r"(( a[\`npx playwright install\`] ))",
+        r"(( grep + path[\`npx playwright install\`] ))",
+        r"(( a[\`npx playwright install\`] = 1 ))",
+        r"echo $(( a[\`npx playwright install\`] ))",
+        r"x=$(( a[\`npx playwright install\`] ))",
+        r"for ((i=0; i<a[\`npx playwright install\`]; i++)); do :; done",
+        "(( a[`npx playwright install`] = 1 ))",
+    ] {
+        let a = analyze(command, HOME);
+        assert!(
+            a.entries
+                .iter()
+                .any(|e| e.raw == ["npx", "playwright", "install"]),
+            "{command}: {a:?}"
+        );
+    }
+    for command in [r"(( a[\`id] ))", r"echo $(( a[\`id] ))"] {
+        assert!(analyze(command, HOME).incomplete, "{command}");
+    }
+    // the text goes on right after the closing pair, or after an unclosed one: what follows is still lexed
+    // as commands, and each pair of a text is a command
+    for (command, programs) in [
+        (
+            r"(( a[\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"echo $(( a[\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"(( a[\`id\`] + b[\`npx playwright install\`] ))",
+            vec!["id", "playwright"],
+        ),
+        (
+            r"(( a[\`npx playwright install\`] + b[\`id\`] ))",
+            vec!["playwright", "id"],
+        ),
+        (
+            r"echo xxxxxxxx; (( a[\`npx playwright install\`] + b[\`id\`] )); id",
+            vec!["playwright", "id"],
+        ),
+        (r"(( a[\`) )); npx playwright install", vec!["playwright"]),
+        (
+            r"echo xxxxxxxx; (( a[\`) )); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo xxxxxxxx; (( a[\`)); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo xxxxxxxx; echo $(( a[\`)); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"echo $(( a[\`) )); npx playwright install",
+            vec!["playwright"],
+        ),
+        (
+            r"(( a[\`id\`\`id\`] )) && npx playwright install",
+            vec!["id", "playwright"],
+        ),
+    ] {
+        let a = analyze(command, HOME);
+        let shown: Vec<&str> = a.entries.iter().map(|e| e.prog.as_str()).collect();
+        for program in programs {
+            assert!(shown.contains(&program), "{command}: {shown:?}");
+        }
+    }
+    for command in [
+        "(( i++ ))",
+        "echo $(( 1 + 2 ))",
+        r"echo a\`b",
+        r"echo 'a\`b'",
+    ] {
+        assert!(!analyze(command, HOME).incomplete, "{command}");
+    }
+}
+
+#[test]
 fn a_budget_stop_is_incomplete_but_not_a_regex_limit() {
     let a = analyze(&format!("find . {}", "-exec find . ".repeat(5000)), HOME);
     assert!(a.incomplete);
