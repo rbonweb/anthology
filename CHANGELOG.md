@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+- Pin anthology-bin 0.2.8 and ATL 1.2.1-anthology.9.
+
 ### [0.5.7] - 2026-11-27
 
 #### Changed
@@ -656,6 +658,8 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+- Pin anthology-bin 0.2.8.
 
 ### [0.2.16] - 2026-11-27
 
