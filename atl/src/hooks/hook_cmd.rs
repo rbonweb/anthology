@@ -832,15 +832,21 @@ mod tests {
             })
             .to_string()
         };
-        assert_eq!(run_claude_inner(&input("auto")), None);
-        for mode in ["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"] {
-            assert!(run_claude_inner(&input(mode)).is_some(), "{mode}");
+        assert_eq!(run_claude_allowing(&input("auto")), None);
+        for mode in [
+            "default",
+            "acceptEdits",
+            "plan",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
+            assert!(run_claude_allowing(&input(mode)).is_some(), "{mode}");
         }
     }
 
     #[test]
     fn test_claude_rewrite_git_status() {
-        let result = run_claude_inner(&claude_input("git status")).unwrap();
+        let result = run_claude_allowing(&claude_input("git status")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let cmd = v
             .pointer("/hookSpecificOutput/updatedInput/command")
@@ -852,7 +858,7 @@ mod tests {
     #[test]
     fn test_claude_rewrite_preserves_tool_input_fields() {
         let input = claude_input_with_fields("git status", 30000, "Check repo status");
-        let result = run_claude_inner(&input).unwrap();
+        let result = run_claude_allowing(&input).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let updated = &v["hookSpecificOutput"]["updatedInput"];
         assert_eq!(updated["command"], "atl git status");
@@ -882,7 +888,7 @@ mod tests {
     #[test]
     fn test_claude_fd_dup_redirect_still_rewritten() {
         // `2>&1` is attestable — the rewrite proceeds as normal.
-        assert!(run_claude_inner(&claude_input("git status 2>&1")).is_some());
+        assert!(run_claude_allowing(&claude_input("git status 2>&1")).is_some());
     }
 
     #[test]
@@ -890,9 +896,143 @@ mod tests {
         assert!(run_claude_inner(&claude_input("cat <<EOF\nhello\nEOF")).is_none());
     }
 
+    /// `run_claude_inner` as a user whose settings allow every Bash command. ATL
+    /// never widens permissions, so with no allow rule and no read-only proof a
+    /// command is not rewritten at all; a test that checks a rewrite needs one.
+    fn run_claude_allowing(input: &str) -> Option<String> {
+        let root = test_isolation::tempdir();
+        let claude = root.path().join(".claude");
+        std::fs::create_dir_all(&claude).expect("mkdir .claude");
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"permissions":{"allow":["Bash(*)"]}}"#,
+        )
+        .expect("write settings");
+        test_isolation::with_root(root.path(), || run_claude_inner(input))
+    }
+
+    /// An `atl ...` line is judged as what it runs, and `Bash(atl *)` is not the
+    /// user's allow for it: with no rule of the user's it asks, about the line as typed.
     #[test]
-    fn test_claude_already_atl_passthrough() {
-        assert!(run_claude_inner(&claude_input("atl git status")).is_none());
+    fn test_claude_typed_atl_asks_unless_what_it_runs_is_allowed() {
+        let decision = |out: Option<String>| -> Option<String> {
+            let v: Value = serde_json::from_str(&out?).unwrap();
+            v.pointer("/hookSpecificOutput/permissionDecision")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        for cmd in [
+            "atl git status",
+            "atl rm -rf x",
+            "atl init -g",
+            "atl run -c 'ls'",
+        ] {
+            assert_eq!(
+                decision(run_claude_inner(&claude_input(cmd))),
+                Some("ask".into()),
+                "{cmd}"
+            );
+        }
+        // Atl's own read-only subcommands, and lines that only mention atl, are not asked.
+        for cmd in ["atl gain", "atl --version", "echo atl is here"] {
+            assert!(run_claude_inner(&claude_input(cmd)).is_none(), "{cmd}");
+        }
+        // The user's allow rule covers what the line runs (the blanket one does not).
+        let root = test_isolation::tempdir();
+        let claude = root.path().join(".claude");
+        std::fs::create_dir_all(&claude).expect("mkdir .claude");
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"permissions":{"allow":["Bash(atl *)","Bash(git status:*)"]}}"#,
+        )
+        .expect("write settings");
+        test_isolation::with_root(root.path(), || {
+            assert!(run_claude_inner(&claude_input("atl git status")).is_none());
+            assert!(run_claude_inner(&claude_input("atl rm -rf x")).is_some());
+        });
+    }
+
+    /// No allow rule and nothing proven read-only: the original goes back untouched.
+    #[test]
+    fn test_claude_does_not_rewrite_what_claude_code_would_prompt_for() {
+        for cmd in [
+            "git push --force",
+            "git status",
+            "cargo build",
+            "ssh h rm -rf x",
+            "find . -delete",
+            "npx pkg",
+        ] {
+            assert!(run_claude_inner(&claude_input(cmd)).is_none(), "{cmd}");
+        }
+    }
+
+    /// `atl bypass <cmd>` runs any command, so the user's `Bash(atl *)` allow must
+    /// not decide on it: the hook asks, whatever the settings hold. Without a
+    /// classifier (no plugin) nothing is proven read-only, so even a read asks.
+    #[test]
+    fn test_claude_atl_bypass_asks_instead_of_leaving_it_to_the_atl_allow() {
+        let ask = |cmd: &str, mode: Option<&str>| -> (Option<String>, Option<String>) {
+            let mut input: Value = serde_json::from_str(&claude_input(cmd)).unwrap();
+            if let Some(mode) = mode {
+                input["permission_mode"] = json!(mode);
+            }
+            let out: Value =
+                serde_json::from_str(&run_claude_inner(&input.to_string()).unwrap_or_else(|| {
+                    panic!("{cmd}: the hook said nothing, so `Bash(atl *)` would decide")
+                }))
+                .unwrap();
+            let field = |pointer: &str| {
+                out.pointer(pointer)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            (
+                field("/hookSpecificOutput/permissionDecision"),
+                field("/hookSpecificOutput/updatedInput/command"),
+            )
+        };
+        for cmd in [
+            "atl bypass rm -rf x",
+            "atl proxy rm -rf x",
+            "atl bypass git log -5",
+            "/usr/local/bin/atl bypass rm -rf x",
+            "env atl bypass rm -rf x",
+        ] {
+            // Nothing to rewrite: the ask is about the command as typed.
+            assert_eq!(
+                ask(cmd, None),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd}"
+            );
+            assert_eq!(
+                ask(cmd, Some("auto")),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd} (auto)"
+            );
+        }
+        for cmd in [
+            "git status && atl bypass rm -rf x",
+            "ls; atl bypass rm -rf x",
+            "ls | atl bypass tee x",
+            "atl bypass rm -rf x | cat",
+        ] {
+            assert_eq!(ask(cmd, None).0.as_deref(), Some("ask"), "{cmd}");
+            // Auto mode rewrites nothing: the ask is about the line as typed.
+            assert_eq!(
+                ask(cmd, Some("auto")),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd} (auto)"
+            );
+        }
+    }
+
+    /// What only mentions the words is as it was.
+    #[test]
+    fn test_claude_atl_bypass_ask_does_not_touch_other_lines() {
+        for cmd in ["echo atl bypass", "atl gain"] {
+            assert!(run_claude_inner(&claude_input(cmd)).is_none(), "{cmd}");
+        }
     }
 
     #[test]
@@ -912,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_claude_env_prefix_preserved() {
-        let result = run_claude_inner(&claude_input("GIT_PAGER=cat git status")).unwrap();
+        let result = run_claude_allowing(&claude_input("GIT_PAGER=cat git status")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let cmd = v
             .pointer("/hookSpecificOutput/updatedInput/command")
@@ -923,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_claude_compound_command() {
-        let result = run_claude_inner(&claude_input("git add . && cargo test")).unwrap();
+        let result = run_claude_allowing(&claude_input("git add . && cargo test")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let cmd = v
             .pointer("/hookSpecificOutput/updatedInput/command")
@@ -934,7 +1074,7 @@ mod tests {
 
     #[test]
     fn test_claude_pipeline_rewrites_only_safe_final_stage() {
-        let result = run_claude_inner(&claude_input("cargo test | grep FAILED")).unwrap();
+        let result = run_claude_allowing(&claude_input("cargo test | grep FAILED")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let cmd = v
             .pointer("/hookSpecificOutput/updatedInput/command")
@@ -945,7 +1085,7 @@ mod tests {
 
     #[test]
     fn test_claude_pipeline_rewrites_producer_when_consumers_safe() {
-        let result = run_claude_inner(&claude_input("git log | tail -5")).unwrap();
+        let result = run_claude_allowing(&claude_input("git log | tail -5")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let cmd = v
             .pointer("/hookSpecificOutput/updatedInput/command")
@@ -956,13 +1096,14 @@ mod tests {
 
     #[test]
     fn test_claude_json_output_structure() {
-        let result = run_claude_inner(&claude_input("git status")).unwrap();
+        let result = run_claude_allowing(&claude_input("git status")).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
         let hook = &v["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], PRE_TOOL_USE_KEY);
-        // permissionDecision is only set when an explicit allow rule matches;
-        // with default-to-ask semantics (no rules configured), it is absent.
+        // permissionDecision is only set when an explicit allow rule matches (the
+        // user's, here); without one a rewrite is not made at all.
+        assert_eq!(hook["permissionDecision"], "allow");
         assert_eq!(hook["permissionDecisionReason"], "ATL auto-rewrite");
         assert!(hook["updatedInput"].is_object());
         assert!(hook["updatedInput"]["command"].is_string());
@@ -982,7 +1123,7 @@ mod tests {
         // Ok(()) — every command silently stops being rewritten.
         let payload = claude_input("git status");
         let with_bom = format!("\u{feff}{}", payload);
-        let result = run_claude_inner(&with_bom).expect("BOM-prefixed payload must parse");
+        let result = run_claude_allowing(&with_bom).expect("BOM-prefixed payload must parse");
         let v: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["updatedInput"]["command"],
@@ -1279,7 +1420,7 @@ mod tests {
 
     #[test]
     fn test_claude_shell_wrapper_rewrites_without_auto_allow() {
-        let result = run_claude_inner(&claude_input(r#"bash -c "head foo && grep -R bar .""#))
+        let result = run_claude_allowing(&claude_input(r#"bash -c "head foo && grep -R bar .""#))
             .expect("wrapper rewrite expected");
         let v: Value = serde_json::from_str(&result).unwrap();
         let output = &v["hookSpecificOutput"];
@@ -1307,5 +1448,4 @@ mod tests {
             _ => panic!("supported shell wrapper must rewrite with confirmation"),
         }
     }
-
 }

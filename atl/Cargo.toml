@@ -7,7 +7,7 @@ members = [".", "text"]
 
 [package]
 name = "atl"
-version = "1.2.1-anthology.8"
+version = "1.2.1-anthology.9"
 edition = "2024"
 rust-version = "1.91"
 authors = ["RTK AI Labs"]

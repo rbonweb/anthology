@@ -89,7 +89,7 @@ If a Bash call is blocked with "(setup)", the guard binary is missing. The block
      `permissions.allow`, `permissions.deny` and `worktree.baseRef` show as `"<redacted>"`. Every value under
      those three is shown as it is, including your own rules, so a token written inside one of your allow or
      deny rules would reach the conversation. Then print this note verbatim:
-     `settings.bypass_note`, which reads: "Note: `Bash(atl *)` also auto-approves `atl bypass <cmd>`, which runs any command. atl's hook still applies the deny and ask rules in your settings files (user, project, local and managed) to the command it wraps, but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
+     `settings.bypass_note`, which reads: "Note: `Bash(atl *)` approves any line that starts with `atl`, and `atl bypass <cmd>` runs any command. atl's hook judges such a line, and a command it rewrites to atl, as the command it runs: it lets the line through only when that command is read-only or one of your own allow rules covers it, and asks you otherwise. It also applies the deny and ask rules in your settings files (user, project, local and managed), but not rules given with `--settings` or `--disallowedTools`, server-managed settings or an MDM profile."
      If `settings.error` is set, show it and stop: nothing is written to a file that cannot be parsed.
    - **CLAUDE_CODE_SUBAGENT_MODEL:** `subagent_model.set_in` lists where it is set (never its value).
      If `removable` is true, show `subagent_model.diff` as a diff (the value reads `"<redacted>"`): this is

@@ -122,8 +122,23 @@ mod unix {
     }
 
     /// `atl hook claude` on `command`, with the rule files the test names.
+    ///
+    /// Given no settings file the host allows every Bash command: ATL rewrites (or
+    /// wraps) only what Claude Code would have allowed anyway, so a test that
+    /// expects a rewrite needs the user's allow. A test that names its own settings
+    /// file gets exactly that file.
     fn claude_hook(command: &str, files: &[(&str, &str)]) -> Output {
-        let home = home_with(files);
+        let mut files = files.to_vec();
+        if !files
+            .iter()
+            .any(|(path, _)| *path == ".claude/settings.json")
+        {
+            files.push((
+                ".claude/settings.json",
+                r#"{"permissions":{"allow":["Bash(*)"]}}"#,
+            ));
+        }
+        let home = home_with(&files);
         hook_stdin("claude", &claude_payload(command), &home)
     }
 
@@ -735,10 +750,10 @@ mode = "swap"
     }
 
     /// Only a wrap ATL built asks explicitly. An `atl run --shell fish -c …` the
-    /// agent typed itself, which the rules only rewrote around, keeps the
-    /// decision it gets without the feature: an allow where the rules allow
-    /// every part, and no `permissionDecision` at all where they leave it to
-    /// the host, including when the rules normalize a leading continuation.
+    /// agent typed itself, which the rules only rewrote around, is a typed atl
+    /// line: it asks unless the script it runs is read-only or the user's own
+    /// rules allow it (the blanket `Bash(atl:*)` does not), including when the
+    /// rules normalize a leading continuation.
     #[test]
     fn a_typed_wrap_form_keeps_its_decision() {
         for (enabled, command) in [
@@ -760,9 +775,12 @@ mode = "swap"
                 "  atl run --shell fish -c 'echo ok' && git status",
             ),
         ] {
+            // ATL never widens permissions: `Bash(atl:*)` is the install's blanket
+            // rule and does not count as the user allowing what `atl run` runs, so
+            // the typed wrap form asks in both (the second also lacks `git`).
             for (allow, expected) in [
-                (r#"["Bash(atl:*)","Bash(git:*)"]"#, Some("allow")),
-                (r#"["Bash(atl:*)"]"#, None),
+                (r#"["Bash(atl:*)","Bash(git:*)"]"#, Some("ask")),
+                (r#"["Bash(atl:*)"]"#, Some("ask")),
             ] {
                 let settings = format!(r#"{{"permissions":{{"allow":{allow}}}}}"#);
                 let home = home_with_wrap(&[(".claude/settings.json", settings.as_str())], enabled);
