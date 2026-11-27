@@ -1055,7 +1055,7 @@ anth_system_message() {
         # ANTH_FIXMSG holds no double quote, backslash or control character (anth_fix_cmd).
         printf '{"systemMessage":"anthology-guardrails: could not install the guard binary (%s); shell commands, file edits and MCP tools are blocked until it installs. Start a new session while online; if this keeps happening, disable anthology-guardrails with /plugin%s"}\n' "$2" "${ANTH_FIXMSG:-.}"
     else
-        printf '{"systemMessage":"anthology: could not install the anthology binary (%s); the routing guide, memory and atl are off until it installs. Start a new session while online, or run /anthology:setup."}\n' "$2"
+        printf '{"systemMessage":"anthology: could not install the anthology binary (%s); the routing guide, memory and atl are off until it installs, and if anthology-guardrails is on, its guard (the same binary) blocks shell commands, file edits and MCP tools too. Start a new session while online; anthology-guardrails names the command that installs it now."}\n' "$2"
     fi
 }
 

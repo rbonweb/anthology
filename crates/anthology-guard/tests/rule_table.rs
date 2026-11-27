@@ -78,7 +78,14 @@ mod rule_table_test {
 
     /// A catastrophe guard: a bound below 8 s is raised to it, because a slow runner is not a regression.
     fn assert_quick(what: &str, bound: Duration, f: impl FnOnce()) {
-        let bound = bound.max(Duration::from_secs(8));
+        // the x86_64 macOS CI runner is about 4x slower than the others (9 to 11 s on a case that
+        // takes 2 s elsewhere), so it gets 3x the bound; a real blow-up is far past even that
+        let slow_runner = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            3
+        } else {
+            1
+        };
+        let bound = bound.max(Duration::from_secs(8)) * slow_runner;
         let start = Instant::now();
         f();
         let took = start.elapsed();
