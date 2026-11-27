@@ -77,6 +77,14 @@ What an update changes:
 - ATL is reconciled to the pinned version at each session start.
 - The memory index format is versioned and rebuilt when it changes.
 
+### Two copies of a plugin in the cache
+
+The plugin cache can hold two folders for one dependency, `X.Y.Z` and `X.Y.Z-<sha>`. This is Claude Code's normal cache scheme for dependencies with a version range, and only the `-<sha>` copy is used. Nothing is broken, and you do not need to act.
+
+Claude Code removes old versions on its own, about 14 days after they are orphaned. `/plugin` shows what is installed.
+
+To clean up by hand instead, quit all Claude Code sessions first. Then delete only the version folders whose path is not an `installPath` in `~/.claude/plugins/installed_plugins.json`. Never delete a folder that file lists.
+
 ## Removing
 
 Run `/anthology:setup remove`. It shows every change first and asks you to confirm. It:

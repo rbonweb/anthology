@@ -362,6 +362,8 @@ mod readme_test {
         let text = repo::read("README.md");
         let mut failures = Vec::new();
         for cmd in [
+            "claude plugin marketplace add rbonweb/anthology",
+            "claude plugin install anthology@anthology",
             "/plugin marketplace add rbonweb/anthology",
             "/plugin install anthology@anthology",
             "/anthology:setup",
@@ -371,6 +373,31 @@ mod readme_test {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The VS Code extension has no `/plugin` slash commands, so the `claude plugin` form leads
+    /// each install step, and the slash form is said to work in the terminal app only.
+    #[test]
+    fn test_install_leads_with_the_cli_form() {
+        let text = repo::read("README.md");
+        for (cli, slash) in [
+            (
+                "claude plugin marketplace add rbonweb/anthology",
+                "/plugin marketplace add rbonweb/anthology",
+            ),
+            (
+                "claude plugin install anthology@anthology",
+                "/plugin install anthology@anthology",
+            ),
+        ] {
+            let cli_at = text.find(cli).unwrap_or_else(|| panic!("README.md lacks {cli}"));
+            let slash_at = text.find(slash).unwrap_or_else(|| panic!("README.md lacks {slash}"));
+            assert!(cli_at < slash_at, "README.md shows {slash} before {cli}");
+        }
+        assert!(
+            text.contains("VS Code"),
+            "README.md must say the VS Code extension needs the `claude plugin` form"
+        );
     }
 
     /// The README is the front page: it links every docs page, and the two security caveats
