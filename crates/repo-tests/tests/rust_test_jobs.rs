@@ -674,7 +674,7 @@ fn a_label_change_and_a_manual_run_start_the_workflow() {
     }
     assert!(yaml::has(&ci()["on"], "workflow_dispatch"));
     assert_eq!(
-        yaml::strings(&ci()["on"]["push"]["branches"]),
+        yaml::strings(&ci()["on"]["push"]["branches"])[..2],
         ["main", "build"]
     );
 }

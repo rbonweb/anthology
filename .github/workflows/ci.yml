@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, build]
+    branches: [main, build, ci-seed/affected-only-tests]
   # labeled/unlabeled: the `full-ci` label asks for every test (ci/jobs/rust-scope.sh reads it).
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
