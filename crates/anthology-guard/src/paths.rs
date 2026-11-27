@@ -15,8 +15,8 @@
 //! Python blocks). Only a brace expansion too large to check ([`BRACE_MAX_RESULTS`],
 //! [`BRACE_MAX_BYTES`]) is left unread; it marks the check [`Paths::capped`], and `check`
 //! blocks it as too complex (G0), except in the code keys of a tool input (`code`, `script`, ...):
-//! that text is code, not a shell word, and is read with Python's brace expansion alone then
-//! ([`Paths::code_hits_profile`]). Under a relative or empty home, a G3 path that uses the home
+//! that text is code, not a shell word, so a word too large to expand is read with each brace
+//! group as one `*` ([`brace_groups_as_globs`]), not blocked ([`Paths::code_hits_profile`]). Under a relative or empty home, a G3 path that uses the home
 //! (or a relative `cd` directory) is also read against an absolute stand-in for it
 //! ([`STANDIN_HOME`]), so a profile under that home is found wherever the home really is.
 
@@ -438,8 +438,8 @@ impl<'a> Paths<'a> {
     }
 
     /// [`Paths::words_hit`]; `cap_blocks` says what a brace expansion too large to check means
-    /// (strict only). `true`: the check is [`Paths::capped`]. `false`: the word is read with
-    /// Python's own brace expansion only, as the non-strict check reads it.
+    /// (strict only). `true`: the check is [`Paths::capped`]. `false`: the word is also
+    /// read with each brace group as one `*` ([`brace_groups_as_globs`]), and nothing blocks.
     fn words_hit_with<S: AsRef<str>>(
         &self,
         words: &[S],
@@ -461,7 +461,9 @@ impl<'a> Paths<'a> {
                         match expand_braces_fully(&piece) {
                             Some(full) => all.extend(full),
                             None if cap_blocks => self.capped.set(true),
-                            None => {}
+                            // not dropped: each group is one `*`, which matches what any
+                            // alternative could be, so a protected path still shows
+                            None => all.push(brace_groups_as_globs(&piece)),
                         }
                     }
                     all
@@ -669,6 +671,38 @@ pub(crate) fn expand_braces_fully(path: &str) -> Option<Vec<String>> {
         }
     }
     None
+}
+
+/// `path` with every brace group that has a comma (innermost first, so a nested one too) read as
+/// one `*`: a glob that stands for any of its alternatives. One linear pass, no expansion. A group
+/// without a comma stays as written; an unmatched brace stays.
+pub(crate) fn brace_groups_as_globs(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    // for each open brace: where its text starts in `out`, and whether a comma is in it
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    for c in path.chars() {
+        match c {
+            '{' => {
+                open.push((out.len(), false));
+                out.push(c);
+            }
+            ',' => {
+                if let Some(top) = open.last_mut() {
+                    top.1 = true;
+                }
+                out.push(c);
+            }
+            '}' => match open.pop() {
+                Some((start, true)) => {
+                    out.truncate(start);
+                    out.push('*');
+                }
+                _ => out.push(c),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// `_may_name_profile(candidate)`: a separator (`/`, a backslash or an encoded `%2F`) and a

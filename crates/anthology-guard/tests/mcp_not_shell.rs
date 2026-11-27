@@ -175,3 +175,59 @@ fn bash_keeps_its_full_analysis() {
     let (tool, input) = gd::bash(&format!("python3 -c 'x={}//config'", objects()));
     assert_eq!(check(&tool, &input, HOME), Verdict::TooComplex);
 }
+
+/// The code an interpreter reads from a heredoc is `Entry.code`: it keeps the brace cap, so the
+/// same literal is still too complex there (flipping `cap_blocks` for it makes these fail).
+#[test]
+fn a_python_heredoc_keeps_the_brace_cap() {
+    let (tool, input) = gd::bash(&format!("python3 - <<EOF\nx={}//config\nEOF", objects()));
+    assert_eq!(check(&tool, &input, HOME), Verdict::TooComplex);
+}
+
+#[test]
+fn a_node_heredoc_keeps_the_brace_cap() {
+    let (tool, input) = gd::bash(&format!("node <<\"EOF\"\nx={}//config\nEOF", objects()));
+    assert_eq!(check(&tool, &input, HOME), Verdict::TooComplex);
+}
+
+/// A word past the brace cap in a code key is not dropped: each brace group is read as a `*`, so
+/// a profile path built from braces still blocks (G3), as a `!` shell line in the code of an IDE
+/// tool is read.
+#[test]
+fn a_profile_path_made_of_brace_groups_in_a_code_key_blocks() {
+    let groups = "{,}".repeat(13);
+    let path = format!("~/.config/chrom{groups}ium/Default/Cookies");
+    for (tool, key, text) in [
+        ("mcp__x__y", "script", format!("cat {path}")),
+        (
+            "mcp__x__y",
+            "script",
+            format!("cat {path}\nx={}", objects()),
+        ),
+        ("mcp__ide__executeCode", "code", format!("!cat {path}")),
+        ("mcp__ide__executeCode", "code", format!("!cat '{path}'")),
+    ] {
+        let input = obj(&[(key, Value::Str(text.clone()))]);
+        assert_eq!(
+            check(&Value::Str(tool.into()), &input, HOME),
+            Verdict::Block(Rule::G3),
+            "{text}"
+        );
+    }
+    // the same text as a Bash command is still too complex, as before
+    let (tool, input) = gd::bash(&format!("cat {path}"));
+    assert_eq!(check(&tool, &input, HOME), Verdict::TooComplex);
+    // a big literal that names no profile stays allowed
+    for code in [
+        format!("window.__x={};//config", objects()),
+        format!("const a = [{}, {}]; // see /config", objects(), objects()),
+    ] {
+        assert_eq!(verdict(&run(&code)), Verdict::Allow, "{code}");
+    }
+    // the cost of the `*` reading: a big literal right before a protected folder name is read as
+    // `*/chromium`, where the `*` could be `.config`, so it blocks
+    assert_eq!(
+        verdict(&run(&format!("x={}/chromium", objects()))),
+        Verdict::Block(Rule::G3)
+    );
+}
