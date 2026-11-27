@@ -24,7 +24,13 @@
 //!      line read-only ([`proven_read_only`]), so the line runs no atl at all, and
 //!      every path it reads lies under the project ([`proof_roots`]: never the
 //!      first folder up the tree with a `.claude`, which is the home in a
-//!      repository that has none), where Claude Code reads without asking.
+//!      repository that has none), where Claude Code reads without asking. The
+//!      one atl the proof sees through is `atl bypass <cmd>` (and `atl proxy`),
+//!      which runs `<cmd>` itself: where it starts a command in the plainest
+//!      spelling, the line is proven without those words
+//!      ([`without_bypass`]), and one left in the line (a path to atl, `env`, a
+//!      quoted command) is no proof. Without this every `atl bypass` would ask
+//!      (`anthology_gate`, point 9), a harmless `atl bypass git log -5` too.
 //!
 //!    The answer is then the plain rewrite, with no decision of the hook's own,
 //!    when the rewrite is in the plain shape and the gate passes it as well: the
@@ -48,7 +54,7 @@
 //! `cd <payload cwd> && <line>`, which is the working directory the gate already
 //! resolves relative paths and rules against.
 
-use super::anthology_gate::{Gate, evaluate, plain};
+use super::anthology_gate::{Gate, evaluate, plain, runs_bypass, without_bypass};
 use super::decision::{AskOwner, HookDecision};
 use super::permissions::{ClaudeHookPermissions, PermissionVerdict};
 use crate::core::user_env;
@@ -182,12 +188,18 @@ pub(crate) fn refine_claude(
                     && plain(rewritten, rules, cwd) == Gate::Pass
             },
             proof: &|| {
-                proven_read_only(
-                    cmd,
-                    cwd,
-                    super::anthology_gate::env_project_dir(),
-                    rules.read_rule_texts(),
-                )
+                // `atl bypass <cmd>` is `<cmd>`: the line is proven as it would run,
+                // without those words. Any `atl bypass` left in it (a path to atl,
+                // `env`, a quoted command) is no proof, whatever the classifier says.
+                let line = without_bypass(cmd);
+                let line = line.as_deref().unwrap_or(cmd);
+                !runs_bypass(line, rules, cwd)
+                    && proven_read_only(
+                        line,
+                        cwd,
+                        super::anthology_gate::env_project_dir(),
+                        rules.read_rule_texts(),
+                    )
             },
         },
     )

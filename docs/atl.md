@@ -42,7 +42,12 @@ Earlier releases installed this tool under its legacy name, rtk. There is no `rt
 
 ## The `Bash(atl *)` risk
 
-Setup adds a blanket `Bash(atl *)` allow so rewritten commands do not prompt (unless one of your deny or ask rules is involved, below). Because `atl bypass <cmd>` runs any command, **this also auto-approves `atl bypass <anything>`**. That is an accepted risk, chosen for a prompt-free workflow. What still holds:
+Setup adds a blanket `Bash(atl *)` allow so rewritten commands do not prompt (unless one of your deny or ask rules is involved, below). `atl bypass <cmd>` (and `atl proxy`, its old name) runs any command, so that allow would approve anything. Since ATL 1.2.1-anthology.9 the hook does not let it: a typed `atl bypass <cmd>` is judged as `<cmd>` itself, never as covered by `Bash(atl *)`.
+
+- **`atl bypass <cmd>` asks unless `<cmd>` is read-only.** The hook applies your deny, ask and `Read(…)` rules to `<cmd>` first (a deny blocks it, an ask rule asks). Otherwise it asks, in every permission mode and in every shape: `atl bypass`, `atl proxy`, a path to atl, `env atl bypass`, `FOO=1 atl bypass`, and inside `&&`, `||`, `;`, a pipe, a group, `sh -c '…'`, `xargs` or `find -exec`. The one exception is a command `anthology perm classify` shows read-only, with every path it reads under the project (`CLAUDE_PROJECT_DIR`, else the git top level of the working directory, else the directory itself): `atl bypass git log -5` runs with no prompt from the hook, so your `Bash(atl *)` rule decides. That holds where `atl bypass` starts a command as the plain word `atl` (or the legacy `rtk`), at the start of the line or after `&&`, `||`, `;` or a pipe, and the command that follows is not quoted; any other spelling asks. Without the plugin's `anthology` binary every `atl bypass` asks. In auto mode nothing is rewritten, so the ask is about the line as typed.
+- **Other `atl` forms are not covered by this.** `atl run`, `atl err`, `atl test`, `atl summary` and `atl <program>` can still run a command under `Bash(atl *)` when no deny, ask or `Read(…)` rule exists. That is an accepted risk, chosen for a prompt-free workflow.
+
+What still holds:
 
 - **Your deny and ask rules.** ATL's hook reads the `permissions` of your settings files (user, project, local and managed `managed-settings.json`) and applies them to the command and to the command an `atl …` form wraps (`atl bypass`, `run`, `err`, `test`, `summary`, `atl git …`, and so on).
   - A matching deny rule blocks the call. A launcher the hook does not model, such as `caffeinate git push`, is left to Claude Code's own matching.

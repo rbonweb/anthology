@@ -349,7 +349,7 @@ pub(crate) fn decide_for_claude_hook_at(
     // the install allows `Bash(atl *)`, so a deny or ask rule that names what an
     // `atl ...` prefix or a shell wrapper runs, or a `Read()` deny, has to be
     // enforced here (`anthology_gate`).
-    use super::anthology_gate::{Gate, evaluate, mentions_token_layer, plain, unread};
+    use super::anthology_gate::{Gate, evaluate, mentions_token_layer, plain, runs_bypass, unread};
     let rules = &permissions.gate;
     let mut gate = evaluate(cmd, rules, permissions.verdict, cwd);
     // A line too long to read within the gate's work budget asks as written
@@ -368,6 +368,14 @@ pub(crate) fn decide_for_claude_hook_at(
             (Gate::Pass, Gate::Pass) => Gate::Pass,
             _ => Gate::Ask,
         };
+    }
+    // `atl bypass <cmd>` runs any command, so `Bash(atl *)` must not approve it: it
+    // is judged as `<cmd>` itself. The rules above already met the inner command (a
+    // deny denied it, an ask rule asked); what is left is that the allow rule must
+    // not decide, with or without any rule, so the hook asks, and
+    // `read_only_proof` drops that ask for an inner command shown read-only.
+    if matches!(gate, Gate::Pass | Gate::Defer) && runs_bypass(cmd, rules, cwd) {
+        gate = Gate::Ask;
     }
     match gate {
         Gate::Deny => return HookDecision::Deny,

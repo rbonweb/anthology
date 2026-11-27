@@ -895,6 +895,74 @@ mod tests {
         assert!(run_claude_inner(&claude_input("atl git status")).is_none());
     }
 
+    /// `atl bypass <cmd>` runs any command, so the user's `Bash(atl *)` allow must
+    /// not decide on it: the hook asks, whatever the settings hold. Without a
+    /// classifier (no plugin) nothing is proven read-only, so even a read asks.
+    #[test]
+    fn test_claude_atl_bypass_asks_instead_of_leaving_it_to_the_atl_allow() {
+        let ask = |cmd: &str, mode: Option<&str>| -> (Option<String>, Option<String>) {
+            let mut input: Value = serde_json::from_str(&claude_input(cmd)).unwrap();
+            if let Some(mode) = mode {
+                input["permission_mode"] = json!(mode);
+            }
+            let out: Value =
+                serde_json::from_str(&run_claude_inner(&input.to_string()).unwrap_or_else(|| {
+                    panic!("{cmd}: the hook said nothing, so `Bash(atl *)` would decide")
+                }))
+                .unwrap();
+            let field = |pointer: &str| {
+                out.pointer(pointer)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            (
+                field("/hookSpecificOutput/permissionDecision"),
+                field("/hookSpecificOutput/updatedInput/command"),
+            )
+        };
+        for cmd in [
+            "atl bypass rm -rf x",
+            "atl proxy rm -rf x",
+            "atl bypass git log -5",
+            "/usr/local/bin/atl bypass rm -rf x",
+            "env atl bypass rm -rf x",
+        ] {
+            // Nothing to rewrite: the ask is about the command as typed.
+            assert_eq!(
+                ask(cmd, None),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd}"
+            );
+            assert_eq!(
+                ask(cmd, Some("auto")),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd} (auto)"
+            );
+        }
+        for cmd in [
+            "git status && atl bypass rm -rf x",
+            "ls; atl bypass rm -rf x",
+            "ls | atl bypass tee x",
+            "atl bypass rm -rf x | cat",
+        ] {
+            assert_eq!(ask(cmd, None).0.as_deref(), Some("ask"), "{cmd}");
+            // Auto mode rewrites nothing: the ask is about the line as typed.
+            assert_eq!(
+                ask(cmd, Some("auto")),
+                (Some("ask".into()), Some(cmd.into())),
+                "{cmd} (auto)"
+            );
+        }
+    }
+
+    /// What only looks like it, or is another atl command, is as it was.
+    #[test]
+    fn test_claude_atl_bypass_ask_does_not_touch_other_lines() {
+        for cmd in ["atl llm-proxy status", "echo atl bypass", "atl gain"] {
+            assert!(run_claude_inner(&claude_input(cmd)).is_none(), "{cmd}");
+        }
+    }
+
     #[test]
     fn test_claude_empty_command_passthrough() {
         let input = json!({

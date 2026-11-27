@@ -758,20 +758,34 @@ fn ordinary_commands_keep_their_rewrite_beside_an_unrelated_rule() {
     }
 }
 
-/// With no rule of any kind every backstop is silent.
+/// Every line of `cmds` runs `atl bypass`, which asks even with no rule of any
+/// kind: `Bash(atl *)` must not approve what it runs (see "`atl bypass` is judged
+/// as the command it runs" below).
+fn assert_bypass_asks(sb: &Sandbox, cmds: &[&str]) {
+    for cmd in cmds {
+        assert!(matches!(sb.hook(cmd), Said::Ask(_)), "{cmd}");
+    }
+}
+
+/// With no rule of any kind every backstop is silent; `atl bypass` alone asks.
 #[test]
 fn every_backstop_is_inert_in_a_bare_sandbox() {
     let sb = Sandbox::bare();
     for cmd in [
         "x=push; atl git $x",
-        "atl bypass caffeinate git push",
         "if true; then atl git push; fi",
-        "atl bypass python3 script.py",
-        "atl bypass base64 secre*",
         "export HO\"ME\"=/; atl read ~/.ssh/id_rsa",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+    assert_bypass_asks(
+        &sb,
+        &[
+            "atl bypass caffeinate git push",
+            "atl bypass python3 script.py",
+            "atl bypass base64 secre*",
+        ],
+    );
     assert!(
         matches!(
             sb.hook("git log --grep='git push'"),
@@ -974,13 +988,18 @@ fn the_round_three_backstops_are_inert_in_a_bare_sandbox() {
     for cmd in [
         "atl git -C . push",
         "atl /usr/bin/git push",
-        "atl bypass caffeinate g''it push",
-        "echo push | atl bypass xargs git",
-        "atl bypass ssh h 'x=push; git $x'",
         "atl run -c 'time time git push'",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+    assert_bypass_asks(
+        &sb,
+        &[
+            "atl bypass caffeinate g''it push",
+            "echo push | atl bypass xargs git",
+            "atl bypass ssh h 'x=push; git $x'",
+        ],
+    );
 }
 
 // --- review round 4 ---
@@ -1183,11 +1202,11 @@ fn the_round_four_backstops_are_inert_in_a_bare_sandbox() {
     for cmd in [
         "atl git -- push",
         "atl git -c alias.p=push p",
-        "atl bypass caffeinate sh -c 'cat secret.txt'",
         "atl pnpm exec cat secret.txt",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+    assert_bypass_asks(&sb, &["atl bypass caffeinate sh -c 'cat secret.txt'"]);
 }
 
 // --- review round 5: the allowlist ---
@@ -1395,15 +1414,20 @@ fn a_rewrite_off_the_allowlist_leaves_the_original_to_the_host() {
 fn the_allowlist_is_inert_in_a_bare_sandbox() {
     let sb = Sandbox::bare();
     for cmd in [
-        "atl bypass ed -s <<< '!git push'",
         "atl git grep -O'git push' x",
-        "atl bypass env -S 'git\\_push'",
-        "atl bypass /usr/lib/git-core/git-push",
         "atl git >/dev/null push",
         "atl ls # x",
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+    assert_bypass_asks(
+        &sb,
+        &[
+            "atl bypass ed -s <<< '!git push'",
+            "atl bypass env -S 'git\\_push'",
+            "atl bypass /usr/lib/git-core/git-push",
+        ],
+    );
 }
 
 // --- review round 6 ---
@@ -1510,7 +1534,6 @@ fn the_round_six_bypass_classes_are_stopped() {
 fn the_plain_shape_is_inert_in_a_bare_sandbox() {
     let sb = Sandbox::bare();
     for cmd in [
-        "atl bypass git push",
         "atl npm run build",
         "atl ls $HOME",
         "< secret.txt atl cat",
@@ -1518,6 +1541,7 @@ fn the_plain_shape_is_inert_in_a_bare_sandbox() {
     ] {
         assert_eq!(sb.hook(cmd), Said::Nothing, "{cmd}");
     }
+    assert_bypass_asks(&sb, &["atl bypass git push"]);
     assert_eq!(
         sb.hook("ls src/*.rs"),
         Said::Rewrite("atl ls src/*.rs".into())
@@ -2245,4 +2269,262 @@ fn in_auto_mode_an_ask_that_stays_is_about_the_original_with_no_rewrite() {
         hook_in(&sb, cmd, Some("auto"), true, &[]),
         Said::Ask(cmd.into())
     );
+}
+
+// --- `atl bypass` is judged as the command it runs ---
+//
+// The install allows `Bash(atl *)`, and `atl bypass <cmd>` (or its old name `atl
+// proxy`) runs any command unfiltered, so that allow would approve everything. The
+// hook judges the inner command instead: the user's deny and ask rules apply to it,
+// and it is asked about unless `anthology perm classify` shows the line read-only.
+
+/// `inner` behind every spelling of `atl bypass` the hook must see through, alone
+/// and next to other commands.
+fn bypass_shapes(inner: &str) -> Vec<String> {
+    let mut shapes: Vec<String> = [
+        "atl bypass",
+        "atl proxy",
+        "atl -v bypass",
+        "/usr/local/bin/atl bypass",
+        "env atl bypass",
+        "FOO=1 atl bypass",
+        "rtk bypass", // legacy
+    ]
+    .iter()
+    .map(|prefix| format!("{prefix} {inner}"))
+    .collect();
+    shapes.extend([
+        format!("ls && atl bypass {inner}"),
+        format!("ls; atl bypass {inner}"),
+        format!("ls | atl bypass {inner}"),
+        format!("ls || atl bypass {inner}"),
+        format!("atl bypass {inner} | head -3"),
+        format!("atl bypass {inner} && ls"),
+        format!("bash -c 'atl bypass {inner}'"),
+    ]);
+    shapes
+}
+
+/// A typed `atl bypass rm -rf x` is not covered by `Bash(atl *)`: the hook asks, in
+/// every shape, with no deny, ask or `Read()` rule anywhere, with or without a
+/// classifier, and whatever the stand-in would say about the inner command.
+#[test]
+fn atl_bypass_of_a_command_that_writes_asks_whatever_the_allow_rule_says() {
+    let allowed = Sandbox::new(Rules {
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let unallowed = Sandbox::bare();
+    for sb in [&allowed, &unallowed] {
+        for cmd in bypass_shapes("rm -rf x") {
+            for classifier in [false, true] {
+                for mode in [None, Some("default"), Some("acceptEdits")] {
+                    assert!(
+                        matches!(hook_in(sb, &cmd, mode, classifier, &[]), Said::Ask(_)),
+                        "{cmd} ({mode:?}, classifier {classifier})"
+                    );
+                }
+            }
+        }
+    }
+    // Even a classifier that proves everything read-only proves nothing about a
+    // line that still runs atl in a shape the hook does not read through.
+    let env = [("FAKE_PROVE_ALL", "1")];
+    for cmd in [
+        "env atl bypass rm -rf x",
+        "timeout 5 atl bypass rm -rf x",
+        "atl bypass atl bypass rm -rf x",
+        "atl bypass 'rm -rf x'",
+    ] {
+        assert!(
+            matches!(hook_in(&allowed, cmd, None, true, &env), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
+}
+
+/// The spellings a shell reads as `atl bypass rm -rf x` too: quotes, escapes,
+/// grammar, groups, substitutions, launchers and the payloads of other commands.
+#[test]
+fn atl_bypass_is_found_behind_quotes_grammar_groups_and_launchers() {
+    let sb = Sandbox::new(Rules {
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    for cmd in [
+        "'atl' bypass rm -rf x",
+        "atl 'bypass' rm -rf x",
+        "atl \"proxy\" rm -rf x",
+        "\\atl bypass rm -rf x",
+        "a\\tl bypass rm -rf x",
+        "(atl bypass rm -rf x)",
+        "{ atl bypass rm -rf x; }",
+        "echo $(atl bypass rm -rf x)",
+        "echo `atl bypass rm -rf x`",
+        "atl bypass rm -rf x &",
+        "ls\natl bypass rm -rf x",
+        "if true; then atl bypass rm -rf x; fi",
+        "for i in 1 2; do atl bypass rm -rf $i; done",
+        "time atl bypass rm -rf x",
+        "! atl bypass rm -rf x",
+        "nice atl bypass rm -rf x",
+        "sudo atl bypass rm -rf x",
+        "xargs atl bypass rm -rf",
+        "find . -name x -exec atl bypass rm -rf {} \\;",
+        "eval 'atl bypass rm -rf x'",
+        "sh -c \"atl bypass rm -rf x\"",
+        "atl run -c 'atl bypass rm -rf x'",
+        "atl err atl bypass rm -rf x",
+        "atl bypass atl bypass rm -rf x",
+        "cd sub && atl bypass rm -rf x",
+        "ls > /dev/null && atl bypass rm -rf x",
+    ] {
+        assert!(
+            matches!(hook_in(&sb, cmd, None, true, &[]), Said::Ask(_)),
+            "{cmd:?}"
+        );
+    }
+}
+
+/// A read-only inner command goes through with no ask, as a read-only line does
+/// (no rewrite and no decision of the hook's own: the host decides).
+#[test]
+fn atl_bypass_of_a_provably_read_only_command_is_not_asked_about() {
+    for rules in [
+        Rules {
+            allow: &["atl *"],
+            ..Rules::default()
+        },
+        // With a rule in place every `atl` line has to be in the plain shape.
+        Rules {
+            deny: &["git push:*"],
+            allow: &["atl *"],
+            ..Rules::default()
+        },
+    ] {
+        let sb = Sandbox::new(rules);
+        for cmd in [
+            "atl bypass git log -5",
+            "atl proxy git log -5",
+            "atl -v bypass git log -5",
+            "ls && atl bypass git log -5",
+            "ls; atl bypass git log -5",
+            "ls | atl bypass git log -5",
+            "atl bypass git log -5 | head -3",
+            "atl bypass git status; atl bypass git log -5",
+        ] {
+            for mode in [None, Some("default"), Some("auto")] {
+                assert_eq!(
+                    hook_in(&sb, cmd, mode, true, &[]),
+                    Said::Nothing,
+                    "{cmd} ({mode:?})"
+                );
+            }
+        }
+        // One part that is not read-only keeps the ask.
+        for cmd in [
+            "atl bypass git log -5 && atl bypass rm -rf x",
+            "ls | atl bypass tee x; atl bypass rm x",
+            "atl bypass git log -5 && rm -rf x",
+        ] {
+            assert!(
+                matches!(hook_in(&sb, cmd, None, true, &[]), Said::Ask(_)),
+                "{cmd}"
+            );
+        }
+        // No classifier (an install without the plugin) proves nothing: it asks.
+        assert!(matches!(
+            hook_in(&sb, "atl bypass git log -5", None, false, &[]),
+            Said::Ask(_)
+        ));
+    }
+}
+
+/// The user's deny rule on the inner command denies, in every shape, and their ask
+/// rule asks even when the classifier proves the line read-only.
+#[test]
+fn atl_bypass_meets_the_deny_and_ask_rules_of_the_inner_command() {
+    let sb = Sandbox::new(Rules {
+        deny: &["rm:*", "git push:*"],
+        ask: &["kubectl apply:*"],
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    let env = [("FAKE_PROVE_ALL", "1")];
+    for inner in ["rm -rf x", "git push origin main"] {
+        for cmd in bypass_shapes(inner) {
+            assert_eq!(hook_in(&sb, &cmd, None, true, &env), Said::Deny, "{cmd}");
+            assert_eq!(
+                hook_in(&sb, &cmd, Some("auto"), false, &env),
+                Said::Deny,
+                "{cmd} in auto mode"
+            );
+        }
+    }
+    for cmd in bypass_shapes("kubectl apply -f x.yaml") {
+        assert!(
+            matches!(hook_in(&sb, &cmd, None, true, &env), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
+    // A read-only inner command is judged by the same rules: no rule, no ask.
+    assert_eq!(
+        hook_in(&sb, "atl bypass git log -5", None, true, &[]),
+        Said::Nothing
+    );
+}
+
+/// Auto mode keeps the earlier rule: nothing is rewritten, so the ask is about the
+/// line as typed.
+#[test]
+fn atl_bypass_in_auto_mode_asks_about_the_line_as_typed() {
+    for rules in [
+        Rules {
+            allow: &["atl *"],
+            ..Rules::default()
+        },
+        Rules {
+            deny: &["git push:*"],
+            allow: &["atl *"],
+            ..Rules::default()
+        },
+    ] {
+        let sb = Sandbox::new(rules);
+        for cmd in [
+            "atl bypass rm -rf x",
+            "atl proxy rm -rf x",
+            "ls && atl bypass rm -rf x",
+            "git status && atl bypass rm -rf x",
+            "env atl bypass rm -rf x",
+        ] {
+            assert_eq!(
+                hook_in(&sb, cmd, Some("auto"), true, &[]),
+                Said::Ask(cmd.into()),
+                "{cmd}"
+            );
+        }
+    }
+}
+
+/// A line that only mentions the words, or runs another atl subcommand, is not
+/// asked about on account of `bypass`.
+#[test]
+fn what_is_not_atl_bypass_is_not_asked_about_as_one() {
+    let sb = Sandbox::new(Rules {
+        allow: &["atl *"],
+        ..Rules::default()
+    });
+    for cmd in [
+        "atl git status",
+        "atl llm-proxy status",
+        "echo atl bypass rm -rf x",
+        "git commit -m 'atl bypass rm'",
+        "grep -rn 'atl bypass' docs",
+        "ls bypass",
+    ] {
+        assert!(
+            !matches!(hook_in(&sb, cmd, None, true, &[]), Said::Ask(_)),
+            "{cmd}"
+        );
+    }
 }

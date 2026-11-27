@@ -21,7 +21,7 @@ Three plugins. Installing `anthology` brings the other two with it.
 Two things to read before you install:
 
 - The guard stops accidental installs and launches by cooperative agents. It is not a sandbox. [Known limits](docs/guardrails.md#known-limits) lists what it misses.
-- Setup allows `Bash(atl *)`, which also auto-approves `atl bypass <cmd>`, and that runs any command. [The `Bash(atl *)` risk](docs/atl.md#the-bashatl--risk) says what still protects you, and `/anthology:setup remove` takes the allow out again.
+- Setup allows `Bash(atl *)`. ATL's hook does not let it approve `atl bypass <cmd>`, which runs any command: that is judged as `<cmd>` and asks unless `<cmd>` is read-only. [The `Bash(atl *)` risk](docs/atl.md#the-bashatl--risk) says what still protects you, and `/anthology:setup remove` takes the allow out again.
 
 ## Install
 
