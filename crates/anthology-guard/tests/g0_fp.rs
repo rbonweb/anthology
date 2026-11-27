@@ -20,6 +20,13 @@
 //!    ...`), the options are the listed ones (not `--env-file`, not `-e PATH=...`), the program word is
 //!    exactly `psql`, and the `-c` value holds no backslash (`\!` and `\o |` make psql start a shell), also
 //!    none that an expansion could bring.
+//! 7. The regex of item 5 with an escaped dollar (`grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir`): the text
+//!    counted every `$` as a possible expansion, also one a backslash escapes, so the text was not plain and
+//!    each `[` after a quote or a backtick was read as a possible subscript start. `\$` in double quotes or
+//!    unquoted is a literal dollar in bash and zsh and expands nothing, but only in a text of searches and
+//!    filters: elsewhere it is how a live dollar reaches a nested text (`trap`, `.`). A `$` that is not
+//!    escaped (`\\$x` is a backslash and then `$x`), a `$(`, a backtick substitution and a `$` in single
+//!    quotes still count.
 
 #[path = "support/gd.rs"]
 mod gd;
@@ -705,4 +712,100 @@ fn a_psql_whose_arguments_come_from_somewhere_else_keeps_its_reading() {
         ],
         Verdict::Allow,
     );
+}
+
+#[test]
+fn a_search_pattern_with_an_escaped_dollar_and_quote_characters_is_allowed() {
+    // `\$` is a literal dollar: nothing expands, so the two bracket expressions that hold a quote and a
+    // backtick are regex text, not subscripts
+    assert_all(
+        &[
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir | cut -c1-200 | head"#,
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\\$\{|\" *\+)" dir"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*\\$" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{)" dir"#,
+            r#"rg -n "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(x\$|y)" dir"#,
+            r#"grep -E [\"\'\`][^\"\'\`]*\(x\$\|y\) dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir | head -5"#,
+            // the dollar escaped once (the shell text `\$`), and a dollar that ends a double-quoted string
+            r#"grep -rnoE "[\"'\`][^\"'\`]*(\$\{|\" *\+)" dir | cut -c1-200 | head"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*\$" dir"#,
+            r#"grep -rnE "[\"'\`]x-[a-z]*$" dir"#,
+            r#"rg "[\"'\`][^\"'\`]*(\$\{|x)" dir"#,
+            r#"grep -rnE "[\"'\`]x[^\"'\`]*$" dir"#,
+        ],
+        Verdict::Allow,
+    );
+}
+
+#[test]
+fn an_expansion_in_a_search_pattern_with_quote_characters_is_still_too_complex() {
+    // the same patterns with a real expansion: a `$` that nothing escapes, an escaped backslash before a
+    // `$`, a substitution, a `$` in single quotes (the quote scan is approximate: it counts there too)
+    assert_all(
+        &[
+            r#"grep -E "[\"'\`][^\"'\`]*($(id)|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(`id`|x)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*($x|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(${x}|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\\\$x|y)" dir"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" "$d""#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" $(echo d)"#,
+            r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" `echo d`"#,
+            r#"grep -E '[`"][^`"]*($x|y)' dir"#,
+            r#"grep -E '[`"][^`"]*(\$|y)' dir"#,
+            r#"grep -E '[`"][^`"]*(\\$\{|y)' dir"#, // a dollar, a backslash and a newline: the lines join and `$1` is read
+            "set -- '[`id`]'; unset \"a$\\\n1\"",
+            r#"set -- '[`id`]'; unset "a$1""#,
+            r#"set -- '[`id`]'; grep -E "[\"'\`][^\"'\`]*(\\$|y)" d; unset "a$1""#,
+        ],
+        Verdict::TooComplex,
+    );
+}
+
+#[test]
+fn an_escaped_dollar_handed_to_a_nested_text_of_the_same_shell_is_still_too_complex() {
+    // the escaped dollar is how a writer passes a live one to a nested text (`trap`, `.` of a process
+    // substitution or of stdin, `eval`): there the escape is gone and `[[ a$X -eq 0 ]]` evaluates the
+    // subscript a loop variable holds. Only a text that is nothing but searches may read an escaped dollar as
+    // a literal one; every one of these was too complex before and stays so.
+    let payload = r#"[\$(npx playwright install)]"#;
+    let mut shapes = vec![
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+        format!(r#"typeset -a a; for X in "{payload}"; do . <(echo "[[ a\$X -eq 0 ]]"); done"#),
+        format!(
+            r#"typeset -a a; for X in "{payload}"; do . /dev/stdin <<< "[[ a\$X -eq 0 ]]"; done"#
+        ),
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a$"X" -eq 0 ]]" EXIT; done"#),
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a$\X -eq 0 ]]" EXIT; done"#),
+        format!(
+            r#"typeset -a a; for X in "{payload}"; do trap \[\[\ a$\X\ -eq\ 0\ \]\] EXIT; done"#
+        ),
+        format!(r#"for X in "{payload}"; do trap "unset \"a\$X\"" EXIT; done"#),
+        format!(r#"for X in "{payload}"; do source <(echo "unset \"a\$X\""); done"#),
+        r#"for X in '[`npx playwright install`]'; do trap "unset \"a\$X\"" EXIT; done"#.to_string(),
+        // a text with one command that is not a search reads its escaped dollars as before
+        r#"echo x; grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#.to_string(),
+        r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir; echo x"#.to_string(),
+        r#"grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir | tee out"#.to_string(),
+        r#"FOO=1 grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir"#.to_string(),
+        r#"/usr/bin/grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir"#.to_string(),
+        // a search before the sink does not make the text a search
+        format!(r#"grep -E "x\$" d; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+        format!(r#"grep -E "x\$" d | for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+    ];
+    // and the same sinks with the search shapes of the Allow test around them
+    shapes.push(format!(
+        r#"grep -E "[\"'\`]x\\$" d; typeset -a a; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#
+    ));
+    let wrong: Vec<String> = shapes
+        .iter()
+        .filter_map(|c| {
+            let got = verdict(c);
+            (got != Verdict::TooComplex).then(|| format!("{c:?}: {got:?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "want TooComplex:\n{}", wrong.join("\n"));
 }
