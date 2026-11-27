@@ -128,19 +128,43 @@ pub fn plan_union_attrs(root: &Path) -> Result<UnionAttrsPlan, PyExc> {
     let path = root.join(".gitattributes");
     let existing = fsx::read_regular(&path, None)?;
     let existing = String::from_utf8_lossy(&existing).into_owned();
-    let have: Vec<String> = splitlines(&existing)
-        .into_iter()
-        .map(|l| split_ws(l).join(" "))
-        .collect();
-    let missing = UNION_LINES
-        .into_iter()
-        .filter(|line| !have.iter().any(|h| h == line))
-        .collect();
+    let missing = missing_union_lines(&existing);
     Ok(UnionAttrsPlan {
         path,
         existing,
         missing,
     })
+}
+
+/// The [`UNION_LINES`] that `text` lacks (lines compare with their whitespace collapsed).
+fn missing_union_lines(text: &str) -> Vec<&'static str> {
+    let have: Vec<String> = splitlines(text)
+        .into_iter()
+        .map(|l| split_ws(l).join(" "))
+        .collect();
+    UNION_LINES
+        .into_iter()
+        .filter(|line| !have.iter().any(|h| h == line))
+        .collect()
+}
+
+/// Whether the commit `HEAD` of the repo at `root` has both [`UNION_LINES`] in its
+/// `.gitattributes`: a worktree or clone made from HEAD only has the rule then. `None` when that
+/// cannot be told (git missing or timed out, or no commit yet). Reads only; writes nothing.
+pub fn union_rule_in_head(root: &Path, env: &Env, git: &dyn Git) -> Option<bool> {
+    if git
+        .run(env, root, &["rev-parse", "--verify", "-q", "HEAD"])?
+        .code
+        != 0
+    {
+        return None;
+    }
+    let shown = git.run(env, root, &["show", "HEAD:.gitattributes"])?;
+    if shown.code != 0 {
+        return Some(false);
+    }
+    let text = String::from_utf8_lossy(&shown.stdout);
+    Some(missing_union_lines(&text).is_empty())
 }
 
 fn save_approved(data: &Map, env: &Env) -> Result<(), PyExc> {

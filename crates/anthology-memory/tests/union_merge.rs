@@ -157,6 +157,123 @@ fn a_rule_only_in_the_merging_working_tree_is_enough() {
     assert_both_lines_kept(&root, &merged);
 }
 
+mod hint {
+    //! Session start tells the user, in one line, when the repo is approved for memory but HEAD's
+    //! `.gitattributes` lacks the union rule (never written, or written and not committed), because
+    //! a worktree branched from HEAD then has no rule. It writes nothing.
+    use super::*;
+    use anthology_memory::sync::{self, SyncDeps};
+
+    fn hints(case: &MemCase, root: &Path) -> Vec<String> {
+        let (_, msgs) = sync::run(root, &case.env, &SyncDeps::default());
+        msgs.into_iter()
+            .filter(|m| m.contains("union-merge"))
+            .collect()
+    }
+
+    /// An approved repo with one commit (`approve` has written `.gitattributes`, not committed).
+    fn approved(case: &MemCase) -> PathBuf {
+        let root = case.make_repo("repo", None);
+        fs::write(root.join("README.md"), "app\n").unwrap();
+        case.git(&root, &["add", "README.md"]);
+        case.git(&root, &["commit", "-q", "-m", "base"]);
+        approve(&root, &case.env, &RealGit).expect("approve");
+        root
+    }
+
+    #[test]
+    fn a_rule_written_but_not_committed_gets_a_hint() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = approved(&case);
+        let h = hints(&case, &root);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(h[0].contains("/anthology:setup") && h[0].contains("commit .gitattributes"));
+        assert!(!h[0].contains('\n') && h[0].len() < 160, "{}", h[0]);
+    }
+
+    #[test]
+    fn no_rule_at_all_gets_a_hint_and_no_file_is_written() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = approved(&case);
+        fs::remove_file(root.join(".gitattributes")).unwrap();
+        assert_eq!(hints(&case, &root).len(), 1);
+        // the hint is all it does: it never writes the rule itself
+        assert!(!root.join(".gitattributes").exists());
+    }
+
+    #[test]
+    fn a_committed_rule_gets_no_hint() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = approved(&case);
+        case.git(&root, &["add", ".gitattributes"]);
+        case.git(&root, &["commit", "-q", "-m", "union rule"]);
+        assert_eq!(hints(&case, &root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_committed_file_with_only_one_of_the_rules_gets_a_hint() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = approved(&case);
+        fs::write(root.join(".gitattributes"), format!("{}\n", UNION_LINES[0])).unwrap();
+        case.git(&root, &["add", ".gitattributes"]);
+        case.git(&root, &["commit", "-q", "-m", "half"]);
+        assert_eq!(hints(&case, &root).len(), 1);
+    }
+
+    #[test]
+    fn a_rule_in_spacing_other_than_ours_counts() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = approved(&case);
+        fs::write(
+            root.join(".gitattributes"),
+            ".claude/memory/MEMORY.md   merge=union\n.claude/agent-memory/*/MEMORY.md\tmerge=union\n",
+        )
+        .unwrap();
+        case.git(&root, &["add", ".gitattributes"]);
+        case.git(&root, &["commit", "-q", "-m", "spaced"]);
+        assert_eq!(hints(&case, &root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_repo_with_no_commit_yet_gets_no_hint() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = case.make_repo("repo", None);
+        approve(&root, &case.env, &RealGit).expect("approve");
+        assert_eq!(hints(&case, &root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_unapproved_repo_gets_no_union_hint() {
+        if !needs_git() {
+            return;
+        }
+        let case = MemCase::new();
+        let root = case.make_repo("repo", None);
+        fs::write(root.join("README.md"), "app\n").unwrap();
+        case.commit_all(&root, "base");
+        fs::create_dir_all(root.join(".claude/memory")).unwrap();
+        assert_eq!(hints(&case, &root), Vec::<String>::new());
+    }
+}
+
 mod plan {
     //! `plan_union_attrs` says what `ensure_union_attrs` would add, and writes nothing.
     use super::*;
