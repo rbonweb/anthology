@@ -3766,6 +3766,145 @@ mod old_notes_by_type_test {
     }
 }
 
+mod repo_union_attrs_test {
+    //! Approving a repo adds `merge=union` rules for the generated memory indexes to its
+    //! `.gitattributes`, so two branches that each add an index line merge without a conflict.
+    //! The preview shows that change as a diff and writes nothing; a second run adds nothing; the
+    //! rest of the file is never touched.
+    use super::*;
+
+    const REMOTE: &str = "https://example.invalid/acme/app.git";
+    const REPO_RULE: &str = ".claude/memory/MEMORY.md merge=union";
+    const AGENT_RULE: &str = ".claude/agent-memory/*/MEMORY.md merge=union";
+    const AGENT_INDEX: &str = ".claude/agent-memory/anthology-implementer/MEMORY.md";
+
+    fn repo_fx() -> Option<(Fx, PathBuf)> {
+        if !mem::needs_git() {
+            return None;
+        }
+        let f = Fx::new();
+        f.c.write_settings(SETTINGS);
+        let repo = f.c.mem.make_repo("repo", Some(REMOTE));
+        Some((f, repo))
+    }
+
+    fn attrs(repo: &Path) -> String {
+        fs::read_to_string(repo.join(".gitattributes")).unwrap()
+    }
+
+    fn has_key(v: &Value, key: &str) -> bool {
+        v.as_object().unwrap().contains_key(key)
+    }
+
+    fn union_of(out: &Value) -> &Value {
+        at(out, &["memory", "repo", "union_attrs"])
+    }
+
+    #[test]
+    fn preview_shows_both_rules_as_a_diff_and_writes_nothing() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let before = mem::snapshot(f.tmp());
+        let out = f.preview(Some(&repo));
+        assert_eq!(mem::snapshot(f.tmp()), before);
+        assert!(!repo.join(".gitattributes").exists());
+        let u = union_of(&out);
+        assert_eq!(text_at(u, &["path"]), p(&repo.join(".gitattributes")));
+        assert_eq!(at(u, &["changed"]), &Value::Bool(true));
+        let diff = text_at(u, &["diff"]);
+        assert!(diff.contains(&format!("+{REPO_RULE}\n")), "{diff}");
+        assert!(diff.contains(&format!("+{AGENT_RULE}\n")), "{diff}");
+        assert!(text_at(u, &["note"]).contains("Commit"), "{u:?}");
+    }
+
+    #[test]
+    fn preview_adds_only_what_is_missing_and_keeps_other_lines() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(
+            &repo.join(".gitattributes"),
+            &format!("*.png binary\n{REPO_RULE}"),
+            None,
+        );
+        let out = f.preview(Some(&repo));
+        let diff = text_at(union_of(&out), &["diff"]);
+        assert!(diff.contains(&format!("+{AGENT_RULE}\n")), "{diff}");
+        assert!(!diff.contains(&format!("+{REPO_RULE}")), "{diff}");
+        // no existing line is removed or changed
+        assert!(
+            !diff
+                .lines()
+                .any(|l| l.starts_with('-') && !l.starts_with("---")),
+            "{diff}"
+        );
+    }
+
+    #[test]
+    fn preview_has_nothing_to_show_once_the_rules_are_there() {
+        let Some((f, repo)) = repo_fx() else { return };
+        // a rule that differs from ours only in its spacing counts as present
+        write(
+            &repo.join(".gitattributes"),
+            &format!("{AGENT_RULE}\n.claude/memory/MEMORY.md   merge=union\n"),
+            None,
+        );
+        let out = f.preview(Some(&repo));
+        let u = union_of(&out);
+        assert_eq!(at(u, &["changed"]), &Value::Bool(false));
+        assert_eq!(text_at(u, &["diff"]), "");
+    }
+
+    #[test]
+    fn preview_reports_an_unsafe_gitattributes_instead_of_a_diff() {
+        let Some((f, repo)) = repo_fx() else { return };
+        fs::write(repo.join("elsewhere"), "x").unwrap();
+        symlink(repo.join("elsewhere"), repo.join(".gitattributes")).unwrap();
+        let out = f.preview(Some(&repo));
+        let u = union_of(&out);
+        assert!(text_at(u, &["skipped"]).contains(".gitattributes"), "{u:?}");
+        assert!(!has_key(u, "diff"));
+    }
+
+    #[test]
+    fn apply_writes_what_the_preview_showed_and_a_second_run_adds_nothing() {
+        let Some((f, repo)) = repo_fx() else { return };
+        write(&repo.join(".gitattributes"), "*.png binary", None);
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        let first = attrs(&repo);
+        assert_eq!(
+            first,
+            format!("*.png binary\n{REPO_RULE}\n{AGENT_RULE}\n"),
+            "existing content kept, rules appended once"
+        );
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        assert_eq!(attrs(&repo), first);
+        let out = f.preview(Some(&repo));
+        assert_eq!(at(union_of(&out), &["changed"]), &Value::Bool(false));
+    }
+
+    #[test]
+    fn applied_rules_make_git_pick_the_union_driver_for_the_index_files() {
+        let Some((f, repo)) = repo_fx() else { return };
+        let res = f.apply_in(&repo, false, &[], &f.deps());
+        assert!(ok(&res), "{res:?}");
+        for path in [".claude/memory/MEMORY.md", AGENT_INDEX] {
+            let out = f.c.mem.git(&repo, &["check-attr", "merge", "--", path]);
+            assert!(
+                out.stdout_text().trim_end().ends_with("merge: union"),
+                "{path}: {}",
+                out.stdout_text()
+            );
+        }
+    }
+
+    #[test]
+    fn skipping_approval_leaves_gitattributes_alone() {
+        let Some((f, repo)) = repo_fx() else { return };
+        f.apply_in(&repo, true, &[], &f.deps());
+        assert!(!repo.join(".gitattributes").exists());
+    }
+}
+
 /// The rename from the legacy rtk to ATL: what setup does about an install made before it (the plan's
 /// upgrade path, item 4). Every old name below is a legacy one.
 mod legacy_cleanup_test {

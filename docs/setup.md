@@ -23,6 +23,7 @@ It checks your machine, then shows every change and applies them only after you 
    - sets `worktree.baseRef` to `"head"`, so agents that work in a worktree start from your current commit instead of the remote's default branch;
    - only if you say yes to its own question: removes `CLAUDE_CODE_SUBAGENT_MODEL` from the `env` block (see [Agent models](agents.md#agent-models)).
 5. **Memory.** Approves the current repo for memory (you can decline this step). That adds two `merge=union` lines to the repo's `.gitattributes` and `"autoMemoryEnabled": false` to the repo's committed `.claude/settings.json`, merged into what is there.
+   - The preview shows the `.gitattributes` change as a diff. It adds only the lines that are missing and keeps the rest of the file. Commit the file: a worktree or clone made from a commit without it does not union-merge the index files.
    - The setting turns off Claude Code's own auto memory in this repo, so the repo's `.claude/memory/` and your personal memory are the only memory. Other repos keep auto memory, and your user-wide settings are not touched for this.
    - The file is committed, so once you push it, auto memory is off for everyone who uses the repo, including teammates who do not use Anthology.
    - Auto memory also covers Claude Code's subagent memory, so in this repo roster agents no longer get their `MEMORY.md` preloaded. Each agent's prompt tells it to read its own.

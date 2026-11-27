@@ -1204,7 +1204,12 @@ mod re_clone_test {
         );
         let before = snapshot(&b);
         let exclude = fs::read(b.join(".git/info/exclude")).unwrap();
-        assert_eq!(run(&c, &b), (personal_only(&c.anth), vec![]));
+        // The clone's HEAD has no union-merge rule (the approval came after the commit), so the
+        // one hint is all there is to say.
+        assert_eq!(
+            run(&c, &b),
+            (personal_only(&c.anth), vec![sync::UNION_HINT.to_string()])
+        );
         assert_eq!(snapshot(&b), before);
         assert_eq!(fs::read(b.join(".git/info/exclude")).unwrap(), exclude);
     }
