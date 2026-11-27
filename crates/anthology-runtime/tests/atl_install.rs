@@ -1478,6 +1478,58 @@ mod wrapper_test {
         );
     }
 
+    #[test]
+    fn test_hook_tells_atl_where_the_read_only_proof_is_and_what_the_callers_path_was() {
+        // atl asks `anthology perm classify` (through the shim beside atl-hook) whether a line is
+        // read-only, and the proof is about the PATH the user's shell has, not the safe one atl
+        // runs on. Neither variable may be inherited: both are set here or removed.
+        let w = setup();
+        let fake = w.b.tmp.join("env-atl");
+        fs::write(
+            &fake,
+            "#!/bin/sh\necho \"classify:$ATL_PERM_CLASSIFY\"\necho \"upath:$ATL_HOOK_USER_PATH\"\n\
+             echo \"path:$PATH\"\ncat >/dev/null\n",
+        )
+        .expect("env-atl");
+        set_mode(&fake, 0o755);
+        w.b.state_write(&[("atl_path", fake.to_str().expect("utf-8 tmp"))]);
+        let base = || {
+            Env::default()
+                .with_os("HOME", w.b.tmp.join("home"))
+                .with_os("CLAUDE_CONFIG_DIR", &w.b.cfg)
+                .with("ATL_PERM_CLASSIFY", "/elsewhere/anthology")
+                .with("ATL_HOOK_USER_PATH", "/elsewhere")
+        };
+        let run = |env: &Env| {
+            run_program(
+                &wrapper("atl-hook"),
+                &[],
+                br#"{"tool_name":"Bash"}"#,
+                env,
+                &w.b.tmp,
+            )
+        };
+        let classifier = wrapper("anthology");
+        // A PATH with a relative and an empty entry: atl runs on the safe one and is told the
+        // caller's.
+        let res = run(&base().with("PATH", "/usr/bin:/bin:.::rel"));
+        assert_eq!(res.code, 0, "{}", res.stderr_text());
+        assert_eq!(
+            lines(&res),
+            [
+                format!("classify:{}", classifier.display()),
+                "upath:/usr/bin:/bin:.::rel".to_string(),
+                "path:/usr/bin:/bin".to_string(),
+            ]
+        );
+        // No PATH exported: the inherited value is gone (what is left is the shell's own default).
+        let res = run(&base());
+        assert_eq!(res.code, 0, "{}", res.stderr_text());
+        let seen = lines(&res);
+        assert_eq!(seen[0], format!("classify:{}", classifier.display()));
+        assert_ne!(seen[1], "upath:/elsewhere");
+    }
+
     const ASK: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"node --version; bun --version"},"permissionDecision":"ask"}}"#;
     const REWRITE: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl git status --short"}}}"#;
     const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ATL: a deny rule matches"}}"#;

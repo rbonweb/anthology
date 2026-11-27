@@ -941,6 +941,16 @@ impl GateRules {
             && self.read_deny.is_empty()
             && self.read_ask.is_empty())
     }
+
+    /// Every `Read()` deny and ask rule, as the rule text `Read(pattern)` that
+    /// `anthology perm classify` takes.
+    pub(crate) fn read_rule_texts(&self) -> Vec<String> {
+        self.read_deny
+            .iter()
+            .chain(&self.read_ask)
+            .map(|pattern| format!("Read({pattern})"))
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
