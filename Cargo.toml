@@ -44,7 +44,7 @@ lexopt = "=0.3.2"
 # may also use them as normal dependencies.
 # Without the default `bit-set` feature: it would add a second bit-set line beside fancy-regex's.
 proptest = { version = "=1.12.0", default-features = false, features = ["std", "fork", "timeout"] }
-yaml-rust2 = { version = "=0.13.1", default-features = false }
+yaml-rust2 = { version = "=0.13.2", default-features = false }
 tempfile = "=3.27.0"
 # The RT2 TLS test server (testkit::http). ring, not aws-lc-rs: no C toolchain beyond cc.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
