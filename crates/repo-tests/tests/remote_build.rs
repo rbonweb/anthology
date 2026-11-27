@@ -40,11 +40,14 @@ esac
 HOME=$FAKE_REMOTE_HOME exec sh -c "$*"
 "#;
 
-/// A docker with state in two files: `containers` (`<id> <volume> <running|exited>` per line) and
-/// `volumes` (`<name> <created, RFC 3339>` per line). It answers the calls the script makes.
+/// A docker with state in three files, one item per line: `containers` (`<id> <volume> <running|
+/// exited> <image>`), `volumes` (`<name> <created, RFC 3339> <ours|->`, `ours` meaning it carries
+/// our label) and `images` (a reference). It answers the calls the script makes. Anything the
+/// script does that could touch more than ours (a prune, a `system` call, a forced image removal)
+/// is a failure here.
 const FAKE_DOCKER: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_STATE/docker.log"
-touch "$FAKE_STATE/containers" "$FAKE_STATE/volumes"
+touch "$FAKE_STATE/containers" "$FAKE_STATE/volumes" "$FAKE_STATE/images"
 drop_line() { # drop_line FILE KEY: remove the lines whose first word is KEY
     grep -v "^$2 " "$1" > "$1.new" || true
     mv "$1.new" "$1"
@@ -54,17 +57,19 @@ case $1 in
         shift
         all=
         vol=
+        img=
         status=
         for a in "$@"; do
             case $a in
                 -a | -aq) all=1 ;;
                 volume=*) vol=${a#volume=} ;;
+                ancestor=*) img=${a#ancestor=} ;;
                 status=*) status="$status ${a#status=}" ;;
             esac
         done
-        awk -v vol="$vol" -v st="$status" -v all="$all" '
+        awk -v vol="$vol" -v img="$img" -v st="$status" -v all="$all" '
             BEGIN { n = split(st, s, " ") }
-            vol == "" || $2 == vol {
+            (vol == "" || $2 == vol) && (img == "" || $4 == img) {
                 ok = 0
                 if (n == 0) ok = (all == 1 || $3 == "running")
                 else for (i = 1; i <= n; i++) if ($3 == s[i]) ok = 1
@@ -77,22 +82,60 @@ case $1 in
             case $a in -*) ;; *) drop_line "$FAKE_STATE/containers" "$a" ;; esac
         done
         ;;
+    inspect)
+        # A container: its volume, as `{{range .Mounts}}{{.Name}}` would list it.
+        for last in "$@"; do :; done
+        awk -v id="$last" '$1 == id { print $2 }' "$FAKE_STATE/containers"
+        ;;
     volume)
         case $2 in
             ls)
-                filter=
+                name=
+                label=
                 for a in "$@"; do
-                    case $a in name=*) filter=${a#name=} ;; esac
+                    case $a in
+                        name=*) name=${a#name=} ;;
+                        label=*) label=${a#label=} ;;
+                    esac
                 done
-                awk -v f="$filter" 'f == "" || index($1, f) > 0 { print $1 }' "$FAKE_STATE/volumes"
+                awk -v n="$name" -v l="$label" '
+                    (n == "" || index($1, n) > 0) && (l == "" || ($3 == "ours" && l == "anthology.remote-build=1")) { print $1 }
+                    ' "$FAKE_STATE/volumes"
                 ;;
-            inspect) awk -v v="$5" '$1 == v { print $2 }' "$FAKE_STATE/volumes" ;;
+            create)
+                tag=-
+                for a in "$@"; do
+                    [ "$a" != "anthology.remote-build=1" ] || tag=ours
+                    name=$a
+                done
+                echo "$name $(date -u +%Y-%m-%dT%H:%M:%SZ) $tag" >> "$FAKE_STATE/volumes"
+                ;;
+            inspect)
+                for last in "$@"; do :; done
+                line=$(awk -v v="$last" '$1 == v { print $2 }' "$FAKE_STATE/volumes")
+                [ -z "$line" ] || echo "$line"
+                [ -n "$line" ]
+                ;;
             rm) drop_line "$FAKE_STATE/volumes" "$3" ;;
+            prune) echo "fake docker: volume prune refused" >&2; exit 1 ;;
         esac
         ;;
+    image)
+        [ "$2" != prune ] || { echo "fake docker: image prune refused" >&2; exit 1; }
+        for last in "$@"; do :; done
+        grep -qxF -- "$last" "$FAKE_STATE/images"
+        ;;
+    rmi)
+        shift
+        for a in "$@"; do
+            case $a in -*) echo "fake docker: rmi flag $a refused" >&2; exit 1 ;; esac
+            grep -vxF -- "$a" "$FAKE_STATE/images" > "$FAKE_STATE/images.new" || true
+            mv "$FAKE_STATE/images.new" "$FAKE_STATE/images"
+        done
+        ;;
+    system | prune | *prune) echo "fake docker: $1 refused" >&2; exit 1 ;;
     info) printf '%s\n' "$FAKE_DOCKER_ROOT" ;;
 esac
-exit 0
 "#;
 
 /// `df -Pk PATH`: the free space is `FAKE_DF_KB`, or `FAKE_DF_DOCKER_KB` for the Docker data dir.
@@ -108,8 +151,19 @@ echo "fake 1000000000 1 $kb 1% /"
 const FAKE_RUST_TEST: &str = r#"#!/bin/sh
 echo "rust-test args: $*"
 echo "rust-test cwd: $(pwd)"
+[ -z "$(find "$HOME/anthology-remote/.last-used" -mmin -5 2>/dev/null)" ] || echo "last-used is fresh"
+[ -z "${FAKE_AGE_LAST_USED:-}" ] || touch -d '5 hours ago' "$HOME/anthology-remote/.last-used"
 root=$(cd "$(dirname "$0")/.." && pwd)
-echo "cont1 anthology-rust-target-$(printf '%s' "$root" | cksum | cut -d' ' -f1) running" >> "$FAKE_STATE/containers"
+vol=anthology-rust-target-$(printf '%s' "$root" | cksum | cut -d' ' -f1)
+image=$(awk '$1 == "FROM" {print $NF; exit}' "$root/ci/images/rust.Dockerfile")
+rustup=anthology-rustup-$(printf '%s' "${image##*@sha256:}" | cut -c1-12)
+# `docker run` pulls a missing image and creates a missing volume, with no label.
+touch "$FAKE_STATE/images" "$FAKE_STATE/volumes"
+grep -qxF -- "$image" "$FAKE_STATE/images" || echo "$image" >> "$FAKE_STATE/images"
+for v in "$vol" anthology-cargo "$rustup"; do
+    grep -q "^$v " "$FAKE_STATE/volumes" || echo "$v $(date -u +%Y-%m-%dT%H:%M:%SZ) -" >> "$FAKE_STATE/volumes"
+done
+echo "cont1 $vol running $image" >> "$FAKE_STATE/containers"
 [ -z "${FAKE_HANG:-}" ] || exec sleep 30
 exit "${FAKE_EXIT:-0}"
 "#;
@@ -260,6 +314,26 @@ impl Rig {
         dirs.remove(0)
     }
 
+    /// What is under `~/anthology-remote` besides the `.last-used` file.
+    fn left_under_root(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.remote_root()) else {
+            return Vec::new();
+        };
+        entries
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != ".last-used" && n != ".pulled-images")
+            .collect()
+    }
+
+    /// The `.last-used` file of the shared caches, last touched `hours_ago` hours ago.
+    fn seed_last_used(&self, hours_ago: u32) -> PathBuf {
+        fs::create_dir_all(self.remote_root()).unwrap();
+        let file = self.remote_root().join(".last-used");
+        fs::write(&file, "").unwrap();
+        sh(&format!("touch -d '{hours_ago} hours ago' \"$0\""), &file);
+        file
+    }
+
     /// Where this checkout's folder is, or will be, on the fake host.
     fn own_remote_dir(&self) -> PathBuf {
         let sum = sh(r#"printf '%s' "$0" | cksum | cut -d' ' -f1"#, &self.repo);
@@ -289,16 +363,49 @@ impl Rig {
         dir
     }
 
+    /// A volume with our label, created `hours_ago` hours ago.
     fn seed_volume(&self, name: &str, hours_ago: u32) {
+        self.seed_volume_tagged(name, hours_ago, "ours");
+    }
+
+    /// A volume without our label, whatever its name.
+    fn seed_foreign_volume(&self, name: &str, hours_ago: u32) {
+        self.seed_volume_tagged(name, hours_ago, "-");
+    }
+
+    fn seed_volume_tagged(&self, name: &str, hours_ago: u32, tag: &str) {
         let created = sh(
             &format!("date -u -d '{hours_ago} hours ago' +%Y-%m-%dT%H:%M:%SZ"),
             Path::new("."),
         );
-        self.append("volumes", &format!("{name} {created}\n"));
+        self.append("volumes", &format!("{name} {created} {tag}\n"));
     }
 
     fn seed_container(&self, id: &str, volume: &str, status: &str) {
-        self.append("containers", &format!("{id} {volume} {status}\n"));
+        self.seed_container_of(id, volume, status, "-");
+    }
+
+    fn seed_container_of(&self, id: &str, volume: &str, status: &str, image: &str) {
+        self.append("containers", &format!("{id} {volume} {status} {image}\n"));
+    }
+
+    /// The Rust image is on the host, and an earlier run of ours recorded that it pulled it.
+    fn seed_pulled_image(&self) {
+        fs::create_dir_all(self.remote_root()).unwrap();
+        fs::write(
+            self.remote_root().join(".pulled-images"),
+            format!("{IMAGE}\n"),
+        )
+        .unwrap();
+        self.append("images", &format!("{IMAGE}\n"));
+    }
+
+    fn images(&self) -> String {
+        self.log("images")
+    }
+
+    fn pulled_images(&self) -> String {
+        fs::read_to_string(self.remote_root().join(".pulled-images")).unwrap_or_default()
     }
 
     fn append(&self, file: &str, line: &str) {
@@ -605,8 +712,8 @@ fn a_run_removes_its_folder_stamp_and_volume_by_default() {
             .output()
             .unwrap();
         assert_eq!(out.status.code(), code.parse::<i32>().ok(), "exit {code}");
-        let left = fs::read_dir(rig.remote_root()).unwrap().count();
-        assert_eq!(left, 0, "something is left under ~/anthology-remote");
+        let left = rig.left_under_root();
+        assert!(left.is_empty(), "left under ~/anthology-remote: {left:?}");
         let volume = volume_for(&rig.own_remote_dir());
         let docker = rig.log("docker.log");
         assert!(docker.contains(&format!("volume rm {volume}")), "{docker}");
@@ -625,7 +732,7 @@ fn a_dropped_link_removes_the_folder_by_default_too() {
         .output()
         .unwrap();
     assert_ne!(out.status.code(), Some(0));
-    assert_eq!(fs::read_dir(rig.remote_root()).unwrap().count(), 0);
+    assert_eq!(rig.left_under_root(), Vec::<String>::new());
 }
 
 #[test]
@@ -738,7 +845,7 @@ fn exactly_20_gb_free_is_enough() {
 }
 
 #[test]
-fn clean_all_removes_every_leftover_and_the_rust_image() {
+fn clean_ours_removes_what_we_created_and_the_image_we_pulled() {
     let rig = rig!();
     rig.seed_dir("1111", 13);
     rig.seed_dir("2222", 1);
@@ -747,33 +854,260 @@ fn clean_all_removes_every_leftover_and_the_rust_image() {
         "anthology-rust-target-2",
         "anthology-cargo",
         "anthology-rustup-abc",
-        "other-project-data",
     ] {
         rig.seed_volume(name, 1);
     }
+    // A volume with our label but not our name, and ours by name but without the label.
+    rig.seed_volume("labelled-but-not-ours", 1);
+    rig.seed_foreign_volume("anthology-rust-target-3", 1);
     rig.seed_container("c1", "anthology-rust-target-1", "running");
-    rig.seed_container("c2", "other-project-data", "running");
+    rig.seed_container("c2", "labelled-but-not-ours", "running");
+    // Our run pulls the image: the first run records it.
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert!(
+        rig.pulled_images().contains(IMAGE),
+        "{}",
+        rig.pulled_images()
+    );
 
-    let out = rig.run(&["--clean-all"]);
+    let out = rig.run(&["--clean-ours"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
     assert!(!rig.remote_root().exists(), "~/anthology-remote is gone");
+    let volumes = rig.volumes();
+    let left: Vec<&str> = volumes
+        .lines()
+        .filter_map(|l| l.split(' ').next())
+        .collect();
     assert_eq!(
-        rig.volumes().trim().split(' ').next(),
-        Some("other-project-data")
+        left,
+        ["labelled-but-not-ours", "anthology-rust-target-3"],
+        "{volumes}"
     );
-    assert_eq!(rig.volumes().lines().count(), 1, "{}", rig.volumes());
     assert!(!rig.containers().contains("c1 "), "{}", rig.containers());
     assert!(rig.containers().contains("c2 "), "{}", rig.containers());
     let docker = rig.log("docker.log");
     assert!(docker.contains(&format!("rmi {IMAGE}")), "{docker}");
-    assert!(!docker.contains("rm -f c2"), "{docker}");
+    assert!(!rig.images().contains(IMAGE), "{}", rig.images());
     assert!(!all_output(&out).contains(ALIAS));
 }
 
 #[test]
-fn clean_all_before_any_run_succeeds_and_takes_no_other_arguments() {
+fn clean_ours_before_any_run_succeeds_and_takes_no_other_arguments() {
     let rig = rig!();
-    assert_eq!(rig.run(&["--clean-all"]).status.code(), Some(0));
-    let out = rig.run(&["--clean-all", "lint"]);
+    assert_eq!(rig.run(&["--clean-ours"]).status.code(), Some(0));
+    let out = rig.run(&["--clean-ours", "lint"]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn the_old_name_clean_all_is_refused_not_passed_on() {
+    let rig = rig!();
+    let out = rig.run(&["--clean-all"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("--clean-ours"));
+    assert!(rig.log("ssh.log").is_empty(), "ssh was called");
+}
+
+/// Our caches, 100 hours old, an unrelated volume, and the Rust image as we pulled it.
+fn seed_caches(rig: &Rig) {
+    for name in ["anthology-cargo", "anthology-rustup-abc"] {
+        rig.seed_volume(name, 100);
+    }
+    rig.seed_foreign_volume("other-project-data", 100);
+    rig.seed_pulled_image();
+}
+
+#[test]
+fn caches_unused_for_48_hours_are_swept_with_the_image() {
+    let rig = rig!();
+    seed_caches(&rig);
+    let last_used = rig.seed_last_used(49);
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    let docker = rig.log("docker.log");
+    // The run then creates what it needs again, so the proof is in the calls.
+    assert!(docker.contains("volume rm anthology-cargo"), "{docker}");
+    assert!(
+        docker.contains("volume rm anthology-rustup-abc"),
+        "{docker}"
+    );
+    assert!(docker.contains(&format!("rmi {IMAGE}")), "{docker}");
+    assert!(!docker.contains("volume rm other-project-data"), "{docker}");
+    assert!(rig.volumes().contains("other-project-data"));
+    assert!(
+        text(&out.stdout).contains("last-used is fresh"),
+        "the file is written at the start: {}",
+        all_output(&out)
+    );
+    assert!(!sh("find \"$0\" -mmin -5", &last_used).is_empty());
+}
+
+#[test]
+fn caches_used_within_48_hours_or_with_no_record_are_kept() {
+    for hours in [Some(47), None] {
+        let rig = rig!();
+        seed_caches(&rig);
+        if let Some(h) = hours {
+            rig.seed_last_used(h);
+        }
+        let out = rig.run(&["lint"]);
+        assert_eq!(out.status.code(), Some(0), "{hours:?}");
+        let volumes = rig.volumes();
+        assert!(volumes.contains("anthology-cargo"), "{hours:?}: {volumes}");
+        assert!(volumes.contains("anthology-rustup-abc"), "{hours:?}");
+        let docker = rig.log("docker.log");
+        assert!(!docker.contains("rmi"), "{hours:?}: {docker}");
+        assert!(
+            rig.remote_root().join(".last-used").is_file(),
+            "{hours:?}: the clock starts"
+        );
+    }
+}
+
+#[test]
+fn a_cache_a_running_container_uses_is_kept() {
+    let rig = rig!();
+    seed_caches(&rig);
+    rig.seed_last_used(49);
+    rig.seed_container("busy", "anthology-cargo", "running");
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert!(rig.volumes().contains("anthology-cargo"));
+    assert!(rig.containers().contains("busy"));
+}
+
+#[test]
+fn the_end_of_a_run_writes_last_used_even_when_the_folder_is_removed() {
+    let rig = rig!();
+    let last_used = rig.seed_last_used(10);
+    // The stand-in run ages the file, so only a write at the end can make it fresh again.
+    let out = rig
+        .command(&["lint"])
+        .env_remove("ANTHOLOGY_KEEP_REMOTE")
+        .env("FAKE_AGE_LAST_USED", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(rig.left_under_root().is_empty());
+    assert!(!sh("find \"$0\" -mmin -5", &last_used).is_empty());
+}
+
+#[test]
+fn what_we_create_carries_our_label() {
+    let rig = rig!();
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    let volumes = rig.volumes();
+    let names = [
+        volume_for(&rig.own_remote_dir()),
+        "anthology-cargo".to_owned(),
+        "anthology-rustup-0123456789ab".to_owned(),
+    ];
+    for name in names {
+        let line = volumes.lines().find(|l| l.starts_with(&format!("{name} ")));
+        let line = line.unwrap_or_else(|| panic!("no volume {name}:\n{volumes}"));
+        assert!(line.ends_with(" ours"), "{name} has no label: {line}");
+    }
+    let docker = rig.log("docker.log");
+    assert!(docker.contains("volume create --label anthology.remote-build=1"));
+}
+
+#[test]
+fn nothing_unlabelled_or_unrelated_is_ever_touched() {
+    let rig = rig!();
+    // Same names as ours but no label, and things with no connection to us.
+    for name in [
+        "anthology-cargo",
+        "anthology-rustup-zzz",
+        "anthology-rust-target-777",
+        "unrelated-data",
+    ] {
+        rig.seed_foreign_volume(name, 100);
+    }
+    rig.seed_volume("labelled-other", 100);
+    // The Rust image was on the host already (no record that we pulled it), beside another one.
+    rig.append("images", &format!("{IMAGE}\nrust:unrelated\n"));
+    rig.seed_container_of("u1", "unrelated-data", "running", "rust:unrelated");
+    rig.seed_container_of("u2", "anthology-cargo", "exited", "rust:unrelated");
+    rig.seed_container("u3", "anthology-rust-target-777", "exited");
+    rig.seed_last_used(100);
+    rig.seed_dir("1111", 100);
+    let outside = rig.home.join("not-ours");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("file"), "x").unwrap();
+
+    for args in [&["lint"][..], &["--clean-ours"]] {
+        let out = rig
+            .command(args)
+            .env_remove("ANTHOLOGY_KEEP_REMOTE")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", all_output(&out));
+    }
+
+    let volumes = rig.volumes();
+    for kept in [
+        "anthology-cargo ",
+        "anthology-rustup-zzz ",
+        "anthology-rust-target-777 ",
+        "unrelated-data ",
+        "labelled-other ",
+    ] {
+        assert!(volumes.contains(kept), "{kept}was removed:\n{volumes}");
+    }
+    let images = rig.images();
+    assert!(images.contains(IMAGE), "an image we did not pull: {images}");
+    assert!(images.contains("rust:unrelated"), "{images}");
+    let containers = rig.containers();
+    for kept in ["u1 ", "u2 ", "u3 "] {
+        assert!(containers.contains(kept), "{kept}was removed: {containers}");
+    }
+    assert!(outside.join("file").is_file(), "outside ~/anthology-remote");
+    let docker = rig.log("docker.log");
+    for never in ["rmi", "prune", "system", "rm -f u", "rm -f --"] {
+        assert!(
+            !docker.contains(never),
+            "docker was called with {never}:\n{docker}"
+        );
+    }
+    for never in [
+        "volume rm anthology-cargo",
+        "volume rm anthology-rustup-zzz",
+        "volume rm anthology-rust-target-777",
+        "volume rm unrelated-data",
+        "volume rm labelled-other",
+    ] {
+        assert!(!docker.contains(never), "{never}:\n{docker}");
+    }
+}
+
+#[test]
+fn an_image_we_pulled_stays_while_a_container_that_is_not_ours_uses_it() {
+    let rig = rig!();
+    rig.seed_pulled_image();
+    rig.seed_container_of("theirs", "their-data", "running", IMAGE);
+    let out = rig.run(&["--clean-ours"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(rig.images().contains(IMAGE), "{}", rig.images());
+    assert!(!rig.log("docker.log").contains("rmi"));
+}
+
+#[test]
+fn an_image_that_was_already_there_is_not_recorded_as_pulled() {
+    let rig = rig!();
+    rig.append("images", &format!("{IMAGE}\n"));
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert!(!rig.pulled_images().contains(IMAGE));
+}
+
+#[test]
+fn the_script_never_prunes_or_forces_a_removal() {
+    let script = repo::read(SCRIPT);
+    for word in [
+        "prune",
+        "docker system",
+        "rmi -f",
+        "rmi --force",
+        "volume rm -f",
+    ] {
+        assert!(!script.contains(word), "{SCRIPT} mentions {word}");
+    }
 }

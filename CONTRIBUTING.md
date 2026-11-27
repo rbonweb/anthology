@@ -66,7 +66,7 @@ To keep a long Rust build off your own machine, [`scripts/remote-build.sh`](scri
 ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh test -p anthology-guard
 ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh lint
 ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean
-ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-all
+ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-ours
 ```
 
 The arguments are the ones `scripts/rust-test.sh` takes. The script copies the checkout (tracked files, plus uncommitted and new files that are not ignored; never `target/` or `.claude/worktrees`) to `~/anthology-remote/<hash>/` on the host, runs the checks there, streams the output and exits with their exit code. The `<hash>` names the checkout, so each worktree has its own folder and its own target volume. Run one build per checkout at a time: a new run removes the containers that an earlier run of the same checkout left.
@@ -74,9 +74,10 @@ The arguments are the ones `scripts/rust-test.sh` takes. The script copies the c
 The host is shared, so the script leaves nothing of ours on it that can fill its disk:
 
 - **Clean by default.** When a run ends, passed or failed, and also on Ctrl-C or a dropped connection, the checkout's folder, its `anthology-rust-target-*` volume and its containers are removed. `ANTHOLOGY_KEEP_REMOTE=1` keeps the folder and volume, so the next run sends only what changed and builds warm. Use it for one working session, then run `--clean`.
-- **Self-heal at the start.** Before each run the script removes our own leftovers that were not used for 12 hours: folders under `~/anthology-remote/`, `anthology-rust-target-*` volumes, and our stopped containers. A volume that a running container uses stays. Nothing else on the host is touched.
+- **Only our own items.** The script removes only what it created: the folders under `~/anthology-remote/`; the `anthology-rust-target-*`, `anthology-cargo` and `anthology-rustup-*` volumes, which it creates itself with the label `anthology.remote-build=1` and treats as ours only when the name matches and the label is there (a same-named volume without the label was on the host before us and is never touched); the containers that mount those volumes; and the Rust image, only if it was not on the host when our run started (the script records that in `~/anthology-remote/.pulled-images`) and only when no container that is not ours uses it. It never prunes, never forces a removal and touches nothing outside `~/anthology-remote`.
+- **Self-heal at the start.** Before each run the script removes our own leftovers that were not used for 12 hours: folders, `anthology-rust-target-*` volumes and our stopped containers. When nothing of ours has run for 48 hours (the time of `~/anthology-remote/.last-used`, written at the start and the end of each run), it also removes the `anthology-cargo` and `anthology-rustup-*` caches and the pulled image. A volume that a running container uses stays.
 - **Disk guard.** The script refuses to start, and says so, when the host has less than 20 GB free on its home disk or its Docker data disk.
-- **`--clean`** removes this checkout's folder, volume and containers. **`--clean-all`** removes everything of ours: every folder, every `anthology-rust-target-*`, `anthology-cargo` and `anthology-rustup-*` volume, their containers, and the Rust image. The cargo and toolchain volumes and the image stay between runs so that a run starts quickly; run `--clean-all` when you are done for the day.
+- **`--clean`** removes this checkout's folder, volume and containers. **`--clean-ours`** removes everything of ours, as defined above, and nothing else. The caches and the image stay between runs so that a run starts quickly; run `--clean-ours` when you are done for the day.
 
 The remote folder is a copy without git history, so checks that read it (for example `scripts/dev.sh lock check-fresh`) belong on your own machine or in CI.
 
