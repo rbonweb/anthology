@@ -14,7 +14,9 @@
 //! expands braces fully on top of Python's expansions (a union, so Rust never allows what
 //! Python blocks). Only a brace expansion too large to check ([`BRACE_MAX_RESULTS`],
 //! [`BRACE_MAX_BYTES`]) is left unread; it marks the check [`Paths::capped`], and `check`
-//! blocks it as too complex (G0). Under a relative or empty home, a G3 path that uses the home
+//! blocks it as too complex (G0), except in the code keys of a tool input (`code`, `script`, ...):
+//! that text is code, not a shell word, and is read with Python's brace expansion alone then
+//! ([`Paths::code_hits_profile`]). Under a relative or empty home, a G3 path that uses the home
 //! (or a relative `cd` directory) is also read against an absolute stand-in for it
 //! ([`STANDIN_HOME`]), so a profile under that home is found wherever the home really is.
 
@@ -432,6 +434,19 @@ impl<'a> Paths<'a> {
         cwd: Option<&str>,
         predicate: impl Fn(&Paths<'_>, &str, Option<&str>) -> Result<bool, Limit>,
     ) -> Result<bool, Limit> {
+        self.words_hit_with(words, cwd, true, predicate)
+    }
+
+    /// [`Paths::words_hit`]; `cap_blocks` says what a brace expansion too large to check means
+    /// (strict only). `true`: the check is [`Paths::capped`]. `false`: the word is read with
+    /// Python's own brace expansion only, as the non-strict check reads it.
+    fn words_hit_with<S: AsRef<str>>(
+        &self,
+        words: &[S],
+        cwd: Option<&str>,
+        cap_blocks: bool,
+        predicate: impl Fn(&Paths<'_>, &str, Option<&str>) -> Result<bool, Limit>,
+    ) -> Result<bool, Limit> {
         any_of(words, |word| {
             let word = word.as_ref();
             if !self.strict && pystr::char_len(word) > MAX_PATH_STRING {
@@ -445,7 +460,8 @@ impl<'a> Paths<'a> {
                     if !self.one_component(&piece, cwd) {
                         match expand_braces_fully(&piece) {
                             Some(full) => all.extend(full),
-                            None => self.capped.set(true),
+                            None if cap_blocks => self.capped.set(true),
+                            None => {}
                         }
                     }
                     all
@@ -479,11 +495,14 @@ impl<'a> Paths<'a> {
     }
 
     /// `_code_hits_profile(texts, home, cwd)`: a profile path spelled inside any of the code
-    /// texts (G3).
+    /// texts (G3). `cap_blocks` is as in [`Paths::words_hit_with`]: `true` for code that a shell
+    /// command runs (`python3 -c ...`), `false` for the code keys of a tool input, which are
+    /// not a shell word (a JavaScript object literal is not a brace expansion).
     pub(crate) fn code_hits_profile<S: AsRef<str>>(
         &self,
         texts: &[S],
         cwd: Option<&str>,
+        cap_blocks: bool,
     ) -> Result<bool, Limit> {
         let mut candidates = HashSet::new();
         let mut limited = false;
@@ -496,7 +515,9 @@ impl<'a> Paths<'a> {
             }
         }
         let words: Vec<&String> = candidates.iter().filter(|c| may_name_profile(c)).collect();
-        let hit = self.words_hit(&words, cwd, |p, c, cwd| p.is_profile_path(c, cwd, true));
+        let hit = self.words_hit_with(&words, cwd, cap_blocks, |p, c, cwd| {
+            p.is_profile_path(c, cwd, true)
+        });
         if limited {
             either(Err(Limit), || hit)
         } else {
