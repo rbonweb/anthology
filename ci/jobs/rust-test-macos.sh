@@ -8,7 +8,9 @@
 #
 # With PACKAGES='a b' (a pull request that touched platform-sensitive paths; ci/jobs/rust-scope.sh
 # names the crates its change reaches) only those crates are tested, and the ledger's listings
-# are left to the full run on `build`, which has no PACKAGES.
+# are left to the full run on `build`, which has no PACKAGES. SHIMS=false (the scope found that
+# nothing the shim tests build or run changed) leaves out the shim network cases at the end;
+# without SHIMS they run.
 #
 # The ledger's macOS ground truth (F4a, controller ruling; this F1 file is touched for it):
 # what cargo compiles and would skip here, `cargo test -- --list [--ignored]`, plain and with
@@ -81,7 +83,7 @@ fi
 # BS1 shims on macOS (controller, BS1 hand-back): the runner's real shells and downloaders, and
 # the network cases against the testkit TLS server, with github.com mapped to 127.0.0.1 (the
 # shims-distros containers do the same). Last, so nothing above resolves github.com to it.
-if [ "${CI:-}" = true ]; then
+if [ "${CI:-}" = true ] && [ "${SHIMS:-true}" = true ]; then
     grep -qE '^127\.0\.0\.1[[:space:]]+github\.com$' /etc/hosts ||
         printf '127.0.0.1 github.com\n' | sudo tee -a /etc/hosts >/dev/null
     # A non-root bind to port 443 works on macOS only on the wildcard address.

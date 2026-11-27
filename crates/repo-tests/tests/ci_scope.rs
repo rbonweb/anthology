@@ -1,19 +1,22 @@
 //! `ci/jobs/rust-scope.sh` on a pull request: from the changed files and the workspace's
 //! dependency graph it decides which Rust tests run (the changed crates and every crate that
 //! depends on them), which golden surfaces replay, whether atl, the fuzz targets and macOS run,
-//! and how the Linux and macOS shards split. Anything it cannot place runs everything.
+//! and how the Linux and macOS shards split, and which repository jobs (ledger, shims-distros,
+//! cli-syntax, startup-budget, lint and the rest of `ALL_JOBS`) run. Anything it cannot place runs
+//! everything.
 //!
 //! Each case builds a throwaway git repository holding a small workspace with the real crate
 //! names (so the real `ci/scope-rules.tsv` and `ci/test-weights.tsv` apply), commits a change on
 //! top of a base commit, and reads the script's `key=value` lines. A few tests then check the
 //! rules, the weights and the graph helper against the real repository.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
 use anthology_pycompat::json::{self, Value};
+use regex::Regex;
 use repo_tests::repo;
 use tempfile::TempDir;
 
@@ -543,6 +546,403 @@ fn a_change_to_what_the_fuzz_targets_build_runs_the_fuzz_job() {
     assert!(!scope_after(|d| touch(d, "docs/setup.md")).flag("fuzz"));
 }
 
+// ---- the repository jobs --------------------------------------------------------------------
+
+/// Every job of ci.yml that rust-scope.sh switches on its `jobs` output. `gitleaks`, `deny` and
+/// `shellcheck` are not here: they run on every pull request.
+const ALL_JOBS: [&str; 11] = [
+    "cli-syntax",
+    "ledger",
+    "lock-fresh",
+    "memory-diff",
+    "mods",
+    "plugin-validate",
+    "rust-lint",
+    "shims-distros",
+    "startup-budget",
+    "vendor-check",
+    "version-bump",
+];
+
+/// The `jobs` a commit that changes `file` (created when the fixture lacks it) switches on.
+fn jobs_for(file: &str) -> Vec<String> {
+    let s = scope_after(|d| {
+        if file.ends_with("Cargo.toml") {
+            // a manifest must stay valid TOML for cargo metadata
+            edit(
+                d,
+                file,
+                "edition.workspace = true\n",
+                "edition.workspace = true\n# changed\n",
+            );
+        } else {
+            touch(d, file);
+        }
+    });
+    assert!(!s.flag("full"), "{file}");
+    s.list("jobs").into_iter().map(str::to_string).collect()
+}
+
+/// Sorted job names.
+fn jobs(names: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_change_nothing_reads_switches_no_repository_job_on() {
+    // Docs, scripts, evals, release notes and the divergence files are read by the repository
+    // checks (repo-tests) only, and by the jobs that run on every pull request (shellcheck).
+    for file in [
+        "docs/setup.md",
+        "README.md",
+        "CHANGELOG.md",
+        "changelog.d/anthology/10-pin.md",
+        "evals/cases/x.md",
+        "scripts/release.sh",
+        "port/difftest/x.tsv",
+        ".github/workflows/evals.yml",
+        "ci/images/shellcheck.Dockerfile",
+        "ci/images/gitleaks.Dockerfile",
+        "deny.toml",
+        ".gitleaks.toml",
+    ] {
+        assert_eq!(jobs_for(file), jobs(&[]), "{file}");
+    }
+}
+
+#[test]
+fn memory_notes_switch_on_only_the_memory_listing() {
+    for file in [".claude/memory/note.md", ".claude/agent-memory/x/y.md"] {
+        assert_eq!(jobs_for(file), jobs(&["memory-diff"]), "{file}");
+    }
+}
+
+#[test]
+fn a_version_only_cargo_edit_switches_on_only_the_lock_check() {
+    let bump = |d: &Path| {
+        edit(
+            d,
+            "Cargo.toml",
+            "version = \"0.2.3\"",
+            "version = \"0.2.4\"",
+        )
+    };
+    let s = scope_after(bump);
+    assert!(!s.flag("full"));
+    assert_eq!(s.list("jobs"), ["lock-fresh"]);
+    let s = scope_after(|d| {
+        edit(
+            d,
+            "Cargo.lock",
+            "version = \"0.2.3\"",
+            "version = \"0.2.4\"",
+        )
+    });
+    assert_eq!(s.list("jobs"), ["lock-fresh"]);
+    // The fuzz lock is no part of the shipped set.
+    let s = scope_after(|d| {
+        edit(
+            d,
+            "fuzz/Cargo.lock",
+            "version = \"0.2.3\"",
+            "version = \"0.2.4\"",
+        )
+    });
+    assert!(s.list("jobs").is_empty());
+}
+
+#[test]
+fn a_plugin_change_switches_on_the_jobs_that_read_that_plugin() {
+    let cases: [(&str, &[&str]); 9] = [
+        (
+            // the mods are the anthology plugin's, and the shim job validates it too
+            "plugins/anthology/hooks/mods/index.ts",
+            &[
+                "cli-syntax",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "version-bump",
+            ],
+        ),
+        (
+            PLUGIN_JSON,
+            &[
+                "cli-syntax",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology-guardrails/hooks/guard.sh",
+            &[
+                "cli-syntax",
+                "plugin-validate",
+                "shims-distros",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology-superpowers/skills/x/SKILL.md",
+            &[
+                "cli-syntax",
+                "plugin-validate",
+                "startup-budget",
+                "vendor-check",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology/agents/scout.md",
+            &[
+                "cli-syntax",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "startup-budget",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology/templates/routing-guide.md",
+            &[
+                "cli-syntax",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "startup-budget",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology/knowledge/caveman/SKILL.md",
+            &[
+                "cli-syntax",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "startup-budget",
+                "vendor-check",
+                "version-bump",
+            ],
+        ),
+        (
+            "plugins/anthology/anthology.lock",
+            &[
+                "cli-syntax",
+                "lock-fresh",
+                "mods",
+                "plugin-validate",
+                "shims-distros",
+                "version-bump",
+            ],
+        ),
+        // the marketplace manifest is validated as the `.` target
+        (".claude-plugin/marketplace.json", &["plugin-validate"]),
+    ];
+    for (file, expected) in cases {
+        assert_eq!(jobs_for(file), jobs(expected), "{file}");
+    }
+}
+
+#[test]
+fn a_crate_change_switches_on_the_jobs_that_build_that_crate() {
+    // Every crate: the test listing (ledger), lint, and the shipped-set check.
+    let always = ["ledger", "lock-fresh", "rust-lint"];
+    let with = |more: &[&str]| -> Vec<String> {
+        let mut v: Vec<&str> = always.to_vec();
+        v.extend_from_slice(more);
+        jobs(&v)
+    };
+    // The shim tests build pycompat (and core and the testkit, which the fixture lacks); the
+    // smoke, vendor, version, memory and budget commands run anthology-dev, which uses pycompat.
+    assert_eq!(
+        jobs_for("crates/anthology-pycompat/src/lib.rs"),
+        with(&[
+            "cli-syntax",
+            "memory-diff",
+            "shims-distros",
+            "startup-budget",
+            "vendor-check",
+            "version-bump",
+        ])
+    );
+    assert_eq!(
+        jobs_for("crates/anthology-dev/src/lib.rs"),
+        with(&[
+            "cli-syntax",
+            "memory-diff",
+            "startup-budget",
+            "vendor-check",
+            "version-bump",
+        ])
+    );
+    // In the fixture neither the shim tests nor anthology-dev build the cli, difftest, guard or
+    // shell crates, so only the ledger, lint and shipped-set check read them.
+    for krate in [
+        "anthology-cli",
+        "difftest",
+        "anthology-guard",
+        "anthology-shell",
+    ] {
+        assert_eq!(
+            jobs_for(&format!("crates/{krate}/src/lib.rs")),
+            with(&[]),
+            "{krate}"
+        );
+    }
+}
+
+#[test]
+fn a_change_to_the_repository_checks_switches_on_their_jobs_by_file() {
+    // repo-tests holds the shim tests (tests/shims*, and src for all of them) and the roster
+    // budget (tests/roster.rs); its other tests are read by the ledger and lint alone.
+    let base = ["ledger", "lock-fresh", "rust-lint"];
+    let with = |more: &[&str]| -> Vec<String> {
+        let mut v: Vec<&str> = base.to_vec();
+        v.extend_from_slice(more);
+        jobs(&v)
+    };
+    assert_eq!(jobs_for("crates/repo-tests/tests/docs.rs"), with(&[]));
+    assert_eq!(
+        jobs_for("crates/repo-tests/tests/shims/offline.rs"),
+        with(&["shims-distros"])
+    );
+    assert_eq!(
+        jobs_for("crates/repo-tests/tests/shims.rs"),
+        with(&["shims-distros"])
+    );
+    assert_eq!(
+        jobs_for("crates/repo-tests/tests/roster.rs"),
+        with(&["startup-budget"])
+    );
+    assert_eq!(
+        jobs_for("crates/repo-tests/src/repo.rs"),
+        with(&["shims-distros", "startup-budget"])
+    );
+    assert_eq!(
+        jobs_for("crates/repo-tests/Cargo.toml"),
+        with(&["shims-distros", "startup-budget"])
+    );
+}
+
+#[test]
+fn a_shim_script_switches_on_the_shim_tests_and_the_plugin_jobs() {
+    let expected = jobs(&[
+        "cli-syntax",
+        "mods",
+        "plugin-validate",
+        "shims-distros",
+        "version-bump",
+    ]);
+    assert_eq!(jobs_for("plugins/anthology/bin/anthology"), expected);
+    assert_eq!(jobs_for("plugins/anthology/hooks/lib.sh"), expected);
+    assert_eq!(
+        jobs_for("plugins/anthology-guardrails/hooks/guard.sh"),
+        jobs(&[
+            "cli-syntax",
+            "plugin-validate",
+            "shims-distros",
+            "version-bump"
+        ])
+    );
+}
+
+#[test]
+fn the_vendoring_and_dev_tool_files_switch_on_their_jobs() {
+    assert_eq!(jobs_for("vendor/sources.json"), jobs(&["vendor-check"]));
+    // atl is a vendored tree too (vendor/sources.json: managed by subtree).
+    assert_eq!(jobs_for("atl/src/main.rs"), jobs(&["vendor-check"]));
+    // scripts/dev.sh runs anthology-dev for these five.
+    assert_eq!(
+        jobs_for("scripts/dev.sh"),
+        jobs(&[
+            "lock-fresh",
+            "memory-diff",
+            "startup-budget",
+            "vendor-check",
+            "version-bump",
+        ])
+    );
+    // Ledger tables.
+    assert_eq!(jobs_for("port/ledger/shims.tsv"), jobs(&["ledger"]));
+    assert_eq!(jobs_for("port/python-test-ids.txt"), jobs(&["ledger"]));
+    assert_eq!(jobs_for("port/regex-resolved.tsv"), jobs(&["ledger"]));
+    // fuzz targets are linted.
+    assert_eq!(jobs_for("fuzz/fuzz_targets/a.rs"), jobs(&["rust-lint"]));
+}
+
+#[test]
+fn the_pinned_claude_code_and_the_job_images_switch_on_the_jobs_that_use_them() {
+    assert_eq!(
+        jobs_for("ci/claude-code/package.json"),
+        jobs(&["cli-syntax", "mods", "plugin-validate", "shims-distros"])
+    );
+    assert_eq!(jobs_for("ci/images/node.Dockerfile"), jobs(&["mods"]));
+    for image in ["alpine", "debian-slim", "ubuntu"] {
+        assert_eq!(
+            jobs_for(&format!("ci/images/{image}.Dockerfile")),
+            jobs(&["shims-distros"]),
+            "{image}"
+        );
+    }
+}
+
+#[test]
+fn a_job_script_switches_its_own_job_on() {
+    for (file, job) in [
+        ("ci/jobs/shims-distros.sh", "shims-distros"),
+        ("ci/jobs/ledger.sh", "ledger"),
+        ("ci/jobs/cli-syntax.sh", "cli-syntax"),
+        ("ci/jobs/mods.sh", "mods"),
+        ("ci/jobs/lock-fresh.sh", "lock-fresh"),
+    ] {
+        assert_eq!(jobs_for(file), jobs(&[job]), "{file}");
+    }
+}
+
+#[test]
+fn the_security_jobs_and_the_gates_are_not_scoped() {
+    // gitleaks, deny and shellcheck (which checks the guard's shell scripts) run on every pull
+    // request, so ci.yml names no scope output for them.
+    for name in ["gitleaks", "deny", "shellcheck"] {
+        let job = repo_tests::yaml::load_file(".github/workflows/ci.yml")["jobs"][name].clone();
+        assert!(!job.is_badvalue(), "{name}");
+        assert!(job["if"].is_badvalue(), "{name} has an if");
+        assert!(job["needs"].is_badvalue(), "{name} has needs");
+    }
+}
+
+#[test]
+fn every_scoped_job_in_ci_yml_reads_the_jobs_output_by_its_own_name() {
+    let ci = repo_tests::yaml::load_file(".github/workflows/ci.yml");
+    for name in ALL_JOBS {
+        let job = &ci["jobs"][name];
+        assert!(!job.is_badvalue(), "ci.yml has no job {name}");
+        assert_eq!(job["needs"].as_str(), Some("rust-scope"), "{name}");
+        let cond = job["if"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} has no if"));
+        assert!(
+            cond.contains(&format!(
+                "contains(needs.rust-scope.outputs.jobs, ',{name},')"
+            )),
+            "{name}: {cond}"
+        );
+    }
+    // And no other job reads the output, so a name that is not in ALL_JOBS cannot hide there.
+    let text = repo::read(".github/workflows/ci.yml");
+    assert_eq!(
+        text.matches("needs.rust-scope.outputs.jobs").count(),
+        ALL_JOBS.len(),
+        "a job reads the jobs output that is not in ALL_JOBS"
+    );
+}
+
 // ---- macOS ----------------------------------------------------------------------------------
 
 #[test]
@@ -568,10 +968,60 @@ fn the_macos_shards_run_the_affected_crates_with_both_feature_sets() {
     let features: Vec<&str> = shards.iter().map(|x| field(x, "features")).collect();
     assert_eq!(features, ["plain", "all"]);
     for shard in &shards {
+        // repo-tests is not among them: its tests are text checks and the shim tests, and
+        // nothing the guard crate does changes either (see the shim cases below).
         assert_eq!(
             field(shard, "packages"),
-            "anthology-cli anthology-guard anthology-memory difftest repo-tests"
+            "anthology-cli anthology-guard anthology-memory difftest"
         );
+        assert_eq!(field(shard, "shims"), "false");
+    }
+}
+
+#[test]
+fn macos_runs_the_shim_tests_only_when_what_they_build_or_run_changed() {
+    // The shims, the hooks, and the crates the shim tests link (pycompat is one in the fixture;
+    // core and the testkit are the others): repo-tests runs on macOS, and its shim network cases.
+    for file in [
+        "plugins/anthology/bin/anthology",
+        "plugins/anthology/hooks/lib.sh",
+        "plugins/anthology-guardrails/hooks/guard.sh",
+        "crates/repo-tests/tests/shims/offline.rs",
+        "crates/anthology-pycompat/src/pyerr.rs",
+    ] {
+        let s = scope_after(|d| touch(d, file));
+        assert!(s.flag("run_macos"), "{file}");
+        for shard in s.shards("macos_matrix") {
+            assert_eq!(field(&shard, "shims"), "true", "{file}");
+            assert!(
+                field(&shard, "packages")
+                    .split(' ')
+                    .any(|p| p == "repo-tests"),
+                "{file}: {}",
+                field(&shard, "packages")
+            );
+        }
+    }
+    // Platform code the shim tests do not link: macOS runs the affected crates but not repo-tests.
+    let s = scope_after(|d| touch(d, "crates/anthology-guard/src/lib.rs"));
+    assert!(s.flag("run_macos"));
+    assert!(
+        s.list("packages").contains(&"repo-tests"),
+        "linux still runs it"
+    );
+    for shard in s.shards("macos_matrix") {
+        assert!(!field(&shard, "packages").contains("repo-tests"));
+    }
+}
+
+#[test]
+fn a_full_run_runs_the_shim_tests_on_macos_with_the_whole_workspace() {
+    let s = scope_with(|d| touch(d, "docs/setup.md"), "[\"full-ci\"]", "head");
+    let shards = s.shards("macos_matrix");
+    assert_eq!(shards.len(), 2);
+    for shard in &shards {
+        assert_eq!(field(shard, "shims"), "true");
+        assert_eq!(field(shard, "packages"), "");
     }
 }
 
@@ -703,6 +1153,7 @@ fn assert_full(s: &Scope, what: &str) {
         "shell.analyze",
     ];
     assert_eq!(s.list("surfaces"), every_surface, "{what}");
+    assert_eq!(s.list("jobs"), ALL_JOBS, "{what}: every repository job");
     assert!(
         s.flag("atl") && s.flag("atl_macos") && s.flag("fuzz"),
         "{what}"
@@ -1224,14 +1675,26 @@ fn every_rule_matches_a_tracked_path_and_names_real_things() {
     assert!(crates.contains(&"repo-tests".to_string()), "{crates:?}");
     for row in rows(RULES) {
         assert_eq!(row.len(), 2, "pattern<TAB>effects: {row:?}");
-        assert!(
-            files.iter().any(|f| glob(&row[0], f)),
-            "no tracked file matches {}",
-            row[0]
-        );
+        // `crate:NAME` is not a path: it names a crate whose build the effects need.
+        if let Some(name) = row[0].strip_prefix("crate:") {
+            assert!(crates.contains(&name.to_string()), "{row:?}");
+            assert!(
+                row[1]
+                    .split(' ')
+                    .all(|e| e.starts_with("job:") || e == "shims"),
+                "a crate row only switches jobs on: {row:?}"
+            );
+        } else {
+            assert!(
+                files.iter().any(|f| glob(&row[0], f)),
+                "no tracked file matches {}",
+                row[0]
+            );
+        }
         for effect in row[1].split(' ') {
             match effect.split_once(':') {
                 Some(("pkg", name)) => assert!(crates.contains(&name.to_string()), "{row:?}"),
+                Some(("job", name)) => assert!(ALL_JOBS.contains(&name), "{row:?}"),
                 Some(("surface", name)) => {
                     assert!(
                         name == "*" || goldens.contains(&name.to_string()),
@@ -1239,13 +1702,65 @@ fn every_rule_matches_a_tracked_path_and_names_real_things() {
                     )
                 }
                 None => assert!(
-                    ["full", "atl", "atl-macos", "fuzz", "macos"].contains(&effect),
+                    ["full", "atl", "atl-macos", "fuzz", "macos", "shims"].contains(&effect),
                     "{row:?}"
                 ),
                 _ => panic!("{row:?}"),
             }
         }
     }
+}
+
+/// The crates a `crate:NAME` row names for `effect` (`shims` or `job:NAME`).
+fn crate_rows_for(effect: &str) -> BTreeSet<String> {
+    rows(RULES)
+        .into_iter()
+        .filter(|r| r[1].split(' ').any(|e| e == effect))
+        .filter_map(|r| r[0].strip_prefix("crate:").map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn the_shim_crate_rows_name_every_crate_the_shim_tests_use() {
+    // shims-distros builds tests/shims.rs and its folder; a crate they use and that has no row
+    // would leave a change to it unnoticed by the job.
+    let mut files = vec!["crates/repo-tests/tests/shims.rs".to_string()];
+    for f in repo::list_dir("crates/repo-tests/tests/shims") {
+        files.push(format!("crates/repo-tests/tests/shims/{f}"));
+    }
+    let used = Regex::new(r"\banthology_([a-z]+)\b").unwrap();
+    let mut crates = BTreeSet::new();
+    for f in &files {
+        for c in used.captures_iter(&repo::read(f)) {
+            crates.insert(format!("anthology-{}", &c[1]));
+        }
+    }
+    assert!(crates.contains("anthology-testkit"), "{crates:?}");
+    assert_eq!(
+        crates,
+        crate_rows_for("shims"),
+        "crates the shim tests use (left) against the `shims` crate rows (right)"
+    );
+}
+
+#[test]
+fn the_startup_budget_and_dev_tool_jobs_name_the_crates_their_commands_run() {
+    // `scripts/dev.sh startup-budget` and the smoke, vendor, version-bump, memory-diff and
+    // lock-check commands run anthology-dev; the runtime budget tests run anthology-runtime.
+    for job in [
+        "cli-syntax",
+        "vendor-check",
+        "version-bump",
+        "memory-diff",
+        "lock-fresh",
+    ] {
+        assert!(
+            crate_rows_for(&format!("job:{job}")).contains("anthology-dev"),
+            "{job}"
+        );
+    }
+    let budget = crate_rows_for("job:startup-budget");
+    assert!(budget.contains("anthology-dev") && budget.contains("anthology-runtime"));
 }
 
 #[test]

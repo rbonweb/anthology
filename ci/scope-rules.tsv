@@ -6,8 +6,8 @@
 # pattern, where `*` also matches `/`. Every rule that matches a path applies, and a path that no
 # rule matches runs everything, so a new folder needs a row here (the repo-tests in ci_scope.rs
 # check every tracked path). Effects:
-#   full          the whole workspace, every surface, atl, fuzz and macOS (the test machinery
-#                 itself, the toolchain, the image)
+#   full          the whole workspace, every surface, atl, fuzz, macOS and every job (the test
+#                 machinery itself, the toolchain, the image)
 #   pkg:NAME      the crate NAME changed: it and every crate that depends on it run
 #   surface:NAME  replay that golden surface; surface:* replays them all
 #   atl           run atl-test (Linux, in the pinned image)
@@ -16,6 +16,15 @@
 #   macos         platform-sensitive: run the macOS shards on a pull request (the shims, the
 #                 hooks and bin shims, the guard, code that spawns processes, waits or reads the
 #                 platform). Push runs always run them.
+#   job:NAME      run the repository job NAME of ci.yml (the `jobs` output): a job that reads
+#                 only some paths runs only when one of them changes. gitleaks, deny and
+#                 shellcheck have no row: they run on every pull request.
+#   shims         the shim tests (crates/repo-tests/tests/shims*) read or build this: job
+#                 shims-distros, and on macOS repo-tests with its shim network cases
+#
+# A row whose glob is `crate:NAME` is not a path. Its effects (job: and shims only) apply when
+# the crate NAME is affected by a change to a crate source: NAME itself or a crate it depends on
+# changed. It lists the crates a job builds or runs, so the job notices a change to one of them.
 #
 # --- the test machinery: a change is proved by running everything
 .github/workflows/ci.yml	full
@@ -25,38 +34,82 @@ ci/test-weights.tsv	full
 ci/images/rust.Dockerfile	full
 rust-toolchain.toml	full
 scripts/rust-test.sh	full
-# --- atl and the fuzz targets have their own jobs
-atl/*	atl atl-macos
+# --- atl and the fuzz targets have their own jobs; atl is a vendored tree (vendor-check)
+atl/*	atl atl-macos job:vendor-check
 scripts/atl-test.sh	atl
 scripts/atl-net-test.sh	atl
 fuzz/*	fuzz pkg:repo-tests
+fuzz/fuzz_targets/*	job:rust-lint
 ci/jobs/fuzz.sh	fuzz pkg:repo-tests
 ci/jobs/fuzz-build.sh	fuzz pkg:repo-tests
 # --- plugins: the repository checks read every file; some files also feed a golden
-plugins/*	pkg:repo-tests
-plugins/anthology/agents/*	surface:dev.startup-budget surface:dev.upstream-watch
-plugins/anthology/templates/*	surface:hook.session-start surface:setup
-plugins/*/bin/*	macos
-plugins/anthology/hooks/*.sh	macos
-plugins/anthology-guardrails/hooks/*.sh	macos
+plugins/*	pkg:repo-tests job:plugin-validate job:cli-syntax job:version-bump
+plugins/anthology/*	job:mods job:shims-distros
+plugins/anthology-guardrails/*	job:shims-distros
+plugins/anthology/agents/*	surface:dev.startup-budget surface:dev.upstream-watch job:startup-budget
+plugins/anthology/templates/*	surface:hook.session-start surface:setup job:startup-budget
+plugins/anthology/knowledge/*	job:startup-budget job:vendor-check
+plugins/anthology-superpowers/*	job:vendor-check
+plugins/anthology-superpowers/skills/*	job:startup-budget
+plugins/*/anthology.lock	job:lock-fresh
+plugins/*/hooks/hooks.json	shims
+plugins/anthology/skills/setup/SKILL.md	shims
+plugins/*/bin/*	macos shims
+plugins/anthology/hooks/*.sh	macos shims
+plugins/anthology-guardrails/hooks/*.sh	macos shims
+.claude-plugin/*	pkg:repo-tests job:plugin-validate
 # --- the divergence files every golden check reads
 port/difftest/*	pkg:repo-tests surface:*
+# --- the ledger reads these (and every file of every crate)
+port/ledger/*	job:ledger
+port/*-test-*	job:ledger
+port/regex-*	job:ledger
+# --- the repository jobs' own scripts, images and pins
+ci/jobs/shims-distros.sh	job:shims-distros
+ci/jobs/ledger.sh	job:ledger
+ci/jobs/cli-syntax.sh	job:cli-syntax
+ci/jobs/mods.sh	job:mods
+ci/jobs/lock-fresh.sh	job:lock-fresh
+ci/claude-code/*	job:plugin-validate job:cli-syntax job:mods job:shims-distros
+ci/images/node.Dockerfile	job:mods
+ci/images/alpine.Dockerfile	job:shims-distros
+ci/images/debian-slim.Dockerfile	job:shims-distros
+ci/images/ubuntu.Dockerfile	job:shims-distros
+# scripts/dev.sh runs anthology-dev in the pinned image for these five
+scripts/dev.sh	job:vendor-check job:version-bump job:memory-diff job:lock-fresh job:startup-budget
+vendor/*	pkg:repo-tests job:vendor-check
+.claude/memory/*	job:memory-diff
+.claude/agent-memory/*	job:memory-diff
+# lock-fresh compares the shipped set, which holds the root manifest and lock (even a version)
+Cargo.toml	job:lock-fresh
+Cargo.lock	job:lock-fresh
 # --- everything else: the repository checks (docs, ledger, vendor, evals, workflows, scripts)
 port/*	pkg:repo-tests
-vendor/*	pkg:repo-tests
 docs/*	pkg:repo-tests
 evals/*	pkg:repo-tests
 scripts/*	pkg:repo-tests
 ci/*	pkg:repo-tests
 .github/*	pkg:repo-tests
 .claude/settings.json	pkg:repo-tests
-.claude-plugin/*	pkg:repo-tests
 *.md	pkg:repo-tests
 LICENSE	pkg:repo-tests
 deny.toml	pkg:repo-tests
 .gitattributes	pkg:repo-tests
 .gitignore	pkg:repo-tests
 .gitleaks.toml	pkg:repo-tests
+# --- a crate: every crate is read by the test listing (ledger), lint and the shipped-set check
+crates/*	job:ledger job:rust-lint job:lock-fresh
+# --- the crates a job builds or runs (a change to the crate or one it depends on switches it on)
+crate:anthology-dev	job:cli-syntax job:vendor-check job:version-bump job:memory-diff job:lock-fresh job:startup-budget
+crate:anthology-runtime	job:startup-budget
+crate:anthology-core	shims
+crate:anthology-pycompat	shims
+crate:anthology-testkit	shims
+# repo-tests: the shim tests and the roster budget it holds, by file (its other tests are read by
+# no repository job)
+crates/repo-tests/src/*	shims job:startup-budget
+crates/repo-tests/Cargo.toml	shims job:startup-budget
+crates/repo-tests/tests/roster.rs	job:startup-budget
 # --- platform-sensitive Rust: the guard, code that spawns, waits or reads the platform
 crates/anthology-guard/*	macos
 crates/anthology-core/src/sys.rs	macos
@@ -80,4 +133,4 @@ crates/anthology-cli/src/cmd/perm/git.rs	macos
 crates/anthology-testkit/src/run.rs	macos
 crates/anthology-testkit/src/sandbox.rs	macos
 crates/anthology-testkit/src/bs.rs	macos
-crates/repo-tests/tests/shims*	macos
+crates/repo-tests/tests/shims*	macos shims
