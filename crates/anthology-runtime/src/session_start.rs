@@ -18,7 +18,9 @@
 //! F-20); the data-folder, wrapper, agent-memory and subagent checks; the git-folder check (a
 //! session folder that is not a repo but holds repos); memory sync; the guide, then what the repo
 //! adds after it ([`project`]: its own agents and skills, and [`MAP_LINE`] when it is approved
-//! in setup; none of it when `.claude/anthology.json` has `routing_guide: false`); compose;
+//! in setup; in a repo approved in setup, `.claude/anthology.json` with `routing_guide: false`
+//! leaves only [`project::floor`] of the guide, anywhere else the file is ignored, and a
+//! message line says which happened); compose;
 //! prune `<ah>/bin` (design §8.5).
 //!
 //! **Subagents.** When the hook input has a non-empty `agent_id` (a SessionStart inside a
@@ -74,13 +76,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anthology_core::git::RealGit;
 use anthology_core::lock::{self, ANTHOLOGY_TAG_PREFIX, Lock};
 use anthology_core::repos::{REPO_SCAN_CAP, repos_below};
 use anthology_core::{Env, paths, platform, state};
 use anthology_guard::{data, host};
-use anthology_memory::approve::is_approved;
-use anthology_memory::repo::{repo_key, repo_root};
 use anthology_memory::sync::{self, SyncDeps};
 use anthology_pycompat::errno_tables;
 use anthology_pycompat::json::{self, Map, Value};
@@ -118,6 +117,10 @@ pub const NOT_A_REPO: &str = "anthology: this folder is not a git repo, but git 
 /// Said after the guide for a repo approved in setup. The architect run for a missing project
 /// map is for those repos only, so it is not in the guide itself, which every repo gets.
 pub const MAP_LINE: &str = "This repo is approved in /anthology:setup. Before planning, read `.claude/memory/reference-project-map.md`; missing: dispatch anthology:architect.";
+/// An approved repo turned the routing guide off; the safety floor stays.
+pub const GUIDE_OFF: &str = "anthology: routing guide turned off by .claude/anthology.json (this repo is approved in /anthology:setup); the safety rules stay";
+/// An approved repo turned the delegation mod off.
+pub const DELEGATION_OFF: &str = "anthology: delegation mod turned off by .claude/anthology.json (this repo is approved in /anthology:setup)";
 /// The guide file is missing or unreadable.
 pub const GUIDE_MISSING: &str =
     "anthology: the routing guide is missing from the plugin (templates/routing-guide.md)";
@@ -492,6 +495,7 @@ pub mod label {
     pub const MEMORY: &str = "memory sync";
     pub const GUIDE: &str = "reading the routing guide";
     pub const PROJECT: &str = "reading the repo's own agents and skills";
+    pub const SWITCHES: &str = "reading the repo's .claude/anthology.json";
     pub const COMPOSE: &str = "assembling the session context";
     pub const STALE: &str = "the loaded plugin version check";
 }
@@ -947,10 +951,32 @@ fn read_guide(root: &Path) -> Option<String> {
     Some(format!("{}\n", text.trim_end_matches('\n')))
 }
 
-/// Whether the repo holding `cwd` was approved in `/anthology:setup` (the memory sync's rule).
-fn repo_approved(env: &Env, cwd: &Path) -> bool {
-    let git = RealGit;
-    repo_root(cwd, env, &git).is_some_and(|root| is_approved(&repo_key(&root, env, &git), env))
+/// The lines for `.claude/anthology.json` switches that ask to turn something off, and whether
+/// the routing guide is off: a switch is honoured only in an approved repo, so the other is said
+/// to be ignored.
+fn switch_notes(env: &Env, cwd: &Path) -> (bool, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut guide_off = false;
+    for (key, what) in [
+        (project::GUIDE_KEY, "routing guide"),
+        (project::DELEGATION_KEY, "delegation mod"),
+    ] {
+        match project::state(env, cwd, key) {
+            project::Switch::On => {}
+            project::Switch::Off => {
+                guide_off |= key == project::GUIDE_KEY;
+                notes.push(if key == project::GUIDE_KEY {
+                    GUIDE_OFF.to_string()
+                } else {
+                    DELEGATION_OFF.to_string()
+                });
+            }
+            project::Switch::Ignored => notes.push(format!(
+                "anthology: .claude/anthology.json asks to turn off the {what}, but this repo is not approved in /anthology:setup, so it is ignored"
+            )),
+        }
+    }
+    (guide_off, notes)
 }
 
 /// What follows the guide for this repo, as blocks separated by a blank line: its own agents
@@ -958,7 +984,7 @@ fn repo_approved(env: &Env, cwd: &Path) -> bool {
 fn repo_extras(env: &Env, cwd: &Path, repo: &Path) -> String {
     let mut blocks = Vec::new();
     blocks.extend(project::section(repo, &compat::config_dir(env)));
-    if repo_approved(env, cwd) {
+    if project::repo_approved(env, cwd) {
         blocks.push(MAP_LINE.to_string());
     }
     blocks.join("\n\n")
@@ -1313,27 +1339,38 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
     let context = if embedded {
         String::new()
     } else {
-        // A repo can turn the guide off (`.claude/anthology.json`): then neither it nor what
-        // follows it is read, and a guide that is not there is not a fault.
-        let repo = compat::repo_top(&cwd).unwrap_or_else(|| cwd.clone());
-        let guide_text = if project::guide_off(&repo) {
-            String::new()
-        } else {
-            let guide = step(
-                &mut warnings,
-                label::GUIDE,
-                |_| {
-                    fault(deps, "_read_guide")?;
-                    Ok(read_guide(&root))
-                },
-                None,
-            );
-            if guide.is_none() {
-                warnings.push(GUIDE_MISSING.into());
-            }
+        // A repo approved in setup can turn the guide off (`.claude/anthology.json`): then only
+        // the safety floor of the guide stays. Any other repo's file is ignored. Either way the
+        // user is told, every session.
+        let (guide_off, notes) = step(
+            &mut warnings,
+            label::SWITCHES,
+            |_| {
+                fault(deps, "_repo_switches")?;
+                Ok(switch_notes(env, &cwd))
+            },
+            (false, Vec::new()),
+        );
+        warnings.extend(notes);
+        let guide = step(
+            &mut warnings,
+            label::GUIDE,
+            |_| {
+                fault(deps, "_read_guide")?;
+                Ok(read_guide(&root))
+            },
+            None,
+        );
+        if guide.is_none() {
+            warnings.push(GUIDE_MISSING.into());
+        }
+        let guide_text = match guide {
+            None => String::new(),
+            Some(g) if guide_off => project::floor(&g),
             // What follows the guide only makes sense beside it.
-            let extras = match guide {
-                Some(_) => step(
+            Some(g) => {
+                let repo = project::repo_dir(&cwd);
+                let extras = step(
                     &mut warnings,
                     label::PROJECT,
                     |_| {
@@ -1341,10 +1378,9 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
                         Ok(repo_extras(env, &cwd, &repo))
                     },
                     String::new(),
-                ),
-                None => String::new(),
-            };
-            with_extras(&guide.unwrap_or_default(), &extras)
+                );
+                with_extras(&g, &extras)
+            }
         };
         step(
             &mut warnings,

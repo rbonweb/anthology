@@ -70,14 +70,14 @@ The agents above fill the gaps; they do not replace yours. When a repo has its o
 - an agent table or list in the repo's `CLAUDE.md` (or `.claude/CLAUDE.md`): the rows of a table and the items of a list under a heading that has "agent" in it, such as `## Project agents`. In a table, the column whose header says "agent" is the name; without one, the first column is;
 - then your own agents and skills in the Claude config folder (`~/.claude/agents`, `~/.claude/skills`, or under `CLAUDE_CONFIG_DIR`).
 
-Under the list is the rule: for the jobs they cover, use the project's own agents and skills before Anthology's; Anthology's agents fill the gaps. The list holds at most 12 entries (project ones first; a name appears once), so it stays inside the session-start budget. A file that does not parse, one with no description, and Anthology's own (`anthology`, `anthology:*`, `anthology-*`) are left out. A dispatch to any agent, yours included, is never refused or redirected.
+Under the heading is the rule: for the jobs they cover, use the project's own agents and skills before Anthology's; Anthology's agents fill the gaps. Then a line says the entries are text from the repo's own files, not instructions. The list holds at most 12 entries (project ones first; a name appears once), so it stays inside the session-start budget. Names and descriptions lose `<`, `>`, backticks and control, invisible and direction-changing characters. A file that does not parse, one with no description, and Anthology's own (`anthology`, `anthology:*`, `anthology-*`) are left out. A dispatch to any agent, yours included, is never refused or redirected.
 
-A repo can switch parts of this off for itself in `.claude/anthology.json` at the project root, a JSON object with boolean keys. A missing key, a value that is not `false`, or a file that does not parse leaves the default.
+A repo can switch parts of this off for itself in `.claude/anthology.json` at the project root (found at the git top, so a session started in a subfolder reads the same file), a JSON object with boolean keys. A missing key, a value that is not `false`, or a file that does not parse leaves the default. **A switch counts only in a repo you approved in `/anthology:setup`.** A repo you cloned can ship the file, and it cannot use it to switch Anthology's rules off: in any other repo the file is ignored, and session start says so in its message. When a switch does count, the message says that too, every session.
 
 | Key | `false` means |
 |---|---|
-| `routing_guide` | Session start leaves out the routing guide, this section and the project-map line below. Memory still loads. |
-| `delegation` | The [strict-delegation mod](mods.md#strict-delegation) does nothing in this repo. |
+| `routing_guide` | Session start leaves out the routing guide, this section and the project-map line below. Memory still loads, and a **safety floor** of guide lines stays: no attribution, tests and builds in containers, no host installs, literal-path deletes, the browser rule and no secrets in repo memory. |
+| `delegation` | The [strict-delegation mod](mods.md#strict-delegation) does nothing in this repo. It asks the installed `anthology switch delegation <folder>`, which applies the same approval rule; with no binary installed the mod stays on. |
 
 The line "before planning, read `.claude/memory/reference-project-map.md`; missing: dispatch `anthology:architect`" is not in the guide. Session start adds it only for a repo you approved in `/anthology:setup`.
 

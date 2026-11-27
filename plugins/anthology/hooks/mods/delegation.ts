@@ -10,7 +10,8 @@
 //     and 4 KB.
 // Only those three file tools are gated: a dispatch (the `Agent` tool) to any agent, the project's
 // own included, is never touched, and neither is a call to any other tool.
-// A repo can switch the mod off with `"delegation": false` in `<root>/.claude/anthology.json`.
+// A repo approved in setup can switch the mod off with `"delegation": false` in its
+// `.claude/anthology.json` (read at the git top; `anthology switch` checks the approval).
 // Subagent calls (they carry an `agentId`) are never touched. A headless run (`claude -p`, the
 // SDK with nothing attached: `$.session.surfaces()` is empty) is never touched either, and
 // neither is a session whose tool pool has no `Agent` tool, since the lead could not hand the work
@@ -22,7 +23,7 @@
 // This is a workflow rule, not a safety boundary: every hook fails open, and a Bash write
 // (`sed -i`, a redirect) is not seen. ANTHOLOGY_DELEGATION=0 (or ANTHOLOGY_MODS=0) turns it off.
 import type { EngineInterface, On, PromptComposeSection } from 'claude-code'
-import { modsOff } from './util.ts'
+import { modsOff, runAnthology } from './util.ts'
 
 // Two values in `$.state`, declared in types/anthology.d.ts. `delegation`: the file the lead
 // edited this turn and how many edits it has used. `coordinator`: whether the prompt carries the
@@ -40,6 +41,8 @@ const MAX_DELETE_LINES = 30
 const MAX_DELETE_CHARS = 4096
 const MAX_CONFIG_LINES = 15
 const CONFIG_FILE = /\.(json|jsonc|json5|ya?ml|toml|ini|cfg|conf|env|properties|plist)$/i
+// CI pipelines run code: their files keep the code limit.
+const CI_FILE = /(^|\/)(\.github|\.gitlab|\.circleci|\.buildkite|\.azure-pipelines|\.drone|\.woodpecker)\/|(^|\/)(\.gitlab-ci|\.travis|azure-pipelines|bitbucket-pipelines|\.drone|appveyor|cloudbuild)\.ya?ml$/i
 /** Folders looked at on the way up from a file to see whether a `.git` is there. */
 const MAX_WALK = 64
 
@@ -56,29 +59,54 @@ const COORDINATOR: PromptComposeSection = {
 }
 
 /**
- * The boolean `key` of `<session root>/.claude/anthology.json`, the repo's own switches; undefined
- * when there is no such file, it is not a JSON object, or the key is not a boolean.
+ * The nearest folder at or above `dir` that holds a `.git` (a folder, or a file in a worktree);
+ * `dir` itself when there is none or the check cannot run. Session start finds the repo the same
+ * way, so both read `.claude/anthology.json` in one place, whatever folder the session started in.
  */
-async function repoSwitch($: EngineInterface, key: string): Promise<boolean | undefined> {
+async function repoTop($: EngineInterface, dir: string): Promise<string> {
   try {
-    const root = await $.session.root()
-    const parsed: unknown = JSON.parse(await $.fs.read(`${root}/.claude/anthology.json`))
-    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { readonly [k: string]: unknown })[key] : undefined
-    return typeof value === 'boolean' ? value : undefined
+    let here = dir.replace(/\/+$/, '')
+    for (let depth = 0; depth < MAX_WALK; depth++) {
+      if (await $.fs.exists(`${here}/.git`)) return here
+      if (here === '') break
+      here = here.slice(0, here.lastIndexOf('/'))
+    }
   } catch {
-    return undefined
+    // unknown: the session folder
+  }
+  return dir
+}
+
+/**
+ * Whether the repo turned this mod off for itself: `"delegation": false` in its
+ * `.claude/anthology.json` and the repo approved in `/anthology:setup`. A repo you cloned can
+ * ship that file, so the file alone is not enough: the installed `anthology switch` says whether
+ * it counts (`off`). Only a file that asks is checked that way. No binary, or any other answer,
+ * leaves the mod on.
+ */
+async function repoTurnedOff($: EngineInterface): Promise<boolean> {
+  try {
+    const cwd = await $.session.cwd()
+    const parsed: unknown = JSON.parse(await $.fs.read(`${await repoTop($, cwd)}/.claude/anthology.json`))
+    if (typeof parsed !== 'object' || parsed === null || (parsed as { readonly [k: string]: unknown }).delegation !== false) {
+      return false
+    }
+    const run = await runAnthology($, ['switch', 'delegation', cwd], '', 5000)
+    return run !== undefined && run.exitCode === 0 && run.stdout.trim() === 'off'
+  } catch {
+    return false
   }
 }
 
 /**
- * ANTHOLOGY_DELEGATION=0 turns this mod off; ANTHOLOGY_MODS=0 turns every anthology mod off; a
- * repo turns it off with `"delegation": false` in its `.claude/anthology.json`.
+ * ANTHOLOGY_DELEGATION=0 turns this mod off; ANTHOLOGY_MODS=0 turns every anthology mod off; an
+ * approved repo turns it off with `"delegation": false` in its `.claude/anthology.json`.
  */
 async function delegationOff($: EngineInterface): Promise<boolean> {
   return (
     (await modsOff($)) ||
     (await $.env.get('ANTHOLOGY_DELEGATION')) === '0' ||
-    (await repoSwitch($, 'delegation')) === false
+    (await repoTurnedOff($))
   )
 }
 
@@ -210,7 +238,7 @@ function lineCount(text: string): number {
 /** How much an Edit may change and still be a tiny fix, by what it does and to what. */
 function limitsFor(file: string, deleting: boolean): { what: string; lines: number; chars: number } {
   if (deleting) return { what: 'a deletion', lines: MAX_DELETE_LINES, chars: MAX_DELETE_CHARS }
-  if (CONFIG_FILE.test(file)) return { what: 'a config edit', lines: MAX_CONFIG_LINES, chars: MAX_EDIT_CHARS }
+  if (CONFIG_FILE.test(file) && !CI_FILE.test(file)) return { what: 'a config edit', lines: MAX_CONFIG_LINES, chars: MAX_EDIT_CHARS }
   return { what: 'an inline fix', lines: MAX_EDIT_LINES, chars: MAX_EDIT_CHARS }
 }
 
@@ -221,7 +249,8 @@ function whyNotTiny(e: object, file: string): string | undefined {
   }
   const before = field(e, 'old_string')
   const after = field(e, 'new_string')
-  const limit = limitsFor(file, before.trim() !== '' && after.trim() === '')
+  // A deletion has an empty `new_string`, exactly: a blank one is a replacement.
+  const limit = limitsFor(file, before !== '' && after === '')
   const lines = Math.max(lineCount(before), lineCount(after))
   if (lines > limit.lines) return `${limit.what} is at most ${limit.lines} lines and this one is ${lines}`
   const chars = before.length + after.length
@@ -293,7 +322,7 @@ async function refusal($: EngineInterface, file: string, why: string): Promise<s
     `Dispatch the project's own matching agent when one fits, else ${agent}${bug}, with this change. ` +
     `Inline only: an Edit of at most ${MAX_EDIT_LINES} lines (${MAX_CONFIG_LINES} in a config file, ${MAX_DELETE_LINES} for a pure deletion) ` +
     `in one file, at most ${MAX_EDITS_PER_TURN} per turn. Files outside a git repo and the Claude config folder are yours. ` +
-    `Set ANTHOLOGY_DELEGATION=0, or "delegation": false in .claude/anthology.json, to turn this off.${rule}`
+    `Set ANTHOLOGY_DELEGATION=0, or "delegation": false in .claude/anthology.json of a repo approved in /anthology:setup, to turn this off.${rule}`
   )
 }
 
