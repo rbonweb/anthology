@@ -366,3 +366,48 @@ fn an_expansion_in_a_search_pattern_with_quote_characters_is_still_too_complex()
         Verdict::TooComplex,
     );
 }
+
+#[test]
+fn an_escaped_dollar_handed_to_a_nested_text_of_the_same_shell_is_still_too_complex() {
+    // the escaped dollar is how a writer passes a live one to a nested text (`trap`, `.` of a process
+    // substitution or of stdin, `eval`): there the escape is gone and `[[ a$X -eq 0 ]]` evaluates the
+    // subscript a loop variable holds. Only a text that is nothing but searches may read an escaped dollar as
+    // a literal one; every one of these was too complex before and stays so.
+    let payload = r#"[\$(npx playwright install)]"#;
+    let mut shapes = vec![
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+        format!(r#"typeset -a a; for X in "{payload}"; do . <(echo "[[ a\$X -eq 0 ]]"); done"#),
+        format!(
+            r#"typeset -a a; for X in "{payload}"; do . /dev/stdin <<< "[[ a\$X -eq 0 ]]"; done"#
+        ),
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a$"X" -eq 0 ]]" EXIT; done"#),
+        format!(r#"typeset -a a; for X in "{payload}"; do trap "[[ a$\X -eq 0 ]]" EXIT; done"#),
+        format!(
+            r#"typeset -a a; for X in "{payload}"; do trap \[\[\ a$\X\ -eq\ 0\ \]\] EXIT; done"#
+        ),
+        format!(r#"for X in "{payload}"; do trap "unset \"a\$X\"" EXIT; done"#),
+        format!(r#"for X in "{payload}"; do source <(echo "unset \"a\$X\""); done"#),
+        r#"for X in '[`npx playwright install`]'; do trap "unset \"a\$X\"" EXIT; done"#.to_string(),
+        // a text with one command that is not a search reads its escaped dollars as before
+        r#"echo x; grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir"#.to_string(),
+        r#"grep -E "[\"'\`][^\"'\`]*(\\$\{|x)" dir; echo x"#.to_string(),
+        r#"grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir | tee out"#.to_string(),
+        r#"FOO=1 grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir"#.to_string(),
+        r#"/usr/bin/grep -E "[\"'\`][^\"'\`]*(\$\{|x)" dir"#.to_string(),
+        // a search before the sink does not make the text a search
+        format!(r#"grep -E "x\$" d; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+        format!(r#"grep -E "x\$" d | for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#),
+    ];
+    // and the same sinks with the search shapes of the Allow test around them
+    shapes.push(format!(
+        r#"grep -E "[\"'\`]x\\$" d; typeset -a a; for X in "{payload}"; do trap "[[ a\$X -eq 0 ]]" EXIT; done"#
+    ));
+    let wrong: Vec<String> = shapes
+        .iter()
+        .filter_map(|c| {
+            let got = verdict(c);
+            (got != Verdict::TooComplex).then(|| format!("{c:?}: {got:?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "want TooComplex:\n{}", wrong.join("\n"));
+}
