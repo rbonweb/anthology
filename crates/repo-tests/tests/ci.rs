@@ -340,7 +340,11 @@ mod memory_diff_startup_budget_cli_syntax_job_tests {
     fn test_memory_diff_is_pull_request_only_and_passes_the_shas_by_env() {
         let wf = ci_jobs();
         let job = &wf["jobs"]["memory-diff"];
-        assert_eq!(text(job, "if"), "github.event_name == 'pull_request'");
+        // pull requests only, and only when rust-scope found a memory note changed
+        assert_eq!(
+            text(job, "if"),
+            "github.event_name == 'pull_request' && contains(needs.rust-scope.outputs.jobs, ',memory-diff,')"
+        );
         assert_eq!(checkout_of(job)["with"]["fetch-depth"].as_i64(), Some(0));
         // Found by its BASE env: the `memory_diff.py` script name is a Python artifact.
         // omitted: the `memory_diff.py` step lookup -> CO2 replacement.
