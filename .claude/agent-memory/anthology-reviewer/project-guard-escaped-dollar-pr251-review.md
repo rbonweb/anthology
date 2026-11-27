@@ -1,13 +1,14 @@
 ---
 name: 'Escaped-dollar plain_text loosening (PR 251) review findings'
-description: 'Head 24c5f4d8: every exempted dollar form reaches a same-shell nested text (trap, dot-source of a procsub or here-string) and runs a hidden subscript'
+description: 'Round 2 head 3f59e941: search-only gate restores every round 1 repro to G0; zsh arithmetic backtick, rg --pre and ugrep --filter gaps are pre-existing'
 metadata:
   type: project
   modified: 2026-11-27
 ---
 
-PR 251 (base ed8eab8b, head 24c5f4d8) lets plain_text in crates/anthology-shell/src/collect.rs skip a dollar that a backslash escapes, that a backslash follows, or that ends a double-quoted string.
-Critical, runtime proven in bash 5.2.37 and zsh 5.9 (debian trixie-slim): those three forms are how a writer hands a live dollar to a nested text. The outer text then counts as plain, so a for-loop variable holding a subscript payload with no name before the bracket is not flagged, while the nested text joins the name. Shapes that were base G0, head Allow and ran a G1 npx marker: typeset -a a, then a for loop over a double-quoted bracket word holding an escaped dollar-paren payload, then trap with a double-quoted [[ a, escaped dollar, X -eq 0 ]] at EXIT; the same with a dot-source of a process substitution echo, or of /dev/stdin with a here-string; the same with the dollar-ends-string and dollar-backslash forms; a single-quoted backtick payload too. A grep before it does not help.
-Held: set -- positional payloads stay G0 on head (positional tracking), eval, sh and flock -c stay G0; read and printf -v binders stayed G0 or G1.
-Why: trap and the dot builtin are not in TEXT_CONSUMERS, and plain is computed once per text while nested texts get the decoded word, where the escape is gone.
-How to apply: in later rounds probe every binder (for, select, getopts, read) with trap and dot-source sinks; zsh needs the name to be an array for [[ -eq ]] subscript evaluation to run a command; bash does not.
+PR 251 (base ed8eab8b) lets plain_text in crates/anthology-shell/src/collect.rs skip a dollar that a backslash escapes, that a backslash follows, or that ends a double-quoted string.
+Round 1 (head 24c5f4d8), Critical, runtime proven in bash 5.2.37 and zsh 5.9: the exemptions reached same-shell nested texts. A for, select or read binder holding a bracket payload with an escaped dollar-paren, then trap, a dot-source of a process substitution, or of /dev/stdin with a here-string, joining a name to the variable inside [[ -eq ]], went from G0 to Allow and ran the npx marker.
+Round 2 (head 3f59e941): the exemptions apply only when the first decoded word of every segment is grep, egrep, fgrep, rg, cut, head, tail, sort, uniq or wc. Nested segments (process substitution, subshell, function body) are in lexed.segments, so an eval or dot inside them turns the gate off. Every round 1 repro is G0 again; command grep and =grep are G0; backslash-grep and quoted grep stay Allow and run grep. Odd backslash counts, dollar-quote, ANSI-C quote, a dollar before a closing quote, dollar-equals, dollar-bracket and (e) flag verdicts are the same on base and head.
+Pre-existing on base and head, not this PR: zsh runs a backslash-escaped backtick inside an arithmetic subscript, (( a[escaped backtick npx playwright install escaped backtick] )) with a an array or with path, and the guard allows it (G1 bypass, bash 5.2 does not run it). rg --pre sh FILE runs the file, rg --pre=npx runs npx, and ugrep --filter (the snapshot grep) runs its command; all Allow.
+Why: the gate is a first-word allowlist, so its safety rests on segment completeness and on the ten programs not running text.
+How to apply: probe new search-only carve-outs against arithmetic commands whose first word is a listed name, and against program-running options of the listed programs.
