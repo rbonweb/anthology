@@ -183,7 +183,7 @@ fn a_rest_shard_without_crates_tests_the_whole_workspace() {
 fn the_replay_shards_run_only_the_named_surfaces_with_the_same_features() {
     let env = [(
         "SURFACES",
-        "guard.check,hook.session-start,dev.rtk-trim,mem",
+        "guard.check,hook.session-start,dev.version-bump,mem",
     )];
     for features in ["plain", "all"] {
         let got = linux(&[features, "replay"], &env).unwrap();
@@ -196,7 +196,7 @@ fn the_replay_shards_run_only_the_named_surfaces_with_the_same_features() {
                 features,
                 "golden_replay::guard_check",
                 "golden_replay::hook_session_start",
-                "golden_replay::dev_rtk_trim",
+                "golden_replay::dev_version_bump",
                 "golden_replay::mem",
             ],
             "{features}"
@@ -241,7 +241,7 @@ fn the_replay_tests_the_shards_name_exist_for_every_golden() {
         golden.contains("mod golden_replay {"),
         "the module the shards filter on"
     );
-    let pair = Regex::new(r#"(?m)^\s+(\w+) => "([^"]+)",$"#).unwrap();
+    let pair = Regex::new(r#"(?m)^\s+(\w+) => "([^"]+)",(?: //.*)?$"#).unwrap();
     let mut tested = BTreeSet::new();
     for c in pair.captures_iter(&golden) {
         assert_eq!(c[1], c[2].replace(['.', '-'], "_"), "{}", &c[2]);

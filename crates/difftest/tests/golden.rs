@@ -479,7 +479,7 @@ mod golden_replay {
         dev_startup_budget => "dev.startup-budget",
         dev_eval_baseline => "dev.eval-baseline",
         dev_upstream_watch => "dev.upstream-watch",
-        dev_rtk_trim => "dev.rtk-trim",
+        dev_rtk_trim => "dev.rtk-trim", // legacy name of the dev.atl-trim surface
         runtime_guardrails_loc => "runtime.guardrails_loc",
     }
 }
