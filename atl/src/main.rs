@@ -1,3 +1,4 @@
+// Throwaway line for the CI timing proof.
 // musl's built-in malloc is slow for the hook's allocation pattern; see Cargo.toml.
 #[cfg(target_env = "musl")]
 #[global_allocator]
