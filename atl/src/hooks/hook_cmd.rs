@@ -69,13 +69,17 @@ fn decide_hook_action(cmd: &str, host: permissions::Host, cwd: Option<&str>) -> 
 /// settings ATL reads and whose hook asks explicitly for a wrap. Copilot
 /// shares `Host::Claude` for its verdict but judges the returned command
 /// itself, so it keeps [`decide_hook_action`].
-fn decide_claude_hook_action(cmd: &str, cwd: Option<&str>) -> HookDecision {
+fn decide_claude_hook_action(
+    cmd: &str,
+    cwd: Option<&str>,
+    mode: super::read_only_proof::Mode,
+) -> HookDecision {
     let permissions = permissions::check_claude_hook_command(cmd);
     if permissions.verdict == PermissionVerdict::Deny {
         return HookDecision::Deny;
     }
     crate::hooks::rewrite_cmd::track_tee_read(cmd);
-    decision::decide_for_claude_hook_at(cmd, &permissions, cwd)
+    decision::decide_for_claude_hook_in(cmd, &permissions, cwd, mode)
 }
 
 // ── Gemini hook ───────────────────────────────────────────────
@@ -181,7 +185,8 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
     };
 
     let cwd = v.get("cwd").and_then(Value::as_str);
-    process_claude_payload_from_decision(v, cmd, decide_claude_hook_action(cmd, cwd))
+    let mode = super::read_only_proof::Mode::of(v);
+    process_claude_payload_from_decision(v, cmd, decide_claude_hook_action(cmd, cwd, mode))
 }
 
 /// Pure core of `process_claude_payload`, taking the hook decision directly so the
@@ -812,6 +817,25 @@ mod tests {
 
     fn claude_input_value(cmd: &str) -> Value {
         serde_json::from_str(&claude_input(cmd)).unwrap()
+    }
+
+    /// Auto mode: Claude Code refuses a call whose input a hook changed after
+    /// auto mode reviewed it, so nothing is rewritten there; every other mode
+    /// still is.
+    #[test]
+    fn test_claude_auto_mode_is_not_rewritten() {
+        let input = |mode: &str| {
+            json!({
+                "permission_mode": mode,
+                "tool_name": "Bash",
+                "tool_input": { "command": "git status" }
+            })
+            .to_string()
+        };
+        assert_eq!(run_claude_inner(&input("auto")), None);
+        for mode in ["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"] {
+            assert!(run_claude_inner(&input(mode)).is_some(), "{mode}");
+        }
     }
 
     #[test]

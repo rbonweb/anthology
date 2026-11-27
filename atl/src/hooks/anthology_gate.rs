@@ -941,6 +941,22 @@ impl GateRules {
             && self.read_deny.is_empty()
             && self.read_ask.is_empty())
     }
+
+    /// The project roots the settings were read from: where Claude Code lets a
+    /// session read without asking.
+    pub(crate) fn project_roots(&self) -> &[PathBuf] {
+        &self.project_roots
+    }
+
+    /// Every `Read()` deny and ask rule, as the rule text `Read(pattern)` that
+    /// `anthology perm classify` takes.
+    pub(crate) fn read_rule_texts(&self) -> Vec<String> {
+        self.read_deny
+            .iter()
+            .chain(&self.read_ask)
+            .map(|pattern| format!("Read({pattern})"))
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

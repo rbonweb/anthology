@@ -21,7 +21,7 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 - `anthology-shell/src/path_vars.rs`: `PathVars`, `analyze_with_vars`, the carve-out (d) text check. `anthology-guard/src/path_vars.rs`: `HostPathVars`, the `ANTHOLOGY_GUARD_PATH_VARS` name, value and file checks.
 - `anthology-memory`: `save.rs` (`save_repo_note_with`, `reindex`, `write_note`), `index.rs` (`run_reindex`). `anthology-runtime/src/setup.rs`: outside a repo, `memory.repo` lists `repos_below[_more]`; setup `SKILL.md` asks which and passes `--cwd`.
 - `crates/anthology-dev` (`version_bump.rs`: `release_verdict`, `highest_release`, run through `gate()`), `difftest` (golden replayer), `repo-tests` - never ship.
-- `atl/`, `fuzz/` - own workspaces and `Cargo.lock`; ATL's gate: `src/hooks/anthology_gate.rs`.
+- `atl/`, `fuzz/` - own workspaces and `Cargo.lock`; ATL's gate: `src/hooks/anthology_gate.rs`, then `read_only_proof.rs` (drops a needless ask when `anthology perm classify` proves the line read-only, found through `ATL_PERM_CLASSIFY` from `bin/atl-hook`; no rewrite in auto mode).
 - `vendor/` - `sources.json` (every pin), `patches/`, `snapshots/`; sync with `scripts/dev.sh vendor sync`.
 - `evals/` (runners export `ANTHOLOGY_HOST_MODE=full`), `ci/jobs/` (one script per CI job), `changelog.d/<plugin>/*.md` (fragments `release-edit` reads and deletes).
 
